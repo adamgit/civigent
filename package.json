@@ -1,0 +1,20 @@
+{
+  "name": "knowledge-store",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "backend",
+    "frontend",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run -w @ks/shared-types build && npm run -w @ks/backend build && npm run -w @ks/frontend build",
+    "dev": "bash ./scripts/dev.sh",
+    "dev:single-user": "KS_AUTH_MODE=single_user npm run dev",
+    "dev:backend": "KS_DATA_ROOT=/workspace/dev-data PORT=3000 npm run dev -w @ks/backend",
+    "dev:frontend": "npm run dev -w @ks/frontend",
+    "test": "npm run test -w @ks/backend && npm run test -w @ks/frontend",
+    "test:ws:single-tab": "npm run test:ws:single-tab -w @ks/frontend",
+    "test:ws:shared-session": "npm run test:ws:shared-session -w @ks/frontend"
+  }
+}

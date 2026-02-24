@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+
+# Sample wiki is committed; real wiki data is not
+# (end users manage their own wiki-data/ repo separately)
+sample-wiki/
+
+# Developer local docs if e.g. using ClaudeCode, Cursor, etc
+#
+TRANSIENT WORKING DOCS/
+
+# Pre-inflight proposal artifacts are transient and never tracked
+**/proposals/proposing/
+**/proposals/planning/

@@ -1,0 +1,11 @@
+services:
+  backend:
+    volumes:
+      # Optional: host-visible snapshot folder for tools like Obsidian.
+      # If SNAPSHOT_DIR is unset, this falls back to a Docker-managed volume.
+      - ${SNAPSHOT_DIR:-snapshot-vol}:/app/snapshot
+    environment:
+      SNAPSHOT_ENABLED: ${SNAPSHOT_ENABLED:-true}
+
+volumes:
+  snapshot-vol:

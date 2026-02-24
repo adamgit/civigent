@@ -1,0 +1,36 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      target: dev
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      - ./sample-wiki:/app/data
+      - snapshot-dev:/app/snapshot
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - SNAPSHOT_ENABLED=true
+      - KS_AUTH_MODE=${KS_AUTH_MODE:-}
+      - KS_USER_NAME=${KS_USER_NAME:-}
+      - KS_USER_EMAIL=${KS_USER_EMAIL:-}
+      - KS_USER_ID=${KS_USER_ID:-}
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    environment:
+      - NODE_ENV=development
+      - VITE_BACKEND_TARGET=http://backend:3000
+
+volumes:
+  snapshot-dev:
