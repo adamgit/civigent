@@ -1,0 +1,165 @@
+import { Link } from "react-router-dom";
+import { sectionGlobalKey, type GetHeatmapResponse, type HeatmapEntry, type Proposal } from "../../types/shared.js";
+
+function involvementColor(score: number): string {
+  if (score >= 0.8) return "#1e40af";
+  if (score >= 0.5) return "#2563eb";
+  if (score >= 0.3) return "#60a5fa";
+  return "#94a3b8";
+}
+
+function involvementLabel(score: number): string {
+  if (score >= 0.8) return "High";
+  if (score >= 0.5) return "Blocked";
+  if (score >= 0.3) return "Moderate";
+  return "Low";
+}
+
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+
+
+export interface AgentReadingState {
+  actor_id: string;
+  actor_display_name: string;
+  sections: Map<string, { doc_path: string; heading_path: string[]; lastSeenAt: number }>;
+  lastSeenAt: number;
+}
+
+interface HeatmapTabProps {
+  heatmap: GetHeatmapResponse | null;
+  agentReadings: Map<string, AgentReadingState>;
+  proposals: Proposal[];
+  loading: boolean;
+  error: string | null;
+}
+
+function agentColor(actorId: string): string {
+  let hash = 0;
+  for (let i = 0; i < actorId.length; i++) {
+    hash = actorId.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return `hsl(${Math.abs(hash) % 360}, 60%, 50%)`;
+}
+
+export function HeatmapTab({ heatmap, agentReadings, proposals, loading, error }: HeatmapTabProps) {
+  const docGroups = new Map<string, HeatmapEntry[]>();
+  if (heatmap) {
+    for (const entry of heatmap.sections) {
+      const existing = docGroups.get(entry.doc_path) ?? [];
+      existing.push(entry);
+      docGroups.set(entry.doc_path, existing);
+    }
+  }
+
+  const now = Date.now();
+
+  return (
+    <div>
+      {heatmap && (
+        <div className="text-xs text-text-muted mb-3">
+          Preset: <strong>{heatmap.preset}</strong> · Midpoint: {heatmap.humanInvolvement_midpoint_seconds}s · Steepness: {heatmap.humanInvolvement_steepness} ·{" "}
+          <Link to="/admin" className="text-[#2d7a8a] hover:underline">Admin</Link>
+        </div>
+      )}
+
+      {loading && !heatmap && <p className="text-xs text-text-muted">Loading heatmap...</p>}
+      {error && <p className="text-xs text-red-600">{error}</p>}
+
+      {heatmap && docGroups.size > 0 ? (
+        Array.from(docGroups.entries()).map(([docPath, entries]) => (
+          <div key={docPath} className="mb-5">
+            <h3 className="text-sm font-semibold mb-1">
+              <Link to={`/docs/${encodeURIComponent(docPath)}`} className="text-text-primary hover:text-[#1d5a66]">{docPath}</Link>
+            </h3>
+            <table className="w-full text-xs" style={{ borderCollapse: "collapse" }}>
+              <thead>
+                <tr className="text-text-muted">
+                  <th className="text-left p-1.5">Section</th>
+                  <th className="text-center p-1.5">Human Involvement</th>
+                  <th className="text-center p-1.5">CRDT</th>
+                  <th className="text-center p-1.5">Agents</th>
+                  <th className="text-left p-1.5">Last commit</th>
+                  <th className="text-left p-1.5">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entries.map((entry, idx) => {
+                  const sectionKey = sectionGlobalKey(entry.doc_path, entry.heading_path);
+                  const borderColor = entry.humanInvolvement_score >= 0.5 ? "#ef4444" : undefined;
+                  // Find agents reading this section
+                  const readingAgents: Array<{ id: string; name: string; hasProposal: boolean }> = [];
+                  for (const [, agent] of agentReadings) {
+                    if (now - agent.lastSeenAt > 5 * 60 * 1000) continue;
+                    for (const [, sec] of agent.sections) {
+                      const secKey = sectionGlobalKey(sec.doc_path, sec.heading_path);
+                      if (secKey === sectionKey && now - sec.lastSeenAt < 5000) {
+                        const hasProposal = proposals.some(
+                          (p) => p.status === "pending" && p.writer.id === agent.actor_id
+                        );
+                        readingAgents.push({ id: agent.actor_id, name: agent.actor_display_name, hasProposal });
+                      }
+                    }
+                  }
+
+                  return (
+                    <tr
+                      key={`${entry.heading_path.join("/")}-${idx}`}
+                      style={{
+                        borderLeft: borderColor ? `3px solid ${borderColor}` : undefined,
+                      }}
+                      className="border-b border-[#f5f2ed] hover:bg-[#faf8f5]"
+                    >
+                      <td className="p-1.5">{entry.heading_path.join(" > ") || "(root)"}</td>
+                      <td className="p-1.5 text-center font-bold" style={{ color: involvementColor(entry.humanInvolvement_score) }}>
+                        {entry.humanInvolvement_score.toFixed(2)}
+                      </td>
+                      <td className="p-1.5 text-center">{entry.crdt_session_active ? "Yes" : "—"}</td>
+                      <td className="p-1.5 text-center">
+                        <div className="flex items-center justify-center gap-0.5">
+                          {readingAgents.map((a) => (
+                            <span
+                              key={a.id}
+                              title={`${a.name}${a.hasProposal ? " (has proposal)" : ""}`}
+                              style={{
+                                width: 8,
+                                height: 8,
+                                borderRadius: a.hasProposal ? 0 : "50%",
+                                background: agentColor(a.id),
+                                display: "inline-block",
+                                clipPath: a.hasProposal ? "polygon(50% 0%, 100% 100%, 0% 100%)" : undefined,
+                              }}
+                            />
+                          ))}
+                        </div>
+                      </td>
+                      <td className="p-1.5 text-text-muted">
+                        {entry.last_commit_author && entry.last_commit_timestamp
+                          ? `${entry.last_commit_author}, ${relativeTime(entry.last_commit_timestamp)}`
+                          : "—"}
+                      </td>
+                      <td className="p-1.5">
+                        {involvementLabel(entry.humanInvolvement_score)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ))
+      ) : (
+        !loading && <p className="text-xs text-text-muted">No sections found.</p>
+      )}
+    </div>
+  );
+}

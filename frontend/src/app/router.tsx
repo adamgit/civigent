@@ -1,0 +1,41 @@
+import { createBrowserRouter } from "react-router-dom";
+import { App } from "./App";
+import { HomePage } from "../pages/HomePage";
+import { DocsBrowserPage } from "../pages/DocsBrowserPage";
+import { RecentDocsPage } from "../pages/RecentDocsPage";
+import { DocsRouteResolver } from "./DocsRouteResolver";
+import { ProposalsPage } from "../pages/ProposalsPage";
+import { ProposalDetailPage } from "../pages/ProposalDetailPage";
+import { AdminPage } from "../pages/AdminPage";
+import { AgentKeysPage } from "../pages/AgentKeysPage";
+import { AgentSimulatorPage } from "../pages/AgentSimulatorPage";
+import { CoordinationPage } from "../pages/CoordinationPage";
+import { LoginPage } from "../pages/LoginPage";
+import { SessionInspectorPage } from "../pages/SessionInspectorPage";
+import { GitHistoryPage } from "../pages/GitHistoryPage";
+import { SetupPage } from "../pages/SetupPage";
+import { FeaturesPage } from "../pages/FeaturesPage";
+
+export const router = createBrowserRouter([
+  {
+    path: "/",
+    element: <App />,
+    children: [
+      { index: true, element: <HomePage /> },
+      { path: "docs", element: <DocsBrowserPage /> },
+      { path: "recent-docs", element: <RecentDocsPage /> },
+      { path: "docs/*", element: <DocsRouteResolver /> },
+      { path: "proposals", element: <ProposalsPage /> },
+      { path: "proposals/:id", element: <ProposalDetailPage /> },
+      { path: "admin", element: <AdminPage /> },
+      { path: "admin/agents", element: <AgentKeysPage /> },
+      { path: "session-inspector", element: <SessionInspectorPage /> },
+      { path: "history", element: <GitHistoryPage /> },
+      { path: "agent-simulator", element: <AgentSimulatorPage /> },
+      { path: "coordination", element: <CoordinationPage /> },
+      { path: "setup", element: <SetupPage /> },
+      { path: "features", element: <FeaturesPage /> },
+      { path: "login", element: <LoginPage /> }
+    ]
+  }
+]);
