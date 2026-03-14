@@ -5,17 +5,17 @@ WORKDIR /src
 
 # Install dependencies for all three packages
 COPY package*.json ./
-COPY packages/milkdown-serializer/package*.json packages/milkdown-serializer/
+COPY sharedlibs/milkdown-serializer/package*.json sharedlibs/milkdown-serializer/
 COPY backend/package*.json backend/
 COPY frontend/package*.json frontend/
 
-RUN cd packages/milkdown-serializer && npm install \
+RUN cd sharedlibs/milkdown-serializer && npm install \
  && cd ../../backend && npm install \
  && cd ../frontend && npm install
 
 # Copy source and build in dependency order
-COPY packages/milkdown-serializer packages/milkdown-serializer
-RUN cd packages/milkdown-serializer && npm run build
+COPY sharedlibs/milkdown-serializer sharedlibs/milkdown-serializer
+RUN cd sharedlibs/milkdown-serializer && npm run build
 
 COPY backend backend
 RUN cd backend && npm run build
@@ -30,7 +30,7 @@ WORKDIR /app
 
 # Backend production deps
 COPY --from=build /src/backend/package*.json ./
-COPY --from=build /src/packages/milkdown-serializer /app/packages/milkdown-serializer
+COPY --from=build /src/sharedlibs/milkdown-serializer /app/sharedlibs/milkdown-serializer
 RUN npm install --omit=dev
 
 # Backend compiled output
