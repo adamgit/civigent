@@ -1,15 +1,46 @@
+### Core stack
+
+# npm and vite artifacts
 node_modules/
+.vite/
+
+# vitest artifacts
+coverage/
+
+# build artifacts
 dist/
-.env
+*.log
 
-# Sample wiki is committed; real wiki data is not
-# (end users manage their own wiki-data/ repo separately)
-sample-wiki/
+### App settings
 
-# Developer local docs if e.g. using ClaudeCode, Cursor, etc
+# core settings private to you/your org (including salts/keys!)
+.env*
+# ... but DO store the example .env that is part of the quickstart install!
+!.env.example
+
+# Personal data - assuming you use the standard name, don't accidentally commit it
+#
+dev-data/
+
+### AI integration
+
+# Developer local docs: enables you to store AI Agent work-in-progress without it accidentally committing to main repository
 #
 TRANSIENT WORKING DOCS/
 
-# Pre-inflight proposal artifacts are transient and never tracked
-**/proposals/proposing/
-**/proposals/planning/
+# With AI Agents some things require local settings in your project, known bug/design flaw.
+# Add them here
+#
+.claude/
+CLAUDE.md
+repomix*.xml
+
+### Badly behaved OSs and IDEs
+
+# Apple users and OS X's trash
+.DS_Store
+
+# IDEs
+.vscode/
+*.swp
+*.swo

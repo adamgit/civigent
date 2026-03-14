@@ -1,6 +1,6 @@
 services:
   backend:
-    image: ghcr.io/yourorg/knowledge-store:latest
+    image: ghcr.io/adamgit/civigent:latest
     # Run as host-matching UID/GID so internal git works predictably on bind mounts.
     user: "${UID:-1000}:${GID:-1000}"
     ports:
