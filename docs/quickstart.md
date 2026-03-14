@@ -52,11 +52,11 @@ Use DockerDesktop, or: open your terminal, navigate to the folder you created, a
 docker compose up
 ```
 
-Wait until you see a message like `Server listening on port 3000`.
+Wait until you see a message like `Civigent running at http://localhost:8080`.
 
 ## Step 4: Open the app
 
-Go to **http://localhost:8080** in your browser. You're done.
+Go to **http://localhost:8080** (or whatever port you chose) in your browser. You're done.
 
 ## Step 5: Stopping and restarting
 
@@ -93,7 +93,7 @@ Content is imported **once** on first startup. After that, the import is skipped
 
 Civigent is designed for humans and AI agents to collaborate. To connect an agent (like Claude Code or Cursor):
 
-1. Open **http://localhost:8080/setup** in your browser
+1. Open **http://localhost:8080/setup** (or replace the 8080 based on the port you chose in config) in your browser
 2. Follow the copy-paste instructions shown on that page
 3. The agent will briefly open your browser for authorization, then connect automatically
 
