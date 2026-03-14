@@ -93,6 +93,15 @@ cd backend && npm test       # backend
 cd frontend && npm test      # frontend
 ```
 
+## Core maintainers
+
+To trigger the GHCR auto-build of the public Docker container:
+
+```bash
+git fetch origin && git push origin origin/main:releases
+```
+
+
 ## License
 
 See LICENSE

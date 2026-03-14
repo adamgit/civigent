@@ -245,7 +245,8 @@ export async function importContentFromDirectoryIfNeeded(
   try {
     await readdir(sourceRoot);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
       return { imported: 0, failed: 0, skipped: 1, errors: [] };
     }
     throw error;
