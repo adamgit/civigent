@@ -60,7 +60,7 @@ process.on("SIGINT", async () => {
 server.listen(PORT, () => {
   const publicUrl = getPublicUrl();
   const mcpEndpoint = `${publicUrl}/mcp`;
-  console.log(`\n  Knowledge Store listening on port ${PORT}\n`);
+  console.log(`\n  Knowledge Store running at ${publicUrl}\n`);
   console.log(`  Connect an agent:\n`);
   console.log(`    claude mcp add --transport http knowledge-store ${mcpEndpoint}\n`);
   console.log(`  Setup page: ${publicUrl}/setup\n`);

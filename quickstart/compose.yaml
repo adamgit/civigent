@@ -8,6 +8,7 @@ services:
       - ${IMPORT_CONTENT_FROM:-/dev/null}:/import:ro
     environment:
       yes 
+      KS_PUBLIC_URL: ${KS_PUBLIC_URL:-http://localhost:${PORT:-8080}}
       SNAPSHOT_ENABLED: ${SNAPSHOT_ENABLED:-false}
       KS_AUTH_MODE: ${KS_AUTH_MODE:-}
       KS_USER_NAME: ${KS_USER_NAME:-}
