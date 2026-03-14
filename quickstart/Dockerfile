@@ -38,6 +38,8 @@ WORKDIR /app
 COPY --from=build /src/backend/package*.json ./
 # Must be at ../sharedlibs relative to /app to match the file: dependency path
 COPY --from=build /src/sharedlibs/milkdown-serializer /sharedlibs/milkdown-serializer
+# Dev package.json points main at src/index.ts — fix for compiled runtime
+RUN sed -i 's|"main": "src/index.ts"|"main": "dist/index.js"|' /sharedlibs/milkdown-serializer/package.json
 RUN npm install --omit=dev
 
 # Backend compiled output (tsc mirrors monorepo structure: dist/backend/src/ + dist/sharedlibs/)
