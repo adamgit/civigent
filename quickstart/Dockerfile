@@ -6,10 +6,12 @@ WORKDIR /src
 # Install dependencies for all three packages
 COPY package*.json ./
 COPY sharedlibs/milkdown-serializer/package*.json sharedlibs/milkdown-serializer/
+COPY sharedlibs/shared-types/package*.json sharedlibs/shared-types/
 COPY backend/package*.json backend/
 COPY frontend/package*.json frontend/
 
 RUN cd sharedlibs/milkdown-serializer && npm install \
+ && cd ../shared-types && npm install \
  && cd ../../backend && npm install \
  && cd ../frontend && npm install
 
@@ -17,8 +19,9 @@ RUN cd sharedlibs/milkdown-serializer && npm install \
 COPY tsconfig.base.json ./
 
 # Copy source and build in dependency order
-COPY sharedlibs/milkdown-serializer sharedlibs/milkdown-serializer
-RUN cd sharedlibs/milkdown-serializer && npm run build
+COPY sharedlibs sharedlibs
+RUN cd sharedlibs/milkdown-serializer && npm run build \
+ && cd ../shared-types && npm run build
 
 COPY backend backend
 RUN cd backend && npm run build
@@ -37,11 +40,11 @@ COPY --from=build /src/backend/package*.json ./
 COPY --from=build /src/sharedlibs/milkdown-serializer /sharedlibs/milkdown-serializer
 RUN npm install --omit=dev
 
-# Backend compiled output
+# Backend compiled output (tsc mirrors monorepo structure: dist/backend/src/ + dist/sharedlibs/)
 COPY --from=build /src/backend/dist ./dist
 
 # Frontend static files — served by Express in production
 COPY --from=build /src/frontend/dist ./public
 
 EXPOSE 3000
-CMD ["node", "dist/server.js"]
+CMD ["node", "dist/backend/src/server.js"]

@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import express from "express";
 import { createApiRouter } from "./api/routes/index.js";
 import { createOAuthRouter } from "./api/routes/oauth.js";
@@ -26,8 +25,7 @@ export function createApp(options?: CreateAppOptions) {
   }));
 
   // In production (quickstart Docker image), serve the frontend from ./public
-  const appRoot = dirname(fileURLToPath(import.meta.url));
-  const publicDir = join(appRoot, "..", "public");
+  const publicDir = join(process.cwd(), "public");
   if (existsSync(publicDir)) {
     app.use(express.static(publicDir));
     // SPA fallback — let the frontend router handle unmatched paths
