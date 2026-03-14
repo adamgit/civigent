@@ -13,6 +13,9 @@ RUN cd sharedlibs/milkdown-serializer && npm install \
  && cd ../../backend && npm install \
  && cd ../frontend && npm install
 
+# Shared tsconfig needed by all sub-projects
+COPY tsconfig.base.json ./
+
 # Copy source and build in dependency order
 COPY sharedlibs/milkdown-serializer sharedlibs/milkdown-serializer
 RUN cd sharedlibs/milkdown-serializer && npm run build
@@ -30,7 +33,8 @@ WORKDIR /app
 
 # Backend production deps
 COPY --from=build /src/backend/package*.json ./
-COPY --from=build /src/sharedlibs/milkdown-serializer /app/sharedlibs/milkdown-serializer
+# Must be at ../sharedlibs relative to /app to match the file: dependency path
+COPY --from=build /src/sharedlibs/milkdown-serializer /sharedlibs/milkdown-serializer
 RUN npm install --omit=dev
 
 # Backend compiled output
