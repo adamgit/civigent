@@ -1,14 +1,14 @@
 services:
   backend:
     image: ghcr.io/adamgit/civigent:latest
-    # Run as host-matching UID/GID so internal git works predictably on bind mounts.
-    user: "${UID:-1000}:${GID:-1000}"
     ports:
       - "${PORT:-8080}:3000"
     volumes:
       - ./wiki-data:/app/data
       - ${IMPORT_CONTENT_FROM:-/dev/null}:/import:ro
     environment:
+      RUN_UID: ${UID:-1000}
+      RUN_GID: ${GID:-1000}
       SNAPSHOT_ENABLED: ${SNAPSHOT_ENABLED:-false}
       KS_AUTH_MODE: ${KS_AUTH_MODE:-}
       KS_USER_NAME: ${KS_USER_NAME:-}

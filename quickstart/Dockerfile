@@ -31,7 +31,7 @@ RUN cd frontend && npm run build
 
 # ── Production image ────────────────────────────────
 FROM node:20-alpine AS prod
-RUN apk add --no-cache git
+RUN apk add --no-cache git su-exec
 WORKDIR /app
 
 # Backend production deps
@@ -48,5 +48,7 @@ COPY --from=build /src/backend/dist ./dist
 # Frontend static files — served by Express in production
 COPY --from=build /src/frontend/dist ./public
 
+COPY quickstart/entrypoint.sh /entrypoint.sh
+
 EXPOSE 3000
-CMD ["node", "dist/backend/src/server.js"]
+ENTRYPOINT ["/entrypoint.sh"]
