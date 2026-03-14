@@ -71,7 +71,7 @@ import { resolveAuthenticatedWriter, type AuthenticatedWriter } from "../../auth
 import { parseImportDocument } from "../../storage/content-import.js";
 import { listAuthMethods, loginHuman } from "../../auth/service.js";
 import { readAgentKeys, addAgentKey, removeAgentKey } from "../../auth/agent-keys.js";
-import { getPublicUrl } from "../../auth/oauth-config.js";
+import { getOidcPublicUrl } from "../../auth/oauth-config.js";
 import { getSnapshotHealth, scheduleSnapshotRegeneration } from "../../storage/snapshot.js";
 import {
   AdminConfigValidationError,
@@ -2147,7 +2147,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   // ─── Setup / connection info (public) ────────────────
 
   router.get("/setup", (_req, res) => {
-    const publicUrl = getPublicUrl();
+    const publicUrl = getOidcPublicUrl();
     const mcpEndpoint = `${publicUrl}/mcp`;
 
     let defaultServerName: string;

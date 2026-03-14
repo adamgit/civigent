@@ -236,7 +236,7 @@ MCP clients use these endpoints to discover the authentication flow:
 | `GET /oauth/authorize` | Authorization (browser-based) |
 | `POST /oauth/token` | Token exchange and refresh |
 
-All URLs in the metadata documents are **absolute**, constructed from `KS_PUBLIC_URL`.
+All URLs in the metadata documents are **absolute**, constructed from `KS_OIDC_PUBLIC_URL`.
 
 ---
 
@@ -244,9 +244,9 @@ All URLs in the metadata documents are **absolute**, constructed from `KS_PUBLIC
 
 ### "OAuth flow fails — browser shows error page"
 
-The server's `KS_PUBLIC_URL` is wrong or not set. The browser is trying to reach a URL that doesn't point to your server.
+The server's `KS_OIDC_PUBLIC_URL` is wrong or not set. The browser is trying to reach a URL that doesn't point to your server.
 
-**Fix:** Set `KS_PUBLIC_URL` to the URL where the server is actually reachable from your machine.
+**Fix:** Set `KS_OIDC_PUBLIC_URL` to the URL where the server is actually reachable from your machine.
 
 ### "409 Conflict when creating a proposal"
 

@@ -2,7 +2,7 @@
  * OAuth configuration — env var handling and startup validation.
  *
  * Env vars:
- *   KS_PUBLIC_URL        — public URL of this server (required in non-single-user mode)
+ *   KS_OIDC_PUBLIC_URL        — public URL of this server (required in non-single-user mode)
  *   KS_AUTH_SECRET        — JWT signing secret (must not be default in non-single-user mode)
  *   KS_AGENT_ANON_SALT    — HMAC key for stateless anonymous client_id tokens
  *   KS_AGENT_ANONYMOUS    — "true"/"false", whether anonymous agent registration is allowed
@@ -17,15 +17,15 @@ const DEFAULT_AUTH_SECRET = "development-insecure-secret";
 
 let _anonSalt: string | null = null;
 
-// ─── KS_PUBLIC_URL ───────────────────────────────────────────────
+// ─── KS_OIDC_PUBLIC_URL ───────────────────────────────────────────────
 
 /**
- * Get the public URL of this server.
+ * Get the public URL of this server that Auth can use for building URLs and for auth (OIDC) callbacks.
  * In single-user mode, defaults to http://localhost:${PORT}.
  * In other modes, must be set explicitly.
  */
-export function getPublicUrl(): string {
-  const explicit = process.env.KS_PUBLIC_URL?.trim();
+export function getOidcPublicUrl(): string {
+  const explicit = process.env.KS_OIDC_PUBLIC_URL?.trim();
   if (explicit) return explicit.replace(/\/+$/, "");
 
   if (isSingleUserMode()) {
@@ -34,7 +34,7 @@ export function getPublicUrl(): string {
   }
 
   // Should have been caught by validateOAuthConfig at startup
-  throw new Error("KS_PUBLIC_URL is not set and server is not in single-user mode.");
+  throw new Error("KS_OIDC_PUBLIC_URL is not set and server is not in single-user mode.");
 }
 
 // ─── KS_AGENT_ANON_SALT ─────────────────────────────────────────
@@ -82,15 +82,15 @@ export function isAnonymousAgentEnabled(): boolean {
 export function validateOAuthConfig(): void {
   const singleUser = isSingleUserMode();
 
-  // KS_PUBLIC_URL is required in non-single-user mode
+  // KS_OIDC_PUBLIC_URL is required in non-single-user mode
   if (!singleUser) {
-    const publicUrl = process.env.KS_PUBLIC_URL?.trim();
+    const publicUrl = process.env.KS_OIDC_PUBLIC_URL?.trim();
     if (!publicUrl) {
       throw new Error(
-        `FATAL: KS_PUBLIC_URL is required.\n` +
+        `FATAL: KS_OIDC_PUBLIC_URL is required.\n` +
         `The server must know its publicly reachable URL to serve OAuth metadata.\n` +
         `Set it to the URL where agent operators will reach this server.\n` +
-        `Example: KS_PUBLIC_URL=https://wiki.company.com\n\n` +
+        `Example: KS_OIDC_PUBLIC_URL=https://wiki.company.com\n\n` +
         `If running locally for evaluation, use single-user mode instead:\n` +
         `  KS_AUTH_MODE=single_user`,
       );

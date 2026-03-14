@@ -67,8 +67,8 @@ describe("OAuth 2.1 flow", () => {
   const PRE_AUTH_SECRET = "sk_test_secret_1234567890";
 
   beforeAll(async () => {
-    // Set KS_PUBLIC_URL so getPublicUrl() works in multi-user mode
-    process.env.KS_PUBLIC_URL = "http://localhost:3000";
+    // Set KS_OIDC_PUBLIC_URL so getOidcPublicUrl() works in multi-user mode
+    process.env.KS_OIDC_PUBLIC_URL = "http://localhost:3000";
 
     ctx = await createTestServer();
 
@@ -85,7 +85,7 @@ describe("OAuth 2.1 flow", () => {
 
   afterAll(async () => {
     await ctx.cleanup();
-    delete process.env.KS_PUBLIC_URL;
+    delete process.env.KS_OIDC_PUBLIC_URL;
   });
 
   // ── Discovery ──────────────────────────────────────────────

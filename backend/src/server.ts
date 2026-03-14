@@ -7,7 +7,7 @@ import { ensureGitRepoReady } from "./storage/git-repo.js";
 import { detectAndRecoverCrash } from "./storage/crash-recovery.js";
 import { importContentFromDirectoryIfNeeded } from "./storage/content-import.js";
 import { setAutoCommitEventHandler, commitAllDirtySessions } from "./storage/auto-commit.js";
-import { getPublicUrl, validateOAuthConfig } from "./auth/oauth-config.js";
+import { validateOAuthConfig } from "./auth/oauth-config.js";
 
 const PORT = Number(process.env.PORT ?? "3000");
 
@@ -58,10 +58,10 @@ process.on("SIGINT", async () => {
 });
 
 server.listen(PORT, () => {
-  const publicUrl = getPublicUrl();
-  const mcpEndpoint = `${publicUrl}/mcp`;
-  console.log(`\n  Knowledge Store running at ${publicUrl}\n`);
+  const displayPort = process.env.KS_DOCKER_HOST_PORT ?? String(PORT);
+  const displayUrl = `http://localhost:${displayPort}`;
+  console.log(`\n  Civigent running at ${displayUrl}\n`);
   console.log(`  Connect an agent:\n`);
-  console.log(`    claude mcp add --transport http knowledge-store ${mcpEndpoint}\n`);
-  console.log(`  Setup page: ${publicUrl}/setup\n`);
+  console.log(`    claude mcp add --transport http knowledge-store ${displayUrl}/mcp\n`);
+  console.log(`  Setup page: ${displayUrl}/setup\n`);
 });

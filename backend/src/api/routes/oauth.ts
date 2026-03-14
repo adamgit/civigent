@@ -12,7 +12,7 @@
 
 import { Router, type Request, type Response } from "express";
 import { createHash } from "node:crypto";
-import { getPublicUrl, isAnonymousAgentEnabled } from "../../auth/oauth-config.js";
+import { getOidcPublicUrl, isAnonymousAgentEnabled } from "../../auth/oauth-config.js";
 import { isSingleUserMode } from "../../auth/context.js";
 import {
   mintAnonClientId,
@@ -58,7 +58,7 @@ export function createOAuthRouter(): Router {
   // ── Discovery: Protected Resource Metadata (RFC 9728) ──────
 
   router.get("/.well-known/oauth-protected-resource", (_req: Request, res: Response) => {
-    const publicUrl = getPublicUrl();
+    const publicUrl = getOidcPublicUrl();
     res.json({
       resource: publicUrl,
       authorization_servers: [publicUrl],
@@ -68,7 +68,7 @@ export function createOAuthRouter(): Router {
   // ── Discovery: Authorization Server Metadata (RFC 8414) ────
 
   router.get("/.well-known/oauth-authorization-server", (_req: Request, res: Response) => {
-    const publicUrl = getPublicUrl();
+    const publicUrl = getOidcPublicUrl();
     res.json({
       issuer: publicUrl,
       authorization_endpoint: `${publicUrl}/oauth/authorize`,

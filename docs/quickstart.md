@@ -48,6 +48,7 @@ KS_USER_EMAIL=you@example.com
 Use DockerDesktop, or: open your terminal, navigate to the folder you created, and run:
 
 ```bash
+# NOTE: to get latest version, you may need to update - see step 5 below
 docker compose up
 ```
 
@@ -56,6 +57,16 @@ Wait until you see a message like `Server listening on port 3000`.
 ## Step 4: Open the app
 
 Go to **http://localhost:8080** in your browser. You're done.
+
+## Step 5: Stopping and restarting
+
+**Stop:** Press `Ctrl+C` in the terminal, or run `docker compose down`.
+
+**Restart:** Run `docker compose up` again. All your data is saved in the `wiki-data/` folder.
+
+**Update:** Run `docker compose pull` then `docker compose up` to get the latest version.
+
+**Back up your data:** Copy the `wiki-data/` folder. It contains everything — your content, edit history, and proposals.
 
 ---
 
@@ -116,18 +127,6 @@ my-wiki/
     ├── drafts/             ← in-progress work (auto-managed, ephemeral)
     └── .git/               ← version history
 ```
-
----
-
-## Stopping and restarting
-
-**Stop:** Press `Ctrl+C` in the terminal, or run `docker compose down`.
-
-**Restart:** Run `docker compose up` again. All your data is saved in the `wiki-data/` folder.
-
-**Update:** Run `docker compose pull` then `docker compose up` to get the latest version.
-
-**Back up your data:** Copy the `wiki-data/` folder. It contains everything — your content, edit history, and proposals.
 
 ---
 

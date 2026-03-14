@@ -32,8 +32,8 @@ The server runs on a cloud host or on-premises machine with a domain name (e.g.,
 **Required configuration:**
 
 ```env
-# The URL where users and agents reach this server (REQUIRED)
-KS_PUBLIC_URL=https://wiki.company.com
+# The URL for auth to use for where users and agents reach this server (REQUIRED)
+KS_OIDC_PUBLIC_URL=https://wiki.company.com
 
 # JWT signing secret (REQUIRED — generate with: openssl rand -hex 32)
 KS_AUTH_SECRET=<your-generated-secret>
@@ -72,9 +72,9 @@ The server validates its configuration at startup and refuses to start if critic
 
 | Condition | Result |
 |-----------|--------|
-| Multi-user mode without `KS_PUBLIC_URL` | **Refuses to start** with instructions |
+| Multi-user mode without `KS_OIDC_PUBLIC_URL` | **Refuses to start** with instructions |
 | Multi-user mode without `KS_AUTH_SECRET` | **Refuses to start** with instructions |
-| Single-user mode without `KS_PUBLIC_URL` | Auto-derives `http://localhost:${PORT}` |
+| Single-user mode without `KS_OIDC_PUBLIC_URL` | Auto-derives `http://localhost:${PORT}` |
 | Single-user mode without `KS_AUTH_SECRET` | Uses development default (acceptable for localhost) |
 
 ---
@@ -160,7 +160,7 @@ If running behind nginx, Apache, or similar, ensure:
 
 1. **WebSocket upgrade** is supported for `/ws` paths
 2. **Proxy headers** are forwarded (`X-Forwarded-For`, `X-Forwarded-Proto`)
-3. **`KS_PUBLIC_URL`** matches the externally reachable URL (not the internal port)
+3. **`KS_OIDC_PUBLIC_URL`** matches the externally reachable URL (not the internal port)
 
 ### Example nginx configuration
 
@@ -239,7 +239,7 @@ Snapshots are a **derived cache** — they can be regenerated from /content at a
 
 | Variable | Purpose | Example |
 |----------|---------|---------|
-| `KS_PUBLIC_URL` | URL where the server is reachable by users and agents | `https://wiki.company.com` |
+| `KS_OIDC_PUBLIC_URL` | URL where the server is reachable by users and agents | `https://wiki.company.com` |
 | `KS_AUTH_SECRET` | JWT signing secret (generate with `openssl rand -hex 32`) | `a1b2c3...` |
 | `KS_OIDC_ISSUER` | OIDC provider URL | `https://auth.company.com/realms/main` |
 | `KS_OIDC_CLIENT_ID` | OIDC client ID | `civigent` |
