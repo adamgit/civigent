@@ -1,5 +1,5 @@
 # ── Build everything ─────────────────────────────────
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 RUN apk add --no-cache git
 WORKDIR /src
 
@@ -30,7 +30,7 @@ COPY frontend frontend
 RUN cd frontend && npm run build
 
 # ── Production image ────────────────────────────────
-FROM node:20-alpine AS prod
+FROM node:24-alpine AS prod
 RUN apk add --no-cache git su-exec
 WORKDIR /app
 
