@@ -60,6 +60,7 @@ interface CrdtSocketState {
   writerId: string;
   writerDisplayName: string;
   docPath: string;
+  observer: boolean;
 }
 
 // ─── Module state ───────────────────────────────────────────────
@@ -139,17 +140,25 @@ function encodeStructureWillChange(
 // ─── URL parsing ────────────────────────────────────────────────
 
 const CRDT_PATH_PREFIX = "/ws/crdt/";
+const CRDT_OBSERVE_PATH_PREFIX = "/ws/crdt-observe/";
 
-function parseCrdtUrl(url: string, host: string): { docPath: string } | null {
+function parseCrdtUrl(url: string, host: string): { docPath: string; observe: boolean } | null {
   const parsed = new URL(url, `http://${host}`);
   const pathname = decodeURIComponent(parsed.pathname);
 
-  if (!pathname.startsWith(CRDT_PATH_PREFIX)) return null;
+  if (pathname.startsWith(CRDT_OBSERVE_PATH_PREFIX)) {
+    const docPath = pathname.slice(CRDT_OBSERVE_PATH_PREFIX.length).replace(/^\/+|\/+$/g, "");
+    if (!docPath) return null;
+    return { docPath, observe: true };
+  }
 
-  const docPath = pathname.slice(CRDT_PATH_PREFIX.length).replace(/^\/+|\/+$/g, "");
-  if (!docPath) return null;
+  if (pathname.startsWith(CRDT_PATH_PREFIX)) {
+    const docPath = pathname.slice(CRDT_PATH_PREFIX.length).replace(/^\/+|\/+$/g, "");
+    if (!docPath) return null;
+    return { docPath, observe: false };
+  }
 
-  return { docPath };
+  return null;
 }
 
 // ─── Client tracking ────────────────────────────────────────────
@@ -204,6 +213,14 @@ function handleMessage(
 
   const msgType = data[0];
   const payload = data.subarray(1);
+
+  // Observer sockets: only allow sync protocol (SYNC_STEP_1/2).
+  // Ignore YJS_UPDATE, SECTION_FOCUS, ACTIVITY_PULSE — no-op, don't apply to Y.Doc.
+  if (state.observer) {
+    if (msgType === MSG_YJS_UPDATE || msgType === MSG_SECTION_FOCUS || msgType === MSG_ACTIVITY_PULSE) {
+      return;
+    }
+  }
 
   switch (msgType) {
     case MSG_SYNC_STEP_1: {
@@ -377,11 +394,17 @@ setIdleTimeoutHandler((docPath: string) => {
   if (!clients) return;
   // Close all WebSocket connections for this document.
   // Each close triggers the socket "close" handler which calls
-  // releaseDocSession → commitSessionFilesToCanonical.
+  // releaseDocSession → commitSessionFilesToCanonical (for editors)
+  // or just removeClient + delete socketState (for observers).
   // Copy to array before iterating — close handlers mutate the Set
   for (const client of [...clients]) {
     if (client.readyState === WebSocket.OPEN) {
-      client.close(4020, "idle_timeout");
+      const st = socketState.get(client);
+      if (st?.observer) {
+        client.close(4021, "session_ended");
+      } else {
+        client.close(4020, "idle_timeout");
+      }
     }
   }
 });
@@ -396,16 +419,50 @@ export function setCrdtEventHandler(handler: (event: WsServerEvent) => void): vo
 
 // ─── Public API ─────────────────────────────────────────────────
 
+// ─── Observer notification helpers ───────────────────────────────
+
+/** Send sync step 1 to all observer sockets for a doc path (bootstraps their Y.Doc). */
+function syncObserversForDoc(docPath: string, ydoc: Y.Doc): void {
+  const clients = docClients.get(docPath);
+  if (!clients) return;
+  const msg = encodeSyncStep1(ydoc);
+  for (const client of clients) {
+    const st = socketState.get(client);
+    if (st?.observer && client.readyState === WebSocket.OPEN) {
+      client.send(msg);
+    }
+  }
+}
+
+/** Close all observer sockets for a doc path with a specific close code. */
+function closeObserversForDoc(docPath: string, code: number, reason: string): void {
+  const clients = docClients.get(docPath);
+  if (!clients) return;
+  for (const client of [...clients]) {
+    const st = socketState.get(client);
+    if (st?.observer && client.readyState === WebSocket.OPEN) {
+      client.close(code, reason.slice(0, 123));
+    }
+  }
+}
+
 export interface CrdtWsServer {
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
 }
 
 export function createCrdtWsServer(): CrdtWsServer {
   const wss = new WebSocketServer({ noServer: true });
+  const observerWss = new WebSocketServer({ noServer: true });
 
+  // ─── Editor connection handler ──────────────────────────────
   wss.on("connection", (socket: WebSocket, session: DocSession, state: CrdtSocketState) => {
     socketState.set(socket, state);
     addClient(state.docPath, socket);
+
+    // If this is the first holder (new session), notify any pre-connected observers
+    if (session.holders.size === 1) {
+      syncObserversForDoc(state.docPath, session.fragments.ydoc);
+    }
 
     // Send sync step 1 so client can respond with its state
     const syncStep1 = encodeSyncStep1(session.fragments.ydoc);
@@ -453,6 +510,9 @@ export function createCrdtWsServer(): CrdtWsServer {
                 }
               }
             }
+
+            // Session ended — notify observer sockets
+            closeObserversForDoc(state.docPath, 4021, "session_ended");
           }
         })
         .catch((err) => {
@@ -474,16 +534,45 @@ export function createCrdtWsServer(): CrdtWsServer {
     });
   });
 
+  // ─── Observer connection handler ────────────────────────────
+  observerWss.on("connection", (socket: WebSocket, state: CrdtSocketState) => {
+    socketState.set(socket, state);
+    addClient(state.docPath, socket);
+
+    // If an editing session already exists, send initial sync
+    const session = lookupDocSession(state.docPath);
+    if (session) {
+      const syncStep1 = encodeSyncStep1(session.fragments.ydoc);
+      socket.send(syncStep1);
+    }
+    // If no session exists, observer waits — sync will be sent when an editor connects
+
+    socket.on("message", (raw) => {
+      // Observer can still send SYNC_STEP_1/2 for initial sync handshake
+      const data = raw instanceof Buffer ? raw : Buffer.from(raw as ArrayBuffer);
+      const session = lookupDocSession(state.docPath);
+      if (session) {
+        handleMessage(socket, session.fragments.ydoc, state, data);
+      }
+    });
+
+    socket.on("close", () => {
+      // Observer disconnect: just clean up — no session release, no commit
+      removeClient(state.docPath, socket);
+      socketState.delete(socket);
+    });
+  });
+
   return {
     async handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer) {
-      // 1. Parse URL (no heading_path param)
+      // 1. Parse URL
       const route = parseCrdtUrl(request.url ?? "", request.headers.host ?? "localhost");
       if (!route) {
         rejectUpgrade(wss, request, socket, head, 4010, `invalid_url: failed to parse ${request.url}`);
         return;
       }
 
-      // 2. Auth — only humans can use CRDT
+      // 2. Auth — only humans can use CRDT (editing or observing)
       const writer = resolveAuthenticatedWriterFromHeaders(request.headers);
       if (!writer || writer.type === "agent") {
         rejectUpgrade(wss, request, socket, head, 4011,
@@ -491,6 +580,22 @@ export function createCrdtWsServer(): CrdtWsServer {
         return;
       }
 
+      // ─── Observer upgrade path ────────────────────────────────
+      if (route.observe) {
+        const state: CrdtSocketState = {
+          writerId: writer.id,
+          writerDisplayName: writer.displayName,
+          docPath: route.docPath,
+          observer: true,
+        };
+
+        observerWss.handleUpgrade(request, socket, head, (ws) => {
+          observerWss.emit("connection", ws, state);
+        });
+        return;
+      }
+
+      // ─── Editor upgrade path ──────────────────────────────────
       // 3. Acquire or join DocSession
       let session: DocSession;
       try {
@@ -506,6 +611,7 @@ export function createCrdtWsServer(): CrdtWsServer {
         writerId: writer.id,
         writerDisplayName: writer.displayName,
         docPath: route.docPath,
+        observer: false,
       };
 
       // 4. editingPresence: human connected to document (doc-level, no specific section yet)

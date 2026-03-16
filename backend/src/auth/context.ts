@@ -69,12 +69,21 @@ export function getSingleUserIdentity(): AuthenticatedWriter {
   };
 }
 
-export function resolveAuthenticatedWriter(req: Request): AuthenticatedWriter | null {
-  return resolveAuthenticatedWriterFromHeaders(req.headers);
+export function resolveAuthenticatedWriter(
+  req: Request,
+  options?: ResolveWriterOptions,
+): AuthenticatedWriter | null {
+  return resolveAuthenticatedWriterFromHeaders(req.headers, options);
+}
+
+export interface ResolveWriterOptions {
+  /** When true, skip the single-user fallback — require an explicit token. */
+  requireExplicitAuth?: boolean;
 }
 
 export function resolveAuthenticatedWriterFromHeaders(
   headers: IncomingHttpHeaders,
+  options?: ResolveWriterOptions,
 ): AuthenticatedWriter | null {
   // Always check for a Bearer token first — agents authenticate via Bearer
   // even in single-user mode (where the human has no token).
@@ -91,7 +100,7 @@ export function resolveAuthenticatedWriterFromHeaders(
     }
   }
 
-  if (isSingleUserMode()) {
+  if (isSingleUserMode() && !options?.requireExplicitAuth) {
     return getSingleUserIdentity();
   }
 

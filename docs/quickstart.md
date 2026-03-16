@@ -1,15 +1,22 @@
 # Quickstart
 
-Get Civigent running on your machine in under 5 minutes. No programming experience required.
+Get Civigent running on your machine in under 1 minute. No programming experience required.
+
+## Options
+
+1. Super-quickstart: use the pre-built docker image, everything is done for you
+2. Build docker container yourself: takes a few more minutes, have to wait for everything to build
+
+
 
 ---
 
-## What you need
+# Superquick
 
-- **Docker** installed and running. This is included on most OS's already. For Windows you need to install Docker Desktop, or work inside WSL and install docker for Linux.
+## Pre-requisites
+
+- **Docker** installed and running. For Windows you need to install Docker Desktop, or work inside WSL and install docker for Linux. For Mac you need to install Docker Desktop, or docker+colima (or similar) via homebrew
 - A terminal (Terminal on Mac, PowerShell on Windows, any terminal on Linux)
-
-That's it. Nothing else to install.
 
 ---
 
@@ -17,30 +24,48 @@ That's it. Nothing else to install.
 
 You need two small files: `compose.yaml` and `.env.example`. Both are in the `quickstart/` folder of this repository.
 
-**Option A — download the 'quickstart' folder** from the [GitHub repository](https://github.com/adamgit/civigent/tree/releases/quickstart) and copy it anywhere on your machine.
+Download these files to wherever you want to run Civigent:
 
-**Option B — curl** (Mac/Linux):
+* https://raw.githubusercontent.com/adamgit/civigent/main/quickstart/.env.example
+* https://raw.githubusercontent.com/adamgit/civigent/main/quickstart/compose.yaml
 
-```bash
-mkdir my-wiki && cd my-wiki
-curl -sO https://raw.githubusercontent.com/adamgit/civigent/releases/quickstart/compose.yaml
-curl -sO https://raw.githubusercontent.com/adamgit/civigent/releases/quickstart/.env.example
-```
+Create a sub-folder to hold your Civigent data:
+
+* e.g. Windows ```bash md my-wiki```
+* e.g. Mac/Linux ```bash mkdir my-wiki```
+
 
 ## Step 2: Configure your personal account
 
-Then create your `.env`:
+Take the example config pre-provided, and rename it so that Civigent will use it:
 
+Windows:
+```bash
+copy .env.example .env
+```
+
+Mac/Linux:
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` in a text editor and set your name and email — these appear in the edit history:
+Edit the new file in a text editor and uncommment / set the following:
 
 ```env
 KS_AUTH_MODE=single_user
 KS_USER_NAME=Your Name
 KS_USER_EMAIL=you@example.com
+```
+
+* "KS_AUTH_MODE" = tells it to disable login/passwords for humans (great for quickstart, but in production you want to disable it and have login + multiple human users)
+* "KS_USER_NAME", "KS_USER_EMAIL" = every change you make is saved to the audit-log, these values will be written in as the 'author' of each change
+
+**OPTIONAL:** Change the default port (from 8080)
+
+For quickstart, the default port for Civigent is 8080. You can change this by editing the first line of the .env file you created. Everything uses that, no other change needed.
+
+```env
+PORT=8080
 ```
 
 ## Step 3: Start the server

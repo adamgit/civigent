@@ -444,6 +444,23 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 
 ---
 
+## 19. CRDT Observer (`crdt-observer/`)
+
+### `crdt-observer-sync.test.ts`
+- Observer WS to /ws/crdt-observe/<docPath> connects successfully
+- Observer receives initial Y.Doc state when editing session exists
+- Observer receives MSG_YJS_UPDATE when editor makes changes
+- Observer receives MSG_STRUCTURE_WILL_CHANGE on normalization
+- Observer receives MSG_SESSION_FLUSHED on flush
+- Observer connection does NOT prevent session idle timeout
+- Observer connection does NOT trigger presence:editing events
+- Observer disconnect does NOT trigger commitSessionFilesToCanonical
+- Observer that connects before any editor receives sync when editor joins
+- Observer that sends MSG_YJS_UPDATE is ignored (no Y.Doc mutation)
+- Multiple observers + one editor: all observers see editor's changes
+
+---
+
 ## File Organization
 
 ```
@@ -520,6 +537,8 @@ backend/src/__tests__/
     crash-recovery.test.ts
   import/
     content-import.test.ts
+  crdt-observer/
+    crdt-observer-sync.test.ts
   helpers/
     auth.ts              (reuse: token generation for test requests)
     temp-data-root.ts    (reuse: isolated temp dirs per test)

@@ -38,6 +38,26 @@ import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
 
 import { normalizeMarkdown, resolveHeadingPathFromDoc } from "./milkdown-utils";
+
+/**
+ * Custom cursor builder for yCursorPlugin.
+ * Renders a zero-width inline <span> with a left-border caret and an
+ * absolutely-positioned name label above it. This eliminates the phantom
+ * newlines caused by the default <div> name label inside inline text flow.
+ */
+function buildCollabCursor(user: { name?: string; color?: string }): HTMLElement {
+  const cursor = document.createElement("span");
+  cursor.className = "collab-cursor";
+  cursor.style.borderLeftColor = user.color ?? "#999";
+
+  const label = document.createElement("span");
+  label.className = "collab-cursor-label";
+  label.style.backgroundColor = user.color ?? "#999";
+  label.textContent = user.name ?? "Anonymous";
+  cursor.appendChild(label);
+
+  return cursor;
+}
 import type { CrdtProvider } from "../services/crdt-provider";
 
 // ─────────────────────────────────────────────────────────
@@ -297,7 +317,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
           plugins: [
             ...view.state.plugins,
             ySyncPlugin(yXmlFragment),
-            yCursorPlugin(awareness),
+            yCursorPlugin(awareness, { cursorBuilder: buildCollabCursor }),
             yUndoPlugin(),
           ],
         });

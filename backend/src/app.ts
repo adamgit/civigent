@@ -3,7 +3,7 @@ import { join } from "node:path";
 import express from "express";
 import { createApiRouter } from "./api/routes/index.js";
 import { createOAuthRouter } from "./api/routes/oauth.js";
-import { createKnowledgeStoreMcpRouter } from "./mcp/index.js";
+import { createKnowledgeStoreMcpRouter, createAutoDetectMcpRouter } from "./mcp/index.js";
 import type { WsServerEvent } from "./types/shared.js";
 
 interface CreateAppOptions {
@@ -20,9 +20,11 @@ export function createApp(options?: CreateAppOptions) {
   app.use("/api", createApiRouter({
     onWsEvent: options?.onWsEvent,
   }));
-  app.use("/mcp", createKnowledgeStoreMcpRouter({
-    onWsEvent: options?.onWsEvent,
-  }));
+  // Tiered MCP mounts — explicit tiers first so /mcp/tierN isn't swallowed by /mcp
+  app.use("/mcp/tier1", createKnowledgeStoreMcpRouter({ tier: 1, onWsEvent: options?.onWsEvent }));
+  app.use("/mcp/tier2", createKnowledgeStoreMcpRouter({ tier: 2, onWsEvent: options?.onWsEvent }));
+  app.use("/mcp/tier3", createKnowledgeStoreMcpRouter({ tier: 3, onWsEvent: options?.onWsEvent }));
+  app.use("/mcp", createAutoDetectMcpRouter({ onWsEvent: options?.onWsEvent }));
 
   // In production (quickstart Docker image), serve the frontend from ./public
   const publicDir = join(process.cwd(), "public");

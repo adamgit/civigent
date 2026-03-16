@@ -167,6 +167,140 @@ export class ContentLayer {
   }
 
   /**
+   * Parallel batch read: like readSectionBatch but fires all readFile calls
+   * concurrently via Promise.all instead of sequential for-of await.
+   */
+  async readSectionBatchParallel(
+    sections: SectionRef[],
+  ): Promise<Map<string, string>> {
+    const skeletonCache = new Map<string, DocumentSkeleton>();
+    const result = new Map<string, string>();
+
+    // Pre-load skeletons (sequential — typically 1-2 unique docs)
+    for (const ref of sections) {
+      if (!skeletonCache.has(ref.docPath)) {
+        skeletonCache.set(ref.docPath, await this.readSkeleton(ref.docPath));
+      }
+    }
+
+    // Fire all reads in parallel
+    const readTasks = sections.map(async (ref) => {
+      const skeleton = skeletonCache.get(ref.docPath)!;
+      let entry: FlatEntry;
+      try {
+        entry = skeleton.resolve(ref.headingPath);
+      } catch {
+        if (this.fallback) {
+          try {
+            const content = await this.fallback.readSection(ref);
+            result.set(ref.globalKey, content);
+          } catch { /* missing in fallback too */ }
+        }
+        return;
+      }
+
+      try {
+        const content = await readFile(entry.absolutePath, "utf8");
+        result.set(ref.globalKey, content);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        if (this.fallback) {
+          try {
+            const content = await this.fallback.readSection(ref);
+            result.set(ref.globalKey, content);
+          } catch { /* missing in fallback too */ }
+        }
+      }
+    });
+
+    await Promise.all(readTasks);
+    return result;
+  }
+
+  /**
+   * Read all sections for a document, unioning overlay and canonical skeletons.
+   *
+   * Approach 2: loads two independent skeletons (overlay-only via
+   * fromDisk(docPath, overlayRoot, overlayRoot) and canonical-only via
+   * fromDisk(docPath, canonicalRoot, canonicalRoot)), builds a union of
+   * heading keys with both absolute paths, then fires all readFile calls
+   * in parallel with overlay preference.
+   *
+   * Returns Map keyed by headingKey (e.g. "Heading A>>Sub B").
+   *
+   * FUTURE (Approach 4): If merge ordering or structural metadata becomes
+   * needed beyond content reads, introduce a SkeletonMergedView value object
+   * that pairs two DocumentSkeleton instances and provides a unified iteration.
+   */
+  async readAllSectionsOverlaid(docPath: string): Promise<Map<string, string>> {
+    const overlayRoot = this.contentRoot;
+    const canonicalRoot = this.fallback?.contentRoot ?? this.contentRoot;
+
+    // Load each skeleton independently — not through the merged overlay path
+    interface PathPair { overlayPath: string | null; canonicalPath: string | null }
+    const union = new Map<string, PathPair>();
+
+    try {
+      const overlaySkeleton = await DocumentSkeleton.fromDisk(docPath, overlayRoot, overlayRoot);
+      overlaySkeleton.forEachSection((_h, _l, _sf, headingPath, absolutePath, isSubSkeleton) => {
+        if (isSubSkeleton) return;
+        const key = SectionRef.headingKey(headingPath);
+        const existing = union.get(key);
+        if (existing) {
+          existing.overlayPath = absolutePath;
+        } else {
+          union.set(key, { overlayPath: absolutePath, canonicalPath: null });
+        }
+      });
+    } catch { /* overlay skeleton doesn't exist */ }
+
+    try {
+      const canonicalSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
+      canonicalSkeleton.forEachSection((_h, _l, _sf, headingPath, absolutePath, isSubSkeleton) => {
+        if (isSubSkeleton) return;
+        const key = SectionRef.headingKey(headingPath);
+        const existing = union.get(key);
+        if (existing) {
+          existing.canonicalPath = absolutePath;
+        } else {
+          union.set(key, { overlayPath: null, canonicalPath: absolutePath });
+        }
+      });
+    } catch { /* canonical skeleton doesn't exist */ }
+
+    // Read all files in parallel, preferring overlay
+    const result = new Map<string, string>();
+    const readTasks: Array<Promise<void>> = [];
+
+    for (const [key, paths] of union) {
+      readTasks.push(
+        (async () => {
+          // Try overlay first
+          if (paths.overlayPath) {
+            try {
+              result.set(key, await readFile(paths.overlayPath, "utf8"));
+              return;
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+            }
+          }
+          // Fall back to canonical
+          if (paths.canonicalPath) {
+            try {
+              result.set(key, await readFile(paths.canonicalPath, "utf8"));
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+            }
+          }
+        })(),
+      );
+    }
+
+    await Promise.all(readTasks);
+    return result;
+  }
+
+  /**
    * Assemble a complete document from skeleton + section body files.
    *
    * Reads all non-sub-skeleton entries from the skeleton in document order,

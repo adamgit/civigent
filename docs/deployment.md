@@ -4,13 +4,41 @@ How to deploy Civigent for your team or organization.
 
 ---
 
+## How to run Civigent
+
+There are four ways to run Civigent. Each targets a different use case and exposes a different external port for web users.
+
+### Production / evaluation / personal use
+
+| Method | Launch command | User connects to | Notes |
+|--------|---------------|-----------------|-------|
+| **Quickstart (pre-built image)** | `docker compose up` from `quickstart/` | `http://localhost:${PORT}` (default **8080**) | Single container. Backend serves both API and frontend static files. Recommended for most users. |
+| **Self-built Docker** | `docker compose up` from repo root | `http://localhost:5173` (frontend) | Two containers: backend on 3000, frontend Vite dev server on 5173. Frontend proxies API calls to backend. Useful for testing local changes before publishing an image. |
+
+### Development / contributing
+
+| Method | Launch command | User connects to | Notes |
+|--------|---------------|-----------------|-------|
+| **Native dev** | `npm run dev` (runs `devtools/dev.sh`) | `http://localhost:5173` (frontend) | No Docker. Backend on port 3000 (configurable via `PORT`), frontend Vite dev server on 5173. Hot-reload on both. |
+| **DevContainer** | Open in VS Code / Cursor / etc | IDE specific but usually `http://localhost:5173`  | VS Code auto-detects and forwards ports. The actual external port is assigned by the IDE and may differ from the internal port. |
+
+### Key differences
+
+- **`KS_OIDC_PUBLIC_URL`** must match whatever URL users actually see in their browser. When not set explicitly, the server auto-derives it from `KS_EXTERNAL_PORT` (which the quickstart compose file sets automatically). For custom domains or reverse proxy setups, set `KS_OIDC_PUBLIC_URL` explicitly.
+- **The quickstart container listens internally on port 3000** but the compose file maps it to the host port `${PORT:-8080}`. The internal port and the external port are different numbers in this setup.
+- **In dev modes (native + dev compose)** the backend port (3000) is exposed but only the frontend port (5173) is user-facing. The backend port is only used for the Vite proxy and direct API testing.
+- **Users never connect directly to the backend.** In quickstart mode the backend serves the frontend statically; in all other modes a Vite dev server on port 5173 serves the frontend and proxies API requests to the backend.
+
+---
+
 ## Deployment scenarios
 
 ### Scenario A: Personal use on your own machine
 
 **Profile:** Single user, one laptop, multiple AI agents.
+**Deployment method:** Quickstart (pre-built image) in single-user mode — `docker compose up` from `quickstart/`.
 
-This is the simplest deployment. Use the [Quickstart guide](quickstart.md) — it covers everything you need.
+This is the simplest deployment. Use the [Quickstart guide](quickstart.md) — it covers everything you need. Enable 'single_user' mode to disable the complex authentication / external auth etc.
 
 **Key settings:**
 ```env
@@ -26,6 +54,7 @@ No public URL, no OIDC, no agent keys needed. OAuth auto-approves for agents. An
 ### Scenario B: Team server with a domain
 
 **Profile:** Multiple humans, multiple agents, accessible over the network.
+**Deployment method:** Quickstart (pre-built image) in multi-user mode, behind a reverse proxy, or self-built Docker for customised builds.
 
 The server runs on a cloud host or on-premises machine with a domain name (e.g., `https://wiki.company.com`).
 
@@ -55,6 +84,7 @@ docker compose up
 ### Scenario C: Enterprise with network-gated agents
 
 **Profile:** Team server where the network itself provides agent authentication (VPN, internal network).
+**Deployment method:** Same as Scenario B (quickstart or self-built), with additional env var configuration.
 
 **Optional:** Disable 'anonymous AI Agents' 
 
@@ -74,7 +104,7 @@ The server validates its configuration at startup and refuses to start if critic
 |-----------|--------|
 | Multi-user mode without `KS_OIDC_PUBLIC_URL` | **Refuses to start** with instructions |
 | Multi-user mode without `KS_AUTH_SECRET` | **Refuses to start** with instructions |
-| Single-user mode without `KS_OIDC_PUBLIC_URL` | Auto-derives `http://localhost:${PORT}` |
+| Single-user mode without `KS_OIDC_PUBLIC_URL` | Auto-derives from `KS_EXTERNAL_PORT` if set, otherwise falls back to `PORT` (internal container port, default 3000). In Docker setups where the host port differs (e.g. quickstart maps 8080→3000), the quickstart compose file sets `KS_EXTERNAL_PORT` automatically so this works. For custom deployments, either set `KS_EXTERNAL_PORT` or set `KS_OIDC_PUBLIC_URL` explicitly. |
 | Single-user mode without `KS_AUTH_SECRET` | Uses development default (acceptable for localhost) |
 
 ---
@@ -249,7 +279,8 @@ Snapshots are a **derived cache** — they can be regenerated from /content at a
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `PORT` | Port the server listens on inside the container | `3000` |
+| `PORT` | Port the server listens on inside the container (not the host-facing port) | `3000` |
+| `KS_EXTERNAL_PORT` | The external host port users connect on. Set automatically by the quickstart compose file. Used for the startup console message. | (none) |
 | `KS_AUTH_MODE` | Set to `single_user` for personal use | (multi-user) |
 | `KS_USER_NAME` | Human display name (single-user mode) | `Local User` |
 | `KS_USER_EMAIL` | Human email (single-user mode) | `local-user@ks.local` |

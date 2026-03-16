@@ -141,11 +141,14 @@ export class SectionPresence {
    * Pre-fetch human proposal lock index across all pending proposals.
    * Returns Map keyed by SectionRef.globalKey.
    */
-  static async prefetchHumanProposalLocks(): Promise<HumanProposalLockIndex> {
+  static async prefetchHumanProposalLocks(
+    excludeProposalId?: string,
+  ): Promise<HumanProposalLockIndex> {
     const index: HumanProposalLockIndex = new Map();
     const pending = await listProposals("pending");
     for (const proposal of pending) {
       if (proposal.writer.type !== "human") continue;
+      if (excludeProposalId && proposal.id === excludeProposalId) continue;
       for (const section of proposal.sections) {
         const key = SectionRef.fromTarget(section).globalKey;
         index.set(key, {

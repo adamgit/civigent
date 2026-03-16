@@ -391,6 +391,26 @@ Uses `@ks/milkdown-serializer` (markdownToJSON, jsonToMarkdown, getSchemaSpec) a
 
 ---
 
+## 15. Observer CRDT (`observer-crdt/`)
+
+### `observer-crdt-provider.test.ts`
+- ObserverCrdtProvider connects to /ws/crdt-observe/<docPath>
+- Applies incoming MSG_YJS_UPDATE to local Y.Doc
+- Fires onChange callback (debounced) after Y.Doc update
+- Never sends MSG_YJS_UPDATE, MSG_SECTION_FOCUS, MSG_ACTIVITY_PULSE
+- destroy() closes WebSocket and removes Y.Doc listeners
+- Reconnects on unexpected close (same backoff as CrdtProvider)
+- On close code 4021 (session_ended): fires onSessionEnded, then reconnects
+
+### `document-page-observer.test.tsx`
+- View-mode sections update in real-time when observer receives Y.Doc changes
+- Observer is destroyed when user enters edit mode
+- Observer is re-created when user exits edit mode
+- Session ended (4021 close) triggers REST fallback + observer reconnect
+- Sections render via <ReactMarkdown> with observer-provided content
+
+---
+
 ## File Organization
 
 ```
@@ -418,6 +438,7 @@ frontend/src/__tests__/
       document-page-presence.test.tsx
       document-page-realtime.test.tsx
       document-page-proposal-mode.test.tsx
+      document-page-observer.test.tsx
       proposal-panel.test.tsx
     proposals/
       proposals-list.test.tsx
@@ -447,6 +468,7 @@ frontend/src/__tests__/
     api-client-auth.test.ts
     ws-client.test.ts
     crdt-provider.test.ts
+    observer-crdt-provider.test.ts
     recent-docs.test.ts
     document-visit-history.test.ts
   helpers/

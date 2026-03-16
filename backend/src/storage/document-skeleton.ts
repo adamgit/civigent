@@ -88,6 +88,9 @@ export function serializeSkeletonEntries(entries: SkeletonEntry[]): string {
   return lines.join("\n").replace(/^\n+/, "") + "\n";
 }
 
+/** The directory suffix used for section body files and sub-skeletons. */
+export const SECTIONS_DIR_SUFFIX = ".sections";
+
 /**
  * Generate a unique section filename from a heading.
  *
@@ -167,6 +170,9 @@ export class DocumentSkeleton {
 
   get dirty(): boolean { return this._dirty; }
 
+  /** True when the overlay contained a skeleton file (vs falling back to canonical). */
+  get overlayPersisted(): boolean { return this._overlayPersisted; }
+
   /** True when the skeleton has no sections at all (no roots). */
   get isEmpty(): boolean { return this.roots.length === 0; }
 
@@ -237,12 +243,12 @@ export class DocumentSkeleton {
 
   /**
    * Resolve the root section directly from this.roots — no flat materialization.
-   * Throws if no root section exists.
+   * Returns null if the skeleton is empty (tombstone) or has no root section.
    */
-  resolveRoot(): FlatEntry {
+  resolveRoot(): FlatEntry | null {
     const rootNode = this.roots.find(n => n.level === 0 && n.heading === "");
     if (!rootNode) {
-      throw new Error(`Skeleton integrity error: no root section in ${this.docPath}`);
+      return null;
     }
     const sectionsDir = `${this.skeletonPath}.sections`;
     return {
@@ -262,7 +268,11 @@ export class DocumentSkeleton {
    */
   resolveByFileId(sectionFileId: string): FlatEntry {
     if (sectionFileId === "__root__") {
-      return this.resolveRoot();
+      const root = this.resolveRoot();
+      if (!root) {
+        throw new Error(`Skeleton integrity error: no root section in ${this.docPath} (document may be deleted)`);
+      }
+      return root;
     }
 
     const targetFile = sectionFileId.endsWith(".md") ? sectionFileId : sectionFileId + ".md";
@@ -307,7 +317,11 @@ export class DocumentSkeleton {
   resolve(headingPath: string[]): FlatEntry {
     // Root section: headingPath=[]
     if (headingPath.length === 0) {
-      return this.resolveRoot();
+      const root = this.resolveRoot();
+      if (!root) {
+        throw new Error(`Skeleton integrity error: no root section in ${this.docPath} (document may be deleted)`);
+      }
+      return root;
     }
 
     let nodes = this.roots;
@@ -620,6 +634,30 @@ export class DocumentSkeleton {
       // No existing canonical skeleton — nothing to clean up
     }
 
+    // Tombstone: empty skeleton means "delete this document from canonical"
+    if (this.isEmpty) {
+      // Delete canonical skeleton file
+      try {
+        await rm(canonicalSkeletonPath, { force: true });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+      // Delete canonical .sections/ directory
+      try {
+        await rm(`${canonicalSkeletonPath}.sections`, { recursive: true, force: true });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+      // Delete all old section body files
+      for (const oldFile of oldSectionFiles) {
+        try { await rm(oldFile, { force: true }); } catch { /* ignore ENOENT */ }
+      }
+      for (const oldDir of oldSubSkeletonDirs) {
+        try { await rm(oldDir + ".sections", { recursive: true, force: true }); } catch { /* ignore */ }
+      }
+      return;
+    }
+
     // 2. Write new skeleton to canonical
     await this.writeTree(this.roots, canonicalSkeletonPath);
 
@@ -686,6 +724,34 @@ export class DocumentSkeleton {
   }
 
   // --- Construction ---
+
+  /**
+   * Create a tombstone skeleton — an empty skeleton (zero entries) at the given
+   * doc path in the overlay root. When promoted to canonical, an empty skeleton
+   * signals "delete this document": all canonical files are removed.
+   *
+   * Call persist() to write the empty skeleton file to the overlay.
+   */
+  static createTombstone(
+    docPath: string,
+    overlayRoot: string,
+    canonicalRoot?: string,
+  ): DocumentSkeleton {
+    const skeleton = new DocumentSkeleton(
+      docPath, [], overlayRoot, canonicalRoot ?? overlayRoot,
+    );
+    skeleton._dirty = true;
+    return skeleton;
+  }
+
+  /**
+   * Derive the sections directory path for a given document.
+   * This is where all body files and sub-skeletons live on disk.
+   */
+  static sectionsDir(docPath: string, contentRoot: string): string {
+    const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+    return path.resolve(contentRoot, ...normalized.split("/")) + ".sections";
+  }
 
   /**
    * Create an empty skeleton for a new document.

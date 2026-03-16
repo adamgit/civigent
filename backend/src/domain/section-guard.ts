@@ -87,7 +87,10 @@ export class SectionGuard {
    * then evaluates each section synchronously.
    * Includes aggregate impact check.
    */
-  static async evaluateBatch(sections: SectionInput[]): Promise<BatchResult> {
+  static async evaluateBatch(
+    sections: SectionInput[],
+    excludeProposalId?: string,
+  ): Promise<BatchResult> {
     // Group by document for batched I/O
     const sectionsByDoc = new Map<string, SectionInput[]>();
     for (const section of sections) {
@@ -109,7 +112,7 @@ export class SectionGuard {
     }
 
     // Pre-build human proposal lock index (single scan)
-    const humanProposalLockIndex = await SectionPresence.prefetchHumanProposalLocks();
+    const humanProposalLockIndex = await SectionPresence.prefetchHumanProposalLocks(excludeProposalId);
 
     // Evaluate each section
     const evaluatedSections: EvaluatedSection[] = [];

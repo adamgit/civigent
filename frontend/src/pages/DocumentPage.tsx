@@ -5,6 +5,8 @@ import remarkGfm from "remark-gfm";
 import * as Y from "yjs";
 import { apiClient, resolveWriterId } from "../services/api-client";
 import { CrdtProvider, type CrdtConnectionState, type StructureWillChangePayload } from "../services/crdt-provider";
+import { ObserverCrdtProvider } from "../services/observer-crdt-provider";
+import { fragmentToMarkdown } from "../services/fragment-to-markdown";
 import { getLastDocumentVisitAt, markDocumentVisitedNow } from "../services/document-visit-history";
 import { rememberRecentDoc } from "../services/recent-docs";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
@@ -244,6 +246,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   /** Fragment keys currently being restructured — suppress rendering to avoid flash of empty content. */
   const [restructuringKeys, setRestructuringKeys] = useState<Set<string>>(new Set());
   const crdtProviderRef = useRef<CrdtProvider | null>(null);
+  const observerRef = useRef<ObserverCrdtProvider | null>(null);
   const editorRefs = useRef<Map<number, MilkdownEditorHandle>>(new Map());
   const pendingFocusRef = useRef<{ index: number; position: "start" | "end" } | null>(null);
   const pendingStructureRefocusRef = useRef<string[] | null>(null);
@@ -325,6 +328,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   useEffect(() => {
     return () => {
       crdtProviderRef.current?.destroy();
+      observerRef.current?.destroy();
       if (proposalSaveTimerRef.current) {
         clearTimeout(proposalSaveTimerRef.current);
       }
@@ -393,14 +397,67 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     }
   }, []);
 
+  // ── Observer CRDT (read-only live sync for non-editing viewers) ──
+  const startObserver = useCallback((docPath: string) => {
+    if (observerRef.current) return; // already observing
+    const observer = new ObserverCrdtProvider(docPath, {
+      onChange: () => {
+        // Convert each Y.Doc fragment to markdown and update sections state
+        const currentSections = sectionsRef.current;
+        if (currentSections.length === 0) return;
+        const ydoc = observer.doc;
+        let changed = false;
+        const updated = currentSections.map((section) => {
+          const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path);
+          try {
+            const md = fragmentToMarkdown(ydoc, fk);
+            if (md !== section.content) {
+              changed = true;
+              return { ...section, content: md };
+            }
+          } catch {
+            // Fragment not yet in Y.Doc — keep existing content
+          }
+          return section;
+        });
+        if (changed) setSections(updated);
+      },
+      onSessionEnded: () => {
+        // Editing session ended — fall back to REST content
+        if (docPath) loadSections(docPath);
+        // Observer will auto-reconnect to wait for next session
+      },
+      onStructureWillChange: () => {
+        // Structure changed — reload sections from REST to get new skeleton
+        if (docPath) loadSections(docPath);
+      },
+    });
+    observerRef.current = observer;
+    observer.connect();
+  }, [loadSections]);
+
+  const stopObserver = useCallback(() => {
+    if (observerRef.current) {
+      observerRef.current.destroy();
+      observerRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     if (!decodedDocPath) return;
     let cancelled = false;
     loadSections(decodedDocPath).then(() => {
       if (cancelled) return;
+      // Start observer if not already editing
+      if (!crdtProviderRef.current) {
+        startObserver(decodedDocPath);
+      }
     });
-    return () => { cancelled = true; };
-  }, [decodedDocPath, loadSections]);
+    return () => {
+      cancelled = true;
+      stopObserver();
+    };
+  }, [decodedDocPath, loadSections, startObserver, stopObserver]);
 
   // ── Load changes-since (recently changed sections) ───────
   useEffect(() => {
@@ -436,7 +493,11 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     setRestructuringKeys(new Set());
     editorRefs.current.clear();
     pendingFocusRef.current = null;
-  }, []);
+    // Re-create observer to resume passive live sync
+    if (decodedDocPath) {
+      startObserver(decodedDocPath);
+    }
+  }, [decodedDocPath, startObserver]);
 
   // ── Proposal mode enter/exit ──────────────────────────────
   const enterProposalMode = useCallback(async (proposalId: string) => {
@@ -762,6 +823,9 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     // Already have an active provider for this document
     if (crdtProviderRef.current) return crdtProviderRef.current;
 
+    // Destroy observer — the full CrdtProvider takes over
+    stopObserver();
+
     setCrdtError(null);
     setStatusMessage(null);
     setError(null);
@@ -844,7 +908,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
       setCrdtError(err instanceof Error ? err.message : String(err));
       return null;
     }
-  }, [decodedDocPath, stopEditing, loadSections]);
+  }, [decodedDocPath, stopEditing, stopObserver, loadSections]);
 
   // ── viewingPresence: set Awareness viewingSections on focus change ──
   const setViewingSections = useCallback((provider: CrdtProvider, sectionIndex: number) => {

@@ -67,6 +67,8 @@ When a section gains sub-headings, its file becomes a sub-skeleton and a **root 
 
 `DocumentSkeleton` is the single in-memory model that reads this recursive structure and provides tree, flat, and resolve views. It is the **canonical source of section identity** — all heading paths, file paths, and tree structure derive from it.
 
+**Empty-skeleton tombstone convention:** A skeleton file with zero entries signals document deletion in any overlay context (proposals, sessions). When `promoteOverlay()` encounters an empty skeleton, it deletes all canonical files for that document (skeleton, `.sections/` directory, section body files) rather than writing an empty file. Document rename is decomposed as: tombstone at old path + full copy at new path — reusing overlay-first read semantics with no new read logic. This ensures ALL document mutations (content edits, section structural changes, document deletion, document renaming) are expressible as skeleton + section file state in an overlay directory. No operation requires metadata, sentinels, or out-of-band state.
+
 ### Layer 2: Session overlays
 
 Ephemeral files representing in-flight edits that haven't been collated into semantic bundles, haven't been added to the audit-log yet.

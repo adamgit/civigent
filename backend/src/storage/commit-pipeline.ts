@@ -23,6 +23,7 @@ import { proposalContentRoot } from "./proposal-repository.js";
 import { getHeadSha, gitExec } from "./git-repo.js";
 import { resolveHeadingPath } from "./heading-resolver.js";
 import { ContentLayer } from "./content-layer.js";
+import { DocumentSkeleton } from "./document-skeleton.js";
 import {
   transitionToCommitting,
   transitionToCommitted,
@@ -47,6 +48,7 @@ export async function evaluateProposalHumanInvolvement(
       heading_path: s.heading_path,
       justification: s.justification,
     })),
+    proposal.id,
   );
 }
 
@@ -63,13 +65,39 @@ export async function commitProposalToCanonical(
   await transitionToCommitting(proposal.id);
 
   try {
+    const canonicalRoot = getContentRoot();
+    const overlayRoot = proposalContentRoot(proposal.id, "committing");
+
+    // Promote structural changes (skeleton files) from proposal overlay to canonical.
+    // For each unique doc path in the proposal, check if the overlay contains a
+    // skeleton file. If so, use promoteOverlay() to merge skeleton changes into
+    // canonical (handles orphan cleanup automatically).
+    const docPaths = new Set(proposal.sections.map((s) => s.doc_path));
+    const promotedDocs = new Set<string>();
+    for (const docPath of docPaths) {
+      try {
+        const skeleton = await DocumentSkeleton.fromDisk(docPath, overlayRoot, canonicalRoot);
+        if (skeleton.overlayPersisted) {
+          await skeleton.promoteOverlay();
+          promotedDocs.add(docPath);
+        }
+      } catch {
+        // No skeleton in overlay — content-only changes, handled below
+      }
+    }
+
     // Copy each section's content from proposal content root to canonical
-    const canonical = new ContentLayer(getContentRoot());
-    const proposalContent = new ContentLayer(proposalContentRoot(proposal.id, "committing"), canonical);
+    const canonical = new ContentLayer(canonicalRoot);
+    const proposalContent = new ContentLayer(overlayRoot, canonical);
     for (const section of proposal.sections) {
       const sectionRef = SectionRef.fromTarget(section);
-      const content = await proposalContent.readSection(sectionRef);
-      await canonical.writeSection(sectionRef, content);
+      try {
+        const content = await proposalContent.readSection(sectionRef);
+        await canonical.writeSection(sectionRef, content);
+      } catch {
+        // Section may have been deleted by a structural change — skip
+        // (promoteOverlay already handled the skeleton-level deletion)
+      }
     }
 
     // Stage and commit
@@ -83,8 +111,8 @@ export async function commitProposalToCanonical(
 
     await gitExec(
       [
-        "-c", "user.name=Knowledge Store",
-        "-c", "user.email=system@knowledge-store.local",
+        "-c", `user.name=${proposal.writer.displayName}`,
+        "-c", `user.email=${proposal.writer.id}@knowledge-store.local`,
         "commit",
         "-m", commitMessage,
         "--allow-empty",

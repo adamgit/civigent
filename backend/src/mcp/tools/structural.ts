@@ -2,70 +2,73 @@
  * Tier 3 structural MCP tools — section creation, deletion, movement, renaming.
  *
  * Tools: create_section, delete_section, move_section, rename_section,
- *        delete_document
+ *        delete_document, rename_document
  *
- * All structural tools operate directly on the DocumentSkeleton + section
- * files on disk. They are guarded by human-involvement checks, proposal contention
- * checks, and active session checks before committing changes via git.
+ * All section-level structural tools operate within a proposal: they require
+ * a proposal_id, verify ownership and pending status, and write skeleton +
+ * section file changes to the proposal's content overlay (NOT to canonical).
+ * Commit happens via commit_proposal, which promotes overlay → canonical.
+ *
+ * Document-level tools (delete_document, rename_document) also operate within
+ * proposals using the tombstone pattern: delete writes an empty skeleton,
+ * rename writes tombstone at old path + full content at new path.
  */
 
 import type { ToolRegistry, ToolHandler } from "../tool-registry.js";
-import { jsonToolResult, textToolResult } from "../tool-registry.js";
+import { jsonToolResult } from "../tool-registry.js";
 import { makeToolErrorResult } from "../protocol.js";
-import { deleteDocument } from "./filesystem.js";
-import { renameDocument } from "../../storage/document-rename.js";
-import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
+import { getContentRoot } from "../../storage/data-root.js";
 import { DocumentSkeleton } from "../../storage/document-skeleton.js";
-import { generateSectionFilename } from "../../storage/markdown-sections.js";
-import { gitExec } from "../../storage/git-repo.js";
 import { DocumentNotFoundError } from "../../storage/document-reader.js";
-import { InvalidDocPathError } from "../../storage/path-utils.js";
-import { lookupDocSession, getAllSessions } from "../../crdt/ydoc-lifecycle.js";
-import { getHeadSha } from "../../storage/git-repo.js";
-import { listProposals } from "../../storage/proposal-repository.js";
-import { SectionRef } from "../../domain/section-ref.js";
-import { SectionGuard } from "../../domain/section-guard.js";
-import { readDocSectionCommitInfo } from "../../storage/section-activity.js";
+import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
+import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
+import {
+  readProposal,
+  updateProposalSections,
+  ProposalNotFoundError,
+  InvalidProposalStateError,
+} from "../../storage/proposal-repository.js";
+import { evaluateProposalHumanInvolvement } from "../../storage/commit-pipeline.js";
 import type { McpToolCallResult } from "../protocol.js";
-import path from "node:path";
-import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import type { Proposal, ProposalSection } from "../../types/shared.js";
+import { ContentLayer } from "../../storage/content-layer.js";
+import { SectionRef } from "../../domain/section-ref.js";
 
-// ─── Helper: git commit structural changes ──────────────
+// ─── Proposal validation helper ──────────────────────────
 
-async function gitCommitStructural(message: string, affectedDocPath?: string): Promise<void> {
-  const dataRoot = getDataRoot();
-  await gitExec(["add", "content/"], dataRoot);
-  await gitExec(
-    [
-      "-c", "user.name=Knowledge Store",
-      "-c", "user.email=system@knowledge-store.local",
-      "commit",
-      "-m", message,
-      "--allow-empty",
-    ],
-    dataRoot,
-  );
-
-  // Update baseHead on active sessions whose docPath matches the committed document
-  const newHead = await getHeadSha(dataRoot);
-  if (affectedDocPath) {
-    const session = lookupDocSession(affectedDocPath);
-    if (session) {
-      session.baseHead = newHead;
+async function loadAndValidateProposal(
+  proposalId: string,
+  writerId: string,
+): Promise<{ proposal: Proposal; contentRoot: string } | McpToolCallResult> {
+  try {
+    const proposal = await readProposal(proposalId);
+    if (proposal.writer.id !== writerId) {
+      return makeToolErrorResult("You can only modify your own proposals.");
     }
-  } else {
-    // No specific doc — update all sessions (e.g. bulk operations)
-    for (const session of getAllSessions().values()) {
-      session.baseHead = newHead;
+    if (proposal.status !== "pending") {
+      return makeToolErrorResult(`Cannot modify proposal in ${proposal.status} state.`);
     }
+    // Derive content root from proposal
+    const { proposalContentRoot } = await import("../../storage/proposal-repository.js");
+    const contentRoot = proposalContentRoot(proposalId, "pending");
+    return { proposal, contentRoot };
+  } catch (error) {
+    if (error instanceof ProposalNotFoundError) {
+      return makeToolErrorResult(`Proposal not found: ${proposalId}`);
+    }
+    if (error instanceof InvalidProposalStateError) {
+      return makeToolErrorResult(error.message);
+    }
+    throw error;
   }
 }
 
-// ─── Contention guard ────────────────────────────────────
+function isError(result: unknown): result is McpToolCallResult {
+  return result !== null && typeof result === "object" && "content" in (result as Record<string, unknown>);
+}
 
-/**
- * Check for active CRDT sessions on the document. Returns an error result if blocked.
- */
+// ─── Session contention guard ────────────────────────────
+
 function checkDocSessionGuard(docPath: string): McpToolCallResult | null {
   const session = lookupDocSession(docPath);
   if (!session) return null;
@@ -74,8 +77,6 @@ function checkDocSessionGuard(docPath: string): McpToolCallResult | null {
       `Cannot modify document structure: active editing session exists on "${docPath}".`,
     );
   }
-  // Block when dirty fragments exist without active holders — uncommitted overlay
-  // files would be overwritten or orphaned by the structural git commit.
   for (const dirtySet of session.perUserDirty.values()) {
     if (dirtySet.size > 0) {
       return makeToolErrorResult(
@@ -86,94 +87,91 @@ function checkDocSessionGuard(docPath: string): McpToolCallResult | null {
   return null;
 }
 
-/**
- * Check for pending proposals that reference any of the given sections.
- * Returns an error result if blocked.
- */
-async function checkProposalGuard(
-  docPath: string,
-  headingPaths: string[][],
-): Promise<McpToolCallResult | null> {
-  const pending = await listProposals("pending");
-  for (const proposal of pending) {
-    for (const section of proposal.sections) {
-      if (section.doc_path !== docPath) continue;
-      for (const hp of headingPaths) {
-        if (SectionRef.headingPathsEqual(section.heading_path, hp)) {
-          return makeToolErrorResult(
-            `Cannot modify section "${hp.join(" > ")}": pending proposal ${proposal.id} (${proposal.writer.displayName}) references it.`,
-          );
-        }
-      }
-    }
-  }
-  return null;
-}
+// ─── create_section (proposal-based) ─────────────────────
 
-/**
- * Check human-involvement scores for affected sections. Returns an error result
- * if any section has high human involvement (blocked).
- */
-async function checkInvolvementGuard(
-  docPath: string,
-  headingPaths: string[][],
-): Promise<McpToolCallResult | null> {
-  const commitInfo = await readDocSectionCommitInfo(docPath, headingPaths.length);
-  for (const hp of headingPaths) {
-    const ref = new SectionRef(docPath, hp);
-    const verdict = await SectionGuard.evaluate(ref, commitInfo);
-    if (verdict.blocked) {
-      return makeToolErrorResult(
-        `Cannot modify section "${hp.join(" > ")}": human involvement score is ${verdict.humanInvolvement_score.toFixed(2)} (blocked). Wait for involvement to decay or ask the human to step away.`,
-      );
-    }
-  }
-  return null;
-}
-
-// ─── create_section ──────────────────────────────────────
-
-const createSectionHandler: ToolHandler = async (args) => {
+const createSectionHandler: ToolHandler = async (args, ctx) => {
+  const proposalId = args.proposal_id as string | undefined;
   const docPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
   const content = (args.content as string | undefined) ?? "";
-  const level = (args.level as number | undefined) ?? 2;
 
+  if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
   if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath) || headingPath.length === 0) {
     return makeToolErrorResult("Missing required parameter: heading_path (non-empty array)");
   }
 
-  // Contention guards
-  const sessionBlock = checkDocSessionGuard(docPath);
-  if (sessionBlock) return sessionBlock;
-
-  // Check proposals referencing the parent heading path (structural insertion affects it)
-  const parentPath = headingPath.slice(0, -1);
-  if (parentPath.length > 0) {
-    const proposalBlock = await checkProposalGuard(docPath, [parentPath]);
-    if (proposalBlock) return proposalBlock;
+  // Validate doc_path before any state is created
+  try {
+    resolveDocPathUnderContent(getContentRoot(), docPath);
+  } catch (error) {
+    if (error instanceof InvalidDocPathError) {
+      return makeToolErrorResult(`Invalid doc_path "${docPath}": ${error.message}`);
+    }
+    throw error;
   }
 
+  const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
+  if (isError(validated)) return validated;
+  const { proposal, contentRoot: proposalContentRoot } = validated;
+
   try {
-    const contentRoot = getContentRoot();
-    const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
+    const canonicalRoot = getContentRoot();
+    // Load skeleton from overlay (proposal content) with canonical fallback
+    const skeleton = await DocumentSkeleton.fromDisk(docPath, proposalContentRoot, canonicalRoot);
     const heading = headingPath[headingPath.length - 1];
+    const parentPath = headingPath.slice(0, -1);
 
-    const added = skeleton.addSectionsFromRootSplit([{ heading, level, body: content }]);
-    await skeleton.persist();
-
-    for (const entry of added) {
-      if (!entry.isSubSkeleton) {
-        const dir = path.dirname(entry.absolutePath);
-        await mkdir(dir, { recursive: true });
-        await writeFile(entry.absolutePath, content, "utf8");
-      }
+    // Derive level from the skeleton's existing hierarchy
+    let level: number;
+    if (parentPath.length === 0) {
+      // Top-level section — level 1 (or match existing siblings)
+      level = 1;
+    } else {
+      const parentEntry = skeleton.resolve(parentPath);
+      level = parentEntry.level + 1;
     }
 
-    await gitCommitStructural(`create section "${heading}" in ${docPath}`, docPath);
+    skeleton.insertSectionUnder(parentPath, { heading, level, body: content });
+    await skeleton.persist();
 
-    return jsonToolResult({ doc_path: docPath, heading_path: headingPath, created: true });
+    // Write body content through ContentLayer (skeleton now has the entry)
+    const proposalLayer = new ContentLayer(proposalContentRoot);
+    await proposalLayer.writeSection(new SectionRef(docPath, headingPath), content);
+
+    // Update proposal sections metadata
+    const existingSections = proposal.sections.filter(
+      (s) => !(s.doc_path === docPath && JSON.stringify(s.heading_path) === JSON.stringify(headingPath)),
+    );
+    const updatedSections: ProposalSection[] = [
+      ...existingSections,
+      { doc_path: docPath, heading_path: headingPath },
+    ];
+    const { proposal: updated } = await updateProposalSections(proposalId, updatedSections);
+
+    // Broadcast proposal:pending
+    if (ctx.emitEvent && updated.sections.length > 0) {
+      ctx.emitEvent({
+        type: "proposal:pending",
+        proposal_id: updated.id,
+        doc_path: updated.sections[0].doc_path,
+        heading_paths: updated.sections.map((s) => s.heading_path),
+        writer_id: ctx.writer.id,
+        writer_display_name: ctx.writer.displayName,
+        intent: updated.intent,
+      });
+    }
+
+    const { evaluation, sections } = await evaluateProposalHumanInvolvement(updated);
+
+    return jsonToolResult({
+      proposal_id: proposalId,
+      doc_path: docPath,
+      heading_path: headingPath,
+      created: true,
+      evaluation,
+      sections,
+    });
   } catch (error) {
     if (error instanceof Error && error.message.includes("not found")) {
       return makeToolErrorResult(error.message);
@@ -182,39 +180,73 @@ const createSectionHandler: ToolHandler = async (args) => {
   }
 };
 
-// ─── delete_section ──────────────────────────────────────
+// ─── delete_section (proposal-based) ─────────────────────
 
-const deleteSectionHandler: ToolHandler = async (args) => {
+const deleteSectionHandler: ToolHandler = async (args, ctx) => {
+  const proposalId = args.proposal_id as string | undefined;
   const docPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
 
+  if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
   if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath) || headingPath.length === 0) {
     return makeToolErrorResult("Cannot delete the root section.");
   }
 
-  // Contention guards
-  const sessionBlock = checkDocSessionGuard(docPath);
-  if (sessionBlock) return sessionBlock;
-  const proposalBlock = await checkProposalGuard(docPath, [headingPath]);
-  if (proposalBlock) return proposalBlock;
-  const involvementBlock = await checkInvolvementGuard(docPath, [headingPath]);
-  if (involvementBlock) return involvementBlock;
+  // Validate doc_path before any state is created
+  try {
+    resolveDocPathUnderContent(getContentRoot(), docPath);
+  } catch (error) {
+    if (error instanceof InvalidDocPathError) {
+      return makeToolErrorResult(`Invalid doc_path "${docPath}": ${error.message}`);
+    }
+    throw error;
+  }
+
+  const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
+  if (isError(validated)) return validated;
+  const { proposal, contentRoot: proposalContentRoot } = validated;
 
   try {
-    const contentRoot = getContentRoot();
-    const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
-    const result = skeleton.replace(headingPath, []);
+    const canonicalRoot = getContentRoot();
+    const skeleton = await DocumentSkeleton.fromDisk(docPath, proposalContentRoot, canonicalRoot);
+    skeleton.replace(headingPath, []);
     await skeleton.persist();
 
-    for (const removed of result.removed) {
-      await rm(removed.absolutePath, { force: true });
-      await rm(`${removed.absolutePath}.sections`, { recursive: true, force: true });
+    // Do NOT delete section body files from canonical — promoteOverlay handles orphan cleanup
+
+    // Update proposal sections metadata
+    const existingSections = proposal.sections.filter(
+      (s) => !(s.doc_path === docPath && JSON.stringify(s.heading_path) === JSON.stringify(headingPath)),
+    );
+    const updatedSections: ProposalSection[] = [
+      ...existingSections,
+      { doc_path: docPath, heading_path: headingPath },
+    ];
+    const { proposal: updated } = await updateProposalSections(proposalId, updatedSections);
+
+    if (ctx.emitEvent && updated.sections.length > 0) {
+      ctx.emitEvent({
+        type: "proposal:pending",
+        proposal_id: updated.id,
+        doc_path: updated.sections[0].doc_path,
+        heading_paths: updated.sections.map((s) => s.heading_path),
+        writer_id: ctx.writer.id,
+        writer_display_name: ctx.writer.displayName,
+        intent: updated.intent,
+      });
     }
 
-    await gitCommitStructural(`delete section "${headingPath.join(" > ")}" from ${docPath}`, docPath);
+    const { evaluation, sections } = await evaluateProposalHumanInvolvement(updated);
 
-    return jsonToolResult({ doc_path: docPath, heading_path: headingPath, deleted: true });
+    return jsonToolResult({
+      proposal_id: proposalId,
+      doc_path: docPath,
+      heading_path: headingPath,
+      deleted: true,
+      evaluation,
+      sections,
+    });
   } catch (error) {
     if (error instanceof Error && error.message.includes("not found")) {
       return makeToolErrorResult(error.message);
@@ -223,13 +255,15 @@ const deleteSectionHandler: ToolHandler = async (args) => {
   }
 };
 
-// ─── move_section ────────────────────────────────────────
+// ─── move_section (proposal-based) ───────────────────────
 
-const moveSectionHandler: ToolHandler = async (args) => {
+const moveSectionHandler: ToolHandler = async (args, ctx) => {
+  const proposalId = args.proposal_id as string | undefined;
   const docPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
   const newParentPath = args.new_parent_path as string[] | undefined;
 
+  if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
   if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath) || headingPath.length === 0) {
     return makeToolErrorResult("Cannot move the root section.");
@@ -238,65 +272,89 @@ const moveSectionHandler: ToolHandler = async (args) => {
     return makeToolErrorResult("Missing required parameter: new_parent_path (string[])");
   }
 
-  // Contention guards
-  const sessionBlock = checkDocSessionGuard(docPath);
-  if (sessionBlock) return sessionBlock;
-  const proposalBlock = await checkProposalGuard(docPath, [headingPath]);
-  if (proposalBlock) return proposalBlock;
-  const involvementBlock = await checkInvolvementGuard(docPath, [headingPath]);
-  if (involvementBlock) return involvementBlock;
+  // Validate doc_path before any state is created
+  try {
+    resolveDocPathUnderContent(getContentRoot(), docPath);
+  } catch (error) {
+    if (error instanceof InvalidDocPathError) {
+      return makeToolErrorResult(`Invalid doc_path "${docPath}": ${error.message}`);
+    }
+    throw error;
+  }
+
+  const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
+  if (isError(validated)) return validated;
+  const { proposal, contentRoot: proposalContentRoot } = validated;
 
   try {
-    const contentRoot = getContentRoot();
-    const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
+    const canonicalRoot = getContentRoot();
+    const skeleton = await DocumentSkeleton.fromDisk(docPath, proposalContentRoot, canonicalRoot);
 
-    // Read current body content
-    const entry = skeleton.resolve(headingPath);
+    // Read current body content via ContentLayer (overlay-first, then canonical)
+    const clWithFallback = new ContentLayer(proposalContentRoot, new ContentLayer(canonicalRoot));
     let bodyContent = "";
     try {
-      bodyContent = await readFile(entry.absolutePath, "utf8");
-    } catch (err: unknown) {
-      // Section file may not exist yet (new section with no body).
-      // Only swallow ENOENT; re-throw anything unexpected.
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      bodyContent = await clWithFallback.readSection(new SectionRef(docPath, headingPath));
+    } catch {
+      // Section body missing in both overlay and canonical — use empty
     }
 
     const heading = headingPath[headingPath.length - 1];
-
-    // Determine the target level based on new parent depth
+    const resolvedEntry = skeleton.resolve(headingPath);
     const targetLevel = newParentPath.length === 0
-      ? entry.level  // Moving to root: keep original level
-      : newParentPath.length + 1;  // Moving under parent: one deeper than parent
+      ? resolvedEntry.level
+      : newParentPath.length + 1;
 
     // Remove from old position
-    const removeResult = skeleton.replace(headingPath, []);
+    skeleton.replace(headingPath, []);
 
     // Insert under the specified parent path
-    const addedEntries = skeleton.insertSectionUnder(newParentPath, {
+    skeleton.insertSectionUnder(newParentPath, {
       heading,
       level: targetLevel,
       body: bodyContent,
     });
     await skeleton.persist();
 
-    // Clean up old files
-    for (const removed of removeResult.removed) {
-      await rm(removed.absolutePath, { force: true });
-      await rm(`${removed.absolutePath}.sections`, { recursive: true, force: true });
+    // Write body content through ContentLayer (skeleton now has the entry)
+    // Do NOT delete old files from canonical — promoteOverlay handles this
+    const moveLayer = new ContentLayer(proposalContentRoot);
+    const newHeadingPathForMove = [...newParentPath, heading];
+    await moveLayer.writeSection(new SectionRef(docPath, newHeadingPathForMove), bodyContent);
+
+    // Update proposal sections metadata
+    const existingSections = proposal.sections.filter(
+      (s) => !(s.doc_path === docPath && JSON.stringify(s.heading_path) === JSON.stringify(headingPath)),
+    );
+    const updatedSections: ProposalSection[] = [
+      ...existingSections,
+      { doc_path: docPath, heading_path: headingPath },
+    ];
+    const { proposal: updated } = await updateProposalSections(proposalId, updatedSections);
+
+    if (ctx.emitEvent && updated.sections.length > 0) {
+      ctx.emitEvent({
+        type: "proposal:pending",
+        proposal_id: updated.id,
+        doc_path: updated.sections[0].doc_path,
+        heading_paths: updated.sections.map((s) => s.heading_path),
+        writer_id: ctx.writer.id,
+        writer_display_name: ctx.writer.displayName,
+        intent: updated.intent,
+      });
     }
 
-    // Write body for new entries
-    for (const e of addedEntries) {
-      if (!e.isSubSkeleton) {
-        const dir = path.dirname(e.absolutePath);
-        await mkdir(dir, { recursive: true });
-        await writeFile(e.absolutePath, bodyContent, "utf8");
-      }
-    }
+    const { evaluation, sections } = await evaluateProposalHumanInvolvement(updated);
 
-    await gitCommitStructural(`move section "${headingPath.join(" > ")}" in ${docPath}`, docPath);
-
-    return jsonToolResult({ doc_path: docPath, heading_path: headingPath, new_parent_path: newParentPath, moved: true });
+    return jsonToolResult({
+      proposal_id: proposalId,
+      doc_path: docPath,
+      heading_path: headingPath,
+      new_parent_path: newParentPath,
+      moved: true,
+      evaluation,
+      sections,
+    });
   } catch (error) {
     if (error instanceof Error && error.message.includes("not found")) {
       return makeToolErrorResult(error.message);
@@ -305,65 +363,94 @@ const moveSectionHandler: ToolHandler = async (args) => {
   }
 };
 
-// ─── rename_section ──────────────────────────────────────
+// ─── rename_section (proposal-based) ─────────────────────
 
-const renameSectionHandler: ToolHandler = async (args) => {
+const renameSectionHandler: ToolHandler = async (args, ctx) => {
+  const proposalId = args.proposal_id as string | undefined;
   const docPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
   const newHeading = args.new_heading as string | undefined;
 
+  if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
   if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath) || headingPath.length === 0) {
     return makeToolErrorResult("Cannot rename the root section.");
   }
   if (!newHeading) return makeToolErrorResult("Missing required parameter: new_heading");
 
-  // Contention guards
-  const sessionBlock = checkDocSessionGuard(docPath);
-  if (sessionBlock) return sessionBlock;
-  const proposalBlock = await checkProposalGuard(docPath, [headingPath]);
-  if (proposalBlock) return proposalBlock;
-  const involvementBlock = await checkInvolvementGuard(docPath, [headingPath]);
-  if (involvementBlock) return involvementBlock;
+  // Validate doc_path before any state is created
+  try {
+    resolveDocPathUnderContent(getContentRoot(), docPath);
+  } catch (error) {
+    if (error instanceof InvalidDocPathError) {
+      return makeToolErrorResult(`Invalid doc_path "${docPath}": ${error.message}`);
+    }
+    throw error;
+  }
+
+  const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
+  if (isError(validated)) return validated;
+  const { proposal, contentRoot: proposalContentRoot } = validated;
 
   try {
-    const contentRoot = getContentRoot();
-    const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
+    const canonicalRoot = getContentRoot();
+    const skeleton = await DocumentSkeleton.fromDisk(docPath, proposalContentRoot, canonicalRoot);
 
-    // Read current body content
-    const entry = skeleton.resolve(headingPath);
+    // Read current body content via ContentLayer (overlay-first, then canonical)
+    const clWithFallback = new ContentLayer(proposalContentRoot, new ContentLayer(canonicalRoot));
     let bodyContent = "";
     try {
-      bodyContent = await readFile(entry.absolutePath, "utf8");
-    } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      bodyContent = await clWithFallback.readSection(new SectionRef(docPath, headingPath));
+    } catch {
+      // Section body missing in both overlay and canonical — use empty
     }
 
     // Replace with new heading, same content
+    const resolvedEntry = skeleton.resolve(headingPath);
     const result = skeleton.replace(headingPath, [
-      { heading: newHeading, level: entry.level, body: bodyContent },
+      { heading: newHeading, level: resolvedEntry.level, body: bodyContent },
     ]);
     await skeleton.persist();
 
-    // Write new body file
-    for (const added of result.added) {
-      if (!added.isSubSkeleton) {
-        const dir = path.dirname(added.absolutePath);
-        await mkdir(dir, { recursive: true });
-        await writeFile(added.absolutePath, bodyContent, "utf8");
-      }
-    }
-
-    // Clean up old files
-    for (const removed of result.removed) {
-      await rm(removed.absolutePath, { force: true });
-      await rm(`${removed.absolutePath}.sections`, { recursive: true, force: true });
-    }
-
-    await gitCommitStructural(`rename section "${headingPath.join(" > ")}" to "${newHeading}" in ${docPath}`, docPath);
-
+    // Write body content through ContentLayer (skeleton now has the renamed entry)
+    // Do NOT delete old files from canonical — promoteOverlay handles this
     const newHeadingPath = [...headingPath.slice(0, -1), newHeading];
-    return jsonToolResult({ doc_path: docPath, old_heading_path: headingPath, new_heading_path: newHeadingPath, renamed: true });
+    const renameLayer = new ContentLayer(proposalContentRoot);
+    await renameLayer.writeSection(new SectionRef(docPath, newHeadingPath), bodyContent);
+
+    // Update proposal sections metadata with new heading path
+    const existingSections = proposal.sections.filter(
+      (s) => !(s.doc_path === docPath && JSON.stringify(s.heading_path) === JSON.stringify(headingPath)),
+    );
+    const updatedSections: ProposalSection[] = [
+      ...existingSections,
+      { doc_path: docPath, heading_path: newHeadingPath },
+    ];
+    const { proposal: updated } = await updateProposalSections(proposalId, updatedSections);
+
+    if (ctx.emitEvent && updated.sections.length > 0) {
+      ctx.emitEvent({
+        type: "proposal:pending",
+        proposal_id: updated.id,
+        doc_path: updated.sections[0].doc_path,
+        heading_paths: updated.sections.map((s) => s.heading_path),
+        writer_id: ctx.writer.id,
+        writer_display_name: ctx.writer.displayName,
+        intent: updated.intent,
+      });
+    }
+
+    const { evaluation, sections } = await evaluateProposalHumanInvolvement(updated);
+
+    return jsonToolResult({
+      proposal_id: proposalId,
+      doc_path: docPath,
+      old_heading_path: headingPath,
+      new_heading_path: newHeadingPath,
+      renamed: true,
+      evaluation,
+      sections,
+    });
   } catch (error) {
     if (error instanceof Error && error.message.includes("not found")) {
       return makeToolErrorResult(error.message);
@@ -372,83 +459,196 @@ const renameSectionHandler: ToolHandler = async (args) => {
   }
 };
 
-// ─── delete_document ─────────────────────────────────────
+// ─── delete_document (proposal-based, tombstone pattern) ──
 
-const deleteDocumentHandler: ToolHandler = async (args) => {
+const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
+  const proposalId = args.proposal_id as string | undefined;
   const docPath = args.path as string | undefined;
+  if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
   if (!docPath) return makeToolErrorResult("Missing required parameter: path");
 
-  // Contention guards
+  // Validate doc_path before any state is created
+  try {
+    resolveDocPathUnderContent(getContentRoot(), docPath);
+  } catch (error) {
+    if (error instanceof InvalidDocPathError) {
+      return makeToolErrorResult(`Invalid path "${docPath}": ${error.message}`);
+    }
+    throw error;
+  }
+
+  const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
+  if (isError(validated)) return validated;
+  const { proposal, contentRoot: proposalContentRoot } = validated;
+
+  // Block if active CRDT session exists
   const sessionBlock = checkDocSessionGuard(docPath);
   if (sessionBlock) return sessionBlock;
 
-  // Load skeleton to get all section heading paths for proposal/human-involvement checks
   try {
-    const contentRoot = getContentRoot();
-    const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
+    const canonicalRoot = getContentRoot();
+
+    // Load canonical skeleton to get all sections for proposal metadata
+    const skeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
     const headingPaths: string[][] = [];
     skeleton.forEachSection((_heading, _level, _sectionFile, headingPath, _absolutePath, isSubSkeleton) => {
       if (!isSubSkeleton) headingPaths.push([...headingPath]);
     });
 
-    const proposalBlock = await checkProposalGuard(docPath, headingPaths);
-    if (proposalBlock) return proposalBlock;
-    const involvementBlock = await checkInvolvementGuard(docPath, headingPaths);
-    if (involvementBlock) return involvementBlock;
+    // Create tombstone skeleton in proposal overlay
+    const tombstone = DocumentSkeleton.createTombstone(docPath, proposalContentRoot, canonicalRoot);
+    await tombstone.persist();
+
+    // Add all document sections to proposal's sections[] metadata
+    const existingSections = proposal.sections.filter(
+      (s) => s.doc_path !== docPath,
+    );
+    const updatedSections: ProposalSection[] = [
+      ...existingSections,
+      ...headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp })),
+    ];
+    const { proposal: updated } = await updateProposalSections(proposalId, updatedSections);
+
+    if (ctx.emitEvent && updated.sections.length > 0) {
+      ctx.emitEvent({
+        type: "proposal:pending",
+        proposal_id: updated.id,
+        doc_path: docPath,
+        heading_paths: updated.sections.map((s) => s.heading_path),
+        writer_id: ctx.writer.id,
+        writer_display_name: ctx.writer.displayName,
+        intent: updated.intent,
+      });
+    }
+
+    const { evaluation, sections } = await evaluateProposalHumanInvolvement(updated);
+
+    return jsonToolResult({
+      proposal_id: proposalId,
+      doc_path: docPath,
+      deleted: true,
+      evaluation,
+      sections,
+    });
   } catch (error) {
     if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-      // Document doesn't exist or invalid path — let deleteDocument handle the error
-    } else {
+      return makeToolErrorResult(`Document not found: ${docPath}`);
+    }
+    throw error;
+  }
+};
+
+// ─── rename_document (proposal-based, tombstone + copy) ───
+
+const renameDocumentHandler: ToolHandler = async (args, ctx) => {
+  const proposalId = args.proposal_id as string | undefined;
+  const docPath = args.doc_path as string | undefined;
+  const newPath = args.new_path as string | undefined;
+  if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
+  if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
+  if (!newPath) return makeToolErrorResult("Missing required parameter: new_path");
+
+  // Validate both old and new doc_path before any state is created
+  const renameContentRoot = getContentRoot();
+  for (const [label, p] of [["doc_path", docPath], ["new_path", newPath]] as const) {
+    try {
+      resolveDocPathUnderContent(renameContentRoot, p);
+    } catch (error) {
+      if (error instanceof InvalidDocPathError) {
+        return makeToolErrorResult(`Invalid ${label} "${p}": ${error.message}`);
+      }
       throw error;
     }
   }
 
-  return deleteDocument(docPath);
-};
+  const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
+  if (isError(validated)) return validated;
+  const { proposal, contentRoot: proposalContentRoot } = validated;
 
-// ─── rename_document ─────────────────────────────────────
-
-const renameDocumentHandler: ToolHandler = async (args) => {
-  const docPath = args.doc_path as string | undefined;
-  const newPath = args.new_path as string | undefined;
-  if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
-  if (!newPath) return makeToolErrorResult("Missing required parameter: new_path");
-
-  // Contention guard: doc-level session check
+  // Block if active CRDT session exists
   const sessionBlock = checkDocSessionGuard(docPath);
   if (sessionBlock) return sessionBlock;
 
-  // Contention guard: check proposals referencing this document
-  const pending = await listProposals("pending");
-  const conflicting = pending.filter((p) =>
-    p.sections.some((s) => s.doc_path === docPath),
-  );
-  if (conflicting.length > 0) {
-    return makeToolErrorResult(
-      `Cannot rename document: pending proposals reference it: ${conflicting.map((p) => p.id).join(", ")}`,
-    );
-  }
-
-  // Involvement guard: check all sections
   try {
-    const contentRoot = getContentRoot();
-    const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
+    const canonicalRoot = getContentRoot();
+
+    // Load canonical skeleton for the old doc
+    const oldSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
     const headingPaths: string[][] = [];
-    skeleton.forEachSection((_heading, _level, _sectionFile, headingPath, _absolutePath, isSubSkeleton) => {
+    oldSkeleton.forEachSection((_heading, _level, _sectionFile, headingPath, _absolutePath, isSubSkeleton) => {
       if (!isSubSkeleton) headingPaths.push([...headingPath]);
     });
-    const involvementBlock = await checkInvolvementGuard(docPath, headingPaths);
-    if (involvementBlock) return involvementBlock;
-  } catch {
-    // Skeleton not found — let renameDocument handle the error
-  }
 
-  try {
-    const result = await renameDocument(docPath, newPath);
-    return jsonToolResult(result);
+    // Step 1: Write tombstone at old path in proposal overlay
+    const tombstone = DocumentSkeleton.createTombstone(docPath, proposalContentRoot, canonicalRoot);
+    await tombstone.persist();
+
+    // Step 2: Copy full content to new path in proposal overlay using skeleton API.
+    // collectSubtree reads all body entries (respecting nested sub-skeletons).
+    const subtree = await oldSkeleton.collectSubtree([]);
+
+    // Create a new empty skeleton at the new doc path in the proposal overlay
+    const newSkeleton = DocumentSkeleton.createEmpty(newPath, proposalContentRoot);
+
+    // Insert all non-root sections under their correct parent paths
+    for (const entry of subtree) {
+      if (entry.headingPath.length === 0) continue; // root handled below
+      const parentPath = entry.headingPath.slice(0, -1);
+      newSkeleton.insertSectionUnder(parentPath, {
+        heading: entry.heading,
+        level: entry.level,
+        body: entry.bodyContent,
+      });
+    }
+    await newSkeleton.persist();
+
+    // Write body files into the new skeleton's overlay locations
+    const newContentLayer = new ContentLayer(proposalContentRoot);
+    for (const entry of subtree) {
+      await newContentLayer.writeSection(
+        new SectionRef(newPath, entry.headingPath),
+        entry.bodyContent,
+      );
+    }
+
+    // Step 3: Update proposal sections metadata — add entries for new-path sections
+    // Include both old-path sections (being deleted by tombstone) and new-path
+    // sections so evaluateProposalHumanInvolvement checks contention on both.
+    const existingSections = proposal.sections.filter(
+      (s) => s.doc_path !== docPath && s.doc_path !== newPath,
+    );
+    const updatedSections: ProposalSection[] = [
+      ...existingSections,
+      ...headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp })),
+      ...headingPaths.map((hp) => ({ doc_path: newPath, heading_path: hp })),
+    ];
+    const { proposal: updated } = await updateProposalSections(proposalId, updatedSections);
+
+    if (ctx.emitEvent && updated.sections.length > 0) {
+      ctx.emitEvent({
+        type: "proposal:pending",
+        proposal_id: updated.id,
+        doc_path: newPath,
+        heading_paths: updated.sections.map((s) => s.heading_path),
+        writer_id: ctx.writer.id,
+        writer_display_name: ctx.writer.displayName,
+        intent: updated.intent,
+      });
+    }
+
+    const { evaluation, sections } = await evaluateProposalHumanInvolvement(updated);
+
+    return jsonToolResult({
+      proposal_id: proposalId,
+      old_path: docPath,
+      new_path: newPath,
+      renamed: true,
+      evaluation,
+      sections,
+    });
   } catch (error) {
-    if (error instanceof Error && error.message.includes("not found")) {
-      return makeToolErrorResult(error.message);
+    if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
+      return makeToolErrorResult(`Document not found: ${docPath}`);
     }
     throw error;
   }
@@ -460,16 +660,16 @@ export function registerStructuralTools(registry: ToolRegistry): void {
   registry.register(
     {
       name: "create_section",
-      description: "Create a new section within a document.",
+      description: "Create a new section within a document. Operates within a proposal.",
       inputSchema: {
         type: "object",
         properties: {
-          doc_path: { type: "string", description: "Document path" },
+          proposal_id: { type: "string", description: "Active proposal ID (required)" },
+          doc_path: { type: "string", description: "Document path (must end with .md)" },
           heading_path: { type: "array", items: { type: "string" }, description: "Heading path for the new section" },
           content: { type: "string", description: "Initial content (markdown)" },
-          after_heading_path: { type: "array", items: { type: "string" }, description: "Insert after this section" },
         },
-        required: ["doc_path", "heading_path"],
+        required: ["proposal_id", "doc_path", "heading_path"],
       },
     },
     createSectionHandler,
@@ -478,14 +678,15 @@ export function registerStructuralTools(registry: ToolRegistry): void {
   registry.register(
     {
       name: "delete_section",
-      description: "Delete a section from a document.",
+      description: "Delete a section from a document. Operates within a proposal.",
       inputSchema: {
         type: "object",
         properties: {
-          doc_path: { type: "string", description: "Document path" },
+          proposal_id: { type: "string", description: "Active proposal ID (required)" },
+          doc_path: { type: "string", description: "Document path (must end with .md)" },
           heading_path: { type: "array", items: { type: "string" }, description: "Section heading path to delete" },
         },
-        required: ["doc_path", "heading_path"],
+        required: ["proposal_id", "doc_path", "heading_path"],
       },
     },
     deleteSectionHandler,
@@ -494,16 +695,16 @@ export function registerStructuralTools(registry: ToolRegistry): void {
   registry.register(
     {
       name: "move_section",
-      description: "Move a section to a new position in the document hierarchy.",
+      description: "Move a section to a new position in the document hierarchy. Operates within a proposal.",
       inputSchema: {
         type: "object",
         properties: {
-          doc_path: { type: "string", description: "Document path" },
+          proposal_id: { type: "string", description: "Active proposal ID (required)" },
+          doc_path: { type: "string", description: "Document path (must end with .md)" },
           heading_path: { type: "array", items: { type: "string" }, description: "Current heading path" },
           new_parent_path: { type: "array", items: { type: "string" }, description: "New parent heading path" },
-          after_sibling: { type: "array", items: { type: "string" }, description: "Insert after this sibling" },
         },
-        required: ["doc_path", "heading_path"],
+        required: ["proposal_id", "doc_path", "heading_path", "new_parent_path"],
       },
     },
     moveSectionHandler,
@@ -512,15 +713,16 @@ export function registerStructuralTools(registry: ToolRegistry): void {
   registry.register(
     {
       name: "rename_section",
-      description: "Rename a section heading.",
+      description: "Rename a section heading. Operates within a proposal.",
       inputSchema: {
         type: "object",
         properties: {
-          doc_path: { type: "string", description: "Document path" },
+          proposal_id: { type: "string", description: "Active proposal ID (required)" },
+          doc_path: { type: "string", description: "Document path (must end with .md)" },
           heading_path: { type: "array", items: { type: "string" }, description: "Current heading path" },
           new_heading: { type: "string", description: "New heading text" },
         },
-        required: ["doc_path", "heading_path", "new_heading"],
+        required: ["proposal_id", "doc_path", "heading_path", "new_heading"],
       },
     },
     renameSectionHandler,
@@ -529,13 +731,14 @@ export function registerStructuralTools(registry: ToolRegistry): void {
   registry.register(
     {
       name: "delete_document",
-      description: "Delete an entire document from the Knowledge Store.",
+      description: "Delete an entire document from the Knowledge Store. Operates within a proposal.",
       inputSchema: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Document path to delete" },
+          proposal_id: { type: "string", description: "Active proposal ID (required)" },
+          path: { type: "string", description: "Document path to delete (must end with .md)" },
         },
-        required: ["path"],
+        required: ["proposal_id", "path"],
       },
     },
     deleteDocumentHandler,
@@ -544,14 +747,15 @@ export function registerStructuralTools(registry: ToolRegistry): void {
   registry.register(
     {
       name: "rename_document",
-      description: "Rename a document (move to a new path).",
+      description: "Rename a document (move to a new path). Operates within a proposal.",
       inputSchema: {
         type: "object",
         properties: {
-          doc_path: { type: "string", description: "Current document path" },
-          new_path: { type: "string", description: "New document path" },
+          proposal_id: { type: "string", description: "Active proposal ID (required)" },
+          doc_path: { type: "string", description: "Current document path (must end with .md)" },
+          new_path: { type: "string", description: "New document path (must end with .md)" },
         },
-        required: ["doc_path", "new_path"],
+        required: ["proposal_id", "doc_path", "new_path"],
       },
     },
     renameDocumentHandler,

@@ -33,7 +33,7 @@ import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { assertDataRootExists, getContentRoot, getDataRoot, getSessionDocsRoot, getSessionAuthorsRoot, getSessionFragmentsRoot } from "../../storage/data-root.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
-import { readAllSectionsWithOverlay } from "../../storage/session-store.js";
+
 import { getSessionState } from "../../storage/session-inspector.js";
 import { getHeadSha, gitLogRecent, gitDiffForCommit } from "../../storage/git-repo.js";
 import { readAssembledDocument, DocumentAssemblyError, DocumentNotFoundError, prependHeadings } from "../../storage/document-reader.js";
@@ -71,7 +71,6 @@ import { resolveAuthenticatedWriter, type AuthenticatedWriter } from "../../auth
 import { parseImportDocument } from "../../storage/content-import.js";
 import { listAuthMethods, loginHuman } from "../../auth/service.js";
 import { readAgentKeys, addAgentKey, removeAgentKey } from "../../auth/agent-keys.js";
-import { getOidcPublicUrl } from "../../auth/oauth-config.js";
 import { getSnapshotHealth, scheduleSnapshotRegeneration } from "../../storage/snapshot.js";
 import {
   AdminConfigValidationError,
@@ -79,7 +78,7 @@ import {
   updateAdminConfig,
 } from "../../admin-config.js";
 import { commitDirtySections } from "../../storage/auto-commit.js";
-import { DocumentSkeleton } from "../../storage/document-skeleton.js";
+import { DocumentSkeleton, SECTIONS_DIR_SUFFIX } from "../../storage/document-skeleton.js";
 import { generateSectionFilename } from "../../storage/markdown-sections.js";
 import { gitExec } from "../../storage/git-repo.js";
 import { SectionRef } from "../../domain/section-ref.js";
@@ -275,7 +274,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       // ── Batch pre-fetch: all I/O happens here, loop below is pure compute ──
       const liveSession = lookupDocSession(docPath);
-      const bulkContent = prependHeadings(skeleton, await readAllSectionsWithOverlay(docPath));
+      const sectionsOverlayRoot = path.join(getSessionDocsRoot(), "content");
+      const sectionsOverlay = new ContentLayer(sectionsOverlayRoot, new ContentLayer(getContentRoot()));
+      const bulkContent = prependHeadings(skeleton, await sectionsOverlay.readAllSectionsOverlaid(docPath));
 
       // Overlay live content from Y.Doc where available
       if (liveSession) {
@@ -350,7 +351,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const headingPaths = flattenStructureToHeadingPaths(structure);
 
       // Pre-fetch content and compute human-involvement metadata via shared helper
-      const bulkContent = await readAllSectionsWithOverlay(docPath);
+      const docOverlayRoot = path.join(getSessionDocsRoot(), "content");
+      const docOverlay = new ContentLayer(docOverlayRoot, new ContentLayer(getContentRoot()));
+      const bulkContent = await docOverlay.readAllSectionsOverlaid(docPath);
       const involvementMeta = await buildSectionInvolvementMeta(docPath, headingPaths, bulkContent);
 
       const sectionsMeta: SectionMeta[] = [];
@@ -411,11 +414,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const skeleton = DocumentSkeleton.createEmpty(docPath, contentRoot);
       await skeleton.persist();
 
-      // Write empty root section body file
-      const rootEntry = skeleton.resolveRoot();
-      const sectionsDir = `${resolvedPath}.sections`;
-      await mkdir(sectionsDir, { recursive: true });
-      await writeFile(path.join(sectionsDir, rootEntry.sectionFile), "", "utf8");
+      // Write empty root section body file through ContentLayer
+      const canonical = new ContentLayer(contentRoot);
+      await canonical.writeSection(new SectionRef(docPath, []), "");
 
       // Git add + commit
       const dataRoot = getDataRoot();
@@ -586,7 +587,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       let hasDirtySessionFiles = false;
       try { await access(sessionDocPath); hasDirtySessionFiles = true; } catch { /* not found */ }
       if (!hasDirtySessionFiles) {
-        try { await access(`${sessionDocPath}.sections`); hasDirtySessionFiles = true; } catch { /* not found */ }
+        try { await access(sessionDocPath + SECTIONS_DIR_SUFFIX); hasDirtySessionFiles = true; } catch { /* not found */ }
       }
       if (hasDirtySessionFiles) {
         sendApiError(res, 409, "Cannot delete document: uncommitted session files exist.");
@@ -595,11 +596,11 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       // Delete the skeleton file and its .sections/ directory
       await rm(resolvedPath, { force: true });
-      await rm(`${resolvedPath}.sections`, { recursive: true, force: true });
+      await rm(resolvedPath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
 
       // Clean up any remaining session artifacts
       await rm(sessionDocPath, { force: true });
-      await rm(`${sessionDocPath}.sections`, { recursive: true, force: true });
+      await rm(sessionDocPath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
 
       // Git add + commit the deletion
       const dataRoot = getDataRoot();
@@ -840,7 +841,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       for (const removed of result.removed) {
         await rm(removed.absolutePath, { force: true });
         // Also try removing .sections/ subdir if it was a sub-skeleton
-        await rm(`${removed.absolutePath}.sections`, { recursive: true, force: true });
+        await rm(removed.absolutePath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
       }
 
       await gitCommitStructuralChange(`delete section "${headingPath.join(" > ")}" from ${docPath}`);
@@ -907,27 +908,25 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const topEntry = subtree[0];
       const children = subtree.slice(1);
 
-      // Map from old headingPath key to new FlatEntry[] for writing body content
-      const writePlan: Array<{ absolutePath: string; content: string }> = [];
+      // Track heading paths + content for writing through ContentLayer after persist
+      const writePlan: Array<{ headingPath: string[]; content: string }> = [];
 
       if (new_parent_path.length === 0) {
-        const added = skeleton.addSectionsFromRootSplit([
+        skeleton.addSectionsFromRootSplit([
           { heading: topEntry.heading, level: topEntry.level, body: topEntry.bodyContent },
         ]);
-        const bodyEntry = added.find(e => !e.isSubSkeleton);
-        if (bodyEntry) writePlan.push({ absolutePath: bodyEntry.absolutePath, content: topEntry.bodyContent });
       } else {
-        const added = skeleton.insertSectionUnder(new_parent_path, {
+        skeleton.insertSectionUnder(new_parent_path, {
           heading: topEntry.heading, level: topEntry.level, body: topEntry.bodyContent,
         });
-        const bodyEntry = added.find(e => !e.isSubSkeleton);
-        if (bodyEntry) writePlan.push({ absolutePath: bodyEntry.absolutePath, content: topEntry.bodyContent });
       }
 
       // Reconstruct the new parent path for the moved section
       const newTopPath = new_parent_path.length === 0
         ? [topEntry.heading]
         : [...new_parent_path, topEntry.heading];
+
+      writePlan.push({ headingPath: newTopPath, content: topEntry.bodyContent });
 
       // Re-insert each descendant under its relative parent within the moved subtree
       for (const child of children) {
@@ -936,25 +935,24 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         // The parent for this child is the new top path + all but the last segment of relPath
         const childParentPath = [...newTopPath, ...relPath.slice(0, -1)];
 
-        const added = skeleton.insertSectionUnder(childParentPath, {
+        skeleton.insertSectionUnder(childParentPath, {
           heading: child.heading, level: child.level, body: child.bodyContent,
         });
-        const bodyEntry = added.find(e => !e.isSubSkeleton);
-        if (bodyEntry) writePlan.push({ absolutePath: bodyEntry.absolutePath, content: child.bodyContent });
+        writePlan.push({ headingPath: [...childParentPath, child.heading], content: child.bodyContent });
       }
 
-      // 5. Persist skeleton and write body files
+      // 5. Persist skeleton and write body files through ContentLayer
       await skeleton.persist();
 
-      for (const { absolutePath, content } of writePlan) {
-        await mkdir(path.dirname(absolutePath), { recursive: true });
-        await writeFile(absolutePath, content, "utf8");
+      const moveCanonical = new ContentLayer(contentRoot);
+      for (const { headingPath: hp, content } of writePlan) {
+        await moveCanonical.writeSection(new SectionRef(docPath, hp), content);
       }
 
       // 6. Clean up old files
       for (const removed of removeResult.removed) {
         await rm(removed.absolutePath, { force: true });
-        await rm(`${removed.absolutePath}.sections`, { recursive: true, force: true });
+        await rm(removed.absolutePath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
       }
 
       await gitCommitStructuralChange(`move section "${headingPath.join(" > ")}" in ${docPath}`);
@@ -1011,37 +1009,32 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const contentRoot = getContentRoot();
       const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
 
-      // Read current body content
+      // Read current body content through ContentLayer
+      const renameCanonical = new ContentLayer(contentRoot);
       const entry = skeleton.resolve(headingPath);
-      const { readFile: readFileFs } = await import("node:fs/promises");
       let bodyContent = "";
       try {
-        bodyContent = await readFileFs(entry.absolutePath, "utf8");
+        bodyContent = await renameCanonical.readSection(new SectionRef(docPath, headingPath));
       } catch {
         // empty
       }
 
       // Replace with same content but new heading
-      const result = skeleton.replace(headingPath, [
+      const replaceResult = skeleton.replace(headingPath, [
         { heading: new_heading, level: entry.level, body: bodyContent },
       ]);
 
       await skeleton.persist();
 
-      // Write new body file
-      for (const added of result.added) {
-        if (!added.isSubSkeleton) {
-          const dir = path.dirname(added.absolutePath);
-          await mkdir(dir, { recursive: true });
-          await writeFile(added.absolutePath, bodyContent, "utf8");
-        }
-      }
+      // Write body content through ContentLayer (skeleton now has the renamed entry)
+      const newHeadingPathForWrite = [...headingPath.slice(0, -1), new_heading];
+      await renameCanonical.writeSection(new SectionRef(docPath, newHeadingPathForWrite), bodyContent);
 
       // Clean up old files
-      for (const removed of result.removed) {
-        if (removed.absolutePath !== result.added[0]?.absolutePath) {
+      for (const removed of replaceResult.removed) {
+        if (removed.absolutePath !== replaceResult.added[0]?.absolutePath) {
           await rm(removed.absolutePath, { force: true });
-          await rm(`${removed.absolutePath}.sections`, { recursive: true, force: true });
+          await rm(removed.absolutePath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
         }
       }
 
@@ -1867,11 +1860,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           const skeleton = DocumentSkeleton.createEmpty(docPath, contentRoot);
           await skeleton.persist();
 
-          const rootEntry = skeleton.resolveRoot();
-          const resolvedPath = resolveDocPathUnderContent(contentRoot, docPath);
-          const sectionsDir = `${resolvedPath}.sections`;
-          await mkdir(sectionsDir, { recursive: true });
-          await writeFile(path.join(sectionsDir, rootEntry.sectionFile), "", "utf8");
+          // Write empty root section body file through ContentLayer
+          const importCanonical = new ContentLayer(contentRoot);
+          await importCanonical.writeSection(new SectionRef(docPath, []), "");
 
           await gitExec(["add", "content/"], dataRoot);
           await gitExec(
@@ -2146,28 +2137,22 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
   // ─── Setup / connection info (public) ────────────────
 
-  router.get("/setup", (_req, res) => {
-    const publicUrl = getOidcPublicUrl();
-    const mcpEndpoint = `${publicUrl}/mcp`;
-
+  router.get("/setup", (req, res) => {
     let defaultServerName: string;
     try {
-      const parsed = new URL(publicUrl);
-      const isLocalhost =
-        parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+      const host = req.hostname;
+      const isLocalhost = host === "localhost" || host === "127.0.0.1";
       if (isLocalhost) {
         defaultServerName = "civigent-local";
       } else {
-        const urlEnd = publicUrl.replace(/\/+$/, "").slice(-10);
-        defaultServerName = `civigent-${urlEnd.replace(/[^a-zA-Z0-9-]/g, "-")}`;
+        const hostEnd = host.slice(-10);
+        defaultServerName = `civigent-${hostEnd.replace(/[^a-zA-Z0-9-]/g, "-")}`;
       }
     } catch {
       defaultServerName = "civigent-local";
     }
 
     res.json({
-      publicUrl,
-      mcpEndpoint,
       defaultServerName,
     });
   });

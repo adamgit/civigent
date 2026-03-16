@@ -45,7 +45,10 @@ trap on_signal INT TERM
 trap cleanup EXIT
 
 # ── Start backend (output stays on terminal) ─────────────────────
-setsid bash -lc "cd \"$REPO_ROOT/backend\" && KS_DATA_ROOT=\"$DATA_ROOT\" PORT=\"$PORT\" npm run dev" &
+# KS_EXTERNAL_PORT tells the backend which port agents/users actually reach.
+# In dev, that's always the Vite port (5173), not the backend's own PORT.
+VITE_PORT=5173
+setsid bash -lc "cd \"$REPO_ROOT/backend\" && KS_DATA_ROOT=\"$DATA_ROOT\" PORT=\"$PORT\" KS_EXTERNAL_PORT=\"$VITE_PORT\" npm run dev" &
 BACK_PID=$!
 
 # ── Wait for backend to be ready or die ──────────────────────────

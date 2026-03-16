@@ -58,7 +58,7 @@ process.on("SIGINT", async () => {
 });
 
 server.listen(PORT, () => {
-  const displayPort = process.env.KS_DOCKER_HOST_PORT ?? String(PORT);
+  const displayPort = process.env.KS_EXTERNAL_PORT ?? String(PORT);
   const displayUrl = `http://localhost:${displayPort}`;
   console.log(`\n  Civigent running at ${displayUrl}\n`);
   console.log(`  Connect an agent:\n`);

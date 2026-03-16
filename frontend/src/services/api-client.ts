@@ -275,8 +275,6 @@ export const apiClient = {
   },
 
   async getSetupInfo(): Promise<{
-    publicUrl: string;
-    mcpEndpoint: string;
     defaultServerName: string;
   }> {
     return requestJson("/api/setup", undefined, false);

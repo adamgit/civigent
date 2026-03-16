@@ -9,7 +9,7 @@ import path from "node:path";
 import { readFile, readdir } from "node:fs/promises";
 import { getContentRoot, getSessionDocsRoot, getSessionAuthorsRoot } from "./data-root.js";
 import { scanSessionFragmentDocPaths, listRawFragments, readRawFragment } from "./session-store.js";
-import { DocumentSkeleton } from "./document-skeleton.js";
+import { DocumentSkeleton, SECTIONS_DIR_SUFFIX } from "./document-skeleton.js";
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -112,7 +112,7 @@ export async function getSessionState(): Promise<SessionState> {
       if (!isSubSkeleton) sectionRefSet.add(sectionFile);
     });
 
-    const sectionsDir = fullPath + ".sections";
+    const sectionsDir = DocumentSkeleton.sectionsDir(docPath, contentSubdir);
     const sectionFiles: Array<{ filename: string; content: string; isOrphaned: boolean }> = [];
     try {
       const sectionEntries = await readdir(sectionsDir);
@@ -183,7 +183,7 @@ async function readdirRecursiveFiles(dir: string, prefix = ""): Promise<string[]
   for (const entry of entries) {
     const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
-      if (entry.name.endsWith(".sections")) continue;
+      if (entry.name.endsWith(SECTIONS_DIR_SUFFIX)) continue;
       results.push(...await readdirRecursiveFiles(path.join(dir, entry.name), rel));
     } else if (entry.name.endsWith(".md")) {
       results.push(rel);

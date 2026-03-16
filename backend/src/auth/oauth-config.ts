@@ -29,7 +29,7 @@ export function getOidcPublicUrl(): string {
   if (explicit) return explicit.replace(/\/+$/, "");
 
   if (isSingleUserMode()) {
-    const port = process.env.PORT ?? "3000";
+    const port = process.env.KS_EXTERNAL_PORT ?? process.env.PORT ?? "3000";
     return `http://localhost:${port}`;
   }
 

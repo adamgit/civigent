@@ -2,6 +2,8 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { DocumentSkeleton } from "./document-skeleton.js";
+import { ContentLayer } from "./content-layer.js";
+import { SectionRef } from "../domain/section-ref.js";
 
 const HEADING_RE = /^(#{1,6})\s+(.+)$/;
 
@@ -166,12 +168,12 @@ async function importOneFile(
   // Create skeleton via DocumentSkeleton
   const skeleton = DocumentSkeleton.createEmpty(relPath, stagingRoot);
 
+  const stagingLayer = new ContentLayer(stagingRoot);
+
   if (parsed.sections.length === 0) {
     // No headings — root-only skeleton, write root body
     await skeleton.persist();
-    const rootEntry = skeleton.resolveRoot();
-    await mkdir(path.dirname(rootEntry.absolutePath), { recursive: true });
-    await writeFile(rootEntry.absolutePath, markdown, "utf8");
+    await stagingLayer.writeSection(new SectionRef(relPath, []), markdown);
   } else {
     // Add headed sections (correctly nests by level via addSectionsFromRootSplit)
     const added = skeleton.addSectionsFromRootSplit(
@@ -179,22 +181,16 @@ async function importOneFile(
     );
     await skeleton.persist();
 
-    // Write body files for each added section
+    // Write body files for each added section through ContentLayer
     for (const entry of added) {
       if (entry.isSubSkeleton) continue;
       const section = parsed.sections.find(s => s.heading === entry.heading);
       if (!section) continue;
-      await mkdir(path.dirname(entry.absolutePath), { recursive: true });
-      await writeFile(entry.absolutePath, section.body, "utf8");
+      await stagingLayer.writeSection(new SectionRef(relPath, entry.headingPath), section.body);
     }
 
     // Also write root body (content before first heading, if any)
-    // The root entry exists because addSectionsFromRootSplit preserves root
-    const rootEntry = skeleton.resolveRoot();
-    if (rootEntry && !rootEntry.isSubSkeleton) {
-      await mkdir(path.dirname(rootEntry.absolutePath), { recursive: true });
-      await writeFile(rootEntry.absolutePath, "", "utf8");
-    }
+    await stagingLayer.writeSection(new SectionRef(relPath, []), "");
   }
 
   await mkdir(path.dirname(destinationPath), { recursive: true });

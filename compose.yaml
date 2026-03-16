@@ -14,6 +14,7 @@ services:
     environment:
       - NODE_ENV=development
       - SNAPSHOT_ENABLED=true
+      - KS_EXTERNAL_PORT=${FRONTEND_PORT:-5173}
       - KS_AUTH_MODE=${KS_AUTH_MODE:-}
       - KS_USER_NAME=${KS_USER_NAME:-}
       - KS_USER_EMAIL=${KS_USER_EMAIL:-}
@@ -27,7 +28,7 @@ services:
       - ./frontend:/app
       - /app/node_modules
     ports:
-      - "5173:5173"
+      - "${FRONTEND_PORT:-5173}:5173"
     environment:
       - NODE_ENV=development
       - VITE_BACKEND_TARGET=http://backend:3000

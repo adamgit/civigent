@@ -406,3 +406,25 @@ a {
 .agent-reading-indicator {
   animation: agent-reading-pulse 2s ease-in-out infinite;
 }
+
+/* ===== COLLABORATIVE CURSOR (yCursorPlugin custom builder) ===== */
+.collab-cursor {
+  position: relative;
+  border-left: 2px solid;
+  margin-left: -1px;
+  margin-right: -1px;
+}
+
+.collab-cursor-label {
+  position: absolute;
+  bottom: 100%;
+  left: -1px;
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 1.3;
+  color: #fff;
+  padding: 1px 4px;
+  border-radius: 3px 3px 3px 0;
+  pointer-events: none;
+  user-select: none;
+}

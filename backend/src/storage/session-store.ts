@@ -14,9 +14,7 @@
 import path from "node:path";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import { getContentRoot, getSessionDocsRoot, getSessionAuthorsRoot, getSessionFragmentsRoot } from "./data-root.js";
-import {
-  resolveAllSectionPaths,
-} from "./heading-resolver.js";
+
 import { DocumentSkeleton } from "./document-skeleton.js";
 import { commitHumanChangesToCanonical } from "./commit-pipeline.js";
 import { ContentLayer } from "./content-layer.js";
@@ -230,67 +228,17 @@ export async function readSectionWithOverlay(
 
 /**
  * Read ALL section contents for a document in bulk, preferring session
- * overlay over canonical. Replaces N calls to readSectionWithOverlay()
- * with 2 skeleton parses + parallel readFile().
+ * overlay over canonical. Delegates to ContentLayer.readAllSections()
+ * which unions both skeletons and reads content overlay-first in parallel.
  *
  * @returns Map keyed by headingPath.join(">>") → content string
  */
 export async function readAllSectionsWithOverlay(
   docPath: string,
 ): Promise<Map<string, string>> {
-  const contentRoot = getContentRoot();
-  const overlayRoot = getSessionDocsContentRoot();
-
-  // Resolve all section file paths under both roots (1 skeleton parse each)
-  const [canonicalPaths, overlayPaths] = await Promise.all([
-    resolveAllSectionPaths(contentRoot, docPath),
-    resolveAllSectionPaths(overlayRoot, docPath),
-  ]);
-
-  const result = new Map<string, string>();
-  const readPromises: Array<Promise<void>> = [];
-
-  for (const [key, resolved] of canonicalPaths) {
-    readPromises.push(
-      (async () => {
-        // Prefer overlay content if the file exists there
-        const overlay = overlayPaths.get(key);
-        if (overlay) {
-          try {
-            result.set(key, await readFile(overlay.absolutePath, "utf8"));
-            return;
-          } catch (err) {
-            if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-            // overlay skeleton listed it but file not on disk — fall through
-          }
-        }
-        // Fall back to canonical
-        try {
-          result.set(key, await readFile(resolved.absolutePath, "utf8"));
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-          // section file missing — skip
-        }
-      })(),
-    );
-  }
-
-  // Also pick up sections that only exist in overlay (newly created sections)
-  for (const [key, resolved] of overlayPaths) {
-    if (canonicalPaths.has(key)) continue;
-    readPromises.push(
-      (async () => {
-        try {
-          result.set(key, await readFile(resolved.absolutePath, "utf8"));
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-        }
-      })(),
-    );
-  }
-
-  await Promise.all(readPromises);
-  return result;
+  const canonical = new ContentLayer(getContentRoot());
+  const overlay = new ContentLayer(getSessionDocsContentRoot(), canonical);
+  return overlay.readAllSectionsOverlaid(docPath);
 }
 
 // ─── commitSessionFilesToCanonical ───────────────────────────────

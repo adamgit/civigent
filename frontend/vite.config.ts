@@ -30,6 +30,18 @@ export default defineConfig({
         target: backendTarget,
         changeOrigin: true
       },
+      "/mcp": {
+        target: backendTarget,
+        changeOrigin: true
+      },
+      "/.well-known": {
+        target: backendTarget,
+        changeOrigin: true
+      },
+      "/oauth": {
+        target: backendTarget,
+        changeOrigin: true
+      },
       "/ws": {
         target: backendWsTarget,
         ws: true

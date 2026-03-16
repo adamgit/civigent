@@ -190,7 +190,7 @@ Explicit proposal management with fine-grained control over the collaboration wo
 | `rename_document` | Rename a document |
 | `delete_document` | Delete a document |
 
-**Note:** Structural tools (`create_section`, `delete_section`, `move_section`, `rename_section`, `delete_document`, `rename_document`) commit directly to canonical — they do not operate within proposals.
+**Note:** All tools (content and structural) operate within proposals and go through the same conflict detection and human-involvement evaluation. Every structural tool requires a `proposal_id` parameter, same as `write_section`. Document deletion uses an empty-skeleton tombstone in the proposal overlay; document rename uses tombstone at old path + full content copy at new path. All changes are committed via `commit_proposal`.
 
 ---
 

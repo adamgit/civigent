@@ -10,31 +10,25 @@ import { jsonToolResult, textToolResult } from "../tool-registry.js";
 import { makeToolErrorResult } from "../protocol.js";
 import { readAssembledDocument, DocumentNotFoundError } from "../../storage/document-reader.js";
 import { readDocumentsTree } from "../../storage/documents-tree.js";
-import { getContentRoot, getDataRoot, getSessionDocsRoot } from "../../storage/data-root.js";
+import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
 import { ContentLayer } from "../../storage/content-layer.js";
-import { getHeadSha, gitExec } from "../../storage/git-repo.js";
-import { readDocumentStructure, flattenStructureToHeadingPaths, resolveAllSectionPaths } from "../../storage/heading-resolver.js";
-import { readAllSectionsWithOverlay } from "../../storage/session-store.js";
+import { getHeadSha } from "../../storage/git-repo.js";
+import { readDocumentStructure, flattenStructureToHeadingPaths } from "../../storage/heading-resolver.js";
 import {
   createProposal,
   findPendingProposalByWriter,
-  listProposals,
   transitionToWithdrawn,
 } from "../../storage/proposal-repository.js";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
-import { resolveDocPathUnderContent } from "../../storage/path-utils.js";
-import { access, rm } from "node:fs/promises";
+import { resolveDocPathUnderContent, InvalidDocPathError } from "../../storage/path-utils.js";
+import { access } from "node:fs/promises";
 import {
   evaluateProposalHumanInvolvement,
   commitProposalToCanonical,
 } from "../../storage/commit-pipeline.js";
 import { SectionRef } from "../../domain/section-ref.js";
-
-import { SectionPresence } from "../../domain/section-presence.js";
-import { readDocSectionCommitInfo, type SectionCommitInfo } from "../../storage/section-activity.js";
-import { InvalidDocPathError } from "../../storage/path-utils.js";
+import { DocumentSkeleton } from "../../storage/document-skeleton.js";
 import type { SectionScoreSnapshot } from "../../types/shared.js";
-import path from "node:path";
 
 // ─── read_file ───────────────────────────────────────────
 
@@ -121,11 +115,11 @@ const listDirectoryHandler: ToolHandler = async (args) => {
 
 // ─── delete_file ─────────────────────────────────────────
 
-const deleteFileHandler: ToolHandler = async (args) => {
+const deleteFileHandler: ToolHandler = async (args, ctx) => {
   const filePath = args.path as string | undefined;
   if (!filePath) return makeToolErrorResult("Missing required parameter: path");
 
-  return deleteDocument(filePath);
+  return deleteDocumentViaProposal(filePath, ctx);
 };
 
 // ─── move_file ───────────────────────────────────────────
@@ -137,36 +131,122 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
   if (!source) return makeToolErrorResult("Missing required parameter: source");
   if (!destination) return makeToolErrorResult("Missing required parameter: destination");
 
-  // Read source content
-  let content: string;
+  const writer = ctx.writer;
+  const canonicalContentRoot = getContentRoot();
+
+  // Verify source exists
   try {
-    content = await readAssembledDocument(source);
-  } catch (error) {
-    if (error instanceof DocumentNotFoundError) {
-      return makeToolErrorResult(`Source document not found: ${source}`);
-    }
-    throw error;
+    resolveDocPathUnderContent(canonicalContentRoot, source);
+    await access(resolveDocPathUnderContent(canonicalContentRoot, source));
+  } catch {
+    return makeToolErrorResult(`Source document not found: ${source}`);
   }
 
-  // Write to destination
-  const writeResult = await writeDocumentViaProposal(
-    [{ path: destination, content }],
-    ctx,
+  // Load source skeleton and collect all sections with body content
+  const sourceSkeleton = await DocumentSkeleton.fromDisk(source, canonicalContentRoot, canonicalContentRoot);
+  if (sourceSkeleton.isEmpty) {
+    return makeToolErrorResult(`Source document not found: ${source}`);
+  }
+  const subtree = await sourceSkeleton.collectSubtree([]);
+  const headingPaths: string[][] = [];
+  sourceSkeleton.forEachSection((_h, _l, _sf, hp, _ap, isSub) => {
+    if (!isSub) headingPaths.push([...hp]);
+  });
+
+  // Auto-withdraw any existing pending proposal
+  const existing = await findPendingProposalByWriter(writer.id);
+  if (existing) {
+    await transitionToWithdrawn(existing.id, "auto-withdrawn by move");
+  }
+
+  // Create proposal covering both source (delete) and destination (write) sections
+  const proposalSections = [
+    ...headingPaths.map((hp) => ({ doc_path: source, heading_path: hp })),
+    ...headingPaths.map((hp) => ({ doc_path: destination, heading_path: hp })),
+  ];
+
+  const intent = ctx.session.pendingIntent ?? `Move ${source} → ${destination}`;
+  ctx.session.pendingIntent = undefined;
+
+  const { proposal, contentRoot } = await createProposal(
+    { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
+    intent,
+    proposalSections,
   );
 
-  // If write succeeded, delete source
-  const resultData = JSON.parse(writeResult.content[0].text);
-  if (resultData.success) {
-    await deleteDocument(source);
+  // Write tombstone at source path
+  const tombstone = DocumentSkeleton.createTombstone(source, contentRoot, canonicalContentRoot);
+  await tombstone.persist();
+
+  // Copy content to destination path using skeleton API
+  const destSkeleton = DocumentSkeleton.createEmpty(destination, contentRoot);
+  for (const entry of subtree) {
+    if (entry.headingPath.length === 0) continue; // root handled by createEmpty
+    destSkeleton.insertSectionUnder(entry.headingPath.slice(0, -1), {
+      heading: entry.heading,
+      level: entry.level,
+      body: entry.bodyContent,
+    });
+  }
+  await destSkeleton.persist();
+
+  // Write body files to proposal overlay
+  const destContentLayer = new ContentLayer(contentRoot);
+  for (const entry of subtree) {
+    await destContentLayer.writeSection(
+      new SectionRef(destination, entry.headingPath),
+      entry.bodyContent,
+    );
+  }
+
+  // Evaluate human involvement
+  const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal);
+
+  if (evaluation.all_sections_accepted) {
+    const scores: import("../../types/shared.js").SectionScoreSnapshot = {};
+    for (const s of sections) {
+      scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
+    }
+    const committedHead = await commitProposalToCanonical(proposal, scores);
+
+    if (ctx.emitEvent) {
+      ctx.emitEvent({
+        type: "content:committed",
+        doc_path: destination,
+        sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+        commit_sha: committedHead,
+        source: "agent_proposal",
+        writer_id: writer.id,
+        writer_display_name: writer.displayName,
+      });
+    }
+
     return jsonToolResult({
       success: true,
       source,
       destination,
-      committed_head: resultData.committed_head,
+      committed_head: committedHead,
+      proposal_id: proposal.id,
+      status: "committed",
+    });
+  } else {
+    const blockedSections = sections
+      .filter((s) => s.blocked)
+      .map((s) => ({
+        doc_path: s.doc_path,
+        heading_path: s.heading_path,
+        humanInvolvement_score: s.humanInvolvement_score,
+      }));
+
+    return jsonToolResult({
+      success: false,
+      proposal_id: proposal.id,
+      status: "pending",
+      outcome: "blocked",
+      blocked_sections: blockedSections,
+      message: "Some sections are contested by human editors. The move proposal has been saved as pending.",
     });
   }
-
-  return writeResult;
 };
 
 // ─── plan_changes (Tier 2) ───────────────────────────────
@@ -229,8 +309,29 @@ async function writeDocumentViaProposal(
     proposalSections,
   );
 
-  // Write section content to proposal's content directory
-  const fContentLayer = new ContentLayer(contentRoot);
+  // Ensure skeletons exist for new documents in the proposal's content overlay.
+  // For existing documents, the canonical fallback provides the skeleton.
+  const canonicalContentRoot = getContentRoot();
+  const seenDocPaths = new Set<string>();
+  for (const sc of sectionContents) {
+    if (seenDocPaths.has(sc.doc_path)) continue;
+    seenDocPaths.add(sc.doc_path);
+
+    // Check if skeleton exists in canonical
+    const canonicalSkeleton = await DocumentSkeleton.fromDisk(
+      sc.doc_path, canonicalContentRoot, canonicalContentRoot,
+    );
+
+    if (canonicalSkeleton.isEmpty) {
+      // New document — create skeleton in the proposal's content overlay
+      const skeleton = DocumentSkeleton.createEmpty(sc.doc_path, contentRoot);
+      await skeleton.persist();
+    }
+  }
+
+  // Write section content to proposal's content directory.
+  // Use canonical fallback so readSkeleton finds existing skeletons.
+  const fContentLayer = new ContentLayer(contentRoot, new ContentLayer(canonicalContentRoot));
   for (const sc of sectionContents) {
     await fContentLayer.writeSection(new SectionRef(sc.doc_path, sc.heading_path), sc.content);
   }
@@ -285,20 +386,22 @@ async function writeDocumentViaProposal(
   }
 }
 
-// ─── Shared: delete document ─────────────────────────────
+// ─── Shared: delete document via proposal ────────────────
 
-async function deleteDocument(
+async function deleteDocumentViaProposal(
   docPath: string,
+  ctx: import("../tool-registry.js").ToolContext,
 ): Promise<import("../protocol.js").McpToolCallResult> {
-  const contentRoot = getContentRoot();
+  const writer = ctx.writer;
+  const canonicalContentRoot = getContentRoot();
+
+  // Verify document exists in canonical
   let resolvedPath: string;
   try {
-    resolvedPath = resolveDocPathUnderContent(contentRoot, docPath);
+    resolvedPath = resolveDocPathUnderContent(canonicalContentRoot, docPath);
   } catch {
     return makeToolErrorResult(`Invalid document path: ${docPath}`);
   }
-
-  // Verify exists
   try {
     await access(resolvedPath);
   } catch {
@@ -311,67 +414,84 @@ async function deleteDocument(
     return makeToolErrorResult("Cannot delete document with active editing session.");
   }
 
-  // Check for pending proposals referencing this document
-  const pendingProposals = await listProposals("pending");
-  const conflicting = pendingProposals.filter((p) =>
-    p.sections.some((s) => s.doc_path === docPath),
-  );
-  if (conflicting.length > 0) {
-    return makeToolErrorResult(
-      `Cannot delete document referenced by pending proposals: ${conflicting.map((p) => p.id).join(", ")}`,
-    );
+  // Load canonical skeleton to get all sections for human-involvement evaluation
+  const skeleton = await DocumentSkeleton.fromDisk(docPath, canonicalContentRoot, canonicalContentRoot);
+  const headingPaths: string[][] = [];
+  skeleton.forEachSection((_heading, _level, _sectionFile, headingPath, _absolutePath, isSubSkeleton) => {
+    if (!isSubSkeleton) headingPaths.push([...headingPath]);
+  });
+
+  // Auto-withdraw any existing pending proposal by this writer
+  const existing = await findPendingProposalByWriter(writer.id);
+  if (existing) {
+    await transitionToWithdrawn(existing.id, "auto-withdrawn by new delete");
   }
 
-  // Check for orphaned dirty session files (flushed but not yet committed)
-  const sessionDocsContentRoot = path.join(getSessionDocsRoot(), "content");
-  try {
-    const sessionDocPath = resolveDocPathUnderContent(sessionDocsContentRoot, docPath);
-    await access(sessionDocPath);
-    // File exists — dirty session files are present
-    return makeToolErrorResult("Cannot delete document: uncommitted session files exist.");
-  } catch {
-    // No dirty session file — also check .sections/ directory
-    try {
-      const sessionDocPath = resolveDocPathUnderContent(sessionDocsContentRoot, docPath);
-      await access(`${sessionDocPath}.sections`);
-      return makeToolErrorResult("Cannot delete document: uncommitted session files exist.");
-    } catch {
-      // No dirty session files — safe to proceed
+  // Create proposal with all sections as targets
+  const proposalSections = headingPaths.map((hp) => ({
+    doc_path: docPath,
+    heading_path: hp,
+  }));
+
+  const { proposal, contentRoot } = await createProposal(
+    { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
+    `Delete document: ${docPath}`,
+    proposalSections,
+  );
+
+  // Write tombstone skeleton to proposal overlay
+  const tombstone = DocumentSkeleton.createTombstone(docPath, contentRoot, canonicalContentRoot);
+  await tombstone.persist();
+
+  // Evaluate human involvement
+  const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal);
+
+  if (evaluation.all_sections_accepted) {
+    const scores: import("../../types/shared.js").SectionScoreSnapshot = {};
+    for (const s of sections) {
+      scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
     }
+    const committedHead = await commitProposalToCanonical(proposal, scores);
+
+    if (ctx.emitEvent) {
+      ctx.emitEvent({
+        type: "content:committed",
+        doc_path: docPath,
+        sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+        commit_sha: committedHead,
+        source: "agent_proposal",
+        writer_id: writer.id,
+        writer_display_name: writer.displayName,
+      });
+    }
+
+    return jsonToolResult({
+      success: true,
+      doc_path: docPath,
+      deleted: true,
+      committed_head: committedHead,
+      proposal_id: proposal.id,
+      status: "committed",
+    });
+  } else {
+    const blockedSections = sections
+      .filter((s) => s.blocked)
+      .map((s) => ({
+        doc_path: s.doc_path,
+        heading_path: s.heading_path,
+        humanInvolvement_score: s.humanInvolvement_score,
+      }));
+
+    return jsonToolResult({
+      success: false,
+      proposal_id: proposal.id,
+      status: "pending",
+      outcome: "blocked",
+      blocked_sections: blockedSections,
+      message: "Some sections are contested by human editors. The delete proposal has been saved as pending.",
+    });
   }
-
-  // Delete skeleton + sections
-  await rm(resolvedPath, { force: true });
-  await rm(`${resolvedPath}.sections`, { recursive: true, force: true });
-
-  // Clean up any remaining session artifacts (may not exist — safe to ignore)
-  try {
-    const sessionDocPath = resolveDocPathUnderContent(sessionDocsContentRoot, docPath);
-    await rm(sessionDocPath, { force: true });
-    await rm(`${sessionDocPath}.sections`, { recursive: true, force: true });
-  } catch {
-    // Session overlay may not exist for this document — safe to ignore
-  }
-
-  // Git commit
-  const dataRoot = getDataRoot();
-  await gitExec(["add", "content/"], dataRoot);
-  await gitExec(
-    [
-      "-c", "user.name=Knowledge Store",
-      "-c", "user.email=system@knowledge-store.local",
-      "commit",
-      "-m", `delete document: ${docPath}`,
-      "--allow-empty",
-    ],
-    dataRoot,
-  );
-
-  return jsonToolResult({ success: true, doc_path: docPath, deleted: true });
 }
-
-// Exported for use by structural tools
-export { deleteDocument };
 
 // ─── Registration ────────────────────────────────────────
 
@@ -478,6 +598,9 @@ export function registerFilesystemTools(registry: ToolRegistry): void {
     moveFileHandler,
   );
 
+}
+
+export function registerPlanChangesTool(registry: ToolRegistry): void {
   registry.register(
     {
       name: "plan_changes",

@@ -7,7 +7,7 @@ services:
       - ./wiki-data:/app/data
       - ${IMPORT_CONTENT_FROM:-/dev/null}:/import:ro
     environment:
-      KS_DOCKER_HOST_PORT: ${PORT:-8080}
+      KS_EXTERNAL_PORT: ${PORT:-8080}
       SNAPSHOT_ENABLED: ${SNAPSHOT_ENABLED:-false}
       KS_AUTH_MODE: ${KS_AUTH_MODE:-}
       KS_USER_NAME: ${KS_USER_NAME:-}

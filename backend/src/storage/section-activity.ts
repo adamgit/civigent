@@ -18,7 +18,7 @@ import { SectionRef } from "../domain/section-ref.js";
 import { getContentRoot, getDataRoot } from "./data-root.js";
 import { getSessionFileMtime, getSectionEditPulse } from "../crdt/ydoc-lifecycle.js";
 import { resolveHeadingPath } from "./heading-resolver.js";
-import { resolveDocPathUnderContent } from "./path-utils.js";
+import { DocumentSkeleton } from "./document-skeleton.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -53,8 +53,7 @@ export async function readDocSectionCommitInfo(
 ): Promise<Map<string, SectionCommitInfo>> {
   const dataRoot = getDataRoot();
   const contentRoot = getContentRoot();
-  const skeletonPath = resolveDocPathUnderContent(contentRoot, docPath);
-  const sectionsDir = `${skeletonPath}.sections`;
+  const sectionsDir = DocumentSkeleton.sectionsDir(docPath, contentRoot);
   const relSectionsDir = path.relative(dataRoot, sectionsDir);
 
   const result = new Map<string, SectionCommitInfo>();

@@ -38,9 +38,33 @@ import {
   commitProposalToCanonical,
 } from "../../storage/commit-pipeline.js";
 import { SectionRef } from "../../domain/section-ref.js";
-import { InvalidDocPathError } from "../../storage/path-utils.js";
+import { INVOLVEMENT_THRESHOLD } from "../../domain/humanInvolvement.js";
+import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
+import { DocumentSkeleton } from "../../storage/document-skeleton.js";
 import type { SectionScoreSnapshot } from "../../types/shared.js";
 import path from "node:path";
+
+/**
+ * Derive a human-readable block_reason from an evaluation result for MCP responses.
+ * Helps agents understand which threshold caused the block.
+ */
+function deriveBlockReason(evaluation: {
+  all_sections_accepted: boolean;
+  aggregate_impact: number;
+  aggregate_threshold: number;
+  blocked_sections: Array<{ humanInvolvement_score: number }>;
+}): string | undefined {
+  if (evaluation.all_sections_accepted) return undefined;
+  const hasPerSectionBlock = evaluation.blocked_sections.some(
+    (s) => s.humanInvolvement_score >= INVOLVEMENT_THRESHOLD,
+  );
+  if (hasPerSectionBlock && evaluation.aggregate_impact > evaluation.aggregate_threshold) {
+    return "per_section_threshold_and_aggregate_threshold";
+  }
+  if (hasPerSectionBlock) return "per_section_threshold";
+  if (evaluation.aggregate_impact > evaluation.aggregate_threshold) return "aggregate_threshold";
+  return "blocked";
+}
 
 // ─── list_docs ───────────────────────────────────────────
 
@@ -188,6 +212,19 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
     }
   }
 
+  // Validate all doc_paths before any state is created
+  const validationRoot = getContentRoot();
+  for (const s of sections) {
+    try {
+      resolveDocPathUnderContent(validationRoot, s.doc_path);
+    } catch (error) {
+      if (error instanceof InvalidDocPathError) {
+        return makeToolErrorResult(`Invalid doc_path "${s.doc_path}": ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
   const writer = ctx.writer;
 
   // Check for existing pending proposal
@@ -216,9 +253,38 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
     })),
   );
 
-  // Write section content to proposal's content directory
-  const pContentLayer = new ContentLayer(contentRoot);
+  // Write section content to proposal's content directory.
+  // For new documents/headings, create skeleton entries via DocumentSkeleton
+  // first so that ContentLayer.writeSection can resolve them.
+  const canonicalRoot = getContentRoot();
+  const skeletonCache = new Map<string, DocumentSkeleton>();
+
   for (const s of sections) {
+    let skeleton = skeletonCache.get(s.doc_path);
+    if (!skeleton) {
+      skeleton = await DocumentSkeleton.fromDisk(s.doc_path, contentRoot, canonicalRoot);
+      skeletonCache.set(s.doc_path, skeleton);
+    }
+
+    // Ensure the heading exists in the skeleton; create if missing
+    try {
+      skeleton.resolve(s.heading_path);
+    } catch {
+      const heading = s.heading_path[s.heading_path.length - 1];
+      const parentPath = s.heading_path.slice(0, -1);
+      let level: number;
+      if (parentPath.length === 0) {
+        level = 1;
+      } else {
+        const parentEntry = skeleton.resolve(parentPath);
+        level = parentEntry.level + 1;
+      }
+      skeleton.insertSectionUnder(parentPath, { heading, level, body: "" });
+      await skeleton.persist();
+    }
+
+    // Write content through ContentLayer (skeleton is now guaranteed to have the entry)
+    const pContentLayer = new ContentLayer(contentRoot);
     await pContentLayer.writeSection(SectionRef.fromTarget(s), s.content);
   }
 
@@ -238,10 +304,15 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
     });
   }
 
+  const outcome = evaluation.all_sections_accepted ? "accepted" : "blocked";
   return jsonToolResult({
     proposal_id: proposal.id,
     status: "pending",
-    outcome: evaluation.all_sections_accepted ? "accepted" : "blocked",
+    outcome,
+    ...(outcome === "blocked" ? {
+      block_reason: deriveBlockReason(evaluation),
+      per_section_threshold: INVOLVEMENT_THRESHOLD,
+    } : {}),
     evaluation,
     sections: evaluatedSections,
   });
@@ -298,6 +369,8 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
         proposal_id: proposalId,
         status: "pending",
         outcome: "blocked",
+        block_reason: deriveBlockReason(evaluation),
+        per_section_threshold: INVOLVEMENT_THRESHOLD,
         evaluation,
         sections,
       });
@@ -420,6 +493,16 @@ const writeSectionHandler: ToolHandler = async (args, ctx) => {
   if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath)) return makeToolErrorResult("Missing required parameter: heading_path");
   if (content === undefined) return makeToolErrorResult("Missing required parameter: content");
+
+  // Validate doc_path before any state is created
+  try {
+    resolveDocPathUnderContent(getContentRoot(), docPath);
+  } catch (error) {
+    if (error instanceof InvalidDocPathError) {
+      return makeToolErrorResult(`Invalid doc_path "${docPath}": ${error.message}`);
+    }
+    throw error;
+  }
 
   try {
     const proposal = await readProposal(proposalId);
@@ -561,7 +644,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
             items: {
               type: "object",
               properties: {
-                doc_path: { type: "string" },
+                doc_path: { type: "string", description: "Document path (must end with .md)" },
                 heading_path: { type: "array", items: { type: "string" } },
                 content: { type: "string" },
                 justification: { type: "string", description: "Optional justification for overwriting this section" },
@@ -586,7 +669,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
         type: "object",
         properties: {
           proposal_id: { type: "string", description: "ID of the pending proposal" },
-          doc_path: { type: "string", description: "Document path" },
+          doc_path: { type: "string", description: "Document path (must end with .md)" },
           heading_path: { type: "array", items: { type: "string" }, description: "Section heading path" },
           content: { type: "string", description: "New section content (markdown)" },
           justification: { type: "string", description: "Optional justification for overwriting this section" },

@@ -84,10 +84,10 @@ export class FragmentStore {
   static async fromDisk(docPath: string): Promise<FragmentStore> {
     // Lazy import to avoid circular dependency (session-store imports from ydoc-lifecycle)
     const {
-      readAllSectionsWithOverlay,
       listRawFragments,
       readRawFragment,
     } = await import("../storage/session-store.js");
+    const { ContentLayer } = await import("../storage/content-layer.js");
 
     const ydoc = new Y.Doc();
     const overlayRoot = path.join(getSessionDocsRoot(), "content");
@@ -112,8 +112,10 @@ export class FragmentStore {
       }
     }
 
-    // Always bulk-read overlay content as fallback
-    const bulkContent = await readAllSectionsWithOverlay(docPath);
+    // Bulk-read overlay content as fallback via ContentLayer
+    const canonical = new ContentLayer(canonicalRoot);
+    const overlay = new ContentLayer(overlayRoot, canonical);
+    const bulkContent = await overlay.readAllSectionsOverlaid(docPath);
 
     // Pass 1: collect encoded updates and raw fragment keys via forEachSection
     const pendingUpdates: Uint8Array[] = [];

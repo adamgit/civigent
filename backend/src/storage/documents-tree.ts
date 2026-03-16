@@ -2,6 +2,7 @@ import path from "node:path";
 import { readdir } from "node:fs/promises";
 import { getContentRoot } from "./data-root.js";
 import { assertChildPath } from "./path-utils.js";
+import { SECTIONS_DIR_SUFFIX } from "./document-skeleton.js";
 import type { DocumentTreeEntry } from "../types/shared.js";
 
 export class DocumentsTreePathNotFoundError extends Error {}
@@ -37,7 +38,7 @@ function toRelativeFromRoot(normalizedPath: string): string {
 }
 
 function shouldIncludeDirectory(name: string): boolean {
-  return !name.endsWith(".sections");
+  return !name.endsWith(SECTIONS_DIR_SUFFIX);
 }
 
 function shouldIncludeFile(name: string): boolean {
