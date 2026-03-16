@@ -148,15 +148,26 @@ async function recoverSessionFiles(): Promise<number> {
 
   if (!hasSessionFiles) return 0;
 
-  // Step 3: Commit session files under crash recovery identity
-  const result = await commitSessionFilesToCanonical(
-    { id: "crash-recovery", type: "human", displayName: "Crash Recovery" },
-  );
+  // Step 3: Try to commit session files under crash recovery identity.
+  // If commit fails (e.g. stale session files referencing headings that no longer
+  // exist), discard the session files — canonical data is authoritative.
+  let sectionsCommitted = 0;
+  try {
+    const result = await commitSessionFilesToCanonical(
+      { id: "crash-recovery", type: "human", displayName: "Crash Recovery" },
+    );
+    sectionsCommitted = result.sectionsCommitted;
+  } catch (err) {
+    console.error(
+      "Crash recovery: failed to commit session files, discarding stale session data:",
+      err instanceof Error ? err.message : err,
+    );
+  }
 
-  // Step 4: Clean up all session files (docs, fragments, authors)
+  // Step 4: Clean up all session files (docs, fragments, authors) — always runs
   await cleanupSessionFiles();
 
-  return result.sectionsCommitted;
+  return sectionsCommitted;
 }
 
 export async function detectAndRecoverCrash(dataRoot = getDataRoot()): Promise<CrashRecoveryResult> {

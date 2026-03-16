@@ -96,9 +96,10 @@ function remarkLineBreak() {
 }
 
 /** Wraps inline HTML in paragraph when inside block containers */
-// Note: 'root' is intentionally excluded. Root-level HTML blocks should remain
-// as block-level html nodes, not be wrapped in paragraphs (which expect inline content).
+// All block container types including 'root' — HTML nodes are always wrapped in
+// paragraphs to match Crepe's schema where html is an inline atom node.
 const BLOCK_CONTAINER_TYPES = [
+  "root",
   "blockquote",
   "listItem",
   "footnoteDefinition",
@@ -351,6 +352,12 @@ const schemaSpec = {
     image: {
       inline: true,
       group: "inline",
+      atom: true,
+      defining: true,
+      isolating: true,
+      selectable: true,
+      draggable: true,
+      marks: "",
       attrs: {
         src: { default: "" },
         alt: { default: "" },
@@ -399,7 +406,7 @@ const schemaSpec = {
       },
     },
     bullet_list: {
-      content: "list_item+",
+      content: "listItem+",
       group: "block",
       attrs: {
         spread: { default: false },
@@ -429,7 +436,7 @@ const schemaSpec = {
       },
     },
     ordered_list: {
-      content: "list_item+",
+      content: "listItem+",
       group: "block",
       attrs: {
         order: { default: 1 },
@@ -461,20 +468,22 @@ const schemaSpec = {
     },
     list_item: {
       content: "paragraph block*",
-      group: "block",
+      group: "listItem",
       defining: true,
       attrs: {
-        label: { default: null },
-        listType: { default: null },
-        spread: { default: "true" },
+        label: { default: "\u2022" },
+        listType: { default: "bullet" },
+        spread: { default: true },
+        checked: { default: null },
       },
       parseMarkdown: {
         match: (node: any) => node.type === "listItem",
         runner: (state: any, node: any, type: any) => {
           state.openNode(type, {
-            label: node.label ?? null,
-            listType: node.listType ?? null,
-            spread: node.spread ? "true" : "false",
+            label: node.label ?? "\u2022",
+            listType: node.listType ?? "bullet",
+            spread: node.spread ?? true,
+            checked: node.checked ?? null,
           });
           state.next(node.children);
           state.closeNode();
@@ -485,6 +494,7 @@ const schemaSpec = {
         runner: (state: any, node: any) => {
           state.openNode("listItem", undefined, {
             spread: node.attrs.spread,
+            checked: node.attrs.checked,
           });
           state.next(node.content);
           state.closeNode();
@@ -492,7 +502,9 @@ const schemaSpec = {
       },
     },
     html: {
-      group: "block",
+      group: "inline",
+      inline: true,
+      atom: true,
       attrs: {
         value: { default: "" },
       },
@@ -524,9 +536,63 @@ const schemaSpec = {
         },
       },
     },
+    // GFM: Footnote nodes
+    footnote_definition: {
+      content: "block+",
+      group: "block",
+      defining: true,
+      attrs: {
+        label: { default: "" },
+      },
+      parseMarkdown: {
+        match: (node: any) => node.type === "footnoteDefinition",
+        runner: (state: any, node: any, type: any) => {
+          state.openNode(type, { label: node.label || node.identifier || "" });
+          state.next(node.children);
+          state.closeNode();
+        },
+      },
+      toMarkdown: {
+        match: (node: any) => node.type.name === "footnote_definition",
+        runner: (state: any, node: any) => {
+          state.openNode("footnoteDefinition", undefined, {
+            label: node.attrs.label,
+            identifier: node.attrs.label,
+          });
+          state.next(node.content);
+          state.closeNode();
+        },
+      },
+    },
+    footnote_reference: {
+      group: "inline",
+      inline: true,
+      atom: true,
+      attrs: {
+        label: { default: "" },
+      },
+      parseMarkdown: {
+        match: (node: any) => node.type === "footnoteReference",
+        runner: (state: any, node: any, type: any) => {
+          state.addNode(type, { label: node.label || node.identifier || "" });
+        },
+      },
+      toMarkdown: {
+        match: (node: any) => node.type.name === "footnote_reference",
+        runner: (state: any, node: any) => {
+          state.addNode("footnoteReference", undefined, undefined, {
+            label: node.attrs.label,
+            identifier: node.attrs.label,
+          });
+        },
+      },
+    },
     // GFM: Table nodes
+    // Schema matches @milkdown/preset-gfm which uses prosemirror-tables'
+    // tableNodes({ cellContent: "paragraph" }) — cells contain block+ content
+    // (paragraph wrappers), not raw inline content.
     table: {
-      content: "table_header_row table_row*",
+      content: "table_header_row table_row+",
       group: "block",
       tableRole: "table",
       isolating: true,
@@ -544,9 +610,12 @@ const schemaSpec = {
                 const headerType = state.schema?.nodes?.table_header;
                 if (headerType) {
                   state.openNode(headerType, {
-                    alignment: align[i] || null,
+                    alignment: align[i] || "left",
                   });
+                  const paraType = state.schema?.nodes?.paragraph;
+                  if (paraType) state.openNode(paraType);
                   state.next(cell.children);
+                  if (paraType) state.closeNode();
                   state.closeNode();
                 }
               });
@@ -561,9 +630,12 @@ const schemaSpec = {
                 const cellType = state.schema?.nodes?.table_cell;
                 if (cellType) {
                   state.openNode(cellType, {
-                    alignment: align[i] || null,
+                    alignment: align[i] || "left",
                   });
+                  const paraType = state.schema?.nodes?.paragraph;
+                  if (paraType) state.openNode(paraType);
                   state.next(cell.children);
+                  if (paraType) state.closeNode();
                   state.closeNode();
                 }
               });
@@ -589,7 +661,7 @@ const schemaSpec = {
       },
     },
     table_header_row: {
-      content: "table_header+",
+      content: "(table_header)*",
       tableRole: "header_row",
       parseMarkdown: {
         match: (node: any) => node.type === "tableRow" && node.isHeader,
@@ -607,7 +679,7 @@ const schemaSpec = {
       },
     },
     table_row: {
-      content: "table_cell+",
+      content: "(table_cell)*",
       tableRole: "row",
       parseMarkdown: {
         match: (node: any) => node.type === "tableRow" && !node.isHeader,
@@ -626,17 +698,23 @@ const schemaSpec = {
       },
     },
     table_header: {
-      content: "inline*",
+      content: "paragraph",
       tableRole: "header_cell",
       attrs: {
-        alignment: { default: null },
+        alignment: { default: "left" },
+        colspan: { default: 1 },
+        rowspan: { default: 1 },
+        colwidth: { default: null },
       },
       isolating: true,
       parseMarkdown: {
         match: (node: any) => node.type === "tableCell" && node.isHeader,
         runner: (state: any, node: any, type: any) => {
-          state.openNode(type);
+          state.openNode(type, { alignment: node.align || "left" });
+          const paraType = state.schema?.nodes?.paragraph;
+          if (paraType) state.openNode(paraType);
           state.next(node.children);
+          if (paraType) state.closeNode();
           state.closeNode();
         },
       },
@@ -644,23 +722,37 @@ const schemaSpec = {
         match: (node: any) => node.type.name === "table_header",
         runner: (state: any, node: any) => {
           state.openNode("tableCell");
-          state.next(node.content);
+          // Unwrap paragraph: remark's tableCell expects inline content directly,
+          // not paragraph wrappers. Serialize the paragraph's inline children.
+          node.content.forEach((child: any) => {
+            if (child.type.name === "paragraph") {
+              state.next(child.content);
+            } else {
+              state.next(Fragment.from(child));
+            }
+          });
           state.closeNode();
         },
       },
     },
     table_cell: {
-      content: "inline*",
+      content: "paragraph",
       tableRole: "cell",
       attrs: {
-        alignment: { default: null },
+        alignment: { default: "left" },
+        colspan: { default: 1 },
+        rowspan: { default: 1 },
+        colwidth: { default: null },
       },
       isolating: true,
       parseMarkdown: {
         match: (node: any) => node.type === "tableCell" && !node.isHeader,
         runner: (state: any, node: any, type: any) => {
-          state.openNode(type);
+          state.openNode(type, { alignment: node.align || "left" });
+          const paraType = state.schema?.nodes?.paragraph;
+          if (paraType) state.openNode(paraType);
           state.next(node.children);
+          if (paraType) state.closeNode();
           state.closeNode();
         },
       },
@@ -668,7 +760,15 @@ const schemaSpec = {
         match: (node: any) => node.type.name === "table_cell",
         runner: (state: any, node: any) => {
           state.openNode("tableCell");
-          state.next(node.content);
+          // Unwrap paragraph: remark's tableCell expects inline content directly,
+          // not paragraph wrappers. Serialize the paragraph's inline children.
+          node.content.forEach((child: any) => {
+            if (child.type.name === "paragraph") {
+              state.next(child.content);
+            } else {
+              state.next(Fragment.from(child));
+            }
+          });
           state.closeNode();
         },
       },
@@ -714,6 +814,7 @@ const schemaSpec = {
       },
     },
     inlineCode: {
+      code: true,
       parseMarkdown: {
         match: (node: any) => node.type === "inlineCode",
         runner: (state: any, node: any, markType: any) => {
@@ -732,7 +833,7 @@ const schemaSpec = {
     link: {
       attrs: {
         href: { default: "" },
-        title: { default: "" },
+        title: { default: null },
       },
       inclusive: false,
       parseMarkdown: {
@@ -872,5 +973,8 @@ export function markdownToJSON(md: string): Record<string, unknown> {
 export function jsonToMarkdown(json: Record<string, unknown>): string {
   ensureInitialized();
   const node = _schema!.nodeFromJSON(json);
+  // Empty docs (no content) crash remark-stringify because the root mdast node
+  // gets no children array. Return empty string instead.
+  if (node.content.size === 0) return "";
   return _serializer!(node);
 }

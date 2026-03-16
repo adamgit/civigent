@@ -258,7 +258,7 @@ export function ProposalDetailPage() {
                   return (
                     <tr key={`${section.doc_path}-${section.heading_path.join("/")}-${idx}`}>
                       <td style={{ padding: "0.3rem" }}>
-                        <Link to={`/docs/${encodeURIComponent(section.doc_path)}`}>{section.doc_path}</Link>
+                        <Link to={`/docs/${section.doc_path}`}>{section.doc_path}</Link>
                       </td>
                       <td style={{ padding: "0.3rem" }}>{formatHeadingPath(section.heading_path)}</td>
                       <td style={{ padding: "0.3rem", textAlign: "center", color: involvementColor(score) }}>
@@ -295,7 +295,7 @@ export function ProposalDetailPage() {
             <ul>
               {affectedDocs.map((docPath) => (
                 <li key={docPath}>
-                  <Link to={`/docs/${encodeURIComponent(docPath)}`}>{docPath}</Link>
+                  <Link to={`/docs/${docPath}`}>{docPath}</Link>
                 </li>
               ))}
             </ul>

@@ -111,7 +111,7 @@ export class CrdtProvider {
 
     // Build WebSocket URL — per-document, no heading_path param.
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    this.url = `${protocol}//${window.location.host}/ws/crdt/${encodeURIComponent(docPath)}`;
+    this.url = `${protocol}//${window.location.host}/ws/crdt/${docPath.split("/").map(encodeURIComponent).join("/")}`;
 
     // Track which fragments are modified per transaction (same pattern as backend).
     this.afterTxnHandler = (txn: Y.Transaction) => {

@@ -321,9 +321,10 @@ export class ContentLayer {
     }
 
     const parts: string[] = [];
+    const missingSections: string[] = [];
 
     for (const entry of bodyEntries) {
-      let content: string;
+      let content: string | undefined;
       try {
         content = await readFile(entry.absolutePath, "utf8");
       } catch (err) {
@@ -336,16 +337,14 @@ export class ContentLayer {
             content = await readFile(fallbackPath, "utf8");
           } catch (err2) {
             if ((err2 as NodeJS.ErrnoException).code !== "ENOENT") throw err2;
-            throw new DocumentAssemblyError(
-              `Skeleton references missing section file: ${entry.sectionFile} (${docPath})`,
-            );
+            missingSections.push(entry.sectionFile);
           }
         } else {
-          throw new DocumentAssemblyError(
-            `Skeleton references missing section file: ${entry.sectionFile} (${docPath})`,
-          );
+          missingSections.push(entry.sectionFile);
         }
       }
+
+      if (content === undefined) continue;
 
       // Prepend heading for non-root sections
       const isRoot = entry.level === 0 && entry.heading === "";
@@ -356,6 +355,12 @@ export class ContentLayer {
       } else {
         parts.push(content);
       }
+    }
+
+    if (missingSections.length > 0) {
+      throw new DocumentAssemblyError(
+        `Skeleton integrity check failed for "${docPath}": ${missingSections.length} missing section file(s): ${missingSections.join(", ")}`,
+      );
     }
 
     return parts.join("\n");

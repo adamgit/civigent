@@ -87,7 +87,12 @@ import { renameDocument } from "../../storage/document-rename.js";
 
 // ─── Helpers ────────────────────────────────────────────
 
-function sendApiError(res: Response, status: number, message: string, details?: unknown): void {
+function sendApiError(res: Response, status: number, messageOrError: string | Error, details?: unknown): void {
+  // Per error policy: NEVER hide or strip error details. Always include the
+  // full stack trace when available.
+  const message = messageOrError instanceof Error
+    ? (messageOrError.stack || messageOrError.message)
+    : messageOrError;
   res.status(status).json({ message, ...(details !== undefined ? { details } : {}) });
 }
 
@@ -227,11 +232,11 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       res.json(response);
     } catch (error) {
       if (error instanceof DocumentsTreePathNotFoundError) {
-        sendApiError(res, 404, error.message);
+        sendApiError(res, 404, error);
         return;
       }
       if (error instanceof InvalidDocumentsTreePathError) {
-        sendApiError(res, 400, error.message);
+        sendApiError(res, 400, error);
         return;
       }
       next(error);
@@ -250,7 +255,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       res.json(response);
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-        sendApiError(res, 404, error.message);
+        sendApiError(res, 404, error);
         return;
       }
       next(error);
@@ -315,11 +320,11 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       res.json(response);
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-        sendApiError(res, 404, error.message);
+        sendApiError(res, 404, error);
         return;
       }
       if (error instanceof DocumentAssemblyError) {
-        sendApiError(res, 500, error.message);
+        sendApiError(res, 500, error);
         return;
       }
       next(error);
@@ -334,13 +339,107 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       res.json(result);
     } catch (error) {
       if (error instanceof InvalidDocPathError) {
-        sendApiError(res, 400, error.message);
+        sendApiError(res, 400, error);
         return;
       }
       next(error);
     }
   });
 
+  // ─── Document version history & restore ─────────────────
+  // MUST be registered BEFORE the catch-all GET /documents/:docPath(*) below,
+  // otherwise Express matches the catch-all first.
+
+  router.get("/documents/:docPath(*)/history", async (req, res, next) => {
+    try {
+      const docPath = req.params.docPath;
+      const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 30, 1), 100);
+      const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
+      const dataRoot = getDataRoot();
+      const entries = await gitLogRecent(dataRoot, { limit, offset, docPath });
+      res.json({ doc_path: docPath, versions: entries });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/documents/:docPath(*)/history/:sha/preview", async (req, res, next) => {
+    try {
+      const { docPath, sha } = req.params;
+      if (!/^[0-9a-f]{7,40}$/i.test(sha)) {
+        sendApiError(res, 400, new Error(`Invalid SHA format: "${sha}"`));
+        return;
+      }
+
+      const { extractHistoricalTree } = await import("../../storage/git-repo.js");
+      const os = await import("node:os");
+      const tmpDir = await mkdir(path.join(os.tmpdir(), `ks-preview-${sha.slice(0, 8)}-${Date.now()}`), { recursive: true });
+      const tmpRoot = typeof tmpDir === "string" ? tmpDir : path.join(os.tmpdir(), `ks-preview-${sha.slice(0, 8)}-${Date.now()}`);
+
+      const dataRoot = getDataRoot();
+      const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+
+      const { gitShowFile: showFile } = await import("../../storage/git-repo.js");
+      const skeletonContent = await showFile(dataRoot, sha, `content/${normalized}`);
+      const skeletonPath = path.resolve(tmpRoot, "content", ...normalized.split("/"));
+      await mkdir(path.dirname(skeletonPath), { recursive: true });
+      await writeFile(skeletonPath, skeletonContent, "utf8");
+
+      await extractHistoricalTree(
+        dataRoot,
+        sha,
+        `content/${normalized}.sections/`,
+        path.resolve(tmpRoot, "content", ...normalized.split("/")) + ".sections",
+      );
+
+      const tmpContentRoot = path.join(tmpRoot, "content");
+      const historicalLayer = new ContentLayer(tmpContentRoot);
+      const content = await historicalLayer.readAssembledDocument(docPath);
+      await rm(tmpRoot, { recursive: true, force: true });
+
+      res.json({ doc_path: docPath, sha, content });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/documents/:docPath(*)/restore", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      const docPath = req.params.docPath;
+      const { sha } = req.body as { sha?: string };
+      if (!sha || !/^[0-9a-f]{7,40}$/i.test(sha)) {
+        sendApiError(res, 400, new Error(`Invalid or missing SHA in restore request for "${docPath}". Body: ${JSON.stringify(req.body)}`));
+        return;
+      }
+
+      const { createRestoreProposal } = await import("../../storage/restore-service.js");
+      const { proposal } = await createRestoreProposal(docPath, sha, writer);
+
+      const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal);
+
+      if (evaluation.all_sections_accepted) {
+        const scores: SectionScoreSnapshot = {};
+        for (const s of sections) {
+          scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
+        }
+        const committedSha = await commitProposalToCanonical(proposal, scores);
+        res.json({ committed_sha: committedSha });
+      } else {
+        res.json({
+          proposal_id: proposal.id,
+          blocked_sections: evaluation.blocked_sections,
+          evaluation,
+        });
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ─── Document catch-all (MUST be AFTER /history, /restore, etc.) ──
   router.get("/documents/:docPath(*)", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
@@ -383,11 +482,11 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       res.json(response);
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-        sendApiError(res, 404, error.message);
+        sendApiError(res, 404, error);
         return;
       }
       if (error instanceof DocumentAssemblyError) {
-        sendApiError(res, 500, error.message);
+        sendApiError(res, 500, error);
         return;
       }
       next(error);
@@ -435,7 +534,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       res.status(201).json({ doc_path: docPath });
     } catch (error) {
       if (error instanceof InvalidDocPathError) {
-        sendApiError(res, 400, error.message);
+        sendApiError(res, 400, error);
         return;
       }
       next(error);
@@ -463,7 +562,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         currentContent = await readAssembledDocument(docPath);
       } catch (error) {
         if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-          sendApiError(res, 404, `Document not found: ${docPath}`);
+          sendApiError(res, 404, error);
           return;
         }
         throw error;
@@ -476,7 +575,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         patchedContent = applyUnifiedDiff(currentContent, diffText);
       } catch (error) {
         if (error instanceof DiffParseError || error instanceof DiffApplyError) {
-          sendApiError(res, 400, error.message);
+          sendApiError(res, 400, error);
           return;
         }
         throw error;
@@ -619,7 +718,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       res.status(200).json({ doc_path: docPath, deleted: true });
     } catch (error) {
       if (error instanceof InvalidDocPathError) {
-        sendApiError(res, 400, error.message);
+        sendApiError(res, 400, error);
         return;
       }
       next(error);
@@ -672,7 +771,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       res.status(200).json(result);
     } catch (error) {
       if (error instanceof InvalidDocPathError) {
-        sendApiError(res, 400, error.message);
+        sendApiError(res, 400, error);
         return;
       }
       next(error);
@@ -706,11 +805,11 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       res.json(response);
     } catch (error) {
       if (error instanceof SectionNotFoundError || error instanceof HeadingNotFoundError) {
-        sendApiError(res, 404, error.message);
+        sendApiError(res, 404, error);
         return;
       }
       if (error instanceof InvalidDocPathError) {
-        sendApiError(res, 400, error.message);
+        sendApiError(res, 400, error);
         return;
       }
       next(error);
@@ -801,7 +900,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       });
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-        sendApiError(res, 404, error.message);
+        sendApiError(res, 404, error);
         return;
       }
       next(error);
@@ -860,7 +959,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       });
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-        sendApiError(res, 404, error.message);
+        sendApiError(res, 404, error);
         return;
       }
       next(error);
@@ -972,7 +1071,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       });
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-        sendApiError(res, 404, error.message);
+        sendApiError(res, 404, error);
         return;
       }
       next(error);
@@ -1056,7 +1155,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       });
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-        sendApiError(res, 404, error.message);
+        sendApiError(res, 404, error);
         return;
       }
       next(error);
@@ -1355,7 +1454,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       res.json(response);
     } catch (error) {
       if (error instanceof ProposalNotFoundError) {
-        sendApiError(res, 404, error.message);
+        sendApiError(res, 404, error);
         return;
       }
       next(error);
@@ -1474,11 +1573,11 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       });
     } catch (error) {
       if (error instanceof ProposalNotFoundError) {
-        sendApiError(res, 404, error.message);
+        sendApiError(res, 404, error);
         return;
       }
       if (error instanceof InvalidProposalStateError) {
-        sendApiError(res, 409, error.message);
+        sendApiError(res, 409, error);
         return;
       }
       next(error);
@@ -1585,11 +1684,11 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
     } catch (error) {
       if (error instanceof ProposalNotFoundError) {
-        sendApiError(res, 404, error.message);
+        sendApiError(res, 404, error);
         return;
       }
       if (error instanceof InvalidProposalStateError) {
-        sendApiError(res, 409, error.message);
+        sendApiError(res, 409, error);
         return;
       }
       next(error);
@@ -1628,11 +1727,11 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       res.json(response);
     } catch (error) {
       if (error instanceof ProposalNotFoundError) {
-        sendApiError(res, 404, error.message);
+        sendApiError(res, 404, error);
         return;
       }
       if (error instanceof InvalidProposalStateError) {
-        sendApiError(res, 409, error.message);
+        sendApiError(res, 409, error);
         return;
       }
       next(error);
@@ -1790,7 +1889,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       });
     } catch (error) {
       if (error instanceof AdminConfigValidationError) {
-        sendApiError(res, 400, error.message);
+        sendApiError(res, 400, error);
         return;
       }
       next(error);
@@ -2013,7 +2112,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
     } catch (error) {
       if (error instanceof InvalidDocPathError) {
-        sendApiError(res, 400, error.message);
+        sendApiError(res, 400, error);
         return;
       }
       next(error);

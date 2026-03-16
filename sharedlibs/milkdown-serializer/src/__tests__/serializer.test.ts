@@ -172,8 +172,8 @@ describe("1B: normalization behaviour", () => {
     const output = roundTrip(uneven);
     // Output should have aligned column widths
     const lines = output.trim().split("\n");
-    // All separator dashes should be padded
-    expect(lines[1]).toMatch(/\| -+ \| -+ \|/);
+    // All separator dashes should be padded (may have : prefix for left alignment)
+    expect(lines[1]).toMatch(/\| :?-+ \| :?-+ \|/);
   });
 
   it("reference-style links normalize to inline links", () => {

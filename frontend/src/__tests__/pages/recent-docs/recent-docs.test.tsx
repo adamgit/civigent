@@ -148,7 +148,7 @@ describe("RecentDocsPage", () => {
     fireEvent.change(pathInput, { target: { value: "ops/new-doc.md" } });
     fireEvent.submit(pathInput.closest("form")!);
 
-    expect(mockNavigate).toHaveBeenCalledWith(`/docs/${encodeURIComponent("ops/new-doc.md")}`);
+    expect(mockNavigate).toHaveBeenCalledWith("/docs/ops/new-doc.md");
   });
 
   it("'Open by path' with edit mode navigates to edit URL", async () => {
@@ -165,7 +165,7 @@ describe("RecentDocsPage", () => {
     fireEvent.change(pathInput, { target: { value: "ops/doc.md" } });
     fireEvent.submit(pathInput.closest("form")!);
 
-    expect(mockNavigate).toHaveBeenCalledWith(`/docs/${encodeURIComponent("ops/doc.md")}/edit`);
+    expect(mockNavigate).toHaveBeenCalledWith("/docs/ops/doc.md/edit");
   });
 
   it("each doc has view, edit, and reconcile links", async () => {
@@ -178,13 +178,13 @@ describe("RecentDocsPage", () => {
     });
 
     const viewLink = screen.getByText("ops/guide.md").closest("a");
-    expect(viewLink?.getAttribute("href")).toBe(`/docs/${encodeURIComponent("ops/guide.md")}`);
+    expect(viewLink?.getAttribute("href")).toBe("/docs/ops/guide.md");
 
     const editLink = screen.getByText("edit").closest("a");
-    expect(editLink?.getAttribute("href")).toBe(`/docs/${encodeURIComponent("ops/guide.md")}/edit`);
+    expect(editLink?.getAttribute("href")).toBe("/docs/ops/guide.md/edit");
 
     const reconcileLink = screen.getByText("reconcile").closest("a");
-    expect(reconcileLink?.getAttribute("href")).toBe(`/docs/${encodeURIComponent("ops/guide.md")}/reconcile`);
+    expect(reconcileLink?.getAttribute("href")).toBe("/docs/ops/guide.md/reconcile");
   });
 
   it("clicking doc calls rememberRecentDoc via localStorage update", async () => {

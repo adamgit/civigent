@@ -22,7 +22,7 @@ import { getContentRoot, getDataRoot } from "./data-root.js";
 import { proposalContentRoot } from "./proposal-repository.js";
 import { getHeadSha, gitExec } from "./git-repo.js";
 import { resolveHeadingPath } from "./heading-resolver.js";
-import { ContentLayer } from "./content-layer.js";
+import { ContentLayer, SectionNotFoundError } from "./content-layer.js";
 import { DocumentSkeleton } from "./document-skeleton.js";
 import {
   transitionToCommitting,
@@ -94,9 +94,14 @@ export async function commitProposalToCanonical(
       try {
         const content = await proposalContent.readSection(sectionRef);
         await canonical.writeSection(sectionRef, content);
-      } catch {
-        // Section may have been deleted by a structural change — skip
-        // (promoteOverlay already handled the skeleton-level deletion)
+      } catch (err) {
+        // Only tolerate missing section bodies when the document had structural
+        // changes promoted (skeleton rewrite may have removed the section).
+        // All other errors must surface — silent catches hide real failures.
+        if (err instanceof SectionNotFoundError && promotedDocs.has(section.doc_path)) {
+          continue;
+        }
+        throw err;
       }
     }
 

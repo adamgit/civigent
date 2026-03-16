@@ -31,9 +31,45 @@ export interface ImportResponse extends CreateProposalResponse {
   created_documents: string[];
 }
 
+export interface DocHistoryVersion {
+  sha: string;
+  author_name: string;
+  author_email: string;
+  timestamp_iso: string;
+  message: string;
+  changed_files: string[];
+}
+
+export interface DocHistoryResponse {
+  doc_path: string;
+  versions: DocHistoryVersion[];
+}
+
+export interface DocHistoryPreviewResponse {
+  doc_path: string;
+  sha: string;
+  content: string;
+}
+
+export interface DocRestoreResponse {
+  committed_sha?: string;
+  proposal_id?: string;
+  blocked_sections?: Array<{
+    doc_path: string;
+    heading_path: string[];
+    humanInvolvement_score: number;
+    blocked: boolean;
+  }>;
+}
+
 interface GetDocumentsTreeOptions {
   path?: string;
   recursive?: boolean;
+}
+
+/** Encode a doc path for use in URL paths — encodes each segment individually so slashes are preserved. */
+function encodeDocPath(docPath: string): string {
+  return docPath.split("/").map(encodeURIComponent).join("/");
 }
 
 const WRITER_ID_STORAGE_KEY = "ks_writer_id";
@@ -384,7 +420,7 @@ export const apiClient = {
   },
 
   async createDocument(docPath: string): Promise<CreateDocumentResponse> {
-    const encoded = encodeURIComponent(docPath);
+    const encoded = encodeDocPath(docPath);
     return requestJson<CreateDocumentResponse>(`/api/documents/${encoded}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -393,7 +429,7 @@ export const apiClient = {
   },
 
   async renameDocument(docPath: string, newPath: string): Promise<{ old_path: string; new_path: string; committed_head: string }> {
-    const encoded = encodeURIComponent(docPath);
+    const encoded = encodeDocPath(docPath);
     return requestJson<{ old_path: string; new_path: string; committed_head: string }>(`/api/documents/${encoded}/rename`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -402,7 +438,7 @@ export const apiClient = {
   },
 
   async getDocument(docPath: string): Promise<GetDocumentResponse> {
-    const encoded = encodeURIComponent(docPath);
+    const encoded = encodeDocPath(docPath);
     return requestJson<GetDocumentResponse>(`/api/documents/${encoded}`);
   },
 
@@ -420,17 +456,17 @@ export const apiClient = {
   },
 
   async getDocumentStructure(docPath: string): Promise<ReadDocStructureResponse> {
-    const encoded = encodeURIComponent(docPath);
+    const encoded = encodeDocPath(docPath);
     return requestJson<ReadDocStructureResponse>(`/api/documents/${encoded}/structure`);
   },
 
   async getDocumentSections(docPath: string): Promise<GetDocumentSectionsResponse> {
-    const encoded = encodeURIComponent(docPath);
+    const encoded = encodeDocPath(docPath);
     return requestJson<GetDocumentSectionsResponse>(`/api/documents/${encoded}/sections`);
   },
 
   async getChangesSince(docPath: string, afterHead?: string): Promise<ChangesSinceResponse> {
-    const encoded = encodeURIComponent(docPath);
+    const encoded = encodeDocPath(docPath);
     const params = afterHead ? `?after_head=${encodeURIComponent(afterHead)}` : "";
     return requestJson<ChangesSinceResponse>(`/api/documents/${encoded}/changes-since${params}`);
   },
@@ -525,6 +561,31 @@ export const apiClient = {
 
   async getGitDiff(sha: string): Promise<{ sha: string; diff_text: string; truncated: boolean }> {
     return requestJson<{ sha: string; diff_text: string; truncated: boolean }>(`/api/git/log/${encodeURIComponent(sha)}/diff`);
+  },
+
+  // --- Document version history ---
+
+  async getDocHistory(docPath: string, opts?: { limit?: number; offset?: number }): Promise<DocHistoryResponse> {
+    const encoded = encodeDocPath(docPath);
+    const params = new URLSearchParams();
+    if (opts?.limit) params.set("limit", String(opts.limit));
+    if (opts?.offset) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    return requestJson<DocHistoryResponse>(`/api/documents/${encoded}/history${qs ? `?${qs}` : ""}`);
+  },
+
+  async getDocHistoryPreview(docPath: string, sha: string): Promise<DocHistoryPreviewResponse> {
+    const encoded = encodeDocPath(docPath);
+    return requestJson<DocHistoryPreviewResponse>(`/api/documents/${encoded}/history/${encodeURIComponent(sha)}/preview`);
+  },
+
+  async restoreDoc(docPath: string, sha: string): Promise<DocRestoreResponse> {
+    const encoded = encodeDocPath(docPath);
+    return requestJson<DocRestoreResponse>(`/api/documents/${encoded}/restore`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sha }),
+    });
   },
 
   // --- Publish ---

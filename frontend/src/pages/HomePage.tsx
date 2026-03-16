@@ -266,7 +266,7 @@ export function HomePage() {
                 return (
                   <Link
                     key={item.id}
-                    to={docPaths[0] ? `/docs/${encodeURIComponent(docPaths[0])}` : "/docs"}
+                    to={docPaths[0] ? `/docs/${docPaths[0]}` : "/docs"}
                     style={{
                       display: "flex",
                       alignItems: "center",
@@ -328,7 +328,7 @@ export function HomePage() {
                 return (
                   <Link
                     key={item.id}
-                    to={docPaths[0] ? `/docs/${encodeURIComponent(docPaths[0])}` : "/docs"}
+                    to={docPaths[0] ? `/docs/${docPaths[0]}` : "/docs"}
                     style={{
                       display: "flex",
                       alignItems: "center",

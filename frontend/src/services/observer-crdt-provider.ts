@@ -70,7 +70,7 @@ export class ObserverCrdtProvider {
     this.events = events;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    this.url = `${protocol}//${window.location.host}/ws/crdt-observe/${encodeURIComponent(docPath)}`;
+    this.url = `${protocol}//${window.location.host}/ws/crdt-observe/${docPath.split("/").map(encodeURIComponent).join("/")}`;
   }
 
   get state(): ObserverConnectionState {

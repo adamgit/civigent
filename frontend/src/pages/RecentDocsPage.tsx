@@ -65,7 +65,7 @@ export function RecentDocsPage() {
     const normalized = normalizeDocPath(docPath);
     if (!normalized) return;
     rememberRecentDoc(normalized);
-    navigate(`/docs/${encodeURIComponent(normalized)}`);
+    navigate(`/docs/${normalized}`);
   };
 
   const handleDirectOpen = (event: FormEvent<HTMLFormElement>) => {
@@ -110,7 +110,7 @@ export function RecentDocsPage() {
                     <span className="text-[10.5px] text-[#b8b2a8] shrink-0 w-[60px] text-right">Viewed</span>
                     <div className="flex-1 min-w-0">
                       <Link
-                        to={`/docs/${encodeURIComponent(docPath)}`}
+                        to={`/docs/${docPath}`}
                         onClick={() => rememberRecentDoc(docPath)}
                         className="text-[13px] font-medium text-text-primary hover:text-[#1d5a66] cursor-pointer"
                       >
@@ -119,14 +119,14 @@ export function RecentDocsPage() {
                     </div>
                     <div className="flex gap-1 shrink-0">
                       <Link
-                        to={`/docs/${encodeURIComponent(docPath)}/edit`}
+                        to={`/docs/${docPath}/edit`}
                         onClick={() => rememberRecentDoc(docPath)}
                         className="text-[11px] px-2.5 py-1 rounded border border-[#eae7e2] bg-white text-text-secondary hover:bg-[#faf8f5]"
                       >
                         Edit
                       </Link>
                       <Link
-                        to={`/docs/${encodeURIComponent(docPath)}/reconcile`}
+                        to={`/docs/${docPath}/reconcile`}
                         onClick={() => rememberRecentDoc(docPath)}
                         className="text-[11px] px-2.5 py-1 rounded border border-[#c9b8e8] bg-white text-[#6b4fa0] hover:bg-[#faf8f5]"
                       >

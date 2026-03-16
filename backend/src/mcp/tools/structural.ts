@@ -133,11 +133,13 @@ const createSectionHandler: ToolHandler = async (args, ctx) => {
     }
 
     skeleton.insertSectionUnder(parentPath, { heading, level, body: content });
-    await skeleton.persist();
 
-    // Write body content through ContentLayer (skeleton now has the entry)
+    // Write body content through ContentLayer BEFORE skeleton.persist()
+    // so that if body write fails, the skeleton doesn't reference a missing file.
     const proposalLayer = new ContentLayer(proposalContentRoot);
     await proposalLayer.writeSection(new SectionRef(docPath, headingPath), content);
+
+    await skeleton.persist();
 
     // Update proposal sections metadata
     const existingSections = proposal.sections.filter(
@@ -314,13 +316,15 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
       level: targetLevel,
       body: bodyContent,
     });
-    await skeleton.persist();
 
-    // Write body content through ContentLayer (skeleton now has the entry)
+    // Write body content through ContentLayer BEFORE skeleton.persist()
+    // so that if body write fails, the skeleton doesn't reference a missing file.
     // Do NOT delete old files from canonical — promoteOverlay handles this
     const moveLayer = new ContentLayer(proposalContentRoot);
     const newHeadingPathForMove = [...newParentPath, heading];
     await moveLayer.writeSection(new SectionRef(docPath, newHeadingPathForMove), bodyContent);
+
+    await skeleton.persist();
 
     // Update proposal sections metadata
     const existingSections = proposal.sections.filter(
@@ -410,13 +414,15 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
     const result = skeleton.replace(headingPath, [
       { heading: newHeading, level: resolvedEntry.level, body: bodyContent },
     ]);
-    await skeleton.persist();
 
-    // Write body content through ContentLayer (skeleton now has the renamed entry)
+    // Write body content through ContentLayer BEFORE skeleton.persist()
+    // so that if body write fails, the skeleton doesn't reference a missing file.
     // Do NOT delete old files from canonical — promoteOverlay handles this
     const newHeadingPath = [...headingPath.slice(0, -1), newHeading];
     const renameLayer = new ContentLayer(proposalContentRoot);
     await renameLayer.writeSection(new SectionRef(docPath, newHeadingPath), bodyContent);
+
+    await skeleton.persist();
 
     // Update proposal sections metadata with new heading path
     const existingSections = proposal.sections.filter(

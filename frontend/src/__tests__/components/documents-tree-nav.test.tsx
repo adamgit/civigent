@@ -163,6 +163,6 @@ describe("DocumentsTreeNav", () => {
     );
 
     const link = screen.getByText("readme.md").closest("a");
-    expect(link?.getAttribute("href")).toBe(`/docs/${encodeURIComponent("readme.md")}`);
+    expect(link?.getAttribute("href")).toBe("/docs/readme.md");
   });
 });

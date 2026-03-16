@@ -333,7 +333,7 @@ export function DocumentsTreeNav({
           return (
             <Link
               key={node.path}
-              to={`/docs/${encodeURIComponent(toRouteDocPath(node.path))}`}
+              to={`/docs/${toRouteDocPath(node.path)}`}
               onClick={handleClick}
               data-testid={isSelected ? `tree-node-selected-${node.path}` : undefined}
               className={`flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-[13px] cursor-pointer transition-all relative ${

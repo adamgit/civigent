@@ -185,7 +185,7 @@ export function DashboardPage() {
                           {docPaths.map((dp, i) => (
                             <span key={dp}>
                               {i > 0 && ", "}
-                              <Link to={`/docs/${encodeURIComponent(dp)}`} className="text-[#2d7a8a] hover:underline">{dp}</Link>
+                              <Link to={`/docs/${dp}`} className="text-[#2d7a8a] hover:underline">{dp}</Link>
                             </span>
                           ))}
                         </>

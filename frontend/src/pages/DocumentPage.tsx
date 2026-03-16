@@ -12,6 +12,7 @@ import { rememberRecentDoc } from "../services/recent-docs";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
 import { MilkdownEditor, type MilkdownEditorHandle } from "../components/MilkdownEditor";
 import { ProposalPanel } from "../components/ProposalPanel";
+import { DocumentHistory } from "../components/DocumentHistory";
 import { useCrossSectionCopy } from "../hooks/useCrossSectionCopy";
 import { useViewingPresence, type ViewingUser } from "../hooks/useViewingPresence";
 import type { Awareness } from "y-protocols/awareness";
@@ -228,6 +229,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
   const [structureTree, setStructureTree] = useState<DocStructureNode[] | null>(null);
   const [showLoading, setShowLoading] = useState(false);
   const [loadDurationMs, setLoadDurationMs] = useState<number | null>(null);
@@ -1069,6 +1071,15 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
           {decodedDocPath ?? "No document selected"}
         </span>
 
+        {/* Version history toggle */}
+        <button
+          onClick={() => setShowHistory((v) => !v)}
+          className={`text-[11px] px-2 py-1 rounded ${showHistory ? "bg-[#e8f4f6] text-[#1d5a66]" : "bg-[#f5f2ed] text-text-muted hover:text-text-primary"}`}
+          title="Version history"
+        >
+          History
+        </button>
+
         {/* Aggregated persistence indicator — derived from per-section state map */}
         <div className="flex items-center gap-[5px]">
           <div className={`w-[7px] h-[7px] rounded-full ${
@@ -1104,6 +1115,37 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
           Offline &mdash; changes won&apos;t be saved
         </div>
       ) : null}
+
+      {/* Version history panel */}
+      {showHistory && decodedDocPath && (
+        <div className="border-b border-[#eae7e2] bg-canvas-bg">
+          <div className="max-w-[700px] mx-auto">
+            <div className="flex items-center justify-between px-4 py-2 border-b border-[#f5f2ed]">
+              <span className="text-xs font-bold text-text-primary">Version History</span>
+              <button
+                onClick={() => setShowHistory(false)}
+                className="text-[11px] text-text-muted hover:text-text-primary"
+              >
+                Close
+              </button>
+            </div>
+            <DocumentHistory
+              docPath={decodedDocPath}
+              onRestored={() => {
+                setShowHistory(false);
+                // Trigger a re-fetch of sections by re-navigating
+                if (decodedDocPath) {
+                  setSectionsLoading(true);
+                  apiClient.getDocumentSections(decodedDocPath).then(
+                    (res) => { setSections(res.sections); setSectionsLoading(false); },
+                    () => { setSectionsLoading(false); },
+                  );
+                }
+              }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Canvas scroll area */}
       <div className="flex-1 overflow-y-auto canvas-scroll px-5 pt-8 pb-24" style={{ background: "var(--color-page-bg)" }}>

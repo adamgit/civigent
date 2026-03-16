@@ -79,7 +79,7 @@ export function HeatmapTab({ heatmap, agentReadings, proposals, loading, error }
         Array.from(docGroups.entries()).map(([docPath, entries]) => (
           <div key={docPath} className="mb-5">
             <h3 className="text-sm font-semibold mb-1">
-              <Link to={`/docs/${encodeURIComponent(docPath)}`} className="text-text-primary hover:text-[#1d5a66]">{docPath}</Link>
+              <Link to={`/docs/${docPath}`} className="text-text-primary hover:text-[#1d5a66]">{docPath}</Link>
             </h3>
             <table className="w-full text-xs" style={{ borderCollapse: "collapse" }}>
               <thead>

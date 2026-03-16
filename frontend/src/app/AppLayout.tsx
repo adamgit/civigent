@@ -130,7 +130,7 @@ export function AppLayout() {
   const createDoc = useCallback(async (path: string): Promise<void> => {
     const docPath = path.endsWith(".md") ? path : `${path}.md`;
     await apiClient.createDocument(docPath);
-    navigate(`/docs/${encodeURIComponent(docPath)}`);
+    navigate(`/docs/${docPath}`);
   }, [navigate]);
 
   const handleNewDocSubmit = (e: FormEvent) => {
@@ -471,7 +471,7 @@ export function AppLayout() {
                 >
                   {toast.text}{" "}
                   <Link
-                    to={`/docs/${encodeURIComponent(toast.docPath)}`}
+                    to={`/docs/${toast.docPath}`}
                     onClick={() => setToasts([])}
                     className="font-medium underline"
                   >
