@@ -22,6 +22,9 @@ export default defineConfig({
     __BUILD_SHA__: JSON.stringify(buildSha),
     __BUILD_DATE__: JSON.stringify(buildDate),
   },
+  optimizeDeps: {
+    exclude: ["@ks/milkdown-serializer"],
+  },
   resolve: {
     dedupe: [
       "prosemirror-model",
@@ -38,6 +41,9 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
+    headers: {
+      "Cache-Control": "no-store",
+    },
     proxy: {
       "/api": {
         target: backendTarget,
