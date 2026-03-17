@@ -129,7 +129,7 @@ export function ProposalPanel({
     return (
       <div style={{
         position: "fixed",
-        bottom: "1.5rem",
+        top: "calc(var(--spacing-topbar-h) + 0.75rem)",
         right: "1.5rem",
         zIndex: 1000,
         background: "#fff",
@@ -165,7 +165,7 @@ export function ProposalPanel({
   return (
     <div style={{
       position: "fixed",
-      bottom: "1.5rem",
+      top: "calc(var(--spacing-topbar-h) + 0.75rem)",
       right: "1.5rem",
       zIndex: 1000,
       background: "#fff",
@@ -175,6 +175,8 @@ export function ProposalPanel({
       boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
       maxWidth: "24rem",
       minWidth: "18rem",
+      maxHeight: "calc(100vh - var(--spacing-topbar-h) - 3rem)",
+      overflowY: "auto",
     }}>
       <h3 style={{ margin: "0 0 0.5rem", fontSize: "0.95rem" }}>Active Proposal</h3>
 

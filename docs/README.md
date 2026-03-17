@@ -17,6 +17,7 @@
 | [Deployment Guide](deployment.md) | Admins | Docker setup, data directory, import, reverse proxy, env vars |
 | [Configuration Reference](configuration.md) | Admins | Involvement presets, admin API, snapshots, auth modes |
 | [Agent Management](agent-management.md) | Admins | OAuth setup, anonymous vs pre-authenticated agents, MCP tools |
+| [Crash Recovery](crash-recovery.md) | Admins | How to recover from crashes, what data is recoverable, where/why |
 
 ## For contributors
 

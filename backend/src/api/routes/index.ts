@@ -587,7 +587,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         return;
       }
 
-      // Submit the patched content as a proposal (root section overwrite)
+      // Submit the patched content as a proposal (normalize into sections)
       const intent = `Patch document: ${docPath}`;
       const existing = await findPendingProposalByWriter(writer.id);
       if (existing) {
@@ -599,9 +599,13 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         intent,
         [{ doc_path: docPath, heading_path: [] }],
       );
-      // Write content to proposal's content directory via ContentLayer
-      const proposalContentLayer = new ContentLayer(contentRoot);
-      await proposalContentLayer.writeSection(new SectionRef(docPath, []), patchedContent);
+      // Write content via writeAssembledDocument which normalizes sections
+      const proposalContentLayer = new ContentLayer(contentRoot, new ContentLayer(getContentRoot()));
+      const patchTargets = await proposalContentLayer.writeAssembledDocument(docPath, patchedContent);
+      // Update proposal sections to match the actual parsed structure
+      if (patchTargets.length > 1 || (patchTargets.length === 1 && patchTargets[0].heading_path.length > 0)) {
+        await updateProposalSections(proposal.id, patchTargets);
+      }
 
       const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal);
 

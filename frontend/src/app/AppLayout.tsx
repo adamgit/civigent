@@ -322,11 +322,10 @@ export function AppLayout() {
       {/* Sidebar */}
       <aside className="w-[--spacing-sidebar-w] min-w-[--spacing-sidebar-w] bg-sidebar-bg border-r border-sidebar-border flex flex-col select-none">
         {/* Sidebar header */}
-        <div className="px-3.5 pt-3.5 pb-2.5 flex items-center justify-between">
+        <div className="px-3.5 pt-3.5 pb-2.5">
           <span className="text-xs font-semibold text-sidebar-heading uppercase tracking-wide">
             <a href="/">Civigent</a>
           </span>
-          <span style={{fontSize:"11px"}}>v1.3.4</span>
         </div>
 
         {/* Sidebar tree */}
@@ -454,6 +453,16 @@ export function AppLayout() {
             <span className="text-xs w-4 text-center opacity-50">&#128274;</span> Login
           </Link>
         </nav>
+
+        {/* Version footer */}
+        <div className="px-3.5 py-2 border-t border-sidebar-border">
+          <span
+            className="text-[10px] text-sidebar-text/40"
+            title={`Built ${__BUILD_DATE__}`}
+          >
+            v{__APP_VERSION__} &middot; {__BUILD_SHA__}
+          </span>
+        </div>
       </aside>
 
       {/* Main area */}

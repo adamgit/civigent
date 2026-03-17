@@ -91,6 +91,16 @@ a {
   border-radius: 3px;
 }
 
+/* ===== DRAG/DROP INDICATORS ===== */
+.section-drop-target {
+  border-top: 2px solid var(--color-accent);
+  transition: border-color 0.15s;
+}
+.section-drop-blocked {
+  border-top: 2px solid var(--color-status-red);
+  opacity: 0.6;
+}
+
 /* ===== DOCUMENT TYPOGRAPHY (inside rendered markdown) ===== */
 .doc-prose h1 {
   font-family: var(--font-body);
@@ -193,6 +203,9 @@ a {
   border-top: 1px solid #eae7e2;
   margin: 24px 0;
 }
+.doc-prose > *:not(table) {
+  max-width: 588px;
+}
 
 /* ===== MILKDOWN / CREPE TYPOGRAPHY OVERRIDES ===== */
 /* Match .doc-prose typography so read-only ↔ editor transitions are seamless. */
@@ -205,6 +218,9 @@ a {
 
 .milkdown .ProseMirror {
   padding: 0;
+}
+.milkdown .ProseMirror > *:not(.milkdown-table-block) {
+  max-width: 588px;
 }
 
 .milkdown .ProseMirror h1 {
@@ -293,6 +309,11 @@ a {
   margin-bottom: 12px;
   font-family: var(--font-body);
   font-size: 14px;
+  table-layout: auto;
+  width: auto;
+}
+.milkdown .ProseMirror .tableWrapper {
+  overflow: visible;
 }
 .milkdown .ProseMirror th,
 .milkdown .ProseMirror td {

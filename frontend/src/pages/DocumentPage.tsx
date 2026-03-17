@@ -8,6 +8,8 @@ import { CrdtProvider, type CrdtConnectionState, type StructureWillChangePayload
 import { ObserverCrdtProvider } from "../services/observer-crdt-provider";
 import { fragmentToMarkdown } from "../services/fragment-to-markdown";
 import { getLastDocumentVisitAt, markDocumentVisitedNow } from "../services/document-visit-history";
+import { SectionTransferService } from "../services/section-transfer";
+import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
 import { rememberRecentDoc } from "../services/recent-docs";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
 import { MilkdownEditor, type MilkdownEditorHandle } from "../components/MilkdownEditor";
@@ -241,6 +243,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const [crdtState, setCrdtState] = useState<CrdtConnectionState>("disconnected");
   const [crdtError, setCrdtError] = useState<string | null>(null);
   const [editingLoading, setEditingLoading] = useState(false);
+  const [readyEditors, setReadyEditors] = useState<Set<number>>(new Set());
   /** Per-section persistence state — single source of truth for dots and summary. */
   const [sectionPersistence, setSectionPersistence] = useState<Map<string, SectionPersistenceState>>(new Map());
   /** Deletion placeholders for sections removed but not yet confirmed by server. */
@@ -250,7 +253,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const crdtProviderRef = useRef<CrdtProvider | null>(null);
   const observerRef = useRef<ObserverCrdtProvider | null>(null);
   const editorRefs = useRef<Map<number, MilkdownEditorHandle>>(new Map());
-  const pendingFocusRef = useRef<{ index: number; position: "start" | "end" } | null>(null);
+  const pendingFocusRef = useRef<{ index: number; position: "start" | "end"; coords?: { x: number; y: number } } | null>(null);
   const pendingStructureRefocusRef = useRef<string[] | null>(null);
   const focusedSectionIndexRef = useRef<number | null>(null);
   const sectionsRef = useRef<DocumentSection[]>([]);
@@ -262,6 +265,8 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const proposalSectionsRef = useRef<Map<string, { doc_path: string; heading_path: string[]; content: string }>>(new Map());
   const proposalSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sectionsContainerRef = useRef<HTMLDivElement>(null);
+  const mouseDownPosRef = useRef<{ x: number; y: number } | null>(null);
+  const deferredEditIndexRef = useRef<number | null>(null);
 
   // ── Metadata state ───────────────────────────────────────
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -273,9 +278,11 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
   // ── v3: Presence indicators ──────────────────────────────
   const [presenceIndicators, setPresenceIndicators] = useState<PresenceIndicator[]>([]);
+  const presenceIndicatorsRef = useRef<PresenceIndicator[]>([]);
 
   // ── v3: Pending proposal indicators ─────────────────────
   const [pendingProposalIndicators, setPendingProposalIndicators] = useState<PendingProposalIndicator[]>([]);
+  const pendingProposalIndicatorsRef = useRef<PendingProposalIndicator[]>([]);
 
   const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
 
@@ -284,6 +291,44 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const focusedHeadingPath = focusedSectionIndex !== null && sections[focusedSectionIndex]
     ? sections[focusedSectionIndex].heading_path
     : null;
+
+  // ── Cross-section drag/drop service ──────────────────────
+  const transferServiceRef = useRef<SectionTransferService | null>(null);
+  const activeCrdtProvider = crdtProviderRef.current;
+  if (activeCrdtProvider && !transferServiceRef.current) {
+    transferServiceRef.current = new SectionTransferService({
+      crdtProvider: activeCrdtProvider,
+      getSections: () => sectionsRef.current.map(s => ({
+        heading_path: s.heading_path,
+        fragment_key: fragmentKeyFromSectionFile(s.section_file, s.heading_path),
+        blocked: !!(s as any).blocked,
+      })),
+      getPresenceIndicators: () => presenceIndicatorsRef.current.map(p => ({
+        sectionKey: p.sectionKey,
+        writerDisplayName: p.writerDisplayName,
+      })),
+      getProposalIndicators: () => pendingProposalIndicatorsRef.current.map(p => ({
+        sectionKey: p.sectionKey,
+        writerDisplayName: p.writerDisplayName,
+      })),
+    });
+  }
+  if (!activeCrdtProvider) transferServiceRef.current = null;
+
+  const { dragOverSectionIndex } = useSectionDragDrop({
+    containerRef: sectionsContainerRef,
+    transferService: transferServiceRef.current,
+    getFragmentKey: (idx) => {
+      const s = sectionsRef.current[idx];
+      return s ? fragmentKeyFromSectionFile(s.section_file, s.heading_path) : null;
+    },
+    getHeadingPath: (idx) => {
+      const s = sectionsRef.current[idx];
+      return s ? s.heading_path : null;
+    },
+    hasEditor: (idx) => editorRefs.current.has(idx),
+    getSectionContent: (idx) => sectionsRef.current[idx]?.content ?? null,
+  });
 
   // ── Highlight map: recently changed sections within HIGHLIGHT_DURATION_MS ──
   const recentlyChangedByLabel = useMemo(() => {
@@ -322,10 +367,17 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   }, [crdtProvider]);
   useEffect(() => {
     focusedSectionIndexRef.current = focusedSectionIndex;
+    setReadyEditors(new Set());
   }, [focusedSectionIndex]);
   useEffect(() => {
     sectionsRef.current = sections;
   }, [sections]);
+  useEffect(() => {
+    presenceIndicatorsRef.current = presenceIndicators;
+  }, [presenceIndicators]);
+  useEffect(() => {
+    pendingProposalIndicatorsRef.current = pendingProposalIndicators;
+  }, [pendingProposalIndicators]);
 
   useEffect(() => {
     return () => {
@@ -839,7 +891,15 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         onStateChange: (state: CrdtConnectionState) => {
           setCrdtState(state);
         },
-        onSynced: () => { /* Y.Doc now has server state */ },
+        onSynced: () => {
+          // Y.Doc now has server state — apply deferred focus if pending
+          const deferredIdx = deferredEditIndexRef.current;
+          if (deferredIdx !== null) {
+            deferredEditIndexRef.current = null;
+            setFocusedSectionIndex(deferredIdx);
+            pendingFocusRef.current = { index: deferredIdx, position: "start" };
+          }
+        },
         onError: (reason: string) => setCrdtError(`CRDT sync error: ${reason}`),
         onFlushStarted: () => {
           // All dirty sections → pending
@@ -928,19 +988,25 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   }, [sections]);
 
   // ── Click-to-edit a section ────────────────────────────
-  const startEditing = useCallback(async (sectionIndex: number) => {
+  const startEditing = useCallback(async (sectionIndex: number, clickCoords?: { x: number; y: number }) => {
+    const hadProvider = !!crdtProviderRef.current;
     const provider = await ensureProvider();
     if (!provider) return;
 
-    setFocusedSectionIndex(sectionIndex);
-    pendingFocusRef.current = { index: sectionIndex, position: "start" };
+    if (hadProvider) {
+      // Existing provider — Y.Doc already has content, focus immediately
+      setFocusedSectionIndex(sectionIndex);
+      pendingFocusRef.current = { index: sectionIndex, position: "start", coords: clickCoords };
+    } else {
+      // New provider — defer focus until onSynced fires (Y.Doc is empty until then)
+      deferredEditIndexRef.current = sectionIndex;
+    }
 
     // Notify server of section focus (editingPresence)
     const section = sections[sectionIndex];
     if (section) {
       provider.focusSection(section.heading_path);
     }
-    // viewingPresence: broadcast which section we're viewing
     setViewingSections(provider, sectionIndex);
   }, [ensureProvider, sections, setViewingSections]);
 
@@ -967,22 +1033,29 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     }
   }, [sections, setViewingSections]);
 
-  // ── Focus editor after focusedSectionIndex changes ──────
+  // ── Focus editor after it is ready AND visible ──────────
+  // Deferred until readyEditors includes the target index, so
+  // posAtCoords has rendered text to work with.
   useEffect(() => {
     if (!pendingFocusRef.current) return;
-    const { index, position } = pendingFocusRef.current;
+    const { index, position, coords } = pendingFocusRef.current;
+    if (!readyEditors.has(index)) return;
 
-    // Use requestAnimationFrame to wait for the editor to mount
+    // One frame after visibility swap so the browser has painted the editor
     const raf = requestAnimationFrame(() => {
       const handle = editorRefs.current.get(index);
       if (handle) {
-        handle.focus(position);
+        if (coords) {
+          handle.focusAtCoords(coords.x, coords.y);
+        } else {
+          handle.focus(position);
+        }
       }
       pendingFocusRef.current = null;
     });
 
     return () => cancelAnimationFrame(raf);
-  }, [focusedSectionIndex]);
+  }, [focusedSectionIndex, readyEditors]);
 
   // ── Restore focus after doc_structure:changed re-fetches sections ──
   useEffect(() => {
@@ -1148,8 +1221,8 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
       )}
 
       {/* Canvas scroll area */}
-      <div className="flex-1 overflow-y-auto canvas-scroll px-5 pt-8 pb-24" style={{ background: "var(--color-page-bg)" }}>
-        <div ref={sectionsContainerRef} className="max-w-[700px] mx-auto bg-canvas-bg shadow-[0_1px_4px_rgba(0,0,0,0.04),0_6px_24px_rgba(0,0,0,0.025)] rounded-sm px-14 pt-12 pb-16 relative min-h-[calc(100vh-200px)]">
+      <div className="flex-1 overflow-auto canvas-scroll px-5 pt-8 pb-24" style={{ background: "var(--color-page-bg)" }}>
+        <div ref={sectionsContainerRef} className="min-w-[700px] w-fit mx-auto bg-canvas-bg shadow-[0_1px_4px_rgba(0,0,0,0.04),0_6px_24px_rgba(0,0,0,0.025)] rounded-sm px-14 pt-12 pb-16 relative min-h-[calc(100vh-200px)]">
           {/* Document title */}
           <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight mb-1 tracking-tight">
             {docTitle}
@@ -1304,109 +1377,17 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
                     ? `bg-amber-50/50 border-l-amber-400 opacity-75`
                     : isInProposal
                     ? `bg-blue-50/30 border-l-blue-500`
-                    : isFocused
-                    ? `bg-[rgba(45,122,138,0.06)] border-l-accent`
-                    : hasEditor
-                    ? `bg-[rgba(45,122,138,0.02)] border-l-accent/40`
                     : highlightEntry
                     ? `bg-green-50/70 border-l-green-400 cursor-pointer hover:bg-section-hover`
                     : `cursor-pointer hover:bg-section-hover ${involvementBorderClass(humanInvolvementScore)}`
-                }`}
-                onClick={isLockedByOtherHuman ? undefined : hasEditor ? undefined : () => void startEditing(i)}
+                }${dragOverSectionIndex === i ? " section-drop-target" : ""}`}
+                onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
+                onClick={isLockedByOtherHuman ? undefined : hasEditor ? undefined : (e) => {
+                  const down = mouseDownPosRef.current;
+                  if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
+                  void startEditing(i, { x: e.clientX, y: e.clientY });
+                }}
               >
-                {/* Hover hint / editing label */}
-                {!hasEditor && !isLockedByOtherHuman ? (
-                  <span className="absolute top-1 right-2 text-[10px] text-text-muted bg-white/80 px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                    Click to edit
-                  </span>
-                ) : isFocused ? (
-                  <span className="text-[10px] font-medium text-accent mb-1 block">
-                    {editingLoading ? "Connecting\u2026" : "Editing"}
-                  </span>
-                ) : null}
-
-                {/* Section metadata badges */}
-                <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
-                  {/* Per-section persistence dot */}
-                  {persistState === "dirty" ? (
-                    <span className="inline-flex items-center gap-1 text-[9px] font-medium text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded-full">
-                      <span className="w-[5px] h-[5px] rounded-full bg-blue-400" />
-                      Unsaved
-                    </span>
-                  ) : persistState === "pending" ? (
-                    <span className="inline-flex items-center gap-1 text-[9px] font-medium text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-full">
-                      <span className="w-[5px] h-[5px] rounded-full bg-amber-400" />
-                      Saving\u2026
-                    </span>
-                  ) : persistState === "flushed" ? (
-                    <span className="inline-flex items-center gap-1 text-[9px] font-medium text-green-700 bg-green-50 px-1.5 py-0.5 rounded-full">
-                      <span className="w-[5px] h-[5px] rounded-full bg-green-500 opacity-70" />
-                      Saved
-                    </span>
-                  ) : null}
-
-                  {/* Proposal mode indicators */}
-                  {isInProposal ? (
-                    <span className="inline-flex items-center gap-1 text-[9px] font-medium text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded-full">
-                      <span className="w-[5px] h-[5px] rounded-full bg-blue-500" />
-                      In proposal
-                    </span>
-                  ) : null}
-                  {isLockedByOtherHuman ? (
-                    <span className="inline-flex items-center gap-1 text-[9px] font-medium text-amber-700 bg-amber-50 border border-amber-300 px-1.5 py-0.5 rounded-full">
-                      Reserved by another user
-                    </span>
-                  ) : null}
-
-                  {/* Active CRDT session indicator */}
-                  {crdtActive && !hasEditor ? (
-                    <span className="inline-flex items-center gap-1 text-[9px] font-medium text-accent bg-accent/10 px-1.5 py-0.5 rounded-full">
-                      <span className="w-[5px] h-[5px] rounded-full bg-accent animate-pulse" />
-                      Active CRDT session
-                    </span>
-                  ) : null}
-
-                  {/* editingPresence indicators for this section (server-authoritative) */}
-                  {sectionPresence.map((p) => (
-                    <span key={p.key} className="inline-flex items-center gap-1 text-[9px] font-medium text-agent-text bg-agent-light border border-agent-border px-1.5 py-0.5 rounded-full">
-                      <span className="w-[5px] h-[5px] rounded-full bg-agent animate-[pulse-agent_2s_ease-in-out_infinite]" />
-                      {p.writerDisplayName}
-                    </span>
-                  ))}
-
-                  {/* viewingPresence dots (Awareness-based, cosmetic UI only) */}
-                  <ViewingPresenceDots
-                    awareness={crdtProviderRef.current?.awareness ?? null}
-                    sectionKey={fk}
-                  />
-
-                  {/* Transient highlight: "Updated by {name}" annotation */}
-                  {highlightEntry ? (
-                    <span className="inline-flex items-center gap-1 text-[9px] font-medium text-green-700 bg-green-50 border border-green-200 px-1.5 py-0.5 rounded-full">
-                      Updated by {highlightEntry.changedByName}
-                    </span>
-                  ) : null}
-
-                  {/* Pending proposal indicators */}
-                  {sectionProposals.map((p) => (
-                    <span key={p.proposalId} className="inline-flex items-center gap-1 text-[9px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
-                      <span className="w-[5px] h-[5px] rounded-full bg-amber-400 animate-pulse" />
-                      Agent '{p.writerDisplayName}' wants to modify this section
-                    </span>
-                  ))}
-
-                  {/* Human involvement score badge (only for non-zero scores) */}
-                  {humanInvolvementScore > 0.3 ? (
-                    <span className={`inline-flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded-full ${
-                      humanInvolvementScore > 0.5
-                        ? "text-blue-700 bg-blue-50 border border-blue-200"
-                        : "text-blue-500 bg-blue-50/50 border border-blue-100"
-                    }`}>
-                      {humanInvolvementScore > 0.5 ? "High" : "Medium"} human involvement ({humanInvolvementScore.toFixed(2)})
-                    </span>
-                  ) : null}
-                </div>
-
                 {/* Section body: editor or static preview */}
                 {isRestructuring ? (
                   <div className="py-3">
@@ -1422,29 +1403,49 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
                       <p className="text-xs">{crdtError}</p>
                     </div>
                   ) : (
-                    <div
-                      className="my-2 min-h-[60px]"
-                      onClick={() => {
-                        if (!isFocused) {
-                          setFocusedSectionIndex(i);
-                          pendingFocusRef.current = { index: i, position: "start" };
-                          const provider = crdtProviderRef.current;
-                          if (provider) {
-                            provider.focusSection(section.heading_path);
-                            setViewingSections(provider, i);
+                    <div className="relative my-2">
+                      {/* ReactMarkdown underlayer — visible until editor is ready */}
+                      <div className="doc-prose" style={{ display: readyEditors.has(i) ? "none" : undefined }}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
+                      </div>
+                      {/* MilkdownEditor overlay — absolute until ready, then back in flow */}
+                      <div
+                        className={readyEditors.has(i) ? "" : "absolute inset-0"}
+                        style={{ minHeight: readyEditors.has(i) ? undefined : 60 }}
+                        onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
+                        onClick={(e) => {
+                          const down = mouseDownPosRef.current;
+                          if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
+                          if (!isFocused) {
+                            setFocusedSectionIndex(i);
+                            pendingFocusRef.current = { index: i, position: "start", coords: { x: e.clientX, y: e.clientY } };
+                            const provider = crdtProviderRef.current;
+                            if (provider) {
+                              provider.focusSection(section.heading_path);
+                              setViewingSections(provider, i);
+                            }
                           }
-                        }
-                      }}
-                    >
-                      <MilkdownEditor
-                        ref={(handle) => setEditorRef(i, handle)}
-                        markdown={section.content}
-                        crdtProvider={proposalMode ? null : crdtProvider}
-                        fragmentKey={fk}
-                        userName={resolveWriterId()}
-                        onChange={proposalMode ? (md) => handleProposalSectionChange(i, md) : undefined}
-                        onCursorExit={(direction) => handleCursorExit(i, direction)}
-                      />
+                        }}
+                      >
+                        <MilkdownEditor
+                          ref={(handle) => setEditorRef(i, handle)}
+                          markdown={section.content}
+                          crdtProvider={proposalMode ? null : crdtProvider}
+                          fragmentKey={fk}
+                          userName={resolveWriterId()}
+                          onChange={proposalMode ? (md) => handleProposalSectionChange(i, md) : undefined}
+                          onCursorExit={(direction) => handleCursorExit(i, direction)}
+                          onCrossSectionDrop={(transfer) => {
+                            transfer.targetHeadingPath = section.heading_path;
+                            const srcSection = sections.find(s =>
+                              fragmentKeyFromSectionFile(s.section_file, s.heading_path) === transfer.sourceFragmentKey,
+                            );
+                            if (srcSection) transfer.sourceHeadingPath = srcSection.heading_path;
+                            void transferServiceRef.current?.execute(transfer);
+                          }}
+                          onReady={() => setReadyEditors(prev => new Set([...prev, i]))}
+                        />
+                      </div>
                     </div>
                   )
                 ) : (

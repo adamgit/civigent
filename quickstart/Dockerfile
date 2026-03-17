@@ -25,6 +25,8 @@ RUN cd sharedlibs/milkdown-serializer && npm run build \
 
 COPY backend backend
 RUN cd backend && npm run build
+COPY package.json ./package.json
+RUN echo "{\"version\":\"$(node -p "require('./package.json').version")\",\"sha\":\"$(git rev-parse --short=7 HEAD)\",\"date\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > backend/dist/build-info.json
 
 COPY frontend frontend
 RUN cd frontend && npm run build

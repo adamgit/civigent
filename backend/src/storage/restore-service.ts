@@ -59,18 +59,18 @@ export async function createRestoreProposal(
     currentHeadingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp })),
   );
 
-  // Extract historical skeleton file into the proposal overlay
-  // The skeleton file is at content/<docPath> (e.g. content/my-doc.md)
+  // Extract historical files into a temporary location, then assemble and
+  // re-write through writeAssembledDocument to ensure normalization.
   const { writeFile, mkdir } = await import("node:fs/promises");
   const { gitShowFile } = await import("./git-repo.js");
   const path = await import("node:path");
 
+  // Extract historical skeleton + body files into the overlay (raw extraction)
   const historicalSkeletonContent = await gitShowFile(dataRoot, targetSha, skeletonGitPrefix);
   const overlaySkeletonPath = path.resolve(contentRoot, ...normalized.split("/"));
   await mkdir(path.dirname(overlaySkeletonPath), { recursive: true });
   await writeFile(overlaySkeletonPath, historicalSkeletonContent, "utf8");
 
-  // Extract historical body files (and sub-skeletons) into the overlay
   await extractHistoricalTree(
     dataRoot,
     targetSha,
@@ -78,17 +78,21 @@ export async function createRestoreProposal(
     path.resolve(contentRoot, ...normalized.split("/")) + ".sections",
   );
 
-  // Now read the restored skeleton via DocumentSkeleton (uses existing parsing)
-  const restoredSkeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
-  const historicalHeadingPaths: string[][] = [];
-  restoredSkeleton.forEachSection((_h, _l, _sf, hp, _ap, isSub) => {
-    if (!isSub) historicalHeadingPaths.push([...hp]);
-  });
+  // Read the historical content as an assembled document, then re-write it
+  // through writeAssembledDocument to normalize the structure. This ensures
+  // restored content is always correctly split into sections, even if the
+  // historical state was itself corrupt (e.g. embedded headings in root body).
+  const historicalLayer = new ContentLayer(contentRoot);
+  const assembledHistorical = await historicalLayer.readAssembledDocument(docPath);
 
-  // Update proposal sections to cover union of current + historical heading paths
+  // Re-write through writeAssembledDocument (normalizes sections + updates skeleton)
+  const normalizedLayer = new ContentLayer(contentRoot);
+  const restoredTargets = await normalizedLayer.writeAssembledDocument(docPath, assembledHistorical);
+
+  // Combine current + restored heading paths for proposal sections
   const allPaths = new Map<string, string[]>();
   for (const hp of currentHeadingPaths) allPaths.set(hp.join(">>"), hp);
-  for (const hp of historicalHeadingPaths) allPaths.set(hp.join(">>"), hp);
+  for (const t of restoredTargets) allPaths.set(t.heading_path.join(">>"), t.heading_path);
 
   const { updateProposalSections } = await import("./proposal-repository.js");
   const updatedSections: ProposalSection[] = [...allPaths.values()].map((hp) => ({

@@ -13,7 +13,8 @@
 
 import path from "node:path";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
-import { getContentRoot, getSessionDocsRoot, getSessionAuthorsRoot, getSessionFragmentsRoot } from "./data-root.js";
+import { getContentRoot, getDataRoot, getSessionDocsRoot, getSessionAuthorsRoot, getSessionFragmentsRoot } from "./data-root.js";
+import { gitExec } from "./git-repo.js";
 
 import { DocumentSkeleton } from "./document-skeleton.js";
 import { commitHumanChangesToCanonical } from "./commit-pipeline.js";
@@ -313,12 +314,29 @@ export async function commitSessionFilesToCanonical(
     return { sectionsCommitted: 0, committedSections: [] };
   }
 
-  const commitSha = await commitHumanChangesToCanonical(writer, sectionsToCommit, coAuthors);
-  const committedSections = sectionsToCommit.map((s) => ({
-    doc_path: s.doc_path,
-    heading_path: s.heading_path,
-  }));
-  return { sectionsCommitted: sectionsToCommit.length, commitSha, committedSections };
+  try {
+    const commitSha = await commitHumanChangesToCanonical(writer, sectionsToCommit, coAuthors);
+    const committedSections = sectionsToCommit.map((s) => ({
+      doc_path: s.doc_path,
+      heading_path: s.heading_path,
+    }));
+    return { sectionsCommitted: sectionsToCommit.length, commitSha, committedSections };
+  } catch (err) {
+    // Rollback: restore canonical content/ to last committed state.
+    // promoteOverlay() already modified canonical files on disk, so a failed
+    // git commit would leave canonical in a half-promoted state.
+    const dataRoot = getDataRoot();
+    try {
+      await gitExec(["reset", "HEAD", "--", "content/"], dataRoot);
+      await gitExec(["checkout", "--", "content/"], dataRoot);
+    } catch (rollbackErr) {
+      console.error(
+        "commitSessionFilesToCanonical: rollback failed:",
+        rollbackErr instanceof Error ? rollbackErr.message : rollbackErr,
+      );
+    }
+    throw err;
+  }
 }
 
 // ─── scanSessionDocPaths ─────────────────────────────────────────

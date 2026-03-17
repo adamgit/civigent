@@ -110,7 +110,7 @@ describe("Heading deletion merge target", () => {
   });
 
   it("sibling merge: delete ## B merges into ## A", async () => {
-    const store = await FragmentStore.fromDisk(NESTED_DOC_PATH);
+    const { store } = await FragmentStore.fromDisk(NESTED_DOC_PATH);
 
     // Verify initial content
     const bKey = "section::sec_b";
@@ -131,7 +131,7 @@ describe("Heading deletion merge target", () => {
   });
 
   it("nested sibling merge: delete ### SubB merges into ### SubA", async () => {
-    const store = await FragmentStore.fromDisk(NESTED_DOC_PATH);
+    const { store } = await FragmentStore.fromDisk(NESTED_DOC_PATH);
 
     const subbKey = "section::sec_subb";
     const subaKey = "section::sec_suba";
@@ -151,7 +151,7 @@ describe("Heading deletion merge target", () => {
   });
 
   it("first child merge: delete ### SubA merges into ## B (parent body)", async () => {
-    const store = await FragmentStore.fromDisk(NESTED_DOC_PATH);
+    const { store } = await FragmentStore.fromDisk(NESTED_DOC_PATH);
 
     const subaKey = "section::sec_suba";
     const bKey = "section::sec_b";
@@ -171,7 +171,7 @@ describe("Heading deletion merge target", () => {
   });
 
   it("first top-level section: delete ## A merges into root", async () => {
-    const store = await FragmentStore.fromDisk(NESTED_DOC_PATH);
+    const { store } = await FragmentStore.fromDisk(NESTED_DOC_PATH);
 
     const aKey = "section::sec_a";
     const rootKey = "section::__root__";

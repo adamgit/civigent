@@ -117,7 +117,31 @@ export async function acquireDocSession(
   }
 
   // Case 2 or 3: Build FragmentStore from disk (session overlay or canonical)
-  const fragments = await FragmentStore.fromDisk(docPath);
+  const { store: fragments, orphanedBodies } = await FragmentStore.fromDisk(docPath);
+  if (orphanedBodies.length > 0) {
+    console.warn(
+      `acquireDocSession: ${orphanedBodies.length} orphaned session bodies found for ${docPath}:`,
+      orphanedBodies.map(o => o.sectionFile),
+    );
+    // Append a "Recovered edits" section so the user can review orphaned content
+    const { buildRecoverySectionMarkdown } = await import("../storage/crash-recovery.js");
+    const recoveryBody = buildRecoverySectionMarkdown(orphanedBodies);
+    const recoverySection = { heading: "Recovered edits", level: 2, body: recoveryBody, headingPath: ["Recovered edits"] };
+    const addedEntries = fragments.skeleton.addSectionsFromRootSplit([recoverySection]);
+    for (const addedEntry of addedEntries) {
+      if (addedEntry.isSubSkeleton) continue;
+      const isRoot = FragmentStore.isDocumentRoot(addedEntry);
+      const newKey = fragmentKeyFromSectionFile(addedEntry.sectionFile, isRoot);
+      const headingLine = `${"#".repeat(addedEntry.level)} ${addedEntry.heading}`;
+      const fragmentContent = recoveryBody.trim()
+        ? `${headingLine}\n\n${recoveryBody}`
+        : headingLine;
+      fragments.populateFragment(newKey, fragmentContent);
+    }
+    if (fragments.skeleton.dirty) {
+      await fragments.skeleton.persist();
+    }
+  }
 
   const touchedSet = new Set<string>();
 
@@ -288,8 +312,8 @@ async function normalizeAllFragments(session: DocSession): Promise<void> {
 
   // Collect fragment keys first (normalization may mutate the skeleton)
   const keys: string[] = [];
-  fragments.skeleton.forEachSection((heading, level, sectionFile) => {
-    const isRoot = level === 0 && heading === "";
+  fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+    const isRoot = FragmentStore.isDocumentRoot({ headingPath, level, heading });
     keys.push(fragmentKeyFromSectionFile(sectionFile, isRoot));
   });
 

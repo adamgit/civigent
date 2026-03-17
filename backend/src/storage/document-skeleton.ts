@@ -251,13 +251,29 @@ export class DocumentSkeleton {
       return null;
     }
     const sectionsDir = `${this.skeletonPath}.sections`;
+    // If root has children, follow through to its root child (body file)
+    if (rootNode.children.length > 0) {
+      const rootChild = rootNode.children.find(c => c.level === 0 && c.heading === "");
+      if (rootChild) {
+        const absPath = path.join(sectionsDir, rootNode.sectionFile);
+        const childSectionsDir = `${absPath}.sections`;
+        return {
+          headingPath: [],
+          heading: rootNode.heading,
+          level: rootNode.level,
+          sectionFile: rootChild.sectionFile,
+          absolutePath: path.join(childSectionsDir, rootChild.sectionFile),
+          isSubSkeleton: false,
+        };
+      }
+    }
     return {
       headingPath: [],
       heading: rootNode.heading,
       level: rootNode.level,
       sectionFile: rootNode.sectionFile,
       absolutePath: path.join(sectionsDir, rootNode.sectionFile),
-      isSubSkeleton: rootNode.children.length > 0,
+      isSubSkeleton: false,
     };
   }
 
@@ -342,13 +358,29 @@ export class DocumentSkeleton {
       const absPath = path.join(sectionsDir, node.sectionFile);
 
       if (i === headingPath.length - 1) {
+        // If this node has children, its file is a sub-skeleton — follow through
+        // to the root child (level=0, heading="") which holds the actual body content.
+        if (node.children.length > 0) {
+          const rootChild = node.children.find(c => c.level === 0 && c.heading === "");
+          if (rootChild) {
+            const childSectionsDir = `${absPath}.sections`;
+            return {
+              headingPath: [...resolvedPath],
+              heading: node.heading,
+              level: node.level,
+              sectionFile: rootChild.sectionFile,
+              absolutePath: path.join(childSectionsDir, rootChild.sectionFile),
+              isSubSkeleton: false,
+            };
+          }
+        }
         return {
           headingPath: [...resolvedPath],
           heading: node.heading,
           level: node.level,
           sectionFile: node.sectionFile,
           absolutePath: absPath,
-          isSubSkeleton: node.children.length > 0,
+          isSubSkeleton: false,
         };
       }
 
@@ -779,6 +811,7 @@ export class DocumentSkeleton {
     canonicalRoot: string,
   ): Promise<DocumentSkeleton> {
     const { nodes, overlayExisted } = await buildSkeletonTree(docPath, overlayRoot, canonicalRoot);
+    validateNoDuplicateRoots(nodes, docPath);
     const skeleton = new DocumentSkeleton(docPath, nodes, overlayRoot, canonicalRoot);
     skeleton._overlayPersisted = overlayExisted;
     return skeleton;
@@ -907,8 +940,9 @@ async function buildSkeletonTree(
   // Try overlay first, then canonical
   let skeletonPath: string;
   let overlayExisted = false;
+  let overlayContent: string | null = null;
   try {
-    await readFile(overlayPath, "utf8");
+    overlayContent = await readFile(overlayPath, "utf8");
     skeletonPath = overlayPath;
     overlayExisted = true;
   } catch (err) {
@@ -922,7 +956,20 @@ async function buildSkeletonTree(
     }
   }
 
-  const nodes = await readTreeRecursive(skeletonPath);
+  let nodes = await readTreeRecursive(skeletonPath);
+
+  // If overlay produced zero entries, check canonical before giving up.
+  // An empty/corrupt overlay must not mask a valid canonical skeleton.
+  if (nodes.length === 0 && overlayExisted) {
+    const canonicalNodes = await readTreeRecursive(canonicalPath);
+    if (canonicalNodes.length > 0) {
+      console.warn(
+        `DocumentSkeleton: overlay skeleton for ${docPath} is empty but canonical has ${canonicalNodes.length} entries — falling back to canonical`,
+      );
+      nodes = canonicalNodes;
+    }
+  }
+
   return { nodes, overlayExisted };
 }
 
@@ -965,6 +1012,22 @@ async function readTreeRecursive(skeletonPath: string): Promise<SkeletonNode[]> 
   }
 
   return nodes;
+}
+
+/**
+ * Validate that a skeleton has at most one root entry (level=0, heading="")
+ * at the top level. Duplicate roots represent an impossible state that causes
+ * data loss on re-normalization. Throws immediately rather than letting the
+ * corruption cascade.
+ */
+function validateNoDuplicateRoots(nodes: SkeletonNode[], docPath: string): void {
+  const rootCount = nodes.filter(n => n.level === 0 && n.heading === "").length;
+  if (rootCount > 1) {
+    throw new Error(
+      `Skeleton integrity error: ${rootCount} duplicate root entries (level=0, heading="") ` +
+      `in ${docPath}. This is an impossible state — only one root is allowed.`,
+    );
+  }
 }
 
 /**

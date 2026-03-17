@@ -26,6 +26,7 @@ import {
   useEffect,
   useImperativeHandle,
   useRef,
+  useState,
   type Ref,
 } from "react";
 import { Crepe, CrepeFeature } from "@milkdown/crepe";
@@ -38,6 +39,23 @@ import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
 
 import { normalizeMarkdown, resolveHeadingPathFromDoc } from "./milkdown-utils";
+import { proseMirrorNodeToMarkdown } from "@ks/milkdown-serializer";
+import { pmPosToMarkdownOffset } from "../services/drop-position";
+import type { SectionTransfer } from "../services/section-transfer";
+
+// ─── Module-level drag source tracking ───────────────────
+// Only one drag can be active at a time, so a module-level
+// variable is safe. Set on dragstart, cleared on dragend.
+
+export interface DragSourceInfo {
+  fragmentKey: string;
+  from: number;
+  to: number;
+  /** Reference to the source ProseMirror view for deletion after cross-section drop. */
+  view: import("@milkdown/prose/view").EditorView;
+}
+
+export let dragSourceInfo: DragSourceInfo | null = null;
 
 /**
  * Custom cursor builder for yCursorPlugin.
@@ -71,6 +89,10 @@ export interface MilkdownEditorHandle {
   getActiveHeadingPath(): string[];
   /** Focus this editor, placing cursor at start or end. */
   focus(position: "start" | "end"): void;
+  /** Focus this editor, placing caret at the given viewport coordinates.
+   *  Falls back to focus("start") if coords don't resolve to a position.
+   *  Must only be called when editor is ready AND visible. */
+  focusAtCoords(x: number, y: number): void;
   /** Get the ProseMirror EditorView (for cross-section copy slicing). */
   getView(): import("@milkdown/prose/view").EditorView | null;
 }
@@ -94,6 +116,10 @@ export interface MilkdownEditorProps {
   userColor?: string;
   /** Called when the cursor exits the editor boundary (ArrowUp at start, ArrowDown at end). */
   onCursorExit?: (direction: "up" | "down") => void;
+  /** Called when content is dropped from a different section's editor. */
+  onCrossSectionDrop?: (transfer: SectionTransfer) => void;
+  /** Called when the editor is fully initialized and has content (safe to display). */
+  onReady?: () => void;
 }
 
 // ─── Default cursor colors (assigned by hashing name) ────
@@ -129,6 +155,8 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     userName = "Anonymous",
     userColor,
     onCursorExit,
+    onCrossSectionDrop,
+    onReady,
   } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -144,6 +172,11 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   onHeadingPathChangeRef.current = onHeadingPathChange;
   const onCursorExitRef = useRef(onCursorExit);
   onCursorExitRef.current = onCursorExit;
+  const onCrossSectionDropRef = useRef(onCrossSectionDrop);
+  onCrossSectionDropRef.current = onCrossSectionDrop;
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  const [ready, setReady] = useState(false);
 
   // ── Focus helper (safe to call only after create() resolves) ──
 
@@ -182,6 +215,21 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
         return;
       }
       doFocus(crepe, position);
+    },
+    focusAtCoords(x: number, y: number): void {
+      const crepe = crepeRef.current;
+      if (!crepe || !readyRef.current) return;
+      const view = crepe.editor.ctx.get(editorViewCtx);
+      const posResult = view.posAtCoords({ left: x, top: y });
+      if (posResult) {
+        const { doc } = view.state;
+        const pos = Math.max(1, Math.min(posResult.pos, doc.content.size - 1));
+        const tr = view.state.tr.setSelection(TextSelection.create(doc, pos));
+        view.dispatch(tr);
+        view.focus();
+      } else {
+        doFocus(crepe, "start");
+      }
     },
     getView() {
       const crepe = crepeRef.current;
@@ -251,6 +299,87 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
             }
           }
           return false;
+        },
+      },
+    })));
+
+    // ── Drag-source tracking ─────────────────────────────
+    // Records which fragment/range is being dragged so the drop target
+    // can detect cross-section drops.
+
+    const fragmentKeyCapture = fragmentKey;
+    crepe.editor.use($prose(() => new Plugin({
+      props: {
+        handleDOMEvents: {
+          dragstart(view) {
+            const { from, to } = view.state.selection;
+            dragSourceInfo = { fragmentKey: fragmentKeyCapture, from, to, view };
+            return false;
+          },
+          dragend() {
+            dragSourceInfo = null;
+            return false;
+          },
+        },
+      },
+    })));
+
+    // ── Cross-section drop interception ────────────────
+    // If a drop comes from a different section, intercept it and route
+    // through the SectionTransferService via onCrossSectionDrop callback.
+
+    crepe.editor.use($prose(() => new Plugin({
+      props: {
+        handleDrop(view, event) {
+          const dropCb = onCrossSectionDropRef.current;
+          if (!dropCb || !event) return false;
+
+          // Is this a cross-section drop?
+          const source = dragSourceInfo;
+          if (!source || source.fragmentKey === fragmentKeyCapture) return false;
+
+          // Cross-section drop detected — intercept
+          event.preventDefault();
+
+          const dt = event.dataTransfer;
+          const plainText = dt?.getData("text/plain") ?? "";
+
+          // Extract markdown from the source ProseMirror document
+          const sourceView = source.view;
+          const sourceFrom = source.from;
+          const sourceTo = source.to;
+          const slice = sourceView.state.doc.slice(sourceFrom, sourceTo);
+          const docNode = sourceView.state.doc.type.create(null, slice.content);
+          const markdown = proseMirrorNodeToMarkdown(docNode);
+
+          const deleteSourceCallback = () => {
+            const tr = sourceView.state.tr.delete(sourceFrom, sourceTo);
+            sourceView.dispatch(tr);
+          };
+
+          // Compute insertion offset from drop position
+          let insertionOffset: number | undefined;
+          const posResult = view.posAtCoords({ left: event.clientX, top: event.clientY });
+          if (posResult) {
+            const targetMarkdown = proseMirrorNodeToMarkdown(view.state.doc);
+            insertionOffset = pmPosToMarkdownOffset(view, posResult.pos, targetMarkdown);
+          }
+
+          const transfer: SectionTransfer = {
+            sourceFragmentKey: source.fragmentKey,
+            sourceHeadingPath: [],  // Resolved by caller
+            targetFragmentKey: fragmentKeyCapture,
+            targetHeadingPath: [],  // Resolved by caller
+            content: { markdown, plainText },
+            sourceSliceRange: { from: sourceFrom, to: sourceTo },
+            deleteFromSource: true,
+            insertionOffset,
+            deleteSourceCallback,
+          };
+
+          dropCb(transfer);
+          dragSourceInfo = null;
+          return true;
         },
       },
     })));
@@ -333,7 +462,29 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
         });
       }
 
+      // ── Native dragstart/dragend on container ──────────────
+      // ProseMirror's handleDOMEvents only fires for events on the editor's
+      // own view DOM. Crepe's BlockEdit drag handle is a sibling element
+      // outside the view DOM, so we need a native listener on the container
+      // to catch handle-initiated drags.
+      const view = crepe.editor.ctx.get(editorViewCtx);
+      const onDragStart = () => {
+        const { from, to } = view.state.selection;
+        dragSourceInfo = { fragmentKey: fragmentKeyCapture, from, to, view };
+      };
+      const onDragEnd = () => {
+        dragSourceInfo = null;
+      };
+      container.addEventListener("dragstart", onDragStart);
+      container.addEventListener("dragend", onDragEnd);
+      cleanupDragListeners = () => {
+        container.removeEventListener("dragstart", onDragStart);
+        container.removeEventListener("dragend", onDragEnd);
+      };
+
       readyRef.current = true;
+      setReady(true);
+      onReadyRef.current?.();
 
       // If focus() was called while we were initializing, fire it now.
       const pendingPos = deferredFocusRef.current;
@@ -345,9 +496,13 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
       throw err;
     });
 
+    let cleanupDragListeners: (() => void) | null = null;
+
     return () => {
+      cleanupDragListeners?.();
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       readyRef.current = false;
+      setReady(false);
       deferredFocusRef.current = null;
       crepeRef.current = null;
       void crepe.destroy();
@@ -369,7 +524,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   return (
     <div
       ref={containerRef}
-      style={{ width: "100%" }}
+      style={{ visibility: ready ? "visible" : "hidden" }}
     />
   );
 });

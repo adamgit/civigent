@@ -32,6 +32,22 @@ Layer 4: WebSocket Transport
 Layer 5: Browser Editors (Milkdown)
 ```
 
+### Critical abstraction classes
+
+The data architecture is innovative and concise, underpinning many of the core features of the app. Details matter. To make sure implementers and downstream classes never make mistakes, we have centralised the core data architecture into a small number of elegant, encapsulated, classes that provide simple abstractions over the architecture. All code must use these and avoid ever directly editing data.
+
+#### DocumentSkeleton
+
+Owns the heading tree structure of a document: which sections exist, how they nest, and where their body files live on disk. All heading paths, section file paths, and tree structure derive from it. Abstracts the recursive skeleton-file / sub-skeleton / root-child disk format so callers never reason about `.sections/` directories or `{{section:}}` markers directly.
+
+#### ContentLayer
+
+Owns reading and writing section body content against a content root directory. Resolves `(docPath, headingPath)` to a file path via DocumentSkeleton, enforces the body-only invariant (strips heading lines), and supports overlay-first-then-canonical chaining for proposal/session reads. All durable section content I/O outside of CRDT sessions goes through this class.
+
+#### FragmentStore
+
+Owns the Y.Doc ↔ disk boundary for a single document's CRDT editing session. Pairs a Y.Doc (in-memory CRDT fragments) with a DocumentSkeleton, and is the sole owner of the dual-write pattern: raw fragments for crash safety, canonical-ready body files for REST/commit readiness. Handles structural normalization (splitting, renaming, merging sections) when users edit headings inline. Writes body files directly (not via ContentLayer) because it already owns the resolved skeleton and has already stripped headings — re-resolving per write would be redundant I/O on a hot path.
+
 ### Layer 1: Canonical store / Audit log
 
 The core content of all documents, with a private (internal) git repository that provides an Audit Log of all changes to all documents.

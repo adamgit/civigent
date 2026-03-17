@@ -25,6 +25,18 @@ import {
   getBackendSchema,
 } from "./ydoc-fragments.js";
 
+// ─── FromDisk result ─────────────────────────────────────────────
+
+export interface OrphanedBody {
+  sectionFile: string;
+  content: string;
+}
+
+export interface FromDiskResult {
+  store: FragmentStore;
+  orphanedBodies: OrphanedBody[];
+}
+
 // ─── Flush result ────────────────────────────────────────────────
 
 export interface FlushResult {
@@ -81,7 +93,7 @@ export class FragmentStore {
    * the freshest content (heading + body). Falls back to the overlay
    * (sessions/docs/) + canonical path for sections without raw fragments.
    */
-  static async fromDisk(docPath: string): Promise<FragmentStore> {
+  static async fromDisk(docPath: string): Promise<FromDiskResult> {
     // Lazy import to avoid circular dependency (session-store imports from ydoc-lifecycle)
     const {
       listRawFragments,
@@ -93,10 +105,19 @@ export class FragmentStore {
     const overlayRoot = path.join(getSessionDocsRoot(), "content");
     const canonicalRoot = getContentRoot();
 
-    const skeleton = await DocumentSkeleton.fromDisk(docPath, overlayRoot, canonicalRoot);
+    let skeleton: DocumentSkeleton;
+    try {
+      skeleton = await DocumentSkeleton.fromDisk(docPath, overlayRoot, canonicalRoot);
+    } catch (err) {
+      console.error(
+        `FragmentStore.fromDisk: session skeleton corrupt for ${docPath}, falling back to canonical:`,
+        err instanceof Error ? err.message : err,
+      );
+      skeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
+    }
 
     if (skeleton.isEmpty) {
-      return new FragmentStore(ydoc, skeleton, docPath);
+      return { store: new FragmentStore(ydoc, skeleton, docPath), orphanedBodies: [] };
     }
 
     // Check for raw fragment files (crash-safe format, freshest content)
@@ -117,12 +138,16 @@ export class FragmentStore {
     const overlay = new ContentLayer(overlayRoot, canonical);
     const bulkContent = await overlay.readAllSectionsOverlaid(docPath);
 
+    // Collect known section files for orphan detection
+    const knownSectionFiles = new Set<string>();
+
     // Pass 1: collect encoded updates and raw fragment keys via forEachSection
     const pendingUpdates: Uint8Array[] = [];
     const rawFragmentKeys: string[] = [];
 
     skeleton.forEachSection((heading, level, sectionFile, headingPath, _absolutePath, _isSubSkeleton) => {
-      const isRoot = level === 0 && heading === "";
+      knownSectionFiles.add(sectionFile);
+      const isRoot = FragmentStore.isDocumentRoot({ headingPath, level, heading });
       const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
 
       let sectionContent: string;
@@ -164,7 +189,42 @@ export class FragmentStore {
       await store.normalizeStructure(fragmentKey);
     }
 
-    return store;
+    // Pass 3: collect orphaned session bodies (files in overlay/raw that don't
+    // match any section in the skeleton). Only relevant when skeleton fell back
+    // to canonical or session has extra files.
+    const orphanedBodies: OrphanedBody[] = [];
+    const { readdir, readFile } = await import("node:fs/promises");
+
+    // Scan session overlay body files
+    const overlayDocPath = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+    const overlaySkeletonPath = path.resolve(overlayRoot, ...overlayDocPath.split("/"));
+    const overlaySectionsDir = overlaySkeletonPath + ".sections";
+    try {
+      const overlayFiles = await readdir(overlaySectionsDir);
+      for (const file of overlayFiles) {
+        if (!file.endsWith(".md")) continue;
+        if (knownSectionFiles.has(file)) continue;
+        try {
+          const content = await readFile(path.join(overlaySectionsDir, file), "utf8");
+          if (content.trim()) {
+            orphanedBodies.push({ sectionFile: file, content: content.trim() });
+          }
+        } catch { /* skip unreadable */ }
+      }
+    } catch { /* no overlay sections dir */ }
+
+    // Scan raw fragment files
+    for (const rawFile of rawFiles) {
+      if (knownSectionFiles.has(rawFile)) continue;
+      // Already collected from overlay? Skip duplicates
+      if (orphanedBodies.some(o => o.sectionFile === rawFile)) continue;
+      const content = rawContentMap.get(rawFile);
+      if (content && content.trim()) {
+        orphanedBodies.push({ sectionFile: rawFile, content: content.trim() });
+      }
+    }
+
+    return { store, orphanedBodies };
   }
 
   /**
@@ -188,10 +248,14 @@ export class FragmentStore {
 
   // ─── Fragment key derivation ───────────────────────────────────
 
+  /** True only for the document-level root, not sub-skeleton root children. */
+  static isDocumentRoot(entry: { headingPath: string[]; level: number; heading: string }): boolean {
+    return entry.headingPath.length === 0;
+  }
+
   /** Derive the fragment key for a skeleton flat entry. */
   static fragmentKeyFor(entry: FlatEntry): string {
-    const isRoot = entry.level === 0 && entry.heading === "";
-    return fragmentKeyFromSectionFile(entry.sectionFile, isRoot);
+    return fragmentKeyFromSectionFile(entry.sectionFile, FragmentStore.isDocumentRoot(entry));
   }
 
   /** Derive the fragment key for a section file ID. */
@@ -218,8 +282,7 @@ export class FragmentStore {
     const sectionFileId = sectionFileFromFragmentKey(fragmentKey);
     try {
       const entry = this.skeleton.resolveByFileId(sectionFileId);
-      const isRoot = entry.level === 0 && entry.heading === "";
-      if (isRoot) return full;
+      if (FragmentStore.isDocumentRoot(entry)) return full;
       return FragmentStore.stripHeadingFromContent(full, entry.level);
     } catch {
       // If we can't resolve the entry, return as-is
@@ -280,7 +343,7 @@ export class FragmentStore {
     const result = new Map<string, string>();
     this.skeleton.forEachSection((heading, level, sectionFile, headingPath, _absolutePath, isSubSkeleton) => {
       if (isSubSkeleton) return;
-      const isRoot = level === 0 && heading === "";
+      const isRoot = FragmentStore.isDocumentRoot({ headingPath, level, heading });
       const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
       const live = this.readLiveBody(fragmentKey);
       if (live != null) {
@@ -298,8 +361,8 @@ export class FragmentStore {
     if (this.skeleton.isEmpty) return "";
 
     const parts: string[] = [];
-    this.skeleton.forEachSection((heading, level, sectionFile, _headingPath, _absolutePath, _isSubSkeleton) => {
-      const isRoot = level === 0 && heading === "";
+    this.skeleton.forEachSection((heading, level, sectionFile, headingPath, _absolutePath, _isSubSkeleton) => {
+      const isRoot = FragmentStore.isDocumentRoot({ headingPath, level, heading });
       const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
 
       try {
@@ -337,9 +400,7 @@ export class FragmentStore {
     const keysToFlush = new Set(this.dirtyKeys);
     this.dirtyKeys.clear();
 
-    // Lazy import to avoid circular dependency (session-store imports from fragment-store)
-    const { writeRawFragment } = await import("../storage/session-store.js");
-
+    const ops = await this.getSessionStoreOps();
     const writtenKeys: string[] = [];
 
     // Ensure overlay skeleton exists before writing body files
@@ -354,22 +415,25 @@ export class FragmentStore {
       } catch {
         continue;
       }
-      const isRoot = entry.level === 0 && entry.heading === "";
+      const isRoot = FragmentStore.isDocumentRoot(entry);
 
       // 1. Always write raw fragment (heading + body) for crash safety
       const rawMarkdown = this.reconstructFullMarkdown(fragmentKey, entry.level, entry.heading);
-      await writeRawFragment(this.docPath, entry.sectionFile, rawMarkdown);
+      await ops.writeRawFragment(this.docPath, entry.sectionFile, rawMarkdown);
 
       // 2. Check structural cleanness
       const clean = this.isStructurallyClean(rawMarkdown, entry, isRoot);
 
-      // 3. Write canonical-ready (body-only) to sessions/docs/ only when clean
+      // 3. Write canonical-ready (body-only) to sessions/docs/ only when clean.
+      //    Note: flush() does NOT use writeDualFormat because it writes the raw
+      //    fragment first (step 1) with rawMarkdown, then conditionally writes
+      //    the body file only when structurally clean. The raw + body content
+      //    differ (raw = heading+body, body = body-only after stripping).
       if (clean) {
         const body = isRoot
           ? this.extractMarkdown(fragmentKey)
           : FragmentStore.stripHeadingFromContent(this.extractMarkdown(fragmentKey), entry.level);
-        await mkdir(path.dirname(entry.absolutePath), { recursive: true });
-        await writeFile(entry.absolutePath, body.replace(/\n+$/, "") + "\n", "utf8");
+        await this.writeBodyToDisk(entry, body);
       }
 
       writtenKeys.push(fragmentKey);
@@ -415,7 +479,7 @@ export class FragmentStore {
     const entry = this.resolveEntryForKey(fragmentKey);
     if (!entry) return { changed: false, createdKeys: [], removedKeys: [] };
 
-    const isRoot = entry.level === 0 && entry.heading === "";
+    const isRoot = FragmentStore.isDocumentRoot(entry);
     const fullMarkdown = this.reconstructFullMarkdown(fragmentKey, entry.level, entry.heading);
     const parsed = parseDocumentMarkdown(fullMarkdown);
     const realSections = parsed.filter(s => s.headingPath.length > 0);
@@ -425,38 +489,41 @@ export class FragmentStore {
       return { changed: false, createdKeys: [], removedKeys: [] };
     }
 
+    // Resolve session-store operations once for all case handlers
+    const ops = await this.getSessionStoreOps();
+
     // Structural change detected — dispatch to appropriate handler.
     // Individual case implementations are added by subsequent checklist items.
 
     if (isRoot && realSections.length > 0) {
       // Root split: user typed heading(s) inside root section
-      return this.normalizeRootSplit(fragmentKey, entry, parsed, realSections, opts);
+      return this.normalizeRootSplit(fragmentKey, entry, parsed, realSections, ops, opts);
     }
 
     if (!isRoot && realSections.length === 1) {
       if (realSections[0].heading !== entry.heading && realSections[0].level === entry.level) {
         // Heading rename
-        return this.normalizeHeadingRename(fragmentKey, entry, realSections[0], opts);
+        return this.normalizeHeadingRename(fragmentKey, entry, realSections[0], ops, opts);
       }
       if (realSections[0].level !== entry.level) {
         // Heading level change (may also include rename)
-        return this.normalizeHeadingLevelChange(fragmentKey, entry, realSections[0], opts);
+        return this.normalizeHeadingLevelChange(fragmentKey, entry, realSections[0], ops, opts);
       }
       if (parsed.length > 1) {
         // Heading relocated: matching heading found but orphan content before it.
         // Rewrite fragment with heading at start, appending orphan content to body.
-        return this.normalizeHeadingRelocated(fragmentKey, entry, parsed, realSections[0], opts);
+        return this.normalizeHeadingRelocated(fragmentKey, entry, parsed, realSections[0], ops, opts);
       }
     }
 
     if (!isRoot && realSections.length >= 2) {
       // Section split
-      return this.normalizeSectionSplit(fragmentKey, entry, realSections, opts);
+      return this.normalizeSectionSplit(fragmentKey, entry, realSections, ops, opts);
     }
 
     if (!isRoot && realSections.length === 0) {
       // Heading deletion / empty section
-      return this.normalizeHeadingDeletion(fragmentKey, entry, parsed, opts);
+      return this.normalizeHeadingDeletion(fragmentKey, entry, parsed, ops, opts);
     }
 
     // Fallback: unrecognized structural change pattern — no-op for safety
@@ -470,10 +537,9 @@ export class FragmentStore {
     entry: FlatEntry,
     parsed: ReturnType<typeof parseDocumentMarkdown>,
     realSections: ReturnType<typeof parseDocumentMarkdown>,
+    ops: SessionStoreOps,
     opts?: { broadcastStructureChange?: (info: Array<{ oldKey: string; newKeys: string[] }>) => void },
   ): Promise<NormalizeResult> {
-    const { writeRawFragment } = await import("../storage/session-store.js");
-
     // Trim root body to content before first heading
     const rootParsed = parsed.find(s => s.headingPath.length === 0);
     const rootBody = (rootParsed?.body ?? "").replace(/\n+$/, "");
@@ -482,9 +548,7 @@ export class FragmentStore {
     this.populateFragment(fragmentKey, rootBody);
 
     // Write root raw fragment + canonical-ready
-    await writeRawFragment(this.docPath, entry.sectionFile, rootBody);
-    await mkdir(path.dirname(entry.absolutePath), { recursive: true });
-    await writeFile(entry.absolutePath, rootBody + "\n", "utf8");
+    await this.writeDualFormat(entry, rootBody, rootBody, ops);
 
     // Add new sections to skeleton
     const addedEntries = this.skeleton.addSectionsFromRootSplit(realSections);
@@ -497,7 +561,7 @@ export class FragmentStore {
       if (addedEntry.isSubSkeleton) continue;
 
       const body = (realSections[bodyIdx]?.body ?? "").replace(/\n+$/, "");
-      const addedIsRoot = addedEntry.level === 0 && addedEntry.heading === "";
+      const addedIsRoot = FragmentStore.isDocumentRoot(addedEntry);
       const newKey = fragmentKeyFromSectionFile(addedEntry.sectionFile, addedIsRoot);
       const fragmentContent = FragmentStore.buildFragmentContent(body, addedEntry.level, addedEntry.heading);
 
@@ -505,9 +569,7 @@ export class FragmentStore {
       this.populateFragment(newKey, fragmentContent);
 
       // Write raw fragment (heading+body) + canonical-ready (body-only)
-      await writeRawFragment(this.docPath, addedEntry.sectionFile, fragmentContent);
-      await mkdir(path.dirname(addedEntry.absolutePath), { recursive: true });
-      await writeFile(addedEntry.absolutePath, body + "\n", "utf8");
+      await this.writeDualFormat(addedEntry, fragmentContent, body, ops);
 
       createdKeys.push(newKey);
       newKeyMapping.push(newKey);
@@ -534,9 +596,9 @@ export class FragmentStore {
     fragmentKey: string,
     entry: FlatEntry,
     section: ReturnType<typeof parseDocumentMarkdown>[0],
+    ops: SessionStoreOps,
     opts?: { broadcastStructureChange?: (info: Array<{ oldKey: string; newKeys: string[] }>) => void },
   ): Promise<NormalizeResult> {
-    const { writeRawFragment, deleteRawFragment } = await import("../storage/session-store.js");
 
     // Update skeleton: replace old heading with new one
     const result = this.skeleton.replace(entry.headingPath, [section]);
@@ -555,10 +617,7 @@ export class FragmentStore {
       // Populate new Y.Doc fragment with heading+body
       this.populateFragment(newKey, fragmentContent);
 
-      // Write raw fragment (heading+body) + canonical-ready (body-only)
-      await writeRawFragment(this.docPath, addedEntry.sectionFile, fragmentContent);
-      await mkdir(path.dirname(addedEntry.absolutePath), { recursive: true });
-      await writeFile(addedEntry.absolutePath, body + "\n", "utf8");
+      await this.writeDualFormat(addedEntry, fragmentContent, body, ops);
 
       if (newKey !== fragmentKey) {
         createdKeys.push(newKey);
@@ -567,9 +626,8 @@ export class FragmentStore {
 
     // Clean up old fragment if key changed
     if (createdKeys.length > 0) {
-      // Clear old Y.Doc fragment
       this.clearFragment(fragmentKey);
-      await deleteRawFragment(this.docPath, entry.sectionFile);
+      await ops.deleteRawFragment(this.docPath, entry.sectionFile);
       removedKeys.push(fragmentKey);
     }
 
@@ -593,11 +651,9 @@ export class FragmentStore {
     fragmentKey: string,
     entry: FlatEntry,
     section: ReturnType<typeof parseDocumentMarkdown>[0],
+    ops: SessionStoreOps,
     opts?: { broadcastStructureChange?: (info: Array<{ oldKey: string; newKeys: string[] }>) => void },
   ): Promise<NormalizeResult> {
-    const { writeRawFragment, deleteRawFragment } = await import("../storage/session-store.js");
-
-    // Update skeleton: replace with new level (nesting relationships may change)
     const result = this.skeleton.replace(entry.headingPath, [section]);
 
     const createdKeys: string[] = [];
@@ -610,32 +666,24 @@ export class FragmentStore {
       const body = section.body.replace(/\n+$/, "");
       const fragmentContent = FragmentStore.buildFragmentContent(body, addedEntry.level, addedEntry.heading);
 
-      // Populate new Y.Doc fragment (heading+body)
       this.populateFragment(newKey, fragmentContent);
-
-      // Write raw fragment (heading+body) + canonical-ready (body-only)
-      await writeRawFragment(this.docPath, addedEntry.sectionFile, fragmentContent);
-      await mkdir(path.dirname(addedEntry.absolutePath), { recursive: true });
-      await writeFile(addedEntry.absolutePath, body + "\n", "utf8");
+      await this.writeDualFormat(addedEntry, fragmentContent, body, ops);
 
       if (newKey !== fragmentKey) {
         createdKeys.push(newKey);
       }
     }
 
-    // Clean up old fragment if key changed
     if (createdKeys.length > 0) {
       this.clearFragment(fragmentKey);
-      await deleteRawFragment(this.docPath, entry.sectionFile);
+      await ops.deleteRawFragment(this.docPath, entry.sectionFile);
       removedKeys.push(fragmentKey);
     }
 
-    // Persist skeleton
     if (this.skeleton.dirty) {
       await this.skeleton.persist();
     }
 
-    // Broadcast structure change
     if (opts?.broadcastStructureChange) {
       opts.broadcastStructureChange([{
         oldKey: fragmentKey,
@@ -651,9 +699,9 @@ export class FragmentStore {
     entry: FlatEntry,
     parsed: ReturnType<typeof parseDocumentMarkdown>,
     section: ReturnType<typeof parseDocumentMarkdown>[0],
+    ops: SessionStoreOps,
     _opts?: { broadcastStructureChange?: (info: Array<{ oldKey: string; newKeys: string[] }>) => void },
   ): Promise<NormalizeResult> {
-    const { writeRawFragment } = await import("../storage/session-store.js");
 
     // Collect orphan content that appeared before the heading
     const preamble = parsed
@@ -677,11 +725,7 @@ export class FragmentStore {
     // Rewrite Y.Doc fragment with heading at start
     this.populateFragment(fragmentKey, fragmentContent);
 
-    // Write raw fragment (heading+body) + canonical-ready (body-only)
-    await writeRawFragment(this.docPath, entry.sectionFile, fragmentContent);
-    const canonicalBody = combinedBody.replace(/\n+$/, "");
-    await mkdir(path.dirname(entry.absolutePath), { recursive: true });
-    await writeFile(entry.absolutePath, canonicalBody + "\n", "utf8");
+    await this.writeDualFormat(entry, fragmentContent, combinedBody, ops);
 
     return { changed: true, createdKeys: [], removedKeys: [] };
   }
@@ -690,36 +734,30 @@ export class FragmentStore {
     fragmentKey: string,
     entry: FlatEntry,
     realSections: ReturnType<typeof parseDocumentMarkdown>,
+    ops: SessionStoreOps,
     opts?: { broadcastStructureChange?: (info: Array<{ oldKey: string; newKeys: string[] }>) => void },
   ): Promise<NormalizeResult> {
-    const { writeRawFragment, deleteRawFragment } = await import("../storage/session-store.js");
 
     // Replace old section with multiple new sections in skeleton
     const result = this.skeleton.replace(entry.headingPath, realSections);
 
     const createdKeys: string[] = [];
 
-    // Clear old Y.Doc fragment
     this.clearFragment(fragmentKey);
-    await deleteRawFragment(this.docPath, entry.sectionFile);
+    await ops.deleteRawFragment(this.docPath, entry.sectionFile);
 
     // Create new Y.Doc fragments for each resulting section
     let bodyIdx = 0;
     for (const addedEntry of result.added) {
       if (addedEntry.isSubSkeleton) continue;
 
-      const addedIsRoot = addedEntry.level === 0 && addedEntry.heading === "";
+      const addedIsRoot = FragmentStore.isDocumentRoot(addedEntry);
       const newKey = fragmentKeyFromSectionFile(addedEntry.sectionFile, addedIsRoot);
       const body = (realSections[bodyIdx]?.body ?? "").replace(/\n+$/, "");
       const fragmentContent = FragmentStore.buildFragmentContent(body, addedEntry.level, addedEntry.heading);
 
-      // Populate new Y.Doc fragment (heading+body)
       this.populateFragment(newKey, fragmentContent);
-
-      // Write raw fragment (heading+body) + canonical-ready (body-only)
-      await writeRawFragment(this.docPath, addedEntry.sectionFile, fragmentContent);
-      await mkdir(path.dirname(addedEntry.absolutePath), { recursive: true });
-      await writeFile(addedEntry.absolutePath, body + "\n", "utf8");
+      await this.writeDualFormat(addedEntry, fragmentContent, body, ops);
 
       createdKeys.push(newKey);
       bodyIdx++;
@@ -745,9 +783,9 @@ export class FragmentStore {
     fragmentKey: string,
     entry: FlatEntry,
     parsed: ReturnType<typeof parseDocumentMarkdown>,
+    ops: SessionStoreOps,
     opts?: { broadcastStructureChange?: (info: Array<{ oldKey: string; newKeys: string[] }>) => void },
   ): Promise<NormalizeResult> {
-    const { writeRawFragment, deleteRawFragment } = await import("../storage/session-store.js");
 
     // Collect orphaned body text (content remaining after heading was deleted)
     const orphanedBody = parsed
@@ -769,7 +807,6 @@ export class FragmentStore {
         found = true;
         return;
       }
-      const isRoot = level === 0 && heading === "";
       prevEntry = {
         headingPath: [...headingPath],
         heading,
@@ -778,7 +815,7 @@ export class FragmentStore {
         absolutePath,
         isSubSkeleton: false,
       };
-      prevKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
+      prevKey = fragmentKeyFromSectionFile(sectionFile, FragmentStore.isDocumentRoot(prevEntry));
     });
 
     // prevEntry is now the section just before the deleted one in document order.
@@ -800,23 +837,19 @@ export class FragmentStore {
         : orphanedBody;
       this.populateFragment(parentKey, mergedContent);
 
-      // Write updated parent raw fragment (heading+body) + canonical-ready (body-only)
       const parentRawMd = this.extractMarkdown(parentKey);
-      await writeRawFragment(this.docPath, parentEntry.sectionFile, parentRawMd);
-      const parentIsRoot = parentEntry.level === 0 && parentEntry.heading === "";
+      const parentIsRoot = FragmentStore.isDocumentRoot(parentEntry);
       const canonicalBody = parentIsRoot
         ? parentRawMd
         : FragmentStore.stripHeadingFromContent(parentRawMd, parentEntry.level);
-      await mkdir(path.dirname(parentEntry.absolutePath), { recursive: true });
-      await writeFile(parentEntry.absolutePath, canonicalBody.replace(/\n+$/, "") + "\n", "utf8");
+      await this.writeDualFormat(parentEntry, parentRawMd, canonicalBody, ops);
     }
 
     // Remove old section from skeleton
     this.skeleton.replace(entry.headingPath, []);
 
-    // Clear old Y.Doc fragment and delete raw file
     this.clearFragment(fragmentKey);
-    await deleteRawFragment(this.docPath, entry.sectionFile);
+    await ops.deleteRawFragment(this.docPath, entry.sectionFile);
 
     // Persist skeleton
     if (this.skeleton.dirty) {
@@ -857,7 +890,7 @@ export class FragmentStore {
   }
 
   /** Resolve a FlatEntry for a fragment key, or null if not found. */
-  private resolveEntryForKey(fragmentKey: string): FlatEntry | null {
+  resolveEntryForKey(fragmentKey: string): FlatEntry | null {
     const sectionFileId = sectionFileFromFragmentKey(fragmentKey);
     try {
       return this.skeleton.resolveByFileId(sectionFileId);
@@ -883,7 +916,7 @@ export class FragmentStore {
   }
 
   /** Populate a Y.Doc fragment from markdown content (heading+body for non-root, body for root). */
-  private populateFragment(fragmentKey: string, markdown: string): void {
+  populateFragment(fragmentKey: string, markdown: string): void {
     const pmJson = markdownToJSON(markdown);
     const tempDoc = prosemirrorJSONToYDoc(getBackendSchema(), pmJson, fragmentKey);
     Y.applyUpdate(this.ydoc, Y.encodeStateAsUpdate(tempDoc));
@@ -909,4 +942,50 @@ export class FragmentStore {
     return this.extractMarkdown(fragmentKey);
   }
 
+  /**
+   * Write a body-only file to the session overlay (sessions/docs/).
+   * Standardizes trailing newline to exactly one.
+   */
+  private async writeBodyToDisk(entry: FlatEntry, body: string): Promise<void> {
+    await mkdir(path.dirname(entry.absolutePath), { recursive: true });
+    const trimmed = body.replace(/\n+$/, "");
+    await writeFile(entry.absolutePath, trimmed ? trimmed + "\n" : "", "utf8");
+  }
+
+  /**
+   * Write both the raw fragment (crash-safe heading+body) and the canonical-ready
+   * body file in one call. Ensures both writes always happen together.
+   */
+  private async writeDualFormat(
+    entry: FlatEntry,
+    rawMarkdown: string,
+    body: string,
+    sessionStoreOps: SessionStoreOps,
+  ): Promise<void> {
+    await sessionStoreOps.writeRawFragment(this.docPath, entry.sectionFile, rawMarkdown);
+    await this.writeBodyToDisk(entry, body);
+  }
+
+  /**
+   * Lazy-resolved session-store operations. Avoids circular dependency
+   * (session-store imports from ydoc-lifecycle which imports fragment-store).
+   */
+  private _sessionStoreOps: SessionStoreOps | null = null;
+  private async getSessionStoreOps(): Promise<SessionStoreOps> {
+    if (!this._sessionStoreOps) {
+      const mod = await import("../storage/session-store.js");
+      this._sessionStoreOps = {
+        writeRawFragment: mod.writeRawFragment,
+        deleteRawFragment: mod.deleteRawFragment,
+      };
+    }
+    return this._sessionStoreOps;
+  }
+
+}
+
+/** Resolved session-store operations, passed through to avoid per-method imports. */
+interface SessionStoreOps {
+  writeRawFragment: (docPath: string, sectionFile: string, content: string) => Promise<void>;
+  deleteRawFragment: (docPath: string, sectionFile: string) => Promise<void>;
 }

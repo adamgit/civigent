@@ -15,6 +15,8 @@
  *   0x06 SESSION_FLUSH_STARTED — Server → Client: flush beginning
  *   0x07 ACTIVITY_PULSE        — Client → Server: human is actively editing (debounced ~2-3s)
  *   0x08 STRUCTURE_WILL_CHANGE — Server → Client: about to restructure fragments (old→new key mapping)
+ *   0x09 SECTION_MUTATE        — Client → Server: replace fragment content (JSON { fragmentKey, markdown })
+ *   0x0A MUTATE_RESULT         — Server → Client: response to SECTION_MUTATE (JSON { success, error? })
  */
 
 import type { IncomingMessage } from "node:http";
@@ -53,6 +55,8 @@ const MSG_SECTION_FOCUS = 5;
 const MSG_SESSION_FLUSH_STARTED = 6;
 const MSG_ACTIVITY_PULSE = 7;
 const MSG_STRUCTURE_WILL_CHANGE = 8;
+const MSG_SECTION_MUTATE = 9;
+const MSG_MUTATE_RESULT = 10;
 
 // ─── Per-socket state ───────────────────────────────────────────
 
@@ -137,6 +141,17 @@ function encodeStructureWillChange(
   return buf;
 }
 
+function sendMutateResult(socket: WebSocket, success: boolean, error?: string): void {
+  const json = JSON.stringify(error ? { success, error } : { success });
+  const payload = new TextEncoder().encode(json);
+  const buf = new Uint8Array(1 + payload.length);
+  buf[0] = MSG_MUTATE_RESULT;
+  buf.set(payload, 1);
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(buf);
+  }
+}
+
 // ─── URL parsing ────────────────────────────────────────────────
 
 const CRDT_PATH_PREFIX = "/ws/crdt/";
@@ -215,9 +230,9 @@ function handleMessage(
   const payload = data.subarray(1);
 
   // Observer sockets: only allow sync protocol (SYNC_STEP_1/2).
-  // Ignore YJS_UPDATE, SECTION_FOCUS, ACTIVITY_PULSE — no-op, don't apply to Y.Doc.
+  // Ignore YJS_UPDATE, SECTION_FOCUS, ACTIVITY_PULSE, SECTION_MUTATE — no-op, don't apply to Y.Doc.
   if (state.observer) {
-    if (msgType === MSG_YJS_UPDATE || msgType === MSG_SECTION_FOCUS || msgType === MSG_ACTIVITY_PULSE) {
+    if (msgType === MSG_YJS_UPDATE || msgType === MSG_SECTION_FOCUS || msgType === MSG_ACTIVITY_PULSE || msgType === MSG_SECTION_MUTATE) {
       return;
     }
   }
@@ -339,6 +354,53 @@ function handleMessage(
       // Human is actively editing — record the pulse timestamp.
       // This is the only signal that resets the idle timeout.
       updateEditPulse(state.docPath, state.writerId);
+      break;
+    }
+    case MSG_SECTION_MUTATE: {
+      // Client requests a section content mutation (cross-section drag/drop).
+      // Payload: JSON { fragmentKey: string, markdown: string }
+      const json = new TextDecoder().decode(payload);
+      let parsed: { fragmentKey: string; markdown: string };
+      try {
+        parsed = JSON.parse(json);
+      } catch {
+        sendMutateResult(socket, false, "Invalid JSON payload");
+        break;
+      }
+
+      const session = lookupDocSession(state.docPath);
+      if (!session) {
+        sendMutateResult(socket, false, "No active session");
+        break;
+      }
+
+      // Verify fragment key exists in skeleton
+      const entry = session.fragments.resolveEntryForKey(parsed.fragmentKey);
+      if (!entry) {
+        sendMutateResult(socket, false, `Fragment key not found: ${parsed.fragmentKey}`);
+        break;
+      }
+
+      // Snapshot state vector before mutation for computing incremental update
+      const svBefore = Y.encodeStateVector(doc);
+
+      // Apply the mutation: populate fragment with new content
+      session.fragments.populateFragment(parsed.fragmentKey, parsed.markdown);
+
+      // Mark dirty for flush and per-user attribution
+      session.fragments.markDirty(parsed.fragmentKey);
+      markFragmentDirty(state.docPath, state.writerId, parsed.fragmentKey);
+
+      // Broadcast the Y.Doc update to other clients
+      const update = Y.encodeStateAsUpdate(doc, svBefore);
+      if (update.length > 0) {
+        broadcastToOthers(state.docPath, socket, encodeUpdate(update));
+      }
+
+      // Trigger debounced flush
+      triggerDebouncedFlush(state.docPath);
+
+      sendMutateResult(socket, true);
       break;
     }
   }

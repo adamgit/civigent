@@ -12,6 +12,8 @@
  *   0x06 (FLUSH_STARTED)    + empty (notification only)
  *   0x07 (ACTIVITY_PULSE)   + empty (client → server: human is actively editing)
  *   0x08 (STRUCTURE_WILL_CHANGE) + JSON old→new key mapping (server → client)
+ *   0x09 (SECTION_MUTATE)      + JSON { fragmentKey, markdown } (client → server)
+ *   0x0A (MUTATE_RESULT)       + JSON { success, error? } (server → client)
  *
  * One connection per document. Section focus communicated via focusSection().
  */
@@ -34,6 +36,8 @@ const MSG_SECTION_FOCUS = 5;
 const MSG_SESSION_FLUSH_STARTED = 6;
 const MSG_ACTIVITY_PULSE = 7;
 const MSG_STRUCTURE_WILL_CHANGE = 8;
+const MSG_SECTION_MUTATE = 9;
+const MSG_MUTATE_RESULT = 10;
 
 /** Debounce interval for ACTIVITY_PULSE messages (ms). */
 const PULSE_DEBOUNCE_MS = 2500;
@@ -99,6 +103,7 @@ export class CrdtProvider {
   private reverseMap = new Map<object, string>();
   private lastShareSize = 0;
   private afterTxnHandler: ((txn: Y.Transaction) => void) | null = null;
+  private pendingMutateResolve: ((result: { success: boolean; error?: string }) => void) | null = null;
 
   constructor(
     doc: Y.Doc,
@@ -238,6 +243,20 @@ export class CrdtProvider {
     this.sendRaw(MSG_ACTIVITY_PULSE, new Uint8Array(0));
   }
 
+  /**
+   * Send a section mutate request to the backend.
+   * The backend replaces the fragment content and broadcasts the Y.Doc update.
+   * Returns a promise that resolves when the server sends MSG_MUTATE_RESULT.
+   */
+  sendSectionMutate(fragmentKey: string, markdown: string): Promise<{ success: boolean; error?: string }> {
+    return new Promise((resolve) => {
+      this.pendingMutateResolve = resolve;
+      const json = JSON.stringify({ fragmentKey, markdown });
+      const payload = new TextEncoder().encode(json);
+      this.sendRaw(MSG_SECTION_MUTATE, payload);
+    });
+  }
+
   // ─── Internal ─────────────────────────────────────────
 
   private setState(state: CrdtConnectionState): void {
@@ -364,6 +383,15 @@ export class CrdtProvider {
         const json = new TextDecoder().decode(payload);
         const restructures = JSON.parse(json) as StructureWillChangePayload[];
         this.events.onStructureWillChange?.(restructures);
+        break;
+      }
+      case MSG_MUTATE_RESULT: {
+        const json = new TextDecoder().decode(payload);
+        const result = JSON.parse(json) as { success: boolean; error?: string };
+        if (this.pendingMutateResolve) {
+          this.pendingMutateResolve(result);
+          this.pendingMutateResolve = null;
+        }
         break;
       }
       default:

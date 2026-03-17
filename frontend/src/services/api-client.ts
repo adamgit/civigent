@@ -83,16 +83,21 @@ export function setUnauthorizedHandler(handler: (() => void) | null): void {
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const text = await response.text();
-    let message: string | undefined;
+    let detail: string | undefined;
     try {
       const parsed = JSON.parse(text) as { message?: string };
       if (typeof parsed.message === "string") {
-        message = parsed.message;
+        detail = parsed.message;
       }
     } catch {
-      // Keep plain text fallback when payload is non-JSON.
+      // Non-JSON body — strip HTML tags and trim to something readable.
+      const plain = text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      if (plain.length > 0) {
+        detail = plain.length > 200 ? plain.slice(0, 200) + "…" : plain;
+      }
     }
-    throw new Error((message ?? text) || `Request failed: ${response.status}`);
+    const prefix = `${response.status} ${response.statusText} — ${response.url}`;
+    throw new Error(detail ? `${prefix}: ${detail}` : prefix);
   }
   return (await response.json()) as T;
 }

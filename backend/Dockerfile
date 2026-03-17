@@ -13,7 +13,8 @@ FROM base AS build
 COPY package*.json ./
 RUN npm install
 COPY . .
-RUN npm run build
+RUN npm run build \
+ && echo "{\"version\":\"$(node -p "require('./package.json').version")\",\"sha\":\"$(git rev-parse --short=7 HEAD)\",\"date\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > dist/build-info.json
 
 # ── Production target ─────────────────────────────────
 FROM base AS prod

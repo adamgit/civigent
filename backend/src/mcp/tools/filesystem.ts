@@ -271,30 +271,20 @@ async function writeDocumentViaProposal(
   const intent = ctx.session.pendingIntent ?? `Write ${files.map((f) => f.path).join(", ")}`;
   ctx.session.pendingIntent = undefined;
 
-  // Build proposal sections (metadata) and content separately
-  const proposalSections: Array<{
+  // Pre-parse all files to build proposal sections from actual heading structure
+  // (not hardcoded to root). This normalizes multi-section markdown.
+  const canonicalContentRoot = getContentRoot();
+  const allSectionTargets: Array<{
     doc_path: string;
     heading_path: string[];
-    justification?: string;
-  }> = [];
-  const sectionContents: Array<{
-    doc_path: string;
-    heading_path: string[];
-    content: string;
   }> = [];
 
-  for (const file of files) {
-    // All files written as root section (single section or overwrite)
-    proposalSections.push({
-      doc_path: file.path,
-      heading_path: [],
-    });
-    sectionContents.push({
-      doc_path: file.path,
-      heading_path: [],
-      content: file.content,
-    });
-  }
+  // We need to create the proposal first (to get contentRoot), then write content.
+  // Build initial proposal sections from first pass — will be exact after write.
+  const initialSections: Array<{
+    doc_path: string;
+    heading_path: string[];
+  }> = files.map(f => ({ doc_path: f.path, heading_path: [] }));
 
   // Check for existing pending proposal and auto-withdraw
   const existing = await findPendingProposalByWriter(writer.id);
@@ -302,38 +292,29 @@ async function writeDocumentViaProposal(
     await transitionToWithdrawn(existing.id, "auto-withdrawn by new write");
   }
 
-  // Create and immediately evaluate proposal
+  // Create proposal with initial sections
   const { proposal, contentRoot } = await createProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     intent,
-    proposalSections,
+    initialSections,
   );
 
-  // Ensure skeletons exist for new documents in the proposal's content overlay.
-  // For existing documents, the canonical fallback provides the skeleton.
-  const canonicalContentRoot = getContentRoot();
-  const seenDocPaths = new Set<string>();
-  for (const sc of sectionContents) {
-    if (seenDocPaths.has(sc.doc_path)) continue;
-    seenDocPaths.add(sc.doc_path);
-
-    // Check if skeleton exists in canonical
-    const canonicalSkeleton = await DocumentSkeleton.fromDisk(
-      sc.doc_path, canonicalContentRoot, canonicalContentRoot,
-    );
-
-    if (canonicalSkeleton.isEmpty) {
-      // New document — create skeleton in the proposal's content overlay
-      const skeleton = DocumentSkeleton.createEmpty(sc.doc_path, contentRoot);
-      await skeleton.persist();
-    }
+  // Write each file through writeAssembledDocument which normalizes sections
+  const fContentLayer = new ContentLayer(contentRoot, new ContentLayer(canonicalContentRoot));
+  for (const file of files) {
+    const targets = await fContentLayer.writeAssembledDocument(file.path, file.content);
+    allSectionTargets.push(...targets);
   }
 
-  // Write section content to proposal's content directory.
-  // Use canonical fallback so readSkeleton finds existing skeletons.
-  const fContentLayer = new ContentLayer(contentRoot, new ContentLayer(canonicalContentRoot));
-  for (const sc of sectionContents) {
-    await fContentLayer.writeSection(new SectionRef(sc.doc_path, sc.heading_path), sc.content);
+  // Update proposal sections to match the actual normalized structure
+  if (allSectionTargets.length > initialSections.length ||
+      allSectionTargets.some((t, i) =>
+        !initialSections[i] ||
+        t.doc_path !== initialSections[i].doc_path ||
+        JSON.stringify(t.heading_path) !== JSON.stringify(initialSections[i].heading_path),
+      )) {
+    const { updateProposalSections } = await import("../../storage/proposal-repository.js");
+    await updateProposalSections(proposal.id, allSectionTargets);
   }
 
   const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal);

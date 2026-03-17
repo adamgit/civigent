@@ -295,18 +295,20 @@ export function DocumentsTreeNav({
             const childEntries = Array.isArray(node.children) ? node.children : [];
             return (
               <div key={node.path}>
-                <button
-                  type="button"
+                <div
+                  role="button"
+                  tabIndex={0}
                   className="group flex items-center gap-[7px] w-full px-1.5 py-[5px] rounded-[5px] text-[13px] text-sidebar-text bg-transparent border-none font-[family-name:var(--font-ui)] text-left cursor-pointer hover:bg-white/45 hover:text-sidebar-text-hover transition-all"
                   style={{ paddingLeft }}
                   onClick={() => toggleDirectory(node.path)}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleDirectory(node.path); } }}
                 >
                   <span className="text-[13px] opacity-45 w-4 text-center">
                     {isExpanded ? "\u{1F4C1}" : "\u{1F4C1}"}
                   </span>
                   <span className="truncate">{getDisplayName(node.path)}/</span>
                   {dirActionButtons(node.path, true)}
-                </button>
+                </div>
                 {isExpanded ? (
                   <div data-testid={`tree-node-expanded-${node.path}`}>
                     {childEntries.length > 0 ? (

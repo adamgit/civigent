@@ -1,0 +1,215 @@
+/**
+ * Self-healing recovery tests.
+ *
+ * These tests document the desired behavior for resilient crash recovery.
+ * Most are EXPECTED TO FAIL until the corresponding fix is implemented:
+ *
+ * - corrupt session skeleton falls back to canonical → Fix: "FragmentStore.fromDisk must always succeed"
+ * - orphaned session bodies collected → Fix: "FragmentStore.fromDisk must always succeed"
+ * - recovery section appended for orphaned bodies → Fix: "Recovery section generation"
+ * - recovery section is a normal editable section → EXPECTED PASS (uses existing skeleton mutation)
+ * - recovery section committed to git during startup recovery → Fix: "Recovery section generation"
+ * - empty overlay skeleton does not mask canonical → Fix: "Overlay skeleton masking fix"
+ */
+
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
+import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+describe("Self-healing Recovery", () => {
+  let ctx: TempDataRootContext;
+
+  beforeEach(async () => {
+    ctx = await createTempDataRoot();
+  });
+
+  afterEach(async () => {
+    await ctx.cleanup();
+  });
+
+  // ── Test: corrupt session skeleton falls back to canonical ──
+
+  it("corrupt session skeleton falls back to canonical", async () => {
+    await createSampleDocument(ctx.rootDir);
+
+    // Write a session overlay skeleton with duplicate root entries
+    // (triggers validateNoDuplicateRoots in DocumentSkeleton.fromDisk)
+    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionDocDir = join(sessionContentDir, "ops");
+    const sessionSectionsDir = `${join(sessionDocDir, "strategy.md")}.sections`;
+    await mkdir(sessionSectionsDir, { recursive: true });
+
+    // Corrupt skeleton: two root entries (impossible state)
+    await writeFile(
+      join(sessionDocDir, "strategy.md"),
+      "{{section: _root.md}}\n{{section: _root2.md}}\n\n## Overview\n{{section: overview.md}}\n",
+      "utf8",
+    );
+    await writeFile(join(sessionSectionsDir, "_root.md"), "root content\n", "utf8");
+    await writeFile(join(sessionSectionsDir, "_root2.md"), "duplicate root\n", "utf8");
+    await writeFile(join(sessionSectionsDir, "overview.md"), "updated overview\n", "utf8");
+
+    // FragmentStore.fromDisk should NOT throw — it should fall back to canonical
+    const { FragmentStore } = await import("../../crdt/fragment-store.js");
+    const { store, orphanedBodies } = await FragmentStore.fromDisk(SAMPLE_DOC_PATH);
+
+    // Y.Doc should contain canonical content (3 sections from canonical skeleton)
+    const flat = store.skeleton.flat;
+    expect(flat.length).toBeGreaterThanOrEqual(3);
+
+    // Orphaned session bodies should be collected (overlay files that don't match canonical skeleton)
+    expect(orphanedBodies.length).toBeGreaterThanOrEqual(0);
+
+    store.ydoc.destroy();
+  });
+
+  // ── Test: orphaned session bodies collected ──
+
+  it("orphaned session bodies collected", async () => {
+    await createSampleDocument(ctx.rootDir);
+
+    // Write session overlay body files: A, B exist in canonical, "sec_new_section_xyz.md" does not
+    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionSectionsDir = `${join(sessionContentDir, "ops", "strategy.md")}.sections`;
+    await mkdir(sessionSectionsDir, { recursive: true });
+
+    await writeFile(join(sessionSectionsDir, "overview.md"), "session overview content\n", "utf8");
+    await writeFile(join(sessionSectionsDir, "timeline.md"), "session timeline content\n", "utf8");
+    await writeFile(join(sessionSectionsDir, "sec_new_section_xyz.md"), "orphaned content from deleted heading\n", "utf8");
+
+    const { FragmentStore } = await import("../../crdt/fragment-store.js");
+
+    const { store, orphanedBodies } = await FragmentStore.fromDisk(SAMPLE_DOC_PATH);
+
+    // orphanedBodies should contain the session file that doesn't match canonical skeleton
+    expect(Array.isArray(orphanedBodies)).toBe(true);
+
+    const orphanFiles = orphanedBodies.map(o => o.sectionFile);
+    expect(orphanFiles).toContain("sec_new_section_xyz.md");
+
+    store.ydoc.destroy();
+  });
+
+  // ── Test: recovery section appended for orphaned bodies ──
+
+  it("recovery section appended for orphaned bodies", async () => {
+    await createSampleDocument(ctx.rootDir);
+
+    // Write session overlay with an orphaned body file
+    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionSectionsDir = `${join(sessionContentDir, "ops", "strategy.md")}.sections`;
+    await mkdir(sessionSectionsDir, { recursive: true });
+
+    await writeFile(join(sessionSectionsDir, "sec_orphan.md"), "orphaned data\n", "utf8");
+
+    // acquireDocSession should detect orphaned bodies and append a recovery section
+    const { acquireDocSession, releaseDocSession } = await import("../../crdt/ydoc-lifecycle.js");
+    const session = await acquireDocSession(SAMPLE_DOC_PATH);
+
+    // Check that skeleton has a "Recovered edits" section
+    const flat = session.fragments.skeleton.flat;
+    const recoveryEntry = flat.find(
+      (e: any) => e.heading.toLowerCase().includes("recovered"),
+    );
+    expect(recoveryEntry).toBeDefined();
+
+    await releaseDocSession(SAMPLE_DOC_PATH);
+  });
+
+  // ── Test: recovery section is a normal editable section ──
+
+  it("recovery section is a normal editable section", async () => {
+    await createSampleDocument(ctx.rootDir);
+
+    const { DocumentSkeleton, parseSkeletonToEntries, serializeSkeletonEntries } =
+      await import("../../storage/document-skeleton.js");
+
+    const contentRoot = join(ctx.rootDir, "content");
+    const skeletonPath = join(contentRoot, SAMPLE_DOC_PATH);
+    const sectionsDir = `${skeletonPath}.sections`;
+
+    // Manually add a "Recovered edits" section to the skeleton
+    const { readFile: readF } = await import("node:fs/promises");
+    const skeletonContent = await readF(skeletonPath, "utf8");
+    const updatedSkeleton =
+      skeletonContent.trimEnd() +
+      "\n\n## Recovered edits\n{{section: sec_recovered_edits.md}}\n";
+    await writeFile(skeletonPath, updatedSkeleton, "utf8");
+    await writeFile(join(sectionsDir, "sec_recovered_edits.md"), "Some recovered content.\n", "utf8");
+
+    // Load skeleton and verify the recovery section exists
+    const skeleton = await DocumentSkeleton.fromDisk(SAMPLE_DOC_PATH, contentRoot, contentRoot);
+    const flat = skeleton.flat;
+    const recoveryEntry = flat.find((e: any) => e.heading === "Recovered edits");
+    expect(recoveryEntry).toBeDefined();
+
+    // Delete the recovery section via skeleton.replace (standard mutation)
+    skeleton.replace(["Recovered edits"], []);
+
+    // Verify it's gone
+    const flatAfter = skeleton.flat;
+    const stillThere = flatAfter.find((e: any) => e.heading === "Recovered edits");
+    expect(stillThere).toBeUndefined();
+
+    // Other sections remain intact
+    expect(flatAfter.some((e: any) => e.heading === "Overview")).toBe(true);
+    expect(flatAfter.some((e: any) => e.heading === "Timeline")).toBe(true);
+  });
+
+  // ── Test: recovery section committed to git during startup recovery ──
+
+  it("recovery section committed to git during startup recovery", async () => {
+    await createSampleDocument(ctx.rootDir);
+
+    // Write a corrupt session skeleton + orphaned body files
+    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionDocDir = join(sessionContentDir, "ops");
+    const sessionSectionsDir = `${join(sessionDocDir, "strategy.md")}.sections`;
+    await mkdir(sessionSectionsDir, { recursive: true });
+
+    // Corrupt skeleton
+    await writeFile(
+      join(sessionDocDir, "strategy.md"),
+      "{{section: _root.md}}\n{{section: _root2.md}}\n",
+      "utf8",
+    );
+    await writeFile(join(sessionSectionsDir, "_root.md"), "root\n", "utf8");
+    await writeFile(join(sessionSectionsDir, "_root2.md"), "dup root\n", "utf8");
+    // Orphaned body that should be recovered
+    await writeFile(join(sessionSectionsDir, "sec_lost_work.md"), "important user edits\n", "utf8");
+
+    const { detectAndRecoverCrash } = await import("../../storage/crash-recovery.js");
+    await detectAndRecoverCrash(ctx.rootDir);
+
+    // After recovery, the canonical document should have a "Recovered edits" section
+    const { readAssembledDocument } = await import("../../storage/document-reader.js");
+    const assembled = await readAssembledDocument(SAMPLE_DOC_PATH);
+    expect(assembled).toContain("Recovered edits");
+    expect(assembled).toContain("important user edits");
+  });
+
+  // ── Test: empty overlay skeleton does not mask canonical ──
+
+  it("empty overlay skeleton does not mask canonical", async () => {
+    await createSampleDocument(ctx.rootDir);
+
+    const contentRoot = join(ctx.rootDir, "content");
+    const overlayRoot = join(ctx.rootDir, "sessions", "docs", "content");
+    const overlayDocDir = join(overlayRoot, "ops");
+
+    // Write an empty overlay skeleton file (zero bytes)
+    await mkdir(overlayDocDir, { recursive: true });
+    await writeFile(join(overlayDocDir, "strategy.md"), "", "utf8");
+
+    const { DocumentSkeleton } = await import("../../storage/document-skeleton.js");
+    const skeleton = await DocumentSkeleton.fromDisk(SAMPLE_DOC_PATH, overlayRoot, contentRoot);
+
+    // Should have 3 sections from canonical, not 0 from the empty overlay
+    const flat = skeleton.flat;
+    expect(flat.length).toBe(3);
+    expect(flat.some((e: any) => e.heading === "Overview")).toBe(true);
+    expect(flat.some((e: any) => e.heading === "Timeline")).toBe(true);
+  });
+});

@@ -37,6 +37,7 @@ export const userFeatures = [
   "Page reloads always show your latest saved content, not stale published content",
   "Large documents show a loading indicator with size estimate and a suggestion to break into smaller files",
   "The system never requires you to take any action to protect your work — publishing is optional, changes are always preserved",
+  "Full drag/drop support for reordering and relocating section titles and bodies",
   "Agent simulator page shows agents what level of protection they'd face when proposing changes",
 ];
 

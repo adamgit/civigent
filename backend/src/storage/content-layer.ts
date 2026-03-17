@@ -14,13 +14,17 @@
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { DocumentSkeleton, type FlatEntry } from "./document-skeleton.js";
+import { DocumentSkeleton, type FlatEntry, generateSectionFilename, serializeSkeletonEntries } from "./document-skeleton.js";
+import { parseDocumentMarkdown } from "./markdown-sections.js";
 import { sectionGlobalKey } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
 
 export class SectionNotFoundError extends Error {}
 export class DocumentNotFoundError extends Error {}
 export class DocumentAssemblyError extends Error {}
+export class MultiSectionContentError extends Error {}
+
+const HEADING_RE = /^#{1,6}\s+.+$/;
 
 /**
  * Strip a leading heading line if it matches the skeleton entry's heading text and level.
@@ -153,6 +157,9 @@ export class ContentLayer {
    *
    * Resolves the heading path via the skeleton and writes the content
    * to the resolved file path. Creates parent directories as needed.
+   *
+   * Throws if the content contains multiple markdown headings — use
+   * writeAssembledDocument() for multi-section content.
    */
   async writeSection(
     ref: SectionRef,
@@ -162,8 +169,123 @@ export class ContentLayer {
     const entry = skeleton.resolve(ref.headingPath);
     // Enforce body-only invariant: strip leading heading if it matches the skeleton entry
     const body = stripMatchingHeading(content, entry.level, entry.heading);
+    // Guard: reject multi-heading content that should go through writeAssembledDocument
+    const headingLineCount = body.split("\n").filter(l => HEADING_RE.test(l.trim())).length;
+    if (headingLineCount > 0) {
+      throw new MultiSectionContentError(
+        `Multi-section content passed to writeSection() for (${ref.docPath}, ` +
+        `[${ref.headingPath.join(" > ")}]) — found ${headingLineCount} embedded heading(s). ` +
+        `Use writeAssembledDocument() instead.`,
+      );
+    }
     await mkdir(path.dirname(entry.absolutePath), { recursive: true });
     await writeFile(entry.absolutePath, body, "utf8");
+  }
+
+  /**
+   * Write a full assembled markdown document, normalizing into per-section files.
+   *
+   * Parses the markdown into sections, creates/updates the skeleton to match
+   * the heading structure, and writes per-section body files. This is the
+   * single authoritative normalize-on-write path for multi-section content.
+   *
+   * Returns the list of section targets (docPath + headingPath) for all
+   * sections that were written, suitable for building proposal metadata.
+   */
+  async writeAssembledDocument(
+    docPath: string,
+    markdown: string,
+  ): Promise<Array<{ doc_path: string; heading_path: string[] }>> {
+    const canonicalRoot = this.fallback?.contentRoot ?? this.contentRoot;
+    const parsedSections = parseDocumentMarkdown(markdown);
+
+    // Load existing skeleton (from canonical via fallback, or empty)
+    let canonicalSkeleton: DocumentSkeleton;
+    try {
+      canonicalSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
+    } catch {
+      canonicalSkeleton = DocumentSkeleton.createEmpty(docPath, canonicalRoot);
+    }
+
+    // Collect canonical flat entries for matching
+    const canonicalFlat: Array<FlatEntry> = [];
+    canonicalSkeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
+      if (!isSubSkeleton) canonicalFlat.push({
+        headingPath: [...headingPath], heading, level, sectionFile, absolutePath, isSubSkeleton,
+      });
+    });
+
+    // Build skeleton path and sections dir for this layer
+    const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+    const skeletonPath = path.resolve(this.contentRoot, ...normalized.split("/"));
+    const sectionsDir = `${skeletonPath}.sections`;
+
+    // Match parsed sections to canonical entries (by heading text, then position)
+    const consumed = new Set<number>();
+    let topLevelIndex = 0;
+    const newEntries: Array<{ heading: string; level: number; sectionFile: string }> = [];
+    const sectionTargets: Array<{ doc_path: string; heading_path: string[] }> = [];
+
+    for (const section of parsedSections) {
+      const isRoot = section.headingPath.length === 0;
+      const heading = section.heading;
+
+      // Try matching by heading text (case-insensitive)
+      let matchedIdx = -1;
+      if (isRoot) {
+        for (let ci = 0; ci < canonicalFlat.length; ci++) {
+          if (consumed.has(ci)) continue;
+          if (canonicalFlat[ci].level === 0 && canonicalFlat[ci].heading === "") {
+            matchedIdx = ci;
+            break;
+          }
+        }
+      } else {
+        for (let ci = 0; ci < canonicalFlat.length; ci++) {
+          if (consumed.has(ci)) continue;
+          if (canonicalFlat[ci].heading.toLowerCase() === heading.toLowerCase()) {
+            matchedIdx = ci;
+            break;
+          }
+        }
+      }
+
+      // Position-based fallback for renamed headings
+      if (!isRoot && matchedIdx < 0 && topLevelIndex < canonicalFlat.length && !consumed.has(topLevelIndex)) {
+        matchedIdx = topLevelIndex;
+      }
+
+      if (matchedIdx >= 0) consumed.add(matchedIdx);
+      if (!isRoot) topLevelIndex++;
+
+      const sectionFile = matchedIdx >= 0
+        ? canonicalFlat[matchedIdx].sectionFile
+        : generateSectionFilename(isRoot ? "root" : heading);
+
+      newEntries.push({
+        heading: isRoot ? "" : heading,
+        level: section.level,
+        sectionFile,
+      });
+
+      // Write body file
+      const sectionPath = path.join(sectionsDir, sectionFile);
+      await mkdir(path.dirname(sectionPath), { recursive: true });
+      const trimmedBody = section.body.replace(/\n+$/, "");
+      await writeFile(sectionPath, trimmedBody ? trimmedBody + "\n" : "", "utf8");
+
+      sectionTargets.push({
+        doc_path: docPath,
+        heading_path: [...section.headingPath],
+      });
+    }
+
+    // Write skeleton file
+    const skeletonContent = serializeSkeletonEntries(newEntries);
+    await mkdir(path.dirname(skeletonPath), { recursive: true });
+    await writeFile(skeletonPath, skeletonContent, "utf8");
+
+    return sectionTargets;
   }
 
   /**
@@ -353,7 +475,8 @@ export class ContentLayer {
         const trimmed = content.replace(/^\n+/, "").replace(/\n+$/, "");
         parts.push(trimmed ? `${headingLine}\n\n${trimmed}\n` : `${headingLine}\n`);
       } else {
-        parts.push(content);
+        const trimmedRoot = content.replace(/^\n+/, "").replace(/\n+$/, "");
+        if (trimmedRoot) parts.push(trimmedRoot);
       }
     }
 

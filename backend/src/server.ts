@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
 import { createApp } from "./app.js";
 import { createWsHub } from "./ws/hub.js";
 import { createCrdtWsServer, setCrdtEventHandler } from "./ws/crdt-sync.js";
@@ -8,6 +9,12 @@ import { detectAndRecoverCrash } from "./storage/crash-recovery.js";
 import { importContentFromDirectoryIfNeeded } from "./storage/content-import.js";
 import { setAutoCommitEventHandler, commitAllDirtySessions } from "./storage/auto-commit.js";
 import { validateOAuthConfig } from "./auth/oauth-config.js";
+
+let buildInfo: { version: string; sha: string; date: string } | null = null;
+try {
+  const raw = readFileSync(new URL("../build-info.json", import.meta.url), "utf8");
+  buildInfo = JSON.parse(raw);
+} catch { /* dev mode — no build-info.json */ }
 
 const PORT = Number(process.env.PORT ?? "3000");
 
@@ -58,9 +65,24 @@ process.on("SIGINT", async () => {
 });
 
 server.listen(PORT, () => {
-  const displayPort = process.env.KS_EXTERNAL_PORT ?? String(PORT);
+  const externalPort = process.env.KS_EXTERNAL_PORT?.trim();
+  if (!externalPort) {
+    console.warn(
+      `WARNING: KS_EXTERNAL_PORT is not set. The URLs below use the internal port (${PORT}),\n` +
+      `which may not match the port users connect on. Set KS_EXTERNAL_PORT in your\n` +
+      `compose.yaml or environment to fix this.`,
+    );
+  }
+  const displayPort = externalPort || String(PORT);
   const displayUrl = `http://localhost:${displayPort}`;
   console.log(`\n  Civigent running at ${displayUrl}\n`);
+  if (buildInfo) {
+    const d = new Date(buildInfo.date);
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const pretty = `${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()} at ${String(d.getUTCHours()).padStart(2,"0")}:${String(d.getUTCMinutes()).padStart(2,"0")} UTC`;
+    console.log(`  Build v${buildInfo.version} · ${buildInfo.sha}`);
+    console.log(`  Built ${pretty}\n`);
+  }
   console.log(`  Connect an agent:\n`);
   console.log(`    claude mcp add --transport http knowledge-store ${displayUrl}/mcp\n`);
   console.log(`  Setup page: ${displayUrl}/setup\n`);
