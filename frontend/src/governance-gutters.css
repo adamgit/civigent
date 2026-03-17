@@ -1,0 +1,399 @@
+/*
+ * Governance Gutters — Left (control/agent policy) & Right (audit trail)
+ *
+ * Naming convention: all classes prefixed with `gov-` for easy grep/rename.
+ * Color tokens: --gov-* mapped to existing app design tokens where possible.
+ *
+ * Imported only in GovernanceDocumentPage.
+ */
+
+/* ------------------------------------------------------------------ */
+/* COLOR TOKENS — mapped to app design tokens                          */
+/* ------------------------------------------------------------------ */
+:root {
+  /* Text hierarchy — mapped to existing app tokens */
+  --gov-ink:            var(--color-text-primary);
+  --gov-ink-secondary:  var(--color-text-secondary);
+  --gov-ink-tertiary:   var(--color-text-muted);
+
+  /* Surfaces — mapped to existing canvas/cream tokens */
+  --gov-paper:      #FFFFFF;
+  --gov-cream:      var(--color-canvas-bg, #FAF8F3);
+  --gov-cream-deep: #F2EFE8;
+  --gov-cream-dd:   #E8E4DB;
+
+  /* Rules / borders */
+  --gov-rule:       #D6D2C8;
+  --gov-rule-light: #E8E4DB;
+
+  /* Semantic — governance-specific colors */
+  --gov-teal:       #1D7A6A;
+  --gov-teal-bg:    #E6F3F0;
+  --gov-amber:      #8B6914;
+  --gov-amber-bg:   #FBF3DC;
+  --gov-red:        var(--color-status-red, #A32D2D);
+  --gov-red-bg:     var(--color-status-red-light, #FCEBEB);
+  --gov-blue:       #185FA5;
+  --gov-blue-bg:    #E6F1FB;
+  --gov-signed:     var(--color-status-green, #0F6E56);
+  --gov-signed-bg:  var(--color-status-green-light, #E1F5EE);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* SHARED PRIMITIVES                                                   */
+/* ------------------------------------------------------------------ */
+
+.gov-gutter {
+  padding: 0 14px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--gov-ink);
+}
+
+.gov-gutter-left {
+  border-right: 0.5px solid var(--gov-rule);
+}
+
+.gov-gutter-right {
+  border-left: 0.5px solid var(--gov-rule);
+}
+
+.gov-gutter-header {
+  font-size: 9px;
+  color: var(--gov-ink-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 12px 0 8px;
+  border-bottom: 0.5px solid var(--gov-rule);
+  margin-bottom: 8px;
+}
+
+.gov-gutter-left .gov-gutter-header {
+  text-align: right;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* LEFT GUTTER — per-section control blocks                            */
+/* ------------------------------------------------------------------ */
+
+.gov-section-control {
+  padding: 10px 0;
+}
+
+.gov-section-control + .gov-section-control {
+  border-top: 0.5px dashed var(--gov-rule-light);
+}
+
+.gov-section-number {
+  font-size: 10px;
+  color: var(--gov-ink-tertiary);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+
+.gov-meta-label {
+  font-size: 9px;
+  color: var(--gov-ink-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 3px;
+}
+
+
+/* --- Human involvement bar --- */
+
+.gov-involvement {
+  margin-bottom: 10px;
+}
+
+.gov-involvement-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gov-involvement-bar-outer {
+  flex: 1;
+  height: 6px;
+  background: var(--gov-cream-dd);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.gov-involvement-bar-inner {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.gov-involvement-high  { background: var(--gov-teal); }
+.gov-involvement-med   { background: var(--gov-amber); }
+.gov-involvement-low   { background: var(--gov-red); opacity: 0.7; }
+
+.gov-involvement-pct {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  min-width: 30px;
+  text-align: right;
+}
+
+.gov-involvement-pct-high { color: var(--gov-teal); }
+.gov-involvement-pct-med  { color: var(--gov-amber); }
+.gov-involvement-pct-low  { color: var(--gov-red); }
+
+.gov-decay-note {
+  font-size: 10px;
+  color: var(--gov-ink-tertiary);
+  font-style: italic;
+  margin-top: 3px;
+  line-height: 1.3;
+}
+
+
+/* --- Agent permission tier badge --- */
+
+.gov-agent-tier {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.gov-agent-tier-auto    { background: var(--gov-signed-bg); color: var(--gov-signed); }
+.gov-agent-tier-gated   { background: var(--gov-amber-bg);  color: var(--gov-amber); }
+.gov-agent-tier-blocked { background: var(--gov-red-bg);     color: var(--gov-red); }
+
+.gov-agent-tier-icon {
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
+  font-size: 10px;
+}
+
+
+/* --- Deterministic gate checklist --- */
+
+.gov-gate-list {
+  margin-top: 6px;
+  list-style: none;
+  padding: 0;
+}
+
+.gov-gate-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--gov-ink-secondary);
+  line-height: 1.3;
+  padding: 2px 0;
+}
+
+.gov-gate-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--gov-ink-tertiary);
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+
+.gov-gate-dot-active {
+  background: var(--gov-signed);
+}
+
+
+/* --- Sign-off summary --- */
+
+.gov-signoff-summary {
+  margin-top: 8px;
+}
+
+.gov-signoff-block {
+  background: var(--gov-cream);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-top: 4px;
+}
+
+.gov-signoff-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.gov-signoff-row + .gov-signoff-row {
+  margin-top: 4px;
+}
+
+.gov-signoff-check {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  flex-shrink: 0;
+}
+
+.gov-signoff-check-done {
+  background: var(--gov-signed-bg);
+  color: var(--gov-signed);
+}
+
+.gov-signoff-check-pending {
+  background: var(--gov-cream-dd);
+  color: var(--gov-ink-tertiary);
+}
+
+
+/* --- Status pills --- */
+
+.gov-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 100px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.gov-status-signed  { background: var(--gov-signed-bg); color: var(--gov-signed); }
+.gov-status-pending { background: var(--gov-amber-bg);  color: var(--gov-amber); }
+.gov-status-draft   { background: var(--gov-cream-deep); color: var(--gov-ink-tertiary); }
+
+.gov-override-btn {
+  font-size: 9px;
+  color: var(--gov-teal);
+  background: none;
+  border: 0.5px solid var(--gov-teal);
+  padding: 2px 8px;
+  border-radius: 100px;
+  cursor: pointer;
+  margin-top: 6px;
+}
+
+.gov-override-btn:hover {
+  background: var(--gov-teal-bg);
+}
+
+
+/* ------------------------------------------------------------------ */
+/* RIGHT GUTTER — audit trail entries                                  */
+/* ------------------------------------------------------------------ */
+
+.gov-audit-entry {
+  padding: 8px 0;
+}
+
+.gov-audit-entry + .gov-audit-entry {
+  border-top: 0.5px dashed var(--gov-rule-light);
+}
+
+.gov-audit-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.gov-audit-avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 500;
+  color: white;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.gov-audit-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.gov-audit-actor {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--gov-ink);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.gov-audit-action {
+  font-size: 10px;
+  color: var(--gov-ink-secondary);
+  line-height: 1.4;
+  margin-top: 1px;
+}
+
+.gov-audit-time {
+  font-size: 9px;
+  color: var(--gov-ink-tertiary);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gov-audit-gate-note {
+  color: var(--gov-teal);
+}
+
+.gov-audit-gate-note-escalated {
+  color: var(--gov-amber);
+}
+
+.gov-audit-reason {
+  background: var(--gov-blue-bg);
+  border-left: 2px solid var(--gov-blue);
+  padding: 5px 9px;
+  border-radius: 0 4px 4px 0;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--gov-blue);
+  line-height: 1.4;
+  font-style: italic;
+}
+
+.gov-actor-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.gov-actor-badge-human {
+  background: var(--gov-teal-bg);
+  color: var(--gov-teal);
+}
+
+.gov-actor-badge-agent {
+  background: var(--gov-amber-bg);
+  color: var(--gov-amber);
+}
+
+.gov-audit-empty {
+  font-size: 10px;
+  color: var(--gov-ink-tertiary);
+  font-style: italic;
+  padding: 8px 0;
+}

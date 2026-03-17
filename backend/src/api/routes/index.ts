@@ -68,7 +68,6 @@ import {
   InvalidDocumentsTreePathError,
 } from "../../storage/documents-tree.js";
 import { resolveAuthenticatedWriter, type AuthenticatedWriter } from "../../auth/context.js";
-import { parseImportDocument } from "../../storage/content-import.js";
 import { listAuthMethods, loginHuman } from "../../auth/service.js";
 import { readAgentKeys, addAgentKey, removeAgentKey } from "../../auth/agent-keys.js";
 import { getSnapshotHealth, scheduleSnapshotRegeneration } from "../../storage/snapshot.js";
@@ -79,10 +78,17 @@ import {
 } from "../../admin-config.js";
 import { commitDirtySections } from "../../storage/auto-commit.js";
 import { DocumentSkeleton, SECTIONS_DIR_SUFFIX } from "../../storage/document-skeleton.js";
-import { generateSectionFilename } from "../../storage/markdown-sections.js";
 import { gitExec } from "../../storage/git-repo.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { renameDocument } from "../../storage/document-rename.js";
+import {
+  createStagingFolder,
+  listStagingFolders,
+  scanStagingFolder,
+  readStagingFiles,
+  deleteStagingFolder,
+} from "../../storage/import-staging.js";
+import { importFilesToProposal } from "../../storage/import-service.js";
 
 
 // ─── Helpers ────────────────────────────────────────────
@@ -1900,165 +1906,155 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     }
   });
 
-  // ─── Import ─────────────────────────────────────────────
+  // ─── Imports (unified staging-based pipeline) ───────────
 
-  router.post("/import", async (req, res, next) => {
+  router.post("/imports", async (req, res, next) => {
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
-
       if (writer.type !== "human") {
-        sendApiError(res, 403, "Only human writers can import files.");
+        sendApiError(res, 403, "Only human writers can create imports.");
+        return;
+      }
+      const { importId, stagingPath } = await createStagingFolder();
+      res.status(201).json({ import_id: importId, staging_path: stagingPath });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/imports/:id/upload", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+      if (writer.type !== "human") {
+        sendApiError(res, 403, "Only human writers can upload import files.");
         return;
       }
 
-      const { target_folder, files } = req.body ?? {};
-
-      if (typeof target_folder !== "string") {
-        sendApiError(res, 400, "target_folder (string) is required.");
-        return;
-      }
+      const importId = req.params.id;
+      const { files } = req.body ?? {};
       if (!Array.isArray(files) || files.length === 0) {
         sendApiError(res, 400, "files (non-empty array) is required.");
         return;
       }
+
+      const { getDataRoot } = await import("../../storage/data-root.js");
+      const stagingPath = path.join(getDataRoot(), "import-staging", importId);
+
+      // Verify staging folder exists
+      try {
+        await stat(stagingPath);
+      } catch {
+        sendApiError(res, 404, `Import ${importId} not found.`);
+        return;
+      }
+
+      let uploaded = 0;
       for (const f of files) {
-        if (typeof f.name !== "string" || !f.name.endsWith(".md")) {
-          sendApiError(res, 400, `Each file name must end in .md. Got: ${f.name}`);
+        if (typeof f.name !== "string" || typeof f.content !== "string") {
+          sendApiError(res, 400, "Each file must have name (string) and content (string).");
           return;
         }
-        if (typeof f.content !== "string") {
-          sendApiError(res, 400, `Each file must have a content string.`);
+        if (!f.name.toLowerCase().endsWith(".md")) {
+          sendApiError(res, 400, `Only .md files are accepted. Got: ${f.name}`);
           return;
         }
+        const filePath = path.join(stagingPath, f.name);
+        // Prevent path traversal
+        if (!filePath.startsWith(stagingPath)) {
+          sendApiError(res, 400, `Invalid file path: ${f.name}`);
+          return;
+        }
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, f.content, "utf8");
+        uploaded++;
       }
 
-      const contentRoot = getContentRoot();
-      const dataRoot = getDataRoot();
-      const createdDocuments: string[] = [];
-      const allSections: Array<{ doc_path: string; heading_path: string[] }> = [];
-      const sectionContents: Array<{ doc_path: string; heading_path: string[]; content: string }> = [];
+      res.status(200).json({ uploaded });
+    } catch (error) {
+      next(error);
+    }
+  });
 
-      for (const file of files) {
-        const folder = target_folder.replace(/^\/+|\/+$/g, "");
-        const docPath = folder ? `${folder}/${file.name}` : file.name;
+  router.get("/imports", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
 
-        // Validate path
-        resolveDocPathUnderContent(contentRoot, docPath);
-
-        // Parse markdown into sections
-        const parsed = parseImportDocument(docPath, file.content);
-
-        // Check if document exists
-        let docExists = false;
-        try {
-          await access(resolveDocPathUnderContent(contentRoot, docPath));
-          docExists = true;
-        } catch {
-          // Does not exist
-        }
-
-        if (!docExists) {
-          // Create the document (skeleton + empty root section)
-          const skeleton = DocumentSkeleton.createEmpty(docPath, contentRoot);
-          await skeleton.persist();
-
-          // Write empty root section body file through ContentLayer
-          const importCanonical = new ContentLayer(contentRoot);
-          await importCanonical.writeSection(new SectionRef(docPath, []), "");
-
-          await gitExec(["add", "content/"], dataRoot);
-          await gitExec(
-            [
-              "-c", "user.name=Knowledge Store",
-              "-c", "user.email=system@knowledge-store.local",
-              "commit",
-              "-m", `create document: ${docPath}`,
-              "--allow-empty",
-            ],
-            dataRoot,
-          );
-          createdDocuments.push(docPath);
-        }
-
-        // Collect sections — root section gets the preamble (body before first heading)
-        // and each parsed section becomes a proposal section
-        const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
-
-        // Root section: content before first heading
-        const rootBody = parsed.sections.length === 0 ? file.content : "";
-        if (rootBody || parsed.sections.length === 0) {
-          allSections.push({ doc_path: docPath, heading_path: [] });
-          sectionContents.push({ doc_path: docPath, heading_path: [], content: rootBody });
-        }
-
-        for (const section of parsed.sections) {
-          // Build heading path from depth info
-          const headingPath = [section.heading];
-          allSections.push({ doc_path: docPath, heading_path: headingPath });
-          sectionContents.push({ doc_path: docPath, heading_path: headingPath, content: section.body });
-
-          // Ensure the section exists in the skeleton
-          try {
-            skeleton.resolve(headingPath);
-          } catch {
-            // Section doesn't exist — create it
-            skeleton.addSectionsFromRootSplit([{
-              heading: section.heading,
-              level: section.depth,
-              body: "",
-            }]);
-          }
-        }
-
-        if (skeleton.dirty) {
-          await skeleton.persist();
-
-          // Write empty body files for new sections
-          const emptyFilePromises: Promise<void>[] = [];
-          skeleton.forEachSection((_heading, _level, _sectionFile, _headingPath, absolutePath, isSubSkeleton) => {
-            if (isSubSkeleton) return;
-            emptyFilePromises.push((async () => {
-              const dir = path.dirname(absolutePath);
-              await mkdir(dir, { recursive: true });
-              try {
-                await access(absolutePath);
-              } catch {
-                await writeFile(absolutePath, "", "utf8");
-              }
-            })());
-          });
-          await Promise.all(emptyFilePromises);
-
-          await gitExec(["add", "content/"], dataRoot);
-          await gitExec(
-            [
-              "-c", "user.name=Knowledge Store",
-              "-c", "user.email=system@knowledge-store.local",
-              "commit",
-              "-m", `import: create sections in ${docPath}`,
-              "--allow-empty",
-            ],
-            dataRoot,
-          );
-        }
-      }
-
-      // Create human proposal
-      const { proposal, contentRoot: propContentRoot } = await createProposal(
-        { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
-        `Import ${files.length} file${files.length > 1 ? "s" : ""} to ${target_folder || "/"}`,
-        allSections.map(s => ({
-          doc_path: s.doc_path,
-          heading_path: s.heading_path,
+      const folders = await listStagingFolders();
+      res.json(
+        folders.map((f) => ({
+          import_id: f.importId,
+          staging_path: f.stagingPath,
+          created_at: f.createdAt,
         })),
       );
+    } catch (error) {
+      next(error);
+    }
+  });
 
-      // Write content to proposal
-      const propLayer = new ContentLayer(propContentRoot);
-      for (const sc of sectionContents) {
-        await propLayer.writeSection(new SectionRef(sc.doc_path, sc.heading_path), sc.content);
+  router.get("/imports/:id", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      const importId = req.params.id;
+      const { getDataRoot } = await import("../../storage/data-root.js");
+      const stagingPath = path.join(getDataRoot(), "import-staging", importId);
+
+      try {
+        await stat(stagingPath);
+      } catch {
+        sendApiError(res, 404, `Import ${importId} not found.`);
+        return;
       }
+
+      const files = await scanStagingFolder(importId);
+      res.json({
+        import_id: importId,
+        staging_path: stagingPath,
+        files: files.map((f) => ({
+          path: f.relativePath,
+          is_markdown: f.isMarkdown,
+          section_count: f.sectionCount,
+        })),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/imports/:id/commit", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+      if (writer.type !== "human") {
+        sendApiError(res, 403, "Only human writers can commit imports.");
+        return;
+      }
+
+      const importId = req.params.id;
+      const { description } = req.body ?? {};
+      if (typeof description !== "string" || description.trim().length === 0) {
+        sendApiError(res, 400, "description (non-empty string) is required.");
+        return;
+      }
+
+      // Read files from staging
+      const stagingFiles = await readStagingFiles(importId);
+      if (stagingFiles.length === 0) {
+        sendApiError(res, 400, "Staging folder is empty or contains no .md files.");
+        return;
+      }
+
+      // Run through the shared import pipeline
+      const { proposal, createdDocuments } = await importFilesToProposal(
+        stagingFiles,
+        { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
+        description.trim(),
+      );
 
       // Evaluate and attempt commit
       const { evaluation, sections: evalSections } = await evaluateProposalHumanInvolvement(proposal);
@@ -2070,6 +2066,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         }
 
         const committedHead = await commitProposalToCanonical(proposal, scores);
+
+        // Delete staging folder on successful commit
+        await deleteStagingFolder(importId);
 
         if (onWsEvent) {
           onWsEvent({
@@ -2093,6 +2092,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           created_documents: createdDocuments,
         });
       } else {
+        // Delete staging folder even when blocked — the proposal overlay has the content
+        await deleteStagingFolder(importId);
+
         if (onWsEvent && evalSections.length > 0) {
           onWsEvent({
             type: "proposal:pending",
@@ -2115,10 +2117,18 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         });
       }
     } catch (error) {
-      if (error instanceof InvalidDocPathError) {
-        sendApiError(res, 400, error);
-        return;
-      }
+      next(error);
+    }
+  });
+
+  router.delete("/imports/:id", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      await deleteStagingFolder(req.params.id);
+      res.status(204).end();
+    } catch (error) {
       next(error);
     }
   });
@@ -2300,6 +2310,38 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         return;
       }
       res.json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ─── Agent activity summary ─────────────────────────────
+
+  router.get("/agents/summary", async (_req, res, next) => {
+    try {
+      const { agentEventLog } = await import("../../mcp/agent-event-log.js");
+      const registeredAgents = (await readAgentKeys()).map(e => ({ id: e.agentId, displayName: e.displayName }));
+
+      // Collect all proposals with their status
+      const allStatuses = ["pending", "committed", "withdrawn"] as const;
+      const allProposals: Array<any> = [];
+      for (const status of allStatuses) {
+        const proposals = await listProposals(status);
+        for (const p of proposals) {
+          allProposals.push({ ...p, status });
+        }
+      }
+
+      const agents = agentEventLog.buildFullSummary(registeredAgents, allProposals);
+      const config = getAdminConfig();
+      const preset = HUMAN_INVOLVEMENT_PRESETS[config.humanInvolvement_preset];
+      res.json({
+        agents,
+        posture: {
+          preset: config.humanInvolvement_preset,
+          description: preset.description ?? config.humanInvolvement_preset,
+        },
+      });
     } catch (error) {
       next(error);
     }

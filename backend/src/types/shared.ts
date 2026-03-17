@@ -24,6 +24,7 @@ export type {
   GetDocumentSectionsResponse,
   GetDocumentsTreeResponse,
   GetHeatmapResponse,
+  GovernanceMode,
   HeadingPath,
   HeatmapEntry,
   HumanInvolvementPreset,
@@ -58,6 +59,10 @@ export type {
   WriterType,
   WsClientMessage,
   WsServerEvent,
+  AgentConnectionStatus,
+  AgentProposalSnapshot,
+  AgentActivitySummary,
+  GetAgentsFullSummaryResponse,
 } from "../../../sharedlibs/shared-types/src/index.js";
 
 export {

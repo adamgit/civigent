@@ -8,6 +8,7 @@ import type {
   CreateProposalResponse,
   GetActivityResponse,
   GetAdminSnapshotHealthResponse,
+  GetAgentsFullSummaryResponse,
   GetDocumentResponse,
   GetDocumentSectionsResponse,
   GetDocumentsTreeResponse,
@@ -29,6 +30,24 @@ import type {
 
 export interface ImportResponse extends CreateProposalResponse {
   created_documents: string[];
+}
+
+export interface ImportStagingInfo {
+  import_id: string;
+  staging_path: string;
+  created_at: string;
+}
+
+export interface ImportStagingFile {
+  path: string;
+  is_markdown: boolean;
+  section_count: number;
+}
+
+export interface ImportDetailResponse {
+  import_id: string;
+  staging_path: string;
+  files: ImportStagingFile[];
 }
 
 export interface DocHistoryVersion {
@@ -606,11 +625,60 @@ export const apiClient = {
     });
   },
 
+  // --- Imports (staging-based pipeline) ---
+
+  async getImports(): Promise<ImportStagingInfo[]> {
+    return requestJson<ImportStagingInfo[]>("/api/imports");
+  },
+
+  async getImportDetail(id: string): Promise<ImportDetailResponse> {
+    return requestJson<ImportDetailResponse>(`/api/imports/${encodeURIComponent(id)}`);
+  },
+
+  async createImport(): Promise<ImportStagingInfo> {
+    return requestJson<ImportStagingInfo>("/api/imports", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+  },
+
+  async uploadImportFiles(
+    id: string,
+    files: { name: string; content: string }[],
+  ): Promise<{ uploaded: number }> {
+    return requestJson<{ uploaded: number }>(`/api/imports/${encodeURIComponent(id)}/upload`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ files }),
+    });
+  },
+
+  async commitImport(id: string, description: string): Promise<ImportResponse> {
+    return requestJson<ImportResponse>(`/api/imports/${encodeURIComponent(id)}/commit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ description }),
+    });
+  },
+
+  async deleteImport(id: string): Promise<void> {
+    await requestJson<void>(`/api/imports/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+  },
+
   async publish(body?: PublishRequest): Promise<PublishResponse> {
     return requestJson<PublishResponse>("/api/publish", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body ?? {}),
     });
+  },
+
+  // --- Agents ---
+
+  async getAgentsSummary(): Promise<GetAgentsFullSummaryResponse> {
+    return requestJson<GetAgentsFullSummaryResponse>("/api/agents/summary");
   },
 };

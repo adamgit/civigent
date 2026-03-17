@@ -93,7 +93,12 @@ export class ToolRegistry {
     }
 
     try {
-      return await tool.handler(args, ctx);
+      const result = await tool.handler(args, ctx);
+      if (ctx.writer.type === "agent") {
+        const { agentEventLog } = await import("./agent-event-log.js");
+        agentEventLog.append(ctx.writer, { kind: "tool_call", tool: name });
+      }
+      return result;
     } catch (error) {
       // Per CLAUDE.md: never hide errors — expose full stack trace
       const message = error instanceof Error

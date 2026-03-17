@@ -39,6 +39,16 @@ export const userFeatures = [
   "The system never requires you to take any action to protect your work — publishing is optional, changes are always preserved",
   "Full drag/drop support for reordering and relocating section titles and bodies",
   "Agent simulator page shows agents what level of protection they'd face when proposing changes",
+    "Drag sections to reorder them or move content between sections — a colored border previews the drop target, and drops are blocked if someone else is editing there",
+  "Version history panel lists past versions of a document with author, timestamp, and message — click any version to preview its full text or restore the document to that point",
+  "Restoring a previous version goes through the same proposal system as any other change — locked sections are respected and nothing is silently overwritten",
+  "If the server crashes while you're editing, your work reappears automatically as a 'Recovered edits' section at the bottom of the document, ready to review and relocate",
+  "Switch between Standard and Governance view using a toggle in the toolbar — or admins can force Governance mode for everyone",
+  "Governance view adds a left column showing each section's human-involvement score, agent permission tier (Blocked, Gated, or Auto), and a checklist of what agents can and can't do",
+  "Governance view adds a right column with a chronological audit trail per section — who changed it, when, human or agent, and any justification provided",
+  "Agent permission tiers are computed automatically from how recently humans edited: heavily-edited sections block agents, moderately-edited sections gate certain actions, untouched sections allow full autonomy",
+  "AI agents connect through capability tiers — from simple file reads up to full proposal-based collaboration with human-involvement checks",
+  "The agent setup page detects your AI tool (Claude Code or Cursor) and shows tool-specific configuration with one-click copy",
 ];
 
 export const architectureFeatures = [
@@ -76,4 +86,7 @@ export const architectureFeatures = [
   "Two WebSocket channels: binary per-document CRDT for editing data, and JSON presence hub for system-wide events",
   "Human and agent proposals use the same infrastructure, same commit path, same API endpoints — distinguished only by writer.type",
   "Sections in a pending human proposal are hard-blocked for everyone else, even after the CRDT session has committed",
+  "Agent MCP access has three tiers: Tier 1 (file operations), Tier 2 (+ intent declaration), Tier 3 (full proposal workflow with danger-score checks). Claude Code and Cursor auto-detect to Tier 3",
+  "Crash recovery reads raw session fragments from disk, layers them on the last committed state, and appends unmatched content as a recovery section — no special UI or user interaction required",
+  "Version restore creates a proposal through the same pipeline as human and agent proposals, inheriting all lock and danger-score checks — git show provides the historical content",
 ];

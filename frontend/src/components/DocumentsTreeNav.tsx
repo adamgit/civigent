@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import type { DocumentTreeEntry, EvaluatedSection } from "../types/shared.js";
-import { apiClient, type ImportResponse } from "../services/api-client.js";
+import { apiClient } from "../services/api-client.js";
 
 function toRouteDocPath(treePath: string): string {
   return treePath.replace(/^\/+/, "");
@@ -146,6 +146,7 @@ export function DocumentsTreeNav({
   onTreeRefresh,
 }: DocumentsTreeNavProps) {
   const location = useLocation();
+  const navigate = useNavigate();
   const selectedDocPath = useMemo(() => parseRouteDocPath(location.pathname), [location.pathname]);
   const [expanded, setExpanded] = useState<Set<string>>(() => readExpandedState(storageKey));
   const [importingFolder, setImportingFolder] = useState<string | null>(null);
@@ -215,28 +216,20 @@ export function DocumentsTreeNav({
     const input = fileInputRef.current;
     if (!input?.files || input.files.length === 0) return;
 
-    const folderPath = pendingFolderRef.current;
-    setImportingFolder(folderPath);
+    setImportingFolder(pendingFolderRef.current);
 
     try {
       const files = await readFilesAsText(input.files);
-      const response: ImportResponse = await apiClient.importFiles(folderPath, files);
-
-      if (response.status === "committed") {
-        setImportMessage(`Imported ${files.length} file${files.length === 1 ? "" : "s"}`);
-        onTreeRefresh?.();
-      } else if (response.outcome === "blocked") {
-        const blocked = response.evaluation.blocked_sections;
-        setBlockedImport({ proposalId: response.proposal_id, blockedSections: blocked });
-      } else {
-        setImportMessage(`Import proposal created (${response.status})`);
-      }
+      // Create staging folder, upload files, navigate to ImportsPage
+      const staging = await apiClient.createImport();
+      await apiClient.uploadImportFiles(staging.import_id, files);
+      navigate(`/imports?expand=${encodeURIComponent(staging.import_id)}`);
     } catch (error) {
       setImportMessage(`Import failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setImportingFolder(null);
     }
-  }, [onTreeRefresh]);
+  }, [navigate]);
 
   const handleKeepProposal = useCallback(() => {
     setBlockedImport(null);

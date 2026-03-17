@@ -88,11 +88,14 @@ export const HUMAN_INVOLVEMENT_PRESETS: Record<HumanHumanInvolvementPresetName, 
 
 // ─── Admin Configuration ───────────────────────────────────────────
 
+export type GovernanceMode = "available" | "forced";
+
 export interface AdminConfig {
   humanInvolvement_preset: HumanHumanInvolvementPresetName;
   humanInvolvement_midpoint_seconds: number;
   humanInvolvement_steepness: number;
   snapshot_enabled: boolean;
+  governance_mode: GovernanceMode;
 }
 
 // ─── Proposal Model (v3 — 4-state lifecycle) ──────────────────────
@@ -529,3 +532,40 @@ export type WsClientMessage =
   | WsFocusSectionMessage
   | WsBlurSectionMessage
   | WsSessionDepartureMessage;
+
+// ─── Agent Activity View ─────────────────────────────────────────
+
+export type AgentConnectionStatus = "active" | "idle" | "offline";
+
+export interface AgentProposalSnapshot {
+  readonly id: string;
+  readonly intent: string;
+  readonly status: ProposalStatus;
+  readonly created_at: string;
+  readonly doc_paths: readonly string[];
+  readonly section_count: number;
+}
+
+export interface AgentActivitySummary {
+  readonly agent_id: string;
+  readonly display_name: string;
+  readonly connection_status: AgentConnectionStatus;
+  readonly last_seen_at: string | null;
+  readonly mcp_tool_usage: Readonly<Record<string, number>>;
+  readonly pending_proposals: readonly AgentProposalSnapshot[];
+  readonly recent_proposals: readonly AgentProposalSnapshot[];
+  readonly stats: {
+    readonly proposals_committed: number;
+    readonly proposals_blocked: number;
+    readonly proposals_withdrawn: number;
+    readonly total_tool_calls: number;
+  };
+}
+
+export interface GetAgentsFullSummaryResponse {
+  readonly agents: readonly AgentActivitySummary[];
+  readonly posture: {
+    readonly preset: HumanHumanInvolvementPresetName;
+    readonly description: string;
+  };
+}

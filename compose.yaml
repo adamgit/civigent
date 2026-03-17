@@ -19,6 +19,7 @@ services:
       - KS_USER_NAME=${KS_USER_NAME:-}
       - KS_USER_EMAIL=${KS_USER_EMAIL:-}
       - KS_USER_ID=${KS_USER_ID:-}
+      # - KS_GOVERNANCE_MODE=available
 
   frontend:
     build:

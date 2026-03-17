@@ -344,6 +344,11 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
 
       const committedHead = await commitProposalToCanonical(proposal, scores);
 
+      if (ctx.writer.type === "agent") {
+        const { agentEventLog } = await import("../agent-event-log.js");
+        agentEventLog.append(ctx.writer, { kind: "proposal_committed", proposalId });
+      }
+
       if (ctx.emitEvent) {
         ctx.emitEvent({
           type: "content:committed",
@@ -365,6 +370,11 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
         sections,
       });
     } else {
+      if (ctx.writer.type === "agent") {
+        const { agentEventLog } = await import("../agent-event-log.js");
+        agentEventLog.append(ctx.writer, { kind: "proposal_blocked", proposalId });
+      }
+
       return jsonToolResult({
         proposal_id: proposalId,
         status: "pending",

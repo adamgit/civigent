@@ -15,6 +15,9 @@ import { SessionInspectorPage } from "../pages/SessionInspectorPage";
 import { GitHistoryPage } from "../pages/GitHistoryPage";
 import { SetupPage } from "../pages/SetupPage";
 import { FeaturesPage } from "../pages/FeaturesPage";
+import { AgentsPage } from "../pages/AgentsPage";
+import { AgentFeedPage } from "../pages/AgentFeedPage";
+import { ImportsPage } from "../pages/ImportsPage";
 
 export const router = createBrowserRouter([
   {
@@ -35,6 +38,9 @@ export const router = createBrowserRouter([
       { path: "coordination", element: <CoordinationPage /> },
       { path: "setup", element: <SetupPage /> },
       { path: "features", element: <FeaturesPage /> },
+      { path: "agents", element: <AgentsPage /> },
+      { path: "agents/feed", element: <AgentFeedPage /> },
+      { path: "imports", element: <ImportsPage /> },
       { path: "login", element: <LoginPage /> }
     ]
   }

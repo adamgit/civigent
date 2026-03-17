@@ -1,8 +1,9 @@
-import type { AdminConfig, HumanHumanInvolvementPresetName } from "./types/shared.js";
+import type { AdminConfig, GovernanceMode, HumanHumanInvolvementPresetName } from "./types/shared.js";
 import { HUMAN_INVOLVEMENT_PRESETS } from "./types/shared.js";
 
 const DEFAULT_HUMAN_INVOLVEMENT_PRESET: HumanHumanInvolvementPresetName = "eager";
 const DEFAULT_SNAPSHOT_ENABLED = true;
+const DEFAULT_GOVERNANCE_MODE: GovernanceMode = "available";
 
 export class AdminConfigValidationError extends Error {
   constructor(message: string) {
@@ -17,6 +18,12 @@ function parsePreset(raw: string | undefined): HumanHumanInvolvementPresetName {
     return normalized;
   }
   return DEFAULT_HUMAN_INVOLVEMENT_PRESET;
+}
+
+function parseGovernanceMode(raw: string | undefined): GovernanceMode {
+  const normalized = String(raw ?? "").trim().toLowerCase();
+  if (normalized === "available" || normalized === "forced") return normalized;
+  return DEFAULT_GOVERNANCE_MODE;
 }
 
 function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
@@ -44,6 +51,7 @@ export function getAdminConfig(): AdminConfig {
     humanInvolvement_midpoint_seconds: preset.midpoint_seconds,
     humanInvolvement_steepness: preset.steepness,
     snapshot_enabled: runtimeConfig.snapshot_enabled,
+    governance_mode: parseGovernanceMode(process.env.KS_GOVERNANCE_MODE),
   };
 }
 

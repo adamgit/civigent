@@ -12,11 +12,7 @@ import { DocumentTopbar } from "../components/DocumentTopbar";
 import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
 import { DocumentSectionRenderer } from "../components/DocumentSectionRenderer";
 import { DocumentFooter } from "../components/DocumentFooter";
-import { DocumentHistory } from "../components/DocumentHistory";
 import { useCrossSectionCopy } from "../hooks/useCrossSectionCopy";
-import { useViewingPresence } from "../hooks/useViewingPresence";
-import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
-import type { Awareness } from "y-protocols/awareness";
 import {
   sectionHeadingKey,
   type DocStructureNode,
@@ -31,33 +27,19 @@ import {
   LOADING_REVEAL_DELAY_MS,
 } from "./document-page-utils";
 import { useDocumentCrdt } from "../hooks/useDocumentCrdt";
-
-// ─── viewingPresence: small component to call the hook per-section ──
-
-function ViewingPresenceDots({ awareness, sectionKey }: { awareness: Awareness | null; sectionKey: string }) {
-  const viewers = useViewingPresence(awareness, sectionKey);
-  if (viewers.length === 0) return null;
-  return (
-    <>
-      {viewers.map((v, idx) => (
-        <span
-          key={`${v.name}-${idx}`}
-          title={v.name}
-          className="inline-block w-[7px] h-[7px] rounded-full border border-white/80"
-          style={{ backgroundColor: v.color }}
-        />
-      ))}
-    </>
-  );
-}
+import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
+import { useGovernanceData } from "../hooks/useGovernanceData";
+import { GovernanceLeftGutter } from "../components/GovernanceLeftGutter";
+import { GovernanceRightGutter } from "../components/GovernanceRightGutter";
+import "../governance-gutters.css";
 
 // ─── Component ───────────────────────────────────────────────────
 
-interface DocumentPageProps {
+interface GovernanceDocumentPageProps {
   docPathOverride?: string | null;
 }
 
-export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
+export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPageProps = {}) {
   const params = useParams();
   const decodedDocPath = useMemo(() => {
     if (typeof docPathOverride === "string" && docPathOverride.length > 0) {
@@ -71,9 +53,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const [sections, setSections] = useState<DocumentSection[]>([]);
   const [sectionsLoading, setSectionsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [renaming, setRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState("");
-  const [renameError, setRenameError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [structureTree, setStructureTree] = useState<DocStructureNode[] | null>(null);
   const [showLoading, setShowLoading] = useState(false);
@@ -109,10 +88,9 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   }, []);
 
   const startObserver = useCallback((docPath: string) => {
-    if (observerRef.current) return; // already observing
+    if (observerRef.current) return;
     const observer = new ObserverCrdtProvider(docPath, {
       onChange: () => {
-        // Convert each Y.Doc fragment to markdown and update sections state
         const currentSections = sectionsRef.current;
         if (currentSections.length === 0) return;
         const ydoc = observer.doc;
@@ -133,12 +111,9 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         if (changed) setSections(updated);
       },
       onSessionEnded: () => {
-        // Editing session ended — fall back to REST content
         if (docPath) loadSections(docPath);
-        // Observer will auto-reconnect to wait for next session
       },
       onStructureWillChange: () => {
-        // Structure changed — reload sections from REST to get new skeleton
         if (docPath) loadSections(docPath);
       },
     });
@@ -177,15 +152,11 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     pendingStructureRefocusRef,
     focusedSectionIndexRef,
     proposalSectionsRef,
-    proposalSaveTimerRef,
     mouseDownPosRef,
-    deferredEditIndexRef,
-    ensureProvider,
-    stopEditing,
     startEditing,
     enterProposalMode,
     exitProposalMode,
-    saveProposalSections,
+    stopEditing,
     handleProposalSectionChange,
     handleCursorExit,
     setEditorRef,
@@ -214,12 +185,8 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     setRecentlyChangedSections,
     recentlyChangedByLabel,
     agentReadingIndicators,
-    presenceIndicators,
     presenceIndicatorsRef,
-    pendingProposalIndicators,
     pendingProposalIndicatorsRef,
-    presenceBySectionKey,
-    proposalsBySectionKey,
   } = useDocumentWebSocket({
     decodedDocPath,
     sectionsRef,
@@ -321,7 +288,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     let cancelled = false;
     loadSections(decodedDocPath).then(() => {
       if (cancelled) return;
-      // Start observer if not already editing
       if (!crdtProviderRef.current) {
         startObserver(decodedDocPath);
       }
@@ -352,7 +318,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     return () => { cancelled = true; };
   }, [decodedDocPath, lastVisitSeed, setRecentlyChangedSections]);
 
-  // ── Handle idle timeout: CRDT disconnects while editing → silently return to read view ──
+  // ── Handle idle timeout ──────────────────────────────────
   useEffect(() => {
     if (
       crdtState === "disconnected"
@@ -369,7 +335,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   // ── Derived ──────────────────────────────────────────────
   const docTitle = decodedDocPath ? getDocDisplayName(decodedDocPath) : "Untitled";
 
-  // Aggregated persistence summary — derived from per-section map (never lies)
   const persistenceSummary = useMemo(() => {
     let dirtyCount = 0;
     let pendingCount = 0;
@@ -384,6 +349,9 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     return { dirtyCount, pendingCount, flushedCount, deletingCount, total: sectionPersistence.size };
   }, [sectionPersistence]);
 
+  // ── Governance data (left + right gutters) ─────────────────
+  const { leftGutterSections, rightGutterGroups } = useGovernanceData(sections);
+
   // ── Render ───────────────────────────────────────────────
   return (
     <div className="flex flex-col h-full">
@@ -396,10 +364,10 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         isEditing={isEditing}
       />
 
-      {/* Document-level connection banner — visible only during transport failures */}
+      {/* Document-level connection banner */}
       {isEditing && crdtState === "reconnecting" ? (
         <div className="bg-amber-50 border-b border-amber-200 px-4 py-1.5 text-xs text-amber-800 font-medium">
-          Reconnecting\u2026
+          Reconnecting{"\u2026"}
         </div>
       ) : isEditing && (crdtState === "error" || crdtState === "disconnected") ? (
         <div className="bg-red-50 border-b border-red-200 px-4 py-1.5 text-xs text-red-800 font-medium">
@@ -407,181 +375,134 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         </div>
       ) : null}
 
-      {/* Version history panel */}
-      {showHistory && decodedDocPath && (
-        <div className="border-b border-[#eae7e2] bg-canvas-bg">
-          <div className="max-w-[700px] mx-auto">
-            <div className="flex items-center justify-between px-4 py-2 border-b border-[#f5f2ed]">
-              <span className="text-xs font-bold text-text-primary">Version History</span>
-              <button
-                onClick={() => setShowHistory(false)}
-                className="text-[11px] text-text-muted hover:text-text-primary"
-              >
-                Close
-              </button>
-            </div>
-            <DocumentHistory
-              docPath={decodedDocPath}
-              onRestored={() => {
-                setShowHistory(false);
-                // Trigger a re-fetch of sections by re-navigating
-                if (decodedDocPath) {
-                  setSectionsLoading(true);
-                  apiClient.getDocumentSections(decodedDocPath).then(
-                    (res) => { setSections(res.sections); setSectionsLoading(false); },
-                    () => { setSectionsLoading(false); },
-                  );
-                }
-              }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Canvas scroll area */}
+      {/* Three-column governance layout scroll area */}
       <div className="flex-1 overflow-auto canvas-scroll px-5 pt-8 pb-24" style={{ background: "var(--color-page-bg)" }}>
-        <div ref={sectionsContainerRef} className="min-w-[700px] w-fit mx-auto bg-canvas-bg shadow-[0_1px_4px_rgba(0,0,0,0.04),0_6px_24px_rgba(0,0,0,0.025)] rounded-sm px-14 pt-12 pb-16 relative min-h-[calc(100vh-200px)]">
-          {/* Document title */}
-          <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight mb-1 tracking-tight">
-            {docTitle}
-          </h1>
-          <div className="text-xs text-text-muted mb-7 pb-5 border-b border-[#eae7e2] flex items-center gap-2">
-            {renaming ? (
-              <form
-                className="flex items-center gap-1.5 flex-1"
-                onSubmit={async (e) => {
-                  e.preventDefault();
-                  if (!decodedDocPath || !renameValue.trim()) return;
-                  setRenameError(null);
-                  try {
-                    await apiClient.renameDocument(decodedDocPath, renameValue.trim());
-                    setRenaming(false);
-                  } catch (err) {
-                    setRenameError(err instanceof Error ? err.message : String(err));
-                  }
-                }}
-              >
-                <input
-                  className="flex-1 text-xs border border-border-default rounded px-1.5 py-0.5 bg-canvas-bg text-text-primary"
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                  autoFocus
+        <div
+          className="mx-auto"
+          style={{
+            display: "grid",
+            gridTemplateColumns: "220px minmax(700px, 1fr) 240px",
+            gap: 0,
+            maxWidth: "1400px",
+          }}
+        >
+          {/* Left gutter — governance controls */}
+          <GovernanceLeftGutter sections={leftGutterSections} />
+
+          {/* Center column — document content */}
+          <div
+            ref={sectionsContainerRef}
+            className="bg-canvas-bg shadow-[0_1px_4px_rgba(0,0,0,0.04),0_6px_24px_rgba(0,0,0,0.025)] rounded-sm px-14 pt-12 pb-16 relative min-h-[calc(100vh-200px)]"
+          >
+            <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight mb-1 tracking-tight">
+              {docTitle}
+            </h1>
+            <div className="text-xs text-text-muted mb-7 pb-5 border-b border-[#eae7e2]">
+              {decodedDocPath ?? ""}
+            </div>
+
+            {/* Agent reading indicators */}
+            {agentReadingIndicators.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {agentReadingIndicators.map((indicator) => (
+                  <span key={indicator.key} className="inline-flex items-center gap-1 text-[10px] text-agent-text animate-[fade-assemble_3s_ease-in-out_infinite]">
+                    <span className="text-xs">&#128065;</span>
+                    {indicator.actorDisplayName} reading {indicator.labels.join(", ")}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+
+            {/* Recently changed sections */}
+            {recentlyChangedSections.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5 mb-4">
+                {recentlyChangedSections.sort((a, b) => b.changedAtMs - a.changedAtMs).map((entry) => (
+                  <span key={entry.key} className="inline-flex items-center gap-1 text-[10px] font-medium text-agent-text bg-agent-light px-[7px] py-px rounded-sm">
+                    {entry.label} ({entry.changedByName}, {formatRelativeAgeFromMs(entry.changedAtMs)})
+                  </span>
+                ))}
+              </div>
+            ) : null}
+
+            {/* Status / error */}
+            {statusMessage ? <p className="text-xs text-status-green mb-2">{statusMessage}</p> : null}
+            {error ? <p className="text-xs text-status-red mb-2">Error: {error}</p> : null}
+
+            {/* Loading state */}
+            {showLoading ? <DocumentLoadingSkeleton structureTree={structureTree} /> : null}
+
+            {/* Sections */}
+            {!sectionsLoading && sections.length === 0 && !error ? (
+              <p className="text-sm text-text-muted">Document is empty.</p>
+            ) : null}
+
+            {!sectionsLoading ? sections.map((section, i) => {
+              const sectionKey = sectionHeadingKey(section.heading_path);
+              const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path);
+              const sectionLabel = headingPathToLabel(section.heading_path);
+
+              return (
+                <DocumentSectionRenderer
+                  key={fk}
+                  section={section}
+                  index={i}
+                  fragmentKey={fk}
+                  isFocused={focusedSectionIndex === i}
+                  hasEditor={shouldMountEditor(i, focusedSectionIndex)}
+                  isRestructuring={restructuringKeys.has(fk)}
+                  isInProposal={!!(proposalMode && proposalSectionsRef.current.has(`${decodedDocPath}::${sectionKey}`))}
+                  isLockedByOtherHuman={!!(section as any).blocked}
+                  highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
+                  humanInvolvementScore={section.humanInvolvement_score ?? 0}
+                  dragOverSectionIndex={dragOverSectionIndex}
+                  crdtProvider={crdtProvider}
+                  crdtError={crdtError}
+                  proposalMode={proposalMode}
+                  readyEditors={readyEditors}
+                  mouseDownPosRef={mouseDownPosRef}
+                  onStartEditing={startEditing}
+                  onFocusSection={(idx, headingPath, coords) => {
+                    setFocusedSectionIndex(idx);
+                    pendingFocusRef.current = { index: idx, position: "start", coords };
+                    const provider = crdtProviderRef.current;
+                    if (provider) {
+                      provider.focusSection(headingPath);
+                      setViewingSections(provider, idx);
+                    }
+                  }}
+                  onSetEditorRef={setEditorRef}
+                  onEditorReady={(idx) => setReadyEditors(prev => new Set([...prev, idx]))}
+                  onProposalSectionChange={proposalMode ? handleProposalSectionChange : undefined}
+                  onCursorExit={handleCursorExit}
+                  onCrossSectionDrop={(sec, transfer) => {
+                    transfer.targetHeadingPath = sec.heading_path;
+                    const srcSection = sections.find(s =>
+                      fragmentKeyFromSectionFile(s.section_file, s.heading_path) === transfer.sourceFragmentKey,
+                    );
+                    if (srcSection) transfer.sourceHeadingPath = srcSection.heading_path;
+                    void transferServiceRef.current?.execute(transfer);
+                  }}
                 />
-                <button type="submit" className="text-xs text-accent-primary hover:underline">Save</button>
-                <button type="button" className="text-xs text-text-muted hover:underline" onClick={() => { setRenaming(false); setRenameError(null); }}>Cancel</button>
-                {renameError && <span className="text-xs text-red-600">{renameError}</span>}
-              </form>
-            ) : (
-              <>
-                <span>{decodedDocPath ?? ""}</span>
-                <button
-                  className="text-xs text-accent-primary hover:underline ml-1"
-                  onClick={() => { setRenameValue(decodedDocPath ?? ""); setRenaming(true); }}
-                >
-                  Rename
-                </button>
-              </>
-            )}
+              );
+            }) : null}
+
+            {/* Deletion placeholders */}
+            {deletionPlaceholders.map((placeholder) => (
+              <div
+                key={`deleting:${placeholder.fragmentKey}`}
+                className="relative m-[-16px] p-[4px_16px] rounded-md border-l-[2.5px] border-l-amber-300 bg-amber-50/30"
+              >
+                <div className="flex items-center gap-1.5 py-1">
+                  <span className="w-[5px] h-[5px] rounded-full bg-amber-400" />
+                  <span className="text-[10px] text-amber-700 line-through">{placeholder.formerHeading || "(document root)"}</span>
+                  <span className="text-[9px] text-amber-500 ml-1">Deletion pending{"\u2026"}</span>
+                </div>
+              </div>
+            ))}
           </div>
 
-          {/* Agent reading indicators */}
-          {agentReadingIndicators.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5 mb-3">
-              {agentReadingIndicators.map((indicator) => (
-                <span key={indicator.key} className="inline-flex items-center gap-1 text-[10px] text-agent-text animate-[fade-assemble_3s_ease-in-out_infinite]">
-                  <span className="text-xs">&#128065;</span>
-                  {indicator.actorDisplayName} reading {indicator.labels.join(", ")}
-                </span>
-              ))}
-            </div>
-          ) : null}
-
-          {/* Recently changed sections */}
-          {recentlyChangedSections.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5 mb-4">
-              {recentlyChangedSections.sort((a, b) => b.changedAtMs - a.changedAtMs).map((entry) => (
-                <span key={entry.key} className="inline-flex items-center gap-1 text-[10px] font-medium text-agent-text bg-agent-light px-[7px] py-px rounded-sm">
-                  {entry.label} ({entry.changedByName}, {formatRelativeAgeFromMs(entry.changedAtMs)})
-                </span>
-              ))}
-            </div>
-          ) : null}
-
-          {/* Status / error */}
-          {statusMessage ? <p className="text-xs text-status-green mb-2">{statusMessage}</p> : null}
-          {error ? <p className="text-xs text-status-red mb-2">Error: {error}</p> : null}
-
-          {/* Loading state (only shown after LOADING_REVEAL_DELAY_MS to avoid flicker) */}
-          {showLoading ? <DocumentLoadingSkeleton structureTree={structureTree} /> : null}
-
-          {/* Sections */}
-          {!sectionsLoading && sections.length === 0 && !error ? (
-            <p className="text-sm text-text-muted">Document is empty.</p>
-          ) : null}
-
-          {!sectionsLoading ? sections.map((section, i) => {
-            const sectionKey = sectionHeadingKey(section.heading_path);
-            const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path);
-            const sectionLabel = headingPathToLabel(section.heading_path);
-
-            return (
-              <DocumentSectionRenderer
-                key={fk}
-                section={section}
-                index={i}
-                fragmentKey={fk}
-                isFocused={focusedSectionIndex === i}
-                hasEditor={shouldMountEditor(i, focusedSectionIndex)}
-                isRestructuring={restructuringKeys.has(fk)}
-                isInProposal={!!(proposalMode && proposalSectionsRef.current.has(`${decodedDocPath}::${sectionKey}`))}
-                isLockedByOtherHuman={!!(section as any).blocked}
-                highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
-                humanInvolvementScore={section.humanInvolvement_score ?? 0}
-                dragOverSectionIndex={dragOverSectionIndex}
-                crdtProvider={crdtProvider}
-                crdtError={crdtError}
-                proposalMode={proposalMode}
-                readyEditors={readyEditors}
-                mouseDownPosRef={mouseDownPosRef}
-                onStartEditing={startEditing}
-                onFocusSection={(idx, headingPath, coords) => {
-                  setFocusedSectionIndex(idx);
-                  pendingFocusRef.current = { index: idx, position: "start", coords };
-                  const provider = crdtProviderRef.current;
-                  if (provider) {
-                    provider.focusSection(headingPath);
-                    setViewingSections(provider, idx);
-                  }
-                }}
-                onSetEditorRef={setEditorRef}
-                onEditorReady={(idx) => setReadyEditors(prev => new Set([...prev, idx]))}
-                onProposalSectionChange={proposalMode ? handleProposalSectionChange : undefined}
-                onCursorExit={handleCursorExit}
-                onCrossSectionDrop={(sec, transfer) => {
-                  transfer.targetHeadingPath = sec.heading_path;
-                  const srcSection = sections.find(s =>
-                    fragmentKeyFromSectionFile(s.section_file, s.heading_path) === transfer.sourceFragmentKey,
-                  );
-                  if (srcSection) transfer.sourceHeadingPath = srcSection.heading_path;
-                  void transferServiceRef.current?.execute(transfer);
-                }}
-              />
-            );
-          }) : null}
-
-          {/* Deletion placeholders — sections removed but not yet confirmed by server */}
-          {deletionPlaceholders.map((placeholder) => (
-            <div
-              key={`deleting:${placeholder.fragmentKey}`}
-              className="relative m-[-16px] p-[4px_16px] rounded-md border-l-[2.5px] border-l-amber-300 bg-amber-50/30"
-            >
-              <div className="flex items-center gap-1.5 py-1">
-                <span className="w-[5px] h-[5px] rounded-full bg-amber-400" />
-                <span className="text-[10px] text-amber-700 line-through">{placeholder.formerHeading || "(document root)"}</span>
-                <span className="text-[9px] text-amber-500 ml-1">Deletion pending\u2026</span>
-              </div>
-            </div>
-          ))}
+          {/* Right gutter — audit trail */}
+          <GovernanceRightGutter sectionGroups={rightGutterGroups} />
         </div>
       </div>
 

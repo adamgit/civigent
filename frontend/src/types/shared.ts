@@ -1,5 +1,6 @@
 export type {
   AdminConfig,
+  GovernanceMode,
   ActivityItem,
   ActivityItemSource,
   AgentReadingEvent,
@@ -60,6 +61,10 @@ export type {
   WriterType,
   WsClientMessage,
   WsServerEvent,
+  AgentConnectionStatus,
+  AgentProposalSnapshot,
+  AgentActivitySummary,
+  GetAgentsFullSummaryResponse,
 } from "../../../sharedlibs/shared-types/src/index.js";
 
 export {

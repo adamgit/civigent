@@ -501,6 +501,24 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     return () => {
       cleanupDragListeners?.();
       if (debounceTimer !== null) clearTimeout(debounceTimer);
+
+      // Silence the ProseMirror EditorView's dispatch before the async
+      // crepe.destroy() starts. Milkdown's destroy is async and removes
+      // the editorStateCtx context slice BEFORE it destroys the
+      // ProseMirror view, leaving a window where deferred y-prosemirror
+      // dispatches (setTimeout(0) from yCursorPlugin awareness updates)
+      // reach a still-alive view whose Milkdown context is already torn
+      // down, throwing "Context 'editorState' not found".
+      // Nulling dispatch prevents those stale dispatches from reaching
+      // the half-destroyed context. Milkdown's own cleanup doesn't use
+      // dispatch, so this is safe.
+      try {
+        const view = crepe.editor.ctx.get(editorViewCtx);
+        view.dispatch = () => {};
+      } catch {
+        // Editor might not be fully created yet — nothing to silence.
+      }
+
       readyRef.current = false;
       setReady(false);
       deferredFocusRef.current = null;

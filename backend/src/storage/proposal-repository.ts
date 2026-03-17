@@ -115,6 +115,10 @@ export async function createProposal(
   const contentRoot = proposalContentRoot(id, "pending");
   await mkdir(contentRoot, { recursive: true });
   await writeJsonFile(proposalPath("pending", id), file);
+  if (writer.type === "agent") {
+    const { agentEventLog } = await import("../mcp/agent-event-log.js");
+    agentEventLog.append(writer, { kind: "proposal_created", proposalId: id });
+  }
   return { proposal: toProposal(file, "pending"), contentRoot };
 }
 
@@ -284,6 +288,10 @@ export async function transitionToWithdrawn(
   await mkdir(statusDir("withdrawn"), { recursive: true });
   await rename(fromDir, toDir);
 
+  if (proposal.writer.type === "agent") {
+    const { agentEventLog } = await import("../mcp/agent-event-log.js");
+    agentEventLog.append(proposal.writer, { kind: "proposal_withdrawn", proposalId: id });
+  }
   return toProposal(file, "withdrawn");
 }
 

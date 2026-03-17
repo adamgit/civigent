@@ -420,6 +420,9 @@ export function AppLayout() {
           <Link to="/history" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
             <span className="text-xs w-4 text-center opacity-50">&#128336;</span> Audit Log
           </Link>
+          <Link to="/agents" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
+            <span className="text-xs w-4 text-center opacity-50">&#129302;</span> Agents
+          </Link>
           <div>
             <div className="flex items-center">
               <Link to="/admin" className="flex-1 flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
@@ -445,6 +448,9 @@ export function AppLayout() {
                 </Link>
                 <Link to="/agent-simulator" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
                   <span className="text-xs w-4 text-center opacity-50">&#129302;</span> Agent Sim
+                </Link>
+                <Link to="/imports" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
+                  <span className="text-xs w-4 text-center opacity-50">&#128229;</span> Imports
                 </Link>
               </div>
             )}
