@@ -4,7 +4,7 @@ import { apiClient } from "../services/api-client";
 import { ObserverCrdtProvider } from "../services/observer-crdt-provider";
 import { fragmentToMarkdown } from "../services/fragment-to-markdown";
 import { getLastDocumentVisitAt, markDocumentVisitedNow } from "../services/document-visit-history";
-import { SectionTransferService } from "../services/section-transfer";
+import { SectionTransferService, type SectionTransfer } from "../services/section-transfer";
 import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
 import { rememberRecentDoc } from "../services/recent-docs";
 import { ProposalPanel } from "../components/ProposalPanel";
@@ -31,6 +31,7 @@ import {
   LOADING_REVEAL_DELAY_MS,
 } from "./document-page-utils";
 import { useDocumentCrdt } from "../hooks/useDocumentCrdt";
+import { SectionHoverProvider } from "../contexts/SectionHoverContext";
 
 // ─── viewingPresence: small component to call the hook per-section ──
 
@@ -384,8 +385,37 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     return { dirtyCount, pendingCount, flushedCount, deletingCount, total: sectionPersistence.size };
   }, [sectionPersistence]);
 
+  // ── B3: Stable section callbacks (extracted from sections.map) ───
+  const handleFocusSection = useCallback((idx: number, headingPath: string[], coords: { x: number; y: number }) => {
+    setFocusedSectionIndex(idx);
+    pendingFocusRef.current = { index: idx, position: "start", coords };
+    const provider = crdtProviderRef.current;
+    if (provider) {
+      provider.focusSection(headingPath);
+      setViewingSections(provider, idx);
+    }
+  }, [setFocusedSectionIndex, setViewingSections]);
+
+  const handleEditorReady = useCallback((idx: number) => {
+    setReadyEditors(prev => {
+      const next = new Set(prev);
+      next.add(idx);
+      return next;
+    });
+  }, []);
+
+  const handleCrossSectionDrop = useCallback((sec: DocumentSection, transfer: SectionTransfer) => {
+    transfer.targetHeadingPath = sec.heading_path;
+    const srcSection = sectionsRef.current.find(s =>
+      fragmentKeyFromSectionFile(s.section_file, s.heading_path) === transfer.sourceFragmentKey,
+    );
+    if (srcSection) transfer.sourceHeadingPath = srcSection.heading_path;
+    void transferServiceRef.current?.execute(transfer);
+  }, []);
+
   // ── Render ───────────────────────────────────────────────
   return (
+    <SectionHoverProvider activeSectionIndex={focusedSectionIndex}>
     <div className="flex flex-col h-full">
       <DocumentTopbar
         docPath={decodedDocPath}
@@ -541,30 +571,15 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
                 crdtProvider={crdtProvider}
                 crdtError={crdtError}
                 proposalMode={proposalMode}
-                readyEditors={readyEditors}
+                isReady={readyEditors.has(i)}
                 mouseDownPosRef={mouseDownPosRef}
                 onStartEditing={startEditing}
-                onFocusSection={(idx, headingPath, coords) => {
-                  setFocusedSectionIndex(idx);
-                  pendingFocusRef.current = { index: idx, position: "start", coords };
-                  const provider = crdtProviderRef.current;
-                  if (provider) {
-                    provider.focusSection(headingPath);
-                    setViewingSections(provider, idx);
-                  }
-                }}
+                onFocusSection={handleFocusSection}
                 onSetEditorRef={setEditorRef}
-                onEditorReady={(idx) => setReadyEditors(prev => new Set([...prev, idx]))}
+                onEditorReady={handleEditorReady}
                 onProposalSectionChange={proposalMode ? handleProposalSectionChange : undefined}
                 onCursorExit={handleCursorExit}
-                onCrossSectionDrop={(sec, transfer) => {
-                  transfer.targetHeadingPath = sec.heading_path;
-                  const srcSection = sections.find(s =>
-                    fragmentKeyFromSectionFile(s.section_file, s.heading_path) === transfer.sourceFragmentKey,
-                  );
-                  if (srcSection) transfer.sourceHeadingPath = srcSection.heading_path;
-                  void transferServiceRef.current?.execute(transfer);
-                }}
+                onCrossSectionDrop={handleCrossSectionDrop}
               />
             );
           }) : null}
@@ -600,5 +615,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         onExitProposalMode={exitProposalMode}
       />
     </div>
+    </SectionHoverProvider>
   );
 }

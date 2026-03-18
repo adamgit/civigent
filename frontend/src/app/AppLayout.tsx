@@ -452,6 +452,9 @@ export function AppLayout() {
                 <Link to="/imports" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
                   <span className="text-xs w-4 text-center opacity-50">&#128229;</span> Imports
                 </Link>
+                <Link to="/admin/snapshots" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
+                  <span className="text-xs w-4 text-center opacity-50">&#128247;</span> Snapshots
+                </Link>
               </div>
             )}
           </div>

@@ -12,7 +12,7 @@
 
 import { Router, type Request, type Response } from "express";
 import { createHash } from "node:crypto";
-import { getOidcPublicUrl, isAnonymousAgentEnabled } from "../../auth/oauth-config.js";
+import { getOidcPublicUrl, getAgentAuthPolicy } from "../../auth/oauth-config.js";
 import { isSingleUserMode } from "../../auth/context.js";
 import {
   mintAnonClientId,
@@ -108,10 +108,10 @@ export function createOAuthRouter(): Router {
     }
 
     // Path 2: Anonymous agent (no client_secret)
-    if (!isAnonymousAgentEnabled()) {
+    if (getAgentAuthPolicy() !== "open") {
       res.status(403).json({
         error: "access_denied",
-        error_description: "Anonymous agent registration is disabled. Contact the administrator.",
+        error_description: "Anonymous agent registration is disabled. Contact the administrator to register a named agent identity.",
       });
       return;
     }
@@ -349,23 +349,34 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
   // Try pre-authenticated
   const preAuth = await lookupAgentKey(resolvedClientId);
   if (preAuth) {
-    // Pre-authenticated: REQUIRE client_secret
-    if (!clientSecret) {
-      res.status(401).json({
-        error: "invalid_client",
-        error_description: "client_secret is required for pre-authenticated agents.",
-      });
-      return;
+    const policy = getAgentAuthPolicy();
+    if (policy === "verify") {
+      // verify: client_secret is mandatory
+      if (!clientSecret) {
+        res.status(401).json({
+          error: "invalid_client",
+          error_description: "client_secret is required (policy: verify).",
+        });
+        return;
+      }
+      if (preAuth.secretHash === "none") {
+        res.status(401).json({
+          error: "invalid_client",
+          error_description: "Agent was registered without a secret. Re-register the agent with a secret to use verify policy.",
+        });
+        return;
+      }
+      const { compareSecret } = await import("../../auth/agent-keys.js");
+      const secretValid = await compareSecret(clientSecret, preAuth.secretHash);
+      if (!secretValid) {
+        res.status(401).json({
+          error: "invalid_client",
+          error_description: "Invalid client_secret.",
+        });
+        return;
+      }
     }
-    const { compareSecret } = await import("../../auth/agent-keys.js");
-    const secretValid = await compareSecret(clientSecret, preAuth.secretHash);
-    if (!secretValid) {
-      res.status(401).json({
-        error: "invalid_client",
-        error_description: "Invalid client_secret.",
-      });
-      return;
-    }
+    // open / register: client_id in agents.keys is sufficient — issue the token
     const tokens = issueTokenPair({
       id: preAuth.agentId,
       type: "agent",

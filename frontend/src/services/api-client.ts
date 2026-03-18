@@ -8,6 +8,7 @@ import type {
   CreateProposalResponse,
   GetActivityResponse,
   GetAdminSnapshotHealthResponse,
+  GetAdminSnapshotHistoryResponse,
   GetAgentsFullSummaryResponse,
   GetDocumentResponse,
   GetDocumentSectionsResponse,
@@ -28,9 +29,7 @@ import type {
   WriterDirtyState,
 } from "../types/shared.js";
 
-export interface ImportResponse extends CreateProposalResponse {
-  created_documents: string[];
-}
+export type ImportResponse = CreateProposalResponse;
 
 export interface ImportStagingInfo {
   import_id: string;
@@ -306,6 +305,14 @@ export const apiClient = {
     return requestJson<GetAdminSnapshotHealthResponse>("/api/admin/snapshot-health");
   },
 
+  async getAdminSnapshotHistory(): Promise<GetAdminSnapshotHistoryResponse> {
+    return requestJson<GetAdminSnapshotHistoryResponse>("/api/admin/snapshot-history");
+  },
+
+  async snapshotNow(): Promise<void> {
+    await requestJson<{ ok: boolean }>("/api/admin/snapshot-now", { method: "POST" });
+  },
+
   async updateAdminConfig(nextConfig: Partial<AdminConfig>): Promise<AdminConfig> {
     return requestJson<AdminConfig>("/api/admin/config", {
       method: "PUT",
@@ -320,11 +327,15 @@ export const apiClient = {
     return requestJson("/api/admin/agents");
   },
 
-  async addAgentKey(displayName: string, agentId?: string): Promise<{ agent_id: string; display_name: string; secret: string }> {
+  async addAgentKey(displayName: string, options?: { agentId?: string; generateSecret?: boolean }): Promise<{ agent_id: string; display_name: string; secret: string | null }> {
     return requestJson("/api/admin/agents", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ display_name: displayName, ...(agentId ? { agent_id: agentId } : {}) }),
+      body: JSON.stringify({
+        display_name: displayName,
+        ...(options?.agentId ? { agent_id: options.agentId } : {}),
+        ...(options?.generateSecret === false ? { generate_secret: false } : {}),
+      }),
     });
   },
 

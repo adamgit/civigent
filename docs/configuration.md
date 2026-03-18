@@ -1,6 +1,6 @@
 # Configuration Reference
 
-How to tune Civigent's behavior for your team.
+How to tune Civigent's behavior for your team. For deployment setup, environment variables, and auth configuration see the [Deployment Guide](deployment.md).
 
 ---
 
@@ -103,55 +103,48 @@ Snapshots are pre-assembled markdown documents written to disk. They're useful f
 - Integration with other systems
 - Quick file-based access to current content
 
-### Enabling snapshots
+Snapshots are enabled via `KS_SNAPSHOT_ENABLED=true` (default: `true`). They are regenerated when content changes and are a derived cache — never part of the source of truth.
 
-```env
-SNAPSHOT_ENABLED=true
-```
-
-Snapshots are regenerated when content changes. They're a derived cache — never part of the source of truth.
-
-### Exposing snapshots to the host
-
-Mount a volume to the snapshot-endpoint when starting the container:
-
-```yaml
-volumes:
-  - ./snapshots:/app/snapshot
-environment:
-  SNAPSHOT_ENABLED: "true"
-```
+For instructions on exposing snapshots to the host filesystem, see [Snapshots](deployment.md#snapshots-optional) in the Deployment Guide.
 
 ---
 
-## Auth mode configuration
+## Environment variable reference
 
-### Single-user mode
+### Required for production (non-single-user mode)
 
-```env
-KS_AUTH_MODE=single_user
-KS_USER_NAME=Alice
-KS_USER_EMAIL=alice@example.com
-```
+| Variable | Purpose | Example |
+|----------|---------|---------|
+| `KS_OIDC_PUBLIC_URL` | URL where the server is reachable by users and agents | `https://wiki.company.com` |
+| `KS_AUTH_SECRET` | JWT signing secret (generate with `openssl rand -hex 32`) | `a1b2c3...` |
 
-Bypasses human authentication entirely. The configured identity is used for all human actions. Agents still authenticate via OAuth and get distinct identities.
+### Optional
 
-### Multi-user mode (default)
-
-Requires OIDC provider configuration:
-
-```env
-KS_OIDC_ISSUER=https://auth.company.com/realms/main
-KS_OIDC_CLIENT_ID=civigent
-KS_OIDC_CLIENT_SECRET=<secret>
-```
-
-Humans log in via the OIDC provider. Each human gets a deterministic UUID derived from their OIDC subject identifier.
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `PORT` | Port the server listens on inside the container (not the host-facing port) | `3000` |
+| `KS_EXTERNAL_PORT` | The external host port users connect on. Required — set automatically by the compose files. Used to construct the public URL. | (none — required) |
+| `KS_EXTERNAL_HOSTNAME` | The external hostname or IP users connect on. Set to your domain for non-localhost deployments. Combined with `KS_EXTERNAL_PORT` to derive the public URL. | `localhost` |
+| `KS_AUTH_MODE` | Set to `single_user` for personal use | (multi-user) |
+| `KS_USER_NAME` | Human display name (single-user mode) | `Local User` |
+| `KS_USER_EMAIL` | Human email (single-user mode) | `local-user@ks.local` |
+| `KS_USER_ID` | Human ID override (single-user mode) | (auto-generated) |
+| `KS_AGENT_AUTH_POLICY` | Agent auth policy: `open` (anonymous allowed), `register` (pre-registered client_id required), `verify` (pre-registered + client_secret required) | `open` (localhost) / `register` (public hostname) |
+| `KS_AGENT_ANON_SALT` | Salt for signing anonymous agent tokens (change to revoke all) | (auto-generated) |
+| `KS_AUTH_CREDENTIALS_USERNAME` | Username for credentials auth mode (also `KS_ADMIN_EMAIL`) | (none) |
+| `KS_AUTH_CREDENTIALS_PASSWORD` | Password for credentials auth mode (also `KS_ADMIN_PASSWORD`) | (none) |
+| `KS_AUTH_ACCESS_TTL_SECONDS` | Access token lifetime in seconds | `1800` |
+| `KS_AUTH_REFRESH_TTL_SECONDS` | Refresh token lifetime in seconds | `2592000` |
+| `KS_DATA_ROOT` | Override the root data directory | (built-in default) |
+| `KS_SNAPSHOT_ROOT` | Override the snapshots directory | `<data_root>/snapshots` |
+| `KS_SNAPSHOT_ENABLED` | Enable assembled document snapshots | `true` |
+| `KS_GOVERNANCE_MODE` | Governance feature mode (`available` or `forced`) | `available` |
+| `KS_INVOLVEMENT_PRESET` | Human involvement preset (`yolo`, `aggressive`, `eager`, `conservative`) | `eager` |
+| `KS_IMPORT_ROOT` | Path inside the container where the import volume is mounted | `/import` |
 
 ---
 
 ## What's next
 
 - [Agent Management](agent-management.md) — manage agent identities and access control
-- [Deployment Guide](deployment.md) — full deployment instructions
 - [Architecture Overview](architecture.md) — understand how the system works internally

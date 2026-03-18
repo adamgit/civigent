@@ -40,7 +40,7 @@ export function AgentKeysPage() {
     setError(null);
     try {
       const result = await apiClient.addAgentKey(name);
-      setNewSecret({ agentId: result.agent_id, secret: result.secret });
+      setNewSecret({ agentId: result.agent_id, secret: result.secret ?? "" });
       setNewName("");
       setCopied(false);
       await reload();

@@ -1,10 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import {
-  DocsRouteResolver,
-  resolveDocsSubroute,
-} from "../../app/DocsRouteResolver";
+import { DocsRouteResolver } from "../../app/DocsRouteResolver";
+import { resolveDocsSubroute } from "../../app/docsRouteUtils";
 
 // Mock page components to render identifiable content
 vi.mock("../../pages/DocsBrowserPage", () => ({

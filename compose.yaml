@@ -13,8 +13,10 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=development
-      - SNAPSHOT_ENABLED=true
+      - KS_SNAPSHOT_ENABLED=true
+      - KS_SNAPSHOT_ROOT=/app/snapshot
       - KS_EXTERNAL_PORT=${FRONTEND_PORT:-5173}
+      - KS_EXTERNAL_HOSTNAME=${KS_EXTERNAL_HOSTNAME:-localhost}
       - KS_AUTH_MODE=${KS_AUTH_MODE:-}
       - KS_USER_NAME=${KS_USER_NAME:-}
       - KS_USER_EMAIL=${KS_USER_EMAIL:-}

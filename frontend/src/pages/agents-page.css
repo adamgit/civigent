@@ -51,3 +51,297 @@
 .agents-pulse-ring {
   animation: agents-pulse 2s ease-out infinite;
 }
+
+.agents-card--add-new {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 2px dashed #d1d5db;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+  text-decoration: none;
+  color: #6b7280;
+}
+
+.agents-card--add-new:hover {
+  border-color: #9ca3af;
+  color: #374151;
+  box-shadow: none;
+}
+
+.agents-card__add-icon {
+  font-size: 2rem;
+  line-height: 1;
+  font-weight: 300;
+}
+
+.agents-card__add-label {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+/* Add agent dialog */
+
+.add-agent-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.add-agent-dialog {
+  background: white;
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  width: 420px;
+  max-width: calc(100vw - 2rem);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+}
+
+.add-agent-dialog__title {
+  margin: 0 0 1rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.add-agent-dialog__form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.add-agent-dialog__input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+  font-size: 0.9rem;
+  box-sizing: border-box;
+}
+
+.add-agent-dialog__input:focus {
+  outline: none;
+  border-color: #2d7a8a;
+  box-shadow: 0 0 0 2px rgba(45, 122, 138, 0.2);
+}
+
+.add-agent-dialog__error {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #dc2626;
+}
+
+.add-agent-dialog__actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.add-agent-dialog__btn {
+  padding: 0.4rem 1rem;
+  border: none;
+  border-radius: 0.375rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.add-agent-dialog__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.add-agent-dialog__btn--submit {
+  background: #2d7a8a;
+  color: white;
+}
+
+.add-agent-dialog__btn--cancel {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.add-agent-dialog__secret {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.add-agent-dialog__secret-intro {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #374151;
+}
+
+.add-agent-dialog__cred-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.add-agent-dialog__cred-row {
+  display: grid;
+  grid-template-columns: 7rem 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.375rem;
+  padding: 0.4rem 0.6rem;
+}
+
+.add-agent-dialog__cred-row--secret {
+  background: #fef9ec;
+  border-color: #fde68a;
+}
+
+.add-agent-dialog__cred-label {
+  font-size: 0.75rem;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.add-agent-dialog__cred-value {
+  font-size: 0.78rem;
+  word-break: break-all;
+  color: #111827;
+}
+
+.add-agent-dialog__copy-btn {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+  background: #e5e7eb;
+  border: none;
+  border-radius: 0.25rem;
+  cursor: pointer;
+  white-space: nowrap;
+  color: #374151;
+}
+
+.add-agent-dialog__copy-btn:hover {
+  background: #d1d5db;
+}
+
+.add-agent-dialog__setup-hint {
+  margin: 0.75rem 0 0;
+  font-size: 0.82rem;
+  color: #6b7280;
+}
+
+.add-agent-dialog__setup-hint a {
+  color: #2d7a8a;
+}
+
+.add-agent-dialog--wide {
+  width: 520px;
+}
+
+.add-agent-dialog__policy-hint {
+  margin: 0 0 1rem;
+  font-size: 0.88rem;
+  color: #6b7280;
+}
+
+.add-agent-dialog__toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.88rem;
+  color: #374151;
+  cursor: pointer;
+}
+
+/* Connection instructions */
+
+.add-agent-dialog__instructions {
+  margin-top: 1rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.375rem;
+  overflow: hidden;
+}
+
+.add-agent-dialog__instructions-heading {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #6b7280;
+  background: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.add-agent-dialog__tabs {
+  display: flex;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f9fafb;
+}
+
+.add-agent-dialog__tab-btn {
+  padding: 0.4rem 0.9rem;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  font-size: 0.83rem;
+  cursor: pointer;
+  color: #6b7280;
+  margin-bottom: -1px;
+}
+
+.add-agent-dialog__tab-btn--active {
+  color: #2d7a8a;
+  border-bottom-color: #2d7a8a;
+  font-weight: 600;
+}
+
+.add-agent-dialog__tab-hint {
+  margin: 0.5rem 0.75rem 0.25rem;
+  font-size: 0.82rem;
+  color: #6b7280;
+}
+
+.add-agent-dialog__code-block {
+  position: relative;
+  margin: 0.25rem 0.75rem 0.5rem;
+  background: #1e1e1e;
+  border-radius: 4px;
+  padding: 0.5rem 3rem 0.5rem 0.75rem;
+}
+
+.add-agent-dialog__code-block code {
+  color: #d4d4d4;
+  font-size: 0.78rem;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.add-agent-dialog__code-block .add-agent-dialog__copy-btn {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  background: #555;
+  color: white;
+}
+
+.add-agent-dialog__code-block .add-agent-dialog__copy-btn:hover {
+  background: #444;
+}
+
+.add-agent-dialog__code-block--pre pre {
+  margin: 0;
+  color: #d4d4d4;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.add-agent-dialog__other-creds {
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}

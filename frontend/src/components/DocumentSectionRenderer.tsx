@@ -7,6 +7,7 @@ import type { SectionPersistenceState, DocumentSection } from "../pages/document
 import { involvementBorderClass, headingPathToLabel, fragmentKeyFromSectionFile } from "../pages/document-page-utils";
 import { resolveWriterId } from "../services/api-client";
 import type { SectionTransfer } from "../services/section-transfer";
+import { useSectionHover } from "../contexts/sectionHoverUtils";
 
 export interface DocumentSectionRendererProps {
   section: DocumentSection;
@@ -23,7 +24,7 @@ export interface DocumentSectionRendererProps {
   crdtProvider: CrdtProvider | null;
   crdtError: string | null;
   proposalMode: boolean;
-  readyEditors: Set<number>;
+  isReady: boolean;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
   onStartEditing: (index: number, coords: { x: number; y: number }) => void;
   onFocusSection: (index: number, headingPath: string[], coords: { x: number; y: number }) => void;
@@ -49,7 +50,7 @@ export function DocumentSectionRenderer({
   crdtProvider,
   crdtError,
   proposalMode,
-  readyEditors,
+  isReady,
   mouseDownPosRef,
   onStartEditing,
   onFocusSection,
@@ -59,6 +60,7 @@ export function DocumentSectionRenderer({
   onCursorExit,
   onCrossSectionDrop,
 }: DocumentSectionRendererProps) {
+  const { setHoveredSection } = useSectionHover();
   return (
     <div
       key={fk}
@@ -74,6 +76,8 @@ export function DocumentSectionRenderer({
           ? `bg-green-50/70 border-l-green-400 cursor-pointer hover:bg-section-hover`
           : `cursor-pointer hover:bg-section-hover ${involvementBorderClass(humanInvolvementScore)}`
       }${dragOverSectionIndex === i ? " section-drop-target" : ""}`}
+      onMouseEnter={() => setHoveredSection(i)}
+      onMouseLeave={() => setHoveredSection(null)}
       onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
       onClick={isLockedByOtherHuman ? undefined : hasEditor ? undefined : (e) => {
         const down = mouseDownPosRef.current;
@@ -98,13 +102,13 @@ export function DocumentSectionRenderer({
         ) : (
           <div className="relative my-2">
             {/* ReactMarkdown underlayer — visible until editor is ready */}
-            <div className="doc-prose" style={{ display: readyEditors.has(i) ? "none" : undefined }}>
+            <div className="doc-prose" style={{ display: isReady ? "none" : undefined }}>
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
             </div>
             {/* MilkdownEditor overlay — absolute until ready, then back in flow */}
             <div
-              className={readyEditors.has(i) ? "" : "absolute inset-0"}
-              style={{ minHeight: readyEditors.has(i) ? undefined : 60 }}
+              className={isReady ? "" : "absolute inset-0"}
+              style={{ minHeight: isReady ? undefined : 60 }}
               onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
               onClick={(e) => {
                 const down = mouseDownPosRef.current;

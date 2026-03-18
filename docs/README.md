@@ -18,6 +18,7 @@
 | [Configuration Reference](configuration.md) | Admins | Involvement presets, admin API, snapshots, auth modes |
 | [Agent Management](agent-management.md) | Admins | OAuth setup, anonymous vs pre-authenticated agents, MCP tools |
 | [Crash Recovery](crash-recovery.md) | Admins | How to recover from crashes, what data is recoverable, where/why |
+| [Recipes](recipes.md) | Admins | Common tasks that aren't immediately obvious from the UI |
 
 ## For contributors
 

@@ -8,7 +8,7 @@ import { ensureGitRepoReady } from "./storage/git-repo.js";
 import { detectAndRecoverCrash } from "./storage/crash-recovery.js";
 import { importContentFromDirectoryIfNeeded } from "./storage/content-import.js";
 import { setAutoCommitEventHandler, commitAllDirtySessions } from "./storage/auto-commit.js";
-import { validateOAuthConfig } from "./auth/oauth-config.js";
+import { validateOAuthConfig, getPublicUrl } from "./auth/oauth-config.js";
 
 let buildInfo: { version: string; sha: string; date: string } | null = null;
 try {
@@ -65,16 +65,7 @@ process.on("SIGINT", async () => {
 });
 
 server.listen(PORT, () => {
-  const externalPort = process.env.KS_EXTERNAL_PORT?.trim();
-  if (!externalPort) {
-    console.warn(
-      `WARNING: KS_EXTERNAL_PORT is not set. The URLs below use the internal port (${PORT}),\n` +
-      `which may not match the port users connect on. Set KS_EXTERNAL_PORT in your\n` +
-      `compose.yaml or environment to fix this.`,
-    );
-  }
-  const displayPort = externalPort || String(PORT);
-  const displayUrl = `http://localhost:${displayPort}`;
+  const displayUrl = getPublicUrl();
   console.log(`\n  Civigent running at ${displayUrl}\n`);
   if (buildInfo) {
     const d = new Date(buildInfo.date);

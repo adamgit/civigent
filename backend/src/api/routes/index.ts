@@ -9,6 +9,7 @@ import type {
   UpdateProposalRequest,
   GetActivityResponse,
   GetAdminSnapshotHealthResponse,
+  GetAdminSnapshotHistoryResponse,
   GetDocumentResponse,
   GetDocumentSectionsResponse,
   GetDocumentsTreeResponse,
@@ -70,7 +71,7 @@ import {
 import { resolveAuthenticatedWriter, type AuthenticatedWriter } from "../../auth/context.js";
 import { listAuthMethods, loginHuman } from "../../auth/service.js";
 import { readAgentKeys, addAgentKey, removeAgentKey } from "../../auth/agent-keys.js";
-import { getSnapshotHealth, scheduleSnapshotRegeneration } from "../../storage/snapshot.js";
+import { getSnapshotHealth, getSnapshotHistory, snapshotAllDocs } from "../../storage/snapshot.js";
 import {
   AdminConfigValidationError,
   getAdminConfig,
@@ -317,6 +318,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           section_length_warning: meta.section_length_warning,
           word_count: meta.word_count,
           section_file: sectionFileByKey.get(headingKey) ?? "",
+          last_human_editor: meta.last_human_editor,
         });
       }
 
@@ -2050,7 +2052,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       // Run through the shared import pipeline
-      const { proposal, createdDocuments } = await importFilesToProposal(
+      const { proposal } = await importFilesToProposal(
         stagingFiles,
         { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
         description.trim(),
@@ -2089,7 +2091,6 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           committed_head: committedHead,
           evaluation,
           sections: evalSections,
-          created_documents: createdDocuments,
         });
       } else {
         // Delete staging folder even when blocked — the proposal overlay has the content
@@ -2113,7 +2114,6 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           outcome: "blocked",
           evaluation,
           sections: evalSections,
-          created_documents: createdDocuments,
         });
       }
     } catch (error) {
@@ -2208,6 +2208,25 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     }
   });
 
+  router.get("/admin/snapshot-history", async (_req, res, next) => {
+    try {
+      const history = await getSnapshotHistory();
+      const response: GetAdminSnapshotHistoryResponse = history;
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/admin/snapshot-now", async (_req, res, next) => {
+    try {
+      await snapshotAllDocs();
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // ─── Git history ──────────────────────────────────────
 
   router.get("/git/log", async (req, res, next) => {
@@ -2283,7 +2302,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
   router.post("/admin/agents", async (req, res, next) => {
     try {
-      const { display_name, agent_id } = req.body ?? {};
+      const { display_name, agent_id, generate_secret } = req.body ?? {};
       if (!display_name || typeof display_name !== "string") {
         sendApiError(res, 400, "display_name is required.");
         return;
@@ -2291,7 +2310,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const id = (typeof agent_id === "string" && agent_id.trim())
         ? agent_id.trim()
         : `agent-${crypto.randomUUID()}`;
-      const plainSecret = await addAgentKey(id, display_name.trim());
+      const withSecret = generate_secret !== false; // default true
+      const plainSecret = await addAgentKey(id, display_name.trim(), withSecret);
       res.status(201).json({
         agent_id: id,
         display_name: display_name.trim(),

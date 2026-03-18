@@ -1,5 +1,6 @@
 import type { AdminConfig, GovernanceMode, HumanHumanInvolvementPresetName } from "./types/shared.js";
 import { HUMAN_INVOLVEMENT_PRESETS } from "./types/shared.js";
+import { getAgentAuthPolicy } from "./auth/oauth-config.js";
 
 const DEFAULT_HUMAN_INVOLVEMENT_PRESET: HumanHumanInvolvementPresetName = "eager";
 const DEFAULT_SNAPSHOT_ENABLED = true;
@@ -52,6 +53,7 @@ export function getAdminConfig(): AdminConfig {
     humanInvolvement_steepness: preset.steepness,
     snapshot_enabled: runtimeConfig.snapshot_enabled,
     governance_mode: parseGovernanceMode(process.env.KS_GOVERNANCE_MODE),
+    agent_auth_policy: getAgentAuthPolicy(),
   };
 }
 

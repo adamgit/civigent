@@ -1,4 +1,3 @@
-import { createBrowserRouter } from "react-router-dom";
 import { App } from "./App";
 import { HomePage } from "../pages/HomePage";
 import { DocsBrowserPage } from "../pages/DocsBrowserPage";
@@ -18,8 +17,10 @@ import { FeaturesPage } from "../pages/FeaturesPage";
 import { AgentsPage } from "../pages/AgentsPage";
 import { AgentFeedPage } from "../pages/AgentFeedPage";
 import { ImportsPage } from "../pages/ImportsPage";
+import { SnapshotsPage } from "../pages/SnapshotsPage";
+import type { RouteObject } from "react-router-dom";
 
-export const router = createBrowserRouter([
+export const routeConfig: RouteObject[] = [
   {
     path: "/",
     element: <App />,
@@ -32,6 +33,7 @@ export const router = createBrowserRouter([
       { path: "proposals/:id", element: <ProposalDetailPage /> },
       { path: "admin", element: <AdminPage /> },
       { path: "admin/agents", element: <AgentKeysPage /> },
+      { path: "admin/snapshots", element: <SnapshotsPage /> },
       { path: "session-inspector", element: <SessionInspectorPage /> },
       { path: "history", element: <GitHistoryPage /> },
       { path: "agent-simulator", element: <AgentSimulatorPage /> },
@@ -44,4 +46,4 @@ export const router = createBrowserRouter([
       { path: "login", element: <LoginPage /> }
     ]
   }
-]);
+];

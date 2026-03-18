@@ -117,6 +117,9 @@ export function AdminPage() {
       <h2>Agent Management</h2>
       <p><Link to="/admin/agents">Manage pre-authenticated agents</Link> — add, remove, and view agent keys.</p>
 
+      <h2>Snapshots</h2>
+      <p><Link to="/admin/snapshots">View snapshot history</Link> — per-batch file counts, timestamps, and errors.</p>
+
       <h2>Operational Snapshot</h2>
       <p><button type="button" onClick={() => void reloadOperationalSnapshot()}>Refresh snapshot</button></p>
       {loading ? <p>Loading operational snapshot...</p> : null}

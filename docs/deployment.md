@@ -24,7 +24,7 @@ There are four ways to run Civigent. Each targets a different use case and expos
 
 ### Key differences
 
-- **`KS_OIDC_PUBLIC_URL`** must match whatever URL users actually see in their browser. When not set explicitly, the server auto-derives it from `KS_EXTERNAL_PORT` (which the quickstart compose file sets automatically). For custom domains or reverse proxy setups, set `KS_OIDC_PUBLIC_URL` explicitly.
+- **`KS_OIDC_PUBLIC_URL`** must match whatever URL users actually see in their browser. When not set explicitly, the server auto-derives it from `KS_EXTERNAL_HOSTNAME` + `KS_EXTERNAL_PORT` (both set automatically by the compose files). For custom domains or reverse proxy setups, set `KS_OIDC_PUBLIC_URL` explicitly.
 - **The quickstart container listens internally on port 3000** but the compose file maps it to the host port `${PORT:-8080}`. The internal port and the external port are different numbers in this setup.
 - **In dev modes (native + dev compose)** the backend port (3000) is exposed but only the frontend port (5173) is user-facing. The backend port is only used for the Vite proxy and direct API testing.
 - **Users never connect directly to the backend.** In quickstart mode the backend serves the frontend statically; in all other modes a Vite dev server on port 5173 serves the frontend and proxies API requests to the backend.
@@ -61,16 +61,11 @@ The server runs on a cloud host or on-premises machine with a domain name (e.g.,
 **Required configuration:**
 
 ```env
-# The URL for auth to use for where users and agents reach this server (REQUIRED)
+# The URL where users and agents reach this server (REQUIRED)
 KS_OIDC_PUBLIC_URL=https://wiki.company.com
 
 # JWT signing secret (REQUIRED — generate with: openssl rand -hex 32)
 KS_AUTH_SECRET=<your-generated-secret>
-
-# OIDC provider for human login
-KS_OIDC_ISSUER=https://auth.company.com/realms/main
-KS_OIDC_CLIENT_ID=civigent
-KS_OIDC_CLIENT_SECRET=<your-oidc-secret>
 ```
 
 **Getting started:** Copy the `quickstart/` folder from the release, then edit the `.env` file to add the settings above. The provided `compose.yaml` and `.env.example` already contain all the Docker configuration — you only need to set your environment variables.
@@ -86,13 +81,21 @@ docker compose up
 **Profile:** Team server where the network itself provides agent authentication (VPN, internal network).
 **Deployment method:** Same as Scenario B (quickstart or self-built), with additional env var configuration.
 
-**Optional:** Disable 'anonymous AI Agents' 
+**Optional:** Require agent pre-registration
 
-Most deployments will restrict access at the network layer, and anonymous agents are safe. However for added security you can remove the 'anonymous' route and force all AI agents to be pre-authorized by an admin user in the admin pages:
+Most deployments will restrict access at the network layer, and anonymous agents are safe. However for added security you can require all AI agents to be pre-registered by an admin user before they can connect:
 
 ```env
-KS_AGENT_ANONYMOUS=false
+KS_AGENT_AUTH_POLICY=register
 ```
+
+For maximum security (agents must also prove possession of a secret at the token endpoint):
+
+```env
+KS_AGENT_AUTH_POLICY=verify
+```
+
+See [Authentication — Agent auth policy](authentication.md#agent-authentication-policy) for details on all three levels.
 
 ---
 
@@ -104,8 +107,20 @@ The server validates its configuration at startup and refuses to start if critic
 |-----------|--------|
 | Multi-user mode without `KS_OIDC_PUBLIC_URL` | **Refuses to start** with instructions |
 | Multi-user mode without `KS_AUTH_SECRET` | **Refuses to start** with instructions |
-| Single-user mode without `KS_OIDC_PUBLIC_URL` | Auto-derives from `KS_EXTERNAL_PORT` if set, otherwise falls back to `PORT` (internal container port, default 3000). In Docker setups where the host port differs (e.g. quickstart maps 8080→3000), the quickstart compose file sets `KS_EXTERNAL_PORT` automatically so this works. For custom deployments, either set `KS_EXTERNAL_PORT` or set `KS_OIDC_PUBLIC_URL` explicitly. |
+| Missing `KS_EXTERNAL_PORT` (any mode) | **Refuses to start** — running outside a compose environment is not supported. Both compose files set this automatically. |
+| Single-user mode without `KS_OIDC_PUBLIC_URL` | Auto-derives from `KS_EXTERNAL_HOSTNAME` + `KS_EXTERNAL_PORT`. Scheme is `https` for non-localhost hostnames, `http` for localhost/127.0.0.1. Port omitted for standard ports (80/443). Set `KS_OIDC_PUBLIC_URL` explicitly to override. |
 | Single-user mode without `KS_AUTH_SECRET` | Uses development default (acceptable for localhost) |
+
+---
+
+## Tuning behavior
+
+Once the server is running, see the [Configuration Reference](configuration.md) for:
+
+- **Human-involvement presets** — control how long human edits protect sections from agent overwrites (`yolo` / `aggressive` / `eager` / `conservative`)
+- **Hard block conditions** — conditions that always block agents regardless of preset
+- **Snapshot configuration** — enable pre-assembled document snapshots for external tools
+- **Admin API** — change presets and read system health programmatically
 
 ---
 
@@ -154,7 +169,7 @@ The `sessions/` directory is ephemeral — it's automatically cleaned up after c
 
 ### First-time import from markdown files
 
-Set `IMPORT_CONTENT_FROM` to point at a directory of markdown files:
+Set `IMPORT_CONTENT_FROM` in your `.env` file to point at a directory of markdown files. This is a compose-level variable — it controls the host path that gets mounted into the container at `/import`. The server itself reads from that mount.
 
 ```env
 IMPORT_CONTENT_FROM=/path/to/your/markdown
@@ -248,7 +263,7 @@ The backend responds to `GET /` with:
 Snapshots are pre-assembled versions of documents — useful for external tools that need to read complete markdown without calling the API.
 
 ```env
-SNAPSHOT_ENABLED=true
+KS_SNAPSHOT_ENABLED=true
 ```
 
 To expose snapshots on the host filesystem, use the provided `compose.snapshot.yaml` overlay:
@@ -263,38 +278,8 @@ Snapshots are a **derived cache** — they can be regenerated from /content at a
 
 ---
 
-## Environment variable reference
-
-### Required for production
-
-| Variable | Purpose | Example |
-|----------|---------|---------|
-| `KS_OIDC_PUBLIC_URL` | URL where the server is reachable by users and agents | `https://wiki.company.com` |
-| `KS_AUTH_SECRET` | JWT signing secret (generate with `openssl rand -hex 32`) | `a1b2c3...` |
-| `KS_OIDC_ISSUER` | OIDC provider URL | `https://auth.company.com/realms/main` |
-| `KS_OIDC_CLIENT_ID` | OIDC client ID | `civigent` |
-| `KS_OIDC_CLIENT_SECRET` | OIDC client secret | `secret-value` |
-
-### Optional
-
-| Variable | Purpose | Default |
-|----------|---------|---------|
-| `PORT` | Port the server listens on inside the container (not the host-facing port) | `3000` |
-| `KS_EXTERNAL_PORT` | The external host port users connect on. Set automatically by the quickstart compose file. Used for the startup console message. | (none) |
-| `KS_AUTH_MODE` | Set to `single_user` for personal use | (multi-user) |
-| `KS_USER_NAME` | Human display name (single-user mode) | `Local User` |
-| `KS_USER_EMAIL` | Human email (single-user mode) | `local-user@ks.local` |
-| `KS_USER_ID` | Human ID override (single-user mode) | (auto-generated) |
-| `KS_AGENT_ANONYMOUS` | Allow anonymous agent self-registration | `true` |
-| `KS_AGENT_ANON_SALT` | Salt for signing anonymous agent tokens (change to revoke all) | (auto-generated) |
-| `IMPORT_CONTENT_FROM` | Path to markdown files for initial import | (none) |
-| `SNAPSHOT_ENABLED` | Enable assembled document snapshots | `false` |
-| `KS_IMPORT_ROOT` | Override import mount path inside container | `/import` |
-
----
-
 ## What's next
 
-- [Configuration Reference](configuration.md) — tune involvement presets and admin settings
+- [Configuration Reference](configuration.md) — env var reference, involvement presets, snapshots, admin API
 - [Agent Management](agent-management.md) — manage agent identities and access
 - [Architecture Overview](architecture.md) — understand the system internals

@@ -11,6 +11,7 @@ import {
   type DeletionPlaceholder,
   type DocumentSection,
   fragmentKeyFromSectionFile,
+  shouldMountEditor,
 } from "../pages/document-page-utils";
 
 // ─── Hook parameters ─────────────────────────────────────────────
@@ -118,8 +119,22 @@ export function useDocumentCrdt({
   }, [crdtProvider]);
 
   useEffect(() => {
+    // B4: clear any stale pendingFocusRef when editing stops so it cannot
+    // fire focus into the wrong section on a later successful navigation.
+    if (focusedSectionIndex === null) pendingFocusRef.current = null;
     focusedSectionIndexRef.current = focusedSectionIndex;
-    setReadyEditors(new Set());
+    // B1: evict only the entries that fall outside the mount window.
+    // Previously the entire Set was cleared (causing overlap corruption for
+    // sections still inside the ±1 window) or only the focused index was
+    // deleted (stale entries for evicted sections caused blank-flash on remount).
+    setReadyEditors(prev => {
+      if (focusedSectionIndex === null) return new Set();
+      const next = new Set<number>();
+      for (const idx of prev) {
+        if (shouldMountEditor(idx, focusedSectionIndex)) next.add(idx);
+      }
+      return next;
+    });
   }, [focusedSectionIndex]);
 
   useEffect(() => {

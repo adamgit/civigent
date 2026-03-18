@@ -5,7 +5,7 @@
  *   KS_OIDC_PUBLIC_URL        — public URL of this server (required in non-single-user mode)
  *   KS_AUTH_SECRET        — JWT signing secret (must not be default in non-single-user mode)
  *   KS_AGENT_ANON_SALT    — HMAC key for stateless anonymous client_id tokens
- *   KS_AGENT_ANONYMOUS    — "true"/"false", whether anonymous agent registration is allowed
+ *   KS_AGENT_AUTH_POLICY  — "open" | "register" | "verify" (default: open for localhost, register otherwise)
  */
 
 import { randomBytes } from "node:crypto";
@@ -17,20 +17,40 @@ const DEFAULT_AUTH_SECRET = "development-insecure-secret";
 
 let _anonSalt: string | null = null;
 
+// ─── KS_EXTERNAL_HOSTNAME / public URL ───────────────────────────
+
+/**
+ * Derive the server's public base URL from environment variables.
+ *
+ * Rules:
+ *   - Hostname: `KS_EXTERNAL_HOSTNAME` (default `localhost`)
+ *   - Port:     `KS_EXTERNAL_PORT` (required — validated at startup)
+ *   - Scheme:   `http` for localhost/127.0.0.1, `https` otherwise
+ *   - Port suffix omitted for standard ports (80/443)
+ */
+export function getPublicUrl(): string {
+  const hostname = process.env.KS_EXTERNAL_HOSTNAME?.trim() || "localhost";
+  const port = process.env.KS_EXTERNAL_PORT?.trim() || "";
+  const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
+  const scheme = isLocal ? "http" : "https";
+  const standardPort = scheme === "https" ? "443" : "80";
+  const portSuffix = port && port !== standardPort ? `:${port}` : "";
+  return `${scheme}://${hostname}${portSuffix}`;
+}
+
 // ─── KS_OIDC_PUBLIC_URL ───────────────────────────────────────────────
 
 /**
- * Get the public URL of this server that Auth can use for building URLs and for auth (OIDC) callbacks.
- * In single-user mode, defaults to http://localhost:${PORT}.
- * In other modes, must be set explicitly.
+ * Get the public URL of this server for OIDC callbacks and auth metadata.
+ * Explicit `KS_OIDC_PUBLIC_URL` takes priority; otherwise derived via getPublicUrl().
+ * In non-single-user mode, KS_OIDC_PUBLIC_URL must be set explicitly.
  */
 export function getOidcPublicUrl(): string {
   const explicit = process.env.KS_OIDC_PUBLIC_URL?.trim();
   if (explicit) return explicit.replace(/\/+$/, "");
 
   if (isSingleUserMode()) {
-    const port = process.env.KS_EXTERNAL_PORT ?? process.env.PORT ?? "3000";
-    return `http://localhost:${port}`;
+    return getPublicUrl();
   }
 
   // Should have been caught by validateOAuthConfig at startup
@@ -60,16 +80,24 @@ export function getAgentAnonSalt(): string {
   return _anonSalt;
 }
 
-// ─── KS_AGENT_ANONYMOUS ─────────────────────────────────────────
+// ─── KS_AGENT_AUTH_POLICY ────────────────────────────────────────
+
+export type AgentAuthPolicy = "open" | "register" | "verify";
 
 /**
- * Whether anonymous (Tier 1) agent registration is allowed.
- * Default: true.
+ * Get the agent authentication policy.
+ * - open:     Anonymous self-registration allowed; any agent can connect.
+ * - register: Only pre-registered agents (client_id in agents.keys) can connect.
+ * - verify:   Pre-registration required AND client_secret must be presented at token endpoint.
+ *
+ * Default: "open" for localhost/127.0.0.1, "register" for public hostnames.
  */
-export function isAnonymousAgentEnabled(): boolean {
-  const val = process.env.KS_AGENT_ANONYMOUS?.trim().toLowerCase();
-  if (val === "false" || val === "0" || val === "no") return false;
-  return true;
+export function getAgentAuthPolicy(): AgentAuthPolicy {
+  const val = process.env.KS_AGENT_AUTH_POLICY?.trim().toLowerCase();
+  if (val === "open" || val === "register" || val === "verify") return val;
+  const hostname = process.env.KS_EXTERNAL_HOSTNAME?.trim() || "localhost";
+  const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
+  return isLocal ? "open" : "register";
 }
 
 // ─── Startup validation ──────────────────────────────────────────
@@ -81,6 +109,17 @@ export function isAnonymousAgentEnabled(): boolean {
  */
 export function validateOAuthConfig(): void {
   const singleUser = isSingleUserMode();
+
+  // KS_EXTERNAL_PORT is always required — bare invocation without compose is not supported
+  if (!process.env.KS_EXTERNAL_PORT?.trim()) {
+    throw new Error(
+      `FATAL: KS_EXTERNAL_PORT is not set.\n` +
+      `Running the server outside of a compose environment is not a supported mode.\n` +
+      `Use docker compose (dev or quickstart) which sets this automatically,\n` +
+      `or set KS_EXTERNAL_PORT to the host port users connect on.\n` +
+      `Example: KS_EXTERNAL_PORT=8080`,
+    );
+  }
 
   // KS_OIDC_PUBLIC_URL is required in non-single-user mode
   if (!singleUser) {

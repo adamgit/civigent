@@ -5,11 +5,12 @@
  * Height: 56px. DocumentPage keeps its own unique 46px topbar.
  */
 
+import type React from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
 
 interface SharedPageHeaderProps {
-  title: string;
+  title: React.ReactNode;
   backTo?: string;
 }
 

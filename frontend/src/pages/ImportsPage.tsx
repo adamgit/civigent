@@ -76,7 +76,7 @@ function ImportDetailView({
       const res = await apiClient.commitImport(importId, description);
       setCommitResult(
         res.status === "committed"
-          ? `Committed (${res.created_documents?.length ?? 0} docs created)`
+          ? "Committed"
           : `Proposal ${res.proposal_id} is pending review`,
       );
       onCommitted();

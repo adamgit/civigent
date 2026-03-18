@@ -90,12 +90,15 @@ export const HUMAN_INVOLVEMENT_PRESETS: Record<HumanHumanInvolvementPresetName, 
 
 export type GovernanceMode = "available" | "forced";
 
+export type AgentAuthPolicy = "open" | "register" | "verify";
+
 export interface AdminConfig {
   humanInvolvement_preset: HumanHumanInvolvementPresetName;
   humanInvolvement_midpoint_seconds: number;
   humanInvolvement_steepness: number;
   snapshot_enabled: boolean;
   governance_mode: GovernanceMode;
+  agent_auth_policy: AgentAuthPolicy;
 }
 
 // ─── Proposal Model (v3 — 4-state lifecycle) ──────────────────────
@@ -250,6 +253,7 @@ export interface GetDocumentSectionsResponse {
     /** Section filename (e.g. "sec_abc123def.md"). Used by frontend to build
      *  stable fragment keys that survive heading renames. */
     section_file: string;
+    last_human_editor?: { name: string; timestampMs: number };
   }>;
 }
 
@@ -374,6 +378,25 @@ export interface GetAdminSnapshotHealthResponse {
   snapshot_enabled: boolean;
   snapshots_exist: boolean;
   snapshot_stale: boolean;
+}
+
+export interface SnapshotRunRecord {
+  type: "server_start" | "snapshot";
+  timestamp: number;
+  // snapshot-only
+  batch_doc_count?: number;
+  failed_doc_count?: number;
+  content_file_count?: number;
+  snapshot_file_count?: number;
+  error?: string;
+}
+
+export interface GetAdminSnapshotHistoryResponse {
+  snapshot_enabled: boolean;
+  current_content_file_count: number;
+  current_snapshot_file_count: number;
+  commits_since_last_snapshot: number | null;
+  history: SnapshotRunRecord[];
 }
 
 // ─── Create Document ───────────────────────────────────────────

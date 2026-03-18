@@ -29,6 +29,7 @@ import {
   transitionToCommitted,
   rollbackCommittingToPending,
 } from "./proposal-repository.js";
+import { isSnapshotGenerationEnabled, scheduleSnapshotRegeneration } from "./snapshot.js";
 
 export interface EvaluationResult {
   evaluation: ProposalHumanInvolvementEvaluation;
@@ -130,6 +131,10 @@ export async function commitProposalToCanonical(
     // Transition to committed
     await transitionToCommitted(proposal.id, headSha, scores);
 
+    if (isSnapshotGenerationEnabled()) {
+      scheduleSnapshotRegeneration(Array.from(docPaths));
+    }
+
     return headSha;
   } catch (error) {
     // Rollback to pending on failure
@@ -190,6 +195,10 @@ export async function commitHumanChangesToCanonical(
     ],
     dataRoot,
   );
+
+  if (isSnapshotGenerationEnabled()) {
+    scheduleSnapshotRegeneration(sections.map((s) => s.doc_path));
+  }
 
   return getHeadSha(dataRoot);
 }

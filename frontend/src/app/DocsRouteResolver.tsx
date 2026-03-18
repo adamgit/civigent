@@ -5,29 +5,9 @@ import { DocsBrowserPage } from "../pages/DocsBrowserPage";
 import { DocumentPage } from "../pages/DocumentPage";
 import { GovernanceDocumentPage } from "../pages/GovernanceDocumentPage";
 import type { GovernanceMode } from "../types/shared.js";
+import { resolveDocsSubroute } from "./docsRouteUtils";
 
-export type DocsRouteMode = "view";
 export type DocViewMode = "standard" | "governance";
-
-export interface ResolvedDocsRoute {
-  mode: DocsRouteMode;
-  docPath: string | null;
-}
-
-function normalizeSplatPath(routeSplat: string | undefined): string {
-  if (!routeSplat) {
-    return "";
-  }
-  return decodeURIComponent(routeSplat).replace(/^\/+|\/+$/g, "");
-}
-
-export function resolveDocsSubroute(routeSplat: string | undefined): ResolvedDocsRoute {
-  const normalized = normalizeSplatPath(routeSplat);
-  if (normalized.length === 0) {
-    return { mode: "view", docPath: null };
-  }
-  return { mode: "view", docPath: normalized };
-}
 
 function ViewModeToggle({ viewMode, onChange }: { viewMode: DocViewMode; onChange: (mode: DocViewMode) => void }) {
   return (

@@ -136,11 +136,20 @@ export async function lookupAgentBySecret(plainSecret: string): Promise<AgentKey
 }
 
 /**
- * Add a new agent entry. Returns the plaintext secret (shown once).
+ * Add a new agent entry.
+ * @param withSecret - if true (default), generate a secret and return its plaintext; if false, store "none" and return null.
+ * Returns the plaintext secret (shown once), or null if no secret was generated.
  */
-export async function addAgentKey(agentId: string, displayName: string): Promise<string> {
-  const plainSecret = `sk_${randomBytes(24).toString("hex")}`;
-  const hash = await hashSecret(plainSecret);
+export async function addAgentKey(agentId: string, displayName: string, withSecret = true): Promise<string | null> {
+  let secretField: string;
+  let plainSecret: string | null = null;
+
+  if (withSecret) {
+    plainSecret = `sk_${randomBytes(24).toString("hex")}`;
+    secretField = await hashSecret(plainSecret);
+  } else {
+    secretField = "none";
+  }
 
   const filePath = keysFilePath();
   await mkdir(path.dirname(filePath), { recursive: true });
@@ -150,7 +159,7 @@ export async function addAgentKey(agentId: string, displayName: string): Promise
     existing = await readFile(filePath, "utf8");
   } catch { /* file doesn't exist yet */ }
 
-  const newLine = `${agentId}:${hash}:${displayName}\n`;
+  const newLine = `${agentId}:${secretField}:${displayName}\n`;
   const content = existing.endsWith("\n") || existing === ""
     ? existing + newLine
     : existing + "\n" + newLine;

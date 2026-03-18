@@ -15,7 +15,7 @@ interface TierThresholds {
 }
 
 const DEFAULT_THRESHOLDS: TierThresholds = {
-  blockedAbove: 70,
+  blockedAbove: 50,
   gatedAbove: 30,
 };
 
@@ -37,18 +37,28 @@ const GATES_BY_TIER: Record<AgentTier, GateRule[]> = {
     { label: "Delete content: requires approval", active: false },
   ],
   auto: [
-    { label: "All reads: auto", active: true },
     { label: "Content updates: auto + audit log", active: true },
-    { label: "Pricing changes: auto + monitoring", active: true },
-    { label: "Section restructure: requires approval", active: false },
   ],
 };
 
 const TIER_TRANSITION_NOTES: Record<AgentTier, string> = {
-  blocked: "Opens to gated writes when score drops below 70%",
+  blocked: "Opens to gated writes when score drops below 50%",
   gated: "Opens to auto when score drops below 30%",
   auto: "",
 };
+
+// ─── Relative time helper ─────────────────────────────────────────
+
+function formatRelativeTime(timestampMs: number): string {
+  const seconds = Math.max(0, Math.floor((Date.now() - timestampMs) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
 
 // ─── Hook ────────────────────────────────────────────────────────
 
@@ -68,16 +78,19 @@ export function useGovernanceData(
           ? section.heading_path[section.heading_path.length - 1]
           : "";
 
+        const lastEditor = section.last_human_editor;
+        const lastEditorNote = lastEditor
+          ? `${lastEditor.name} edited ${formatRelativeTime(lastEditor.timestampMs)}`
+          : "";
+
         return {
           sectionIndex: i,
           heading,
           involvementScore,
           agentTier: tier,
-          decayNote: "Score derived from recent edit history",
+          lastEditorNote,
           gates: GATES_BY_TIER[tier],
           tierTransitionNote: TIER_TRANSITION_NOTES[tier] || undefined,
-          signoffs: [],
-          status: "draft" as const,
         };
       },
     );

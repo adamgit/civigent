@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
+import type { AgentAuthPolicy } from "../types/shared.js";
 import skillTemplate from "../agentskills/skill.md?raw";
 import cursorRuleTemplate from "../agentskills/cursor-rule.md?raw";
 
@@ -64,7 +66,11 @@ function CopyBlock({ label, content }: { label?: string; content: string }) {
 }
 
 export function SetupPage() {
+  const [searchParams] = useSearchParams();
+  const preAuthClientId = searchParams.get("client-id") ?? null;
+
   const [info, setInfo] = useState<SetupInfo | null>(null);
+  const [policy, setPolicy] = useState<AgentAuthPolicy>("open");
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("claude-code");
   const [serverName, setServerName] = useState("");
@@ -73,9 +79,10 @@ export function SetupPage() {
 
   const load = useCallback(async () => {
     try {
-      const data = await apiClient.getSetupInfo();
+      const [data, adminCfg] = await Promise.all([apiClient.getSetupInfo(), apiClient.getAdminConfig()]);
       setInfo(data);
       setServerName(data.defaultServerName);
+      setPolicy(adminCfg.agent_auth_policy);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -163,7 +170,22 @@ export function SetupPage() {
                 <p style={{ margin: "0 0 0.8rem", color: "#333" }}>
                   Run this command in your terminal:
                 </p>
-                <CopyBlock content={`claude mcp add --transport http ${serverName} ${mcpEndpoint}`} />
+                {preAuthClientId ? (
+                  <>
+                    <CopyBlock content={
+                      policy === "verify"
+                        ? `claude mcp add --transport http --client-id ${preAuthClientId} --client-secret <your-secret> ${serverName} ${mcpEndpoint}`
+                        : `claude mcp add --transport http --client-id ${preAuthClientId} ${serverName} ${mcpEndpoint}`
+                    } />
+                    {policy === "verify" && (
+                      <p style={{ margin: "0 0 0.5rem", color: "#b45309", fontSize: "0.85rem" }}>
+                        Replace <code>&lt;your-secret&gt;</code> with the client secret you received when registering this agent.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <CopyBlock content={`claude mcp add --transport http ${serverName} ${mcpEndpoint}`} />
+                )}
 
                 <p style={{ margin: "1rem 0 0.5rem", color: "#555", fontSize: "0.9rem" }}>
                   A browser window will open for authorization. Click "Allow" to connect.
@@ -187,7 +209,23 @@ export function SetupPage() {
                 <p style={{ margin: "0 0 0.8rem", color: "#555", fontSize: "0.9rem" }}>
                   Add this to your <code>~/.cursor/mcp.json</code> (or <code>.cursor/mcp.json</code> in your project):
                 </p>
-                <CopyBlock content={JSON.stringify({ mcpServers: { [serverName]: { url: mcpEndpoint } } }, null, 2)} />
+                <CopyBlock content={JSON.stringify(
+                  preAuthClientId
+                    ? {
+                        mcpServers: {
+                          [serverName]: {
+                            url: mcpEndpoint,
+                            auth: {
+                              CLIENT_ID: preAuthClientId,
+                              ...(policy === "verify" ? { CLIENT_SECRET: "<your-secret>" } : {}),
+                            },
+                          },
+                        },
+                      }
+                    : { mcpServers: { [serverName]: { url: mcpEndpoint } } },
+                  null,
+                  2,
+                )} />
 
                 <p style={{ margin: "0.5rem 0", color: "#555", fontSize: "0.9rem" }}>
                   Or: Cursor Settings &gt; Tools &amp; MCP &gt; Add New MCP Server

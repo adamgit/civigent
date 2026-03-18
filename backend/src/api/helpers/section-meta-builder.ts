@@ -27,6 +27,7 @@ export interface SectionInvolvementMeta {
   crdt_session_active: boolean;
   section_length_warning: boolean;
   word_count: number;
+  last_human_editor?: { name: string; timestampMs: number };
 }
 
 /**
@@ -71,11 +72,15 @@ export async function buildSectionInvolvementMeta(
       const wordCount = countWords(content);
       const lengthWarning = wordCount > SECTION_LENGTH_WARNING_THRESHOLD;
 
+      const commitInfo = commitByHeading.get(headingKey);
       result.set(headingKey, {
         humanInvolvement_score: verdict.humanInvolvement_score,
         crdt_session_active: !!verdict.crdt_session_active,
         section_length_warning: lengthWarning,
         word_count: wordCount,
+        last_human_editor: commitInfo
+          ? { name: commitInfo.authorName, timestampMs: commitInfo.timestampMs }
+          : undefined,
       });
     } catch (err: any) {
       if (err?.code !== "ENOENT") throw err;

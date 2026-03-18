@@ -4,6 +4,7 @@ export const userFeatures = [
   "Copy text across multiple sections produces clean markdown without UI clutter",
   "See other humans' cursors and selections in real time when multiple people edit the same document",
   "Other humans can watch you edit a section in real time even if they aren't editing it themselves",
+  "All docs and folders available on disk in pure .md Markdown format for readonly access by 3rd party tools (/snapshots)",
   "Per-section save indicators: blue dot for unsaved local changes, amber while saving to server, green once confirmed on disk",
   "Connection status banners: yellow while reconnecting, red if connection is lost entirely",
   "Aggregate save status indicator: 'N unsaved sections', 'N sections waiting for confirmation', 'All changes saved', or 'Up to date'",

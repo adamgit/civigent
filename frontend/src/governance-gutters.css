@@ -129,20 +129,12 @@
   transition: width 0.4s ease;
 }
 
-.gov-involvement-high  { background: var(--gov-teal); }
-.gov-involvement-med   { background: var(--gov-amber); }
-.gov-involvement-low   { background: var(--gov-red); opacity: 0.7; }
-
 .gov-involvement-pct {
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   min-width: 30px;
   text-align: right;
 }
-
-.gov-involvement-pct-high { color: var(--gov-teal); }
-.gov-involvement-pct-med  { color: var(--gov-amber); }
-.gov-involvement-pct-low  { color: var(--gov-red); }
 
 .gov-decay-note {
   font-size: 10px;
@@ -210,70 +202,11 @@
 }
 
 
-/* --- Sign-off summary --- */
+/* --- Agent permissions unified block --- */
 
-.gov-signoff-summary {
-  margin-top: 8px;
-}
-
-.gov-signoff-block {
-  background: var(--gov-cream);
-  border-radius: 6px;
-  padding: 8px 10px;
+.gov-agent-permissions-block {
   margin-top: 4px;
 }
-
-.gov-signoff-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-}
-
-.gov-signoff-row + .gov-signoff-row {
-  margin-top: 4px;
-}
-
-.gov-signoff-check {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  flex-shrink: 0;
-}
-
-.gov-signoff-check-done {
-  background: var(--gov-signed-bg);
-  color: var(--gov-signed);
-}
-
-.gov-signoff-check-pending {
-  background: var(--gov-cream-dd);
-  color: var(--gov-ink-tertiary);
-}
-
-
-/* --- Status pills --- */
-
-.gov-status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 9px;
-  font-weight: 500;
-  padding: 2px 7px;
-  border-radius: 100px;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.gov-status-signed  { background: var(--gov-signed-bg); color: var(--gov-signed); }
-.gov-status-pending { background: var(--gov-amber-bg);  color: var(--gov-amber); }
-.gov-status-draft   { background: var(--gov-cream-deep); color: var(--gov-ink-tertiary); }
 
 .gov-override-btn {
   font-size: 9px;

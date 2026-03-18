@@ -1,5 +1,6 @@
 export type {
   AdminConfig,
+  AgentAuthPolicy,
   GovernanceMode,
   ActivityItem,
   ActivityItemSource,
@@ -25,6 +26,8 @@ export type {
   EvaluatedSection,
   GetActivityResponse,
   GetAdminSnapshotHealthResponse,
+  GetAdminSnapshotHistoryResponse,
+  SnapshotRunRecord,
   GetDocumentResponse,
   GetDocumentSectionsResponse,
   GetDocumentsTreeResponse,
