@@ -1,6 +1,7 @@
 import type {
   AdminConfig,
   AuthUser,
+  BlameResponse,
   ChangesSinceResponse,
   CommitProposalResponse,
   CreateDocumentResponse,
@@ -15,7 +16,7 @@ import type {
   GetDocumentsTreeResponse,
   GetHeatmapResponse,
   ListProposalsResponse,
-  LoginProvider,
+  AuthMethod,
   ProposalId,
   ProposalStatus,
   PublishRequest,
@@ -93,14 +94,46 @@ function encodeDocPath(docPath: string): string {
 const WRITER_ID_STORAGE_KEY = "ks_writer_id";
 let singleUserBootstrapInFlight: Promise<boolean> | null = null;
 let unauthorizedHandler: (() => void) | null = null;
+let systemStartingHandler: (() => void) | null = null;
 
 export function setUnauthorizedHandler(handler: (() => void) | null): void {
   unauthorizedHandler = handler;
 }
 
+export function setSystemStartingHandler(handler: (() => void) | null): void {
+  systemStartingHandler = handler;
+}
+
+export class SystemStartingError extends Error {
+  public readonly retryAfter: number;
+
+  constructor(message: string, retryAfter: number) {
+    super(message);
+    this.name = "SystemStartingError";
+    this.retryAfter = retryAfter;
+  }
+}
+
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const text = await response.text();
+
+    // Detect 503 system_starting — throw specific error for startup gate
+    if (response.status === 503) {
+      try {
+        const parsed = JSON.parse(text) as { error?: string; message?: string };
+        if (parsed.error === "system_starting") {
+          const retryAfter = Number(response.headers.get("Retry-After")) || 5;
+          throw new SystemStartingError(
+            parsed.message ?? "The system is starting up.",
+            retryAfter,
+          );
+        }
+      } catch (e) {
+        if (e instanceof SystemStartingError) throw e;
+      }
+    }
+
     let detail: string | undefined;
     try {
       const parsed = JSON.parse(text) as { message?: string };
@@ -158,7 +191,11 @@ async function requestJson<T>(url: string, init?: RequestInit, includeAuth = tru
     await tryBootstrapSingleUserSession();
   }
 
-  const buildHeaders = () => new Headers(init?.headers);
+  const buildHeaders = () => {
+    const h = new Headers(init?.headers);
+    h.set("X-Requested-With", "fetch");
+    return h;
+  };
   let response = await fetch(url, {
     ...init,
     headers: buildHeaders(),
@@ -180,15 +217,28 @@ async function requestJson<T>(url: string, init?: RequestInit, includeAuth = tru
     unauthorizedHandler?.();
   }
 
-  return parseJsonOrThrow<T>(response);
+  try {
+    return await parseJsonOrThrow<T>(response);
+  } catch (error) {
+    if (error instanceof SystemStartingError && systemStartingHandler) {
+      systemStartingHandler();
+      // Don't re-throw — handler set systemStarting=true which unmounts callers.
+      // Return a never-settling promise so callers silently stop processing.
+      // The pending promise becomes unreachable once the caller unmounts and will be GC'd.
+      return new Promise<T>(() => {});
+    }
+    throw error;
+  }
 }
 
 interface AuthMethodsResponse {
-  methods: LoginProvider[];
+  methods: AuthMethod[];
+  bootstrap_available?: boolean;
 }
 
 interface HealthStatusResponse {
   ok: boolean;
+  ready: boolean;
 }
 
 interface AuthTokenResponse {
@@ -198,24 +248,16 @@ interface AuthTokenResponse {
   identity: AuthUser;
 }
 
-interface CredentialsLoginInput {
-  username?: string;
-  email?: string;
-  password: string;
-  name?: string;
-}
-
-interface OidcLoginInput {
-  issuer: string;
-  subject: string;
-  email?: string;
-  name?: string;
-  username?: string;
-}
-
 interface RefreshTokenResponse {
   access_token: string;
   refresh_token: string;
+}
+
+export interface AclSnapshot {
+  defaults: { read: string; write: string };
+  acl: Record<string, { read?: string; write?: string }>;
+  roles: Record<string, string[]>;
+  customRoles: string[];
 }
 
 async function tryBootstrapSingleUserSession(): Promise<boolean> {
@@ -323,7 +365,7 @@ export const apiClient = {
     });
   },
 
-  async listAgentKeys(): Promise<{ agent_id: string; display_name: string }[]> {
+  async listAgentKeys(): Promise<{ agents: { agent_id: string; display_name: string }[]; errors: string[] }> {
     return requestJson("/api/admin/agents");
   },
 
@@ -361,55 +403,6 @@ export const apiClient = {
         },
         body: JSON.stringify({
           provider: "single_user",
-        }),
-      },
-      false,
-    );
-    if (response.identity?.id) {
-      setWriterId(response.identity.id);
-    }
-    return response;
-  },
-
-  async loginCredentials(input: CredentialsLoginInput): Promise<AuthTokenResponse> {
-    const response = await requestJson<AuthTokenResponse>(
-      "/api/auth/login",
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          provider: "credentials",
-          username: input.username,
-          email: input.email,
-          password: input.password,
-          name: input.name,
-        }),
-      },
-      false,
-    );
-    if (response.identity?.id) {
-      setWriterId(response.identity.id);
-    }
-    return response;
-  },
-
-  async loginOidc(input: OidcLoginInput): Promise<AuthTokenResponse> {
-    const response = await requestJson<AuthTokenResponse>(
-      "/api/auth/login",
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          provider: "oidc",
-          issuer: input.issuer,
-          subject: input.subject,
-          email: input.email,
-          name: input.name,
-          username: input.username,
         }),
       },
       false,
@@ -691,5 +684,67 @@ export const apiClient = {
 
   async getAgentsSummary(): Promise<GetAgentsFullSummaryResponse> {
     return requestJson<GetAgentsFullSummaryResponse>("/api/agents/summary");
+  },
+
+  async getBlame(docPath: string, sectionFile: string): Promise<BlameResponse> {
+    return requestJson<BlameResponse>(
+      `/api/documents/${encodeURIComponent(docPath)}/blame/${encodeURIComponent(sectionFile)}`,
+    );
+  },
+
+  // --- ACL / RBAC ---
+
+  async getAcl(): Promise<AclSnapshot> {
+    return requestJson<AclSnapshot>("/api/admin/acl");
+  },
+
+  async updateAclDefaults(defaults: { read?: string; write?: string }): Promise<void> {
+    await requestJson("/api/admin/acl/defaults", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(defaults),
+    });
+  },
+
+  async setDocAcl(docPath: string, perms: { read?: string; write?: string }): Promise<void> {
+    await requestJson(`/api/admin/acl/doc/${encodeURIComponent(docPath)}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(perms),
+    });
+  },
+
+  async removeDocAcl(docPath: string): Promise<void> {
+    await requestJson(`/api/admin/acl/doc/${encodeURIComponent(docPath)}`, {
+      method: "DELETE",
+    });
+  },
+
+  async setUserRoles(userId: string, roles: string[]): Promise<void> {
+    await requestJson(`/api/admin/roles/${encodeURIComponent(userId)}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ roles }),
+    });
+  },
+
+  async removeUserRoles(userId: string): Promise<void> {
+    await requestJson(`/api/admin/roles/${encodeURIComponent(userId)}`, {
+      method: "DELETE",
+    });
+  },
+
+  async createCustomRole(name: string): Promise<void> {
+    await requestJson("/api/admin/custom-roles", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  async deleteCustomRole(name: string): Promise<void> {
+    await requestJson(`/api/admin/custom-roles/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    });
   },
 };

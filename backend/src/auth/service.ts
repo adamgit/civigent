@@ -1,6 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { decodeAndValidateToken, InvalidAuthTokenError, issueTokenPair, type IssuedAuthTokenPair } from "./tokens.js";
 import { getSingleUserIdentity, isSingleUserMode, type AuthenticatedWriter } from "./context.js";
+import { hasAnyAdmin, grantAdmin } from "./acl.js";
+import { isOidcConfigured } from "./oauth-config.js";
 
 export interface AgentRegistrationInput {
   name: string;
@@ -8,33 +10,38 @@ export interface AgentRegistrationInput {
 }
 
 export interface LoginInput {
-  provider: "oidc" | "credentials" | "single_user";
-  username?: string;
-  password?: string;
+  provider: "single_user";
   email?: string;
   name?: string;
-  issuer?: string;
-  subject?: string;
 }
 
 function assertNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-type RuntimeAuthMode = "single_user" | "oidc" | "credentials" | "hybrid";
+type RuntimeAuthMode = "single_user" | "oidc" | "hybrid";
 
-function readRuntimeAuthMode(): RuntimeAuthMode {
-  const mode = String(process.env.KS_AUTH_MODE ?? "").trim().toLowerCase();
-  if (mode === "single_user") {
-    return "single_user";
+const LEGAL_AUTH_MODES: ReadonlySet<string> = new Set(["single_user", "oidc", "hybrid"]);
+
+export function readRuntimeAuthMode(): RuntimeAuthMode {
+  const raw = process.env.KS_AUTH_MODE?.trim().toLowerCase() ?? "";
+  if (!raw) {
+    throw new Error(
+      `FATAL: KS_AUTH_MODE is not set.\n` +
+      `You must explicitly choose an auth mode. Legal values: single_user, oidc, hybrid.\n` +
+      `  single_user — no login required (personal / evaluation use)\n` +
+      `  oidc        — OIDC provider only\n` +
+      `  hybrid      — OIDC + local credentials fallback\n` +
+      `Example: KS_AUTH_MODE=single_user`,
+    );
   }
-  if (mode === "oidc") {
-    return "oidc";
+  if (!LEGAL_AUTH_MODES.has(raw)) {
+    throw new Error(
+      `FATAL: KS_AUTH_MODE="${raw}" is not a recognised auth mode.\n` +
+      `Legal values: single_user, oidc, hybrid.`,
+    );
   }
-  if (mode === "credentials" || mode === "builtin") {
-    return "credentials";
-  }
-  return "hybrid";
+  return raw as RuntimeAuthMode;
 }
 
 function deterministicUuid(seed: string): string {
@@ -50,64 +57,25 @@ function normalizeNonEmpty(value: string | undefined): string | undefined {
 }
 
 function providerAllowedInMode(provider: LoginInput["provider"], mode: RuntimeAuthMode): boolean {
-  if (mode === "hybrid") {
-    return provider === "credentials" || provider === "oidc";
-  }
   if (mode === "single_user") {
     return true;
   }
-  return provider === mode;
+  // oidc and hybrid: human login via POST is not used (OIDC redirects handle it)
+  return false;
 }
 
-function loginViaCredentials(input: LoginInput): AuthenticatedWriter {
-  const username = normalizeNonEmpty(input.username) ?? normalizeNonEmpty(input.email);
-  const password = normalizeNonEmpty(input.password);
-  if (!username || !password) {
-    throw new Error("validation_error: username/email and password are required.");
-  }
-
-  const expectedUsername = normalizeNonEmpty(
-    process.env.KS_AUTH_CREDENTIALS_USERNAME
-    ?? process.env.KS_ADMIN_EMAIL,
-  );
-  const expectedPassword = normalizeNonEmpty(
-    process.env.KS_AUTH_CREDENTIALS_PASSWORD
-    ?? process.env.KS_ADMIN_PASSWORD,
-  );
-
-  if (!expectedUsername || !expectedPassword) {
-    throw new Error(
-      "validation_error: credentials provider is not configured; set credentials username/email and password.",
-    );
-  }
-
-  if (username !== expectedUsername || password !== expectedPassword) {
-    throw new Error("unauthorized: invalid credentials.");
-  }
-
-  const id = `human-${deterministicUuid(`credentials|${username.toLowerCase()}`)}`;
-  const email = normalizeNonEmpty(input.email) ?? (username.includes("@") ? username : undefined);
-  return {
-    id,
-    type: "human",
-    displayName: normalizeNonEmpty(input.name) ?? username,
-    ...(email ? { email } : {}),
-  };
-}
-
-function loginViaOidc(input: LoginInput): AuthenticatedWriter {
-  const issuer = normalizeNonEmpty(input.issuer);
-  const subject = normalizeNonEmpty(input.subject);
-  if (!issuer || !subject) {
-    throw new Error("validation_error: issuer and subject are required for oidc login.");
-  }
-  const seed = `${issuer}|${subject}`;
-  const id = `human-${deterministicUuid(seed)}`;
-  const displayName = normalizeNonEmpty(input.name)
-    ?? normalizeNonEmpty(input.username)
-    ?? normalizeNonEmpty(input.email)
-    ?? subject;
-  const email = normalizeNonEmpty(input.email);
+/**
+ * Build an AuthenticatedWriter identity from OIDC token claims.
+ * The deterministic UUID seed is "issuer|subject" — stable across sessions.
+ */
+export function buildOidcIdentity(
+  issuer: string,
+  subject: string,
+  email?: string,
+  name?: string,
+): AuthenticatedWriter {
+  const id = `human-${deterministicUuid(`${issuer}|${subject}`)}`;
+  const displayName = name ?? email ?? subject;
   return {
     id,
     type: "human",
@@ -116,18 +84,13 @@ function loginViaOidc(input: LoginInput): AuthenticatedWriter {
   };
 }
 
-export function listAuthMethods(): Array<"oidc" | "credentials" | "single_user"> {
+export function listAuthMethods(): Array<"oidc" | "single_user"> {
   const mode = readRuntimeAuthMode();
   if (mode === "single_user" || isSingleUserMode()) {
     return ["single_user"];
   }
-  if (mode === "oidc") {
-    return ["oidc"];
-  }
-  if (mode === "credentials") {
-    return ["credentials"];
-  }
-  return ["credentials", "oidc"];
+  // Both oidc and hybrid use OIDC login
+  return ["oidc"];
 }
 
 export function registerTransientAgent(input: AgentRegistrationInput): {
@@ -182,22 +145,91 @@ export function loginHuman(input: LoginInput): {
     );
   }
 
-  let identity: AuthenticatedWriter;
-  if (input.provider === "credentials") {
-    identity = loginViaCredentials(input);
-  } else if (input.provider === "oidc") {
-    identity = loginViaOidc(input);
-  } else {
-    throw new Error(`validation_error: provider "${input.provider}" is not available.`);
-  }
+  // Only single_user provider reaches here; OIDC login is handled via redirect flow
+  throw new Error(`validation_error: provider "${input.provider}" is not available via POST login.`);
+}
 
-  const tokenPair = issueTokenPair(identity);
-  return {
-    token: tokenPair.access_token,
-    access_token: tokenPair.access_token,
-    refresh_token: tokenPair.refresh_token,
-    identity,
-  };
+// ─── Admin bootstrap (one-time code printed to stdout) ────────────────────────
+
+let _bootstrapCode: string | null = null;
+let _bootstrapTimer: ReturnType<typeof setTimeout> | null = null;
+
+const BOOTSTRAP_TTL_MS = 30_000; // 30 seconds
+
+/**
+ * If OIDC is configured and no admin users exist in roles.json, generate a
+ * one-time bootstrap code and print it to stdout. Called once at startup.
+ * Code expires after 30 seconds — restart server to generate a new one.
+ */
+export async function maybeGenerateBootstrapCode(): Promise<void> {
+  if (isSingleUserMode()) return;
+  if (!isOidcConfigured()) return;
+  if (await hasAnyAdmin()) return;
+
+  _bootstrapCode = randomBytes(16).toString("hex");
+  console.log(
+    `\n╔══════════════════════════════════════════════════════════════════╗\n` +
+    `║  No admin users configured.                                    ║\n` +
+    `║  After OIDC login, use this one-time code to claim admin:      ║\n` +
+    `║  Code expires in 30 seconds.                                   ║\n` +
+    `║                                                                ║\n` +
+    `║    ${_bootstrapCode}    ║\n` +
+    `║                                                                ║\n` +
+    `╚══════════════════════════════════════════════════════════════════╝\n`,
+  );
+
+  _bootstrapTimer = setTimeout(() => {
+    _bootstrapCode = null;
+    _bootstrapTimer = null;
+    console.log(
+      `\n╔══════════════════════════════════════════════════════════════════╗\n` +
+      `║  Bootstrap code expired. Restart server to generate a new one. ║\n` +
+      `╚══════════════════════════════════════════════════════════════════╝\n`,
+    );
+  }, BOOTSTRAP_TTL_MS);
+  // Don't let the timer prevent process exit
+  _bootstrapTimer.unref();
+}
+
+/**
+ * Returns true if bootstrap is available (code generated but not yet used or expired).
+ */
+export function isBootstrapAvailable(): boolean {
+  return _bootstrapCode !== null;
+}
+
+/**
+ * Validate the bootstrap code and grant admin to the given writer.
+ * Returns true on success, throws on failure. One-use: code is invalidated after success.
+ */
+export async function redeemBootstrapCode(code: string, writerId: string): Promise<void> {
+  if (!_bootstrapCode) {
+    throw new Error("Bootstrap is not available — either already used, expired, or no bootstrap code was generated.");
+  }
+  if (code !== _bootstrapCode) {
+    throw new Error("Invalid bootstrap code.");
+  }
+  await grantAdmin(writerId);
+  _bootstrapCode = null;
+  if (_bootstrapTimer) {
+    clearTimeout(_bootstrapTimer);
+    _bootstrapTimer = null;
+  }
+  console.log(`Bootstrap code redeemed by writer ${writerId}. Code is now invalid.`);
+}
+
+/** For testing only — reset bootstrap state. */
+export function _resetBootstrapState(): void {
+  _bootstrapCode = null;
+  if (_bootstrapTimer) {
+    clearTimeout(_bootstrapTimer);
+    _bootstrapTimer = null;
+  }
+}
+
+/** For testing only — set the bootstrap code directly. */
+export function _setBootstrapCode(code: string | null): void {
+  _bootstrapCode = code;
 }
 
 export function exchangeRefreshToken(refreshToken: string): IssuedAuthTokenPair {

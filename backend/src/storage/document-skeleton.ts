@@ -85,6 +85,7 @@ export function serializeSkeletonEntries(entries: SkeletonEntry[]): string {
       lines.push(`{{section: ${entry.sectionFile}}}`);
     }
   }
+  if (lines.length === 0) return "";
   return lines.join("\n").replace(/^\n+/, "") + "\n";
 }
 
@@ -176,18 +177,17 @@ export class DocumentSkeleton {
   /** True when the skeleton has no sections at all (no roots). */
   get isEmpty(): boolean { return this.roots.length === 0; }
 
-  /** Flat ordered view of all sections. Recomputed from tree on each call. */
-  get flat(): FlatEntry[] {
-    return this.flatten(this.roots, [], this.skeletonPath);
-  }
-
   /**
    * Depth-first visitor over all sections. Zero intermediate allocation.
    *
    * headingPath is a shared mutable array — push/pop during walk.
    * Callers must copy it (e.g. [...headingPath]) if they retain it.
    */
-  forEachSection(
+  /**
+   * Iterate all nodes including sub-skeleton entries.
+   * Use this for structural operations (persist, diff) that need sub-skeleton directory paths.
+   */
+  forEachNode(
     cb: (
       heading: string,
       level: number,
@@ -199,6 +199,24 @@ export class DocumentSkeleton {
   ): void {
     const hp: string[] = [];
     this.walkNodes(this.roots, hp, this.skeletonPath, cb);
+  }
+
+  /**
+   * Iterate content sections only — skips sub-skeleton entries.
+   * Use this for content/API callers that should never see sub-skeleton nodes.
+   */
+  forEachSection(
+    cb: (
+      heading: string,
+      level: number,
+      sectionFile: string,
+      headingPath: string[],
+      absolutePath: string,
+    ) => void,
+  ): void {
+    this.forEachNode((heading, level, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
+      if (!isSubSkeleton) cb(heading, level, sectionFile, headingPath, absolutePath);
+    });
   }
 
   private walkNodes(
@@ -389,6 +407,15 @@ export class DocumentSkeleton {
     }
 
     throw new Error(`Skeleton integrity error: empty heading path for ${this.docPath}`);
+  }
+
+  /** Resolve a section by heading path, returning null if not found (instead of throwing). */
+  resolveByHeadingPath(headingPath: string[]): FlatEntry | null {
+    try {
+      return this.resolve(headingPath);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -607,8 +634,8 @@ export class DocumentSkeleton {
     const bodyEntries: Array<{ headingPath: string[]; heading: string; level: number; absolutePath: string }> = [];
 
     if (headingPath.length === 0) {
-      this.forEachSection((heading, level, _sf, hp, absolutePath, isSubSkeleton) => {
-        if (!isSubSkeleton) bodyEntries.push({ headingPath: [...hp], heading, level, absolutePath });
+      this.forEachSection((heading, level, _sf, hp, absolutePath) => {
+        bodyEntries.push({ headingPath: [...hp], heading, level, absolutePath });
       });
     } else {
       const parentPath = headingPath.slice(0, -1);
@@ -658,7 +685,7 @@ export class DocumentSkeleton {
       const oldSkeleton = await DocumentSkeleton.fromDisk(
         this.docPath, this.canonicalRoot, this.canonicalRoot,
       );
-      oldSkeleton.forEachSection((_h, _l, _sf, _hp, absolutePath, isSubSkeleton) => {
+      oldSkeleton.forEachNode((_h, _l, _sf, _hp, absolutePath, isSubSkeleton) => {
         oldSectionFiles.add(absolutePath);
         if (isSubSkeleton) oldSubSkeletonDirs.add(absolutePath);
       });
@@ -699,7 +726,7 @@ export class DocumentSkeleton {
     );
     const newSectionFiles = new Set<string>();
     const newSubSkeletonDirs = new Set<string>();
-    newSkeleton.forEachSection((_h, _l, _sf, _hp, absolutePath, isSubSkeleton) => {
+    newSkeleton.forEachNode((_h, _l, _sf, _hp, absolutePath, isSubSkeleton) => {
       newSectionFiles.add(absolutePath);
       if (isSubSkeleton) newSubSkeletonDirs.add(absolutePath);
     });
@@ -803,6 +830,21 @@ export class DocumentSkeleton {
     const skeleton = new DocumentSkeleton(docPath, [rootNode], targetRoot, targetRoot);
     skeleton._dirty = true;
     return skeleton;
+  }
+
+  /**
+   * Construct a skeleton from pre-assembled nodes. Used by crash recovery to build
+   * a compound skeleton from multiple sources without going through fromDisk().
+   * targetRoot is used as both overlay and canonical root (recovery writes directly
+   * to canonical).
+   */
+  static fromNodes(
+    docPath: string,
+    nodes: SkeletonNode[],
+    targetRoot: string,
+  ): DocumentSkeleton {
+    validateNoDuplicateRoots(nodes, docPath);
+    return new DocumentSkeleton(docPath, nodes, targetRoot, targetRoot);
   }
 
   static async fromDisk(
@@ -959,14 +1001,14 @@ async function buildSkeletonTree(
   let nodes = await readTreeRecursive(skeletonPath);
 
   // If overlay produced zero entries, check canonical before giving up.
-  // An empty/corrupt overlay must not mask a valid canonical skeleton.
+  // An empty overlay masking valid canonical data is corruption — surface it.
   if (nodes.length === 0 && overlayExisted) {
     const canonicalNodes = await readTreeRecursive(canonicalPath);
     if (canonicalNodes.length > 0) {
-      console.warn(
-        `DocumentSkeleton: overlay skeleton for ${docPath} is empty but canonical has ${canonicalNodes.length} entries — falling back to canonical`,
+      throw new Error(
+        `DocumentSkeleton: overlay skeleton for ${docPath} is empty but canonical has ${canonicalNodes.length} entries. ` +
+        `This indicates skeleton corruption. Remove or repair the overlay skeleton file to recover.`,
       );
-      nodes = canonicalNodes;
     }
   }
 

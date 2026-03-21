@@ -14,20 +14,15 @@
  *   Reconnecting clients get a fresh Y.Doc (no stale CRDT state to merge).
  */
 
-import { readdir, writeFile, mkdir, readFile } from "node:fs/promises";
+import { readdir, readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { getDataRoot, getProposalsCommittingRoot, getSessionDocsRoot, getSessionFragmentsRoot } from "./data-root.js";
+import { getDataRoot, getContentRoot, getProposalsCommittingRoot, getSessionDocsRoot, getSessionFragmentsRoot } from "./data-root.js";
 import { gitExec } from "./git-repo.js";
 import { rollbackCommittingToPending } from "./proposal-repository.js";
 import {
-  commitSessionFilesToCanonical,
-  cleanupSessionFiles,
   scanSessionFragmentDocPaths,
-  listRawFragments,
-  readRawFragment,
 } from "./session-store.js";
-import { fragmentKeyFromSectionFile } from "../crdt/ydoc-fragments.js";
-import type { OrphanedBody } from "../crdt/fragment-store.js";
+import { recoverDocument, reconcileAndCleanup, writeRecoveredToCanonical, buildCompoundSkeleton, type DocumentRecoveryResult } from "./recovery-layers.js";
 
 // ─── Recovery section generation ─────────────────────────────────
 
@@ -71,6 +66,12 @@ export function buildRecoverySectionMarkdown(
 export interface CrashRecoveryResult {
   recovered: boolean;
   sessionFilesRecovered: number;
+  /** Docs whose orphan-body scan failed. Session commit still ran for other docs. */
+  orphanScanFailures: Array<{ docPath: string; error: string }>;
+  /** Error message if the session-file commit itself failed. Session files preserved on disk. */
+  commitError?: string;
+  /** Docs where recovery threw an exception. Session files preserved; will retry next restart. */
+  failedDocuments: Array<{ docPath: string; error: string }>;
 }
 
 function isTrackedContentOrProposalPath(statusLine: string): boolean {
@@ -79,6 +80,51 @@ function isTrackedContentOrProposalPath(statusLine: string): boolean {
     return false;
   }
   return trimmed.includes("content/") || trimmed.includes("proposals/");
+}
+
+/**
+ * Extract doc paths from dirty content/ lines in git status.
+ * E.g. " M content/my-doc" → "my-doc", " M content/my-doc.sections/foo.md" → "my-doc"
+ */
+function extractDirtyDocPaths(dirtyLines: string[]): Set<string> {
+  const docPaths = new Set<string>();
+  for (const line of dirtyLines) {
+    const match = /content\/(.+?)(?:\.sections\/|$)/.exec(line);
+    if (match) docPaths.add(match[1].replace(/\/$/, ""));
+  }
+  return docPaths;
+}
+
+/**
+ * Check if session files exist for a given document.
+ */
+async function hasSessionFilesForDoc(docPath: string): Promise<boolean> {
+  const sessionDocsRoot = getSessionDocsRoot();
+  const sessionFragmentsRoot = getSessionFragmentsRoot();
+  const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+
+  // Check session docs overlay
+  try {
+    const overlayPath = path.join(sessionDocsRoot, "content", ...normalized.split("/"));
+    await readFile(overlayPath, "utf8");
+    return true;
+  } catch { /* no overlay skeleton */ }
+
+  // Check session docs sections dir
+  try {
+    const sectionsDir = path.join(sessionDocsRoot, "content", `${normalized}.sections`);
+    const entries = await readdir(sectionsDir);
+    if (entries.length > 0) return true;
+  } catch { /* no overlay sections */ }
+
+  // Check raw fragments
+  try {
+    const fragmentDir = path.join(sessionFragmentsRoot, ...normalized.split("/"));
+    const entries = await readdir(fragmentDir);
+    if (entries.length > 0) return true;
+  } catch { /* no fragments */ }
+
+  return false;
 }
 
 async function recoverDirtyWorkingTree(dataRoot: string): Promise<boolean> {
@@ -92,16 +138,45 @@ async function recoverDirtyWorkingTree(dataRoot: string): Promise<boolean> {
     return false;
   }
 
-  const hasContentDirty = dirtyLines.some((l) => l.includes("content/"));
+  const contentDirtyLines = dirtyLines.filter((l) => l.includes("content/"));
   const hasProposalsDirty = dirtyLines.some((l) => l.includes("proposals/"));
 
-  // Restore content/ to last committed state — dirty content files come from
-  // half-finished promoteOverlay() and must not be preserved. Session overlay
-  // is the authoritative source of recent edits.
-  // Reset index first (unstages), then checkout restores working tree.
-  if (hasContentDirty) {
-    await gitExec(["reset", "HEAD", "--", "content/"], dataRoot);
-    await gitExec(["checkout", "--", "content/"], dataRoot);
+  if (contentDirtyLines.length > 0) {
+    // Per-document handling: revert docs that have session files (session is authoritative),
+    // leave docs without session files as-is (dirty canonical is the only copy).
+    const dirtyDocPaths = extractDirtyDocPaths(contentDirtyLines);
+    const docsToRevert: string[] = [];
+    const docsToKeep: string[] = [];
+
+    for (const dp of dirtyDocPaths) {
+      if (await hasSessionFilesForDoc(dp)) {
+        docsToRevert.push(dp);
+      } else {
+        docsToKeep.push(dp);
+      }
+    }
+
+    // Revert docs where session files are authoritative
+    for (const dp of docsToRevert) {
+      const normalized = dp.replace(/\\/g, "/").replace(/^\/+/, "");
+      await gitExec(["reset", "HEAD", "--", `content/${normalized}`, `content/${normalized}.sections/`], dataRoot);
+      await gitExec(["checkout", "--", `content/${normalized}`, `content/${normalized}.sections/`], dataRoot);
+    }
+
+    // Commit docs where dirty canonical is the only copy
+    if (docsToKeep.length > 0) {
+      for (const dp of docsToKeep) {
+        const normalized = dp.replace(/\\/g, "/").replace(/^\/+/, "");
+        await gitExec(["add", `content/${normalized}`, `content/${normalized}.sections/`], dataRoot);
+      }
+      await gitExec([
+        "-c", "user.name=Knowledge Store Recovery",
+        "-c", "user.email=recovery@knowledge-store.local",
+        "commit",
+        "-m", "startup recovery: commit dirty canonical (no session files — only copy)",
+        "--allow-empty",
+      ], dataRoot);
+    }
   }
 
   // Proposal state transitions are safe to commit (directory renames are atomic)
@@ -143,137 +218,132 @@ async function recoverCommittingProposals(): Promise<boolean> {
 }
 
 /**
- * Recover raw fragment files from sessions/fragments/.
- *
- * Raw fragments are the crash-safe format written by flush(). They contain
- * heading + body markdown. On recovery, we reconstruct FragmentStores from
- * raw fragments, normalize any that contain embedded headings (producing
- * canonical-ready files in sessions/docs/), then let the existing session
- * commit pipeline handle the rest.
+ * Discover all document paths that have session state (overlay docs or raw fragments).
  */
-async function recoverRawFragments(): Promise<void> {
-  const docPaths = await scanSessionFragmentDocPaths();
-  if (docPaths.length === 0) return;
+async function discoverSessionDocPaths(): Promise<string[]> {
+  const { scanSessionDocPaths } = await import("./session-store.js");
+  const fragmentDocPaths = await scanSessionFragmentDocPaths();
+  const overlayDocPaths = await scanSessionDocPaths();
+  const all = new Set([...fragmentDocPaths, ...overlayDocPaths]);
+  return [...all];
+}
 
-  const { FragmentStore } = await import("../crdt/fragment-store.js");
+interface RecoverSessionFilesResult {
+  sectionsCommitted: number;
+  orphanScanFailures: Array<{ docPath: string; error: string }>;
+  commitError?: string;
+  failedDocuments: Array<{ docPath: string; error: string }>;
+}
+
+/**
+ * Recover session files using the RecoveryLayer pipeline.
+ *
+ * For each doc with session state:
+ *   1. recoverDocument() — tolerant per-section recovery with decision table
+ *   2. commitHumanChangesToCanonical() — write recovered sections to canonical + git commit
+ *   3. reconcileAndCleanup() — verify all session files consumed, then delete
+ */
+async function recoverSessionFiles(): Promise<RecoverSessionFilesResult> {
+  const docPaths = await discoverSessionDocPaths();
+  if (docPaths.length === 0) return { sectionsCommitted: 0, orphanScanFailures: [], failedDocuments: [] };
+
+  const orphanScanFailures: Array<{ docPath: string; error: string }> = [];
+  const failedDocuments: Array<{ docPath: string; error: string }> = [];
+  let totalSections = 0;
+
+  const perDocResults = new Map<string, { recovery: DocumentRecoveryResult; compound: Awaited<ReturnType<typeof buildCompoundSkeleton>> }>();
 
   for (const docPath of docPaths) {
-    // Build a temporary FragmentStore from disk (will use sessions/docs/ overlay if available)
-    const { store: fragments } = await FragmentStore.fromDisk(docPath);
-
-    // Read raw fragment files and check for structural issues
-    const rawFiles = await listRawFragments(docPath);
-    for (const rawFile of rawFiles) {
-      const content = await readRawFragment(docPath, rawFile);
-      if (content === null) continue;
-
-      // Resolve the fragment key for this raw file
-      const isRoot = rawFile === "__root__.md";
-      const fragmentKey = fragmentKeyFromSectionFile(rawFile, isRoot);
-
-      // Normalize this fragment (no-op if structurally clean)
-      await fragments.normalizeStructure(fragmentKey);
-    }
-
-    // Clean up the temporary Y.Doc
-    fragments.ydoc.destroy();
-  }
-}
-
-/**
- * Write a recovery section to canonical when orphaned session bodies are found.
- * Modifies the canonical skeleton and writes a body file for the recovery section.
- */
-async function writeRecoverySectionToCanonical(
-  docPath: string,
-  orphans: Array<{ sectionFile: string; content: string }>,
-): Promise<void> {
-  const { getContentRoot } = await import("./data-root.js");
-  const contentRoot = getContentRoot();
-  const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-  const skeletonPath = path.resolve(contentRoot, ...normalized.split("/"));
-  const sectionsDir = `${skeletonPath}.sections`;
-
-  // Read current skeleton and append recovery section
-  const skeleton = await readFile(skeletonPath, "utf8");
-  const recoveryBody = buildRecoverySectionMarkdown(orphans);
-  const sectionFile = "sec_recovered_edits.md";
-
-  const updatedSkeleton = skeleton.trimEnd() + `\n\n## Recovered edits\n{{section: ${sectionFile}}}\n`;
-  await writeFile(skeletonPath, updatedSkeleton, "utf8");
-  await mkdir(sectionsDir, { recursive: true });
-  await writeFile(path.join(sectionsDir, sectionFile), recoveryBody + "\n", "utf8");
-}
-
-/**
- * Recover session files from sessions/docs/.
- *
- * First processes raw fragments (sessions/fragments/) to produce canonical-ready
- * files, then uses session-store to commit differences under crash recovery identity.
- * If orphaned session bodies are found, writes a recovery section to canonical.
- */
-async function recoverSessionFiles(): Promise<number> {
-  // Step 1: Process raw fragments → canonical-ready in sessions/docs/
-  await recoverRawFragments();
-
-  const contentSubdir = path.join(getSessionDocsRoot(), "content");
-
-  // Step 2: Check if any session content files exist
-  let hasSessionFiles = false;
-  try {
-    const entries = await readdir(contentSubdir, { recursive: true });
-    hasSessionFiles = entries.length > 0;
-  } catch {
-    // No session content directory
-    return 0;
-  }
-
-  if (!hasSessionFiles) return 0;
-
-  // Step 2.5: Scan for orphaned bodies across all session documents
-  const { scanSessionDocPaths } = await import("./session-store.js");
-  const { FragmentStore } = await import("../crdt/fragment-store.js");
-  const sessionDocPaths = await scanSessionDocPaths();
-
-  for (const docPath of sessionDocPaths) {
     try {
-      const { store, orphanedBodies } = await FragmentStore.fromDisk(docPath);
-      store.ydoc.destroy();
+      const compound = await buildCompoundSkeleton(docPath);
+      const recovery = await recoverDocument(docPath);
+      perDocResults.set(docPath, { recovery, compound });
 
-      if (orphanedBodies.length > 0) {
-        console.warn(
-          `Crash recovery: ${orphanedBodies.length} orphaned session bodies for ${docPath}, writing recovery section`,
-        );
-        await writeRecoverySectionToCanonical(docPath, orphanedBodies);
+      if (recovery.sections.length > 0) {
+        // Write recovered content directly to canonical
+        await writeRecoveredToCanonical(docPath, recovery, compound.skeleton);
+        totalSections += recovery.sections.length;
+      }
+
+      // Log diagnostics
+      for (const diag of recovery.sectionDiagnostics) {
+        if (diag.parseFailure) {
+          orphanScanFailures.push({
+            docPath,
+            error: `Parse failure in ${diag.sectionFile} (source: ${diag.source}). Raw text preserved.`,
+          });
+        }
       }
     } catch (err) {
-      console.error(
-        `Crash recovery: failed to scan orphans for ${docPath}:`,
-        err instanceof Error ? err.message : err,
-      );
+      const errorMsg = err instanceof Error ? `${err.message}\n${err.stack ?? ""}`.trim() : String(err);
+      failedDocuments.push({ docPath, error: errorMsg });
+
+      // Write a recovery-failure notice to the document's canonical file so the user sees it
+      const failureNotice = [
+        `> **Crash recovery failed for this document.** Session files are preserved on disk.`,
+        `> The system will retry on next restart.`,
+        `>`,
+        `> \`\`\``,
+        ...errorMsg.split("\n").map(line => `> ${line}`),
+        `> \`\`\``,
+      ].join("\n");
+
+      const canonicalPath = path.join(getContentRoot(), docPath + ".md");
+      try {
+        await mkdir(path.dirname(canonicalPath), { recursive: true });
+        await writeFile(canonicalPath, failureNotice, "utf8");
+      } catch {
+        // Best-effort — if we can't write the notice, the failure is still tracked in failedDocuments
+      }
     }
   }
 
-  // Step 3: Try to commit session files under crash recovery identity.
-  // If commit fails, session files are preserved — they may be the only copy of user data.
-  let sectionsCommitted = 0;
-  try {
-    const result = await commitSessionFilesToCanonical(
-      { id: "crash-recovery", type: "human", displayName: "Crash Recovery" },
-    );
-    sectionsCommitted = result.sectionsCommitted;
-
-    // Step 4: Clean up session files only after successful commit
-    await cleanupSessionFiles();
-  } catch (err) {
-    console.error(
-      "Crash recovery: failed to commit session files, preserving session data for manual recovery:",
-      err instanceof Error ? err.message : err,
-    );
-    return 0;
+  if (totalSections === 0) {
+    return { sectionsCommitted: 0, orphanScanFailures, failedDocuments };
   }
 
-  return sectionsCommitted;
+  // Git commit all recovered canonical changes
+  const dataRoot = getDataRoot();
+  let commitError: string | undefined;
+  try {
+    await gitExec(["add", "-A", "content/"], dataRoot);
+    await gitExec([
+      "-c", "user.name=Knowledge Store Recovery",
+      "-c", "user.email=recovery@knowledge-store.local",
+      "commit",
+      "-m", `crash recovery: recovered ${totalSections} sections from ${perDocResults.size} documents`,
+      "--allow-empty",
+    ], dataRoot);
+  } catch (err) {
+    commitError = err instanceof Error ? `${err.message}\n${err.stack ?? ""}`.trim() : String(err);
+    // Rollback canonical to committed state, session files preserved
+    try {
+      await gitExec(["reset", "HEAD", "--", "content/"], dataRoot);
+      await gitExec(["checkout", "--", "content/"], dataRoot);
+    } catch { /* rollback best-effort */ }
+    return { sectionsCommitted: 0, orphanScanFailures, commitError, failedDocuments };
+  }
+
+  // Per-document reconciled cleanup (only for successfully recovered docs)
+  for (const [docPath, { recovery }] of perDocResults) {
+    try {
+      const reconciliation = await reconcileAndCleanup(docPath, recovery.consumedSessionFiles);
+      if (!reconciliation.safe) {
+        orphanScanFailures.push({
+          docPath,
+          error: `Cleanup refused: ${reconciliation.missedFiles.length} session files not consumed by recovery: ${reconciliation.missedFiles.join(", ")}`,
+        });
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      orphanScanFailures.push({
+        docPath,
+        error: `Cleanup error: ${errorMsg}`,
+      });
+    }
+  }
+
+  return { sectionsCommitted: totalSections, orphanScanFailures, commitError, failedDocuments };
 }
 
 export async function detectAndRecoverCrash(dataRoot = getDataRoot()): Promise<CrashRecoveryResult> {
@@ -283,10 +353,13 @@ export async function detectAndRecoverCrash(dataRoot = getDataRoot()): Promise<C
   ]);
 
   // Session recovery runs after git recovery (may need clean working tree)
-  const sessionFilesRecovered = await recoverSessionFiles();
+  const { sectionsCommitted, orphanScanFailures, commitError, failedDocuments } = await recoverSessionFiles();
 
   return {
-    recovered: recoveredCommitting || recoveredGit || sessionFilesRecovered > 0,
-    sessionFilesRecovered,
+    recovered: recoveredCommitting || recoveredGit || sectionsCommitted > 0,
+    sessionFilesRecovered: sectionsCommitted,
+    orphanScanFailures,
+    commitError,
+    failedDocuments,
   };
 }

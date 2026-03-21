@@ -329,10 +329,31 @@ This is a **courtesy signal only** — it does not block reads, create state, or
 
 No database, no Redis, no session store. All auth state is either:
 - In environment variables (secrets, OIDC config)
-- In a single flat file (`data/auth/agents.keys` for pre-authenticated agents)
+- In flat files under `data/auth/` that survive restarts (see RBAC section below)
 - In stateless signed tokens (JWTs, anonymous `client_id` tokens, authorization codes)
 
-Implementation is via Passport so that it should be easy for admins to customise / add your specific preferred authentication system for human users.
+### Three-file RBAC authorization model
+
+JWT tokens carry identity only (`sub`, `type`, `display_name`, `email` — no role flags). Authorization is evaluated at request time against three flat files in `{data_root}/auth/`:
+
+| File | Format | Purpose |
+|---|---|---|
+| `defaults.json` | `{ "read": "authenticated", "write": "authenticated" }` | System-wide default permission level |
+| `roles.json` | `{ "<userUUID>": ["admin"] }` | User-role assignments |
+| `acl.json` | `{ "<docPath>": { "read": "public" } }` | Per-document permission overrides (sparse) |
+
+All three files are cached in-memory; cache is invalidated immediately after any write. An absent file is treated as empty (no entries). Operators can delete a file to recover from corruption.
+
+**Admin bootstrap by auth mode:**
+- `single_user`: The singleton env-var identity is always admin — no `roles.json` lookup needed.
+- `credentials`: The credentials env-var user is always admin (same deterministic UUID algorithm as token issuance).
+- `oidc` / `hybrid`: No built-in bootstrap. Operator populates `roles.json` directly as a deployment step.
+
+**Route guards:**
+- `requireAdmin()`: Requires an authenticated human with the "admin" role. Agents are structurally excluded (agents never appear in `roles.json`).
+- `resolvePublicOrAuthenticated()`: Checks ACL for the specific `docPath`. Unauthenticated callers pass through for public documents; authenticated callers always pass through.
+
+**Document tree filtering:** Unauthenticated callers to `GET /documents/tree` receive only documents where `getDocReadPermission() === "public"`. The full document list is never exposed to anonymous callers.
 
 ### Token structure
 
@@ -428,6 +449,49 @@ Tab 3 ──port──┘
 4. **REST endpoints return canonical-ready only** — never read raw fragments (may contain un-normalized content)
 5. **Human-involvement is a 0-1 float** — single threshold (0.5), never cached, computed on every evaluation
 6. **Dirty ownership contract**: Content dirtiness is shared (`sessions/docs/`); attribution dirtiness is per-user (`sessions/authors/`)
+
+---
+
+## Data directory structure
+
+All persistent state lives under a single data directory (mounted as `/app/data` in Docker):
+
+```
+data/
+├── snapshots/            ← Pure markdown files, read-only, enabling any standard 3rd party tool to read the data
+├── content/              ← Published content (canonical), markdown stored in a custom format
+│   ├── .git/             ← Private audit-log of all changes to /content/
+│   ├── document-name.md  ← Skeleton file (privately stored and maintained, you should never need to edit or view this raw)
+│   └── document-name.md.sections/ (part of the custom internal markdown format)
+│       ├── sec_abc123.md           ← Section content file
+│       └── sec_abc123.md.sections/ ← Sub-sections (for nested headings)
+│
+├── sessions/             ← In-flight editing state (ephemeral, survives restarts)
+│   ├── fragments/        ← Raw Y.Doc fragments (crash-safety layer, ~2s freshness)
+│   ├── docs/             ← Canonical-ready session content (structurally valid)
+│   │   └── content/      ← Mirrors canonical structure with dirty section overlays
+│   └── authors/          ← Per-user attribution metadata (which user dirtied which sections)
+│
+├── proposals/            ← Agent and human proposals (filesystem = state machine)
+│   ├── pending/          ← Active proposals (mutable)
+│   ├── committing/       ← Being committed right now (transient, milliseconds)
+│   ├── committed/        ← Successfully committed (terminal, audit trail)
+│   └── withdrawn/        ← Cancelled proposals (terminal, audit trail)
+│
+│
+└── auth/                 ← Authentication and authorization state
+    ├── defaults.json     ← System-wide default permission levels (read/write)
+    ├── roles.json        ← User-to-role mappings (e.g. admin)
+    ├── acl.json          ← Per-document permission overrides (sparse)
+    └── agents.keys       ← Pre-authenticated agent credentials (optional)
+```
+
+### Backing up
+
+- **`content/`** — all published content and full git history. The most critical directory.
+- **`sessions/`** — in-flight editing state. Contains all unpublished edits (up to minutes of human work).
+- **`proposals/`** — the audit trail of all proposals (committed and withdrawn). Back this up for audit compliance.
+- **`auth/`** — agent credentials and RBAC files. Small but important.
 
 ---
 

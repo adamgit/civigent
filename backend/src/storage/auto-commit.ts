@@ -11,6 +11,7 @@
 
 import { getAllSessions, type DocSession } from "../crdt/ydoc-lifecycle.js";
 import { FragmentStore } from "../crdt/fragment-store.js";
+import { fragmentKeyFromSectionFile } from "../crdt/ydoc-fragments.js";
 
 import {
   flushDocSessionToDisk,
@@ -56,9 +57,9 @@ export async function commitDirtySections(
     await flushDocSessionToDisk(session);
 
     // Iterate skeleton entries — stable fragment keys mean no rename ambiguity
-    session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
+    session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
       const isRoot = level === 0 && heading === "";
-      const fragmentKey = FragmentStore.fragmentKeyForFileId(sectionFile, isRoot);
+      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
       if (!dirtyFragments.has(fragmentKey)) return;
       if (headingPaths && !headingPaths.some(
         (target) => JSON.stringify(target) === JSON.stringify(headingPath),

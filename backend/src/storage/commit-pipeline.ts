@@ -76,14 +76,11 @@ export async function commitProposalToCanonical(
     const docPaths = new Set(proposal.sections.map((s) => s.doc_path));
     const promotedDocs = new Set<string>();
     for (const docPath of docPaths) {
-      try {
-        const skeleton = await DocumentSkeleton.fromDisk(docPath, overlayRoot, canonicalRoot);
-        if (skeleton.overlayPersisted) {
-          await skeleton.promoteOverlay();
-          promotedDocs.add(docPath);
-        }
-      } catch {
-        // No skeleton in overlay — content-only changes, handled below
+      const proposalOverlay = new ContentLayer(overlayRoot, new ContentLayer(canonicalRoot));
+      const skeleton = await proposalOverlay.readSkeleton(docPath);
+      if (skeleton.overlayPersisted) {
+        await skeleton.promoteOverlay();
+        promotedDocs.add(docPath);
       }
     }
 

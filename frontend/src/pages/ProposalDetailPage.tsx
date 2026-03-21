@@ -253,8 +253,8 @@ export function ProposalDetailPage() {
                   ) ?? proposal.humanInvolvement_evaluation?.passed_sections.find(
                     (s) => s.doc_path === section.doc_path && JSON.stringify(s.heading_path) === JSON.stringify(section.heading_path)
                   );
-                  const score = evalSection?.humanInvolvement_score ?? section.humanInvolvement_score ?? 0;
-                  const blocked = evalSection?.blocked ?? section.blocked ?? false;
+                  const score = evalSection?.humanInvolvement_score ?? 0;
+                  const blocked = evalSection?.blocked ?? false;
                   return (
                     <tr key={`${section.doc_path}-${section.heading_path.join("/")}-${idx}`}>
                       <td style={{ padding: "0.3rem" }}>

@@ -125,16 +125,12 @@ For instructions on exposing snapshots to the host filesystem, see [Snapshots](d
 | `PORT` | Port the server listens on inside the container (not the host-facing port) | `3000` |
 | `KS_EXTERNAL_PORT` | The external host port users connect on. Required — set automatically by the compose files. Used to construct the public URL. | (none — required) |
 | `KS_EXTERNAL_HOSTNAME` | The external hostname or IP users connect on. Set to your domain for non-localhost deployments. Combined with `KS_EXTERNAL_PORT` to derive the public URL. | `localhost` |
-| `KS_AUTH_MODE` | Set to `single_user` for personal use | (multi-user) |
+| `KS_AUTH_MODE` | Auth mode: `single_user`, `oidc`, or `hybrid` (required) | (none — required) |
 | `KS_USER_NAME` | Human display name (single-user mode) | `Local User` |
 | `KS_USER_EMAIL` | Human email (single-user mode) | `local-user@ks.local` |
 | `KS_USER_ID` | Human ID override (single-user mode) | (auto-generated) |
 | `KS_AGENT_AUTH_POLICY` | Agent auth policy: `open` (anonymous allowed), `register` (pre-registered client_id required), `verify` (pre-registered + client_secret required) | `open` (localhost) / `register` (public hostname) |
 | `KS_AGENT_ANON_SALT` | Salt for signing anonymous agent tokens (change to revoke all) | (auto-generated) |
-| `KS_AUTH_CREDENTIALS_USERNAME` | Username for credentials auth mode (also `KS_ADMIN_EMAIL`) | (none) |
-| `KS_AUTH_CREDENTIALS_PASSWORD` | Password for credentials auth mode (also `KS_ADMIN_PASSWORD`) | (none) |
-| `KS_AUTH_ACCESS_TTL_SECONDS` | Access token lifetime in seconds | `1800` |
-| `KS_AUTH_REFRESH_TTL_SECONDS` | Refresh token lifetime in seconds | `2592000` |
 | `KS_DATA_ROOT` | Override the root data directory | (built-in default) |
 | `KS_SNAPSHOT_ROOT` | Override the snapshots directory | `<data_root>/snapshots` |
 | `KS_SNAPSHOT_ENABLED` | Enable assembled document snapshots | `true` |

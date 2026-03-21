@@ -13,7 +13,7 @@
 import { Router, type Request, type Response } from "express";
 import { createHash } from "node:crypto";
 import { getOidcPublicUrl, getAgentAuthPolicy } from "../../auth/oauth-config.js";
-import { isSingleUserMode } from "../../auth/context.js";
+import { isSingleUserMode, resolveAuthenticatedWriter } from "../../auth/context.js";
 import {
   mintAnonClientId,
   validateAnonClientId,
@@ -22,6 +22,50 @@ import {
 } from "../../auth/oauth-tokens.js";
 import { lookupAgentBySecret, lookupAgentKey } from "../../auth/agent-keys.js";
 import { issueTokenPair } from "../../auth/tokens.js";
+
+// ─── Registration rate limiter (process-level, no deps) ─────────
+
+const _registerThrottle = {
+  count: 0,
+  windowStart: Date.now(),
+};
+const REGISTER_WINDOW_MS = 60_000; // 1 minute
+const REGISTER_MAX_PER_WINDOW = 10;
+
+function checkRegisterRateLimit(): boolean {
+  const now = Date.now();
+  if (now - _registerThrottle.windowStart > REGISTER_WINDOW_MS) {
+    _registerThrottle.count = 0;
+    _registerThrottle.windowStart = now;
+  }
+  if (_registerThrottle.count >= REGISTER_MAX_PER_WINDOW) {
+    return false; // rate limited
+  }
+  _registerThrottle.count++;
+  return true;
+}
+
+// ─── Token endpoint rate limiter (process-level, no deps) ────────
+
+const _tokenThrottle = {
+  count: 0,
+  windowStart: Date.now(),
+};
+const TOKEN_WINDOW_MS = 60_000; // 1 minute
+const TOKEN_MAX_PER_WINDOW = 30;
+
+function checkTokenRateLimit(): boolean {
+  const now = Date.now();
+  if (now - _tokenThrottle.windowStart > TOKEN_WINDOW_MS) {
+    _tokenThrottle.count = 0;
+    _tokenThrottle.windowStart = now;
+  }
+  if (_tokenThrottle.count >= TOKEN_MAX_PER_WINDOW) {
+    return false;
+  }
+  _tokenThrottle.count++;
+  return true;
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -84,6 +128,13 @@ export function createOAuthRouter(): Router {
   // ── DCR: Dynamic Client Registration (RFC 7591) ────────────
 
   router.post("/oauth/register", async (req: Request, res: Response) => {
+    if (!checkRegisterRateLimit()) {
+      res.status(429).json({
+        error: "too_many_requests",
+        error_description: "Too many registration requests. Try again later.",
+      });
+      return;
+    }
     const body = req.body as Record<string, unknown>;
     const clientName = typeof body.client_name === "string" ? body.client_name.trim() : "";
     const clientSecret = typeof body.client_secret === "string" ? body.client_secret : null;
@@ -196,9 +247,19 @@ export function createOAuthRouter(): Router {
       return;
     }
 
-    // Multi-user mode: show consent page
-    // TODO: Check for valid human session (JWT cookie), redirect to OIDC if needed
-    // For now, serve the consent page directly
+    // Multi-user mode: require human session before showing consent page
+    const writer = resolveAuthenticatedWriter(req);
+    if (!writer) {
+      // No session — redirect to login with return_to back to this authorize URL
+      const returnTo = req.originalUrl;
+      res.redirect(302, `/login?return_to=${encodeURIComponent(returnTo)}`);
+      return;
+    }
+    if (writer.type === "agent") {
+      res.status(403).send("Agents cannot approve their own authorization.");
+      return;
+    }
+
     const agentDisplayName = escapeHtml(client.agentName);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.send(`<!DOCTYPE html>
@@ -246,6 +307,26 @@ export function createOAuthRouter(): Router {
       ? body.code_challenge_method : "S256";
     const state = typeof body.state === "string" ? body.state : "";
 
+    // In multi-user mode, require a valid human session before minting auth codes
+    if (!isSingleUserMode()) {
+      const writer = resolveAuthenticatedWriter(req);
+      if (!writer) {
+        // Reconstruct the authorize URL for return_to
+        const params = new URLSearchParams();
+        if (clientId) params.set("client_id", clientId);
+        if (redirectUri) params.set("redirect_uri", redirectUri);
+        if (codeChallenge) params.set("code_challenge", codeChallenge);
+        if (codeChallengeMethod) params.set("code_challenge_method", codeChallengeMethod);
+        if (state) params.set("state", state);
+        res.redirect(302, `/login?return_to=${encodeURIComponent(`/oauth/authorize?${params.toString()}`)}`);
+        return;
+      }
+      if (writer.type === "agent") {
+        res.status(403).send("Agents cannot approve their own authorization.");
+        return;
+      }
+    }
+
     if (!clientId || !redirectUri || !codeChallenge) {
       res.status(400).send("Missing required parameters.");
       return;
@@ -268,6 +349,16 @@ export function createOAuthRouter(): Router {
   // ── Token endpoint ─────────────────────────────────────────
 
   router.post("/oauth/token", async (req: Request, res: Response) => {
+    if (!checkTokenRateLimit()) {
+      res.status(429)
+        .setHeader("Retry-After", "60")
+        .json({
+          error: "too_many_requests",
+          error_description: "Too many token requests. Try again later.",
+        });
+      return;
+    }
+
     const body = req.body as Record<string, unknown>;
     const grantType = typeof body.grant_type === "string" ? body.grant_type : "";
 

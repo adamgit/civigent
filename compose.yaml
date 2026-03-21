@@ -7,7 +7,7 @@ services:
     volumes:
       - ./backend:/app
       - /app/node_modules
-      - ./sample-wiki:/app/data
+      - ./dev-data:/app/data
       - snapshot-dev:/app/snapshot
     ports:
       - "3000:3000"
@@ -17,11 +17,20 @@ services:
       - KS_SNAPSHOT_ROOT=/app/snapshot
       - KS_EXTERNAL_PORT=${FRONTEND_PORT:-5173}
       - KS_EXTERNAL_HOSTNAME=${KS_EXTERNAL_HOSTNAME:-localhost}
+      - KS_GOVERNANCE_MODE=${KS_GOVERNANCE_MODE:-}
+      - KS_INVOLVEMENT_PRESET=${KS_INVOLVEMENT_PRESET:-}
       - KS_AUTH_MODE=${KS_AUTH_MODE:-}
+      - KS_AUTH_SECRET=${KS_AUTH_SECRET:-}
       - KS_USER_NAME=${KS_USER_NAME:-}
       - KS_USER_EMAIL=${KS_USER_EMAIL:-}
       - KS_USER_ID=${KS_USER_ID:-}
-      # - KS_GOVERNANCE_MODE=available
+      - KS_OIDC_PUBLIC_URL=${KS_OIDC_PUBLIC_URL:-}
+      - KS_OIDC_ISSUER=${KS_OIDC_ISSUER:-}
+      - KS_OIDC_CLIENT_ID=${KS_OIDC_CLIENT_ID:-}
+      - KS_OIDC_CLIENT_SECRET=${KS_OIDC_CLIENT_SECRET:-}
+      - KS_OIDC_DISPLAY_NAME=${KS_OIDC_DISPLAY_NAME:-}
+      - KS_AGENT_AUTH_POLICY=${KS_AGENT_AUTH_POLICY:-}
+      - KS_AGENT_ANON_SALT=${KS_AGENT_ANON_SALT:-}
 
   frontend:
     build:

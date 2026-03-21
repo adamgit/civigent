@@ -23,7 +23,8 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import * as Y from "yjs";
-import { resolveAuthenticatedWriterFromHeaders } from "../auth/context.js";
+import { resolveWriterWithExpiry } from "../auth/context.js";
+import { checkDocPermission } from "../auth/acl.js";
 import {
   lookupDocSession,
   acquireDocSession,
@@ -65,6 +66,8 @@ interface CrdtSocketState {
   writerDisplayName: string;
   docPath: string;
   observer: boolean;
+  /** Token expiry (epoch seconds). Messages after this time close the connection. */
+  tokenExp: number;
 }
 
 // ─── Module state ───────────────────────────────────────────────
@@ -85,6 +88,15 @@ function rejectUpgrade(
   wss.handleUpgrade(request, socket, head, (ws) => {
     ws.close(code, reason.slice(0, 123));
   });
+}
+
+/** Check if a socket's auth token has expired. Returns true if expired (and closes the socket). */
+function checkTokenExpired(ws: WebSocket, state: CrdtSocketState): boolean {
+  if (state.tokenExp === Infinity) return false; // single_user mode
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (nowSec < state.tokenExp) return false;
+  ws.close(4011, "token_expired");
+  return true;
 }
 
 // ─── Yjs sync protocol helpers ──────────────────────────────────
@@ -316,16 +328,15 @@ function handleMessage(
       if (oldFocus) {
         const session = lookupDocSession(state.docPath);
         if (session) {
-          try {
-            const oldEntry = session.fragments.skeleton.resolve(oldFocus);
+          // resolveByHeadingPath returns null if heading was renamed/restructured — non-fatal
+          const oldEntry = session.fragments.skeleton.resolveByHeadingPath(oldFocus);
+          if (oldEntry) {
             const oldKey = FragmentStore.fragmentKeyFor(oldEntry);
             normalizeFragment(state.docPath, oldKey).catch((err) => {
-              // Fire-and-forget normalization — surface errors but don't crash the WS handler.
-              // Fragment stays unnormalized until disconnect (normalizeAllFragments).
-              console.error(`normalizeFragment failed for ${state.docPath} key=${oldKey}:`, err);
+              // Fire-and-forget normalization. Rethrow as unhandled so the process error
+              // handler surfaces it. Fragment stays unnormalized until disconnect (normalizeAllFragments).
+              throw err instanceof Error ? err : new Error(String(err));
             });
-          } catch {
-            // Skeleton resolve can fail if heading was renamed/restructured — non-fatal
           }
         }
       }
@@ -531,6 +542,7 @@ export function createCrdtWsServer(): CrdtWsServer {
     socket.send(syncStep1);
 
     socket.on("message", (raw) => {
+      if (checkTokenExpired(socket, state)) return;
       const data = raw instanceof Buffer ? raw : Buffer.from(raw as ArrayBuffer);
       handleMessage(socket, session.fragments.ydoc, state, data);
     });
@@ -546,6 +558,17 @@ export function createCrdtWsServer(): CrdtWsServer {
             // Y.Doc destroyed, data flushed to disk — commit session files immediately
             const writer = { id: state.writerId, type: "human" as const, displayName: state.writerDisplayName };
             const commitResult = await commitSessionFilesToCanonical(writer, state.docPath);
+            if (commitResult.skeletonErrors.length > 0) {
+              // Corrupt overlay skeleton — session files preserved on disk for manual recovery.
+              // Do NOT clean up session files — they may be the only copy.
+              // Next attempt to open this doc for editing will throw (skeleton corruption
+              // surfaced by DocumentSkeleton.fromDisk), preventing further damage.
+              throw new Error(
+                `Session commit skipped for ${state.docPath}: corrupt overlay skeleton. ` +
+                `Session files preserved on disk. Remove the corrupt overlay to recover.\n` +
+                commitResult.skeletonErrors.map(e => e.error).join("\n"),
+              );
+            }
             if (commitResult.sectionsCommitted > 0) {
               await cleanupSessionFiles(state.docPath);
               if (onWsEvent && commitResult.commitSha) {
@@ -610,6 +633,7 @@ export function createCrdtWsServer(): CrdtWsServer {
     // If no session exists, observer waits — sync will be sent when an editor connects
 
     socket.on("message", (raw) => {
+      if (checkTokenExpired(socket, state)) return;
       // Observer can still send SYNC_STEP_1/2 for initial sync handshake
       const data = raw instanceof Buffer ? raw : Buffer.from(raw as ArrayBuffer);
       const session = lookupDocSession(state.docPath);
@@ -635,10 +659,22 @@ export function createCrdtWsServer(): CrdtWsServer {
       }
 
       // 2. Auth — only humans can use CRDT (editing or observing)
-      const writer = resolveAuthenticatedWriterFromHeaders(request.headers);
-      if (!writer || writer.type === "agent") {
+      const resolved = resolveWriterWithExpiry(request.headers);
+      if (!resolved || resolved.writer.type === "agent") {
         rejectUpgrade(wss, request, socket, head, 4011,
-          `auth_failed: ${!writer ? "no credentials" : "agents cannot use CRDT"}`);
+          `auth_failed: ${!resolved ? "no credentials" : "agents cannot use CRDT"}`);
+        return;
+      }
+      const writer = resolved.writer;
+      const tokenExp = resolved.tokenExp;
+
+      // 2b. Document-level authorization — check ACL
+      // Observers need read permission; editors need write permission.
+      const wsAction = route.observe ? "read" : "write";
+      const docAllowed = await checkDocPermission(writer, route.docPath, wsAction);
+      if (!docAllowed) {
+        rejectUpgrade(wss, request, socket, head, 4013,
+          `authorization_failed: you do not have ${wsAction} permission for this document`);
         return;
       }
 
@@ -649,6 +685,7 @@ export function createCrdtWsServer(): CrdtWsServer {
           writerDisplayName: writer.displayName,
           docPath: route.docPath,
           observer: true,
+          tokenExp,
         };
 
         observerWss.handleUpgrade(request, socket, head, (ws) => {
@@ -674,6 +711,7 @@ export function createCrdtWsServer(): CrdtWsServer {
         writerDisplayName: writer.displayName,
         docPath: route.docPath,
         observer: false,
+        tokenExp,
       };
 
       // 4. editingPresence: human connected to document (doc-level, no specific section yet)

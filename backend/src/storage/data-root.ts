@@ -59,6 +59,12 @@ export function getSessionAuthorsRoot(): string {
   return path.join(getDataRoot(), "sessions", "authors");
 }
 
+// ─── Auth ─────────────────────────────────────────────────────────
+
+export function getAuthRoot(): string {
+  return path.join(getDataRoot(), "auth");
+}
+
 // ─── Snapshots ─────────────────────────────────────────────────────
 
 export function getSnapshotRoot(): string {
@@ -83,6 +89,7 @@ export async function ensureV3Directories(): Promise<void> {
     getSessionDocsRoot(),
     getSessionFragmentsRoot(),
     getSessionAuthorsRoot(),
+    getAuthRoot(),
     getSnapshotRoot(),
   ];
   for (const dir of dirs) {

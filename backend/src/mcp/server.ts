@@ -33,6 +33,7 @@ import {
 import { type ToolRegistry, type ToolContext, type McpSession } from "./tool-registry.js";
 import type { AuthenticatedWriter } from "../auth/context.js";
 import type { WsServerEvent } from "../types/shared.js";
+import { isSystemReady } from "../startup-state.js";
 
 // ─── Server options ──────────────────────────────────────
 
@@ -132,6 +133,13 @@ export class McpServer {
         return this.handleToolsList(req);
 
       case MCP_METHODS.TOOLS_CALL:
+        if (!isSystemReady()) {
+          return makeErrorResponse(
+            req.id,
+            JSONRPC_ERRORS.INTERNAL_ERROR,
+            "The system is starting up. Please try again shortly.",
+          );
+        }
         return this.handleToolCall(req, writer, session, emitEvent);
 
       default:

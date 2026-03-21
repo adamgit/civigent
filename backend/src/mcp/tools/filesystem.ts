@@ -29,6 +29,7 @@ import {
 import { SectionRef } from "../../domain/section-ref.js";
 import { DocumentSkeleton } from "../../storage/document-skeleton.js";
 import type { SectionScoreSnapshot } from "../../types/shared.js";
+import { checkDocPermission } from "../../auth/acl.js";
 
 // ─── read_file ───────────────────────────────────────────
 
@@ -36,6 +37,11 @@ const readFileHandler: ToolHandler = async (args, ctx) => {
   const filePath = args.path as string | undefined;
   if (!filePath) {
     return makeToolErrorResult("Missing required parameter: path");
+  }
+
+  const readAllowed = await checkDocPermission(ctx.writer, filePath, "read");
+  if (!readAllowed) {
+    return makeToolErrorResult(`Permission denied: you do not have read access to "${filePath}".`);
   }
 
   try {
@@ -132,6 +138,21 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
   if (!destination) return makeToolErrorResult("Missing required parameter: destination");
 
   const writer = ctx.writer;
+
+  // Check permissions: read on source, write on both source (to delete) and destination
+  const sourceReadOk = await checkDocPermission(writer, source, "read");
+  if (!sourceReadOk) {
+    return makeToolErrorResult(`Permission denied: you do not have read access to "${source}".`);
+  }
+  const sourceWriteOk = await checkDocPermission(writer, source, "write");
+  if (!sourceWriteOk) {
+    return makeToolErrorResult(`Permission denied: you do not have write access to "${source}".`);
+  }
+  const destWriteOk = await checkDocPermission(writer, destination, "write");
+  if (!destWriteOk) {
+    return makeToolErrorResult(`Permission denied: you do not have write access to "${destination}".`);
+  }
+
   const canonicalContentRoot = getContentRoot();
 
   // Verify source exists
@@ -149,8 +170,8 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
   }
   const subtree = await sourceSkeleton.collectSubtree([]);
   const headingPaths: string[][] = [];
-  sourceSkeleton.forEachSection((_h, _l, _sf, hp, _ap, isSub) => {
-    if (!isSub) headingPaths.push([...hp]);
+  sourceSkeleton.forEachSection((_h, _l, _sf, hp) => {
+    headingPaths.push([...hp]);
   });
 
   // Auto-withdraw any existing pending proposal
@@ -267,6 +288,14 @@ async function writeDocumentViaProposal(
 ): Promise<import("../protocol.js").McpToolCallResult> {
   const writer = ctx.writer;
 
+  // Check write permission for all target documents
+  for (const file of files) {
+    const allowed = await checkDocPermission(writer, file.path, "write");
+    if (!allowed) {
+      return makeToolErrorResult(`Permission denied: you do not have write access to "${file.path}".`);
+    }
+  }
+
   // Consume pending intent from plan_changes (Tier 2), or use default
   const intent = ctx.session.pendingIntent ?? `Write ${files.map((f) => f.path).join(", ")}`;
   ctx.session.pendingIntent = undefined;
@@ -374,6 +403,12 @@ async function deleteDocumentViaProposal(
   ctx: import("../tool-registry.js").ToolContext,
 ): Promise<import("../protocol.js").McpToolCallResult> {
   const writer = ctx.writer;
+
+  const deleteAllowed = await checkDocPermission(writer, docPath, "write");
+  if (!deleteAllowed) {
+    return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
+  }
+
   const canonicalContentRoot = getContentRoot();
 
   // Verify document exists in canonical
@@ -398,8 +433,8 @@ async function deleteDocumentViaProposal(
   // Load canonical skeleton to get all sections for human-involvement evaluation
   const skeleton = await DocumentSkeleton.fromDisk(docPath, canonicalContentRoot, canonicalContentRoot);
   const headingPaths: string[][] = [];
-  skeleton.forEachSection((_heading, _level, _sectionFile, headingPath, _absolutePath, isSubSkeleton) => {
-    if (!isSubSkeleton) headingPaths.push([...headingPath]);
+  skeleton.forEachSection((_heading, _level, _sectionFile, headingPath) => {
+    headingPaths.push([...headingPath]);
   });
 
   // Auto-withdraw any existing pending proposal by this writer

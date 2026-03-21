@@ -5,7 +5,7 @@
  * Format: base64url(JSON payload) + "." + base64url(HMAC signature)
  */
 
-import { createHmac, randomUUID, randomBytes } from "node:crypto";
+import { createHmac, randomUUID, randomBytes, timingSafeEqual } from "node:crypto";
 import { getAgentAnonSalt } from "./oauth-config.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────
@@ -40,7 +40,9 @@ function verifyToken(token: string, secret: string): Record<string, unknown> | n
   const payload = token.slice(0, dotIdx);
   const sig = token.slice(dotIdx + 1);
   const expected = hmacSign(payload, secret);
-  if (sig !== expected) return null;
+  const sigBuf = Buffer.from(sig);
+  const expectedBuf = Buffer.from(expected);
+  if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) return null;
   try {
     return JSON.parse(base64UrlDecode(payload).toString("utf8")) as Record<string, unknown>;
   } catch {

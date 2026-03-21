@@ -249,7 +249,7 @@ export async function readAllSectionsWithOverlay(
  * skeletons to canonical (handling heading renames), and commit to
  * canonical via the commit pipeline.
  *
- * Uses DocumentSkeleton.flat to iterate sections — this correctly handles
+ * Uses DocumentSkeleton.forEachSection to iterate sections — this correctly handles
  * sub-skeletons, root children, and arbitrarily nested structures.
  *
  * Used by:
@@ -266,6 +266,8 @@ export interface CommitSessionResult {
   sectionsCommitted: number;
   commitSha?: string;
   committedSections: Array<{ doc_path: string; heading_path: string[] }>;
+  /** Documents whose overlay skeleton was corrupt — commit skipped for these. */
+  skeletonErrors: Array<{ docPath: string; error: string }>;
 }
 
 export async function commitSessionFilesToCanonical(
@@ -280,18 +282,29 @@ export async function commitSessionFilesToCanonical(
   const docPaths = docPath ? [docPath] : await scanSessionDocPaths();
 
   const sectionsToCommit: Array<{ doc_path: string; heading_path: string[]; content: string }> = [];
+  const skeletonErrors: Array<{ docPath: string; error: string }> = [];
 
   for (const dp of docPaths) {
-    // Build skeleton from overlay + canonical
-    const skeleton = await DocumentSkeleton.fromDisk(dp, overlayRoot, contentRoot);
+    // Build skeleton from overlay + canonical.
+    // Per-doc: a corrupt overlay for one doc must not block others.
+    let skeleton: DocumentSkeleton;
+    try {
+      skeleton = await DocumentSkeleton.fromDisk(dp, overlayRoot, contentRoot);
+    } catch (err) {
+      skeletonErrors.push({
+        docPath: dp,
+        error: err instanceof Error ? `${err.message}\n${err.stack ?? ""}`.trim() : String(err),
+      });
+      continue;
+    }
 
     // Promote ALL overlay skeleton files (main + sub-skeletons) to canonical
     await skeleton.promoteOverlay();
 
     // Collect body section paths, then read them (forEachSection is sync)
     const bodyEntries: Array<{ headingPath: string[]; absolutePath: string }> = [];
-    skeleton.forEachSection((_heading, _level, _sf, headingPath, absolutePath, isSubSkeleton) => {
-      if (!isSubSkeleton) bodyEntries.push({ headingPath: [...headingPath], absolutePath });
+    skeleton.forEachSection((_heading, _level, _sf, headingPath, absolutePath) => {
+      bodyEntries.push({ headingPath: [...headingPath], absolutePath });
     });
 
     // Try reading each overlay body file — ENOENT means section wasn't edited
@@ -310,8 +323,12 @@ export async function commitSessionFilesToCanonical(
     }
   }
 
+  // skeletonErrors are surfaced in the result — callers must check and act on them.
+  // We do NOT throw here: session files are preserved on disk for the corrupt docs,
+  // and other docs in a multi-doc commit should still proceed.
+
   if (sectionsToCommit.length === 0) {
-    return { sectionsCommitted: 0, committedSections: [] };
+    return { sectionsCommitted: 0, committedSections: [], skeletonErrors };
   }
 
   try {
@@ -320,7 +337,7 @@ export async function commitSessionFilesToCanonical(
       doc_path: s.doc_path,
       heading_path: s.heading_path,
     }));
-    return { sectionsCommitted: sectionsToCommit.length, commitSha, committedSections };
+    return { sectionsCommitted: sectionsToCommit.length, commitSha, committedSections, skeletonErrors };
   } catch (err) {
     // Rollback: restore canonical content/ to last committed state.
     // promoteOverlay() already modified canonical files on disk, so a failed
@@ -330,9 +347,13 @@ export async function commitSessionFilesToCanonical(
       await gitExec(["reset", "HEAD", "--", "content/"], dataRoot);
       await gitExec(["checkout", "--", "content/"], dataRoot);
     } catch (rollbackErr) {
-      console.error(
-        "commitSessionFilesToCanonical: rollback failed:",
-        rollbackErr instanceof Error ? rollbackErr.message : rollbackErr,
+      // Both commit AND rollback failed — canonical content/ may be in a half-promoted state.
+      const commitMessage = err instanceof Error ? (err.stack ?? err.message) : String(err);
+      const rollbackMessage = rollbackErr instanceof Error ? (rollbackErr.stack ?? rollbackErr.message) : String(rollbackErr);
+      throw new Error(
+        `commitSessionFilesToCanonical: commit failed AND rollback failed. ` +
+        `Canonical content/ may be corrupt. Manual recovery required.\n` +
+        `Commit error:\n${commitMessage}\n\nRollback error:\n${rollbackMessage}`,
       );
     }
     throw err;

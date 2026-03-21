@@ -119,10 +119,6 @@ export async function acquireDocSession(
   // Case 2 or 3: Build FragmentStore from disk (session overlay or canonical)
   const { store: fragments, orphanedBodies } = await FragmentStore.fromDisk(docPath);
   if (orphanedBodies.length > 0) {
-    console.warn(
-      `acquireDocSession: ${orphanedBodies.length} orphaned session bodies found for ${docPath}:`,
-      orphanedBodies.map(o => o.sectionFile),
-    );
     // Append a "Recovered edits" section so the user can review orphaned content
     const { buildRecoverySectionMarkdown } = await import("../storage/crash-recovery.js");
     const recoveryBody = buildRecoverySectionMarkdown(orphanedBodies);
@@ -510,21 +506,24 @@ export async function getSessionFileMtime(sectionKey: string): Promise<number | 
   if (parts.length < 1) return null;
   const docPath = parts[0];
   const headingPart = parts.length > 1 ? parts.slice(1).join("::") : "";
-  const targetFragmentKey = SectionRef.fragmentKeyFromHeadingPath(headingPart ? headingPart.split(">>") : []);
+  const headingPath = headingPart ? headingPart.split(">>") : [];
 
   // Check in-memory session first
   const session = sessions.get(docPath);
   if (session) {
-    const fragmentTime = session.fragmentLastActivity.get(targetFragmentKey);
-    if (fragmentTime != null) {
-      return fragmentTime;
+    const entry = session.fragments.skeleton.resolveByHeadingPath(headingPath);
+    if (entry) {
+      const targetFragmentKey = fragmentKeyFromSectionFile(entry.sectionFile, headingPath.length === 0);
+      const fragmentTime = session.fragmentLastActivity.get(targetFragmentKey);
+      if (fragmentTime != null) {
+        return fragmentTime;
+      }
     }
     return null;
   }
 
   // No in-memory session — check disk file mtime for orphaned sessions
   const sessionDocsContentRoot = path.join(getSessionDocsRoot(), "content");
-  const headingPath = headingPart ? headingPart.split(">>") : [];
   if (headingPath.length === 0) return null;
 
   try {

@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
 type TokenUse = "access" | "refresh" | "bootstrap";
 
@@ -15,9 +15,9 @@ export interface AuthTokenClaims {
 }
 
 const DEFAULT_SECRET = "development-insecure-secret";
-const ACCESS_TTL_SECONDS = Number(process.env.KS_AUTH_ACCESS_TTL_SECONDS ?? "1800");
-const REFRESH_TTL_SECONDS = Number(process.env.KS_AUTH_REFRESH_TTL_SECONDS ?? "2592000");
-const BOOTSTRAP_TTL_SECONDS = Number(process.env.KS_AUTH_BOOTSTRAP_TTL_SECONDS ?? "2592000");
+const ACCESS_TTL_SECONDS = 1800;
+const REFRESH_TTL_SECONDS = 2592000;
+const BOOTSTRAP_TTL_SECONDS = 2592000;
 
 function getAuthSecret(): string {
   return process.env.KS_AUTH_SECRET ?? DEFAULT_SECRET;
@@ -64,7 +64,9 @@ export function decodeAndValidateToken(token: string): AuthTokenClaims {
   }
   const [headerPart, payloadPart, providedSignature] = parts;
   const expectedSignature = signValue(`${headerPart}.${payloadPart}`);
-  if (providedSignature !== expectedSignature) {
+  const providedBuf = Buffer.from(providedSignature);
+  const expectedBuf = Buffer.from(expectedSignature);
+  if (providedBuf.length !== expectedBuf.length || !timingSafeEqual(providedBuf, expectedBuf)) {
     throw new InvalidAuthTokenError("Invalid token signature.");
   }
 

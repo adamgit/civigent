@@ -42,8 +42,8 @@ export async function createRestoreProposal(
   // Gather current sections for proposal metadata (before creating proposal)
   const currentSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
   const currentHeadingPaths: string[][] = [];
-  currentSkeleton.forEachSection((_h, _l, _sf, hp, _ap, isSub) => {
-    if (!isSub) currentHeadingPaths.push([...hp]);
+  currentSkeleton.forEachSection((_h, _l, _sf, hp) => {
+    currentHeadingPaths.push([...hp]);
   });
 
   // The document's files in git live under content/<docPath> (skeleton)

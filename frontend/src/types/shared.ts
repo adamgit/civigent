@@ -1,6 +1,7 @@
 export type {
   AdminConfig,
   AgentAuthPolicy,
+  AuthMethod,
   GovernanceMode,
   ActivityItem,
   ActivityItemSource,
@@ -35,13 +36,23 @@ export type {
   HeadingPath,
   HeatmapEntry,
   HumanInvolvementPreset,
-  HumanHumanInvolvementPresetName,
+  HumanInvolvementPresetName,
   ListProposalsResponse,
   LoginProvider,
   PresenceDoneEvent,
   PresenceEditingEvent,
   Proposal,
   ProposalFile,
+  ProposalFileBase,
+  CommittedProposalFile,
+  WithdrawnProposalFile,
+  AnyProposalFile,
+  PendingProposal,
+  CommittedProposalDomain,
+  WithdrawnProposalDomain,
+  AnyProposal,
+  PendingProposalDTO,
+  ProposalDTO,
   ProposalId,
 
   ProposalHumanInvolvementEvaluation,
@@ -68,11 +79,13 @@ export type {
   AgentProposalSnapshot,
   AgentActivitySummary,
   GetAgentsFullSummaryResponse,
+  CatalogChangedEvent,
+  BlameLineAttribution,
+  BlameResponse,
 } from "../../../sharedlibs/shared-types/src/index.js";
 
 export {
   HUMAN_INVOLVEMENT_PRESETS,
   sectionHeadingKey,
   sectionGlobalKey,
-  sectionFragmentKey,
 } from "../../../sharedlibs/shared-types/src/index.js";

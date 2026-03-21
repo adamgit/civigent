@@ -9,6 +9,7 @@ interface AgentEntry {
 
 export function AgentKeysPage() {
   const [agents, setAgents] = useState<AgentEntry[]>([]);
+  const [parseErrors, setParseErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
@@ -22,7 +23,8 @@ export function AgentKeysPage() {
     setError(null);
     try {
       const data = await apiClient.listAgentKeys();
-      setAgents(data);
+      setAgents(data.agents);
+      setParseErrors(data.errors);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -103,6 +105,17 @@ export function AgentKeysPage() {
         {error && (
           <div style={{ background: "#ffeaea", color: "#a00", padding: "0.5rem 1rem", borderRadius: 4, marginBottom: "1rem" }}>
             {error}
+          </div>
+        )}
+
+        {parseErrors.length > 0 && (
+          <div style={{ background: "#fff3e0", border: "1px solid #ff9800", color: "#e65100", padding: "0.75rem 1rem", borderRadius: 4, marginBottom: "1rem" }}>
+            <strong>Warning: {parseErrors.length} malformed {parseErrors.length === 1 ? "entry" : "entries"} in agents.keys</strong>
+            <ul style={{ margin: "0.5rem 0 0", paddingLeft: "1.2rem" }}>
+              {parseErrors.map((err, i) => (
+                <li key={i} style={{ fontSize: "0.85rem", marginBottom: "0.2rem" }}>{err}</li>
+              ))}
+            </ul>
           </div>
         )}
 

@@ -282,7 +282,7 @@ describe("Auto-commit dirty fragment key derivation — sub-skeleton context", (
       hpKey: string; heading: string; level: number;
       sectionFile: string; fragmentKey: string; isSubSkeleton: boolean;
     }> = [];
-    skeleton.forEachSection((heading, level, sectionFile, headingPath, _absolutePath, isSubSkeleton) => {
+    skeleton.forEachNode((heading, level, sectionFile, headingPath, _absolutePath, isSubSkeleton) => {
       const isRoot = level === 0 && heading === "";
       const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
       forEachEntries.push({

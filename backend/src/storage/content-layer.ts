@@ -209,9 +209,9 @@ export class ContentLayer {
 
     // Collect canonical flat entries for matching
     const canonicalFlat: Array<FlatEntry> = [];
-    canonicalSkeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
-      if (!isSubSkeleton) canonicalFlat.push({
-        headingPath: [...headingPath], heading, level, sectionFile, absolutePath, isSubSkeleton,
+    canonicalSkeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
+      canonicalFlat.push({
+        headingPath: [...headingPath], heading, level, sectionFile, absolutePath, isSubSkeleton: false,
       });
     });
 
@@ -364,8 +364,7 @@ export class ContentLayer {
 
     try {
       const overlaySkeleton = await DocumentSkeleton.fromDisk(docPath, overlayRoot, overlayRoot);
-      overlaySkeleton.forEachSection((_h, _l, _sf, headingPath, absolutePath, isSubSkeleton) => {
-        if (isSubSkeleton) return;
+      overlaySkeleton.forEachSection((_h, _l, _sf, headingPath, absolutePath) => {
         const key = SectionRef.headingKey(headingPath);
         const existing = union.get(key);
         if (existing) {
@@ -378,8 +377,7 @@ export class ContentLayer {
 
     try {
       const canonicalSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
-      canonicalSkeleton.forEachSection((_h, _l, _sf, headingPath, absolutePath, isSubSkeleton) => {
-        if (isSubSkeleton) return;
+      canonicalSkeleton.forEachSection((_h, _l, _sf, headingPath, absolutePath) => {
         const key = SectionRef.headingKey(headingPath);
         const existing = union.get(key);
         if (existing) {
@@ -434,8 +432,8 @@ export class ContentLayer {
 
     // Collect body sections via visitor (sync), then read files (async)
     const bodyEntries: Array<{ heading: string; level: number; sectionFile: string; absolutePath: string }> = [];
-    skeleton.forEachSection((heading, level, sectionFile, _hp, absolutePath, isSubSkeleton) => {
-      if (!isSubSkeleton) bodyEntries.push({ heading, level, sectionFile, absolutePath });
+    skeleton.forEachSection((heading, level, sectionFile, _hp, absolutePath) => {
+      bodyEntries.push({ heading, level, sectionFile, absolutePath });
     });
 
     if (bodyEntries.length === 0) {

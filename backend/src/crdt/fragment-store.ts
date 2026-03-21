@@ -102,19 +102,12 @@ export class FragmentStore {
     const { ContentLayer } = await import("../storage/content-layer.js");
 
     const ydoc = new Y.Doc();
-    const overlayRoot = path.join(getSessionDocsRoot(), "content");
     const canonicalRoot = getContentRoot();
+    const overlayRoot = path.join(getSessionDocsRoot(), "content");
+    const canonical = new ContentLayer(canonicalRoot);
+    const overlay = new ContentLayer(overlayRoot, canonical);
 
-    let skeleton: DocumentSkeleton;
-    try {
-      skeleton = await DocumentSkeleton.fromDisk(docPath, overlayRoot, canonicalRoot);
-    } catch (err) {
-      console.error(
-        `FragmentStore.fromDisk: session skeleton corrupt for ${docPath}, falling back to canonical:`,
-        err instanceof Error ? err.message : err,
-      );
-      skeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
-    }
+    const skeleton = await overlay.readSkeleton(docPath);
 
     if (skeleton.isEmpty) {
       return { store: new FragmentStore(ydoc, skeleton, docPath), orphanedBodies: [] };
@@ -134,8 +127,6 @@ export class FragmentStore {
     }
 
     // Bulk-read overlay content as fallback via ContentLayer
-    const canonical = new ContentLayer(canonicalRoot);
-    const overlay = new ContentLayer(overlayRoot, canonical);
     const bulkContent = await overlay.readAllSectionsOverlaid(docPath);
 
     // Collect known section files for orphan detection
@@ -145,7 +136,7 @@ export class FragmentStore {
     const pendingUpdates: Uint8Array[] = [];
     const rawFragmentKeys: string[] = [];
 
-    skeleton.forEachSection((heading, level, sectionFile, headingPath, _absolutePath, _isSubSkeleton) => {
+    skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
       knownSectionFiles.add(sectionFile);
       const isRoot = FragmentStore.isDocumentRoot({ headingPath, level, heading });
       const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
@@ -258,11 +249,6 @@ export class FragmentStore {
     return fragmentKeyFromSectionFile(entry.sectionFile, FragmentStore.isDocumentRoot(entry));
   }
 
-  /** Derive the fragment key for a section file ID. */
-  static fragmentKeyForFileId(sectionFileId: string, isRoot: boolean): string {
-    return fragmentKeyFromSectionFile(sectionFileId, isRoot);
-  }
-
   // ─── Dirty tracking ────────────────────────────────────────────
 
   /** Mark a fragment key as dirty (modified since last flush). */
@@ -341,8 +327,7 @@ export class FragmentStore {
    */
   readAllLiveContent(): Map<string, string> {
     const result = new Map<string, string>();
-    this.skeleton.forEachSection((heading, level, sectionFile, headingPath, _absolutePath, isSubSkeleton) => {
-      if (isSubSkeleton) return;
+    this.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
       const isRoot = FragmentStore.isDocumentRoot({ headingPath, level, heading });
       const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
       const live = this.readLiveBody(fragmentKey);
@@ -361,7 +346,7 @@ export class FragmentStore {
     if (this.skeleton.isEmpty) return "";
 
     const parts: string[] = [];
-    this.skeleton.forEachSection((heading, level, sectionFile, headingPath, _absolutePath, _isSubSkeleton) => {
+    this.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
       const isRoot = FragmentStore.isDocumentRoot({ headingPath, level, heading });
       const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
 
@@ -406,13 +391,16 @@ export class FragmentStore {
     // Ensure overlay skeleton exists before writing body files
     await this.skeleton.ensureOverlayExists();
 
+    const droppedKeys: Array<{ fragmentKey: string; error: unknown }> = [];
+
     for (const fragmentKey of keysToFlush) {
       const sectionFileId = sectionFileFromFragmentKey(fragmentKey);
 
       let entry: FlatEntry;
       try {
         entry = this.skeleton.resolveByFileId(sectionFileId);
-      } catch {
+      } catch (err) {
+        droppedKeys.push({ fragmentKey, error: err });
         continue;
       }
       const isRoot = FragmentStore.isDocumentRoot(entry);
@@ -442,6 +430,15 @@ export class FragmentStore {
     // Persist skeleton if modified
     if (this.skeleton.dirty) {
       await this.skeleton.persist();
+    }
+
+    if (droppedKeys.length > 0) {
+      const details = droppedKeys
+        .map(({ fragmentKey, error }) => `${fragmentKey}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
+        .join("\n");
+      throw new Error(
+        `flush(): ${droppedKeys.length} dirty fragment(s) could not be resolved in skeleton and were NOT written to disk:\n${details}`,
+      );
     }
 
     return { writtenKeys, deletedKeys: [] };
@@ -801,8 +798,8 @@ export class FragmentStore {
     let prevKey: string = ROOT_FRAGMENT_KEY;
     let found = false;
 
-    this.skeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
-      if (found || isSubSkeleton) return;
+    this.skeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
+      if (found) return;
       if (sectionFile === deletedSectionFile) {
         found = true;
         return;

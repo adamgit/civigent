@@ -68,8 +68,7 @@ export function headingPathToLabel(path: string[]): string {
 
 /** Build a stable fragment key from a section filename.
  *  Root sections (empty heading at level 0) use "__root__". */
-export function fragmentKeyFromSectionFile(sectionFile: string, headingPath: string[]): string {
-  const isRoot = headingPath.length === 0;
+export function fragmentKeyFromSectionFile(sectionFile: string, isRoot: boolean): string {
   if (isRoot) return "section::__root__";
   const stem = sectionFile.replace(/\.md$/, "");
   return "section::" + stem;

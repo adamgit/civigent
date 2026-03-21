@@ -26,13 +26,6 @@ import { listProposals } from "../storage/proposal-repository.js";
 
 // ─── Types ──────────────────────────────────────────────────────
 
-export type PresenceReason = "live_session" | "dirty_session_files" | "human_proposal";
-
-export interface PresenceResult {
-  present: boolean;
-  reason: PresenceReason | null;
-}
-
 export interface HumanProposalLockInfo {
   writerId: string;
   writerDisplayName: string;
@@ -50,24 +43,16 @@ export class SectionPresence {
    * Full async check: is a human actively editing this section?
    * Performs disk I/O for dirty file check and proposal lookup.
    */
-  static async check(ref: SectionRef): Promise<PresenceResult> {
+  static async check(ref: SectionRef): Promise<boolean> {
     // Step 1: Live session focus (hard block)
-    if (SectionPresence.checkLiveSession(ref)) {
-      return { present: true, reason: "live_session" };
-    }
+    if (SectionPresence.checkLiveSession(ref)) return true;
 
     // Step 2: Dirty session files on disk
-    if (await SectionPresence.checkDirtyFile(ref)) {
-      return { present: true, reason: "dirty_session_files" };
-    }
+    if (await SectionPresence.checkDirtyFile(ref)) return true;
 
     // Step 3: Human proposal lock
     const lock = await SectionPresence.checkHumanProposalLock(ref);
-    if (lock) {
-      return { present: true, reason: "human_proposal" };
-    }
-
-    return { present: false, reason: null };
+    return lock !== null;
   }
 
   // ─── Sync (batch, uses pre-fetched caches) ──────────────────
@@ -80,25 +65,11 @@ export class SectionPresence {
     ref: SectionRef,
     dirtyFileSet: Set<string>,
     humanProposalLockIndex?: HumanProposalLockIndex,
-  ): PresenceResult {
-    // Step 1: Live session focus (hard block)
-    if (SectionPresence.checkLiveSession(ref)) {
-      return { present: true, reason: "live_session" };
-    }
-
-    // Step 2: Dirty file check (from pre-built set)
-    if (dirtyFileSet.has(ref.key)) {
-      return { present: true, reason: "dirty_session_files" };
-    }
-
-    // Step 3: Human proposal lock (from pre-built index)
-    if (humanProposalLockIndex) {
-      if (humanProposalLockIndex.has(ref.globalKey)) {
-        return { present: true, reason: "human_proposal" };
-      }
-    }
-
-    return { present: false, reason: null };
+  ): boolean {
+    if (SectionPresence.checkLiveSession(ref)) return true;
+    if (dirtyFileSet.has(ref.key)) return true;
+    if (humanProposalLockIndex?.has(ref.globalKey)) return true;
+    return false;
   }
 
   /**

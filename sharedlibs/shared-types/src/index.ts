@@ -33,12 +33,6 @@ export function sectionGlobalKey(docPath: string, headingPath: string[]): string
   return docPath + "::" + sectionHeadingKey(headingPath);
 }
 
-/** Build a fragment key for a heading path. Root (empty path) returns "__root__". */
-export function sectionFragmentKey(headingPath: string[]): string {
-  if (headingPath.length === 0) return "__root__";
-  return "section::" + sectionHeadingKey(headingPath);
-}
-
 // ─── Section Score Snapshot ────────────────────────────────────────
 
 /** Keyed by section key → score at the time of evaluation/commit. */
@@ -46,16 +40,16 @@ export type SectionScoreSnapshot = Record<string, number>;
 
 // ─── Human-Involvement Presets ───────────────────────────────────
 
-export type HumanHumanInvolvementPresetName = "yolo" | "aggressive" | "eager" | "conservative";
+export type HumanInvolvementPresetName = "yolo" | "aggressive" | "eager" | "conservative";
 
 export interface HumanInvolvementPreset {
-  name: HumanHumanInvolvementPresetName;
+  name: HumanInvolvementPresetName;
   midpoint_seconds: number;
   steepness: number;
   description: string;
 }
 
-export const HUMAN_INVOLVEMENT_PRESETS: Record<HumanHumanInvolvementPresetName, HumanInvolvementPreset> = {
+export const HUMAN_INVOLVEMENT_PRESETS: Record<HumanInvolvementPresetName, HumanInvolvementPreset> = {
   yolo: {
     name: "yolo",
     midpoint_seconds: 30,
@@ -93,7 +87,7 @@ export type GovernanceMode = "available" | "forced";
 export type AgentAuthPolicy = "open" | "register" | "verify";
 
 export interface AdminConfig {
-  humanInvolvement_preset: HumanHumanInvolvementPresetName;
+  humanInvolvement_preset: HumanInvolvementPresetName;
   humanInvolvement_midpoint_seconds: number;
   humanInvolvement_steepness: number;
   snapshot_enabled: boolean;
@@ -101,34 +95,95 @@ export interface AdminConfig {
   agent_auth_policy: AgentAuthPolicy;
 }
 
-// ─── Proposal Model (v3 — 4-state lifecycle) ──────────────────────
+// ─── Proposal Model (v4 — layered storage / domain / DTO) ─────────
 
 export type ProposalStatus = "pending" | "committing" | "committed" | "withdrawn";
 
-/** What is stored in the proposal JSON file on disk. */
-export interface ProposalFile {
+// ── Storage layer (what is stored in meta.json on disk) ────────────
+
+/** Base fields present in every proposal meta.json file regardless of lifecycle state. */
+export interface ProposalFileBase {
   id: ProposalId;
   writer: WriterIdentity;
   intent: string;
   sections: ProposalSection[];
   created_at: string;
-  committed_head?: string;
-  humanInvolvement_at_commit?: Record<string, number>;
+}
+
+/** Committed proposal meta.json — adds terminal commit fields (both required). */
+export interface CommittedProposalFile extends ProposalFileBase {
+  committed_head: string;
+  humanInvolvement_at_commit: Record<string, number>;
+}
+
+/** Withdrawn proposal meta.json — adds optional withdrawal reason. */
+export interface WithdrawnProposalFile extends ProposalFileBase {
   withdrawal_reason?: string;
 }
 
-/** What the API returns (enriched at read time). */
-export interface Proposal extends ProposalFile {
+/** Union of all proposal file variants for untyped disk reads. */
+export type AnyProposalFile = ProposalFileBase | CommittedProposalFile | WithdrawnProposalFile;
+
+// ── Domain layer (file + status, runtime representation) ──────────
+
+/** Pending or committing proposal (no terminal fields). */
+export interface PendingProposal extends ProposalFileBase {
+  status: "pending" | "committing";
+}
+
+/** Committed proposal with required terminal fields. */
+export interface CommittedProposalDomain extends CommittedProposalFile {
+  status: "committed";
+}
+
+/** Withdrawn proposal with optional reason. */
+export interface WithdrawnProposalDomain extends WithdrawnProposalFile {
+  status: "withdrawn";
+}
+
+/** Discriminated union of all proposal domain states. */
+export type AnyProposal = PendingProposal | CommittedProposalDomain | WithdrawnProposalDomain;
+
+// ── DTO layer (enriched for API responses) ────────────────────────
+
+/** Pending proposal DTO — adds required human-involvement evaluation computed at read time. */
+export interface PendingProposalDTO extends PendingProposal {
+  humanInvolvement_evaluation: ProposalHumanInvolvementEvaluation;
+  sections: EvaluatedSection[];
+}
+
+/** Union of all proposal DTO variants for API responses. */
+export type ProposalDTO = PendingProposalDTO | CommittedProposalDomain | WithdrawnProposalDomain;
+
+// ── Backwards-compat aliases (to be removed once all callers migrate) ──
+
+/** @deprecated Use AnyProposalFile instead. */
+export type ProposalFile = ProposalFileBase & {
+  committed_head?: string;
+  humanInvolvement_at_commit?: Record<string, number>;
+  withdrawal_reason?: string;
+};
+
+/** @deprecated Use AnyProposal or ProposalDTO instead. */
+export interface Proposal {
+  id: ProposalId;
+  writer: WriterIdentity;
+  intent: string;
+  sections: ProposalSection[];
+  created_at: string;
   status: ProposalStatus;
+  committed_head?: string;
+  humanInvolvement_at_commit?: Record<string, number>;
+  withdrawal_reason?: string;
   humanInvolvement_evaluation?: ProposalHumanInvolvementEvaluation;
 }
+
+// ── Proposal sub-types ────────────────────────────────────────────
 
 export interface ProposalSection {
   doc_path: string;
   heading_path: string[];
   justification?: string;
-  humanInvolvement_score?: number;
-  blocked?: boolean;
 }
 
 export interface ProposalHumanInvolvementEvaluation {
@@ -146,14 +201,7 @@ export interface EvaluatedSection {
   blocked: boolean;
 
   justification?: string;
-  crdt_session_active?: boolean;
 }
-
-/** Alias: per-section verdict from SectionGuard evaluation. */
-export type SectionVerdict = EvaluatedSection;
-
-/** Alias: batch verdict from SectionGuard.evaluateBatch(). */
-export type BatchVerdict = ProposalHumanInvolvementEvaluation;
 
 // ─── Section State / Activity ──────────────────────────────────────
 
@@ -185,7 +233,7 @@ export interface HeatmapEntry {
 }
 
 export interface GetHeatmapResponse {
-  preset: HumanHumanInvolvementPresetName;
+  preset: HumanInvolvementPresetName;
   humanInvolvement_midpoint_seconds: number;
   humanInvolvement_steepness: number;
   sections: HeatmapEntry[];
@@ -303,7 +351,6 @@ export interface CreateProposalResponse {
   proposal_id: ProposalId;
   status: ProposalStatus;
   outcome: ProposalOutcome;
-  committed_head?: string;
   evaluation: ProposalHumanInvolvementEvaluation;
   sections: EvaluatedSection[];
 }
@@ -318,14 +365,24 @@ export interface UpdateProposalRequest {
   }>;
 }
 
-export interface CommitProposalResponse {
+export interface CommitProposalAccepted {
   proposal_id: ProposalId;
-  status: ProposalStatus;
-  outcome: ProposalOutcome;
-  committed_head?: string;
+  status: "committed";
+  outcome: "accepted";
+  committed_head: string;
   evaluation: ProposalHumanInvolvementEvaluation;
   sections: EvaluatedSection[];
 }
+
+export interface CommitProposalBlocked {
+  proposal_id: ProposalId;
+  status: "pending";
+  outcome: "blocked";
+  evaluation: ProposalHumanInvolvementEvaluation;
+  sections: EvaluatedSection[];
+}
+
+export type CommitProposalResponse = CommitProposalAccepted | CommitProposalBlocked;
 
 export interface WithdrawProposalResponse {
   proposal_id: ProposalId;
@@ -380,16 +437,22 @@ export interface GetAdminSnapshotHealthResponse {
   snapshot_stale: boolean;
 }
 
-export interface SnapshotRunRecord {
-  type: "server_start" | "snapshot";
+export interface ServerStartRecord {
+  type: "server_start";
   timestamp: number;
-  // snapshot-only
-  batch_doc_count?: number;
-  failed_doc_count?: number;
-  content_file_count?: number;
-  snapshot_file_count?: number;
+}
+
+export interface SnapshotRecord {
+  type: "snapshot";
+  timestamp: number;
+  batch_doc_count: number;
+  failed_doc_count: number;
+  content_file_count: number;
+  snapshot_file_count: number;
   error?: string;
 }
+
+export type SnapshotRunRecord = ServerStartRecord | SnapshotRecord;
 
 export interface GetAdminSnapshotHistoryResponse {
   snapshot_enabled: boolean;
@@ -408,6 +471,12 @@ export interface CreateDocumentResponse {
 // ─── Auth ──────────────────────────────────────────────────────────
 
 export type LoginProvider = "single_user" | "credentials" | "oidc" | "hybrid";
+
+export interface AuthMethod {
+  type: "single_user" | "credentials" | "oidc";
+  displayName: string;
+  authUrl?: string; // only present for "oidc"
+}
 
 export interface AuthUser {
   id: string;
@@ -508,6 +577,10 @@ export interface ProposalWithdrawnEvent {
   heading_paths: string[][];
 }
 
+export interface CatalogChangedEvent {
+  type: "catalog:changed";
+}
+
 export type WsServerEvent =
   | ContentCommittedEvent
   | DirtyChangedEvent
@@ -518,7 +591,8 @@ export type WsServerEvent =
   | SessionFlushedEvent
   | DocRenamedEvent
   | ProposalPendingEvent
-  | ProposalWithdrawnEvent;
+  | ProposalWithdrawnEvent
+  | CatalogChangedEvent;
 
 // ─── WebSocket Client Messages ─────────────────────────────────────
 
@@ -588,7 +662,19 @@ export interface AgentActivitySummary {
 export interface GetAgentsFullSummaryResponse {
   readonly agents: readonly AgentActivitySummary[];
   readonly posture: {
-    readonly preset: HumanHumanInvolvementPresetName;
+    readonly preset: HumanInvolvementPresetName;
     readonly description: string;
   };
+}
+
+// ─── Git Blame Attribution ────────────────────────────────────────
+
+export interface BlameLineAttribution {
+  line: number;
+  type: "human" | "agent" | "mixed";
+  author?: string;
+}
+
+export interface BlameResponse {
+  lines: BlameLineAttribution[];
 }

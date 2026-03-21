@@ -29,8 +29,10 @@ import {
 import { useDocumentCrdt } from "../hooks/useDocumentCrdt";
 import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
 import { useGovernanceData } from "../hooks/useGovernanceData";
+import { useBlameData } from "../hooks/useBlameData";
 import { GovernanceLeftGutter } from "../components/GovernanceLeftGutter";
 import { GovernanceRightGutter } from "../components/GovernanceRightGutter";
+import { AttributionOverlay } from "../components/AttributionOverlay";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
 import "../governance-gutters.css";
 
@@ -97,7 +99,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
         const ydoc = observer.doc;
         let changed = false;
         const updated = currentSections.map((section) => {
-          const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path);
+          const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path.length === 0);
           try {
             const md = fragmentToMarkdown(ydoc, fk);
             if (md !== section.content) {
@@ -216,7 +218,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
       crdtProvider: activeCrdtProvider,
       getSections: () => sectionsRef.current.map(s => ({
         heading_path: s.heading_path,
-        fragment_key: fragmentKeyFromSectionFile(s.section_file, s.heading_path),
+        fragment_key: fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0),
         blocked: !!(s as any).blocked,
       })),
       getPresenceIndicators: () => presenceIndicatorsRef.current.map(p => ({
@@ -236,7 +238,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     transferService: transferServiceRef.current,
     getFragmentKey: (idx) => {
       const s = sectionsRef.current[idx];
-      return s ? fragmentKeyFromSectionFile(s.section_file, s.heading_path) : null;
+      return s ? fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0) : null;
     },
     getHeadingPath: (idx) => {
       const s = sectionsRef.current[idx];
@@ -353,6 +355,11 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   // ── Governance data (left + right gutters) ─────────────────
   const { leftGutterSections, rightGutterGroups } = useGovernanceData(sections);
 
+  // ── Attribution overlay (blame) ──────────────────────────
+  const [showAttribution, setShowAttribution] = useState(false);
+  const sectionFiles = useMemo(() => sections.map((s) => s.section_file), [sections]);
+  const blameMap = useBlameData(decodedDocPath ?? "", sectionFiles, showAttribution && !sectionsLoading);
+
   // ── B3: Stable section callbacks (extracted from sections.map) ───
   const handleFocusSection = useCallback((idx: number, headingPath: string[], coords: { x: number; y: number }) => {
     setFocusedSectionIndex(idx);
@@ -375,7 +382,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   const handleCrossSectionDrop = useCallback((sec: DocumentSection, transfer: SectionTransfer) => {
     transfer.targetHeadingPath = sec.heading_path;
     const srcSection = sectionsRef.current.find(s =>
-      fragmentKeyFromSectionFile(s.section_file, s.heading_path) === transfer.sourceFragmentKey,
+      fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0) === transfer.sourceFragmentKey,
     );
     if (srcSection) transfer.sourceHeadingPath = srcSection.heading_path;
     void transferServiceRef.current?.execute(transfer);
@@ -427,8 +434,18 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
             <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight mb-1 tracking-tight">
               {docTitle}
             </h1>
-            <div className="text-xs text-text-muted mb-7 pb-5 border-b border-[#eae7e2]">
-              {decodedDocPath ?? ""}
+            <div className="text-xs text-text-muted mb-7 pb-5 border-b border-[#eae7e2] flex items-center justify-between gap-4">
+              <span>{decodedDocPath ?? ""}</span>
+              <button
+                onClick={() => setShowAttribution((v) => !v)}
+                className={`shrink-0 text-[10px] font-medium px-2 py-0.5 rounded border transition-colors ${
+                  showAttribution
+                    ? "bg-agent-light text-agent-text border-agent-text/30"
+                    : "bg-transparent text-text-muted border-[#ddd] hover:border-[#bbb]"
+                }`}
+              >
+                {showAttribution ? "Hide authorship" : "Show authorship"}
+              </button>
             </div>
 
             {/* Agent reading indicators */}
@@ -468,36 +485,64 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
 
             {!sectionsLoading ? sections.map((section, i) => {
               const sectionKey = sectionHeadingKey(section.heading_path);
-              const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path);
+              const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path.length === 0);
               const sectionLabel = headingPathToLabel(section.heading_path);
 
+              const blameEntry = showAttribution ? blameMap.get(section.section_file) : undefined;
+              const attributionReady = showAttribution && blameEntry && !blameEntry.loading;
+
+              if (attributionReady) {
+                // Attribution mode: render colored source lines INSTEAD OF the section renderer
+                return (
+                  <div key={fk}>
+                    {section.heading_path.length > 0 ? (
+                      <h2 className="font-[family-name:var(--font-body)] text-lg font-semibold text-text-primary mt-6 mb-2">
+                        {section.heading_path[section.heading_path.length - 1]}
+                      </h2>
+                    ) : null}
+                    <AttributionOverlay
+                      lines={blameEntry.lines}
+                      loading={false}
+                      content={section.content}
+                      error={blameEntry.error}
+                    />
+                  </div>
+                );
+              }
+
               return (
-                <DocumentSectionRenderer
-                  key={fk}
-                  section={section}
-                  index={i}
-                  fragmentKey={fk}
-                  isFocused={focusedSectionIndex === i}
-                  hasEditor={shouldMountEditor(i, focusedSectionIndex)}
-                  isRestructuring={restructuringKeys.has(fk)}
-                  isInProposal={!!(proposalMode && proposalSectionsRef.current.has(`${decodedDocPath}::${sectionKey}`))}
-                  isLockedByOtherHuman={!!(section as any).blocked}
-                  highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
-                  humanInvolvementScore={section.humanInvolvement_score ?? 0}
-                  dragOverSectionIndex={dragOverSectionIndex}
-                  crdtProvider={crdtProvider}
-                  crdtError={crdtError}
-                  proposalMode={proposalMode}
-                  isReady={readyEditors.has(i)}
-                  mouseDownPosRef={mouseDownPosRef}
-                  onStartEditing={startEditing}
-                  onFocusSection={handleFocusSection}
-                  onSetEditorRef={setEditorRef}
-                  onEditorReady={handleEditorReady}
-                  onProposalSectionChange={proposalMode ? handleProposalSectionChange : undefined}
-                  onCursorExit={handleCursorExit}
-                  onCrossSectionDrop={handleCrossSectionDrop}
-                />
+                <div key={fk}>
+                  {showAttribution && blameEntry?.loading ? (
+                    <AttributionOverlay lines={null} loading={true} content="" />
+                  ) : null}
+                  {!showAttribution ? (
+                    <DocumentSectionRenderer
+                      section={section}
+                      index={i}
+                      fragmentKey={fk}
+                      isFocused={focusedSectionIndex === i}
+                      hasEditor={shouldMountEditor(i, focusedSectionIndex)}
+                      isRestructuring={restructuringKeys.has(fk)}
+                      isInProposal={!!(proposalMode && proposalSectionsRef.current.has(`${decodedDocPath}::${sectionKey}`))}
+                      isLockedByOtherHuman={!!(section as any).blocked}
+                      highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
+                      humanInvolvementScore={section.humanInvolvement_score ?? 0}
+                      dragOverSectionIndex={dragOverSectionIndex}
+                      crdtProvider={crdtProvider}
+                      crdtError={crdtError}
+                      proposalMode={proposalMode}
+                      isReady={readyEditors.has(i)}
+                      mouseDownPosRef={mouseDownPosRef}
+                      onStartEditing={startEditing}
+                      onFocusSection={handleFocusSection}
+                      onSetEditorRef={setEditorRef}
+                      onEditorReady={handleEditorReady}
+                      onProposalSectionChange={proposalMode ? handleProposalSectionChange : undefined}
+                      onCursorExit={handleCursorExit}
+                      onCrossSectionDrop={handleCrossSectionDrop}
+                    />
+                  ) : null}
+                </div>
               );
             }) : null}
 

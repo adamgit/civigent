@@ -41,6 +41,8 @@ KS_OIDC_CLIENT_ID=civigent
 KS_OIDC_CLIENT_SECRET=<your-oidc-secret>
 ```
 
+Any provider with a standard OIDC discovery document works: Google Workspace, Microsoft Entra ID, Keycloak, Authentik, Okta, Auth0, and others. See [SSO Setup](sso-setup.md) for step-by-step instructions per provider.
+
 Each human gets a deterministic UUID derived from their OIDC subject identifier. The same person always gets the same UUID regardless of which machine they use.
 
 ### Human session tokens
@@ -195,10 +197,10 @@ Existing access tokens remain valid until they expire (30 minutes). For immediat
 
 ## Token lifetime
 
-| Token | Default | Env var |
-|-------|---------|---------|
-| Access token | 30 minutes | `KS_AUTH_ACCESS_TTL_SECONDS` |
-| Refresh token | 30 days | `KS_AUTH_REFRESH_TTL_SECONDS` |
+| Token | Default |
+|-------|---------|
+| Access token | 30 minutes |
+| Refresh token | 30 days |
 
 Both humans and agents use the same token lifetime settings. Agents refresh automatically via `refresh_token` grant.
 
@@ -208,20 +210,19 @@ Both humans and agents use the same token lifetime settings. Agents refresh auto
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `KS_AUTH_MODE` | Set to `single_user` to bypass human login | (multi-user) |
+| `KS_AUTH_MODE` | Auth mode: `single_user`, `oidc`, or `hybrid` (required) | (none — required) |
 | `KS_AUTH_SECRET` | JWT signing secret — required in multi-user mode | (insecure dev default) |
 | `KS_OIDC_ISSUER` | OIDC provider URL for human login | (none — required in multi-user) |
 | `KS_OIDC_CLIENT_ID` | OIDC client ID | (none) |
 | `KS_OIDC_CLIENT_SECRET` | OIDC client secret | (none) |
 | `KS_AGENT_AUTH_POLICY` | Agent auth policy: `open`, `register`, or `verify` | `open` (localhost) / `register` (public) |
 | `KS_AGENT_ANON_SALT` | HMAC key for anonymous agent tokens — change to revoke all | (auto-generated, logged) |
-| `KS_AUTH_ACCESS_TTL_SECONDS` | Access token lifetime | `1800` |
-| `KS_AUTH_REFRESH_TTL_SECONDS` | Refresh token lifetime | `2592000` |
 
 ---
 
 ## What's next
 
+- [SSO Setup](sso-setup.md) — step-by-step OIDC configuration for Google, Entra ID, Keycloak, and others
 - [Agent Management](agent-management.md) — connecting agents, MCP tiers, and agent workflow
 - [Deployment Guide](deployment.md) — full env var reference and deployment scenarios
 - [Configuration Reference](configuration.md) — human-involvement presets and admin settings

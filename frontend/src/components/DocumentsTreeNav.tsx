@@ -421,9 +421,7 @@ export function DocumentsTreeNav({
                   <div className="text-gray-500">
                     {section.heading_path.join(" > ")}
                     {" — "}
-                    {section.crdt_session_active
-                      ? "Being edited live"
-                      : `Reserved (human involvement: ${(section.humanInvolvement_score * 100).toFixed(0)}%)`}
+                    {`Reserved (human involvement: ${(section.humanInvolvement_score * 100).toFixed(0)}%)`}
                   </div>
                   {section.justification ? (
                     <div className="text-gray-400 italic">{section.justification}</div>

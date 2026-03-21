@@ -3,6 +3,7 @@ import { getContentRoot } from "./data-root.js";
 import { resolveDocPathUnderContent, InvalidDocPathError } from "./path-utils.js";
 import type { DocStructureNode } from "../types/shared.js";
 import { DocumentSkeleton } from "./document-skeleton.js";
+import { ContentLayer } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
 
 export class HeadingNotFoundError extends Error {}
@@ -175,7 +176,8 @@ export async function readDocumentStructureWithOverlay(
   docPath: string,
   overlayRoot: string,
 ): Promise<DocStructureNode[]> {
-  const contentRoot = getContentRoot();
-  const skeleton = await DocumentSkeleton.fromDisk(docPath, overlayRoot, contentRoot);
+  const canonical = new ContentLayer(getContentRoot());
+  const overlay = new ContentLayer(overlayRoot, canonical);
+  const skeleton = await overlay.readSkeleton(docPath);
   return skeleton.structure;
 }

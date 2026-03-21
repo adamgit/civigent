@@ -19,8 +19,18 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FragmentStore } from "../../crdt/fragment-store.js";
+import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { gitExec } from "../../storage/git-repo.js";
+import type { DocumentSkeleton, FlatEntry } from "../../storage/document-skeleton.js";
+
+function collectFlat(skeleton: DocumentSkeleton): FlatEntry[] {
+  const entries: FlatEntry[] = [];
+  skeleton.forEachNode((heading, level, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
+    entries.push({ heading, level, sectionFile, headingPath: [...headingPath], absolutePath, isSubSkeleton });
+  });
+  return entries;
+}
 
 const DOC_PATH = "in-development/civigent.md";
 
@@ -61,7 +71,7 @@ describe("ROOT_FRAGMENT_KEY collision", () => {
     let bgKey: string | null = null;
     fragments.skeleton.forEachSection((heading, _level, sectionFile) => {
       if (heading === "Background") {
-        bgKey = FragmentStore.fragmentKeyForFileId(sectionFile, false);
+        bgKey = fragmentKeyFromSectionFile(sectionFile, false);
       }
     });
     expect(bgKey).toBeTruthy();
@@ -102,7 +112,7 @@ describe("ROOT_FRAGMENT_KEY collision", () => {
     expect(result.changed).toBe(true);
 
     // INVARIANT: exactly one Background entry at level 1 in the skeleton
-    const flat = fragments.skeleton.flat;
+    const flat = collectFlat(fragments.skeleton);
     const bgEntries = flat.filter(e => e.heading === "Background" && e.level === 1);
     expect(bgEntries).toHaveLength(1);
 

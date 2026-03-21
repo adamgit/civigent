@@ -50,24 +50,7 @@ describe("LoginPage methods", () => {
     });
   });
 
-  it("shows credentials form when credentials method available", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
-      if (String(url).includes("/api/auth/methods")) {
-        return jsonResponse({ methods: ["credentials"] });
-      }
-      return jsonResponse({});
-    });
-
-    renderLogin();
-    await waitFor(() => {
-      expect(screen.getByRole("heading", { name: /Credentials/ })).toBeDefined();
-    });
-    expect(screen.getByText("Email")).toBeDefined();
-    expect(screen.getByText("Password")).toBeDefined();
-    expect(screen.getByText("Sign in")).toBeDefined();
-  });
-
-  it("shows OIDC form when oidc method available", async () => {
+  it("shows OIDC button when oidc method available", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
       if (String(url).includes("/api/auth/methods")) {
         return jsonResponse({ methods: ["oidc"] });
@@ -84,23 +67,18 @@ describe("LoginPage methods", () => {
     expect(screen.getByText("Sign in with OIDC")).toBeDefined();
   });
 
-  it("only renders forms for available methods", async () => {
+  it("only renders buttons for available methods", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
       if (String(url).includes("/api/auth/methods")) {
-        return jsonResponse({ methods: ["credentials"] });
+        return jsonResponse({ methods: [{ type: "oidc", displayName: "SSO", authUrl: "/api/auth/oidc/authorize" }] });
       }
       return jsonResponse({});
     });
 
     renderLogin();
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: /Credentials/ })).toBeDefined();
+      expect(screen.getByText("SSO")).toBeDefined();
     });
-
-    // single_user button should NOT be present (not in methods list, and methods.length > 0)
-    expect(screen.queryByText("Use single-user session")).toBeNull();
-    // OIDC form should NOT be present
-    expect(screen.queryByRole("heading", { name: /OIDC/ })).toBeNull();
   });
 
   it("shows current writer ID", async () => {

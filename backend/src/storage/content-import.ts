@@ -1,17 +1,6 @@
 import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { DocumentSkeleton } from "./document-skeleton.js";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import { ContentLayer } from "./content-layer.js";
-import { SectionRef } from "../domain/section-ref.js";
-
-const HEADING_RE = /^(#{1,6})\s+(.+)$/;
-
-export interface ParsedImportSection {
-  heading: string;
-  depth: number;
-  body: string;
-}
 
 export interface ContentImportSummary {
   imported: number;
@@ -22,63 +11,6 @@ export interface ContentImportSummary {
 
 function normalizeRelPath(relPath: string): string {
   return relPath.replace(/\\/g, "/").replace(/^\/+/, "");
-}
-
-export function parseImportDocument(_docPath: string, markdown: string): { sections: ParsedImportSection[] } {
-  const normalized = markdown.replace(/\r\n/g, "\n");
-  const lines = normalized.split("\n");
-
-  const sections: Array<{ heading: string; depth: number; bodyLines: string[]; level: number; parentPath: string[] }> = [];
-  const stack: Array<{ heading: string; level: number; path: string[] }> = [];
-  let current: { heading: string; depth: number; bodyLines: string[]; level: number; parentPath: string[] } | null = null;
-  const seenByParent = new Map<string, Set<string>>();
-
-  for (const line of lines) {
-    const headingMatch = HEADING_RE.exec(line.trim());
-    if (headingMatch) {
-      const rawLevel = headingMatch[1].length;
-      const heading = headingMatch[2].trim();
-
-      const level = rawLevel;
-      while (stack.length > 0 && stack[stack.length - 1].level >= level) {
-        stack.pop();
-      }
-      const parentPath = stack.length > 0 ? stack[stack.length - 1].path : [];
-      const parentKey = parentPath.map((part) => part.toLowerCase()).join("\u001f");
-      const seenSet = seenByParent.get(parentKey) ?? new Set<string>();
-      const normalizedHeading = heading.toLowerCase();
-      if (seenSet.has(normalizedHeading)) {
-        throw new Error(`Duplicate heading "${heading}" under parent "${parentPath.join(" > ")}".`);
-      }
-      seenSet.add(normalizedHeading);
-      seenByParent.set(parentKey, seenSet);
-
-      const node = {
-        heading,
-        depth: level,
-        bodyLines: [] as string[],
-        level,
-        parentPath,
-      };
-      sections.push(node);
-      const nodePath = [...parentPath, heading];
-      stack.push({ heading, level, path: nodePath });
-      current = node;
-      continue;
-    }
-
-    if (current) {
-      current.bodyLines.push(line);
-    }
-  }
-
-  return {
-    sections: sections.map((section) => ({
-      heading: section.heading,
-      depth: section.depth,
-      body: section.bodyLines.join("\n").replace(/\s+$/g, ""),
-    })),
-  };
 }
 
 async function readImportIgnorePatterns(sourceRoot: string): Promise<string[]> {
@@ -149,60 +81,6 @@ async function isDirectoryEmpty(targetDir: string): Promise<boolean> {
   return entries.length === 0;
 }
 
-async function importOneFile(
-  sourceRoot: string,
-  contentRoot: string,
-  relPath: string,
-): Promise<void> {
-  const sourcePath = path.join(sourceRoot, relPath);
-  const markdown = await readFile(sourcePath, "utf8");
-  const parsed = parseImportDocument(relPath, markdown);
-  const destinationPath = path.join(contentRoot, relPath);
-  const destinationSectionsPath = `${destinationPath}.sections`;
-  const stagingRoot = path.join(contentRoot, ".import-tmp", randomUUID());
-  const stagedDocPath = path.join(stagingRoot, relPath);
-  const stagedSectionsPath = `${stagedDocPath}.sections`;
-
-  await mkdir(path.dirname(stagedDocPath), { recursive: true });
-
-  // Create skeleton via DocumentSkeleton
-  const skeleton = DocumentSkeleton.createEmpty(relPath, stagingRoot);
-
-  const stagingLayer = new ContentLayer(stagingRoot);
-
-  if (parsed.sections.length === 0) {
-    // No headings — root-only skeleton, write root body
-    await skeleton.persist();
-    await stagingLayer.writeSection(new SectionRef(relPath, []), markdown);
-  } else {
-    // Add headed sections (correctly nests by level via addSectionsFromRootSplit)
-    const added = skeleton.addSectionsFromRootSplit(
-      parsed.sections.map(s => ({ heading: s.heading, level: s.depth, body: s.body })),
-    );
-    await skeleton.persist();
-
-    // Write body files for each added section through ContentLayer
-    for (const entry of added) {
-      if (entry.isSubSkeleton) continue;
-      const section = parsed.sections.find(s => s.heading === entry.heading);
-      if (!section) continue;
-      await stagingLayer.writeSection(new SectionRef(relPath, entry.headingPath), section.body);
-    }
-
-    // Also write root body (content before first heading, if any)
-    await stagingLayer.writeSection(new SectionRef(relPath, []), "");
-  }
-
-  await mkdir(path.dirname(destinationPath), { recursive: true });
-  await rm(destinationPath, { force: true });
-  await rm(destinationSectionsPath, { recursive: true, force: true });
-
-  await rename(stagedDocPath, destinationPath);
-  await rename(stagedSectionsPath, destinationSectionsPath);
-
-  await rm(stagingRoot, { recursive: true, force: true });
-}
-
 export async function importContent(sourceRoot: string, contentRoot: string): Promise<ContentImportSummary> {
   const summary: ContentImportSummary = { imported: 0, failed: 0, skipped: 0, errors: [] };
 
@@ -219,11 +97,14 @@ export async function importContent(sourceRoot: string, contentRoot: string): Pr
     }
   }
 
+  const contentLayer = new ContentLayer(contentRoot);
   const ignorePatterns = await readImportIgnorePatterns(sourceRoot);
   const markdownFiles = await collectImportMarkdownFiles(sourceRoot, ignorePatterns);
   for (const relPath of markdownFiles) {
     try {
-      await importOneFile(sourceRoot, contentRoot, relPath);
+      const sourcePath = path.join(sourceRoot, relPath);
+      const markdown = await readFile(sourcePath, "utf8");
+      await contentLayer.writeAssembledDocument(relPath, markdown);
       summary.imported += 1;
     } catch (error) {
       summary.failed += 1;

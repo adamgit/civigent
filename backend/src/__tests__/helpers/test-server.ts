@@ -1,6 +1,7 @@
 import { createApp } from "../../app.js";
 import { createTempDataRoot, type TempDataRootContext } from "./temp-data-root.js";
 import { authFor } from "./auth.js";
+import { setSystemReady } from "../../startup-state.js";
 import type { WsServerEvent } from "../../types/shared.js";
 import type { Express } from "express";
 
@@ -23,6 +24,9 @@ export interface TestServerContext {
 export async function createTestServer(): Promise<TestServerContext> {
   const dataCtx = await createTempDataRoot();
   const wsEvents: WsServerEvent[] = [];
+
+  // Mark system as ready for tests (no crash recovery phase)
+  setSystemReady();
 
   const app = createApp({
     onWsEvent: (event) => wsEvents.push(event),

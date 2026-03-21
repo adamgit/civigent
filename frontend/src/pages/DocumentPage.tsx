@@ -119,7 +119,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         const ydoc = observer.doc;
         let changed = false;
         const updated = currentSections.map((section) => {
-          const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path);
+          const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path.length === 0);
           try {
             const md = fragmentToMarkdown(ydoc, fk);
             if (md !== section.content) {
@@ -249,7 +249,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
       crdtProvider: activeCrdtProvider,
       getSections: () => sectionsRef.current.map(s => ({
         heading_path: s.heading_path,
-        fragment_key: fragmentKeyFromSectionFile(s.section_file, s.heading_path),
+        fragment_key: fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0),
         blocked: !!(s as any).blocked,
       })),
       getPresenceIndicators: () => presenceIndicatorsRef.current.map(p => ({
@@ -269,7 +269,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     transferService: transferServiceRef.current,
     getFragmentKey: (idx) => {
       const s = sectionsRef.current[idx];
-      return s ? fragmentKeyFromSectionFile(s.section_file, s.heading_path) : null;
+      return s ? fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0) : null;
     },
     getHeadingPath: (idx) => {
       const s = sectionsRef.current[idx];
@@ -407,7 +407,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const handleCrossSectionDrop = useCallback((sec: DocumentSection, transfer: SectionTransfer) => {
     transfer.targetHeadingPath = sec.heading_path;
     const srcSection = sectionsRef.current.find(s =>
-      fragmentKeyFromSectionFile(s.section_file, s.heading_path) === transfer.sourceFragmentKey,
+      fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0) === transfer.sourceFragmentKey,
     );
     if (srcSection) transfer.sourceHeadingPath = srcSection.heading_path;
     void transferServiceRef.current?.execute(transfer);
@@ -551,7 +551,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
           {!sectionsLoading ? sections.map((section, i) => {
             const sectionKey = sectionHeadingKey(section.heading_path);
-            const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path);
+            const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path.length === 0);
             const sectionLabel = headingPathToLabel(section.heading_path);
 
             return (

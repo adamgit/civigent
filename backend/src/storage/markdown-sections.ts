@@ -151,9 +151,9 @@ export async function applyDocumentMarkdownToDraft(
 
   // Load canonical skeleton via DocumentSkeleton
   const canonicalSkeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
-  const canonicalFlat: Array<{ headingPath: string[]; heading: string; level: number; sectionFile: string; absolutePath: string; isSubSkeleton: boolean }> = [];
-  canonicalSkeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
-    if (!isSubSkeleton) canonicalFlat.push({ headingPath: [...headingPath], heading, level, sectionFile, absolutePath, isSubSkeleton });
+  const canonicalFlat: FlatEntry[] = [];
+  canonicalSkeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
+    canonicalFlat.push({ headingPath: [...headingPath], heading, level, sectionFile, absolutePath, isSubSkeleton: false });
   });
 
   // Build the draft skeleton path

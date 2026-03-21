@@ -9,11 +9,19 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ContentLayer, MultiSectionContentError } from "../../storage/content-layer.js";
-import { DocumentSkeleton, serializeSkeletonEntries } from "../../storage/document-skeleton.js";
+import { DocumentSkeleton, serializeSkeletonEntries, type FlatEntry } from "../../storage/document-skeleton.js";
 import { parseDocumentMarkdown } from "../../storage/markdown-sections.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { gitExec } from "../../storage/git-repo.js";
 import { SectionRef } from "../../domain/section-ref.js";
+
+function collectFlat(skeleton: DocumentSkeleton): FlatEntry[] {
+  const entries: FlatEntry[] = [];
+  skeleton.forEachNode((heading, level, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
+    entries.push({ heading, level, sectionFile, headingPath: [...headingPath], absolutePath, isSubSkeleton });
+  });
+  return entries;
+}
 
 // ─── Helper: create a standard doc with root + 2 headed sections ─
 
@@ -110,7 +118,8 @@ describe("BUG1 FIXED: writeSection rejects multi-heading; writeAssembledDocument
 
     // Skeleton should now reflect the new structure
     const skeleton = await DocumentSkeleton.fromDisk(docPath, ctx.contentDir, ctx.contentDir);
-    const headings = skeleton.flat.map(e => e.heading);
+    const flat = collectFlat(skeleton);
+    const headings = flat.map(e => e.heading);
     expect(headings).toContain("Alpha");
     expect(headings).toContain("Beta");
     expect(headings).toContain("Gamma");
@@ -118,7 +127,7 @@ describe("BUG1 FIXED: writeSection rejects multi-heading; writeAssembledDocument
     expect(headings).not.toContain("Timeline");
 
     // Root body should only contain preamble, not embedded headings
-    const rootEntry = skeleton.flat.find(e => e.level === 0 && e.heading === "");
+    const rootEntry = flat.find(e => e.level === 0 && e.heading === "");
     const rootBody = await readFile(rootEntry!.absolutePath, "utf8");
     expect(rootBody.trim()).toBe("New preamble.");
     expect(rootBody).not.toContain("## Alpha");
@@ -214,7 +223,7 @@ describe("BUG2: Restore path copies historical files verbatim without normalizat
     // createRestoreProposal would write this directly to the overlay — no normalization
     // The skeleton would NOT be updated to reflect the embedded heading structure
     const skeleton = await DocumentSkeleton.fromDisk(docPath, ctx.contentDir, ctx.contentDir);
-    const headings = skeleton.flat.map(e => e.heading);
+    const headings = collectFlat(skeleton).map(e => e.heading);
     // Skeleton still has old structure, not the structure from the embedded headings
     expect(headings).not.toContain("Main Title");
     expect(headings).not.toContain("SubSection");

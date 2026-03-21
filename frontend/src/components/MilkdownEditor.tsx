@@ -260,7 +260,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
         [CrepeFeature.Latex]: false,
         [CrepeFeature.Placeholder]: true,
         [CrepeFeature.Toolbar]: true,
-        [CrepeFeature.ListItem]: true,
+        [CrepeFeature.ListItem]: false,
         [CrepeFeature.LinkTooltip]: true,
         [CrepeFeature.BlockEdit]: true,
         [CrepeFeature.Cursor]: true,

@@ -1,10 +1,18 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DocumentSkeleton } from "../../storage/document-skeleton.js";
+import { DocumentSkeleton, type FlatEntry } from "../../storage/document-skeleton.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { gitExec } from "../../storage/git-repo.js";
+
+function collectFlat(skeleton: DocumentSkeleton): FlatEntry[] {
+  const entries: FlatEntry[] = [];
+  skeleton.forEachNode((heading, level, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
+    entries.push({ heading, level, sectionFile, headingPath: [...headingPath], absolutePath, isSubSkeleton });
+  });
+  return entries;
+}
 
 describe("DocumentSkeleton", () => {
   let ctx: TempDataRootContext;
@@ -26,7 +34,7 @@ describe("DocumentSkeleton", () => {
     );
     expect(skeleton.docPath).toBe(SAMPLE_DOC_PATH);
 
-    const flat = skeleton.flat;
+    const flat = collectFlat(skeleton);
     expect(flat.length).toBeGreaterThanOrEqual(3);
 
     // Should contain root, Overview, and Timeline entries
@@ -35,13 +43,13 @@ describe("DocumentSkeleton", () => {
     expect(headings).toContain("Timeline");
   });
 
-  it("skeleton.flat returns all leaf entries in document order", async () => {
+  it("forEachSection returns all entries in document order", async () => {
     const skeleton = await DocumentSkeleton.fromDisk(
       SAMPLE_DOC_PATH,
       ctx.contentDir,
       ctx.contentDir,
     );
-    const flat = skeleton.flat;
+    const flat = collectFlat(skeleton);
 
     // Sample doc has root + Overview + Timeline = 3 entries
     expect(flat).toHaveLength(3);
@@ -57,7 +65,7 @@ describe("DocumentSkeleton", () => {
     expect(skeleton.docPath).toBe("new-doc.md");
     expect(skeleton.dirty).toBe(true);
 
-    const flat = skeleton.flat;
+    const flat = collectFlat(skeleton);
     expect(flat).toHaveLength(1);
     expect(flat[0].heading).toBe("");
     expect(flat[0].level).toBe(0);
@@ -73,7 +81,7 @@ describe("DocumentSkeleton", () => {
       ctx.contentDir,
       ctx.contentDir,
     );
-    const flat = reloaded.flat;
+    const flat = collectFlat(reloaded);
     expect(flat).toHaveLength(1);
     expect(flat[0].heading).toBe("");
     expect(flat[0].level).toBe(0);
@@ -196,8 +204,8 @@ describe("DocumentSkeleton.resolve() — nested document (sub-skeletons)", () =>
 
   afterAll(async () => { await ctx.cleanup(); });
 
-  it("flat view includes all 6 entries (root, intro, details-subskel, details-root, sub_a, sub_b)", () => {
-    const flat = skeleton.flat;
+  it("forEachSection includes all 6 entries (root, intro, details-subskel, details-root, sub_a, sub_b)", () => {
+    const flat = collectFlat(skeleton);
     expect(flat).toHaveLength(6);
     const headings = flat.map(e => e.heading);
     expect(headings).toEqual(["", "Introduction", "Details", "", "Sub-Detail A", "Sub-Detail B"]);
@@ -396,5 +404,50 @@ describe("DocumentSkeleton.resolveByFileId('__root__') — root with children", 
     expect(entry.isSubSkeleton).toBe(false);
     expect(entry.absolutePath).toContain("_body.md");
     expect(entry.sectionFile).toBe("_body.md");
+  });
+});
+
+describe("DocumentSkeleton.fromNodes", () => {
+  let ctx: TempDataRootContext;
+
+  beforeAll(async () => {
+    ctx = await createTempDataRoot();
+    await createSampleDocument(ctx.rootDir);
+  });
+
+  afterAll(async () => {
+    await ctx.cleanup();
+  });
+
+  it("produces a usable skeleton identical to one built by fromDisk", async () => {
+    const diskSkeleton = await DocumentSkeleton.fromDisk(
+      SAMPLE_DOC_PATH,
+      ctx.contentDir,
+      ctx.contentDir,
+    );
+    const diskEntries = collectFlat(diskSkeleton);
+
+    // Build the same node tree manually
+    const nodes = diskEntries
+      .filter(e => !e.isSubSkeleton)
+      .map(e => ({
+        heading: e.heading,
+        level: e.level,
+        sectionFile: e.sectionFile,
+        children: [] as import("../../storage/document-skeleton.js").SkeletonNode[],
+      }));
+
+    const nodeSkeleton = DocumentSkeleton.fromNodes(SAMPLE_DOC_PATH, nodes, ctx.contentDir);
+    const nodeEntries = collectFlat(nodeSkeleton);
+
+    expect(nodeEntries.length).toBe(diskEntries.length);
+    for (let i = 0; i < diskEntries.length; i++) {
+      expect(nodeEntries[i].heading).toBe(diskEntries[i].heading);
+      expect(nodeEntries[i].level).toBe(diskEntries[i].level);
+      expect(nodeEntries[i].sectionFile).toBe(diskEntries[i].sectionFile);
+    }
+
+    // structure() should also match
+    expect(nodeSkeleton.structure.length).toBe(diskSkeleton.structure.length);
   });
 });

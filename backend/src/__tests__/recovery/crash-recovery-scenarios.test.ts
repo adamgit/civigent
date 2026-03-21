@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
-import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
+import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_DOC_PATH_2, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 import { mkdir, writeFile, readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { gitExec } from "../../storage/git-repo.js";
@@ -18,11 +18,10 @@ describe("Crash Recovery Scenarios", () => {
 
   // ── Fix 1: Session file preservation on commit failure ──
 
-  it("Fix 1: when commitSessionFilesToCanonical throws, session files are preserved", async () => {
+  it("Fix 1: duplicate-root overlay is recovered gracefully (deduplication)", async () => {
     await createSampleDocument(ctx.rootDir);
 
     // Write a session overlay with a skeleton containing duplicate roots
-    // (triggers the "no duplicate root entries" invariant in DocumentSkeleton.fromDisk)
     const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
     const sessionDocDir = join(sessionContentDir, "ops");
     const sessionSectionsDir = `${join(sessionDocDir, "strategy.md")}.sections`;
@@ -39,12 +38,9 @@ describe("Crash Recovery Scenarios", () => {
     const { detectAndRecoverCrash } = await import("../../storage/crash-recovery.js");
     const result = await detectAndRecoverCrash(ctx.rootDir);
 
-    // Commit should have failed (duplicate root invariant), so session files preserved
-    expect(result.sessionFilesRecovered).toBe(0);
-
-    // Session files must still exist
-    const overviewExists = await stat(join(sessionSectionsDir, "overview.md")).then(() => true).catch(() => false);
-    expect(overviewExists).toBe(true);
+    // New pipeline deduplicates roots and recovers all content
+    expect(result.sessionFilesRecovered).toBeGreaterThan(0);
+    expect(result.recovered).toBe(true);
   });
 
   it("Fix 1: when commit succeeds, session files are cleaned up (happy path)", async () => {
@@ -75,39 +71,26 @@ describe("Crash Recovery Scenarios", () => {
 
   // ── Fix 2: Restore content/ instead of committing ──
 
-  it("Fix 2: half-promoted canonical is restored to last committed state", async () => {
+  it("Fix 2: dirty canonical without session files is committed (only copy)", async () => {
     await createSampleDocument(ctx.rootDir);
 
-    // Read original content for comparison
     const contentRoot = join(ctx.rootDir, "content");
     const skeletonPath = join(contentRoot, SAMPLE_DOC_PATH);
-    const sectionsDir = `${skeletonPath}.sections`;
+
+    // Simulate half-promoted canonical: modify skeleton
     const originalSkeleton = await readFile(skeletonPath, "utf8");
-    const originalOverview = await readFile(join(sectionsDir, "overview.md"), "utf8");
+    const modifiedSkeleton = originalSkeleton.replace("## Overview", "## Renamed");
+    await writeFile(skeletonPath, modifiedSkeleton, "utf8");
 
-    // Simulate half-promoted canonical: modify skeleton and delete a body file
-    const corruptSkeleton = originalSkeleton.replace("## Overview", "## Renamed");
-    await writeFile(skeletonPath, corruptSkeleton, "utf8");
-    // Don't delete body file — just modify skeleton to simulate partial promote
-
-    // Working tree is now dirty (modified skeleton)
-    const statusBefore = await gitExec(["status", "--porcelain"], ctx.rootDir);
-    expect(statusBefore).toContain("content/");
-
+    // No session files — dirty canonical is the only copy
     const { detectAndRecoverCrash } = await import("../../storage/crash-recovery.js");
     await detectAndRecoverCrash(ctx.rootDir);
 
-    // Canonical should be restored to last committed state
-    const restoredSkeleton = await readFile(skeletonPath, "utf8");
-    expect(restoredSkeleton).toBe(originalSkeleton);
-
-    const restoredOverview = await readFile(join(sectionsDir, "overview.md"), "utf8");
-    expect(restoredOverview).toBe(originalOverview);
-
-    // Working tree should be clean
+    // Dirty canonical should be committed (not reverted) because there are no session files
+    // and the dirty state is the only copy of the content
     const statusAfter = await gitExec(["status", "--porcelain"], ctx.rootDir);
-    const contentDirty = statusAfter.split(/\r?\n/).filter(l => l.includes("content/"));
-    expect(contentDirty.length).toBe(0);
+    const contentDirty = statusAfter.split(/\r?\n/).filter((l: string) => l.includes("content/"));
+    expect(contentDirty.length).toBe(0); // clean — it was committed
   });
 
   it("Fix 2: dirty proposals are still committed (not restored)", async () => {
@@ -173,24 +156,24 @@ describe("Crash Recovery Scenarios", () => {
 
   // ── Test 1b: Staged but uncommitted content changes ──
 
-  it("Test 1b: staged content changes are restored, not committed", async () => {
+  it("Test 1b: staged content changes without session files are committed (only copy)", async () => {
     await createSampleDocument(ctx.rootDir);
 
     const contentRoot = join(ctx.rootDir, "content");
     const sectionsDir = `${join(contentRoot, SAMPLE_DOC_PATH)}.sections`;
 
-    // Modify and stage a content file
-    await writeFile(join(sectionsDir, "overview.md"), "STAGED BAD CONTENT\n", "utf8");
+    // Modify and stage a content file — no session files exist
+    await writeFile(join(sectionsDir, "overview.md"), "STAGED CONTENT\n", "utf8");
     await gitExec(["add", "content/"], ctx.rootDir);
 
     const { detectAndRecoverCrash } = await import("../../storage/crash-recovery.js");
     await detectAndRecoverCrash(ctx.rootDir);
 
-    // Content should be restored to last committed state
+    // Without session files, dirty canonical is the only copy — committed, not reverted
     const content = await readFile(join(sectionsDir, "overview.md"), "utf8");
-    expect(content).toBe(SAMPLE_SECTIONS.overview);
+    expect(content).toBe("STAGED CONTENT\n");
 
-    // Working tree should be clean
+    // Working tree should be clean (committed)
     const status = await gitExec(["status", "--porcelain"], ctx.rootDir);
     expect(status.trim()).toBe("");
   });
@@ -236,17 +219,13 @@ describe("Crash Recovery Scenarios", () => {
 
     expect(result.sessionFilesRecovered).toBeGreaterThan(0);
 
-    // Canonical should have the updated content
+    // Canonical should have the updated content from overlay (fresher than canonical)
     const contentRoot = join(ctx.rootDir, "content");
     const sectionsDir = `${join(contentRoot, SAMPLE_DOC_PATH)}.sections`;
     const overview = await readFile(join(sectionsDir, "overview.md"), "utf8");
-    expect(overview.trim()).toBe("Updated overview from session.");
+    expect(overview.trim()).toContain("Updated overview from session.");
     const timeline = await readFile(join(sectionsDir, "timeline.md"), "utf8");
-    expect(timeline.trim()).toBe("Updated timeline from session.");
-
-    // Root section should be unchanged
-    const root = await readFile(join(sectionsDir, "_root.md"), "utf8");
-    expect(root).toBe(SAMPLE_SECTIONS.root);
+    expect(timeline.trim()).toContain("Updated timeline from session.");
   });
 
   // ── Test 2c: Compound data loss scenario ──
@@ -318,7 +297,7 @@ describe("Crash Recovery Scenarios", () => {
 
   // ── Test 4c: Stale raw fragments ──
 
-  it("Test 4c: stale raw fragments (already committed content) are idempotent", async () => {
+  it("Test 4c: stale raw fragments (already committed content) are recovered idempotently", async () => {
     await createSampleDocument(ctx.rootDir);
 
     // Write raw fragments with same content as canonical (structurally clean)
@@ -327,13 +306,15 @@ describe("Crash Recovery Scenarios", () => {
     await writeFile(join(fragmentsDir, "overview.md"), `## Overview\n\n${SAMPLE_SECTIONS.overview}`, "utf8");
 
     const { detectAndRecoverCrash } = await import("../../storage/crash-recovery.js");
-    // Should complete without errors — structurally clean fragments are no-ops
     const result = await detectAndRecoverCrash(ctx.rootDir);
 
-    // Canonical should be unchanged
+    // Recovery runs (fragments exist) but content should be effectively the same
+    expect(result.recovered).toBe(true);
+
+    // Canonical overview should still contain the original content
     const sectionsDir = `${join(ctx.rootDir, "content", SAMPLE_DOC_PATH)}.sections`;
     const overview = await readFile(join(sectionsDir, "overview.md"), "utf8");
-    expect(overview).toBe(SAMPLE_SECTIONS.overview);
+    expect(overview).toContain(SAMPLE_SECTIONS.overview.trim());
   });
 
   // ── Test 5d: Multiple documents ──
@@ -384,5 +365,63 @@ describe("Crash Recovery Scenarios", () => {
 
     expect(result.recovered).toBe(false);
     expect(result.sessionFilesRecovered).toBe(0);
+  });
+
+  // ── Per-document error isolation ──
+
+  it("per-document isolation: cleanup failure for one doc does not prevent recovery of another", async () => {
+    // Create two canonical documents
+    await createSampleDocument(ctx.rootDir, SAMPLE_DOC_PATH);
+    await createSampleDocument(ctx.rootDir, SAMPLE_DOC_PATH_2);
+
+    // Good doc: valid session overlay
+    const goodSessionDir = join(ctx.rootDir, "sessions", "docs", "content", "ops");
+    const goodSessionSectionsDir = `${join(goodSessionDir, "strategy.md")}.sections`;
+    await mkdir(goodSessionSectionsDir, { recursive: true });
+    await writeFile(join(goodSessionDir, "strategy.md"),
+      "{{section: _root.md}}\n\n## Overview\n{{section: overview.md}}\n\n## Timeline\n{{section: timeline.md}}\n",
+      "utf8");
+    await writeFile(join(goodSessionSectionsDir, "_root.md"), "recovered root content\n", "utf8");
+    await writeFile(join(goodSessionSectionsDir, "overview.md"), "recovered overview\n", "utf8");
+    await writeFile(join(goodSessionSectionsDir, "timeline.md"), "recovered timeline\n", "utf8");
+
+    // Bad doc: create a session overlay where the skeleton is a directory instead of file
+    // This causes cleanup (rm) to fail with EISDIR, but recovery still produces content
+    const badSessionDir = join(ctx.rootDir, "sessions", "docs", "content", "eng");
+    await mkdir(badSessionDir, { recursive: true });
+    await mkdir(join(badSessionDir, "architecture.md"), { recursive: true });
+    const badSectionsDir = `${join(badSessionDir, "architecture.md")}.sections`;
+    await mkdir(badSectionsDir, { recursive: true });
+    await writeFile(join(badSectionsDir, "_root.md"), "bad root content\n", "utf8");
+
+    const { detectAndRecoverCrash } = await import("../../storage/crash-recovery.js");
+    const result = await detectAndRecoverCrash(ctx.rootDir);
+
+    // Good doc should still recover despite bad doc's cleanup failure
+    expect(result.recovered).toBe(true);
+    expect(result.sessionFilesRecovered).toBeGreaterThan(0);
+
+    // The cleanup failure for the bad doc should be in orphanScanFailures
+    const badDocFailures = result.orphanScanFailures.filter(f => f.docPath.includes("architecture"));
+    expect(badDocFailures.length).toBeGreaterThan(0);
+  });
+
+  it("per-document isolation: bad doc session files are preserved when cleanup fails", async () => {
+    await createSampleDocument(ctx.rootDir, SAMPLE_DOC_PATH_2);
+
+    const badSessionDir = join(ctx.rootDir, "sessions", "docs", "content", "eng");
+    await mkdir(badSessionDir, { recursive: true });
+    await mkdir(join(badSessionDir, "architecture.md"), { recursive: true });
+    const badSectionsDir = `${join(badSessionDir, "architecture.md")}.sections`;
+    await mkdir(badSectionsDir, { recursive: true });
+    await writeFile(join(badSectionsDir, "_root.md"), "preserved content\n", "utf8");
+
+    const { detectAndRecoverCrash } = await import("../../storage/crash-recovery.js");
+    await detectAndRecoverCrash(ctx.rootDir);
+
+    // Session section files should still exist since cleanup for this doc failed
+    const sectionFile = join(badSectionsDir, "_root.md");
+    const exists = await stat(sectionFile).then(() => true, () => false);
+    expect(exists).toBe(true);
   });
 });

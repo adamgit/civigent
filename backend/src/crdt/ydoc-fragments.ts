@@ -10,8 +10,6 @@
 
 import { getSchemaSpec } from "@ks/milkdown-serializer";
 import { Schema } from "prosemirror-model";
-import type { DocSession } from "./ydoc-lifecycle.js";
-import { SectionRef } from "../domain/section-ref.js";
 
 // ─── Fragment key helpers ────────────────────────────────────────
 
@@ -40,20 +38,6 @@ export function sectionFileFromFragmentKey(key: string): string {
   return key.slice(prefix.length);
 }
 
-/** @deprecated Use fragmentKeyFromSectionFile() instead. Kept for test compatibility. */
-export function fragmentKeyFromHeadingPath(headingPath: string[]): string {
-  return SectionRef.fragmentKeyFromHeadingPath(headingPath);
-}
-
-/** @deprecated Use skeleton.resolveByFileId() instead. Kept for test compatibility. */
-export function headingPathFromFragmentKey(key: string): string[] {
-  const prefix = "section::";
-  if (!key.startsWith(prefix)) return [];
-  const rest = key.slice(prefix.length);
-  if (rest === "") return [];
-  return rest.split(">>");
-}
-
 // ─── Schema ──────────────────────────────────────────────────────
 
 let _backendSchema: Schema | null = null;
@@ -65,12 +49,4 @@ export function getBackendSchema(): Schema {
 }
 
 // ─── Session-level helpers ───────────────────────────────────────
-
-/**
- * @deprecated Use session.fragments.assembleMarkdown() instead.
- * Kept for backwards compatibility during migration.
- */
-export async function assembleMarkdownFromDoc(session: DocSession): Promise<string> {
-  return session.fragments.assembleMarkdown();
-}
 

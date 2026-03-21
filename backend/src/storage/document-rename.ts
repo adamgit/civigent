@@ -31,6 +31,8 @@ export interface RenameResult {
   old_path: string;
   new_path: string;
   committed_head: string;
+  /** Non-empty when non-critical metadata files could not be updated (e.g. corrupt author JSON). */
+  warnings?: string[];
 }
 
 /**
@@ -106,12 +108,14 @@ export async function renameDocument(
   await rewriteProposalDocPaths(oldPath, newPath);
 
   // ─── Step 7: Rewrite author metadata ──────────────────────
-  await rewriteAuthorDocPaths(oldPath, newPath);
+  const warnings = await rewriteAuthorDocPaths(oldPath, newPath);
 
   // ─── Step 8: Restart flush timer under new path ───────────
   triggerDebouncedFlush(newPath);
 
-  return { old_path: oldPath, new_path: newPath, committed_head: committedHead };
+  const result: RenameResult = { old_path: oldPath, new_path: newPath, committed_head: committedHead };
+  if (warnings.length > 0) result.warnings = warnings;
+  return result;
 }
 
 /**
@@ -140,13 +144,14 @@ async function rewriteProposalDocPaths(oldPath: string, newPath: string): Promis
 /**
  * Rewrite docPath references in all author metadata files.
  */
-async function rewriteAuthorDocPaths(oldPath: string, newPath: string): Promise<void> {
+async function rewriteAuthorDocPaths(oldPath: string, newPath: string): Promise<string[]> {
   const authorsRoot = getSessionAuthorsRoot();
+  const warnings: string[] = [];
   let entries;
   try {
     entries = await readdir(authorsRoot, { withFileTypes: true });
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return warnings;
     throw err;
   }
 
@@ -158,7 +163,8 @@ async function rewriteAuthorDocPaths(oldPath: string, newPath: string): Promise<
     try {
       data = JSON.parse(raw) as Record<string, unknown>;
     } catch (parseErr) {
-      console.error(`Corrupt author metadata JSON during rename, skipping ${filePath}:`, parseErr);
+      const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+      warnings.push(`Corrupt author metadata JSON skipped during rename: ${filePath}: ${msg}`);
       continue;
     }
 
@@ -176,4 +182,5 @@ async function rewriteAuthorDocPaths(oldPath: string, newPath: string): Promise<
       await writeFile(filePath, JSON.stringify(data, null, 2), "utf8");
     }
   }
+  return warnings;
 }

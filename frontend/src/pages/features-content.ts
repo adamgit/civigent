@@ -50,6 +50,13 @@ export const userFeatures = [
   "Agent permission tiers are computed automatically from how recently humans edited: heavily-edited sections block agents, moderately-edited sections gate certain actions, untouched sections allow full autonomy",
   "AI agents connect through capability tiers — from simple file reads up to full proposal-based collaboration with human-involvement checks",
   "The agent setup page detects your AI tool (Claude Code or Cursor) and shows tool-specific configuration with one-click copy",
+     "Per-line human/AI authorship coloring in governance view shows who wrote each line",
+  "Sidebar  updates automatically when other users create, delete, or rename documents",
+  "Admin permissions page lets admins manage roles, per-document access, and custom roles from the UI",
+  "Documents can be restricted to specific user roles (e.g. 'legal-team', 'board-members')",
+  "Server shows a friendly 'starting up' screen during crash recovery instead of broken pages",
+  "Sign in via your organization's SSO provider (OIDC) — no passwords stored",
+  "First admin is bootstrapped via a one-time code printed to the server console"
 ];
 
 export const architectureFeatures = [

@@ -1,4 +1,5 @@
 import express, { type NextFunction, type Request, type Response } from "express";
+import { isSystemReady } from "../../startup-state.js";
 import type {
   AdminConfig,
   ChangesSinceResponse,
@@ -25,7 +26,7 @@ import type {
   WriterDirtyState,
   WsServerEvent,
   SectionMeta,
-  HumanHumanInvolvementPresetName,
+  HumanInvolvementPresetName,
   SectionScoreSnapshot,
 } from "../../types/shared.js";
 import { HUMAN_INVOLVEMENT_PRESETS } from "../../types/shared.js";
@@ -68,9 +69,27 @@ import {
   DocumentsTreePathNotFoundError,
   InvalidDocumentsTreePathError,
 } from "../../storage/documents-tree.js";
-import { resolveAuthenticatedWriter, type AuthenticatedWriter } from "../../auth/context.js";
-import { listAuthMethods, loginHuman } from "../../auth/service.js";
-import { readAgentKeys, addAgentKey, removeAgentKey } from "../../auth/agent-keys.js";
+import { resolveAuthenticatedWriter, requireAdmin, isSingleUserMode, type AuthenticatedWriter } from "../../auth/context.js";
+import {
+  getDocReadPermission,
+  checkDocPermission,
+  getAclSnapshot,
+  updateDefaults,
+  setDocAcl,
+  removeDocAcl,
+  setUserRoles,
+  removeUserRoles,
+  listCustomRoles,
+  addCustomRole,
+  deleteCustomRole,
+} from "../../auth/acl.js";
+import { listAuthMethods, buildOidcIdentity, isBootstrapAvailable, redeemBootstrapCode } from "../../auth/service.js";
+import { issueTokenPair } from "../../auth/tokens.js";
+import { isOidcConfigured, getOidcDisplayName, getOidcPublicUrl } from "../../auth/oauth-config.js";
+import { generateOidcState, generateOidcNonce, storeOidcState, retrieveAndClearOidcState } from "../../auth/oidc-state.js";
+import { buildOidcRedirectUrl, redeemOidcCode } from "../../auth/oidc-provider.js";
+import type { AuthMethod } from "../../types/shared.js";
+import { readAgentKeysAndErrors, readAgentKeysSkipErrors, addAgentKey, removeAgentKey } from "../../auth/agent-keys.js";
 import { getSnapshotHealth, getSnapshotHistory, snapshotAllDocs } from "../../storage/snapshot.js";
 import {
   AdminConfigValidationError,
@@ -93,6 +112,22 @@ import { importFilesToProposal } from "../../storage/import-service.js";
 
 
 // ─── Helpers ────────────────────────────────────────────
+
+/**
+ * Sanitize a return_to URL to prevent open redirect attacks.
+ * Uses URL parser (OWASP-recommended) instead of string prefix checks.
+ */
+export function sanitizeReturnTo(raw: string): string {
+  if (!raw || typeof raw !== "string") return "/";
+  const cleaned = raw.replace(/[\x00-\x1f\x7f]/g, "");
+  try {
+    const parsed = new URL(cleaned, "http://localhost");
+    if (parsed.hostname !== "localhost") return "/";
+    return parsed.pathname + parsed.search + parsed.hash;
+  } catch {
+    return "/";
+  }
+}
 
 function sendApiError(res: Response, status: number, messageOrError: string | Error, details?: unknown): void {
   // Per error policy: NEVER hide or strip error details. Always include the
@@ -145,6 +180,49 @@ function requireAuthenticatedWriter(req: Request, res: Response): AuthenticatedW
   return writer;
 }
 
+/**
+ * Check per-document read permission. Returns the writer (or null for public docs).
+ * Sends 401 if unauthenticated and doc requires auth, 403 if authenticated but
+ * lacking the required role. Returns null and sends the error response in both cases.
+ */
+async function requireDocReadPermission(
+  req: Request,
+  res: Response,
+  docPath: string,
+): Promise<AuthenticatedWriter | "public" | null> {
+  const writer = resolveAuthenticatedWriter(req);
+  const allowed = await checkDocPermission(writer, docPath, "read");
+  if (allowed) return writer ?? "public";
+  if (!writer) {
+    sendApiError(res, 401, "Authentication required.");
+  } else {
+    sendApiError(res, 403, "You do not have permission to read this document.");
+  }
+  return null;
+}
+
+/**
+ * Check per-document write permission. Returns the writer on success.
+ * Sends 401 if unauthenticated, 403 if lacking the required role.
+ */
+async function requireDocWritePermission(
+  req: Request,
+  res: Response,
+  docPath: string,
+): Promise<AuthenticatedWriter | null> {
+  const writer = resolveAuthenticatedWriter(req);
+  if (!writer) {
+    sendApiError(res, 401, "Authentication required.");
+    return null;
+  }
+  const allowed = await checkDocPermission(writer, docPath, "write");
+  if (!allowed) {
+    sendApiError(res, 403, "You do not have permission to write to this document.");
+    return null;
+  }
+  return writer;
+}
+
 const SECTION_LENGTH_WARNING_THRESHOLD = 2000; // words
 
 function computeSectionLengthWarning(content: string): boolean {
@@ -154,6 +232,25 @@ function computeSectionLengthWarning(content: string): boolean {
 
 function countWords(content: string): number {
   return content.split(/\s+/).filter(Boolean).length;
+}
+
+async function filterTreeToPublic(entries: import("../../types/shared.js").DocumentTreeEntry[]): Promise<import("../../types/shared.js").DocumentTreeEntry[]> {
+  const result: import("../../types/shared.js").DocumentTreeEntry[] = [];
+  for (const entry of entries) {
+    if (entry.type === "file") {
+      const perm = await getDocReadPermission(entry.path);
+      if (perm === "public") {
+        result.push(entry);
+      }
+    } else {
+      // directory: recurse and include only if it has public children
+      const children = await filterTreeToPublic(entry.children ?? []);
+      if (children.length > 0) {
+        result.push({ ...entry, children });
+      }
+    }
+  }
+  return result;
 }
 
 // ─── Router Options ─────────────────────────────────────
@@ -168,18 +265,154 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   const router = express.Router();
   const onWsEvent = options?.onWsEvent;
 
+  // ─── Startup gate: reject requests during crash recovery ────
+  // Exempt: /health (used as ready probe), /auth/* (login page needs to load)
+  router.use((req: Request, res: Response, next: NextFunction) => {
+    if (isSystemReady()) {
+      next();
+      return;
+    }
+    const p = req.path;
+    if (p === "/health" || p.startsWith("/auth/")) {
+      next();
+      return;
+    }
+    res.status(503)
+      .setHeader("Retry-After", "5")
+      .json({
+        error: "system_starting",
+        message: "The system is starting up. Please try again shortly.",
+      });
+  });
+
+  // ─── Global auth middleware (opt-OUT via skip list) ────
+  // Every route is auth-protected by default. Exempt paths must be listed explicitly.
+  // Routes that handle their own auth (e.g. public-doc exception) are also exempt here.
+  router.use((req: Request, res: Response, next: NextFunction) => {
+    const p = req.path;
+    // Always exempt: auth endpoints, health check
+    if (p === "/health" || p.startsWith("/auth/")) {
+      next();
+      return;
+    }
+    // In single_user mode, all routes are accessible without auth
+    if (isSingleUserMode()) {
+      next();
+      return;
+    }
+    const writer = resolveAuthenticatedWriter(req);
+    if (writer) {
+      next();
+      return;
+    }
+    // Unauthenticated: allow through to all document GET routes (each handler
+    // checks per-document read permission via requireDocReadPermission)
+    if (req.method === "GET" && p.startsWith("/documents/") && p !== "/documents/tree") {
+      next();
+      return;
+    }
+    sendApiError(res, 401, "Authentication required.");
+  });
+
+  // ─── CSRF protection: require X-Requested-With header on state-changing requests ──
+  // Runs AFTER auth middleware — unauthenticated requests get 401, not 403.
+  // Requests with a Bearer token are exempt — CSRF exploits cookie-based auth, not header-based.
+  router.use((req: Request, res: Response, next: NextFunction) => {
+    if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
+      next();
+      return;
+    }
+    const p = req.path;
+    if (p.startsWith("/auth/")) {
+      next();
+      return;
+    }
+    if (req.headers.authorization?.startsWith("Bearer ")) {
+      next();
+      return;
+    }
+    if (!req.headers["x-requested-with"]) {
+      sendApiError(res, 403, "Missing X-Requested-With header.");
+      return;
+    }
+    next();
+  });
+
   // ─── Health ───────────────────────────────────────────
 
   router.get("/health", (_req, res) => {
-    res.status(200).json({ status: "ok" });
+    res.status(200).json({ status: "ok", ready: isSystemReady() });
   });
 
   // ─── Auth ─────────────────────────────────────────────
 
   router.get("/auth/methods", async (_req, res, next) => {
     try {
-      const methods = await listAuthMethods();
-      res.json({ methods });
+      const rawMethods = listAuthMethods();
+      const methods: AuthMethod[] = rawMethods.map((m) => {
+        if (m === "oidc") {
+          return { type: "oidc", displayName: getOidcDisplayName(), authUrl: "/api/auth/oidc/authorize" };
+        }
+        return { type: "single_user", displayName: "Single-user session" };
+      });
+      res.json({ methods, bootstrap_available: isBootstrapAvailable() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/auth/oidc/authorize", async (req, res, next) => {
+    try {
+      if (!isOidcConfigured()) {
+        sendApiError(res, 503, "OIDC is not configured on this server.");
+        return;
+      }
+      const returnTo = sanitizeReturnTo((req.query.return_to as string) ?? "");
+
+      const state = generateOidcState();
+      const nonce = generateOidcNonce();
+      storeOidcState(state, nonce, returnTo);
+
+      let url: string;
+      try {
+        url = await buildOidcRedirectUrl(state, nonce);
+      } catch (err) {
+        sendApiError(res, 503, err instanceof Error ? err : String(err));
+        return;
+      }
+      res.redirect(302, url);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/auth/oidc/callback", async (req, res, next) => {
+    try {
+      const { code, state } = req.query;
+      if (!code || !state) {
+        sendApiError(res, 400, "Missing code or state in OIDC callback.");
+        return;
+      }
+
+      const stored = retrieveAndClearOidcState(String(state));
+      if (!stored) {
+        sendApiError(res, 400, "OIDC state expired or invalid.");
+        return;
+      }
+
+      const callbackUrl = new URL(req.originalUrl, getOidcPublicUrl());
+      let claims: { issuer: string; subject: string; email?: string; name?: string };
+      try {
+        claims = await redeemOidcCode(callbackUrl, String(state), stored.nonce);
+      } catch (err) {
+        sendApiError(res, 401, err instanceof Error ? err : String(err));
+        return;
+      }
+
+      const identity = buildOidcIdentity(claims.issuer, claims.subject, claims.email, claims.name);
+      const { access_token, refresh_token } = issueTokenPair(identity);
+      setAuthCookies(req, res, access_token, refresh_token);
+      res.redirect(302, stored.returnTo);
     } catch (error) {
       next(error);
     }
@@ -203,21 +436,29 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
   // POST /auth/agent/register removed — replaced by POST /oauth/register (OAuth 2.1 DCR)
 
-  router.post("/auth/login", async (req, res, next) => {
+  router.post("/auth/bootstrap", async (req, res, next) => {
     try {
-      const { username, password } = req.body ?? {};
-      if (!username || !password) {
-        sendApiError(res, 400, "username and password are required.");
+      const writer = resolveAuthenticatedWriter(req);
+      if (!writer) {
+        sendApiError(res, 401, "You must be authenticated (via OIDC) before using the bootstrap code.");
         return;
       }
-      const result = loginHuman({ provider: "credentials", username, password });
-      setAuthCookies(req, res, result.access_token, result.refresh_token);
-      res.json({
-        user: result.identity,
-        access_token: result.access_token,
-        refresh_token: result.refresh_token,
-      });
+      const { code } = req.body ?? {};
+      if (!code) {
+        sendApiError(res, 400, "Bootstrap code is required.");
+        return;
+      }
+      await redeemBootstrapCode(String(code), writer.id);
+      res.json({ success: true, message: "Admin role granted." });
     } catch (error) {
+      if (error instanceof Error && error.message.includes("Invalid bootstrap code")) {
+        sendApiError(res, 403, error.message);
+        return;
+      }
+      if (error instanceof Error && error.message.includes("not available")) {
+        sendApiError(res, 410, error.message);
+        return;
+      }
       next(error);
     }
   });
@@ -233,9 +474,17 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
   router.get("/documents/tree", async (req, res, next) => {
     try {
+      const writer = resolveAuthenticatedWriter(req);
       const basePath = (req.query.path as string) ?? "";
       const tree = await readDocumentsTree(basePath);
-      const response: GetDocumentsTreeResponse = { tree };
+
+      // Unauthenticated callers only see documents with public read permission
+      let filteredTree = tree;
+      if (!writer) {
+        filteredTree = await filterTreeToPublic(tree);
+      }
+
+      const response: GetDocumentsTreeResponse = { tree: filteredTree };
       res.json(response);
     } catch (error) {
       if (error instanceof DocumentsTreePathNotFoundError) {
@@ -253,6 +502,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   router.get("/documents/:docPath(*)/structure", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
+      const access = await requireDocReadPermission(req, res, docPath);
+      if (!access) return;
       const sessionDocsContentRoot = path.join(getSessionDocsRoot(), "content");
       const structure = await readDocumentStructureWithOverlay(docPath, sessionDocsContentRoot);
 
@@ -272,8 +523,11 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   router.get("/documents/:docPath(*)/sections", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
-      const sessionDocsContentRoot = path.join(getSessionDocsRoot(), "content");
-      const skeleton = await DocumentSkeleton.fromDisk(docPath, sessionDocsContentRoot, getContentRoot());
+      const access = await requireDocReadPermission(req, res, docPath);
+      if (!access) return;
+      const canonical = new ContentLayer(getContentRoot());
+      const overlay = new ContentLayer(path.join(getSessionDocsRoot(), "content"), canonical);
+      const skeleton = await overlay.readSkeleton(docPath);
 
       // Build headingPaths and sectionFileByKey in one forEachSection pass
       const headingPaths: string[][] = [];
@@ -342,6 +596,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   router.get("/documents/:docPath(*)/changes-since", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
+      const access = await requireDocReadPermission(req, res, docPath);
+      if (!access) return;
       const afterHead = req.query.after_head as string | undefined;
       const result = await readChangesSince(docPath, afterHead);
       res.json(result);
@@ -361,6 +617,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   router.get("/documents/:docPath(*)/history", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
+      const access = await requireDocReadPermission(req, res, docPath);
+      if (!access) return;
       const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 30, 1), 100);
       const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
       const dataRoot = getDataRoot();
@@ -374,6 +632,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   router.get("/documents/:docPath(*)/history/:sha/preview", async (req, res, next) => {
     try {
       const { docPath, sha } = req.params;
+      const access = await requireDocReadPermission(req, res, docPath);
+      if (!access) return;
       if (!/^[0-9a-f]{7,40}$/i.test(sha)) {
         sendApiError(res, 400, new Error(`Invalid SHA format: "${sha}"`));
         return;
@@ -413,10 +673,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
   router.post("/documents/:docPath(*)/restore", async (req, res, next) => {
     try {
-      const writer = requireAuthenticatedWriter(req, res);
-      if (!writer) return;
-
       const docPath = req.params.docPath;
+      const writer = await requireDocWritePermission(req, res, docPath);
+      if (!writer) return;
       const { sha } = req.body as { sha?: string };
       if (!sha || !/^[0-9a-f]{7,40}$/i.test(sha)) {
         sendApiError(res, 400, new Error(`Invalid or missing SHA in restore request for "${docPath}". Body: ${JSON.stringify(req.body)}`));
@@ -447,287 +706,26 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     }
   });
 
-  // ─── Document catch-all (MUST be AFTER /history, /restore, etc.) ──
-  router.get("/documents/:docPath(*)", async (req, res, next) => {
+  // ─── Git Blame (MUST be before catch-all) ────────────────
+  router.get("/documents/:docPath(*)/blame/:sectionFile", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
-      const assembled = await readAssembledDocument(docPath);
+      const access = await requireDocReadPermission(req, res, docPath);
+      if (!access) return;
 
-      // Compute per-section metadata
-      const structure = await readDocumentStructure(docPath).catch(() => []);
-      const headingPaths = flattenStructureToHeadingPaths(structure);
+      const sectionFile = req.params.sectionFile;
 
-      // Pre-fetch content and compute human-involvement metadata via shared helper
-      const docOverlayRoot = path.join(getSessionDocsRoot(), "content");
-      const docOverlay = new ContentLayer(docOverlayRoot, new ContentLayer(getContentRoot()));
-      const bulkContent = await docOverlay.readAllSectionsOverlaid(docPath);
-      const involvementMeta = await buildSectionInvolvementMeta(docPath, headingPaths, bulkContent);
+      // Resolve sectionFile → absolute disk path via skeleton (handles sub-skeleton nesting)
+      const contentRoot = getContentRoot();
+      const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
+      const entry = skeleton.resolveByFileId(sectionFile);
+      const sectionFilePath = entry.absolutePath;
 
-      const sectionsMeta: SectionMeta[] = [];
-      for (const headingPath of headingPaths) {
-        const headingKey = SectionRef.headingKey(headingPath);
-        const meta = involvementMeta.get(headingKey);
-        if (!meta) continue;
+      const { computeSectionBlame } = await import("../../storage/section-blame.js");
+      const lines = await computeSectionBlame(sectionFilePath);
 
-        sectionsMeta.push({
-          heading_path: headingPath,
-          humanInvolvement_score: meta.humanInvolvement_score,
-          crdt_session_active: meta.crdt_session_active,
-          section_length_warning: meta.section_length_warning,
-          word_count: meta.word_count,
-        });
-      }
-
-      broadcastAgentReading(req, docPath, sectionsMeta.map((s) => s.heading_path), onWsEvent);
-
-      const headSha = await getHeadSha(getDataRoot());
-      const response: GetDocumentResponse = {
-        doc_path: docPath,
-        content: assembled,
-        head_sha: headSha,
-        sections_meta: sectionsMeta,
-      };
+      const response: import("../../types/shared.js").BlameResponse = { lines };
       res.json(response);
-    } catch (error) {
-      if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-        sendApiError(res, 404, error);
-        return;
-      }
-      if (error instanceof DocumentAssemblyError) {
-        sendApiError(res, 500, error);
-        return;
-      }
-      next(error);
-    }
-  });
-
-  // ─── Create Document ────────────────────────────────────
-
-  router.put("/documents/:docPath(*)", async (req, res, next) => {
-    try {
-      const docPath = req.params.docPath;
-      const contentRoot = getContentRoot();
-      const resolvedPath = resolveDocPathUnderContent(contentRoot, docPath);
-
-      // Check if skeleton file already exists
-      try {
-        await access(resolvedPath);
-        sendApiError(res, 409, "Document already exists.");
-        return;
-      } catch {
-        // File does not exist — proceed
-      }
-
-      const skeleton = DocumentSkeleton.createEmpty(docPath, contentRoot);
-      await skeleton.persist();
-
-      // Write empty root section body file through ContentLayer
-      const canonical = new ContentLayer(contentRoot);
-      await canonical.writeSection(new SectionRef(docPath, []), "");
-
-      // Git add + commit
-      const dataRoot = getDataRoot();
-      await gitExec(["add", "content/"], dataRoot);
-      await gitExec(
-        [
-          "-c", "user.name=Knowledge Store",
-          "-c", "user.email=system@knowledge-store.local",
-          "commit",
-          "-m", `create document: ${docPath}`,
-          "--allow-empty",
-        ],
-        dataRoot,
-      );
-
-      res.status(201).json({ doc_path: docPath });
-    } catch (error) {
-      if (error instanceof InvalidDocPathError) {
-        sendApiError(res, 400, error);
-        return;
-      }
-      next(error);
-    }
-  });
-
-  // ─── Patch Document (unified diff) ──────────────────────
-
-  router.patch("/documents/:docPath(*)", async (req, res, next) => {
-    try {
-      const writer = requireAuthenticatedWriter(req, res);
-      if (!writer) return;
-
-      const docPath = req.params.docPath;
-      const diffText = typeof req.body === "string" ? req.body : req.body?.diff;
-
-      if (!diffText || typeof diffText !== "string") {
-        sendApiError(res, 400, "Request body must be a unified diff (text/x-diff or text/plain, or JSON with 'diff' field).");
-        return;
-      }
-
-      // Read current document content
-      let currentContent: string;
-      try {
-        currentContent = await readAssembledDocument(docPath);
-      } catch (error) {
-        if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-          sendApiError(res, 404, error);
-          return;
-        }
-        throw error;
-      }
-
-      // Parse and apply the diff
-      const { applyUnifiedDiff, DiffParseError, DiffApplyError } = await import("../../storage/diff-parser.js");
-      let patchedContent: string;
-      try {
-        patchedContent = applyUnifiedDiff(currentContent, diffText);
-      } catch (error) {
-        if (error instanceof DiffParseError || error instanceof DiffApplyError) {
-          sendApiError(res, 400, error);
-          return;
-        }
-        throw error;
-      }
-
-      // No-op detection: skip proposal if nothing changed
-      if (patchedContent === currentContent) {
-        res.status(200).json({ doc_path: docPath, no_changes: true });
-        return;
-      }
-
-      // Submit the patched content as a proposal (normalize into sections)
-      const intent = `Patch document: ${docPath}`;
-      const existing = await findPendingProposalByWriter(writer.id);
-      if (existing) {
-        await transitionToWithdrawn(existing.id, "auto-withdrawn by PATCH");
-      }
-
-      const { proposal, contentRoot } = await createProposal(
-        { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
-        intent,
-        [{ doc_path: docPath, heading_path: [] }],
-      );
-      // Write content via writeAssembledDocument which normalizes sections
-      const proposalContentLayer = new ContentLayer(contentRoot, new ContentLayer(getContentRoot()));
-      const patchTargets = await proposalContentLayer.writeAssembledDocument(docPath, patchedContent);
-      // Update proposal sections to match the actual parsed structure
-      if (patchTargets.length > 1 || (patchTargets.length === 1 && patchTargets[0].heading_path.length > 0)) {
-        await updateProposalSections(proposal.id, patchTargets);
-      }
-
-      const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal);
-
-      if (evaluation.all_sections_accepted) {
-        const scores: SectionScoreSnapshot = {};
-        for (const s of sections) {
-          scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
-        }
-
-        const committedHead = await commitProposalToCanonical(proposal, scores);
-
-        if (onWsEvent) {
-          onWsEvent({
-            type: "content:committed",
-            doc_path: docPath,
-            sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
-            commit_sha: committedHead,
-            source: "agent_proposal",
-            writer_id: writer.id,
-            writer_display_name: writer.displayName,
-          });
-        }
-
-        res.status(200).json({
-          doc_path: docPath,
-          committed_head: committedHead,
-          status: "committed",
-        });
-      } else {
-        res.status(409).json({
-          doc_path: docPath,
-          proposal_id: proposal.id,
-          status: "pending",
-          outcome: "blocked",
-          blocked_sections: sections.filter((s) => s.blocked),
-        });
-      }
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  // ─── Delete Document ────────────────────────────────────
-
-  router.delete("/documents/:docPath(*)", async (req, res, next) => {
-    try {
-      const writer = requireAuthenticatedWriter(req, res);
-      if (!writer) return;
-
-      const docPath = req.params.docPath;
-      const contentRoot = getContentRoot();
-      const resolvedPath = resolveDocPathUnderContent(contentRoot, docPath);
-
-      // Verify document exists
-      try {
-        await access(resolvedPath);
-      } catch {
-        sendApiError(res, 404, `Document not found: ${docPath}`);
-        return;
-      }
-
-      // Check for active CRDT sessions
-      const docSession = lookupDocSession(docPath);
-      if (docSession) {
-        sendApiError(res, 409, "Cannot delete document with active editing session.");
-        return;
-      }
-
-      // Check for pending proposals that reference this document
-      const pendingProposals = await listProposals("pending");
-      const conflicting = pendingProposals.filter((p) =>
-        p.sections.some((s) => s.doc_path === docPath),
-      );
-      if (conflicting.length > 0) {
-        sendApiError(res, 409, `Cannot delete document referenced by pending proposals: ${conflicting.map((p) => p.id).join(", ")}`);
-        return;
-      }
-
-      // Check for orphaned dirty session files (flushed but not yet committed)
-      const sessionDocsContentRoot = path.join(getSessionDocsRoot(), "content");
-      const sessionDocPath = resolveDocPathUnderContent(sessionDocsContentRoot, docPath);
-      let hasDirtySessionFiles = false;
-      try { await access(sessionDocPath); hasDirtySessionFiles = true; } catch { /* not found */ }
-      if (!hasDirtySessionFiles) {
-        try { await access(sessionDocPath + SECTIONS_DIR_SUFFIX); hasDirtySessionFiles = true; } catch { /* not found */ }
-      }
-      if (hasDirtySessionFiles) {
-        sendApiError(res, 409, "Cannot delete document: uncommitted session files exist.");
-        return;
-      }
-
-      // Delete the skeleton file and its .sections/ directory
-      await rm(resolvedPath, { force: true });
-      await rm(resolvedPath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
-
-      // Clean up any remaining session artifacts
-      await rm(sessionDocPath, { force: true });
-      await rm(sessionDocPath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
-
-      // Git add + commit the deletion
-      const dataRoot = getDataRoot();
-      await gitExec(["add", "content/"], dataRoot);
-      await gitExec(
-        [
-          "-c", "user.name=Knowledge Store",
-          "-c", "user.email=system@knowledge-store.local",
-          "commit",
-          "-m", `delete document: ${docPath}`,
-          "--allow-empty",
-        ],
-        dataRoot,
-      );
-
-      res.status(200).json({ doc_path: docPath, deleted: true });
     } catch (error) {
       if (error instanceof InvalidDocPathError) {
         sendApiError(res, 400, error);
@@ -741,10 +739,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
   router.post("/documents/:docPath(*)/rename", async (req, res, next) => {
     try {
-      const writer = requireAuthenticatedWriter(req, res);
-      if (!writer) return;
-
       const docPath = req.params.docPath;
+      const writer = await requireDocWritePermission(req, res, docPath);
+      if (!writer) return;
       const { new_path: newPath } = req.body as { new_path?: string };
       if (!newPath || typeof newPath !== "string") {
         sendApiError(res, 400, "Missing required field: new_path");
@@ -770,7 +767,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       const result = await renameDocument(docPath, newPath);
 
-      // Broadcast doc:renamed to all connected clients
+      // Broadcast doc:renamed to all connected clients, plus catalog:changed for tree refresh
       if (onWsEvent) {
         onWsEvent({
           type: "doc:renamed",
@@ -778,6 +775,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           new_path: result.new_path,
           committed_head: result.committed_head,
         });
+        onWsEvent({ type: "catalog:changed" });
       }
 
       res.status(200).json(result);
@@ -854,10 +852,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   // POST /api/documents/:docPath/sections — Create a new section
   router.post("/documents/:docPath(*)/sections", async (req, res, next) => {
     try {
-      const writer = requireAuthenticatedWriter(req, res);
-      if (!writer) return;
-
       const docPath = req.params.docPath;
+      const writer = await requireDocWritePermission(req, res, docPath);
+      if (!writer) return;
 
       // Prevent structural changes during active CRDT editing
       const activeSession = lookupDocSession(docPath);
@@ -922,10 +919,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   // DELETE /api/documents/:docPath/sections/:headingPath — Delete a section
   router.delete("/documents/:docPath(*)/sections/:headingPath", async (req, res, next) => {
     try {
-      const writer = requireAuthenticatedWriter(req, res);
-      if (!writer) return;
-
       const docPath = req.params.docPath;
+      const writer = await requireDocWritePermission(req, res, docPath);
+      if (!writer) return;
 
       const activeSession = lookupDocSession(docPath);
       if (activeSession) {
@@ -981,10 +977,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   // PUT /api/documents/:docPath/sections/:headingPath/move — Move a section
   router.put("/documents/:docPath(*)/sections/:headingPath/move", async (req, res, next) => {
     try {
-      const writer = requireAuthenticatedWriter(req, res);
-      if (!writer) return;
-
       const docPath = req.params.docPath;
+      const writer = await requireDocWritePermission(req, res, docPath);
+      if (!writer) return;
 
       const activeSession = lookupDocSession(docPath);
       if (activeSession) {
@@ -1093,10 +1088,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   // PUT /api/documents/:docPath/sections/:headingPath/rename — Rename a section heading
   router.put("/documents/:docPath(*)/sections/:headingPath/rename", async (req, res, next) => {
     try {
-      const writer = requireAuthenticatedWriter(req, res);
-      if (!writer) return;
-
       const docPath = req.params.docPath;
+      const writer = await requireDocWritePermission(req, res, docPath);
+      if (!writer) return;
 
       const activeSession = lookupDocSession(docPath);
       if (activeSession) {
@@ -1178,6 +1172,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
   router.get("/heatmap", async (req, res, next) => {
     try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
       const config = getAdminConfig();
       const sections: HeatmapEntry[] = [];
 
@@ -1218,7 +1214,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
               doc_path: docPath,
               heading_path: headingPath,
               humanInvolvement_score: verdict.humanInvolvement_score,
-              crdt_session_active: !!verdict.crdt_session_active,
+              crdt_session_active: SectionPresence.checkLiveSessionOnly(
+                new SectionRef(docPath, headingPath),
+              ),
               last_human_commit_sha: commitInfo?.sha ?? null,
               last_commit_author: commitInfo?.authorName ?? null,
               last_commit_timestamp: commitInfo ? new Date(commitInfo.timestampMs).toISOString() : null,
@@ -1255,6 +1253,18 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       if (!body.intent) {
         sendApiError(res, 400, "intent is required.");
         return;
+      }
+
+      // Check write permission for all target documents
+      const targetDocPaths = new Set(
+        (body.sections ?? []).map((s) => s.doc_path).filter(Boolean),
+      );
+      for (const docPath of targetDocPaths) {
+        const allowed = await checkDocPermission(writer, docPath, "write");
+        if (!allowed) {
+          sendApiError(res, 403, `You do not have permission to write to document "${docPath}".`);
+          return;
+        }
       }
 
       // Human reservations can start with empty sections
@@ -1612,6 +1622,16 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         return;
       }
 
+      // Check write permission for all target documents
+      const commitDocPaths = new Set(proposal.sections.map((s) => s.doc_path));
+      for (const docPath of commitDocPaths) {
+        const allowed = await checkDocPermission(writer, docPath, "write");
+        if (!allowed) {
+          sendApiError(res, 403, `You do not have permission to write to document "${docPath}".`);
+          return;
+        }
+      }
+
       // Human reservations always commit (no human-involvement evaluation)
       if (proposal.writer.type === "human") {
         const scores: SectionScoreSnapshot = {};
@@ -1844,6 +1864,13 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       const body = req.body as PublishRequest;
+      if (body?.doc_path) {
+        const allowed = await checkDocPermission(writer, body.doc_path, "write");
+        if (!allowed) {
+          sendApiError(res, 403, `You do not have permission to write to document "${body.doc_path}".`);
+          return;
+        }
+      }
       const result = await commitDirtySections(
         { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
         body?.doc_path,
@@ -1881,17 +1908,25 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
   // ─── Admin ────────────────────────────────────────────
 
-  router.get("/admin/config", (_req, res) => {
-    const config = getAdminConfig();
-    const preset = HUMAN_INVOLVEMENT_PRESETS[config.humanInvolvement_preset];
-    res.json({
-      ...config,
-      preset_description: preset.description,
-    });
+  router.get("/admin/config", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const config = getAdminConfig();
+      const preset = HUMAN_INVOLVEMENT_PRESETS[config.humanInvolvement_preset];
+      res.json({
+        ...config,
+        preset_description: preset.description,
+      });
+    } catch (error) {
+      next(error);
+    }
   });
 
-  router.put("/admin/config", (req, res, next) => {
+  router.put("/admin/config", async (req, res, next) => {
     try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
       const body = req.body;
       const updated = updateAdminConfig(body);
       const preset = HUMAN_INVOLVEMENT_PRESETS[updated.humanInvolvement_preset];
@@ -2198,8 +2233,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
   // ─── Admin ─────────────────────────────────────────────
 
-  router.get("/admin/snapshot-health", async (_req, res, next) => {
+  router.get("/admin/snapshot-health", async (req, res, next) => {
     try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
       const health = await getSnapshotHealth();
       const response: GetAdminSnapshotHealthResponse = health;
       res.json(response);
@@ -2208,8 +2245,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     }
   });
 
-  router.get("/admin/snapshot-history", async (_req, res, next) => {
+  router.get("/admin/snapshot-history", async (req, res, next) => {
     try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
       const history = await getSnapshotHistory();
       const response: GetAdminSnapshotHistoryResponse = history;
       res.json(response);
@@ -2218,8 +2257,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     }
   });
 
-  router.post("/admin/snapshot-now", async (_req, res, next) => {
+  router.post("/admin/snapshot-now", async (req, res, next) => {
     try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
       await snapshotAllDocs();
       res.json({ ok: true });
     } catch (error) {
@@ -2259,8 +2300,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
   // ─── Session state inspector ──────────────────────────
 
-  router.get("/admin/session-state", async (_req, res, next) => {
+  router.get("/admin/session-state", async (req, res, next) => {
     try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
       res.json(await getSessionState());
     } catch (error) {
       next(error);
@@ -2291,10 +2334,15 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
   // ─── Pre-authenticated agent management ────────────────
 
-  router.get("/admin/agents", async (_req, res, next) => {
+  router.get("/admin/agents", async (req, res, next) => {
     try {
-      const entries = await readAgentKeys();
-      res.json(entries.map((e) => ({ agent_id: e.agentId, display_name: e.displayName })));
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const { entries, errors } = await readAgentKeysAndErrors();
+      res.json({
+        agents: entries.map((e) => ({ agent_id: e.agentId, display_name: e.displayName })),
+        errors,
+      });
     } catch (error) {
       next(error);
     }
@@ -2302,6 +2350,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
   router.post("/admin/agents", async (req, res, next) => {
     try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
       const { display_name, agent_id, generate_secret } = req.body ?? {};
       if (!display_name || typeof display_name !== "string") {
         sendApiError(res, 400, "display_name is required.");
@@ -2324,6 +2374,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
   router.delete("/admin/agents/:agentId", async (req, res, next) => {
     try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
       const removed = await removeAgentKey(req.params.agentId);
       if (!removed) {
         sendApiError(res, 404, "Agent not found.");
@@ -2340,7 +2392,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   router.get("/agents/summary", async (_req, res, next) => {
     try {
       const { agentEventLog } = await import("../../mcp/agent-event-log.js");
-      const registeredAgents = (await readAgentKeys()).map(e => ({ id: e.agentId, displayName: e.displayName }));
+      const registeredAgents = (await readAgentKeysSkipErrors()).map(e => ({ id: e.agentId, displayName: e.displayName }));
 
       // Collect all proposals with their status
       const allStatuses = ["pending", "committed", "withdrawn"] as const;
@@ -2367,6 +2419,127 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     }
   });
 
+  // ─── Admin ACL/RBAC management ─────────────────────────
+
+  router.get("/admin/acl", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const snapshot = await getAclSnapshot();
+      res.json(snapshot);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.put("/admin/acl/defaults", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const { read, write } = req.body as { read?: string; write?: string };
+      await updateDefaults({ read, write });
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.put("/admin/acl/doc/:docPath(*)", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const docPath = req.params.docPath;
+      const { read, write } = req.body as { read?: string; write?: string };
+      await setDocAcl(docPath, { read, write });
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.delete("/admin/acl/doc/:docPath(*)", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const docPath = req.params.docPath;
+      await removeDocAcl(docPath);
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.put("/admin/roles/:userId", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const userId = req.params.userId;
+      const { roles } = req.body as { roles: string[] };
+      if (!Array.isArray(roles)) {
+        sendApiError(res, 400, "roles must be a string array.");
+        return;
+      }
+      await setUserRoles(userId, roles);
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.delete("/admin/roles/:userId", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const userId = req.params.userId;
+      await removeUserRoles(userId);
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/admin/custom-roles", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const { name } = req.body as { name: string };
+      if (!name || typeof name !== "string") {
+        sendApiError(res, 400, "name is required.");
+        return;
+      }
+      await addCustomRole(name);
+      res.json({ ok: true });
+    } catch (error) {
+      if (error instanceof Error && (error.message.includes("magic role") || error.message.includes("already exists"))) {
+        sendApiError(res, 400, error.message);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  router.delete("/admin/custom-roles/:name", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const name = req.params.name;
+      await deleteCustomRole(name);
+      res.json({ ok: true });
+    } catch (error) {
+      if (error instanceof Error && (error.message.includes("magic role") || error.message.includes("does not exist"))) {
+        sendApiError(res, 400, error.message);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // ─── Document catch-all routes ─────────────────────────
+  // Registered LAST so they never shadow more-specific /documents/ routes.
+  // This is in a separate function to make it structurally impossible to
+  // accidentally add a specific route after the catch-all wildcards.
+  registerDocumentCatchAllRoutes(router, onWsEvent);
+
   // ─── Error handler ────────────────────────────────────
 
   router.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
@@ -2376,6 +2549,298 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   return router;
 }
 
+
+// ─── Document catch-all routes ──────────────────────────
+//
+// These wildcard routes (GET/PUT/PATCH/DELETE /documents/:docPath(*))
+// match ANY path under /documents/. They MUST be registered after all
+// specific /documents/ routes, otherwise they shadow them.
+//
+// Isolated in a separate function so that adding a new specific route
+// inside createApiRouter() can never accidentally end up after these.
+
+function registerDocumentCatchAllRoutes(
+  router: express.Router,
+  onWsEvent: ((event: WsServerEvent) => void) | undefined,
+): void {
+  // ─── Read Document (assembled) ────────────────────────
+  router.get("/documents/:docPath(*)", async (req, res, next) => {
+    try {
+      const docPath = req.params.docPath;
+      const accessResult = await requireDocReadPermission(req, res, docPath);
+      if (!accessResult) return;
+      const assembled = await readAssembledDocument(docPath);
+
+      // Compute per-section metadata
+      const structure = await readDocumentStructure(docPath).catch(() => []);
+      const headingPaths = flattenStructureToHeadingPaths(structure);
+
+      const docOverlayRoot = path.join(getSessionDocsRoot(), "content");
+      const docOverlay = new ContentLayer(docOverlayRoot, new ContentLayer(getContentRoot()));
+      const bulkContent = await docOverlay.readAllSectionsOverlaid(docPath);
+      const involvementMeta = await buildSectionInvolvementMeta(docPath, headingPaths, bulkContent);
+
+      const sectionsMeta: SectionMeta[] = [];
+      for (const headingPath of headingPaths) {
+        const headingKey = SectionRef.headingKey(headingPath);
+        const meta = involvementMeta.get(headingKey);
+        if (!meta) continue;
+
+        sectionsMeta.push({
+          heading_path: headingPath,
+          humanInvolvement_score: meta.humanInvolvement_score,
+          crdt_session_active: meta.crdt_session_active,
+          section_length_warning: meta.section_length_warning,
+          word_count: meta.word_count,
+        });
+      }
+
+      broadcastAgentReading(req, docPath, sectionsMeta.map((s) => s.heading_path), onWsEvent);
+
+      const headSha = await getHeadSha(getDataRoot());
+      const response: GetDocumentResponse = {
+        doc_path: docPath,
+        content: assembled,
+        head_sha: headSha,
+        sections_meta: sectionsMeta,
+      };
+      res.json(response);
+    } catch (error) {
+      if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      if (error instanceof DocumentAssemblyError) {
+        sendApiError(res, 500, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // ─── Create Document ────────────────────────────────────
+  router.put("/documents/:docPath(*)", async (req, res, next) => {
+    try {
+      const docPath = req.params.docPath;
+      const writer = await requireDocWritePermission(req, res, docPath);
+      if (!writer) return;
+      const contentRoot = getContentRoot();
+      const resolvedPath = resolveDocPathUnderContent(contentRoot, docPath);
+
+      try {
+        await access(resolvedPath);
+        sendApiError(res, 409, "Document already exists.");
+        return;
+      } catch {
+        // File does not exist — proceed
+      }
+
+      const skeleton = DocumentSkeleton.createEmpty(docPath, contentRoot);
+      await skeleton.persist();
+
+      const canonical = new ContentLayer(contentRoot);
+      await canonical.writeSection(new SectionRef(docPath, []), "");
+
+      const dataRoot = getDataRoot();
+      await gitExec(["add", "content/"], dataRoot);
+      await gitExec(
+        [
+          "-c", "user.name=Knowledge Store",
+          "-c", "user.email=system@knowledge-store.local",
+          "commit",
+          "-m", `create document: ${docPath}`,
+          "--allow-empty",
+        ],
+        dataRoot,
+      );
+
+      if (onWsEvent) {
+        onWsEvent({ type: "catalog:changed" });
+      }
+      res.status(201).json({ doc_path: docPath });
+    } catch (error) {
+      if (error instanceof InvalidDocPathError) {
+        sendApiError(res, 400, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // ─── Patch Document (unified diff) ──────────────────────
+  router.patch("/documents/:docPath(*)", async (req, res, next) => {
+    try {
+      const docPath = req.params.docPath;
+      const writer = await requireDocWritePermission(req, res, docPath);
+      if (!writer) return;
+      const diffText = typeof req.body === "string" ? req.body : req.body?.diff;
+
+      if (!diffText || typeof diffText !== "string") {
+        sendApiError(res, 400, "Request body must be a unified diff (text/x-diff or text/plain, or JSON with 'diff' field).");
+        return;
+      }
+
+      let currentContent: string;
+      try {
+        currentContent = await readAssembledDocument(docPath);
+      } catch (error) {
+        if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
+          sendApiError(res, 404, error);
+          return;
+        }
+        throw error;
+      }
+
+      const { applyUnifiedDiff, DiffParseError, DiffApplyError } = await import("../../storage/diff-parser.js");
+      let patchedContent: string;
+      try {
+        patchedContent = applyUnifiedDiff(currentContent, diffText);
+      } catch (error) {
+        if (error instanceof DiffParseError || error instanceof DiffApplyError) {
+          sendApiError(res, 400, error);
+          return;
+        }
+        throw error;
+      }
+
+      if (patchedContent === currentContent) {
+        res.status(200).json({ doc_path: docPath, no_changes: true });
+        return;
+      }
+
+      const intent = `Patch document: ${docPath}`;
+      const existing = await findPendingProposalByWriter(writer.id);
+      if (existing) {
+        await transitionToWithdrawn(existing.id, "auto-withdrawn by PATCH");
+      }
+
+      const { proposal, contentRoot } = await createProposal(
+        { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
+        intent,
+        [{ doc_path: docPath, heading_path: [] }],
+      );
+      const proposalContentLayer = new ContentLayer(contentRoot, new ContentLayer(getContentRoot()));
+      const patchTargets = await proposalContentLayer.writeAssembledDocument(docPath, patchedContent);
+      if (patchTargets.length > 1 || (patchTargets.length === 1 && patchTargets[0].heading_path.length > 0)) {
+        await updateProposalSections(proposal.id, patchTargets);
+      }
+
+      const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal);
+
+      if (evaluation.all_sections_accepted) {
+        const scores: SectionScoreSnapshot = {};
+        for (const s of sections) {
+          scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
+        }
+
+        const committedHead = await commitProposalToCanonical(proposal, scores);
+
+        if (onWsEvent) {
+          onWsEvent({
+            type: "content:committed",
+            doc_path: docPath,
+            sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+            commit_sha: committedHead,
+            source: "agent_proposal",
+            writer_id: writer.id,
+            writer_display_name: writer.displayName,
+          });
+        }
+
+        res.status(200).json({
+          doc_path: docPath,
+          committed_head: committedHead,
+          status: "committed",
+        });
+      } else {
+        res.status(409).json({
+          doc_path: docPath,
+          proposal_id: proposal.id,
+          status: "pending",
+          outcome: "blocked",
+          blocked_sections: sections.filter((s) => s.blocked),
+        });
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ─── Delete Document ────────────────────────────────────
+  router.delete("/documents/:docPath(*)", async (req, res, next) => {
+    try {
+      const docPath = req.params.docPath;
+      const writer = await requireDocWritePermission(req, res, docPath);
+      if (!writer) return;
+      const contentRoot = getContentRoot();
+      const resolvedPath = resolveDocPathUnderContent(contentRoot, docPath);
+
+      try {
+        await access(resolvedPath);
+      } catch {
+        sendApiError(res, 404, `Document not found: ${docPath}`);
+        return;
+      }
+
+      const docSession = lookupDocSession(docPath);
+      if (docSession) {
+        sendApiError(res, 409, "Cannot delete document with active editing session.");
+        return;
+      }
+
+      const pendingProposals = await listProposals("pending");
+      const conflicting = pendingProposals.filter((p) =>
+        p.sections.some((s) => s.doc_path === docPath),
+      );
+      if (conflicting.length > 0) {
+        sendApiError(res, 409, `Cannot delete document referenced by pending proposals: ${conflicting.map((p) => p.id).join(", ")}`);
+        return;
+      }
+
+      const sessionDocsContentRoot = path.join(getSessionDocsRoot(), "content");
+      const sessionDocPath = resolveDocPathUnderContent(sessionDocsContentRoot, docPath);
+      let hasDirtySessionFiles = false;
+      try { await access(sessionDocPath); hasDirtySessionFiles = true; } catch { /* not found */ }
+      if (!hasDirtySessionFiles) {
+        try { await access(sessionDocPath + SECTIONS_DIR_SUFFIX); hasDirtySessionFiles = true; } catch { /* not found */ }
+      }
+      if (hasDirtySessionFiles) {
+        sendApiError(res, 409, "Cannot delete document: uncommitted session files exist.");
+        return;
+      }
+
+      await rm(resolvedPath, { force: true });
+      await rm(resolvedPath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
+
+      await rm(sessionDocPath, { force: true });
+      await rm(sessionDocPath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
+
+      const dataRoot = getDataRoot();
+      await gitExec(["add", "content/"], dataRoot);
+      await gitExec(
+        [
+          "-c", "user.name=Knowledge Store",
+          "-c", "user.email=system@knowledge-store.local",
+          "commit",
+          "-m", `delete document: ${docPath}`,
+          "--allow-empty",
+        ],
+        dataRoot,
+      );
+
+      if (onWsEvent) {
+        onWsEvent({ type: "catalog:changed" });
+      }
+      res.status(200).json({ doc_path: docPath, deleted: true });
+    } catch (error) {
+      if (error instanceof InvalidDocPathError) {
+        sendApiError(res, 400, error);
+        return;
+      }
+      next(error);
+    }
+  });
+}
 
 // ─── Structure Helpers ──────────────────────────────────
 

@@ -1,8 +1,8 @@
-import type { AdminConfig, GovernanceMode, HumanHumanInvolvementPresetName } from "./types/shared.js";
+import type { AdminConfig, GovernanceMode, HumanInvolvementPresetName } from "./types/shared.js";
 import { HUMAN_INVOLVEMENT_PRESETS } from "./types/shared.js";
 import { getAgentAuthPolicy } from "./auth/oauth-config.js";
 
-const DEFAULT_HUMAN_INVOLVEMENT_PRESET: HumanHumanInvolvementPresetName = "eager";
+const DEFAULT_HUMAN_INVOLVEMENT_PRESET: HumanInvolvementPresetName = "eager";
 const DEFAULT_SNAPSHOT_ENABLED = true;
 const DEFAULT_GOVERNANCE_MODE: GovernanceMode = "available";
 
@@ -13,7 +13,7 @@ export class AdminConfigValidationError extends Error {
   }
 }
 
-function parsePreset(raw: string | undefined): HumanHumanInvolvementPresetName {
+function parsePreset(raw: string | undefined): HumanInvolvementPresetName {
   const normalized = String(raw ?? "").trim().toLowerCase();
   if (normalized === "yolo" || normalized === "aggressive" || normalized === "eager" || normalized === "conservative") {
     return normalized;
@@ -34,7 +34,7 @@ function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
 }
 
 interface RuntimeConfig {
-  humanInvolvement_preset: HumanHumanInvolvementPresetName;
+  humanInvolvement_preset: HumanInvolvementPresetName;
   snapshot_enabled: boolean;
 }
 
@@ -57,13 +57,13 @@ export function getAdminConfig(): AdminConfig {
   };
 }
 
-export function getHumanHumanInvolvementPreset(): HumanHumanInvolvementPresetName {
+export function getHumanHumanInvolvementPreset(): HumanInvolvementPresetName {
   return runtimeConfig.humanInvolvement_preset;
 }
 
 export function updateAdminConfig(next: Partial<AdminConfig>): AdminConfig {
   if (next.humanInvolvement_preset != null) {
-    const valid: HumanHumanInvolvementPresetName[] = ["yolo", "aggressive", "eager", "conservative"];
+    const valid: HumanInvolvementPresetName[] = ["yolo", "aggressive", "eager", "conservative"];
     if (!valid.includes(next.humanInvolvement_preset)) {
       throw new AdminConfigValidationError(
         `Invalid humanInvolvement_preset: ${next.humanInvolvement_preset}. Must be one of: ${valid.join(", ")}`,

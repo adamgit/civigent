@@ -1,12 +1,12 @@
 {
   "name": "knowledge-store",
   "private": true,
-  "version": "3.4.0",
+  "version": "3.4.1",
   "scripts": {
     "build": "cd sharedlibs/milkdown-serializer && npm run build && cd ../../backend && npm run build && cd ../frontend && npm run build",
     "dev": "bash ./devtools/dev.sh",
     "dev:single-user": "KS_AUTH_MODE=single_user npm run dev",
-    "dev:backend": "cd backend && KS_DATA_ROOT=/workspace/dev-data PORT=3000 npm run dev",
+    "dev:backend": "cd backend && PORT=3000 npm run dev",
     "dev:frontend": "cd frontend && npm run dev",
     "test": "cd backend && npm run test && cd ../frontend && npm run test",
     "test:ws:single-tab": "cd frontend && npm run test:ws:single-tab",

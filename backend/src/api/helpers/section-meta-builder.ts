@@ -75,7 +75,9 @@ export async function buildSectionInvolvementMeta(
       const commitInfo = commitByHeading.get(headingKey);
       result.set(headingKey, {
         humanInvolvement_score: verdict.humanInvolvement_score,
-        crdt_session_active: !!verdict.crdt_session_active,
+        crdt_session_active: SectionPresence.checkLiveSessionOnly(
+          new SectionRef(docPath, headingPath),
+        ),
         section_length_warning: lengthWarning,
         word_count: wordCount,
         last_human_editor: commitInfo

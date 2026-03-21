@@ -2,7 +2,7 @@
  * Pre-authenticated agents — file-based key store.
  *
  * Reads data/auth/agents.keys (under data root).
- * Format: agent-id:secret-hash:display-name (one per line).
+ * Format: agent-id:scrypt:salt:hash:display-name (one per line).
  * Lines starting with # and blank lines are skipped.
  *
  * Secret hashing uses Node.js built-in scrypt (no bcrypt dependency needed).
@@ -20,6 +20,11 @@ export interface AgentKeyEntry {
   agentId: string;
   secretHash: string;
   displayName: string;
+}
+
+export interface AgentKeysWithErrors {
+  entries: AgentKeyEntry[];
+  errors: string[];
 }
 
 // ─── File path ───────────────────────────────────────────────────
@@ -68,69 +73,138 @@ export async function compareSecret(plaintext: string, storedHash: string): Prom
   return timingSafeEqual(computedHash, expectedHash);
 }
 
+// ─── Line parsing ───────────────────────────────────────────────
+
+/**
+ * Parse a single non-comment, non-blank line from agents.keys.
+ * Returns the entry or null if malformed.
+ */
+function parseLine(trimmed: string): AgentKeyEntry | null {
+  // Format: agent-id:scrypt:salt:hash:display-name
+  // We need exactly 5 colon-separated fields: agentId, "scrypt", salt, hash, displayName
+  const firstColon = trimmed.indexOf(":");
+  if (firstColon < 0) return null;
+
+  const agentId = trimmed.slice(0, firstColon);
+  const rest = trimmed.slice(firstColon + 1);
+
+  // For "none" secret (no-secret agents): agent-id:none:display-name
+  if (rest.startsWith("none:")) {
+    const displayName = rest.slice(5);
+    if (!agentId || !displayName) return null;
+    return { agentId, secretHash: "none", displayName };
+  }
+
+  // For scrypt: rest = scrypt:salt:hash:display-name (4 parts)
+  const parts = rest.split(":");
+  if (parts.length < 4) return null;
+  if (parts[0] !== "scrypt") return null;
+
+  const secretHash = `${parts[0]}:${parts[1]}:${parts[2]}`;
+  const displayName = parts.slice(3).join(":");
+  if (!agentId || !displayName) return null;
+
+  return { agentId, secretHash, displayName };
+}
+
+/**
+ * Extract the agentId prefix from a raw line (best-effort, for error messages).
+ */
+function extractAgentIdPrefix(trimmed: string): string | null {
+  const firstColon = trimmed.indexOf(":");
+  if (firstColon > 0) return trimmed.slice(0, firstColon);
+  return null;
+}
+
 // ─── File operations ─────────────────────────────────────────────
 
 /**
- * Read and parse the agents.keys file.
- * Returns empty array if file doesn't exist.
+ * Read and parse the agents.keys file, collecting errors for malformed lines.
+ * Returns both valid entries and error descriptions.
  */
-export async function readAgentKeys(): Promise<AgentKeyEntry[]> {
+export async function readAgentKeysAndErrors(): Promise<AgentKeysWithErrors> {
   let content: string;
   try {
     content = await readFile(keysFilePath(), "utf8");
   } catch {
-    return [];
+    return { entries: [], errors: [] };
   }
 
   const entries: AgentKeyEntry[] = [];
+  const errors: string[] = [];
+  let lineNum = 0;
+
   for (const line of content.split("\n")) {
+    lineNum++;
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
 
-    const firstColon = trimmed.indexOf(":");
-    if (firstColon < 0) continue;
-
-    const agentId = trimmed.slice(0, firstColon);
-    const rest = trimmed.slice(firstColon + 1);
-
-    // Secret hash may contain colons (scrypt:salt:hash), so find
-    // the display name after the last colon that follows the hash
-    // Format: agent-id:scrypt:salt:hash:display-name
-    // We know the hash format is "scrypt:<hex>:<hex>" — find the
-    // display name by matching backwards
-    const lastColon = rest.lastIndexOf(":");
-    if (lastColon < 0) continue;
-
-    const secretHash = rest.slice(0, lastColon);
-    const displayName = rest.slice(lastColon + 1);
-
-    if (!agentId || !secretHash || !displayName) continue;
-
-    entries.push({ agentId, secretHash, displayName });
+    const entry = parseLine(trimmed);
+    if (entry) {
+      entries.push(entry);
+    } else {
+      const prefix = extractAgentIdPrefix(trimmed) ?? "(unknown)";
+      errors.push(`Line ${lineNum}: malformed entry for agent "${prefix}" — expected format agent-id:scrypt:salt:hash:display-name`);
+    }
   }
 
+  return { entries, errors };
+}
+
+/**
+ * Read and parse the agents.keys file, silently skipping malformed lines.
+ * Name makes it explicit that some entries may be missing.
+ */
+export async function readAgentKeysSkipErrors(): Promise<AgentKeyEntry[]> {
+  const { entries } = await readAgentKeysAndErrors();
   return entries;
 }
 
 /**
+ * @deprecated Use readAgentKeysSkipErrors() or readAgentKeysAndErrors() instead.
+ */
+export async function readAgentKeys(): Promise<AgentKeyEntry[]> {
+  return readAgentKeysSkipErrors();
+}
+
+/**
  * Look up an agent by ID.
- * Returns the entry if found, null otherwise.
+ * Throws if the agent's entry exists but is malformed.
+ * Returns null if the agent genuinely doesn't exist.
  */
 export async function lookupAgentKey(agentId: string): Promise<AgentKeyEntry | null> {
-  const entries = await readAgentKeys();
-  return entries.find((e) => e.agentId === agentId) ?? null;
+  const { entries, errors } = await readAgentKeysAndErrors();
+  const found = entries.find((e) => e.agentId === agentId);
+  if (found) return found;
+
+  // Check if the agent's ID appears in a malformed line
+  const malformedMatch = errors.find((err) => err.includes(`"${agentId}"`));
+  if (malformedMatch) {
+    throw new Error(
+      `Agent "${agentId}" exists but its entry in agents.keys is malformed: ` +
+      `expected format agent-id:scrypt:salt:hash:display-name`,
+    );
+  }
+
+  return null;
 }
 
 /**
  * Look up an agent by matching a plaintext secret against all entries.
- * Returns the matching entry, or null if no match.
+ * Throws if no match is found but malformed lines exist (can't be sure it's not there).
+ * Returns null only when no match AND no malformed lines.
  */
 export async function lookupAgentBySecret(plainSecret: string): Promise<AgentKeyEntry | null> {
-  const entries = await readAgentKeys();
+  const { entries, errors } = await readAgentKeysAndErrors();
   for (const entry of entries) {
     if (await compareSecret(plainSecret, entry.secretHash)) {
       return entry;
     }
+  }
+  if (errors.length > 0) {
+    throw new Error(
+      `Cannot verify agent secret: ${errors.length} entries in agents.keys are malformed and could not be checked`,
+    );
   }
   return null;
 }
@@ -139,8 +213,16 @@ export async function lookupAgentBySecret(plainSecret: string): Promise<AgentKey
  * Add a new agent entry.
  * @param withSecret - if true (default), generate a secret and return its plaintext; if false, store "none" and return null.
  * Returns the plaintext secret (shown once), or null if no secret was generated.
+ * Throws if display name contains a colon.
  */
 export async function addAgentKey(agentId: string, displayName: string, withSecret = true): Promise<string | null> {
+  if (displayName.includes(":")) {
+    throw new Error(
+      `Display name cannot contain ":" — the agents.keys file uses colons as field delimiters. ` +
+      `Received: "${displayName}"`,
+    );
+  }
+
   let secretField: string;
   let plainSecret: string | null = null;
 

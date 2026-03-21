@@ -43,6 +43,7 @@ import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/p
 import { DocumentSkeleton } from "../../storage/document-skeleton.js";
 import type { SectionScoreSnapshot } from "../../types/shared.js";
 import path from "node:path";
+import { checkDocPermission } from "../../auth/acl.js";
 
 /**
  * Derive a human-readable block_reason from an evaluation result for MCP responses.
@@ -87,6 +88,9 @@ const readDocHandler: ToolHandler = async (args, ctx) => {
   const docPath = args.path as string | undefined;
   if (!docPath) return makeToolErrorResult("Missing required parameter: path");
 
+  const readOk = await checkDocPermission(ctx.writer, docPath, "read");
+  if (!readOk) return makeToolErrorResult(`Permission denied: you do not have read access to "${docPath}".`);
+
   try {
     const content = await readAssembledDocument(docPath);
     const headSha = await getHeadSha(getDataRoot());
@@ -124,6 +128,9 @@ const readDocStructureHandler: ToolHandler = async (args, ctx) => {
   const docPath = args.path as string | undefined;
   if (!docPath) return makeToolErrorResult("Missing required parameter: path");
 
+  const structReadOk = await checkDocPermission(ctx.writer, docPath, "read");
+  if (!structReadOk) return makeToolErrorResult(`Permission denied: you do not have read access to "${docPath}".`);
+
   try {
     const sessionDocsContentRoot = path.join(getSessionDocsRoot(), "content");
     const structure = await readDocumentStructureWithOverlay(docPath, sessionDocsContentRoot);
@@ -157,6 +164,9 @@ const readSectionHandler: ToolHandler = async (args, ctx) => {
 
   if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath)) return makeToolErrorResult("Missing required parameter: heading_path (array of strings)");
+
+  const secReadOk = await checkDocPermission(ctx.writer, docPath, "read");
+  if (!secReadOk) return makeToolErrorResult(`Permission denied: you do not have read access to "${docPath}".`);
 
   try {
     const content = await readSectionWithHeading(docPath, headingPath);
@@ -210,6 +220,13 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
     if (!s.doc_path || !Array.isArray(s.heading_path) || typeof s.content !== "string") {
       return makeToolErrorResult("Each section must have doc_path (string), heading_path (string[]), and content (string)");
     }
+  }
+
+  // Check write permission for all target documents
+  const targetDocs = new Set(sections.map((s) => s.doc_path));
+  for (const dp of targetDocs) {
+    const wpOk = await checkDocPermission(ctx.writer, dp, "write");
+    if (!wpOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${dp}".`);
   }
 
   // Validate all doc_paths before any state is created
@@ -332,6 +349,13 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
     }
     if (proposal.status !== "pending") {
       return makeToolErrorResult(`Cannot commit proposal in ${proposal.status} state.`);
+    }
+
+    // Check write permission for all target documents
+    const commitTargetDocs = new Set(proposal.sections.map((s) => s.doc_path));
+    for (const dp of commitTargetDocs) {
+      const wpOk = await checkDocPermission(ctx.writer, dp, "write");
+      if (!wpOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${dp}".`);
     }
 
     const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal);
@@ -503,6 +527,9 @@ const writeSectionHandler: ToolHandler = async (args, ctx) => {
   if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath)) return makeToolErrorResult("Missing required parameter: heading_path");
   if (content === undefined) return makeToolErrorResult("Missing required parameter: content");
+
+  const wsOk = await checkDocPermission(ctx.writer, docPath, "write");
+  if (!wsOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
 
   // Validate doc_path before any state is created
   try {

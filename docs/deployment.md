@@ -31,6 +31,71 @@ There are four ways to run Civigent. Each targets a different use case and expos
 
 ---
 
+## Auto-start on server boot (Ubuntu)
+
+To have Civigent start automatically when your server boots, configure Docker and a systemd service.
+
+### 1. Enable Docker to start on boot
+
+```bash
+sudo systemctl enable docker.service
+sudo systemctl enable containerd.service
+```
+
+### 2. Add restart policy to compose.yaml
+
+In your `quickstart/compose.yaml`, add `restart: unless-stopped` to the service so Docker itself will restart the container if it crashes:
+
+```yaml
+services:
+  civigent:
+    restart: unless-stopped
+    # ... rest of your config
+```
+
+### 3. Create a systemd service
+
+Create `/etc/systemd/system/civigent.service` (replace the two placeholders marked with `[ ]`):
+
+```ini
+[Unit]
+Description=[your Civigent instance name]
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=[path to your quickstart/ folder]
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+ExecReload=/usr/bin/docker compose up -d
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 4. Enable the service
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now civigent.service
+```
+
+The `--now` flag starts it immediately without a reboot. From this point on, Civigent will start automatically on boot and restart if Docker restarts it.
+
+**Useful commands:**
+```bash
+sudo systemctl status civigent   # check if it's running
+sudo systemctl stop civigent     # stop without disabling auto-start
+sudo systemctl start civigent    # start again
+journalctl -u civigent -f        # follow logs
+```
+
+---
+
 ## Deployment scenarios
 
 ### Scenario A: Personal use on your own machine
@@ -124,44 +189,9 @@ Once the server is running, see the [Configuration Reference](configuration.md) 
 
 ---
 
-## Data directory structure
+## Data directory and backups
 
-All persistent state lives under a single data directory (mounted as `/app/data` in Docker):
-
-```
-wiki-data/
-├── snapshots/            ← Pure markdown files, read-only, enabling any standard 3rd party tool to read the data
-├── content/              ← Published content (canonical), markdown stored in a custom format
-│   ├── .git/             ← Private audit-log of all changed to /content/
-│   ├── document-name.md  ← Skeleton file (privately stored and maintained, you should never need to edit or view this raw)
-│   └── document-name.md.sections/ (part of the custom internal markdown format)
-│       ├── sec_abc123.md           ← Section content file
-│       └── sec_abc123.md.sections/ ← Sub-sections (for nested headings)
-│
-├── sessions/             ← In-flight editing state (ephemeral, survives restarts)
-│   ├── fragments/        ← Raw Y.Doc fragments (crash-safety layer, ~2s freshness)
-│   ├── docs/             ← Canonical-ready session content (structurally valid)
-│   │   └── content/      ← Mirrors canonical structure with dirty section overlays
-│   └── authors/          ← Per-user attribution metadata (which user dirtied which sections)
-│
-├── proposals/            ← Agent and human proposals (filesystem = state machine)
-│   ├── pending/          ← Active proposals (mutable)
-│   ├── committing/       ← Being committed right now (transient, milliseconds)
-│   ├── committed/        ← Successfully committed (terminal, audit trail)
-│   └── withdrawn/        ← Cancelled proposals (terminal, audit trail)
-│
-│
-└── auth/                 ← Authentication state
-    └── agents.keys       ← Pre-authenticated agent credentials (optional)
-```
-
-### Backing up
-
-The `content/` directory is the most important — it contains all published content and full git history. Back it up like any git repository.
-
-The `proposals/` directory contains the audit trail of all proposals (committed and withdrawn). Back this up if you need audit compliance.
-
-The `sessions/` directory is ephemeral — it's automatically cleaned up after commits and crash recovery. You don't need to back it up.
+See [Architecture Overview — Data directory structure](architecture.md#data-directory-structure) for the full directory layout and backup guidance.
 
 ---
 

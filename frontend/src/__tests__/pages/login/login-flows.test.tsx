@@ -31,7 +31,7 @@ describe("LoginPage flows", () => {
       const urlStr = String(url);
 
       if (urlStr.includes("/api/auth/methods")) {
-        return jsonResponse({ methods: ["single_user", "credentials"] });
+        return jsonResponse({ methods: [{ type: "single_user", displayName: "Single-user session" }] });
       }
 
       if (urlStr.includes("/api/auth/login") && init?.method === "POST") {
@@ -73,31 +73,6 @@ describe("LoginPage flows", () => {
     // Should navigate to default returnTo "/"
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith("/");
-    });
-  });
-
-  it("credentials login calls loginCredentials with form values", async () => {
-    renderLogin();
-    await waitFor(() => {
-      expect(screen.getByText("Sign in")).toBeDefined();
-    });
-
-    const emailInput = screen.getByLabelText("Email");
-    const passwordInput = screen.getByLabelText("Password");
-
-    fireEvent.change(emailInput, { target: { value: "user@example.com" } });
-    fireEvent.change(passwordInput, { target: { value: "secret123" } });
-    fireEvent.click(screen.getByText("Sign in"));
-
-    await waitFor(() => {
-      const loginCalls = fetchMock.mock.calls.filter(
-        (call: [unknown, RequestInit?]) =>
-          String(call[0]).includes("/api/auth/login") && call[1]?.method === "POST",
-      );
-      expect(loginCalls.length).toBeGreaterThan(0);
-      const body = JSON.parse(loginCalls[0][1]!.body as string);
-      expect(body.email).toBe("user@example.com");
-      expect(body.password).toBe("secret123");
     });
   });
 

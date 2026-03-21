@@ -39,11 +39,17 @@ async function getAuthCodeViaConsent(
   codeChallenge: string,
   codeChallengeMethod: string,
   state?: string,
+  humanBearerToken?: string,
 ): Promise<string> {
-  const res = await request(app)
+  // Extract raw token from "Bearer xxx" format for cookie
+  const rawToken = humanBearerToken?.replace(/^Bearer\s+/, "");
+  const req$ = request(app)
     .post("/oauth/authorize")
-    .type("form")
-    .send({
+    .type("form");
+  if (rawToken) {
+    req$.set("Cookie", `ks_access_token=${rawToken}`);
+  }
+  const res = await req$.send({
       client_id: clientId,
       redirect_uri: redirectUri,
       code_challenge: codeChallenge,
@@ -167,7 +173,7 @@ describe("OAuth 2.1 flow", () => {
       const codeVerifier = generateCodeVerifier();
       const codeChallenge = generateCodeChallenge(codeVerifier);
 
-      // Step 3: Get auth code via consent POST
+      // Step 3: Get auth code via consent POST (with human session)
       const authCode = await getAuthCodeViaConsent(
         ctx.app,
         clientId,
@@ -175,6 +181,7 @@ describe("OAuth 2.1 flow", () => {
         codeChallenge,
         "S256",
         "test-state",
+        ctx.humanToken,
       );
 
       // Step 4: Token exchange
@@ -259,7 +266,19 @@ describe("OAuth 2.1 flow", () => {
 
   // ── CRITICAL SECURITY TEST ─────────────────────────────────
 
-  describe("pre-auth client_id without secret must be rejected", () => {
+  describe("pre-auth client_id without secret must be rejected (verify policy)", () => {
+    let prevPolicy: string | undefined;
+
+    beforeAll(() => {
+      prevPolicy = process.env.KS_AGENT_AUTH_POLICY;
+      process.env.KS_AGENT_AUTH_POLICY = "verify";
+    });
+
+    afterAll(() => {
+      if (prevPolicy === undefined) delete process.env.KS_AGENT_AUTH_POLICY;
+      else process.env.KS_AGENT_AUTH_POLICY = prevPolicy;
+    });
+
     it("token endpoint rejects pre-auth client_id when client_secret is omitted", async () => {
       const codeVerifier = generateCodeVerifier();
       const codeChallenge = generateCodeChallenge(codeVerifier);
@@ -271,6 +290,8 @@ describe("OAuth 2.1 flow", () => {
         "http://localhost:9999/callback",
         codeChallenge,
         "S256",
+        undefined,
+        ctx.humanToken,
       );
 
       // ATTACK: Try to exchange the code WITHOUT providing client_secret
@@ -298,6 +319,8 @@ describe("OAuth 2.1 flow", () => {
         "http://localhost:9999/callback",
         codeChallenge,
         "S256",
+        undefined,
+        ctx.humanToken,
       );
 
       const tokenRes = await request(ctx.app)
@@ -324,6 +347,8 @@ describe("OAuth 2.1 flow", () => {
         "http://localhost:9999/callback",
         codeChallenge,
         "S256",
+        undefined,
+        ctx.humanToken,
       );
 
       const tokenRes = await request(ctx.app)
@@ -381,6 +406,8 @@ describe("OAuth 2.1 flow", () => {
         "http://localhost:9999/callback",
         codeChallenge,
         "S256",
+        undefined,
+        ctx.humanToken,
       );
 
       // Use wrong verifier
@@ -432,6 +459,113 @@ describe("OAuth 2.1 flow", () => {
           response_type: "token",
         });
       expect(res.status).toBe(400);
+    });
+  });
+
+  // ── Consent session verification ─────────────────────────────
+
+  describe("OAuth consent requires human session", () => {
+    let prevAuthMode: string | undefined;
+
+    beforeAll(() => {
+      prevAuthMode = process.env.KS_AUTH_MODE;
+      process.env.KS_AUTH_MODE = "oidc";
+    });
+
+    afterAll(() => {
+      if (prevAuthMode === undefined) delete process.env.KS_AUTH_MODE;
+      else process.env.KS_AUTH_MODE = prevAuthMode;
+    });
+
+    it("POST /oauth/authorize without session redirects to login", async () => {
+      const res = await request(ctx.app)
+        .post("/oauth/authorize")
+        .type("form")
+        .send({
+          client_id: "some-client",
+          redirect_uri: "http://localhost:9999/callback",
+          code_challenge: "test-challenge",
+          code_challenge_method: "S256",
+        });
+      expect(res.status).toBe(302);
+      expect(res.headers.location).toMatch(/^\/login\?return_to=/);
+    });
+
+    it("POST /oauth/authorize with valid human session issues auth code", async () => {
+      const codeVerifier = generateCodeVerifier();
+      const codeChallenge = generateCodeChallenge(codeVerifier);
+      const rawToken = ctx.humanToken.replace(/^Bearer\s+/, "");
+
+      const res = await request(ctx.app)
+        .post("/oauth/authorize")
+        .type("form")
+        .set("Cookie", `ks_access_token=${rawToken}`)
+        .send({
+          client_id: PRE_AUTH_AGENT_ID,
+          redirect_uri: "http://localhost:9999/callback",
+          code_challenge: codeChallenge,
+          code_challenge_method: "S256",
+        });
+      expect(res.status).toBe(302);
+      expect(res.headers.location).toMatch(/code=/);
+    });
+
+    it("POST /oauth/authorize with agent bearer token returns 403", async () => {
+      const rawAgentToken = ctx.agentToken.replace(/^Bearer\s+/, "");
+
+      const res = await request(ctx.app)
+        .post("/oauth/authorize")
+        .type("form")
+        .set("Cookie", `ks_access_token=${rawAgentToken}`)
+        .send({
+          client_id: PRE_AUTH_AGENT_ID,
+          redirect_uri: "http://localhost:9999/callback",
+          code_challenge: "test-challenge",
+          code_challenge_method: "S256",
+        });
+      expect(res.status).toBe(403);
+    });
+  });
+
+  // ── Token rate limiting ─────────────────────────────────────
+
+  describe("POST /oauth/token rate limiting", () => {
+    it("returns 429 after 30 rapid token requests", async () => {
+      // Send 30 token requests (they'll all fail with invalid_request, that's fine)
+      for (let i = 0; i < 30; i++) {
+        await request(ctx.app)
+          .post("/oauth/token")
+          .send({ grant_type: "authorization_code" });
+      }
+
+      // The 31st must be 429
+      const res = await request(ctx.app)
+        .post("/oauth/token")
+        .send({ grant_type: "authorization_code" });
+      expect(res.status).toBe(429);
+      expect(res.body.error).toBe("too_many_requests");
+    });
+  });
+
+  // ── Registration rate limiting ──────────────────────────────
+
+  describe("POST /oauth/register rate limiting", () => {
+    it("returns 429 after 10 rapid registrations", async () => {
+      // Send 10 registrations to fill the window
+      for (let i = 0; i < 10; i++) {
+        const r = await request(ctx.app)
+          .post("/oauth/register")
+          .send({ client_name: `RateTest-${i}` });
+        // Some may be 201, some may already be 429 from earlier tests in this file
+        expect([201, 429]).toContain(r.status);
+      }
+
+      // The 11th must be 429
+      const res = await request(ctx.app)
+        .post("/oauth/register")
+        .send({ client_name: "RateTest-overflow" });
+      expect(res.status).toBe(429);
+      expect(res.body.error).toBe("too_many_requests");
     });
   });
 });

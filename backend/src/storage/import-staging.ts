@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import { getDataRoot } from "./data-root.js";
-import { parseImportDocument } from "./content-import.js";
+import { parseDocumentMarkdown } from "./markdown-sections.js";
 import type { ImportFile } from "./import-service.js";
 
 function getImportStagingRoot(): string {
@@ -91,8 +91,8 @@ export async function scanStagingFolder(importId: string): Promise<StagingFileIn
       if (isMarkdown) {
         try {
           const content = await readFile(path.join(root, relPath), "utf8");
-          const parsed = parseImportDocument(relPath, content);
-          sectionCount = parsed.sections.length;
+          const parsed = parseDocumentMarkdown(content);
+          sectionCount = parsed.length;
         } catch {
           // Parse failure — still show the file, just with 0 sections
         }

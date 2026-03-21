@@ -1,6 +1,7 @@
-import type { Request } from "express";
+import type { Request, Response } from "express";
 import type { IncomingHttpHeaders } from "node:http";
 import { decodeAndValidateToken, InvalidAuthTokenError, type AuthTokenClaims } from "./tokens.js";
+import { isAdmin, getDocReadPermission } from "./acl.js";
 
 export interface AuthenticatedWriter {
   id: string;
@@ -81,17 +82,30 @@ export interface ResolveWriterOptions {
   requireExplicitAuth?: boolean;
 }
 
+export interface ResolvedWriter {
+  writer: AuthenticatedWriter;
+  /** Token expiry (epoch seconds). Infinity for single-user mode (no token). */
+  tokenExp: number;
+}
+
 export function resolveAuthenticatedWriterFromHeaders(
   headers: IncomingHttpHeaders,
   options?: ResolveWriterOptions,
 ): AuthenticatedWriter | null {
+  return resolveWriterWithExpiry(headers, options)?.writer ?? null;
+}
+
+export function resolveWriterWithExpiry(
+  headers: IncomingHttpHeaders,
+  options?: ResolveWriterOptions,
+): ResolvedWriter | null {
   // Always check for a Bearer token first — agents authenticate via Bearer
   // even in single-user mode (where the human has no token).
   const bearerToken = parseBearerTokenFromHeaders(headers);
   if (bearerToken) {
     try {
       const claims = decodeAndValidateToken(bearerToken);
-      return toWriter(claims);
+      return { writer: toWriter(claims), tokenExp: claims.exp };
     } catch (error) {
       if (!(error instanceof InvalidAuthTokenError)) {
         throw error;
@@ -101,7 +115,7 @@ export function resolveAuthenticatedWriterFromHeaders(
   }
 
   if (isSingleUserMode() && !options?.requireExplicitAuth) {
-    return getSingleUserIdentity();
+    return { writer: getSingleUserIdentity(), tokenExp: Infinity };
   }
 
   const cookieToken = parseCookieTokenFromHeaders(headers);
@@ -110,11 +124,58 @@ export function resolveAuthenticatedWriterFromHeaders(
   }
   try {
     const claims = decodeAndValidateToken(cookieToken);
-    return toWriter(claims);
+    return { writer: toWriter(claims), tokenExp: claims.exp };
   } catch (error) {
     if (error instanceof InvalidAuthTokenError) {
       return null;
     }
     throw error;
   }
+}
+
+/**
+ * Require the caller to be an authenticated admin.
+ * Returns the AuthenticatedWriter on success.
+ * Sends 401 if not authenticated, 403 if not admin; returns null in both cases.
+ * Agents are never admin — agents never appear in roles.json.
+ */
+export async function requireAdmin(req: Request, res: Response): Promise<AuthenticatedWriter | null> {
+  const writer = resolveAuthenticatedWriter(req);
+  if (!writer) {
+    res.status(401).json({ message: "Authentication required." });
+    return null;
+  }
+  if (writer.type === "agent") {
+    res.status(403).json({ message: "Admin access is not available to agents." });
+    return null;
+  }
+  const admin = await isAdmin(writer.id);
+  if (!admin) {
+    res.status(403).json({ message: "Admin access required." });
+    return null;
+  }
+  return writer;
+}
+
+/**
+ * Resolve access for a document read operation.
+ *
+ * Returns:
+ *   - AuthenticatedWriter if the caller is authenticated
+ *   - "public" if the document is publicly accessible and the caller is unauthenticated
+ *   - null if the caller is not authenticated and the document requires auth (401 sent)
+ */
+export async function resolvePublicOrAuthenticated(
+  req: Request,
+  res: Response,
+  docPath: string,
+): Promise<AuthenticatedWriter | "public" | null> {
+  const writer = resolveAuthenticatedWriter(req);
+  if (writer) return writer;
+
+  const permission = await getDocReadPermission(docPath);
+  if (permission === "public") return "public";
+
+  res.status(401).json({ message: "Authentication required." });
+  return null;
 }

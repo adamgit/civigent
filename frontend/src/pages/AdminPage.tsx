@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient, resolveWriterId } from "../services/api-client";
-import type { AdminConfig, HumanHumanInvolvementPresetName, GetAdminSnapshotHealthResponse, Proposal } from "../types/shared.js";
+import type { AdminConfig, HumanInvolvementPresetName, GetAdminSnapshotHealthResponse, Proposal } from "../types/shared.js";
 
-const HUMAN_INVOLVEMENT_PRESETS: { value: HumanHumanInvolvementPresetName; label: string; description: string }[] = [
+const HUMAN_INVOLVEMENT_PRESETS: { value: HumanInvolvementPresetName; label: string; description: string }[] = [
   { value: "yolo", label: "YOLO", description: "Almost no protection. ~30s wait." },
   { value: "aggressive", label: "Aggressive", description: "~5 minute wait after human activity." },
   { value: "eager", label: "Eager", description: "~2 hour wait. Balanced for most teams." },
@@ -82,7 +82,7 @@ export function AdminPage() {
     return counts;
   }, [proposals]);
 
-  const handlePresetChange = async (preset: HumanHumanInvolvementPresetName) => {
+  const handlePresetChange = async (preset: HumanInvolvementPresetName) => {
     setPresetSaving(true);
     try {
       const updated = await apiClient.updateAdminConfig({ humanInvolvement_preset: preset } as Partial<AdminConfig>);
@@ -115,6 +115,7 @@ export function AdminPage() {
       <p><Link to="/login">Change writer identity</Link></p>
 
       <h2>Agent Management</h2>
+      <p><Link to="/admin/permissions">Manage permissions</Link> — roles, defaults, and per-document access control.</p>
       <p><Link to="/admin/agents">Manage pre-authenticated agents</Link> — add, remove, and view agent keys.</p>
 
       <h2>Snapshots</h2>

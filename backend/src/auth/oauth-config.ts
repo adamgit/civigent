@@ -10,6 +10,7 @@
 
 import { randomBytes } from "node:crypto";
 import { isSingleUserMode } from "./context.js";
+import { readRuntimeAuthMode } from "./service.js";
 
 const DEFAULT_AUTH_SECRET = "development-insecure-secret";
 
@@ -100,6 +101,22 @@ export function getAgentAuthPolicy(): AgentAuthPolicy {
   return isLocal ? "open" : "register";
 }
 
+// ─── OIDC configuration ──────────────────────────────────────────
+
+/**
+ * Returns true if both KS_OIDC_ISSUER and KS_OIDC_CLIENT_ID are set.
+ */
+export function isOidcConfigured(): boolean {
+  return !!(process.env.KS_OIDC_ISSUER?.trim() && process.env.KS_OIDC_CLIENT_ID?.trim());
+}
+
+/**
+ * Human-readable display name for the OIDC login button.
+ */
+export function getOidcDisplayName(): string {
+  return process.env.KS_OIDC_DISPLAY_NAME?.trim() || "Sign in with SSO";
+}
+
 // ─── Startup validation ──────────────────────────────────────────
 
 /**
@@ -108,7 +125,26 @@ export function getAgentAuthPolicy(): AgentAuthPolicy {
  * Must be called before the server starts listening.
  */
 export function validateOAuthConfig(): void {
+  // Validate KS_AUTH_MODE early — throws on empty/unrecognised values
+  readRuntimeAuthMode();
+
   const singleUser = isSingleUserMode();
+
+  // single_user mode must never run on a public hostname — zero access control
+  if (singleUser) {
+    const hostname = process.env.KS_EXTERNAL_HOSTNAME?.trim() || "localhost";
+    const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
+    if (!isLocal) {
+      throw new Error(
+        `FATAL: KS_AUTH_MODE=single_user is not allowed when KS_EXTERNAL_HOSTNAME is "${hostname}".\n` +
+        `Single-user mode disables ALL authentication — running it on a public hostname\n` +
+        `exposes the entire system without access control.\n\n` +
+        `Either:\n` +
+        `  - Use KS_AUTH_MODE=oidc for production deployments\n` +
+        `  - Remove KS_EXTERNAL_HOSTNAME (defaults to localhost) for local evaluation`,
+      );
+    }
+  }
 
   // KS_EXTERNAL_PORT is always required — bare invocation without compose is not supported
   if (!process.env.KS_EXTERNAL_PORT?.trim()) {
@@ -144,6 +180,24 @@ export function validateOAuthConfig(): void {
         `FATAL: KS_AUTH_SECRET must be set to a secure value in non-single-user mode.\n` +
         `The default development secret is not safe for production.\n` +
         `Generate one with: openssl rand -hex 32`,
+      );
+    }
+  }
+
+  // KS_OIDC_ISSUER and KS_OIDC_CLIENT_ID are required in oidc or hybrid mode
+  const authMode = readRuntimeAuthMode();
+  if (authMode === "oidc" || authMode === "hybrid") {
+    if (!process.env.KS_OIDC_ISSUER?.trim()) {
+      throw new Error(
+        `FATAL: KS_OIDC_ISSUER is required when KS_AUTH_MODE is "${authMode}".\n` +
+        `Set it to the issuer URL of your OIDC provider.\n` +
+        `Example: KS_OIDC_ISSUER=https://accounts.google.com`,
+      );
+    }
+    if (!process.env.KS_OIDC_CLIENT_ID?.trim()) {
+      throw new Error(
+        `FATAL: KS_OIDC_CLIENT_ID is required when KS_AUTH_MODE is "${authMode}".\n` +
+        `Set it to the client ID registered with your OIDC provider.`,
       );
     }
   }

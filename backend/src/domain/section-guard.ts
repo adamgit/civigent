@@ -15,9 +15,13 @@
 import type {
   EvaluatedSection,
   ProposalHumanInvolvementEvaluation,
-  SectionVerdict,
-  BatchVerdict,
 } from "../types/shared.js";
+
+/** Per-section verdict from SectionGuard evaluation. */
+export type SectionVerdict = EvaluatedSection;
+
+/** Batch verdict from SectionGuard.evaluateBatch(). */
+export type BatchVerdict = ProposalHumanInvolvementEvaluation;
 import {
   evaluateSectionHumanInvolvement,
   computeAggregateImpact,
@@ -53,10 +57,10 @@ export class SectionGuard {
     ref: SectionRef,
     commitInfoMap: Map<string, SectionCommitInfo>,
   ): Promise<SectionVerdict> {
-    const presence = await SectionPresence.check(ref);
+    const present = await SectionPresence.check(ref);
 
     // Hard block: live session, dirty files, or human proposal — short-circuit to score=1.0
-    if (presence.present) {
+    if (present) {
       return {
         doc_path: ref.docPath,
         heading_path: ref.headingPath,
@@ -166,14 +170,14 @@ export class SectionGuard {
     humanProposalLockIndex: HumanProposalLockIndex,
   ): SectionVerdict {
     const ref = new SectionRef(section.doc_path, section.heading_path);
-    const presence = SectionPresence.checkWithCache(
+    const present = SectionPresence.checkWithCache(
       ref,
       dirtyFileSet,
       humanProposalLockIndex,
     );
 
     // Hard block: live session, dirty files, or human proposal — short-circuit to score=1.0
-    if (presence.present) {
+    if (present) {
       return {
         doc_path: section.doc_path,
         heading_path: section.heading_path,

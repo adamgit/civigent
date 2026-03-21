@@ -43,8 +43,7 @@ export function prependHeadings(
   bodyMap: Map<string, string>,
 ): Map<string, string> {
   const result = new Map(bodyMap);
-  skeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
-    if (isSubSkeleton) return;
+  skeleton.forEachSection((heading, level, _sectionFile, headingPath) => {
     const isRoot = level === 0 && heading === "";
     if (isRoot) return;
     const key = SectionRef.headingKey(headingPath);

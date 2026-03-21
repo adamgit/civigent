@@ -138,7 +138,7 @@ export function useDocumentWebSocket({
               const hpKey = sectionHeadingKey(s.heading_path);
               const match = sectionsRef.current.find((sec) => sectionHeadingKey(sec.heading_path) === hpKey);
               if (match) {
-                const fk = fragmentKeyFromSectionFile(match.section_file, match.heading_path);
+                const fk = fragmentKeyFromSectionFile(match.section_file, match.heading_path.length === 0);
                 next.delete(fk); // clean = absent from the map
               }
             }
@@ -265,7 +265,7 @@ export function useDocumentWebSocket({
         }
 
         // Snapshot old section keys before reload so we can detect removals.
-        const oldKeys = new Set(secs.map((s) => fragmentKeyFromSectionFile(s.section_file, s.heading_path)));
+        const oldKeys = new Set(secs.map((s) => fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0)));
 
         // Refresh section list and structure tree, then detect removed sections.
         loadSections(decodedDocPath).then(() => {
@@ -274,7 +274,7 @@ export function useDocumentWebSocket({
           // on the dead socket to clear them.
           if (focusedSectionIndexRef.current === null) return;
 
-          const newKeys = new Set(sectionsRef.current.map((s) => fragmentKeyFromSectionFile(s.section_file, s.heading_path)));
+          const newKeys = new Set(sectionsRef.current.map((s) => fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0)));
           const removedKeys = [...oldKeys].filter((k) => !newKeys.has(k));
           if (removedKeys.length > 0) {
             setDeletionPlaceholders((prev) => {
@@ -282,7 +282,7 @@ export function useDocumentWebSocket({
               for (const rk of removedKeys) {
                 if (next.some((p) => p.fragmentKey === rk)) continue;
                 // Find the old section's heading from the snapshot
-                const oldSec = secs.find((s) => fragmentKeyFromSectionFile(s.section_file, s.heading_path) === rk);
+                const oldSec = secs.find((s) => fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0) === rk);
                 next.push({
                   fragmentKey: rk,
                   formerHeading: oldSec ? (oldSec.heading_path[oldSec.heading_path.length - 1] ?? "") : "",

@@ -12,7 +12,7 @@
  * Also provides equality checks and heading-path matching.
  */
 
-import { sectionHeadingKey, sectionGlobalKey, sectionFragmentKey, type SectionTargetRef } from "../types/shared.js";
+import { sectionHeadingKey, sectionGlobalKey, type SectionTargetRef } from "../types/shared.js";
 
 function normalizeDocPath(docPath: string): string {
   return docPath.replace(/\\/g, "/").replace(/^\/+/, "");
@@ -52,11 +52,6 @@ export class SectionRef {
   /** Whether this ref points to the root section (empty heading path). */
   get isRoot(): boolean {
     return this.headingPath.length === 0;
-  }
-
-  /** Fragment key for Y.Doc: "__root__" for root, "section::" + key otherwise. */
-  get fragmentKey(): string {
-    return sectionFragmentKey(this.headingPath);
   }
 
   /** Deep equality: same docPath and headingPath. */
@@ -100,11 +95,4 @@ export class SectionRef {
     return a.every((seg, i) => seg === b[i]);
   }
 
-  /**
-   * Compute fragment key from a raw heading path without creating a full SectionRef.
-   * Returns "section::__root__" for empty paths, "section::" + join(">>") otherwise.
-   */
-  static fragmentKeyFromHeadingPath(headingPath: string[]): string {
-    return sectionFragmentKey(headingPath);
-  }
 }

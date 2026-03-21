@@ -33,6 +33,7 @@ import type { McpToolCallResult } from "../protocol.js";
 import type { Proposal, ProposalSection } from "../../types/shared.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
+import { checkDocPermission } from "../../auth/acl.js";
 
 // ─── Proposal validation helper ──────────────────────────
 
@@ -110,6 +111,9 @@ const createSectionHandler: ToolHandler = async (args, ctx) => {
     }
     throw error;
   }
+
+  const writeOk = await checkDocPermission(ctx.writer, docPath, "write");
+  if (!writeOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
@@ -205,6 +209,9 @@ const deleteSectionHandler: ToolHandler = async (args, ctx) => {
     throw error;
   }
 
+  const delWriteOk = await checkDocPermission(ctx.writer, docPath, "write");
+  if (!delWriteOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
+
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
   const { proposal, contentRoot: proposalContentRoot } = validated;
@@ -273,6 +280,9 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
   if (!Array.isArray(newParentPath)) {
     return makeToolErrorResult("Missing required parameter: new_parent_path (string[])");
   }
+
+  const moveWriteOk = await checkDocPermission(ctx.writer, docPath, "write");
+  if (!moveWriteOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
 
   // Validate doc_path before any state is created
   try {
@@ -382,6 +392,9 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
   }
   if (!newHeading) return makeToolErrorResult("Missing required parameter: new_heading");
 
+  const renameWriteOk = await checkDocPermission(ctx.writer, docPath, "write");
+  if (!renameWriteOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
+
   // Validate doc_path before any state is created
   try {
     resolveDocPathUnderContent(getContentRoot(), docPath);
@@ -473,6 +486,9 @@ const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
   if (!docPath) return makeToolErrorResult("Missing required parameter: path");
 
+  const delDocWriteOk = await checkDocPermission(ctx.writer, docPath, "write");
+  if (!delDocWriteOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
+
   // Validate doc_path before any state is created
   try {
     resolveDocPathUnderContent(getContentRoot(), docPath);
@@ -497,8 +513,8 @@ const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
     // Load canonical skeleton to get all sections for proposal metadata
     const skeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
     const headingPaths: string[][] = [];
-    skeleton.forEachSection((_heading, _level, _sectionFile, headingPath, _absolutePath, isSubSkeleton) => {
-      if (!isSubSkeleton) headingPaths.push([...headingPath]);
+    skeleton.forEachSection((_heading, _level, _sectionFile, headingPath) => {
+      headingPaths.push([...headingPath]);
     });
 
     // Create tombstone skeleton in proposal overlay
@@ -554,6 +570,12 @@ const renameDocumentHandler: ToolHandler = async (args, ctx) => {
   if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!newPath) return makeToolErrorResult("Missing required parameter: new_path");
 
+  // Check write permission on both source (delete) and destination (create)
+  const srcWriteOk = await checkDocPermission(ctx.writer, docPath, "write");
+  if (!srcWriteOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
+  const dstWriteOk = await checkDocPermission(ctx.writer, newPath, "write");
+  if (!dstWriteOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${newPath}".`);
+
   // Validate both old and new doc_path before any state is created
   const renameContentRoot = getContentRoot();
   for (const [label, p] of [["doc_path", docPath], ["new_path", newPath]] as const) {
@@ -581,8 +603,8 @@ const renameDocumentHandler: ToolHandler = async (args, ctx) => {
     // Load canonical skeleton for the old doc
     const oldSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
     const headingPaths: string[][] = [];
-    oldSkeleton.forEachSection((_heading, _level, _sectionFile, headingPath, _absolutePath, isSubSkeleton) => {
-      if (!isSubSkeleton) headingPaths.push([...headingPath]);
+    oldSkeleton.forEachSection((_heading, _level, _sectionFile, headingPath) => {
+      headingPaths.push([...headingPath]);
     });
 
     // Step 1: Write tombstone at old path in proposal overlay

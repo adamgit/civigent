@@ -7,6 +7,7 @@ import { ProposalsPage } from "../pages/ProposalsPage";
 import { ProposalDetailPage } from "../pages/ProposalDetailPage";
 import { AdminPage } from "../pages/AdminPage";
 import { AgentKeysPage } from "../pages/AgentKeysPage";
+import { PermissionsPage } from "../pages/PermissionsPage";
 import { AgentSimulatorPage } from "../pages/AgentSimulatorPage";
 import { CoordinationPage } from "../pages/CoordinationPage";
 import { LoginPage } from "../pages/LoginPage";
@@ -33,6 +34,7 @@ export const routeConfig: RouteObject[] = [
       { path: "proposals/:id", element: <ProposalDetailPage /> },
       { path: "admin", element: <AdminPage /> },
       { path: "admin/agents", element: <AgentKeysPage /> },
+      { path: "admin/permissions", element: <PermissionsPage /> },
       { path: "admin/snapshots", element: <SnapshotsPage /> },
       { path: "session-inspector", element: <SessionInspectorPage /> },
       { path: "history", element: <GitHistoryPage /> },

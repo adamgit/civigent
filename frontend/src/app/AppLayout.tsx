@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { apiClient, setUnauthorizedHandler, setWriterId } from "../services/api-client";
+import { apiClient, SystemStartingError, setUnauthorizedHandler, setSystemStartingHandler, setWriterId } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
 import { DocumentsTreeNav } from "../components/DocumentsTreeNav";
 import { MirrorPanel } from "../components/MirrorPanel";
@@ -89,6 +89,7 @@ export function AppLayout() {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [docBadges, setDocBadges] = useState<Set<string>>(() => readBadgeDocPaths());
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
+  const [systemStarting, setSystemStarting] = useState(true);
   const [windowFocused, setWindowFocused] = useState(() => document.hasFocus());
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
   const [adminExpanded, setAdminExpanded] = useState(false);
@@ -114,6 +115,7 @@ export function AppLayout() {
         setTreeError(null);
       })
       .catch((err) => {
+        if (err instanceof SystemStartingError) return;
         if (!options?.background) {
           setTreeError(err instanceof Error ? err.message : String(err));
         }
@@ -130,6 +132,7 @@ export function AppLayout() {
   const createDoc = useCallback(async (path: string): Promise<void> => {
     const docPath = path.endsWith(".md") ? path : `${path}.md`;
     await apiClient.createDocument(docPath);
+    loadTree({ background: true }).catch(() => { /* non-fatal refresh */ });
     navigate(`/docs/${docPath}`);
   }, [navigate]);
 
@@ -178,19 +181,62 @@ export function AppLayout() {
     };
   }, [location.hash, location.pathname, location.search, navigate]);
 
+  // Global handler: any API call that gets a 503 system_starting triggers startup UI
   useEffect(() => {
-    apiClient.getSessionInfo()
-      .then((session) => {
-        if (session.authenticated && session.user?.id) {
-          setWriterId(session.user.id);
-          setCurrentUser(session.user);
+    setSystemStartingHandler(() => setSystemStarting(true));
+    return () => setSystemStartingHandler(null);
+  }, []);
+
+  // Initial health check — prevent flash of error UI by checking readiness first
+  useEffect(() => {
+    apiClient.getHealth()
+      .then((health) => {
+        if (!health.ready) {
+          setSystemStarting(true);
+        } else {
+          // System is ready — open the gate, load session and tree
+          setSystemStarting(false);
+          apiClient.getSessionInfo()
+            .then((session) => {
+              if (session.authenticated && session.user?.id) {
+                setWriterId(session.user.id);
+                setCurrentUser(session.user);
+              }
+            })
+            .catch(() => {});
+          loadTree().catch(() => {});
         }
+      })
+      .catch(() => {
+        // Health endpoint unreachable (server not listening yet) — stay in startup state.
+        // The auto-retry interval will poll health and open the gate when ready.
       });
   }, []);
 
+  // Auto-retry when system is starting up
   useEffect(() => {
-    loadTree().catch(() => { /* non-fatal initial load */ });
-  }, []);
+    if (!systemStarting) return;
+    const timer = setInterval(() => {
+      apiClient.getHealth()
+        .then((health) => {
+          if (health.ready) {
+            setSystemStarting(false);
+            setTreeError(null);
+            loadTree().catch(() => {});
+            apiClient.getSessionInfo()
+              .then((session) => {
+                if (session.authenticated && session.user?.id) {
+                  setWriterId(session.user.id);
+                  setCurrentUser(session.user);
+                }
+              })
+              .catch(() => {});
+          }
+        })
+        .catch(() => { /* still starting */ });
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [systemStarting]);
 
   useEffect(() => {
     const handleFocus = () => setWindowFocused(true);
@@ -240,20 +286,27 @@ export function AppLayout() {
   useEffect(() => {
     wsClient.connect();
     let refreshTimer: number | null = null;
-    wsClient.onEvent((event) => {
-      if (event.type === "dirty:changed") {
-        return;
-      }
-      if (event.type !== "content:committed") {
-        return;
-      }
-      const committedDocPath = toCanonicalDocPath(event.doc_path);
+    const scheduleTreeRefresh = () => {
       if (refreshTimer != null) {
         window.clearTimeout(refreshTimer);
       }
       refreshTimer = window.setTimeout(() => {
         loadTree({ background: true }).catch(() => { /* non-fatal refresh */ });
       }, 180);
+    };
+    wsClient.onEvent((event) => {
+      if (event.type === "dirty:changed") {
+        return;
+      }
+      if (event.type === "catalog:changed" || event.type === "doc:renamed") {
+        scheduleTreeRefresh();
+        return;
+      }
+      if (event.type !== "content:committed") {
+        return;
+      }
+      const committedDocPath = toCanonicalDocPath(event.doc_path);
+      scheduleTreeRefresh();
 
       // Only show toast for agent commits
       if (event.source !== "agent_proposal") {
@@ -377,10 +430,12 @@ export function AppLayout() {
           {!loadingTree && syncingTree ? (
             <p className="text-[10px] text-text-faint px-1.5">Refreshing...</p>
           ) : null}
-          {treeError ? (
+          {systemStarting ? (
+            <p className="text-xs text-text-faint px-1.5 py-2">Waiting for system...</p>
+          ) : treeError ? (
             <p className="text-xs text-status-red px-1.5 py-2">Tree unavailable: {treeError}</p>
           ) : null}
-          {!loadingTree && !treeError && entries.length === 0 ? (
+          {!loadingTree && !systemStarting && !treeError && entries.length === 0 ? (
             <p className="text-xs text-sidebar-text px-1.5 py-2">
               No documents yet.{" "}
               <button
@@ -499,7 +554,18 @@ export function AppLayout() {
               ))}
             </div>
           ) : null}
-          <Outlet context={{ entries, treeLoading: loadingTree, treeSyncing: syncingTree, treeError, createDoc, currentUser } satisfies AppLayoutOutletContext} />
+          {systemStarting ? (
+            <div className="flex flex-col items-center justify-center h-full gap-4 text-text-faint">
+              <div className="flex gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse" />
+                <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse [animation-delay:300ms]" />
+                <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse [animation-delay:600ms]" />
+              </div>
+              <p className="text-sm">The system is starting up. This page will refresh automatically.</p>
+            </div>
+          ) : (
+            <Outlet context={{ entries, treeLoading: loadingTree, treeSyncing: syncingTree, treeError, createDoc, currentUser } satisfies AppLayoutOutletContext} />
+          )}
         </main>
         <MirrorPanel />
       </div>

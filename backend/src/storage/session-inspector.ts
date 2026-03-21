@@ -8,6 +8,7 @@
 import path from "node:path";
 import { readFile, readdir } from "node:fs/promises";
 import { getContentRoot, getSessionDocsRoot, getSessionAuthorsRoot } from "./data-root.js";
+import { ContentLayer } from "./content-layer.js";
 import { scanSessionFragmentDocPaths, listRawFragments, readRawFragment } from "./session-store.js";
 import { DocumentSkeleton, SECTIONS_DIR_SUFFIX } from "./document-skeleton.js";
 
@@ -55,13 +56,13 @@ export async function getSessionState(): Promise<SessionState> {
     const files = await listRawFragments(docPath);
     let skeleton: DocumentSkeleton | null = null;
     try {
-      skeleton = await DocumentSkeleton.fromDisk(
-        docPath,
+      const sessionOverlay = new ContentLayer(
         path.join(getSessionDocsRoot(), "content"),
-        getContentRoot(),
+        new ContentLayer(getContentRoot()),
       );
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      skeleton = await sessionOverlay.readSkeleton(docPath);
+    } catch {
+      // Skeleton doesn't exist or is corrupt — fragments will show as unresolvable
     }
     const entries: FragmentFileInfo[] = [];
     for (const filename of files) {
@@ -106,10 +107,12 @@ export async function getSessionState(): Promise<SessionState> {
     const fullPath = path.join(contentSubdir, relPath);
     const fileContent = await readFile(fullPath, "utf8");
 
-    const overlaySkeleton = await DocumentSkeleton.fromDisk(docPath, contentSubdir, getContentRoot());
+    const canonical = new ContentLayer(getContentRoot());
+    const overlay = new ContentLayer(contentSubdir, canonical);
+    const overlaySkeleton = await overlay.readSkeleton(docPath);
     const sectionRefSet = new Set<string>();
-    overlaySkeleton.forEachSection((_h, _l, sectionFile, _hp, _ap, isSubSkeleton) => {
-      if (!isSubSkeleton) sectionRefSet.add(sectionFile);
+    overlaySkeleton.forEachSection((_h, _l, sectionFile) => {
+      sectionRefSet.add(sectionFile);
     });
 
     const sectionsDir = DocumentSkeleton.sectionsDir(docPath, contentSubdir);

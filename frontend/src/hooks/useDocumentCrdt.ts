@@ -340,7 +340,7 @@ export function useDocumentCrdt({
   const setViewingSections = useCallback((provider: CrdtProvider, sectionIndex: number) => {
     const section = sections[sectionIndex];
     if (!section) return;
-    const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path);
+    const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path.length === 0);
     // viewingPresence: client-informational, cosmetic UI only.
     // Signal source is editor focus for now; can be swapped to
     // IntersectionObserver without touching backend.

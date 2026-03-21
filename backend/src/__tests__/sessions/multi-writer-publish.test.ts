@@ -8,7 +8,7 @@ import {
   setFlushCallback,
   destroyAllSessions,
 } from "../../crdt/ydoc-lifecycle.js";
-import { FragmentStore } from "../../crdt/fragment-store.js";
+import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { commitDirtySections, setAutoCommitEventHandler } from "../../storage/auto-commit.js";
 import { flushDocSessionToDisk } from "../../storage/session-store.js";
 import { getHeadSha } from "../../storage/git-repo.js";
@@ -42,10 +42,10 @@ describe("multi-writer publish clears co-editors' dirty state", () => {
 
     // Find the fragment key for "Overview" section
     let overviewKey: string | null = null;
-    session.fragments.skeleton.forEachSection((heading, level, sectionFile, _hp, _ap, isSubSkeleton) => {
-      if (!isSubSkeleton && heading === "Overview") {
+    session.fragments.skeleton.forEachSection((heading, level, sectionFile) => {
+      if (heading === "Overview") {
         const isRoot = level === 0 && heading === "";
-        overviewKey = FragmentStore.fragmentKeyForFileId(sectionFile, isRoot);
+        overviewKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
       }
     });
     expect(overviewKey).not.toBeNull();

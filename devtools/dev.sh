@@ -2,10 +2,7 @@
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_ROOT="${DEV_DATA_ROOT:-$REPO_ROOT/dev-data}"
-if [ ! -d "$DATA_ROOT/content" ] || [ ! -d "$DATA_ROOT/proposals" ]; then
-  mkdir -p "$DATA_ROOT"
-  cp -a "$REPO_ROOT/sample-wiki/." "$DATA_ROOT"/
-fi
+mkdir -p "$DATA_ROOT"
 PORT="${PORT:-3000}"
 BACK_PID=""
 FRONT_PID=""

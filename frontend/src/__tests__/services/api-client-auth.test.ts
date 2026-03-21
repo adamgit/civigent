@@ -16,10 +16,10 @@ describe("api-client auth endpoints", () => {
 
   it("getAuthMethods calls /api/auth/methods", async () => {
     fetchMock = installFetchMock(async () =>
-      jsonResponse({ methods: ["credentials", "oidc"] }),
+      jsonResponse({ methods: ["oidc"] }),
     );
     const result = await apiClient.getAuthMethods();
-    expect(result.methods).toContain("credentials");
+    expect(result.methods).toContain("oidc");
     expect(fetchMock.calls.some((c) => String(c.input) === "/api/auth/methods")).toBe(true);
   });
 
@@ -56,44 +56,6 @@ describe("api-client auth endpoints", () => {
     expect(loginCall).toBeDefined();
     const body = JSON.parse(loginCall!.init!.body as string);
     expect(body.provider).toBe("single_user");
-  });
-
-  it("loginCredentials sends username/password to /api/auth/login", async () => {
-    fetchMock = installFetchMock(async () =>
-      jsonResponse({
-        token: "t",
-        access_token: "at",
-        refresh_token: "rt",
-        identity: { id: "user-1", displayName: "Alice" },
-      }),
-    );
-    await apiClient.loginCredentials({
-      email: "alice@example.com",
-      username: "alice",
-      password: "secret",
-    });
-
-    const loginCall = fetchMock.calls.find(
-      (c) => String(c.input) === "/api/auth/login" && c.init?.method === "POST",
-    );
-    expect(loginCall).toBeDefined();
-    const body = JSON.parse(loginCall!.init!.body as string);
-    expect(body.provider).toBe("credentials");
-    expect(body.email).toBe("alice@example.com");
-    expect(body.password).toBe("secret");
-  });
-
-  it("loginCredentials stores writer ID on success", async () => {
-    fetchMock = installFetchMock(async () =>
-      jsonResponse({
-        token: "t",
-        access_token: "at",
-        refresh_token: "rt",
-        identity: { id: "user-from-login", displayName: "User" },
-      }),
-    );
-    await apiClient.loginCredentials({ email: "a@b.com", password: "p" });
-    expect(localStorage.getItem("ks_writer_id")).toBe("user-from-login");
   });
 
   it("registerAgent calls /api/auth/agent/register is not on apiClient (tested via page)", () => {
