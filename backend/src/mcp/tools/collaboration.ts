@@ -260,7 +260,7 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
     }
   }
 
-  const { proposal, contentRoot } = await createProposal(
+  const { id: mcpProposalId, contentRoot } = await createProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     intent,
     sections.map((s) => ({
@@ -306,13 +306,13 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
   }
 
   // Evaluate immediately (informational — agent must call commit_proposal explicitly)
-  const { evaluation, sections: evaluatedSections } = await evaluateProposalHumanInvolvement(proposal);
+  const { evaluation, sections: evaluatedSections } = await evaluateProposalHumanInvolvement(mcpProposalId);
 
   // Broadcast proposal:created so frontends show the pending indicator
   if (ctx.emitEvent && evaluatedSections.length > 0) {
     ctx.emitEvent({
       type: "proposal:pending",
-      proposal_id: proposal.id,
+      proposal_id: mcpProposalId,
       doc_path: evaluatedSections[0].doc_path,
       heading_paths: evaluatedSections.map((s) => s.heading_path),
       writer_id: writer.id,
@@ -323,7 +323,7 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
 
   const outcome = evaluation.all_sections_accepted ? "accepted" : "blocked";
   return jsonToolResult({
-    proposal_id: proposal.id,
+    proposal_id: mcpProposalId,
     status: "pending",
     outcome,
     ...(outcome === "blocked" ? {
@@ -358,7 +358,7 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
       if (!wpOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${dp}".`);
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal);
+    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
 
     if (evaluation.all_sections_accepted) {
       const scores: SectionScoreSnapshot = {};
@@ -366,7 +366,7 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
         scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
       }
 
-      const committedHead = await commitProposalToCanonical(proposal, scores);
+      const committedHead = await commitProposalToCanonical(proposalId, scores);
 
       if (ctx.writer.type === "agent") {
         const { agentEventLog } = await import("../agent-event-log.js");
@@ -489,10 +489,10 @@ const readProposalHandler: ToolHandler = async (args) => {
   try {
     const { proposal, sectionContent } = await readProposalWithContent(proposalId);
 
-    // Re-evaluate human-involvement for pending proposals
-    let evaluation = proposal.humanInvolvement_evaluation;
-    if (proposal.status === "pending") {
-      const result = await evaluateProposalHumanInvolvement(proposal);
+    // Re-evaluate human-involvement for pending/committing proposals
+    let evaluation: import("../../types/shared.js").ProposalHumanInvolvementEvaluation | undefined;
+    if (proposal.status === "pending" || proposal.status === "committing") {
+      const result = await evaluateProposalHumanInvolvement(proposalId);
       evaluation = result.evaluation;
     }
 
@@ -503,7 +503,7 @@ const readProposalHandler: ToolHandler = async (args) => {
     }
 
     return jsonToolResult({
-      proposal: { ...proposal, humanInvolvement_evaluation: evaluation },
+      proposal: { ...proposal, ...(evaluation ? { humanInvolvement_evaluation: evaluation } : {}) },
       section_content: contentMap,
     });
   } catch (error) {
@@ -582,7 +582,7 @@ const writeSectionHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(updated);
+    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
 
     return jsonToolResult({
       proposal_id: proposalId,

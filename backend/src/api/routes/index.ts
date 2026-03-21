@@ -28,6 +28,7 @@ import type {
   SectionMeta,
   HumanInvolvementPresetName,
   SectionScoreSnapshot,
+  ProposalDTO,
 } from "../../types/shared.js";
 import { HUMAN_INVOLVEMENT_PRESETS } from "../../types/shared.js";
 import path from "node:path";
@@ -662,7 +663,24 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       const tmpContentRoot = path.join(tmpRoot, "content");
       const historicalLayer = new ContentLayer(tmpContentRoot);
-      const content = await historicalLayer.readAssembledDocument(docPath);
+      let content: string;
+      try {
+        content = await historicalLayer.readAssembledDocument(docPath);
+      } catch (assemblyErr) {
+        await rm(tmpRoot, { recursive: true, force: true });
+        if (assemblyErr instanceof DocumentAssemblyError) {
+          // Historical commit is corrupt (missing section files) — return descriptive error
+          // instead of 500 since we can't fix git history retroactively
+          res.json({
+            doc_path: docPath,
+            sha,
+            content: null,
+            error: `This historical version has missing section files and cannot be fully assembled. ${assemblyErr.message}`,
+          });
+          return;
+        }
+        throw assemblyErr;
+      }
       await rm(tmpRoot, { recursive: true, force: true });
 
       res.json({ doc_path: docPath, sha, content });
@@ -685,14 +703,14 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const { createRestoreProposal } = await import("../../storage/restore-service.js");
       const { proposal } = await createRestoreProposal(docPath, sha, writer);
 
-      const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal);
+      const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal.id);
 
       if (evaluation.all_sections_accepted) {
         const scores: SectionScoreSnapshot = {};
         for (const s of sections) {
           scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
         }
-        const committedSha = await commitProposalToCanonical(proposal, scores);
+        const committedSha = await commitProposalToCanonical(proposal.id, scores);
         res.json({ committed_sha: committedSha });
       } else {
         res.json({
@@ -1342,7 +1360,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       // Create proposal
-      const { proposal, contentRoot: propContentRoot } = await createProposal(
+      const { id: proposalId, contentRoot: propContentRoot } = await createProposal(
         { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
         body.intent,
         sections,
@@ -1359,7 +1377,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       // Human reservations skip human-involvement evaluation — go straight to pending
       if (writer.type === "human") {
         const response: CreateProposalResponse = {
-          proposal_id: proposal.id,
+          proposal_id: proposalId,
           status: "pending",
           outcome: "accepted",
           evaluation: {
@@ -1375,7 +1393,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         if (onWsEvent && sections.length > 0) {
           onWsEvent({
             type: "proposal:pending",
-            proposal_id: proposal.id,
+            proposal_id: proposalId,
             doc_path: sections[0].doc_path,
             heading_paths: sections.map((s) => s.heading_path),
             writer_id: writer.id,
@@ -1389,12 +1407,12 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       // Agent proposals: evaluate human involvement (informational — must commit explicitly)
-      const { evaluation, sections: evalSections } = await evaluateProposalHumanInvolvement(proposal);
+      const { evaluation, sections: evalSections } = await evaluateProposalHumanInvolvement(proposalId);
 
       if (onWsEvent && evalSections.length > 0) {
         onWsEvent({
           type: "proposal:pending",
-          proposal_id: proposal.id,
+          proposal_id: proposalId,
           doc_path: evalSections[0].doc_path,
           heading_paths: evalSections.map((s) => s.heading_path),
           writer_id: writer.id,
@@ -1404,7 +1422,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       const response: CreateProposalResponse = {
-        proposal_id: proposal.id,
+        proposal_id: proposalId,
         status: "pending",
         outcome: evaluation.all_sections_accepted ? "accepted" : "blocked",
         evaluation,
@@ -1463,16 +1481,16 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     try {
       const proposal = await readProposal(req.params.id);
 
-      // Re-evaluate human-involvement for pending proposals
-      let involvementEvaluation = proposal.humanInvolvement_evaluation;
-      if (proposal.status === "pending") {
-        const { evaluation } = await evaluateProposalHumanInvolvement(proposal);
-        involvementEvaluation = evaluation;
+      // Enrich pending/committing proposals with live human-involvement evaluation
+      let dto: ProposalDTO;
+      if (proposal.status === "committed" || proposal.status === "withdrawn") {
+        dto = proposal;
+      } else {
+        const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal.id);
+        dto = { ...proposal, humanInvolvement_evaluation: evaluation, sections };
       }
 
-      const response: ReadProposalResponse = {
-        proposal: { ...proposal, humanInvolvement_evaluation: involvementEvaluation },
-      };
+      const response: ReadProposalResponse = { proposal: dto };
       res.json(response);
     } catch (error) {
       if (error instanceof ProposalNotFoundError) {
@@ -1587,7 +1605,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       // Re-evaluate human-involvement for agent proposals
-      const { evaluation, sections } = await evaluateProposalHumanInvolvement(updated);
+      const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal.id);
 
       res.json({
         proposal: { ...updated, humanInvolvement_evaluation: evaluation },
@@ -1639,7 +1657,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           scores[SectionRef.fromTarget(s).globalKey] = 0;
         }
 
-        const committedHead = await commitProposalToCanonical(proposal, scores);
+        const committedHead = await commitProposalToCanonical(proposal.id, scores);
 
         const source = "human_publish" as const;
         if (onWsEvent) {
@@ -1673,7 +1691,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       // Agent proposals: evaluate human-involvement
-      const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal);
+      const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal.id);
 
       if (evaluation.all_sections_accepted) {
         const scores: SectionScoreSnapshot = {};
@@ -1681,7 +1699,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
         }
 
-        const committedHead = await commitProposalToCanonical(proposal, scores);
+        const committedHead = await commitProposalToCanonical(proposal.id, scores);
 
         if (onWsEvent) {
           onWsEvent({
@@ -2087,14 +2105,14 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       // Run through the shared import pipeline
-      const { proposal } = await importFilesToProposal(
+      const { id: importProposalId } = await importFilesToProposal(
         stagingFiles,
         { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
         description.trim(),
       );
 
       // Evaluate and attempt commit
-      const { evaluation, sections: evalSections } = await evaluateProposalHumanInvolvement(proposal);
+      const { evaluation, sections: evalSections } = await evaluateProposalHumanInvolvement(importProposalId);
 
       if (evaluation.all_sections_accepted) {
         const scores: SectionScoreSnapshot = {};
@@ -2102,7 +2120,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
         }
 
-        const committedHead = await commitProposalToCanonical(proposal, scores);
+        const committedHead = await commitProposalToCanonical(importProposalId, scores);
 
         // Delete staging folder on successful commit
         await deleteStagingFolder(importId);
@@ -2120,7 +2138,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         }
 
         res.status(201).json({
-          proposal_id: proposal.id,
+          proposal_id: importProposalId,
           status: "committed",
           outcome: "accepted",
           committed_head: committedHead,
@@ -2134,17 +2152,17 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         if (onWsEvent && evalSections.length > 0) {
           onWsEvent({
             type: "proposal:pending",
-            proposal_id: proposal.id,
+            proposal_id: importProposalId,
             doc_path: evalSections[0].doc_path,
             heading_paths: evalSections.map((s) => s.heading_path),
             writer_id: writer.id,
             writer_display_name: writer.displayName,
-            intent: proposal.intent,
+            intent: description.trim(),
           });
         }
 
         res.status(201).json({
-          proposal_id: proposal.id,
+          proposal_id: importProposalId,
           status: "pending",
           outcome: "blocked",
           evaluation,
@@ -2714,18 +2732,18 @@ function registerDocumentCatchAllRoutes(
         await transitionToWithdrawn(existing.id, "auto-withdrawn by PATCH");
       }
 
-      const { proposal, contentRoot } = await createProposal(
+      const { id: patchProposalId, contentRoot: patchContentRoot } = await createProposal(
         { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
         intent,
         [{ doc_path: docPath, heading_path: [] }],
       );
-      const proposalContentLayer = new ContentLayer(contentRoot, new ContentLayer(getContentRoot()));
+      const proposalContentLayer = new ContentLayer(patchContentRoot, new ContentLayer(getContentRoot()));
       const patchTargets = await proposalContentLayer.writeAssembledDocument(docPath, patchedContent);
       if (patchTargets.length > 1 || (patchTargets.length === 1 && patchTargets[0].heading_path.length > 0)) {
-        await updateProposalSections(proposal.id, patchTargets);
+        await updateProposalSections(patchProposalId, patchTargets);
       }
 
-      const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal);
+      const { evaluation, sections } = await evaluateProposalHumanInvolvement(patchProposalId);
 
       if (evaluation.all_sections_accepted) {
         const scores: SectionScoreSnapshot = {};
@@ -2733,7 +2751,7 @@ function registerDocumentCatchAllRoutes(
           scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
         }
 
-        const committedHead = await commitProposalToCanonical(proposal, scores);
+        const committedHead = await commitProposalToCanonical(patchProposalId, scores);
 
         if (onWsEvent) {
           onWsEvent({
@@ -2755,7 +2773,7 @@ function registerDocumentCatchAllRoutes(
       } else {
         res.status(409).json({
           doc_path: docPath,
-          proposal_id: proposal.id,
+          proposal_id: patchProposalId,
           status: "pending",
           outcome: "blocked",
           blocked_sections: sections.filter((s) => s.blocked),

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient, resolveWriterId } from "../services/api-client";
-import type { AdminConfig, HumanInvolvementPresetName, GetAdminSnapshotHealthResponse, Proposal } from "../types/shared.js";
+import type { AdminConfig, HumanInvolvementPresetName, GetAdminSnapshotHealthResponse, AnyProposal } from "../types/shared.js";
 
 const HUMAN_INVOLVEMENT_PRESETS: { value: HumanInvolvementPresetName; label: string; description: string }[] = [
   { value: "yolo", label: "YOLO", description: "Almost no protection. ~30s wait." },
@@ -31,7 +31,7 @@ function writeNumberSetting(key: string, value: number): void {
 
 export function AdminPage() {
   const [health, setHealth] = useState<{ ok: boolean } | null>(null);
-  const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [proposals, setProposals] = useState<AnyProposal[]>([]);
   const [sessionWriterId, setSessionWriterId] = useState<string | null>(null);
   const [activityCount, setActivityCount] = useState(0);
   const [adminConfig, setAdminConfig] = useState<AdminConfig | null>(null);

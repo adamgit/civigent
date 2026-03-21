@@ -10,7 +10,7 @@ import { writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import {
   sectionGlobalKey,
-  type Proposal,
+  type ProposalId,
   type ProposalHumanInvolvementEvaluation,
   type EvaluatedSection,
   type WriterIdentity,
@@ -19,7 +19,7 @@ import {
 import { SectionGuard } from "../domain/section-guard.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { getContentRoot, getDataRoot } from "./data-root.js";
-import { proposalContentRoot } from "./proposal-repository.js";
+import { proposalContentRoot, readProposal } from "./proposal-repository.js";
 import { getHeadSha, gitExec } from "./git-repo.js";
 import { resolveHeadingPath } from "./heading-resolver.js";
 import { ContentLayer, SectionNotFoundError } from "./content-layer.js";
@@ -38,11 +38,13 @@ export interface EvaluationResult {
 
 /**
  * Compute human involvement for each section in a proposal.
+ * Reads the proposal from disk to guarantee fresh data.
  * Delegates to SectionGuard.evaluateBatch() for all evaluation logic.
  */
 export async function evaluateProposalHumanInvolvement(
-  proposal: Proposal,
+  proposalId: ProposalId,
 ): Promise<EvaluationResult> {
+  const proposal = await readProposal(proposalId);
   return SectionGuard.evaluateBatch(
     proposal.sections.map((s) => ({
       doc_path: s.doc_path,
@@ -55,11 +57,13 @@ export async function evaluateProposalHumanInvolvement(
 
 /**
  * Write a proposal's section content to canonical files and create a git commit.
+ * Reads the proposal from disk to guarantee fresh data — no stale-object bugs.
  */
 export async function commitProposalToCanonical(
-  proposal: Proposal,
+  proposalId: ProposalId,
   scores: SectionScoreSnapshot,
 ): Promise<string> {
+  const proposal = await readProposal(proposalId);
   const dataRoot = getDataRoot();
 
   // Transition to committing (guard state)
@@ -84,22 +88,73 @@ export async function commitProposalToCanonical(
       }
     }
 
-    // Copy each section's content from proposal content root to canonical
+    // Copy section body files from proposal overlay to canonical.
+    // For promoted docs: walk the promoted skeleton to discover ALL body files (by absolute
+    // path, not by heading path from proposal.sections — the skeleton is authoritative).
+    // For non-promoted docs: copy by heading path from proposal.sections.
     const canonical = new ContentLayer(canonicalRoot);
     const proposalContent = new ContentLayer(overlayRoot, canonical);
+    const copyTasks: Promise<void>[] = [];
+
+    for (const docPath of promotedDocs) {
+      const promotedSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
+      const overlayContentLayer = new ContentLayer(overlayRoot);
+
+      // Copy each body file that exists in the proposal overlay
+      promotedSkeleton.forEachSection((_heading, _level, _sectionFile, headingPath) => {
+        const sectionRef = new SectionRef(docPath, [...headingPath]);
+        copyTasks.push(
+          overlayContentLayer.readSection(sectionRef)
+            .then(async (content) => {
+              await canonical.writeSection(sectionRef, content);
+            })
+            .catch((err) => {
+              // Body file might not exist in overlay (section unchanged from canonical) — skip
+              if (err instanceof SectionNotFoundError) return;
+              throw err;
+            }),
+        );
+      });
+    }
+
+    // Non-promoted docs: copy by heading path from proposal.sections
     for (const section of proposal.sections) {
+      if (promotedDocs.has(section.doc_path)) continue; // already handled above
       const sectionRef = SectionRef.fromTarget(section);
-      try {
-        const content = await proposalContent.readSection(sectionRef);
-        await canonical.writeSection(sectionRef, content);
-      } catch (err) {
-        // Only tolerate missing section bodies when the document had structural
-        // changes promoted (skeleton rewrite may have removed the section).
-        // All other errors must surface — silent catches hide real failures.
-        if (err instanceof SectionNotFoundError && promotedDocs.has(section.doc_path)) {
-          continue;
+      copyTasks.push(
+        proposalContent.readSection(sectionRef)
+          .then(async (content) => {
+            await canonical.writeSection(sectionRef, content);
+          })
+          .catch((err) => {
+            if (err instanceof SectionNotFoundError) return;
+            throw err;
+          }),
+      );
+    }
+
+    await Promise.all(copyTasks);
+
+    // Validate: every skeleton entry must have a body file in canonical.
+    // This is the last gate before git add bakes corruption into history.
+    const { access: accessFile } = await import("node:fs/promises");
+    for (const docPath of promotedDocs) {
+      const finalSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
+      const missingFiles: string[] = [];
+      finalSkeleton.forEachSection((_heading, _level, _sectionFile, _headingPath, absolutePath) => {
+        // Collect for async check below (forEachSection is sync)
+        missingFiles.push(absolutePath);
+      });
+      for (const absPath of missingFiles) {
+        try {
+          await accessFile(absPath);
+        } catch {
+          throw new Error(
+            `Commit validation failed for "${docPath}": skeleton references body file "${path.basename(absPath)}" but the file does not exist on disk. ` +
+            `This indicates a bug in the proposal pipeline — the skeleton was promoted but the body file was not copied. ` +
+            `Proposal: ${proposal.id}`,
+          );
         }
-        throw err;
       }
     }
 

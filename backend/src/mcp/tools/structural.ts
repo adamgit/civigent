@@ -30,7 +30,7 @@ import {
 } from "../../storage/proposal-repository.js";
 import { evaluateProposalHumanInvolvement } from "../../storage/commit-pipeline.js";
 import type { McpToolCallResult } from "../protocol.js";
-import type { Proposal, ProposalSection } from "../../types/shared.js";
+import type { AnyProposal, ProposalSection } from "../../types/shared.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { checkDocPermission } from "../../auth/acl.js";
@@ -40,7 +40,7 @@ import { checkDocPermission } from "../../auth/acl.js";
 async function loadAndValidateProposal(
   proposalId: string,
   writerId: string,
-): Promise<{ proposal: Proposal; contentRoot: string } | McpToolCallResult> {
+): Promise<{ proposal: AnyProposal; contentRoot: string } | McpToolCallResult> {
   try {
     const proposal = await readProposal(proposalId);
     if (proposal.writer.id !== writerId) {
@@ -168,7 +168,7 @@ const createSectionHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(updated);
+    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
 
     return jsonToolResult({
       proposal_id: proposalId,
@@ -246,7 +246,7 @@ const deleteSectionHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(updated);
+    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
 
     return jsonToolResult({
       proposal_id: proposalId,
@@ -358,7 +358,7 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(updated);
+    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
 
     return jsonToolResult({
       proposal_id: proposalId,
@@ -459,7 +459,7 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(updated);
+    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
 
     return jsonToolResult({
       proposal_id: proposalId,
@@ -543,7 +543,7 @@ const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(updated);
+    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
 
     return jsonToolResult({
       proposal_id: proposalId,
@@ -664,7 +664,7 @@ const renameDocumentHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(updated);
+    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
 
     return jsonToolResult({
       proposal_id: proposalId,

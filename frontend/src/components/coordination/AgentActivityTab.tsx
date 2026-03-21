@@ -1,11 +1,11 @@
-import type { Proposal } from "../../types/shared.js";
+import type { AnyProposal } from "../../types/shared.js";
 import type { AgentReadingState } from "./HeatmapTab";
 import { ActiveAgentsPanel } from "./ActiveAgentsPanel";
 import { ProposalTimeline, type ProposalTimelineEntry } from "./ProposalTimeline";
 
 interface AgentActivityTabProps {
   agentReadings: Map<string, AgentReadingState>;
-  proposals: Proposal[];
+  proposals: AnyProposal[];
   proposalTimeline: ProposalTimelineEntry[];
 }
 

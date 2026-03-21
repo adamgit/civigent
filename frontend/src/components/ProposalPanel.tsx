@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { apiClient, resolveWriterId } from "../services/api-client";
-import type { Proposal } from "../types/shared.js";
+import type { AnyProposal } from "../types/shared.js";
 
 export interface ProposalPanelProps {
   /** Currently active proposal ID (if in proposal mode). */
@@ -31,7 +31,7 @@ export function ProposalPanel({
   onExitProposalMode,
 }: ProposalPanelProps) {
   const [intent, setIntent] = useState("");
-  const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [proposal, setProposal] = useState<AnyProposal | null>(null);
   const [creating, setCreating] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [cancelling, setCancelling] = useState(false);

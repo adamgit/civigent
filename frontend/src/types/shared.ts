@@ -41,8 +41,6 @@ export type {
   LoginProvider,
   PresenceDoneEvent,
   PresenceEditingEvent,
-  Proposal,
-  ProposalFile,
   ProposalFileBase,
   CommittedProposalFile,
   WithdrawnProposalFile,

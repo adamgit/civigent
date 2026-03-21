@@ -7,7 +7,7 @@
  * Singleton instance exported for use by MCP tool dispatch and proposal lifecycle.
  */
 
-import type { WriterIdentity, AgentConnectionStatus, AgentActivitySummary, AgentProposalSnapshot, ProposalFile, ProposalStatus } from "../types/shared.js";
+import type { WriterIdentity, AgentConnectionStatus, AgentActivitySummary, AgentProposalSnapshot, AnyProposal, ProposalStatus } from "../types/shared.js";
 
 // ─── Event types ─────────────────────────────────────────────────
 
@@ -132,7 +132,7 @@ export class AgentEventLog {
    */
   buildFullSummary(
     registeredAgents: Array<{ id: string; displayName: string }>,
-    allProposals: Array<ProposalFile & { status: ProposalStatus }>,
+    allProposals: AnyProposal[],
   ): AgentActivitySummary[] {
     // Merge registered + transient agents from log
     const agentMap = new Map<string, { id: string; displayName: string }>();

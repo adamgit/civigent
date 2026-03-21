@@ -2,10 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { jsonResponse } from "../../helpers/fetch-mocks";
-import type { Proposal } from "../../../types/shared";
+import type { AnyProposal } from "../../../types/shared";
 import { ProposalDetailPage } from "../../../pages/ProposalDetailPage";
 
-const pendingProposal: Proposal = {
+const pendingProposal: AnyProposal = {
   id: "prop-1",
   kind: "agent_write",
   writer: { id: "agent-1", type: "agent", displayName: "Agent Alpha" },
@@ -23,7 +23,7 @@ const pendingProposal: Proposal = {
   created_at: "2026-01-01T00:00:00.000Z",
 };
 
-const committedProposal: Proposal = {
+const committedProposal: AnyProposal = {
   ...pendingProposal,
   id: "prop-committed",
   status: "committed",

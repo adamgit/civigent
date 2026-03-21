@@ -2,10 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { jsonResponse } from "../../helpers/fetch-mocks";
-import type { Proposal } from "../../../types/shared";
+import type { AnyProposal } from "../../../types/shared";
 import { ProposalsPage } from "../../../pages/ProposalsPage";
 
-const sampleProposals: Proposal[] = [
+const sampleProposals: AnyProposal[] = [
   {
     id: "prop-1",
     kind: "agent_write",

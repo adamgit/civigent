@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { jsonResponse } from "../../helpers/fetch-mocks";
-import type { Proposal } from "../../../types/shared";
+import type { AnyProposal } from "../../../types/shared";
 
 vi.mock("../../../services/api-client", async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
@@ -13,7 +13,7 @@ vi.mock("../../../services/api-client", async (importOriginal) => {
 
 import { ProposalPanel } from "../../../components/ProposalPanel";
 
-const sampleProposal: Proposal = {
+const sampleProposal: AnyProposal = {
   id: "prop-1",
   kind: "human_reservation",
   writer: { id: "test-user", type: "human", display_name: "Test User" },

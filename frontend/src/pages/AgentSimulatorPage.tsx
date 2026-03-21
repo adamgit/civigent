@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { DocStructureNode, Proposal } from "../types/shared.js";
+import type { DocStructureNode, AnyProposal } from "../types/shared.js";
 import { apiClient } from "../services/api-client.js";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 
@@ -285,7 +285,7 @@ export function AgentSimulatorPage() {
   const [cancelReason, setCancelReason] = useState("Testing cancellation");
 
   // Existing pending proposals
-  const [pendingProposals, setPendingProposals] = useState<Proposal[]>([]);
+  const [pendingProposals, setPendingProposals] = useState<AnyProposal[]>([]);
   const [withdrawingId, setWithdrawingId] = useState<string | null>(null);
 
   // Document tree for picker
@@ -320,7 +320,7 @@ export function AgentSimulatorPage() {
   // ── Fetch pending proposals ─────────────────────────────────────────────
 
   const fetchPendingProposals = useCallback(async () => {
-    const resp = await agentFetch<{ proposals?: Proposal[] }>(
+    const resp = await agentFetch<{ proposals?: AnyProposal[] }>(
       "/api/proposals?status=pending",
       agent?.token ?? "",
     );

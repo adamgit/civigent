@@ -9,7 +9,7 @@
 import { ContentLayer } from "./content-layer.js";
 import { getContentRoot } from "./data-root.js";
 import { createProposal, updateProposalSections } from "./proposal-repository.js";
-import type { Proposal, WriterIdentity } from "../types/shared.js";
+import type { ProposalId, WriterIdentity } from "../types/shared.js";
 
 export interface ImportFile {
   docPath: string;
@@ -17,7 +17,7 @@ export interface ImportFile {
 }
 
 export interface ImportFilesToProposalResult {
-  proposal: Proposal;
+  id: ProposalId;
   contentRoot: string;
 }
 
@@ -37,7 +37,7 @@ export async function importFilesToProposal(
 
   // Create proposal with placeholder root sections — will be updated after write
   const initialSections = files.map(f => ({ doc_path: f.docPath, heading_path: [] as string[] }));
-  const { proposal, contentRoot: propContentRoot } = await createProposal(
+  const { id: proposalId, contentRoot: propContentRoot } = await createProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     description,
     initialSections,
@@ -52,7 +52,7 @@ export async function importFilesToProposal(
   }
 
   // Update proposal sections to match actual normalized structure
-  await updateProposalSections(proposal.id, allSectionTargets);
+  await updateProposalSections(proposalId, allSectionTargets);
 
-  return { proposal, contentRoot: propContentRoot };
+  return { id: proposalId, contentRoot: propContentRoot };
 }

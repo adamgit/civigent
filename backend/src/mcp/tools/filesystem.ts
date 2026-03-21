@@ -189,7 +189,7 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
   const intent = ctx.session.pendingIntent ?? `Move ${source} → ${destination}`;
   ctx.session.pendingIntent = undefined;
 
-  const { proposal, contentRoot } = await createProposal(
+  const { id: moveProposalId, contentRoot } = await createProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     intent,
     proposalSections,
@@ -221,14 +221,14 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
   }
 
   // Evaluate human involvement
-  const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal);
+  const { evaluation, sections } = await evaluateProposalHumanInvolvement(moveProposalId);
 
   if (evaluation.all_sections_accepted) {
     const scores: import("../../types/shared.js").SectionScoreSnapshot = {};
     for (const s of sections) {
       scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
     }
-    const committedHead = await commitProposalToCanonical(proposal, scores);
+    const committedHead = await commitProposalToCanonical(moveProposalId, scores);
 
     if (ctx.emitEvent) {
       ctx.emitEvent({
@@ -247,7 +247,7 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
       source,
       destination,
       committed_head: committedHead,
-      proposal_id: proposal.id,
+      proposal_id: moveProposalId,
       status: "committed",
     });
   } else {
@@ -261,7 +261,7 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
 
     return jsonToolResult({
       success: false,
-      proposal_id: proposal.id,
+      proposal_id: moveProposalId,
       status: "pending",
       outcome: "blocked",
       blocked_sections: blockedSections,
@@ -322,7 +322,7 @@ async function writeDocumentViaProposal(
   }
 
   // Create proposal with initial sections
-  const { proposal, contentRoot } = await createProposal(
+  const { id: writeProposalId, contentRoot } = await createProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     intent,
     initialSections,
@@ -343,10 +343,10 @@ async function writeDocumentViaProposal(
         JSON.stringify(t.heading_path) !== JSON.stringify(initialSections[i].heading_path),
       )) {
     const { updateProposalSections } = await import("../../storage/proposal-repository.js");
-    await updateProposalSections(proposal.id, allSectionTargets);
+    await updateProposalSections(writeProposalId, allSectionTargets);
   }
 
-  const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal);
+  const { evaluation, sections } = await evaluateProposalHumanInvolvement(writeProposalId);
 
   if (evaluation.all_sections_accepted) {
     const scores: SectionScoreSnapshot = {};
@@ -354,7 +354,7 @@ async function writeDocumentViaProposal(
       scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
     }
 
-    const committedHead = await commitProposalToCanonical(proposal, scores);
+    const committedHead = await commitProposalToCanonical(writeProposalId, scores);
 
     // Broadcast content:committed
     if (ctx.emitEvent) {
@@ -372,7 +372,7 @@ async function writeDocumentViaProposal(
     return jsonToolResult({
       success: true,
       committed_head: committedHead,
-      proposal_id: proposal.id,
+      proposal_id: writeProposalId,
       status: "committed",
     });
   } else {
@@ -387,7 +387,7 @@ async function writeDocumentViaProposal(
 
     return jsonToolResult({
       success: false,
-      proposal_id: proposal.id,
+      proposal_id: writeProposalId,
       status: "pending",
       outcome: "blocked",
       blocked_sections: blockedSections,
@@ -449,7 +449,7 @@ async function deleteDocumentViaProposal(
     heading_path: hp,
   }));
 
-  const { proposal, contentRoot } = await createProposal(
+  const { id: delProposalId, contentRoot } = await createProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     `Delete document: ${docPath}`,
     proposalSections,
@@ -460,14 +460,14 @@ async function deleteDocumentViaProposal(
   await tombstone.persist();
 
   // Evaluate human involvement
-  const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal);
+  const { evaluation, sections } = await evaluateProposalHumanInvolvement(delProposalId);
 
   if (evaluation.all_sections_accepted) {
     const scores: import("../../types/shared.js").SectionScoreSnapshot = {};
     for (const s of sections) {
       scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
     }
-    const committedHead = await commitProposalToCanonical(proposal, scores);
+    const committedHead = await commitProposalToCanonical(delProposalId, scores);
 
     if (ctx.emitEvent) {
       ctx.emitEvent({
@@ -486,7 +486,7 @@ async function deleteDocumentViaProposal(
       doc_path: docPath,
       deleted: true,
       committed_head: committedHead,
-      proposal_id: proposal.id,
+      proposal_id: delProposalId,
       status: "committed",
     });
   } else {
@@ -500,7 +500,7 @@ async function deleteDocumentViaProposal(
 
     return jsonToolResult({
       success: false,
-      proposal_id: proposal.id,
+      proposal_id: delProposalId,
       status: "pending",
       outcome: "blocked",
       blocked_sections: blockedSections,

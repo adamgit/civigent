@@ -7,7 +7,7 @@
  * automatically because the restore goes through the normal proposal pipeline.
  */
 
-import type { WriterIdentity, Proposal, ProposalSection } from "../types/shared.js";
+import type { WriterIdentity, AnyProposal, ProposalSection } from "../types/shared.js";
 import { getContentRoot, getDataRoot } from "./data-root.js";
 import { extractHistoricalTree } from "./git-repo.js";
 import { DocumentSkeleton } from "./document-skeleton.js";
@@ -16,7 +16,7 @@ import { SectionRef } from "../domain/section-ref.js";
 import { createProposal } from "./proposal-repository.js";
 
 export interface RestoreResult {
-  proposal: Proposal;
+  proposal: AnyProposal;
   contentRoot: string;
 }
 
@@ -53,7 +53,7 @@ export async function createRestoreProposal(
   const sectionsGitPrefix = `content/${normalized}.sections/`;
 
   // Create proposal with placeholder sections (will update after reading historical structure)
-  const { proposal: initialProposal, contentRoot } = await createProposal(
+  const { id: restoreProposalId, contentRoot } = await createProposal(
     writer,
     `Restore "${docPath}" to version ${targetSha.slice(0, 8)}`,
     currentHeadingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp })),
@@ -94,12 +94,14 @@ export async function createRestoreProposal(
   for (const hp of currentHeadingPaths) allPaths.set(hp.join(">>"), hp);
   for (const t of restoredTargets) allPaths.set(t.heading_path.join(">>"), t.heading_path);
 
-  const { updateProposalSections } = await import("./proposal-repository.js");
+  const { updateProposalSections, readProposal } = await import("./proposal-repository.js");
   const updatedSections: ProposalSection[] = [...allPaths.values()].map((hp) => ({
     doc_path: docPath,
     heading_path: hp,
   }));
-  const { proposal } = await updateProposalSections(initialProposal.id, updatedSections);
+  await updateProposalSections(restoreProposalId, updatedSections);
 
+  // Read fresh proposal from disk — sections are up-to-date after update
+  const proposal = await readProposal(restoreProposalId);
   return { proposal, contentRoot };
 }

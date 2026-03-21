@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
-import type { Proposal, EvaluatedSection } from "../types/shared.js";
+import type { AnyProposal, ProposalDTO, EvaluatedSection } from "../types/shared.js";
 
 function formatHeadingPath(headingPath: string[]): string {
   if (headingPath.length === 0) {
@@ -19,7 +19,7 @@ function involvementColor(score: number): string {
 }
 
 /** Reconstruct what the on-disk JSON file contains (status is NOT stored in the file). */
-function reconstructFileJson(proposal: Proposal): Record<string, unknown> {
+function reconstructFileJson(proposal: ProposalDTO): Record<string, unknown> {
   const file: Record<string, unknown> = {
     id: proposal.id,
     writer: proposal.writer,
@@ -27,9 +27,14 @@ function reconstructFileJson(proposal: Proposal): Record<string, unknown> {
     sections: proposal.sections,
     created_at: proposal.created_at,
   };
-  if (proposal.committed_head !== undefined) file.committed_head = proposal.committed_head;
-  if (proposal.humanInvolvement_at_commit !== undefined) file.humanInvolvement_at_commit = proposal.humanInvolvement_at_commit;
-  if (proposal.withdrawal_reason !== undefined) file.withdrawal_reason = proposal.withdrawal_reason;
+  if (proposal.status === "committed") {
+    const committed = proposal as import("../types/shared.js").CommittedProposalDomain;
+    file.committed_head = committed.committed_head;
+    file.humanInvolvement_at_commit = committed.humanInvolvement_at_commit;
+  }
+  if (proposal.status === "withdrawn" && "withdrawal_reason" in proposal) {
+    file.withdrawal_reason = (proposal as import("../types/shared.js").WithdrawnProposalDomain).withdrawal_reason;
+  }
   return file;
 }
 
@@ -54,7 +59,7 @@ function FieldCheck({ label, present, expectedWhen }: { label: string; present: 
   );
 }
 
-function ProposalFileViewer({ proposal }: { proposal: Proposal }) {
+function ProposalFileViewer({ proposal }: { proposal: ProposalDTO }) {
   const [expanded, setExpanded] = useState(false);
 
   const directoryPath = `proposals/${proposal.status}/${proposal.id}/meta.json`;
@@ -126,9 +131,9 @@ function ProposalFileViewer({ proposal }: { proposal: Proposal }) {
             <div style={{ background: "#f7f5f1", borderRadius: "5px", padding: "4px 0" }}>
               <FieldCheck label="status" present={false} expectedWhen="never stored in file" />
               <FieldCheck label="humanInvolvement_evaluation" present={false} expectedWhen="never stored — computed at read time" />
-              <FieldCheck label="committed_head" present={proposal.committed_head !== undefined} expectedWhen="written at commit time only" />
-              <FieldCheck label="humanInvolvement_at_commit" present={proposal.humanInvolvement_at_commit !== undefined} expectedWhen="written at commit time only" />
-              <FieldCheck label="withdrawal_reason" present={proposal.withdrawal_reason !== undefined} expectedWhen="written at withdrawal only" />
+              <FieldCheck label="committed_head" present={proposal.status === "committed" && "committed_head" in proposal} expectedWhen="written at commit time only" />
+              <FieldCheck label="humanInvolvement_at_commit" present={proposal.status === "committed" && "humanInvolvement_at_commit" in proposal} expectedWhen="written at commit time only" />
+              <FieldCheck label="withdrawal_reason" present={proposal.status === "withdrawn" && "withdrawal_reason" in proposal} expectedWhen="written at withdrawal only" />
             </div>
           </div>
 
@@ -162,10 +167,13 @@ function ProposalFileViewer({ proposal }: { proposal: Proposal }) {
 
 export function ProposalDetailPage() {
   const { id } = useParams();
-  const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [proposal, setProposal] = useState<ProposalDTO | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  const evaluation = proposal && (proposal.status === "pending" || proposal.status === "committing")
+    ? (proposal as import("../types/shared.js").PendingProposalDTO).humanInvolvement_evaluation
+    : undefined;
 
   const loadProposal = useCallback(async () => {
     if (!id) {
@@ -232,8 +240,8 @@ export function ProposalDetailPage() {
           <p>Writer: {proposal.writer.displayName} ({proposal.writer.type})</p>
           <p>Created: {new Date(proposal.created_at).toLocaleString()}</p>
           <p>Intent: {proposal.intent}</p>
-          {proposal.committed_head ? <p>Committed HEAD: <code>{proposal.committed_head}</code></p> : null}
-          {proposal.withdrawal_reason ? <p>Withdrawal reason: {proposal.withdrawal_reason}</p> : null}
+          {proposal.status === "committed" ? <p>Committed HEAD: <code>{(proposal as import("../types/shared.js").CommittedProposalDomain).committed_head}</code></p> : null}
+          {proposal.status === "withdrawn" && "withdrawal_reason" in proposal ? <p>Withdrawal reason: {(proposal as import("../types/shared.js").WithdrawnProposalDomain).withdrawal_reason}</p> : null}
 
           <h2>Sections ({proposal.sections.length})</h2>
           {proposal.sections.length === 0 ? <p>No sections.</p> : (
@@ -248,9 +256,9 @@ export function ProposalDetailPage() {
               </thead>
               <tbody>
                 {proposal.sections.map((section, idx) => {
-                  const evalSection = proposal.humanInvolvement_evaluation?.blocked_sections.find(
+                  const evalSection = evaluation?.blocked_sections.find(
                     (s) => s.doc_path === section.doc_path && JSON.stringify(s.heading_path) === JSON.stringify(section.heading_path)
-                  ) ?? proposal.humanInvolvement_evaluation?.passed_sections.find(
+                  ) ?? evaluation?.passed_sections.find(
                     (s) => s.doc_path === section.doc_path && JSON.stringify(s.heading_path) === JSON.stringify(section.heading_path)
                   );
                   const score = evalSection?.humanInvolvement_score ?? 0;
@@ -278,14 +286,14 @@ export function ProposalDetailPage() {
             </table>
           )}
 
-          {proposal.humanInvolvement_evaluation ? (
+          {evaluation ? (
             <>
               <h2>Human Involvement Evaluation</h2>
               <ul>
-                <li>All sections accepted: {proposal.humanInvolvement_evaluation.all_sections_accepted ? "yes" : "no"}</li>
-                <li>Aggregate impact: {proposal.humanInvolvement_evaluation.aggregate_impact.toFixed(2)} / {proposal.humanInvolvement_evaluation.aggregate_threshold.toFixed(2)}</li>
-                <li>Blocked sections: {proposal.humanInvolvement_evaluation.blocked_sections.length}</li>
-                <li>Passed sections: {proposal.humanInvolvement_evaluation.passed_sections.length}</li>
+                <li>All sections accepted: {evaluation.all_sections_accepted ? "yes" : "no"}</li>
+                <li>Aggregate impact: {evaluation.aggregate_impact.toFixed(2)} / {evaluation.aggregate_threshold.toFixed(2)}</li>
+                <li>Blocked sections: {evaluation.blocked_sections.length}</li>
+                <li>Passed sections: {evaluation.passed_sections.length}</li>
               </ul>
             </>
           ) : null}

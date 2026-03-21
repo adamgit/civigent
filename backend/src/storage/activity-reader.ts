@@ -11,15 +11,19 @@ import { listProposals } from "./proposal-repository.js";
 import type {
   ActivityItem,
   ChangesSinceResponse,
-  Proposal,
+  CommittedProposalDomain,
   SectionTargetRef,
 } from "../types/shared.js";
 
-async function readCommittedProposals(): Promise<Proposal[]> {
+async function readCommittedProposals(): Promise<CommittedProposalDomain[]> {
   const proposals = await listProposals("committed");
+  // listProposals("committed") only returns committed proposals; narrow the type.
+  const committed = proposals.filter(
+    (p): p is CommittedProposalDomain => p.status === "committed",
+  );
   // Sort by created_at descending
-  proposals.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
-  return proposals;
+  committed.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+  return committed;
 }
 
 export async function readActivity(limit: number, days: number): Promise<ActivityItem[]> {

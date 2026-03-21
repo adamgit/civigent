@@ -155,28 +155,6 @@ export interface PendingProposalDTO extends PendingProposal {
 /** Union of all proposal DTO variants for API responses. */
 export type ProposalDTO = PendingProposalDTO | CommittedProposalDomain | WithdrawnProposalDomain;
 
-// ── Backwards-compat aliases (to be removed once all callers migrate) ──
-
-/** @deprecated Use AnyProposalFile instead. */
-export type ProposalFile = ProposalFileBase & {
-  committed_head?: string;
-  humanInvolvement_at_commit?: Record<string, number>;
-  withdrawal_reason?: string;
-};
-
-/** @deprecated Use AnyProposal or ProposalDTO instead. */
-export interface Proposal {
-  id: ProposalId;
-  writer: WriterIdentity;
-  intent: string;
-  sections: ProposalSection[];
-  created_at: string;
-  status: ProposalStatus;
-  committed_head?: string;
-  humanInvolvement_at_commit?: Record<string, number>;
-  withdrawal_reason?: string;
-  humanInvolvement_evaluation?: ProposalHumanInvolvementEvaluation;
-}
 
 // ── Proposal sub-types ────────────────────────────────────────────
 
@@ -390,11 +368,11 @@ export interface WithdrawProposalResponse {
 }
 
 export interface ReadProposalResponse {
-  proposal: Proposal;
+  proposal: ProposalDTO;
 }
 
 export interface ListProposalsResponse {
-  proposals: Proposal[];
+  proposals: AnyProposal[];
 }
 
 // ─── Publish ───────────────────────────────────────────────────────

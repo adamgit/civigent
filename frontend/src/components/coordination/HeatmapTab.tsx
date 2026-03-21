@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { sectionGlobalKey, type GetHeatmapResponse, type HeatmapEntry, type Proposal } from "../../types/shared.js";
+import { sectionGlobalKey, type GetHeatmapResponse, type HeatmapEntry, type AnyProposal } from "../../types/shared.js";
 
 function involvementColor(score: number): string {
   if (score >= 0.8) return "#1e40af";
@@ -38,7 +38,7 @@ export interface AgentReadingState {
 interface HeatmapTabProps {
   heatmap: GetHeatmapResponse | null;
   agentReadings: Map<string, AgentReadingState>;
-  proposals: Proposal[];
+  proposals: AnyProposal[];
   loading: boolean;
   error: string | null;
 }

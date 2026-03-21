@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ContentPanel } from "../ContentPanel";
 import { SectionHeadingChip } from "../SectionHeadingChip";
 import { StatusPill } from "../StatusPill";
-import type { Proposal } from "../../types/shared.js";
+import type { AnyProposal } from "../../types/shared.js";
 import type { AgentReadingState } from "./HeatmapTab";
 
 function agentColor(actorId: string): string {
@@ -24,7 +24,7 @@ function relativeTime(ms: number): string {
 
 interface ActiveAgentsPanelProps {
   agentReadings: Map<string, AgentReadingState>;
-  proposals: Proposal[];
+  proposals: AnyProposal[];
 }
 
 export function ActiveAgentsPanel({ agentReadings, proposals }: ActiveAgentsPanelProps) {

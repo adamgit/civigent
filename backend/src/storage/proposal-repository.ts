@@ -10,12 +10,15 @@ import {
   getProposalsWithdrawnRoot,
 } from "./data-root.js";
 import type {
-  Proposal,
-  ProposalFile,
+  AnyProposal,
+  AnyProposalFile,
+  CommittedProposalFile,
+  ProposalFileBase,
   ProposalId,
   ProposalSection,
   ProposalStatus,
   SectionScoreSnapshot,
+  WithdrawnProposalFile,
   WriterIdentity,
 } from "../types/shared.js";
 
@@ -63,12 +66,12 @@ export async function locateProposalContentRoot(id: ProposalId): Promise<string>
   return proposalContentRoot(id, status);
 }
 
-async function readJsonFile(filePath: string): Promise<ProposalFile> {
+async function readJsonFile(filePath: string): Promise<AnyProposalFile> {
   const content = await readFile(filePath, "utf8");
-  return JSON.parse(content) as ProposalFile;
+  return JSON.parse(content) as AnyProposalFile;
 }
 
-async function writeJsonFile(filePath: string, data: ProposalFile): Promise<void> {
+async function writeJsonFile(filePath: string, data: AnyProposalFile): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, JSON.stringify(data, null, 2), "utf8");
 }
@@ -89,12 +92,12 @@ async function locateProposal(id: ProposalId): Promise<{ status: ProposalStatus;
   throw new ProposalNotFoundError(`Proposal not found: ${id}`);
 }
 
-function toProposal(file: ProposalFile, status: ProposalStatus): Proposal {
-  return { ...file, status };
+function toProposal(file: AnyProposalFile, status: ProposalStatus): AnyProposal {
+  return { ...file, status } as AnyProposal;
 }
 
 export interface CreateProposalResult {
-  proposal: Proposal;
+  id: ProposalId;
   contentRoot: string;
 }
 
@@ -105,7 +108,7 @@ export async function createProposal(
 ): Promise<CreateProposalResult> {
   const id = generateProposalId();
   const now = new Date().toISOString();
-  const file: ProposalFile = {
+  const file: ProposalFileBase = {
     id,
     writer,
     intent,
@@ -119,10 +122,10 @@ export async function createProposal(
     const { agentEventLog } = await import("../mcp/agent-event-log.js");
     agentEventLog.append(writer, { kind: "proposal_created", proposalId: id });
   }
-  return { proposal: toProposal(file, "pending"), contentRoot };
+  return { id, contentRoot };
 }
 
-export async function readProposal(id: ProposalId): Promise<Proposal> {
+export async function readProposal(id: ProposalId): Promise<AnyProposal> {
   for (const status of ALL_STATUSES) {
     const filePath = proposalPath(status, id);
     try {
@@ -143,7 +146,7 @@ export async function readProposal(id: ProposalId): Promise<Proposal> {
  * Returns the proposal metadata and a separate content map (keyed by "doc_path::heading>path").
  * Content lives on disk, never on the section objects.
  */
-export async function readProposalWithContent(id: ProposalId): Promise<{ proposal: Proposal; sectionContent: Map<string, string> }> {
+export async function readProposalWithContent(id: ProposalId): Promise<{ proposal: AnyProposal; sectionContent: Map<string, string> }> {
   const proposal = await readProposal(id);
   const contentRoot = proposalContentRoot(id, proposal.status);
   const layer = new ContentLayer(contentRoot);
@@ -155,12 +158,12 @@ export async function readProposalWithContent(id: ProposalId): Promise<{ proposa
   return { proposal, sectionContent: batchResult };
 }
 
-export async function listProposals(status?: ProposalStatus): Promise<Proposal[]> {
+export async function listProposals(status?: ProposalStatus): Promise<AnyProposal[]> {
   // Spec: "committing" proposals should be treated as pending for listing purposes
   const statuses = status
     ? (status === "pending" ? ["pending", "committing"] as ProposalStatus[] : [status])
     : ALL_STATUSES;
-  const proposals: Proposal[] = [];
+  const proposals: AnyProposal[] = [];
 
   for (const currentStatus of statuses) {
     let entries;
@@ -189,13 +192,13 @@ export async function listProposals(status?: ProposalStatus): Promise<Proposal[]
   return proposals;
 }
 
-export async function findPendingProposalByWriter(writerId: string): Promise<Proposal | null> {
+export async function findPendingProposalByWriter(writerId: string): Promise<AnyProposal | null> {
   const pending = await listProposals("pending");
   return pending.find((p) => p.writer.id === writerId) ?? null;
 }
 
 export interface UpdateProposalResult {
-  proposal: Proposal;
+  proposal: AnyProposal;
   contentRoot: string;
 }
 
@@ -220,7 +223,7 @@ export async function updateProposalSections(
   return { proposal: toProposal(file, status), contentRoot };
 }
 
-export async function transitionToCommitting(id: ProposalId): Promise<Proposal> {
+export async function transitionToCommitting(id: ProposalId): Promise<AnyProposal> {
   const proposal = await readProposal(id);
   if (proposal.status !== "pending") {
     throw new InvalidProposalStateError(
@@ -240,7 +243,7 @@ export async function transitionToCommitted(
   id: ProposalId,
   committedHead: string,
   scoresAtCommit: SectionScoreSnapshot,
-): Promise<Proposal> {
+): Promise<AnyProposal> {
   const proposal = await readProposal(id);
   if (proposal.status !== "committing") {
     throw new InvalidProposalStateError(
@@ -251,8 +254,8 @@ export async function transitionToCommitted(
   // Write enriched meta.json BEFORE rename so the rename is the single atomic commit point.
   // If crash happens before rename: proposal stays in "committing" with enriched meta (harmless).
   // If crash happens after rename: proposal is in "committed" with correct meta.
-  const { status: _s, humanInvolvement_evaluation: _e, ...rest } = proposal;
-  const file: ProposalFile = { ...rest, committed_head: committedHead, humanInvolvement_at_commit: scoresAtCommit };
+  const { status: _s, ...rest } = proposal;
+  const file: CommittedProposalFile = { ...rest, committed_head: committedHead, humanInvolvement_at_commit: scoresAtCommit };
   await writeJsonFile(proposalPath("committing", id), file);
 
   // Atomic directory rename
@@ -267,7 +270,7 @@ export async function transitionToCommitted(
 export async function transitionToWithdrawn(
   id: ProposalId,
   reason?: string,
-): Promise<Proposal> {
+): Promise<AnyProposal> {
   const proposal = await readProposal(id);
   if (proposal.status !== "pending") {
     throw new InvalidProposalStateError(
@@ -278,8 +281,8 @@ export async function transitionToWithdrawn(
   // Write enriched meta.json BEFORE rename so the rename is the single atomic commit point.
   // If crash happens before rename: proposal stays in "pending" with withdrawal_reason (harmless).
   // If crash happens after rename: proposal is in "withdrawn" with correct meta.
-  const { status: _s, humanInvolvement_evaluation: _e, ...rest } = proposal;
-  const file: ProposalFile = { ...rest, withdrawal_reason: reason };
+  const { status: _s, ...rest } = proposal;
+  const file: WithdrawnProposalFile = { ...rest, withdrawal_reason: reason };
   await writeJsonFile(proposalPath("pending", id), file);
 
   // Atomic directory rename
@@ -295,7 +298,7 @@ export async function transitionToWithdrawn(
   return toProposal(file, "withdrawn");
 }
 
-export async function rollbackCommittingToPending(id: ProposalId): Promise<Proposal> {
+export async function rollbackCommittingToPending(id: ProposalId): Promise<AnyProposal> {
   const proposal = await readProposal(id);
   if (proposal.status !== "committing") {
     throw new InvalidProposalStateError(

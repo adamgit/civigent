@@ -8,7 +8,7 @@ import { GitHistoryTab } from "../components/coordination/GitHistoryTab";
 import type { ProposalTimelineEntry } from "../components/coordination/ProposalTimeline";
 import { apiClient } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
-import { sectionGlobalKey, type GetHeatmapResponse, type Proposal, type WsServerEvent } from "../types/shared.js";
+import { sectionGlobalKey, type GetHeatmapResponse, type AnyProposal, type WsServerEvent } from "../types/shared.js";
 
 const TABS = [
   { label: "Heatmap", key: "heatmap" },
@@ -21,7 +21,7 @@ export function CoordinationPage() {
   const [heatmap, setHeatmap] = useState<GetHeatmapResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [proposals, setProposals] = useState<AnyProposal[]>([]);
   const [agentReadings, setAgentReadings] = useState<Map<string, AgentReadingState>>(new Map());
   const [proposalTimeline, setProposalTimeline] = useState<ProposalTimelineEntry[]>([]);
   const prevProposalMapRef = useRef<Map<string, { status: string }>>(new Map());

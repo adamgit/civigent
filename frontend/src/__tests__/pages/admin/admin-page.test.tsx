@@ -3,9 +3,9 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { AdminPage } from "../../../pages/AdminPage";
 import { jsonResponse } from "../../helpers/fetch-mocks";
-import type { Proposal } from "../../../types/shared";
+import type { AnyProposal } from "../../../types/shared";
 
-const sampleProposals: Proposal[] = [
+const sampleProposals: AnyProposal[] = [
   {
     id: "prop-1",
     kind: "agent_write",

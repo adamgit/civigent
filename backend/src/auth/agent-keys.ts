@@ -161,13 +161,6 @@ export async function readAgentKeysSkipErrors(): Promise<AgentKeyEntry[]> {
 }
 
 /**
- * @deprecated Use readAgentKeysSkipErrors() or readAgentKeysAndErrors() instead.
- */
-export async function readAgentKeys(): Promise<AgentKeyEntry[]> {
-  return readAgentKeysSkipErrors();
-}
-
-/**
  * Look up an agent by ID.
  * Throws if the agent's entry exists but is malformed.
  * Returns null if the agent genuinely doesn't exist.

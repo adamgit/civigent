@@ -7,7 +7,7 @@ import { StatusPill } from "../components/StatusPill";
 import { WriterIdentity } from "../components/WriterIdentity";
 import { PageStatusBar } from "../components/PageStatusBar";
 import { apiClient } from "../services/api-client";
-import type { Proposal, ProposalStatus } from "../types/shared.js";
+import type { AnyProposal, ProposalStatus } from "../types/shared.js";
 
 function relativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -36,7 +36,7 @@ export function ProposalsPage() {
   const [statusFilter, setStatusFilter] = useState<string>("All");
   const [writerFilter, setWriterFilter] = useState<string>("All writers");
   const [query, setQuery] = useState("");
-  const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [proposals, setProposals] = useState<AnyProposal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 

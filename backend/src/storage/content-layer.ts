@@ -402,16 +402,23 @@ export class ContentLayer {
               return;
             } catch (err) {
               if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+              // Overlay file missing — fall through to canonical
             }
           }
           // Fall back to canonical
           if (paths.canonicalPath) {
             try {
               result.set(key, await readFile(paths.canonicalPath, "utf8"));
+              return;
             } catch (err) {
               if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
             }
           }
+          // Both overlay and canonical missing — skeleton references a file that doesn't exist
+          throw new DocumentAssemblyError(
+            `Section "${key}" in document "${docPath}" is referenced by the skeleton but has no body file in any layer. ` +
+            `This indicates data corruption — the skeleton and section files are out of sync.`,
+          );
         })(),
       );
     }

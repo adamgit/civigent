@@ -357,4 +357,45 @@ describe("Crash Recovery Test Gaps", () => {
     const exists = await access(canonicalPath).then(() => true).catch(() => false);
     expect(exists).toBe(true);
   });
+
+  // ── TEST 9: Dirty canonical handling ───────────────────────
+
+  it("reverts dirty canonical for doc with session files, commits for doc without", async () => {
+    // Create two canonical docs
+    await createSampleDocument(ctx.rootDir);
+    await createSampleDocument2(ctx.rootDir);
+
+    const contentRoot = join(ctx.rootDir, "content");
+
+    // Read original content for comparison
+    const doc1Sections = join(contentRoot, `${SAMPLE_DOC_PATH}.sections`);
+    const doc2Sections = join(contentRoot, `${SAMPLE_DOC_PATH_2}.sections`);
+    const doc1OriginalOverview = await readFile(join(doc1Sections, "overview.md"), "utf8");
+
+    // Dirty both docs' canonical files
+    await writeFile(join(doc1Sections, "overview.md"), "DIRTY doc1 overview\n", "utf8");
+    await writeFile(join(doc2Sections, "principles.md"), "DIRTY doc2 principles\n", "utf8");
+
+    // Create session files ONLY for doc1 → doc1 should be reverted, doc2 committed
+    await writeSessionOverlay(SAMPLE_DOC_PATH, {
+      "overview.md": "Session overlay for doc1.\n",
+    });
+
+    const { detectAndRecoverCrash } = await import("../../storage/crash-recovery.js");
+    await detectAndRecoverCrash(ctx.rootDir);
+
+    // Doc1: canonical should contain session overlay content (session is authoritative —
+    // dirty canonical was reverted, then session content was committed)
+    const doc1After = await readFile(join(doc1Sections, "overview.md"), "utf8");
+    expect(doc1After.trim()).toBe("Session overlay for doc1.");
+
+    // Doc2: dirty canonical should be committed (it's the only copy)
+    const doc2After = await readFile(join(doc2Sections, "principles.md"), "utf8");
+    expect(doc2After).toBe("DIRTY doc2 principles\n");
+
+    // No content/ lines should remain dirty in git
+    const statusOutput = await gitExec(["status", "--porcelain"], ctx.rootDir);
+    const contentDirty = statusOutput.split("\n").filter((l: string) => l.includes("content/") && l.trim().length > 0);
+    expect(contentDirty.length).toBe(0);
+  });
 });
