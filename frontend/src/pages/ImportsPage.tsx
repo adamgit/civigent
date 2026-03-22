@@ -74,12 +74,20 @@ function ImportDetailView({
     setCommitResult(null);
     try {
       const res = await apiClient.commitImport(importId, description);
-      setCommitResult(
-        res.status === "committed"
-          ? "Committed"
-          : `Proposal ${res.proposal_id} is pending review`,
-      );
-      onCommitted();
+      if (res.status === "committed" && res.outcome === "accepted") {
+        setCommitResult("Import committed successfully.");
+        onCommitted();
+      } else {
+        // Non-success outcome — surface it as an error with details
+        const blockedCount = res.evaluation?.blocked_sections?.length ?? 0;
+        setError(
+          `Import was not committed. Status: ${res.status}, outcome: ${res.outcome}. ` +
+          (blockedCount > 0
+            ? `${blockedCount} section(s) blocked by human-involvement thresholds. ` +
+              `Proposal ${res.proposal_id} saved as pending — an admin can review and commit it.`
+            : `Proposal ${res.proposal_id} is pending review.`),
+        );
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
