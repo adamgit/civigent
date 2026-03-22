@@ -24,7 +24,7 @@ export class DocumentNotFoundError extends Error {}
 export class DocumentAssemblyError extends Error {}
 export class MultiSectionContentError extends Error {}
 
-const HEADING_RE = /^#{1,6}\s+.+$/;
+import { getParser } from "./markdown-parser.js";
 
 /**
  * Strip a leading heading line if it matches the skeleton entry's heading text and level.
@@ -170,11 +170,11 @@ export class ContentLayer {
     // Enforce body-only invariant: strip leading heading if it matches the skeleton entry
     const body = stripMatchingHeading(content, entry.level, entry.heading);
     // Guard: reject multi-heading content that should go through writeAssembledDocument
-    const headingLineCount = body.split("\n").filter(l => HEADING_RE.test(l.trim())).length;
-    if (headingLineCount > 0) {
+    const hasHeadings = getParser().containsHeadings(body);
+    if (hasHeadings) {
       throw new MultiSectionContentError(
         `Multi-section content passed to writeSection() for (${ref.docPath}, ` +
-        `[${ref.headingPath.join(" > ")}]) — found ${headingLineCount} embedded heading(s). ` +
+        `[${ref.headingPath.join(" > ")}]) — embedded heading(s) detected. ` +
         `Use writeAssembledDocument() instead.`,
       );
     }

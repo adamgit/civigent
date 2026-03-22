@@ -44,82 +44,19 @@ export interface ApplyResult {
   skeletonChanged: boolean;
 }
 
-// ─── Heading regex ───────────────────────────────────────────────
-
-const HEADING_RE = /^(#{1,6})\s+(.+)$/;
-
 // ─── parseDocumentMarkdown ───────────────────────────────────────
+
+import { getParser } from "./markdown-parser.js";
 
 /**
  * Split a full assembled markdown document into sections by heading boundaries.
  *
- * Each section includes its heading line as the first line and all content
- * until the next heading of equal or higher level (lower depth number).
- *
- * Returns a flat list of ParsedSection in document order. The root section
- * (content before the first heading) is included with headingPath=[].
+ * Delegates to the code-fence-aware CommonMark parser. Heading-like lines inside
+ * fenced code blocks, indented code blocks, and HTML blocks are correctly ignored.
+ * Setext headings (underline style) are recognized.
  */
 export function parseDocumentMarkdown(markdown: string): ParsedSection[] {
-  const lines = markdown.split(/\r?\n/);
-  const sections: ParsedSection[] = [];
-
-  // Track current heading context as a stack of {heading, level}
-  let currentLines: string[] = [];
-  let currentHeading = "";
-  let currentLevel = 0;
-  const headingStack: Array<{ heading: string; level: number }> = [];
-
-  function flushSection(): void {
-    const fullContent = currentLines.join("\n");
-    const body = currentHeading
-      ? currentLines.slice(1).join("\n").replace(/^\n+/, "")
-      : fullContent;
-
-    const headingPath = headingStack.map((h) => h.heading);
-
-    sections.push({
-      headingPath: [...headingPath],
-      heading: currentHeading,
-      level: currentLevel,
-      body: body.replace(/\n+$/, ""),
-      fullContent: fullContent.replace(/\n+$/, ""),
-    });
-  }
-
-  for (const line of lines) {
-    const headingMatch = HEADING_RE.exec(line.trim());
-
-    if (headingMatch) {
-      // Flush the previous section
-      if (currentLines.length > 0 || sections.length === 0) {
-        if (currentLines.length > 0) {
-          flushSection();
-        }
-      }
-
-      const newLevel = headingMatch[1].length;
-      const newHeading = headingMatch[2].trim();
-
-      // Pop stack back to parent level
-      while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= newLevel) {
-        headingStack.pop();
-      }
-      headingStack.push({ heading: newHeading, level: newLevel });
-
-      currentLines = [line];
-      currentHeading = newHeading;
-      currentLevel = newLevel;
-    } else {
-      currentLines.push(line);
-    }
-  }
-
-  // Flush last section
-  if (currentLines.length > 0) {
-    flushSection();
-  }
-
-  return sections;
+  return getParser().parseDocumentMarkdown(markdown);
 }
 
 // ─── applyDocumentMarkdownToDraft ────────────────────────────────
