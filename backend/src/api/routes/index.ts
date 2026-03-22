@@ -663,24 +663,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       const tmpContentRoot = path.join(tmpRoot, "content");
       const historicalLayer = new ContentLayer(tmpContentRoot);
-      let content: string;
-      try {
-        content = await historicalLayer.readAssembledDocument(docPath);
-      } catch (assemblyErr) {
-        await rm(tmpRoot, { recursive: true, force: true });
-        if (assemblyErr instanceof DocumentAssemblyError) {
-          // Historical commit is corrupt (missing section files) — return descriptive error
-          // instead of 500 since we can't fix git history retroactively
-          res.json({
-            doc_path: docPath,
-            sha,
-            content: null,
-            error: `This historical version has missing section files and cannot be fully assembled. ${assemblyErr.message}`,
-          });
-          return;
-        }
-        throw assemblyErr;
-      }
+      // Lenient: return partial content if some section files are missing in this
+      // historical commit (can happen with commits from the stale-proposal bug).
+      const content = await historicalLayer.readAssembledDocument(docPath, { lenient: true });
       await rm(tmpRoot, { recursive: true, force: true });
 
       res.json({ doc_path: docPath, sha, content });

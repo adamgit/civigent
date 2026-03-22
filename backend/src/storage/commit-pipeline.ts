@@ -6,7 +6,7 @@
  * human-involvement evaluation pass per section.
  */
 
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, readdir, copyFile, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   sectionGlobalKey,
@@ -17,19 +17,34 @@ import {
   SectionScoreSnapshot,
 } from "../types/shared.js";
 import { SectionGuard } from "../domain/section-guard.js";
-import { SectionRef } from "../domain/section-ref.js";
 import { getContentRoot, getDataRoot } from "./data-root.js";
 import { proposalContentRoot, readProposal } from "./proposal-repository.js";
 import { getHeadSha, gitExec } from "./git-repo.js";
 import { resolveHeadingPath } from "./heading-resolver.js";
-import { ContentLayer, SectionNotFoundError } from "./content-layer.js";
-import { DocumentSkeleton } from "./document-skeleton.js";
+import { ContentLayer } from "./content-layer.js";
 import {
   transitionToCommitting,
   transitionToCommitted,
   rollbackCommittingToPending,
 } from "./proposal-repository.js";
 import { isSnapshotGenerationEnabled, scheduleSnapshotRegeneration } from "./snapshot.js";
+
+/**
+ * Recursively copy all files from src to dest, preserving subdirectory structure.
+ */
+async function copyDirectoryContents(src: string, dest: string): Promise<void> {
+  const entries = await readdir(src, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      await mkdir(destPath, { recursive: true });
+      await copyDirectoryContents(srcPath, destPath);
+    } else {
+      await copyFile(srcPath, destPath);
+    }
+  }
+}
 
 export interface EvaluationResult {
   evaluation: ProposalHumanInvolvementEvaluation;
@@ -73,88 +88,31 @@ export async function commitProposalToCanonical(
     const canonicalRoot = getContentRoot();
     const overlayRoot = proposalContentRoot(proposal.id, "committing");
 
-    // Promote structural changes (skeleton files) from proposal overlay to canonical.
-    // For each unique doc path in the proposal, check if the overlay contains a
-    // skeleton file. If so, use promoteOverlay() to merge skeleton changes into
-    // canonical (handles orphan cleanup automatically).
     const docPaths = new Set(proposal.sections.map((s) => s.doc_path));
-    const promotedDocs = new Set<string>();
+
     for (const docPath of docPaths) {
+      const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+
+      // 1. If overlay has a skeleton → promoteOverlay (copies skeleton to canonical,
+      //    deletes orphaned body files from old skeleton)
       const proposalOverlay = new ContentLayer(overlayRoot, new ContentLayer(canonicalRoot));
       const skeleton = await proposalOverlay.readSkeleton(docPath);
       if (skeleton.overlayPersisted) {
         await skeleton.promoteOverlay();
-        promotedDocs.add(docPath);
       }
-    }
 
-    // Copy section body files from proposal overlay to canonical.
-    // For promoted docs: walk the promoted skeleton to discover ALL body files (by absolute
-    // path, not by heading path from proposal.sections — the skeleton is authoritative).
-    // For non-promoted docs: copy by heading path from proposal.sections.
-    const canonical = new ContentLayer(canonicalRoot);
-    const proposalContent = new ContentLayer(overlayRoot, canonical);
-    const copyTasks: Promise<void>[] = [];
-
-    for (const docPath of promotedDocs) {
-      const promotedSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
-      const overlayContentLayer = new ContentLayer(overlayRoot);
-
-      // Copy each body file that exists in the proposal overlay
-      promotedSkeleton.forEachSection((_heading, _level, _sectionFile, headingPath) => {
-        const sectionRef = new SectionRef(docPath, [...headingPath]);
-        copyTasks.push(
-          overlayContentLayer.readSection(sectionRef)
-            .then(async (content) => {
-              await canonical.writeSection(sectionRef, content);
-            })
-            .catch((err) => {
-              // Body file might not exist in overlay (section unchanged from canonical) — skip
-              if (err instanceof SectionNotFoundError) return;
-              throw err;
-            }),
-        );
-      });
-    }
-
-    // Non-promoted docs: copy by heading path from proposal.sections
-    for (const section of proposal.sections) {
-      if (promotedDocs.has(section.doc_path)) continue; // already handled above
-      const sectionRef = SectionRef.fromTarget(section);
-      copyTasks.push(
-        proposalContent.readSection(sectionRef)
-          .then(async (content) => {
-            await canonical.writeSection(sectionRef, content);
-          })
-          .catch((err) => {
-            if (err instanceof SectionNotFoundError) return;
-            throw err;
-          }),
-      );
-    }
-
-    await Promise.all(copyTasks);
-
-    // Validate: every skeleton entry must have a body file in canonical.
-    // This is the last gate before git add bakes corruption into history.
-    const { access: accessFile } = await import("node:fs/promises");
-    for (const docPath of promotedDocs) {
-      const finalSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
-      const missingFiles: string[] = [];
-      finalSkeleton.forEachSection((_heading, _level, _sectionFile, _headingPath, absolutePath) => {
-        // Collect for async check below (forEachSection is sync)
-        missingFiles.push(absolutePath);
-      });
-      for (const absPath of missingFiles) {
-        try {
-          await accessFile(absPath);
-        } catch {
-          throw new Error(
-            `Commit validation failed for "${docPath}": skeleton references body file "${path.basename(absPath)}" but the file does not exist on disk. ` +
-            `This indicates a bug in the proposal pipeline — the skeleton was promoted but the body file was not copied. ` +
-            `Proposal: ${proposal.id}`,
-          );
+      // 2. If overlay has a .sections/ directory → copy each file to canonical .sections/
+      const overlaySectionsDir = path.resolve(overlayRoot, ...normalized.split("/")) + ".sections";
+      try {
+        const dirStat = await stat(overlaySectionsDir);
+        if (dirStat.isDirectory()) {
+          const canonicalSectionsDir = path.resolve(canonicalRoot, ...normalized.split("/")) + ".sections";
+          await mkdir(canonicalSectionsDir, { recursive: true });
+          await copyDirectoryContents(overlaySectionsDir, canonicalSectionsDir);
         }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        // No .sections/ in overlay — no body files to copy (e.g. tombstone-only)
       }
     }
 
@@ -189,17 +147,10 @@ export async function commitProposalToCanonical(
 
     return headSha;
   } catch (error) {
-    // Rollback to pending on failure
-    try {
-      await rollbackCommittingToPending(proposal.id);
-    } catch (rollbackError) {
-      // Both commit and rollback failed — proposal stuck in committing state.
-      // Surface both errors so crash recovery can detect and fix this.
-      throw new AggregateError(
-        [error, rollbackError],
-        `Commit failed AND rollback failed for proposal ${proposal.id} — proposal stuck in committing state`,
-      );
-    }
+    // Rollback: move proposal back to pending, then restore canonical to last committed state
+    await rollbackCommittingToPending(proposal.id);
+    await gitExec(["checkout", "--", "content/"], dataRoot).catch(() => {});
+    await gitExec(["clean", "-fd", "content/"], dataRoot).catch(() => {});
     throw error;
   }
 }

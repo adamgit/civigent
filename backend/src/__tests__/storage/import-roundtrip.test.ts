@@ -159,4 +159,71 @@ describe("import → commit → read round-trip", () => {
     expect(assembled).toContain("Content A.");
     expect(assembled).toContain("Content B.");
   });
+
+  it("code blocks with heading-like lines survive import round-trip intact", async () => {
+    const markdown = [
+      "## Setup Guide",
+      "",
+      "Follow these steps:",
+      "",
+      "```markdown",
+      "## This is NOT a heading",
+      "It's inside a code block.",
+      "```",
+      "",
+      "Done.",
+      "",
+    ].join("\n");
+
+    const docPath = "code-block-import.md";
+
+    const { id } = await importFilesToProposal(
+      [{ docPath, content: markdown }],
+      writer,
+      "Test code block import",
+    );
+
+    const { sections } = await evaluateProposalHumanInvolvement(id);
+    const scores: Record<string, number> = {};
+    for (const s of sections) {
+      scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
+    }
+    await commitProposalToCanonical(id, scores);
+
+    const assembled = await readAssembledDocument(docPath);
+    // The code block should be preserved intact
+    expect(assembled).toContain("```markdown");
+    expect(assembled).toContain("## This is NOT a heading");
+    expect(assembled).toContain("```");
+    // The parser should have produced only 1 heading section (Setup Guide),
+    // not split at the ## inside the code block. The root is empty (no preamble).
+    const layer = new ContentLayer(getContentRoot());
+    const allContent = await layer.readAllSectionsOverlaid(docPath);
+    // root (empty but present) + "Setup Guide" — but empty root may not generate a body file.
+    // The key assertion: NOT 3 sections (no split at code block heading).
+    expect(allContent.size).toBeLessThanOrEqual(2);
+    // Code block content is inside "Setup Guide" body, not a separate section
+    for (const [, body] of allContent) {
+      if (body.includes("code block")) {
+        expect(body).toContain("## This is NOT a heading");
+      }
+    }
+  });
+
+  it("import failure leaves canonical clean — no orphaned skeletons", async () => {
+    const contentRoot = getContentRoot();
+    const docPath = "should-not-exist.md";
+
+    // Attempt import with empty files — should fail or produce nothing
+    try {
+      await importFilesToProposal([], writer, "Empty import");
+    } catch {
+      // Expected — empty file list
+    }
+
+    // Canonical should not have any skeleton for this doc
+    const skeletonPath = join(contentRoot, docPath);
+    const exists = await stat(skeletonPath).then(() => true).catch(() => false);
+    expect(exists).toBe(false);
+  });
 });

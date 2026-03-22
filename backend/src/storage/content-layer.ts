@@ -434,7 +434,7 @@ export class ContentLayer {
    * concatenates their body content. Each section is read through this
    * layer's read path (with fallback if configured).
    */
-  async readAssembledDocument(docPath: string): Promise<string> {
+  async readAssembledDocument(docPath: string, options?: { lenient?: boolean }): Promise<string> {
     const skeleton = await this.readSkeleton(docPath);
 
     // Collect body sections via visitor (sync), then read files (async)
@@ -485,7 +485,7 @@ export class ContentLayer {
       }
     }
 
-    if (missingSections.length > 0) {
+    if (missingSections.length > 0 && !options?.lenient) {
       throw new DocumentAssemblyError(
         `Skeleton integrity check failed for "${docPath}": ${missingSections.length} missing section file(s): ${missingSections.join(", ")}`,
       );
