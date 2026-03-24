@@ -7,8 +7,7 @@
 
 import path from "node:path";
 import { readFile, readdir } from "node:fs/promises";
-import { getContentRoot, getSessionDocsRoot, getSessionAuthorsRoot } from "./data-root.js";
-import { ContentLayer } from "./content-layer.js";
+import { getContentRoot, getSessionDocsContentRoot, getSessionAuthorsRoot } from "./data-root.js";
 import { scanSessionFragmentDocPaths, listRawFragments, readRawFragment } from "./session-store.js";
 import { DocumentSkeleton, SECTIONS_DIR_SUFFIX } from "./document-skeleton.js";
 
@@ -56,11 +55,11 @@ export async function getSessionState(): Promise<SessionState> {
     const files = await listRawFragments(docPath);
     let skeleton: DocumentSkeleton | null = null;
     try {
-      const sessionOverlay = new ContentLayer(
-        path.join(getSessionDocsRoot(), "content"),
-        new ContentLayer(getContentRoot()),
+      skeleton = await DocumentSkeleton.fromDisk(
+        docPath,
+        getSessionDocsContentRoot(),
+        getContentRoot(),
       );
-      skeleton = await sessionOverlay.readSkeleton(docPath);
     } catch {
       // Skeleton doesn't exist or is corrupt — fragments will show as unresolvable
     }
@@ -90,12 +89,11 @@ export async function getSessionState(): Promise<SessionState> {
   }
 
   // ── Docs overlay ──
-  const docsRoot = getSessionDocsRoot();
   const docs: Record<string, DocOverlayInfo> = {};
   let totalOverlayDocs = 0;
   let totalOverlaySections = 0;
   let orphanedSections = 0;
-  const contentSubdir = path.join(docsRoot, "content");
+  const contentSubdir = getSessionDocsContentRoot();
   let overlayDocPaths: string[] = [];
   try {
     overlayDocPaths = await readdirRecursiveFiles(contentSubdir);
@@ -107,9 +105,7 @@ export async function getSessionState(): Promise<SessionState> {
     const fullPath = path.join(contentSubdir, relPath);
     const fileContent = await readFile(fullPath, "utf8");
 
-    const canonical = new ContentLayer(getContentRoot());
-    const overlay = new ContentLayer(contentSubdir, canonical);
-    const overlaySkeleton = await overlay.readSkeleton(docPath);
+    const overlaySkeleton = await DocumentSkeleton.fromDisk(docPath, contentSubdir, getContentRoot());
     const sectionRefSet = new Set<string>();
     overlaySkeleton.forEachSection((_h, _l, sectionFile) => {
       sectionRefSet.add(sectionFile);

@@ -526,7 +526,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       isInProposal={!!(proposalMode && proposalSectionsRef.current.has(`${decodedDocPath}::${sectionKey}`))}
                       isLockedByOtherHuman={!!(section as any).blocked}
                       highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
-                      humanInvolvementScore={section.humanInvolvement_score ?? 0}
+                      hasRemotePresence={presenceIndicatorsRef.current.some((p) => p.sectionKey === sectionKey)}
                       dragOverSectionIndex={dragOverSectionIndex}
                       crdtProvider={crdtProvider}
                       crdtError={crdtError}

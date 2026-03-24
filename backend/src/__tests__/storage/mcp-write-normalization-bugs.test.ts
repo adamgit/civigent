@@ -60,7 +60,7 @@ async function createStandardDoc(
 
 // ─── BUG1-TEST: MCP write path doesn't split multi-section markdown ─
 
-describe("BUG1 FIXED: writeSection rejects multi-heading; writeAssembledDocument normalizes", () => {
+describe("BUG1 FIXED: writeSection rejects multi-heading; importMarkdownDocument normalizes", () => {
   let ctx: TempDataRootContext;
   const docPath = "test/standard.md";
 
@@ -89,7 +89,7 @@ describe("BUG1 FIXED: writeSection rejects multi-heading; writeAssembledDocument
     await expect(layer.writeSection(ref, multiSectionMarkdown)).rejects.toThrow(MultiSectionContentError);
   });
 
-  it("writeAssembledDocument normalizes multi-section markdown into skeleton + body files", async () => {
+  it("importMarkdownDocument normalizes multi-section markdown into skeleton + body files", async () => {
     const multiSectionMarkdown = [
       "New preamble.",
       "",
@@ -107,7 +107,7 @@ describe("BUG1 FIXED: writeSection rejects multi-heading; writeAssembledDocument
     ].join("\n");
 
     const layer = new ContentLayer(ctx.contentDir);
-    const targets = await layer.writeAssembledDocument(docPath, multiSectionMarkdown);
+    const targets = await layer.importMarkdownDocument(docPath, multiSectionMarkdown);
 
     // Should return 4 section targets: root + Alpha + Beta + Gamma
     expect(targets).toHaveLength(4);

@@ -49,7 +49,7 @@ describe("RecentDocsPage", () => {
               kind: "agent_write",
               writer: { id: "agent-1", type: "agent", displayName: "Agent A" },
               intent: "Test",
-              status: "pending",
+              status: "draft",
               sections: [{ doc_path: "ops/from-proposal.md", heading_path: ["Overview"], content: "x" }],
               created_at: "2026-01-01T00:00:00.000Z",
             },

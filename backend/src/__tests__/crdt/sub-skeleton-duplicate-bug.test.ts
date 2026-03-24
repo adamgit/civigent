@@ -151,7 +151,7 @@ describe("BUG: assembleMarkdown includes raw skeleton markers from sub-skeleton 
 
     // The sub-skeleton file details.md contains "{{section: _details_root.md}}" —
     // if the bug exists, assembleMarkdown reads that fragment and includes the raw skeleton markers.
-    // Note: this test currently passes because readAllSectionsOverlaid uses headingKeys (not raw file content)
+    // Note: this test currently passes because readAllSections uses headingKeys (not raw file content)
     // so the "Details" heading key maps to "Details body." (from _details_root.md), not the sub-skeleton format.
     // The duplicate "Details" section in the output is the actual bug — content appears twice.
     expect(markdown).not.toContain("{{section:");

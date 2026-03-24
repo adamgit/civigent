@@ -12,7 +12,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { scrypt, randomBytes, timingSafeEqual } from "node:crypto";
 import path from "node:path";
-import { getDataRoot } from "../storage/data-root.js";
+import { getAuthRoot } from "../storage/data-root.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -30,7 +30,7 @@ export interface AgentKeysWithErrors {
 // ─── File path ───────────────────────────────────────────────────
 
 function keysFilePath(): string {
-  return path.join(getDataRoot(), "auth", "agents.keys");
+  return path.join(getAuthRoot(), "agents.keys");
 }
 
 // ─── Scrypt helpers ──────────────────────────────────────────────

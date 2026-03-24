@@ -160,6 +160,8 @@ export function createWsHub(): WsHub {
           broadcastInternal({
             type: "presence:done",  // editingPresence: human left previous section
             writer_id: state.writerId,
+            writer_display_name: state.writerDisplayName,
+            writer_type: "human",
             doc_path: previousDocPath,
             heading_path: state.focusedHeadingPath ?? [],
           });
@@ -173,6 +175,7 @@ export function createWsHub(): WsHub {
           doc_path: parsed.doc_path,
           writer_id: state.writerId,
           writer_display_name: state.writerDisplayName,
+          writer_type: "human",
           heading_path: parsed.heading_path,
         });
       } else if (parsed.action === "blur_section") {
@@ -186,6 +189,8 @@ export function createWsHub(): WsHub {
         broadcastInternal({
           type: "presence:done",  // editingPresence: human blurred section
           writer_id: state.writerId,
+          writer_display_name: state.writerDisplayName,
+          writer_type: "human",
           doc_path: previousDocPath,
           heading_path: previousHeadingPath,
         });
@@ -195,6 +200,8 @@ export function createWsHub(): WsHub {
           broadcastInternal({
             type: "presence:done",  // editingPresence: human departed document
             writer_id: state.writerId,
+            writer_display_name: state.writerDisplayName,
+            writer_type: "human",
             doc_path: state.focusedDocPath,
             heading_path: state.focusedHeadingPath ?? [],
           });
@@ -210,6 +217,8 @@ export function createWsHub(): WsHub {
         broadcastInternal({
           type: "presence:done",  // editingPresence: socket closed
           writer_id: state.writerId,
+          writer_display_name: state.writerDisplayName,
+          writer_type: "human",
           doc_path: state.focusedDocPath,
           heading_path: state.focusedHeadingPath ?? [],
         });

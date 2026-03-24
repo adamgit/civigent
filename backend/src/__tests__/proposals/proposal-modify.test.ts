@@ -28,7 +28,7 @@ describe("PUT /api/proposals/:id — modify proposal", () => {
         ],
       });
 
-    expect(pendingRes.body.status).toBe("pending");
+    expect(pendingRes.body.status).toBe("draft");
     pendingProposalId = pendingRes.body.proposal_id;
 
     // Create an agent proposal that auto-commits

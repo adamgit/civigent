@@ -12,7 +12,7 @@ function buildFeedEvents(response: GetAgentsFullSummaryResponse): ActivityFeedEv
   for (const agent of response.agents) {
     const hue = avatarHueFromId(agent.agent_id);
     const letter = (agent.display_name.trim()[0] ?? "?").toUpperCase();
-    for (const proposal of [...agent.pending_proposals, ...agent.recent_proposals]) {
+    for (const proposal of [...agent.draft_proposals, ...agent.recent_proposals]) {
       events.push({
         id: `${agent.agent_id}-${proposal.id}`,
         agentId: agent.agent_id,
@@ -66,7 +66,7 @@ export function AgentFeedPage() {
       ) : null}
 
       {error ? (
-        <p className="px-4 py-3 text-sm text-red-600">{error}</p>
+        <p className="px-4 py-3 text-sm text-error">{error}</p>
       ) : null}
 
       {!loading && !error ? (

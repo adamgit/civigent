@@ -78,7 +78,7 @@ export function useGovernanceData(
           ? section.heading_path[section.heading_path.length - 1]
           : "";
 
-        const lastEditor = section.last_human_editor;
+        const lastEditor = section.last_editor;
         const lastEditorNote = lastEditor
           ? `${lastEditor.name} edited ${formatRelativeTime(lastEditor.timestampMs)}`
           : "";

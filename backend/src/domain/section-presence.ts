@@ -19,7 +19,7 @@ import { access } from "node:fs/promises";
 import path from "node:path";
 import { SectionRef } from "./section-ref.js";
 import { lookupDocSession } from "../crdt/ydoc-lifecycle.js";
-import { getSessionDocsRoot } from "../storage/data-root.js";
+import { getSessionDocsContentRoot } from "../storage/data-root.js";
 import { resolveHeadingPathUnderRoot } from "../storage/heading-resolver.js";
 import { resolveAllSectionPaths } from "../storage/heading-resolver.js";
 import { listProposals } from "../storage/proposal-repository.js";
@@ -87,7 +87,7 @@ export class SectionPresence {
    * Returns Set of SectionRef.headingKey() strings.
    */
   static async prefetchDirtyFiles(docPath: string): Promise<Set<string>> {
-    const sessionDocsContentRoot = path.join(getSessionDocsRoot(), "content");
+    const sessionDocsContentRoot = getSessionDocsContentRoot();
     const result = new Set<string>();
 
     let overlayPaths: Map<string, { absolutePath: string }>;
@@ -116,7 +116,7 @@ export class SectionPresence {
     excludeProposalId?: string,
   ): Promise<HumanProposalLockIndex> {
     const index: HumanProposalLockIndex = new Map();
-    const pending = await listProposals("pending");
+    const pending = await listProposals("draft");
     for (const proposal of pending) {
       if (proposal.writer.type !== "human") continue;
       if (excludeProposalId && proposal.id === excludeProposalId) continue;
@@ -154,7 +154,7 @@ export class SectionPresence {
    * Check if a dirty session file exists on disk for this section.
    */
   private static async checkDirtyFile(ref: SectionRef): Promise<boolean> {
-    const sessionDocsContentRoot = path.join(getSessionDocsRoot(), "content");
+    const sessionDocsContentRoot = getSessionDocsContentRoot();
     try {
       const sectionPath = await resolveHeadingPathUnderRoot(
         sessionDocsContentRoot,
@@ -174,7 +174,7 @@ export class SectionPresence {
   private static async checkHumanProposalLock(
     ref: SectionRef,
   ): Promise<HumanProposalLockInfo | null> {
-    const pending = await listProposals("pending");
+    const pending = await listProposals("draft");
     for (const proposal of pending) {
       if (proposal.writer.type !== "human") continue;
       for (const section of proposal.sections) {

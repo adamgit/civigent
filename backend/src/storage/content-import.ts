@@ -1,6 +1,8 @@
 import path from "node:path";
-import { mkdir, readFile, readdir } from "node:fs/promises";
-import { ContentLayer } from "./content-layer.js";
+import { readFile, readdir } from "node:fs/promises";
+import { importFilesToProposal, type ImportFile } from "./import-service.js";
+import { commitProposalToCanonical } from "./commit-pipeline.js";
+import type { WriterIdentity } from "../types/shared.js";
 
 export interface ContentImportSummary {
   imported: number;
@@ -8,6 +10,13 @@ export interface ContentImportSummary {
   skipped: number;
   errors: string[];
 }
+
+const SYSTEM_WRITER: WriterIdentity = {
+  id: "system",
+  type: "human",
+  displayName: "System",
+  email: "system@civigent",
+};
 
 function normalizeRelPath(relPath: string): string {
   return relPath.replace(/\\/g, "/").replace(/^\/+/, "");
@@ -90,27 +99,41 @@ export async function importContent(sourceRoot: string, contentRoot: string): Pr
       return summary;
     }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      await mkdir(contentRoot, { recursive: true });
-    } else {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
     }
+    // contentRoot doesn't exist yet — will be created by the proposal pipeline
   }
 
-  const contentLayer = new ContentLayer(contentRoot);
   const ignorePatterns = await readImportIgnorePatterns(sourceRoot);
   const markdownFiles = await collectImportMarkdownFiles(sourceRoot, ignorePatterns);
+  if (markdownFiles.length === 0) {
+    return summary;
+  }
+
+  const importFiles: ImportFile[] = [];
   for (const relPath of markdownFiles) {
     try {
       const sourcePath = path.join(sourceRoot, relPath);
-      const markdown = await readFile(sourcePath, "utf8");
-      await contentLayer.writeAssembledDocument(relPath, markdown);
-      summary.imported += 1;
+      const content = await readFile(sourcePath, "utf8");
+      importFiles.push({ docPath: relPath, content });
     } catch (error) {
       summary.failed += 1;
       summary.errors.push(`${relPath}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+
+  if (importFiles.length === 0) {
+    return summary;
+  }
+
+  const { id: proposalId } = await importFilesToProposal(
+    importFiles,
+    SYSTEM_WRITER,
+    `Bootstrap import from ${sourceRoot}`,
+  );
+  await commitProposalToCanonical(proposalId, {});
+  summary.imported += importFiles.length;
 
   return summary;
 }

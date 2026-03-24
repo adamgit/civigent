@@ -81,6 +81,7 @@ export async function readDocumentStructure(docPath: string): Promise<DocStructu
 
 export interface FlatSection {
   headingPath: string[];
+  heading: string;
   level: number;
 }
 
@@ -92,7 +93,7 @@ export function flattenStructureWithLevels(
   for (const node of nodes) {
     const isRoot = node.level === 0 && node.heading === "";
     const currentPath = isRoot ? [...parentPath] : [...parentPath, node.heading];
-    result.push({ headingPath: currentPath, level: node.level });
+    result.push({ headingPath: currentPath, heading: node.heading, level: node.level });
     if (node.children?.length) {
       result.push(...flattenStructureWithLevels(node.children, currentPath));
     }
@@ -178,6 +179,5 @@ export async function readDocumentStructureWithOverlay(
 ): Promise<DocStructureNode[]> {
   const canonical = new ContentLayer(getContentRoot());
   const overlay = new ContentLayer(overlayRoot, canonical);
-  const skeleton = await overlay.readSkeleton(docPath);
-  return skeleton.structure;
+  return overlay.getDocumentStructure(docPath);
 }

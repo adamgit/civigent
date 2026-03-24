@@ -35,7 +35,7 @@ describe("Proposal meta.json enrichment after FSM transitions", () => {
       });
 
     expect(createRes.status).toBe(201);
-    expect(createRes.body.status).toBe("pending");
+    expect(createRes.body.status).toBe("draft");
     const proposalId = createRes.body.proposal_id;
 
     // Commit the proposal
@@ -83,7 +83,7 @@ describe("Proposal meta.json enrichment after FSM transitions", () => {
       });
 
     expect(createRes.status).toBe(201);
-    expect(createRes.body.status).toBe("pending");
+    expect(createRes.body.status).toBe("draft");
     const proposalId = createRes.body.proposal_id;
 
     // Withdraw the proposal (endpoint is /cancel)

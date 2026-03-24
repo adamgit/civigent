@@ -113,7 +113,7 @@ describe("import → commit → read round-trip", () => {
 
     // Read via /sections-style API to verify all sections have content
     const layer = new ContentLayer(contentRoot);
-    const allContent = await layer.readAllSectionsOverlaid(docPath);
+    const allContent = await layer.readAllSections(docPath);
 
     // Should have at least root + Overview + Details
     expect(allContent.size).toBeGreaterThanOrEqual(3);
@@ -198,7 +198,7 @@ describe("import → commit → read round-trip", () => {
     // The parser should have produced only 1 heading section (Setup Guide),
     // not split at the ## inside the code block. The root is empty (no preamble).
     const layer = new ContentLayer(getContentRoot());
-    const allContent = await layer.readAllSectionsOverlaid(docPath);
+    const allContent = await layer.readAllSections(docPath);
     // root (empty but present) + "Setup Guide" — but empty root may not generate a body file.
     // The key assertion: NOT 3 sections (no split at code block heading).
     expect(allContent.size).toBeLessThanOrEqual(2);

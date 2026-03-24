@@ -22,7 +22,7 @@ function relativeTime(iso: string): string {
 
 function statusPillVariant(status: string): "green" | "yellow" | "red" | "muted" {
   switch (status) {
-    case "pending": case "committing": return "yellow";
+    case "draft": case "committing": return "yellow";
     case "committed": return "green";
     case "withdrawn": return "red";
     default: return "muted";
@@ -63,8 +63,8 @@ export function ProposalsPage() {
   const filteredProposals = useMemo(() => {
     return proposals.filter((p) => {
       // Status filter
-      if (statusFilter === "Inflight" && p.status !== "pending" && p.status !== "committing") return false;
-      if (statusFilter === "Proposing" && p.status !== "pending") return false;
+      if (statusFilter === "Inflight" && p.status !== "draft" && p.status !== "committing") return false;
+      if (statusFilter === "Proposing" && p.status !== "draft") return false;
       if (statusFilter === "Committed" && p.status !== "committed") return false;
       if (statusFilter === "Cancelled" && p.status !== "withdrawn") return false;
       // Writer filter
@@ -79,7 +79,7 @@ export function ProposalsPage() {
     });
   }, [proposals, statusFilter, writerFilter, query]);
 
-  const inflight = proposals.filter((p) => p.status === "pending" || p.status === "committing").length;
+  const inflight = proposals.filter((p) => p.status === "draft" || p.status === "committing").length;
   const committed = proposals.filter((p) => p.status === "committed").length;
 
   return (
@@ -109,7 +109,7 @@ export function ProposalsPage() {
         </ProposalFilterBar>
 
         {loading && <p className="text-xs text-text-muted">Loading proposals...</p>}
-        {error && <p className="text-xs text-red-600">{error}</p>}
+        {error && <p className="text-error text-xs">{error}</p>}
 
         {!loading && !error && (
           <ContentPanel>
@@ -134,7 +134,7 @@ export function ProposalsPage() {
                         {proposal.status}
                       </StatusPill>
                       <WriterIdentity name={proposal.writer.displayName} kind={proposal.writer.type} />
-                      <span className="text-[11px] text-[#b8b2a8]" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                      <span className="code-inline" style={{ fontSize: "11px", padding: "1px 5px" }}>
                         {proposal.id.length > 14 ? `${proposal.id.slice(0, 8)}…${proposal.id.slice(-3)}` : proposal.id}
                       </span>
                       <span className="ml-auto text-[11px] text-[#b8b2a8]">

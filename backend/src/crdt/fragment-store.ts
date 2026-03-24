@@ -14,7 +14,7 @@ import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
 import { yDocToProsemirrorJSON, prosemirrorJSONToYDoc } from "y-prosemirror";
-import { getContentRoot, getSessionDocsRoot } from "../storage/data-root.js";
+import { getContentRoot, getSessionDocsContentRoot } from "../storage/data-root.js";
 import { DocumentSkeleton, type FlatEntry } from "../storage/document-skeleton.js";
 import { parseDocumentMarkdown } from "../storage/markdown-sections.js";
 import { SectionRef } from "../domain/section-ref.js";
@@ -103,11 +103,11 @@ export class FragmentStore {
 
     const ydoc = new Y.Doc();
     const canonicalRoot = getContentRoot();
-    const overlayRoot = path.join(getSessionDocsRoot(), "content");
+    const overlayRoot = getSessionDocsContentRoot();
     const canonical = new ContentLayer(canonicalRoot);
     const overlay = new ContentLayer(overlayRoot, canonical);
 
-    const skeleton = await overlay.readSkeleton(docPath);
+    const skeleton = await DocumentSkeleton.fromDisk(docPath, overlayRoot, canonicalRoot);
 
     if (skeleton.isEmpty) {
       return { store: new FragmentStore(ydoc, skeleton, docPath), orphanedBodies: [] };
@@ -127,7 +127,7 @@ export class FragmentStore {
     }
 
     // Bulk-read overlay content as fallback via ContentLayer
-    const bulkContent = await overlay.readAllSectionsOverlaid(docPath);
+    const bulkContent = await overlay.readAllSections(docPath);
 
     // Collect known section files for orphan detection
     const knownSectionFiles = new Set<string>();
@@ -389,7 +389,7 @@ export class FragmentStore {
     const writtenKeys: string[] = [];
 
     // Ensure overlay skeleton exists before writing body files
-    await this.skeleton.ensureOverlayExists();
+    await this.skeleton.writeSkeletonIfAbsent();
 
     const droppedKeys: Array<{ fragmentKey: string; error: unknown }> = [];
 

@@ -31,6 +31,9 @@ import { SectionPresence, type HumanProposalLockIndex } from "./section-presence
 import { SectionRef } from "./section-ref.js";
 import { SectionRecency } from "./section-recency.js";
 import { readDocSectionCommitInfo, getSecondsSinceLastHumanActivity, type SectionCommitInfo } from "../storage/section-activity.js";
+import { DocumentSkeleton } from "../storage/document-skeleton.js";
+import { getContentRoot, getDataRoot } from "../storage/data-root.js";
+import path from "node:path";
 
 // ─── Input types ────────────────────────────────────────────────
 
@@ -103,15 +106,35 @@ export class SectionGuard {
       sectionsByDoc.set(section.doc_path, group);
     }
 
-    // Batch-fetch per document (1 git call + 1 readdir per unique doc)
+    // Batch-fetch per document (1 git call + 1 readdir + 1 skeleton read per unique doc)
     const commitInfoByDoc = new Map<string, Map<string, SectionCommitInfo>>();
     const dirtyFilesByDoc = new Map<string, Set<string>>();
+    const contentRoot = getContentRoot();
     for (const [docPath, docSections] of sectionsByDoc) {
-      const [info, dirtyFiles] = await Promise.all([
+      const [rawCommitInfo, dirtyFiles] = await Promise.all([
         readDocSectionCommitInfo(docPath, docSections.length),
         SectionPresence.prefetchDirtyFiles(docPath),
       ]);
-      commitInfoByDoc.set(docPath, info);
+
+      // Translate file-path keys to heading keys via skeleton.
+      // rawCommitInfo keys are relative to dataRoot (e.g. "content/ops/doc.md.sections/sec.md").
+      // Skeleton absolutePath is absolute. Convert via path.relative(dataRoot, absolutePath).
+      const commitByHeadingKey = new Map<string, SectionCommitInfo>();
+      const dataRoot = getDataRoot();
+      try {
+        const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
+        skeleton.forEachSection((_h, _l, _sf, headingPath, absolutePath) => {
+          const relPath = path.relative(dataRoot, absolutePath);
+          const info = rawCommitInfo.get(relPath);
+          if (info) {
+            commitByHeadingKey.set(SectionRef.headingKey(headingPath), info);
+          }
+        });
+      } catch {
+        // Skeleton not readable — commit info unavailable for this doc
+      }
+
+      commitInfoByDoc.set(docPath, commitByHeadingKey);
       dirtyFilesByDoc.set(docPath, dirtyFiles);
     }
 

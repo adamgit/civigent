@@ -1,20 +1,35 @@
 /**
- * DocumentSkeleton — In-memory model of a document's heading tree.
+ * DocumentSkeleton — In-memory index of a document's heading structure.
  *
- * Owns the tree structure (headings, levels, section filenames, nesting).
- * Provides:
- *   - flat: ordered view of all sections (derived from tree)
- *   - resolve(headingPath): lookup a section by heading path
- *   - replace(headingPath, newSections): structural mutation (split/rename)
- *   - persist(): write skeleton to overlay
- *   - fromDisk(): construct from overlay + canonical fallback
+ * ## Why it exists
  *
- * Does NOT store body content — that's in section files on disk
- * and in Y.Doc fragments in memory.
+ * Section body files are stored under random IDs (e.g. sec_abc123_xyz.md),
+ * decoupled from heading text. You cannot locate a body file from its heading
+ * path alone. The skeleton file is the indirection layer: it maps the heading
+ * tree to section file IDs, and the .sections/ directory hierarchy maps those
+ * IDs to absolute paths on disk.
+ *
+ * DocumentSkeleton parses that structure into an in-memory tree and answers one
+ * question: given a heading path like ["Overview", "Details"], where is the body
+ * file on disk?
+ *
+ * ## What it owns on disk
+ *
+ * Skeleton files only — the files containing {{section: filename.md}} markers.
+ * persist() and writeSkeletonIfAbsent() write these files. Nothing else.
+ *
+ * ## What it must never do
+ *
+ * - Read section body files. That is ContentLayer's job.
+ * - Copy or move files between roots. That is the commit pipeline's job.
+ * - Know about a canonical root. It was constructed for one root and resolves
+ *   all paths under that root. Canonical is not its concern.
+ * - Swallow errors on behalf of callers. If a heading is not found, throw.
+ *   Whether that is fatal is the caller's decision, not the skeleton's.
  */
 
 import path from "node:path";
-import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import type { DocStructureNode } from "../types/shared.js";
 
 // ─── Skeleton file format helpers ────────────────────────────────
@@ -133,12 +148,6 @@ export interface FlatEntry {
   isSubSkeleton: boolean;
 }
 
-export interface SubtreeEntry {
-  headingPath: string[];
-  heading: string;
-  level: number;
-  bodyContent: string;
-}
 
 export interface ReplacementResult {
   /** Entries removed from the flat list */
@@ -155,18 +164,15 @@ export class DocumentSkeleton {
   private _dirty: boolean = false;
   private _overlayPersisted: boolean = false;
   private readonly overlayRoot: string;
-  private readonly canonicalRoot: string;
 
   private constructor(
     docPath: string,
     roots: SkeletonNode[],
     overlayRoot: string,
-    canonicalRoot: string,
   ) {
     this.docPath = docPath;
     this.roots = roots;
     this.overlayRoot = overlayRoot;
-    this.canonicalRoot = canonicalRoot;
   }
 
   get dirty(): boolean { return this._dirty; }
@@ -409,15 +415,6 @@ export class DocumentSkeleton {
     throw new Error(`Skeleton integrity error: empty heading path for ${this.docPath}`);
   }
 
-  /** Resolve a section by heading path, returning null if not found (instead of throwing). */
-  resolveByHeadingPath(headingPath: string[]): FlatEntry | null {
-    try {
-      return this.resolve(headingPath);
-    } catch {
-      return null;
-    }
-  }
-
   /**
    * Replace the section at headingPath with one or more new sections.
    *
@@ -623,135 +620,30 @@ export class DocumentSkeleton {
   }
 
   /**
-   * Collect the full subtree rooted at headingPath: the section itself and all
-   * descendants. Reads body files from disk for each node (skips sub-skeleton
-   * entries whose content is structural, not body text).
-   *
-   * Used by the move endpoint to capture everything before removal.
+   * Return FlatEntry[] for the subtree rooted at headingPath (no file I/O).
+   * If headingPath is [], returns all content sections (entire document).
+   * Sub-skeleton entries are excluded — only body-file entries are returned.
    */
-  async collectSubtree(headingPath: string[]): Promise<SubtreeEntry[]> {
-    // Collect body entries (sync walk), then read files (async)
-    const bodyEntries: Array<{ headingPath: string[]; heading: string; level: number; absolutePath: string }> = [];
-
+  subtreeEntries(headingPath: string[]): FlatEntry[] {
     if (headingPath.length === 0) {
-      this.forEachSection((heading, level, _sf, hp, absolutePath) => {
-        bodyEntries.push({ headingPath: [...hp], heading, level, absolutePath });
+      const entries: FlatEntry[] = [];
+      this.forEachSection((heading, level, sectionFile, hp, absolutePath) => {
+        entries.push({ headingPath: [...hp], heading, level, sectionFile, absolutePath, isSubSkeleton: false });
       });
-    } else {
-      const parentPath = headingPath.slice(0, -1);
-      const target = headingPath[headingPath.length - 1];
-      const siblings = this.findSiblingList(parentPath);
-      const node = siblings.find(n => n.heading.toLowerCase() === target.toLowerCase());
-      if (!node) {
-        throw new Error(
-          `Skeleton integrity error: heading "${target}" not found in ${this.docPath} ` +
-          `at path [${parentPath.join(" > ")}]`
-        );
-      }
-      for (const entry of this.flattenNode(node, parentPath, this.resolveSkeletonPathFor(parentPath))) {
-        if (!entry.isSubSkeleton) bodyEntries.push(entry);
-      }
+      return entries;
     }
-
-    const result: SubtreeEntry[] = [];
-    for (const { headingPath: hp, heading, level, absolutePath } of bodyEntries) {
-      let bodyContent = "";
-      try {
-        bodyContent = await readFile(absolutePath, "utf8");
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-      }
-      result.push({ headingPath: hp, heading, level, bodyContent });
-    }
-    return result;
-  }
-
-  /**
-   * Copy ALL skeleton files (main + sub-skeletons) from overlay to canonical.
-   * Also deletes orphaned section files that are no longer referenced by the
-   * new skeleton (e.g. after section splits, renames, or deletions).
-   *
-   * Uses writeTree() which recursively writes sub-skeleton files for any
-   * node with children, so this handles arbitrarily nested structures.
-   */
-  async promoteOverlay(): Promise<void> {
-    const normalized = this.docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-    const canonicalSkeletonPath = path.resolve(this.canonicalRoot, ...normalized.split("/"));
-
-    // 1. Read current canonical skeleton to find old section files
-    const oldSectionFiles = new Set<string>();
-    const oldSubSkeletonDirs = new Set<string>();
-    try {
-      const oldSkeleton = await DocumentSkeleton.fromDisk(
-        this.docPath, this.canonicalRoot, this.canonicalRoot,
+    const parentPath = headingPath.slice(0, -1);
+    const target = headingPath[headingPath.length - 1];
+    const siblings = this.findSiblingList(parentPath);
+    const node = siblings.find(n => n.heading.toLowerCase() === target.toLowerCase());
+    if (!node) {
+      throw new Error(
+        `Skeleton integrity error: heading "${target}" not found in ${this.docPath} ` +
+        `at path [${parentPath.join(" > ")}]`
       );
-      oldSkeleton.forEachNode((_h, _l, _sf, _hp, absolutePath, isSubSkeleton) => {
-        oldSectionFiles.add(absolutePath);
-        if (isSubSkeleton) oldSubSkeletonDirs.add(absolutePath);
-      });
-    } catch {
-      // No existing canonical skeleton — nothing to clean up
     }
-
-    // Tombstone: empty skeleton means "delete this document from canonical"
-    if (this.isEmpty) {
-      // Delete canonical skeleton file
-      try {
-        await rm(canonicalSkeletonPath, { force: true });
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-      }
-      // Delete canonical .sections/ directory
-      try {
-        await rm(`${canonicalSkeletonPath}.sections`, { recursive: true, force: true });
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-      }
-      // Delete all old section body files
-      for (const oldFile of oldSectionFiles) {
-        try { await rm(oldFile, { force: true }); } catch { /* ignore ENOENT */ }
-      }
-      for (const oldDir of oldSubSkeletonDirs) {
-        try { await rm(oldDir + ".sections", { recursive: true, force: true }); } catch { /* ignore */ }
-      }
-      return;
-    }
-
-    // 2. Write new skeleton to canonical
-    await this.writeTree(this.roots, canonicalSkeletonPath);
-
-    // 3. Compute new section files
-    const newSkeleton = await DocumentSkeleton.fromDisk(
-      this.docPath, this.canonicalRoot, this.canonicalRoot,
-    );
-    const newSectionFiles = new Set<string>();
-    const newSubSkeletonDirs = new Set<string>();
-    newSkeleton.forEachNode((_h, _l, _sf, _hp, absolutePath, isSubSkeleton) => {
-      newSectionFiles.add(absolutePath);
-      if (isSubSkeleton) newSubSkeletonDirs.add(absolutePath);
-    });
-
-    // 4. Delete orphaned section body files (old entries not in new skeleton)
-    for (const oldFile of oldSectionFiles) {
-      if (!newSectionFiles.has(oldFile) && !oldSubSkeletonDirs.has(oldFile)) {
-        try {
-          await rm(oldFile, { force: true });
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-        }
-      }
-    }
-
-    // 5. Delete orphaned sub-skeleton directories
-    for (const oldDir of oldSubSkeletonDirs) {
-      if (!newSubSkeletonDirs.has(oldDir)) {
-        try {
-          await rm(oldDir + ".sections", { recursive: true, force: true });
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-        }
-      }
-    }
+    return this.flattenNode(node, parentPath, this.resolveSkeletonPathFor(parentPath))
+      .filter(e => !e.isSubSkeleton);
   }
 
   /** Write the skeleton to the overlay. Throws if not dirty. */
@@ -759,7 +651,7 @@ export class DocumentSkeleton {
     if (!this._dirty) {
       throw new Error(`Skeleton persist called but not dirty for ${this.docPath}`);
     }
-    await this.writeTree(this.roots, this.overlaySkeletonPath);
+    await this.writeTree(this.roots, this.skeletonPath);
     this._dirty = false;
     this._overlayPersisted = true;
   }
@@ -774,12 +666,86 @@ export class DocumentSkeleton {
    * that no skeleton points to.
    *
    * This is idempotent — if the overlay was already persisted (either by
-   * persist() or a previous ensureOverlayExists() call), this is a no-op.
+   * persist() or a previous writeSkeletonIfAbsent() call), this is a no-op.
    */
-  async ensureOverlayExists(): Promise<void> {
+  async writeSkeletonIfAbsent(): Promise<void> {
     if (this._overlayPersisted) return;
-    await this.writeTree(this.roots, this.overlaySkeletonPath);
+    await this.writeTree(this.roots, this.skeletonPath);
     this._overlayPersisted = true;
+  }
+
+  /**
+   * Build an overlay DocumentSkeleton from a parsed document.
+   *
+   * For each section in `parsed`, reuses the canonical section file ID if the
+   * heading text (case-insensitive) and parent heading path both match an unconsumed
+   * canonical entry. Otherwise mints a fresh file ID.
+   *
+   * No position-based fallback. A renamed heading always gets a fresh file ID.
+   * Two sections that share a heading at different depths are never confused.
+   *
+   * Pure transformation — no I/O. Call overlay.persist() to write to disk.
+   */
+  buildOverlaySkeleton(
+    parsed: { readonly sections: ReadonlyArray<{ headingPath: string[]; heading: string; level: number }> },
+    overlayContentRoot: string,
+  ): DocumentSkeleton {
+    // Collect canonical flat entries for matching
+    const canonicalFlat: FlatEntry[] = [];
+    this.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
+      canonicalFlat.push({ headingPath: [...headingPath], heading, level, sectionFile, absolutePath, isSubSkeleton: false });
+    });
+
+    const consumed = new Set<number>();
+    const nodes: SkeletonNode[] = [];
+
+    for (const section of parsed.sections) {
+      const isRoot = section.headingPath.length === 0;
+      const heading = section.heading;
+
+      let matchedIdx = -1;
+      if (isRoot) {
+        // Match the canonical root entry (level=0, heading="")
+        for (let ci = 0; ci < canonicalFlat.length; ci++) {
+          if (consumed.has(ci)) continue;
+          if (canonicalFlat[ci].level === 0 && canonicalFlat[ci].heading === "") {
+            matchedIdx = ci;
+            break;
+          }
+        }
+      } else {
+        // Match by heading text AND parent path — no cross-path ID theft
+        const parentPath = section.headingPath.slice(0, -1);
+        for (let ci = 0; ci < canonicalFlat.length; ci++) {
+          if (consumed.has(ci)) continue;
+          const cf = canonicalFlat[ci];
+          if (cf.heading.toLowerCase() !== heading.toLowerCase()) continue;
+          const cfParent = cf.headingPath.slice(0, -1);
+          if (cfParent.length !== parentPath.length) continue;
+          if (cfParent.every((seg, i) => seg.toLowerCase() === parentPath[i].toLowerCase())) {
+            matchedIdx = ci;
+            break;
+          }
+        }
+      }
+
+      if (matchedIdx >= 0) consumed.add(matchedIdx);
+
+      const sectionFile = matchedIdx >= 0
+        ? canonicalFlat[matchedIdx].sectionFile
+        : generateSectionFilename(isRoot ? "root" : heading);
+
+      nodes.push({
+        heading: isRoot ? "" : heading,
+        level: section.level,
+        sectionFile,
+        children: [],
+      });
+    }
+
+    const overlay = new DocumentSkeleton(this.docPath, nodes, overlayContentRoot);
+    overlay._dirty = true;
+    return overlay;
   }
 
   // --- Construction ---
@@ -794,11 +760,8 @@ export class DocumentSkeleton {
   static createTombstone(
     docPath: string,
     overlayRoot: string,
-    canonicalRoot?: string,
   ): DocumentSkeleton {
-    const skeleton = new DocumentSkeleton(
-      docPath, [], overlayRoot, canonicalRoot ?? overlayRoot,
-    );
+    const skeleton = new DocumentSkeleton(docPath, [], overlayRoot);
     skeleton._dirty = true;
     return skeleton;
   }
@@ -827,7 +790,7 @@ export class DocumentSkeleton {
       sectionFile: generateSectionFilename("root"),
       children: [],
     };
-    const skeleton = new DocumentSkeleton(docPath, [rootNode], targetRoot, targetRoot);
+    const skeleton = new DocumentSkeleton(docPath, [rootNode], targetRoot);
     skeleton._dirty = true;
     return skeleton;
   }
@@ -844,7 +807,7 @@ export class DocumentSkeleton {
     targetRoot: string,
   ): DocumentSkeleton {
     validateNoDuplicateRoots(nodes, docPath);
-    return new DocumentSkeleton(docPath, nodes, targetRoot, targetRoot);
+    return new DocumentSkeleton(docPath, nodes, targetRoot);
   }
 
   static async fromDisk(
@@ -854,7 +817,7 @@ export class DocumentSkeleton {
   ): Promise<DocumentSkeleton> {
     const { nodes, overlayExisted } = await buildSkeletonTree(docPath, overlayRoot, canonicalRoot);
     validateNoDuplicateRoots(nodes, docPath);
-    const skeleton = new DocumentSkeleton(docPath, nodes, overlayRoot, canonicalRoot);
+    const skeleton = new DocumentSkeleton(docPath, nodes, overlayRoot);
     skeleton._overlayPersisted = overlayExisted;
     return skeleton;
   }
@@ -864,10 +827,6 @@ export class DocumentSkeleton {
   private get skeletonPath(): string {
     const normalized = this.docPath.replace(/\\/g, "/").replace(/^\/+/, "");
     return path.resolve(this.overlayRoot, ...normalized.split("/"));
-  }
-
-  private get overlaySkeletonPath(): string {
-    return this.skeletonPath;
   }
 
   private findSiblingList(parentPath: string[]): SkeletonNode[] {
@@ -1000,15 +959,21 @@ async function buildSkeletonTree(
 
   let nodes = await readTreeRecursive(skeletonPath);
 
-  // If overlay produced zero entries, check canonical before giving up.
-  // An empty overlay masking valid canonical data is corruption — surface it.
-  if (nodes.length === 0 && overlayExisted) {
-    const canonicalNodes = await readTreeRecursive(canonicalPath);
-    if (canonicalNodes.length > 0) {
-      throw new Error(
-        `DocumentSkeleton: overlay skeleton for ${docPath} is empty but canonical has ${canonicalNodes.length} entries. ` +
-        `This indicates skeleton corruption. Remove or repair the overlay skeleton file to recover.`,
-      );
+  // If the overlay exists but is empty, fall through to canonical.
+  //
+  // Empty overlay skeletons arise from stale/corrupt session state (e.g. a
+  // session that flushed before any content existed, or was abandoned mid-flight).
+  // They must NOT shadow a non-empty canonical skeleton — doing so makes the
+  // document appear empty to every reader.
+  //
+  // Intentional tombstones (document-deletion proposals) are processed exclusively
+  // in CanonicalStore.absorb().deletionPass, which reads skeletons directly via
+  // parseSkeletonToEntries and never calls DocumentSkeleton.fromDisk.  Therefore
+  // treating an empty overlay as "absent" here is safe for all current call sites.
+  if (overlayExisted && nodes.length === 0) {
+    const fallbackNodes = await readTreeRecursive(canonicalPath);
+    if (fallbackNodes.length > 0) {
+      return { nodes: fallbackNodes, overlayExisted: false };
     }
   }
 

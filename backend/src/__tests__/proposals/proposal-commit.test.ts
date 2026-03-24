@@ -28,7 +28,7 @@ describe("POST /api/proposals/:id/commit — commit proposal", () => {
         ],
       });
 
-    expect(pendingRes.body.status).toBe("pending");
+    expect(pendingRes.body.status).toBe("draft");
     pendingProposalId = pendingRes.body.proposal_id;
 
     // Create an agent proposal that auto-commits
@@ -84,7 +84,7 @@ describe("POST /api/proposals/:id/commit — commit proposal", () => {
         ],
       });
 
-    expect(createRes.body.status).toBe("pending");
+    expect(createRes.body.status).toBe("draft");
     const proposalId = createRes.body.proposal_id;
 
     ctx.wsEvents.length = 0;

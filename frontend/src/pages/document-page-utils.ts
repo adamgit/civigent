@@ -90,12 +90,6 @@ export function getDocDisplayName(path: string): string {
   return filename.replace(/\.md$/, "");
 }
 
-/** Map human-involvement score to a border color class. */
-export function involvementBorderClass(score: number): string {
-  if (score > 0.5) return "border-l-blue-600";
-  if (score > 0.3) return "border-l-blue-300";
-  return "border-l-slate-300";
-}
 
 /** Derive heading depth from heading_path (root = 1). */
 export function headingDepth(headingPath: string[]): number {

@@ -47,7 +47,7 @@ describe("AgentSimulatorPage", () => {
             kind: "agent_write",
             writer: { id: "agent-sim-1", type: "agent", displayName: "test-agent" },
             intent: "Agent test edit",
-            status: "pending",
+            status: "draft",
             sections: [
               { doc_path: "ops/strategy.md", heading_path: ["Overview"], content: "" },
             ],

@@ -17,7 +17,7 @@ import {
   type SkeletonEntry,
   type SkeletonNode,
 } from "./document-skeleton.js";
-import { getContentRoot, getSessionDocsRoot, getSessionFragmentsRoot } from "./data-root.js";
+import { getContentRoot, getSessionDocsContentRoot, getSessionFragmentsRoot } from "./data-root.js";
 
 // ─── Skeleton Assessment ──────────────────────────────────────────
 
@@ -168,7 +168,7 @@ function entriesToNodes(entries: SkeletonEntry[]): SkeletonNode[] {
  */
 export async function buildCompoundSkeleton(docPath: string): Promise<CompoundSkeletonResult> {
   const contentRoot = getContentRoot();
-  const overlayContentRoot = path.join(getSessionDocsRoot(), "content");
+  const overlayContentRoot = getSessionDocsContentRoot();
   const fragmentsRoot = getSessionFragmentsRoot();
 
   const overlayPaths = resolveDocPaths(docPath, overlayContentRoot);
@@ -403,7 +403,7 @@ function decideContent(
  */
 export async function recoverDocument(docPath: string): Promise<DocumentRecoveryResult> {
   const contentRoot = getContentRoot();
-  const overlayContentRoot = path.join(getSessionDocsRoot(), "content");
+  const overlayContentRoot = getSessionDocsContentRoot();
   const fragmentsRoot = getSessionFragmentsRoot();
 
   const compound = await buildCompoundSkeleton(docPath);
@@ -492,7 +492,7 @@ export interface ReconciliationResult {
  * List all session files on disk for a given document.
  */
 async function listAllSessionFiles(docPath: string): Promise<string[]> {
-  const overlayContentRoot = path.join(getSessionDocsRoot(), "content");
+  const overlayContentRoot = getSessionDocsContentRoot();
   const fragmentsRoot = getSessionFragmentsRoot();
   const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
   const files: string[] = [];
@@ -540,7 +540,7 @@ export async function reconcileAndCleanup(
   }
 
   // All files accounted for — safe to delete
-  const overlayContentRoot = path.join(getSessionDocsRoot(), "content");
+  const overlayContentRoot = getSessionDocsContentRoot();
   const fragmentsRoot = getSessionFragmentsRoot();
   const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
 
@@ -559,7 +559,8 @@ export async function reconcileAndCleanup(
 
 /**
  * Write recovered sections directly to canonical (skeleton + body files).
- * Bypasses promoteOverlay and the normal commit pipeline's heading resolver.
+ * Bypasses CanonicalStore — acceptable for crash recovery where git state is already dirty
+ * and an external git commit is made after this call completes.
  * Uses the compound skeleton's structure directly.
  */
 export async function writeRecoveredToCanonical(

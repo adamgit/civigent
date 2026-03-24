@@ -42,7 +42,8 @@ describe("Crash Recovery", () => {
     await detectAndRecoverCrash();
 
     // After recovery, proposal should be moved to pending
-    const pendingDir = join(ctx.rootDir, "proposals", "pending");
+    const pendingDir = join(ctx.rootDir, "proposals", 
+"draft");
     const pendingFiles = await readdir(pendingDir).catch(() => []);
     expect(pendingFiles).toContain("stuck-proposal-1.json");
 

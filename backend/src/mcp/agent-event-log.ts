@@ -157,7 +157,7 @@ export class AgentEventLog {
       const agentProposals = allProposals.filter(p => p.writer.id === id);
 
       const pending: AgentProposalSnapshot[] = agentProposals
-        .filter(p => p.status === "pending")
+        .filter(p => p.status === "draft")
         .map(p => ({
           id: p.id,
           intent: p.intent,
@@ -185,7 +185,7 @@ export class AgentEventLog {
         connection_status: status,
         last_seen_at: lastSeen,
         mcp_tool_usage: toolUsage,
-        pending_proposals: pending,
+        draft_proposals: pending,
         recent_proposals: recent,
         stats,
       });

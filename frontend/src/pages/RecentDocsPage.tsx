@@ -87,7 +87,7 @@ export function RecentDocsPage() {
         </form>
 
         {loading && <p className="text-xs text-text-muted">Loading known documents...</p>}
-        {error && <p className="text-xs text-red-600">{error}</p>}
+        {error && <p className="text-error text-xs">{error}</p>}
 
         {!loading && !error && (
           <ContentPanel>
@@ -121,21 +121,21 @@ export function RecentDocsPage() {
                       <Link
                         to={`/docs/${docPath}/edit`}
                         onClick={() => rememberRecentDoc(docPath)}
-                        className="text-[11px] px-2.5 py-1 rounded border border-[#eae7e2] bg-white text-text-secondary hover:bg-[#faf8f5]"
+                        className="btn-small"
                       >
                         Edit
                       </Link>
                       <Link
                         to={`/docs/${docPath}/reconcile`}
                         onClick={() => rememberRecentDoc(docPath)}
-                        className="text-[11px] px-2.5 py-1 rounded border border-[#c9b8e8] bg-white text-[#6b4fa0] hover:bg-[#faf8f5]"
+                        className="btn-small"
+                        style={{ borderColor: "var(--color-agent-border)", color: "var(--color-agent-text)" }}
                       >
                         Reconcile
                       </Link>
                       <button
                         onClick={() => openDoc(docPath)}
-                        className="text-[11px] px-2.5 py-1 rounded text-white"
-                        style={{ background: "#2d7a8a", border: "none", cursor: "pointer" }}
+                        className="btn-primary"
                       >
                         Open
                       </button>

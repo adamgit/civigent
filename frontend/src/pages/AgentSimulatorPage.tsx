@@ -284,7 +284,7 @@ export function AgentSimulatorPage() {
   // Cancel
   const [cancelReason, setCancelReason] = useState("Testing cancellation");
 
-  // Existing pending proposals
+  // Existing draft proposals
   const [pendingProposals, setPendingProposals] = useState<AnyProposal[]>([]);
   const [withdrawingId, setWithdrawingId] = useState<string | null>(null);
 
@@ -317,11 +317,11 @@ export function AgentSimulatorPage() {
       .catch(() => { setHeadings([]); });
   }, [docPath]);
 
-  // ── Fetch pending proposals ─────────────────────────────────────────────
+  // ── Fetch draft proposals ─────────────────────────────────────────────
 
   const fetchPendingProposals = useCallback(async () => {
     const resp = await agentFetch<{ proposals?: AnyProposal[] }>(
-      "/api/proposals?status=pending",
+      "/api/proposals?status=draft",
       agent?.token ?? "",
     );
     if (resp.ok && Array.isArray(resp.body.proposals)) {
@@ -329,7 +329,7 @@ export function AgentSimulatorPage() {
     }
   }, [agent?.token]);
 
-  // Auto-fetch pending proposals when agent is registered
+  // Auto-fetch draft proposals when agent is registered
   useEffect(() => {
     if (agent) {
       void fetchPendingProposals();

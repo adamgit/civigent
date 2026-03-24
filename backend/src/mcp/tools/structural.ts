@@ -46,12 +46,12 @@ async function loadAndValidateProposal(
     if (proposal.writer.id !== writerId) {
       return makeToolErrorResult("You can only modify your own proposals.");
     }
-    if (proposal.status !== "pending") {
+    if (proposal.status !== "draft") {
       return makeToolErrorResult(`Cannot modify proposal in ${proposal.status} state.`);
     }
     // Derive content root from proposal
     const { proposalContentRoot } = await import("../../storage/proposal-repository.js");
-    const contentRoot = proposalContentRoot(proposalId, "pending");
+    const contentRoot = proposalContentRoot(proposalId, "draft");
     return { proposal, contentRoot };
   } catch (error) {
     if (error instanceof ProposalNotFoundError) {
@@ -155,10 +155,10 @@ const createSectionHandler: ToolHandler = async (args, ctx) => {
     ];
     const { proposal: updated } = await updateProposalSections(proposalId, updatedSections);
 
-    // Broadcast proposal:pending
+    // Broadcast proposal:draft
     if (ctx.emitEvent && updated.sections.length > 0) {
       ctx.emitEvent({
-        type: "proposal:pending",
+        type: "proposal:draft",
         proposal_id: updated.id,
         doc_path: updated.sections[0].doc_path,
         heading_paths: updated.sections.map((s) => s.heading_path),
@@ -222,8 +222,6 @@ const deleteSectionHandler: ToolHandler = async (args, ctx) => {
     skeleton.replace(headingPath, []);
     await skeleton.persist();
 
-    // Do NOT delete section body files from canonical — promoteOverlay handles orphan cleanup
-
     // Update proposal sections metadata
     const existingSections = proposal.sections.filter(
       (s) => !(s.doc_path === docPath && JSON.stringify(s.heading_path) === JSON.stringify(headingPath)),
@@ -236,7 +234,7 @@ const deleteSectionHandler: ToolHandler = async (args, ctx) => {
 
     if (ctx.emitEvent && updated.sections.length > 0) {
       ctx.emitEvent({
-        type: "proposal:pending",
+        type: "proposal:draft",
         proposal_id: updated.id,
         doc_path: updated.sections[0].doc_path,
         heading_paths: updated.sections.map((s) => s.heading_path),
@@ -329,7 +327,6 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
 
     // Write body content through ContentLayer BEFORE skeleton.persist()
     // so that if body write fails, the skeleton doesn't reference a missing file.
-    // Do NOT delete old files from canonical — promoteOverlay handles this
     const moveLayer = new ContentLayer(proposalContentRoot);
     const newHeadingPathForMove = [...newParentPath, heading];
     await moveLayer.writeSection(new SectionRef(docPath, newHeadingPathForMove), bodyContent);
@@ -348,7 +345,7 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
 
     if (ctx.emitEvent && updated.sections.length > 0) {
       ctx.emitEvent({
-        type: "proposal:pending",
+        type: "proposal:draft",
         proposal_id: updated.id,
         doc_path: updated.sections[0].doc_path,
         heading_paths: updated.sections.map((s) => s.heading_path),
@@ -430,7 +427,6 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
 
     // Write body content through ContentLayer BEFORE skeleton.persist()
     // so that if body write fails, the skeleton doesn't reference a missing file.
-    // Do NOT delete old files from canonical — promoteOverlay handles this
     const newHeadingPath = [...headingPath.slice(0, -1), newHeading];
     const renameLayer = new ContentLayer(proposalContentRoot);
     await renameLayer.writeSection(new SectionRef(docPath, newHeadingPath), bodyContent);
@@ -449,7 +445,7 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
 
     if (ctx.emitEvent && updated.sections.length > 0) {
       ctx.emitEvent({
-        type: "proposal:pending",
+        type: "proposal:draft",
         proposal_id: updated.id,
         doc_path: updated.sections[0].doc_path,
         heading_paths: updated.sections.map((s) => s.heading_path),
@@ -518,7 +514,7 @@ const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
     });
 
     // Create tombstone skeleton in proposal overlay
-    const tombstone = DocumentSkeleton.createTombstone(docPath, proposalContentRoot, canonicalRoot);
+    const tombstone = DocumentSkeleton.createTombstone(docPath, proposalContentRoot);
     await tombstone.persist();
 
     // Add all document sections to proposal's sections[] metadata
@@ -533,7 +529,7 @@ const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
 
     if (ctx.emitEvent && updated.sections.length > 0) {
       ctx.emitEvent({
-        type: "proposal:pending",
+        type: "proposal:draft",
         proposal_id: updated.id,
         doc_path: docPath,
         heading_paths: updated.sections.map((s) => s.heading_path),
@@ -608,12 +604,11 @@ const renameDocumentHandler: ToolHandler = async (args, ctx) => {
     });
 
     // Step 1: Write tombstone at old path in proposal overlay
-    const tombstone = DocumentSkeleton.createTombstone(docPath, proposalContentRoot, canonicalRoot);
+    const tombstone = DocumentSkeleton.createTombstone(docPath, proposalContentRoot);
     await tombstone.persist();
 
     // Step 2: Copy full content to new path in proposal overlay using skeleton API.
-    // collectSubtree reads all body entries (respecting nested sub-skeletons).
-    const subtree = await oldSkeleton.collectSubtree([]);
+    const subtree = await new ContentLayer(canonicalRoot).readSubtree(docPath, []);
 
     // Create a new empty skeleton at the new doc path in the proposal overlay
     const newSkeleton = DocumentSkeleton.createEmpty(newPath, proposalContentRoot);
@@ -654,7 +649,7 @@ const renameDocumentHandler: ToolHandler = async (args, ctx) => {
 
     if (ctx.emitEvent && updated.sections.length > 0) {
       ctx.emitEvent({
-        type: "proposal:pending",
+        type: "proposal:draft",
         proposal_id: updated.id,
         doc_path: newPath,
         heading_paths: updated.sections.map((s) => s.heading_path),

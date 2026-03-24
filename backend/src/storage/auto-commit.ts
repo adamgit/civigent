@@ -176,6 +176,8 @@ export async function commitDirtySections(
       source: "human_auto_commit",
       writer_id: writer.id,
       writer_display_name: writer.displayName,
+      writer_type: writer.type,
+      seconds_ago: 0,
     });
 
     for (const section of sectionsPublished) {

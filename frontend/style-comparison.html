@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Style Conflict Resolution</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:wght@400;500;600&display=swap');
+
+  :root {
+    --font-ui: "DM Sans", -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", monospace;
+    --font-body: "Source Serif 4", Georgia, serif;
+    --color-page-bg: #f4f1ec;
+    --color-text-primary: #1a1610;
+    --color-text-secondary: #5c564c;
+    --color-text-muted: #8a8279;
+    --color-text-faint: #b8b2a8;
+    --color-accent: #2d7a8a;
+    --color-accent-light: #e8f4f6;
+    --color-sidebar-bg: #e8e4de;
+    --color-footer-border: #e2ded8;
+    --color-status-red: #c4493a;
+    --color-status-red-light: #fce8e6;
+    --color-status-green: #3a9a5c;
+    --color-status-green-light: #e8f5ed;
+    --color-status-yellow: #c49a2a;
+    --color-status-yellow-light: #fdf6e4;
+    --color-section-hover: #faf8f5;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--font-ui);
+    background: var(--color-page-bg);
+    color: var(--color-text-primary);
+    padding: 2rem;
+    line-height: 1.5;
+  }
+  h1 { font-size: 22px; font-weight: 600; margin-bottom: 1.5rem; }
+  h2 { font-size: 16px; font-weight: 600; margin: 2rem 0 0.75rem; border-bottom: 1px solid #d6d1ca; padding-bottom: 0.4rem; }
+  h3 { font-size: 13px; font-weight: 500; color: var(--color-text-muted); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  .section { max-width: 900px; margin: 0 auto; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
+  .grid-4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
+  .card {
+    background: white;
+    border-radius: 8px;
+    padding: 1rem;
+    border: 1px solid #e2ded8;
+  }
+  .card-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-text-muted);
+    margin-bottom: 0.5rem;
+  }
+  .card-source {
+    font-size: 10px;
+    color: var(--color-text-faint);
+    margin-top: 0.5rem;
+    font-family: var(--font-mono);
+  }
+  .verdict {
+    margin: 0.5rem 0 1.5rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--color-accent-light);
+    border-left: 3px solid var(--color-accent);
+    font-size: 12px;
+    border-radius: 0 4px 4px 0;
+  }
+
+  /* ============================================ */
+  /*  1. PRIMARY BUTTONS                          */
+  /* ============================================ */
+
+  .btn-primary-a {
+    background: #2d7a8a;
+    color: white;
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: var(--font-ui);
+    cursor: pointer;
+  }
+  .btn-primary-b {
+    background: #2d7a8a;
+    color: white;
+    padding: 7px 14px;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    font-family: var(--font-ui);
+    cursor: pointer;
+  }
+  .btn-primary-c {
+    background: #2d7a8a;
+    color: white;
+    padding: 6.4px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    font-family: var(--font-ui);
+    cursor: pointer;
+  }
+
+  /* ============================================ */
+  /*  2. SECONDARY BUTTONS                        */
+  /* ============================================ */
+
+  .btn-sec-a {
+    background: var(--color-sidebar-bg);
+    color: var(--color-text-primary);
+    padding: 7px 14px;
+    border: 1px solid var(--color-footer-border);
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: var(--font-ui);
+    cursor: pointer;
+  }
+  .btn-sec-b {
+    background: #f7f5f1;
+    color: var(--color-text-primary);
+    padding: 7px 14px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: var(--font-ui);
+    cursor: pointer;
+  }
+  .btn-sec-c {
+    background: #e5e7eb;
+    color: #374151;
+    padding: 6.4px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: var(--font-ui);
+    cursor: pointer;
+  }
+  .btn-sec-d {
+    background: white;
+    color: var(--color-text-secondary);
+    padding: 4px 10px;
+    border: 1px solid #eae7e2;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: var(--font-ui);
+    cursor: pointer;
+  }
+
+  /* ============================================ */
+  /*  3. DANGER BUTTONS                           */
+  /* ============================================ */
+
+  .btn-danger-a {
+    background: transparent;
+    color: #dc2626;
+    padding: 6px 16px;
+    border: 1px solid #fca5a5;
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: var(--font-ui);
+    cursor: pointer;
+  }
+  .btn-danger-b {
+    background: transparent;
+    color: var(--color-status-red);
+    padding: 6px 16px;
+    border: 1px solid var(--color-status-red);
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: var(--font-ui);
+    cursor: pointer;
+  }
+
+  /* ============================================ */
+  /*  4. ERROR TEXT                                */
+  /* ============================================ */
+
+  .err-a { color: #c0392b; font-size: 13px; }
+  .err-b { color: #dc2626; font-size: 14px; }
+  .err-c { color: #aa0000; font-size: 13px; }
+  .err-d { color: #c4493a; font-size: 13px; }
+  .err-e { color: #b91c1c; font-size: 14px; }
+
+  /* ============================================ */
+  /*  5. INPUT FIELDS                             */
+  /* ============================================ */
+
+  .input-a {
+    padding: 6px 10px;
+    font-size: 13px;
+    font-family: var(--font-ui);
+    border: 1px solid var(--color-text-faint);
+    border-radius: 8px;
+    background: white;
+    color: var(--color-text-primary);
+    outline: none;
+    width: 100%;
+    max-width: 300px;
+  }
+  .input-b {
+    padding: 6px 10px;
+    font-size: 13px;
+    font-family: monospace;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: white;
+    color: var(--color-text-primary);
+    outline: none;
+    width: 100%;
+    max-width: 300px;
+  }
+  .input-c {
+    padding: 7px 10px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    border: 1px solid #eae7e2;
+    border-radius: 6px;
+    background: white;
+    outline: none;
+    width: 100%;
+    max-width: 300px;
+  }
+  .input-d {
+    padding: 8px 12px;
+    font-size: 14px;
+    font-family: var(--font-ui);
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: white;
+    outline: none;
+    width: 100%;
+    max-width: 300px;
+  }
+  .input-e {
+    padding: 8px 12px;
+    font-size: 14px;
+    font-family: var(--font-ui);
+    border: 1px solid var(--color-footer-border);
+    border-radius: 6px;
+    background: white;
+    color: var(--color-text-primary);
+    outline: none;
+    width: 100%;
+    max-width: 300px;
+  }
+
+  /* ============================================ */
+  /*  6. BORDERS / DIVIDERS                       */
+  /* ============================================ */
+
+  .divider-row {
+    display: flex;
+    align-items: center;
+    padding: 10px 16px;
+    font-size: 13px;
+  }
+  .div-a { border-bottom: 1px solid #f5f2ed; }
+  .div-b { border-bottom: 1px solid #eae7e2; }
+  .div-c { border-bottom: 1px solid #f0ede8; }
+  .div-d { border-bottom: 1px solid #e5e7eb; }
+  .div-e { border-bottom: 1px solid #ddd; }
+  .div-f { border-bottom: 1px solid #ccc; }
+
+  /* ============================================ */
+  /*  7. CODE BLOCKS                              */
+  /* ============================================ */
+
+  .code-dark {
+    background: #1e1e1e;
+    border-radius: 6px;
+    padding: 12px 14px;
+    color: #d4d4d4;
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .code-light {
+    background: #f7f5f1;
+    border-radius: 5px;
+    padding: 8px 10px;
+    color: var(--color-text-primary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  /* ============================================ */
+  /*  8. STATUS PILLS                             */
+  /* ============================================ */
+
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .pill-green-a { background: #dcfce7; color: #166534; }
+  .pill-green-b { background: var(--color-status-green-light); color: var(--color-status-green); }
+  .pill-yellow-a { background: #fef3c7; color: #92400e; }
+  .pill-yellow-b { background: var(--color-status-yellow-light); color: var(--color-status-yellow); }
+  .pill-red-a { background: #fee2e2; color: #991b1b; }
+  .pill-red-b { background: var(--color-status-red-light); color: var(--color-status-red); }
+
+  /* Show on warm background */
+  .warm-bg { background: var(--color-page-bg); padding: 1rem; border-radius: 8px; }
+</style>
+</head>
+<body>
+<div class="section">
+
+<h1>Style Conflict Resolution — Pick Your Standards</h1>
+<p style="font-size:13px; color:var(--color-text-secondary); margin-bottom:2rem;">
+  Each group shows the competing styles currently in use. Pick one per group (or suggest a tweak).
+  All samples render on both white and warm (<code>#f4f1ec</code>) backgrounds so you can see contrast.
+</p>
+
+<!-- ======================================== -->
+<h2>1. Primary Action Buttons</h2>
+<p style="font-size:12px; color:var(--color-text-secondary); margin-bottom:1rem;">All use #2d7a8a but differ in padding, font-size, border-radius.</p>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-label">Option A — ImportsPage / RecentDocs</div>
+    <button class="btn-primary-a">Import Files</button>
+    <div class="card-source">padding: 8px 16px · 13px · radius: 6px</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Option B — LoginPage / AgentsDialog</div>
+    <button class="btn-primary-b">Claim Admin</button>
+    <div class="card-source">padding: 7px 14px · 12px · radius: 6px</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Option C — AgentsPage CSS</div>
+    <button class="btn-primary-c">Add Agent</button>
+    <div class="card-source">padding: 0.4rem 1rem · 0.9rem · radius: 0.375rem</div>
+  </div>
+</div>
+<div class="warm-bg">
+  <h3>On warm background</h3>
+  <div style="display:flex; gap:1rem; margin-top:0.5rem;">
+    <button class="btn-primary-a">Option A</button>
+    <button class="btn-primary-b">Option B</button>
+    <button class="btn-primary-c">Option C</button>
+  </div>
+</div>
+
+<!-- ======================================== -->
+<h2>2. Secondary / Cancel Buttons</h2>
+<p style="font-size:12px; color:var(--color-text-secondary); margin-bottom:1rem;">Wildly divergent: warm tokens, cold Tailwind grays, no borders, borders…</p>
+
+<div class="grid-4">
+  <div class="card">
+    <div class="card-label">A — Warm + border (Imports)</div>
+    <button class="btn-sec-a">Refresh</button>
+    <div class="card-source">bg: sidebar-bg · border: footer-border</div>
+  </div>
+  <div class="card">
+    <div class="card-label">B — Warm, no border (Login)</div>
+    <button class="btn-sec-b">Log Out</button>
+    <div class="card-source">bg: #f7f5f1 · no border</div>
+  </div>
+  <div class="card">
+    <div class="card-label">C — Cold gray (AgentsPage)</div>
+    <button class="btn-sec-c">Cancel</button>
+    <div class="card-source">bg: #e5e7eb · color: #374151</div>
+  </div>
+  <div class="card">
+    <div class="card-label">D — Small outline (RecentDocs)</div>
+    <button class="btn-sec-d">Edit</button>
+    <div class="card-source">bg: white · border: #eae7e2 · 11px</div>
+  </div>
+</div>
+<div class="warm-bg">
+  <h3>On warm background</h3>
+  <div style="display:flex; gap:1rem; margin-top:0.5rem;">
+    <button class="btn-sec-a">A</button>
+    <button class="btn-sec-b">B</button>
+    <button class="btn-sec-c">C</button>
+    <button class="btn-sec-d">D</button>
+  </div>
+</div>
+
+<!-- ======================================== -->
+<h2>3. Danger / Destructive Buttons</h2>
+<div class="grid-2">
+  <div class="card">
+    <div class="card-label">A — Tailwind red (ImportsPage)</div>
+    <button class="btn-danger-a">Cancel Import</button>
+    <div class="card-source">color: #dc2626 · border: #fca5a5</div>
+  </div>
+  <div class="card">
+    <div class="card-label">B — Theme token red</div>
+    <button class="btn-danger-b">Cancel Import</button>
+    <div class="card-source">color: status-red · border: status-red</div>
+  </div>
+</div>
+<div class="warm-bg">
+  <h3>On warm background</h3>
+  <div style="display:flex; gap:1rem; margin-top:0.5rem;">
+    <button class="btn-danger-a">A — Tailwind</button>
+    <button class="btn-danger-b">B — Token</button>
+  </div>
+</div>
+
+<!-- ======================================== -->
+<h2>4. Error Text</h2>
+<p style="font-size:12px; color:var(--color-text-secondary); margin-bottom:1rem;">5 different reds used for the same purpose.</p>
+
+<div class="card" style="margin-bottom:1rem;">
+  <div style="display:grid; grid-template-columns: 80px 1fr; gap:0.5rem; align-items:center;">
+    <span class="card-source" style="margin:0;">A: #c0392b</span>
+    <span class="err-a">Something went wrong loading the page.</span>
+
+    <span class="card-source" style="margin:0;">B: #dc2626</span>
+    <span class="err-b">Something went wrong loading the page.</span>
+
+    <span class="card-source" style="margin:0;">C: #aa0000</span>
+    <span class="err-c">Something went wrong loading the page.</span>
+
+    <span class="card-source" style="margin:0;">D: #c4493a</span>
+    <span class="err-d">Something went wrong loading the page.</span>
+
+    <span class="card-source" style="margin:0;">E: #b91c1c</span>
+    <span class="err-e">Something went wrong loading the page.</span>
+  </div>
+</div>
+<div class="warm-bg">
+  <h3>On warm background</h3>
+  <div style="display:grid; grid-template-columns: 80px 1fr; gap:0.5rem; align-items:center; margin-top:0.5rem;">
+    <span style="font-size:10px;font-family:var(--font-mono);color:var(--color-text-faint);">A: #c0392b</span>
+    <span class="err-a">Something went wrong loading the page.</span>
+    <span style="font-size:10px;font-family:var(--font-mono);color:var(--color-text-faint);">B: #dc2626</span>
+    <span class="err-b">Something went wrong loading the page.</span>
+    <span style="font-size:10px;font-family:var(--font-mono);color:var(--color-text-faint);">C: #aa0000</span>
+    <span class="err-c">Something went wrong loading the page.</span>
+    <span style="font-size:10px;font-family:var(--font-mono);color:var(--color-text-faint);">D: #c4493a</span>
+    <span class="err-d">Something went wrong loading the page.</span>
+    <span style="font-size:10px;font-family:var(--font-mono);color:var(--color-text-faint);">E: #b91c1c</span>
+    <span class="err-e">Something went wrong loading the page.</span>
+  </div>
+</div>
+<div class="verdict">
+  <strong>D (#c4493a)</strong> is already in your theme as <code>--color-status-red</code>. Using the token means one place to tweak.
+</div>
+
+<!-- ======================================== -->
+<h2>5. Input Fields</h2>
+<p style="font-size:12px; color:var(--color-text-secondary); margin-bottom:1rem;">Different border colors, radii, fonts, and padding.</p>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-label">A — HomePage (warm token border, r8)</div>
+    <input class="input-a" value="my-document/path" />
+    <div class="card-source">border: text-faint · radius: 8 · font-ui</div>
+  </div>
+  <div class="card">
+    <div class="card-label">B — SetupPage (gray, r4, monospace)</div>
+    <input class="input-b" value="my-server-name" />
+    <div class="card-source">border: #ccc · radius: 4 · monospace</div>
+  </div>
+  <div class="card">
+    <div class="card-label">C — LoginPage (warm hex, r6, mono)</div>
+    <input class="input-c" value="bootstrap-code-123" />
+    <div class="card-source">border: #eae7e2 · radius: 6 · JetBrains</div>
+  </div>
+</div>
+<div class="grid-2">
+  <div class="card">
+    <div class="card-label">D — AgentsPage CSS (cold gray, r6)</div>
+    <input class="input-d" value="Agent Display Name" />
+    <div class="card-source">border: #d1d5db · radius: 0.375rem · font-ui</div>
+  </div>
+  <div class="card">
+    <div class="card-label">E — Proposed standard (warm token, r6)</div>
+    <input class="input-e" value="Standard input field" />
+    <div class="card-source">border: footer-border · radius: 6 · font-ui</div>
+  </div>
+</div>
+<div class="warm-bg">
+  <h3>On warm background</h3>
+  <div style="display:flex; flex-direction:column; gap:0.75rem; margin-top:0.5rem; max-width:300px;">
+    <input class="input-a" value="A — HomePage" />
+    <input class="input-b" value="B — SetupPage" />
+    <input class="input-c" value="C — LoginPage" />
+    <input class="input-d" value="D — AgentsPage" />
+    <input class="input-e" value="E — Proposed" />
+  </div>
+</div>
+
+<!-- ======================================== -->
+<h2>6. Border / Divider Colors</h2>
+<p style="font-size:12px; color:var(--color-text-secondary); margin-bottom:1rem;">6 different divider colors in use. Shown stacked on both white and warm bg.</p>
+
+<div class="grid-2">
+  <div class="card" style="padding:0;">
+    <div style="padding:0.5rem 1rem;font-size:11px;color:var(--color-text-muted);">ON WHITE</div>
+    <div class="divider-row div-a">A: #f5f2ed — Proposals, RecentDocs</div>
+    <div class="divider-row div-b">B: #eae7e2 — ProposalDetail, Login</div>
+    <div class="divider-row div-c">C: #f0ede8 — Snapshots (= footer-bg)</div>
+    <div class="divider-row div-d">D: #e5e7eb — AgentsPage (cold Tailwind)</div>
+    <div class="divider-row div-e">E: #ddd — SetupPage</div>
+    <div class="divider-row div-f">F: #ccc — SetupPage inputs</div>
+  </div>
+  <div class="warm-bg" style="padding:0;">
+    <div style="padding:0.5rem 1rem;font-size:11px;color:var(--color-text-muted);">ON WARM BG (#f4f1ec)</div>
+    <div class="divider-row div-a">A: #f5f2ed — nearly invisible here</div>
+    <div class="divider-row div-b">B: #eae7e2 — subtle</div>
+    <div class="divider-row div-c">C: #f0ede8 — nearly invisible here</div>
+    <div class="divider-row div-d">D: #e5e7eb — cold, visible</div>
+    <div class="divider-row div-e">E: #ddd — medium</div>
+    <div class="divider-row div-f">F: #ccc — strong</div>
+  </div>
+</div>
+<div class="verdict">
+  Your theme defines <code>--color-footer-border: #e2ded8</code> and <code>--color-sidebar-border: #d6d1ca</code>.
+  Suggest: <strong>footer-border</strong> for subtle dividers, <strong>sidebar-border</strong> for stronger ones.
+  A and C are too faint on warm bg. D/E/F are cold outliers.
+</div>
+
+<!-- ======================================== -->
+<h2>7. Code / Monospace Blocks</h2>
+<div class="grid-2">
+  <div class="card">
+    <div class="card-label">Dark — AgentsPage, SetupPage</div>
+    <div class="code-dark">
+curl -X POST http://localhost:3001/api/agents \<br>
+&nbsp;&nbsp;-H "Authorization: Bearer sk-..."
+    </div>
+    <div class="card-source">bg: #1e1e1e · text: #d4d4d4</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Light — LoginPage, ProposalsPage</div>
+    <div class="code-light">
+session: usr_k7x9m2<br>
+role: admin
+    </div>
+    <div class="card-source">bg: #f7f5f1 · text: text-primary</div>
+  </div>
+</div>
+<div class="verdict">
+  These serve different purposes: <strong>dark</strong> = terminal/shell commands, <strong>light</strong> = inline metadata/IDs.
+  Both are fine to keep as two variants: <code>.code-block-dark</code> and <code>.code-inline</code>.
+</div>
+
+<!-- ======================================== -->
+<h2>8. Status Pills</h2>
+<p style="font-size:12px; color:var(--color-text-secondary); margin-bottom:1rem;">Tailwind utility colors vs theme tokens.</p>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-label">A — Tailwind utilities (ImportsPage)</div>
+    <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+      <span class="pill pill-green-a">committed</span>
+      <span class="pill pill-yellow-a">pending</span>
+      <span class="pill pill-red-a">failed</span>
+    </div>
+    <div class="card-source">bg: Tailwind green-100/yellow-100/red-100</div>
+  </div>
+  <div class="card">
+    <div class="card-label">B — Theme tokens</div>
+    <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+      <span class="pill pill-green-b">committed</span>
+      <span class="pill pill-yellow-b">pending</span>
+      <span class="pill pill-red-b">failed</span>
+    </div>
+    <div class="card-source">bg: status-*-light · text: status-*</div>
+  </div>
+</div>
+<div class="warm-bg">
+  <h3>On warm background</h3>
+  <div style="display:flex; gap:2rem; margin-top:0.5rem;">
+    <div>
+      <div style="font-size:10px;color:var(--color-text-muted);margin-bottom:4px;">A — Tailwind</div>
+      <span class="pill pill-green-a">ok</span>
+      <span class="pill pill-yellow-a">pending</span>
+      <span class="pill pill-red-a">fail</span>
+    </div>
+    <div>
+      <div style="font-size:10px;color:var(--color-text-muted);margin-bottom:4px;">B — Tokens</div>
+      <span class="pill pill-green-b">ok</span>
+      <span class="pill pill-yellow-b">pending</span>
+      <span class="pill pill-red-b">fail</span>
+    </div>
+  </div>
+</div>
+<div class="verdict">
+  <strong>B (tokens)</strong> is warmer and matches the overall palette. A's greens/yellows feel colder.
+</div>
+
+<!-- ======================================== -->
+<h2 style="margin-top:3rem;">Summary: My Recommendations</h2>
+<div class="card" style="font-size:13px; line-height:1.7;">
+  <table style="width:100%; border-collapse:collapse;">
+    <thead>
+      <tr style="border-bottom:2px solid var(--color-footer-border); text-align:left;">
+        <th style="padding:6px 8px;">Element</th>
+        <th style="padding:6px 8px;">Recommendation</th>
+        <th style="padding:6px 8px;">Rationale</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr style="border-bottom:1px solid #f0ede8;">
+        <td style="padding:6px 8px;">Primary button</td>
+        <td style="padding:6px 8px;"><strong>A</strong> (8px 16px, 13px, r6)</td>
+        <td style="padding:6px 8px;">Largest target, most readable</td>
+      </tr>
+      <tr style="border-bottom:1px solid #f0ede8;">
+        <td style="padding:6px 8px;">Secondary button</td>
+        <td style="padding:6px 8px;"><strong>A</strong> (warm + border)</td>
+        <td style="padding:6px 8px;">Matches palette, border gives affordance</td>
+      </tr>
+      <tr style="border-bottom:1px solid #f0ede8;">
+        <td style="padding:6px 8px;">Small/inline button</td>
+        <td style="padding:6px 8px;"><strong>D</strong> (white + outline, 11px)</td>
+        <td style="padding:6px 8px;">Good for table rows, compact UI</td>
+      </tr>
+      <tr style="border-bottom:1px solid #f0ede8;">
+        <td style="padding:6px 8px;">Danger button</td>
+        <td style="padding:6px 8px;"><strong>B</strong> (theme token)</td>
+        <td style="padding:6px 8px;">Single source of truth for red</td>
+      </tr>
+      <tr style="border-bottom:1px solid #f0ede8;">
+        <td style="padding:6px 8px;">Error text</td>
+        <td style="padding:6px 8px;"><strong>D</strong> (#c4493a = status-red)</td>
+        <td style="padding:6px 8px;">Already a theme token</td>
+      </tr>
+      <tr style="border-bottom:1px solid #f0ede8;">
+        <td style="padding:6px 8px;">Input fields</td>
+        <td style="padding:6px 8px;"><strong>E</strong> (proposed standard)</td>
+        <td style="padding:6px 8px;">Warm border token, consistent r6</td>
+      </tr>
+      <tr style="border-bottom:1px solid #f0ede8;">
+        <td style="padding:6px 8px;">Dividers</td>
+        <td style="padding:6px 8px;">footer-border / sidebar-border</td>
+        <td style="padding:6px 8px;">Two tiers: subtle + strong, both warm</td>
+      </tr>
+      <tr style="border-bottom:1px solid #f0ede8;">
+        <td style="padding:6px 8px;">Code blocks</td>
+        <td style="padding:6px 8px;">Keep both dark + light</td>
+        <td style="padding:6px 8px;">Different semantic purposes</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;">Status pills</td>
+        <td style="padding:6px 8px;"><strong>B</strong> (theme tokens)</td>
+        <td style="padding:6px 8px;">Warmer, single source of truth</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+</div>
+</body>
+</html>

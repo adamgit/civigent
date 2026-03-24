@@ -26,6 +26,7 @@ export interface SectionCommitInfo {
   timestampMs: number;
   sha: string;
   authorName: string;
+  writerId: string;
 }
 
 // ─── Batch git lookup ────────────────────────────────────────────
@@ -63,7 +64,7 @@ export async function readDocSectionCommitInfo(
     [
       "-c", `safe.directory=${dataRoot}`,
       "log",
-      "--format=COMMIT_%at_%H%x00%an",
+      "--format=COMMIT_%at_%H%x00%an%x00%ae",
       "--name-only",
       "--",
       relSectionsDir + "/",
@@ -76,21 +77,27 @@ export async function readDocSectionCommitInfo(
   let currentTs = 0;
   let currentSha = "";
   let currentAuthor = "";
+  let currentWriterId = "";
 
   try {
     for await (const line of rl) {
       if (line.startsWith("COMMIT_")) {
-        // Format: COMMIT_<unix-seconds>_<sha>\0<author-name>
+        // Format: COMMIT_<unix-seconds>_<sha>\0<author-name>\0<author-email>
         const firstSep = 7; // length of "COMMIT_"
         const secondSep = line.indexOf("_", firstSep);
-        const nullSep = line.indexOf("\0", secondSep + 1);
+        const null1 = line.indexOf("\0", secondSep + 1);
+        const null2 = null1 === -1 ? -1 : line.indexOf("\0", null1 + 1);
         currentTs = parseInt(line.slice(firstSep, secondSep), 10) * 1000;
-        currentSha = line.slice(secondSep + 1, nullSep === -1 ? undefined : nullSep);
-        currentAuthor = nullSep === -1 ? "" : line.slice(nullSep + 1);
+        currentSha = line.slice(secondSep + 1, null1 === -1 ? undefined : null1);
+        currentAuthor = null1 === -1 ? "" : (null2 === -1 ? line.slice(null1 + 1) : line.slice(null1 + 1, null2));
+        const email = null2 === -1 ? "" : line.slice(null2 + 1);
+        currentWriterId = email.endsWith("@knowledge-store.local")
+          ? email.slice(0, -"@knowledge-store.local".length)
+          : email;
       } else if (line.trim()) {
         // File path — keep only first occurrence (most recent commit)
         if (!result.has(line)) {
-          result.set(line, { timestampMs: currentTs, sha: currentSha, authorName: currentAuthor });
+          result.set(line, { timestampMs: currentTs, sha: currentSha, authorName: currentAuthor, writerId: currentWriterId });
           if (result.size >= expectedFileCount) {
             proc.kill();
             break;

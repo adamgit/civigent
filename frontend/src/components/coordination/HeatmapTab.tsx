@@ -2,10 +2,10 @@ import { Link } from "react-router-dom";
 import { sectionGlobalKey, type GetHeatmapResponse, type HeatmapEntry, type AnyProposal } from "../../types/shared.js";
 
 function involvementColor(score: number): string {
-  if (score >= 0.8) return "#1e40af";
-  if (score >= 0.5) return "#2563eb";
-  if (score >= 0.3) return "#60a5fa";
-  return "#94a3b8";
+  if (score >= 0.8) return "var(--color-humanInvolvement-dot-blocked, #1e40af)";
+  if (score >= 0.5) return "var(--color-humanInvolvement-dot-high, #2563eb)";
+  if (score >= 0.3) return "var(--color-humanInvolvement-dot-caution, #60a5fa)";
+  return "var(--color-humanInvolvement-dot-safe, #94a3b8)";
 }
 
 function involvementLabel(score: number): string {
@@ -68,18 +68,18 @@ export function HeatmapTab({ heatmap, agentReadings, proposals, loading, error }
       {heatmap && (
         <div className="text-xs text-text-muted mb-3">
           Preset: <strong>{heatmap.preset}</strong> · Midpoint: {heatmap.humanInvolvement_midpoint_seconds}s · Steepness: {heatmap.humanInvolvement_steepness} ·{" "}
-          <Link to="/admin" className="text-[#2d7a8a] hover:underline">Admin</Link>
+          <Link to="/admin" className="text-accent hover:underline">Admin</Link>
         </div>
       )}
 
       {loading && !heatmap && <p className="text-xs text-text-muted">Loading heatmap...</p>}
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {error && <p className="text-xs text-error">{error}</p>}
 
       {heatmap && docGroups.size > 0 ? (
         Array.from(docGroups.entries()).map(([docPath, entries]) => (
           <div key={docPath} className="mb-5">
             <h3 className="text-sm font-semibold mb-1">
-              <Link to={`/docs/${docPath}`} className="text-text-primary hover:text-[#1d5a66]">{docPath}</Link>
+              <Link to={`/docs/${docPath}`} className="text-text-primary hover:text-accent-text">{docPath}</Link>
             </h3>
             <table className="w-full text-xs" style={{ borderCollapse: "collapse" }}>
               <thead>
@@ -95,7 +95,7 @@ export function HeatmapTab({ heatmap, agentReadings, proposals, loading, error }
               <tbody>
                 {entries.map((entry, idx) => {
                   const sectionKey = sectionGlobalKey(entry.doc_path, entry.heading_path);
-                  const borderColor = entry.humanInvolvement_score >= 0.5 ? "#ef4444" : undefined;
+                  const borderColor = entry.humanInvolvement_score >= 0.5 ? "var(--color-status-red)" : undefined;
                   // Find agents reading this section
                   const readingAgents: Array<{ id: string; name: string; hasProposal: boolean }> = [];
                   for (const [, agent] of agentReadings) {
@@ -104,7 +104,7 @@ export function HeatmapTab({ heatmap, agentReadings, proposals, loading, error }
                       const secKey = sectionGlobalKey(sec.doc_path, sec.heading_path);
                       if (secKey === sectionKey && now - sec.lastSeenAt < 5000) {
                         const hasProposal = proposals.some(
-                          (p) => p.status === "pending" && p.writer.id === agent.actor_id
+                          (p) => p.status === "draft" && p.writer.id === agent.actor_id
                         );
                         readingAgents.push({ id: agent.actor_id, name: agent.actor_display_name, hasProposal });
                       }
@@ -117,7 +117,7 @@ export function HeatmapTab({ heatmap, agentReadings, proposals, loading, error }
                       style={{
                         borderLeft: borderColor ? `3px solid ${borderColor}` : undefined,
                       }}
-                      className="border-b border-[#f5f2ed] hover:bg-[#faf8f5]"
+                      className="border-b border-footer-border hover:bg-section-hover"
                     >
                       <td className="p-1.5">{entry.heading_path.join(" > ") || "(root)"}</td>
                       <td className="p-1.5 text-center font-bold" style={{ color: involvementColor(entry.humanInvolvement_score) }}>

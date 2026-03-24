@@ -49,13 +49,13 @@ export function ActiveAgentsPanel({ agentReadings, proposals }: ActiveAgentsPane
         ) : (
           activeAgents.map((agent) => {
             const agentProposals = proposals.filter((p) => p.writer.id === agent.actor_id);
-            const pendingCount = agentProposals.filter((p) => p.status === "pending").length;
+            const pendingCount = agentProposals.filter((p) => p.status === "draft").length;
             const expanded = expandedId === agent.actor_id;
             return (
               <div key={agent.actor_id}>
                 <div
                   onClick={() => setExpandedId(expanded ? null : agent.actor_id)}
-                  className="flex items-center gap-3 px-4 py-2.5 border-b border-[#f5f2ed] hover:bg-[#faf8f5] cursor-pointer text-xs"
+                  className="flex items-center gap-3 px-4 py-2.5 border-b border-footer-border hover:bg-section-hover cursor-pointer text-xs"
                 >
                   <span
                     style={{
@@ -74,7 +74,7 @@ export function ActiveAgentsPanel({ agentReadings, proposals }: ActiveAgentsPane
                   <span className="ml-auto text-text-muted">{relativeTime(agent.lastSeenAt)}</span>
                 </div>
                 {expanded && (
-                  <div className="px-6 py-3 bg-[#faf8f5] border-b border-[#f5f2ed] text-xs">
+                  <div className="px-6 py-3 bg-section-hover border-b border-footer-border text-xs">
                     <div className="mb-2">
                       <span className="font-semibold text-text-secondary">Recent reads</span>
                       <div className="flex flex-wrap gap-1 mt-1">
@@ -91,7 +91,7 @@ export function ActiveAgentsPanel({ agentReadings, proposals }: ActiveAgentsPane
                         {agentProposals.map((p) => (
                           <div key={p.id} className="flex items-center gap-2 mt-1">
                             <StatusPill
-                              variant={p.status === "pending" ? "yellow" : p.status === "committed" ? "green" : "red"}
+                              variant={p.status === "draft" ? "yellow" : p.status === "committed" ? "green" : "red"}
                               showDot
                             >
                               {p.status}

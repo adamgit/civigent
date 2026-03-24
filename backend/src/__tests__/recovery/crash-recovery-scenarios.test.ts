@@ -97,7 +97,8 @@ describe("Crash Recovery Scenarios", () => {
     await createSampleDocument(ctx.rootDir);
 
     // Create a dirty proposal file
-    const pendingDir = join(ctx.rootDir, "proposals", "pending");
+    const pendingDir = join(ctx.rootDir, "proposals", 
+"draft");
     await mkdir(pendingDir, { recursive: true });
     const proposalData = {
       id: "test-prop-1",

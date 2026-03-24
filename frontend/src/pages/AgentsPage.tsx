@@ -23,7 +23,7 @@ function buildViewModels(response: GetAgentsFullSummaryResponse): AgentCardViewM
       currentActivityHtml: "",
       activeDocuments: [],
       mcpToolUsage: agent.mcp_tool_usage,
-      pendingProposals: agent.pending_proposals,
+      pendingProposals: agent.draft_proposals,
       recentProposals: agent.recent_proposals,
       stats: agent.stats,
     };
@@ -390,7 +390,7 @@ export function AgentsPage() {
       ) : null}
 
       {error ? (
-        <p className="px-4 text-sm text-red-600">{error}</p>
+        <p className="px-4 text-sm text-error">{error}</p>
       ) : null}
 
       {!loading && !error ? (

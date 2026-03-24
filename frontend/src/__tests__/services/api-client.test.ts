@@ -89,7 +89,7 @@ describe("api-client", () => {
       return jsonResponse({ proposals: [] });
     });
     await apiClient.listProposals("pending");
-    expect(fetchMock.calls.some((c) => String(c.input).includes("status=pending"))).toBe(true);
+    expect(fetchMock.calls.some((c) => String(c.input).includes("status=draft"))).toBe(true);
   });
 
   it("commitProposal calls POST /api/proposals/{id}/commit", async () => {

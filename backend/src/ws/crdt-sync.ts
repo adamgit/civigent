@@ -328,8 +328,11 @@ function handleMessage(
       if (oldFocus) {
         const session = lookupDocSession(state.docPath);
         if (session) {
-          // resolveByHeadingPath returns null if heading was renamed/restructured — non-fatal
-          const oldEntry = session.fragments.skeleton.resolveByHeadingPath(oldFocus);
+          // Heading may no longer exist if renamed/restructured mid-flight — skip normalization
+          let oldEntry = null;
+          try { oldEntry = session.fragments.skeleton.resolve(oldFocus); } catch (e) {
+            if (!(e instanceof Error) || !e.message.startsWith("Skeleton integrity error")) throw e;
+          }
           if (oldEntry) {
             const oldKey = FragmentStore.fragmentKeyFor(oldEntry);
             normalizeFragment(state.docPath, oldKey).catch((err) => {
@@ -347,6 +350,8 @@ function handleMessage(
           onWsEvent({
             type: "presence:done",  // editingPresence: human left this section
             writer_id: state.writerId,
+            writer_display_name: state.writerDisplayName,
+            writer_type: "human",
             doc_path: state.docPath,
             heading_path: oldFocus,
           });
@@ -356,6 +361,7 @@ function handleMessage(
           doc_path: state.docPath,
           writer_id: state.writerId,
           writer_display_name: state.writerDisplayName,
+          writer_type: "human",
           heading_path: headingPath,
         });
       }
@@ -580,6 +586,8 @@ export function createCrdtWsServer(): CrdtWsServer {
                   source: "human_auto_commit",
                   writer_id: state.writerId,
                   writer_display_name: state.writerDisplayName,
+                  writer_type: "human",
+                  seconds_ago: 0,
                 });
 
                 for (const section of commitResult.committedSections) {
@@ -612,6 +620,8 @@ export function createCrdtWsServer(): CrdtWsServer {
         onWsEvent({
           type: "presence:done",  // editingPresence: writer disconnected
           writer_id: state.writerId,
+          writer_display_name: state.writerDisplayName,
+          writer_type: "human",
           doc_path: state.docPath,
           heading_path: focusedPath ?? [],
         });
@@ -721,6 +731,7 @@ export function createCrdtWsServer(): CrdtWsServer {
           doc_path: route.docPath,
           writer_id: writer.id,
           writer_display_name: writer.displayName,
+          writer_type: "human",
           heading_path: [],
         });
       }

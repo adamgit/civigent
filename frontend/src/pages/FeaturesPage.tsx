@@ -34,32 +34,22 @@ export function FeaturesPage() {
         <div style={{ display: "flex", gap: 4, marginBottom: "1.5rem" }}>
           <button
             onClick={() => setActiveTab("user")}
+            className="btn-secondary"
             style={{
-              padding: "6px 14px",
-              fontSize: 13,
-              fontWeight: 500,
-              fontFamily: "var(--font-ui)",
-              border: "1px solid var(--color-footer-border)",
-              borderRadius: 8,
-              background: activeTab === "user" ? "var(--color-sidebar-bg)" : "transparent",
-              color: activeTab === "user" ? "var(--color-text-primary)" : "var(--color-text-muted)",
-              cursor: "pointer",
+              borderColor: activeTab === "user" ? "var(--color-accent-border)" : undefined,
+              background: activeTab === "user" ? "var(--color-accent-light)" : undefined,
+              color: activeTab === "user" ? "var(--color-accent-text)" : undefined,
             }}
           >
             User features
           </button>
           <button
             onClick={() => setActiveTab("architecture")}
+            className="btn-secondary"
             style={{
-              padding: "6px 14px",
-              fontSize: 13,
-              fontWeight: 500,
-              fontFamily: "var(--font-ui)",
-              border: "1px solid var(--color-footer-border)",
-              borderRadius: 8,
-              background: activeTab === "architecture" ? "var(--color-sidebar-bg)" : "transparent",
-              color: activeTab === "architecture" ? "var(--color-text-primary)" : "var(--color-text-muted)",
-              cursor: "pointer",
+              borderColor: activeTab === "architecture" ? "var(--color-accent-border)" : undefined,
+              background: activeTab === "architecture" ? "var(--color-accent-light)" : undefined,
+              color: activeTab === "architecture" ? "var(--color-accent-text)" : undefined,
             }}
           >
             Architecture

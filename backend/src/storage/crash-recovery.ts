@@ -12,19 +12,98 @@
  *   Compares against canonical and commits differences under "crash recovery" identity.
  *   Deletes all session content files and author metadata (clean slate).
  *   Reconnecting clients get a fresh Y.Doc (no stale CRDT state to merge).
+ *
+ * ─── I/O DISCIPLINE ──────────────────────────────────────────────────────────
+ *
+ * Recovery functions (discardPendingProposals, recoverCommittingProposals,
+ * recoverDirtyWorkingTree, recoverSessionFiles) MUST NOT call gitExec or
+ * node:fs functions directly. All I/O must go through RecoveryContext so
+ * that breadcrumbs (phase, doc, operation) are captured at the exact point
+ * of failure. Only RecoveryContext itself imports and calls these functions.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import { readdir, readFile, writeFile, mkdir } from "node:fs/promises";
+import { readdir, readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { getDataRoot, getContentRoot, getProposalsCommittingRoot, getSessionDocsRoot, getSessionFragmentsRoot } from "./data-root.js";
+import { getDataRoot, getContentRoot, getContentGitPrefix, getProposalsGitPrefix, getProposalsCommittingRoot, getProposalsPendingRoot, getSessionDocsContentRoot, getSessionFragmentsRoot } from "./data-root.js";
 import { gitExec } from "./git-repo.js";
-import { rollbackCommittingToPending } from "./proposal-repository.js";
+import { rollbackCommittingToDraft } from "./proposal-repository.js";
 import {
   scanSessionFragmentDocPaths,
 } from "./session-store.js";
 import { recoverDocument, reconcileAndCleanup, writeRecoveredToCanonical, buildCompoundSkeleton, type DocumentRecoveryResult } from "./recovery-layers.js";
 
-// ─── Recovery section generation ─────────────────────────────────
+// ─── Recovery I/O Context ────────────────────────────────────────────────────
+
+/**
+ * Mutable breadcrumb object passed through all recovery phases.
+ *
+ * Captures the exact state (phase, document, last attempted operation, and
+ * git status lines) at every I/O call. When a call throws, ctx already holds
+ * the context needed to produce a human-readable crash report without any
+ * additional instrumentation at the throw site.
+ *
+ * Recovery functions set ctx.phase and ctx.doc as they progress through their
+ * work, then call ctx.git() / ctx.fs() instead of calling gitExec / node:fs
+ * directly.
+ */
+class RecoveryContext {
+  phase = "";
+  doc = "";
+  operation = "";
+  gitStatusLines: string[] = [];
+
+  /**
+   * Execute a git command, recording the full argument list as the last
+   * attempted operation. If gitExec throws, this.operation reflects what
+   * was being attempted.
+   */
+  async git(args: string[], cwd: string): Promise<string> {
+    this.operation = `git ${args.join(" ")}`;
+    return gitExec(args, cwd);
+  }
+
+  /**
+   * Execute an fs operation, recording a human-readable description as the
+   * last attempted operation. If fn() throws, this.operation reflects what
+   * was being attempted.
+   */
+  async fs<T>(operationDesc: string, fn: () => Promise<T>): Promise<T> {
+    this.operation = operationDesc;
+    return fn();
+  }
+}
+
+// ─── Crash report formatter ──────────────────────────────────────────────────
+
+function formatCrashReport(ctx: RecoveryContext, dataRoot: string, err: unknown): never {
+  const errMsg = err instanceof Error ? `${err.message}\n${err.stack ?? ""}`.trim() : String(err);
+  const statusBlock = ctx.gitStatusLines.length > 0
+    ? ctx.gitStatusLines.map(l => `  ${l}`).join("\n")
+    : "  (no git status captured)";
+  const report = [
+    "═══ FULL ERROR (for maintainers) ═══",
+    errMsg,
+    "",
+    "═══ CRASH RECOVERY FAILED ═══",
+    `Phase:     ${ctx.phase || "(none)"}`,
+    `Document:  ${ctx.doc || "(none)"}`,
+    `Operation: ${ctx.operation || "(none)"}`,
+    `Git status at time of recovery:`,
+    statusBlock,
+    `TO RESOLVE: inspect git status in your data directory and resolve manually, then restart.`,
+    `  cd ${dataRoot}`,
+    `  git status`,
+  ].join("\n");
+  console.error(report);
+  // Hard exit — a throw would be caught by nodemon ("app crashed – waiting for
+  // file changes") which keeps the port open and lets dev.sh start vite.
+  // process.exit(1) kills the process outright so the whole dev stack stops.
+  process.exit(1);
+}
+
+// ─── Recovery section generation ─────────────────────────────────────────────
 
 /**
  * Build markdown content for a "Recovered edits" section.
@@ -74,12 +153,21 @@ export interface CrashRecoveryResult {
   failedDocuments: Array<{ docPath: string; error: string }>;
 }
 
+/**
+ * Parse a git --porcelain status line into its status code and file path.
+ * Porcelain v1 format: "XY path" where XY is two status chars and path starts at index 3.
+ */
+function parseStatusLine(statusLine: string): { code: string; filePath: string } {
+  return { code: statusLine.slice(0, 2), filePath: statusLine.slice(3) };
+}
+
 function isTrackedContentOrProposalPath(statusLine: string): boolean {
-  const trimmed = statusLine.trim();
-  if (trimmed.length === 0 || trimmed.startsWith("??")) {
-    return false;
-  }
-  return trimmed.includes("content/") || trimmed.includes("proposals/");
+  if (statusLine.trim().length === 0) return false;
+  const { code, filePath } = parseStatusLine(statusLine);
+  if (code === "??") return false; // untracked
+  // Must START WITH the root prefix — not just contain it anywhere in the path.
+  // A proposal path like proposals/pending/.../content/foo.md must only match proposals/.
+  return filePath.startsWith(getContentGitPrefix() + "/") || filePath.startsWith(getProposalsGitPrefix() + "/");
 }
 
 /**
@@ -89,7 +177,10 @@ function isTrackedContentOrProposalPath(statusLine: string): boolean {
 function extractDirtyDocPaths(dirtyLines: string[]): Set<string> {
   const docPaths = new Set<string>();
   for (const line of dirtyLines) {
-    const match = /content\/(.+?)(?:\.sections\/|$)/.exec(line);
+    const { filePath } = parseStatusLine(line);
+    // Anchor to start of path so proposals/.../content/... never matches here.
+    const contentPrefix = getContentGitPrefix();
+    const match = new RegExp(`^${contentPrefix}/(.+?)(?:\\.sections/|$)`).exec(filePath);
     if (match) docPaths.add(match[1].replace(/\/$/, ""));
   }
   return docPaths;
@@ -97,49 +188,64 @@ function extractDirtyDocPaths(dirtyLines: string[]): Set<string> {
 
 /**
  * Check if session files exist for a given document.
+ * Returns false if the expected locations don't exist (ENOENT), rethrows on
+ * any other error.
  */
-async function hasSessionFilesForDoc(docPath: string): Promise<boolean> {
-  const sessionDocsRoot = getSessionDocsRoot();
+async function hasSessionFilesForDoc(docPath: string, ctx: RecoveryContext): Promise<boolean> {
+  const sessionDocsContentRoot = getSessionDocsContentRoot();
   const sessionFragmentsRoot = getSessionFragmentsRoot();
   const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
 
   // Check session docs overlay
+  const overlayPath = path.join(sessionDocsContentRoot, ...normalized.split("/"));
   try {
-    const overlayPath = path.join(sessionDocsRoot, "content", ...normalized.split("/"));
-    await readFile(overlayPath, "utf8");
+    await ctx.fs(`readFile ${overlayPath}`, () => readFile(overlayPath, "utf8"));
     return true;
-  } catch { /* no overlay skeleton */ }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
 
   // Check session docs sections dir
+  const sectionsDir = path.join(sessionDocsContentRoot, `${normalized}.sections`);
   try {
-    const sectionsDir = path.join(sessionDocsRoot, "content", `${normalized}.sections`);
-    const entries = await readdir(sectionsDir);
+    const entries = await ctx.fs(`readdir ${sectionsDir}`, () => readdir(sectionsDir));
     if (entries.length > 0) return true;
-  } catch { /* no overlay sections */ }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
 
   // Check raw fragments
+  const fragmentDir = path.join(sessionFragmentsRoot, ...normalized.split("/"));
   try {
-    const fragmentDir = path.join(sessionFragmentsRoot, ...normalized.split("/"));
-    const entries = await readdir(fragmentDir);
+    const entries = await ctx.fs(`readdir ${fragmentDir}`, () => readdir(fragmentDir));
     if (entries.length > 0) return true;
-  } catch { /* no fragments */ }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
 
   return false;
 }
 
-async function recoverDirtyWorkingTree(dataRoot: string): Promise<boolean> {
-  const statusOutput = await gitExec(["status", "--porcelain"], dataRoot);
+// ─── Recovery phases ──────────────────────────────────────────────────────────
+
+async function recoverDirtyWorkingTree(dataRoot: string, ctx: RecoveryContext): Promise<boolean> {
+  ctx.phase = "dirty-working-tree";
+  const statusOutput = await ctx.git(["status", "--porcelain"], dataRoot);
   const dirtyLines = statusOutput
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
     .filter(isTrackedContentOrProposalPath);
 
+  ctx.gitStatusLines = dirtyLines;
+
   if (dirtyLines.length === 0) {
     return false;
   }
 
-  const contentDirtyLines = dirtyLines.filter((l) => l.includes("content/"));
-  const hasProposalsDirty = dirtyLines.some((l) => l.includes("proposals/"));
+  const contentPrefix = getContentGitPrefix() + "/";
+  const proposalsPrefix = getProposalsGitPrefix() + "/";
+  const contentDirtyLines = dirtyLines.filter((l) => parseStatusLine(l).filePath.startsWith(contentPrefix));
+  const hasProposalsDirty = dirtyLines.some((l) => parseStatusLine(l).filePath.startsWith(proposalsPrefix));
 
   if (contentDirtyLines.length > 0) {
     // Per-document handling: revert docs that have session files (session is authoritative),
@@ -149,7 +255,8 @@ async function recoverDirtyWorkingTree(dataRoot: string): Promise<boolean> {
     const docsToKeep: string[] = [];
 
     for (const dp of dirtyDocPaths) {
-      if (await hasSessionFilesForDoc(dp)) {
+      ctx.doc = dp;
+      if (await hasSessionFilesForDoc(dp, ctx)) {
         docsToRevert.push(dp);
       } else {
         docsToKeep.push(dp);
@@ -158,18 +265,23 @@ async function recoverDirtyWorkingTree(dataRoot: string): Promise<boolean> {
 
     // Revert docs where session files are authoritative
     for (const dp of docsToRevert) {
+      ctx.doc = dp;
       const normalized = dp.replace(/\\/g, "/").replace(/^\/+/, "");
-      await gitExec(["reset", "HEAD", "--", `content/${normalized}`, `content/${normalized}.sections/`], dataRoot);
-      await gitExec(["checkout", "--", `content/${normalized}`, `content/${normalized}.sections/`], dataRoot);
+      const cp = getContentGitPrefix();
+      await ctx.git(["reset", "HEAD", "--", `${cp}/${normalized}`, `${cp}/${normalized}.sections/`], dataRoot);
+      await ctx.git(["checkout", "--", `${cp}/${normalized}`, `${cp}/${normalized}.sections/`], dataRoot);
     }
 
     // Commit docs where dirty canonical is the only copy
     if (docsToKeep.length > 0) {
       for (const dp of docsToKeep) {
+        ctx.doc = dp;
         const normalized = dp.replace(/\\/g, "/").replace(/^\/+/, "");
-        await gitExec(["add", `content/${normalized}`, `content/${normalized}.sections/`], dataRoot);
+        const cp = getContentGitPrefix();
+        await ctx.git(["add", `${cp}/${normalized}`, `${cp}/${normalized}.sections/`], dataRoot);
       }
-      await gitExec([
+      ctx.doc = "";
+      await ctx.git([
         "-c", "user.name=Knowledge Store Recovery",
         "-c", "user.email=recovery@knowledge-store.local",
         "commit",
@@ -181,8 +293,9 @@ async function recoverDirtyWorkingTree(dataRoot: string): Promise<boolean> {
 
   // Proposal state transitions are safe to commit (directory renames are atomic)
   if (hasProposalsDirty) {
-    await gitExec(["add", "proposals/"], dataRoot);
-    await gitExec([
+    ctx.doc = "";
+    await ctx.git(["add", getProposalsGitPrefix() + "/"], dataRoot);
+    await ctx.git([
       "-c", "user.name=Knowledge Store Recovery",
       "-c", "user.email=recovery@knowledge-store.local",
       "commit",
@@ -194,11 +307,35 @@ async function recoverDirtyWorkingTree(dataRoot: string): Promise<boolean> {
   return true;
 }
 
-async function recoverCommittingProposals(): Promise<boolean> {
+/**
+ * Discard all proposals in proposals/pending/ — they are by definition crash debris.
+ * Pending proposals are transient (write_files, move_file, delete_document, PATCH, import, restore)
+ * and are assembled-then-immediately-committed. If any survive startup, the commit never ran.
+ */
+async function discardPendingProposals(ctx: RecoveryContext): Promise<void> {
+  ctx.phase = "discard-pending-proposals";
+  const pendingRoot = getProposalsPendingRoot();
+  let entries;
+  try {
+    entries = await ctx.fs(`readdir ${pendingRoot}`, () => readdir(pendingRoot, { withFileTypes: true }));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    ctx.doc = entry.name;
+    const entryPath = path.join(pendingRoot, entry.name);
+    await ctx.fs(`rm -rf ${entryPath}`, () => rm(entryPath, { recursive: true, force: true }));
+  }
+}
+
+async function recoverCommittingProposals(ctx: RecoveryContext): Promise<boolean> {
+  ctx.phase = "recover-committing-proposals";
   const committingRoot = getProposalsCommittingRoot();
   let entries;
   try {
-    entries = await readdir(committingRoot, { withFileTypes: true });
+    entries = await ctx.fs(`readdir ${committingRoot}`, () => readdir(committingRoot, { withFileTypes: true }));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return false;
@@ -211,7 +348,9 @@ async function recoverCommittingProposals(): Promise<boolean> {
     if (!entry.isDirectory()) {
       continue;
     }
-    await rollbackCommittingToPending(entry.name);
+    ctx.doc = entry.name;
+    ctx.operation = `rollbackCommittingToDraft ${entry.name}`;
+    await rollbackCommittingToDraft(entry.name);
     recovered = true;
   }
   return recovered;
@@ -240,10 +379,12 @@ interface RecoverSessionFilesResult {
  *
  * For each doc with session state:
  *   1. recoverDocument() — tolerant per-section recovery with decision table
- *   2. commitHumanChangesToCanonical() — write recovered sections to canonical + git commit
+ *   2. writeRecoveredToCanonical() — write recovered sections to canonical
  *   3. reconcileAndCleanup() — verify all session files consumed, then delete
  */
-async function recoverSessionFiles(): Promise<RecoverSessionFilesResult> {
+async function recoverSessionFiles(ctx: RecoveryContext): Promise<RecoverSessionFilesResult> {
+  ctx.phase = "session-file-recovery";
+  ctx.operation = "discoverSessionDocPaths";
   const docPaths = await discoverSessionDocPaths();
   if (docPaths.length === 0) return { sectionsCommitted: 0, orphanScanFailures: [], failedDocuments: [] };
 
@@ -254,13 +395,16 @@ async function recoverSessionFiles(): Promise<RecoverSessionFilesResult> {
   const perDocResults = new Map<string, { recovery: DocumentRecoveryResult; compound: Awaited<ReturnType<typeof buildCompoundSkeleton>> }>();
 
   for (const docPath of docPaths) {
+    ctx.doc = docPath;
     try {
+      ctx.operation = `buildCompoundSkeleton ${docPath}`;
       const compound = await buildCompoundSkeleton(docPath);
+      ctx.operation = `recoverDocument ${docPath}`;
       const recovery = await recoverDocument(docPath);
       perDocResults.set(docPath, { recovery, compound });
 
       if (recovery.sections.length > 0) {
-        // Write recovered content directly to canonical
+        ctx.operation = `writeRecoveredToCanonical ${docPath}`;
         await writeRecoveredToCanonical(docPath, recovery, compound.skeleton);
         totalSections += recovery.sections.length;
       }
@@ -290,8 +434,8 @@ async function recoverSessionFiles(): Promise<RecoverSessionFilesResult> {
 
       const canonicalPath = path.join(getContentRoot(), docPath + ".md");
       try {
-        await mkdir(path.dirname(canonicalPath), { recursive: true });
-        await writeFile(canonicalPath, failureNotice, "utf8");
+        await ctx.fs(`mkdir ${path.dirname(canonicalPath)}`, () => mkdir(path.dirname(canonicalPath), { recursive: true }));
+        await ctx.fs(`writeFile ${canonicalPath}`, () => writeFile(canonicalPath, failureNotice, "utf8"));
       } catch {
         // Best-effort — if we can't write the notice, the failure is still tracked in failedDocuments
       }
@@ -306,8 +450,10 @@ async function recoverSessionFiles(): Promise<RecoverSessionFilesResult> {
   const dataRoot = getDataRoot();
   let commitError: string | undefined;
   try {
-    await gitExec(["add", "-A", "content/"], dataRoot);
-    await gitExec([
+    ctx.doc = "";
+    const cp = getContentGitPrefix();
+    await ctx.git(["add", "-A", cp + "/"], dataRoot);
+    await ctx.git([
       "-c", "user.name=Knowledge Store Recovery",
       "-c", "user.email=recovery@knowledge-store.local",
       "commit",
@@ -318,15 +464,18 @@ async function recoverSessionFiles(): Promise<RecoverSessionFilesResult> {
     commitError = err instanceof Error ? `${err.message}\n${err.stack ?? ""}`.trim() : String(err);
     // Rollback canonical to committed state, session files preserved
     try {
-      await gitExec(["reset", "HEAD", "--", "content/"], dataRoot);
-      await gitExec(["checkout", "--", "content/"], dataRoot);
+      const cp = getContentGitPrefix();
+      await ctx.git(["reset", "HEAD", "--", cp + "/"], dataRoot);
+      await ctx.git(["checkout", "--", cp + "/"], dataRoot);
     } catch { /* rollback best-effort */ }
     return { sectionsCommitted: 0, orphanScanFailures, commitError, failedDocuments };
   }
 
   // Per-document reconciled cleanup (only for successfully recovered docs)
   for (const [docPath, { recovery }] of perDocResults) {
+    ctx.doc = docPath;
     try {
+      ctx.operation = `reconcileAndCleanup ${docPath}`;
       const reconciliation = await reconcileAndCleanup(docPath, recovery.consumedSessionFiles);
       if (!reconciliation.safe) {
         orphanScanFailures.push({
@@ -347,13 +496,28 @@ async function recoverSessionFiles(): Promise<RecoverSessionFilesResult> {
 }
 
 export async function detectAndRecoverCrash(dataRoot = getDataRoot()): Promise<CrashRecoveryResult> {
-  const [recoveredCommitting, recoveredGit] = await Promise.all([
-    recoverCommittingProposals(),
-    recoverDirtyWorkingTree(dataRoot),
-  ]);
+  const ctx = new RecoveryContext();
+
+  // Helper: wrap a phase call; on failure, emit a structured crash report and rethrow.
+  const wrap = async <T>(fn: () => Promise<T>): Promise<T> => {
+    try {
+      return await fn();
+    } catch (err) {
+      formatCrashReport(ctx, dataRoot, err);
+    }
+  };
+
+  // Discard transient pending proposals — these are always crash debris
+  await wrap(() => discardPendingProposals(ctx));
+
+  // Recover committing proposals and dirty working tree sequentially so ctx
+  // breadcrumbs reflect the correct phase if either throws.
+  const recoveredCommitting = await wrap(() => recoverCommittingProposals(ctx));
+  const recoveredGit = await wrap(() => recoverDirtyWorkingTree(dataRoot, ctx));
 
   // Session recovery runs after git recovery (may need clean working tree)
-  const { sectionsCommitted, orphanScanFailures, commitError, failedDocuments } = await recoverSessionFiles();
+  const { sectionsCommitted, orphanScanFailures, commitError, failedDocuments } =
+    await wrap(() => recoverSessionFiles(ctx));
 
   return {
     recovered: recoveredCommitting || recoveredGit || sectionsCommitted > 0,

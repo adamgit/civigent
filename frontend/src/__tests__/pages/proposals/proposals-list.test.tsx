@@ -20,7 +20,7 @@ const sampleProposals: AnyProposal[] = [
     kind: "human_reservation",
     writer: { id: "human-1", type: "human", displayName: "Alice" },
     intent: "Refactor goals section",
-    status: "pending",
+    status: "draft",
     sections: [{ doc_path: "ops/strategy.md", heading_path: ["Goals"], content: "Goals.\n" }],
     created_at: "2026-01-02T00:00:00.000Z",
   },
@@ -82,7 +82,7 @@ describe("ProposalsPage list", () => {
   it("status filter changes API call parameter", async () => {
     fetchMock.mockImplementation(async (url: unknown) => {
       const urlStr = String(url);
-      if (urlStr.includes("/api/proposals") && urlStr.includes("status=pending")) {
+      if (urlStr.includes("/api/proposals") && urlStr.includes("status=draft")) {
         return jsonResponse({ proposals: [sampleProposals[1]] });
       }
       if (urlStr.includes("/api/proposals")) {

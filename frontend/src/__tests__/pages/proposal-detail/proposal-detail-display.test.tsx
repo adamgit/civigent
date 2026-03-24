@@ -10,7 +10,7 @@ const pendingProposal: AnyProposal = {
   kind: "agent_write",
   writer: { id: "agent-1", type: "agent", displayName: "Agent Alpha" },
   intent: "Improve overview clarity",
-  status: "pending",
+  status: "draft",
   sections: [
     {
       doc_path: "ops/strategy.md",

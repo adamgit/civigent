@@ -211,30 +211,14 @@ export function LoginPage() {
                       value={bootstrapCode}
                       onChange={(e) => setBootstrapCode(e.target.value)}
                       placeholder="Paste bootstrap code"
-                      style={{
-                        flex: 1,
-                        fontFamily: "'JetBrains Mono', monospace",
-                        fontSize: 12,
-                        padding: "7px 10px",
-                        border: "1px solid #eae7e2",
-                        borderRadius: 6,
-                        background: "white",
-                      }}
+                      className="input-field"
+                      style={{ flex: 1 }}
                     />
                     <button
                       onClick={() => void handleBootstrap()}
                       disabled={working || !bootstrapCode.trim()}
-                      style={{
-                        background: "#2d7a8a",
-                        color: "white",
-                        padding: "7px 14px",
-                        borderRadius: 6,
-                        border: "none",
-                        cursor: bootstrapCode.trim() ? "pointer" : "default",
-                        fontSize: 12,
-                        fontWeight: 500,
-                        opacity: bootstrapCode.trim() ? 1 : 0.5,
-                      }}
+                      className="btn-primary"
+                      style={{ opacity: bootstrapCode.trim() ? 1 : 0.5 }}
                     >
                       Claim admin
                     </button>
@@ -243,23 +227,13 @@ export function LoginPage() {
               )}
 
               {message && <p className="text-xs text-green-700 mb-3">{message}</p>}
-              {error && <p className="text-xs text-red-600 mb-3">{error}</p>}
+              {error && <p className="text-error mb-3">{error}</p>}
 
               {/* Session management */}
               <button
                 onClick={() => void handleLogout()}
                 disabled={working}
-                className="w-full"
-                style={{
-                  background: "#f7f5f1",
-                  color: "var(--color-text-primary)",
-                  padding: "7px 14px",
-                  borderRadius: 6,
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  fontWeight: 500,
-                }}
+                className="btn-secondary w-full"
               >
                 Clear session
               </button>

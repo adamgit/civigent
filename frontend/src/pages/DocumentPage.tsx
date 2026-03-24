@@ -32,6 +32,7 @@ import {
 } from "./document-page-utils";
 import { useDocumentCrdt } from "../hooks/useDocumentCrdt";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
+import { SummaryWhoChangedThisSection } from "../components/SummaryWhoChangedThisSection.js";
 
 // ─── viewingPresence: small component to call the hook per-section ──
 
@@ -469,134 +470,173 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
       )}
 
       {/* Canvas scroll area */}
-      <div className="flex-1 overflow-auto canvas-scroll px-5 pt-8 pb-24" style={{ background: "var(--color-page-bg)" }}>
-        <div ref={sectionsContainerRef} className="min-w-[700px] w-fit mx-auto bg-canvas-bg shadow-[0_1px_4px_rgba(0,0,0,0.04),0_6px_24px_rgba(0,0,0,0.025)] rounded-sm px-14 pt-12 pb-16 relative min-h-[calc(100vh-200px)]">
-          {/* Document title */}
-          <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight mb-1 tracking-tight">
-            {docTitle}
-          </h1>
-          <div className="text-xs text-text-muted mb-7 pb-5 border-b border-[#eae7e2] flex items-center gap-2">
-            {renaming ? (
-              <form
-                className="flex items-center gap-1.5 flex-1"
-                onSubmit={async (e) => {
-                  e.preventDefault();
-                  if (!decodedDocPath || !renameValue.trim()) return;
-                  setRenameError(null);
-                  try {
-                    await apiClient.renameDocument(decodedDocPath, renameValue.trim());
-                    setRenaming(false);
-                  } catch (err) {
-                    setRenameError(err instanceof Error ? err.message : String(err));
-                  }
-                }}
-              >
-                <input
-                  className="flex-1 text-xs border border-border-default rounded px-1.5 py-0.5 bg-canvas-bg text-text-primary"
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                  autoFocus
-                />
-                <button type="submit" className="text-xs text-accent-primary hover:underline">Save</button>
-                <button type="button" className="text-xs text-text-muted hover:underline" onClick={() => { setRenaming(false); setRenameError(null); }}>Cancel</button>
-                {renameError && <span className="text-xs text-red-600">{renameError}</span>}
-              </form>
-            ) : (
-              <>
-                <span>{decodedDocPath ?? ""}</span>
-                <button
-                  className="text-xs text-accent-primary hover:underline ml-1"
-                  onClick={() => { setRenameValue(decodedDocPath ?? ""); setRenaming(true); }}
-                >
-                  Rename
-                </button>
-              </>
-            )}
+      <div
+        className="flex-1 overflow-auto canvas-scroll px-5 pt-8 pb-24"
+        style={{ background: "var(--color-page-bg)" }}
+      >
+        <div ref={sectionsContainerRef} className="mx-auto" style={{ maxWidth: "1400px" }}>
+
+          {/* Header row */}
+          <div className="flex">
+            <div className="w-[200px] min-w-[100px] shrink" />
+            <div className="flex-1 min-w-[700px] bg-canvas-bg border border-b-0 border-[rgba(0,0,0,0.06)] rounded-t-sm px-14 pt-12 relative">
+              {/* Document title */}
+              <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight mb-1 tracking-tight">
+                {docTitle}
+              </h1>
+              <div className="text-xs text-text-muted mb-7 pb-5 border-b border-[#eae7e2] flex items-center gap-2">
+                {renaming ? (
+                  <form
+                    className="flex items-center gap-1.5 flex-1"
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      if (!decodedDocPath || !renameValue.trim()) return;
+                      setRenameError(null);
+                      try {
+                        await apiClient.renameDocument(decodedDocPath, renameValue.trim());
+                        setRenaming(false);
+                      } catch (err) {
+                        setRenameError(err instanceof Error ? err.message : String(err));
+                      }
+                    }}
+                  >
+                    <input
+                      className="flex-1 text-xs border border-border-default rounded px-1.5 py-0.5 bg-canvas-bg text-text-primary"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      autoFocus
+                    />
+                    <button type="submit" className="text-xs text-accent-primary hover:underline">Save</button>
+                    <button type="button" className="text-xs text-text-muted hover:underline" onClick={() => { setRenaming(false); setRenameError(null); }}>Cancel</button>
+                    {renameError && <span className="text-xs text-red-600">{renameError}</span>}
+                  </form>
+                ) : (
+                  <>
+                    <span>{decodedDocPath ?? ""}</span>
+                    <button
+                      className="text-xs text-accent-primary hover:underline ml-1"
+                      onClick={() => { setRenameValue(decodedDocPath ?? ""); setRenaming(true); }}
+                    >
+                      Rename
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* Agent reading indicators */}
+              {agentReadingIndicators.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  {agentReadingIndicators.map((indicator) => (
+                    <span key={indicator.key} className="inline-flex items-center gap-1 text-[10px] text-agent-text animate-[fade-assemble_3s_ease-in-out_infinite]">
+                      <span className="text-xs">&#128065;</span>
+                      {indicator.actorDisplayName} reading {indicator.labels.join(", ")}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+
+              {/* Recently changed sections */}
+              {recentlyChangedSections.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5 mb-4">
+                  {recentlyChangedSections.sort((a, b) => b.changedAtMs - a.changedAtMs).map((entry) => (
+                    <span key={entry.key} className="inline-flex items-center gap-1 text-[10px] font-medium text-agent-text bg-agent-light px-[7px] py-px rounded-sm">
+                      {entry.label} ({entry.changedByName}, {formatRelativeAgeFromMs(entry.changedAtMs)})
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+
+              {/* Status / error */}
+              {statusMessage ? <p className="text-xs text-status-green mb-2">{statusMessage}</p> : null}
+              {error ? <p className="text-xs text-status-red mb-2">Error: {error}</p> : null}
+
+              {/* Loading state */}
+              {showLoading ? <DocumentLoadingSkeleton structureTree={structureTree} /> : null}
+
+              {!sectionsLoading && sections.length === 0 && !error ? (
+                <p className="text-sm text-text-muted">Document is empty.</p>
+              ) : null}
+            </div>
+            <div className="w-[200px] min-w-[100px] shrink" />
           </div>
 
-          {/* Agent reading indicators */}
-          {agentReadingIndicators.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5 mb-3">
-              {agentReadingIndicators.map((indicator) => (
-                <span key={indicator.key} className="inline-flex items-center gap-1 text-[10px] text-agent-text animate-[fade-assemble_3s_ease-in-out_infinite]">
-                  <span className="text-xs">&#128065;</span>
-                  {indicator.actorDisplayName} reading {indicator.labels.join(", ")}
-                </span>
-              ))}
-            </div>
-          ) : null}
-
-          {/* Recently changed sections */}
-          {recentlyChangedSections.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5 mb-4">
-              {recentlyChangedSections.sort((a, b) => b.changedAtMs - a.changedAtMs).map((entry) => (
-                <span key={entry.key} className="inline-flex items-center gap-1 text-[10px] font-medium text-agent-text bg-agent-light px-[7px] py-px rounded-sm">
-                  {entry.label} ({entry.changedByName}, {formatRelativeAgeFromMs(entry.changedAtMs)})
-                </span>
-              ))}
-            </div>
-          ) : null}
-
-          {/* Status / error */}
-          {statusMessage ? <p className="text-xs text-status-green mb-2">{statusMessage}</p> : null}
-          {error ? <p className="text-xs text-status-red mb-2">Error: {error}</p> : null}
-
-          {/* Loading state (only shown after LOADING_REVEAL_DELAY_MS to avoid flicker) */}
-          {showLoading ? <DocumentLoadingSkeleton structureTree={structureTree} /> : null}
-
-          {/* Sections */}
-          {!sectionsLoading && sections.length === 0 && !error ? (
-            <p className="text-sm text-text-muted">Document is empty.</p>
-          ) : null}
-
+          {/* Section rows — each is a flex row so left gutter aligns with its section */}
           {!sectionsLoading ? sections.map((section, i) => {
             const sectionKey = sectionHeadingKey(section.heading_path);
             const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path.length === 0);
             const sectionLabel = headingPathToLabel(section.heading_path);
-
             return (
-              <DocumentSectionRenderer
-                key={fk}
-                section={section}
-                index={i}
-                fragmentKey={fk}
-                isFocused={focusedSectionIndex === i}
-                hasEditor={shouldMountEditor(i, focusedSectionIndex)}
-                isRestructuring={restructuringKeys.has(fk)}
-                isInProposal={!!(proposalMode && proposalSectionsRef.current.has(`${decodedDocPath}::${sectionKey}`))}
-                isLockedByOtherHuman={!!(section as any).blocked}
-                highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
-                humanInvolvementScore={section.humanInvolvement_score ?? 0}
-                dragOverSectionIndex={dragOverSectionIndex}
-                crdtProvider={crdtProvider}
-                crdtError={crdtError}
-                proposalMode={proposalMode}
-                isReady={readyEditors.has(i)}
-                mouseDownPosRef={mouseDownPosRef}
-                onStartEditing={startEditing}
-                onFocusSection={handleFocusSection}
-                onSetEditorRef={setEditorRef}
-                onEditorReady={handleEditorReady}
-                onProposalSectionChange={proposalMode ? handleProposalSectionChange : undefined}
-                onCursorExit={handleCursorExit}
-                onCrossSectionDrop={handleCrossSectionDrop}
-              />
+              <div key={fk} className="flex items-start">
+                {/* Left gutter — who changed this section */}
+                <div className="w-[200px] min-w-[100px] shrink flex justify-end pt-1">
+                  <SummaryWhoChangedThisSection
+                    editorId={section.last_editor?.id}
+                    editorName={section.last_editor?.name}
+                    secondsAgo={section.last_editor?.seconds_ago}
+                    writerType={section.last_editor?.type}
+                    sectionIndex={i}
+                  />
+                </div>
+
+                {/* Center — section content */}
+                <div className="flex-1 min-w-[700px] bg-canvas-bg border-x border-[rgba(0,0,0,0.06)] px-14">
+                  <DocumentSectionRenderer
+                    section={section}
+                    index={i}
+                    fragmentKey={fk}
+                    isFocused={focusedSectionIndex === i}
+                    hasEditor={shouldMountEditor(i, focusedSectionIndex)}
+                    isRestructuring={restructuringKeys.has(fk)}
+                    isInProposal={!!(proposalMode && proposalSectionsRef.current.has(`${decodedDocPath}::${sectionKey}`))}
+                    isLockedByOtherHuman={!!(section as any).blocked}
+                    highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
+                    hasRemotePresence={presenceIndicators.some((p) => p.sectionKey === sectionKey)}
+                    dragOverSectionIndex={dragOverSectionIndex}
+                    crdtProvider={crdtProvider}
+                    crdtError={crdtError}
+                    proposalMode={proposalMode}
+                    isReady={readyEditors.has(i)}
+                    mouseDownPosRef={mouseDownPosRef}
+                    onStartEditing={startEditing}
+                    onFocusSection={handleFocusSection}
+                    onSetEditorRef={setEditorRef}
+                    onEditorReady={handleEditorReady}
+                    onProposalSectionChange={proposalMode ? handleProposalSectionChange : undefined}
+                    onCursorExit={handleCursorExit}
+                    onCrossSectionDrop={handleCrossSectionDrop}
+                  />
+                </div>
+
+                {/* Right gutter — empty placeholder */}
+                <div className="w-[200px] min-w-[100px] shrink" />
+              </div>
             );
           }) : null}
 
-          {/* Deletion placeholders — sections removed but not yet confirmed by server */}
+          {/* Deletion placeholders */}
           {deletionPlaceholders.map((placeholder) => (
-            <div
-              key={`deleting:${placeholder.fragmentKey}`}
-              className="relative m-[-16px] p-[4px_16px] rounded-md border-l-[2.5px] border-l-amber-300 bg-amber-50/30"
-            >
-              <div className="flex items-center gap-1.5 py-1">
-                <span className="w-[5px] h-[5px] rounded-full bg-amber-400" />
-                <span className="text-[10px] text-amber-700 line-through">{placeholder.formerHeading || "(document root)"}</span>
-                <span className="text-[9px] text-amber-500 ml-1">Deletion pending\u2026</span>
+            <div key={`deleting:${placeholder.fragmentKey}`} className="flex">
+              <div className="w-[200px] min-w-[100px] shrink" />
+              <div className="flex-1 min-w-[700px] bg-canvas-bg border-x border-[rgba(0,0,0,0.06)] px-14">
+                <div className="relative m-[-16px] p-[4px_16px] rounded-md border-l-[2.5px] border-l-amber-300 bg-amber-50/30">
+                  <div className="flex items-center gap-1.5 py-1">
+                    <span className="w-[5px] h-[5px] rounded-full bg-amber-400" />
+                    <span className="text-[10px] text-amber-700 line-through">{placeholder.formerHeading || "(document root)"}</span>
+                    <span className="text-[9px] text-amber-500 ml-1">Deletion pending\u2026</span>
+                  </div>
+                </div>
               </div>
+              <div className="w-[200px] min-w-[100px] shrink" />
             </div>
           ))}
+
+          {/* Footer row — closes the paper */}
+          <div className="flex">
+            <div className="w-[200px] min-w-[100px] shrink" />
+            <div className="flex-1 min-w-[700px] bg-canvas-bg border border-t-0 border-[rgba(0,0,0,0.06)] rounded-b-sm pb-16 min-h-[100px]" />
+            <div className="w-[200px] min-w-[100px] shrink" />
+          </div>
+
         </div>
       </div>
 

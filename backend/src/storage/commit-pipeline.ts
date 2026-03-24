@@ -6,8 +6,6 @@
  * human-involvement evaluation pass per section.
  */
 
-import { writeFile, mkdir, readdir, copyFile, stat } from "node:fs/promises";
-import path from "node:path";
 import {
   sectionGlobalKey,
   type ProposalId,
@@ -19,32 +17,14 @@ import {
 import { SectionGuard } from "../domain/section-guard.js";
 import { getContentRoot, getDataRoot } from "./data-root.js";
 import { proposalContentRoot, readProposal } from "./proposal-repository.js";
-import { getHeadSha, gitExec } from "./git-repo.js";
-import { resolveHeadingPath } from "./heading-resolver.js";
-import { ContentLayer } from "./content-layer.js";
 import {
   transitionToCommitting,
   transitionToCommitted,
-  rollbackCommittingToPending,
+  rollbackCommittingToDraft,
+  InvalidProposalStateError,
 } from "./proposal-repository.js";
 import { isSnapshotGenerationEnabled, scheduleSnapshotRegeneration } from "./snapshot.js";
-
-/**
- * Recursively copy all files from src to dest, preserving subdirectory structure.
- */
-async function copyDirectoryContents(src: string, dest: string): Promise<void> {
-  const entries = await readdir(src, { withFileTypes: true });
-  for (const entry of entries) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) {
-      await mkdir(destPath, { recursive: true });
-      await copyDirectoryContents(srcPath, destPath);
-    } else {
-      await copyFile(srcPath, destPath);
-    }
-  }
-}
+import { CanonicalStore } from "./canonical-store.js";
 
 export interface EvaluationResult {
   evaluation: ProposalHumanInvolvementEvaluation;
@@ -77,131 +57,66 @@ export async function evaluateProposalHumanInvolvement(
 export async function commitProposalToCanonical(
   proposalId: ProposalId,
   scores: SectionScoreSnapshot,
+  diagnostics?: string[],
 ): Promise<string> {
   const proposal = await readProposal(proposalId);
   const dataRoot = getDataRoot();
+  const overlayRoot = proposalContentRoot(proposal.id, "committing");
 
   // Transition to committing (guard state)
   await transitionToCommitting(proposal.id);
 
   try {
-    const canonicalRoot = getContentRoot();
-    const overlayRoot = proposalContentRoot(proposal.id, "committing");
-
-    const docPaths = new Set(proposal.sections.map((s) => s.doc_path));
-
-    for (const docPath of docPaths) {
-      const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-
-      // 1. If overlay has a skeleton → promoteOverlay (copies skeleton to canonical,
-      //    deletes orphaned body files from old skeleton)
-      const proposalOverlay = new ContentLayer(overlayRoot, new ContentLayer(canonicalRoot));
-      const skeleton = await proposalOverlay.readSkeleton(docPath);
-      if (skeleton.overlayPersisted) {
-        await skeleton.promoteOverlay();
-      }
-
-      // 2. If overlay has a .sections/ directory → copy each file to canonical .sections/
-      const overlaySectionsDir = path.resolve(overlayRoot, ...normalized.split("/")) + ".sections";
-      try {
-        const dirStat = await stat(overlaySectionsDir);
-        if (dirStat.isDirectory()) {
-          const canonicalSectionsDir = path.resolve(canonicalRoot, ...normalized.split("/")) + ".sections";
-          await mkdir(canonicalSectionsDir, { recursive: true });
-          await copyDirectoryContents(overlaySectionsDir, canonicalSectionsDir);
-        }
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-        // No .sections/ in overlay — no body files to copy (e.g. tombstone-only)
-      }
-    }
-
-    // Stage and commit
-    await gitExec(["add", "-A", "content/"], dataRoot);
+    const store = new CanonicalStore(getContentRoot(), dataRoot);
 
     const sectionList = proposal.sections
       .map((s) => `  - ${sectionGlobalKey(s.doc_path, s.heading_path)}`)
       .join("\n");
-
     const commitMessage = `agent proposal: ${proposal.intent}\n\nSections:\n${sectionList}\n\nProposal: ${proposal.id}\nWriter: ${proposal.writer.id}`;
+    const author = {
+      name: proposal.writer.displayName,
+      email: `${proposal.writer.id}@knowledge-store.local`,
+    };
 
-    await gitExec(
-      [
-        "-c", `user.name=${proposal.writer.displayName}`,
-        "-c", `user.email=${proposal.writer.id}@knowledge-store.local`,
-        "commit",
-        "-m", commitMessage,
-        "--allow-empty",
-      ],
-      dataRoot,
-    );
-
-    const headSha = await getHeadSha(dataRoot);
+    const headSha = await store.absorb(overlayRoot, commitMessage, author, { diagnostics });
 
     // Transition to committed
     await transitionToCommitted(proposal.id, headSha, scores);
 
     if (isSnapshotGenerationEnabled()) {
+      const docPaths = new Set(proposal.sections.map((s) => s.doc_path));
       scheduleSnapshotRegeneration(Array.from(docPaths));
     }
 
     return headSha;
   } catch (error) {
-    // Rollback: move proposal back to pending, then restore canonical to last committed state
-    await rollbackCommittingToPending(proposal.id);
-    await gitExec(["checkout", "--", "content/"], dataRoot).catch(() => {});
-    await gitExec(["clean", "-fd", "content/"], dataRoot).catch(() => {});
+    // absorb() already rolled back canonical. Roll back FSM state if proposal reached committing/.
+    try {
+      await rollbackCommittingToDraft(proposal.id);
+    } catch (fsmErr) {
+      // transitionToCommitting may have thrown before completing — proposal still in draft, nothing to roll back
+      if (!(fsmErr instanceof InvalidProposalStateError)) throw fsmErr;
+    }
     throw error;
   }
 }
 
 /**
- * Write human CRDT changes to canonical files and create a git commit.
- * Used by the auto-commit batcher and manual publish.
+ * Write human CRDT session changes to canonical and create a git commit.
+ * sessionDocsContentRoot is the sessions/docs/content/ directory —
+ * a valid staging root in skeleton+section-file layout.
  */
 export async function commitHumanChangesToCanonical(
   writer: WriterIdentity,
-  sections: Array<{ doc_path: string; heading_path: string[]; content: string }>,
+  sessionDocsContentRoot: string,
   coAuthors?: Array<{ name: string; email: string }>,
 ): Promise<string> {
-  const dataRoot = getDataRoot();
-
-  for (const section of sections) {
-    const resolvedPath = await resolveHeadingPath(section.doc_path, section.heading_path);
-    await mkdir(path.dirname(resolvedPath), { recursive: true });
-    await writeFile(resolvedPath, section.content, "utf8");
-  }
-
-  await gitExec(["add", "-A", "content/"], dataRoot);
-
-  const sectionList = sections
-    .map((s) => `  - ${sectionGlobalKey(s.doc_path, s.heading_path)}`)
-    .join("\n");
-
-  let commitMessage = `human edit: ${writer.displayName}\n\nSections:\n${sectionList}\n\nWriter: ${writer.id}`;
-
-  // Append Co-authored-by trailers for compound attribution
+  let commitMessage = `human edit: ${writer.displayName}\n\nWriter: ${writer.id}`;
   if (coAuthors && coAuthors.length > 0) {
-    const trailers = coAuthors
-      .map((a) => `Co-authored-by: ${a.name} <${a.email}>`)
-      .join("\n");
+    const trailers = coAuthors.map((a) => `Co-authored-by: ${a.name} <${a.email}>`).join("\n");
     commitMessage += "\n" + trailers;
   }
-
-  await gitExec(
-    [
-      "-c", `user.name=${writer.displayName}`,
-      "-c", `user.email=${writer.email || "human@knowledge-store.local"}`,
-      "commit",
-      "-m", commitMessage,
-      "--allow-empty",
-    ],
-    dataRoot,
-  );
-
-  if (isSnapshotGenerationEnabled()) {
-    scheduleSnapshotRegeneration(sections.map((s) => s.doc_path));
-  }
-
-  return getHeadSha(dataRoot);
+  const author = { name: writer.displayName, email: writer.email || "human@knowledge-store.local" };
+  const store = new CanonicalStore(getContentRoot(), getDataRoot());
+  return store.absorb(sessionDocsContentRoot, commitMessage, author);
 }

@@ -13,12 +13,12 @@
 
 import path from "node:path";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
-import { getContentRoot, getDataRoot, getSessionDocsRoot, getSessionAuthorsRoot, getSessionFragmentsRoot } from "./data-root.js";
-import { gitExec } from "./git-repo.js";
+import { getContentRoot, getDataRoot, getSessionDocsContentRoot, getSessionAuthorsRoot, getSessionFragmentsRoot } from "./data-root.js";
 
 import { DocumentSkeleton } from "./document-skeleton.js";
-import { commitHumanChangesToCanonical } from "./commit-pipeline.js";
+
 import { ContentLayer } from "./content-layer.js";
+import { CanonicalStore } from "./canonical-store.js";
 import type { WriterIdentity } from "../types/shared.js";
 import type { DocSession } from "../crdt/ydoc-lifecycle.js";
 import type { FlushResult } from "../crdt/fragment-store.js";
@@ -28,9 +28,7 @@ import {
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
-function getSessionDocsContentRoot(): string {
-  return path.join(getSessionDocsRoot(), "content");
-}
+export { getSessionDocsContentRoot } from "./data-root.js";
 
 // ─── Raw fragment file I/O (sessions/fragments/) ─────────────────
 
@@ -239,7 +237,7 @@ export async function readAllSectionsWithOverlay(
 ): Promise<Map<string, string>> {
   const canonical = new ContentLayer(getContentRoot());
   const overlay = new ContentLayer(getSessionDocsContentRoot(), canonical);
-  return overlay.readAllSectionsOverlaid(docPath);
+  return overlay.readAllSections(docPath);
 }
 
 // ─── commitSessionFilesToCanonical ───────────────────────────────
@@ -276,20 +274,21 @@ export async function commitSessionFilesToCanonical(
   coAuthors?: Array<{ name: string; email: string }>,
 ): Promise<CommitSessionResult> {
   const contentRoot = getContentRoot();
-  const overlayRoot = getSessionDocsContentRoot();
+  const sessionDocsContentRoot = getSessionDocsContentRoot();
 
   // Determine which documents to process
   const docPaths = docPath ? [docPath] : await scanSessionDocPaths();
 
-  const sectionsToCommit: Array<{ doc_path: string; heading_path: string[]; content: string }> = [];
+  // Pre-validate skeletons (per-doc error isolation: corrupt overlay for one doc
+  // must not block others) and collect the list of sections for the result.
+  const validDocPaths: string[] = [];
+  const committedSections: Array<{ doc_path: string; heading_path: string[] }> = [];
   const skeletonErrors: Array<{ docPath: string; error: string }> = [];
 
   for (const dp of docPaths) {
-    // Build skeleton from overlay + canonical.
-    // Per-doc: a corrupt overlay for one doc must not block others.
     let skeleton: DocumentSkeleton;
     try {
-      skeleton = await DocumentSkeleton.fromDisk(dp, overlayRoot, contentRoot);
+      skeleton = await DocumentSkeleton.fromDisk(dp, sessionDocsContentRoot, contentRoot);
     } catch (err) {
       skeletonErrors.push({
         docPath: dp,
@@ -297,68 +296,30 @@ export async function commitSessionFilesToCanonical(
       });
       continue;
     }
-
-    // Promote ALL overlay skeleton files (main + sub-skeletons) to canonical
-    await skeleton.promoteOverlay();
-
-    // Collect body section paths, then read them (forEachSection is sync)
-    const bodyEntries: Array<{ headingPath: string[]; absolutePath: string }> = [];
-    skeleton.forEachSection((_heading, _level, _sf, headingPath, absolutePath) => {
-      bodyEntries.push({ headingPath: [...headingPath], absolutePath });
+    validDocPaths.push(dp);
+    skeleton.forEachSection((_h, _l, _sf, hp) => {
+      committedSections.push({ doc_path: dp, heading_path: [...hp] });
     });
-
-    // Try reading each overlay body file — ENOENT means section wasn't edited
-    for (const { headingPath, absolutePath } of bodyEntries) {
-      try {
-        const content = await readFile(absolutePath, "utf8");
-        sectionsToCommit.push({
-          doc_path: dp,
-          heading_path: headingPath,
-          content,
-        });
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw err;
-      }
-    }
   }
 
-  // skeletonErrors are surfaced in the result — callers must check and act on them.
-  // We do NOT throw here: session files are preserved on disk for the corrupt docs,
-  // and other docs in a multi-doc commit should still proceed.
-
-  if (sectionsToCommit.length === 0) {
+  if (validDocPaths.length === 0) {
     return { sectionsCommitted: 0, committedSections: [], skeletonErrors };
   }
 
-  try {
-    const commitSha = await commitHumanChangesToCanonical(writer, sectionsToCommit, coAuthors);
-    const committedSections = sectionsToCommit.map((s) => ({
-      doc_path: s.doc_path,
-      heading_path: s.heading_path,
-    }));
-    return { sectionsCommitted: sectionsToCommit.length, commitSha, committedSections, skeletonErrors };
-  } catch (err) {
-    // Rollback: restore canonical content/ to last committed state.
-    // promoteOverlay() already modified canonical files on disk, so a failed
-    // git commit would leave canonical in a half-promoted state.
-    const dataRoot = getDataRoot();
-    try {
-      await gitExec(["reset", "HEAD", "--", "content/"], dataRoot);
-      await gitExec(["checkout", "--", "content/"], dataRoot);
-    } catch (rollbackErr) {
-      // Both commit AND rollback failed — canonical content/ may be in a half-promoted state.
-      const commitMessage = err instanceof Error ? (err.stack ?? err.message) : String(err);
-      const rollbackMessage = rollbackErr instanceof Error ? (rollbackErr.stack ?? rollbackErr.message) : String(rollbackErr);
-      throw new Error(
-        `commitSessionFilesToCanonical: commit failed AND rollback failed. ` +
-        `Canonical content/ may be corrupt. Manual recovery required.\n` +
-        `Commit error:\n${commitMessage}\n\nRollback error:\n${rollbackMessage}`,
-      );
-    }
-    throw err;
+  let commitMessage = `human edit: ${writer.displayName}\n\nWriter: ${writer.id}`;
+  if (coAuthors && coAuthors.length > 0) {
+    commitMessage += "\n" + coAuthors.map((a) => `Co-authored-by: ${a.name} <${a.email}>`).join("\n");
   }
+  const author = { name: writer.displayName, email: writer.email || "human@knowledge-store.local" };
+
+  const store = new CanonicalStore(contentRoot, getDataRoot());
+  // When committing a single doc, filter to only that doc's files so other writers'
+  // pending session edits are not absorbed. absorb() handles filtering internally.
+  const absorbOpts = docPath ? { docPaths: validDocPaths } : undefined;
+  const commitSha = await store.absorb(sessionDocsContentRoot, commitMessage, author, absorbOpts);
+  return { sectionsCommitted: committedSections.length, commitSha, committedSections, skeletonErrors };
 }
+
 
 // ─── scanSessionDocPaths ─────────────────────────────────────────
 

@@ -19,10 +19,11 @@ import {
   getContentRoot,
   getDataRoot,
   getSessionFragmentsRoot,
-  getSessionDocsRoot,
+  getSessionDocsContentRoot,
   getSessionAuthorsRoot,
+  getProposalsDraftRoot,
+  getContentGitPrefix,
 } from "./data-root.js";
-import { getProposalsPendingRoot } from "./data-root.js";
 import { listProposals } from "./proposal-repository.js";
 import { gitExec, getHeadSha } from "./git-repo.js";
 import { resolveDocPathUnderContent, InvalidDocPathError } from "./path-utils.js";
@@ -66,7 +67,7 @@ export async function renameDocument(
   );
 
   // ─── Step 3: Rename sessions/docs/content/ ────────────────
-  const sessionDocsContentRoot = path.join(getSessionDocsRoot(), "content");
+  const sessionDocsContentRoot = getSessionDocsContentRoot();
   try {
     const oldSessionDoc = resolveDocPathUnderContent(sessionDocsContentRoot, oldPath);
     const newSessionDoc = resolveDocPathUnderContent(sessionDocsContentRoot, newPath);
@@ -91,7 +92,7 @@ export async function renameDocument(
 
   // ─── Step 5: Git commit ───────────────────────────────────
   const dataRoot = getDataRoot();
-  await gitExec(["add", "-A", "content/"], dataRoot);
+  await gitExec(["add", "-A", getContentGitPrefix() + "/"], dataRoot);
   await gitExec(
     [
       "-c", "user.name=Knowledge Store",
@@ -122,8 +123,8 @@ export async function renameDocument(
  * Rewrite doc_path in all pending proposal JSON files that reference oldPath.
  */
 async function rewriteProposalDocPaths(oldPath: string, newPath: string): Promise<void> {
-  const pendingRoot = getProposalsPendingRoot();
-  const proposals = await listProposals("pending");
+  const draftRoot = getProposalsDraftRoot();
+  const proposals = await listProposals("draft");
 
   for (const proposal of proposals) {
     let changed = false;
@@ -135,7 +136,7 @@ async function rewriteProposalDocPaths(oldPath: string, newPath: string): Promis
     }
 
     if (changed) {
-      const metaPath = path.join(pendingRoot, proposal.id, "meta.json");
+      const metaPath = path.join(draftRoot, proposal.id, "meta.json");
       await writeFile(metaPath, JSON.stringify(proposal, null, 2), "utf8");
     }
   }

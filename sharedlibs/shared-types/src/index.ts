@@ -97,7 +97,7 @@ export interface AdminConfig {
 
 // ─── Proposal Model (v4 — layered storage / domain / DTO) ─────────
 
-export type ProposalStatus = "pending" | "committing" | "committed" | "withdrawn";
+export type ProposalStatus = "draft" | "pending" | "committing" | "committed" | "withdrawn";
 
 // ── Storage layer (what is stored in meta.json on disk) ────────────
 
@@ -126,9 +126,9 @@ export type AnyProposalFile = ProposalFileBase | CommittedProposalFile | Withdra
 
 // ── Domain layer (file + status, runtime representation) ──────────
 
-/** Pending or committing proposal (no terminal fields). */
-export interface PendingProposal extends ProposalFileBase {
-  status: "pending" | "committing";
+/** Draft, pending, or committing proposal (no terminal fields). */
+export interface DraftProposal extends ProposalFileBase {
+  status: "draft" | "pending" | "committing";
 }
 
 /** Committed proposal with required terminal fields. */
@@ -142,18 +142,18 @@ export interface WithdrawnProposalDomain extends WithdrawnProposalFile {
 }
 
 /** Discriminated union of all proposal domain states. */
-export type AnyProposal = PendingProposal | CommittedProposalDomain | WithdrawnProposalDomain;
+export type AnyProposal = DraftProposal | CommittedProposalDomain | WithdrawnProposalDomain;
 
 // ── DTO layer (enriched for API responses) ────────────────────────
 
-/** Pending proposal DTO — adds required human-involvement evaluation computed at read time. */
-export interface PendingProposalDTO extends PendingProposal {
+/** Draft proposal DTO — adds required human-involvement evaluation computed at read time. */
+export interface DraftProposalDTO extends DraftProposal {
   humanInvolvement_evaluation: ProposalHumanInvolvementEvaluation;
   sections: EvaluatedSection[];
 }
 
 /** Union of all proposal DTO variants for API responses. */
-export type ProposalDTO = PendingProposalDTO | CommittedProposalDomain | WithdrawnProposalDomain;
+export type ProposalDTO = DraftProposalDTO | CommittedProposalDomain | WithdrawnProposalDomain;
 
 
 // ── Proposal sub-types ────────────────────────────────────────────
@@ -279,7 +279,7 @@ export interface GetDocumentSectionsResponse {
     /** Section filename (e.g. "sec_abc123def.md"). Used by frontend to build
      *  stable fragment keys that survive heading renames. */
     section_file: string;
-    last_human_editor?: { name: string; timestampMs: number };
+    last_editor?: { id: string; name: string; timestampMs: number; type: WriterType; seconds_ago: number };
   }>;
 }
 
@@ -354,7 +354,7 @@ export interface CommitProposalAccepted {
 
 export interface CommitProposalBlocked {
   proposal_id: ProposalId;
-  status: "pending";
+  status: "draft";
   outcome: "blocked";
   evaluation: ProposalHumanInvolvementEvaluation;
   sections: EvaluatedSection[];
@@ -486,6 +486,8 @@ export interface ContentCommittedEvent {
   source: ActivityItemSource;
   writer_id: string;
   writer_display_name: string;
+  writer_type: WriterType;
+  seconds_ago: number;
 }
 
 export interface DirtyChangedEvent {
@@ -510,6 +512,7 @@ export interface PresenceEditingEvent {
   type: "presence:editing";
   writer_id: string;
   writer_display_name: string;
+  writer_type: WriterType;
   doc_path: string;
   heading_path: string[];
 }
@@ -517,6 +520,8 @@ export interface PresenceEditingEvent {
 export interface PresenceDoneEvent {
   type: "presence:done";
   writer_id: string;
+  writer_display_name: string;
+  writer_type: WriterType;
   doc_path: string;
   heading_path: string[];
 }
@@ -538,8 +543,8 @@ export interface DocRenamedEvent {
   committed_head: string;
 }
 
-export interface ProposalPendingEvent {
-  type: "proposal:pending";
+export interface ProposalDraftEvent {
+  type: "proposal:draft";
   proposal_id: string;
   doc_path: string;
   heading_paths: string[][];
@@ -568,7 +573,7 @@ export type WsServerEvent =
   | DocStructureChangedEvent
   | SessionFlushedEvent
   | DocRenamedEvent
-  | ProposalPendingEvent
+  | ProposalDraftEvent
   | ProposalWithdrawnEvent
   | CatalogChangedEvent;
 
@@ -627,7 +632,7 @@ export interface AgentActivitySummary {
   readonly connection_status: AgentConnectionStatus;
   readonly last_seen_at: string | null;
   readonly mcp_tool_usage: Readonly<Record<string, number>>;
-  readonly pending_proposals: readonly AgentProposalSnapshot[];
+  readonly draft_proposals: readonly AgentProposalSnapshot[];
   readonly recent_proposals: readonly AgentProposalSnapshot[];
   readonly stats: {
     readonly proposals_committed: number;

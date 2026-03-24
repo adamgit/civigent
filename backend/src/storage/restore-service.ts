@@ -9,11 +9,10 @@
 
 import type { WriterIdentity, AnyProposal, ProposalSection } from "../types/shared.js";
 import { getContentRoot, getDataRoot } from "./data-root.js";
-import { extractHistoricalTree } from "./git-repo.js";
-import { DocumentSkeleton } from "./document-skeleton.js";
-import { ContentLayer } from "./content-layer.js";
+import { assembleDocumentAtCommit } from "./git-repo.js";
+import { ContentLayer, DocumentNotFoundError } from "./content-layer.js";
+import { createTransientProposal, updateProposalSections, readProposal } from "./proposal-repository.js";
 import { SectionRef } from "../domain/section-ref.js";
-import { createProposal } from "./proposal-repository.js";
 
 export interface RestoreResult {
   proposal: AnyProposal;
@@ -25,11 +24,10 @@ export interface RestoreResult {
  *
  * Strategy:
  * 1. Create a proposal to get a content overlay directory
- * 2. Extract the historical skeleton + body files from git directly into that overlay
- * 3. Use DocumentSkeleton.fromDisk on the overlay to read the structure (for metadata)
- * 4. Gather current sections too, so the proposal covers all affected sections
- *
- * This avoids custom parsing — all structure reading goes through DocumentSkeleton.
+ * 2. Assemble the historical document in-memory from git (no disk writes)
+ * 3. Write the assembled content into the overlay via importMarkdownDocument
+ *    (with the canonical root as fallback, for correct file-ID matching)
+ * 4. Update proposal sections to the restored structure only
  */
 export async function createRestoreProposal(
   docPath: string,
@@ -39,67 +37,39 @@ export async function createRestoreProposal(
   const dataRoot = getDataRoot();
   const canonicalRoot = getContentRoot();
 
-  // Gather current sections for proposal metadata (before creating proposal)
-  const currentSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
-  const currentHeadingPaths: string[][] = [];
-  currentSkeleton.forEachSection((_h, _l, _sf, hp) => {
-    currentHeadingPaths.push([...hp]);
-  });
-
-  // The document's files in git live under content/<docPath> (skeleton)
-  // and content/<docPath>.sections/ (body files + sub-skeletons).
-  const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-  const skeletonGitPrefix = `content/${normalized}`;
-  const sectionsGitPrefix = `content/${normalized}.sections/`;
-
-  // Create proposal with placeholder sections (will update after reading historical structure)
-  const { id: restoreProposalId, contentRoot } = await createProposal(
+  // Create proposal with empty placeholder sections — updated after writing
+  const { id: restoreProposalId, contentRoot } = await createTransientProposal(
     writer,
     `Restore "${docPath}" to version ${targetSha.slice(0, 8)}`,
-    currentHeadingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp })),
+    [],
   );
 
-  // Extract historical files into a temporary location, then assemble and
-  // re-write through writeAssembledDocument to ensure normalization.
-  const { writeFile, mkdir } = await import("node:fs/promises");
-  const { gitShowFile } = await import("./git-repo.js");
-  const path = await import("node:path");
+  // Assemble historical document from git entirely in-memory (no disk writes)
+  const { content: assembledHistorical } = await assembleDocumentAtCommit(dataRoot, targetSha, docPath);
 
-  // Extract historical skeleton + body files into the overlay (raw extraction)
-  const historicalSkeletonContent = await gitShowFile(dataRoot, targetSha, skeletonGitPrefix);
-  const overlaySkeletonPath = path.resolve(contentRoot, ...normalized.split("/"));
-  await mkdir(path.dirname(overlaySkeletonPath), { recursive: true });
-  await writeFile(overlaySkeletonPath, historicalSkeletonContent, "utf8");
+  // Write through importMarkdownDocument with canonical fallback for correct file-ID matching
+  const normalizedLayer = new ContentLayer(contentRoot, new ContentLayer(canonicalRoot));
+  const restoredTargets = await normalizedLayer.importMarkdownDocument(docPath, assembledHistorical);
 
-  await extractHistoricalTree(
-    dataRoot,
-    targetSha,
-    sectionsGitPrefix,
-    path.resolve(contentRoot, ...normalized.split("/")) + ".sections",
-  );
+  // Compute sections present in canonical but absent from the restored version.
+  // These are being deleted by the restore — they must appear in the proposal manifest
+  // so that conflict detection, lock checks, and human-involvement scoring evaluate them.
+  const canonicalLayer = new ContentLayer(canonicalRoot);
+  const deletedSections: ProposalSection[] = [];
+  try {
+    const canonicalSections = await canonicalLayer.getSectionList(docPath);
+    const restoredKeys = new Set(restoredTargets.map(t => SectionRef.headingKey(t.heading_path)));
+    for (const entry of canonicalSections) {
+      if (!restoredKeys.has(SectionRef.headingKey(entry.headingPath))) {
+        deletedSections.push({ doc_path: docPath, heading_path: entry.headingPath });
+      }
+    }
+  } catch (err) {
+    if (!(err instanceof DocumentNotFoundError)) throw err;
+    // Document doesn't exist in canonical yet — no deletions to track
+  }
 
-  // Read the historical content as an assembled document, then re-write it
-  // through writeAssembledDocument to normalize the structure. This ensures
-  // restored content is always correctly split into sections, even if the
-  // historical state was itself corrupt (e.g. embedded headings in root body).
-  const historicalLayer = new ContentLayer(contentRoot);
-  const assembledHistorical = await historicalLayer.readAssembledDocument(docPath);
-
-  // Re-write through writeAssembledDocument (normalizes sections + updates skeleton)
-  const normalizedLayer = new ContentLayer(contentRoot);
-  const restoredTargets = await normalizedLayer.writeAssembledDocument(docPath, assembledHistorical);
-
-  // Combine current + restored heading paths for proposal sections
-  const allPaths = new Map<string, string[]>();
-  for (const hp of currentHeadingPaths) allPaths.set(hp.join(">>"), hp);
-  for (const t of restoredTargets) allPaths.set(t.heading_path.join(">>"), t.heading_path);
-
-  const { updateProposalSections, readProposal } = await import("./proposal-repository.js");
-  const updatedSections: ProposalSection[] = [...allPaths.values()].map((hp) => ({
-    doc_path: docPath,
-    heading_path: hp,
-  }));
-  await updateProposalSections(restoreProposalId, updatedSections);
+  await updateProposalSections(restoreProposalId, [...restoredTargets, ...deletedSections]);
 
   // Read fresh proposal from disk — sections are up-to-date after update
   const proposal = await readProposal(restoreProposalId);

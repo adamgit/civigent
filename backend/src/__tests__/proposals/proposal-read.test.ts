@@ -66,7 +66,7 @@ describe("GET /api/proposals/:id — read proposal", () => {
     expect(res.status).toBe(200);
     expect(res.body.proposal).toBeDefined();
     expect(res.body.proposal.id).toBe(pendingProposalId);
-    expect(res.body.proposal.status).toBe("pending");
+    expect(res.body.proposal.status).toBe("draft");
   });
 
   it("returns proposal with writer, intent, and sections", async () => {

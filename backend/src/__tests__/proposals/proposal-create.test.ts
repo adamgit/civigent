@@ -32,7 +32,7 @@ describe("POST /api/proposals — create proposal", () => {
 
     expect(res.status).toBe(201);
     expect(res.body.proposal_id).toBeDefined();
-    expect(res.body.status).toBe("pending");
+    expect(res.body.status).toBe("draft");
     expect(res.body.outcome).toBe("accepted");
     expect(res.body.committed_head).toBeUndefined();
     expect(res.body.evaluation).toBeDefined();

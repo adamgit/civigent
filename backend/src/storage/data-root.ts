@@ -22,6 +22,10 @@ export function getProposalsRoot(): string {
   return path.join(getDataRoot(), "proposals");
 }
 
+export function getProposalsDraftRoot(): string {
+  return path.join(getDataRoot(), "proposals", "draft");
+}
+
 export function getProposalsPendingRoot(): string {
   return path.join(getDataRoot(), "proposals", "pending");
 }
@@ -59,6 +63,35 @@ export function getSessionAuthorsRoot(): string {
   return path.join(getDataRoot(), "sessions", "authors");
 }
 
+/** The content subdirectory of the session docs overlay root. */
+export function getSessionDocsContentRoot(): string {
+  return path.join(getSessionDocsRoot(), "content");
+}
+
+/** Root directory for import staging areas (one subdir per import ID). */
+export function getImportStagingRoot(): string {
+  return path.join(getDataRoot(), "import-staging");
+}
+
+// ─── Git-relative path prefixes ─────────────────────────────────────
+
+/**
+ * Git-relative prefix for the content directory.
+ * Use this when constructing paths for git command arguments (e.g. git add, git checkout).
+ * Returns "content" (no trailing slash). Callers append "/" or "/${docPath}" as needed.
+ */
+export function getContentGitPrefix(): string {
+  return path.relative(getDataRoot(), getContentRoot());
+}
+
+/**
+ * Git-relative prefix for the proposals directory.
+ * Returns "proposals" (no trailing slash).
+ */
+export function getProposalsGitPrefix(): string {
+  return path.relative(getDataRoot(), getProposalsRoot());
+}
+
 // ─── Auth ─────────────────────────────────────────────────────────
 
 export function getAuthRoot(): string {
@@ -82,6 +115,7 @@ export function getImportRoot(): string {
 export async function ensureV3Directories(): Promise<void> {
   const dirs = [
     getContentRoot(),
+    getProposalsDraftRoot(),
     getProposalsPendingRoot(),
     getProposalsCommittingRoot(),
     getProposalsCommittedRoot(),

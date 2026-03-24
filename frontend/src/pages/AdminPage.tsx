@@ -75,7 +75,7 @@ export function AdminPage() {
   const proposalCounts = useMemo(() => {
     const counts = { pending: 0, committed: 0, withdrawn: 0, total: proposals.length };
     for (const proposal of proposals) {
-      if (proposal.status === "pending") counts.pending += 1;
+      if (proposal.status === "draft") counts.pending += 1;
       else if (proposal.status === "committed") counts.committed += 1;
       else if (proposal.status === "withdrawn") counts.withdrawn += 1;
     }
@@ -124,12 +124,12 @@ export function AdminPage() {
       <h2>Operational Snapshot</h2>
       <p><button type="button" onClick={() => void reloadOperationalSnapshot()}>Refresh snapshot</button></p>
       {loading ? <p>Loading operational snapshot...</p> : null}
-      {error ? <p style={{ color: "#c0392b" }}>{error}</p> : null}
+      {error ? <p className="text-error">{error}</p> : null}
       {!loading && !error ? (
         <ul>
           <li>Backend health: {health?.ok ? "ok" : "unknown"}</li>
           <li>Proposals total: {proposalCounts.total}</li>
-          <li>Pending proposals: {proposalCounts.pending}</li>
+          <li>Draft proposals: {proposalCounts.pending}</li>
           <li>Committed proposals: {proposalCounts.committed}</li>
           <li>Withdrawn proposals: {proposalCounts.withdrawn}</li>
           <li>Recent activity items (7d/50): {activityCount}</li>

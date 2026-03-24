@@ -22,7 +22,7 @@
 
 import path from "node:path";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { getDataRoot } from "../storage/data-root.js";
+import { getAuthRoot } from "../storage/data-root.js";
 import type { AuthenticatedWriter } from "./context.js";
 
 /** PermissionLevel is now a plain string — any role name is valid. */
@@ -52,10 +52,6 @@ interface AclCache {
 
 let _cache: AclCache | null = null;
 
-function getAuthDir(): string {
-  return path.join(getDataRoot(), "auth");
-}
-
 async function loadJsonFile<T>(filePath: string): Promise<T | null> {
   try {
     const content = await readFile(filePath, "utf8");
@@ -68,7 +64,7 @@ async function loadJsonFile<T>(filePath: string): Promise<T | null> {
 async function loadCache(): Promise<AclCache> {
   if (_cache) return _cache;
 
-  const authDir = getAuthDir();
+  const authDir = getAuthRoot();
   const [defaults, roles, acl, customRoles] = await Promise.all([
     loadJsonFile<DefaultsFile>(path.join(authDir, "defaults.json")),
     loadJsonFile<RolesFile>(path.join(authDir, "roles.json")),
@@ -129,7 +125,7 @@ export async function hasAnyAdmin(): Promise<boolean> {
  * Creates the auth directory and file if they don't exist.
  */
 export async function grantAdmin(writerId: string): Promise<void> {
-  const authDir = getAuthDir();
+  const authDir = getAuthRoot();
   await mkdir(authDir, { recursive: true });
   const rolesPath = path.join(authDir, "roles.json");
   const cache = await loadCache();
@@ -264,7 +260,7 @@ export async function deleteCustomRole(name: string): Promise<void> {
 }
 
 async function writeCustomRoles(roles: string[]): Promise<void> {
-  const authDir = getAuthDir();
+  const authDir = getAuthRoot();
   await mkdir(authDir, { recursive: true });
   await writeFile(path.join(authDir, "custom-roles.json"), JSON.stringify(roles, null, 2) + "\n");
 }
@@ -295,7 +291,7 @@ export async function updateDefaults(defaults: { read?: string; write?: string }
   const cache = await loadCache();
   if (defaults.read !== undefined) cache.defaults.read = defaults.read;
   if (defaults.write !== undefined) cache.defaults.write = defaults.write;
-  const authDir = getAuthDir();
+  const authDir = getAuthRoot();
   await mkdir(authDir, { recursive: true });
   await writeFile(path.join(authDir, "defaults.json"), JSON.stringify(cache.defaults, null, 2) + "\n");
   invalidateCache();
@@ -304,7 +300,7 @@ export async function updateDefaults(defaults: { read?: string; write?: string }
 export async function setDocAcl(docPath: string, perms: { read?: string; write?: string }): Promise<void> {
   const cache = await loadCache();
   cache.acl[docPath] = { ...cache.acl[docPath], ...perms };
-  const authDir = getAuthDir();
+  const authDir = getAuthRoot();
   await mkdir(authDir, { recursive: true });
   await writeFile(path.join(authDir, "acl.json"), JSON.stringify(cache.acl, null, 2) + "\n");
   invalidateCache();
@@ -313,7 +309,7 @@ export async function setDocAcl(docPath: string, perms: { read?: string; write?:
 export async function removeDocAcl(docPath: string): Promise<void> {
   const cache = await loadCache();
   delete cache.acl[docPath];
-  const authDir = getAuthDir();
+  const authDir = getAuthRoot();
   await mkdir(authDir, { recursive: true });
   await writeFile(path.join(authDir, "acl.json"), JSON.stringify(cache.acl, null, 2) + "\n");
   invalidateCache();
@@ -322,7 +318,7 @@ export async function removeDocAcl(docPath: string): Promise<void> {
 export async function setUserRoles(userId: string, roles: string[]): Promise<void> {
   const cache = await loadCache();
   cache.roles[userId] = roles;
-  const authDir = getAuthDir();
+  const authDir = getAuthRoot();
   await mkdir(authDir, { recursive: true });
   await writeFile(path.join(authDir, "roles.json"), JSON.stringify(cache.roles, null, 2) + "\n");
   invalidateCache();
@@ -331,7 +327,7 @@ export async function setUserRoles(userId: string, roles: string[]): Promise<voi
 export async function removeUserRoles(userId: string): Promise<void> {
   const cache = await loadCache();
   delete cache.roles[userId];
-  const authDir = getAuthDir();
+  const authDir = getAuthRoot();
   await mkdir(authDir, { recursive: true });
   await writeFile(path.join(authDir, "roles.json"), JSON.stringify(cache.roles, null, 2) + "\n");
   invalidateCache();

@@ -3,7 +3,7 @@ import {
   createProposal,
   readProposal,
   listProposals,
-  findPendingProposalByWriter,
+  findDraftProposalByWriter,
   transitionToWithdrawn,
   ProposalNotFoundError,
 } from "../../storage/proposal-repository.js";
@@ -34,7 +34,7 @@ describe("proposal-store", () => {
     expect(contentRoot).toBeTruthy();
 
     const proposal = await readProposal(id);
-    expect(proposal.status).toBe("pending");
+    expect(proposal.status).toBe("draft");
     expect(proposal.writer.id).toBe("user-alice");
     expect(proposal.intent).toBe("Fix typos in guide");
     expect(proposal.sections).toHaveLength(1);
@@ -49,7 +49,7 @@ describe("proposal-store", () => {
 
     const read = await readProposal(id);
     expect(read.id).toBe(id);
-    expect(read.status).toBe("pending");
+    expect(read.status).toBe("draft");
     expect(read.writer.id).toBe("agent-bot");
   });
 
@@ -57,11 +57,12 @@ describe("proposal-store", () => {
     const all = await listProposals();
     expect(all.length).toBeGreaterThanOrEqual(2);
 
-    const pending = await listProposals("pending");
-    expect(pending.every((p) => p.status === "pending")).toBe(true);
+    const pending = await listProposals(
+"draft");
+    expect(pending.every((p) => p.status === "draft")).toBe(true);
   });
 
-  it("findPendingProposalByWriter finds correct proposal", async () => {
+  it("findDraftProposalByWriter finds correct proposal", async () => {
     const uniqueWriter = { id: "user-unique-finder", type: "human" as const, displayName: "Finder" };
     await createProposal(
       uniqueWriter,
@@ -69,7 +70,7 @@ describe("proposal-store", () => {
       [{ doc_path: "find.md", heading_path: ["Section"], content: "content" }],
     );
 
-    const found = await findPendingProposalByWriter("user-unique-finder");
+    const found = await findDraftProposalByWriter("user-unique-finder");
     expect(found).not.toBeNull();
     expect(found!.writer.id).toBe("user-unique-finder");
     expect(found!.intent).toBe("Find me");

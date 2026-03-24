@@ -2,7 +2,6 @@ import { readFile } from "node:fs/promises";
 import { getContentRoot, getSnapshotRoot } from "./data-root.js";
 import { resolveDocPathUnderContent, InvalidDocPathError } from "./path-utils.js";
 import { ContentLayer } from "./content-layer.js";
-import type { DocumentSkeleton } from "./document-skeleton.js";
 import { SectionRef } from "../domain/section-ref.js";
 
 // Re-export error classes from ContentLayer (callers import from here)
@@ -34,24 +33,24 @@ export async function readAssembledDocument(rawDocPath: string): Promise<string>
 /**
  * Prepend heading lines to body-only content for all non-root sections.
  *
- * Takes a DocumentSkeleton and a Map<headingKey, string> of body-only content,
+ * Takes a section list and a Map<headingKey, string> of body-only content,
  * returns a new Map<headingKey, string> with "## Heading\n\n" prepended to each
  * non-root entry. Root entries (level=0, heading="") are passed through unchanged.
  */
 export function prependHeadings(
-  skeleton: DocumentSkeleton,
+  sections: Array<{ heading: string; level: number; headingPath: string[] }>,
   bodyMap: Map<string, string>,
 ): Map<string, string> {
   const result = new Map(bodyMap);
-  skeleton.forEachSection((heading, level, _sectionFile, headingPath) => {
+  for (const { heading, level, headingPath } of sections) {
     const isRoot = level === 0 && heading === "";
-    if (isRoot) return;
+    if (isRoot) continue;
     const key = SectionRef.headingKey(headingPath);
     const body = result.get(key);
-    if (body == null) return;
+    if (body == null) continue;
     const headingLine = `${"#".repeat(level)} ${heading}`;
     const trimmedBody = body.replace(/^\n+/, "").replace(/\n+$/, "");
     result.set(key, trimmedBody ? `${headingLine}\n\n${trimmedBody}\n` : `${headingLine}\n`);
-  });
+  }
   return result;
 }

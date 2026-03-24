@@ -42,7 +42,10 @@ export class SectionRecency {
     // 1. In-memory fragment activity (Y.Doc update timestamp)
     const session = lookupDocSession(ref.docPath);
     if (session) {
-      const entry = session.fragments.skeleton.resolveByHeadingPath(ref.headingPath);
+      let entry = null;
+      try { entry = session.fragments.skeleton.resolve(ref.headingPath); } catch (e) {
+        if (!(e instanceof Error) || !e.message.startsWith("Skeleton integrity error")) throw e;
+      }
       if (entry) {
         const fk = fragmentKeyFromSectionFile(entry.sectionFile, ref.isRoot);
         const fragmentTime = session.fragmentLastActivity?.get(fk);

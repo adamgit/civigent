@@ -40,11 +40,11 @@ export type {
   CommittedProposalFile,
   WithdrawnProposalFile,
   AnyProposalFile,
-  PendingProposal,
+  DraftProposal,
   CommittedProposalDomain,
   WithdrawnProposalDomain,
   AnyProposal,
-  PendingProposalDTO,
+  DraftProposalDTO,
   ProposalDTO,
   ProposalId,
 

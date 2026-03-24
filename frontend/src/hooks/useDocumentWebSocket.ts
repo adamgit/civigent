@@ -11,7 +11,7 @@ import {
   type DocStructureNode,
   type PresenceDoneEvent,
   type PresenceEditingEvent,
-  type ProposalPendingEvent,
+  type ProposalDraftEvent,
   type ProposalWithdrawnEvent,
 } from "../types/shared.js";
 import {
@@ -146,7 +146,7 @@ export function useDocumentWebSocket({
           });
         }
 
-        // Clear pending proposal indicators for committed sections
+        // Clear draft proposal indicators for committed sections
         const committedSectionKeys = new Set(
           committed.sections.map((s) => sectionHeadingKey(s.heading_path)),
         );
@@ -306,8 +306,8 @@ export function useDocumentWebSocket({
       }
 
       // ── proposal:created ──
-      if (event.type === "proposal:pending") {
-        const created = event as ProposalPendingEvent;
+      if (event.type === "proposal:draft") {
+        const created = event as ProposalDraftEvent;
         if (normalizeDocPath(created.doc_path) !== normalizeDocPath(decodedDocPath)) return;
 
         setPendingProposalIndicators((prev) => {
@@ -391,7 +391,7 @@ export function useDocumentWebSocket({
     return map;
   }, [presenceIndicators]);
 
-  // Build a lookup of pending proposal indicators by section key
+  // Build a lookup of draft proposal indicators by section key
   const proposalsBySectionKey = useMemo(() => {
     const map = new Map<string, PendingProposalIndicator[]>();
     for (const indicator of pendingProposalIndicators) {

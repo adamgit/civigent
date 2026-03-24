@@ -18,7 +18,7 @@ const sampleProposal: AnyProposal = {
   kind: "human_reservation",
   writer: { id: "test-user", type: "human", display_name: "Test User" },
   intent: "Update strategy docs",
-  status: "pending",
+  status: "draft",
   sections: [
     { doc_path: "ops/strategy.md", heading_path: ["Overview"], content: "Updated.\n" },
   ],

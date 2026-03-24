@@ -59,6 +59,31 @@ export function parseDocumentMarkdown(markdown: string): ParsedSection[] {
   return getParser().parseDocumentMarkdown(markdown);
 }
 
+// ─── ParsedDocument ──────────────────────────────────────────────
+
+/**
+ * A parsed markdown document as a first-class value.
+ *
+ * Wraps parseDocumentMarkdown and exposes the resulting sections as a
+ * typed, immutable list. Can be passed around and acted on without
+ * repeating the parse step.
+ */
+export class ParsedDocument {
+  readonly sections: ReadonlyArray<ParsedSection>;
+
+  constructor(markdown: string) {
+    this.sections = parseDocumentMarkdown(markdown);
+  }
+
+  /**
+   * Return the proposal section manifest for this document: one entry per
+   * section in document order, ready for use as a section target list.
+   */
+  sectionTargets(docPath: string): Array<{ doc_path: string; heading_path: string[] }> {
+    return this.sections.map(s => ({ doc_path: docPath, heading_path: s.headingPath }));
+  }
+}
+
 // ─── applyDocumentMarkdownToDraft ────────────────────────────────
 
 /**

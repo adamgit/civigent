@@ -10,13 +10,11 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
-import { getDataRoot } from "./data-root.js";
+import { getImportStagingRoot } from "./data-root.js";
 import { parseDocumentMarkdown } from "./markdown-sections.js";
 import type { ImportFile } from "./import-service.js";
 
-function getImportStagingRoot(): string {
-  return path.join(getDataRoot(), "import-staging");
-}
+export { getImportStagingRoot } from "./data-root.js";
 
 function stagingFolderPath(importId: string): string {
   return path.join(getImportStagingRoot(), importId);
@@ -34,6 +32,15 @@ export interface StagingFileInfo {
   relativePath: string;
   isMarkdown: boolean;
   sectionCount: number;
+  /**
+   * True when the file is a Civigent internal-format artifact: either a skeleton file
+   * (an .md file with a sibling .sections/ directory) or any file inside a .sections/ directory.
+   */
+  isInternalArtifact: boolean;
+  /**
+   * Human-readable reason why this file cannot be imported, or null if it is valid.
+   */
+  rejectionReason: string | null;
 }
 
 // ─── Public API ──────────────────────────────────────────
@@ -74,6 +81,8 @@ export async function listStagingFolders(): Promise<StagingFolderInfo[]> {
 export async function scanStagingFolder(importId: string): Promise<StagingFileInfo[]> {
   const root = stagingFolderPath(importId);
   const files: StagingFileInfo[] = [];
+  // Collect relative paths of all .sections/ directories so we can flag artifacts
+  const sectionsDirs = new Set<string>();
 
   const walk = async (relativeDir: string) => {
     const absoluteDir = path.join(root, relativeDir);
@@ -81,6 +90,9 @@ export async function scanStagingFolder(importId: string): Promise<StagingFileIn
     for (const entry of entries) {
       const relPath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
+        if (entry.name.endsWith(".sections")) {
+          sectionsDirs.add(relPath);
+        }
         await walk(relPath);
         continue;
       }
@@ -97,11 +109,44 @@ export async function scanStagingFolder(importId: string): Promise<StagingFileIn
           // Parse failure — still show the file, just with 0 sections
         }
       }
-      files.push({ relativePath: relPath, isMarkdown, sectionCount });
+      const rejectionReason = isMarkdown
+        ? null
+        : "Unsupported file type. Only .md (Markdown) files can be imported.";
+      files.push({ relativePath: relPath, isMarkdown, sectionCount, isInternalArtifact: false, rejectionReason });
     }
   };
 
   await walk("");
+
+  // Mark artifacts: any file inside a .sections/ directory, AND the skeleton
+  // sibling (the .md file whose name + ".sections" matches a directory).
+  if (sectionsDirs.size > 0) {
+    // Build set of skeleton paths: for "foo.md.sections" the skeleton is "foo.md"
+    const skeletonPaths = new Set<string>();
+    for (const dir of sectionsDirs) {
+      if (dir.endsWith(".sections")) {
+        skeletonPaths.add(dir.slice(0, -".sections".length));
+      }
+    }
+
+    const artifactRejection =
+      "Civigent internal-format file (skeleton or .sections/ artifact) — these cannot be imported. You probably meant to copy from the snapshots folder instead.";
+    for (const f of files) {
+      if (skeletonPaths.has(f.relativePath)) {
+        f.isInternalArtifact = true;
+        f.rejectionReason = artifactRejection;
+        continue;
+      }
+      for (const dir of sectionsDirs) {
+        if (f.relativePath.startsWith(dir + "/")) {
+          f.isInternalArtifact = true;
+          f.rejectionReason = artifactRejection;
+          break;
+        }
+      }
+    }
+  }
+
   files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   return files;
 }

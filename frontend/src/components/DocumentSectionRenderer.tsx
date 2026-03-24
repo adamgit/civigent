@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 import { MilkdownEditor, type MilkdownEditorHandle } from "./MilkdownEditor";
 import type { CrdtProvider } from "../services/crdt-provider";
 import type { SectionPersistenceState, DocumentSection } from "../pages/document-page-utils";
-import { involvementBorderClass, headingPathToLabel, fragmentKeyFromSectionFile } from "../pages/document-page-utils";
+import { headingPathToLabel, fragmentKeyFromSectionFile } from "../pages/document-page-utils";
 import { resolveWriterId } from "../services/api-client";
 import type { SectionTransfer } from "../services/section-transfer";
 import { useSectionHover } from "../contexts/sectionHoverUtils";
@@ -19,7 +19,7 @@ export interface DocumentSectionRendererProps {
   isInProposal: boolean;
   isLockedByOtherHuman: boolean;
   highlightLabel: string | null;
-  humanInvolvementScore: number;
+  hasRemotePresence: boolean;
   dragOverSectionIndex: number | null;
   crdtProvider: CrdtProvider | null;
   crdtError: string | null;
@@ -45,7 +45,7 @@ export function DocumentSectionRenderer({
   isInProposal,
   isLockedByOtherHuman,
   highlightLabel,
-  humanInvolvementScore,
+  hasRemotePresence,
   dragOverSectionIndex,
   crdtProvider,
   crdtError,
@@ -74,7 +74,11 @@ export function DocumentSectionRenderer({
           ? `bg-blue-50/30 border-l-blue-500`
           : highlightLabel
           ? `bg-green-50/70 border-l-green-400 cursor-pointer hover:bg-section-hover`
-          : `cursor-pointer hover:bg-section-hover ${involvementBorderClass(humanInvolvementScore)}`
+          : isFocused
+          ? `cursor-pointer hover:bg-section-hover border-l-accent-emphasis`
+          : hasRemotePresence
+          ? `cursor-pointer hover:bg-section-hover border-l-blue-400`
+          : `cursor-pointer hover:bg-section-hover border-l-transparent`
       }${dragOverSectionIndex === i ? " section-drop-target" : ""}`}
       onMouseEnter={() => setHoveredSection(i)}
       onMouseLeave={() => setHoveredSection(null)}

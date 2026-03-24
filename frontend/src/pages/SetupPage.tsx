@@ -39,7 +39,7 @@ function CopyBlock({ label, content }: { label?: string; content: string }) {
   return (
     <div style={{ marginBottom: "1rem" }}>
       {label && <p style={{ margin: "0 0 0.3rem", fontWeight: 500, fontSize: "0.9rem" }}>{label}</p>}
-      <div style={{ position: "relative", background: "#1e1e1e", borderRadius: 6, padding: "0.8rem 1rem" }}>
+      <div className="code-block-dark" style={{ position: "relative", padding: "0.8rem 1rem" }}>
         <pre style={{ margin: 0, color: "#d4d4d4", fontSize: "0.85rem", whiteSpace: "pre-wrap", wordBreak: "break-all", paddingRight: "3rem" }}>
           {content}
         </pre>
@@ -95,12 +95,12 @@ export function SetupPage() {
   const tabStyle = (t: Tab): React.CSSProperties => ({
     padding: "0.5rem 1.2rem",
     border: "none",
-    borderBottom: tab === t ? "2px solid #2d7a8a" : "2px solid transparent",
+    borderBottom: tab === t ? "2px solid var(--color-accent)" : "2px solid transparent",
     background: "none",
     cursor: "pointer",
     fontWeight: tab === t ? 600 : 400,
     fontSize: "0.95rem",
-    color: tab === t ? "#2d7a8a" : "#666",
+    color: tab === t ? "var(--color-accent)" : "var(--color-text-secondary)",
   });
 
   return (
@@ -108,11 +108,7 @@ export function SetupPage() {
       <SharedPageHeader title="Connect an Agent" backTo="/" />
 
       <section style={{ maxWidth: 700, margin: "0 auto", padding: "1rem" }}>
-        {error && (
-          <div style={{ background: "#ffeaea", color: "#a00", padding: "0.5rem 1rem", borderRadius: 4, marginBottom: "1rem" }}>
-            {error}
-          </div>
-        )}
+        {error && <p className="text-error" style={{ marginBottom: "1rem" }}>{error}</p>}
 
         {!info ? (
           <p style={{ color: "#888" }}>Loading setup info...</p>
@@ -135,28 +131,18 @@ export function SetupPage() {
                 type="text"
                 value={serverName}
                 onChange={(e) => setServerName(e.target.value)}
-                style={{
-                  width: "100%",
-                  maxWidth: 350,
-                  padding: "0.4rem 0.6rem",
-                  fontSize: "0.9rem",
-                  border: nameError ? "1.5px solid #d32f2f" : "1px solid #ccc",
-                  borderRadius: 4,
-                  fontFamily: "monospace",
-                  boxSizing: "border-box",
-                }}
+                className="input-field"
+                style={{ width: "100%", maxWidth: 350, border: nameError ? `1.5px solid var(--color-status-red)` : undefined }}
               />
               {nameError && (
-                <p style={{ color: "#d32f2f", fontSize: "0.8rem", margin: "0.3rem 0 0" }}>
-                  {nameError}
-                </p>
+                <p className="text-error" style={{ margin: "0.3rem 0 0" }}>{nameError}</p>
               )}
               <p style={{ color: "#aaa", fontSize: "0.75rem", margin: "0.3rem 0 0" }}>
                 {serverName.length}/{MAX_SERVER_NAME} characters
               </p>
             </div>
 
-            <div style={{ borderBottom: "1px solid #ddd", marginBottom: "1.5rem" }}>
+            <div style={{ borderBottom: "1px solid var(--color-footer-border)", marginBottom: "1.5rem" }}>
               <button style={tabStyle("claude-code")} onClick={() => setTab("claude-code")}>
                 Claude Code
               </button>

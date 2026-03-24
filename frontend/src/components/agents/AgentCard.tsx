@@ -23,7 +23,7 @@ function ProposalStatusDot({ status }: { status: string }) {
   if (status === "committed") {
     return <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />;
   }
-  if (status === "blocked" || status === "pending") {
+  if (status === "blocked" || status === "draft") {
     return <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />;
   }
   return <span className="inline-block w-1.5 h-1.5 rounded-full bg-gray-400 shrink-0" />;
@@ -81,12 +81,12 @@ export function AgentCard({ vm, onClick }: AgentCardProps) {
             {avatarLetter}
           </div>
           <div className="flex flex-col min-w-0">
-            <span className="text-sm font-semibold text-gray-800 leading-tight truncate">
+            <span className="text-sm font-semibold text-text-primary leading-tight truncate">
               {displayName}
             </span>
             <div className="flex items-center gap-1 mt-0.5">
               <StatusDot status={connectionStatus} />
-              <span className="text-[10px] text-gray-500 capitalize">{connectionStatus}</span>
+              <span className="text-[10px] text-text-muted capitalize">{connectionStatus}</span>
             </div>
           </div>
         </div>
@@ -94,7 +94,7 @@ export function AgentCard({ vm, onClick }: AgentCardProps) {
         {/* Current activity */}
         {currentActivityHtml ? (
           <p
-            className="text-xs text-gray-600 leading-snug m-0"
+            className="text-xs text-text-secondary leading-snug m-0"
             dangerouslySetInnerHTML={{ __html: currentActivityHtml }}
           />
         ) : null}
@@ -122,8 +122,8 @@ export function AgentCard({ vm, onClick }: AgentCardProps) {
             {recentTwo.map((proposal) => (
               <div key={proposal.id} className="flex items-center gap-1.5">
                 <ProposalStatusDot status={proposal.status} />
-                <span className="text-[11px] text-gray-600 truncate flex-1">{proposal.intent}</span>
-                <span className="text-[10px] text-gray-400 capitalize shrink-0">{proposal.status}</span>
+                <span className="text-[11px] text-text-secondary truncate flex-1">{proposal.intent}</span>
+                <span className="text-[10px] text-text-faint capitalize shrink-0">{proposal.status}</span>
               </div>
             ))}
           </div>
@@ -132,8 +132,8 @@ export function AgentCard({ vm, onClick }: AgentCardProps) {
         {/* Acceptance rate bar */}
         <div className="flex flex-col gap-0.5">
           <div className="flex justify-between items-center">
-            <span className="text-[9px] text-gray-400 uppercase tracking-wide">Acceptance rate</span>
-            <span className="text-[9px] text-gray-500">{rate}%</span>
+            <span className="text-[9px] text-text-faint uppercase tracking-wide">Acceptance rate</span>
+            <span className="text-[9px] text-text-muted">{rate}%</span>
           </div>
           <div className="h-1 bg-gray-100 rounded-full overflow-hidden">
             <div

@@ -68,7 +68,7 @@ function ProposalFileViewer({ proposal }: { proposal: ProposalDTO }) {
   return (
     <div style={{
       marginTop: "1.5rem",
-      border: "1px solid #eae7e2",
+      border: "1px solid var(--color-footer-border)",
       borderRadius: "8px",
       overflow: "hidden",
       background: "#fff",
@@ -101,20 +101,13 @@ function ProposalFileViewer({ proposal }: { proposal: ProposalDTO }) {
       {expanded && (
         <div style={{ borderTop: "1px solid #f0ede8" }}>
           {/* Directory info */}
-          <div style={{ padding: "12px 14px", borderBottom: "1px solid #f0ede8" }}>
+          <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--color-footer-border)" }}>
             <div style={{ fontSize: "11px", fontWeight: 600, color: "#8a8279", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "6px" }}>
               File Location
             </div>
-            <div style={{
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: "12px",
-              color: "#1a1610",
-              background: "#f7f5f1",
-              padding: "8px 10px",
-              borderRadius: "5px",
-            }}>
-              <span style={{ color: "#8a8279" }}>$KS_DATA_ROOT/</span>
-              <span style={{ color: "#2d7a8a", fontWeight: 600 }}>proposals/{proposal.status}/</span>
+            <div className="code-inline">
+              <span style={{ color: "var(--color-text-muted)" }}>$KS_DATA_ROOT/</span>
+              <span style={{ color: "var(--color-accent)", fontWeight: 600 }}>proposals/{proposal.status}/</span>
               <span>{proposal.id}.json</span>
             </div>
             <div style={{ fontSize: "11px", color: "#8a8279", marginTop: "6px" }}>
@@ -124,7 +117,7 @@ function ProposalFileViewer({ proposal }: { proposal: ProposalDTO }) {
           </div>
 
           {/* Field presence checks */}
-          <div style={{ padding: "12px 14px", borderBottom: "1px solid #f0ede8" }}>
+          <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--color-footer-border)" }}>
             <div style={{ fontSize: "11px", fontWeight: 600, color: "#8a8279", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "6px" }}>
               Field Presence
             </div>
@@ -142,20 +135,7 @@ function ProposalFileViewer({ proposal }: { proposal: ProposalDTO }) {
             <div style={{ fontSize: "11px", fontWeight: 600, color: "#8a8279", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "6px" }}>
               Raw File Contents
             </div>
-            <pre style={{
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: "11px",
-              lineHeight: 1.5,
-              background: "#f7f5f1",
-              padding: "10px 12px",
-              borderRadius: "5px",
-              overflow: "auto",
-              maxHeight: "400px",
-              margin: 0,
-              color: "#1a1610",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-            }}>
+            <pre className="code-inline" style={{ overflow: "auto", maxHeight: "400px", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.5 }}>
               {JSON.stringify(fileJson, null, 2)}
             </pre>
           </div>
@@ -171,8 +151,8 @@ export function ProposalDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
-  const evaluation = proposal && (proposal.status === "pending" || proposal.status === "committing")
-    ? (proposal as import("../types/shared.js").PendingProposalDTO).humanInvolvement_evaluation
+  const evaluation = proposal && (proposal.status === "draft" || proposal.status === "committing")
+    ? (proposal as import("../types/shared.js").DraftProposalDTO).humanInvolvement_evaluation
     : undefined;
 
   const loadProposal = useCallback(async () => {
@@ -233,7 +213,7 @@ export function ProposalDetailPage() {
       <SharedPageHeader title="Proposal Detail" backTo="/proposals" />
       <p>Proposal ID: {id ?? "(unknown)"}</p>
       {loading ? <p>Loading proposal...</p> : null}
-      {error ? <p style={{ color: "#c0392b" }}>{error}</p> : null}
+      {error ? <p className="text-error">{error}</p> : null}
       {proposal ? (
         <>
           <p>Status: <strong>{proposal.status}</strong></p>
@@ -318,14 +298,14 @@ export function ProposalDetailPage() {
             <button
               type="button"
               onClick={handleCommit}
-              disabled={actionBusy || proposal.status !== "pending"}
+              disabled={actionBusy || proposal.status !== "draft"}
             >
               Recommit
             </button>
             <button
               type="button"
               onClick={handleWithdraw}
-              disabled={actionBusy || proposal.status !== "pending"}
+              disabled={actionBusy || proposal.status !== "draft"}
             >
               Withdraw
             </button>

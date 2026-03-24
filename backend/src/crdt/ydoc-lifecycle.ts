@@ -9,7 +9,7 @@
  */
 
 import path from "node:path";
-import { getSessionDocsRoot } from "../storage/data-root.js";
+import { getSessionDocsContentRoot } from "../storage/data-root.js";
 import type { WriterIdentity } from "../types/shared.js";
 import { FragmentStore } from "./fragment-store.js";
 import { fragmentKeyFromSectionFile } from "./ydoc-fragments.js";
@@ -511,7 +511,10 @@ export async function getSessionFileMtime(sectionKey: string): Promise<number | 
   // Check in-memory session first
   const session = sessions.get(docPath);
   if (session) {
-    const entry = session.fragments.skeleton.resolveByHeadingPath(headingPath);
+    let entry = null;
+    try { entry = session.fragments.skeleton.resolve(headingPath); } catch (e) {
+      if (!(e instanceof Error) || !e.message.startsWith("Skeleton integrity error")) throw e;
+    }
     if (entry) {
       const targetFragmentKey = fragmentKeyFromSectionFile(entry.sectionFile, headingPath.length === 0);
       const fragmentTime = session.fragmentLastActivity.get(targetFragmentKey);
@@ -523,7 +526,7 @@ export async function getSessionFileMtime(sectionKey: string): Promise<number | 
   }
 
   // No in-memory session — check disk file mtime for orphaned sessions
-  const sessionDocsContentRoot = path.join(getSessionDocsRoot(), "content");
+  const sessionDocsContentRoot = getSessionDocsContentRoot();
   if (headingPath.length === 0) return null;
 
   try {

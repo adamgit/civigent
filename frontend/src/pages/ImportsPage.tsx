@@ -4,7 +4,7 @@ import {
   apiClient,
   type ImportStagingInfo,
   type ImportDetailResponse,
-  type ImportStagingFile,
+  type ImportResponse,
 } from "../services/api-client";
 
 function ImportDetailView({
@@ -21,7 +21,7 @@ function ImportDetailView({
   const [error, setError] = useState<string | null>(null);
   const [description, setDescription] = useState("");
   const [committing, setCommitting] = useState(false);
-  const [commitResult, setCommitResult] = useState<string | null>(null);
+  const [commitResult, setCommitResult] = useState<ImportResponse | null>(null);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -57,7 +57,11 @@ function ImportDetailView({
           setError("No .md files selected.");
           return;
         }
-        await apiClient.uploadImportFiles(importId, files);
+        // Batch uploads to avoid hitting express JSON body size limit
+        const BATCH_SIZE = 5;
+        for (let i = 0; i < files.length; i += BATCH_SIZE) {
+          await apiClient.uploadImportFiles(importId, files.slice(i, i + BATCH_SIZE));
+        }
         await fetchDetail();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -69,31 +73,25 @@ function ImportDetailView({
   );
 
   const handleCommit = useCallback(async () => {
+    const hasArtifacts = (detail?.files ?? []).some((f) => f.is_internal_artifact);
+    if (hasArtifacts) {
+      alert(
+        "Civigent internal-format files detected — import cannot continue, these files will corrupt on import.\n\nYou probably meant to copy from the snapshots folder instead?"
+      );
+      return;
+    }
     setCommitting(true);
     setError(null);
     setCommitResult(null);
     try {
       const res = await apiClient.commitImport(importId, description);
-      if (res.status === "committed" && res.outcome === "accepted") {
-        setCommitResult("Import committed successfully.");
-        onCommitted();
-      } else {
-        // Non-success outcome — surface it as an error with details
-        const blockedCount = res.evaluation?.blocked_sections?.length ?? 0;
-        setError(
-          `Import was not committed. Status: ${res.status}, outcome: ${res.outcome}. ` +
-          (blockedCount > 0
-            ? `${blockedCount} section(s) blocked by human-involvement thresholds. ` +
-              `Proposal ${res.proposal_id} saved as pending — an admin can review and commit it.`
-            : `Proposal ${res.proposal_id} is pending review.`),
-        );
-      }
+      setCommitResult(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCommitting(false);
     }
-  }, [importId, description, onCommitted]);
+  }, [importId, description, detail, onCommitted]);
 
   const handleDelete = useCallback(async () => {
     if (!confirm("Delete this import? Files in the staging folder will be removed.")) return;
@@ -117,21 +115,57 @@ function ImportDetailView({
 
   if (loading) return <div className="p-4 text-sm text-muted">Scanning staging folder...</div>;
 
+  // ── Result view after commit ──
+  if (commitResult) {
+    const isCommitted = commitResult.status === "committed" && commitResult.outcome === "accepted";
+    const blockedCount = commitResult.evaluation?.blocked_sections?.length ?? 0;
+    const docPaths = [...new Set(commitResult.sections?.map((s) => s.doc_path) ?? [])];
+
+    return (
+      <div className="p-4 space-y-3 border-t border-border-subtle">
+        <div className={`p-3 rounded text-sm ${isCommitted
+          ? "bg-status-green-light text-status-green"
+          : "bg-status-yellow-light text-status-yellow"}`}
+        >
+          <div className="font-medium mb-1">
+            {isCommitted ? "Import committed" : "Import pending review"}
+          </div>
+          <div className="text-xs space-y-0.5">
+            <div>Proposal: <code>{commitResult.proposal_id}</code></div>
+            <div>Status: {commitResult.status} / {commitResult.outcome}</div>
+            {(commitResult as unknown as { committed_head?: string }).committed_head && (
+              <div>Commit: <code>{(commitResult as unknown as { committed_head?: string }).committed_head!.slice(0, 10)}</code></div>
+            )}
+            <div>Sections: {commitResult.sections?.length ?? 0}</div>
+            {docPaths.length > 0 && <div>Documents: {docPaths.join(", ")}</div>}
+            {blockedCount > 0 && (
+              <div className="text-error">
+                {blockedCount} section(s) blocked by human-involvement thresholds
+              </div>
+            )}
+          </div>
+        </div>
+        {Array.isArray((commitResult as unknown as { diagnostics?: string[] }).diagnostics) &&
+          (commitResult as unknown as { diagnostics?: string[] }).diagnostics!.length > 0 && (
+          <details className="text-xs">
+            <summary className="cursor-pointer text-muted">Diagnostics</summary>
+            <pre className="mt-1 p-2 bg-canvas-subtle rounded overflow-x-auto text-xs">
+              {(commitResult as unknown as { diagnostics?: string[] }).diagnostics!.join("\n")}
+            </pre>
+          </details>
+        )}
+        <button className="btn-secondary" onClick={onCommitted}>Done</button>
+      </div>
+    );
+  }
+
   const mdCount = detail?.files.filter((f) => f.is_markdown).length ?? 0;
   const totalSections = detail?.files.reduce((sum, f) => sum + f.section_count, 0) ?? 0;
+  const artifactCount = detail?.files.filter((f) => f.is_internal_artifact).length ?? 0;
 
   return (
     <div className="p-4 space-y-4 border-t border-border-subtle">
-      {error && (
-        <div className="p-2 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 rounded text-sm">
-          {error}
-        </div>
-      )}
-      {commitResult && (
-        <div className="p-2 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 rounded text-sm">
-          {commitResult}
-        </div>
-      )}
+      {error && <p className="text-error">{error}</p>}
 
       <div className="flex items-center gap-2 text-xs text-muted">
         <span>Staging path:</span>
@@ -146,24 +180,34 @@ function ImportDetailView({
       </div>
 
       {detail && detail.files.length > 0 && (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-xs text-muted">
-              <th className="py-1">File</th>
-              <th className="py-1 w-16 text-center">Type</th>
-              <th className="py-1 w-20 text-right">Sections</th>
-            </tr>
-          </thead>
-          <tbody>
-            {detail.files.map((f) => (
-              <tr key={f.path} className="border-t border-border-subtle">
-                <td className="py-1 font-mono text-xs">{f.path}</td>
-                <td className="py-1 text-center">{f.is_markdown ? "\u2713" : "\u2717"}</td>
-                <td className="py-1 text-right">{f.is_markdown ? f.section_count : "\u2014"}</td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-muted">
+                <th className="py-1">File</th>
+                <th className="py-1 w-16 text-center">Type</th>
+                <th className="py-1 w-20 text-right">Sections</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {detail.files.map((f) => {
+                const rowClass = f.is_internal_artifact
+                  ? "border-t border-border-subtle text-red-600 dark:text-red-400"
+                  : !f.is_markdown
+                    ? "border-t border-border-subtle text-amber-600 dark:text-amber-400"
+                    : "border-t border-border-subtle";
+                const typeIcon = f.is_internal_artifact ? "⚠" : f.is_markdown ? "\u2713" : "\u2717";
+                return (
+                  <tr key={f.path} className={rowClass} title={f.rejection_reason ?? undefined}>
+                    <td className="py-1 font-mono text-xs whitespace-nowrap">{f.path}</td>
+                    <td className="py-1 text-center">{typeIcon}</td>
+                    <td className="py-1 text-right">{f.is_markdown && !f.is_internal_artifact ? f.section_count : "\u2014"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <div
@@ -200,24 +244,15 @@ function ImportDetailView({
 
       <div className="flex gap-2">
         <button
-          className="px-4 py-1.5 bg-accent-emphasis text-white rounded text-sm disabled:opacity-50"
+          className="btn-primary"
+          style={{ opacity: (!description.trim() || committing || mdCount === 0) ? 0.5 : 1 }}
           disabled={!description.trim() || committing || mdCount === 0}
           onClick={handleCommit}
         >
           {committing ? "Importing..." : "Import"}
         </button>
-        <button
-          className="px-4 py-1.5 bg-canvas-subtle border border-border-default rounded text-sm"
-          onClick={fetchDetail}
-        >
-          Refresh
-        </button>
-        <button
-          className="px-4 py-1.5 text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded text-sm ml-auto"
-          onClick={handleDelete}
-        >
-          Cancel
-        </button>
+        <button className="btn-secondary" onClick={fetchDetail}>Refresh</button>
+        <button className="btn-danger" style={{ marginLeft: "auto" }} onClick={handleDelete}>Cancel</button>
       </div>
     </div>
   );
@@ -260,19 +295,10 @@ export function ImportsPage() {
     <div className="flex flex-col h-full">
       <SharedPageHeader title="Imports" backTo="/admin" />
       <div className="flex-1 overflow-y-auto p-6">
-        {error && (
-          <div className="mb-4 p-2 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 rounded text-sm">
-            {error}
-          </div>
-        )}
+        {error && <p className="text-error mb-4">{error}</p>}
 
         <div className="mb-4">
-          <button
-            className="px-4 py-2 bg-accent-emphasis text-white rounded text-sm"
-            onClick={handleNewImport}
-          >
-            + New Import
-          </button>
+          <button className="btn-primary" onClick={handleNewImport}>+ New Import</button>
         </div>
 
         {loading && imports.length === 0 && (
@@ -308,7 +334,7 @@ export function ImportsPage() {
                   </code>
                 </div>
                 <span className="text-xs text-muted">
-                  {new Date(imp.created_at).toLocaleString()}
+                  {imp.import_id.slice(0, 12)}
                 </span>
               </div>
               {expandedId === imp.import_id && (

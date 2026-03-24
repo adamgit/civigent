@@ -14,9 +14,9 @@
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { DocumentSkeleton, type FlatEntry, generateSectionFilename, serializeSkeletonEntries } from "./document-skeleton.js";
-import { parseDocumentMarkdown } from "./markdown-sections.js";
-import { sectionGlobalKey } from "../types/shared.js";
+import { DocumentSkeleton, type FlatEntry } from "./document-skeleton.js";
+import { ParsedDocument } from "./markdown-sections.js";
+import type { DocStructureNode } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
 
 export class SectionNotFoundError extends Error {}
@@ -31,7 +31,7 @@ import { getParser } from "./markdown-parser.js";
  * No-op for root sections (level=0, heading="") and for content that is already body-only.
  * Idempotent: body-only input passes through unchanged.
  */
-export function stripMatchingHeading(content: string, level: number, heading: string): string {
+function stripMatchingHeading(content: string, level: number, heading: string): string {
   // Root sections never have headings to strip
   if (level === 0 && heading === "") return content;
 
@@ -57,6 +57,29 @@ export class ContentLayer {
   }
 
   /**
+   * Return the document's structural tree as DocStructureNode[].
+   * Suitable for API responses that describe document outline.
+   */
+  async getDocumentStructure(docPath: string): Promise<DocStructureNode[]> {
+    const skeleton = await this.readSkeleton(docPath);
+    return skeleton.structure;
+  }
+
+  /**
+   * Return a flat ordered list of all sections in the document.
+   * Suitable for callers that need to enumerate sections without
+   * access to the raw DocumentSkeleton.
+   */
+  async getSectionList(docPath: string): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>> {
+    const skeleton = await this.readSkeleton(docPath);
+    const sections: Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }> = [];
+    skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+      sections.push({ heading, level, sectionFile, headingPath: [...headingPath] });
+    });
+    return sections;
+  }
+
+  /**
    * Read the DocumentSkeleton for a document.
    *
    * When a fallback is configured, the skeleton is loaded with
@@ -66,7 +89,7 @@ export class ContentLayer {
    * When no fallback is configured, both roots point to this.contentRoot
    * (pure canonical read).
    */
-  async readSkeleton(docPath: string): Promise<DocumentSkeleton> {
+  private async readSkeleton(docPath: string): Promise<DocumentSkeleton> {
     const canonicalRoot = this.fallback?.contentRoot ?? this.contentRoot;
     return DocumentSkeleton.fromDisk(docPath, this.contentRoot, canonicalRoot);
   }
@@ -101,6 +124,25 @@ export class ContentLayer {
   }
 
   /**
+   * Read the full subtree rooted at headingPath: the section itself and all
+   * descendants. Reads body content via readSection (respects overlay fallback).
+   * headingPath=[] returns all sections in the document.
+   */
+  async readSubtree(
+    docPath: string,
+    headingPath: string[],
+  ): Promise<Array<{ headingPath: string[]; heading: string; level: number; bodyContent: string }>> {
+    const skeleton = await this.readSkeleton(docPath);
+    const entries = skeleton.subtreeEntries(headingPath);
+    const result: Array<{ headingPath: string[]; heading: string; level: number; bodyContent: string }> = [];
+    for (const entry of entries) {
+      const bodyContent = await this.readSection(new SectionRef(docPath, entry.headingPath));
+      result.push({ headingPath: entry.headingPath, heading: entry.heading, level: entry.level, bodyContent });
+    }
+    return result;
+  }
+
+  /**
    * Batch-read multiple sections, memoizing skeletons by docPath.
    *
    * Avoids redundant skeleton reads when reading many sections from the
@@ -123,13 +165,14 @@ export class ContentLayer {
       let entry: FlatEntry;
       try {
         entry = skeleton.resolve(ref.headingPath);
-      } catch {
+      } catch (e) {
+        if (!(e instanceof Error) || !e.message.startsWith("Skeleton integrity error")) throw e;
         // Section not in skeleton — try fallback
         if (this.fallback) {
           try {
             const content = await this.fallback.readSection(ref);
             result.set(ref.globalKey, content);
-          } catch { /* missing in fallback too — skip */ }
+          } catch (fe) { if (!(fe instanceof SectionNotFoundError)) throw fe; }
         }
         continue;
       }
@@ -144,7 +187,7 @@ export class ContentLayer {
           try {
             const content = await this.fallback.readSection(ref);
             result.set(ref.globalKey, content);
-          } catch { /* missing in fallback too — skip */ }
+          } catch (fe) { if (!(fe instanceof SectionNotFoundError)) throw fe; }
         }
       }
     }
@@ -159,7 +202,7 @@ export class ContentLayer {
    * to the resolved file path. Creates parent directories as needed.
    *
    * Throws if the content contains multiple markdown headings — use
-   * writeAssembledDocument() for multi-section content.
+   * importMarkdownDocument() for multi-section content.
    */
   async writeSection(
     ref: SectionRef,
@@ -169,13 +212,13 @@ export class ContentLayer {
     const entry = skeleton.resolve(ref.headingPath);
     // Enforce body-only invariant: strip leading heading if it matches the skeleton entry
     const body = stripMatchingHeading(content, entry.level, entry.heading);
-    // Guard: reject multi-heading content that should go through writeAssembledDocument
+    // Guard: reject multi-heading content that should go through importMarkdownDocument
     const hasHeadings = getParser().containsHeadings(body);
     if (hasHeadings) {
       throw new MultiSectionContentError(
         `Multi-section content passed to writeSection() for (${ref.docPath}, ` +
         `[${ref.headingPath.join(" > ")}]) — embedded heading(s) detected. ` +
-        `Use writeAssembledDocument() instead.`,
+        `Use importMarkdownDocument() instead.`,
       );
     }
     await mkdir(path.dirname(entry.absolutePath), { recursive: true });
@@ -183,7 +226,7 @@ export class ContentLayer {
   }
 
   /**
-   * Write a full assembled markdown document, normalizing into per-section files.
+   * Import a full assembled markdown document into this layer's proprietary format.
    *
    * Parses the markdown into sections, creates/updates the skeleton to match
    * the heading structure, and writes per-section body files. This is the
@@ -192,14 +235,14 @@ export class ContentLayer {
    * Returns the list of section targets (docPath + headingPath) for all
    * sections that were written, suitable for building proposal metadata.
    */
-  async writeAssembledDocument(
+  async importMarkdownDocument(
     docPath: string,
     markdown: string,
   ): Promise<Array<{ doc_path: string; heading_path: string[] }>> {
     const canonicalRoot = this.fallback?.contentRoot ?? this.contentRoot;
-    const parsedSections = parseDocumentMarkdown(markdown);
+    const parsed = new ParsedDocument(markdown);
 
-    // Load existing skeleton (from canonical via fallback, or empty)
+    // Load canonical skeleton for file-ID matching; empty skeleton for new docs
     let canonicalSkeleton: DocumentSkeleton;
     try {
       canonicalSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
@@ -207,136 +250,27 @@ export class ContentLayer {
       canonicalSkeleton = DocumentSkeleton.createEmpty(docPath, canonicalRoot);
     }
 
-    // Collect canonical flat entries for matching
-    const canonicalFlat: Array<FlatEntry> = [];
-    canonicalSkeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
-      canonicalFlat.push({
-        headingPath: [...headingPath], heading, level, sectionFile, absolutePath, isSubSkeleton: false,
-      });
+    // Build overlay skeleton — correct matching algorithm, no position fallback
+    const overlaySkeleton = canonicalSkeleton.buildOverlaySkeleton(parsed, this.contentRoot);
+
+    // Collect overlay entries in document order (same order as parsed.sections)
+    const overlayPaths: string[] = [];
+    overlaySkeleton.forEachSection((_heading, _level, _sectionFile, _headingPath, absolutePath) => {
+      overlayPaths.push(absolutePath);
     });
 
-    // Build skeleton path and sections dir for this layer
-    const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-    const skeletonPath = path.resolve(this.contentRoot, ...normalized.split("/"));
-    const sectionsDir = `${skeletonPath}.sections`;
-
-    // Match parsed sections to canonical entries (by heading text, then position)
-    const consumed = new Set<number>();
-    let topLevelIndex = 0;
-    const newEntries: Array<{ heading: string; level: number; sectionFile: string }> = [];
-    const sectionTargets: Array<{ doc_path: string; heading_path: string[] }> = [];
-
-    for (const section of parsedSections) {
-      const isRoot = section.headingPath.length === 0;
-      const heading = section.heading;
-
-      // Try matching by heading text (case-insensitive)
-      let matchedIdx = -1;
-      if (isRoot) {
-        for (let ci = 0; ci < canonicalFlat.length; ci++) {
-          if (consumed.has(ci)) continue;
-          if (canonicalFlat[ci].level === 0 && canonicalFlat[ci].heading === "") {
-            matchedIdx = ci;
-            break;
-          }
-        }
-      } else {
-        for (let ci = 0; ci < canonicalFlat.length; ci++) {
-          if (consumed.has(ci)) continue;
-          if (canonicalFlat[ci].heading.toLowerCase() === heading.toLowerCase()) {
-            matchedIdx = ci;
-            break;
-          }
-        }
-      }
-
-      // Position-based fallback for renamed headings
-      if (!isRoot && matchedIdx < 0 && topLevelIndex < canonicalFlat.length && !consumed.has(topLevelIndex)) {
-        matchedIdx = topLevelIndex;
-      }
-
-      if (matchedIdx >= 0) consumed.add(matchedIdx);
-      if (!isRoot) topLevelIndex++;
-
-      const sectionFile = matchedIdx >= 0
-        ? canonicalFlat[matchedIdx].sectionFile
-        : generateSectionFilename(isRoot ? "root" : heading);
-
-      newEntries.push({
-        heading: isRoot ? "" : heading,
-        level: section.level,
-        sectionFile,
-      });
-
-      // Write body file
-      const sectionPath = path.join(sectionsDir, sectionFile);
-      await mkdir(path.dirname(sectionPath), { recursive: true });
-      const trimmedBody = section.body.replace(/\n+$/, "");
-      await writeFile(sectionPath, trimmedBody ? trimmedBody + "\n" : "", "utf8");
-
-      sectionTargets.push({
-        doc_path: docPath,
-        heading_path: [...section.headingPath],
-      });
+    // Write body files: both lists are in the same document order
+    for (let i = 0; i < parsed.sections.length && i < overlayPaths.length; i++) {
+      const absolutePath = overlayPaths[i];
+      const trimmedBody = parsed.sections[i].body.replace(/\n+$/, "");
+      await mkdir(path.dirname(absolutePath), { recursive: true });
+      await writeFile(absolutePath, trimmedBody ? trimmedBody + "\n" : "", "utf8");
     }
 
     // Write skeleton file
-    const skeletonContent = serializeSkeletonEntries(newEntries);
-    await mkdir(path.dirname(skeletonPath), { recursive: true });
-    await writeFile(skeletonPath, skeletonContent, "utf8");
+    await overlaySkeleton.persist();
 
-    return sectionTargets;
-  }
-
-  /**
-   * Parallel batch read: like readSectionBatch but fires all readFile calls
-   * concurrently via Promise.all instead of sequential for-of await.
-   */
-  async readSectionBatchParallel(
-    sections: SectionRef[],
-  ): Promise<Map<string, string>> {
-    const skeletonCache = new Map<string, DocumentSkeleton>();
-    const result = new Map<string, string>();
-
-    // Pre-load skeletons (sequential — typically 1-2 unique docs)
-    for (const ref of sections) {
-      if (!skeletonCache.has(ref.docPath)) {
-        skeletonCache.set(ref.docPath, await this.readSkeleton(ref.docPath));
-      }
-    }
-
-    // Fire all reads in parallel
-    const readTasks = sections.map(async (ref) => {
-      const skeleton = skeletonCache.get(ref.docPath)!;
-      let entry: FlatEntry;
-      try {
-        entry = skeleton.resolve(ref.headingPath);
-      } catch {
-        if (this.fallback) {
-          try {
-            const content = await this.fallback.readSection(ref);
-            result.set(ref.globalKey, content);
-          } catch { /* missing in fallback too */ }
-        }
-        return;
-      }
-
-      try {
-        const content = await readFile(entry.absolutePath, "utf8");
-        result.set(ref.globalKey, content);
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-        if (this.fallback) {
-          try {
-            const content = await this.fallback.readSection(ref);
-            result.set(ref.globalKey, content);
-          } catch { /* missing in fallback too */ }
-        }
-      }
-    });
-
-    await Promise.all(readTasks);
-    return result;
+    return parsed.sectionTargets(docPath);
   }
 
   /**
@@ -354,7 +288,7 @@ export class ContentLayer {
    * needed beyond content reads, introduce a SkeletonMergedView value object
    * that pairs two DocumentSkeleton instances and provides a unified iteration.
    */
-  async readAllSectionsOverlaid(docPath: string): Promise<Map<string, string>> {
+  async readAllSections(docPath: string): Promise<Map<string, string>> {
     const overlayRoot = this.contentRoot;
     const canonicalRoot = this.fallback?.contentRoot ?? this.contentRoot;
 
@@ -373,7 +307,7 @@ export class ContentLayer {
           union.set(key, { overlayPath: absolutePath, canonicalPath: null });
         }
       });
-    } catch { /* overlay skeleton doesn't exist */ }
+    } catch (e) { if (!(e instanceof DocumentNotFoundError)) throw e; }
 
     try {
       const canonicalSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
@@ -386,7 +320,7 @@ export class ContentLayer {
           union.set(key, { overlayPath: null, canonicalPath: absolutePath });
         }
       });
-    } catch { /* canonical skeleton doesn't exist */ }
+    } catch (e) { if (!(e instanceof DocumentNotFoundError)) throw e; }
 
     // Read all files in parallel, preferring overlay
     const result = new Map<string, string>();
@@ -434,7 +368,7 @@ export class ContentLayer {
    * concatenates their body content. Each section is read through this
    * layer's read path (with fallback if configured).
    */
-  async readAssembledDocument(docPath: string, options?: { lenient?: boolean }): Promise<string> {
+  async readAssembledDocument(docPath: string): Promise<string> {
     const skeleton = await this.readSkeleton(docPath);
 
     // Collect body sections via visitor (sync), then read files (async)
@@ -448,7 +382,6 @@ export class ContentLayer {
     }
 
     const parts: string[] = [];
-    const missingSections: string[] = [];
 
     for (const entry of bodyEntries) {
       let content: string | undefined;
@@ -464,10 +397,12 @@ export class ContentLayer {
             content = await readFile(fallbackPath, "utf8");
           } catch (err2) {
             if ((err2 as NodeJS.ErrnoException).code !== "ENOENT") throw err2;
-            missingSections.push(entry.sectionFile);
           }
-        } else {
-          missingSections.push(entry.sectionFile);
+        }
+        if (content === undefined) {
+          throw new DocumentAssemblyError(
+            `Skeleton integrity check failed for "${docPath}": section file "${entry.sectionFile}" is referenced by the skeleton but has no body file in any layer. This indicates data corruption.`,
+          );
         }
       }
 
@@ -483,12 +418,6 @@ export class ContentLayer {
         const trimmedRoot = content.replace(/^\n+/, "").replace(/\n+$/, "");
         if (trimmedRoot) parts.push(trimmedRoot);
       }
-    }
-
-    if (missingSections.length > 0 && !options?.lenient) {
-      throw new DocumentAssemblyError(
-        `Skeleton integrity check failed for "${docPath}": ${missingSections.length} missing section file(s): ${missingSections.join(", ")}`,
-      );
     }
 
     return parts.join("\n");

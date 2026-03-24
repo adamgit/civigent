@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DocumentSkeleton, type FlatEntry } from "../../storage/document-skeleton.js";
+import { DocumentSkeleton, type FlatEntry, type SkeletonNode } from "../../storage/document-skeleton.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { gitExec } from "../../storage/git-repo.js";
@@ -449,5 +449,115 @@ describe("DocumentSkeleton.fromNodes", () => {
 
     // structure() should also match
     expect(nodeSkeleton.structure.length).toBe(diskSkeleton.structure.length);
+  });
+});
+
+// ─── buildOverlaySkeleton regression tests ───────────────────────
+
+describe("DocumentSkeleton.buildOverlaySkeleton — file-identity matching", () => {
+  it("rename a heading mints a fresh file ID (no position-based reuse)", () => {
+    // Canonical: root, Section A (sec_a.md), Section B (sec_b.md)
+    const canonicalNodes: SkeletonNode[] = [
+      { heading: "", level: 0, sectionFile: "_root.md", children: [] },
+      { heading: "Section A", level: 2, sectionFile: "sec_a.md", children: [] },
+      { heading: "Section B", level: 2, sectionFile: "sec_b.md", children: [] },
+    ];
+    const canonical = DocumentSkeleton.fromNodes("test/rename.md", canonicalNodes, "/canonical");
+
+    // Parsed: Section A renamed to "Renamed A", Section B unchanged
+    const parsed = {
+      sections: [
+        { headingPath: [] as string[], heading: "", level: 0 },
+        { headingPath: ["Renamed A"], heading: "Renamed A", level: 2 },
+        { headingPath: ["Section B"], heading: "Section B", level: 2 },
+      ],
+    };
+
+    const overlay = canonical.buildOverlaySkeleton(parsed, "/overlay");
+
+    const flat: Array<{ heading: string; sectionFile: string }> = [];
+    overlay.forEachSection((heading, _level, sectionFile) => {
+      flat.push({ heading, sectionFile });
+    });
+
+    // "Renamed A" must get a fresh ID — not sec_a.md
+    expect(flat[1].heading).toBe("Renamed A");
+    expect(flat[1].sectionFile).not.toBe("sec_a.md");
+
+    // "Section B" must keep its canonical ID
+    expect(flat[2].heading).toBe("Section B");
+    expect(flat[2].sectionFile).toBe("sec_b.md");
+  });
+
+  it("two sections share heading at different depths — no cross-path ID theft", () => {
+    // Canonical with sub-skeleton structure:
+    //   root, Part 1 (sub-sk: p1.md), Part 1 root body (_p1_root.md),
+    //   Part 1 > Summary (sum1.md), Part 2 (sub-sk: p2.md), Part 2 root body (_p2_root.md),
+    //   Part 2 > Summary (sum2.md)
+    const canonicalNodes: SkeletonNode[] = [
+      { heading: "", level: 0, sectionFile: "_root.md", children: [] },
+      {
+        heading: "Part 1", level: 1, sectionFile: "p1.md",
+        children: [
+          { heading: "", level: 0, sectionFile: "_p1_root.md", children: [] },
+          { heading: "Summary", level: 2, sectionFile: "sum1.md", children: [] },
+        ],
+      },
+      {
+        heading: "Part 2", level: 1, sectionFile: "p2.md",
+        children: [
+          { heading: "", level: 0, sectionFile: "_p2_root.md", children: [] },
+          { heading: "Summary", level: 2, sectionFile: "sum2.md", children: [] },
+        ],
+      },
+    ];
+    const canonical = DocumentSkeleton.fromNodes("test/cross-path.md", canonicalNodes, "/canonical");
+
+    // Parsed: only Part 2 > Summary is present (no Part 1 > Summary)
+    // The buggy algorithm would grab sum1.md (first "Summary" in pool).
+    // The correct algorithm matches by parent path, so it must pick sum2.md.
+    const parsed = {
+      sections: [
+        { headingPath: [] as string[], heading: "", level: 0 },
+        { headingPath: ["Part 1"], heading: "Part 1", level: 1 },
+        { headingPath: ["Part 2"], heading: "Part 2", level: 1 },
+        { headingPath: ["Part 2", "Summary"], heading: "Summary", level: 2 },
+      ],
+    };
+
+    const overlay = canonical.buildOverlaySkeleton(parsed, "/overlay");
+
+    const flat: Array<{ heading: string; headingPath: string[]; sectionFile: string }> = [];
+    overlay.forEachSection((heading, _level, sectionFile, headingPath) => {
+      flat.push({ heading, headingPath: [...headingPath], sectionFile });
+    });
+
+    // The "Summary" section must match ["Part 2", "Summary"] → sum2.md, not sum1.md
+    const summaryEntry = flat.find(e => e.heading === "Summary");
+    expect(summaryEntry).toBeDefined();
+    expect(summaryEntry!.sectionFile).toBe("sum2.md");
+    expect(summaryEntry!.sectionFile).not.toBe("sum1.md");
+  });
+});
+
+describe("DocumentSkeleton tombstone", () => {
+  it("fromDisk on a tombstone overlay over non-empty canonical returns isEmpty=true without throwing", async () => {
+    const ctx = await createTempDataRoot();
+    try {
+      // Write a real document in canonical
+      await createSampleDocument(ctx.rootDir);
+
+      // Write an empty overlay skeleton (tombstone) at the same doc path
+      const overlayDir = join(ctx.rootDir, "overlay", "content");
+      await mkdir(overlayDir, { recursive: true });
+      const overlaySkeletonPath = join(overlayDir, SAMPLE_DOC_PATH.replace(/^\/+/, ""));
+      await mkdir(join(overlaySkeletonPath, ".."), { recursive: true });
+      await writeFile(overlaySkeletonPath, "", "utf8");
+
+      const skeleton = await DocumentSkeleton.fromDisk(SAMPLE_DOC_PATH, overlayDir, ctx.contentDir);
+      expect(skeleton.isEmpty).toBe(true);
+    } finally {
+      await ctx.cleanup();
+    }
   });
 });

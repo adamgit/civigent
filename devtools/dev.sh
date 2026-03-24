@@ -75,8 +75,41 @@ if [ "$BACKEND_READY" = false ]; then
   exit 1
 fi
 
+# ── Watchdog: if backend port drops after startup, kill everything ─
+# Nodemon swallows crashes ("app crashed — waiting for file changes") so
+# the backend process group stays alive even after a fatal startup error.
+# This loop detects the port closing and tears down the whole dev stack.
+(
+  sleep 2  # give startup recovery time to finish
+  while sleep 1; do
+    if ! port_open "$PORT"; then
+      # Port dropped — but nodemon restarts briefly close the port too.
+      # Wait up to 10s for it to come back (normal restart). If it stays
+      # closed, it's a real crash.
+      RECOVERED=false
+      for _ in $(seq 1 10); do
+        sleep 1
+        if port_open "$PORT"; then
+          RECOVERED=true
+          break
+        fi
+      done
+      if [ "$RECOVERED" = false ]; then
+        echo "" >&2
+        echo "══════════════════════════════════════════════════════════" >&2
+        echo "  BACKEND PORT CLOSED — shutting down dev stack" >&2
+        echo "══════════════════════════════════════════════════════════" >&2
+        kill -TERM $$ 2>/dev/null
+        break
+      fi
+    fi
+  done
+) &
+WATCHDOG_PID=$!
+
 # ── Start frontend (only after backend is confirmed alive) ───────
 setsid bash -lc "cd \"$REPO_ROOT/frontend\" && VITE_BACKEND_TARGET=\"${VITE_BACKEND_TARGET:-http://localhost:$PORT}\" npm run dev" &
 FRONT_PID=$!
-wait -n "$BACK_PID" "$FRONT_PID"
-exit $?
+wait -n "$BACK_PID" "$FRONT_PID" "$WATCHDOG_PID"
+cleanup
+exit 1

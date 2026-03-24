@@ -124,42 +124,19 @@ export function HomePage() {
               onChange={(e) => setNewDocPath(e.target.value)}
               placeholder="e.g. roadmap.md or projects/brief.md"
               disabled={creatingDoc}
-              style={{
-                flex: 1,
-                height: 34,
-                padding: "0 10px",
-                fontSize: 13,
-                fontFamily: "var(--font-ui)",
-                border: "1px solid var(--color-text-faint)",
-                borderRadius: 8,
-                background: "#fff",
-                color: "var(--color-text-primary)",
-                outline: "none",
-              }}
+              className="input-field"
+              style={{ flex: 1, height: 34 }}
             />
             <button
               type="submit"
               disabled={creatingDoc}
-              style={{
-                height: 34,
-                padding: "0 16px",
-                fontSize: 13,
-                fontWeight: 500,
-                fontFamily: "var(--font-ui)",
-                border: "1px solid var(--color-text-faint)",
-                borderRadius: 8,
-                background: "#fff",
-                color: "var(--color-text-primary)",
-                cursor: creatingDoc ? "wait" : "pointer",
-                whiteSpace: "nowrap",
-              }}
+              className="btn-secondary"
+              style={{ height: 34, cursor: creatingDoc ? "wait" : "pointer", whiteSpace: "nowrap" }}
             >
               {creatingDoc ? "Creating\u2026" : "Create"}
             </button>
           </div>
-          {newDocError && (
-            <p style={{ fontSize: 12, color: "var(--color-status-red)", marginTop: 6 }}>{newDocError}</p>
-          )}
+          {newDocError && <p className="text-error" style={{ marginTop: 6 }}>{newDocError}</p>}
         </form>
 
         {/* Quick links */}

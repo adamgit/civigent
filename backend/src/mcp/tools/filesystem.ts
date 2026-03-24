@@ -15,13 +15,14 @@ import { ContentLayer } from "../../storage/content-layer.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { readDocumentStructure, flattenStructureToHeadingPaths } from "../../storage/heading-resolver.js";
 import {
-  createProposal,
-  findPendingProposalByWriter,
+  createTransientProposal,
+  findDraftProposalByWriter,
   transitionToWithdrawn,
 } from "../../storage/proposal-repository.js";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import { resolveDocPathUnderContent, InvalidDocPathError } from "../../storage/path-utils.js";
-import { access } from "node:fs/promises";
+import { access, copyFile, mkdir, readdir } from "node:fs/promises";
+import path from "node:path";
 import {
   evaluateProposalHumanInvolvement,
   commitProposalToCanonical,
@@ -163,19 +164,18 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
     return makeToolErrorResult(`Source document not found: ${source}`);
   }
 
-  // Load source skeleton and collect all sections with body content
+  // Load source skeleton to collect heading paths for proposal metadata
   const sourceSkeleton = await DocumentSkeleton.fromDisk(source, canonicalContentRoot, canonicalContentRoot);
   if (sourceSkeleton.isEmpty) {
     return makeToolErrorResult(`Source document not found: ${source}`);
   }
-  const subtree = await sourceSkeleton.collectSubtree([]);
   const headingPaths: string[][] = [];
   sourceSkeleton.forEachSection((_h, _l, _sf, hp) => {
     headingPaths.push([...hp]);
   });
 
   // Auto-withdraw any existing pending proposal
-  const existing = await findPendingProposalByWriter(writer.id);
+  const existing = await findDraftProposalByWriter(writer.id);
   if (existing) {
     await transitionToWithdrawn(existing.id, "auto-withdrawn by move");
   }
@@ -189,36 +189,29 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
   const intent = ctx.session.pendingIntent ?? `Move ${source} → ${destination}`;
   ctx.session.pendingIntent = undefined;
 
-  const { id: moveProposalId, contentRoot } = await createProposal(
+  const { id: moveProposalId, contentRoot } = await createTransientProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     intent,
     proposalSections,
   );
 
   // Write tombstone at source path
-  const tombstone = DocumentSkeleton.createTombstone(source, contentRoot, canonicalContentRoot);
+  const tombstone = DocumentSkeleton.createTombstone(source, contentRoot);
   await tombstone.persist();
 
-  // Copy content to destination path using skeleton API
-  const destSkeleton = DocumentSkeleton.createEmpty(destination, contentRoot);
-  for (const entry of subtree) {
-    if (entry.headingPath.length === 0) continue; // root handled by createEmpty
-    destSkeleton.insertSectionUnder(entry.headingPath.slice(0, -1), {
-      heading: entry.heading,
-      level: entry.level,
-      body: entry.bodyContent,
-    });
-  }
-  await destSkeleton.persist();
+  // Copy canonical skeleton file verbatim to overlay destination path
+  const normalizedSrc = source.replace(/\\/g, "/").replace(/^\/+/, "");
+  const normalizedDest = destination.replace(/\\/g, "/").replace(/^\/+/, "");
+  const canonicalSrcSkeletonPath = path.resolve(canonicalContentRoot, ...normalizedSrc.split("/"));
+  const overlaySrcSectionsDir = `${canonicalSrcSkeletonPath}.sections`;
+  const overlayDestSkeletonPath = path.resolve(contentRoot, ...normalizedDest.split("/"));
+  const overlayDestSectionsDir = `${overlayDestSkeletonPath}.sections`;
 
-  // Write body files to proposal overlay
-  const destContentLayer = new ContentLayer(contentRoot);
-  for (const entry of subtree) {
-    await destContentLayer.writeSection(
-      new SectionRef(destination, entry.headingPath),
-      entry.bodyContent,
-    );
-  }
+  await mkdir(path.dirname(overlayDestSkeletonPath), { recursive: true });
+  await copyFile(canonicalSrcSkeletonPath, overlayDestSkeletonPath);
+
+  // Recursively copy canonical source.sections/ to overlay dest.sections/
+  await copyDirectoryRecursive(overlaySrcSectionsDir, overlayDestSectionsDir);
 
   // Evaluate human involvement
   const { evaluation, sections } = await evaluateProposalHumanInvolvement(moveProposalId);
@@ -239,6 +232,8 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
         source: "agent_proposal",
         writer_id: writer.id,
         writer_display_name: writer.displayName,
+        writer_type: writer.type,
+        seconds_ago: 0,
       });
     }
 
@@ -262,7 +257,7 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
     return jsonToolResult({
       success: false,
       proposal_id: moveProposalId,
-      status: "pending",
+      status: "draft",
       outcome: "blocked",
       blocked_sections: blockedSections,
       message: "Some sections are contested by human editors. The move proposal has been saved as pending.",
@@ -308,43 +303,28 @@ async function writeDocumentViaProposal(
     heading_path: string[];
   }> = [];
 
-  // We need to create the proposal first (to get contentRoot), then write content.
-  // Build initial proposal sections from first pass — will be exact after write.
-  const initialSections: Array<{
-    doc_path: string;
-    heading_path: string[];
-  }> = files.map(f => ({ doc_path: f.path, heading_path: [] }));
-
   // Check for existing pending proposal and auto-withdraw
-  const existing = await findPendingProposalByWriter(writer.id);
+  const existing = await findDraftProposalByWriter(writer.id);
   if (existing) {
     await transitionToWithdrawn(existing.id, "auto-withdrawn by new write");
   }
 
-  // Create proposal with initial sections
-  const { id: writeProposalId, contentRoot } = await createProposal(
+  // Create proposal (sections updated after write)
+  const { id: writeProposalId, contentRoot } = await createTransientProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     intent,
-    initialSections,
   );
 
-  // Write each file through writeAssembledDocument which normalizes sections
+  // Write each file through importMarkdownDocument which normalizes sections
   const fContentLayer = new ContentLayer(contentRoot, new ContentLayer(canonicalContentRoot));
   for (const file of files) {
-    const targets = await fContentLayer.writeAssembledDocument(file.path, file.content);
+    const targets = await fContentLayer.importMarkdownDocument(file.path, file.content);
     allSectionTargets.push(...targets);
   }
 
   // Update proposal sections to match the actual normalized structure
-  if (allSectionTargets.length > initialSections.length ||
-      allSectionTargets.some((t, i) =>
-        !initialSections[i] ||
-        t.doc_path !== initialSections[i].doc_path ||
-        JSON.stringify(t.heading_path) !== JSON.stringify(initialSections[i].heading_path),
-      )) {
-    const { updateProposalSections } = await import("../../storage/proposal-repository.js");
-    await updateProposalSections(writeProposalId, allSectionTargets);
-  }
+  const { updateProposalSections } = await import("../../storage/proposal-repository.js");
+  await updateProposalSections(writeProposalId, allSectionTargets);
 
   const { evaluation, sections } = await evaluateProposalHumanInvolvement(writeProposalId);
 
@@ -366,6 +346,8 @@ async function writeDocumentViaProposal(
         source: "agent_proposal",
         writer_id: writer.id,
         writer_display_name: writer.displayName,
+        writer_type: writer.type,
+        seconds_ago: 0,
       });
     }
 
@@ -388,7 +370,7 @@ async function writeDocumentViaProposal(
     return jsonToolResult({
       success: false,
       proposal_id: writeProposalId,
-      status: "pending",
+      status: "draft",
       outcome: "blocked",
       blocked_sections: blockedSections,
       message: "Some sections are contested by human editors. The proposal has been saved as pending. You can modify it via the proposal API or wait for the contention to resolve.",
@@ -438,7 +420,7 @@ async function deleteDocumentViaProposal(
   });
 
   // Auto-withdraw any existing pending proposal by this writer
-  const existing = await findPendingProposalByWriter(writer.id);
+  const existing = await findDraftProposalByWriter(writer.id);
   if (existing) {
     await transitionToWithdrawn(existing.id, "auto-withdrawn by new delete");
   }
@@ -449,14 +431,14 @@ async function deleteDocumentViaProposal(
     heading_path: hp,
   }));
 
-  const { id: delProposalId, contentRoot } = await createProposal(
+  const { id: delProposalId, contentRoot } = await createTransientProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     `Delete document: ${docPath}`,
     proposalSections,
   );
 
   // Write tombstone skeleton to proposal overlay
-  const tombstone = DocumentSkeleton.createTombstone(docPath, contentRoot, canonicalContentRoot);
+  const tombstone = DocumentSkeleton.createTombstone(docPath, contentRoot);
   await tombstone.persist();
 
   // Evaluate human involvement
@@ -478,6 +460,8 @@ async function deleteDocumentViaProposal(
         source: "agent_proposal",
         writer_id: writer.id,
         writer_display_name: writer.displayName,
+        writer_type: writer.type,
+        seconds_ago: 0,
       });
     }
 
@@ -501,7 +485,7 @@ async function deleteDocumentViaProposal(
     return jsonToolResult({
       success: false,
       proposal_id: delProposalId,
-      status: "pending",
+      status: "draft",
       outcome: "blocked",
       blocked_sections: blockedSections,
       message: "Some sections are contested by human editors. The delete proposal has been saved as pending.",
@@ -614,6 +598,28 @@ export function registerFilesystemTools(registry: ToolRegistry): void {
     moveFileHandler,
   );
 
+}
+
+// ─── Helpers ─────────────────────────────────────────────
+
+async function copyDirectoryRecursive(srcDir: string, destDir: string): Promise<void> {
+  let entries;
+  try {
+    entries = await readdir(srcDir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return; // No sections dir is valid
+    throw err;
+  }
+  await mkdir(destDir, { recursive: true });
+  for (const entry of entries) {
+    const srcPath = path.join(srcDir, entry.name);
+    const destPath = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      await copyDirectoryRecursive(srcPath, destPath);
+    } else {
+      await copyFile(srcPath, destPath);
+    }
+  }
 }
 
 export function registerPlanChangesTool(registry: ToolRegistry): void {

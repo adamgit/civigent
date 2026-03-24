@@ -10,7 +10,7 @@ const pendingProposal: AnyProposal = {
   kind: "agent_write",
   writer: { id: "agent-1", type: "agent", displayName: "Agent Alpha" },
   intent: "Improve overview",
-  status: "pending",
+  status: "draft",
   sections: [
     {
       doc_path: "ops/strategy.md",
@@ -67,7 +67,7 @@ describe("ProposalDetailPage actions", () => {
     vi.restoreAllMocks();
   });
 
-  it("'Recommit' button calls commitProposal for pending proposals", async () => {
+  it("'Recommit' button calls commitProposal for draft proposals", async () => {
     renderDetail("prop-1");
     await waitFor(() => {
       expect(screen.getByText("Recommit")).toBeDefined();
@@ -84,7 +84,7 @@ describe("ProposalDetailPage actions", () => {
     });
   });
 
-  it("'Withdraw' button calls withdrawProposal for pending proposals", async () => {
+  it("'Withdraw' button calls withdrawProposal for draft proposals", async () => {
     renderDetail("prop-1");
     await waitFor(() => {
       expect(screen.getByText("Withdraw")).toBeDefined();

@@ -36,7 +36,7 @@ describe("Proposal single-pending invariant", () => {
       });
 
     expect(first.status).toBe(201);
-    expect(first.body.status).toBe("pending");
+    expect(first.body.status).toBe("draft");
 
     // Second proposal without replace — should be rejected
     const second = await request(ctx.app)
@@ -77,7 +77,7 @@ describe("Proposal single-pending invariant", () => {
       });
 
     expect(first.status).toBe(201);
-    expect(first.body.status).toBe("pending");
+    expect(first.body.status).toBe("draft");
 
     const second = await request(ctx.app)
       .post("/api/proposals?replace=true")
@@ -159,7 +159,7 @@ describe("Proposal single-pending invariant", () => {
       });
 
     expect(first.status).toBe(201);
-    expect(first.body.status).toBe("pending");
+    expect(first.body.status).toBe("draft");
 
     // Commit the first proposal via commit_proposal
     const commitRes = await request(ctx.app)

@@ -9,13 +9,7 @@ function formatTs(ts: number): string {
 
 function StatusBadge({ ok }: { ok: boolean }) {
   return (
-    <span
-      className={`inline-block text-[11px] px-2 py-0.5 rounded-full font-medium ${
-        ok
-          ? "bg-green-100 text-green-700"
-          : "bg-red-100 text-red-700"
-      }`}
-    >
+    <span className={`pill ${ok ? "pill-green" : "pill-red"}`}>
       {ok ? "ok" : "error"}
     </span>
   );
@@ -23,7 +17,7 @@ function StatusBadge({ ok }: { ok: boolean }) {
 
 function KVRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-baseline gap-4 px-4 py-2 border-b border-[#f0ede8] last:border-0">
+    <div className="flex items-baseline gap-4 px-4 py-2 border-b border-footer-border last:border-0">
       <span className="text-[12px] font-medium text-text-muted w-48 shrink-0">{label}</span>
       <span className="text-[13px] text-text-primary">{children}</span>
     </div>
@@ -33,7 +27,7 @@ function KVRow({ label, children }: { label: string; children: React.ReactNode }
 function HistoryRow({ entry }: { entry: SnapshotRunRecord }) {
   if (entry.type === "server_start") {
     return (
-      <div className="grid grid-cols-[180px_90px_70px_90px_90px_1fr] gap-x-4 items-center px-4 py-2 border-b border-[#f0ede8] last:border-0 text-[12px]">
+      <div className="grid grid-cols-[180px_90px_70px_90px_90px_1fr] gap-x-4 items-center px-4 py-2 border-b border-footer-border last:border-0 text-[12px]">
         <span className="text-text-muted font-mono">{formatTs(entry.timestamp)}</span>
         <span className="italic text-text-muted">server started</span>
         <span />
@@ -44,7 +38,7 @@ function HistoryRow({ entry }: { entry: SnapshotRunRecord }) {
     );
   }
   return (
-    <div className="grid grid-cols-[180px_90px_70px_90px_90px_1fr] gap-x-4 items-start px-4 py-2 border-b border-[#f0ede8] last:border-0 text-[12px]">
+    <div className="grid grid-cols-[180px_90px_70px_90px_90px_1fr] gap-x-4 items-start px-4 py-2 border-b border-footer-border last:border-0 text-[12px]">
       <span className="text-text-muted font-mono">{formatTs(entry.timestamp)}</span>
       <span className="text-text-secondary">snapshot</span>
       <span className="tabular-nums">
@@ -148,7 +142,7 @@ export function SnapshotsPage() {
           <>
             {/* Current State */}
             <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white mb-4">
-              <div className="px-4 py-2.5 border-b border-[#f0ede8] bg-[#faf8f5]">
+              <div className="px-4 py-2.5 border-b border-footer-border bg-[#faf8f5]">
                 <div className="text-[13px] font-semibold text-text-primary">Current State</div>
                 <div className="text-[11px] text-text-muted">Live counts from disk</div>
               </div>
@@ -178,7 +172,7 @@ export function SnapshotsPage() {
 
             {/* History */}
             <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white">
-              <div className="px-4 py-2.5 border-b border-[#f0ede8] bg-[#faf8f5]">
+              <div className="px-4 py-2.5 border-b border-footer-border bg-[#faf8f5]">
                 <div className="text-[13px] font-semibold text-text-primary">History</div>
                 <div className="text-[11px] text-text-muted">In-memory only — oldest entry is server start</div>
               </div>

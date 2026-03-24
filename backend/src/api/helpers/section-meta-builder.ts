@@ -27,7 +27,7 @@ export interface SectionInvolvementMeta {
   crdt_session_active: boolean;
   section_length_warning: boolean;
   word_count: number;
-  last_human_editor?: { name: string; timestampMs: number };
+  last_editor?: { id: string; name: string; timestampMs: number; type: "human" | "agent"; seconds_ago: number };
 }
 
 /**
@@ -73,6 +73,7 @@ export async function buildSectionInvolvementMeta(
       const lengthWarning = wordCount > SECTION_LENGTH_WARNING_THRESHOLD;
 
       const commitInfo = commitByHeading.get(headingKey);
+      const nowMs = Date.now();
       result.set(headingKey, {
         humanInvolvement_score: verdict.humanInvolvement_score,
         crdt_session_active: SectionPresence.checkLiveSessionOnly(
@@ -80,8 +81,14 @@ export async function buildSectionInvolvementMeta(
         ),
         section_length_warning: lengthWarning,
         word_count: wordCount,
-        last_human_editor: commitInfo
-          ? { name: commitInfo.authorName, timestampMs: commitInfo.timestampMs }
+        last_editor: commitInfo
+          ? {
+              id: commitInfo.writerId,
+              name: commitInfo.authorName,
+              timestampMs: commitInfo.timestampMs,
+              type: "human",
+              seconds_ago: Math.max(0, (nowMs - commitInfo.timestampMs) / 1000),
+            }
           : undefined,
       });
     } catch (err: any) {

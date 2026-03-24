@@ -28,7 +28,7 @@ describe("POST /api/proposals/:id/cancel — cancel proposal", () => {
         ],
       });
 
-    expect(pendingRes.body.status).toBe("pending");
+    expect(pendingRes.body.status).toBe("draft");
     pendingProposalId = pendingRes.body.proposal_id;
 
     // Create an agent proposal that auto-commits
@@ -88,7 +88,7 @@ describe("POST /api/proposals/:id/cancel — cancel proposal", () => {
         ],
       });
 
-    expect(createRes.body.status).toBe("pending");
+    expect(createRes.body.status).toBe("draft");
 
     const res = await request(ctx.app)
       .post(`/api/proposals/${createRes.body.proposal_id}/cancel`)
@@ -125,7 +125,7 @@ describe("POST /api/proposals/:id/cancel — cancel proposal", () => {
         ],
       });
 
-    expect(createRes.body.status).toBe("pending");
+    expect(createRes.body.status).toBe("draft");
 
     const res = await request(ctx.app)
       .post(`/api/proposals/${createRes.body.proposal_id}/cancel`)

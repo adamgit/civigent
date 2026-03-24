@@ -35,13 +35,14 @@ export type ImportResponse = CreateProposalResponse;
 export interface ImportStagingInfo {
   import_id: string;
   staging_path: string;
-  created_at: string;
 }
 
 export interface ImportStagingFile {
   path: string;
   is_markdown: boolean;
   section_count: number;
+  is_internal_artifact: boolean;
+  rejection_reason: string | null;
 }
 
 export interface ImportDetailResponse {

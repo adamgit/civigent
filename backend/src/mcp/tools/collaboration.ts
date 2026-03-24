@@ -12,7 +12,7 @@ import { makeToolErrorResult } from "../protocol.js";
 import { readAssembledDocument, DocumentNotFoundError } from "../../storage/document-reader.js";
 import { readDocumentsTree } from "../../storage/documents-tree.js";
 import { readSectionWithHeading, SectionNotFoundError } from "../../storage/section-reader.js";
-import { getContentRoot, getDataRoot, getSessionDocsRoot } from "../../storage/data-root.js";
+import { getContentRoot, getDataRoot, getSessionDocsContentRoot } from "../../storage/data-root.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import {
@@ -27,7 +27,7 @@ import {
   readProposal,
   readProposalWithContent,
   listProposals,
-  findPendingProposalByWriter,
+  findDraftProposalByWriter,
   updateProposalSections,
   transitionToWithdrawn,
   ProposalNotFoundError,
@@ -132,7 +132,7 @@ const readDocStructureHandler: ToolHandler = async (args, ctx) => {
   if (!structReadOk) return makeToolErrorResult(`Permission denied: you do not have read access to "${docPath}".`);
 
   try {
-    const sessionDocsContentRoot = path.join(getSessionDocsRoot(), "content");
+    const sessionDocsContentRoot = getSessionDocsContentRoot();
     const structure = await readDocumentStructureWithOverlay(docPath, sessionDocsContentRoot);
 
     // Broadcast agent:reading
@@ -245,7 +245,7 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
   const writer = ctx.writer;
 
   // Check for existing pending proposal
-  const existing = await findPendingProposalByWriter(writer.id);
+  const existing = await findDraftProposalByWriter(writer.id);
   if (existing) {
     const replaceFlag = args.replace as boolean | undefined;
     if (replaceFlag) {
@@ -311,7 +311,7 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
   // Broadcast proposal:created so frontends show the pending indicator
   if (ctx.emitEvent && evaluatedSections.length > 0) {
     ctx.emitEvent({
-      type: "proposal:pending",
+      type: "proposal:draft",
       proposal_id: mcpProposalId,
       doc_path: evaluatedSections[0].doc_path,
       heading_paths: evaluatedSections.map((s) => s.heading_path),
@@ -324,7 +324,7 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
   const outcome = evaluation.all_sections_accepted ? "accepted" : "blocked";
   return jsonToolResult({
     proposal_id: mcpProposalId,
-    status: "pending",
+    status: "draft",
     outcome,
     ...(outcome === "blocked" ? {
       block_reason: deriveBlockReason(evaluation),
@@ -347,7 +347,7 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
     if (proposal.writer.id !== ctx.writer.id) {
       return makeToolErrorResult("You can only commit your own proposals.");
     }
-    if (proposal.status !== "pending") {
+    if (proposal.status !== "draft") {
       return makeToolErrorResult(`Cannot commit proposal in ${proposal.status} state.`);
     }
 
@@ -382,6 +382,8 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
           source: "agent_proposal",
           writer_id: ctx.writer.id,
           writer_display_name: ctx.writer.displayName,
+          writer_type: ctx.writer.type,
+          seconds_ago: 0,
         });
       }
 
@@ -401,7 +403,7 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
 
       return jsonToolResult({
         proposal_id: proposalId,
-        status: "pending",
+        status: "draft",
         outcome: "blocked",
         block_reason: deriveBlockReason(evaluation),
         per_section_threshold: INVOLVEMENT_THRESHOLD,
@@ -455,7 +457,7 @@ const cancelProposalHandler: ToolHandler = async (args, ctx) => {
 
 const listProposalsHandler: ToolHandler = async (args) => {
   const status = args.status as string | undefined;
-  const validStatuses = ["pending", "committed", "withdrawn"];
+  const validStatuses = ["draft", "committed", "withdrawn"];
 
   if (status && !validStatuses.includes(status)) {
     return makeToolErrorResult(`Invalid status filter. Must be one of: ${validStatuses.join(", ")}`);
@@ -469,7 +471,7 @@ const listProposalsHandler: ToolHandler = async (args) => {
 
 const myProposalsHandler: ToolHandler = async (args, ctx) => {
   const status = args.status as string | undefined;
-  const validStatuses = ["pending", "committed", "withdrawn"];
+  const validStatuses = ["draft", "committed", "withdrawn"];
 
   if (status && !validStatuses.includes(status)) {
     return makeToolErrorResult(`Invalid status filter. Must be one of: ${validStatuses.join(", ")}`);
@@ -491,7 +493,7 @@ const readProposalHandler: ToolHandler = async (args) => {
 
     // Re-evaluate human-involvement for pending/committing proposals
     let evaluation: import("../../types/shared.js").ProposalHumanInvolvementEvaluation | undefined;
-    if (proposal.status === "pending" || proposal.status === "committing") {
+    if (proposal.status === "draft" || proposal.status === "committing") {
       const result = await evaluateProposalHumanInvolvement(proposalId);
       evaluation = result.evaluation;
     }
@@ -546,7 +548,7 @@ const writeSectionHandler: ToolHandler = async (args, ctx) => {
     if (proposal.writer.id !== ctx.writer.id) {
       return makeToolErrorResult("You can only modify your own proposals.");
     }
-    if (proposal.status !== "pending") {
+    if (proposal.status !== "draft") {
       return makeToolErrorResult(`Cannot modify proposal in ${proposal.status} state.`);
     }
 
@@ -569,10 +571,10 @@ const writeSectionHandler: ToolHandler = async (args, ctx) => {
     const wContentLayer = new ContentLayer(updContentRoot);
     await wContentLayer.writeSection(new SectionRef(docPath, headingPath), content);
 
-    // Broadcast proposal:pending with updated sections
+    // Broadcast proposal:draft with updated sections
     if (ctx.emitEvent && updated.sections.length > 0) {
       ctx.emitEvent({
-        type: "proposal:pending",
+        type: "proposal:draft",
         proposal_id: updated.id,
         doc_path: updated.sections[0].doc_path,
         heading_paths: updated.sections.map((s) => s.heading_path),
@@ -586,7 +588,7 @@ const writeSectionHandler: ToolHandler = async (args, ctx) => {
 
     return jsonToolResult({
       proposal_id: proposalId,
-      status: "pending",
+      status: "draft",
       evaluation,
       sections,
     });

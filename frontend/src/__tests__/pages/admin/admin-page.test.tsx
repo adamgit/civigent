@@ -11,7 +11,7 @@ const sampleProposals: AnyProposal[] = [
     kind: "agent_write",
     writer: { id: "agent-1", type: "agent", displayName: "Agent A" },
     intent: "Update docs",
-    status: "pending",
+    status: "draft",
     sections: [],
     created_at: "2026-01-01T00:00:00.000Z",
   },
@@ -99,7 +99,7 @@ describe("AdminPage", () => {
     await waitFor(() => {
       expect(screen.getByText(/Proposals total: 3/)).toBeDefined();
     });
-    expect(screen.getByText(/Pending proposals: 1/)).toBeDefined();
+    expect(screen.getByText(/Draft proposals: 1/)).toBeDefined();
     expect(screen.getByText(/Committed proposals: 1/)).toBeDefined();
     expect(screen.getByText(/Withdrawn proposals: 1/)).toBeDefined();
   });

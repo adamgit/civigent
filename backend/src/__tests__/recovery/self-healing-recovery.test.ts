@@ -189,22 +189,21 @@ describe("Self-healing Recovery", () => {
     expect(result.sessionFilesRecovered).toBeGreaterThan(0);
   });
 
-  // ── Test: empty overlay skeleton does not mask canonical ──
+  // ── Test: empty overlay skeleton is a valid tombstone (signals document deletion) ──
 
-  it("empty overlay skeleton throws corruption error instead of masking canonical", async () => {
+  it("empty overlay skeleton is treated as tombstone (isEmpty=true, no error)", async () => {
     await createSampleDocument(ctx.rootDir);
 
     const contentRoot = join(ctx.rootDir, "content");
     const overlayRoot = join(ctx.rootDir, "sessions", "docs", "content");
     const overlayDocDir = join(overlayRoot, "ops");
 
-    // Write an empty overlay skeleton file (zero bytes)
+    // Write an empty overlay skeleton file (zero bytes) — this is a tombstone
     await mkdir(overlayDocDir, { recursive: true });
     await writeFile(join(overlayDocDir, "strategy.md"), "", "utf8");
 
     const { DocumentSkeleton } = await import("../../storage/document-skeleton.js");
-    await expect(
-      DocumentSkeleton.fromDisk(SAMPLE_DOC_PATH, overlayRoot, contentRoot),
-    ).rejects.toThrow("skeleton corruption");
+    const skeleton = await DocumentSkeleton.fromDisk(SAMPLE_DOC_PATH, overlayRoot, contentRoot);
+    expect(skeleton.isEmpty).toBe(true);
   });
 });

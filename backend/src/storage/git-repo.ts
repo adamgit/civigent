@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import { access } from "node:fs/promises";
+import { getContentGitPrefix } from "./data-root.js";
+import { parseSkeletonToEntries } from "./document-skeleton.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -62,7 +64,7 @@ export async function gitLogRecent(
     `--skip`, String(skip),
   ];
   if (opts.docPath) {
-    args.push("--", `content/${opts.docPath}`);
+    args.push("--", `${getContentGitPrefix()}/${opts.docPath}`);
   }
   let output: string;
   try {
@@ -185,4 +187,106 @@ export async function extractHistoricalTree(
     await mkdir(path.dirname(targetPath), { recursive: true });
     await writeFile(targetPath, content, "utf8");
   }
+}
+
+/**
+ * Attempt to read a file at a historical git commit.
+ * Returns null if the file does not exist in the tree at that SHA.
+ * Throws on any other error.
+ */
+async function gitShowFileOrNull(
+  dataRoot: string,
+  sha: string,
+  relativePath: string,
+): Promise<string | null> {
+  try {
+    return await gitShowFile(dataRoot, sha, relativePath);
+  } catch (err) {
+    const msg = (err as Error).message ?? "";
+    if (msg.includes("does not exist") || msg.includes("exists on disk, but not in")) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Recursively assemble sections from a skeleton file at a historical git commit.
+ * Returns assembled markdown parts and records any missing section files.
+ */
+async function assembleSkeletonFromGit(
+  dataRoot: string,
+  sha: string,
+  skeletonGitPath: string,
+  missingSections: string[],
+): Promise<string[]> {
+  const skeletonContent = await gitShowFileOrNull(dataRoot, sha, skeletonGitPath);
+  if (skeletonContent === null) {
+    missingSections.push(skeletonGitPath);
+    return [];
+  }
+
+  const entries = parseSkeletonToEntries(skeletonContent);
+  const sectionsPrefix = skeletonGitPath + ".sections/";
+  const parts: string[] = [];
+
+  for (const entry of entries) {
+    const bodyGitPath = sectionsPrefix + entry.sectionFile;
+    const bodyContent = await gitShowFileOrNull(dataRoot, sha, bodyGitPath);
+
+    if (bodyContent === null) {
+      missingSections.push(bodyGitPath);
+      continue;
+    }
+
+    // If the body file is itself a skeleton (contains {{section:}} markers), recurse
+    if (bodyContent.includes("{{section:")) {
+      const subParts = await assembleSkeletonFromGit(dataRoot, sha, bodyGitPath, missingSections);
+      parts.push(...subParts);
+      continue;
+    }
+
+    const isRoot = entry.level === 0 && entry.heading === "";
+    if (isRoot) {
+      const trimmed = bodyContent.replace(/^\n+/, "").replace(/\n+$/, "");
+      if (trimmed) parts.push(trimmed);
+    } else {
+      const headingLine = `${"#".repeat(entry.level)} ${entry.heading}`;
+      const trimmed = bodyContent.replace(/^\n+/, "").replace(/\n+$/, "");
+      parts.push(trimmed ? `${headingLine}\n\n${trimmed}\n` : `${headingLine}\n`);
+    }
+  }
+
+  return parts;
+}
+
+/**
+ * Assemble a full document from a historical git commit entirely in-memory.
+ *
+ * Reads the skeleton and all section body files from git (no filesystem writes).
+ * Handles sub-skeletons recursively.
+ *
+ * Returns content (assembled markdown) and missingSections (list of git paths
+ * that were referenced by the skeleton but absent from the tree at that SHA —
+ * indicates a corrupt historical commit).
+ *
+ * Throws DocumentNotFoundError if the document skeleton did not exist at that SHA.
+ */
+export async function assembleDocumentAtCommit(
+  dataRoot: string,
+  sha: string,
+  docPath: string,
+): Promise<{ content: string; missingSections: string[] }> {
+  const { DocumentNotFoundError } = await import("./content-layer.js");
+  const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  const skeletonGitPath = `${getContentGitPrefix()}/${normalized}`;
+
+  const skeletonContent = await gitShowFileOrNull(dataRoot, sha, skeletonGitPath);
+  if (skeletonContent === null) {
+    throw new DocumentNotFoundError(`Document "${docPath}" does not exist at commit ${sha}`);
+  }
+
+  const missingSections: string[] = [];
+  const parts = await assembleSkeletonFromGit(dataRoot, sha, skeletonGitPath, missingSections);
+  return { content: parts.join("\n"), missingSections };
 }
