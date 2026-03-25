@@ -24,6 +24,7 @@ import {
   encodeAwarenessUpdate,
   applyAwarenessUpdate,
 } from "y-protocols/awareness";
+import type { RestoreNotificationPayload } from "../types/shared";
 
 // ─── Protocol constants (must match backend/src/ws/crdt-sync.ts) ───
 
@@ -38,6 +39,7 @@ const MSG_ACTIVITY_PULSE = 7;
 const MSG_STRUCTURE_WILL_CHANGE = 8;
 const MSG_SECTION_MUTATE = 9;
 const MSG_MUTATE_RESULT = 10;
+const MSG_RESTORE_NOTIFICATION = 0x0B;
 
 /** Debounce interval for ACTIVITY_PULSE messages (ms). */
 const PULSE_DEBOUNCE_MS = 2500;
@@ -75,6 +77,11 @@ export interface CrdtProviderEvents {
   /** Fired when a local Y.Doc update is sent to the server (user keystroke).
    *  Receives the set of fragment keys (shared type names) that were modified. */
   onLocalUpdate?: (modifiedFragmentKeys: string[]) => void;
+  /** Fired when the server closes this socket with code 4022 (document restored).
+   *  The provider reconnects immediately (backoff reset). */
+  onSessionReinit?: () => void;
+  /** Fired once, after onSynced on the post-restore reconnection, with the banner payload. */
+  onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
 }
 
 // ─── Provider ──────────────────────────────────────────────────────
@@ -104,6 +111,7 @@ export class CrdtProvider {
   private lastShareSize = 0;
   private afterTxnHandler: ((txn: Y.Transaction) => void) | null = null;
   private pendingMutateResolve: ((result: { success: boolean; error?: string }) => void) | null = null;
+  private pendingRestoreNotification: RestoreNotificationPayload | null = null;
 
   constructor(
     doc: Y.Doc,
@@ -277,6 +285,9 @@ export class CrdtProvider {
     }
 
     this.ws.onopen = () => {
+      // Reset sync state and pending notification on every new connection.
+      this.synced = false;
+      this.pendingRestoreNotification = null;
       this.reconnectAttempts = 0;
       this.setState("connected");
       this.sendSyncStep1();
@@ -303,6 +314,15 @@ export class CrdtProvider {
     this.ws.onclose = (event: CloseEvent) => {
       this.ws = null;
       this.synced = false;
+
+      if (event.code === 4022) {
+        // Document restored — reconnect immediately (no exponential backoff).
+        this.reconnectAttempts = 0;
+        this.events.onSessionReinit?.();
+        this.openWebSocket();
+        return;
+      }
+
       if (event.code === 4001) {
         this.setState("disconnected");
         return;
@@ -353,6 +373,11 @@ export class CrdtProvider {
           this.synced = true;
           this.events.onSynced?.();
         }
+        if (this.pendingRestoreNotification) {
+          const n = this.pendingRestoreNotification;
+          this.pendingRestoreNotification = null;
+          this.events.onRestoreNotification?.(n);
+        }
         break;
       }
       case MSG_YJS_UPDATE: {
@@ -392,6 +417,11 @@ export class CrdtProvider {
           this.pendingMutateResolve(result);
           this.pendingMutateResolve = null;
         }
+        break;
+      }
+      case MSG_RESTORE_NOTIFICATION: {
+        const json = new TextDecoder().decode(payload);
+        this.pendingRestoreNotification = JSON.parse(json) as RestoreNotificationPayload;
         break;
       }
       default:

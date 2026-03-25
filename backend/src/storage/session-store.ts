@@ -269,9 +269,8 @@ export interface CommitSessionResult {
 }
 
 export async function commitSessionFilesToCanonical(
-  writer: WriterIdentity,
+  contributors: WriterIdentity[],
   docPath?: string,
-  coAuthors?: Array<{ name: string; email: string }>,
 ): Promise<CommitSessionResult> {
   const contentRoot = getContentRoot();
   const sessionDocsContentRoot = getSessionDocsContentRoot();
@@ -306,11 +305,14 @@ export async function commitSessionFilesToCanonical(
     return { sectionsCommitted: 0, committedSections: [], skeletonErrors };
   }
 
-  let commitMessage = `human edit: ${writer.displayName}\n\nWriter: ${writer.id}`;
-  if (coAuthors && coAuthors.length > 0) {
-    commitMessage += "\n" + coAuthors.map((a) => `Co-authored-by: ${a.name} <${a.email}>`).join("\n");
+  const [primaryWriter, ...coWriters] = contributors;
+  let commitMessage = `human edit: ${primaryWriter.displayName}\n\nWriter: ${primaryWriter.id}`;
+  if (coWriters.length > 0) {
+    commitMessage += "\n" + coWriters
+      .map((w) => `Co-authored-by: ${w.displayName} <${w.email ?? `${w.id}@knowledge-store.local`}>`)
+      .join("\n");
   }
-  const author = { name: writer.displayName, email: writer.email || "human@knowledge-store.local" };
+  const author = { name: primaryWriter.displayName, email: primaryWriter.email ?? "human@knowledge-store.local" };
 
   const store = new CanonicalStore(contentRoot, getDataRoot());
   // When committing a single doc, filter to only that doc's files so other writers'

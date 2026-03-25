@@ -75,6 +75,7 @@ export type {
   CatalogChangedEvent,
   BlameLineAttribution,
   BlameResponse,
+  RestoreNotificationPayload,
 } from "../../../sharedlibs/shared-types/src/index.js";
 
 export {

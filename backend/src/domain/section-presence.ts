@@ -18,7 +18,7 @@
 import { access } from "node:fs/promises";
 import path from "node:path";
 import { SectionRef } from "./section-ref.js";
-import { lookupDocSession } from "../crdt/ydoc-lifecycle.js";
+import { lookupDocSession, countEditorSockets } from "../crdt/ydoc-lifecycle.js";
 import { getSessionDocsContentRoot } from "../storage/data-root.js";
 import { resolveHeadingPathUnderRoot } from "../storage/heading-resolver.js";
 import { resolveAllSectionPaths } from "../storage/heading-resolver.js";
@@ -140,9 +140,9 @@ export class SectionPresence {
    */
   private static checkLiveSession(ref: SectionRef): boolean {
     const session = lookupDocSession(ref.docPath);
-    if (!session || session.holders.size === 0) return false;
+    if (!session || countEditorSockets(session) === 0) return false;
 
-    for (const [, focusedPath] of session.sectionFocus.entries()) {
+    for (const [, focusedPath] of session.presenceManager.getAll().entries()) {
       if (ref.matchesHeadingPath(focusedPath)) {
         return true;
       }

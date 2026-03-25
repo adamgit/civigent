@@ -20,6 +20,7 @@ import type { Awareness } from "y-protocols/awareness";
 import {
   sectionHeadingKey,
   type DocStructureNode,
+  type RestoreNotificationPayload,
 } from "../types/shared.js";
 import {
   type DocumentSection,
@@ -82,6 +83,9 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const [loadDurationMs, setLoadDurationMs] = useState<number | null>(null);
   const loadStartedAtRef = useRef<number | null>(null);
 
+  // ── Restore banner state ─────────────────────────────────
+  const [restoreBanner, setRestoreBanner] = useState<RestoreNotificationPayload | null>(null);
+
   // ── Metadata state ───────────────────────────────────────
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [lastVisitSeed, setLastVisitSeed] = useState<{ docPath: string; since: string | null } | null>(null);
@@ -90,6 +94,8 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
   // ── Observer CRDT (read-only live sync for non-editing viewers) ──
   const observerRef = useRef<ObserverCrdtProvider | null>(null);
+  // Ref so startObserver (defined before useDocumentCrdt) can call stopEditing.
+  const stopEditingRef = useRef<(() => void) | null>(null);
 
   // ── Load sections ────────────────────────────────────────
   const loadSections = useCallback(async (docPath: string) => {
@@ -114,25 +120,29 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     if (observerRef.current) return; // already observing
     const observer = new ObserverCrdtProvider(docPath, {
       onChange: () => {
-        // Convert each Y.Doc fragment to markdown and update sections state
-        const currentSections = sectionsRef.current;
-        if (currentSections.length === 0) return;
+        // Use functional updater to avoid stale-closure overwrite: if a content:committed
+        // event triggers setSections(freshSections) and onChange fires before the next
+        // render updates sectionsRef, reading sectionsRef.current here would overwrite the
+        // fresh REST data. The updater always receives the latest committed state.
         const ydoc = observer.doc;
-        let changed = false;
-        const updated = currentSections.map((section) => {
-          const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path.length === 0);
-          try {
-            const md = fragmentToMarkdown(ydoc, fk);
-            if (md !== section.content) {
-              changed = true;
-              return { ...section, content: md };
+        setSections((current) => {
+          if (current.length === 0) return current;
+          let changed = false;
+          const updated = current.map((section) => {
+            const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path.length === 0);
+            try {
+              const md = fragmentToMarkdown(ydoc, fk);
+              if (md !== null && md !== section.content) {
+                changed = true;
+                return { ...section, content: md };
+              }
+            } catch {
+              // Fragment not yet in Y.Doc — keep existing content
             }
-          } catch {
-            // Fragment not yet in Y.Doc — keep existing content
-          }
-          return section;
+            return section;
+          });
+          return changed ? updated : current;
         });
-        if (changed) setSections(updated);
       },
       onSessionEnded: () => {
         // Editing session ended — fall back to REST content
@@ -142,6 +152,12 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
       onStructureWillChange: () => {
         // Structure changed — reload sections from REST to get new skeleton
         if (docPath) loadSections(docPath);
+      },
+      onSessionReinit: () => {
+        stopEditingRef.current?.();
+      },
+      onRestoreNotification: (payload) => {
+        setRestoreBanner(payload);
       },
     });
     observerRef.current = observer;
@@ -202,13 +218,59 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     loadSections,
     startObserver,
     stopObserver,
+    onRestoreNotification: (payload) => setRestoreBanner(payload),
   });
+
+  // Wire stopEditing into the ref so startObserver's onSessionReinit can call it.
+  stopEditingRef.current = stopEditing;
 
   // Ref for sections (used by observer and transferService)
   const sectionsRef = useRef<DocumentSection[]>([]);
   useEffect(() => {
     sectionsRef.current = sections;
   }, [sections]);
+
+  // ── Injected sections state (proposal injection visual affordance) ─
+  // Separate from recentlyChangedSections — different visual, different trigger.
+  const [injectedSections, setInjectedSections] = useState<
+    Map<string, { writerDisplayName: string; injectedAtMs: number; sectionLabel: string }>
+  >(new Map());
+
+  const onSectionsInjectedByProposal = useCallback((headingPaths: string[][], writerDisplayName: string) => {
+    const injectedAtMs = Date.now();
+    setInjectedSections((prev) => {
+      const next = new Map(prev);
+      for (const hp of headingPaths) {
+        const key = sectionHeadingKey(hp);
+        const sectionLabel = headingPathToLabel(hp);
+        next.set(key, { writerDisplayName, injectedAtMs, sectionLabel });
+      }
+      return next;
+    });
+    // Clear each entry after 5 seconds — only if injectedAtMs still matches
+    // (rapid successive injections don't cancel each other).
+    for (const hp of headingPaths) {
+      const key = sectionHeadingKey(hp);
+      setTimeout(() => {
+        setInjectedSections((prev) => {
+          const entry = prev.get(key);
+          if (!entry || entry.injectedAtMs !== injectedAtMs) return prev;
+          const next = new Map(prev);
+          next.delete(key);
+          return next;
+        });
+      }, 5000);
+    }
+  }, []);
+
+  // Derive injectedByLabel: Map<sectionLabel, writerDisplayName>
+  const injectedByLabel = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const { sectionLabel, writerDisplayName } of injectedSections.values()) {
+      map.set(sectionLabel, writerDisplayName);
+    }
+    return map;
+  }, [injectedSections]);
 
   // ── WebSocket hook ────────────────────────────────────────
   const {
@@ -234,6 +296,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     setDeletionPlaceholders,
     setStructureTree,
     loadSections,
+    onSectionsInjectedByProposal,
   });
 
   // Derived
@@ -427,6 +490,27 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         isEditing={isEditing}
       />
 
+      {/* Restore banner — shown after a document restore while the user was connected */}
+      {restoreBanner && (
+        <div className="restore-banner">
+          <span>
+            Document restored to <code>{restoreBanner.restored_sha}</code> by{" "}
+            {restoreBanner.restored_by_display_name}.
+            {restoreBanner.pre_commit_sha && restoreBanner.your_dirty_heading_paths && (
+              <> Your edits to{" "}
+                <em>
+                  {restoreBanner.your_dirty_heading_paths
+                    .map((p) => p[p.length - 1])
+                    .join(", ")}
+                </em>
+                {" "}were committed as <code>{restoreBanner.pre_commit_sha}</code>.
+              </>
+            )}
+          </span>
+          <button onClick={() => setRestoreBanner(null)}>×</button>
+        </div>
+      )}
+
       {/* Document-level connection banner — visible only during transport failures */}
       {isEditing && crdtState === "reconnecting" ? (
         <div className="bg-amber-50 border-b border-amber-200 px-4 py-1.5 text-xs text-amber-800 font-medium">
@@ -590,6 +674,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
                     isInProposal={!!(proposalMode && proposalSectionsRef.current.has(`${decodedDocPath}::${sectionKey}`))}
                     isLockedByOtherHuman={!!(section as any).blocked}
                     highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
+                    injectedByWriter={injectedByLabel.get(sectionLabel) ?? null}
                     hasRemotePresence={presenceIndicators.some((p) => p.sectionKey === sectionKey)}
                     dragOverSectionIndex={dragOverSectionIndex}
                     crdtProvider={crdtProvider}

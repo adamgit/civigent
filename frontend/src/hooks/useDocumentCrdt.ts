@@ -4,7 +4,7 @@ import { apiClient } from "../services/api-client";
 import { CrdtProvider, type CrdtConnectionState, type StructureWillChangePayload } from "../services/crdt-provider";
 import { ObserverCrdtProvider } from "../services/observer-crdt-provider";
 import { fragmentToMarkdown } from "../services/fragment-to-markdown";
-import { sectionHeadingKey, sectionGlobalKey } from "../types/shared.js";
+import { sectionHeadingKey, sectionGlobalKey, type RestoreNotificationPayload } from "../types/shared.js";
 import { type MilkdownEditorHandle } from "../components/MilkdownEditor";
 import {
   type SectionPersistenceState,
@@ -26,6 +26,7 @@ export interface UseDocumentCrdtParams {
   loadSections: (docPath: string) => Promise<void>;
   startObserver: (docPath: string) => void;
   stopObserver: () => void;
+  onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
 }
 
 // ─── Hook return type ─────────────────────────────────────────────
@@ -85,6 +86,7 @@ export function useDocumentCrdt({
   loadSections,
   startObserver,
   stopObserver,
+  onRestoreNotification,
 }: UseDocumentCrdtParams): UseDocumentCrdtReturn {
 
   // ── State ─────────────────────────────────────────────────
@@ -316,6 +318,12 @@ export function useDocumentCrdt({
               return next;
             });
           }
+        },
+        onSessionReinit: () => {
+          stopEditing();
+        },
+        onRestoreNotification: (payload) => {
+          onRestoreNotification?.(payload);
         },
         onIdleTimeout: () => {
           stopEditing();

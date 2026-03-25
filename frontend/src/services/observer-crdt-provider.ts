@@ -14,6 +14,7 @@
  */
 
 import * as Y from "yjs";
+import type { RestoreNotificationPayload } from "../types/shared";
 
 // ─── Protocol constants (must match backend/src/ws/crdt-sync.ts) ───
 
@@ -22,6 +23,7 @@ const MSG_SYNC_STEP_2 = 1;
 const MSG_YJS_UPDATE = 2;
 const MSG_SESSION_FLUSHED = 4;
 const MSG_STRUCTURE_WILL_CHANGE = 8;
+const MSG_RESTORE_NOTIFICATION = 0x0B;
 
 /** Debounce interval for onChange callbacks (ms). */
 const CHANGE_DEBOUNCE_MS = 100;
@@ -36,7 +38,12 @@ export type ObserverConnectionState =
 
 export interface ObserverCrdtProviderEvents {
   onStateChange?: (state: ObserverConnectionState) => void;
-  /** Fired (debounced ~100ms) when the Y.Doc is updated by an editor. */
+  /** Fired exactly once when the initial SYNC_STEP_2 completes and the Y.Doc is
+   *  fully populated. Use this for the first render rather than onChange so that
+   *  fragmentToMarkdown is never called against an empty/incomplete doc. */
+  onSynced?: () => void;
+  /** Fired (debounced ~100ms) when the Y.Doc is updated by an editor.
+   *  Only fires after the initial sync has completed (synced === true). */
   onChange?: () => void;
   /** Server confirmed fragments were flushed to disk. */
   onSessionFlushed?: () => void;
@@ -44,12 +51,22 @@ export interface ObserverCrdtProviderEvents {
   onStructureWillChange?: (restructures: Array<{ oldKey: string; newKeys: string[] }>) => void;
   /** Editing session ended — observer should fall back to REST content. */
   onSessionEnded?: () => void;
+  /** Fired when the server closes this socket with code 4022 (document restored).
+   *  The provider reconnects immediately (backoff reset). */
+  onSessionReinit?: () => void;
+  /** Fired once, after onSynced on the post-restore reconnection, with the banner payload. */
+  onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
 }
 
 // ─── Provider ──────────────────────────────────────────────────────
 
 export class ObserverCrdtProvider {
   readonly doc: Y.Doc;
+
+  private _synced: boolean = false;
+  /** True once SYNC_STEP_2 has been received and applied. Safe to call
+   *  fragmentToMarkdown only when this is true. */
+  get synced(): boolean { return this._synced; }
 
   private ws: WebSocket | null = null;
   private _state: ObserverConnectionState = "disconnected";
@@ -61,6 +78,7 @@ export class ObserverCrdtProvider {
   private reconnectAttempts = 0;
   private destroyed = false;
   private changeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingRestoreNotification: RestoreNotificationPayload | null = null;
 
   constructor(
     docPath: string,
@@ -122,6 +140,9 @@ export class ObserverCrdtProvider {
     }
 
     this.ws.onopen = () => {
+      // Reset sync state and pending notification on every new connection.
+      this._synced = false;
+      this.pendingRestoreNotification = null;
       this.reconnectAttempts = 0;
       this.setState("connected");
       // Send sync step 1 so server can respond with current Y.Doc state
@@ -136,6 +157,14 @@ export class ObserverCrdtProvider {
 
     this.ws.onclose = (event: CloseEvent) => {
       this.ws = null;
+
+      if (event.code === 4022) {
+        // Document restored — reconnect immediately (no exponential backoff).
+        this.reconnectAttempts = 0;
+        this.events.onSessionReinit?.();
+        this.openWebSocket();
+        return;
+      }
 
       if (event.code === 4021) {
         // Session ended — notify frontend to fall back to REST content
@@ -175,6 +204,15 @@ export class ObserverCrdtProvider {
       }
       case MSG_SYNC_STEP_2: {
         Y.applyUpdate(this.doc, payload);
+        if (!this._synced) {
+          this._synced = true;
+          this.events.onSynced?.();
+        }
+        if (this.pendingRestoreNotification) {
+          const n = this.pendingRestoreNotification;
+          this.pendingRestoreNotification = null;
+          this.events.onRestoreNotification?.(n);
+        }
         this.scheduleOnChange();
         break;
       }
@@ -193,10 +231,16 @@ export class ObserverCrdtProvider {
         this.events.onStructureWillChange?.(restructures);
         break;
       }
+      case MSG_RESTORE_NOTIFICATION: {
+        const json = new TextDecoder().decode(payload);
+        this.pendingRestoreNotification = JSON.parse(json) as RestoreNotificationPayload;
+        break;
+      }
     }
   }
 
   private scheduleOnChange(): void {
+    if (!this._synced) return;
     if (this.changeDebounceTimer) return;
     this.changeDebounceTimer = setTimeout(() => {
       this.changeDebounceTimer = null;

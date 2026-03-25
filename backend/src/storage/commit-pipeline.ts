@@ -26,6 +26,15 @@ import {
 import { isSnapshotGenerationEnabled, scheduleSnapshotRegeneration } from "./snapshot.js";
 import { CanonicalStore } from "./canonical-store.js";
 
+// ─── Post-commit hook ────────────────────────────────────────────
+
+export interface PostCommitMeta { proposalId: string; writerDisplayName: string; }
+type PostCommitHook = (docPath: string, headingPaths: string[][], meta: PostCommitMeta) => Promise<void>;
+let _postCommitHook: PostCommitHook | null = null;
+export function setPostCommitHook(cb: PostCommitHook): void { _postCommitHook = cb; }
+
+// ─────────────────────────────────────────────────────────────────
+
 export interface EvaluationResult {
   evaluation: ProposalHumanInvolvementEvaluation;
   sections: EvaluatedSection[];
@@ -58,6 +67,7 @@ export async function commitProposalToCanonical(
   proposalId: ProposalId,
   scores: SectionScoreSnapshot,
   diagnostics?: string[],
+  options: { skipCrdtInjection?: boolean } = {},
 ): Promise<string> {
   const proposal = await readProposal(proposalId);
   const dataRoot = getDataRoot();
@@ -82,6 +92,21 @@ export async function commitProposalToCanonical(
 
     // Transition to committed
     await transitionToCommitted(proposal.id, headSha, scores);
+
+    // Fire post-commit hook for each affected document (CRDT injection).
+    // Errors propagate — the commit is already durable in git and FSM;
+    // a 500 from the route handler is correct behaviour for injection failure.
+    if (_postCommitHook && !options.skipCrdtInjection) {
+      const byDoc = new Map<string, string[][]>();
+      for (const s of proposal.sections) {
+        if (!byDoc.has(s.doc_path)) byDoc.set(s.doc_path, []);
+        byDoc.get(s.doc_path)!.push(s.heading_path);
+      }
+      const meta: PostCommitMeta = { proposalId: proposal.id, writerDisplayName: proposal.writer.displayName };
+      for (const [docPath, headingPaths] of byDoc) {
+        await _postCommitHook(docPath, headingPaths, meta);
+      }
+    }
 
     if (isSnapshotGenerationEnabled()) {
       const docPaths = new Set(proposal.sections.map((s) => s.doc_path));

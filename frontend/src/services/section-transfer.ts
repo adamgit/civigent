@@ -173,6 +173,9 @@ export class SectionTransferService {
 
       // Step 3: Read target section's current markdown
       const targetMarkdown = this._readSectionMarkdown(transfer.targetFragmentKey);
+      if (targetMarkdown === null) {
+        return { success: false, error: "Target section not yet synced — drop cancelled", sourceModified: false, targetModified: false };
+      }
 
       // Step 4: Insert dropped content at the specified offset (default: end)
       const offset = transfer.insertionOffset ?? targetMarkdown.length;
@@ -197,6 +200,14 @@ export class SectionTransferService {
       let sourceModified = false;
       if (transfer.deleteFromSource && transfer.sourceFragmentKey) {
         const sourceMarkdown = this._readSectionMarkdown(transfer.sourceFragmentKey);
+        if (sourceMarkdown === null) {
+          return {
+            success: true,
+            error: "Source section not yet synced — content may be duplicated in source section",
+            sourceModified: false,
+            targetModified: true,
+          };
+        }
         const capturedIdx = sourceMarkdown.indexOf(markdown);
         if (capturedIdx < 0) {
           return {
@@ -238,8 +249,8 @@ export class SectionTransferService {
 
   // ─── Private helpers ───────────────────────────────────
 
-  /** Read current section markdown from the local Y.Doc. */
-  private _readSectionMarkdown(fragmentKey: string): string {
+  /** Read current section markdown from the local Y.Doc. Returns null if not yet synced. */
+  private _readSectionMarkdown(fragmentKey: string): string | null {
     return fragmentToMarkdown(this.deps.crdtProvider.doc, fragmentKey);
   }
 

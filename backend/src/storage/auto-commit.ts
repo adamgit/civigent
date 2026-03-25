@@ -9,7 +9,7 @@
  * There is NO periodic timer. Commits only happen on the above triggers.
  */
 
-import { getAllSessions, type DocSession } from "../crdt/ydoc-lifecycle.js";
+import { getAllSessions, lookupDocSession, type DocSession } from "../crdt/ydoc-lifecycle.js";
 import { FragmentStore } from "../crdt/fragment-store.js";
 import { fragmentKeyFromSectionFile } from "../crdt/ydoc-fragments.js";
 
@@ -80,35 +80,16 @@ export async function commitDirtySections(
     return { committed: false, sectionsPublished: [] };
   }
 
-  // Collect co-authors: other writers who have dirty fragments overlapping committed sections
-  const committedFragmentKeys = new Set<string>();
-  for (const section of sectionsToCommit) {
-    for (const [, session] of sessions) {
-      if (session.docPath !== section.doc_path) continue;
-      try {
-        const entry = session.fragments.skeleton.resolve(section.heading_path);
-        committedFragmentKeys.add(FragmentStore.fragmentKeyFor(entry));
-      } catch { /* section not in skeleton — skip */ }
-    }
-  }
-
-  const coAuthors: Array<{ name: string; email: string }> = [];
-  const seenCoAuthorIds = new Set<string>();
+  // Build contributors: primary writer + any session contributors (writers who sent activity pulses).
+  const contributors: WriterIdentity[] = [writer];
+  const seenContributorIds = new Set([writer.id]);
   for (const [, session] of sessions) {
-    for (const [otherWriterId, dirtySet] of session.perUserDirty) {
-      if (otherWriterId === writer.id) continue;
-      if (seenCoAuthorIds.has(otherWriterId)) continue;
-      // Check if any of this writer's dirty fragments overlap committed sections
-      for (const fk of dirtySet) {
-        if (committedFragmentKeys.has(fk)) {
-          seenCoAuthorIds.add(otherWriterId);
-          const identity = session.holders.get(otherWriterId);
-          coAuthors.push({
-            name: identity?.displayName ?? otherWriterId,
-            email: identity?.email ?? `${otherWriterId}@knowledge-store.local`,
-          });
-          break;
-        }
+    if (!session.holders.has(writer.id)) continue;
+    if (docPath && session.docPath !== docPath) continue;
+    for (const [contribId, contribIdentity] of session.contributors) {
+      if (!seenContributorIds.has(contribId)) {
+        seenContributorIds.add(contribId);
+        contributors.push(contribIdentity);
       }
     }
   }
@@ -116,7 +97,7 @@ export async function commitDirtySections(
   // Flush ensures disk is current. Commit from disk (handles skeleton promotion).
   let commitSha: string | undefined;
   for (const dp of new Set(sectionsToCommit.map((s) => s.doc_path))) {
-    const result = await commitSessionFilesToCanonical(writer, dp, coAuthors);
+    const result = await commitSessionFilesToCanonical(contributors, dp);
     if (result.sectionsCommitted > 0) {
       await cleanupSessionFiles(dp);
       if (result.commitSha) {
@@ -177,6 +158,7 @@ export async function commitDirtySections(
       writer_id: writer.id,
       writer_display_name: writer.displayName,
       writer_type: writer.type,
+      contributor_ids: contributors.map((c) => c.id),
       seconds_ago: 0,
     });
 
@@ -209,6 +191,75 @@ export async function commitDirtySections(
   return { committed: true, commitSha, sectionsPublished };
 }
 
+// ─── PreemptiveCommitResult ───────────────────────────────────────
+
+export interface PreemptiveCommitResult {
+  committedSha: string;
+  affectedWriters: Array<{ writerId: string; dirtyHeadingPaths: string[][] }>;
+}
+
+/**
+ * Flush, normalise, and commit a document's live session before a restore replaces
+ * its canonical content.
+ *
+ * Returns null if no live session exists or if the session has no dirty content.
+ * Throws if the commit does not produce a git commit SHA (restore must not proceed
+ * with a failed pre-commit).
+ *
+ * Does NOT emit hub events — the caller (restore route + invalidateSessionForRestore)
+ * delivers notifications via MSG_RESTORE_NOTIFICATION.
+ */
+export async function preemptiveFlushAndCommit(
+  docPath: string,
+): Promise<PreemptiveCommitResult | null> {
+  const session = lookupDocSession(docPath);
+  if (!session) return null;
+
+  // No dirty content — nothing to commit.
+  if (session.fragments.dirtyKeys.size === 0) return null;
+
+  // Build affectedWriters BEFORE normalization alters the key set.
+  const affectedWriters: Array<{ writerId: string; dirtyHeadingPaths: string[][] }> = [];
+  for (const [writerId, dirtySet] of session.perUserDirty) {
+    if (dirtySet.size === 0) continue;
+    const dirtyHeadingPaths: string[][] = [];
+    session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+      const isRoot = level === 0 && heading === "";
+      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
+      if (dirtySet.has(fragmentKey)) {
+        dirtyHeadingPaths.push([...headingPath]);
+      }
+    });
+    affectedWriters.push({ writerId, dirtyHeadingPaths });
+  }
+
+  // Normalise all dirty fragments (snapshot Set before iterating — normalisation adds new keys).
+  const dirtySnapshot = new Set(session.fragments.dirtyKeys);
+  for (const key of dirtySnapshot) {
+    await session.fragments.normalizeStructure(key);
+  }
+
+  // Flush the normalised content to disk.
+  await flushDocSessionToDisk(session);
+
+  // Commit session files to canonical. Use contributors for correct git attribution.
+  const result = await commitSessionFilesToCanonical(
+    Array.from(session.contributors.values()),
+    docPath,
+  );
+  if (result.sectionsCommitted === 0 || !result.commitSha) {
+    throw new Error(
+      `preemptiveFlushAndCommit: commit for "${docPath}" produced no result ` +
+      `(sectionsCommitted=${result.sectionsCommitted}, commitSha=${result.commitSha ?? "null"})`,
+    );
+  }
+
+  // Remove session overlay so reconnecting clients load canonical (restored) content.
+  await cleanupSessionFiles(docPath);
+
+  return { committedSha: result.commitSha, affectedWriters };
+}
+
 /**
  * Commit all dirty sessions and orphaned disk files. Used at shutdown.
  *
@@ -232,7 +283,7 @@ export async function commitAllDirtySessions(): Promise<void> {
     displayName: "Shutdown Auto-Commit",
   };
 
-  const result = await commitSessionFilesToCanonical(writer);
+  const result = await commitSessionFilesToCanonical([writer]);
   if (result.sectionsCommitted > 0) {
     await cleanupSessionFiles();
   }

@@ -577,3 +577,58 @@ a {
   pointer-events: none;
   user-select: none;
 }
+
+/* ── Proposal injection flash — distinct from content:committed green highlight ── */
+
+@keyframes section-injected-flash {
+  from { background-color: rgba(251, 191, 36, 0.20); }
+  to   { background-color: transparent; }
+}
+
+.section-injected-flash {
+  animation: section-injected-flash 3s ease-out forwards;
+}
+
+@keyframes section-injected-msg-fade {
+  from { opacity: 0.85; }
+  to   { opacity: 0; }
+}
+
+.section-injected-msg {
+  animation: section-injected-msg-fade 3s ease-out forwards;
+  position: absolute;
+  right: -4px;
+  top: 4px;
+  transform: translateX(100%);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  color: var(--color-text-secondary);
+}
+
+/* ─── Restore banner ─────────────────────────────────────────────── */
+
+.restore-banner {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  background: #fef3c7;
+  border-bottom: 1px solid #f59e0b;
+  font-size: 13px;
+}
+.restore-banner code {
+  font-family: monospace;
+  font-size: 12px;
+}
+.restore-banner button {
+  margin-left: 12px;
+  background: none;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  color: #92400e;
+}

@@ -102,7 +102,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
           const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path.length === 0);
           try {
             const md = fragmentToMarkdown(ydoc, fk);
-            if (md !== section.content) {
+            if (md !== null && md !== section.content) {
               changed = true;
               return { ...section, content: md };
             }
@@ -526,6 +526,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       isInProposal={!!(proposalMode && proposalSectionsRef.current.has(`${decodedDocPath}::${sectionKey}`))}
                       isLockedByOtherHuman={!!(section as any).blocked}
                       highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
+                      injectedByWriter={null}
                       hasRemotePresence={presenceIndicatorsRef.current.some((p) => p.sectionKey === sectionKey)}
                       dragOverSectionIndex={dragOverSectionIndex}
                       crdtProvider={crdtProvider}

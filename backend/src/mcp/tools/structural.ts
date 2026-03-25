@@ -21,7 +21,7 @@ import { getContentRoot } from "../../storage/data-root.js";
 import { DocumentSkeleton } from "../../storage/document-skeleton.js";
 import { DocumentNotFoundError } from "../../storage/document-reader.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
-import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
+import { lookupDocSession, countEditorSockets } from "../../crdt/ydoc-lifecycle.js";
 import {
   readProposal,
   updateProposalSections,
@@ -73,7 +73,7 @@ function isError(result: unknown): result is McpToolCallResult {
 function checkDocSessionGuard(docPath: string): McpToolCallResult | null {
   const session = lookupDocSession(docPath);
   if (!session) return null;
-  if (session.holders.size > 0) {
+  if (countEditorSockets(session) > 0) {
     return makeToolErrorResult(
       `Cannot modify document structure: active editing session exists on "${docPath}".`,
     );

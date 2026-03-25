@@ -233,6 +233,7 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
         writer_id: writer.id,
         writer_display_name: writer.displayName,
         writer_type: writer.type,
+        contributor_ids: [writer.id],
         seconds_ago: 0,
       });
     }
@@ -347,6 +348,7 @@ async function writeDocumentViaProposal(
         writer_id: writer.id,
         writer_display_name: writer.displayName,
         writer_type: writer.type,
+        contributor_ids: [writer.id],
         seconds_ago: 0,
       });
     }
@@ -461,6 +463,7 @@ async function deleteDocumentViaProposal(
         writer_id: writer.id,
         writer_display_name: writer.displayName,
         writer_type: writer.type,
+        contributor_ids: [writer.id],
         seconds_ago: 0,
       });
     }

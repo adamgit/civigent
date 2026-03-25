@@ -487,6 +487,9 @@ export interface ContentCommittedEvent {
   writer_id: string;
   writer_display_name: string;
   writer_type: WriterType;
+  /** All writer IDs who contributed edits during this session. Used by frontends
+   *  to clear dirty/persistence state for all participants, not just the committer. */
+  contributor_ids: string[];
   seconds_ago: number;
 }
 
@@ -564,6 +567,14 @@ export interface CatalogChangedEvent {
   type: "catalog:changed";
 }
 
+export interface ProposalInjectedIntoSessionEvent {
+  type: "proposal:injected_into_session";
+  doc_path: string;
+  proposal_id: string;
+  writer_display_name: string;
+  heading_paths: string[][];
+}
+
 export type WsServerEvent =
   | ContentCommittedEvent
   | DirtyChangedEvent
@@ -575,7 +586,8 @@ export type WsServerEvent =
   | DocRenamedEvent
   | ProposalDraftEvent
   | ProposalWithdrawnEvent
-  | CatalogChangedEvent;
+  | CatalogChangedEvent
+  | ProposalInjectedIntoSessionEvent;
 
 // ─── WebSocket Client Messages ─────────────────────────────────────
 
@@ -660,4 +672,16 @@ export interface BlameLineAttribution {
 
 export interface BlameResponse {
   lines: BlameLineAttribution[];
+}
+
+// ─── Restore Notification ─────────────────────────────────────────
+
+export interface RestoreNotificationPayload {
+  /** 7-char short SHA of the restore commit. */
+  restored_sha: string;
+  restored_by_display_name: string;
+  /** SHA of the pre-emptive commit made before restore; null if the client had no dirty state. */
+  pre_commit_sha: string | null;
+  /** Heading paths this writer had dirty; null if not an affected writer. */
+  your_dirty_heading_paths: string[][] | null;
 }

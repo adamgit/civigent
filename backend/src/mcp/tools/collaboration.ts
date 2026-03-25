@@ -383,6 +383,7 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
           writer_id: ctx.writer.id,
           writer_display_name: ctx.writer.displayName,
           writer_type: ctx.writer.type,
+          contributor_ids: [ctx.writer.id],
           seconds_ago: 0,
         });
       }

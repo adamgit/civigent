@@ -21,6 +21,7 @@ export type {
   DocRenamedEvent,
   DocStructureChangedEvent,
   ProposalDraftEvent,
+  ProposalInjectedIntoSessionEvent,
   ProposalWithdrawnEvent,
   DocStructureNode,
   DocumentTreeEntry,
@@ -80,6 +81,7 @@ export type {
   CatalogChangedEvent,
   BlameLineAttribution,
   BlameResponse,
+  RestoreNotificationPayload,
 } from "../../../sharedlibs/shared-types/src/index.js";
 
 export {

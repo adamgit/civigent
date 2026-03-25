@@ -25,6 +25,13 @@ import {
   getBackendSchema,
 } from "./ydoc-fragments.js";
 
+// ─── Server injection origin ──────────────────────────────────────
+
+/** Unforgeable Symbol used to stamp server-authoritative Y.Doc mutations.
+ *  The afterTransaction guard checks txn.origin === SERVER_INJECTION_ORIGIN
+ *  to suppress dirty tracking for injected updates. */
+export const SERVER_INJECTION_ORIGIN = Symbol('server-injection');
+
 // ─── FromDisk result ─────────────────────────────────────────────
 
 export interface OrphanedBody {
@@ -151,15 +158,7 @@ export class FragmentStore {
         // Fallback: read from overlay/canonical (body-only files)
         const headingKey = SectionRef.headingKey([...headingPath]);
         const bodyContent = (bulkContent?.get(headingKey) ?? "").replace(/\n+$/, "");
-        if (isRoot) {
-          sectionContent = bodyContent;
-        } else {
-          // Prepend heading to body-only content to match fragment format
-          const headingLine = `${"#".repeat(level)} ${heading}`;
-          sectionContent = bodyContent.trim()
-            ? `${headingLine}\n\n${bodyContent}`
-            : headingLine;
-        }
+        sectionContent = FragmentStore.buildFragmentContent(bodyContent, level, heading);
       }
 
       const pmJson = markdownToJSON(sectionContent || "");
@@ -542,7 +541,7 @@ export class FragmentStore {
     const rootBody = (rootParsed?.body ?? "").replace(/\n+$/, "");
 
     // Update root fragment in Y.Doc with trimmed body
-    this.populateFragment(fragmentKey, rootBody);
+    this.populateFragment(fragmentKey, rootBody, SERVER_INJECTION_ORIGIN);
 
     // Write root raw fragment + canonical-ready
     await this.writeDualFormat(entry, rootBody, rootBody, ops);
@@ -563,7 +562,7 @@ export class FragmentStore {
       const fragmentContent = FragmentStore.buildFragmentContent(body, addedEntry.level, addedEntry.heading);
 
       // Create Y.Doc fragment for new section (heading+body)
-      this.populateFragment(newKey, fragmentContent);
+      this.populateFragment(newKey, fragmentContent, SERVER_INJECTION_ORIGIN);
 
       // Write raw fragment (heading+body) + canonical-ready (body-only)
       await this.writeDualFormat(addedEntry, fragmentContent, body, ops);
@@ -612,7 +611,7 @@ export class FragmentStore {
       const fragmentContent = FragmentStore.buildFragmentContent(body, addedEntry.level, addedEntry.heading);
 
       // Populate new Y.Doc fragment with heading+body
-      this.populateFragment(newKey, fragmentContent);
+      this.populateFragment(newKey, fragmentContent, SERVER_INJECTION_ORIGIN);
 
       await this.writeDualFormat(addedEntry, fragmentContent, body, ops);
 
@@ -663,7 +662,7 @@ export class FragmentStore {
       const body = section.body.replace(/\n+$/, "");
       const fragmentContent = FragmentStore.buildFragmentContent(body, addedEntry.level, addedEntry.heading);
 
-      this.populateFragment(newKey, fragmentContent);
+      this.populateFragment(newKey, fragmentContent, SERVER_INJECTION_ORIGIN);
       await this.writeDualFormat(addedEntry, fragmentContent, body, ops);
 
       if (newKey !== fragmentKey) {
@@ -720,7 +719,7 @@ export class FragmentStore {
     );
 
     // Rewrite Y.Doc fragment with heading at start
-    this.populateFragment(fragmentKey, fragmentContent);
+    this.populateFragment(fragmentKey, fragmentContent, SERVER_INJECTION_ORIGIN);
 
     await this.writeDualFormat(entry, fragmentContent, combinedBody, ops);
 
@@ -753,7 +752,7 @@ export class FragmentStore {
       const body = (realSections[bodyIdx]?.body ?? "").replace(/\n+$/, "");
       const fragmentContent = FragmentStore.buildFragmentContent(body, addedEntry.level, addedEntry.heading);
 
-      this.populateFragment(newKey, fragmentContent);
+      this.populateFragment(newKey, fragmentContent, SERVER_INJECTION_ORIGIN);
       await this.writeDualFormat(addedEntry, fragmentContent, body, ops);
 
       createdKeys.push(newKey);
@@ -832,7 +831,7 @@ export class FragmentStore {
       const mergedContent = existingContent.trim()
         ? existingContent.replace(/\n+$/, "") + "\n\n" + orphanedBody
         : orphanedBody;
-      this.populateFragment(parentKey, mergedContent);
+      this.populateFragment(parentKey, mergedContent, SERVER_INJECTION_ORIGIN);
 
       const parentRawMd = this.extractMarkdown(parentKey);
       const parentIsRoot = FragmentStore.isDocumentRoot(parentEntry);
@@ -902,29 +901,55 @@ export class FragmentStore {
     return jsonToMarkdown(pmJson as Record<string, unknown>);
   }
 
-  /** Clear all content from a Y.Doc fragment. */
-  private clearFragment(fragmentKey: string): void {
+  /** Clear all content from a Y.Doc fragment.
+   *  Pass origin (e.g. SERVER_INJECTION_ORIGIN) to stamp the transaction source. */
+  private clearFragment(fragmentKey: string, origin?: unknown): void {
     this.ydoc.transact(() => {
       const fragment = this.ydoc.getXmlFragment(fragmentKey);
       while (fragment.length > 0) {
         fragment.delete(0, 1);
       }
-    });
+    }, origin);
   }
 
-  /** Populate a Y.Doc fragment from markdown content (heading+body for non-root, body for root). */
-  populateFragment(fragmentKey: string, markdown: string): void {
+  /** Populate a Y.Doc fragment from markdown content (heading+body for non-root, body for root).
+   *  Pass origin (e.g. SERVER_INJECTION_ORIGIN) to stamp the transaction source. */
+  populateFragment(fragmentKey: string, markdown: string, origin?: unknown): void {
     const pmJson = markdownToJSON(markdown);
     const tempDoc = prosemirrorJSONToYDoc(getBackendSchema(), pmJson, fragmentKey);
-    Y.applyUpdate(this.ydoc, Y.encodeStateAsUpdate(tempDoc));
+    Y.applyUpdate(this.ydoc, Y.encodeStateAsUpdate(tempDoc), origin);
     tempDoc.destroy();
+  }
+
+  /**
+   * Reload a single section's Y.Doc fragment from canonical content on disk.
+   * Stamps the transaction with SERVER_INJECTION_ORIGIN so afterTransaction
+   * listeners do not attribute the update as a user edit (no dirty tracking).
+   * Does NOT call markDirty — this is server-authoritative content.
+   */
+  async reloadSectionFromCanonical(
+    headingPath: string[],
+    // ContentLayer is lazy-imported below to avoid the same circular-dependency
+    // issue that caused fromDisk to lazy-import it.
+    contentLayer: import("../storage/content-layer.js").ContentLayer,
+  ): Promise<void> {
+    const entry = this.skeleton.resolve(headingPath);
+    const isRoot = FragmentStore.isDocumentRoot(entry);
+    const fragmentKey = fragmentKeyFromSectionFile(entry.sectionFile, isRoot);
+    const body = (await contentLayer.readSection(new SectionRef(this.docPath, headingPath)) ?? "")
+      .replace(/\n+$/, "");
+    const markdown = FragmentStore.buildFragmentContent(body, entry.level, entry.heading);
+    // Clear existing content before repopulating — Y.applyUpdate merges rather than replaces,
+    // so without a clear the old and new content would both appear in the fragment.
+    this.clearFragment(fragmentKey, SERVER_INJECTION_ORIGIN);
+    this.populateFragment(fragmentKey, markdown, SERVER_INJECTION_ORIGIN);
   }
 
   /**
    * Build full fragment content (heading+body) for populating a non-root Y.Doc fragment.
    * Root fragments pass body directly (no heading to prepend).
    */
-  private static buildFragmentContent(body: string, level: number, heading: string): string {
+  static buildFragmentContent(body: string, level: number, heading: string): string {
     if (level === 0 && heading === "") return body;
     const headingLine = `${"#".repeat(level)} ${heading}`;
     return body.trim() ? `${headingLine}\n\n${body}` : headingLine;

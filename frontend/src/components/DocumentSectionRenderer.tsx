@@ -19,6 +19,7 @@ export interface DocumentSectionRendererProps {
   isInProposal: boolean;
   isLockedByOtherHuman: boolean;
   highlightLabel: string | null;
+  injectedByWriter: string | null;
   hasRemotePresence: boolean;
   dragOverSectionIndex: number | null;
   crdtProvider: CrdtProvider | null;
@@ -45,6 +46,7 @@ export function DocumentSectionRenderer({
   isInProposal,
   isLockedByOtherHuman,
   highlightLabel,
+  injectedByWriter,
   hasRemotePresence,
   dragOverSectionIndex,
   crdtProvider,
@@ -79,7 +81,7 @@ export function DocumentSectionRenderer({
           : hasRemotePresence
           ? `cursor-pointer hover:bg-section-hover border-l-blue-400`
           : `cursor-pointer hover:bg-section-hover border-l-transparent`
-      }${dragOverSectionIndex === i ? " section-drop-target" : ""}`}
+      }${dragOverSectionIndex === i ? " section-drop-target" : ""}${injectedByWriter ? " section-injected-flash" : ""}`}
       onMouseEnter={() => setHoveredSection(i)}
       onMouseLeave={() => setHoveredSection(null)}
       onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
@@ -89,6 +91,13 @@ export function DocumentSectionRenderer({
         void onStartEditing(i, { x: e.clientX, y: e.clientY });
       }}
     >
+      {/* Injection attribution — fading right-gutter message when a proposal injected this section */}
+      {injectedByWriter ? (
+        <span className="section-injected-msg">
+          Updated by {injectedByWriter}
+        </span>
+      ) : null}
+
       {/* Section body: editor or static preview */}
       {isRestructuring ? (
         <div className="py-3">

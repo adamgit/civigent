@@ -12,6 +12,7 @@ import {
   type PresenceDoneEvent,
   type PresenceEditingEvent,
   type ProposalDraftEvent,
+  type ProposalInjectedIntoSessionEvent,
   type ProposalWithdrawnEvent,
 } from "../types/shared.js";
 import {
@@ -43,6 +44,7 @@ export interface UseDocumentWebSocketParams {
   setDeletionPlaceholders: React.Dispatch<React.SetStateAction<DeletionPlaceholder[]>>;
   setStructureTree: React.Dispatch<React.SetStateAction<DocStructureNode[] | null>>;
   loadSections: (docPath: string) => Promise<void>;
+  onSectionsInjectedByProposal?: (headingPaths: string[][], writerDisplayName: string) => void;
 }
 
 // ─── Hook return type ─────────────────────────────────────────────
@@ -75,6 +77,7 @@ export function useDocumentWebSocket({
   setDeletionPlaceholders,
   setStructureTree,
   loadSections,
+  onSectionsInjectedByProposal,
 }: UseDocumentWebSocketParams): UseDocumentWebSocketReturn {
   const navigate = useNavigate();
 
@@ -130,7 +133,9 @@ export function useDocumentWebSocket({
 
         // Committed sections → clean in the persistence map
         const myWriterId = resolveWriterId();
-        if (committed.writer_id === myWriterId) {
+        const isMyCommit = committed.writer_id === myWriterId ||
+          (committed.contributor_ids?.includes(myWriterId) ?? false);
+        if (isMyCommit) {
           setSectionPersistence((prev) => {
             const next = new Map(prev);
             for (const s of committed.sections) {
@@ -335,6 +340,16 @@ export function useDocumentWebSocket({
         setPendingProposalIndicators((prev) =>
           prev.filter((ind) => ind.proposalId !== withdrawn.proposal_id),
         );
+        return;
+      }
+
+      // ── proposal:injected_into_session ──
+      if (event.type === "proposal:injected_into_session") {
+        const injected = event as ProposalInjectedIntoSessionEvent;
+        if (normalizeDocPath(injected.doc_path) !== normalizeDocPath(decodedDocPath)) return;
+        if (onSectionsInjectedByProposal) {
+          onSectionsInjectedByProposal(injected.heading_paths, injected.writer_display_name);
+        }
         return;
       }
     });

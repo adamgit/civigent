@@ -56,7 +56,10 @@ export const userFeatures = [
   "Documents can be restricted to specific user roles (e.g. 'legal-team', 'board-members')",
   "Server shows a friendly 'starting up' screen during crash recovery instead of broken pages",
   "Sign in via your organization's SSO provider (OIDC) — no passwords stored",
-  "First admin is bootstrapped via a one-time code printed to the server console"
+  "First admin is bootstrapped via a one-time code printed to the server console",
+  "Shared UI theme: consistent button, pill, input, and code styles applied across all pages",
+  "Import page: non-markdown files shown in amber, internal-format artifacts shown in red with explanatory tooltip",
+  "Document page: left gutter shows who last changed each section, with HUMAN / AI badge and live age",
 ];
 
 export const architectureFeatures = [

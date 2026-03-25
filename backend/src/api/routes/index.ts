@@ -62,7 +62,10 @@ import {
 import {
   getSessionsForWriter,
   lookupDocSession,
+  countEditorSockets,
+  invalidateSessionForRestore,
 } from "../../crdt/ydoc-lifecycle.js";
+import { preemptiveFlushAndCommit } from "../../storage/auto-commit.js";
 import { SectionGuard } from "../../domain/section-guard.js";
 import { readDocSectionCommitInfo, type SectionCommitInfo } from "../../storage/section-activity.js";
 import { SectionPresence } from "../../domain/section-presence.js";
@@ -668,11 +671,23 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         return;
       }
 
+      // Pre-commit any in-progress session before restore replaces canonical content.
+      const preCommitResult = await preemptiveFlushAndCommit(docPath);
+
       const { createRestoreProposal } = await import("../../storage/restore-service.js");
       const { proposal } = await createRestoreProposal(docPath, sha, writer);
 
-      // Human explicitly requested this restore — commit directly, no involvement evaluation.
-      const committedSha = await commitProposalToCanonical(proposal.id, {});
+      // Human explicitly requested this restore — commit directly, skip CRDT injection
+      // (restore changes the entire skeleton; injectAfterCommit would corrupt the Y.Doc).
+      const committedSha = await commitProposalToCanonical(proposal.id, {}, undefined, { skipCrdtInjection: true });
+
+      // Invalidate live session and notify connected clients.
+      await invalidateSessionForRestore(
+        docPath,
+        committedSha.slice(0, 7),
+        writer.displayName,
+        preCommitResult,
+      );
       res.json({ committed_sha: committedSha });
     } catch (error) {
       next(error);
@@ -723,7 +738,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       // Check for active CRDT sessions
       const docSession = lookupDocSession(docPath);
-      if (docSession && docSession.holders.size > 0) {
+      if (docSession && countEditorSockets(docSession) > 0) {
         sendApiError(res, 409, "Cannot rename document with active editing session.");
         return;
       }
@@ -1626,6 +1641,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
             writer_id: writer.id,
             writer_display_name: writer.displayName,
             writer_type: writer.type,
+            contributor_ids: [writer.id],
             seconds_ago: 0,
           });
         }
@@ -1669,6 +1685,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
             writer_id: writer.id,
             writer_display_name: writer.displayName,
             writer_type: writer.type,
+            contributor_ids: [writer.id],
             seconds_ago: 0,
           });
         }
@@ -2094,6 +2111,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
             writer_id: writer.id,
             writer_display_name: writer.displayName,
             writer_type: writer.type,
+            contributor_ids: [writer.id],
             seconds_ago: 0,
           });
         }
@@ -2141,6 +2159,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
               writer_id: writer.id,
               writer_display_name: writer.displayName,
               writer_type: writer.type,
+              contributor_ids: [writer.id],
               seconds_ago: 0,
             });
           }
@@ -2769,6 +2788,7 @@ function registerDocumentCatchAllRoutes(
             writer_id: writer.id,
             writer_display_name: writer.displayName,
             writer_type: writer.type,
+            contributor_ids: [writer.id],
             seconds_ago: 0,
           });
         }
