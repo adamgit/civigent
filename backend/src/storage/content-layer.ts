@@ -12,9 +12,9 @@
  *   // overlay.readSection() tries overlay root first, falls back to canonical
  */
 
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { DocumentSkeleton, type FlatEntry } from "./document-skeleton.js";
+import { DocumentSkeleton, DocumentSkeletonMutable, type FlatEntry, type ReplacementResult } from "./document-skeleton.js";
 import { ParsedDocument } from "./markdown-sections.js";
 import type { DocStructureNode } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
@@ -243,11 +243,11 @@ export class ContentLayer {
     const parsed = new ParsedDocument(markdown);
 
     // Load canonical skeleton for file-ID matching; empty skeleton for new docs
-    let canonicalSkeleton: DocumentSkeleton;
+    let canonicalSkeleton: DocumentSkeletonMutable;
     try {
-      canonicalSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
+      canonicalSkeleton = await DocumentSkeletonMutable.fromDisk(docPath, canonicalRoot, canonicalRoot);
     } catch {
-      canonicalSkeleton = DocumentSkeleton.createEmpty(docPath, canonicalRoot);
+      canonicalSkeleton = await DocumentSkeletonMutable.createEmpty(docPath, canonicalRoot);
     }
 
     // Build overlay skeleton — correct matching algorithm, no position fallback
@@ -421,5 +421,296 @@ export class ContentLayer {
     }
 
     return parts.join("\n");
+  }
+}
+
+// ─── OverlayContentLayer ────────────────────────────────────────
+
+/**
+ * OverlayContentLayer — skeleton-aware content layer with required canonical fallback.
+ *
+ * Owns skeleton loading (overlay-first-then-canonical), structural mutation,
+ * and content writes. Callers never see or touch DocumentSkeletonMutable.
+ *
+ * Skeleton instances are cached per docPath for the lifetime of this layer,
+ * so multiple writeSection + structural calls for the same document share
+ * one skeleton and don't redundantly read from disk.
+ */
+export class OverlayContentLayer {
+  readonly overlayRoot: string;
+  readonly canonicalRoot: string;
+  private skeletonCache = new Map<string, DocumentSkeletonMutable>();
+
+  constructor(overlayRoot: string, canonicalRoot: string) {
+    this.overlayRoot = overlayRoot;
+    this.canonicalRoot = canonicalRoot;
+  }
+
+  /**
+   * Load (or return cached) mutable skeleton for a document.
+   * Creates a new empty skeleton if the document doesn't exist.
+   */
+  private async loadSkeleton(docPath: string): Promise<DocumentSkeletonMutable> {
+    let skeleton = this.skeletonCache.get(docPath);
+    if (skeleton) return skeleton;
+
+    skeleton = await DocumentSkeletonMutable.fromDisk(docPath, this.overlayRoot, this.canonicalRoot);
+    if (skeleton.isEmpty) {
+      // New document — create with root section
+      skeleton = await DocumentSkeletonMutable.createEmpty(docPath, this.overlayRoot);
+    }
+    this.skeletonCache.set(docPath, skeleton);
+    return skeleton;
+  }
+
+  /**
+   * Write a section's body content. Auto-creates the document and any missing
+   * ancestor headings if they don't exist in the skeleton.
+   *
+   * Level for auto-created headings is parent.level + 1.
+   */
+  async writeSection(ref: SectionRef, content: string): Promise<void> {
+    const skeleton = await this.loadSkeleton(ref.docPath);
+
+    // Auto-create missing ancestor headings
+    await this.ensureHeadingPath(skeleton, ref.headingPath);
+
+    const entry = skeleton.resolve(ref.headingPath);
+    // Strip leading heading if it matches the skeleton entry
+    const body = stripMatchingHeading(content, entry.level, entry.heading);
+
+    await mkdir(path.dirname(entry.absolutePath), { recursive: true });
+    await writeFile(entry.absolutePath, body, "utf8");
+
+    // Persist skeleton if it was mutated by auto-creation
+    if (skeleton.dirty) {
+      await skeleton.persist();
+    }
+  }
+
+  /**
+   * Import a full assembled markdown document. Delegates to the same
+   * normalize-on-write path as ContentLayer.importMarkdownDocument.
+   */
+  async importMarkdownDocument(
+    docPath: string,
+    markdown: string,
+  ): Promise<Array<{ doc_path: string; heading_path: string[] }>> {
+    const parsed = new ParsedDocument(markdown);
+
+    // Load canonical skeleton for file-ID matching; empty skeleton for new docs
+    let canonicalSkeleton: DocumentSkeletonMutable;
+    try {
+      canonicalSkeleton = await DocumentSkeletonMutable.fromDisk(docPath, this.canonicalRoot, this.canonicalRoot);
+    } catch {
+      canonicalSkeleton = await DocumentSkeletonMutable.createEmpty(docPath, this.canonicalRoot);
+    }
+
+    const overlaySkeleton = canonicalSkeleton.buildOverlaySkeleton(parsed, this.overlayRoot);
+
+    const overlayPaths: string[] = [];
+    overlaySkeleton.forEachSection((_heading, _level, _sectionFile, _headingPath, absolutePath) => {
+      overlayPaths.push(absolutePath);
+    });
+
+    for (let i = 0; i < parsed.sections.length && i < overlayPaths.length; i++) {
+      const absolutePath = overlayPaths[i];
+      const trimmedBody = parsed.sections[i].body.replace(/\n+$/, "");
+      await mkdir(path.dirname(absolutePath), { recursive: true });
+      await writeFile(absolutePath, trimmedBody ? trimmedBody + "\n" : "", "utf8");
+    }
+
+    await overlaySkeleton.persist();
+    this.skeletonCache.set(docPath, overlaySkeleton);
+
+    return parsed.sectionTargets(docPath);
+  }
+
+  // ─── Structural mutations ─────────────────────────────────
+
+  /**
+   * Create a new section under parentPath. Writes an empty body file and
+   * updates the skeleton atomically (skeleton persisted after body write).
+   */
+  async createSection(
+    docPath: string,
+    parentPath: string[],
+    heading: string,
+    level: number,
+    body: string = "",
+  ): Promise<FlatEntry[]> {
+    const skeleton = await this.loadSkeleton(docPath);
+    const added = skeleton.insertSectionUnder(parentPath, { heading, level, body });
+
+    // Write body file for each added entry (may include root children for sub-skeletons)
+    for (const entry of added) {
+      if (!entry.isSubSkeleton) {
+        await mkdir(path.dirname(entry.absolutePath), { recursive: true });
+        await writeFile(entry.absolutePath, body, "utf8");
+      }
+    }
+
+    await skeleton.persist();
+    return added;
+  }
+
+  /**
+   * Delete a section by heading path. Removes the section from the skeleton
+   * and persists atomically.
+   */
+  async deleteSection(
+    docPath: string,
+    headingPath: string[],
+  ): Promise<ReplacementResult> {
+    const skeleton = await this.loadSkeleton(docPath);
+    const result = skeleton.replace(headingPath, []);
+    await skeleton.persist();
+    return result;
+  }
+
+  /**
+   * Move a section from one location to another.
+   * Removes from old location, inserts under new parent, preserves body content.
+   */
+  async moveSection(
+    docPath: string,
+    headingPath: string[],
+    newParentPath: string[],
+    newLevel: number,
+  ): Promise<{ removed: FlatEntry[]; added: FlatEntry[] }> {
+    const skeleton = await this.loadSkeleton(docPath);
+
+    // Read body content before removal
+    const entry = skeleton.resolve(headingPath);
+    let bodyContent = "";
+    try {
+      bodyContent = await readFile(entry.absolutePath, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+
+    // Remove from old position
+    const { removed } = skeleton.replace(headingPath, []);
+
+    // Insert at new position
+    const heading = headingPath[headingPath.length - 1];
+    const added = skeleton.insertSectionUnder(newParentPath, {
+      heading,
+      level: newLevel,
+      body: bodyContent,
+    });
+
+    // Write body file at new location
+    for (const addedEntry of added) {
+      if (!addedEntry.isSubSkeleton) {
+        await mkdir(path.dirname(addedEntry.absolutePath), { recursive: true });
+        await writeFile(addedEntry.absolutePath, bodyContent, "utf8");
+      }
+    }
+
+    await skeleton.persist();
+    return { removed, added };
+  }
+
+  /**
+   * Rename a section (change heading text). Preserves body content.
+   */
+  async renameSection(
+    docPath: string,
+    headingPath: string[],
+    newHeading: string,
+  ): Promise<ReplacementResult> {
+    const skeleton = await this.loadSkeleton(docPath);
+
+    // Read body content before replacement
+    const entry = skeleton.resolve(headingPath);
+    let bodyContent = "";
+    try {
+      bodyContent = await readFile(entry.absolutePath, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+
+    const result = skeleton.replace(headingPath, [{
+      heading: newHeading,
+      level: entry.level,
+      body: bodyContent,
+    }]);
+
+    // Write body file at new location
+    for (const addedEntry of result.added) {
+      if (!addedEntry.isSubSkeleton) {
+        await mkdir(path.dirname(addedEntry.absolutePath), { recursive: true });
+        await writeFile(addedEntry.absolutePath, bodyContent, "utf8");
+      }
+    }
+
+    await skeleton.persist();
+    return result;
+  }
+
+  /**
+   * Create a tombstone skeleton for document deletion.
+   */
+  async deleteDocument(docPath: string): Promise<void> {
+    await DocumentSkeleton.createTombstone(docPath, this.overlayRoot);
+    this.skeletonCache.delete(docPath);
+  }
+
+  // ─── Read methods (delegated to readonly paths) ───────────
+
+  async readSection(ref: SectionRef): Promise<string> {
+    const skeleton = await this.loadSkeleton(ref.docPath);
+    const entry = skeleton.resolve(ref.headingPath);
+    try {
+      return await readFile(entry.absolutePath, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      // Try canonical fallback
+      const canonicalSkeleton = await DocumentSkeleton.fromDisk(ref.docPath, this.canonicalRoot, this.canonicalRoot);
+      try {
+        const canonicalEntry = canonicalSkeleton.resolve(ref.headingPath);
+        return await readFile(canonicalEntry.absolutePath, "utf8");
+      } catch {
+        throw new SectionNotFoundError(
+          `Section not found: (${ref.docPath}, [${ref.headingPath.join(" > ")}]).`,
+        );
+      }
+    }
+  }
+
+  // ─── Private helpers ──────────────────────────────────────
+
+  /**
+   * Ensure all headings in the path exist. Auto-creates missing ancestors.
+   * Level for each auto-created heading is parent.level + 1.
+   */
+  private async ensureHeadingPath(
+    skeleton: DocumentSkeletonMutable,
+    headingPath: string[],
+  ): Promise<void> {
+    for (let i = 1; i <= headingPath.length; i++) {
+      const ancestorPath = headingPath.slice(0, i);
+      if (skeleton.has(ancestorPath)) continue;
+
+      const parentPath = ancestorPath.slice(0, -1);
+      const parentEntry = skeleton.resolve(parentPath);
+      const level = parentEntry.level + 1;
+      const heading = ancestorPath[ancestorPath.length - 1];
+
+      const added = skeleton.insertSectionUnder(parentPath, {
+        heading,
+        level,
+        body: "",
+      });
+
+      // Write empty body files for auto-created entries
+      for (const entry of added) {
+        if (!entry.isSubSkeleton) {
+          await mkdir(path.dirname(entry.absolutePath), { recursive: true });
+          await writeFile(entry.absolutePath, "", "utf8");
+        }
+      }
+    }
   }
 }

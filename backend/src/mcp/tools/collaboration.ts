@@ -13,7 +13,7 @@ import { readAssembledDocument, DocumentNotFoundError } from "../../storage/docu
 import { readDocumentsTree } from "../../storage/documents-tree.js";
 import { readSectionWithHeading, SectionNotFoundError } from "../../storage/section-reader.js";
 import { getContentRoot, getDataRoot, getSessionDocsContentRoot } from "../../storage/data-root.js";
-import { ContentLayer } from "../../storage/content-layer.js";
+import { OverlayContentLayer } from "../../storage/content-layer.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import {
   readDocumentStructure,
@@ -40,7 +40,6 @@ import {
 import { SectionRef } from "../../domain/section-ref.js";
 import { INVOLVEMENT_THRESHOLD } from "../../domain/humanInvolvement.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
-import { DocumentSkeleton } from "../../storage/document-skeleton.js";
 import type { SectionScoreSnapshot } from "../../types/shared.js";
 import path from "node:path";
 import { checkDocPermission } from "../../auth/acl.js";
@@ -270,39 +269,12 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
     })),
   );
 
-  // Write section content to proposal's content directory.
-  // For new documents/headings, create skeleton entries via DocumentSkeleton
-  // first so that ContentLayer.writeSection can resolve them.
-  const canonicalRoot = getContentRoot();
-  const skeletonCache = new Map<string, DocumentSkeleton>();
+  // Write section content through OverlayContentLayer — skeleton resolution,
+  // ancestor auto-creation, and content writing are handled internally.
+  const overlayLayer = new OverlayContentLayer(contentRoot, getContentRoot());
 
   for (const s of sections) {
-    let skeleton = skeletonCache.get(s.doc_path);
-    if (!skeleton) {
-      skeleton = await DocumentSkeleton.fromDisk(s.doc_path, contentRoot, canonicalRoot);
-      skeletonCache.set(s.doc_path, skeleton);
-    }
-
-    // Ensure the heading exists in the skeleton; create if missing
-    try {
-      skeleton.resolve(s.heading_path);
-    } catch {
-      const heading = s.heading_path[s.heading_path.length - 1];
-      const parentPath = s.heading_path.slice(0, -1);
-      let level: number;
-      if (parentPath.length === 0) {
-        level = 1;
-      } else {
-        const parentEntry = skeleton.resolve(parentPath);
-        level = parentEntry.level + 1;
-      }
-      skeleton.insertSectionUnder(parentPath, { heading, level, body: "" });
-      await skeleton.persist();
-    }
-
-    // Write content through ContentLayer (skeleton is now guaranteed to have the entry)
-    const pContentLayer = new ContentLayer(contentRoot);
-    await pContentLayer.writeSection(SectionRef.fromTarget(s), s.content);
+    await overlayLayer.writeSection(SectionRef.fromTarget(s), s.content);
   }
 
   // Evaluate immediately (informational — agent must call commit_proposal explicitly)
@@ -568,9 +540,9 @@ const writeSectionHandler: ToolHandler = async (args, ctx) => {
       updatedSections,
     );
 
-    // Write section content to proposal's content directory
-    const wContentLayer = new ContentLayer(updContentRoot);
-    await wContentLayer.writeSection(new SectionRef(docPath, headingPath), content);
+    // Write section content through OverlayContentLayer
+    const overlayLayer = new OverlayContentLayer(updContentRoot, getContentRoot());
+    await overlayLayer.writeSection(new SectionRef(docPath, headingPath), content);
 
     // Broadcast proposal:draft with updated sections
     if (ctx.emitEvent && updated.sections.length > 0) {

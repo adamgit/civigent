@@ -19,6 +19,7 @@ import { AgentsPage } from "../pages/AgentsPage";
 import { AgentFeedPage } from "../pages/AgentFeedPage";
 import { ImportsPage } from "../pages/ImportsPage";
 import { SnapshotsPage } from "../pages/SnapshotsPage";
+import { AgentMcpLogsPage } from "../pages/AgentMcpLogsPage";
 import type { RouteObject } from "react-router-dom";
 
 export const routeConfig: RouteObject[] = [
@@ -36,6 +37,7 @@ export const routeConfig: RouteObject[] = [
       { path: "admin/agents", element: <AgentKeysPage /> },
       { path: "admin/permissions", element: <PermissionsPage /> },
       { path: "admin/snapshots", element: <SnapshotsPage /> },
+      { path: "admin/agent-mcp-logs", element: <AgentMcpLogsPage /> },
       { path: "session-inspector", element: <SessionInspectorPage /> },
       { path: "history", element: <GitHistoryPage /> },
       { path: "agent-simulator", element: <AgentSimulatorPage /> },

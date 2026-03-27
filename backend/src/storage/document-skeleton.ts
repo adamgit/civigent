@@ -13,6 +13,13 @@
  * question: given a heading path like ["Overview", "Details"], where is the body
  * file on disk?
  *
+ * ## Class hierarchy
+ *
+ * DocumentSkeleton — public, readonly. All query methods, no mutation.
+ * DocumentSkeletonMutable — restricted. Adds mutation, persistence, and
+ *   structural write methods. Only used by OverlayContentLayer internals,
+ *   recovery-layers.ts, and callers that need to modify skeleton structure.
+ *
  * ## What it owns on disk
  *
  * Skeleton files only — the files containing {{section: filename.md}} markers.
@@ -156,16 +163,16 @@ export interface ReplacementResult {
   added: FlatEntry[];
 }
 
-// ─── DocumentSkeleton ────────────────────────────────────────────
+// ─── DocumentSkeleton (readonly) ────────────────────────────────
 
 export class DocumentSkeleton {
   readonly docPath: string;
-  private roots: SkeletonNode[];
-  private _dirty: boolean = false;
-  private _overlayPersisted: boolean = false;
-  private readonly overlayRoot: string;
+  protected roots: SkeletonNode[];
+  protected _dirty: boolean = false;
+  protected _overlayPersisted: boolean = false;
+  protected readonly overlayRoot: string;
 
-  private constructor(
+  protected constructor(
     docPath: string,
     roots: SkeletonNode[],
     overlayRoot: string,
@@ -225,7 +232,7 @@ export class DocumentSkeleton {
     });
   }
 
-  private walkNodes(
+  protected walkNodes(
     nodes: SkeletonNode[],
     hp: string[],
     parentSkeletonPath: string,
@@ -257,7 +264,16 @@ export class DocumentSkeleton {
     return this.toDocStructureNodes(this.roots);
   }
 
-  private toDocStructureNodes(nodes: SkeletonNode[]): DocStructureNode[] {
+  /** Return all content sections as a flat array (excludes sub-skeleton entries). */
+  get flat(): FlatEntry[] {
+    const entries: FlatEntry[] = [];
+    this.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
+      entries.push({ headingPath: [...headingPath], heading, level, sectionFile, absolutePath, isSubSkeleton: false });
+    });
+    return entries;
+  }
+
+  protected toDocStructureNodes(nodes: SkeletonNode[]): DocStructureNode[] {
     return nodes.map(n => ({
       heading: n.heading,
       level: n.level,
@@ -324,7 +340,7 @@ export class DocumentSkeleton {
     );
   }
 
-  private walkFindFile(
+  protected walkFindFile(
     nodes: SkeletonNode[],
     parentPath: string[],
     parentSkeletonPath: string,
@@ -414,6 +430,222 @@ export class DocumentSkeleton {
 
     throw new Error(`Skeleton integrity error: empty heading path for ${this.docPath}`);
   }
+
+  /**
+   * Check whether a heading path exists in the skeleton.
+   * Returns true if resolve() would succeed, false if it would throw.
+   */
+  has(headingPath: string[]): boolean {
+    try {
+      this.resolve(headingPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Return FlatEntry[] for the subtree rooted at headingPath (no file I/O).
+   * If headingPath is [], returns all content sections (entire document).
+   * Sub-skeleton entries are excluded — only body-file entries are returned.
+   */
+  subtreeEntries(headingPath: string[]): FlatEntry[] {
+    if (headingPath.length === 0) {
+      const entries: FlatEntry[] = [];
+      this.forEachSection((heading, level, sectionFile, hp, absolutePath) => {
+        entries.push({ headingPath: [...hp], heading, level, sectionFile, absolutePath, isSubSkeleton: false });
+      });
+      return entries;
+    }
+    const parentPath = headingPath.slice(0, -1);
+    const target = headingPath[headingPath.length - 1];
+    const siblings = this.findSiblingList(parentPath);
+    const node = siblings.find(n => n.heading.toLowerCase() === target.toLowerCase());
+    if (!node) {
+      throw new Error(
+        `Skeleton integrity error: heading "${target}" not found in ${this.docPath} ` +
+        `at path [${parentPath.join(" > ")}]`
+      );
+    }
+    return this.flattenNode(node, parentPath, this.resolveSkeletonPathFor(parentPath))
+      .filter(e => !e.isSubSkeleton);
+  }
+
+  // --- Static factories ---
+
+  /**
+   * Create a tombstone skeleton — an empty skeleton (zero entries) at the given
+   * doc path in the overlay root. Auto-persists atomically; returns a readonly instance.
+   */
+  static async createTombstone(
+    docPath: string,
+    overlayRoot: string,
+  ): Promise<DocumentSkeleton> {
+    const skeleton = new DocumentSkeleton(docPath, [], overlayRoot);
+    skeleton._dirty = true;
+    await skeleton.writeTree(skeleton.roots, skeleton.skeletonPath);
+    skeleton._dirty = false;
+    skeleton._overlayPersisted = true;
+    return skeleton;
+  }
+
+  /**
+   * Derive the sections directory path for a given document.
+   * This is where all body files and sub-skeletons live on disk.
+   */
+  static sectionsDir(docPath: string, contentRoot: string): string {
+    const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+    return path.resolve(contentRoot, ...normalized.split("/")) + ".sections";
+  }
+
+  /**
+   * Create an empty skeleton for a new document.
+   * Auto-persists atomically; returns a readonly instance.
+   */
+  static async createEmpty(
+    docPath: string,
+    targetRoot: string,
+  ): Promise<DocumentSkeleton> {
+    const rootNode: SkeletonNode = {
+      heading: "",
+      level: 0,
+      sectionFile: generateSectionFilename("root"),
+      children: [],
+    };
+    const skeleton = new DocumentSkeleton(docPath, [rootNode], targetRoot);
+    skeleton._dirty = true;
+    await skeleton.writeTree(skeleton.roots, skeleton.skeletonPath);
+    skeleton._dirty = false;
+    skeleton._overlayPersisted = true;
+    return skeleton;
+  }
+
+  static async fromDisk(
+    docPath: string,
+    overlayRoot: string,
+    canonicalRoot: string,
+  ): Promise<DocumentSkeleton> {
+    const { nodes, overlayExisted } = await buildSkeletonTree(docPath, overlayRoot, canonicalRoot);
+    validateNoDuplicateRoots(nodes, docPath);
+    const skeleton = new DocumentSkeleton(docPath, nodes, overlayRoot);
+    skeleton._overlayPersisted = overlayExisted;
+    return skeleton;
+  }
+
+  // --- Protected helpers ---
+
+  protected get skeletonPath(): string {
+    const normalized = this.docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+    return path.resolve(this.overlayRoot, ...normalized.split("/"));
+  }
+
+  protected findSiblingList(parentPath: string[]): SkeletonNode[] {
+    if (parentPath.length === 0) return this.roots;
+    let nodes = this.roots;
+    for (const segment of parentPath) {
+      const node = nodes.find(n => n.heading.toLowerCase() === segment.toLowerCase());
+      if (!node) {
+        throw new Error(
+          `Skeleton integrity error: parent "${segment}" not found in ${this.docPath}`
+        );
+      }
+      nodes = node.children;
+    }
+    return nodes;
+  }
+
+  protected resolveSkeletonPathFor(parentPath: string[]): string {
+    let skPath = this.skeletonPath;
+    let nodes = this.roots;
+    for (const segment of parentPath) {
+      const node = nodes.find(n => n.heading.toLowerCase() === segment.toLowerCase());
+      if (!node) {
+        throw new Error(
+          `Skeleton integrity error: parent "${segment}" not found in ${this.docPath}`
+        );
+      }
+      skPath = path.join(`${skPath}.sections`, node.sectionFile);
+      nodes = node.children;
+    }
+    return skPath;
+  }
+
+  protected flatten(
+    nodes: SkeletonNode[],
+    parentPath: string[],
+    parentSkeletonPath: string,
+  ): FlatEntry[] {
+    const result: FlatEntry[] = [];
+    const sectionsDir = `${parentSkeletonPath}.sections`;
+    for (const node of nodes) {
+      const isRoot = node.level === 0 && node.heading === "";
+      const hp = isRoot ? [...parentPath] : [...parentPath, node.heading];
+      const absPath = path.join(sectionsDir, node.sectionFile);
+      result.push({
+        headingPath: hp,
+        heading: node.heading,
+        level: node.level,
+        sectionFile: node.sectionFile,
+        absolutePath: absPath,
+        isSubSkeleton: node.children.length > 0,
+      });
+      if (node.children.length > 0) {
+        result.push(...this.flatten(node.children, hp, absPath));
+      }
+    }
+    return result;
+  }
+
+  protected flattenNode(
+    node: SkeletonNode,
+    parentPath: string[],
+    parentSkeletonPath: string,
+  ): FlatEntry[] {
+    const sectionsDir = `${parentSkeletonPath}.sections`;
+    const isRoot = node.level === 0 && node.heading === "";
+    const hp = isRoot ? [...parentPath] : [...parentPath, node.heading];
+    const absPath = path.join(sectionsDir, node.sectionFile);
+    const result: FlatEntry[] = [{
+      headingPath: hp,
+      heading: node.heading,
+      level: node.level,
+      sectionFile: node.sectionFile,
+      absolutePath: absPath,
+      isSubSkeleton: node.children.length > 0,
+    }];
+    if (node.children.length > 0) {
+      result.push(...this.flatten(node.children, hp, absPath));
+    }
+    return result;
+  }
+
+  protected async writeTree(nodes: SkeletonNode[], skeletonPath: string): Promise<void> {
+    const content = serializeSkeletonEntries(
+      nodes.map(n => ({ heading: n.heading, level: n.level, sectionFile: n.sectionFile })),
+    );
+    await mkdir(path.dirname(skeletonPath), { recursive: true });
+    await writeFile(skeletonPath, content, "utf8");
+
+    // Recurse into children that have their own sub-skeletons
+    const sectionsDir = `${skeletonPath}.sections`;
+    for (const node of nodes) {
+      if (node.children.length > 0) {
+        const childSkeletonPath = path.join(sectionsDir, node.sectionFile);
+        await this.writeTree(node.children, childSkeletonPath);
+      }
+    }
+  }
+}
+
+// ─── DocumentSkeletonMutable ────────────────────────────────────
+
+/**
+ * Mutable variant of DocumentSkeleton — adds structural mutation methods
+ * and persistence. Restricted to OverlayContentLayer internals,
+ * recovery-layers.ts crash recovery, and callers that need to modify
+ * skeleton structure.
+ */
+export class DocumentSkeletonMutable extends DocumentSkeleton {
 
   /**
    * Replace the section at headingPath with one or more new sections.
@@ -620,62 +852,7 @@ export class DocumentSkeleton {
   }
 
   /**
-   * Return FlatEntry[] for the subtree rooted at headingPath (no file I/O).
-   * If headingPath is [], returns all content sections (entire document).
-   * Sub-skeleton entries are excluded — only body-file entries are returned.
-   */
-  subtreeEntries(headingPath: string[]): FlatEntry[] {
-    if (headingPath.length === 0) {
-      const entries: FlatEntry[] = [];
-      this.forEachSection((heading, level, sectionFile, hp, absolutePath) => {
-        entries.push({ headingPath: [...hp], heading, level, sectionFile, absolutePath, isSubSkeleton: false });
-      });
-      return entries;
-    }
-    const parentPath = headingPath.slice(0, -1);
-    const target = headingPath[headingPath.length - 1];
-    const siblings = this.findSiblingList(parentPath);
-    const node = siblings.find(n => n.heading.toLowerCase() === target.toLowerCase());
-    if (!node) {
-      throw new Error(
-        `Skeleton integrity error: heading "${target}" not found in ${this.docPath} ` +
-        `at path [${parentPath.join(" > ")}]`
-      );
-    }
-    return this.flattenNode(node, parentPath, this.resolveSkeletonPathFor(parentPath))
-      .filter(e => !e.isSubSkeleton);
-  }
-
-  /** Write the skeleton to the overlay. Throws if not dirty. */
-  async persist(): Promise<void> {
-    if (!this._dirty) {
-      throw new Error(`Skeleton persist called but not dirty for ${this.docPath}`);
-    }
-    await this.writeTree(this.roots, this.skeletonPath);
-    this._dirty = false;
-    this._overlayPersisted = true;
-  }
-
-  /**
-   * Ensure the overlay skeleton file exists on disk.
-   *
-   * When body files are written to the overlay (e.g. during flush), the
-   * overlay skeleton must also exist so that readers (resolveAllSectionPaths,
-   * readAllSectionsWithOverlay) can discover those body files. Without this,
-   * simple body edits (no structural change) would write orphaned body files
-   * that no skeleton points to.
-   *
-   * This is idempotent — if the overlay was already persisted (either by
-   * persist() or a previous writeSkeletonIfAbsent() call), this is a no-op.
-   */
-  async writeSkeletonIfAbsent(): Promise<void> {
-    if (this._overlayPersisted) return;
-    await this.writeTree(this.roots, this.skeletonPath);
-    this._overlayPersisted = true;
-  }
-
-  /**
-   * Build an overlay DocumentSkeleton from a parsed document.
+   * Build an overlay DocumentSkeletonMutable from a parsed document.
    *
    * For each section in `parsed`, reuses the canonical section file ID if the
    * heading text (case-insensitive) and parent heading path both match an unconsumed
@@ -689,7 +866,7 @@ export class DocumentSkeleton {
   buildOverlaySkeleton(
     parsed: { readonly sections: ReadonlyArray<{ headingPath: string[]; heading: string; level: number }> },
     overlayContentRoot: string,
-  ): DocumentSkeleton {
+  ): DocumentSkeletonMutable {
     // Collect canonical flat entries for matching
     const canonicalFlat: FlatEntry[] = [];
     this.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
@@ -743,54 +920,74 @@ export class DocumentSkeleton {
       });
     }
 
-    const overlay = new DocumentSkeleton(this.docPath, nodes, overlayContentRoot);
+    const overlay = new DocumentSkeletonMutable(this.docPath, nodes, overlayContentRoot);
     overlay._dirty = true;
     return overlay;
   }
 
-  // --- Construction ---
+  // --- Persistence ---
+
+  /** Write the skeleton to the overlay. Throws if not dirty. */
+  async persist(): Promise<void> {
+    if (!this._dirty) {
+      throw new Error(
+        `ASSERTION: skeleton persist called but not dirty for ${this.docPath}` +
+        ` — this indicates a bug in the caller, not bad data.`
+      );
+    }
+    await this.writeTree(this.roots, this.skeletonPath);
+    this._dirty = false;
+    this._overlayPersisted = true;
+  }
 
   /**
-   * Create a tombstone skeleton — an empty skeleton (zero entries) at the given
-   * doc path in the overlay root. When promoted to canonical, an empty skeleton
-   * signals "delete this document": all canonical files are removed.
+   * Ensure the overlay skeleton file exists on disk.
    *
-   * Call persist() to write the empty skeleton file to the overlay.
+   * When body files are written to the overlay (e.g. during flush), the
+   * overlay skeleton must also exist so that readers (resolveAllSectionPaths,
+   * readAllSectionsWithOverlay) can discover those body files. Without this,
+   * simple body edits (no structural change) would write orphaned body files
+   * that no skeleton points to.
+   *
+   * This is idempotent — if the overlay was already persisted (either by
+   * persist() or a previous writeSkeletonIfAbsent() call), this is a no-op.
    */
-  static createTombstone(
+  async writeSkeletonIfAbsent(): Promise<void> {
+    if (this._overlayPersisted) return;
+    await this.writeTree(this.roots, this.skeletonPath);
+    this._overlayPersisted = true;
+  }
+
+  // --- Static factories ---
+
+  /**
+   * Create a tombstone skeleton — an empty skeleton (zero entries).
+   * Returns a dirty mutable instance. Call persist() to write to disk.
+   */
+  static override async createTombstone(
     docPath: string,
     overlayRoot: string,
-  ): DocumentSkeleton {
-    const skeleton = new DocumentSkeleton(docPath, [], overlayRoot);
+  ): Promise<DocumentSkeletonMutable> {
+    const skeleton = new DocumentSkeletonMutable(docPath, [], overlayRoot);
     skeleton._dirty = true;
     return skeleton;
   }
 
   /**
-   * Derive the sections directory path for a given document.
-   * This is where all body files and sub-skeletons live on disk.
-   */
-  static sectionsDir(docPath: string, contentRoot: string): string {
-    const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-    return path.resolve(contentRoot, ...normalized.split("/")) + ".sections";
-  }
-
-  /**
    * Create an empty skeleton for a new document.
-   * Uses targetRoot as both overlay and canonical root (writing directly to canonical).
-   * Call persist() to write the skeleton file to disk.
+   * Returns a dirty mutable instance. Call persist() to write to disk.
    */
-  static createEmpty(
+  static override async createEmpty(
     docPath: string,
     targetRoot: string,
-  ): DocumentSkeleton {
+  ): Promise<DocumentSkeletonMutable> {
     const rootNode: SkeletonNode = {
       heading: "",
       level: 0,
       sectionFile: generateSectionFilename("root"),
       children: [],
     };
-    const skeleton = new DocumentSkeleton(docPath, [rootNode], targetRoot);
+    const skeleton = new DocumentSkeletonMutable(docPath, [rootNode], targetRoot);
     skeleton._dirty = true;
     return skeleton;
   }
@@ -805,125 +1002,21 @@ export class DocumentSkeleton {
     docPath: string,
     nodes: SkeletonNode[],
     targetRoot: string,
-  ): DocumentSkeleton {
+  ): DocumentSkeletonMutable {
     validateNoDuplicateRoots(nodes, docPath);
-    return new DocumentSkeleton(docPath, nodes, targetRoot);
+    return new DocumentSkeletonMutable(docPath, nodes, targetRoot);
   }
 
-  static async fromDisk(
+  static override async fromDisk(
     docPath: string,
     overlayRoot: string,
     canonicalRoot: string,
-  ): Promise<DocumentSkeleton> {
+  ): Promise<DocumentSkeletonMutable> {
     const { nodes, overlayExisted } = await buildSkeletonTree(docPath, overlayRoot, canonicalRoot);
     validateNoDuplicateRoots(nodes, docPath);
-    const skeleton = new DocumentSkeleton(docPath, nodes, overlayRoot);
+    const skeleton = new DocumentSkeletonMutable(docPath, nodes, overlayRoot);
     skeleton._overlayPersisted = overlayExisted;
     return skeleton;
-  }
-
-  // --- Private helpers ---
-
-  private get skeletonPath(): string {
-    const normalized = this.docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-    return path.resolve(this.overlayRoot, ...normalized.split("/"));
-  }
-
-  private findSiblingList(parentPath: string[]): SkeletonNode[] {
-    if (parentPath.length === 0) return this.roots;
-    let nodes = this.roots;
-    for (const segment of parentPath) {
-      const node = nodes.find(n => n.heading.toLowerCase() === segment.toLowerCase());
-      if (!node) {
-        throw new Error(
-          `Skeleton integrity error: parent "${segment}" not found in ${this.docPath}`
-        );
-      }
-      nodes = node.children;
-    }
-    return nodes;
-  }
-
-  private resolveSkeletonPathFor(parentPath: string[]): string {
-    let skPath = this.skeletonPath;
-    let nodes = this.roots;
-    for (const segment of parentPath) {
-      const node = nodes.find(n => n.heading.toLowerCase() === segment.toLowerCase());
-      if (!node) {
-        throw new Error(
-          `Skeleton integrity error: parent "${segment}" not found in ${this.docPath}`
-        );
-      }
-      skPath = path.join(`${skPath}.sections`, node.sectionFile);
-      nodes = node.children;
-    }
-    return skPath;
-  }
-
-  private flatten(
-    nodes: SkeletonNode[],
-    parentPath: string[],
-    parentSkeletonPath: string,
-  ): FlatEntry[] {
-    const result: FlatEntry[] = [];
-    const sectionsDir = `${parentSkeletonPath}.sections`;
-    for (const node of nodes) {
-      const isRoot = node.level === 0 && node.heading === "";
-      const hp = isRoot ? [...parentPath] : [...parentPath, node.heading];
-      const absPath = path.join(sectionsDir, node.sectionFile);
-      result.push({
-        headingPath: hp,
-        heading: node.heading,
-        level: node.level,
-        sectionFile: node.sectionFile,
-        absolutePath: absPath,
-        isSubSkeleton: node.children.length > 0,
-      });
-      if (node.children.length > 0) {
-        result.push(...this.flatten(node.children, hp, absPath));
-      }
-    }
-    return result;
-  }
-
-  private flattenNode(
-    node: SkeletonNode,
-    parentPath: string[],
-    parentSkeletonPath: string,
-  ): FlatEntry[] {
-    const sectionsDir = `${parentSkeletonPath}.sections`;
-    const isRoot = node.level === 0 && node.heading === "";
-    const hp = isRoot ? [...parentPath] : [...parentPath, node.heading];
-    const absPath = path.join(sectionsDir, node.sectionFile);
-    const result: FlatEntry[] = [{
-      headingPath: hp,
-      heading: node.heading,
-      level: node.level,
-      sectionFile: node.sectionFile,
-      absolutePath: absPath,
-      isSubSkeleton: node.children.length > 0,
-    }];
-    if (node.children.length > 0) {
-      result.push(...this.flatten(node.children, hp, absPath));
-    }
-    return result;
-  }
-
-  private async writeTree(nodes: SkeletonNode[], skeletonPath: string): Promise<void> {
-    const content = serializeSkeletonEntries(
-      nodes.map(n => ({ heading: n.heading, level: n.level, sectionFile: n.sectionFile })),
-    );
-    await mkdir(path.dirname(skeletonPath), { recursive: true });
-    await writeFile(skeletonPath, content, "utf8");
-
-    // Recurse into children that have their own sub-skeletons
-    const sectionsDir = `${skeletonPath}.sections`;
-    for (const node of nodes) {
-      if (node.children.length > 0) {
-        const childSkeletonPath = path.join(sectionsDir, node.sectionFile);
-        await this.writeTree(node.children, childSkeletonPath);
-      }
-    }
   }
 }
 

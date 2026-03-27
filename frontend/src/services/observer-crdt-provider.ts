@@ -1,5 +1,5 @@
 /**
- * ObserverCrdtProvider — Read-only Y.Doc sync via /ws/crdt-observe/<docPath>.
+ * ObserverCrdtProvider — Read-only Y.Doc sync via /ws/crdt/<docPath>.
  *
  * Lightweight variant of CrdtProvider for non-editing viewers.
  * Receives Y.Doc updates but never sends YJS_UPDATE, SECTION_FOCUS,
@@ -14,7 +14,12 @@
  */
 
 import * as Y from "yjs";
-import type { RestoreNotificationPayload } from "../types/shared";
+import type {
+  RestoreNotificationPayload,
+  ClientInstanceId,
+  ModeTransitionRequest,
+  ModeTransitionResult,
+} from "../types/shared";
 
 // ─── Protocol constants (must match backend/src/ws/crdt-sync.ts) ───
 
@@ -24,6 +29,8 @@ const MSG_YJS_UPDATE = 2;
 const MSG_SESSION_FLUSHED = 4;
 const MSG_STRUCTURE_WILL_CHANGE = 8;
 const MSG_RESTORE_NOTIFICATION = 0x0B;
+const MSG_MODE_TRANSITION_REQUEST = 0x0C;
+const MSG_MODE_TRANSITION_RESULT = 0x0D;
 
 /** Debounce interval for onChange callbacks (ms). */
 const CHANGE_DEBOUNCE_MS = 100;
@@ -56,6 +63,10 @@ export interface ObserverCrdtProviderEvents {
   onSessionReinit?: () => void;
   /** Fired once, after onSynced on the post-restore reconnection, with the banner payload. */
   onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
+  onModeTransitionResult?: (result: ModeTransitionResult) => void;
+  /** Fired when a protocol-level error occurs (e.g. malformed JSON payload).
+   *  The connection is terminated after this callback. */
+  onError?: (reason: string) => void;
 }
 
 // ─── Provider ──────────────────────────────────────────────────────
@@ -79,16 +90,23 @@ export class ObserverCrdtProvider {
   private destroyed = false;
   private changeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingRestoreNotification: RestoreNotificationPayload | null = null;
+  private readonly clientInstanceId: ClientInstanceId;
+  private readonly docPath: string;
+  private initialTransitionRequest: ModeTransitionRequest | null = null;
 
   constructor(
     docPath: string,
     events: ObserverCrdtProviderEvents = {},
+    opts?: { clientInstanceId?: ClientInstanceId; initialTransitionRequest?: ModeTransitionRequest },
   ) {
     this.doc = new Y.Doc();
     this.events = events;
+    this.docPath = docPath;
+    this.clientInstanceId = opts?.clientInstanceId ?? crypto.randomUUID();
+    this.initialTransitionRequest = opts?.initialTransitionRequest ?? null;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    this.url = `${protocol}//${window.location.host}/ws/crdt-observe/${docPath.split("/").map(encodeURIComponent).join("/")}`;
+    this.url = `${protocol}//${window.location.host}/ws/crdt/${docPath.split("/").map(encodeURIComponent).join("/")}?clientInstanceId=${encodeURIComponent(this.clientInstanceId)}`;
   }
 
   get state(): ObserverConnectionState {
@@ -145,6 +163,7 @@ export class ObserverCrdtProvider {
       this.pendingRestoreNotification = null;
       this.reconnectAttempts = 0;
       this.setState("connected");
+      this.sendModeTransitionRequest();
       // Send sync step 1 so server can respond with current Y.Doc state
       const stateVector = Y.encodeStateVector(this.doc);
       this.sendRaw(MSG_SYNC_STEP_1, stateVector);
@@ -197,9 +216,9 @@ export class ObserverCrdtProvider {
 
     switch (msgType) {
       case MSG_SYNC_STEP_1: {
-        // Server requests our state — reply with sync step 2
-        const diff = Y.encodeStateAsUpdate(this.doc, payload);
-        this.sendRaw(MSG_SYNC_STEP_2, diff);
+        // Server sends its state vector asking what we have. Observers are strictly
+        // receive-only replicas — never contribute state back. joinSession already
+        // sends SYNC_STEP_2 (full Y.Doc) proactively, so no response is needed.
         break;
       }
       case MSG_SYNC_STEP_2: {
@@ -227,16 +246,50 @@ export class ObserverCrdtProvider {
       }
       case MSG_STRUCTURE_WILL_CHANGE: {
         const json = new TextDecoder().decode(payload);
-        const restructures = JSON.parse(json) as Array<{ oldKey: string; newKeys: string[] }>;
+        let restructures: Array<{ oldKey: string; newKeys: string[] }>;
+        try {
+          restructures = JSON.parse(json) as Array<{ oldKey: string; newKeys: string[] }>;
+        } catch (err) {
+          this.closeWithProtocolError(`Malformed MSG_STRUCTURE_WILL_CHANGE payload: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
         this.events.onStructureWillChange?.(restructures);
         break;
       }
       case MSG_RESTORE_NOTIFICATION: {
         const json = new TextDecoder().decode(payload);
-        this.pendingRestoreNotification = JSON.parse(json) as RestoreNotificationPayload;
+        try {
+          this.pendingRestoreNotification = JSON.parse(json) as RestoreNotificationPayload;
+        } catch (err) {
+          this.closeWithProtocolError(`Malformed MSG_RESTORE_NOTIFICATION payload: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
+        break;
+      }
+      case MSG_MODE_TRANSITION_RESULT: {
+        const json = new TextDecoder().decode(payload);
+        let result: ModeTransitionResult;
+        try {
+          result = JSON.parse(json) as ModeTransitionResult;
+        } catch (err) {
+          this.closeWithProtocolError(`Malformed MSG_MODE_TRANSITION_RESULT payload: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
+        this.events.onModeTransitionResult?.(result);
         break;
       }
     }
+  }
+
+  /** Surface a protocol-level parse error and terminate the connection. */
+  private closeWithProtocolError(msg: string): void {
+    this.events.onError?.(msg);
+    if (this.ws) {
+      this.ws.onclose = null;
+      this.ws.close();
+      this.ws = null;
+    }
+    this.scheduleReconnect();
   }
 
   private scheduleOnChange(): void {
@@ -254,6 +307,19 @@ export class ObserverCrdtProvider {
     msg[0] = msgType;
     msg.set(payload, 1);
     this.ws.send(msg);
+  }
+
+  private sendModeTransitionRequest(): void {
+    const request: ModeTransitionRequest = this.initialTransitionRequest ?? {
+      requestId: crypto.randomUUID(),
+      clientInstanceId: this.clientInstanceId,
+      docPath: this.docPath,
+      requestedMode: "observer",
+      editorFocusTarget: null,
+    };
+    this.initialTransitionRequest = null;
+    const payload = new TextEncoder().encode(JSON.stringify(request));
+    this.sendRaw(MSG_MODE_TRANSITION_REQUEST, payload);
   }
 
   private scheduleReconnect(): void {

@@ -234,6 +234,16 @@ export class SectionTransferService {
       }
 
       return { success: true, sourceModified, targetModified: true };
+    } catch (err) {
+      // sendSectionMutate rejects if the provider is disconnected or destroyed.
+      // Convert to a TransferResult so this async function always resolves (not rejects).
+      // Callers use `void execute(...)` so a rejected promise would be unhandled.
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+        sourceModified: false,
+        targetModified: false,
+      };
     } finally {
       this._executing = false;
     }

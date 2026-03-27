@@ -14,6 +14,7 @@ import {
   parseSkeletonToEntries,
   serializeSkeletonEntries,
   DocumentSkeleton,
+  DocumentSkeletonMutable,
   type SkeletonEntry,
   type SkeletonNode,
 } from "./document-skeleton.js";
@@ -264,7 +265,7 @@ export async function buildCompoundSkeleton(docPath: string): Promise<CompoundSk
   }
 
   const nodes = entriesToNodes(mergedEntries);
-  const skeleton = DocumentSkeleton.fromNodes(docPath, nodes, contentRoot);
+  const skeleton = DocumentSkeletonMutable.fromNodes(docPath, nodes, contentRoot);
 
   return {
     skeleton,

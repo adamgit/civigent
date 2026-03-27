@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { apiClient } from "../services/api-client";
-import { ObserverCrdtProvider } from "../services/observer-crdt-provider";
-import { fragmentToMarkdown } from "../services/fragment-to-markdown";
 import { getLastDocumentVisitAt, markDocumentVisitedNow } from "../services/document-visit-history";
 import { SectionTransferService, type SectionTransfer } from "../services/section-transfer";
 import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
@@ -85,6 +83,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
   // ── Restore banner state ─────────────────────────────────
   const [restoreBanner, setRestoreBanner] = useState<RestoreNotificationPayload | null>(null);
+  const handleRestoreNotification = useCallback((payload: RestoreNotificationPayload) => setRestoreBanner(payload), []);
 
   // ── Metadata state ───────────────────────────────────────
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -92,13 +91,8 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
   const sectionsContainerRef = useRef<HTMLDivElement>(null);
 
-  // ── Observer CRDT (read-only live sync for non-editing viewers) ──
-  const observerRef = useRef<ObserverCrdtProvider | null>(null);
-  // Ref so startObserver (defined before useDocumentCrdt) can call stopEditing.
-  const stopEditingRef = useRef<(() => void) | null>(null);
-
   // ── Load sections ────────────────────────────────────────
-  const loadSections = useCallback(async (docPath: string) => {
+  const loadSections = useCallback(async (docPath: string): Promise<DocumentSection[]> => {
     loadStartedAtRef.current = Date.now();
     setLoadDurationMs(null);
     setSectionsLoading(true);
@@ -106,68 +100,15 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     try {
       const sectionsResp = await apiClient.getDocumentSections(docPath);
       setSections(sectionsResp.sections);
+      return sectionsResp.sections;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return [];
     } finally {
       if (loadStartedAtRef.current !== null) {
         setLoadDurationMs(Date.now() - loadStartedAtRef.current);
       }
       setSectionsLoading(false);
-    }
-  }, []);
-
-  const startObserver = useCallback((docPath: string) => {
-    if (observerRef.current) return; // already observing
-    const observer = new ObserverCrdtProvider(docPath, {
-      onChange: () => {
-        // Use functional updater to avoid stale-closure overwrite: if a content:committed
-        // event triggers setSections(freshSections) and onChange fires before the next
-        // render updates sectionsRef, reading sectionsRef.current here would overwrite the
-        // fresh REST data. The updater always receives the latest committed state.
-        const ydoc = observer.doc;
-        setSections((current) => {
-          if (current.length === 0) return current;
-          let changed = false;
-          const updated = current.map((section) => {
-            const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path.length === 0);
-            try {
-              const md = fragmentToMarkdown(ydoc, fk);
-              if (md !== null && md !== section.content) {
-                changed = true;
-                return { ...section, content: md };
-              }
-            } catch {
-              // Fragment not yet in Y.Doc — keep existing content
-            }
-            return section;
-          });
-          return changed ? updated : current;
-        });
-      },
-      onSessionEnded: () => {
-        // Editing session ended — fall back to REST content
-        if (docPath) loadSections(docPath);
-        // Observer will auto-reconnect to wait for next session
-      },
-      onStructureWillChange: () => {
-        // Structure changed — reload sections from REST to get new skeleton
-        if (docPath) loadSections(docPath);
-      },
-      onSessionReinit: () => {
-        stopEditingRef.current?.();
-      },
-      onRestoreNotification: (payload) => {
-        setRestoreBanner(payload);
-      },
-    });
-    observerRef.current = observer;
-    observer.connect();
-  }, [loadSections]);
-
-  const stopObserver = useCallback(() => {
-    if (observerRef.current) {
-      observerRef.current.destroy();
-      observerRef.current = null;
     }
   }, []);
 
@@ -189,7 +130,10 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     setRestructuringKeys,
     proposalMode,
     activeProposalId,
+    controllerState,
     crdtProviderRef,
+    controllerStateRef,
+    mountedEditorFragmentKeysRef,
     editorRefs,
     pendingFocusRef,
     pendingStructureRefocusRef,
@@ -208,6 +152,8 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     handleCursorExit,
     setEditorRef,
     setViewingSections,
+    requestMode,
+    stopObserver,
   } = useDocumentCrdt({
     decodedDocPath,
     sections,
@@ -216,15 +162,10 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     setError,
     setStatusMessage,
     loadSections,
-    startObserver,
-    stopObserver,
-    onRestoreNotification: (payload) => setRestoreBanner(payload),
+    onRestoreNotification: handleRestoreNotification,
   });
 
-  // Wire stopEditing into the ref so startObserver's onSessionReinit can call it.
-  stopEditingRef.current = stopEditing;
-
-  // Ref for sections (used by observer and transferService)
+  // Ref for sections (used by transferService and other stable callbacks)
   const sectionsRef = useRef<DocumentSection[]>([]);
   useEffect(() => {
     sectionsRef.current = sections;
@@ -290,17 +231,19 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     setSections,
     crdtProviderRef,
     focusedSectionIndexRef,
+    mountedEditorFragmentKeysRef,
     pendingStructureRefocusRef,
     setRestructuringKeys,
     setSectionPersistence,
     setDeletionPlaceholders,
     setStructureTree,
     loadSections,
+    setError,
     onSectionsInjectedByProposal,
   });
 
   // Derived
-  const isEditing = focusedSectionIndex !== null;
+  const isEditing = controllerState.requestedMode === "editor";
   const focusedHeadingPath = focusedSectionIndex !== null && sections[focusedSectionIndex]
     ? sections[focusedSectionIndex].heading_path
     : null;
@@ -386,16 +329,15 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     let cancelled = false;
     loadSections(decodedDocPath).then(() => {
       if (cancelled) return;
-      // Start observer if not already editing
-      if (!crdtProviderRef.current) {
-        startObserver(decodedDocPath);
-      }
+      // Start observer unless the user clicked into edit mode while sections were loading.
+      // Read via ref so this async callback doesn't need controllerState in the dep array.
+      if (controllerStateRef.current.requestedMode !== "editor") requestMode("observer");
     });
     return () => {
       cancelled = true;
       stopObserver();
     };
-  }, [decodedDocPath, loadSections, startObserver, stopObserver]);
+  }, [decodedDocPath, loadSections, requestMode, stopObserver, controllerStateRef]);
 
   // ── Load changes-since (recently changed sections) ───────
   useEffect(() => {
@@ -421,7 +363,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   useEffect(() => {
     if (
       crdtState === "disconnected"
-      && focusedSectionIndex !== null
+      && controllerState.requestedMode === "editor"
       && !editingLoading
     ) {
       stopEditing();
@@ -429,7 +371,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         loadSections(decodedDocPath);
       }
     }
-  }, [crdtState, focusedSectionIndex, editingLoading, stopEditing, decodedDocPath, loadSections]);
+  }, [crdtState, controllerState.requestedMode, editingLoading, stopEditing, decodedDocPath, loadSections]);
 
   // ── Derived ──────────────────────────────────────────────
   const docTitle = decodedDocPath ? getDocDisplayName(decodedDocPath) : "Untitled";

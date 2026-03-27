@@ -48,7 +48,7 @@ server.on("upgrade", (request, socket, head) => {
   }
 
   const pathname = new URL(request.url ?? "", `http://${request.headers.host}`).pathname;
-  if (pathname.startsWith("/ws/crdt/") || pathname.startsWith("/ws/crdt-observe/")) {
+  if (pathname.startsWith("/ws/crdt/")) {
     crdtWs.handleUpgrade(request, socket, head);
   } else if (pathname === "/ws") {
     wsHub.handleUpgrade(request, socket, head);

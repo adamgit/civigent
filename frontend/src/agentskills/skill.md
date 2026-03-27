@@ -30,6 +30,18 @@ All changes go through a proposal. A proposal groups one or more section writes 
 
 Use `cancel_proposal` to withdraw a proposal you no longer need.
 
+### One draft per writer
+
+Each agent (writer) can have only **one draft proposal at a time**. If you already have a draft proposal and call `create_proposal`, it will fail unless you pass `replace: true`. When `replace` is set, the existing draft is automatically withdrawn before the new proposal is created. Use this when you want to start fresh without manually cancelling the old proposal.
+
+### Auto-creation of documents and sections
+
+You do not need to pre-create documents or sections before writing to them. If you specify a `doc_path` that does not exist, the document is created automatically. Likewise, if a `heading_path` refers to a section that does not yet exist, it is created on the fly. This means agents can write to entirely new documents and sections in a single proposal without any prior setup.
+
+### Proposal sizing for large batch writes
+
+When writing many sections at once, prefer splitting work across multiple smaller proposals rather than packing everything into one. Large proposals that touch many sections increase the chance of contention (overlapping with human edits) and make review harder. A good rule of thumb: keep each proposal focused on a single logical change or a coherent group of related sections. If you need to update an entire document, consider one proposal per top-level section or logical chapter.
+
 ### When `commit_proposal` is blocked
 
 Some sections may have high human-involvement scores (a human is actively editing). The proposal stays pending. You can wait for the contention to resolve, modify the proposal via `write_section`, or cancel it.

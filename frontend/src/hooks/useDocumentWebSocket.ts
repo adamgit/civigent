@@ -38,12 +38,16 @@ export interface UseDocumentWebSocketParams {
   setSections: React.Dispatch<React.SetStateAction<DocumentSection[]>>;
   crdtProviderRef: React.MutableRefObject<CrdtProvider | null>;
   focusedSectionIndexRef: React.MutableRefObject<number | null>;
+  /** Fragment keys of currently mounted Milkdown editors — used to exclude CRDT-bound
+   *  sections from the REST refresh on content:committed without positional index coupling. */
+  mountedEditorFragmentKeysRef: React.MutableRefObject<Set<string>>;
   pendingStructureRefocusRef: React.MutableRefObject<string[] | null>;
   setRestructuringKeys: React.Dispatch<React.SetStateAction<Set<string>>>;
   setSectionPersistence: React.Dispatch<React.SetStateAction<Map<string, SectionPersistenceState>>>;
   setDeletionPlaceholders: React.Dispatch<React.SetStateAction<DeletionPlaceholder[]>>;
   setStructureTree: React.Dispatch<React.SetStateAction<DocStructureNode[] | null>>;
-  loadSections: (docPath: string) => Promise<void>;
+  loadSections: (docPath: string) => Promise<DocumentSection[]>;
+  setError: (e: string | null) => void;
   onSectionsInjectedByProposal?: (headingPaths: string[][], writerDisplayName: string) => void;
 }
 
@@ -71,12 +75,14 @@ export function useDocumentWebSocket({
   setSections,
   crdtProviderRef,
   focusedSectionIndexRef,
+  mountedEditorFragmentKeysRef,
   pendingStructureRefocusRef,
   setRestructuringKeys,
   setSectionPersistence,
   setDeletionPlaceholders,
   setStructureTree,
   loadSections,
+  setError,
   onSectionsInjectedByProposal,
 }: UseDocumentWebSocketParams): UseDocumentWebSocketReturn {
   const navigate = useNavigate();
@@ -165,17 +171,18 @@ export function useDocumentWebSocket({
           loadSections(decodedDocPath);
         } else {
           // CRDT session active — selectively refresh non-CRDT-bound sections only.
-          // Sections within ±1 of focusedSectionIndex are CRDT-bound; leave those untouched.
+          // Exclude sections whose fragment key appears in mountedEditorFragmentKeysRef
+          // (identity-based, not positional ±1 — safe under insert/reorder/structure change).
           apiClient.getDocumentSections(decodedDocPath).then((resp) => {
-            const fi = focusedSectionIndexRef.current;
+            const crdtBound = mountedEditorFragmentKeysRef.current;
             setSections((prev) => {
               const next = [...prev];
               const freshByKey = new Map(
                 resp.sections.map((s) => [sectionHeadingKey(s.heading_path), s]),
               );
               for (let i = 0; i < next.length; i++) {
-                // Skip CRDT-bound sections (focused ±1)
-                if (fi !== null && Math.abs(i - fi) <= 1) continue;
+                const fk = fragmentKeyFromSectionFile(next[i].section_file, next[i].heading_path.length === 0);
+                if (crdtBound.has(fk)) continue; // skip sections with live editors
                 const key = sectionHeadingKey(next[i].heading_path);
                 const fresh = freshByKey.get(key);
                 if (fresh) {
@@ -183,14 +190,14 @@ export function useDocumentWebSocket({
                 }
               }
               // If section count changed (structure changed), use fresh list but
-              // only when no CRDT editor is active to avoid disruption
-              if (resp.sections.length !== prev.length && fi === null) {
+              // only when no CRDT editor is mounted to avoid disruption.
+              if (resp.sections.length !== prev.length && crdtBound.size === 0) {
                 return resp.sections;
               }
               return next;
             });
           }).catch((err) => {
-            console.error("Failed to refresh non-edited sections:", err);
+            setError(`Failed to refresh sections after commit: ${err instanceof Error ? err.message : String(err)}`);
           });
         }
         return;
@@ -273,13 +280,15 @@ export function useDocumentWebSocket({
         const oldKeys = new Set(secs.map((s) => fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0)));
 
         // Refresh section list and structure tree, then detect removed sections.
-        loadSections(decodedDocPath).then(() => {
+        // Use the returned sections directly — sectionsRef.current is not yet updated
+        // at .then() time because React batches setSections into the next render cycle.
+        loadSections(decodedDocPath).then((newSections) => {
           // If editing ended (e.g. idle timeout closed CRDT socket), don't create
           // placeholders — the session is over and SESSION_FLUSHED will never arrive
           // on the dead socket to clear them.
-          if (focusedSectionIndexRef.current === null) return;
+          if (mountedEditorFragmentKeysRef.current.size === 0) return;
 
-          const newKeys = new Set(sectionsRef.current.map((s) => fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0)));
+          const newKeys = new Set(newSections.map((s) => fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0)));
           const removedKeys = [...oldKeys].filter((k) => !newKeys.has(k));
           if (removedKeys.length > 0) {
             setDeletionPlaceholders((prev) => {

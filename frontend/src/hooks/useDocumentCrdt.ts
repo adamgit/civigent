@@ -4,7 +4,16 @@ import { apiClient } from "../services/api-client";
 import { CrdtProvider, type CrdtConnectionState, type StructureWillChangePayload } from "../services/crdt-provider";
 import { ObserverCrdtProvider } from "../services/observer-crdt-provider";
 import { fragmentToMarkdown } from "../services/fragment-to-markdown";
-import { sectionHeadingKey, sectionGlobalKey, type RestoreNotificationPayload } from "../types/shared.js";
+import {
+  sectionHeadingKey,
+  sectionGlobalKey,
+  type RestoreNotificationPayload,
+  type DocumentSessionControllerState,
+  type ModeTransitionRequest,
+  type ModeTransitionResult,
+  type RequestedMode,
+  type EditorFocusTarget,
+} from "../types/shared.js";
 import { type MilkdownEditorHandle } from "../components/MilkdownEditor";
 import {
   type SectionPersistenceState,
@@ -23,9 +32,7 @@ export interface UseDocumentCrdtParams {
   setSectionsLoading: (b: boolean) => void;
   setError: (e: string | null) => void;
   setStatusMessage: (s: string | null) => void;
-  loadSections: (docPath: string) => Promise<void>;
-  startObserver: (docPath: string) => void;
-  stopObserver: () => void;
+  loadSections: (docPath: string) => Promise<DocumentSection[]>;
   onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
 }
 
@@ -49,9 +56,13 @@ export interface UseDocumentCrdtReturn {
   setRestructuringKeys: React.Dispatch<React.SetStateAction<Set<string>>>;
   proposalMode: boolean;
   activeProposalId: string | null;
+  controllerState: DocumentSessionControllerState;
 
   // Refs
   crdtProviderRef: React.MutableRefObject<CrdtProvider | null>;
+  controllerStateRef: React.MutableRefObject<DocumentSessionControllerState>;
+  /** Fragment keys of sections that currently have a mounted Milkdown editor. */
+  mountedEditorFragmentKeysRef: React.MutableRefObject<Set<string>>;
   editorRefs: React.MutableRefObject<Map<number, MilkdownEditorHandle>>;
   pendingFocusRef: React.MutableRefObject<{ index: number; position: "start" | "end"; coords?: { x: number; y: number } } | null>;
   pendingStructureRefocusRef: React.MutableRefObject<string[] | null>;
@@ -72,6 +83,8 @@ export interface UseDocumentCrdtReturn {
   handleCursorExit: (sectionIndex: number, direction: "up" | "down") => void;
   setEditorRef: (index: number, handle: MilkdownEditorHandle | null) => void;
   setViewingSections: (provider: CrdtProvider, sectionIndex: number) => void;
+  requestMode: (mode: RequestedMode, focusTarget?: EditorFocusTarget | null) => Promise<void>;
+  stopObserver: () => void;
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────
@@ -84,10 +97,9 @@ export function useDocumentCrdt({
   setError,
   setStatusMessage,
   loadSections,
-  startObserver,
-  stopObserver,
   onRestoreNotification,
 }: UseDocumentCrdtParams): UseDocumentCrdtReturn {
+  const clientInstanceIdRef = useRef<string>(crypto.randomUUID());
 
   // ── State ─────────────────────────────────────────────────
   const [focusedSectionIndex, setFocusedSectionIndex] = useState<number | null>(null);
@@ -101,9 +113,26 @@ export function useDocumentCrdt({
   const [restructuringKeys, setRestructuringKeys] = useState<Set<string>>(new Set());
   const [proposalMode, setProposalMode] = useState(false);
   const [activeProposalId, setActiveProposalId] = useState<string | null>(null);
+  const [controllerState, setControllerState] = useState<DocumentSessionControllerState>({
+    clientInstanceId: clientInstanceIdRef.current,
+    requestedMode: "none",
+    clientRole: null,
+    attachmentState: "detached",
+    docSessionId: null,
+    editorFocusTarget: null,
+    pendingTransition: null,
+  });
 
   // ── Refs ──────────────────────────────────────────────────
   const crdtProviderRef = useRef<CrdtProvider | null>(null);
+  // controllerStateRef: always reflects the latest controllerState without
+  // being a closure dep. Use this inside async callbacks / effects where
+  // adding controllerState to deps would cause unwanted re-runs.
+  const controllerStateRef = useRef<DocumentSessionControllerState>(controllerState);
+  // mountedEditorFragmentKeysRef: updated whenever editors mount or unmount.
+  // Provides identity-based CRDT-bound exclusion for section refresh logic
+  // (replacing the fragile focused-index ±1 positional heuristic).
+  const mountedEditorFragmentKeysRef = useRef<Set<string>>(new Set());
   const observerRef = useRef<ObserverCrdtProvider | null>(null);
   const editorRefs = useRef<Map<number, MilkdownEditorHandle>>(new Map());
   const pendingFocusRef = useRef<{ index: number; position: "start" | "end"; coords?: { x: number; y: number } } | null>(null);
@@ -114,11 +143,19 @@ export function useDocumentCrdt({
   const proposalSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mouseDownPosRef = useRef<{ x: number; y: number } | null>(null);
   const deferredEditIndexRef = useRef<number | null>(null);
+  const deferredClickCoordsRef = useRef<{ x: number; y: number } | null>(null);
+  const observerDocSessionIdRef = useRef<string | null>(null);
+  // Stable ref to stopEditing, used in observer's onSessionReinit to break circular dep.
+  const stopEditingRef = useRef<(() => void) | null>(null);
 
   // ── Ref sync effects ──────────────────────────────────────
   useEffect(() => {
     crdtProviderRef.current = crdtProvider;
   }, [crdtProvider]);
+
+  useEffect(() => {
+    controllerStateRef.current = controllerState;
+  }, [controllerState]);
 
   useEffect(() => {
     // B4: clear any stale pendingFocusRef when editing stops so it cannot
@@ -142,6 +179,136 @@ export function useDocumentCrdt({
   useEffect(() => {
     sectionsRef.current = sections;
   }, [sections]);
+
+  const applyModeTransitionResult = useCallback((result: ModeTransitionResult) => {
+    setControllerState((prev) => {
+      if (result.clientInstanceId !== prev.clientInstanceId) return prev;
+      if (result.kind === "rejected") {
+        return {
+          ...prev,
+          pendingTransition: null,
+          attachmentState: result.attachmentState,
+          docSessionId: result.docSessionId,
+          clientRole: result.clientRole,
+        };
+      }
+      return {
+        ...prev,
+        requestedMode: result.requestedMode,
+        attachmentState: result.attachmentState,
+        docSessionId: result.docSessionId,
+        clientRole: result.clientRole,
+        pendingTransition: null,
+      };
+    });
+  }, []);
+
+  // ── Internal observer management ──────────────────────────
+  // Observer creation lives here so pages don't construct providers directly.
+
+  const stopObserver = useCallback(() => {
+    if (observerRef.current) {
+      observerRef.current.destroy();
+      observerRef.current = null;
+    }
+  }, []);
+
+  const startObserver = useCallback((
+    docPath: string,
+    opts?: {
+      clientInstanceId?: string;
+      initialTransitionRequest?: ModeTransitionRequest;
+      onModeTransitionResult?: (result: ModeTransitionResult) => void;
+    },
+  ) => {
+    if (observerRef.current) return; // already observing
+    const observer = new ObserverCrdtProvider(docPath, {
+      onChange: () => {
+        // Functional updater avoids stale-closure overwrite: if a content:committed
+        // event triggers setSections(freshSections) before the next render updates
+        // sectionsRef, using sectionsRef.current here would overwrite the fresh data.
+        const ydoc = observer.doc;
+        setSections((current) => {
+          if (current.length === 0) return current;
+          let changed = false;
+          const updated = current.map((section) => {
+            const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path.length === 0);
+            try {
+              const md = fragmentToMarkdown(ydoc, fk);
+              if (md !== null && md !== section.content) {
+                changed = true;
+                return { ...section, content: md };
+              }
+            } catch {
+              // Fragment not yet in Y.Doc — keep existing content
+            }
+            return section;
+          });
+          return changed ? updated : current;
+        });
+      },
+      onSessionEnded: () => {
+        // Editing session ended — fall back to REST content
+        if (docPath) loadSections(docPath);
+        // Observer auto-reconnects to wait for next session
+      },
+      onStructureWillChange: () => {
+        // Structure changed — reload sections from REST to get new skeleton
+        if (docPath) loadSections(docPath);
+      },
+      onSessionReinit: () => {
+        // Document restored (close code 4022) — exit edit mode
+        stopEditingRef.current?.();
+      },
+      onRestoreNotification: (payload) => {
+        onRestoreNotification?.(payload);
+      },
+      onModeTransitionResult: (result) => {
+        opts?.onModeTransitionResult?.(result);
+      },
+    }, {
+      clientInstanceId: opts?.clientInstanceId,
+      initialTransitionRequest: opts?.initialTransitionRequest,
+    });
+    observerRef.current = observer;
+    observer.connect();
+  }, [setSections, loadSections, onRestoreNotification]);
+
+  // Observer replica safety: observer Y.Doc is scoped to one DocSessionId.
+  // Recreate when attached session identity changes, or when it becomes null after attach.
+  useEffect(() => {
+    if (!decodedDocPath) return;
+    if (controllerState.requestedMode !== "observer") {
+      observerDocSessionIdRef.current = null;
+      return;
+    }
+    const prev = observerDocSessionIdRef.current;
+    const next = controllerState.docSessionId;
+    const changed = prev !== null && next !== prev;
+    const detachedAfterAttach = prev !== null && next === null;
+    if (!changed && !detachedAfterAttach) {
+      if (prev === null && next) observerDocSessionIdRef.current = next;
+      return;
+    }
+    observerDocSessionIdRef.current = next;
+    stopObserver();
+    const transition: ModeTransitionRequest = {
+      requestId: crypto.randomUUID(),
+      clientInstanceId: clientInstanceIdRef.current,
+      docPath: decodedDocPath,
+      requestedMode: "observer",
+      editorFocusTarget: null,
+    };
+    setControllerState((prevState) => ({
+      ...prevState,
+      pendingTransition: transition,
+    }));
+    startObserver(decodedDocPath, {
+      clientInstanceId: clientInstanceIdRef.current,
+      initialTransitionRequest: transition,
+      onModeTransitionResult: applyModeTransitionResult,
+    });
+  }, [controllerState.requestedMode, controllerState.docSessionId, decodedDocPath, stopObserver, startObserver, applyModeTransitionResult]);
 
   // ── Provider cleanup on unmount ────────────────────────────
   useEffect(() => {
@@ -168,11 +335,42 @@ export function useDocumentCrdt({
     setRestructuringKeys(new Set());
     editorRefs.current.clear();
     pendingFocusRef.current = null;
+    setControllerState((prev) => ({
+      ...prev,
+      requestedMode: "none",
+      clientRole: null,
+      attachmentState: "detached",
+      docSessionId: null,
+      editorFocusTarget: null,
+      pendingTransition: null,
+    }));
     // Re-create observer to resume passive live sync
     if (decodedDocPath) {
-      startObserver(decodedDocPath);
+      const transition: ModeTransitionRequest = {
+        requestId: crypto.randomUUID(),
+        clientInstanceId: clientInstanceIdRef.current,
+        docPath: decodedDocPath,
+        requestedMode: "observer",
+        editorFocusTarget: null,
+      };
+      setControllerState((prev) => ({
+        ...prev,
+        requestedMode: "observer",
+        pendingTransition: transition,
+      }));
+      startObserver(decodedDocPath, {
+        clientInstanceId: clientInstanceIdRef.current,
+        initialTransitionRequest: transition,
+        onModeTransitionResult: applyModeTransitionResult,
+      });
     }
-  }, [decodedDocPath, startObserver]);
+  }, [decodedDocPath, startObserver, applyModeTransitionResult]);
+
+  // Keep stopEditingRef in sync so the observer's onSessionReinit can call it
+  // without a circular dependency through startObserver.
+  useEffect(() => {
+    stopEditingRef.current = stopEditing;
+  }, [stopEditing]);
 
   // ── Proposal mode enter/exit ───────────────────────────────
   const enterProposalMode = useCallback(async (proposalId: string) => {
@@ -253,6 +451,18 @@ export function useDocumentCrdt({
 
     try {
       const doc = new Y.Doc();
+      const transition: ModeTransitionRequest = {
+        requestId: crypto.randomUUID(),
+        clientInstanceId: clientInstanceIdRef.current,
+        docPath: decodedDocPath,
+        requestedMode: "editor",
+        editorFocusTarget: null,
+      };
+      setControllerState((prev) => ({
+        ...prev,
+        requestedMode: "editor",
+        pendingTransition: transition,
+      }));
       const provider = new CrdtProvider(doc, decodedDocPath, {
         onStateChange: (state: CrdtConnectionState) => {
           setCrdtState(state);
@@ -261,9 +471,11 @@ export function useDocumentCrdt({
           // Y.Doc now has server state — apply deferred focus if pending
           const deferredIdx = deferredEditIndexRef.current;
           if (deferredIdx !== null) {
+            const coords = deferredClickCoordsRef.current;
             deferredEditIndexRef.current = null;
+            deferredClickCoordsRef.current = null;
             setFocusedSectionIndex(deferredIdx);
-            pendingFocusRef.current = { index: deferredIdx, position: "start" };
+            pendingFocusRef.current = { index: deferredIdx, position: "start", coords: coords ?? undefined };
           }
         },
         onError: (reason: string) => setCrdtError(`CRDT sync error: ${reason}`),
@@ -325,12 +537,16 @@ export function useDocumentCrdt({
         onRestoreNotification: (payload) => {
           onRestoreNotification?.(payload);
         },
+        onModeTransitionResult: applyModeTransitionResult,
         onIdleTimeout: () => {
           stopEditing();
           if (decodedDocPath) {
             loadSections(decodedDocPath);
           }
         },
+      }, {
+        clientInstanceId: clientInstanceIdRef.current,
+        initialTransitionRequest: transition,
       });
       provider.connect();
       setCrdtProvider(provider);
@@ -342,7 +558,7 @@ export function useDocumentCrdt({
       setCrdtError(err instanceof Error ? err.message : String(err));
       return null;
     }
-  }, [decodedDocPath, stopEditing, stopObserver, loadSections, setError, setStatusMessage]);
+  }, [decodedDocPath, stopEditing, stopObserver, loadSections, setError, setStatusMessage, onRestoreNotification, applyModeTransitionResult]);
 
   // ── viewingPresence: set Awareness viewingSections on focus change ──
   const setViewingSections = useCallback((provider: CrdtProvider, sectionIndex: number) => {
@@ -372,12 +588,17 @@ export function useDocumentCrdt({
     } else {
       // New provider — defer focus until onSynced fires (Y.Doc is empty until then)
       deferredEditIndexRef.current = sectionIndex;
+      deferredClickCoordsRef.current = clickCoords ?? null;
     }
 
     // Notify server of section focus (editingPresence)
     const section = sections[sectionIndex];
     if (section) {
       provider.focusSection(section.heading_path);
+      setControllerState((prev) => ({
+        ...prev,
+        editorFocusTarget: { heading_path: section.heading_path },
+      }));
     }
     setViewingSections(provider, sectionIndex);
   }, [ensureProvider, sections, setViewingSections]);
@@ -398,6 +619,10 @@ export function useDocumentCrdt({
     const targetSection = sections[targetIndex];
     if (provider && targetSection) {
       provider.focusSection(targetSection.heading_path);
+      setControllerState((prev) => ({
+        ...prev,
+        editorFocusTarget: { heading_path: targetSection.heading_path },
+      }));
     }
     // viewingPresence: broadcast which section we're viewing
     if (provider) {
@@ -459,7 +684,66 @@ export function useDocumentCrdt({
     } else {
       editorRefs.current.delete(index);
     }
+    // Keep mountedEditorFragmentKeysRef in sync for identity-based CRDT exclusion.
+    const mounted = new Set<string>();
+    for (const i of editorRefs.current.keys()) {
+      const s = sectionsRef.current[i];
+      if (s) {
+        mounted.add(fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0));
+      }
+    }
+    mountedEditorFragmentKeysRef.current = mounted;
   }, []);
+
+  const requestMode = useCallback(async (mode: RequestedMode, focusTarget?: EditorFocusTarget | null): Promise<void> => {
+    if (!decodedDocPath) return;
+    if (mode === "none") {
+      stopObserver();
+      if (crdtProviderRef.current) {
+        stopEditing();
+      } else {
+        setControllerState((prev) => ({
+          ...prev,
+          requestedMode: "none",
+          clientRole: null,
+          attachmentState: "detached",
+          docSessionId: null,
+          editorFocusTarget: null,
+          pendingTransition: null,
+        }));
+      }
+      return;
+    }
+    if (mode === "observer") {
+      if (crdtProviderRef.current) {
+        stopEditing();
+        return;
+      }
+      const transition: ModeTransitionRequest = {
+        requestId: crypto.randomUUID(),
+        clientInstanceId: clientInstanceIdRef.current,
+        docPath: decodedDocPath,
+        requestedMode: "observer",
+        editorFocusTarget: null,
+      };
+      setControllerState((prev) => ({
+        ...prev,
+        requestedMode: "observer",
+        editorFocusTarget: null,
+        pendingTransition: transition,
+      }));
+      startObserver(decodedDocPath, {
+        clientInstanceId: clientInstanceIdRef.current,
+        initialTransitionRequest: transition,
+        onModeTransitionResult: applyModeTransitionResult,
+      });
+      return;
+    }
+    await ensureProvider();
+    if (focusTarget) {
+      setControllerState((prev) => ({ ...prev, editorFocusTarget: focusTarget }));
+    }
+  }, [decodedDocPath, stopObserver, stopEditing, startObserver, ensureProvider, applyModeTransitionResult]);
 
   return {
     // State
@@ -479,9 +763,12 @@ export function useDocumentCrdt({
     setRestructuringKeys,
     proposalMode,
     activeProposalId,
+    controllerState,
 
     // Refs
     crdtProviderRef,
+    controllerStateRef,
+    mountedEditorFragmentKeysRef,
     editorRefs,
     pendingFocusRef,
     pendingStructureRefocusRef,
@@ -502,5 +789,7 @@ export function useDocumentCrdt({
     handleCursorExit,
     setEditorRef,
     setViewingSections,
+    requestMode,
+    stopObserver,
   };
 }

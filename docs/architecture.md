@@ -117,27 +117,65 @@ One `Y.Doc` per document, containing one `Y.XmlFragment` per section.
 - Reconstructed from disk on reconnect (prefers raw fragments, falls back to overlay+canonical)
 
 **DocSession tracks:**
-- `holders`: Set of connected writer IDs
-- `sectionFocus`: Map of writerId → heading path (drives editingPresence and agent blocking)
+- `holders`: Map of writerId → `HolderEntry { editorSocketIds: Set<string>, observerSocketIds: Set<string> }` — per-user socket-id sets, not a role flag
+- `contributors`: Map of writerId → WriterIdentity — accumulated over session lifetime
+- `presenceManager`: PresenceManager — explicit focus state per writer
 - `perUserDirty`: Which user dirtied which fragments (for Mirror panel)
 - `fragmentFirstActivity` / `fragmentLastActivity`: Activity timestamps per fragment
 - `baseHead`: Git HEAD SHA when session was created
+- `state`: `"acquiring" | "active" | "flushing" | "committing" | "ended"` — explicit state machine
 
 ### Layer 4: WebSocket transport
 
-Binary protocol over `/ws/crdt/{docPath}` with 9 message types:
+A unified endpoint `/ws/crdt/{docPath}` handles all clients (editors and observers).
+
+**Mode transition protocol (all clients start detached):**
+
+Every new connection starts with `requestedMode: "none"` and `attachmentState: "detached"`. The frontend sends `MSG_MODE_TRANSITION_REQUEST` (0x0C) to request a role, and the backend replies with `MSG_MODE_TRANSITION_RESULT` (0x0D). The backend is authoritative — the frontend waits for the result rather than assuming the transition succeeded.
+
+**CRDT remote-session types** (defined in `sharedlibs/shared-types/src/index.ts`, re-exported everywhere):
+
+| Type | Description |
+|------|-------------|
+| `ClientRole` | `"observer" \| "editor"` — applied server role for a connected participant |
+| `ClientInstanceId` | Per-tab runtime identity (UUID). Never use `writerId` for live-socket identity. |
+| `RequestedMode` | `"none" \| "observer" \| "editor"` — desired mode requested by the tab-local controller |
+| `AttachmentState` | `"detached" \| "waiting_for_session" \| "attached_to_session"` — relative to a live DocSession |
+| `DocSessionId` | Explicit identity of one live backend DocSession. Hard boundary between Y.Doc lifetimes. |
+| `EditorFocusTarget` | `{ heading_path: string[] }` — the one section actively edited by this tab |
+| `RemoteParticipant` | Server-authoritative runtime state for one connected tab (holds all of the above) |
+| `ModeTransitionRequest` | Frontend → backend request to change mode |
+| `ModeTransitionResult` | Backend → frontend ack/reject (discriminated union `success \| rejected`) |
+| `DocumentSessionControllerState` | Frontend-only single source of truth for this tab's CRDT state |
+
+**Binary message types:**
 
 | Code | Name | Direction | Purpose |
 |------|------|-----------|---------|
 | 0x00 | SYNC_STEP_1 | Bidirectional | Y.js sync initiation |
-| 0x01 | SYNC_STEP_2 | Bidirectional | Y.js sync response |
-| 0x02 | YJS_UPDATE | Bidirectional | Y.js incremental update |
+| 0x01 | SYNC_STEP_2 | Server→Client | Y.js sync response (editors may also send) |
+| 0x02 | YJS_UPDATE | Bidirectional | Y.js incremental update (editor→server and server→all) |
 | 0x03 | AWARENESS | Bidirectional | Presence/cursor data |
 | 0x04 | SESSION_FLUSHED | Server→Client | Confirms which fragments were saved |
-| 0x05 | SECTION_FOCUS | Client→Server | Reports which section the user is editing |
+| 0x05 | SECTION_FOCUS | Editor→Server | Reports which section the user is editing |
 | 0x06 | SESSION_FLUSH_STARTED | Server→Client | Signals flush I/O in progress |
-| 0x07 | ACTIVITY_PULSE | Client→Server | Keep-alive for active editing (~2-3s debounced) |
+| 0x07 | ACTIVITY_PULSE | Editor→Server | Keep-alive for active editing (~2-3s debounced) |
 | 0x08 | STRUCTURE_WILL_CHANGE | Server→Client | Structural normalization notification |
+| 0x09 | SECTION_MUTATE | Editor→Server | Replace fragment content (agent publish path) |
+| 0x0A | MUTATE_RESULT | Server→Client | Response to SECTION_MUTATE |
+| 0x0B | RESTORE_NOTIFICATION | Server→Client | Document restored (after close code 4022) |
+| 0x0C | MODE_TRANSITION_REQUEST | Client→Server | Request mode transition |
+| 0x0D | MODE_TRANSITION_RESULT | Server→Client | Mode transition ack/reject |
+
+**Application-level close codes:**
+
+| Code | Meaning | Client behaviour |
+|------|---------|-----------------|
+| 4010–4019 | Hard rejection (bad auth, bad URL) | Do not reconnect |
+| 4020 | Idle timeout | Reconnect (user navigated away) |
+| 4021 | Session ended (last editor left) | Reconnect and wait for next session |
+| 4022 | Document restored | Reconnect immediately (no backoff) |
+| 4023 | Superseded by new tab | Close the old tab's editor socket |
 
 ### Layer 5: Browser editors
 

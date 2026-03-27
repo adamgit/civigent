@@ -110,6 +110,12 @@ export function getImportRoot(): string {
   return path.resolve(process.env.KS_IMPORT_ROOT ?? "/import");
 }
 
+// ─── Monitoring ─────────────────────────────────────────────────────
+
+export function getMonitoringRoot(): string {
+  return path.join(getDataRoot(), "monitoring");
+}
+
 // ─── Ensure directories exist ──────────────────────────────────────
 
 export async function ensureV3Directories(): Promise<void> {
@@ -125,6 +131,7 @@ export async function ensureV3Directories(): Promise<void> {
     getSessionAuthorsRoot(),
     getAuthRoot(),
     getSnapshotRoot(),
+    getMonitoringRoot(),
   ];
   for (const dir of dirs) {
     await mkdir(dir, { recursive: true });

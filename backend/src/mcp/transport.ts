@@ -19,6 +19,7 @@ import { resolveAuthenticatedWriter, type AuthenticatedWriter } from "../auth/co
 import { getOidcPublicUrl } from "../auth/oauth-config.js";
 import type { WsServerEvent } from "../types/shared.js";
 import { JSONRPC_ERRORS, makeErrorResponse } from "./protocol.js";
+import { activityLog } from "../monitoring/activity-log.js";
 
 // ─── Options ─────────────────────────────────────────────
 
@@ -40,6 +41,8 @@ function cleanExpiredSessions(): void {
   for (const [id, entry] of sessions) {
     if (now - entry.lastUsed > SESSION_TTL_MS) {
       sessions.delete(id);
+      // Fire-and-forget: flush activity log for expired session
+      activityLog.flush(id).catch(() => {});
     }
   }
 }
@@ -76,7 +79,7 @@ export function createMcpRouter(options: McpTransportOptions): express.Router {
 
     if (!sessionEntry) {
       sessionId = randomUUID();
-      sessionEntry = { session: {}, writer, lastUsed: Date.now() };
+      sessionEntry = { session: { sessionId }, writer, lastUsed: Date.now() };
       sessions.set(sessionId, sessionEntry);
     } else {
       sessionId = incomingSessionId!;
@@ -113,10 +116,11 @@ export function createMcpRouter(options: McpTransportOptions): express.Router {
 
   // GET /mcp — SSE endpoint for server-initiated messages (not needed for stateless tools)
   // DELETE /mcp — session termination
-  router.delete("/", (req: Request, res: Response) => {
+  router.delete("/", async (req: Request, res: Response) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
     if (sessionId) {
       sessions.delete(sessionId);
+      await activityLog.flush(sessionId);
     }
     res.status(204).end();
   });

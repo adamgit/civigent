@@ -32,6 +32,8 @@ export interface ToolContext {
  * Currently holds the Tier 2 "pending intent" set by plan_changes.
  */
 export interface McpSession {
+  /** MCP session ID (set by transport layer, used for activity logging) */
+  sessionId?: string;
   /** Intent label set by plan_changes, consumed by next write */
   pendingIntent?: string;
 }
@@ -97,6 +99,23 @@ export class ToolRegistry {
       if (ctx.writer.type === "agent") {
         const { agentEventLog } = await import("./agent-event-log.js");
         agentEventLog.append(ctx.writer, { kind: "tool_call", tool: name });
+
+        // Persistent activity log — append per-call metadata for JSONL persistence
+        if (ctx.session.sessionId) {
+          const { activityLog } = await import("../monitoring/activity-log.js");
+          const metadata: Record<string, unknown> = {};
+          if (typeof args.doc_path === "string") metadata.doc_path = args.doc_path;
+          if (Array.isArray(args.heading_path)) metadata.heading_path = args.heading_path;
+          if (Array.isArray(args.sections)) metadata.sections_count = args.sections.length;
+          if (typeof args.content === "string") metadata.content_chars = args.content.length;
+          activityLog.record(
+            ctx.session.sessionId,
+            ctx.writer.id,
+            ctx.writer.displayName,
+            name,
+            metadata,
+          );
+        }
       }
       return result;
     } catch (error) {

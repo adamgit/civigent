@@ -19,6 +19,7 @@ import {
   lookupDocSession,
   acquireDocSession,
   releaseDocSession,
+  getDocSessionId,
   updateSectionFocus,
   joinSession,
   updateActivity,
@@ -46,6 +47,7 @@ import { getHeadSha } from "../storage/git-repo.js";
 import { getDataRoot } from "../storage/data-root.js";
 import { flushDocSessionToDisk, commitSessionFilesToCanonical, cleanupSessionFiles } from "../storage/session-store.js";
 import type { WsServerEvent, WriterIdentity } from "../types/shared.js";
+import type { ClientInstanceId, RemoteParticipant, ModeTransitionRequest, ModeTransitionResult } from "../types/shared.js";
 import {
   MSG_SYNC_STEP_1,
   MSG_SYNC_STEP_2,
@@ -54,6 +56,7 @@ import {
   MSG_SECTION_FOCUS,
   MSG_ACTIVITY_PULSE,
   MSG_SECTION_MUTATE,
+  MSG_MODE_TRANSITION_REQUEST,
   encodeSyncStep2,
   encodeUpdate,
   encodeSessionFlushStarted,
@@ -61,6 +64,7 @@ import {
   encodeStructureWillChange,
   encodeMutateResult,
   encodeRestoreNotification,
+  encodeModeTransitionResult,
   decodeMessage,
   parseCrdtUrl,
 } from "./crdt-protocol.js";
@@ -77,6 +81,33 @@ import {
 // must remain in sync with session holder lifecycle (see addObserverHolder).
 
 const docSockets = new Map<string, Set<WebSocket>>();
+const participants = new Map<ClientInstanceId, RemoteParticipant>();
+
+function setParticipantFromSocketState(state: CrdtSocketState): void {
+  participants.set(state.clientInstanceId, {
+    clientInstanceId: state.clientInstanceId,
+    writerId: state.writerId,
+    docPath: state.docPath,
+    clientRole: state.socketRole,
+    requestedMode: state.requestedMode,
+    attachmentState: state.attachmentState,
+    docSessionId: state.docSessionId,
+    editorFocusTarget: state.editorFocusTarget,
+  });
+}
+
+function updateParticipant(
+  clientInstanceId: ClientInstanceId,
+  patch: Partial<Pick<RemoteParticipant, "clientRole" | "requestedMode" | "attachmentState" | "docSessionId" | "editorFocusTarget">>,
+): void {
+  const existing = participants.get(clientInstanceId);
+  if (!existing) return;
+  participants.set(clientInstanceId, { ...existing, ...patch });
+}
+
+function removeParticipant(clientInstanceId: ClientInstanceId): void {
+  participants.delete(clientInstanceId);
+}
 
 function addSocket(docPath: string, socket: WebSocket): void {
   let sockets = docSockets.get(docPath);
@@ -139,47 +170,333 @@ export function setCrdtEventHandler(handler: (event: WsServerEvent) => void): vo
 
 // ─── Message handler ────────────────────────────────────────────
 
-function handleMessage(
+async function finalizeSessionEnd(state: CrdtSocketState, result: Awaited<ReturnType<typeof releaseDocSession>>): Promise<void> {
+  if (!result.sessionEnded) return;
+  // Build contributors list: the disconnecting editor is primary; others from session.
+  const primaryWriter: WriterIdentity = {
+    id: state.writerId,
+    type: "human" as const,
+    displayName: state.writerDisplayName,
+  };
+  const contributors: WriterIdentity[] = [
+    primaryWriter,
+    ...result.contributors.filter((c) => c.id !== state.writerId),
+  ];
+  const commitResult = await commitSessionFilesToCanonical(contributors, state.docPath);
+  if (commitResult.skeletonErrors.length > 0) {
+    throw new Error(
+      `Session commit skipped for ${state.docPath}: corrupt overlay skeleton. ` +
+      `Session files preserved on disk. Remove the corrupt overlay to recover.\n` +
+      commitResult.skeletonErrors.map(e => e.error).join("\n"),
+    );
+  }
+  if (commitResult.sectionsCommitted > 0) {
+    await cleanupSessionFiles(state.docPath);
+    if (onWsEvent && commitResult.commitSha) {
+      onWsEvent({
+        type: "content:committed",
+        doc_path: state.docPath,
+        sections: commitResult.committedSections,
+        commit_sha: commitResult.commitSha,
+        source: "human_auto_commit",
+        writer_id: contributors[0].id,
+        writer_display_name: contributors[0].displayName,
+        writer_type: "human",
+        contributor_ids: contributors.map((c) => c.id),
+        seconds_ago: 0,
+      });
+
+      // Emit dirty:changed for all contributors so each frontend can clear its dirty state.
+      for (const contributor of contributors) {
+        for (const section of commitResult.committedSections) {
+          onWsEvent({
+            type: "dirty:changed",
+            writer_id: contributor.id,
+            doc_path: section.doc_path,
+            heading_path: section.heading_path,
+            dirty: false,
+            base_head: null,
+            committed_head: commitResult.commitSha,
+          });
+        }
+      }
+    }
+  }
+
+  closeObserversForDoc(state.docPath, 4021, "session_ended");
+}
+
+async function applyModeTransition(
   socket: WebSocket,
-  doc: Y.Doc,
   state: CrdtSocketState,
-  session: DocSession,
+  request: ModeTransitionRequest,
+): Promise<ModeTransitionResult> {
+  if (request.clientInstanceId !== state.clientInstanceId) {
+    return {
+      kind: "rejected",
+      requestId: request.requestId,
+      clientInstanceId: state.clientInstanceId,
+      requestedMode: request.requestedMode,
+      attachmentState: state.attachmentState,
+      docSessionId: state.docSessionId,
+      clientRole: state.socketRole,
+      reason: "clientInstanceId mismatch",
+    };
+  }
+
+  state.requestedMode = request.requestedMode;
+  state.editorFocusTarget = request.editorFocusTarget;
+
+  if (request.requestedMode === "none") {
+    if (state.socketRole === "observer") {
+      removeObserverHolder(state.docPath, state.writerId, state.socketId);
+    } else {
+      const releaseResult = await releaseDocSession(state.docPath, state.writerId, state.socketId);
+      await finalizeSessionEnd(state, releaseResult);
+    }
+    state.attachmentState = "detached";
+    state.docSessionId = null;
+    updateParticipant(state.clientInstanceId, {
+      requestedMode: state.requestedMode,
+      editorFocusTarget: state.editorFocusTarget,
+      attachmentState: state.attachmentState,
+      docSessionId: null,
+    });
+    return {
+      kind: "success",
+      requestId: request.requestId,
+      clientInstanceId: state.clientInstanceId,
+      requestedMode: "none",
+      attachmentState: "detached",
+      docSessionId: null,
+      clientRole: null,
+    };
+  }
+
+  if (request.requestedMode === "observer") {
+    if (!state.canRead) {
+      return {
+        kind: "rejected",
+        requestId: request.requestId,
+        clientInstanceId: state.clientInstanceId,
+        requestedMode: request.requestedMode,
+        attachmentState: state.attachmentState,
+        docSessionId: state.docSessionId,
+        clientRole: state.socketRole,
+        reason: "Read permission required for observer mode",
+      };
+    }
+    if (state.socketRole === "editor") {
+      return {
+        kind: "rejected",
+        requestId: request.requestId,
+        clientInstanceId: state.clientInstanceId,
+        requestedMode: request.requestedMode,
+        attachmentState: state.attachmentState,
+        docSessionId: state.docSessionId,
+        clientRole: state.socketRole,
+        reason: "Transition to observer requires requesting none first",
+      };
+    }
+
+    const session = lookupDocSession(state.docPath);
+    state.socketRole = "observer";
+    if (session) {
+      addObserverHolder(session, state.writerId, {
+        id: state.writerId,
+        type: "human" as const,
+        displayName: state.writerDisplayName,
+      }, state.socketId);
+      if (!state.joined) {
+        joinSession(session, (msg) => socket.send(msg), (event) => { if (onWsEvent) onWsEvent(event); });
+        state.joined = true;
+        const notification = getPendingRestoreNotification(state.docPath, state.writerId);
+        if (notification) sendToSocket(socket, encodeRestoreNotification(notification));
+      }
+      state.docSessionId = session.docSessionId;
+      state.attachmentState = "attached_to_session";
+    } else {
+      state.docSessionId = null;
+      state.attachmentState = "waiting_for_session";
+    }
+  } else {
+    if (!state.canWrite) {
+      return {
+        kind: "rejected",
+        requestId: request.requestId,
+        clientInstanceId: state.clientInstanceId,
+        requestedMode: request.requestedMode,
+        attachmentState: state.attachmentState,
+        docSessionId: state.docSessionId,
+        clientRole: state.socketRole,
+        reason: "Write permission required for editor mode",
+      };
+    }
+    if (state.socketRole === "observer") {
+      return {
+        kind: "rejected",
+        requestId: request.requestId,
+        clientInstanceId: state.clientInstanceId,
+        requestedMode: request.requestedMode,
+        attachmentState: state.attachmentState,
+        docSessionId: state.docSessionId,
+        clientRole: state.socketRole,
+        reason: "Transition to editor requires requesting none first",
+      };
+    }
+    // Enforce single editor socket per user per document.
+    for (const existingSocket of docSockets.get(state.docPath) ?? []) {
+      if (existingSocket === socket) continue;
+      const st = socketState.get(existingSocket);
+      if (st?.writerId === state.writerId && st?.socketRole === "editor" && existingSocket.readyState === WebSocket.OPEN) {
+        existingSocket.close(4023, "superseded_by_new_tab");
+      }
+    }
+    const baseHead = await getHeadSha(getDataRoot());
+    const session = await acquireDocSession(
+      state.docPath,
+      state.writerId,
+      baseHead,
+      { id: state.writerId, type: "human", displayName: state.writerDisplayName },
+      state.socketId,
+    );
+    state.socketRole = "editor";
+    state.docSessionId = session.docSessionId;
+    state.attachmentState = "attached_to_session";
+
+    if (!state.joined) {
+      joinSession(session, (msg) => socket.send(msg), (event) => { if (onWsEvent) onWsEvent(event); });
+      state.joined = true;
+      const notification = getPendingRestoreNotification(state.docPath, state.writerId);
+      if (notification) sendToSocket(socket, encodeRestoreNotification(notification));
+    }
+
+    // First editor in session: attach waiting observers.
+    if (countEditorSockets(session) === 1) {
+      for (const client of docSockets.get(state.docPath) ?? []) {
+        if (client === socket) continue;
+        const st = socketState.get(client);
+        if (!st || st.socketRole !== "observer" || st.joined || client.readyState !== WebSocket.OPEN) continue;
+        addObserverHolder(session, st.writerId, {
+          id: st.writerId,
+          type: "human" as const,
+          displayName: st.writerDisplayName,
+        }, st.socketId);
+        st.docSessionId = session.docSessionId;
+        st.attachmentState = "attached_to_session";
+        joinSession(session, (msg) => client.send(msg), (event) => { if (onWsEvent) onWsEvent(event); });
+        st.joined = true;
+        const obsNotification = getPendingRestoreNotification(state.docPath, st.writerId);
+        if (obsNotification) sendToSocket(client, encodeRestoreNotification(obsNotification));
+        updateParticipant(st.clientInstanceId, {
+          attachmentState: "attached_to_session",
+          docSessionId: session.docSessionId,
+        });
+      }
+    }
+  }
+
+  updateParticipant(state.clientInstanceId, {
+    requestedMode: state.requestedMode,
+    editorFocusTarget: state.editorFocusTarget,
+    attachmentState: state.attachmentState,
+    docSessionId: state.docSessionId,
+    clientRole: state.socketRole,
+  });
+
+  return {
+    kind: "success",
+    requestId: request.requestId,
+    clientInstanceId: state.clientInstanceId,
+    requestedMode: state.requestedMode,
+    attachmentState: state.attachmentState,
+    docSessionId: state.docSessionId,
+    clientRole: state.socketRole,
+  };
+}
+
+async function handleMessage(
+  socket: WebSocket,
+  state: CrdtSocketState,
   data: Buffer,
-): void {
+): Promise<void> {
   const decoded = decodeMessage(data);
   if (!decoded) return;
 
   const { type: msgType, payload } = decoded;
 
-  // Block write operations from observers (role is anchored in CrdtSocketState.socketRole).
-  if (state.socketRole === "observer") {
-    if (msgType === MSG_YJS_UPDATE || msgType === MSG_SECTION_FOCUS || msgType === MSG_ACTIVITY_PULSE || msgType === MSG_SECTION_MUTATE) {
+  const participant = participants.get(state.clientInstanceId);
+  const effectiveRole = participant?.clientRole ?? state.socketRole;
+
+  // Block write operations from observers (server-authoritative participant role).
+  if (effectiveRole === "observer") {
+    if (
+      msgType === MSG_SYNC_STEP_2 ||
+      msgType === MSG_YJS_UPDATE ||
+      msgType === MSG_SECTION_FOCUS ||
+      msgType === MSG_ACTIVITY_PULSE ||
+      msgType === MSG_SECTION_MUTATE
+    ) {
       return;
     }
   }
+  if (state.requestedMode === "none" && msgType !== MSG_MODE_TRANSITION_REQUEST) {
+    return;
+  }
+
+  const activeSession = lookupDocSession(state.docPath);
+  const session = activeSession;
+  const doc = session?.fragments.ydoc;
+
+  if (!doc && msgType !== MSG_MODE_TRANSITION_REQUEST) {
+    // While detached/waiting there is no doc to process sync/update messages against.
+    return;
+  }
 
   switch (msgType) {
+    case MSG_MODE_TRANSITION_REQUEST: {
+      let request: ModeTransitionRequest;
+      try {
+        request = JSON.parse(new TextDecoder().decode(payload)) as ModeTransitionRequest;
+      } catch {
+        const rejected: ModeTransitionResult = {
+          kind: "rejected",
+          requestId: "invalid",
+          clientInstanceId: state.clientInstanceId,
+          requestedMode: state.requestedMode,
+          attachmentState: state.attachmentState,
+          docSessionId: state.docSessionId,
+          clientRole: state.socketRole,
+          reason: "Invalid mode transition payload",
+        };
+        sendToSocket(socket, encodeModeTransitionResult(rejected));
+        break;
+      }
+      const result = await applyModeTransition(socket, state, request);
+      sendToSocket(socket, encodeModeTransitionResult(result));
+      break;
+    }
     case MSG_SYNC_STEP_1: {
-      const response = encodeSyncStep2(doc, payload);
+      const response = encodeSyncStep2(doc!, payload);
       sendToSocket(socket, response);
       break;
     }
     case MSG_SYNC_STEP_2: {
-      Y.applyUpdate(doc, payload);
+      Y.applyUpdate(doc!, payload);
       break;
     }
     case MSG_YJS_UPDATE: {
-      Y.applyUpdate(doc, payload);
+      Y.applyUpdate(doc!, payload);
       broadcastToOthers(state.docPath, socket, encodeUpdate(payload));
       updateActivity(state.docPath);
 
       // Track which fragment this writer dirtied (for author metadata).
-      const focusedPath = session.presenceManager.getAll().get(state.writerId);
+      const focusedPath = session!.presenceManager.getAll().get(state.writerId);
       if (focusedPath) {
         try {
-          const entry = session.fragments.skeleton.resolve(focusedPath);
+          const entry = session!.fragments.skeleton.resolve(focusedPath);
           const fragmentKey = FragmentStore.fragmentKeyFor(entry);
-          session.fragments.markDirty(fragmentKey);
+          session!.fragments.markDirty(fragmentKey);
           const isNewlyDirty = markFragmentDirty(state.docPath, state.writerId, fragmentKey);
           if (isNewlyDirty && onWsEvent) {
             onWsEvent({
@@ -188,7 +505,7 @@ function handleMessage(
               doc_path: state.docPath,
               heading_path: focusedPath,
               dirty: true,
-              base_head: session.baseHead,
+              base_head: session!.baseHead,
             });
           }
         } catch {
@@ -196,11 +513,11 @@ function handleMessage(
         }
       } else {
         // No focus set yet — mark only the fragments actually touched by this transaction
-        for (const fragmentKey of session.lastTouchedFragments) {
-          session.fragments.markDirty(fragmentKey);
+        for (const fragmentKey of session!.lastTouchedFragments) {
+          session!.fragments.markDirty(fragmentKey);
           markFragmentDirty(state.docPath, state.writerId, fragmentKey);
         }
-        session.lastTouchedFragments.clear();
+        session!.lastTouchedFragments.clear();
       }
 
       triggerDebouncedFlush(state.docPath);
@@ -219,13 +536,15 @@ function handleMessage(
         .decode(payload)
         .split("\x00")
         .filter(Boolean);
+      state.editorFocusTarget = headingPath.length > 0 ? { heading_path: headingPath } : null;
+      updateParticipant(state.clientInstanceId, { editorFocusTarget: state.editorFocusTarget });
 
       const { oldFocus } = updateSectionFocus(state.docPath, state.writerId, headingPath);
 
       // Normalize the LEFT (old) fragment on focus change
       if (oldFocus) {
         let oldEntry = null;
-        try { oldEntry = session.fragments.skeleton.resolve(oldFocus); } catch (e) {
+        try { oldEntry = session!.fragments.skeleton.resolve(oldFocus); } catch (e) {
           if (!(e instanceof Error) || !e.message.startsWith("Skeleton integrity error")) throw e;
         }
         if (oldEntry) {
@@ -261,7 +580,6 @@ function handleMessage(
     }
     case MSG_ACTIVITY_PULSE: {
       updateEditPulse(state.docPath, state.writerId);
-      // Accumulate contributor for commit attribution (the unambiguous "actively editing" signal).
       addContributor(state.docPath, state.writerId, {
         id: state.writerId,
         type: "human" as const,
@@ -279,18 +597,18 @@ function handleMessage(
         break;
       }
 
-      const entry = session.fragments.resolveEntryForKey(parsed.fragmentKey);
+      const entry = session!.fragments.resolveEntryForKey(parsed.fragmentKey);
       if (!entry) {
         sendToSocket(socket, encodeMutateResult(false, `Fragment key not found: ${parsed.fragmentKey}`));
         break;
       }
 
-      const svBefore = Y.encodeStateVector(doc);
-      session.fragments.populateFragment(parsed.fragmentKey, parsed.markdown);
-      session.fragments.markDirty(parsed.fragmentKey);
+      const svBefore = Y.encodeStateVector(doc!);
+      session!.fragments.setFragmentContent(parsed.fragmentKey, parsed.markdown);
+      session!.fragments.markDirty(parsed.fragmentKey);
       markFragmentDirty(state.docPath, state.writerId, parsed.fragmentKey);
 
-      const update = Y.encodeStateAsUpdate(doc, svBefore);
+      const update = Y.encodeStateAsUpdate(doc!, svBefore);
       if (update.length > 0) {
         broadcastToOthers(state.docPath, socket, encodeUpdate(update));
       }
@@ -394,138 +712,31 @@ export interface CrdtWsServer {
 export function createCrdtWsServer(): CrdtWsServer {
   const wss = new WebSocketServer({ noServer: true });
 
-  // ─── Unified connection handler (editors + observers) ───────
-  wss.on("connection", (socket: WebSocket, role: "editor" | "observer", editorSession: DocSession | null, state: CrdtSocketState) => {
+  // ─── Unified connection handler ───────
+  wss.on("connection", (socket: WebSocket, state: CrdtSocketState) => {
     socketState.set(socket, state);
+    setParticipantFromSocketState(state);
     addSocket(state.docPath, socket);
-
-    // Resolve the active session. For editors it's the just-acquired session;
-    // for observers it may or may not exist (observer can pre-connect).
-    const session = role === "editor" ? editorSession! : lookupDocSession(state.docPath);
-
-    if (session) {
-      if (role === "observer") {
-        // Observer connected while a session is active — add to holders.
-        addObserverHolder(session, state.writerId, {
-          id: state.writerId,
-          type: "human" as const,
-          displayName: state.writerDisplayName,
-        }, state.socketId);
-      } else {
-        // First editor in the session: join any pre-connected observers that aren't yet holders.
-        if (countEditorSockets(session) === 1) {
-          for (const client of docSockets.get(state.docPath) ?? []) {
-            if (client === socket) continue;
-            const st = socketState.get(client);
-            // Use joined flag and socketRole — not holders.has() — to detect pre-connected observers.
-            if (st && !st.joined && st.socketRole === "observer" && client.readyState === WebSocket.OPEN) {
-              addObserverHolder(session, st.writerId, {
-                id: st.writerId,
-                type: "human" as const,
-                displayName: st.writerDisplayName,
-              }, st.socketId);
-              joinSession(session, (msg) => client.send(msg), (event) => { if (onWsEvent) onWsEvent(event); });
-              st.joined = true;
-              const obsNotification = getPendingRestoreNotification(state.docPath, st.writerId);
-              if (obsNotification) {
-                sendToSocket(client, encodeRestoreNotification(obsNotification));
-              }
-            }
-          }
-        }
-      }
-      // Atomic sync + presence replay for the joining participant.
-      joinSession(session, (msg) => socket.send(msg), (event) => { if (onWsEvent) onWsEvent(event); });
-      state.joined = true;
-
-      // Send pending restore notification (if any) immediately after join.
-      // Ordering: notification arrives before SYNC_STEP_2 content — client stores it,
-      // fires the banner only after onSynced (content visible).
-      const notification = getPendingRestoreNotification(state.docPath, state.writerId);
-      if (notification) {
-        sendToSocket(socket, encodeRestoreNotification(notification));
-      }
-    }
 
     socket.on("message", (raw) => {
       if (checkTokenExpired(socket, state)) return;
       const data = raw instanceof Buffer ? raw : Buffer.from(raw as ArrayBuffer);
-      const activeSession = lookupDocSession(state.docPath);
-      if (!activeSession) return;
-      handleMessage(socket, activeSession.fragments.ydoc, state, activeSession, data);
+      handleMessage(socket, state, data).catch((err) => {
+        throw err instanceof Error ? err : new Error(String(err));
+      });
     });
 
     socket.on("close", () => {
       removeSocket(state.docPath, socket);
       socketState.delete(socket);
-
-      // Use the socket's creation-time role, not the user's current holder role.
-      // This prevents a race where an observer socket close fires after the editor
-      // socket has already promoted the user to "editor" in session.holders.
+      removeParticipant(state.clientInstanceId);
       if (state.socketRole === "observer") {
         removeObserverHolder(state.docPath, state.writerId, state.socketId);
-        return;
+      } else if (state.socketRole === "editor") {
+        releaseDocSession(state.docPath, state.writerId, state.socketId)
+          .then((result) => finalizeSessionEnd(state, result))
+          .catch((err) => { throw err; });
       }
-
-      // Editor (or unknown — session may have already ended).
-      releaseDocSession(state.docPath, state.writerId, state.socketId)
-        .then(async (result) => {
-          if (result.sessionEnded) {
-            // Build contributors list: the disconnecting editor is primary; others from session.
-            const primaryWriter: WriterIdentity = {
-              id: state.writerId,
-              type: "human" as const,
-              displayName: state.writerDisplayName,
-            };
-            const contributors: WriterIdentity[] = [
-              primaryWriter,
-              ...result.contributors.filter((c) => c.id !== state.writerId),
-            ];
-            const commitResult = await commitSessionFilesToCanonical(contributors, state.docPath);
-            if (commitResult.skeletonErrors.length > 0) {
-              throw new Error(
-                `Session commit skipped for ${state.docPath}: corrupt overlay skeleton. ` +
-                `Session files preserved on disk. Remove the corrupt overlay to recover.\n` +
-                commitResult.skeletonErrors.map(e => e.error).join("\n"),
-              );
-            }
-            if (commitResult.sectionsCommitted > 0) {
-              await cleanupSessionFiles(state.docPath);
-              if (onWsEvent && commitResult.commitSha) {
-                onWsEvent({
-                  type: "content:committed",
-                  doc_path: state.docPath,
-                  sections: commitResult.committedSections,
-                  commit_sha: commitResult.commitSha,
-                  source: "human_auto_commit",
-                  writer_id: contributors[0].id,
-                  writer_display_name: contributors[0].displayName,
-                  writer_type: "human",
-                  contributor_ids: contributors.map((c) => c.id),
-                  seconds_ago: 0,
-                });
-
-                // Emit dirty:changed for all contributors so each frontend can clear its dirty state.
-                for (const contributor of contributors) {
-                  for (const section of commitResult.committedSections) {
-                    onWsEvent({
-                      type: "dirty:changed",
-                      writer_id: contributor.id,
-                      doc_path: section.doc_path,
-                      heading_path: section.heading_path,
-                      dirty: false,
-                      base_head: null,
-                      committed_head: commitResult.commitSha,
-                    });
-                  }
-                }
-              }
-            }
-
-            closeObserversForDoc(state.docPath, 4021, "session_ended");
-          }
-        })
-        .catch((err) => { throw err; });
 
       // editingPresence: writer disconnected
       if (onWsEvent) {
@@ -560,72 +771,37 @@ export function createCrdtWsServer(): CrdtWsServer {
       const writer = resolved.writer;
       const tokenExp = resolved.tokenExp;
 
-      const wsAction = route.observe ? "read" : "write";
-      const docAllowed = await checkDocPermission(writer, route.docPath, wsAction);
-      if (!docAllowed) {
+      const canRead = await checkDocPermission(writer, route.docPath, "read");
+      if (!canRead) {
         rejectUpgrade(wss, request, socket, head, 4013,
-          `authorization_failed: you do not have ${wsAction} permission for this document`);
+          "authorization_failed: you do not have read permission for this document");
         return;
       }
+      const canWrite = await checkDocPermission(writer, route.docPath, "write");
 
-      if (route.observe) {
-        const observerState: CrdtSocketState = {
-          writerId: writer.id,
-          writerDisplayName: writer.displayName,
-          docPath: route.docPath,
-          socketRole: "observer",
-          tokenExp,
-          socketId: crypto.randomUUID(),
-          joined: false,
-        };
-        wss.handleUpgrade(request, socket, head, (ws) => {
-          wss.emit("connection", ws, "observer", null, observerState);
-        });
-        return;
-      }
-
+      const clientInstanceId =
+        new URL(request.url ?? "", `http://${request.headers.host ?? "localhost"}`)
+          .searchParams
+          .get("clientInstanceId") ?? crypto.randomUUID();
       const state: CrdtSocketState = {
+        clientInstanceId,
         writerId: writer.id,
         writerDisplayName: writer.displayName,
         docPath: route.docPath,
-        socketRole: "editor",
+        socketRole: "observer",
+        requestedMode: "none",
+        attachmentState: "detached",
+        docSessionId: getDocSessionId(route.docPath),
+        editorFocusTarget: null,
         tokenExp,
+        canRead,
+        canWrite,
         socketId: crypto.randomUUID(),
         joined: false,
       };
 
-      // Enforce single editor socket per user per document.
-      // Close any existing editor socket for this user so PresenceManager stays unambiguous.
-      for (const existingSocket of docSockets.get(route.docPath) ?? []) {
-        const st = socketState.get(existingSocket);
-        if (st?.writerId === writer.id && st?.socketRole === "editor" && existingSocket.readyState === WebSocket.OPEN) {
-          existingSocket.close(4023, "superseded_by_new_tab");
-        }
-      }
-
-      let session: DocSession;
-      try {
-        const baseHead = await getHeadSha(getDataRoot());
-        session = await acquireDocSession(route.docPath, writer.id, baseHead, writer, state.socketId);
-      } catch (err) {
-        rejectUpgrade(wss, request, socket, head, 4014,
-          `ydoc_init_failed: ${(err as Error).message}`);
-        return;
-      }
-
-      if (onWsEvent) {
-        onWsEvent({
-          type: "presence:editing",
-          doc_path: route.docPath,
-          writer_id: writer.id,
-          writer_display_name: writer.displayName,
-          writer_type: "human",
-          heading_path: [],
-        });
-      }
-
       wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit("connection", ws, "editor", session, state);
+        wss.emit("connection", ws, state);
       });
     },
   };

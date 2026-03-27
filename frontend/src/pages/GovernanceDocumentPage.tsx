@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { apiClient } from "../services/api-client";
-import { ObserverCrdtProvider } from "../services/observer-crdt-provider";
-import { fragmentToMarkdown } from "../services/fragment-to-markdown";
 import { getLastDocumentVisitAt, markDocumentVisitedNow } from "../services/document-visit-history";
 import { SectionTransferService, type SectionTransfer } from "../services/section-transfer";
 import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
@@ -68,11 +66,8 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
 
   const sectionsContainerRef = useRef<HTMLDivElement>(null);
 
-  // ── Observer CRDT (read-only live sync for non-editing viewers) ──
-  const observerRef = useRef<ObserverCrdtProvider | null>(null);
-
   // ── Load sections ────────────────────────────────────────
-  const loadSections = useCallback(async (docPath: string) => {
+  const loadSections = useCallback(async (docPath: string): Promise<DocumentSection[]> => {
     loadStartedAtRef.current = Date.now();
     setLoadDurationMs(null);
     setSectionsLoading(true);
@@ -80,54 +75,15 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     try {
       const sectionsResp = await apiClient.getDocumentSections(docPath);
       setSections(sectionsResp.sections);
+      return sectionsResp.sections;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return [];
     } finally {
       if (loadStartedAtRef.current !== null) {
         setLoadDurationMs(Date.now() - loadStartedAtRef.current);
       }
       setSectionsLoading(false);
-    }
-  }, []);
-
-  const startObserver = useCallback((docPath: string) => {
-    if (observerRef.current) return;
-    const observer = new ObserverCrdtProvider(docPath, {
-      onChange: () => {
-        const currentSections = sectionsRef.current;
-        if (currentSections.length === 0) return;
-        const ydoc = observer.doc;
-        let changed = false;
-        const updated = currentSections.map((section) => {
-          const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path.length === 0);
-          try {
-            const md = fragmentToMarkdown(ydoc, fk);
-            if (md !== null && md !== section.content) {
-              changed = true;
-              return { ...section, content: md };
-            }
-          } catch {
-            // Fragment not yet in Y.Doc — keep existing content
-          }
-          return section;
-        });
-        if (changed) setSections(updated);
-      },
-      onSessionEnded: () => {
-        if (docPath) loadSections(docPath);
-      },
-      onStructureWillChange: () => {
-        if (docPath) loadSections(docPath);
-      },
-    });
-    observerRef.current = observer;
-    observer.connect();
-  }, [loadSections]);
-
-  const stopObserver = useCallback(() => {
-    if (observerRef.current) {
-      observerRef.current.destroy();
-      observerRef.current = null;
     }
   }, []);
 
@@ -149,7 +105,10 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     setRestructuringKeys,
     proposalMode,
     activeProposalId,
+    controllerState,
     crdtProviderRef,
+    controllerStateRef,
+    mountedEditorFragmentKeysRef,
     editorRefs,
     pendingFocusRef,
     pendingStructureRefocusRef,
@@ -164,6 +123,8 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     handleCursorExit,
     setEditorRef,
     setViewingSections,
+    requestMode,
+    stopObserver,
   } = useDocumentCrdt({
     decodedDocPath,
     sections,
@@ -172,11 +133,9 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     setError,
     setStatusMessage,
     loadSections,
-    startObserver,
-    stopObserver,
   });
 
-  // Ref for sections (used by observer and transferService)
+  // Ref for sections (used by transferService and other stable callbacks)
   const sectionsRef = useRef<DocumentSection[]>([]);
   useEffect(() => {
     sectionsRef.current = sections;
@@ -196,16 +155,18 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     setSections,
     crdtProviderRef,
     focusedSectionIndexRef,
+    mountedEditorFragmentKeysRef,
     pendingStructureRefocusRef,
     setRestructuringKeys,
     setSectionPersistence,
     setDeletionPlaceholders,
     setStructureTree,
     loadSections,
+    setError,
   });
 
   // Derived
-  const isEditing = focusedSectionIndex !== null;
+  const isEditing = controllerState.requestedMode === "editor";
   const focusedHeadingPath = focusedSectionIndex !== null && sections[focusedSectionIndex]
     ? sections[focusedSectionIndex].heading_path
     : null;
@@ -291,15 +252,15 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     let cancelled = false;
     loadSections(decodedDocPath).then(() => {
       if (cancelled) return;
-      if (!crdtProviderRef.current) {
-        startObserver(decodedDocPath);
-      }
+      // Start observer unless the user clicked into edit mode while sections were loading.
+      // Read via ref so this async callback doesn't need controllerState in the dep array.
+      if (controllerStateRef.current.requestedMode !== "editor") requestMode("observer");
     });
     return () => {
       cancelled = true;
       stopObserver();
     };
-  }, [decodedDocPath, loadSections, startObserver, stopObserver]);
+  }, [decodedDocPath, loadSections, requestMode, stopObserver, controllerStateRef]);
 
   // ── Load changes-since (recently changed sections) ───────
   useEffect(() => {
@@ -325,7 +286,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   useEffect(() => {
     if (
       crdtState === "disconnected"
-      && focusedSectionIndex !== null
+      && controllerState.requestedMode === "editor"
       && !editingLoading
     ) {
       stopEditing();
@@ -333,7 +294,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
         loadSections(decodedDocPath);
       }
     }
-  }, [crdtState, focusedSectionIndex, editingLoading, stopEditing, decodedDocPath, loadSections]);
+  }, [crdtState, controllerState.requestedMode, editingLoading, stopEditing, decodedDocPath, loadSections]);
 
   // ── Derived ──────────────────────────────────────────────
   const docTitle = decodedDocPath ? getDocDisplayName(decodedDocPath) : "Untitled";

@@ -15,6 +15,85 @@ export type DocPath = string;
 export type HeadingPath = string[];
 export type ProposalId = string;
 
+// ─── CRDT Remote Session Model ──────────────────────────────────────
+
+/** Applied server role for a connected CRDT participant. */
+export type ClientRole = "observer" | "editor";
+
+/** Per-tab runtime identity for a CRDT participant. Never use writerId for this. */
+export type ClientInstanceId = string;
+
+/** Desired runtime mode requested by a tab-local controller. */
+export type RequestedMode = "none" | "observer" | "editor";
+
+/** Attachment state of a participant relative to a live DocSession. */
+export type AttachmentState = "detached" | "waiting_for_session" | "attached_to_session";
+
+/** Explicit identity of one live backend DocSession. */
+export type DocSessionId = string;
+
+/** Explicit focus target for the one section currently edited by this tab. */
+export interface EditorFocusTarget {
+  heading_path: string[];
+}
+
+/** Server-authoritative runtime state for one connected CRDT participant/tab. */
+export interface RemoteParticipant {
+  clientInstanceId: ClientInstanceId;
+  writerId: string;
+  docPath: DocPath;
+  clientRole: ClientRole;
+  requestedMode: RequestedMode;
+  attachmentState: AttachmentState;
+  docSessionId: DocSessionId | null;
+  editorFocusTarget: EditorFocusTarget | null;
+}
+
+/** Frontend request to transition this tab into a new CRDT mode. */
+export interface ModeTransitionRequest {
+  requestId: string;
+  clientInstanceId: ClientInstanceId;
+  docPath: DocPath;
+  requestedMode: RequestedMode;
+  editorFocusTarget: EditorFocusTarget | null;
+}
+
+/** Successful server application of a mode transition request. */
+export interface ModeTransitionResultSuccess {
+  kind: "success";
+  requestId: string;
+  clientInstanceId: ClientInstanceId;
+  requestedMode: RequestedMode;
+  attachmentState: AttachmentState;
+  docSessionId: DocSessionId | null;
+  clientRole: ClientRole | null;
+}
+
+/** Rejected (impossible or stale) server result for a transition request. */
+export interface ModeTransitionResultRejected {
+  kind: "rejected";
+  requestId: string;
+  clientInstanceId: ClientInstanceId;
+  requestedMode: RequestedMode;
+  attachmentState: AttachmentState;
+  docSessionId: DocSessionId | null;
+  clientRole: ClientRole | null;
+  reason: string;
+}
+
+export type ModeTransitionResult = ModeTransitionResultSuccess | ModeTransitionResultRejected;
+
+/** Single source of truth for one tab's CRDT controller runtime state. */
+export interface DocumentSessionControllerState {
+  clientInstanceId: ClientInstanceId;
+  requestedMode: RequestedMode;
+  clientRole: ClientRole | null;
+  attachmentState: AttachmentState;
+  docSessionId: DocSessionId | null;
+  editorFocusTarget: EditorFocusTarget | null;
+  pendingTransition: ModeTransitionRequest | null;
+}
+
 export interface SectionTargetRef {
   doc_path: string;
   heading_path: string[];

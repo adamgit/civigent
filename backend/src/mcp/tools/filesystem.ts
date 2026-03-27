@@ -195,9 +195,8 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
     proposalSections,
   );
 
-  // Write tombstone at source path
-  const tombstone = DocumentSkeleton.createTombstone(source, contentRoot);
-  await tombstone.persist();
+  // Write tombstone at source path (createTombstone auto-persists)
+  await DocumentSkeleton.createTombstone(source, contentRoot);
 
   // Copy canonical skeleton file verbatim to overlay destination path
   const normalizedSrc = source.replace(/\\/g, "/").replace(/^\/+/, "");
@@ -439,9 +438,8 @@ async function deleteDocumentViaProposal(
     proposalSections,
   );
 
-  // Write tombstone skeleton to proposal overlay
-  const tombstone = DocumentSkeleton.createTombstone(docPath, contentRoot);
-  await tombstone.persist();
+  // Write tombstone skeleton to proposal overlay (createTombstone auto-persists)
+  await DocumentSkeleton.createTombstone(docPath, contentRoot);
 
   // Evaluate human involvement
   const { evaluation, sections } = await evaluateProposalHumanInvolvement(delProposalId);

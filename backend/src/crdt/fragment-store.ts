@@ -15,7 +15,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
 import { yDocToProsemirrorJSON, prosemirrorJSONToYDoc } from "y-prosemirror";
 import { getContentRoot, getSessionDocsContentRoot } from "../storage/data-root.js";
-import { DocumentSkeleton, type FlatEntry } from "../storage/document-skeleton.js";
+import { DocumentSkeleton, DocumentSkeletonMutable, type FlatEntry } from "../storage/document-skeleton.js";
 import { parseDocumentMarkdown } from "../storage/markdown-sections.js";
 import { SectionRef } from "../domain/section-ref.js";
 import {
@@ -75,7 +75,7 @@ export class FragmentStore {
   /** The skeleton. Callers need access for structural queries
    *  (flat, resolve, structure) and for focus→fragmentKey mapping.
    *  Structural mutations during flush are internal to FragmentStore. */
-  readonly skeleton: DocumentSkeleton;
+  readonly skeleton: DocumentSkeletonMutable;
 
   readonly docPath: string;
 
@@ -84,7 +84,7 @@ export class FragmentStore {
    *  tracks per-user attribution for the Mirror panel. */
   readonly dirtyKeys = new Set<string>();
 
-  private constructor(ydoc: Y.Doc, skeleton: DocumentSkeleton, docPath: string) {
+  private constructor(ydoc: Y.Doc, skeleton: DocumentSkeletonMutable, docPath: string) {
     this.ydoc = ydoc;
     this.skeleton = skeleton;
     this.docPath = docPath;
@@ -114,7 +114,7 @@ export class FragmentStore {
     const canonical = new ContentLayer(canonicalRoot);
     const overlay = new ContentLayer(overlayRoot, canonical);
 
-    const skeleton = await DocumentSkeleton.fromDisk(docPath, overlayRoot, canonicalRoot);
+    const skeleton = await DocumentSkeletonMutable.fromDisk(docPath, overlayRoot, canonicalRoot);
 
     if (skeleton.isEmpty) {
       return { store: new FragmentStore(ydoc, skeleton, docPath), orphanedBodies: [] };
@@ -540,8 +540,8 @@ export class FragmentStore {
     const rootParsed = parsed.find(s => s.headingPath.length === 0);
     const rootBody = (rootParsed?.body ?? "").replace(/\n+$/, "");
 
-    // Update root fragment in Y.Doc with trimmed body
-    this.populateFragment(fragmentKey, rootBody, SERVER_INJECTION_ORIGIN);
+    // Update root fragment in Y.Doc with trimmed body (clear first — Y.applyUpdate merges)
+    this.setFragmentContent(fragmentKey, rootBody, SERVER_INJECTION_ORIGIN);
 
     // Write root raw fragment + canonical-ready
     await this.writeDualFormat(entry, rootBody, rootBody, ops);
@@ -718,8 +718,8 @@ export class FragmentStore {
       entry.heading,
     );
 
-    // Rewrite Y.Doc fragment with heading at start
-    this.populateFragment(fragmentKey, fragmentContent, SERVER_INJECTION_ORIGIN);
+    // Rewrite Y.Doc fragment with heading at start (clear first — Y.applyUpdate merges)
+    this.setFragmentContent(fragmentKey, fragmentContent, SERVER_INJECTION_ORIGIN);
 
     await this.writeDualFormat(entry, fragmentContent, combinedBody, ops);
 
@@ -913,12 +913,25 @@ export class FragmentStore {
   }
 
   /** Populate a Y.Doc fragment from markdown content (heading+body for non-root, body for root).
-   *  Pass origin (e.g. SERVER_INJECTION_ORIGIN) to stamp the transaction source. */
-  populateFragment(fragmentKey: string, markdown: string, origin?: unknown): void {
+   *  Pass origin (e.g. SERVER_INJECTION_ORIGIN) to stamp the transaction source.
+   *  PRIVATE — always call setFragmentContent instead, which clears first.
+   *  Y.applyUpdate merges — calling this on a non-empty fragment duplicates content. */
+  private populateFragment(fragmentKey: string, markdown: string, origin?: unknown): void {
     const pmJson = markdownToJSON(markdown);
     const tempDoc = prosemirrorJSONToYDoc(getBackendSchema(), pmJson, fragmentKey);
     Y.applyUpdate(this.ydoc, Y.encodeStateAsUpdate(tempDoc), origin);
     tempDoc.destroy();
+  }
+
+  /**
+   * Atomically replace a Y.Doc fragment's content: clear existing content then populate.
+   * This is the only safe way to set fragment content — Y.applyUpdate merges rather than
+   * replaces, so calling populateFragment on a non-empty fragment duplicates content.
+   * Pass origin (e.g. SERVER_INJECTION_ORIGIN) to stamp the transaction source.
+   */
+  setFragmentContent(fragmentKey: string, markdown: string, origin?: unknown): void {
+    this.clearFragment(fragmentKey, origin);
+    this.populateFragment(fragmentKey, markdown, origin);
   }
 
   /**
@@ -939,10 +952,7 @@ export class FragmentStore {
     const body = (await contentLayer.readSection(new SectionRef(this.docPath, headingPath)) ?? "")
       .replace(/\n+$/, "");
     const markdown = FragmentStore.buildFragmentContent(body, entry.level, entry.heading);
-    // Clear existing content before repopulating — Y.applyUpdate merges rather than replaces,
-    // so without a clear the old and new content would both appear in the fragment.
-    this.clearFragment(fragmentKey, SERVER_INJECTION_ORIGIN);
-    this.populateFragment(fragmentKey, markdown, SERVER_INJECTION_ORIGIN);
+    this.setFragmentContent(fragmentKey, markdown, SERVER_INJECTION_ORIGIN);
   }
 
   /**

@@ -8,10 +8,14 @@
  *   - Reconstructed from canonical + sessions/docs/ overlay on reconnect
  */
 
-import path from "node:path";
 import * as Y from "yjs";
 import { getContentRoot, getSessionDocsContentRoot } from "../storage/data-root.js";
-import type { WriterIdentity, WsServerEvent, RestoreNotificationPayload } from "../types/shared.js";
+import type {
+  WriterIdentity,
+  WsServerEvent,
+  RestoreNotificationPayload,
+  DocSessionId,
+} from "../types/shared.js";
 import type { PreemptiveCommitResult } from "../storage/auto-commit.js";
 import { FragmentStore, SERVER_INJECTION_ORIGIN } from "./fragment-store.js";
 import { fragmentKeyFromSectionFile } from "./ydoc-fragments.js";
@@ -44,9 +48,6 @@ export interface HolderEntry {
   /** socketIds of live observer sockets for this user. */
   observerSocketIds: Set<string>;
 }
-
-/** Returns true if this holder has at least one live editor socket. */
-function holderIsEditor(h: HolderEntry): boolean { return h.editorSocketIds.size > 0; }
 
 // ─── DocSession interface ────────────────────────────────────────
 
@@ -86,6 +87,8 @@ export interface DocSession {
   /** All writers who sent at least one MSG_ACTIVITY_PULSE during this session.
    *  Accumulated by the coordinator; used to build the git co-author list at commit time. */
   contributors: Map<string, WriterIdentity>;
+  /** Explicit identity boundary for this live Y.Doc lifetime. */
+  docSessionId: DocSessionId;
 }
 
 // ─── Module state ────────────────────────────────────────────────
@@ -133,6 +136,10 @@ export function setBroadcastRestoreInvalidation(cb: (docPath: string) => void): 
 
 export function lookupDocSession(docPath: string): DocSession | undefined {
   return sessions.get(docPath);
+}
+
+export function getDocSessionId(docPath: string): DocSessionId | null {
+  return sessions.get(docPath)?.docSessionId ?? null;
 }
 
 export function getAllSessions(): Map<string, DocSession> {
@@ -227,7 +234,7 @@ export async function acquireDocSession(
         const fragmentContent = recoveryBody.trim()
           ? `${headingLine}\n\n${recoveryBody}`
           : headingLine;
-        fragments.populateFragment(newKey, fragmentContent);
+        fragments.setFragmentContent(newKey, fragmentContent);
       }
       if (fragments.skeleton.dirty) {
         await fragments.skeleton.persist();
@@ -283,6 +290,7 @@ export async function acquireDocSession(
       flushTimer: null,
       lastTouchedFragments: touchedSet,
       contributors: new Map(),
+      docSessionId: crypto.randomUUID(),
     };
 
     sessions.set(docPath, newSession);

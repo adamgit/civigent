@@ -31,7 +31,7 @@ import {
 import { evaluateProposalHumanInvolvement } from "../../storage/commit-pipeline.js";
 import type { McpToolCallResult } from "../protocol.js";
 import type { AnyProposal, ProposalSection } from "../../types/shared.js";
-import { ContentLayer } from "../../storage/content-layer.js";
+import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { checkDocPermission } from "../../auth/acl.js";
 
@@ -120,30 +120,10 @@ const createSectionHandler: ToolHandler = async (args, ctx) => {
   const { proposal, contentRoot: proposalContentRoot } = validated;
 
   try {
-    const canonicalRoot = getContentRoot();
-    // Load skeleton from overlay (proposal content) with canonical fallback
-    const skeleton = await DocumentSkeleton.fromDisk(docPath, proposalContentRoot, canonicalRoot);
-    const heading = headingPath[headingPath.length - 1];
-    const parentPath = headingPath.slice(0, -1);
+    const overlayLayer = new OverlayContentLayer(proposalContentRoot, getContentRoot());
 
-    // Derive level from the skeleton's existing hierarchy
-    let level: number;
-    if (parentPath.length === 0) {
-      // Top-level section — level 1 (or match existing siblings)
-      level = 1;
-    } else {
-      const parentEntry = skeleton.resolve(parentPath);
-      level = parentEntry.level + 1;
-    }
-
-    skeleton.insertSectionUnder(parentPath, { heading, level, body: content });
-
-    // Write body content through ContentLayer BEFORE skeleton.persist()
-    // so that if body write fails, the skeleton doesn't reference a missing file.
-    const proposalLayer = new ContentLayer(proposalContentRoot);
-    await proposalLayer.writeSection(new SectionRef(docPath, headingPath), content);
-
-    await skeleton.persist();
+    // Auto-create headings and write content atomically through OverlayContentLayer
+    await overlayLayer.writeSection(new SectionRef(docPath, headingPath), content);
 
     // Update proposal sections metadata
     const existingSections = proposal.sections.filter(
@@ -217,10 +197,8 @@ const deleteSectionHandler: ToolHandler = async (args, ctx) => {
   const { proposal, contentRoot: proposalContentRoot } = validated;
 
   try {
-    const canonicalRoot = getContentRoot();
-    const skeleton = await DocumentSkeleton.fromDisk(docPath, proposalContentRoot, canonicalRoot);
-    skeleton.replace(headingPath, []);
-    await skeleton.persist();
+    const overlayLayer = new OverlayContentLayer(proposalContentRoot, getContentRoot());
+    await overlayLayer.deleteSection(docPath, headingPath);
 
     // Update proposal sections metadata
     const existingSections = proposal.sections.filter(
@@ -297,41 +275,16 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
   const { proposal, contentRoot: proposalContentRoot } = validated;
 
   try {
-    const canonicalRoot = getContentRoot();
-    const skeleton = await DocumentSkeleton.fromDisk(docPath, proposalContentRoot, canonicalRoot);
+    const overlayLayer = new OverlayContentLayer(proposalContentRoot, getContentRoot());
 
-    // Read current body content via ContentLayer (overlay-first, then canonical)
-    const clWithFallback = new ContentLayer(proposalContentRoot, new ContentLayer(canonicalRoot));
-    let bodyContent = "";
-    try {
-      bodyContent = await clWithFallback.readSection(new SectionRef(docPath, headingPath));
-    } catch {
-      // Section body missing in both overlay and canonical — use empty
-    }
-
-    const heading = headingPath[headingPath.length - 1];
+    // Determine target level from existing skeleton
+    const skeleton = await DocumentSkeleton.fromDisk(docPath, proposalContentRoot, getContentRoot());
     const resolvedEntry = skeleton.resolve(headingPath);
     const targetLevel = newParentPath.length === 0
       ? resolvedEntry.level
       : newParentPath.length + 1;
 
-    // Remove from old position
-    skeleton.replace(headingPath, []);
-
-    // Insert under the specified parent path
-    skeleton.insertSectionUnder(newParentPath, {
-      heading,
-      level: targetLevel,
-      body: bodyContent,
-    });
-
-    // Write body content through ContentLayer BEFORE skeleton.persist()
-    // so that if body write fails, the skeleton doesn't reference a missing file.
-    const moveLayer = new ContentLayer(proposalContentRoot);
-    const newHeadingPathForMove = [...newParentPath, heading];
-    await moveLayer.writeSection(new SectionRef(docPath, newHeadingPathForMove), bodyContent);
-
-    await skeleton.persist();
+    await overlayLayer.moveSection(docPath, headingPath, newParentPath, targetLevel);
 
     // Update proposal sections metadata
     const existingSections = proposal.sections.filter(
@@ -407,31 +360,9 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
   const { proposal, contentRoot: proposalContentRoot } = validated;
 
   try {
-    const canonicalRoot = getContentRoot();
-    const skeleton = await DocumentSkeleton.fromDisk(docPath, proposalContentRoot, canonicalRoot);
-
-    // Read current body content via ContentLayer (overlay-first, then canonical)
-    const clWithFallback = new ContentLayer(proposalContentRoot, new ContentLayer(canonicalRoot));
-    let bodyContent = "";
-    try {
-      bodyContent = await clWithFallback.readSection(new SectionRef(docPath, headingPath));
-    } catch {
-      // Section body missing in both overlay and canonical — use empty
-    }
-
-    // Replace with new heading, same content
-    const resolvedEntry = skeleton.resolve(headingPath);
-    const result = skeleton.replace(headingPath, [
-      { heading: newHeading, level: resolvedEntry.level, body: bodyContent },
-    ]);
-
-    // Write body content through ContentLayer BEFORE skeleton.persist()
-    // so that if body write fails, the skeleton doesn't reference a missing file.
+    const overlayLayer = new OverlayContentLayer(proposalContentRoot, getContentRoot());
+    await overlayLayer.renameSection(docPath, headingPath, newHeading);
     const newHeadingPath = [...headingPath.slice(0, -1), newHeading];
-    const renameLayer = new ContentLayer(proposalContentRoot);
-    await renameLayer.writeSection(new SectionRef(docPath, newHeadingPath), bodyContent);
-
-    await skeleton.persist();
 
     // Update proposal sections metadata with new heading path
     const existingSections = proposal.sections.filter(
@@ -513,9 +444,8 @@ const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
       headingPaths.push([...headingPath]);
     });
 
-    // Create tombstone skeleton in proposal overlay
-    const tombstone = DocumentSkeleton.createTombstone(docPath, proposalContentRoot);
-    await tombstone.persist();
+    // Create tombstone skeleton in proposal overlay (auto-persists)
+    await DocumentSkeleton.createTombstone(docPath, proposalContentRoot);
 
     // Add all document sections to proposal's sections[] metadata
     const existingSections = proposal.sections.filter(
@@ -603,32 +533,16 @@ const renameDocumentHandler: ToolHandler = async (args, ctx) => {
       headingPaths.push([...headingPath]);
     });
 
-    // Step 1: Write tombstone at old path in proposal overlay
-    const tombstone = DocumentSkeleton.createTombstone(docPath, proposalContentRoot);
-    await tombstone.persist();
+    // Step 1: Write tombstone at old path in proposal overlay (auto-persists)
+    await DocumentSkeleton.createTombstone(docPath, proposalContentRoot);
 
-    // Step 2: Copy full content to new path in proposal overlay using skeleton API.
+    // Step 2: Copy full content to new path in proposal overlay.
+    // Read all sections from canonical, then write through OverlayContentLayer.
     const subtree = await new ContentLayer(canonicalRoot).readSubtree(docPath, []);
+    const overlayLayer = new OverlayContentLayer(proposalContentRoot, canonicalRoot);
 
-    // Create a new empty skeleton at the new doc path in the proposal overlay
-    const newSkeleton = DocumentSkeleton.createEmpty(newPath, proposalContentRoot);
-
-    // Insert all non-root sections under their correct parent paths
     for (const entry of subtree) {
-      if (entry.headingPath.length === 0) continue; // root handled below
-      const parentPath = entry.headingPath.slice(0, -1);
-      newSkeleton.insertSectionUnder(parentPath, {
-        heading: entry.heading,
-        level: entry.level,
-        body: entry.bodyContent,
-      });
-    }
-    await newSkeleton.persist();
-
-    // Write body files into the new skeleton's overlay locations
-    const newContentLayer = new ContentLayer(proposalContentRoot);
-    for (const entry of subtree) {
-      await newContentLayer.writeSection(
+      await overlayLayer.writeSection(
         new SectionRef(newPath, entry.headingPath),
         entry.bodyContent,
       );

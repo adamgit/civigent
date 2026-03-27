@@ -33,6 +33,7 @@ TRANSIENT WORKING DOCS/
 #
 .claude/
 CLAUDE.md
+.cursorignore
 repomix*.xml
 
 ### Badly behaved OSs and IDEs

@@ -34,7 +34,7 @@ import { HUMAN_INVOLVEMENT_PRESETS } from "../../types/shared.js";
 import path from "node:path";
 import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { assertDataRootExists, getContentRoot, getContentGitPrefix, getDataRoot, getSessionDocsContentRoot, getSessionAuthorsRoot } from "../../storage/data-root.js";
-import { ContentLayer } from "../../storage/content-layer.js";
+import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
 
 import { getSessionState } from "../../storage/session-inspector.js";
@@ -859,26 +859,13 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       const contentRoot = getContentRoot();
-      const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
+      const overlayLayer = new OverlayContentLayer(contentRoot, contentRoot);
 
       // Determine the heading level from context
       // Default: level 2 (##) for top-level sections
       const level = req.body.level ?? 2;
 
-      // Add as a new top-level sibling via addSectionsFromRootSplit
-      const added = skeleton.addSectionsFromRootSplit([
-        { heading, level, body: content ?? "" },
-      ]);
-
-      // Persist skeleton and write body files
-      await skeleton.persist();
-
-      const contentLayer = new ContentLayer(contentRoot);
-      for (const entry of added) {
-        if (!entry.isSubSkeleton) {
-          await contentLayer.writeSection(new SectionRef(docPath, entry.headingPath), content ?? "");
-        }
-      }
+      await overlayLayer.createSection(docPath, [], heading, level, content ?? "");
 
       await gitCommitStructuralChange(`create section "${heading}" in ${docPath}`);
 
@@ -925,12 +912,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       const contentRoot = getContentRoot();
-      const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
+      const overlayLayer = new OverlayContentLayer(contentRoot, contentRoot);
 
-      // Use replace with empty array to remove the section
-      const result = skeleton.replace(headingPath, []);
-
-      await skeleton.persist();
+      const result = await overlayLayer.deleteSection(docPath, headingPath);
 
       // Delete the removed files from disk
       for (const removed of result.removed) {
@@ -990,64 +974,21 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       const contentRoot = getContentRoot();
+      const overlayLayer = new OverlayContentLayer(contentRoot, contentRoot);
+
+      // Determine target level
       const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
-      const layer = new ContentLayer(contentRoot);
+      const resolvedEntry = skeleton.resolve(headingPath);
+      const targetLevel = new_parent_path.length === 0
+        ? resolvedEntry.level
+        : new_parent_path.length + 1;
 
-      // 1. Capture entire subtree (section + descendants) with body content
-      const subtree = await layer.readSubtree(docPath, headingPath);
+      const { removed } = await overlayLayer.moveSection(docPath, headingPath, new_parent_path, targetLevel);
 
-      // 2. Remove from old position
-      const removeResult = skeleton.replace(headingPath, []);
-
-      // 3-4. Re-insert at new position, preserving subtree structure
-      const topEntry = subtree[0];
-      const children = subtree.slice(1);
-
-      // Track heading paths + content for writing through ContentLayer after persist
-      const writePlan: Array<{ headingPath: string[]; content: string }> = [];
-
-      if (new_parent_path.length === 0) {
-        skeleton.addSectionsFromRootSplit([
-          { heading: topEntry.heading, level: topEntry.level, body: topEntry.bodyContent },
-        ]);
-      } else {
-        skeleton.insertSectionUnder(new_parent_path, {
-          heading: topEntry.heading, level: topEntry.level, body: topEntry.bodyContent,
-        });
-      }
-
-      // Reconstruct the new parent path for the moved section
-      const newTopPath = new_parent_path.length === 0
-        ? [topEntry.heading]
-        : [...new_parent_path, topEntry.heading];
-
-      writePlan.push({ headingPath: newTopPath, content: topEntry.bodyContent });
-
-      // Re-insert each descendant under its relative parent within the moved subtree
-      for (const child of children) {
-        // Compute relative path within the subtree: strip the old top heading path prefix
-        const relPath = child.headingPath.slice(headingPath.length);
-        // The parent for this child is the new top path + all but the last segment of relPath
-        const childParentPath = [...newTopPath, ...relPath.slice(0, -1)];
-
-        skeleton.insertSectionUnder(childParentPath, {
-          heading: child.heading, level: child.level, body: child.bodyContent,
-        });
-        writePlan.push({ headingPath: [...childParentPath, child.heading], content: child.bodyContent });
-      }
-
-      // 5. Persist skeleton and write body files through ContentLayer
-      await skeleton.persist();
-
-      const moveCanonical = new ContentLayer(contentRoot);
-      for (const { headingPath: hp, content } of writePlan) {
-        await moveCanonical.writeSection(new SectionRef(docPath, hp), content);
-      }
-
-      // 6. Clean up old files
-      for (const removed of removeResult.removed) {
-        await rm(removed.absolutePath, { force: true });
-        await rm(removed.absolutePath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
+      // Clean up old files
+      for (const entry of removed) {
+        await rm(entry.absolutePath, { force: true });
+        await rm(entry.absolutePath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
       }
 
       await gitCommitStructuralChange(`move section "${headingPath.join(" > ")}" in ${docPath}`);
@@ -1101,28 +1042,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       const contentRoot = getContentRoot();
-      const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
+      const overlayLayer = new OverlayContentLayer(contentRoot, contentRoot);
 
-      // Read current body content through ContentLayer
-      const renameCanonical = new ContentLayer(contentRoot);
-      const entry = skeleton.resolve(headingPath);
-      let bodyContent = "";
-      try {
-        bodyContent = await renameCanonical.readSection(new SectionRef(docPath, headingPath));
-      } catch {
-        // empty
-      }
-
-      // Replace with same content but new heading
-      const replaceResult = skeleton.replace(headingPath, [
-        { heading: new_heading, level: entry.level, body: bodyContent },
-      ]);
-
-      await skeleton.persist();
-
-      // Write body content through ContentLayer (skeleton now has the renamed entry)
-      const newHeadingPathForWrite = [...headingPath.slice(0, -1), new_heading];
-      await renameCanonical.writeSection(new SectionRef(docPath, newHeadingPathForWrite), bodyContent);
+      const replaceResult = await overlayLayer.renameSection(docPath, headingPath, new_heading);
 
       // Clean up old files
       for (const removed of replaceResult.removed) {
@@ -1339,9 +1261,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       // Write section content to proposal's content directory
       if (sectionContents.length > 0) {
-        const pContentLayer = new ContentLayer(propContentRoot);
+        const overlayLayer = new OverlayContentLayer(propContentRoot, getContentRoot());
         for (const sc of sectionContents) {
-          await pContentLayer.writeSection(new SectionRef(sc.doc_path, sc.heading_path), sc.content);
+          await overlayLayer.writeSection(new SectionRef(sc.doc_path, sc.heading_path), sc.content);
         }
       }
 
@@ -1547,9 +1469,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       // Write updated section content to proposal's content directory
       {
-        const pContentLayer = new ContentLayer(updContentRoot);
+        const overlayLayer = new OverlayContentLayer(updContentRoot, getContentRoot());
         for (const s of body.sections) {
-          await pContentLayer.writeSection(new SectionRef(s.doc_path, s.heading_path), s.content);
+          await overlayLayer.writeSection(new SectionRef(s.doc_path, s.heading_path), s.content);
         }
       }
 
@@ -2580,6 +2502,32 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     }
   });
 
+  // ─── Agent MCP activity log ─────────────────────────────
+
+  router.get("/admin/agent-activity", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const { readFile } = await import("node:fs/promises");
+      const { getMonitoringRoot } = await import("../../storage/data-root.js");
+      const logPath = (await import("node:path")).join(getMonitoringRoot(), "agent-mcp-activity.jsonl");
+      let raw: string;
+      try {
+        raw = await readFile(logPath, "utf-8");
+      } catch {
+        res.json({ sessions: [] });
+        return;
+      }
+      const sessions = raw
+        .split("\n")
+        .filter((line) => line.trim().length > 0)
+        .map((line) => JSON.parse(line));
+      res.json({ sessions });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // ─── Document catch-all routes ─────────────────────────
   // Registered LAST so they never shadow more-specific /documents/ routes.
   // This is in a separate function to make it structurally impossible to
@@ -2681,8 +2629,7 @@ function registerDocumentCatchAllRoutes(
         // File does not exist — proceed
       }
 
-      const skeleton = DocumentSkeleton.createEmpty(docPath, contentRoot);
-      await skeleton.persist();
+      await DocumentSkeleton.createEmpty(docPath, contentRoot);
 
       const canonical = new ContentLayer(contentRoot);
       await canonical.writeSection(new SectionRef(docPath, []), "");

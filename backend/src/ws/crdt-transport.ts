@@ -9,19 +9,32 @@
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
+import type {
+  AttachmentState,
+  ClientInstanceId,
+  ClientRole,
+  DocSessionId,
+  EditorFocusTarget,
+  RequestedMode,
+} from "../types/shared.js";
 
 // ─── Per-socket state ───────────────────────────────────────────
 
 export interface CrdtSocketState {
+  clientInstanceId: ClientInstanceId;
   writerId: string;
   writerDisplayName: string;
   docPath: string;
-  /** Role this socket was opened with. Anchored at creation time; never changes.
-   *  Used by the close handler to distinguish observer vs editor sockets even when
-   *  the holder entry has been overwritten. */
-  socketRole: "editor" | "observer";
+  /** Applied server role for this socket. Updated by mode transition FSM. */
+  socketRole: ClientRole;
+  requestedMode: RequestedMode;
+  attachmentState: AttachmentState;
+  docSessionId: DocSessionId | null;
+  editorFocusTarget: EditorFocusTarget | null;
   /** Token expiry (epoch seconds). Messages after this time close the connection. */
   tokenExp: number;
+  canRead: boolean;
+  canWrite: boolean;
   /** UUID assigned at socket creation; never changes. Used to identify this specific
    *  socket within the per-user HolderEntry socket-id sets. */
   socketId: string;

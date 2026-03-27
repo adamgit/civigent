@@ -17,6 +17,8 @@
  *   0x09 SECTION_MUTATE        — Client → Server: replace fragment content (JSON { fragmentKey, markdown })
  *   0x0A MUTATE_RESULT         — Server → Client: response to SECTION_MUTATE (JSON { success, error? })
  *   0x0B RESTORE_NOTIFICATION  — Server → Client: document restored (JSON RestoreNotificationPayload)
+ *   0x0C MODE_TRANSITION_REQUEST — Client → Server: request mode transition (JSON ModeTransitionRequest)
+ *   0x0D MODE_TRANSITION_RESULT  — Server → Client: transition ack/reject (JSON ModeTransitionResult)
  *
  * Close codes (application-level, above 4000):
  *   4001 — auth_required
@@ -31,7 +33,11 @@
  */
 
 import * as Y from "yjs";
-import type { RestoreNotificationPayload } from "../types/shared.js";
+import type {
+  RestoreNotificationPayload,
+  ModeTransitionRequest,
+  ModeTransitionResult,
+} from "../types/shared.js";
 
 // ─── Message type constants ──────────────────────────────────────
 
@@ -47,11 +53,12 @@ export const MSG_STRUCTURE_WILL_CHANGE = 8;
 export const MSG_SECTION_MUTATE = 9;
 export const MSG_MUTATE_RESULT = 10;
 export const MSG_RESTORE_NOTIFICATION = 0x0B;
+export const MSG_MODE_TRANSITION_REQUEST = 0x0C;
+export const MSG_MODE_TRANSITION_RESULT = 0x0D;
 
 // ─── URL routing constants ────────────────────────────────────────
 
 export const CRDT_PATH_PREFIX = "/ws/crdt/";
-export const CRDT_OBSERVE_PATH_PREFIX = "/ws/crdt-observe/";
 
 // ─── Encode helpers ──────────────────────────────────────────────
 
@@ -114,6 +121,22 @@ export function encodeRestoreNotification(payload: RestoreNotificationPayload): 
   return msg;
 }
 
+export function encodeModeTransitionRequest(payload: ModeTransitionRequest): Uint8Array {
+  const json = new TextEncoder().encode(JSON.stringify(payload));
+  const msg = new Uint8Array(1 + json.length);
+  msg[0] = MSG_MODE_TRANSITION_REQUEST;
+  msg.set(json, 1);
+  return msg;
+}
+
+export function encodeModeTransitionResult(payload: ModeTransitionResult): Uint8Array {
+  const json = new TextEncoder().encode(JSON.stringify(payload));
+  const msg = new Uint8Array(1 + json.length);
+  msg[0] = MSG_MODE_TRANSITION_RESULT;
+  msg.set(json, 1);
+  return msg;
+}
+
 /** Parse the message type and payload from a raw binary frame. Returns null for empty frames. */
 export function decodeMessage(data: Uint8Array): { type: number; payload: Uint8Array } | null {
   if (data.length < 1) return null;
@@ -122,20 +145,14 @@ export function decodeMessage(data: Uint8Array): { type: number; payload: Uint8A
 
 // ─── URL parsing ────────────────────────────────────────────────
 
-export function parseCrdtUrl(url: string, host: string): { docPath: string; observe: boolean } | null {
+export function parseCrdtUrl(url: string, host: string): { docPath: string } | null {
   const parsed = new URL(url, `http://${host}`);
   const pathname = decodeURIComponent(parsed.pathname);
-
-  if (pathname.startsWith(CRDT_OBSERVE_PATH_PREFIX)) {
-    const docPath = pathname.slice(CRDT_OBSERVE_PATH_PREFIX.length).replace(/^\/+|\/+$/g, "");
-    if (!docPath) return null;
-    return { docPath, observe: true };
-  }
 
   if (pathname.startsWith(CRDT_PATH_PREFIX)) {
     const docPath = pathname.slice(CRDT_PATH_PREFIX.length).replace(/^\/+|\/+$/g, "");
     if (!docPath) return null;
-    return { docPath, observe: false };
+    return { docPath };
   }
 
   return null;

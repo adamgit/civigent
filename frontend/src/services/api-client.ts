@@ -32,6 +32,22 @@ import type {
 
 export type ImportResponse = CreateProposalResponse;
 
+export interface AgentMcpActionEntry {
+  method: string;
+  ts: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface AgentMcpSessionRecord {
+  session_id: string;
+  agent_id: string;
+  agent_display_name: string;
+  started_at: string;
+  ended_at: string;
+  action_count: number;
+  actions: AgentMcpActionEntry[];
+}
+
 export interface ImportStagingInfo {
   import_id: string;
   staging_path: string;
@@ -747,5 +763,9 @@ export const apiClient = {
     await requestJson(`/api/admin/custom-roles/${encodeURIComponent(name)}`, {
       method: "DELETE",
     });
+  },
+
+  async getAgentActivity(): Promise<{ sessions: AgentMcpSessionRecord[] }> {
+    return requestJson<{ sessions: AgentMcpSessionRecord[] }>("/api/admin/agent-activity");
   },
 };

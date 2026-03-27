@@ -24,7 +24,13 @@ import {
   encodeAwarenessUpdate,
   applyAwarenessUpdate,
 } from "y-protocols/awareness";
-import type { RestoreNotificationPayload } from "../types/shared";
+import type {
+  RestoreNotificationPayload,
+  ClientInstanceId,
+  EditorFocusTarget,
+  ModeTransitionRequest,
+  ModeTransitionResult,
+} from "../types/shared";
 
 // ─── Protocol constants (must match backend/src/ws/crdt-sync.ts) ───
 
@@ -40,6 +46,8 @@ const MSG_STRUCTURE_WILL_CHANGE = 8;
 const MSG_SECTION_MUTATE = 9;
 const MSG_MUTATE_RESULT = 10;
 const MSG_RESTORE_NOTIFICATION = 0x0B;
+const MSG_MODE_TRANSITION_REQUEST = 0x0C;
+const MSG_MODE_TRANSITION_RESULT = 0x0D;
 
 /** Debounce interval for ACTIVITY_PULSE messages (ms). */
 const PULSE_DEBOUNCE_MS = 2500;
@@ -82,6 +90,8 @@ export interface CrdtProviderEvents {
   onSessionReinit?: () => void;
   /** Fired once, after onSynced on the post-restore reconnection, with the banner payload. */
   onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
+  /** Server-authoritative result for this tab's requested CRDT mode transition. */
+  onModeTransitionResult?: (result: ModeTransitionResult) => void;
 }
 
 // ─── Provider ──────────────────────────────────────────────────────
@@ -110,21 +120,37 @@ export class CrdtProvider {
   private reverseMap = new Map<object, string>();
   private lastShareSize = 0;
   private afterTxnHandler: ((txn: Y.Transaction) => void) | null = null;
-  private pendingMutateResolve: ((result: { success: boolean; error?: string }) => void) | null = null;
+  // Serialized mutate queue: one request in-flight at a time.
+  // Using a queue prevents single-slot loss when concurrent callers race on pendingMutateResolve.
+  private mutateQueue: Array<{
+    fragmentKey: string;
+    markdown: string;
+    resolve: (result: { success: boolean; error?: string }) => void;
+    reject: (err: Error) => void;
+  }> = [];
+  private mutateInFlight = false;
   private pendingRestoreNotification: RestoreNotificationPayload | null = null;
+  private readonly clientInstanceId: ClientInstanceId;
+  private readonly docPath: string;
+  private pendingEditorFocusTarget: EditorFocusTarget | null = null;
+  private initialTransitionRequest: ModeTransitionRequest | null = null;
 
   constructor(
     doc: Y.Doc,
     docPath: string,
     events: CrdtProviderEvents = {},
+    opts?: { clientInstanceId?: ClientInstanceId; initialTransitionRequest?: ModeTransitionRequest },
   ) {
     this.doc = doc;
     this.awareness = new Awareness(doc);
     this.events = events;
+    this.docPath = docPath;
+    this.clientInstanceId = opts?.clientInstanceId ?? crypto.randomUUID();
+    this.initialTransitionRequest = opts?.initialTransitionRequest ?? null;
 
     // Build WebSocket URL — per-document, no heading_path param.
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    this.url = `${protocol}//${window.location.host}/ws/crdt/${docPath.split("/").map(encodeURIComponent).join("/")}`;
+    this.url = `${protocol}//${window.location.host}/ws/crdt/${docPath.split("/").map(encodeURIComponent).join("/")}?clientInstanceId=${encodeURIComponent(this.clientInstanceId)}`;
 
     // Track which fragments are modified per transaction (same pattern as backend).
     this.afterTxnHandler = (txn: Y.Transaction) => {
@@ -189,6 +215,7 @@ export class CrdtProvider {
       this.ws.close();
       this.ws = null;
     }
+    this.rejectPendingMutates(new Error("WebSocket disconnected"));
     this.setState("disconnected");
   }
 
@@ -196,6 +223,12 @@ export class CrdtProvider {
   destroy(): void {
     this.destroyed = true;
     this.disconnect();
+    // Reject all pending mutate promises so callers don't hang.
+    for (const entry of this.mutateQueue) {
+      entry.reject(new Error("CrdtProvider destroyed"));
+    }
+    this.mutateQueue = [];
+    this.mutateInFlight = false;
     if (this.pulseTimer) {
       clearTimeout(this.pulseTimer);
       this.pulseTimer = null;
@@ -227,6 +260,7 @@ export class CrdtProvider {
     // This handles the race where focusSection() is called right after
     // connect() but before the WebSocket handshake completes.
     this.pendingFocus = headingPath;
+    this.pendingEditorFocusTarget = headingPath.length > 0 ? { heading_path: headingPath } : null;
     const payload = new TextEncoder().encode(headingPath.join("\x00"));
     this.sendRaw(MSG_SECTION_FOCUS, payload);
 
@@ -255,13 +289,15 @@ export class CrdtProvider {
    * Send a section mutate request to the backend.
    * The backend replaces the fragment content and broadcasts the Y.Doc update.
    * Returns a promise that resolves when the server sends MSG_MUTATE_RESULT.
+   *
+   * Requests are serialized: only one is in-flight at a time. Concurrent callers
+   * are queued and dispatched in FIFO order once the previous result arrives.
+   * All pending promises are rejected if the provider is disconnected or destroyed.
    */
   sendSectionMutate(fragmentKey: string, markdown: string): Promise<{ success: boolean; error?: string }> {
-    return new Promise((resolve) => {
-      this.pendingMutateResolve = resolve;
-      const json = JSON.stringify({ fragmentKey, markdown });
-      const payload = new TextEncoder().encode(json);
-      this.sendRaw(MSG_SECTION_MUTATE, payload);
+    return new Promise((resolve, reject) => {
+      this.mutateQueue.push({ fragmentKey, markdown, resolve, reject });
+      this.drainMutateQueue();
     });
   }
 
@@ -290,6 +326,7 @@ export class CrdtProvider {
       this.pendingRestoreNotification = null;
       this.reconnectAttempts = 0;
       this.setState("connected");
+      this.sendModeTransitionRequest();
       this.sendSyncStep1();
 
       // Broadcast local awareness state on connect.
@@ -314,6 +351,9 @@ export class CrdtProvider {
     this.ws.onclose = (event: CloseEvent) => {
       this.ws = null;
       this.synced = false;
+      // Reject any in-flight mutate request — the socket is closed so the server
+      // will not send MSG_MUTATE_RESULT for it. This prevents callers from hanging.
+      this.rejectPendingMutates(new Error(`WebSocket closed (code ${event.code})`));
 
       if (event.code === 4022) {
         // Document restored — reconnect immediately (no exponential backoff).
@@ -406,22 +446,60 @@ export class CrdtProvider {
       case MSG_STRUCTURE_WILL_CHANGE: {
         // Payload: JSON array of { oldKey: string, newKeys: string[] }
         const json = new TextDecoder().decode(payload);
-        const restructures = JSON.parse(json) as StructureWillChangePayload[];
+        let restructures: StructureWillChangePayload[];
+        try {
+          restructures = JSON.parse(json) as StructureWillChangePayload[];
+        } catch (err) {
+          this.closeWithProtocolError(`Malformed MSG_STRUCTURE_WILL_CHANGE payload: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
         this.events.onStructureWillChange?.(restructures);
         break;
       }
       case MSG_MUTATE_RESULT: {
         const json = new TextDecoder().decode(payload);
-        const result = JSON.parse(json) as { success: boolean; error?: string };
-        if (this.pendingMutateResolve) {
-          this.pendingMutateResolve(result);
-          this.pendingMutateResolve = null;
+        let result: { success: boolean; error?: string };
+        try {
+          result = JSON.parse(json) as { success: boolean; error?: string };
+        } catch (err) {
+          // Parse failed — reject the in-flight entry so callers don't hang.
+          const head = this.mutateQueue.shift();
+          this.mutateInFlight = false;
+          if (head) {
+            head.reject(new Error(`Malformed MSG_MUTATE_RESULT payload: ${err instanceof Error ? err.message : String(err)}`));
+          }
+          this.drainMutateQueue();
+          break;
         }
+        const head = this.mutateQueue.shift();
+        this.mutateInFlight = false;
+        if (head) {
+          head.resolve(result);
+        }
+        // Send next queued request, if any.
+        this.drainMutateQueue();
         break;
       }
       case MSG_RESTORE_NOTIFICATION: {
         const json = new TextDecoder().decode(payload);
-        this.pendingRestoreNotification = JSON.parse(json) as RestoreNotificationPayload;
+        try {
+          this.pendingRestoreNotification = JSON.parse(json) as RestoreNotificationPayload;
+        } catch (err) {
+          this.closeWithProtocolError(`Malformed MSG_RESTORE_NOTIFICATION payload: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
+        break;
+      }
+      case MSG_MODE_TRANSITION_RESULT: {
+        const json = new TextDecoder().decode(payload);
+        let result: ModeTransitionResult;
+        try {
+          result = JSON.parse(json) as ModeTransitionResult;
+        } catch (err) {
+          this.closeWithProtocolError(`Malformed MSG_MODE_TRANSITION_RESULT payload: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
+        this.events.onModeTransitionResult?.(result);
         break;
       }
       default:
@@ -445,6 +523,53 @@ export class CrdtProvider {
     msg[0] = msgType;
     msg.set(payload, 1);
     this.ws.send(msg);
+  }
+
+  private sendModeTransitionRequest(): void {
+    const request: ModeTransitionRequest = this.initialTransitionRequest ?? {
+      requestId: crypto.randomUUID(),
+      clientInstanceId: this.clientInstanceId,
+      docPath: this.docPath,
+      requestedMode: "editor",
+      editorFocusTarget: this.pendingEditorFocusTarget,
+    };
+    this.initialTransitionRequest = null;
+    const payload = new TextEncoder().encode(JSON.stringify(request));
+    this.sendRaw(MSG_MODE_TRANSITION_REQUEST, payload);
+  }
+
+  /** Surface a protocol-level parse error and terminate the connection. */
+  private closeWithProtocolError(msg: string): void {
+    this.setState("error");
+    this.events.onError?.(msg);
+    if (this.ws) {
+      this.ws.onclose = null;
+      this.ws.close();
+      this.ws = null;
+    }
+    this.rejectPendingMutates(new Error(msg));
+  }
+
+  private drainMutateQueue(): void {
+    if (this.mutateInFlight || this.mutateQueue.length === 0) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      // Socket not open — reject everything rather than hanging in-flight indefinitely.
+      this.rejectPendingMutates(new Error("WebSocket not open"));
+      return;
+    }
+    const next = this.mutateQueue[0];
+    this.mutateInFlight = true;
+    const json = JSON.stringify({ fragmentKey: next.fragmentKey, markdown: next.markdown });
+    const payload = new TextEncoder().encode(json);
+    this.sendRaw(MSG_SECTION_MUTATE, payload);
+  }
+
+  private rejectPendingMutates(err: Error): void {
+    const entries = this.mutateQueue.splice(0);
+    this.mutateInFlight = false;
+    for (const entry of entries) {
+      entry.reject(err);
+    }
   }
 
   private scheduleReconnect(): void {
