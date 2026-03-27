@@ -60,6 +60,8 @@ export const userFeatures = [
   "Shared UI theme: consistent button, pill, input, and code styles applied across all pages",
   "Import page: non-markdown files shown in amber, internal-format artifacts shown in red with explanatory tooltip",
   "Document page: left gutter shows who last changed each section, with HUMAN / AI badge and live age",
+  "'Agent MCP Logs' admin page shows a timeline of AI agent activity per session",
+   "AI proposal changes appear in your open document in real time — no need to reload"
 ];
 
 export const architectureFeatures = [
