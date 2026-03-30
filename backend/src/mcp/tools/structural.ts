@@ -175,7 +175,7 @@ const deleteSectionHandler: ToolHandler = async (args, ctx) => {
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
   if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath) || headingPath.length === 0) {
-    return makeToolErrorResult("Cannot delete the root section.");
+    return makeToolErrorResult("Cannot delete the before-first-heading section. Use document delete to remove the entire document.");
   }
 
   // Validate doc_path before any state is created
@@ -250,7 +250,7 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
   if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath) || headingPath.length === 0) {
-    return makeToolErrorResult("Cannot move the root section.");
+    return makeToolErrorResult("Cannot move the before-first-heading section.");
   }
   if (!Array.isArray(newParentPath)) {
     return makeToolErrorResult("Missing required parameter: new_parent_path (string[])");
@@ -336,7 +336,7 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
   if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath) || headingPath.length === 0) {
-    return makeToolErrorResult("Cannot rename the root section.");
+    return makeToolErrorResult("Cannot rename the before-first-heading section (it has no heading).");
   }
   if (!newHeading) return makeToolErrorResult("Missing required parameter: new_heading");
 
@@ -522,8 +522,10 @@ const renameDocumentHandler: ToolHandler = async (args, ctx) => {
     const headingPaths = await overlayLayer.tombstoneDocument(docPath);
 
     // Step 2: Copy full content to new path in proposal overlay.
-    // Read all sections from canonical, then write through OverlayContentLayer.
-    const subtree = await new ContentLayer(canonicalRoot).readSubtree(docPath, []);
+    // Create the destination document skeleton first (needed for live-empty docs
+    // where no writeSection calls would otherwise create it).
+    await overlayLayer.createDocument(newPath);
+    const subtree = await new ContentLayer(canonicalRoot).readAllSubtreeEntries(docPath);
 
     for (const entry of subtree) {
       await overlayLayer.writeSection(

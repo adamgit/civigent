@@ -100,6 +100,7 @@ export function serializeSkeletonEntries(entries: SkeletonEntry[]): string {
   const lines: string[] = [];
   for (const entry of entries) {
     if (entry.level === 0 && entry.heading === "") {
+      // Before-first-heading section: no heading line, just the section directive
       lines.push(`{{section: ${entry.sectionFile}}}`);
     } else {
       lines.push("");
@@ -157,11 +158,15 @@ export async function readOverlayDocumentState(
 }
 
 /**
- * Generate a unique section filename from a heading.
+ * Generate a unique section filename from a heading text.
+ * Only for headed sections — produces `sec_<slug>_<id>.md`.
+ * For before-first-heading sections, use generateBeforeFirstHeadingFilename().
+ * For sub-skeleton body holders, use generateSectionBodyFilename().
  *
- * INVARIANT: The generated filename stem (without .md) must NEVER equal "__root__",
- * which is the synthetic constant used for root fragment keys. The current format
- * "sec_${slug}_${random}.md" cannot collide with "__root__" by construction.
+ * INVARIANT: The generated filename stem (without .md) must NEVER equal "__beforeFirstHeading__",
+ * which is the synthetic constant used for before-first-heading fragment keys. The `sec_` prefix
+ * guarantees this. The `--before-first-heading--` and `--section-body--` families also cannot
+ * collide since `sec_` never starts with `--`.
  */
 export function generateSectionFilename(heading: string): string {
   const slug = heading
@@ -171,6 +176,23 @@ export function generateSectionFilename(heading: string): string {
     .slice(0, 40);
   const randomSuffix = Math.random().toString(36).slice(2, 8);
   return `sec_${slug}_${randomSuffix}.md`;
+}
+
+/** Generate a unique filename for a before-first-heading section body file.
+ *  Uses the `--before-first-heading--<id>.md` family, which cannot collide
+ *  with heading-derived `sec_<slug>_<id>.md` filenames. */
+export function generateBeforeFirstHeadingFilename(): string {
+  const id = Math.random().toString(36).slice(2, 8);
+  return `--before-first-heading--${id}.md`;
+}
+
+/** Generate a unique filename for a sub-skeleton body holder (the implicit
+ *  root child of a headed section that has children).
+ *  Uses the `--section-body--<id>.md` family, which cannot collide
+ *  with heading-derived `sec_<slug>_<id>.md` or `--before-first-heading--` filenames. */
+export function generateSectionBodyFilename(): string {
+  const id = Math.random().toString(36).slice(2, 8);
+  return `--section-body--${id}.md`;
 }
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -290,15 +312,15 @@ export class DocumentSkeleton {
   ): void {
     const sectionsDir = `${parentSkeletonPath}.sections`;
     for (const node of nodes) {
-      const isRoot = node.level === 0 && node.heading === "";
-      if (!isRoot) hp.push(node.heading);
+      const isBfh = node.level === 0 && node.heading === "";
+      if (!isBfh) hp.push(node.heading);
       const absPath = path.join(sectionsDir, node.sectionFile);
       const isSubSkeleton = node.children.length > 0;
       cb(node.heading, node.level, node.sectionFile, hp, absPath, isSubSkeleton);
       if (isSubSkeleton) {
         this.walkNodes(node.children, hp, absPath, cb);
       }
-      if (!isRoot) hp.pop();
+      if (!isBfh) hp.pop();
     }
   }
 
@@ -316,10 +338,10 @@ export class DocumentSkeleton {
   }
 
   /**
-   * Resolve the root section directly from this.roots — no flat materialization.
-   * Returns null if the skeleton is empty (tombstone) or has no root section.
+   * Resolve the before-first-heading section directly from this.roots — no flat materialization.
+   * Returns null if the skeleton is empty (tombstone) or has no before-first-heading section.
    */
-  expectRoot(): FlatEntry | null {
+  expectBeforeFirstHeading(): FlatEntry | null {
     const rootNode = this.roots.find(n => n.level === 0 && n.heading === "");
     if (!rootNode) {
       return null;
@@ -357,10 +379,10 @@ export class DocumentSkeleton {
    * Throws if not found.
    */
   expectByFileId(sectionFileId: string): FlatEntry {
-    if (sectionFileId === "__root__") {
-      const root = this.expectRoot();
+    if (sectionFileId === "__beforeFirstHeading__") {
+      const root = this.expectBeforeFirstHeading();
       if (!root) {
-        throw new Error(`Skeleton integrity error: no root section in ${this.docPath} (document may be deleted)`);
+        throw new Error(`No before-first-heading section in ${this.docPath}. The document may have no content before its first heading.`);
       }
       return root;
     }
@@ -380,8 +402,8 @@ export class DocumentSkeleton {
    * callers need find-or-null semantics.
    */
   findByFileId(sectionFileId: string): FlatEntry | null {
-    if (sectionFileId === "__root__") {
-      return this.expectRoot();
+    if (sectionFileId === "__beforeFirstHeading__") {
+      return this.expectBeforeFirstHeading();
     }
 
     const targetFile = sectionFileId.endsWith(".md") ? sectionFileId : sectionFileId + ".md";
@@ -396,8 +418,8 @@ export class DocumentSkeleton {
   ): FlatEntry | null {
     const sectionsDir = `${parentSkeletonPath}.sections`;
     for (const node of nodes) {
-      const isRoot = node.level === 0 && node.heading === "";
-      const hp = isRoot ? parentPath : [...parentPath, node.heading];
+      const isBfh = node.level === 0 && node.heading === "";
+      const hp = isBfh ? parentPath : [...parentPath, node.heading];
       const absPath = path.join(sectionsDir, node.sectionFile);
       if (node.sectionFile === targetFile) {
         return {
@@ -419,9 +441,9 @@ export class DocumentSkeleton {
 
   /** Look up a section by heading path. Returns null if not found. */
   find(headingPath: string[]): FlatEntry | null {
-    // Root section: headingPath=[]
+    // Before-first-heading section: headingPath=[]
     if (headingPath.length === 0) {
-      return this.expectRoot();
+      return this.expectBeforeFirstHeading();
     }
 
     let nodes = this.roots;
@@ -475,7 +497,7 @@ export class DocumentSkeleton {
     const entry = this.find(headingPath);
     if (!entry) {
       if (headingPath.length === 0) {
-        throw new Error(`Skeleton integrity error: no root section in ${this.docPath} (document may be deleted)`);
+        throw new Error(`No before-first-heading section in ${this.docPath}. The document may have no content before its first heading.`);
       }
       throw new Error(
         `Skeleton integrity error: heading path [${headingPath.join(" > ")}] not found in ${this.docPath}`
@@ -490,17 +512,32 @@ export class DocumentSkeleton {
   }
 
   /**
-   * Return FlatEntry[] for the subtree rooted at headingPath (no file I/O).
-   * If headingPath is [], returns all content sections (entire document).
+   * Return all content FlatEntry[] for the entire document (no file I/O).
    * Sub-skeleton entries are excluded — only body-file entries are returned.
+   * Use this instead of subtreeEntries([]) for whole-document enumeration.
+   */
+  allContentEntries(): FlatEntry[] {
+    const entries: FlatEntry[] = [];
+    this.forEachSection((heading, level, sectionFile, hp, absolutePath) => {
+      entries.push({ headingPath: [...hp], heading, level, sectionFile, absolutePath, isSubSkeleton: false });
+    });
+    return entries;
+  }
+
+  /**
+   * Return FlatEntry[] for the subtree rooted at headingPath (no file I/O).
+   * Sub-skeleton entries are excluded — only body-file entries are returned.
+   *
+   * ILLEGAL to call with headingPath=[]. Use allContentEntries() for
+   * whole-document enumeration, or expectBeforeFirstHeading() for the
+   * before-first-heading section.
    */
   subtreeEntries(headingPath: string[]): FlatEntry[] {
     if (headingPath.length === 0) {
-      const entries: FlatEntry[] = [];
-      this.forEachSection((heading, level, sectionFile, hp, absolutePath) => {
-        entries.push({ headingPath: [...hp], heading, level, sectionFile, absolutePath, isSubSkeleton: false });
-      });
-      return entries;
+      throw new Error(
+        "subtreeEntries([]) is illegal — use allContentEntries() for whole-document enumeration, " +
+        "or expectBeforeFirstHeading() for the before-first-heading section"
+      );
     }
     const parentPath = headingPath.slice(0, -1);
     const target = headingPath[headingPath.length - 1];
@@ -607,8 +644,8 @@ export class DocumentSkeleton {
     const result: FlatEntry[] = [];
     const sectionsDir = `${parentSkeletonPath}.sections`;
     for (const node of nodes) {
-      const isRoot = node.level === 0 && node.heading === "";
-      const hp = isRoot ? [...parentPath] : [...parentPath, node.heading];
+      const isBfh = node.level === 0 && node.heading === "";
+      const hp = isBfh ? [...parentPath] : [...parentPath, node.heading];
       const absPath = path.join(sectionsDir, node.sectionFile);
       result.push({
         headingPath: hp,
@@ -631,8 +668,8 @@ export class DocumentSkeleton {
     parentSkeletonPath: string,
   ): FlatEntry[] {
     const sectionsDir = `${parentSkeletonPath}.sections`;
-    const isRoot = node.level === 0 && node.heading === "";
-    const hp = isRoot ? [...parentPath] : [...parentPath, node.heading];
+    const isBfh = node.level === 0 && node.heading === "";
+    const hp = isBfh ? [...parentPath] : [...parentPath, node.heading];
     const absPath = path.join(sectionsDir, node.sectionFile);
     const result: FlatEntry[] = [{
       headingPath: hp,
@@ -693,6 +730,40 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     headingPath: string[],
     newSections: Array<{ heading: string; level: number; body: string }>,
   ): Promise<ReplacementResult> {
+    // Before-first-heading section: search this.roots for the level=0, heading="" node
+    if (headingPath.length === 0) {
+      const idx = this.roots.findIndex(n => n.level === 0 && n.heading === "");
+      if (idx < 0) {
+        throw new Error(
+          `Skeleton integrity error: before-first-heading section not found in ${this.docPath}`
+        );
+      }
+      const oldNode = this.roots[idx];
+      const removed = this.flattenNode(oldNode, [], this.skeletonPath);
+      // Build replacement nodes from newSections
+      const added: FlatEntry[] = [];
+      const replacementNodes: SkeletonNode[] = [];
+      for (const sec of newSections) {
+        const sectionFile = (sec.level === 0 && sec.heading === "")
+          ? generateBeforeFirstHeadingFilename()
+          : generateSectionFilename(sec.heading);
+        const node: SkeletonNode = { heading: sec.heading, level: sec.level, sectionFile, children: [] };
+        replacementNodes.push(node);
+        const absPath = path.join(`${this.skeletonPath}.sections`, sectionFile);
+        added.push({
+          headingPath: sec.heading === "" ? [] : [sec.heading],
+          heading: sec.heading,
+          level: sec.level,
+          sectionFile,
+          absolutePath: absPath,
+          isSubSkeleton: false,
+        });
+      }
+      this.roots.splice(idx, 1, ...replacementNodes);
+      await this.persistInternal();
+      return { removed, added };
+    }
+
     const parentPath = headingPath.slice(0, -1);
     const oldHeading = headingPath[headingPath.length - 1];
     const siblings = this.findSiblingList(parentPath);
@@ -755,7 +826,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
 
     // Any node that gained children needs a root child to hold its body,
     // since its file will become a sub-skeleton (overwritten by persist()).
-    addRootChildrenToParents(replacementNodes);
+    addBodyHoldersToParents(replacementNodes);
 
     // Splice into the sibling list
     siblings.splice(idx, 1, ...replacementNodes);
@@ -771,11 +842,11 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
   }
 
   /**
-   * Insert new sections from a root fragment split.
+   * Insert new sections from a before-first-heading fragment split.
    *
-   * When the user types heading(s) inside the root section, the root
-   * fragment contains both the root body and one or more headed sections.
-   * This method adds those headed sections as siblings of root in
+   * When the user types heading(s) inside the before-first-heading section, the BFH
+   * fragment contains both the preamble body and one or more headed sections.
+   * This method adds those headed sections as siblings of the BFH entry in
    * this.roots (NOT as children, to avoid sub-skeleton file conflicts
    * with root's body file).
    *
@@ -786,12 +857,14 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * @returns FlatEntry[] for all added sections (depth-first order,
    *          matching the document-order of newSections).
    */
-  async addSectionsFromRootSplit(
+  async addSectionsFromBeforeFirstHeadingSplit(
     newSections: Array<{ heading: string; level: number; body: string }>,
   ): Promise<FlatEntry[]> {
     const rootIdx = this.roots.findIndex(n => n.level === 0 && n.heading === "");
     if (rootIdx < 0) {
-      throw new Error(`Skeleton integrity error: no root section in ${this.docPath}`);
+      // No BFH section exists — nothing to split. This is valid for documents
+      // that have no content before their first heading.
+      return [];
     }
 
     // Build tree from newSections (level-based nesting among themselves)
@@ -823,7 +896,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
 
     // Any node that gained children needs a root child to hold its body,
     // since its file will become a sub-skeleton (overwritten by persist()).
-    addRootChildrenToParents(newNodes);
+    addBodyHoldersToParents(newNodes);
 
     // Insert after root in this.roots
     this.roots.splice(rootIdx + 1, 0, ...newNodes);
@@ -847,7 +920,10 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     parentPath: string[],
     section: { heading: string; level: number; body: string },
   ): Promise<FlatEntry[]> {
-    const sectionFile = generateSectionFilename(section.heading);
+    const isBfh = section.level === 0 && section.heading === "";
+    const sectionFile = isBfh
+      ? generateBeforeFirstHeadingFilename()
+      : generateSectionFilename(section.heading);
     const node: SkeletonNode = {
       heading: section.heading,
       level: section.level,
@@ -859,7 +935,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     siblings.push(node);
 
     // If the parent now has children and didn't have a root child before,
-    // addRootChildrenToParents will handle it on persist. But we need to
+    // addBodyHoldersToParents will handle it on persist. But we need to
     // ensure the parent node gets root children if it just gained its first child.
     if (parentPath.length > 0) {
       const parentSiblings = this.findSiblingList(parentPath.slice(0, -1));
@@ -867,7 +943,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
         n => n.heading.toLowerCase() === parentPath[parentPath.length - 1].toLowerCase(),
       );
       if (parentNode) {
-        addRootChildrenToParents([parentNode]);
+        addBodyHoldersToParents([parentNode]);
       }
     }
 
@@ -904,11 +980,11 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     const nodes: SkeletonNode[] = [];
 
     for (const section of parsed.sections) {
-      const isRoot = section.headingPath.length === 0;
+      const isBfh = section.headingPath.length === 0;
       const heading = section.heading;
 
       let matchedIdx = -1;
-      if (isRoot) {
+      if (isBfh) {
         // Match the canonical root entry (level=0, heading="")
         for (let ci = 0; ci < canonicalFlat.length; ci++) {
           if (consumed.has(ci)) continue;
@@ -937,10 +1013,10 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
 
       const sectionFile = matchedIdx >= 0
         ? canonicalFlat[matchedIdx].sectionFile
-        : generateSectionFilename(isRoot ? "root" : heading);
+        : isBfh ? generateBeforeFirstHeadingFilename() : generateSectionFilename(heading);
 
       nodes.push({
-        heading: isRoot ? "" : heading,
+        heading: isBfh ? "" : heading,
         level: section.level,
         sectionFile,
         children: [],
@@ -998,22 +1074,11 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     return new DocumentSkeletonInternal(docPath, [], overlayRoot);
   }
 
-  /**
-   * Create an in-memory skeleton with a root section node (no disk I/O).
-   * Caller must call persistInternal() after setup is complete.
-   */
-  static inMemoryWithRoot(
-    docPath: string,
-    overlayRoot: string,
-  ): DocumentSkeletonInternal {
-    const rootNode: SkeletonNode = {
-      heading: "",
-      level: 0,
-      sectionFile: generateSectionFilename("root"),
-      children: [],
-    };
-    return new DocumentSkeletonInternal(docPath, [rootNode], overlayRoot);
-  }
+  // --- Static factories ---
+  // inMemoryEmpty: creates a live-empty document (zero sections)
+  // fromDisk: loads an existing document's skeleton from overlay+canonical
+  // fromNodes: builds from pre-assembled nodes (used by crash recovery)
+  // createTombstone: creates a deletion marker
 
   /**
    * Construct a skeleton from pre-assembled nodes. Used by crash recovery to build
@@ -1141,18 +1206,19 @@ function validateNoDuplicateRoots(nodes: SkeletonNode[], docPath: string): void 
 }
 
 /**
- * Post-process a tree of nodes: any node that has children but no root child
- * gets a root child (level=0, heading="") prepended. This ensures the parent's
+ * Post-process a tree of nodes: any node that has children but no body holder
+ * child gets one (level=0, heading="") prepended. This ensures the parent's
  * body content has a file to live in, since the parent's file becomes a
  * sub-skeleton (overwritten by persist/writeTree).
+ * These are sub-skeleton body holders, NOT document-level before-first-heading sections.
  */
-function addRootChildrenToParents(nodes: SkeletonNode[]): void {
+function addBodyHoldersToParents(nodes: SkeletonNode[]): void {
   for (const node of nodes) {
     if (node.children.length > 0) {
-      // Check if a root child already exists
-      const hasRoot = node.children.some(c => c.level === 0 && c.heading === "");
-      if (!hasRoot) {
-        const rootFile = generateSectionFilename("root");
+      // Check if a body holder child already exists
+      const hasBodyHolder = node.children.some(c => c.level === 0 && c.heading === "");
+      if (!hasBodyHolder) {
+        const rootFile = generateSectionBodyFilename();
         node.children.unshift({
           heading: "",
           level: 0,
@@ -1160,8 +1226,8 @@ function addRootChildrenToParents(nodes: SkeletonNode[]): void {
           children: [],
         });
       }
-      // Recurse into children (skip the root child itself)
-      addRootChildrenToParents(node.children);
+      // Recurse into children
+      addBodyHoldersToParents(node.children);
     }
   }
 }

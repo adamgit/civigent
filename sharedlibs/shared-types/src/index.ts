@@ -21,6 +21,26 @@ export type DocPath = string;
 export type HeadingPath = string[];
 export type ProposalId = string;
 
+/**
+ * SectionTarget — discriminated union for targeting a section.
+ * Used in MCP tool inputs and API boundaries.
+ */
+export type SectionTarget =
+  | { kind: "before_first_heading" }
+  | { kind: "heading_path"; heading_path: string[] };
+
+/** Convert SectionTarget to heading path for internal resolution. */
+export function sectionTargetToHeadingPath(target: SectionTarget): string[] {
+  return target.kind === "before_first_heading" ? [] : target.heading_path;
+}
+
+/** Convert heading path to SectionTarget for wire format parsing. */
+export function headingPathToSectionTarget(hp: string[]): SectionTarget {
+  return hp.length === 0
+    ? { kind: "before_first_heading" }
+    : { kind: "heading_path", heading_path: hp };
+}
+
 // ─── CRDT Remote Session Model ──────────────────────────────────────
 
 /** Applied server role for a connected CRDT participant. */
@@ -39,9 +59,7 @@ export type AttachmentState = "detached" | "waiting_for_session" | "attached_to_
 export type DocSessionId = string;
 
 /** Explicit focus target for the one section currently edited by this tab. */
-export interface EditorFocusTarget {
-  heading_path: string[];
-}
+export type EditorFocusTarget = SectionTarget;
 
 /** Server-authoritative runtime state for one connected CRDT participant/tab. */
 export interface RemoteParticipant {

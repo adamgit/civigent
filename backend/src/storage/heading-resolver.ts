@@ -91,8 +91,8 @@ export function flattenStructureWithLevels(
 ): FlatSection[] {
   const result: FlatSection[] = [];
   for (const node of nodes) {
-    const isRoot = node.level === 0 && node.heading === "";
-    const currentPath = isRoot ? [...parentPath] : [...parentPath, node.heading];
+    const isBeforeFirstHeading = node.level === 0 && node.heading === "";
+    const currentPath = isBeforeFirstHeading ? [...parentPath] : [...parentPath, node.heading];
     result.push({ headingPath: currentPath, heading: node.heading, level: node.level });
     if (node.children?.length) {
       result.push(...flattenStructureWithLevels(node.children, currentPath));
@@ -107,8 +107,8 @@ export function flattenStructureToHeadingPaths(
 ): string[][] {
   const result: string[][] = [];
   for (const node of nodes) {
-    const isRoot = node.level === 0 && node.heading === "";
-    const currentPath = isRoot ? [...parentPath] : [...parentPath, node.heading];
+    const isBeforeFirstHeading = node.level === 0 && node.heading === "";
+    const currentPath = isBeforeFirstHeading ? [...parentPath] : [...parentPath, node.heading];
     result.push(currentPath);
     if (node.children?.length) {
       result.push(...flattenStructureToHeadingPaths(node.children, currentPath));

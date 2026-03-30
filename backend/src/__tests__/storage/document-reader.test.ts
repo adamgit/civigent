@@ -19,7 +19,7 @@ describe("document-reader", () => {
 
   it("readAssembledDocument concatenates all section content", async () => {
     const result = await readAssembledDocument(SAMPLE_DOC_PATH);
-    expect(result).toContain(SAMPLE_SECTIONS.root.trim());
+    expect(result).toContain(SAMPLE_SECTIONS.preamble.trim());
     expect(result).toContain(SAMPLE_SECTIONS.overview.trim());
     expect(result).toContain(SAMPLE_SECTIONS.timeline.trim());
   });

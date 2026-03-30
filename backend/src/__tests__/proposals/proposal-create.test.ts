@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import { createTestServer, type TestServerContext } from "../helpers/test-server.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
+import { authFor } from "../helpers/auth.js";
 
 describe("POST /api/proposals — create proposal", () => {
   let ctx: TestServerContext;
@@ -72,16 +73,18 @@ describe("POST /api/proposals — create proposal", () => {
     expect(res.status).toBe(400);
   });
 
-  it("returns 400 if sections is empty array", async () => {
+  it("accepts empty sections array for agent proposals (document-level operations)", async () => {
+    // Use a unique agent to avoid single-pending-invariant conflict
+    const uniqueAgentToken = authFor("empty-sec-agent", "agent");
     const res = await request(ctx.app)
       .post("/api/proposals")
-      .set("Authorization", ctx.agentToken)
+      .set("Authorization", uniqueAgentToken)
       .send({
         intent: "Empty sections",
         sections: [],
       });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(201);
   });
 
   it("returns 400 if section missing doc_path", async () => {

@@ -601,7 +601,9 @@ export function useDocumentCrdt({
       provider.focusSection(section.heading_path);
       setControllerState((prev) => ({
         ...prev,
-        editorFocusTarget: { heading_path: section.heading_path },
+        editorFocusTarget: section.heading_path.length > 0
+          ? { kind: "heading_path", heading_path: section.heading_path }
+          : { kind: "before_first_heading" },
       }));
     }
     setViewingSections(provider, sectionIndex);
@@ -625,7 +627,9 @@ export function useDocumentCrdt({
       provider.focusSection(targetSection.heading_path);
       setControllerState((prev) => ({
         ...prev,
-        editorFocusTarget: { heading_path: targetSection.heading_path },
+        editorFocusTarget: targetSection.heading_path.length > 0
+          ? { kind: "heading_path", heading_path: targetSection.heading_path }
+          : { kind: "before_first_heading" },
       }));
     }
     // viewingPresence: broadcast which section we're viewing

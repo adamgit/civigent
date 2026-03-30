@@ -827,9 +827,13 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
         `Rename document: ${docPath} -> ${newPath}`,
       );
-      const headingPaths = await new OverlayContentLayer(proposalContentRoot, canonicalRoot).tombstoneDocument(docPath);
-      const subtree = await new ContentLayer(canonicalRoot).readSubtree(docPath, []);
       const overlayLayer = new OverlayContentLayer(proposalContentRoot, canonicalRoot);
+      const headingPaths = await overlayLayer.tombstoneDocument(docPath);
+      const subtree = await new ContentLayer(canonicalRoot).readAllSubtreeEntries(docPath);
+      // Create the destination document (skeleton). For live-empty docs this is the
+      // only operation; for docs with sections, writeSection auto-creates but we need
+      // the skeleton to exist even if there are zero sections.
+      await overlayLayer.createDocument(newPath);
       for (const entry of subtree) {
         await overlayLayer.writeSection(new SectionRef(newPath, entry.headingPath), entry.bodyContent);
       }
@@ -1020,7 +1024,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const headingPath = parseHeadingPathParam(req.params.headingPath);
 
       if (headingPath.length === 0) {
-        sendApiError(res, 400, "Cannot delete the root section.");
+        sendApiError(res, 400, "Cannot delete the before-first-heading section. Use document delete to remove the entire document.");
         return;
       }
 
@@ -1084,7 +1088,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const headingPath = parseHeadingPathParam(req.params.headingPath);
 
       if (headingPath.length === 0) {
-        sendApiError(res, 400, "Cannot move the root section.");
+        sendApiError(res, 400, "Cannot move the before-first-heading section.");
         return;
       }
 
@@ -1162,7 +1166,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const headingPath = parseHeadingPathParam(req.params.headingPath);
 
       if (headingPath.length === 0) {
-        sendApiError(res, 400, "Cannot rename the root section.");
+        sendApiError(res, 400, "Cannot rename the before-first-heading section (it has no heading).");
         return;
       }
 
@@ -1317,9 +1321,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         }
       }
 
-      // Human reservations can start with empty sections
+      // Human reservations can start with empty sections.
+      // Agent proposals may also have zero sections for document-level operations (create/delete).
       if (writer.type === "agent") {
-        if (!Array.isArray(body.sections) || body.sections.length === 0) {
+        if (!Array.isArray(body.sections)) {
           sendApiError(res, 400, "sections[] is required for agent proposals.");
           return;
         }
@@ -1561,7 +1566,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       const body = req.body as UpdateProposalRequest;
-      if (!Array.isArray(body.sections) || body.sections.length === 0) {
+      if (!Array.isArray(body.sections)) {
         sendApiError(res, 400, "sections[] is required.");
         return;
       }
@@ -1861,7 +1866,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           let headingPath: string[] = [];
           if (fragmentKey.startsWith(prefix)) {
             const fileId = fragmentKey.slice(prefix.length);
-            if (fileId === "__root__") {
+            if (fileId === "__beforeFirstHeading__") {
               headingPath = [];
             } else {
               try {
@@ -2746,8 +2751,8 @@ function registerDocumentCatchAllRoutes(
         `Create document: ${docPath}`,
       );
       const overlayLayer = new OverlayContentLayer(proposalContentRoot, contentRoot);
-      await overlayLayer.writeSection(new SectionRef(docPath, []), "");
-      await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: [] }]);
+      await overlayLayer.createDocument(docPath);
+      await updateProposalSections(proposalId, []);
       const { sections, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId);
       if (!committedHead) {
         res.status(409).json({

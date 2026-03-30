@@ -40,13 +40,12 @@ describe("GET /api/documents/:doc_path/sections", () => {
     }
   });
 
-  it("returns 200 with empty sections for non-existent document", async () => {
+  it("returns 404 for non-existent document", async () => {
     const res = await request(ctx.app)
       .get("/api/documents/nonexistent.md/sections")
       .set("Authorization", ctx.humanToken);
 
-    // Non-existent docs return empty sections (skeleton returns empty nodes)
-    expect(res.status).toBe(200);
-    expect(res.body.sections).toHaveLength(0);
+    // Non-existent docs return 404 (no skeleton on disk)
+    expect(res.status).toBe(404);
   });
 });

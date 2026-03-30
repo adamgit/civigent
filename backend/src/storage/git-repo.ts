@@ -267,8 +267,8 @@ async function assembleSkeletonFromGit(
       continue;
     }
 
-    const isRoot = entry.level === 0 && entry.heading === "";
-    if (isRoot) {
+    const isBeforeFirstHeading = entry.level === 0 && entry.heading === "";
+    if (isBeforeFirstHeading) {
       const trimmed = bodyContent.replace(/^\n+/, "").replace(/\n+$/, "");
       if (trimmed) parts.push(trimmed);
     } else {

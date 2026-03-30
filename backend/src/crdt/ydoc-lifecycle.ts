@@ -228,11 +228,11 @@ export async function acquireDocSession(
       const { buildRecoverySectionMarkdown } = await import("../storage/crash-recovery.js");
       const recoveryBody = buildRecoverySectionMarkdown(orphanedBodies);
       const recoverySection = { heading: "Recovered edits", level: 2, body: recoveryBody, headingPath: ["Recovered edits"] };
-      const addedEntries = await fragments.skeleton.addSectionsFromRootSplit([recoverySection]);
+      const addedEntries = await fragments.skeleton.addSectionsFromBeforeFirstHeadingSplit([recoverySection]);
       for (const addedEntry of addedEntries) {
         if (addedEntry.isSubSkeleton) continue;
-        const isRoot = FragmentStore.isDocumentRoot(addedEntry);
-        const newKey = fragmentKeyFromSectionFile(addedEntry.sectionFile, isRoot);
+        const isBfh = FragmentStore.isBeforeFirstHeading(addedEntry);
+        const newKey = fragmentKeyFromSectionFile(addedEntry.sectionFile, isBfh);
         const headingLine = `${"#".repeat(addedEntry.level)} ${addedEntry.heading}`;
         const fragmentContent = recoveryBody.trim()
           ? `${headingLine}\n\n${recoveryBody}`
@@ -659,8 +659,8 @@ async function normalizeAllFragments(session: DocSession): Promise<void> {
   // Collect fragment keys first (normalization may mutate the skeleton)
   const keys: string[] = [];
   fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-    const isRoot = FragmentStore.isDocumentRoot({ headingPath, level, heading });
-    keys.push(fragmentKeyFromSectionFile(sectionFile, isRoot));
+    const isBfh = FragmentStore.isBeforeFirstHeading({ headingPath, level, heading });
+    keys.push(fragmentKeyFromSectionFile(sectionFile, isBfh));
   });
 
   for (const fragmentKey of keys) {
@@ -894,11 +894,11 @@ export async function getSessionFileMtime(sectionKey: string): Promise<number | 
 
   // No in-memory session — check disk file mtime for orphaned sessions
   const sessionDocsContentRoot = getSessionDocsContentRoot();
-  if (headingPath.length === 0) return null;
 
   try {
-    const { resolveHeadingPathUnderRoot } = await import("../storage/heading-resolver.js");
-    const filePath = await resolveHeadingPathUnderRoot(sessionDocsContentRoot, docPath, headingPath);
+    const { ContentLayer } = await import("../storage/content-layer.js");
+    const layer = new ContentLayer(sessionDocsContentRoot);
+    const filePath = await layer.resolveSectionPath(docPath, headingPath);
     const { stat } = await import("node:fs/promises");
     const stats = await stat(filePath);
     return stats.mtimeMs;

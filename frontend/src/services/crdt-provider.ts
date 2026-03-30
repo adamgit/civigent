@@ -267,7 +267,9 @@ export class CrdtProvider {
     // This handles the race where focusSection() is called right after
     // connect() but before the WebSocket handshake completes.
     this.pendingFocus = headingPath;
-    this.pendingEditorFocusTarget = headingPath.length > 0 ? { heading_path: headingPath } : null;
+    this.pendingEditorFocusTarget = headingPath.length > 0
+      ? { kind: "heading_path", heading_path: headingPath }
+      : { kind: "before_first_heading" };
     const payload = new TextEncoder().encode(headingPath.join("\x00"));
     this.sendRaw(MSG_SECTION_FOCUS, payload);
 

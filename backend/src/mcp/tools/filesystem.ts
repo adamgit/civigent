@@ -162,12 +162,10 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
     return makeToolErrorResult(`Source document not found: ${source}`);
   }
 
-  // Load source heading paths for proposal metadata
+  // Load source heading paths for proposal metadata.
+  // A live-empty doc (zero sections) is valid — don't conflate zero headings with "not found".
   const canonicalLayer = new ContentLayer(canonicalContentRoot);
   const headingPaths = await canonicalLayer.listHeadingPaths(source);
-  if (headingPaths.length === 0) {
-    return makeToolErrorResult(`Source document not found: ${source}`);
-  }
 
   // Auto-withdraw any existing pending proposal
   const existing = await findDraftProposalByWriter(writer.id);

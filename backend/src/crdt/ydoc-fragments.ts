@@ -2,7 +2,7 @@
  * Y.Doc Fragment Helpers — Fragment key utilities and schema.
  *
  * Fragment key = "section::" + sectionFileId (filename stem, e.g. "sec_abc123def").
- * Root section uses the synthetic constant "section::__root__".
+ * Before-first-heading section uses the synthetic constant "section::__beforeFirstHeading__".
  *
  * Content operations (read, write, restructure, assemble) are in FragmentStore.
  * This module provides key derivation, schema, and session-level helpers.
@@ -13,16 +13,16 @@ import { Schema } from "prosemirror-model";
 
 // ─── Fragment key helpers ────────────────────────────────────────
 
-/** Synthetic fragment key for the root section (level=0, heading=""). */
-export const ROOT_FRAGMENT_KEY = "section::__root__";
+/** Synthetic fragment key for the before-first-heading section (level=0, heading=""). */
+export const BEFORE_FIRST_HEADING_KEY = "section::__beforeFirstHeading__";
 
 /**
  * Derive a stable fragment key from a section filename.
  * e.g. "sec_abc123def.md" → "section::sec_abc123def"
- * Root sections (level=0, heading="") use ROOT_FRAGMENT_KEY.
+ * Before-first-heading sections (level=0, heading="") use BEFORE_FIRST_HEADING_KEY.
  */
-export function fragmentKeyFromSectionFile(sectionFile: string, isRoot: boolean): string {
-  if (isRoot) return ROOT_FRAGMENT_KEY;
+export function fragmentKeyFromSectionFile(sectionFile: string, isBeforeFirstHeading: boolean): string {
+  if (isBeforeFirstHeading) return BEFORE_FIRST_HEADING_KEY;
   const stem = sectionFile.replace(/\.md$/, "");
   return "section::" + stem;
 }
@@ -30,7 +30,7 @@ export function fragmentKeyFromSectionFile(sectionFile: string, isRoot: boolean)
 /**
  * Extract the section file stem from a fragment key.
  * e.g. "section::sec_abc123def" → "sec_abc123def"
- * Returns "__root__" for the root fragment.
+ * Returns "__beforeFirstHeading__" for the before-first-heading fragment.
  */
 export function sectionFileFromFragmentKey(key: string): string {
   const prefix = "section::";

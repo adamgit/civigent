@@ -1,15 +1,16 @@
 /**
- * Regression test for ROOT_FRAGMENT_KEY collision crash.
+ * Regression test for BFH_FRAGMENT_KEY collision crash.
  *
  * Bug: when a section gains children (user types a deeper heading inside it),
- * normalization creates a root child entry (level=0, heading="") whose fragment
- * key collides with the document-level root. populateFragment merges the section
- * body into the document root's Y.Doc fragment via CRDT, corrupting the root
- * content. The corrupted root can then trigger a spurious normalizeRootSplit,
- * creating duplicate skeleton entries that crash resolveHeadingPath.
+ * normalization creates a body-holder entry (level=0, heading="") whose fragment
+ * key collides with the document-level before-first-heading fragment.
+ * populateFragment merges the section body into the document BFH's Y.Doc fragment
+ * via CRDT, corrupting the BFH content. The corrupted BFH can then trigger a
+ * spurious BFH split, creating duplicate skeleton entries that crash
+ * resolveHeadingPath.
  *
- * Root cause: fragmentKeyFromSectionFile(file, isRoot) returns ROOT_FRAGMENT_KEY
- * for ALL root children (level=0, heading=""), not just the document-level root.
+ * Root cause: fragmentKeyFromSectionFile(file, isBfh) returned BFH_FRAGMENT_KEY
+ * for ALL body-holder children (level=0, heading=""), not just the document-level BFH.
  * The frontend already does this correctly (checks headingPath.length === 0).
  *
  * This test fails until the backend fix is applied.
@@ -124,9 +125,9 @@ describe("ROOT_FRAGMENT_KEY collision", () => {
 
     // INVARIANT: document root fragment content is NOT corrupted by the section split.
     // The root fragment should still contain only the original root preamble,
-    // not Background's body merged in via ROOT_FRAGMENT_KEY collision.
-    const { ROOT_FRAGMENT_KEY } = await import("../../crdt/ydoc-fragments.js");
-    const rootContent = fragments.readFullContent(ROOT_FRAGMENT_KEY);
+    // not Background's body merged in via BEFORE_FIRST_HEADING_KEY collision.
+    const { BEFORE_FIRST_HEADING_KEY } = await import("../../crdt/ydoc-fragments.js");
+    const rootContent = fragments.readFullContent(BEFORE_FIRST_HEADING_KEY);
     expect(rootContent).not.toContain("primary maintainer");
 
     fragments.ydoc.destroy();

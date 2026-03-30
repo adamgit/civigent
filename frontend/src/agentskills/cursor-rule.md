@@ -9,7 +9,7 @@ alwaysApply: true
 You have access to a Knowledge Store via MCP tools (prefixed `mcp__%%name%%__`).
 These tools let you read, write, and manage structured wiki documents.
 
-The system operates at **section-level granularity**. Sections are identified by a `heading_path` — an array of heading strings like `["Chapter 1", "Section A"]`. An empty array `[]` means the root section (content before the first heading).
+The system operates at **section-level granularity**. Sections are identified by a `heading_path` — an array of heading strings like `["Chapter 1", "Section A"]`. An empty array `[]` means the before-first-heading section (content before the first heading).
 
 ## Reading & Research
 

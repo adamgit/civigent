@@ -66,11 +66,11 @@ import { getParser } from "./markdown-parser.js";
 
 /**
  * Strip a leading heading line if it matches the skeleton entry's heading text and level.
- * No-op for root sections (level=0, heading="") and for content that is already body-only.
+ * No-op for before-first-heading sections (level=0, heading="") and for content that is already body-only.
  * Idempotent: body-only input passes through unchanged.
  */
 function stripMatchingHeading(content: string, level: number, heading: string): string {
-  // Root sections never have headings to strip
+  // Before-first-heading sections have no heading line to strip
   if (level === 0 && heading === "") return content;
 
   const expectedPrefix = "#".repeat(level) + " " + heading;
@@ -211,7 +211,10 @@ export class ContentLayer {
   /**
    * Read the full subtree rooted at headingPath: the section itself and all
    * descendants. Reads body content via readSection().
-   * headingPath=[] returns all sections in the document.
+   *
+   * When headingPath is [], reads ALL sections (entire document).
+   * This is a document-level read, not a before-first-heading read.
+   * For before-first-heading specifically, use readSection(ref(docPath, [])).
    */
   async readSubtree(
     docPath: string,
@@ -219,6 +222,23 @@ export class ContentLayer {
   ): Promise<Array<{ headingPath: string[]; heading: string; level: number; bodyContent: string }>> {
     const skeleton = await this.readSkeleton(docPath);
     const entries = skeleton.subtreeEntries(headingPath);
+    const result: Array<{ headingPath: string[]; heading: string; level: number; bodyContent: string }> = [];
+    for (const entry of entries) {
+      const bodyContent = await this.readSection(new SectionRef(docPath, entry.headingPath));
+      result.push({ headingPath: entry.headingPath, heading: entry.heading, level: entry.level, bodyContent });
+    }
+    return result;
+  }
+
+  /**
+   * Read all sections in the document (whole-document enumeration).
+   * Use this instead of readSubtree(docPath, []).
+   */
+  async readAllSubtreeEntries(
+    docPath: string,
+  ): Promise<Array<{ headingPath: string[]; heading: string; level: number; bodyContent: string }>> {
+    const skeleton = await this.readSkeleton(docPath);
+    const entries = skeleton.allContentEntries();
     const result: Array<{ headingPath: string[]; heading: string; level: number; bodyContent: string }> = [];
     for (const entry of entries) {
       const bodyContent = await this.readSection(new SectionRef(docPath, entry.headingPath));
@@ -371,9 +391,9 @@ export class ContentLayer {
 
       if (content === undefined) continue;
 
-      // Prepend heading for non-root sections
-      const isRoot = entry.level === 0 && entry.heading === "";
-      if (!isRoot) {
+      // Prepend heading for non-before-first-heading sections
+      const isBeforeFirstHeading = entry.level === 0 && entry.heading === "";
+      if (!isBeforeFirstHeading) {
         const headingLine = `${"#".repeat(entry.level)} ${entry.heading}`;
         const trimmed = content.replace(/^\n+/, "").replace(/\n+$/, "");
         parts.push(trimmed ? `${headingLine}\n\n${trimmed}\n` : `${headingLine}\n`);
@@ -409,6 +429,11 @@ export class OverlayContentLayer {
     this.canonicalRoot = canonicalRoot;
   }
 
+  /** Normalize docPath for cache key consistency (strip leading slashes/backslashes). */
+  private cacheKey(docPath: string): string {
+    return docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  }
+
   /**
    * True only for a live document. Missing and tombstoned documents return false.
    */
@@ -419,16 +444,20 @@ export class OverlayContentLayer {
   /**
    * Resolve the effective document state across overlay + canonical roots.
    * "tombstone" means the overlay explicitly shadows the doc as pending deletion.
+   *
+   * Document state is determined by skeleton/tombstone files only.
+   * The presence or absence of a before-first-heading section has no effect
+   * on document existence. A document with zero sections is valid and "live".
    */
   async getDocumentState(docPath: string): Promise<OverlayDocumentState> {
-    if (this.skeletonCache.has(docPath)) return "live";
+    if (this.skeletonCache.has(this.cacheKey(docPath))) return "live";
     return readOverlayDocumentState(docPath, this.overlayRoot, this.canonicalRoot);
   }
 
   /**
-   * Create a new document. Throws if the document already exists (callers must check first).
-   * Creates the skeleton with root entry AND writes the root body file (empty string) atomically.
-   * Caches the resulting skeleton.
+   * Creates a live-empty document (zero sections, zero body files).
+   * The skeleton file is persisted immediately, marking the document as "live".
+   * Sections are added later via writeSection() or createSection().
    */
   async createDocument(docPath: string): Promise<void> {
     const state = await this.getDocumentState(docPath);
@@ -438,19 +467,9 @@ export class OverlayContentLayer {
     if (state === "tombstone") {
       throw new Error(`Cannot create document "${docPath}" — it is pending deletion in this overlay.`);
     }
-    const skeleton = DocumentSkeletonInternal.inMemoryWithRoot(docPath, this.overlayRoot);
-
-    // Write the root body file so the document is not in a corrupt state
-    let rootEntry: FlatEntry | null = null;
-    skeleton.forEachSection((_heading, _level, sectionFile, headingPath, absolutePath) => {
-      if (!rootEntry) rootEntry = { headingPath: [...headingPath], heading: _heading, level: _level, sectionFile, absolutePath, isSubSkeleton: false };
-    });
-    if (rootEntry) {
-      await writeBodyFile(rootEntry, "");
-    }
-
+    const skeleton = DocumentSkeletonInternal.inMemoryEmpty(docPath, this.overlayRoot);
     await skeleton.persistInternal();
-    this.skeletonCache.set(docPath, skeleton);
+    this.skeletonCache.set(this.cacheKey(docPath), skeleton);
   }
 
   /**
@@ -458,7 +477,7 @@ export class OverlayContentLayer {
    * Throws DocumentNotFoundError if the document does not exist.
    */
   async getWritableSkeleton(docPath: string): Promise<DocumentSkeletonInternal> {
-    const cached = this.skeletonCache.get(docPath);
+    const cached = this.skeletonCache.get(this.cacheKey(docPath));
     if (cached) return cached;
     const state = await this.getDocumentState(docPath);
     if (state === "tombstone") {
@@ -468,7 +487,7 @@ export class OverlayContentLayer {
       throw new DocumentNotFoundError(`Document "${docPath}" does not exist.`);
     }
     const skeleton = await DocumentSkeletonInternal.fromDisk(docPath, this.overlayRoot, this.canonicalRoot);
-    this.skeletonCache.set(docPath, skeleton);
+    this.skeletonCache.set(this.cacheKey(docPath), skeleton);
     return skeleton;
   }
 
@@ -564,7 +583,7 @@ export class OverlayContentLayer {
       paths.push([...headingPath]);
     });
     await DocumentSkeleton.createTombstone(docPath, this.overlayRoot);
-    this.skeletonCache.delete(docPath);
+    this.skeletonCache.delete(this.cacheKey(docPath));
     return paths;
   }
 
@@ -583,7 +602,7 @@ export class OverlayContentLayer {
       `${canonicalSrcSkeletonPath}.sections`,
       `${overlayDestSkeletonPath}.sections`,
     );
-    this.skeletonCache.delete(destinationDocPath);
+    this.skeletonCache.delete(this.cacheKey(destinationDocPath));
   }
 
   async getSectionList(
@@ -691,7 +710,7 @@ export class OverlayContentLayer {
       await writeBodyFile(overlayEntries[i], trimmedBody ? trimmedBody + "\n" : "");
     }
 
-    this.skeletonCache.set(docPath, overlaySkeleton);
+    this.skeletonCache.set(this.cacheKey(docPath), overlaySkeleton);
 
     return parsed.sectionTargets(docPath);
   }
@@ -783,11 +802,39 @@ export class OverlayContentLayer {
   /**
    * Rename a section (change heading text). Preserves body content.
    */
+  /**
+   * Create the before-first-heading section explicitly. Throws if it already exists.
+   */
+  async createBeforeFirstHeadingSection(docPath: string, body: string): Promise<void> {
+    const state = await this.getDocumentState(docPath);
+    if (state === "tombstone") {
+      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this overlay.`);
+    }
+    if (state === "missing") {
+      await this.createDocument(docPath);
+    }
+    const skeleton = await this.getWritableSkeleton(docPath);
+    if (skeleton.has([])) {
+      throw new Error(`Before-first-heading section already exists in "${docPath}".`);
+    }
+    const added = await skeleton.insertSectionUnder([], {
+      heading: "",
+      level: 0,
+      body: "",
+    });
+    for (const entry of added) {
+      await writeBodyFile(entry, body);
+    }
+  }
+
   async renameSection(
     docPath: string,
     headingPath: string[],
     newHeading: string,
   ): Promise<ReplacementResult> {
+    if (headingPath.length === 0) {
+      throw new Error("Cannot rename the before-first-heading section — it has no heading.");
+    }
     const skeleton = await this.getWritableSkeleton(docPath);
 
     // Read body content before replacement
@@ -818,7 +865,7 @@ export class OverlayContentLayer {
    */
   async deleteDocument(docPath: string): Promise<void> {
     await DocumentSkeleton.createTombstone(docPath, this.overlayRoot);
-    this.skeletonCache.delete(docPath);
+    this.skeletonCache.delete(this.cacheKey(docPath));
   }
 
   // ─── Read methods (delegated to readonly paths) ───────────
@@ -861,6 +908,17 @@ export class OverlayContentLayer {
     skeleton: DocumentSkeletonInternal,
     headingPath: string[],
   ): Promise<void> {
+    // Auto-create before-first-heading section if targeting [] and skeleton has none
+    if (headingPath.length === 0 && !skeleton.has([])) {
+      const added = await skeleton.insertSectionUnder([], {
+        heading: "",
+        level: 0,
+        body: "",
+      });
+      for (const entry of added) {
+        await writeBodyFile(entry, "");
+      }
+    }
     for (let i = 1; i <= headingPath.length; i++) {
       const ancestorPath = headingPath.slice(0, i);
       if (skeleton.has(ancestorPath)) continue;

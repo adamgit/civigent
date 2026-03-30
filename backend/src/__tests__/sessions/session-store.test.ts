@@ -22,7 +22,7 @@ describe("Session Store — readAllSectionsWithOverlay", () => {
 
     // Root section
     const rootContent = sections.get("");
-    expect(rootContent).toBe(SAMPLE_SECTIONS.root);
+    expect(rootContent).toBe(SAMPLE_SECTIONS.preamble);
   });
 
   it("includes named sections", async () => {

@@ -18,9 +18,11 @@ describe("writeSection heading-stripping invariant", () => {
 
   beforeAll(async () => {
     ctx = await createTempDataRoot();
-    // Build a skeleton: root + "Overview" (h2) + "Title" (h1) + "Deep Section" (h4)
-    const skeleton = DocumentSkeletonInternal.inMemoryWithRoot(DOC, ctx.contentDir);
+    // Build a skeleton: before-first-heading + "Overview" (h2) + "Title" (h1) + "Deep Section" (h4)
+    const skeleton = DocumentSkeletonInternal.inMemoryEmpty(DOC, ctx.contentDir);
     await skeleton.persistInternal();
+    // Explicitly create the before-first-heading section (this test needs it for heading stripping tests)
+    await skeleton.insertSectionUnder([], { heading: "", level: 0, body: "" });
     await skeleton.insertSectionUnder([], { heading: "Overview", level: 2, body: "" });
     await skeleton.insertSectionUnder([], { heading: "Title", level: 1, body: "" });
     await skeleton.insertSectionUnder([], { heading: "Deep Section", level: 4, body: "" });

@@ -31,7 +31,7 @@ export async function readAssembledDocument(rawDocPath: string): Promise<string>
 }
 
 /**
- * Prepend heading lines to body-only content for all non-root sections.
+ * Prepend heading lines to body-only content for all headed sections.
  *
  * Takes a section list and a Map<headingKey, string> of body-only content,
  * returns a new Map<headingKey, string> with "## Heading\n\n" prepended to each
@@ -43,8 +43,8 @@ export function prependHeadings(
 ): Map<string, string> {
   const result = new Map(bodyMap);
   for (const { heading, level, headingPath } of sections) {
-    const isRoot = level === 0 && heading === "";
-    if (isRoot) continue;
+    const isBeforeFirstHeading = level === 0 && heading === "";
+    if (isBeforeFirstHeading) continue;
     const key = SectionRef.headingKey(headingPath);
     const body = result.get(key);
     if (body == null) continue;

@@ -191,7 +191,7 @@ export async function buildCompoundSkeleton(docPath: string): Promise<CompoundSk
 
   // Start with base entries
   const mergedSectionFiles = new Set(base.entries.map((e) => e.sectionFile));
-  const mergedEntries: SkeletonEntry[] = [...base.entries];
+  let mergedEntries: SkeletonEntry[] = [...base.entries];
 
   // Merge entries from the other layer that reference files existing on disk but absent from base
   const allFilesOnDisk = new Set([
@@ -249,21 +249,32 @@ export async function buildCompoundSkeleton(docPath: string): Promise<CompoundSk
     });
   }
 
-  // Ensure there's exactly one root entry (level=0, heading="")
-  const rootEntries = mergedEntries.filter((e) => e.level === 0 && e.heading === "");
-  if (rootEntries.length > 1) {
-    // Keep the first root, remove duplicates
-    const firstRoot = rootEntries[0];
-    for (let i = mergedEntries.length - 1; i >= 0; i--) {
-      if (mergedEntries[i].level === 0 && mergedEntries[i].heading === "" && mergedEntries[i] !== firstRoot) {
-        mergedEntries.splice(i, 1);
+  // Deduplicate before-first-heading entries (level=0, heading=""). Only the first is kept;
+  // subsequent duplicates are demoted to appendix sections so their content is still recovered.
+  let seenBfh = false;
+  const deduped: SkeletonEntry[] = [];
+  for (const entry of mergedEntries) {
+    if (entry.level === 0 && entry.heading === "") {
+      if (!seenBfh) {
+        deduped.push(entry);
+        seenBfh = true;
+      } else {
+        const name = entry.sectionFile.replace(/\.md$/, "").replace(/^sec_/, "").replace(/_/g, " ");
+        deduped.push({
+          heading: `Recovered: ${name}`,
+          level: 2,
+          sectionFile: entry.sectionFile,
+        });
+        appendixSections.push({ sectionFile: entry.sectionFile, source: "dedup" });
       }
+    } else {
+      deduped.push(entry);
     }
   }
-  if (mergedEntries.length === 0 || mergedEntries[0].level !== 0) {
-    mergedEntries.unshift({ heading: "", level: 0, sectionFile: "_root.md" });
-  }
+  mergedEntries = deduped;
 
+  // mergedEntries may be empty — this is valid for live-empty documents.
+  // entriesToNodes([]) returns [] and fromNodes(docPath, [], root) creates a valid empty skeleton.
   const nodes = entriesToNodes(mergedEntries);
   const skeleton = DocumentSkeletonInternal.fromNodes(docPath, nodes, contentRoot);
 

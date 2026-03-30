@@ -79,9 +79,11 @@ export async function commitProposalToCanonical(
   try {
     const store = new CanonicalStore(getContentRoot(), dataRoot);
 
-    const sectionList = proposal.sections
-      .map((s) => `  - ${sectionGlobalKey(s.doc_path, s.heading_path)}`)
-      .join("\n");
+    const sectionList = proposal.sections.length > 0
+      ? proposal.sections
+          .map((s) => `  - ${sectionGlobalKey(s.doc_path, s.heading_path)}`)
+          .join("\n")
+      : "  (none — document-level operation)";
     const commitMessage = `agent proposal: ${proposal.intent}\n\nSections:\n${sectionList}\n\nProposal: ${proposal.id}\nWriter: ${proposal.writer.id}\nWriter-Type: ${proposal.writer.type}`;
     const author = {
       name: proposal.writer.displayName,

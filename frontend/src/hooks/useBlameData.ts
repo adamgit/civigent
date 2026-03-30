@@ -12,7 +12,7 @@ interface BlameEntry {
  * Fetch git blame attribution for a set of section files.
  *
  * @param docPath - Document path (e.g. "ops/strategy.md")
- * @param sectionFiles - List of section filenames (e.g. ["_root.md", "overview.md"])
+ * @param sectionFiles - List of section filenames (e.g. ["--before-first-heading--abc123.md", "sec_overview_xyz.md"])
  * @param enabled - When false, no fetches are made and all entries are cleared
  * @returns Map from sectionFile → { loading, lines }
  */

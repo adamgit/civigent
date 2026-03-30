@@ -8,6 +8,7 @@ import { WriterIdentity } from "../components/WriterIdentity";
 import { PageStatusBar } from "../components/PageStatusBar";
 import { apiClient } from "../services/api-client";
 import type { AnyProposal, ProposalStatus } from "../types/shared.js";
+import { headingPathToLabel } from "./document-page-utils";
 
 function relativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -154,7 +155,7 @@ export function ProposalsPage() {
                         for (const s of proposal.sections) {
                           const docName = s.doc_path;
                           const existing = byDoc.get(docName) ?? [];
-                          const heading = s.heading_path.join(" > ") || "(root)";
+                          const heading = headingPathToLabel(s.heading_path);
                           const level = s.heading_path.length;
                           existing.push({ heading, level });
                           byDoc.set(docName, existing);

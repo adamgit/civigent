@@ -3,6 +3,7 @@ import { Link, useOutletContext } from "react-router-dom";
 import type { ActivityItem } from "../types/shared.js";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
 import { apiClient } from "../services/api-client";
+import { headingPathToLabel } from "./document-page-utils";
 
 function relativeTime(iso: string): string {
   const seconds = Math.floor((Date.now() - Date.parse(iso)) / 1000);
@@ -238,7 +239,7 @@ export function HomePage() {
                 const color = avatarColor(item.writer_display_name);
                 const docPaths = [...new Set(item.sections.map((s) => s.doc_path))];
                 const sectionLabels = item.sections
-                  .map((s) => s.heading_path.join(" > ") || "root")
+                  .map((s) => headingPathToLabel(s.heading_path))
                   .join(", ");
                 return (
                   <Link
@@ -300,7 +301,7 @@ export function HomePage() {
                 const initial = item.writer_display_name.charAt(0).toUpperCase();
                 const docPaths = [...new Set(item.sections.map((s) => s.doc_path))];
                 const sectionLabels = item.sections
-                  .map((s) => s.heading_path.join(" > ") || "root")
+                  .map((s) => headingPathToLabel(s.heading_path))
                   .join(", ");
                 return (
                   <Link

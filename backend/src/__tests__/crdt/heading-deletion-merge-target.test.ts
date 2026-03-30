@@ -170,11 +170,62 @@ describe("Heading deletion merge target", () => {
     expect(bContentAfter).toContain("Orphaned SubA content");
   });
 
+  it("no BFH section: delete first heading creates BFH and merges content into it", async () => {
+    // Build a document with no before-first-heading section (starts directly with ## A)
+    const noBfhDocPath = "test/no-bfh-doc.md";
+    const contentRoot = join(ctx.rootDir, "content");
+    const skeletonPath = join(contentRoot, noBfhDocPath);
+    const sectionsDir = `${skeletonPath}.sections`;
+
+    await mkdir(dirname(skeletonPath), { recursive: true });
+    await mkdir(sectionsDir, { recursive: true });
+
+    const skeleton = [
+      "## A",
+      "{{section: sec_a.md}}",
+      "",
+      "## B",
+      "{{section: sec_b.md}}",
+      "",
+    ].join("\n");
+
+    await writeFile(skeletonPath, skeleton, "utf8");
+    await writeFile(join(sectionsDir, "sec_a.md"), "Content of section A.\n", "utf8");
+    await writeFile(join(sectionsDir, "sec_b.md"), "Content of section B.\n", "utf8");
+
+    await gitExec(["add", "content/"], ctx.rootDir);
+    await gitExec(
+      ["-c", "user.name=Test", "-c", "user.email=test@test.local",
+       "commit", "-m", "add no-bfh doc", "--allow-empty"],
+      ctx.rootDir,
+    );
+
+    const { store } = await FragmentStore.fromDisk(noBfhDocPath);
+
+    // Verify no BFH exists
+    expect(store.skeleton.expectBeforeFirstHeading()).toBeNull();
+
+    const aKey = "section::sec_a";
+    replaceFragmentWithBodyOnly(store.ydoc, aKey, "Orphaned A content.");
+
+    const result = await store.normalizeStructure(aKey);
+    expect(result.changed).toBe(true);
+    expect(result.removedKeys).toContain(aKey);
+
+    // A BFH section should now exist with the orphaned content
+    const bfhEntry = store.skeleton.expectBeforeFirstHeading();
+    expect(bfhEntry).not.toBeNull();
+
+    const bfhKey = "section::__beforeFirstHeading__";
+    const bfhContent = store.readFullContent(bfhKey);
+    expect(bfhContent).toContain("Orphaned A content");
+  });
+
   it("first top-level section: delete ## A merges into root", async () => {
     const { store } = await FragmentStore.fromDisk(NESTED_DOC_PATH);
 
     const aKey = "section::sec_a";
-    const rootKey = "section::__root__";
+    const rootKey = "section::__beforeFirstHeading__";
     const rootContentBefore = store.readFullContent(rootKey);
     expect(rootContentBefore).toContain("Root preamble");
 

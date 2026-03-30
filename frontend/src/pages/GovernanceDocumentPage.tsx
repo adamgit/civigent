@@ -516,7 +516,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
               >
                 <div className="flex items-center gap-1.5 py-1">
                   <span className="w-[5px] h-[5px] rounded-full bg-amber-400" />
-                  <span className="text-[10px] text-amber-700 line-through">{placeholder.formerHeading || "(document root)"}</span>
+                  <span className="text-[10px] text-amber-700 line-through">{placeholder.formerHeading || "(before first heading)"}</span>
                   <span className="text-[9px] text-amber-500 ml-1">Deletion pending{"\u2026"}</span>
                 </div>
               </div>

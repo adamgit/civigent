@@ -277,14 +277,14 @@ describe("Auto-commit dirty fragment key derivation — sub-skeleton context", (
     // Collect ALL fragment keys via forEachSection (what commitDirtySections uses)
     // Note: forEachSection visits BOTH the sub-skeleton entry AND its root child,
     // which share the same headingPath (["Details"]). The root child (level=0, heading="")
-    // gets isRoot=true → ROOT_FRAGMENT_KEY, overwriting the sub-skeleton's key.
+    // gets isBeforeFirstHeading=true → BEFORE_FIRST_HEADING_KEY, overwriting the sub-skeleton's key.
     const forEachEntries: Array<{
       hpKey: string; heading: string; level: number;
       sectionFile: string; fragmentKey: string; isSubSkeleton: boolean;
     }> = [];
     skeleton.forEachNode((heading, level, sectionFile, headingPath, _absolutePath, isSubSkeleton) => {
-      const isRoot = level === 0 && heading === "";
-      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
+      const isBfh = level === 0 && heading === "";
+      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBfh);
       forEachEntries.push({
         hpKey: headingPath.join(">>"),
         heading, level, sectionFile, fragmentKey, isSubSkeleton,
@@ -298,7 +298,7 @@ describe("Auto-commit dirty fragment key derivation — sub-skeleton context", (
     expect(detailsEntries[0].isSubSkeleton).toBe(true);  // sub-skeleton entry
     expect(detailsEntries[0].fragmentKey).toBe("section::details");
     expect(detailsEntries[1].isSubSkeleton).toBe(false);  // root child (body)
-    expect(detailsEntries[1].fragmentKey).toBe("section::__root__");
+    expect(detailsEntries[1].fragmentKey).toBe("section::__beforeFirstHeading__");
 
     // FIXED: resolve(["Details"]) now returns the root child body entry
     const resolveEntry = skeleton.expect(["Details"]);

@@ -58,8 +58,8 @@ export async function commitDirtySections(
 
     // Iterate skeleton entries — stable fragment keys mean no rename ambiguity
     session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
-      const isRoot = level === 0 && heading === "";
-      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
+      const isBeforeFirstHeading = level === 0 && heading === "";
+      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBeforeFirstHeading);
       if (!dirtyFragments.has(fragmentKey)) return;
       if (headingPaths && !headingPaths.some(
         (target) => JSON.stringify(target) === JSON.stringify(headingPath),
@@ -223,8 +223,8 @@ export async function preemptiveFlushAndCommit(
     if (dirtySet.size === 0) continue;
     const dirtyHeadingPaths: string[][] = [];
     session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-      const isRoot = level === 0 && heading === "";
-      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
+      const isBeforeFirstHeading = level === 0 && heading === "";
+      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBeforeFirstHeading);
       if (dirtySet.has(fragmentKey)) {
         dirtyHeadingPaths.push([...headingPath]);
       }

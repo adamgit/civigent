@@ -542,7 +542,10 @@ async function handleMessage(
         .decode(payload)
         .split("\x00")
         .filter(Boolean);
-      state.editorFocusTarget = headingPath.length > 0 ? { heading_path: headingPath } : null;
+      // headingPath=[] is a valid focus (before-first-heading section), not "no focus"
+      state.editorFocusTarget = headingPath.length > 0
+        ? { kind: "heading_path", heading_path: headingPath }
+        : { kind: "before_first_heading" };
       updateParticipant(state.clientInstanceId, { editorFocusTarget: state.editorFocusTarget });
 
       const { oldFocus } = updateSectionFocus(state.docPath, state.writerId, headingPath);

@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { sectionGlobalKey, type GetHeatmapResponse, type HeatmapEntry, type AnyProposal } from "../../types/shared.js";
+import { headingPathToLabel } from "../../pages/document-page-utils";
 
 function involvementColor(score: number): string {
   if (score >= 0.8) return "var(--color-humanInvolvement-dot-blocked, #1e40af)";
@@ -119,7 +120,7 @@ export function HeatmapTab({ heatmap, agentReadings, proposals, loading, error }
                       }}
                       className="border-b border-footer-border hover:bg-section-hover"
                     >
-                      <td className="p-1.5">{entry.heading_path.join(" > ") || "(root)"}</td>
+                      <td className="p-1.5">{headingPathToLabel(entry.heading_path)}</td>
                       <td className="p-1.5 text-center font-bold" style={{ color: involvementColor(entry.humanInvolvement_score) }}>
                         {entry.humanInvolvement_score.toFixed(2)}
                       </td>

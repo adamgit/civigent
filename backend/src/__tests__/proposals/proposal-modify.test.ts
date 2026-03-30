@@ -153,7 +153,7 @@ describe("PUT /api/proposals/:id — modify proposal", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns 400 if sections is empty", async () => {
+  it("accepts empty sections array for proposal updates (document-level operations)", async () => {
     const res = await request(ctx.app)
       .put(`/api/proposals/${pendingProposalId}`)
       .set("Authorization", ctx.humanToken)
@@ -161,7 +161,7 @@ describe("PUT /api/proposals/:id — modify proposal", () => {
         sections: [],
       });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
   });
 
   it("returns 401 without auth", async () => {

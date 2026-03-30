@@ -45,12 +45,12 @@ export class SectionRef {
   get label(): string {
     const heading = this.headingPath.length > 0
       ? this.headingPath.join(" > ")
-      : "(skeleton)";
+      : "(before first heading)";
     return `${this.docPath} :: ${heading}`;
   }
 
-  /** Whether this ref points to the root section (empty heading path). */
-  get isRoot(): boolean {
+  /** Whether this ref points to the before-first-heading section (empty heading path). */
+  get isBeforeFirstHeading(): boolean {
     return this.headingPath.length === 0;
   }
 

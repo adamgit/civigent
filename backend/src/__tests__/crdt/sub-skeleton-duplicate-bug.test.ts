@@ -179,8 +179,8 @@ describe("BUG: normalizeAllFragments processes sub-skeleton sectionFile as a fra
     // Reproduce the key-collection logic from normalizeAllFragments
     const keys: string[] = [];
     skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-      const isRoot = FragmentStore.isDocumentRoot({ headingPath: [...headingPath], level, heading });
-      keys.push(fragmentKeyFromSectionFile(sectionFile, isRoot));
+      const isBeforeFirstHeading = FragmentStore.isBeforeFirstHeading({ headingPath: [...headingPath], level, heading });
+      keys.push(fragmentKeyFromSectionFile(sectionFile, isBeforeFirstHeading));
     });
 
     // "details.md" is a sub-skeleton — its key should NOT be in the list.

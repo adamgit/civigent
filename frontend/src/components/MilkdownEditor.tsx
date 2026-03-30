@@ -13,7 +13,7 @@
  *
  *   The `fragmentKey` prop selects which Y.XmlFragment within the Y.Doc
  *   the editor binds to. Each section of a document has its own fragment
- *   keyed by section file ID (e.g. "section::sec_abc123def", "section::__root__").
+ *   keyed by section file ID (e.g. "section::sec_abc123def", "section::__beforeFirstHeading__").
  *
  * Public interface:
  *   Props:    markdown, onChange, onHeadingPathChange, readOnly,

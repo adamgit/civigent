@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiClient, resolveWriterId } from "../services/api-client";
 import type { AnyProposal } from "../types/shared.js";
+import { headingPathToLabel } from "../pages/document-page-utils";
 
 export interface ProposalPanelProps {
   /** Currently active proposal ID (if in proposal mode). */
@@ -119,7 +120,7 @@ export function ProposalPanel({
   if (proposal) {
     for (const section of proposal.sections) {
       const existing = sectionsByDoc.get(section.doc_path) ?? [];
-      existing.push(section.heading_path.join(" > ") || "(root)");
+      existing.push(headingPathToLabel(section.heading_path));
       sectionsByDoc.set(section.doc_path, existing);
     }
   }

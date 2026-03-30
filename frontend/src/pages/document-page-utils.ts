@@ -64,13 +64,13 @@ export function normalizeDocPath(path: string): string {
 }
 
 export function headingPathToLabel(path: string[]): string {
-  return path.length === 0 ? "(document root)" : path.join(" > ");
+  return path.length === 0 ? "(before first heading)" : path.join(" > ");
 }
 
 /** Build a stable fragment key from a section filename.
- *  Root sections (empty heading at level 0) use "__root__". */
-export function fragmentKeyFromSectionFile(sectionFile: string, isRoot: boolean): string {
-  if (isRoot) return "section::__root__";
+ *  Before-first-heading sections (empty heading at level 0) use "__beforeFirstHeading__". */
+export function fragmentKeyFromSectionFile(sectionFile: string, isBeforeFirstHeading: boolean): string {
+  if (isBeforeFirstHeading) return "section::__beforeFirstHeading__";
   const stem = sectionFile.replace(/\.md$/, "");
   return "section::" + stem;
 }
@@ -92,12 +92,12 @@ export function getDocDisplayName(path: string): string {
 }
 
 
-/** Derive heading depth from heading_path (root = 1). */
+/** Derive heading depth from heading_path (before-first-heading = 1). */
 export function headingDepth(headingPath: string[]): number {
   return Math.max(1, headingPath.length);
 }
 
-/** Derive heading text from heading_path (last segment, or empty for root). */
+/** Derive heading text from heading_path (last segment, or empty for before-first-heading). */
 export function headingText(headingPath: string[]): string {
   if (headingPath.length === 0) return "";
   return headingPath[headingPath.length - 1];

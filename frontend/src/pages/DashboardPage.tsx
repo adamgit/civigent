@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
+import { headingPathToLabel } from "./document-page-utils";
 import { ActivityTabStrip } from "../components/ActivityTabStrip";
 import { ContentPanel } from "../components/ContentPanel";
 import { ActivityFeedItem } from "../components/ActivityFeedItem";
@@ -175,7 +176,7 @@ export function DashboardPage() {
                   const { variant, label } = writerTypeToLabel(item.writer_type);
                   const docPaths = [...new Set(item.sections.map((s) => s.doc_path))];
                   const sectionLabels = item.sections.map(
-                    (s) => s.heading_path.join(" > ") || "(root)",
+                    (s) => headingPathToLabel(s.heading_path),
                   );
                   return (
                     <ActivityFeedItem

@@ -60,20 +60,17 @@ describe("DocumentSkeleton", () => {
     expect(flat[2].heading).toBe("Timeline");
   });
 
-  it("inMemoryWithRoot creates valid skeleton with root section", async () => {
-    const skeleton = DocumentSkeletonInternal.inMemoryWithRoot("new-doc.md", ctx.contentDir);
+  it("inMemoryEmpty creates valid skeleton with zero sections", async () => {
+    const skeleton = DocumentSkeletonInternal.inMemoryEmpty("new-doc.md", ctx.contentDir);
     await skeleton.persistInternal();
     expect(skeleton.docPath).toBe("new-doc.md");
-
+    expect(skeleton.isEmpty).toBe(true);
     const flat = collectFlat(skeleton);
-    expect(flat).toHaveLength(1);
-    expect(flat[0].heading).toBe("");
-    expect(flat[0].level).toBe(0);
-    expect(flat[0].sectionFile).toBeTruthy();
+    expect(flat).toHaveLength(0);
   });
 
   it("mutation auto-persists skeleton and can be re-read", async () => {
-    const skeleton = DocumentSkeletonInternal.inMemoryWithRoot("persist-test.md", ctx.contentDir);
+    const skeleton = DocumentSkeletonInternal.inMemoryEmpty("persist-test.md", ctx.contentDir);
     await skeleton.persistInternal();
     await skeleton.insertSectionUnder([], { heading: "Persisted", level: 1, body: "" });
 
@@ -83,9 +80,8 @@ describe("DocumentSkeleton", () => {
       ctx.contentDir,
     );
     const flat = collectFlat(reloaded);
-    expect(flat).toHaveLength(2);
-    expect(flat[0].heading).toBe("");
-    expect(flat[1].heading).toBe("Persisted");
+    expect(flat).toHaveLength(1);
+    expect(flat[0].heading).toBe("Persisted");
   });
 });
 
@@ -339,8 +335,8 @@ describe("DocumentSkeleton.expectByFileId() — nested document", () => {
     expect(entry.absolutePath).toContain("sub_a.md");
   });
 
-  it("resolveByFileId('__root__') returns the document root section", () => {
-    const entry = skeleton.expectByFileId("__root__");
+  it("resolveByFileId('__beforeFirstHeading__') returns the before-first-heading section", () => {
+    const entry = skeleton.expectByFileId("__beforeFirstHeading__");
     expect(entry.heading).toBe("");
     expect(entry.level).toBe(0);
     expect(entry.headingPath).toEqual([]);
@@ -351,7 +347,7 @@ describe("DocumentSkeleton.expectByFileId() — nested document", () => {
   });
 });
 
-describe("DocumentSkeleton.expectByFileId('__root__') — root with children", () => {
+describe("DocumentSkeleton.expectByFileId('__beforeFirstHeading__') — BFH with children", () => {
   let ctx: TempDataRootContext;
 
   beforeAll(async () => {
@@ -361,16 +357,16 @@ describe("DocumentSkeleton.expectByFileId('__root__') — root with children", (
 
   afterAll(async () => { await ctx.cleanup(); });
 
-  it("resolveByFileId('__root__') when root has no children returns isSubSkeleton=false", async () => {
-    // The nested doc's root has no children
+  it("resolveByFileId('__beforeFirstHeading__') when BFH has no children returns isSubSkeleton=false", async () => {
+    // The nested doc's BFH has no children
     const skeleton = await DocumentSkeleton.fromDisk(NESTED_DOC_PATH, ctx.contentDir, ctx.contentDir);
-    const entry = skeleton.expectByFileId("__root__");
+    const entry = skeleton.expectByFileId("__beforeFirstHeading__");
     expect(entry.heading).toBe("");
     expect(entry.level).toBe(0);
     expect(entry.isSubSkeleton).toBe(false);
   });
 
-  it("resolveByFileId('__root__') when root has children follows through to body (fixed)", async () => {
+  it("resolveByFileId('__beforeFirstHeading__') when BFH has children follows through to body (fixed)", async () => {
     const docPath = "test/root-children-fileid.md";
     const skeletonPath = join(ctx.contentDir, docPath);
     const sectionsDir = `${skeletonPath}.sections`;
@@ -399,7 +395,7 @@ describe("DocumentSkeleton.expectByFileId('__root__') — root with children", (
     );
 
     const skeleton = await DocumentSkeleton.fromDisk(docPath, ctx.contentDir, ctx.contentDir);
-    const entry = skeleton.expectByFileId("__root__");
+    const entry = skeleton.expectByFileId("__beforeFirstHeading__");
     expect(entry.heading).toBe("");
     expect(entry.level).toBe(0);
     expect(entry.isSubSkeleton).toBe(false);

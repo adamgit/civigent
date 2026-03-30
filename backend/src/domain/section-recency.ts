@@ -44,7 +44,7 @@ export class SectionRecency {
     if (session) {
       const entry = session.fragments.skeleton.find(ref.headingPath);
       if (entry) {
-        const fk = fragmentKeyFromSectionFile(entry.sectionFile, ref.isRoot);
+        const fk = fragmentKeyFromSectionFile(entry.sectionFile, ref.isBeforeFirstHeading);
         const fragmentTime = session.fragmentLastActivity?.get(fk);
         if (fragmentTime != null) {
           return Math.max(0, (now - fragmentTime) / 1000);

@@ -389,11 +389,11 @@ async function recoverSessionFiles(ctx: RecoveryContext): Promise<RecoverSession
       const recovery = await recoverDocument(docPath);
       perDocResults.set(docPath, { recovery, compound });
 
-      if (recovery.sections.length > 0) {
-        ctx.operation = `writeRecoveredToCanonical ${docPath}`;
-        await writeRecoveredToCanonical(docPath, recovery, compound.skeleton);
-        totalSections += recovery.sections.length;
-      }
+      // Always write to canonical — even zero-section documents need their
+      // skeleton file persisted (marks the doc as "live-empty").
+      ctx.operation = `writeRecoveredToCanonical ${docPath}`;
+      await writeRecoveredToCanonical(docPath, recovery, compound.skeleton);
+      totalSections += recovery.sections.length;
 
       // Log diagnostics
       for (const diag of recovery.sectionDiagnostics) {

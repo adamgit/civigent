@@ -6,13 +6,13 @@ export const SAMPLE_DOC_PATH = "/ops/strategy.md";
 export const SAMPLE_DOC_PATH_2 = "/eng/architecture.md";
 
 export const SAMPLE_SECTIONS = {
-  root: "This is the strategy document preamble.\n",
+  preamble: "This is the strategy document preamble.\n",
   overview: "The overview covers our strategic goals.\n",
   timeline: "Q1: Planning. Q2: Execution. Q3: Review.\n",
 };
 
 export const SAMPLE_SECTIONS_2 = {
-  root: "Architecture document preamble.\n",
+  preamble: "Architecture document preamble.\n",
   principles: "We follow SOLID principles.\n",
 };
 
@@ -37,7 +37,7 @@ export async function createSampleDocument(
 
   // Write skeleton
   const skeleton = [
-    "{{section: _root.md}}",
+    "{{section: --before-first-heading--sample.md}}",
     "",
     "## Overview",
     "{{section: overview.md}}",
@@ -50,7 +50,7 @@ export async function createSampleDocument(
   await writeFile(skeletonPath, skeleton, "utf8");
 
   // Write section files
-  await writeFile(join(sectionsDir, "_root.md"), SAMPLE_SECTIONS.root, "utf8");
+  await writeFile(join(sectionsDir, "--before-first-heading--sample.md"), SAMPLE_SECTIONS.preamble, "utf8");
   await writeFile(join(sectionsDir, "overview.md"), SAMPLE_SECTIONS.overview, "utf8");
   await writeFile(join(sectionsDir, "timeline.md"), SAMPLE_SECTIONS.timeline, "utf8");
 
@@ -63,6 +63,7 @@ export async function createSampleDocument(
       "commit",
       "-m", `add sample doc: ${docPath}`,
       "--allow-empty",
+      "--trailer", "Writer-Type: agent",
     ],
     dataRoot,
   );
@@ -92,7 +93,7 @@ export async function createSampleDocument2(
   await mkdir(sectionsDir, { recursive: true });
 
   const skeleton = [
-    "{{section: _root.md}}",
+    "{{section: --before-first-heading--sample.md}}",
     "",
     "## Principles",
     "{{section: principles.md}}",
@@ -100,7 +101,7 @@ export async function createSampleDocument2(
   ].join("\n");
 
   await writeFile(skeletonPath, skeleton, "utf8");
-  await writeFile(join(sectionsDir, "_root.md"), SAMPLE_SECTIONS_2.root, "utf8");
+  await writeFile(join(sectionsDir, "--before-first-heading--sample.md"), SAMPLE_SECTIONS_2.preamble, "utf8");
   await writeFile(join(sectionsDir, "principles.md"), SAMPLE_SECTIONS_2.principles, "utf8");
 
   await gitExec(["add", "content/"], dataRoot);
@@ -111,6 +112,7 @@ export async function createSampleDocument2(
       "commit",
       "-m", `add sample doc: ${docPath}`,
       "--allow-empty",
+      "--trailer", "Writer-Type: agent",
     ],
     dataRoot,
   );
@@ -121,4 +123,46 @@ export async function createSampleDocument2(
       ["Principles"],
     ],
   };
+}
+
+/**
+ * Creates a human-attributed git commit touching a specific section file.
+ * Uses --date to control the commit timestamp for deterministic HI score testing.
+ *
+ * @param dataRoot - the data root (where .git lives)
+ * @param docPath - e.g. "/ops/strategy.md"
+ * @param sectionFile - the section body filename, e.g. "overview.md"
+ * @param content - body content to write
+ * @param hoursAgo - how many hours in the past the commit should be dated
+ */
+export async function createHumanCommit(
+  dataRoot: string,
+  docPath: string,
+  sectionFile: string,
+  content: string,
+  hoursAgo: number,
+): Promise<void> {
+  const contentRoot = join(dataRoot, "content");
+  const diskRelative = docPath.replace(/^\//, "");
+  const sectionsDir = `${join(contentRoot, diskRelative)}.sections`;
+
+  await mkdir(sectionsDir, { recursive: true });
+  await writeFile(join(sectionsDir, sectionFile), content, "utf8");
+
+  await gitExec(["add", "content/"], dataRoot);
+
+  const commitDate = new Date(Date.now() - hoursAgo * 3600 * 1000).toISOString();
+  await gitExec(
+    [
+      "-c", "user.name=Human Editor",
+      "-c", "user.email=human@test.local",
+      "commit",
+      "--allow-empty",
+      "--date", commitDate,
+      "-m", `human edit: ${docPath} ${sectionFile}`,
+      "--trailer", "Writer-Type: human",
+      "--trailer", "Writer: human-editor",
+    ],
+    dataRoot,
+  );
 }

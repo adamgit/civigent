@@ -84,7 +84,7 @@ describe("Fragment injection after proposal commit", () => {
     let overviewHeadingPath: string[] | null = null;
     store.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
       if (heading === "Overview") {
-        const isRoot = FragmentStore.isDocumentRoot({ headingPath, level, heading });
+        const isRoot = FragmentStore.isBeforeFirstHeading({ headingPath, level, heading });
         overviewKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
         overviewHeadingPath = [...headingPath];
       }
@@ -114,7 +114,7 @@ describe("Fragment injection after proposal commit", () => {
     let overviewHeadingPath: string[] | null = null;
     store.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
       if (heading === "Overview") {
-        const isRoot = FragmentStore.isDocumentRoot({ headingPath, level, heading });
+        const isRoot = FragmentStore.isBeforeFirstHeading({ headingPath, level, heading });
         overviewKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
         overviewHeadingPath = [...headingPath];
       }
@@ -146,7 +146,7 @@ describe("Fragment injection after proposal commit", () => {
     let overviewKey: string | null = null;
     session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
       if (heading === "Overview") {
-        const isRoot = FragmentStore.isDocumentRoot({ headingPath, level, heading });
+        const isRoot = FragmentStore.isBeforeFirstHeading({ headingPath, level, heading });
         overviewKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
         overviewHeadingPath = [...headingPath];
       }

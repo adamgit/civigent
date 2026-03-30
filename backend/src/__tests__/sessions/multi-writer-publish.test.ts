@@ -44,8 +44,8 @@ describe("multi-writer publish clears co-editors' dirty state", () => {
     let overviewKey: string | null = null;
     session.fragments.skeleton.forEachSection((heading, level, sectionFile) => {
       if (heading === "Overview") {
-        const isRoot = level === 0 && heading === "";
-        overviewKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
+        const isBfh = level === 0 && heading === "";
+        overviewKey = fragmentKeyFromSectionFile(sectionFile, isBfh);
       }
     });
     expect(overviewKey).not.toBeNull();

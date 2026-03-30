@@ -69,7 +69,7 @@ export async function getSessionState(): Promise<SessionState> {
       const fileId = filename.replace(/\.md$/, "");
       try {
         const entry = await overlayLayer.resolveSectionFileId(docPath, fileId);
-        sectionHeading = entry.heading || "(root)";
+        sectionHeading = entry.heading || "(before first heading)";
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
         if (err instanceof SectionNotFoundError || code === "ENOENT") {

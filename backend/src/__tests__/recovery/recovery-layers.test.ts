@@ -450,3 +450,100 @@ describe("reconcileAndCleanup", () => {
     await rm(join(ctx.rootDir, "sessions"), { recursive: true, force: true });
   });
 });
+
+describe("recoverDocument — before-first-heading", () => {
+  it("preserves real before-first-heading content with correct filename and skeleton entry", async () => {
+    const ctx = await createTempDataRoot();
+    try {
+      const DOC_PATH = "test-bfh-recovery";
+      const BFH_FILE = "--before-first-heading--abc123.md";
+
+      // Set up canonical with a BFH section + a headed section
+      const contentRoot = join(ctx.rootDir, "content");
+      const skeleton = join(contentRoot, DOC_PATH);
+      const sectionsDir = `${skeleton}.sections`;
+      await mkdir(sectionsDir, { recursive: true });
+
+      await writeFile(skeleton, [
+        `{{section: ${BFH_FILE}}}`,
+        "# Main Heading",
+        "{{section: sec_main_heading_def456.md}}",
+      ].join("\n"));
+      await writeFile(join(sectionsDir, BFH_FILE), "preamble text before any heading");
+      await writeFile(join(sectionsDir, "sec_main_heading_def456.md"), "main heading content");
+
+      // Simulate a crash: leave fragment files (fresher versions)
+      const fragmentDir = join(ctx.rootDir, "sessions", "fragments", DOC_PATH);
+      await mkdir(fragmentDir, { recursive: true });
+      await writeFile(join(fragmentDir, BFH_FILE), "updated preamble from session");
+      await writeFile(join(fragmentDir, "sec_main_heading_def456.md"), "updated main heading from session");
+
+      const result = await recoverDocument(DOC_PATH);
+
+      // Should have 2 sections: BFH + headed
+      expect(result.sections).toHaveLength(2);
+
+      // BFH section: heading_path=[], content from fragment (fresher)
+      const bfhSection = result.sections.find(s => s.heading_path.length === 0);
+      expect(bfhSection).toBeDefined();
+      expect(bfhSection!.content).toContain("updated preamble from session");
+
+      // The BFH diagnostic should reference the correct filename
+      const bfhDiag = result.sectionDiagnostics.find(d => d.sectionFile === BFH_FILE);
+      expect(bfhDiag).toBeDefined();
+      expect(bfhDiag!.source).toBe("fragment");
+      expect(bfhDiag!.orphan).toBe(false);
+
+      // Headed section also recovered
+      const headedSection = result.sections.find(s =>
+        s.heading_path.length > 0 && s.heading_path[0] === "Main Heading",
+      );
+      expect(headedSection).toBeDefined();
+      expect(headedSection!.content).toContain("updated main heading from session");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it("does not invent a before-first-heading section for docs that start with a heading", async () => {
+    const ctx = await createTempDataRoot();
+    try {
+      const DOC_PATH = "test-no-bfh-recovery";
+
+      // Set up canonical: no BFH, starts directly with a heading
+      const contentRoot = join(ctx.rootDir, "content");
+      const skeleton = join(contentRoot, DOC_PATH);
+      const sectionsDir = `${skeleton}.sections`;
+      await mkdir(sectionsDir, { recursive: true });
+
+      await writeFile(skeleton, [
+        "# First Heading",
+        "{{section: sec_first_heading_aaa111.md}}",
+        "# Second Heading",
+        "{{section: sec_second_heading_bbb222.md}}",
+      ].join("\n"));
+      await writeFile(join(sectionsDir, "sec_first_heading_aaa111.md"), "first heading content");
+      await writeFile(join(sectionsDir, "sec_second_heading_bbb222.md"), "second heading content");
+
+      // Simulate a crash: leave fragment files
+      const fragmentDir = join(ctx.rootDir, "sessions", "fragments", DOC_PATH);
+      await mkdir(fragmentDir, { recursive: true });
+      await writeFile(join(fragmentDir, "sec_first_heading_aaa111.md"), "recovered first heading");
+
+      const result = await recoverDocument(DOC_PATH);
+
+      // Should have exactly 2 sections — no synthetic BFH invented
+      expect(result.sections).toHaveLength(2);
+
+      // No section should have an empty heading_path (BFH marker)
+      const bfhSections = result.sections.filter(s => s.heading_path.length === 0);
+      expect(bfhSections).toHaveLength(0);
+
+      // Both headings recovered
+      expect(result.sections.some(s => s.heading_path[0] === "First Heading")).toBe(true);
+      expect(result.sections.some(s => s.heading_path[0] === "Second Heading")).toBe(true);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+});

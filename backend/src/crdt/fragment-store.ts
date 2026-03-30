@@ -3,7 +3,7 @@
  *
  * Single owner of fragment content format knowledge. Fragments store
  * heading+body content (the heading is the first node in the Y.XmlFragment,
- * editable inline). Root sections (level=0, heading="") store body only.
+ * editable inline). Before-first-heading sections (level=0, heading="") store body only.
  *
  * Pairs a Y.Doc with a DocumentSkeleton — operations that must touch
  * both (construct, flush, assemble) are methods here.
@@ -20,7 +20,7 @@ import { DocumentSkeleton, DocumentSkeletonInternal, type FlatEntry } from "../s
 import { parseDocumentMarkdown } from "../storage/markdown-sections.js";
 import { SectionRef } from "../domain/section-ref.js";
 import {
-  ROOT_FRAGMENT_KEY,
+  BEFORE_FIRST_HEADING_KEY,
   fragmentKeyFromSectionFile,
   sectionFileFromFragmentKey,
   getBackendSchema,
@@ -145,8 +145,8 @@ export class FragmentStore {
 
     skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
       knownSectionFiles.add(sectionFile);
-      const isRoot = FragmentStore.isDocumentRoot({ headingPath, level, heading });
-      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
+      const isBeforeFirstHeading = FragmentStore.isBeforeFirstHeading({ headingPath, level, heading });
+      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBeforeFirstHeading);
 
       let sectionContent: string;
 
@@ -236,14 +236,14 @@ export class FragmentStore {
 
   // ─── Fragment key derivation ───────────────────────────────────
 
-  /** True only for the document-level root, not sub-skeleton root children. */
-  static isDocumentRoot(entry: { headingPath: string[]; level: number; heading: string }): boolean {
+  /** True only for the before-first-heading section, not sub-skeleton root children. */
+  static isBeforeFirstHeading(entry: { headingPath: string[]; level: number; heading: string }): boolean {
     return entry.headingPath.length === 0;
   }
 
   /** Derive the fragment key for a skeleton flat entry. */
   static fragmentKeyFor(entry: FlatEntry): string {
-    return fragmentKeyFromSectionFile(entry.sectionFile, FragmentStore.isDocumentRoot(entry));
+    return fragmentKeyFromSectionFile(entry.sectionFile, FragmentStore.isBeforeFirstHeading(entry));
   }
 
   // ─── Dirty tracking ────────────────────────────────────────────
@@ -264,7 +264,7 @@ export class FragmentStore {
     // Find the skeleton entry to get the level for heading stripping
     const sectionFileId = sectionFileFromFragmentKey(fragmentKey);
     const entry = this.skeleton.expectByFileId(sectionFileId);
-    if (FragmentStore.isDocumentRoot(entry)) return full;
+    if (FragmentStore.isBeforeFirstHeading(entry)) return full;
     return FragmentStore.stripHeadingFromContent(full, entry.level);
   }
 
@@ -294,8 +294,8 @@ export class FragmentStore {
   readAllLiveContent(): Map<string, string> {
     const result = new Map<string, string>();
     this.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-      const isRoot = FragmentStore.isDocumentRoot({ headingPath, level, heading });
-      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
+      const isBeforeFirstHeading = FragmentStore.isBeforeFirstHeading({ headingPath, level, heading });
+      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBeforeFirstHeading);
       const live = this.readLiveBody(fragmentKey);
       if (live != null) {
         result.set(SectionRef.headingKey([...headingPath]), live);
@@ -313,8 +313,8 @@ export class FragmentStore {
 
     const parts: string[] = [];
     this.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-      const isRoot = FragmentStore.isDocumentRoot({ headingPath, level, heading });
-      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
+      const isBeforeFirstHeading = FragmentStore.isBeforeFirstHeading({ headingPath, level, heading });
+      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBeforeFirstHeading);
 
       const content = this.extractMarkdown(fragmentKey);
       if (content.trim()) {
@@ -362,14 +362,14 @@ export class FragmentStore {
         droppedKeys.push({ fragmentKey, error: err });
         continue;
       }
-      const isRoot = FragmentStore.isDocumentRoot(entry);
+      const isBeforeFirstHeading = FragmentStore.isBeforeFirstHeading(entry);
 
       // 1. Always write raw fragment (heading + body) for crash safety
       const rawMarkdown = this.reconstructFullMarkdown(fragmentKey, entry.level, entry.heading);
       await ops.writeRawFragment(this.docPath, entry.sectionFile, rawMarkdown);
 
       // 2. Check structural cleanness
-      const clean = this.isStructurallyClean(rawMarkdown, entry, isRoot);
+      const clean = this.isStructurallyClean(rawMarkdown, entry, isBeforeFirstHeading);
 
       // 3. Write canonical-ready (body-only) to sessions/docs/ only when clean.
       //    Note: flush() does NOT use writeDualFormat because it writes the raw
@@ -377,7 +377,7 @@ export class FragmentStore {
       //    the body file only when structurally clean. The raw + body content
       //    differ (raw = heading+body, body = body-only after stripping).
       if (clean) {
-        const body = isRoot
+        const body = isBeforeFirstHeading
           ? this.extractMarkdown(fragmentKey)
           : FragmentStore.stripHeadingFromContent(this.extractMarkdown(fragmentKey), entry.level);
         await this.writeBodyToDisk(entry, body);
@@ -410,12 +410,12 @@ export class FragmentStore {
    * broadcasts STRUCTURE_WILL_CHANGE as a one-phase notification.
    *
    * Cases handled (each implemented in separate checklist items):
-   * - Root body edit (no-op)
-   * - Root split (headings typed in root section)
+   * - Before-first-heading body edit (no-op)
+   * - Before-first-heading split (headings typed in preamble section)
    * - Simple body edit (no-op)
    * - Heading rename
    * - Heading level change
-   * - Section split (additional headings in non-root section)
+   * - Section split (additional headings in non-preamble section)
    * - Heading deletion / empty section
    *
    * @param fragmentKey The fragment key to normalize
@@ -430,13 +430,13 @@ export class FragmentStore {
     const entry = this.resolveEntryForKey(fragmentKey);
     if (!entry) return { changed: false, createdKeys: [], removedKeys: [] };
 
-    const isRoot = FragmentStore.isDocumentRoot(entry);
+    const isBeforeFirstHeading = FragmentStore.isBeforeFirstHeading(entry);
     const fullMarkdown = this.reconstructFullMarkdown(fragmentKey, entry.level, entry.heading);
     const parsed = parseDocumentMarkdown(fullMarkdown);
     const realSections = parsed.filter(s => s.headingPath.length > 0);
 
     // Check if structurally clean — no normalization needed
-    if (this.isStructurallyClean(fullMarkdown, entry, isRoot)) {
+    if (this.isStructurallyClean(fullMarkdown, entry, isBeforeFirstHeading)) {
       return { changed: false, createdKeys: [], removedKeys: [] };
     }
 
@@ -446,12 +446,12 @@ export class FragmentStore {
     // Structural change detected — dispatch to appropriate handler.
     // Individual case implementations are added by subsequent checklist items.
 
-    if (isRoot && realSections.length > 0) {
-      // Root split: user typed heading(s) inside root section
+    if (isBeforeFirstHeading && realSections.length > 0) {
+      // BFH split: user typed heading(s) inside before-first-heading section
       return this.normalizeRootSplit(fragmentKey, entry, parsed, realSections, ops, opts);
     }
 
-    if (!isRoot && realSections.length === 1) {
+    if (!isBeforeFirstHeading && realSections.length === 1) {
       if (realSections[0].heading !== entry.heading && realSections[0].level === entry.level) {
         // Heading rename
         return this.normalizeHeadingRename(fragmentKey, entry, realSections[0], ops, opts);
@@ -467,12 +467,12 @@ export class FragmentStore {
       }
     }
 
-    if (!isRoot && realSections.length >= 2) {
+    if (!isBeforeFirstHeading && realSections.length >= 2) {
       // Section split
       return this.normalizeSectionSplit(fragmentKey, entry, realSections, ops, opts);
     }
 
-    if (!isRoot && realSections.length === 0) {
+    if (!isBeforeFirstHeading && realSections.length === 0) {
       // Heading deletion / empty section
       return this.normalizeHeadingDeletion(fragmentKey, entry, parsed, ops, opts);
     }
@@ -502,7 +502,7 @@ export class FragmentStore {
     await this.writeDualFormat(entry, rootBody, rootBody, ops);
 
     // Add new sections to skeleton
-    const addedEntries = await this.skeleton.addSectionsFromRootSplit(realSections);
+    const addedEntries = await this.skeleton.addSectionsFromBeforeFirstHeadingSplit(realSections);
 
     const createdKeys: string[] = [];
     const newKeyMapping: string[] = [];
@@ -512,8 +512,8 @@ export class FragmentStore {
       if (addedEntry.isSubSkeleton) continue;
 
       const body = (realSections[bodyIdx]?.body ?? "").replace(/\n+$/, "");
-      const addedIsRoot = FragmentStore.isDocumentRoot(addedEntry);
-      const newKey = fragmentKeyFromSectionFile(addedEntry.sectionFile, addedIsRoot);
+      const addedIsBfh = FragmentStore.isBeforeFirstHeading(addedEntry);
+      const newKey = fragmentKeyFromSectionFile(addedEntry.sectionFile, addedIsBfh);
       const fragmentContent = FragmentStore.buildFragmentContent(body, addedEntry.level, addedEntry.heading);
 
       // Create Y.Doc fragment for new section (heading+body)
@@ -688,8 +688,8 @@ export class FragmentStore {
     for (const addedEntry of result.added) {
       if (addedEntry.isSubSkeleton) continue;
 
-      const addedIsRoot = FragmentStore.isDocumentRoot(addedEntry);
-      const newKey = fragmentKeyFromSectionFile(addedEntry.sectionFile, addedIsRoot);
+      const addedIsBfh = FragmentStore.isBeforeFirstHeading(addedEntry);
+      const newKey = fragmentKeyFromSectionFile(addedEntry.sectionFile, addedIsBfh);
       const body = (realSections[bodyIdx]?.body ?? "").replace(/\n+$/, "");
       const fragmentContent = FragmentStore.buildFragmentContent(body, addedEntry.level, addedEntry.heading);
 
@@ -730,7 +730,7 @@ export class FragmentStore {
     // Walk all sections, track the last non-sub-skeleton entry before the deleted one.
     const deletedSectionFile = entry.sectionFile;
     let prevEntry: FlatEntry | null = null;
-    let prevKey: string = ROOT_FRAGMENT_KEY;
+    let prevKey: string = BEFORE_FIRST_HEADING_KEY;
     let found = false;
 
     this.skeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
@@ -747,7 +747,7 @@ export class FragmentStore {
         absolutePath,
         isSubSkeleton: false,
       };
-      prevKey = fragmentKeyFromSectionFile(sectionFile, FragmentStore.isDocumentRoot(prevEntry));
+      prevKey = fragmentKeyFromSectionFile(sectionFile, FragmentStore.isBeforeFirstHeading(prevEntry));
     });
 
     // prevEntry is now the section just before the deleted one in document order.
@@ -755,9 +755,22 @@ export class FragmentStore {
     let mergeTarget: FlatEntry | null = prevEntry;
     let mergeKey: string = prevKey;
     if (!mergeTarget) {
-      mergeTarget = this.skeleton.expectRoot();
-      mergeKey = ROOT_FRAGMENT_KEY;
+      mergeTarget = this.skeleton.expectBeforeFirstHeading();
+      mergeKey = BEFORE_FIRST_HEADING_KEY;
     }
+
+    // If there is still no merge target (no BFH section exists), create one.
+    // This happens when the document has no preamble and the deleted heading
+    // was the first section. We create the BFH so orphaned content is preserved.
+    if (!mergeTarget) {
+      const addedEntries = await this.skeleton.insertSectionUnder([], { heading: "", level: 0, body: "" });
+      mergeTarget = addedEntries[0];
+      mergeKey = BEFORE_FIRST_HEADING_KEY;
+      // Initialize an empty fragment for the newly created BFH
+      this.populateFragment(mergeKey, "", SERVER_INJECTION_ORIGIN);
+      await this.writeDualFormat(mergeTarget, "", "", ops);
+    }
+
     const parentEntry = mergeTarget;
     const parentKey = mergeKey;
 
@@ -770,8 +783,8 @@ export class FragmentStore {
       this.populateFragment(parentKey, mergedContent, SERVER_INJECTION_ORIGIN);
 
       const parentRawMd = this.extractMarkdown(parentKey);
-      const parentIsRoot = FragmentStore.isDocumentRoot(parentEntry);
-      const canonicalBody = parentIsRoot
+      const parentIsBfh = FragmentStore.isBeforeFirstHeading(parentEntry);
+      const canonicalBody = parentIsBfh
         ? parentRawMd
         : FragmentStore.stripHeadingFromContent(parentRawMd, parentEntry.level);
       await this.writeDualFormat(parentEntry, parentRawMd, canonicalBody, ops);
@@ -801,11 +814,11 @@ export class FragmentStore {
    * headings beyond what the skeleton expects). Clean fragments can be
    * written to canonical-ready; dirty ones need normalizeStructure().
    */
-  private isStructurallyClean(fullMarkdown: string, entry: FlatEntry, isRoot: boolean): boolean {
+  private isStructurallyClean(fullMarkdown: string, entry: FlatEntry, isBeforeFirstHeading: boolean): boolean {
     const parsed = parseDocumentMarkdown(fullMarkdown);
     const realSections = parsed.filter(s => s.headingPath.length > 0);
 
-    if (isRoot) {
+    if (isBeforeFirstHeading) {
       // Root is clean if no real headings were typed inside it
       return realSections.length === 0;
     }
@@ -874,8 +887,8 @@ export class FragmentStore {
     contentLayer: import("../storage/content-layer.js").ContentLayer,
   ): Promise<void> {
     const entry = this.skeleton.expect(headingPath);
-    const isRoot = FragmentStore.isDocumentRoot(entry);
-    const fragmentKey = fragmentKeyFromSectionFile(entry.sectionFile, isRoot);
+    const isBeforeFirstHeading = FragmentStore.isBeforeFirstHeading(entry);
+    const fragmentKey = fragmentKeyFromSectionFile(entry.sectionFile, isBeforeFirstHeading);
     const body = (await contentLayer.readSection(new SectionRef(this.docPath, headingPath)) ?? "")
       .replace(/\n+$/, "");
     const markdown = FragmentStore.buildFragmentContent(body, entry.level, entry.heading);

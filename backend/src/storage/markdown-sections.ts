@@ -17,6 +17,7 @@ import {
   type FlatEntry,
   serializeSkeletonEntries,
   generateSectionFilename,
+  generateBeforeFirstHeadingFilename,
 } from "./document-skeleton.js";
 import { ContentLayer } from "./content-layer.js";
 
@@ -137,12 +138,12 @@ export async function applyDocumentMarkdownToDraft(
   const newEntries: Array<{ heading: string; level: number; sectionFile: string }> = [];
 
   for (const section of parsedSections) {
-    const isRoot = section.headingPath.length === 0;
+    const isBeforeFirstHeading = section.headingPath.length === 0;
     const heading = section.heading;
 
     // 1. Try matching by heading text (case-insensitive)
     let matchedEntry: FlatEntry | undefined;
-    if (isRoot) {
+    if (isBeforeFirstHeading) {
       for (let ci = 0; ci < canonicalFlat.length; ci++) {
         if (consumed.has(ci)) continue;
         if (canonicalFlat[ci].level === 0 && canonicalFlat[ci].heading === "") {
@@ -165,16 +166,16 @@ export async function applyDocumentMarkdownToDraft(
     // 2. Position-based fallback: if no text match, the heading at
     //    this position was likely renamed. Reuse the canonical section
     //    filename so the session overlay file keeps the same path.
-    if (!isRoot && !matchedEntry && topLevelIndex < canonicalFlat.length && !consumed.has(topLevelIndex)) {
+    if (!isBeforeFirstHeading && !matchedEntry && topLevelIndex < canonicalFlat.length && !consumed.has(topLevelIndex)) {
       matchedEntry = canonicalFlat[topLevelIndex];
       consumed.add(topLevelIndex);
     }
 
-    if (!isRoot) topLevelIndex++;
+    if (!isBeforeFirstHeading) topLevelIndex++;
 
-    const sectionFile = matchedEntry?.sectionFile ?? generateSectionFilename(isRoot ? "root" : heading);
+    const sectionFile = matchedEntry?.sectionFile ?? (isBeforeFirstHeading ? generateBeforeFirstHeadingFilename() : generateSectionFilename(heading));
 
-    newEntries.push({ heading: isRoot ? "" : heading, level: section.level, sectionFile });
+    newEntries.push({ heading: isBeforeFirstHeading ? "" : heading, level: section.level, sectionFile });
 
     // Read canonical section content for comparison
     let canonicalBody = "";
@@ -236,4 +237,6 @@ export {
   parseSkeletonToEntries,
   serializeSkeletonEntries,
   generateSectionFilename,
+  generateBeforeFirstHeadingFilename,
+  generateSectionBodyFilename,
 } from "./document-skeleton.js";

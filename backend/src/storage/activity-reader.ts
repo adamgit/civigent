@@ -38,7 +38,8 @@ function isUnknownShaError(error: unknown): boolean {
     message.includes("bad revision") ||
     message.includes("bad object") ||
     message.includes("not a valid object name") ||
-    message.includes("ambiguous argument")
+    message.includes("ambiguous argument") ||
+    message.includes("invalid revision range")
   );
 }
 

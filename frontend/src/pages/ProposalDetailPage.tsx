@@ -3,13 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
 import type { AnyProposal, ProposalDTO, EvaluatedSection } from "../types/shared.js";
-
-function formatHeadingPath(headingPath: string[]): string {
-  if (headingPath.length === 0) {
-    return "(document root)";
-  }
-  return headingPath.join(" > ");
-}
+import { headingPathToLabel } from "./document-page-utils";
 
 function involvementColor(score: number): string {
   if (score >= 0.8) return "#1e40af";
@@ -248,7 +242,7 @@ export function ProposalDetailPage() {
                       <td style={{ padding: "0.3rem" }}>
                         <Link to={`/docs/${section.doc_path}`}>{section.doc_path}</Link>
                       </td>
-                      <td style={{ padding: "0.3rem" }}>{formatHeadingPath(section.heading_path)}</td>
+                      <td style={{ padding: "0.3rem" }}>{headingPathToLabel(section.heading_path)}</td>
                       <td style={{ padding: "0.3rem", textAlign: "center", color: involvementColor(score) }}>
                         {score.toFixed(2)}
                       </td>

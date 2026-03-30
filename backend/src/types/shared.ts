@@ -68,6 +68,7 @@ export type {
   SectionMeta,
   SectionScoreSnapshot,
   SectionState,
+  SectionTarget,
   SectionTargetRef,
   SessionInfoResponse,
   UpdateProposalRequest,
@@ -92,4 +93,6 @@ export {
   HUMAN_INVOLVEMENT_PRESETS,
   sectionHeadingKey,
   sectionGlobalKey,
+  sectionTargetToHeadingPath,
+  headingPathToSectionTarget,
 } from "../../../sharedlibs/shared-types/src/index.js";

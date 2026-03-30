@@ -31,7 +31,7 @@ import { SectionPresence, type HumanProposalLockIndex } from "./section-presence
 import { SectionRef } from "./section-ref.js";
 import { SectionRecency } from "./section-recency.js";
 import { readDocSectionCommitInfo, getSecondsSinceLastHumanActivity, type SectionCommitInfo } from "../storage/section-activity.js";
-import { ContentLayer } from "../storage/content-layer.js";
+import { ContentLayer, DocumentNotFoundError } from "../storage/content-layer.js";
 import { getContentRoot, getDataRoot } from "../storage/data-root.js";
 import path from "node:path";
 
@@ -121,7 +121,17 @@ export class SectionGuard {
       const commitByHeadingKey = new Map<string, SectionCommitInfo>();
       const dataRoot = getDataRoot();
       const layer = new ContentLayer(contentRoot);
-      const sectionList = await layer.getSectionList(docPath);
+      let sectionList: Awaited<ReturnType<ContentLayer["getSectionList"]>>;
+      try {
+        sectionList = await layer.getSectionList(docPath);
+      } catch (err) {
+        if (err instanceof DocumentNotFoundError) {
+          // New document — no canonical history, no commit info to map
+          sectionList = [];
+        } else {
+          throw err;
+        }
+      }
       const sectionsDir = layer.sectionsDirectory(docPath);
       for (const s of sectionList) {
         const absolutePath = path.join(sectionsDir, s.sectionFile);

@@ -20,7 +20,7 @@ export async function readSection(
 
 /**
  * Read a section's full content (heading + body) from canonical storage.
- * Non-root sections have their heading prepended; root sections return body only.
+ * Headed sections have their heading prepended; before-first-heading sections return body only.
  *
  * Uses ContentLayer for the body read, then prepends the heading line
  * based on the skeleton's heading level.
@@ -35,7 +35,7 @@ export async function readSectionWithHeading(
   // Read body via ContentLayer
   const body = await layer.readSection(ref);
 
-  // For root sections or empty heading paths, return body only
+  // For before-first-heading sections, return body only
   if (ref.headingPath.length === 0) return body;
 
   // Get the heading level from the skeleton
