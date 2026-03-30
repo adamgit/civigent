@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { CommitDetail } from "./CommitDetail";
+import type { AttributionWriterType } from "../types/shared.js";
 
 export interface GitLogEntry {
   sha: string;
   author_name: string;
   author_email: string;
+  writer_type?: AttributionWriterType;
   timestamp_iso: string;
   message: string;
   changed_files: string[];
@@ -21,10 +23,10 @@ function relativeTime(iso: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-function inferWriterKind(email: string): "agent" | "human" {
-  if (email.endsWith("@knowledge-store.local")) return "agent";
-  if (email.startsWith("recovery@")) return "agent";
-  return "human";
+function classifyWriterType(raw: string | undefined): "agent" | "human" | "unknown" {
+  if (raw === "agent") return "agent";
+  if (raw === "human") return "human";
+  return "unknown";
 }
 
 interface CommitRowProps {
@@ -33,7 +35,8 @@ interface CommitRowProps {
 
 export function CommitRow({ entry }: CommitRowProps) {
   const [expanded, setExpanded] = useState(false);
-  const kind = inferWriterKind(entry.author_email);
+  const kind = classifyWriterType(entry.writer_type);
+  const rawWriterType = entry.writer_type ?? "(missing)";
 
   return (
     <div>
@@ -47,13 +50,21 @@ export function CommitRow({ entry }: CommitRowProps) {
               className={`inline-flex items-center justify-center rounded-full text-[9px] font-semibold ${
                 kind === "agent"
                   ? "bg-[#f3effa] text-[#6b4fa0]"
-                  : "bg-[#e8f4f6] text-[#1d5a66]"
+                  : kind === "human"
+                    ? "bg-[#e8f4f6] text-[#1d5a66]"
+                    : "text-error border border-current"
               }`}
               style={{ width: 20, height: 20 }}
+              title={kind === "unknown" ? `Raw backend writer type: ${rawWriterType}` : undefined}
             >
               {entry.author_name.slice(0, 2).toUpperCase()}
             </span>
-            <span className="text-xs font-bold text-text-primary">{entry.author_name}</span>
+            <span className={`text-xs font-bold ${kind === "unknown" ? "text-error" : "text-text-primary"}`}>{entry.author_name}</span>
+            {kind === "unknown" ? (
+              <span className="text-[10px] text-error cursor-help" title={`Raw backend writer type: ${rawWriterType}`} tabIndex={0}>
+                UNKNOWN
+              </span>
+            ) : null}
           </div>
           <span className="text-[11px] text-text-muted">{relativeTime(entry.timestamp_iso)}</span>
         </div>

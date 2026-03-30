@@ -2,12 +2,7 @@
  * Git blame attribution for section files.
  *
  * Classifies each line of a section file as human, agent, or mixed based on
- * the commit message prefix of the blame commit for that line.
- *
- * Commit message prefixes:
- *   "human edit:"    → human
- *   "agent proposal:" → agent
- *   all others       → human (fallback)
+ * backend-authored commit trailers (`Writer-Type:`) on the blame commit.
  */
 
 import { execFile } from "node:child_process";
@@ -17,42 +12,63 @@ import { getDataRoot } from "./data-root.js";
 
 const execFileAsync = promisify(execFile);
 
-type CommitType = "human" | "agent";
+type CommitType = Exclude<BlameLineAttribution["type"], "mixed">;
 
-function classifyCommitMessage(subject: string): CommitType {
-  if (subject.startsWith("agent proposal:")) return "agent";
-  return "human";
+function classifyWriterTypeTrailer(raw: string): CommitType {
+  const trailer = raw.trim().toLowerCase();
+  if (trailer === "agent") return "agent";
+  if (trailer === "human") return "human";
+  return "unknown";
 }
 
 /**
- * Parse `git blame --porcelain` output.
+ * Parse `git blame --line-porcelain` output.
  * Returns a map: line number (1-based) → { sha, author }
  */
-function parsePorcelainBlame(output: string): Map<number, { sha: string; author: string }> {
-  const result = new Map<number, { sha: string; author: string }>();
+function parseLinePorcelainBlame(output: string): Map<number, { sha: string; author?: string }> {
+  const result = new Map<number, { sha: string; author?: string }>();
   const lines = output.split("\n");
-  let currentSha = "";
-  let currentAuthor = "";
-  let currentLine = 0;
+  let currentSha: string | null = null;
+  let currentAuthor: string | undefined;
+  let currentLine: number | null = null;
+  let waitingForContentLine = false;
 
   for (const line of lines) {
     // Header line: <sha> <orig-line> <result-line> [<num-lines>]
-    const headerMatch = /^([0-9a-f]{40}) \d+ (\d+)/.exec(line);
+    const headerMatch = /^([0-9a-f]{40}) \d+ (\d+)(?: \d+)?$/.exec(line);
     if (headerMatch) {
+      if (waitingForContentLine) {
+        throw new Error("Malformed git blame output: encountered new header before content line.");
+      }
       currentSha = headerMatch[1];
       currentLine = parseInt(headerMatch[2], 10);
-      currentAuthor = "";
+      currentAuthor = undefined;
+      waitingForContentLine = true;
       continue;
     }
     if (line.startsWith("author ")) {
+      if (!waitingForContentLine) {
+        throw new Error("Malformed git blame output: author metadata encountered outside a blame record.");
+      }
       currentAuthor = line.slice("author ".length).trim();
       continue;
     }
     if (line.startsWith("\t")) {
-      // Content line — record this line's attribution
+      if (!waitingForContentLine || currentSha === null || currentLine === null) {
+        throw new Error("Malformed git blame output: content line encountered without an active blame record.");
+      }
+      if (result.has(currentLine)) {
+        throw new Error(`Malformed git blame output: duplicate attribution for line ${currentLine}.`);
+      }
       result.set(currentLine, { sha: currentSha, author: currentAuthor });
+      waitingForContentLine = false;
     }
   }
+
+  if (waitingForContentLine) {
+    throw new Error("Malformed git blame output: record ended without a content line.");
+  }
+
   return result;
 }
 
@@ -66,10 +82,10 @@ function parsePorcelainBlame(output: string): Map<number, { sha: string; author:
 export async function computeSectionBlame(absoluteFilePath: string): Promise<BlameLineAttribution[]> {
   const dataRoot = getDataRoot();
 
-  // Run git blame --porcelain on the file
+  // Run git blame --line-porcelain on the file
   const { stdout: blameOutput } = await execFileAsync(
     "git",
-    ["blame", "--porcelain", absoluteFilePath],
+    ["blame", "--line-porcelain", absoluteFilePath],
     { cwd: dataRoot },
   );
 
@@ -78,18 +94,32 @@ export async function computeSectionBlame(absoluteFilePath: string): Promise<Bla
   }
 
   // Collect unique SHAs from blame output
-  const lineMap = parsePorcelainBlame(blameOutput);
+  const lineMap = parseLinePorcelainBlame(blameOutput);
+  if (lineMap.size === 0) {
+    throw new Error(`git blame returned no line attributions for ${absoluteFilePath}.`);
+  }
+  const lineNumbers = Array.from(lineMap.keys()).sort((a, b) => a - b);
+  const firstLine = lineNumbers[0];
+  const lastLine = lineNumbers[lineNumbers.length - 1];
+  if (firstLine !== 1) {
+    throw new Error(`git blame attribution for ${absoluteFilePath} must start at line 1, got ${firstLine}.`);
+  }
+  for (let line = 1; line <= lastLine; line += 1) {
+    if (!lineMap.has(line)) {
+      throw new Error(`git blame attribution for ${absoluteFilePath} is missing line ${line}.`);
+    }
+  }
   const uniqueShas = new Set(Array.from(lineMap.values()).map((v) => v.sha));
 
-  // For each SHA, get the commit subject to classify it
+  // For each SHA, read the explicit Writer-Type trailer
   const shaTypes = new Map<string, CommitType>();
   for (const sha of uniqueShas) {
     const { stdout } = await execFileAsync(
       "git",
-      ["log", "-1", "--format=%s", sha],
+      ["log", "-1", "--format=%(trailers:key=Writer-Type,valueonly)", sha],
       { cwd: dataRoot },
     );
-    shaTypes.set(sha, classifyCommitMessage(stdout.trim()));
+    shaTypes.set(sha, classifyWriterTypeTrailer(stdout));
   }
 
   // Detect mixed: does the file's commit history contain both human and agent commits?
@@ -104,9 +134,18 @@ export async function computeSectionBlame(absoluteFilePath: string): Promise<Bla
   // Build attribution per line.
   // V1: if the file has both human and agent commits, every line is "mixed".
   const attributions: BlameLineAttribution[] = [];
-  for (const [lineNum, { sha, author }] of Array.from(lineMap.entries()).sort(([a], [b]) => a - b)) {
-    const type: BlameLineAttribution["type"] = fileMixed ? "mixed" : (shaTypes.get(sha) ?? "human");
-    attributions.push({ line: lineNum, type, author });
+  for (let lineNum = 1; lineNum <= lastLine; lineNum += 1) {
+    const lineAttribution = lineMap.get(lineNum);
+    if (!lineAttribution) {
+      throw new Error(`git blame attribution for ${absoluteFilePath} is missing line ${lineNum}.`);
+    }
+    const { sha, author } = lineAttribution;
+    const type: BlameLineAttribution["type"] = fileMixed ? "mixed" : (shaTypes.get(sha) ?? "unknown");
+    attributions.push({
+      line: lineNum,
+      type,
+      ...(author ? { author } : {}),
+    });
   }
 
   return attributions;

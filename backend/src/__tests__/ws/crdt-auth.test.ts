@@ -86,7 +86,7 @@ describe("WebSocket CRDT auth", () => {
   });
 
   it("rejects unauthenticated WS upgrade with 4011", async () => {
-    const result = await connectWs(`/ws/crdt/${SAMPLE_DOC_PATH}`);
+    const result = await connectWs(`/ws/crdt${SAMPLE_DOC_PATH}`);
     expect(result.code).toBe(4011);
     expect(result.reason).toContain("auth_failed");
   });
@@ -97,7 +97,7 @@ describe("WebSocket CRDT auth", () => {
       type: "agent",
       displayName: "Test Agent",
     });
-    const result = await connectWs(`/ws/crdt/${SAMPLE_DOC_PATH}`, agentTokenPair.access_token);
+    const result = await connectWs(`/ws/crdt${SAMPLE_DOC_PATH}`, agentTokenPair.access_token);
     expect(result.code).toBe(4011);
     expect(result.reason).toContain("agents cannot use CRDT");
   });
@@ -108,7 +108,7 @@ describe("WebSocket CRDT auth", () => {
       type: "human",
       displayName: "WS Test User",
     });
-    const result = await connectWs(`/ws/crdt/${SAMPLE_DOC_PATH}`, humanTokenPair.access_token);
+    const result = await connectWs(`/ws/crdt${SAMPLE_DOC_PATH}`, humanTokenPair.access_token);
     expect(result.code).toBeUndefined(); // connected, not closed
     result.ws.close();
   });
@@ -130,7 +130,7 @@ describe("WebSocket CRDT auth", () => {
       type: "human",
       displayName: "Non-Admin User",
     });
-    const result = await connectWs(`/ws/crdt/${SAMPLE_DOC_PATH}`, humanTokenPair.access_token);
+    const result = await connectWs(`/ws/crdt${SAMPLE_DOC_PATH}`, humanTokenPair.access_token);
     expect(result.code).toBe(4013);
     expect(result.reason).toContain("authorization_failed");
 

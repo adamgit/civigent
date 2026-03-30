@@ -70,7 +70,7 @@ describe("Proposal single-pending invariant", () => {
         sections: [
           {
             doc_path: SAMPLE_DOC_PATH,
-            heading_path: ["Overview"],
+            heading_path: ["Stakeholders"],
             content: "First update.\n",
           },
         ],
@@ -88,7 +88,7 @@ describe("Proposal single-pending invariant", () => {
         sections: [
           {
             doc_path: SAMPLE_DOC_PATH,
-            heading_path: ["Overview"],
+            heading_path: ["Stakeholders"],
             content: "Second update.\n",
           },
         ],
@@ -152,7 +152,7 @@ describe("Proposal single-pending invariant", () => {
         sections: [
           {
             doc_path: SAMPLE_DOC_PATH,
-            heading_path: ["Overview"],
+            heading_path: ["Budget"],
             content: "Agent first.\n",
           },
         ],
@@ -177,7 +177,7 @@ describe("Proposal single-pending invariant", () => {
         sections: [
           {
             doc_path: SAMPLE_DOC_PATH,
-            heading_path: ["Timeline"],
+            heading_path: ["Risks"],
             content: "Agent second.\n",
           },
         ],

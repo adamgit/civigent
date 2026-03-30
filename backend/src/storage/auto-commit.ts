@@ -118,7 +118,7 @@ export async function commitDirtySections(
       for (const section of sectionsToCommit) {
         if (session.docPath === section.doc_path) {
           try {
-            const entry = session.fragments.skeleton.resolve(section.heading_path);
+            const entry = session.fragments.skeleton.expect(section.heading_path);
             const fk = FragmentStore.fragmentKeyFor(entry);
             if (dirtyFragments.has(fk)) {
               dirtyFragments.delete(fk);
@@ -154,7 +154,6 @@ export async function commitDirtySections(
       doc_path: sectionsToCommit[0].doc_path,
       sections: sectionsPublished,
       commit_sha: commitSha,
-      source: "human_auto_commit",
       writer_id: writer.id,
       writer_display_name: writer.displayName,
       writer_type: writer.type,

@@ -2,15 +2,14 @@ import path from "node:path";
 import { getContentRoot } from "./data-root.js";
 import { resolveDocPathUnderContent, InvalidDocPathError } from "./path-utils.js";
 import type { DocStructureNode } from "../types/shared.js";
-import { DocumentSkeleton } from "./document-skeleton.js";
-import { ContentLayer } from "./content-layer.js";
+import { ContentLayer, SectionNotFoundError } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
 
 export class HeadingNotFoundError extends Error {}
 
 /**
  * Resolve a heading_path to the canonical section file path.
- * Delegates to DocumentSkeleton for all skeleton parsing.
+ * Delegates to ContentLayer for all skeleton parsing.
  */
 export async function resolveHeadingPath(
   docPath: string,
@@ -19,11 +18,12 @@ export async function resolveHeadingPath(
   const contentRoot = getContentRoot();
   // Validate the doc path (throws InvalidDocPathError if bad)
   resolveDocPathUnderContent(contentRoot, docPath);
-  const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
+  const layer = new ContentLayer(contentRoot);
   try {
-    return skeleton.resolve(headingPath).absolutePath;
+    return await layer.resolveSectionPath(docPath, headingPath);
   } catch (err) {
-    throw new HeadingNotFoundError((err as Error).message);
+    if (err instanceof SectionNotFoundError) throw new HeadingNotFoundError(err.message);
+    throw err;
   }
 }
 
@@ -37,12 +37,13 @@ export async function resolveHeadingPathWithLevel(
 ): Promise<{ path: string; level: number }> {
   const contentRoot = getContentRoot();
   resolveDocPathUnderContent(contentRoot, docPath);
-  const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
+  const layer = new ContentLayer(contentRoot);
   try {
-    const entry = skeleton.resolve(headingPath);
-    return { path: entry.absolutePath, level: entry.level };
+    const { absolutePath, level } = await layer.resolveSectionPathWithLevel(docPath, headingPath);
+    return { path: absolutePath, level };
   } catch (err) {
-    throw new HeadingNotFoundError((err as Error).message);
+    if (err instanceof SectionNotFoundError) throw new HeadingNotFoundError(err.message);
+    throw err;
   }
 }
 
@@ -58,23 +59,22 @@ export async function resolveHeadingPathUnderRoot(
   if (headingPath.length === 0) {
     throw new InvalidDocPathError("heading_path must have at least one element.");
   }
-  const skeleton = await DocumentSkeleton.fromDisk(docPath, rootContentDir, rootContentDir);
+  const layer = new ContentLayer(rootContentDir);
   try {
-    return skeleton.resolve(headingPath).absolutePath;
+    return await layer.resolveSectionPath(docPath, headingPath);
   } catch (err) {
-    throw new HeadingNotFoundError((err as Error).message);
+    if (err instanceof SectionNotFoundError) throw new HeadingNotFoundError(err.message);
+    throw err;
   }
 }
 
 /**
  * Build the full document structure tree from canonical content.
- * Delegates to DocumentSkeleton which uses file-system nesting (sub-skeleton
- * files) rather than level-based nesting.
+ * Delegates to ContentLayer which uses DocumentSkeleton internally.
  */
 export async function readDocumentStructure(docPath: string): Promise<DocStructureNode[]> {
-  const contentRoot = getContentRoot();
-  const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
-  return skeleton.structure;
+  const layer = new ContentLayer(getContentRoot());
+  return layer.getDocumentStructure(docPath);
 }
 
 // ─── Structure flattening helpers ────────────────────────────────
@@ -138,46 +138,49 @@ export interface ResolvedSection {
 
 /**
  * Resolve ALL section file paths for a document.
- * Delegates to DocumentSkeleton which provides canonical heading paths
- * and absolute file paths via its flat view.
+ * Delegates to ContentLayer.getSectionList which provides canonical
+ * heading paths and absolute file paths.
  *
  * @param rootDir - the content root directory (canonical or overlay)
- * @param docPath - the document path (e.g. "my-doc.md")
+ * @param docPath - the document path (e.g. "/my-doc.md")
  * @returns Map keyed by headingPath.join(">>") → ResolvedSection
  */
 export async function resolveAllSectionPaths(
   rootDir: string,
   docPath: string,
 ): Promise<Map<string, ResolvedSection>> {
-  let skeleton: DocumentSkeleton;
+  const layer = new ContentLayer(rootDir);
+  let sections: Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>;
   try {
-    skeleton = await DocumentSkeleton.fromDisk(docPath, rootDir, rootDir);
+    sections = await layer.getSectionList(docPath);
   } catch {
     return new Map(); // skeleton doesn't exist (e.g. overlay root with no changes)
   }
 
+  // getSectionList doesn't include absolutePath, so compute it from sectionsDir + sectionFile
+  const sectionsDir = layer.sectionsDirectory(docPath);
   const result = new Map<string, ResolvedSection>();
-  skeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
-    const key = SectionRef.headingKey(headingPath);
+  for (const s of sections) {
+    const absolutePath = path.join(sectionsDir, s.sectionFile);
+    const key = SectionRef.headingKey(s.headingPath);
     result.set(key, {
-      headingPath: [...headingPath],
+      headingPath: [...s.headingPath],
       absolutePath,
       relativePath: path.relative(rootDir, absolutePath),
     });
-  });
+  }
   return result;
 }
 
 /**
  * Read document structure, checking an overlay root first (e.g. sessions/docs/content/).
- * If the skeleton exists in the overlay, use it; otherwise fall back to canonical.
- * Delegates to DocumentSkeleton which handles overlay/canonical fallback.
+ * Uses OverlayContentLayer for overlay+canonical skeleton loading.
  */
 export async function readDocumentStructureWithOverlay(
   docPath: string,
   overlayRoot: string,
 ): Promise<DocStructureNode[]> {
-  const canonical = new ContentLayer(getContentRoot());
-  const overlay = new ContentLayer(overlayRoot, canonical);
-  return overlay.getDocumentStructure(docPath);
+  const { OverlayContentLayer } = await import("./content-layer.js");
+  const layer = new OverlayContentLayer(overlayRoot, getContentRoot());
+  return layer.getDocumentStructure(docPath);
 }

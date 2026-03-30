@@ -2,7 +2,7 @@
  * OAuth configuration — env var handling and startup validation.
  *
  * Env vars:
- *   KS_OIDC_PUBLIC_URL        — public URL of this server (required in non-single-user mode)
+ *   KS_OIDC_PUBLIC_URL        — explicit public URL override (otherwise derived)
  *   KS_AUTH_SECRET        — JWT signing secret (must not be default in non-single-user mode)
  *   KS_AGENT_ANON_SALT    — HMAC key for stateless anonymous client_id tokens
  *   KS_AGENT_AUTH_POLICY  — "open" | "register" | "verify" (default: open for localhost, register otherwise)
@@ -44,18 +44,11 @@ export function getPublicUrl(): string {
 /**
  * Get the public URL of this server for OIDC callbacks and auth metadata.
  * Explicit `KS_OIDC_PUBLIC_URL` takes priority; otherwise derived via getPublicUrl().
- * In non-single-user mode, KS_OIDC_PUBLIC_URL must be set explicitly.
  */
 export function getOidcPublicUrl(): string {
   const explicit = process.env.KS_OIDC_PUBLIC_URL?.trim();
   if (explicit) return explicit.replace(/\/+$/, "");
-
-  if (isSingleUserMode()) {
-    return getPublicUrl();
-  }
-
-  // Should have been caught by validateOAuthConfig at startup
-  throw new Error("KS_OIDC_PUBLIC_URL is not set and server is not in single-user mode.");
+  return getPublicUrl();
 }
 
 // ─── KS_AGENT_ANON_SALT ─────────────────────────────────────────
@@ -130,18 +123,26 @@ export function validateOAuthConfig(): void {
 
   const singleUser = isSingleUserMode();
 
-  // single_user mode must never run on a public hostname — zero access control
+  const explicitOidcPublicUrl = process.env.KS_OIDC_PUBLIC_URL?.trim() || "";
+  const explicitExternalHostname = process.env.KS_EXTERNAL_HOSTNAME?.trim() || "";
+
+  // Enforced matrix:
+  // - single_user is mutually exclusive with explicit OIDC URL and explicit external hostname
+  // - non-single-user requires at least one of explicit OIDC URL or explicit external hostname
   if (singleUser) {
-    const hostname = process.env.KS_EXTERNAL_HOSTNAME?.trim() || "localhost";
-    const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
-    if (!isLocal) {
+    const isLoopback = explicitExternalHostname === "localhost" || explicitExternalHostname === "127.0.0.1";
+    if (explicitOidcPublicUrl || (explicitExternalHostname && !isLoopback)) {
       throw new Error(
-        `FATAL: KS_AUTH_MODE=single_user is not allowed when KS_EXTERNAL_HOSTNAME is "${hostname}".\n` +
-        `Single-user mode disables ALL authentication — running it on a public hostname\n` +
-        `exposes the entire system without access control.\n\n` +
-        `Either:\n` +
-        `  - Use KS_AUTH_MODE=oidc for production deployments\n` +
-        `  - Remove KS_EXTERNAL_HOSTNAME (defaults to localhost) for local evaluation`,
+        `FATAL: KS_AUTH_MODE=single_user is mutually exclusive with KS_OIDC_PUBLIC_URL and KS_EXTERNAL_HOSTNAME.\n` +
+        `Remove KS_OIDC_PUBLIC_URL and KS_EXTERNAL_HOSTNAME when running single-user mode.\n` +
+        `single_user may be combined with KS_EXTERNAL_PORT only.`,
+      );
+    }
+  } else {
+    if (!explicitOidcPublicUrl && !explicitExternalHostname) {
+      throw new Error(
+        `FATAL: non-single-user mode requires at least one of KS_OIDC_PUBLIC_URL or KS_EXTERNAL_HOSTNAME.\n` +
+        `Set KS_OIDC_PUBLIC_URL explicitly, or set KS_EXTERNAL_HOSTNAME and allow OIDC URL derivation.`,
       );
     }
   }
@@ -155,21 +156,6 @@ export function validateOAuthConfig(): void {
       `or set KS_EXTERNAL_PORT to the host port users connect on.\n` +
       `Example: KS_EXTERNAL_PORT=8080`,
     );
-  }
-
-  // KS_OIDC_PUBLIC_URL is required in non-single-user mode
-  if (!singleUser) {
-    const publicUrl = process.env.KS_OIDC_PUBLIC_URL?.trim();
-    if (!publicUrl) {
-      throw new Error(
-        `FATAL: KS_OIDC_PUBLIC_URL is required.\n` +
-        `The server must know its publicly reachable URL to serve OAuth metadata.\n` +
-        `Set it to the URL where agent operators will reach this server.\n` +
-        `Example: KS_OIDC_PUBLIC_URL=https://wiki.company.com\n\n` +
-        `If running locally for evaluation, use single-user mode instead:\n` +
-        `  KS_AUTH_MODE=single_user`,
-      );
-    }
   }
 
   // KS_AUTH_SECRET must not be the default in non-single-user mode

@@ -10,7 +10,7 @@
 import type { WriterIdentity, AnyProposal, ProposalSection } from "../types/shared.js";
 import { getContentRoot, getDataRoot } from "./data-root.js";
 import { assembleDocumentAtCommit } from "./git-repo.js";
-import { ContentLayer, DocumentNotFoundError } from "./content-layer.js";
+import { ContentLayer, DocumentNotFoundError, OverlayContentLayer } from "./content-layer.js";
 import { createTransientProposal, updateProposalSections, readProposal } from "./proposal-repository.js";
 import { SectionRef } from "../domain/section-ref.js";
 
@@ -48,7 +48,7 @@ export async function createRestoreProposal(
   const { content: assembledHistorical } = await assembleDocumentAtCommit(dataRoot, targetSha, docPath);
 
   // Write through importMarkdownDocument with canonical fallback for correct file-ID matching
-  const normalizedLayer = new ContentLayer(contentRoot, new ContentLayer(canonicalRoot));
+  const normalizedLayer = new OverlayContentLayer(contentRoot, canonicalRoot);
   const restoredTargets = await normalizedLayer.importMarkdownDocument(docPath, assembledHistorical);
 
   // Compute sections present in canonical but absent from the restored version.

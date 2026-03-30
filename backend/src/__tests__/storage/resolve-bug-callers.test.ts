@@ -1,8 +1,8 @@
 /**
  * Phase 2: Caller-level tests confirming broken/working paths
- * for the DocumentSkeleton.resolve() sub-skeleton bug.
+ * for the DocumentSkeleton.expect() sub-skeleton bug.
  *
- * Documents the broken behavior: when resolve() returns a sub-skeleton
+ * Documents the broken behavior: when expect() returns a sub-skeleton
  * entry (isSubSkeleton=true), callers that read/write body content
  * will hit the skeleton file instead of the body file.
  */
@@ -164,7 +164,7 @@ describe("resolveHeadingPath() — sub-skeleton bug", () => {
     const skeleton = await DocumentSkeleton.fromDisk(
       NESTED_DOC_PATH, ctx.contentDir, ctx.contentDir,
     );
-    const entry = skeleton.resolve(["Introduction"]);
+    const entry = skeleton.expect(["Introduction"]);
     expect(entry.absolutePath).toContain("intro.md");
     expect(entry.isSubSkeleton).toBe(false);
   });
@@ -173,7 +173,7 @@ describe("resolveHeadingPath() — sub-skeleton bug", () => {
     const skeleton = await DocumentSkeleton.fromDisk(
       NESTED_DOC_PATH, ctx.contentDir, ctx.contentDir,
     );
-    const entry = skeleton.resolve(["Details"]);
+    const entry = skeleton.expect(["Details"]);
     // FIXED: returns the root child body file path
     expect(entry.absolutePath).toContain("_details_root.md");
     expect(entry.absolutePath).toContain("details.md.sections");
@@ -200,7 +200,7 @@ describe("commitHumanChangesToCanonical — sub-skeleton path verification", () 
     const skeleton = await DocumentSkeleton.fromDisk(
       NESTED_DOC_PATH, ctx.contentDir, ctx.contentDir,
     );
-    const entry = skeleton.resolve(["Details"]);
+    const entry = skeleton.expect(["Details"]);
     expect(entry.isSubSkeleton).toBe(false);
     // Reading this file should show body content, not skeleton markup
     const fileContent = await readFile(entry.absolutePath, "utf8");
@@ -221,11 +221,11 @@ describe("FragmentStore.fragmentKeyFor() — sub-skeleton context", () => {
 
   afterAll(async () => { await ctx.cleanup(); });
 
-  it("fragmentKeyFor with resolve() now uses root child's sectionFile (fixed)", async () => {
+  it("fragmentKeyFor with expect() now uses root child's sectionFile (fixed)", async () => {
     const skeleton = await DocumentSkeleton.fromDisk(
       NESTED_DOC_PATH, ctx.contentDir, ctx.contentDir,
     );
-    const entry = skeleton.resolve(["Details"]);
+    const entry = skeleton.expect(["Details"]);
     // FIXED: entry.sectionFile is the root child's file (_details_root.md)
     // but heading/level are preserved from the parent (Details, level 2)
     expect(entry.isSubSkeleton).toBe(false);
@@ -241,7 +241,7 @@ describe("FragmentStore.fragmentKeyFor() — sub-skeleton context", () => {
     const skeleton = await DocumentSkeleton.fromDisk(
       NESTED_DOC_PATH, ctx.contentDir, ctx.contentDir,
     );
-    const entry = skeleton.resolve(["Details"]);
+    const entry = skeleton.expect(["Details"]);
     const fromStore = FragmentStore.fragmentKeyFor(entry);
     const fromHelper = fragmentKeyFromSectionFile(entry.sectionFile, false);
     expect(fromStore).toBe(fromHelper);
@@ -251,7 +251,7 @@ describe("FragmentStore.fragmentKeyFor() — sub-skeleton context", () => {
     const skeleton = await DocumentSkeleton.fromDisk(
       NESTED_DOC_PATH, ctx.contentDir, ctx.contentDir,
     );
-    const entry = skeleton.resolve(["Details"]);
+    const entry = skeleton.expect(["Details"]);
     // Level is correctly 2 (## Details) even though absolutePath is wrong
     expect(entry.level).toBe(2);
   });
@@ -269,7 +269,7 @@ describe("Auto-commit dirty fragment key derivation — sub-skeleton context", (
 
   afterAll(async () => { await ctx.cleanup(); });
 
-  it("forEachSection and resolve() produce consistent fragment keys for sub-skeleton sections", async () => {
+  it("forEachSection and expect() produce consistent fragment keys for sub-skeleton sections", async () => {
     const skeleton = await DocumentSkeleton.fromDisk(
       NESTED_DOC_PATH, ctx.contentDir, ctx.contentDir,
     );
@@ -301,7 +301,7 @@ describe("Auto-commit dirty fragment key derivation — sub-skeleton context", (
     expect(detailsEntries[1].fragmentKey).toBe("section::__root__");
 
     // FIXED: resolve(["Details"]) now returns the root child body entry
-    const resolveEntry = skeleton.resolve(["Details"]);
+    const resolveEntry = skeleton.expect(["Details"]);
     const resolveKey = FragmentStore.fragmentKeyFor(resolveEntry);
     // heading/level preserved from parent, sectionFile from root child
     expect(resolveEntry.sectionFile).toBe("_details_root.md");
@@ -310,7 +310,7 @@ describe("Auto-commit dirty fragment key derivation — sub-skeleton context", (
 
     // The auto-commit flow uses forEachSection (which skips isSubSkeleton entries)
     // and derives fragment keys from sectionFile directly, so it consistently
-    // uses the root child's fragment key. The resolve() path also now returns
+    // uses the root child's fragment key. The expect() path also now returns
     // the root child's sectionFile, so the key derivation is consistent.
   });
 });

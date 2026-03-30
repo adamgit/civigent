@@ -43,6 +43,7 @@ export interface UseDocumentCrdtReturn {
   focusedSectionIndex: number | null;
   setFocusedSectionIndex: React.Dispatch<React.SetStateAction<number | null>>;
   crdtProvider: CrdtProvider | null;
+  crdtSynced: boolean;
   crdtState: CrdtConnectionState;
   crdtError: string | null;
   editingLoading: boolean;
@@ -104,6 +105,7 @@ export function useDocumentCrdt({
   // ── State ─────────────────────────────────────────────────
   const [focusedSectionIndex, setFocusedSectionIndex] = useState<number | null>(null);
   const [crdtProvider, setCrdtProvider] = useState<CrdtProvider | null>(null);
+  const [crdtSynced, setCrdtSynced] = useState(false);
   const [crdtState, setCrdtState] = useState<CrdtConnectionState>("disconnected");
   const [crdtError, setCrdtError] = useState<string | null>(null);
   const [editingLoading, setEditingLoading] = useState(false);
@@ -326,6 +328,7 @@ export function useDocumentCrdt({
     if (crdtProviderRef.current) {
       crdtProviderRef.current.destroy();
       setCrdtProvider(null);
+      setCrdtSynced(false);
       setCrdtState("disconnected");
     }
     setFocusedSectionIndex(null);
@@ -468,6 +471,7 @@ export function useDocumentCrdt({
           setCrdtState(state);
         },
         onSynced: () => {
+          setCrdtSynced(true);
           // Y.Doc now has server state — apply deferred focus if pending
           const deferredIdx = deferredEditIndexRef.current;
           if (deferredIdx !== null) {
@@ -750,6 +754,7 @@ export function useDocumentCrdt({
     focusedSectionIndex,
     setFocusedSectionIndex,
     crdtProvider,
+    crdtSynced,
     crdtState,
     crdtError,
     editingLoading,

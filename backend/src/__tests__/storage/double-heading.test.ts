@@ -6,7 +6,7 @@ import {
   evaluateProposalHumanInvolvement,
   commitProposalToCanonical,
 } from "../../storage/commit-pipeline.js";
-import { ContentLayer } from "../../storage/content-layer.js";
+import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
 import { getContentRoot } from "../../storage/data-root.js";
 import { SectionRef } from "../../domain/section-ref.js";
 
@@ -33,8 +33,7 @@ describe("double-heading bug fix", () => {
       [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] }],
     );
 
-    const canonical = new ContentLayer(getContentRoot());
-    const pContentLayer = new ContentLayer(contentRoot, canonical);
+    const pContentLayer = new OverlayContentLayer(contentRoot, getContentRoot());
     await pContentLayer.writeSection(
       new SectionRef(SAMPLE_DOC_PATH, ["Overview"]),
       headedContent,
@@ -65,8 +64,7 @@ describe("double-heading bug fix", () => {
       [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Timeline"] }],
     );
 
-    const canonical2 = new ContentLayer(getContentRoot());
-    const pContentLayer = new ContentLayer(contentRoot, canonical2);
+    const pContentLayer = new OverlayContentLayer(contentRoot, getContentRoot());
     await pContentLayer.writeSection(
       new SectionRef(SAMPLE_DOC_PATH, ["Timeline"]),
       bodyOnlyContent,

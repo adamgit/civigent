@@ -131,8 +131,8 @@ describe("DocumentPage realtime", () => {
       capturedWsHandler?.({
         type: "content:committed",
         doc_path: "test.md",
-        source: "agent_proposal",
         writer_display_name: "Agent",
+        writer_type: "agent",
         sections: [{ doc_path: "test.md", heading_path: ["Overview"] }],
         commit_sha: "abc123",
       } as WsServerEvent);

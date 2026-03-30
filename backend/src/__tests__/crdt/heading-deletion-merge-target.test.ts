@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
@@ -100,12 +100,12 @@ function replaceFragmentWithBodyOnly(
 describe("Heading deletion merge target", () => {
   let ctx: TempDataRootContext;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     ctx = await createTempDataRoot();
     await createNestedDocument(ctx.rootDir);
   });
 
-  afterAll(async () => {
+  afterEach(async () => {
     await ctx.cleanup();
   });
 

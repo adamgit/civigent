@@ -1,124 +1,104 @@
 import { describe, it, expect } from "vitest";
-import { evaluateSectionHumanInvolvementBulk } from "../../domain/section-human-involvement.js";
+import { SectionGuard, type SectionInput } from "../../domain/section-guard.js";
 import type { SectionCommitInfo } from "../../storage/section-activity.js";
+import type { HumanProposalLockIndex } from "../../domain/section-presence.js";
 
-describe("section-human-involvement", () => {
+describe("section-human-involvement (via SectionGuard.evaluateWithPrefetch)", () => {
+  const EMPTY_DIRTY = new Set<string>();
+  const EMPTY_COMMITS = new Map<string, SectionCommitInfo>();
+  const EMPTY_LOCKS: HumanProposalLockIndex = new Map();
+
   it("section with no history returns zero human-involvement score", () => {
-    const result = evaluateSectionHumanInvolvementBulk(
-      "doc.md",
-      ["SomeSection"],
-      new Set(),
-      new Map(),
-    );
+    const section: SectionInput = { doc_path: "doc.md", heading_path: ["SomeSection"] };
+    const result = SectionGuard.evaluateWithPrefetch(section, EMPTY_DIRTY, EMPTY_COMMITS, EMPTY_LOCKS);
 
     expect(result.humanInvolvement_score).toBe(0);
-    expect(result.crdt_session_active).toBe(false);
+    expect(result.blocked).toBe(false);
   });
 
-  it("result includes humanInvolvement_score, crdt_session_active, and optional block_reason", () => {
-    const result = evaluateSectionHumanInvolvementBulk(
-      "doc.md",
-      ["AnotherSection"],
-      new Set(),
-      new Map(),
-    );
+  it("result includes humanInvolvement_score and blocked", () => {
+    const section: SectionInput = { doc_path: "doc.md", heading_path: ["AnotherSection"] };
+    const result = SectionGuard.evaluateWithPrefetch(section, EMPTY_DIRTY, EMPTY_COMMITS, EMPTY_LOCKS);
 
     expect(result).toHaveProperty("humanInvolvement_score");
-    expect(result).toHaveProperty("crdt_session_active");
+    expect(result).toHaveProperty("blocked");
     expect(typeof result.humanInvolvement_score).toBe("number");
-    expect(typeof result.crdt_session_active).toBe("boolean");
+    expect(typeof result.blocked).toBe("boolean");
   });
 
-  it("dirty file set makes section appear as active editing", () => {
+  it("dirty file set makes section blocked with score 1.0", () => {
+    const section: SectionInput = { doc_path: "doc.md", heading_path: ["SomeSection"] };
     const dirtySet = new Set(["SomeSection"]);
-    const result = evaluateSectionHumanInvolvementBulk(
-      "doc.md",
-      ["SomeSection"],
-      dirtySet,
-      new Map(),
-    );
+    const result = SectionGuard.evaluateWithPrefetch(section, dirtySet, EMPTY_COMMITS, EMPTY_LOCKS);
 
-    // Dirty section is treated as actively edited
-    expect(result.crdt_session_active).toBe(true);
-    expect(result.block_reason).toBe("dirty_session_files");
+    expect(result.humanInvolvement_score).toBe(1.0);
+    expect(result.blocked).toBe(true);
   });
 
   it("very recent git commit produces high human-involvement score", () => {
-    const now = Date.now();
+    const section: SectionInput = { doc_path: "doc.md", heading_path: ["RecentSection"] };
     const commitByHeading = new Map<string, SectionCommitInfo>();
     commitByHeading.set("RecentSection", {
       sha: "abc123",
-      timestampMs: now - 1000, // 1 second ago
+      timestampMs: Date.now() - 1000, // 1 second ago
       authorEmail: "test@test.local",
     });
 
-    const result = evaluateSectionHumanInvolvementBulk(
-      "doc.md",
-      ["RecentSection"],
-      new Set(),
-      commitByHeading,
-    );
+    const result = SectionGuard.evaluateWithPrefetch(section, EMPTY_DIRTY, commitByHeading, EMPTY_LOCKS);
 
     expect(result.humanInvolvement_score).toBeGreaterThan(0.5);
-    expect(result.crdt_session_active).toBe(false);
+    expect(result.blocked).toBe(true);
   });
 
   it("old git commit produces low human-involvement score", () => {
-    const now = Date.now();
+    const section: SectionInput = { doc_path: "doc.md", heading_path: ["OldSection"] };
     const commitByHeading = new Map<string, SectionCommitInfo>();
     commitByHeading.set("OldSection", {
       sha: "def456",
-      timestampMs: now - 7 * 24 * 3600 * 1000, // 7 days ago
+      timestampMs: Date.now() - 7 * 24 * 3600 * 1000, // 7 days ago
       authorEmail: "test@test.local",
     });
 
-    const result = evaluateSectionHumanInvolvementBulk(
-      "doc.md",
-      ["OldSection"],
-      new Set(),
-      commitByHeading,
-    );
+    const result = SectionGuard.evaluateWithPrefetch(section, EMPTY_DIRTY, commitByHeading, EMPTY_LOCKS);
 
     expect(result.humanInvolvement_score).toBeLessThan(0.5);
-    expect(result.crdt_session_active).toBe(false);
+    expect(result.blocked).toBe(false);
   });
 
   it("humanInvolvement_score is always between 0 and 1", () => {
     // No history
-    const r1 = evaluateSectionHumanInvolvementBulk("doc.md", ["A"], new Set(), new Map());
+    const s1: SectionInput = { doc_path: "doc.md", heading_path: ["A"] };
+    const r1 = SectionGuard.evaluateWithPrefetch(s1, EMPTY_DIRTY, EMPTY_COMMITS, EMPTY_LOCKS);
     expect(r1.humanInvolvement_score).toBeGreaterThanOrEqual(0);
     expect(r1.humanInvolvement_score).toBeLessThanOrEqual(1);
 
     // Very recent commit
+    const s2: SectionInput = { doc_path: "doc.md", heading_path: ["B"] };
     const commitByHeading = new Map<string, SectionCommitInfo>();
     commitByHeading.set("B", {
       sha: "abc",
       timestampMs: Date.now() - 100,
       authorEmail: "test@test.local",
     });
-    const r2 = evaluateSectionHumanInvolvementBulk("doc.md", ["B"], new Set(), commitByHeading);
+    const r2 = SectionGuard.evaluateWithPrefetch(s2, EMPTY_DIRTY, commitByHeading, EMPTY_LOCKS);
     expect(r2.humanInvolvement_score).toBeGreaterThanOrEqual(0);
     expect(r2.humanInvolvement_score).toBeLessThanOrEqual(1);
   });
 
-  it("human proposal lock marks section as actively edited", () => {
-    const humanProposalLockIndex = new Map([
+  it("human proposal lock marks section as blocked with score 1.0", () => {
+    const section: SectionInput = { doc_path: "doc.md", heading_path: ["Locked"] };
+    const humanProposalLockIndex: HumanProposalLockIndex = new Map([
       ["doc.md::Locked", { writerId: "human-1", writerDisplayName: "Human" }],
     ]);
 
-    const result = evaluateSectionHumanInvolvementBulk(
-      "doc.md",
-      ["Locked"],
-      new Set(),
-      new Map(),
-      humanProposalLockIndex,
-    );
+    const result = SectionGuard.evaluateWithPrefetch(section, EMPTY_DIRTY, EMPTY_COMMITS, humanProposalLockIndex);
 
-    expect(result.crdt_session_active).toBe(true);
-    expect(result.block_reason).toBe("human_proposal");
+    expect(result.humanInvolvement_score).toBe(1.0);
+    expect(result.blocked).toBe(true);
   });
 
   it("nested heading path joins with >> for key lookups", () => {
+    const section: SectionInput = { doc_path: "doc.md", heading_path: ["Parent", "Child"] };
     const commitByHeading = new Map<string, SectionCommitInfo>();
     commitByHeading.set("Parent>>Child", {
       sha: "xyz",
@@ -126,14 +106,8 @@ describe("section-human-involvement", () => {
       authorEmail: "test@test.local",
     });
 
-    const result = evaluateSectionHumanInvolvementBulk(
-      "doc.md",
-      ["Parent", "Child"],
-      new Set(),
-      commitByHeading,
-    );
+    const result = SectionGuard.evaluateWithPrefetch(section, EMPTY_DIRTY, commitByHeading, EMPTY_LOCKS);
 
-    // Should find the commit info via the joined key
     expect(result.humanInvolvement_score).toBeGreaterThan(0);
   });
 });

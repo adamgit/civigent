@@ -71,6 +71,7 @@ export interface DocHistoryVersion {
   sha: string;
   author_name: string;
   author_email: string;
+  writer_type?: string;
   timestamp_iso: string;
   message: string;
   changed_files: string[];
@@ -410,6 +411,20 @@ export const apiClient = {
     return requestJson("/api/setup", undefined, false);
   },
 
+  async bootstrap(code: string): Promise<{ message?: string }> {
+    return requestJson<{ message?: string }>(
+      "/api/auth/bootstrap",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ code }),
+      },
+      false,
+    );
+  },
+
   async loginSingleUser(): Promise<AuthTokenResponse> {
     const response = await requestJson<AuthTokenResponse>(
       "/api/auth/login",
@@ -470,6 +485,13 @@ export const apiClient = {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: "{}",
+    });
+  },
+
+  async deleteDocument(docPath: string): Promise<void> {
+    const encoded = encodeDocPath(docPath);
+    await requestJson<void>(`/api/documents/${encoded}`, {
+      method: "DELETE",
     });
   },
 
@@ -666,12 +688,16 @@ export const apiClient = {
 
   async uploadImportFiles(
     id: string,
-    files: { name: string; content: string }[],
+    files: File[],
   ): Promise<{ uploaded: number }> {
+    const formData = new FormData();
+    for (const file of files) {
+      const uploadPath = file.webkitRelativePath || file.name;
+      formData.append("files", file, uploadPath);
+    }
     return requestJson<{ uploaded: number }>(`/api/imports/${encodeURIComponent(id)}/upload`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ files }),
+      body: formData,
     });
   },
 

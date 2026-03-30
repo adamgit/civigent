@@ -14,7 +14,7 @@ import {
   parseSkeletonToEntries,
   serializeSkeletonEntries,
   DocumentSkeleton,
-  DocumentSkeletonMutable,
+  DocumentSkeletonInternal,
   type SkeletonEntry,
   type SkeletonNode,
 } from "./document-skeleton.js";
@@ -64,7 +64,7 @@ export async function assessSkeleton(
   try {
     const dirEntries = await readdir(sectionsDir);
     filesOnDisk = dirEntries.filter((f) => f.endsWith(".md")).sort();
-  } catch {
+  } catch { // Intentional: recovery module contract — never throws (see module header)
     // ENOENT or other — no files on disk
   }
 
@@ -108,7 +108,7 @@ export async function assessSectionContent(
   let rawText: string | null;
   try {
     rawText = await readFile(filePath, "utf8");
-  } catch {
+  } catch { // Intentional: recovery module contract — never throws (see module header)
     return { rawText: null, parseable: false, source };
   }
 
@@ -228,7 +228,7 @@ export async function buildCompoundSkeleton(docPath: string): Promise<CompoundSk
   try {
     const entries = await readdir(fragmentDir);
     fragmentFiles = entries.filter((f) => f.endsWith(".md"));
-  } catch {
+  } catch { // Intentional: recovery module contract — never throws (see module header)
     // No fragment directory
   }
 
@@ -265,7 +265,7 @@ export async function buildCompoundSkeleton(docPath: string): Promise<CompoundSk
   }
 
   const nodes = entriesToNodes(mergedEntries);
-  const skeleton = DocumentSkeletonMutable.fromNodes(docPath, nodes, contentRoot);
+  const skeleton = DocumentSkeletonInternal.fromNodes(docPath, nodes, contentRoot);
 
   return {
     skeleton,
@@ -503,21 +503,27 @@ async function listAllSessionFiles(docPath: string): Promise<string[]> {
   try {
     await readFile(overlaySkeleton, "utf8");
     files.push(overlaySkeleton);
-  } catch { /* missing */ }
+  } catch { // Intentional: recovery module contract — never throws (see module header)
+    /* missing */
+  }
 
   // Overlay sections
   const overlaySectionsDir = `${overlaySkeleton}.sections`;
   try {
     const entries = await readdir(overlaySectionsDir);
     for (const e of entries) files.push(path.join(overlaySectionsDir, e));
-  } catch { /* missing */ }
+  } catch { // Intentional: recovery module contract — never throws (see module header)
+    /* missing */
+  }
 
   // Raw fragments
   const fragmentDir = path.resolve(fragmentsRoot, ...normalized.split("/"));
   try {
     const entries = await readdir(fragmentDir);
     for (const e of entries) files.push(path.join(fragmentDir, e));
-  } catch { /* missing */ }
+  } catch { // Intentional: recovery module contract — never throws (see module header)
+    /* missing */
+  }
 
   return files;
 }

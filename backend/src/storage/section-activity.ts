@@ -18,7 +18,8 @@ import { SectionRef } from "../domain/section-ref.js";
 import { getContentRoot, getDataRoot } from "./data-root.js";
 import { getSessionFileMtime, getSectionEditPulse } from "../crdt/ydoc-lifecycle.js";
 import { resolveHeadingPath } from "./heading-resolver.js";
-import { DocumentSkeleton } from "./document-skeleton.js";
+import { ContentLayer } from "./content-layer.js";
+import type { AttributionWriterType } from "../types/shared.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -27,6 +28,7 @@ export interface SectionCommitInfo {
   sha: string;
   authorName: string;
   writerId: string;
+  writerType: AttributionWriterType;
 }
 
 // ─── Batch git lookup ────────────────────────────────────────────
@@ -38,23 +40,16 @@ export interface SectionCommitInfo {
  * This is the ONLY way to retrieve per-section commit info.
  * Per-section git calls do not exist — use this function.
  *
- * The git process is killed early once `expectedFileCount` unique files
- * have been seen, so for the common case (auto-commit recently touched
- * all files) this terminates after reading just 1-2 commits.
- *
- * @param docPath - the document path (e.g. "my-doc.md")
- * @param expectedFileCount - number of section files expected; process is
- *   killed early once this many unique files have been seen. Pass
- *   flattenStructureToHeadingPaths(structure).length.
+ * @param docPath - the document path (e.g. "/my-doc.md")
  * @returns Map keyed by file path relative to dataRoot
  */
 export async function readDocSectionCommitInfo(
   docPath: string,
-  expectedFileCount: number,
 ): Promise<Map<string, SectionCommitInfo>> {
   const dataRoot = getDataRoot();
   const contentRoot = getContentRoot();
-  const sectionsDir = DocumentSkeleton.sectionsDir(docPath, contentRoot);
+  const layer = new ContentLayer(contentRoot);
+  const sectionsDir = layer.sectionsDirectory(docPath);
   const relSectionsDir = path.relative(dataRoot, sectionsDir);
 
   const result = new Map<string, SectionCommitInfo>();
@@ -64,7 +59,7 @@ export async function readDocSectionCommitInfo(
     [
       "-c", `safe.directory=${dataRoot}`,
       "log",
-      "--format=COMMIT_%at_%H%x00%an%x00%ae",
+      "--format=COMMIT_%at_%H%x00%an%x00%ae%x00%(trailers:key=Writer,valueonly,separator=%x2c)%x00%(trailers:key=Writer-Type,valueonly,separator=%x2c)",
       "--name-only",
       "--",
       relSectionsDir + "/",
@@ -78,30 +73,37 @@ export async function readDocSectionCommitInfo(
   let currentSha = "";
   let currentAuthor = "";
   let currentWriterId = "";
+  let currentWriterType: AttributionWriterType = "unknown";
 
   try {
     for await (const line of rl) {
       if (line.startsWith("COMMIT_")) {
-        // Format: COMMIT_<unix-seconds>_<sha>\0<author-name>\0<author-email>
-        const firstSep = 7; // length of "COMMIT_"
-        const secondSep = line.indexOf("_", firstSep);
-        const null1 = line.indexOf("\0", secondSep + 1);
-        const null2 = null1 === -1 ? -1 : line.indexOf("\0", null1 + 1);
-        currentTs = parseInt(line.slice(firstSep, secondSep), 10) * 1000;
-        currentSha = line.slice(secondSep + 1, null1 === -1 ? undefined : null1);
-        currentAuthor = null1 === -1 ? "" : (null2 === -1 ? line.slice(null1 + 1) : line.slice(null1 + 1, null2));
-        const email = null2 === -1 ? "" : line.slice(null2 + 1);
-        currentWriterId = email.endsWith("@knowledge-store.local")
-          ? email.slice(0, -"@knowledge-store.local".length)
-          : email;
+        // Format:
+        // COMMIT_<unix-seconds>_<sha>\0<author-name>\0<author-email>\0<Writer trailer>\0<Writer-Type trailer>
+        const payload = line.slice("COMMIT_".length);
+        const tsSep = payload.indexOf("_");
+        currentTs = parseInt(payload.slice(0, tsSep), 10) * 1000;
+        const fields = payload.slice(tsSep + 1).split("\0");
+        currentSha = fields[0] ?? "";
+        currentAuthor = fields[1] ?? "";
+        const writerTrailer = (fields[3] ?? "").split(",")[0]?.trim() ?? "";
+        const writerTypeTrailer = (fields[4] ?? "").split(",")[0]?.trim().toLowerCase() ?? "";
+        currentWriterId = writerTrailer || "unknown";
+        if (writerTypeTrailer === "agent" || writerTypeTrailer === "human") {
+          currentWriterType = writerTypeTrailer;
+        } else {
+          currentWriterType = "unknown";
+        }
       } else if (line.trim()) {
         // File path — keep only first occurrence (most recent commit)
         if (!result.has(line)) {
-          result.set(line, { timestampMs: currentTs, sha: currentSha, authorName: currentAuthor, writerId: currentWriterId });
-          if (result.size >= expectedFileCount) {
-            proc.kill();
-            break;
-          }
+          result.set(line, {
+            timestampMs: currentTs,
+            sha: currentSha,
+            authorName: currentAuthor,
+            writerId: currentWriterId,
+            writerType: currentWriterType,
+          });
         }
       }
     }
@@ -131,13 +133,7 @@ export async function lookupSectionCommitInfo(
 ): Promise<SectionCommitInfo | null> {
   const dataRoot = getDataRoot();
 
-  let resolvedPath: string;
-  try {
-    resolvedPath = await resolveHeadingPath(ref.docPath, ref.headingPath);
-  } catch {
-    return null;
-  }
-
+  const resolvedPath = await resolveHeadingPath(ref.docPath, ref.headingPath);
   const relPath = path.relative(dataRoot, resolvedPath);
   return batchMap.get(relPath) ?? null;
 }

@@ -6,14 +6,19 @@ import type { TestServerContext } from "../helpers/test-server.js";
 
 describe("POST /api/publish", () => {
   let ctx: TestServerContext;
+  let prevAuthMode: string | undefined;
 
   beforeAll(async () => {
+    prevAuthMode = process.env.KS_AUTH_MODE;
+    process.env.KS_AUTH_MODE = "oidc";
     ctx = await createTestServer();
     await createSampleDocument(ctx.dataCtx.rootDir);
   });
 
   afterAll(async () => {
     await ctx.cleanup();
+    if (prevAuthMode === undefined) delete process.env.KS_AUTH_MODE;
+    else process.env.KS_AUTH_MODE = prevAuthMode;
   });
 
   it("requires auth", async () => {

@@ -1,10 +1,56 @@
 import { useCallback, useEffect, useState } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
+import type { AgentAuthPolicy } from "../types/shared";
 
 interface AgentEntry {
   agent_id: string;
   display_name: string;
+}
+
+function AgentAuthStatus({ policy }: { policy: AgentAuthPolicy }) {
+  const anonEnabled = policy === "open";
+  const preAuthEnabled = true; // pre-auth agents work in all modes
+  const secretRequired = policy === "verify";
+
+  return (
+    <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 6, padding: "0.75rem 1rem", marginBottom: "1rem" }}>
+      <div style={{ display: "flex", gap: "1.5rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+          <span style={{
+            display: "inline-block",
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background: anonEnabled ? "#22c55e" : "#94a3b8",
+          }} />
+          <span style={{ fontSize: "0.85rem", color: anonEnabled ? "#166534" : "#64748b" }}>
+            Anonymous agents {anonEnabled ? "enabled" : "disabled"}
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+          <span style={{
+            display: "inline-block",
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background: preAuthEnabled ? "#22c55e" : "#94a3b8",
+          }} />
+          <span style={{ fontSize: "0.85rem", color: preAuthEnabled ? "#166534" : "#64748b" }}>
+            Pre-authenticated agents {preAuthEnabled ? "enabled" : "disabled"}
+            {secretRequired ? " (secret required)" : ""}
+          </span>
+        </div>
+      </div>
+      <div style={{ fontSize: "0.75rem", color: "#94a3b8", marginTop: "0.4rem" }}>
+        Policy: <strong>{policy}</strong> — configured via <code>KS_AGENT_AUTH_POLICY</code>
+      </div>
+      <div style={{ fontSize: "0.75rem", color: "#94a3b8", marginTop: "0.2rem" }}>
+        Anonymous agent identities are signed with an HMAC salt (<code>KS_AGENT_ANON_SALT</code>).
+        Auto-generated if unset; anonymous agents will not survive a restart unless this is set explicitly.
+      </div>
+    </div>
+  );
 }
 
 export function AgentKeysPage() {
@@ -17,14 +63,19 @@ export function AgentKeysPage() {
   const [newSecret, setNewSecret] = useState<{ agentId: string; secret: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [authPolicy, setAuthPolicy] = useState<AgentAuthPolicy | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiClient.listAgentKeys();
+      const [data, config] = await Promise.all([
+        apiClient.listAgentKeys(),
+        apiClient.getAdminConfig(),
+      ]);
       setAgents(data.agents);
       setParseErrors(data.errors);
+      setAuthPolicy(config.agent_auth_policy);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -102,6 +153,8 @@ export function AgentKeysPage() {
       <SharedPageHeader title="Pre-Authenticated Agents" backTo="/admin" />
 
       <section style={{ maxWidth: 700, margin: "0 auto", padding: "1rem" }}>
+        {authPolicy && <AgentAuthStatus policy={authPolicy} />}
+
         {error && (
           <div style={{ background: "#ffeaea", color: "#a00", padding: "0.5rem 1rem", borderRadius: 4, marginBottom: "1rem" }}>
             {error}

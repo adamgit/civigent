@@ -20,6 +20,12 @@ import type {
   ModeTransitionRequest,
   ModeTransitionResult,
 } from "../types/shared";
+import {
+  WS_CLOSE_DOCUMENT_RESTORED,
+  WS_CLOSE_SESSION_ENDED,
+  WS_CLOSE_INVALID_URL,
+  WS_CLOSE_YDOC_INIT_FAILED,
+} from "./crdt-close-codes";
 
 // ─── Protocol constants (must match backend/src/ws/crdt-sync.ts) ───
 
@@ -177,7 +183,7 @@ export class ObserverCrdtProvider {
     this.ws.onclose = (event: CloseEvent) => {
       this.ws = null;
 
-      if (event.code === 4022) {
+      if (event.code === WS_CLOSE_DOCUMENT_RESTORED) {
         // Document restored — reconnect immediately (no exponential backoff).
         this.reconnectAttempts = 0;
         this.events.onSessionReinit?.();
@@ -185,7 +191,7 @@ export class ObserverCrdtProvider {
         return;
       }
 
-      if (event.code === 4021) {
+      if (event.code === WS_CLOSE_SESSION_ENDED) {
         // Session ended — notify frontend to fall back to REST content
         this.setState("disconnected");
         this.events.onSessionEnded?.();
@@ -194,7 +200,7 @@ export class ObserverCrdtProvider {
         return;
       }
 
-      if (event.code >= 4010 && event.code <= 4019) {
+      if (event.code >= WS_CLOSE_INVALID_URL && event.code <= WS_CLOSE_YDOC_INIT_FAILED) {
         // Permanent rejection — don't reconnect
         this.setState("disconnected");
         return;

@@ -54,7 +54,6 @@ describe("Dashboard realtime", () => {
             {
               id: `act-${fetchCallCount}`,
               timestamp: new Date().toISOString(),
-              source: "agent_proposal",
               writer_id: "agent-1",
               writer_type: "agent",
               writer_display_name: "Agent Alpha",
@@ -90,7 +89,7 @@ describe("Dashboard realtime", () => {
       capturedWsHandler?.({
         type: "content:committed",
         doc_path: "ops/strategy.md",
-        source: "agent_proposal",
+        writer_type: "agent",
         writer_display_name: "Agent Alpha",
       } as WsServerEvent);
     });
@@ -120,7 +119,7 @@ describe("Dashboard realtime", () => {
       capturedWsHandler?.({
         type: "content:committed",
         doc_path: "ops/strategy.md",
-        source: "agent_proposal",
+        writer_type: "agent",
         writer_display_name: "Agent Alpha",
       } as WsServerEvent);
     });

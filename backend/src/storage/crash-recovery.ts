@@ -27,7 +27,7 @@
 import { readdir, readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { getDataRoot, getContentRoot, getContentGitPrefix, getProposalsGitPrefix, getProposalsCommittingRoot, getProposalsPendingRoot, getSessionDocsContentRoot, getSessionFragmentsRoot } from "./data-root.js";
-import { gitExec } from "./git-repo.js";
+import { gitExec, gitStatusPorcelain } from "./git-repo.js";
 import { rollbackCommittingToDraft } from "./proposal-repository.js";
 import {
   scanSessionFragmentDocPaths,
@@ -154,36 +154,16 @@ export interface CrashRecoveryResult {
 }
 
 /**
- * Parse a git --porcelain status line into its status code and file path.
- * Porcelain v1 format: "XY path" where XY is two status chars and path starts at index 3.
+ * Extract the document path from a content/ file path.
+ * E.g. "content/my-doc" → "my-doc", "content/my-doc.sections/foo.md" → "my-doc"
+ * Returns null if the path doesn't match the expected content prefix format.
  */
-function parseStatusLine(statusLine: string): { code: string; filePath: string } {
-  return { code: statusLine.slice(0, 2), filePath: statusLine.slice(3) };
-}
-
-function isTrackedContentOrProposalPath(statusLine: string): boolean {
-  if (statusLine.trim().length === 0) return false;
-  const { code, filePath } = parseStatusLine(statusLine);
-  if (code === "??") return false; // untracked
-  // Must START WITH the root prefix — not just contain it anywhere in the path.
-  // A proposal path like proposals/pending/.../content/foo.md must only match proposals/.
-  return filePath.startsWith(getContentGitPrefix() + "/") || filePath.startsWith(getProposalsGitPrefix() + "/");
-}
-
-/**
- * Extract doc paths from dirty content/ lines in git status.
- * E.g. " M content/my-doc" → "my-doc", " M content/my-doc.sections/foo.md" → "my-doc"
- */
-function extractDirtyDocPaths(dirtyLines: string[]): Set<string> {
-  const docPaths = new Set<string>();
-  for (const line of dirtyLines) {
-    const { filePath } = parseStatusLine(line);
-    // Anchor to start of path so proposals/.../content/... never matches here.
-    const contentPrefix = getContentGitPrefix();
-    const match = new RegExp(`^${contentPrefix}/(.+?)(?:\\.sections/|$)`).exec(filePath);
-    if (match) docPaths.add(match[1].replace(/\/$/, ""));
-  }
-  return docPaths;
+function extractDocPathFromContentFile(filePath: string): string | null {
+  const contentPrefix = getContentGitPrefix() + "/";
+  if (!filePath.startsWith(contentPrefix)) return null;
+  const rest = filePath.slice(contentPrefix.length);
+  const match = /^(.+?)(?:\.sections\/|$)/.exec(rest);
+  return match ? match[1].replace(/\/$/, "") : null;
 }
 
 /**
@@ -230,27 +210,33 @@ async function hasSessionFilesForDoc(docPath: string, ctx: RecoveryContext): Pro
 
 async function recoverDirtyWorkingTree(dataRoot: string, ctx: RecoveryContext): Promise<boolean> {
   ctx.phase = "dirty-working-tree";
-  const statusOutput = await ctx.git(["status", "--porcelain"], dataRoot);
-  const dirtyLines = statusOutput
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd())
-    .filter(isTrackedContentOrProposalPath);
+  ctx.operation = "gitStatusPorcelain";
+  const statusEntries = await gitStatusPorcelain(dataRoot);
 
-  ctx.gitStatusLines = dirtyLines;
+  // Filter to tracked content/ and proposals/ paths (exclude untracked "??" entries)
+  const contentPrefix = getContentGitPrefix() + "/";
+  const proposalsPrefix = getProposalsGitPrefix() + "/";
+  const dirtyEntries = statusEntries.filter(e =>
+    e.code !== "??" && (e.filePath.startsWith(contentPrefix) || e.filePath.startsWith(proposalsPrefix)),
+  );
 
-  if (dirtyLines.length === 0) {
+  ctx.gitStatusLines = dirtyEntries.map(e => `${e.code} ${e.filePath}`);
+
+  if (dirtyEntries.length === 0) {
     return false;
   }
 
-  const contentPrefix = getContentGitPrefix() + "/";
-  const proposalsPrefix = getProposalsGitPrefix() + "/";
-  const contentDirtyLines = dirtyLines.filter((l) => parseStatusLine(l).filePath.startsWith(contentPrefix));
-  const hasProposalsDirty = dirtyLines.some((l) => parseStatusLine(l).filePath.startsWith(proposalsPrefix));
+  const contentDirtyEntries = dirtyEntries.filter(e => e.filePath.startsWith(contentPrefix));
+  const hasProposalsDirty = dirtyEntries.some(e => e.filePath.startsWith(proposalsPrefix));
 
-  if (contentDirtyLines.length > 0) {
+  if (contentDirtyEntries.length > 0) {
     // Per-document handling: revert docs that have session files (session is authoritative),
     // leave docs without session files as-is (dirty canonical is the only copy).
-    const dirtyDocPaths = extractDirtyDocPaths(contentDirtyLines);
+    const dirtyDocPaths = new Set<string>();
+    for (const entry of contentDirtyEntries) {
+      const docPath = extractDocPathFromContentFile(entry.filePath);
+      if (docPath) dirtyDocPaths.add(docPath);
+    }
     const docsToRevert: string[] = [];
     const docsToKeep: string[] = [];
 
@@ -436,8 +422,7 @@ async function recoverSessionFiles(ctx: RecoveryContext): Promise<RecoverSession
       try {
         await ctx.fs(`mkdir ${path.dirname(canonicalPath)}`, () => mkdir(path.dirname(canonicalPath), { recursive: true }));
         await ctx.fs(`writeFile ${canonicalPath}`, () => writeFile(canonicalPath, failureNotice, "utf8"));
-      } catch {
-        // Best-effort — if we can't write the notice, the failure is still tracked in failedDocuments
+      } catch { // Intentional: best-effort notice write — primary error already tracked in failedDocuments
       }
     }
   }

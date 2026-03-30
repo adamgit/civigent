@@ -91,6 +91,21 @@ a {
   border-radius: 3px;
 }
 
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-accent) transparent;
+}
+.sidebar-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-accent);
+  border-radius: 4px;
+}
+
 /* ===== DRAG/DROP INDICATORS ===== */
 .section-drop-target {
   border-top: 2px solid var(--color-accent);
@@ -109,6 +124,61 @@ a {
 .badge-ai {
   background-color: #dbeafe; /* cool blue-100 */
   color: #1e3a8a;            /* blue-900 */
+}
+
+/* ===== DOCUMENT LEFT GUTTER (who changed this section) ===== */
+.section-who-changed-anchor {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+}
+
+.section-who-changed {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  justify-content: flex-start;
+  max-width: 200px;
+  padding-right: 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--color-text-muted);
+}
+
+.section-who-changed-name {
+  font-weight: 500;
+  line-height: 1.45;
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.section-who-changed-meta {
+  display: flex;
+  flex-direction: column;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  column-gap: 6px;
+  row-gap: 2px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.section-who-changed-age,
+.section-who-changed-type-line,
+.section-who-changed-raw {
+  white-space: nowrap;
+}
+
+.section-who-changed-type-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 /* ===== DOCUMENT TYPOGRAPHY (inside rendered markdown) ===== */

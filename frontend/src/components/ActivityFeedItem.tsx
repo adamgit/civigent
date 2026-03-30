@@ -4,7 +4,8 @@ import { StatusPill } from "./StatusPill";
 
 interface ActivityFeedItemProps {
   writerName: string;
-  writerKind: "human" | "agent";
+  writerKind: "human" | "agent" | "unknown";
+  writerKindRaw?: string;
   writerInitials: string;
   headline: ReactNode;
   timestamp: string;
@@ -28,6 +29,7 @@ function relativeTime(iso: string): string {
 export function ActivityFeedItem({
   writerName,
   writerKind,
+  writerKindRaw,
   writerInitials,
   headline,
   timestamp,
@@ -37,6 +39,7 @@ export function ActivityFeedItem({
   sections,
 }: ActivityFeedItemProps) {
   const isAgent = writerKind === "agent";
+  const isUnknown = writerKind === "unknown";
 
   return (
     <div
@@ -50,9 +53,10 @@ export function ActivityFeedItem({
           width: 28,
           height: 28,
           marginTop: 2,
-          background: isAgent ? "#f3effa" : "#e8f4f6",
-          color: isAgent ? "#6b4fa0" : "#1d5a66",
+          background: isUnknown ? "transparent" : isAgent ? "#f3effa" : "#e8f4f6",
+          color: isUnknown ? "var(--color-error, #b00020)" : isAgent ? "#6b4fa0" : "#1d5a66",
         }}
+        title={isUnknown ? `Raw backend writer type: ${writerKindRaw ?? "(missing)"}` : undefined}
       >
         {writerInitials}
       </div>

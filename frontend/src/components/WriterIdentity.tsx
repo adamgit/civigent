@@ -1,10 +1,16 @@
+import type { AttributionWriterType } from "../types/shared.js";
+
 interface WriterIdentityProps {
   name: string;
-  kind: "human" | "agent";
+  kind: AttributionWriterType;
+  rawKind?: string;
 }
 
-export function WriterIdentity({ name, kind }: WriterIdentityProps) {
+export function WriterIdentity({ name, kind, rawKind }: WriterIdentityProps) {
   const isAgent = kind === "agent";
+  const isHuman = kind === "human";
+  const isUnknown = !isAgent && !isHuman;
+  const raw = rawKind ?? "(missing)";
   return (
     <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
       <span
@@ -17,14 +23,25 @@ export function WriterIdentity({ name, kind }: WriterIdentityProps) {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          background: isAgent ? "#f3effa" : "#e8f4f6",
-          color: isAgent ? "#6b4fa0" : "#1d5a66",
+          background: isUnknown ? "transparent" : isAgent ? "#f3effa" : "#e8f4f6",
+          color: isUnknown ? "var(--color-error)" : isAgent ? "#6b4fa0" : "#1d5a66",
           flexShrink: 0,
         }}
+        title={isUnknown ? `Raw backend writer type: ${raw}` : undefined}
       >
         {name.slice(0, 2).toUpperCase()}
       </span>
-      <span style={{ fontWeight: 500, color: "var(--color-text-primary)" }}>{name}</span>
+      <span
+        className={isUnknown ? "text-error" : ""}
+        style={{ fontWeight: 500, color: isUnknown ? "var(--color-error)" : "var(--color-text-primary)" }}
+      >
+        {name}
+      </span>
+      {isUnknown ? (
+        <span className="text-[10px] text-error cursor-help" title={`Raw backend writer type: ${raw}`} tabIndex={0}>
+          UNKNOWN
+        </span>
+      ) : null}
     </span>
   );
 }

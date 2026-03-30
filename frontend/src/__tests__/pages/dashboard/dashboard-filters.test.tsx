@@ -28,7 +28,6 @@ function makeManyItems(count: number): ActivityItem[] {
   return Array.from({ length: count }, (_, i) => ({
     id: `act-${i}`,
     timestamp: new Date(Date.now() - i * 60000).toISOString(),
-    source: "agent_proposal" as const,
     writer_id: `agent-${i}`,
     writer_type: "agent" as const,
     writer_display_name: `Agent ${i}`,

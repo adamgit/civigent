@@ -26,7 +26,7 @@ describe("validateOAuthConfig — single_user hostname guard", () => {
       KS_EXTERNAL_PORT: "443",
     });
 
-    expect(() => validateOAuthConfig()).toThrowError(/FATAL.*single_user.*not allowed/);
+    expect(() => validateOAuthConfig()).toThrowError(/FATAL.*single_user.*mutually exclusive/);
   });
 
   it("allows single_user mode with localhost", () => {

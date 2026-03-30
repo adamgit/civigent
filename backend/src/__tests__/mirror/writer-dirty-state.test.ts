@@ -5,13 +5,18 @@ import type { TestServerContext } from "../helpers/test-server.js";
 
 describe("GET /api/writers/:id/dirty", () => {
   let ctx: TestServerContext;
+  let prevAuthMode: string | undefined;
 
   beforeAll(async () => {
+    prevAuthMode = process.env.KS_AUTH_MODE;
+    process.env.KS_AUTH_MODE = "oidc";
     ctx = await createTestServer();
   });
 
   afterAll(async () => {
     await ctx.cleanup();
+    if (prevAuthMode === undefined) delete process.env.KS_AUTH_MODE;
+    else process.env.KS_AUTH_MODE = prevAuthMode;
   });
 
   it("returns 401 without auth", async () => {

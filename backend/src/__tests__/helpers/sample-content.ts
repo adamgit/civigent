@@ -2,8 +2,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { gitExec } from "../../storage/git-repo.js";
 
-export const SAMPLE_DOC_PATH = "ops/strategy.md";
-export const SAMPLE_DOC_PATH_2 = "eng/architecture.md";
+export const SAMPLE_DOC_PATH = "/ops/strategy.md";
+export const SAMPLE_DOC_PATH_2 = "/eng/architecture.md";
 
 export const SAMPLE_SECTIONS = {
   root: "This is the strategy document preamble.\n",
@@ -28,7 +28,8 @@ export async function createSampleDocument(
   docPath: string = SAMPLE_DOC_PATH,
 ): Promise<{ headingPaths: string[][] }> {
   const contentRoot = join(dataRoot, "content");
-  const skeletonPath = join(contentRoot, docPath);
+  const diskRelative = docPath.replace(/^\//, "");
+  const skeletonPath = join(contentRoot, diskRelative);
   const sectionsDir = `${skeletonPath}.sections`;
 
   await mkdir(dirname(skeletonPath), { recursive: true });
@@ -83,7 +84,8 @@ export async function createSampleDocument2(
 ): Promise<{ headingPaths: string[][] }> {
   const contentRoot = join(dataRoot, "content");
   const docPath = SAMPLE_DOC_PATH_2;
-  const skeletonPath = join(contentRoot, docPath);
+  const diskRelative = docPath.replace(/^\//, "");
+  const skeletonPath = join(contentRoot, diskRelative);
   const sectionsDir = `${skeletonPath}.sections`;
 
   await mkdir(dirname(skeletonPath), { recursive: true });

@@ -1,7 +1,6 @@
 export type {
   AdminConfig,
   ActivityItem,
-  ActivityItemSource,
   AgentReadingEvent,
   ApiError,
   AuthMethod,
@@ -76,6 +75,7 @@ export type {
   WriterDirtyState,
   WriterIdentity,
   WriterType,
+  AttributionWriterType,
   WsClientMessage,
   WsServerEvent,
   AgentConnectionStatus,

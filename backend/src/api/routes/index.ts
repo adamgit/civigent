@@ -32,8 +32,8 @@ import type {
 } from "../../types/shared.js";
 import { HUMAN_INVOLVEMENT_PRESETS } from "../../types/shared.js";
 import path from "node:path";
-import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { assertDataRootExists, getContentRoot, getContentGitPrefix, getDataRoot, getSessionDocsContentRoot, getSessionAuthorsRoot } from "../../storage/data-root.js";
+import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { assertDataRootExists, getContentRoot, getDataRoot, getSessionDocsContentRoot, getSessionAuthorsRoot } from "../../storage/data-root.js";
 import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
 
@@ -46,6 +46,7 @@ import {
   createProposal,
   createTransientProposal,
   readProposal,
+  readProposalWithContent,
   listProposals,
   findDraftProposalByWriter,
   updateProposalSections,
@@ -102,10 +103,8 @@ import {
   updateAdminConfig,
 } from "../../admin-config.js";
 import { commitDirtySections } from "../../storage/auto-commit.js";
-import { DocumentSkeleton, SECTIONS_DIR_SUFFIX } from "../../storage/document-skeleton.js";
-import { gitExec } from "../../storage/git-repo.js";
+import { SECTIONS_DIR_SUFFIX } from "../../storage/document-skeleton.js";
 import { SectionRef } from "../../domain/section-ref.js";
-import { renameDocument } from "../../storage/document-rename.js";
 import {
   createStagingFolder,
   listStagingFolders,
@@ -115,6 +114,8 @@ import {
   getImportStagingRoot,
 } from "../../storage/import-staging.js";
 import { importFilesToProposal } from "../../storage/import-service.js";
+
+const BUILD_INFO_FILE_URL = new URL("../../../build-info.json", import.meta.url);
 
 
 // ─── Helpers ────────────────────────────────────────────
@@ -133,6 +134,60 @@ export function sanitizeReturnTo(raw: string): string {
   } catch {
     return "/";
   }
+}
+
+function parseMultipartBoundary(contentType: string | undefined): string | null {
+  if (!contentType) return null;
+  const match = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
+  return match?.[1] ?? match?.[2] ?? null;
+}
+
+async function readRequestBody(req: Request): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+function parseMultipartUploadFiles(
+  body: Buffer,
+  boundary: string,
+): Array<{ name: string; content: string }> {
+  const raw = body.toString("latin1");
+  const parts = raw.split(`--${boundary}`);
+  const files: Array<{ name: string; content: string }> = [];
+
+  for (const part of parts) {
+    if (!part || part === "--" || part === "--\r\n") continue;
+    const normalizedPart = part.startsWith("\r\n") ? part.slice(2) : part;
+    const headerEnd = normalizedPart.indexOf("\r\n\r\n");
+    if (headerEnd < 0) continue;
+
+    const headerBlock = normalizedPart.slice(0, headerEnd);
+    let contentBlock = normalizedPart.slice(headerEnd + 4);
+    if (contentBlock.endsWith("\r\n")) {
+      contentBlock = contentBlock.slice(0, -2);
+    }
+
+    const dispositionLine = headerBlock
+      .split("\r\n")
+      .find((line) => line.toLowerCase().startsWith("content-disposition:"));
+    if (!dispositionLine) continue;
+
+    const fieldName = /name="([^"]+)"/i.exec(dispositionLine)?.[1];
+    if (fieldName !== "files") continue;
+
+    const filename = /filename="([^"]*)"/i.exec(dispositionLine)?.[1];
+    if (!filename) continue;
+
+    files.push({
+      name: filename,
+      content: Buffer.from(contentBlock, "latin1").toString("utf8"),
+    });
+  }
+
+  return files;
 }
 
 function sendApiError(res: Response, status: number, messageOrError: string | Error, details?: unknown): void {
@@ -271,6 +326,12 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   const router = express.Router();
   const onWsEvent = options?.onWsEvent;
 
+  // Restore leading slash that Express strips from :docPath(*) params
+  router.param("docPath", (req, _res, next, value) => {
+    req.params.docPath = "/" + value;
+    next();
+  });
+
   // ─── Startup gate: reject requests during crash recovery ────
   // Exempt: /health (used as ready probe), /auth/* (login page needs to load)
   router.use((req: Request, res: Response, next: NextFunction) => {
@@ -279,7 +340,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       return;
     }
     const p = req.path;
-    if (p === "/health" || p.startsWith("/auth/")) {
+    if (p === "/health" || p === "/build-info" || p.startsWith("/auth/")) {
       next();
       return;
     }
@@ -297,7 +358,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   router.use((req: Request, res: Response, next: NextFunction) => {
     const p = req.path;
     // Always exempt: auth endpoints, health check
-    if (p === "/health" || p.startsWith("/auth/")) {
+    if (p === "/health" || p === "/build-info" || p.startsWith("/auth/")) {
       next();
       return;
     }
@@ -348,6 +409,27 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
   router.get("/health", (_req, res) => {
     res.status(200).json({ status: "ok", ready: isSystemReady() });
+  });
+
+  router.get("/build-info", async (_req, res, next) => {
+    try {
+      const raw = await readFile(BUILD_INFO_FILE_URL, "utf8");
+      const parsed = JSON.parse(raw);
+      const version = typeof parsed?.version === "string" ? parsed.version : null;
+      const sha = typeof parsed?.sha === "string" ? parsed.sha : null;
+      const date = typeof parsed?.date === "string" ? parsed.date : null;
+      if (!version || !sha || !date) {
+        sendApiError(res, 500, "build-info.json is malformed. Expected { version, sha, date } strings.");
+        return;
+      }
+      res.status(200).json({ version, sha, date });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+        sendApiError(res, 404, "build-info.json is not available on this server.");
+        return;
+      }
+      next(error);
+    }
   });
 
   // ─── Auth ─────────────────────────────────────────────
@@ -531,8 +613,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const docPath = req.params.docPath;
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
-      const canonical = new ContentLayer(getContentRoot());
-      const overlay = new ContentLayer(getSessionDocsContentRoot(), canonical);
+      const overlay = new OverlayContentLayer(getSessionDocsContentRoot(), getContentRoot());
       const sectionList = await overlay.getSectionList(docPath);
 
       // Build headingPaths and sectionFileByKey from the section list
@@ -544,7 +625,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       // ── Batch pre-fetch: all I/O happens here, loop below is pure compute ──
       const liveSession = lookupDocSession(docPath);
       const sectionsOverlayRoot = getSessionDocsContentRoot();
-      const sectionsOverlay = new ContentLayer(sectionsOverlayRoot, new ContentLayer(getContentRoot()));
+      const sectionsOverlay = new OverlayContentLayer(sectionsOverlayRoot, getContentRoot());
       const bulkContent = prependHeadings(sectionList, await sectionsOverlay.readAllSections(docPath));
 
       // Overlay live content from Y.Doc where available
@@ -703,11 +784,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       const sectionFile = req.params.sectionFile;
 
-      // Resolve sectionFile → absolute disk path via skeleton (handles sub-skeleton nesting)
+      // Resolve sectionFile → absolute disk path via ContentLayer (handles sub-skeleton nesting)
       const contentRoot = getContentRoot();
-      const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
-      const entry = skeleton.resolveByFileId(sectionFile);
-      const sectionFilePath = entry.absolutePath;
+      const { absolutePath: sectionFilePath } = await new ContentLayer(contentRoot).resolveSectionFileId(docPath, sectionFile);
 
       const { computeSectionBlame } = await import("../../storage/section-blame.js");
       const lines = await computeSectionBlame(sectionFilePath);
@@ -743,30 +822,45 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         return;
       }
 
-      // Check for pending proposals referencing this document
-      const pendingProposals = await listProposals("draft");
-      const conflicting = pendingProposals.filter((p) =>
-        p.sections.some((s) => s.doc_path === docPath),
+      const canonicalRoot = getContentRoot();
+      const { id: proposalId, contentRoot: proposalContentRoot } = await createTransientProposal(
+        { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
+        `Rename document: ${docPath} -> ${newPath}`,
       );
-      if (conflicting.length > 0) {
-        sendApiError(res, 409, `Cannot rename document referenced by pending proposals: ${conflicting.map((p) => p.id).join(", ")}`);
+      const headingPaths = await new OverlayContentLayer(proposalContentRoot, canonicalRoot).tombstoneDocument(docPath);
+      const subtree = await new ContentLayer(canonicalRoot).readSubtree(docPath, []);
+      const overlayLayer = new OverlayContentLayer(proposalContentRoot, canonicalRoot);
+      for (const entry of subtree) {
+        await overlayLayer.writeSection(new SectionRef(newPath, entry.headingPath), entry.bodyContent);
+      }
+      await updateProposalSections(proposalId, [
+        ...headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp })),
+        ...headingPaths.map((hp) => ({ doc_path: newPath, heading_path: hp })),
+      ]);
+      const { sections, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId);
+      if (!committedHead) {
+        res.status(409).json({
+          doc_path: docPath,
+          proposal_id: proposalId,
+          status: "draft",
+          outcome: "blocked",
+          blocked_sections: sections.filter((s) => s.blocked),
+        });
         return;
       }
-
-      const result = await renameDocument(docPath, newPath);
 
       // Broadcast doc:renamed to all connected clients, plus catalog:changed for tree refresh
       if (onWsEvent) {
         onWsEvent({
           type: "doc:renamed",
-          old_path: result.old_path,
-          new_path: result.new_path,
-          committed_head: result.committed_head,
+          old_path: docPath,
+          new_path: newPath,
+          committed_head: committedHead,
         });
         onWsEvent({ type: "catalog:changed" });
       }
 
-      res.status(200).json(result);
+      res.status(200).json({ old_path: docPath, new_path: newPath, committed_head: committedHead });
     } catch (error) {
       if (error instanceof InvalidDocPathError) {
         sendApiError(res, 400, error);
@@ -821,20 +915,23 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     return raw.split(":").map((s) => decodeURIComponent(s.trim())).filter(Boolean);
   }
 
-  // Helper: git commit a structural change
-  async function gitCommitStructuralChange(message: string): Promise<void> {
-    const dataRoot = getDataRoot();
-    await gitExec(["add", getContentGitPrefix() + "/"], dataRoot);
-    await gitExec(
-      [
-        "-c", "user.name=Knowledge Store",
-        "-c", "user.email=system@knowledge-store.local",
-        "commit",
-        "-m", message,
-        "--allow-empty",
-      ],
-      dataRoot,
-    );
+  async function evaluateAndMaybeCommitTransientProposal(proposalId: string): Promise<{
+    evaluation: Awaited<ReturnType<typeof evaluateProposalHumanInvolvement>>["evaluation"];
+    sections: Awaited<ReturnType<typeof evaluateProposalHumanInvolvement>>["sections"];
+    committedHead?: string;
+  }> {
+    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
+    if (!evaluation.all_sections_accepted) {
+      return { evaluation, sections };
+    }
+
+    const scores: SectionScoreSnapshot = {};
+    for (const s of sections) {
+      scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
+    }
+
+    const committedHead = await commitProposalToCanonical(proposalId, scores);
+    return { evaluation, sections, committedHead };
   }
 
   // POST /api/documents/:docPath/sections — Create a new section
@@ -859,15 +956,29 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       const contentRoot = getContentRoot();
-      const overlayLayer = new OverlayContentLayer(contentRoot, contentRoot);
+      const { id: proposalId, contentRoot: proposalContentRoot } = await createTransientProposal(
+        { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
+        `Create section "${heading}" in ${docPath}`,
+      );
+      const overlayLayer = new OverlayContentLayer(proposalContentRoot, contentRoot);
 
       // Determine the heading level from context
       // Default: level 2 (##) for top-level sections
       const level = req.body.level ?? 2;
 
       await overlayLayer.createSection(docPath, [], heading, level, content ?? "");
-
-      await gitCommitStructuralChange(`create section "${heading}" in ${docPath}`);
+      await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: [heading] }]);
+      const { evaluation, sections, committedHead } = await evaluateAndMaybeCommitTransientProposal(proposalId);
+      if (!committedHead) {
+        res.status(409).json({
+          doc_path: docPath,
+          proposal_id: proposalId,
+          status: "draft",
+          outcome: "blocked",
+          blocked_sections: sections.filter((s) => s.blocked),
+        });
+        return;
+      }
 
       // Broadcast structure change
       if (onWsEvent) {
@@ -881,6 +992,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         doc_path: docPath,
         heading_path: [heading],
         created: true,
+        committed_head: committedHead,
+        evaluation,
       });
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
@@ -912,18 +1025,25 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       const contentRoot = getContentRoot();
-      const overlayLayer = new OverlayContentLayer(contentRoot, contentRoot);
+      const { id: proposalId, contentRoot: proposalContentRoot } = await createTransientProposal(
+        { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
+        `Delete section "${headingPath.join(" > ")}" from ${docPath}`,
+      );
+      const overlayLayer = new OverlayContentLayer(proposalContentRoot, contentRoot);
 
-      const result = await overlayLayer.deleteSection(docPath, headingPath);
-
-      // Delete the removed files from disk
-      for (const removed of result.removed) {
-        await rm(removed.absolutePath, { force: true });
-        // Also try removing .sections/ subdir if it was a sub-skeleton
-        await rm(removed.absolutePath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
+      await overlayLayer.deleteSection(docPath, headingPath);
+      await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: headingPath }]);
+      const { evaluation, sections, committedHead } = await evaluateAndMaybeCommitTransientProposal(proposalId);
+      if (!committedHead) {
+        res.status(409).json({
+          doc_path: docPath,
+          proposal_id: proposalId,
+          status: "draft",
+          outcome: "blocked",
+          blocked_sections: sections.filter((s) => s.blocked),
+        });
+        return;
       }
-
-      await gitCommitStructuralChange(`delete section "${headingPath.join(" > ")}" from ${docPath}`);
 
       if (onWsEvent) {
         onWsEvent({
@@ -936,6 +1056,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         doc_path: docPath,
         heading_path: headingPath,
         deleted: true,
+        committed_head: committedHead,
+        evaluation,
       });
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
@@ -974,24 +1096,31 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       const contentRoot = getContentRoot();
-      const overlayLayer = new OverlayContentLayer(contentRoot, contentRoot);
+      const { id: proposalId, contentRoot: proposalContentRoot } = await createTransientProposal(
+        { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
+        `Move section "${headingPath.join(" > ")}" in ${docPath}`,
+      );
+      const overlayLayer = new OverlayContentLayer(proposalContentRoot, contentRoot);
 
       // Determine target level
-      const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
-      const resolvedEntry = skeleton.resolve(headingPath);
+      const { level: resolvedLevel } = await new ContentLayer(contentRoot).resolveSectionPathWithLevel(docPath, headingPath);
       const targetLevel = new_parent_path.length === 0
-        ? resolvedEntry.level
+        ? resolvedLevel
         : new_parent_path.length + 1;
 
-      const { removed } = await overlayLayer.moveSection(docPath, headingPath, new_parent_path, targetLevel);
-
-      // Clean up old files
-      for (const entry of removed) {
-        await rm(entry.absolutePath, { force: true });
-        await rm(entry.absolutePath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
+      await overlayLayer.moveSection(docPath, headingPath, new_parent_path, targetLevel);
+      await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: headingPath }]);
+      const { evaluation, sections, committedHead } = await evaluateAndMaybeCommitTransientProposal(proposalId);
+      if (!committedHead) {
+        res.status(409).json({
+          doc_path: docPath,
+          proposal_id: proposalId,
+          status: "draft",
+          outcome: "blocked",
+          blocked_sections: sections.filter((s) => s.blocked),
+        });
+        return;
       }
-
-      await gitCommitStructuralChange(`move section "${headingPath.join(" > ")}" in ${docPath}`);
 
       if (onWsEvent) {
         onWsEvent({
@@ -1005,6 +1134,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         heading_path: headingPath,
         new_parent_path,
         moved: true,
+        committed_head: committedHead,
+        evaluation,
       });
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
@@ -1042,19 +1173,26 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       const contentRoot = getContentRoot();
-      const overlayLayer = new OverlayContentLayer(contentRoot, contentRoot);
+      const { id: proposalId, contentRoot: proposalContentRoot } = await createTransientProposal(
+        { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
+        `Rename section "${headingPath.join(" > ")}" to "${new_heading}" in ${docPath}`,
+      );
+      const overlayLayer = new OverlayContentLayer(proposalContentRoot, contentRoot);
 
-      const replaceResult = await overlayLayer.renameSection(docPath, headingPath, new_heading);
-
-      // Clean up old files
-      for (const removed of replaceResult.removed) {
-        if (removed.absolutePath !== replaceResult.added[0]?.absolutePath) {
-          await rm(removed.absolutePath, { force: true });
-          await rm(removed.absolutePath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
-        }
+      await overlayLayer.renameSection(docPath, headingPath, new_heading);
+      const newHeadingPath = [...headingPath.slice(0, -1), new_heading];
+      await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: newHeadingPath }]);
+      const { evaluation, sections, committedHead } = await evaluateAndMaybeCommitTransientProposal(proposalId);
+      if (!committedHead) {
+        res.status(409).json({
+          doc_path: docPath,
+          proposal_id: proposalId,
+          status: "draft",
+          outcome: "blocked",
+          blocked_sections: sections.filter((s) => s.blocked),
+        });
+        return;
       }
-
-      await gitCommitStructuralChange(`rename section "${headingPath.join(" > ")}" to "${new_heading}" in ${docPath}`);
 
       if (onWsEvent) {
         onWsEvent({
@@ -1063,12 +1201,13 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         } as any);
       }
 
-      const newHeadingPath = [...headingPath.slice(0, -1), new_heading];
       res.status(200).json({
         doc_path: docPath,
         old_heading_path: headingPath,
         new_heading_path: newHeadingPath,
         renamed: true,
+        committed_head: committedHead,
+        evaluation,
       });
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
@@ -1102,7 +1241,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           // Batch pre-fetch per document
           const [dirtyFileSet, gitCommitInfo, canonicalPaths] = await Promise.all([
             SectionPresence.prefetchDirtyFiles(docPath),
-            readDocSectionCommitInfo(docPath, headingPaths.length),
+            readDocSectionCommitInfo(docPath),
             resolveAllSectionPaths(getContentRoot(), docPath),
           ]);
 
@@ -1372,15 +1511,26 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   // GET /api/proposals/:id — Read proposal (with live involvement re-evaluation)
   router.get("/proposals/:id", async (req, res, next) => {
     try {
-      const proposal = await readProposal(req.params.id);
+      const { proposal, sectionContent } = await readProposalWithContent(req.params.id);
+
+      // Merge section content into each section object
+      const sectionsWithContent = proposal.sections.map(s => ({
+        ...s,
+        content: sectionContent.get(SectionRef.fromTarget(s).globalKey) ?? null,
+      }));
 
       // Enrich pending/committing proposals with live human-involvement evaluation
       let dto: ProposalDTO;
       if (proposal.status === "committed" || proposal.status === "withdrawn") {
-        dto = proposal;
+        dto = { ...proposal, sections: sectionsWithContent };
       } else {
         const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal.id);
-        dto = { ...proposal, humanInvolvement_evaluation: evaluation, sections };
+        // Merge content into the re-evaluated sections too
+        const enrichedSections = sections.map(s => ({
+          ...s,
+          content: sectionContent.get(SectionRef.fromTarget(s).globalKey) ?? null,
+        }));
+        dto = { ...proposal, humanInvolvement_evaluation: evaluation, sections: enrichedSections };
       }
 
       const response: ReadProposalResponse = { proposal: dto };
@@ -1552,14 +1702,12 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
         const committedHead = await commitProposalToCanonical(proposal.id, scores);
 
-        const source = "human_publish" as const;
         if (onWsEvent) {
           onWsEvent({
             type: "content:committed",
             doc_path: proposal.sections[0]?.doc_path ?? "",
             sections: proposal.sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
             commit_sha: committedHead,
-            source,
             writer_id: writer.id,
             writer_display_name: writer.displayName,
             writer_type: writer.type,
@@ -1603,7 +1751,6 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
             doc_path: sections[0]?.doc_path ?? "",
             sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
             commit_sha: committedHead,
-            source: "agent_proposal",
             writer_id: writer.id,
             writer_display_name: writer.displayName,
             writer_type: writer.type,
@@ -1718,7 +1865,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
               headingPath = [];
             } else {
               try {
-                const entry = session.fragments.skeleton.resolveByFileId(fileId);
+                const entry = session.fragments.skeleton.expectByFileId(fileId);
                 headingPath = entry.headingPath;
               } catch {
                 // Fragment references a section no longer in skeleton (e.g. deleted)
@@ -1887,9 +2034,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       const importId = req.params.id;
-      const { files } = req.body ?? {};
-      if (!Array.isArray(files) || files.length === 0) {
-        sendApiError(res, 400, "files (non-empty array) is required.");
+      const boundary = parseMultipartBoundary(req.headers["content-type"]);
+      if (!boundary) {
+        sendApiError(res, 400, "multipart/form-data with one or more files parts is required.");
         return;
       }
 
@@ -1903,19 +2050,30 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         return;
       }
 
+      const files = parseMultipartUploadFiles(await readRequestBody(req), boundary);
+      if (files.length === 0) {
+        sendApiError(res, 400, "At least one uploaded Markdown file is required.");
+        return;
+      }
+
       let uploaded = 0;
       for (const f of files) {
-        if (typeof f.name !== "string" || typeof f.content !== "string") {
-          sendApiError(res, 400, "Each file must have name (string) and content (string).");
-          return;
-        }
         if (!f.name.toLowerCase().endsWith(".md")) {
           sendApiError(res, 400, `Only .md files are accepted. Got: ${f.name}`);
           return;
         }
-        const filePath = path.join(stagingPath, f.name);
+        const relativePath = f.name.replace(/\\/g, "/").replace(/^\/+/, "");
+        const pathSegments = relativePath.split("/");
+        if (
+          relativePath.length === 0 ||
+          pathSegments.some((segment) => segment.length === 0 || segment === "." || segment === "..")
+        ) {
+          sendApiError(res, 400, `Invalid file path: ${f.name}`);
+          return;
+        }
+        const filePath = path.resolve(stagingPath, ...pathSegments);
         // Prevent path traversal
-        if (!filePath.startsWith(stagingPath)) {
+        if (filePath !== stagingPath && !filePath.startsWith(stagingPath + path.sep)) {
           sendApiError(res, 400, `Invalid file path: ${f.name}`);
           return;
         }
@@ -2010,115 +2168,50 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         description.trim(),
       );
 
-      // Human imports commit directly — the human IS the involvement.
-      // Agent imports go through evaluation (may block on human-involvement thresholds).
-      if (writer.type === "human") {
-        const freshProposal = await readProposal(importProposalId);
-        const scores: SectionScoreSnapshot = {};
-        for (const s of freshProposal.sections) {
-          scores[SectionRef.fromTarget(s).globalKey] = 0;
-        }
-
-        const importDiagnostics: string[] = [];
-        const committedHead = await commitProposalToCanonical(importProposalId, scores, importDiagnostics);
-        await deleteStagingFolder(importId);
-
-        if (onWsEvent && freshProposal.sections.length > 0) {
-          onWsEvent({
-            type: "content:committed",
-            doc_path: freshProposal.sections[0].doc_path,
-            sections: freshProposal.sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
-            commit_sha: committedHead,
-            source: "agent_proposal",
-            writer_id: writer.id,
-            writer_display_name: writer.displayName,
-            writer_type: writer.type,
-            contributor_ids: [writer.id],
-            seconds_ago: 0,
-          });
-        }
-
-        res.status(201).json({
-          proposal_id: importProposalId,
-          status: "committed",
-          outcome: "accepted",
-          committed_head: committedHead,
-          evaluation: {
-            all_sections_accepted: true,
-            aggregate_impact: 0,
-            aggregate_threshold: 0,
-            blocked_sections: [],
-            passed_sections: [],
-          },
-          sections: freshProposal.sections.map((s) => ({
-            ...s,
-            humanInvolvement_score: 0,
-            blocked: false,
-          })),
-          diagnostics: importDiagnostics,
-        });
-      } else {
-        // Agent imports: evaluate human involvement
-        const { evaluation, sections: evalSections } = await evaluateProposalHumanInvolvement(importProposalId);
-
-        if (evaluation.all_sections_accepted) {
-          const scores: SectionScoreSnapshot = {};
-          for (const s of evalSections) {
-            scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
-          }
-
-          const agentImportDiagnostics: string[] = [];
-          const committedHead = await commitProposalToCanonical(importProposalId, scores, agentImportDiagnostics);
-          await deleteStagingFolder(importId);
-
-          if (onWsEvent) {
-            onWsEvent({
-              type: "content:committed",
-              doc_path: evalSections[0]?.doc_path ?? "",
-              sections: evalSections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
-              commit_sha: committedHead,
-              source: "agent_proposal",
-              writer_id: writer.id,
-              writer_display_name: writer.displayName,
-              writer_type: writer.type,
-              contributor_ids: [writer.id],
-              seconds_ago: 0,
-            });
-          }
-
-          res.status(201).json({
-            proposal_id: importProposalId,
-            status: "committed",
-            outcome: "accepted",
-            committed_head: committedHead,
-            evaluation,
-            sections: evalSections,
-            diagnostics: agentImportDiagnostics,
-          });
-        } else {
-          await deleteStagingFolder(importId);
-
-          if (onWsEvent && evalSections.length > 0) {
-            onWsEvent({
-              type: "proposal:draft",
-              proposal_id: importProposalId,
-              doc_path: evalSections[0].doc_path,
-              heading_paths: evalSections.map((s) => s.heading_path),
-              writer_id: writer.id,
-              writer_display_name: writer.displayName,
-              intent: description.trim(),
-            });
-          }
-
-          res.status(201).json({
-            proposal_id: importProposalId,
-            status: "draft",
-            outcome: "blocked",
-            evaluation,
-            sections: evalSections,
-          });
-        }
+      // Human imports commit directly — human involvement is always 0.
+      const freshProposal = await readProposal(importProposalId);
+      const scores: SectionScoreSnapshot = {};
+      for (const s of freshProposal.sections) {
+        scores[SectionRef.fromTarget(s).globalKey] = 0;
       }
+
+      const importDiagnostics: string[] = [];
+      const committedHead = await commitProposalToCanonical(importProposalId, scores, importDiagnostics);
+      await deleteStagingFolder(importId);
+
+      if (onWsEvent && freshProposal.sections.length > 0) {
+        onWsEvent({
+          type: "content:committed",
+          doc_path: freshProposal.sections[0].doc_path,
+          sections: freshProposal.sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+          commit_sha: committedHead,
+          writer_id: writer.id,
+          writer_display_name: writer.displayName,
+          writer_type: writer.type,
+          contributor_ids: [writer.id],
+          seconds_ago: 0,
+        });
+      }
+
+      res.status(201).json({
+        proposal_id: importProposalId,
+        status: "committed",
+        outcome: "accepted",
+        committed_head: committedHead,
+        evaluation: {
+          all_sections_accepted: true,
+          aggregate_impact: 0,
+          aggregate_threshold: 0,
+          blocked_sections: [],
+          passed_sections: [],
+        },
+        sections: freshProposal.sections.map((s) => ({
+          ...s,
+          humanInvolvement_score: 0,
+          blocked: false,
+        })),
+        diagnostics: importDiagnostics,
+      });
     } catch (error) {
       next(error);
     }
@@ -2553,6 +2646,25 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 // Isolated in a separate function so that adding a new specific route
 // inside createApiRouter() can never accidentally end up after these.
 
+async function evaluateAndMaybeCommitDocumentProposal(proposalId: string): Promise<{
+  evaluation: Awaited<ReturnType<typeof evaluateProposalHumanInvolvement>>["evaluation"];
+  sections: Awaited<ReturnType<typeof evaluateProposalHumanInvolvement>>["sections"];
+  committedHead?: string;
+}> {
+  const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
+  if (!evaluation.all_sections_accepted) {
+    return { evaluation, sections };
+  }
+
+  const scores: SectionScoreSnapshot = {};
+  for (const s of sections) {
+    scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
+  }
+
+  const committedHead = await commitProposalToCanonical(proposalId, scores);
+  return { evaluation, sections, committedHead };
+}
+
 function registerDocumentCatchAllRoutes(
   router: express.Router,
   onWsEvent: ((event: WsServerEvent) => void) | undefined,
@@ -2566,11 +2678,11 @@ function registerDocumentCatchAllRoutes(
       const assembled = await readAssembledDocument(docPath);
 
       // Compute per-section metadata
-      const structure = await readDocumentStructure(docPath).catch(() => []);
+      const structure = await readDocumentStructure(docPath);
       const headingPaths = flattenStructureToHeadingPaths(structure);
 
       const docOverlayRoot = getSessionDocsContentRoot();
-      const docOverlay = new ContentLayer(docOverlayRoot, new ContentLayer(getContentRoot()));
+      const docOverlay = new OverlayContentLayer(docOverlayRoot, getContentRoot());
       const bulkContent = await docOverlay.readAllSections(docPath);
       const involvementMeta = await buildSectionInvolvementMeta(docPath, headingPaths, bulkContent);
 
@@ -2629,28 +2741,29 @@ function registerDocumentCatchAllRoutes(
         // File does not exist — proceed
       }
 
-      await DocumentSkeleton.createEmpty(docPath, contentRoot);
-
-      const canonical = new ContentLayer(contentRoot);
-      await canonical.writeSection(new SectionRef(docPath, []), "");
-
-      const dataRoot = getDataRoot();
-      await gitExec(["add", getContentGitPrefix() + "/"], dataRoot);
-      await gitExec(
-        [
-          "-c", "user.name=Knowledge Store",
-          "-c", "user.email=system@knowledge-store.local",
-          "commit",
-          "-m", `create document: ${docPath}`,
-          "--allow-empty",
-        ],
-        dataRoot,
+      const { id: proposalId, contentRoot: proposalContentRoot } = await createTransientProposal(
+        { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
+        `Create document: ${docPath}`,
       );
+      const overlayLayer = new OverlayContentLayer(proposalContentRoot, contentRoot);
+      await overlayLayer.writeSection(new SectionRef(docPath, []), "");
+      await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: [] }]);
+      const { sections, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId);
+      if (!committedHead) {
+        res.status(409).json({
+          doc_path: docPath,
+          proposal_id: proposalId,
+          status: "draft",
+          outcome: "blocked",
+          blocked_sections: sections.filter((s) => s.blocked),
+        });
+        return;
+      }
 
       if (onWsEvent) {
         onWsEvent({ type: "catalog:changed" });
       }
-      res.status(201).json({ doc_path: docPath });
+      res.status(201).json({ doc_path: docPath, committed_head: committedHead });
     } catch (error) {
       if (error instanceof InvalidDocPathError) {
         sendApiError(res, 400, error);
@@ -2711,7 +2824,7 @@ function registerDocumentCatchAllRoutes(
         { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
         intent,
       );
-      const proposalContentLayer = new ContentLayer(patchContentRoot, new ContentLayer(getContentRoot()));
+      const proposalContentLayer = new OverlayContentLayer(patchContentRoot, getContentRoot());
       const patchTargets = await proposalContentLayer.importMarkdownDocument(docPath, patchedContent);
       await updateProposalSections(patchProposalId, patchTargets);
 
@@ -2731,7 +2844,6 @@ function registerDocumentCatchAllRoutes(
             doc_path: docPath,
             sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
             commit_sha: committedHead,
-            source: "agent_proposal",
             writer_id: writer.id,
             writer_display_name: writer.displayName,
             writer_type: writer.type,
@@ -2781,15 +2893,6 @@ function registerDocumentCatchAllRoutes(
         return;
       }
 
-      const pendingProposals = await listProposals("draft");
-      const conflicting = pendingProposals.filter((p) =>
-        p.sections.some((s) => s.doc_path === docPath),
-      );
-      if (conflicting.length > 0) {
-        sendApiError(res, 409, `Cannot delete document referenced by pending proposals: ${conflicting.map((p) => p.id).join(", ")}`);
-        return;
-      }
-
       const sessionDocsContentRoot = getSessionDocsContentRoot();
       const sessionDocPath = resolveDocPathUnderContent(sessionDocsContentRoot, docPath);
       let hasDirtySessionFiles = false;
@@ -2802,29 +2905,32 @@ function registerDocumentCatchAllRoutes(
         return;
       }
 
-      await rm(resolvedPath, { force: true });
-      await rm(resolvedPath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
-
-      await rm(sessionDocPath, { force: true });
-      await rm(sessionDocPath + SECTIONS_DIR_SUFFIX, { recursive: true, force: true });
-
-      const dataRoot = getDataRoot();
-      await gitExec(["add", getContentGitPrefix() + "/"], dataRoot);
-      await gitExec(
-        [
-          "-c", "user.name=Knowledge Store",
-          "-c", "user.email=system@knowledge-store.local",
-          "commit",
-          "-m", `delete document: ${docPath}`,
-          "--allow-empty",
-        ],
-        dataRoot,
+      const canonicalRoot = getContentRoot();
+      const { id: proposalId, contentRoot: proposalContentRoot } = await createTransientProposal(
+        { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
+        `Delete document: ${docPath}`,
       );
+      const headingPaths = await new OverlayContentLayer(proposalContentRoot, canonicalRoot).tombstoneDocument(docPath);
+      await updateProposalSections(
+        proposalId,
+        headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp })),
+      );
+      const { sections, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId);
+      if (!committedHead) {
+        res.status(409).json({
+          doc_path: docPath,
+          proposal_id: proposalId,
+          status: "draft",
+          outcome: "blocked",
+          blocked_sections: sections.filter((s) => s.blocked),
+        });
+        return;
+      }
 
       if (onWsEvent) {
         onWsEvent({ type: "catalog:changed" });
       }
-      res.status(200).json({ doc_path: docPath, deleted: true });
+      res.status(200).json({ doc_path: docPath, deleted: true, committed_head: committedHead });
     } catch (error) {
       if (error instanceof InvalidDocPathError) {
         sendApiError(res, 400, error);

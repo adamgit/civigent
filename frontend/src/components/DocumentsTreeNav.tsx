@@ -105,22 +105,6 @@ function getDisplayName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-function readFilesAsText(fileList: FileList): Promise<{ name: string; content: string }[]> {
-  const promises: Promise<{ name: string; content: string }>[] = [];
-  for (let i = 0; i < fileList.length; i++) {
-    const file = fileList[i];
-    promises.push(
-      new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve({ name: file.name, content: reader.result as string });
-        reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
-        reader.readAsText(file);
-      }),
-    );
-  }
-  return Promise.all(promises);
-}
-
 interface BlockedImportInfo {
   proposalId: string;
   blockedSections: EvaluatedSection[];
@@ -219,7 +203,10 @@ export function DocumentsTreeNav({
     setImportingFolder(pendingFolderRef.current);
 
     try {
-      const files = await readFilesAsText(input.files);
+      const files = Array.from(input.files).filter((file) => file.name.toLowerCase().endsWith(".md"));
+      if (files.length === 0) {
+        throw new Error("No .md files selected.");
+      }
       // Create staging folder, upload files, navigate to ImportsPage
       const staging = await apiClient.createImport();
       await apiClient.uploadImportFiles(staging.import_id, files);

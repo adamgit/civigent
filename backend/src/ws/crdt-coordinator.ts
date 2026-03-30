@@ -67,6 +67,14 @@ import {
   encodeModeTransitionResult,
   decodeMessage,
   parseCrdtUrl,
+  WS_CLOSE_DOCUMENT_RESTORED,
+  WS_CLOSE_SUPERSEDED,
+  WS_CLOSE_SESSION_ENDED,
+  WS_CLOSE_IDLE_TIMEOUT,
+  WS_CLOSE_INVALID_URL,
+  WS_CLOSE_AUTH_FAILED,
+  WS_CLOSE_AUTHORIZATION_FAILED,
+  WS_CLOSE_REASON_MAX_LENGTH,
 } from "./crdt-protocol.js";
 import {
   CrdtSocketState,
@@ -109,6 +117,18 @@ function removeParticipant(clientInstanceId: ClientInstanceId): void {
   participants.delete(clientInstanceId);
 }
 
+/**
+ * Guard-and-join helper: joins a session for a socket if not already joined,
+ * then delivers any pending restore notification.
+ */
+function joinAndNotify(session: DocSession, socket: WebSocket, st: CrdtSocketState): void {
+  if (st.joined) return;
+  joinSession(session, (msg) => socket.send(msg), (event) => { if (onWsEvent) onWsEvent(event); });
+  st.joined = true;
+  const notification = getPendingRestoreNotification(st.docPath, st.writerId);
+  if (notification) sendToSocket(socket, encodeRestoreNotification(notification));
+}
+
 function addSocket(docPath: string, socket: WebSocket): void {
   let sockets = docSockets.get(docPath);
   if (!sockets) {
@@ -135,7 +155,7 @@ function removeSocket(docPath: string, socket: WebSocket): void {
 export function broadcastRestoreInvalidation(docPath: string): void {
   for (const socket of docSockets.get(docPath) ?? []) {
     if (socket.readyState === WebSocket.OPEN) {
-      socket.close(4022, "document restored");
+      socket.close(WS_CLOSE_DOCUMENT_RESTORED, "document restored");
     }
   }
 }
@@ -175,7 +195,7 @@ async function finalizeSessionEnd(state: CrdtSocketState, result: Awaited<Return
   // Build contributors list: the disconnecting editor is primary; others from session.
   const primaryWriter: WriterIdentity = {
     id: state.writerId,
-    type: "human" as const,
+    type: state.writerType,
     displayName: state.writerDisplayName,
   };
   const contributors: WriterIdentity[] = [
@@ -198,10 +218,9 @@ async function finalizeSessionEnd(state: CrdtSocketState, result: Awaited<Return
         doc_path: state.docPath,
         sections: commitResult.committedSections,
         commit_sha: commitResult.commitSha,
-        source: "human_auto_commit",
         writer_id: contributors[0].id,
         writer_display_name: contributors[0].displayName,
-        writer_type: "human",
+        writer_type: contributors[0].type,
         contributor_ids: contributors.map((c) => c.id),
         seconds_ago: 0,
       });
@@ -304,15 +323,10 @@ async function applyModeTransition(
     if (session) {
       addObserverHolder(session, state.writerId, {
         id: state.writerId,
-        type: "human" as const,
+        type: state.writerType,
         displayName: state.writerDisplayName,
       }, state.socketId);
-      if (!state.joined) {
-        joinSession(session, (msg) => socket.send(msg), (event) => { if (onWsEvent) onWsEvent(event); });
-        state.joined = true;
-        const notification = getPendingRestoreNotification(state.docPath, state.writerId);
-        if (notification) sendToSocket(socket, encodeRestoreNotification(notification));
-      }
+      joinAndNotify(session, socket, state);
       state.docSessionId = session.docSessionId;
       state.attachmentState = "attached_to_session";
     } else {
@@ -349,7 +363,7 @@ async function applyModeTransition(
       if (existingSocket === socket) continue;
       const st = socketState.get(existingSocket);
       if (st?.writerId === state.writerId && st?.socketRole === "editor" && existingSocket.readyState === WebSocket.OPEN) {
-        existingSocket.close(4023, "superseded_by_new_tab");
+        existingSocket.close(WS_CLOSE_SUPERSEDED, "superseded_by_new_tab");
       }
     }
     const baseHead = await getHeadSha(getDataRoot());
@@ -357,19 +371,14 @@ async function applyModeTransition(
       state.docPath,
       state.writerId,
       baseHead,
-      { id: state.writerId, type: "human", displayName: state.writerDisplayName },
+      { id: state.writerId, type: state.writerType, displayName: state.writerDisplayName },
       state.socketId,
     );
     state.socketRole = "editor";
     state.docSessionId = session.docSessionId;
     state.attachmentState = "attached_to_session";
 
-    if (!state.joined) {
-      joinSession(session, (msg) => socket.send(msg), (event) => { if (onWsEvent) onWsEvent(event); });
-      state.joined = true;
-      const notification = getPendingRestoreNotification(state.docPath, state.writerId);
-      if (notification) sendToSocket(socket, encodeRestoreNotification(notification));
-    }
+    joinAndNotify(session, socket, state);
 
     // First editor in session: attach waiting observers.
     if (countEditorSockets(session) === 1) {
@@ -379,15 +388,12 @@ async function applyModeTransition(
         if (!st || st.socketRole !== "observer" || st.joined || client.readyState !== WebSocket.OPEN) continue;
         addObserverHolder(session, st.writerId, {
           id: st.writerId,
-          type: "human" as const,
+          type: st.writerType,
           displayName: st.writerDisplayName,
         }, st.socketId);
         st.docSessionId = session.docSessionId;
         st.attachmentState = "attached_to_session";
-        joinSession(session, (msg) => client.send(msg), (event) => { if (onWsEvent) onWsEvent(event); });
-        st.joined = true;
-        const obsNotification = getPendingRestoreNotification(state.docPath, st.writerId);
-        if (obsNotification) sendToSocket(client, encodeRestoreNotification(obsNotification));
+        joinAndNotify(session, client, st);
         updateParticipant(st.clientInstanceId, {
           attachmentState: "attached_to_session",
           docSessionId: session.docSessionId,
@@ -494,7 +500,7 @@ async function handleMessage(
       const focusedPath = session!.presenceManager.getAll().get(state.writerId);
       if (focusedPath) {
         try {
-          const entry = session!.fragments.skeleton.resolve(focusedPath);
+          const entry = session!.fragments.skeleton.expect(focusedPath);
           const fragmentKey = FragmentStore.fragmentKeyFor(entry);
           session!.fragments.markDirty(fragmentKey);
           const isNewlyDirty = markFragmentDirty(state.docPath, state.writerId, fragmentKey);
@@ -543,15 +549,10 @@ async function handleMessage(
 
       // Normalize the LEFT (old) fragment on focus change
       if (oldFocus) {
-        let oldEntry = null;
-        try { oldEntry = session!.fragments.skeleton.resolve(oldFocus); } catch (e) {
-          if (!(e instanceof Error) || !e.message.startsWith("Skeleton integrity error")) throw e;
-        }
+        const oldEntry = session!.fragments.skeleton.find(oldFocus);
         if (oldEntry) {
           const oldKey = FragmentStore.fragmentKeyFor(oldEntry);
-          normalizeFragment(state.docPath, oldKey).catch((err) => {
-            throw err instanceof Error ? err : new Error(String(err));
-          });
+          await normalizeFragment(state.docPath, oldKey);
         }
       }
 
@@ -562,7 +563,7 @@ async function handleMessage(
             type: "presence:done",
             writer_id: state.writerId,
             writer_display_name: state.writerDisplayName,
-            writer_type: "human",
+            writer_type: state.writerType,
             doc_path: state.docPath,
             heading_path: oldFocus,
           });
@@ -572,7 +573,7 @@ async function handleMessage(
           doc_path: state.docPath,
           writer_id: state.writerId,
           writer_display_name: state.writerDisplayName,
-          writer_type: "human",
+          writer_type: state.writerType,
           heading_path: headingPath,
         });
       }
@@ -582,7 +583,7 @@ async function handleMessage(
       updateEditPulse(state.docPath, state.writerId);
       addContributor(state.docPath, state.writerId, {
         id: state.writerId,
-        type: "human" as const,
+        type: state.writerType,
         displayName: state.writerDisplayName,
       });
       break;
@@ -681,9 +682,9 @@ setIdleTimeoutHandler((docPath: string) => {
     if (client.readyState === WebSocket.OPEN) {
       const st = socketState.get(client);
       if (st?.socketRole === "observer") {
-        client.close(4021, "session_ended");
+        client.close(WS_CLOSE_SESSION_ENDED, "session_ended");
       } else {
-        client.close(4020, "idle_timeout");
+        client.close(WS_CLOSE_IDLE_TIMEOUT, "idle_timeout");
       }
     }
   }
@@ -698,7 +699,7 @@ function closeObserversForDoc(docPath: string, code: number, reason: string): vo
     if (client.readyState !== WebSocket.OPEN) continue;
     const st = socketState.get(client);
     if (st?.socketRole === "observer") {
-      client.close(code, reason.slice(0, 123));
+      client.close(code, reason.slice(0, WS_CLOSE_REASON_MAX_LENGTH));
     }
   }
 }
@@ -721,9 +722,7 @@ export function createCrdtWsServer(): CrdtWsServer {
     socket.on("message", (raw) => {
       if (checkTokenExpired(socket, state)) return;
       const data = raw instanceof Buffer ? raw : Buffer.from(raw as ArrayBuffer);
-      handleMessage(socket, state, data).catch((err) => {
-        throw err instanceof Error ? err : new Error(String(err));
-      });
+      handleMessage(socket, state, data);
     });
 
     socket.on("close", () => {
@@ -734,8 +733,7 @@ export function createCrdtWsServer(): CrdtWsServer {
         removeObserverHolder(state.docPath, state.writerId, state.socketId);
       } else if (state.socketRole === "editor") {
         releaseDocSession(state.docPath, state.writerId, state.socketId)
-          .then((result) => finalizeSessionEnd(state, result))
-          .catch((err) => { throw err; });
+          .then((result) => finalizeSessionEnd(state, result));
       }
 
       // editingPresence: writer disconnected
@@ -746,7 +744,7 @@ export function createCrdtWsServer(): CrdtWsServer {
           type: "presence:done",
           writer_id: state.writerId,
           writer_display_name: state.writerDisplayName,
-          writer_type: "human",
+          writer_type: state.writerType,
           doc_path: state.docPath,
           heading_path: focusedPath ?? [],
         });
@@ -758,13 +756,13 @@ export function createCrdtWsServer(): CrdtWsServer {
     async handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer) {
       const route = parseCrdtUrl(request.url ?? "", request.headers.host ?? "localhost");
       if (!route) {
-        rejectUpgrade(wss, request, socket, head, 4010, `invalid_url: failed to parse ${request.url}`);
+        rejectUpgrade(wss, request, socket, head, WS_CLOSE_INVALID_URL, `invalid_url: failed to parse ${request.url}`);
         return;
       }
 
       const resolved = resolveWriterWithExpiry(request.headers);
       if (!resolved || resolved.writer.type === "agent") {
-        rejectUpgrade(wss, request, socket, head, 4011,
+        rejectUpgrade(wss, request, socket, head, WS_CLOSE_AUTH_FAILED,
           `auth_failed: ${!resolved ? "no credentials" : "agents cannot use CRDT"}`);
         return;
       }
@@ -773,7 +771,7 @@ export function createCrdtWsServer(): CrdtWsServer {
 
       const canRead = await checkDocPermission(writer, route.docPath, "read");
       if (!canRead) {
-        rejectUpgrade(wss, request, socket, head, 4013,
+        rejectUpgrade(wss, request, socket, head, WS_CLOSE_AUTHORIZATION_FAILED,
           "authorization_failed: you do not have read permission for this document");
         return;
       }
@@ -786,6 +784,7 @@ export function createCrdtWsServer(): CrdtWsServer {
       const state: CrdtSocketState = {
         clientInstanceId,
         writerId: writer.id,
+        writerType: writer.type,
         writerDisplayName: writer.displayName,
         docPath: route.docPath,
         socketRole: "observer",

@@ -116,7 +116,7 @@ export function AdminPage() {
 
       <h2>Agent Management</h2>
       <p><Link to="/admin/permissions">Manage permissions</Link> — roles, defaults, and per-document access control.</p>
-      <p><Link to="/admin/agents">Manage pre-authenticated agents</Link> — add, remove, and view agent keys.</p>
+      <p><Link to="/admin/agents-auth">Manage pre-authenticated agents</Link> — add, remove, and view agent keys.</p>
 
       <h2>Monitoring</h2>
       <p><Link to="/admin/agent-mcp-logs">Agent MCP Logs</Link> — per-session tool call history and metadata.</p>

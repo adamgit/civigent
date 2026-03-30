@@ -42,10 +42,7 @@ export class SectionRecency {
     // 1. In-memory fragment activity (Y.Doc update timestamp)
     const session = lookupDocSession(ref.docPath);
     if (session) {
-      let entry = null;
-      try { entry = session.fragments.skeleton.resolve(ref.headingPath); } catch (e) {
-        if (!(e instanceof Error) || !e.message.startsWith("Skeleton integrity error")) throw e;
-      }
+      const entry = session.fragments.skeleton.find(ref.headingPath);
       if (entry) {
         const fk = fragmentKeyFromSectionFile(entry.sectionFile, ref.isRoot);
         const fragmentTime = session.fragmentLastActivity?.get(fk);
@@ -60,9 +57,9 @@ export class SectionRecency {
       return 0;
     }
 
-    // 3. Git commit history
+    // 3. Git commit history (only human commits count)
     const commitInfo = commitByHeading.get(ref.key);
-    if (commitInfo) {
+    if (commitInfo && commitInfo.writerType !== "agent") {
       return Math.max(0, (now - commitInfo.timestampMs) / 1000);
     }
 

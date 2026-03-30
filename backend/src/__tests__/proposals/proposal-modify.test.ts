@@ -8,8 +8,11 @@ describe("PUT /api/proposals/:id — modify proposal", () => {
   let ctx: TestServerContext;
   let pendingProposalId: string;
   let committedProposalId: string;
+  let prevAuthMode: string | undefined;
 
   beforeAll(async () => {
+    prevAuthMode = process.env.KS_AUTH_MODE;
+    process.env.KS_AUTH_MODE = "oidc";
     ctx = await createTestServer();
     await createSampleDocument(ctx.dataCtx.rootDir);
 
@@ -31,7 +34,7 @@ describe("PUT /api/proposals/:id — modify proposal", () => {
     expect(pendingRes.body.status).toBe("draft");
     pendingProposalId = pendingRes.body.proposal_id;
 
-    // Create an agent proposal that auto-commits
+    // Create an agent proposal and commit it explicitly
     const committedRes = await request(ctx.app)
       .post("/api/proposals")
       .set("Authorization", ctx.agentToken)
@@ -46,12 +49,18 @@ describe("PUT /api/proposals/:id — modify proposal", () => {
         ],
       });
 
-    expect(committedRes.body.status).toBe("committed");
     committedProposalId = committedRes.body.proposal_id;
+
+    const commitRes = await request(ctx.app)
+      .post(`/api/proposals/${committedProposalId}/commit`)
+      .set("Authorization", ctx.agentToken);
+    expect(commitRes.body.status).toBe("committed");
   });
 
   afterAll(async () => {
     await ctx.cleanup();
+    if (prevAuthMode === undefined) delete process.env.KS_AUTH_MODE;
+    else process.env.KS_AUTH_MODE = prevAuthMode;
   });
 
   it("successfully modifies a pending proposal", async () => {

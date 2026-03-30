@@ -118,7 +118,7 @@ describe("AppLayout WebSocket", () => {
       capturedWsHandler?.({
         type: "content:committed",
         doc_path: "ops/strategy.md",
-        source: "human_publish",
+        writer_type: "human",
         writer_display_name: "User",
       } as WsServerEvent);
     });
@@ -146,7 +146,7 @@ describe("AppLayout WebSocket", () => {
       capturedWsHandler?.({
         type: "content:committed",
         doc_path: "ops/strategy.md",
-        source: "agent_proposal",
+        writer_type: "agent",
         writer_display_name: "Agent Alpha",
       } as WsServerEvent);
     });
@@ -169,7 +169,7 @@ describe("AppLayout WebSocket", () => {
       capturedWsHandler?.({
         type: "content:committed",
         doc_path: "eng/architecture.md",
-        source: "agent_proposal",
+        writer_type: "agent",
         writer_display_name: "Bot Writer",
       } as WsServerEvent);
     });

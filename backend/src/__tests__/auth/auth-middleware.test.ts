@@ -42,7 +42,7 @@ describe("Auth middleware enforcement", () => {
   });
 
   it("returns 401 on GET /api/documents/:path/sections without auth", async () => {
-    const res = await request(ctx.app).get(`/api/documents/${SAMPLE_DOC_PATH}/sections`);
+    const res = await request(ctx.app).get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/sections`);
     expect(res.status).toBe(401);
   });
 
@@ -124,7 +124,7 @@ describe("Auth middleware enforcement", () => {
     invalidateCache();
 
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(403);
@@ -144,7 +144,7 @@ describe("Auth middleware enforcement", () => {
     invalidateCache();
 
     const res = await request(ctx.app)
-      .delete(`/api/documents/${SAMPLE_DOC_PATH}`)
+      .delete(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
       .set("Authorization", ctx.humanToken)
       .set("X-Requested-With", "fetch");
 
@@ -169,7 +169,7 @@ describe("Auth middleware enforcement", () => {
     invalidateCache();
 
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);

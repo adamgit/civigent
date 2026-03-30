@@ -70,33 +70,11 @@ export function decodeAndValidateToken(token: string): AuthTokenClaims {
     throw new InvalidAuthTokenError("Invalid token signature.");
   }
 
-  let payload: unknown;
+  let claims: AuthTokenClaims;
   try {
-    payload = JSON.parse(base64UrlDecode(payloadPart));
+    claims = JSON.parse(base64UrlDecode(payloadPart)) as AuthTokenClaims;
   } catch {
     throw new InvalidAuthTokenError("Invalid token payload.");
-  }
-
-  if (
-    typeof payload !== "object"
-    || payload == null
-    || typeof (payload as { sub?: unknown }).sub !== "string"
-    || typeof (payload as { type?: unknown }).type !== "string"
-    || typeof (payload as { display_name?: unknown }).display_name !== "string"
-    || typeof (payload as { token_use?: unknown }).token_use !== "string"
-    || typeof (payload as { exp?: unknown }).exp !== "number"
-    || typeof (payload as { iat?: unknown }).iat !== "number"
-    || typeof (payload as { jti?: unknown }).jti !== "string"
-  ) {
-    throw new InvalidAuthTokenError("Invalid token claims.");
-  }
-
-  const claims = payload as AuthTokenClaims;
-  if (claims.type !== "human" && claims.type !== "agent") {
-    throw new InvalidAuthTokenError("Invalid writer type claim.");
-  }
-  if (claims.token_use !== "access" && claims.token_use !== "refresh" && claims.token_use !== "bootstrap") {
-    throw new InvalidAuthTokenError("Invalid token use claim.");
   }
 
   const nowSeconds = Math.floor(Date.now() / 1000);

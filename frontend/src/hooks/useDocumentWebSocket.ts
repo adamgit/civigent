@@ -67,6 +67,10 @@ export interface UseDocumentWebSocketReturn {
   proposalsBySectionKey: Map<string, PendingProposalIndicator[]>;
 }
 
+function toRouteDocPath(docPath: string): string {
+  return docPath.replace(/^\/+/, "");
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────
 
 export function useDocumentWebSocket({
@@ -230,7 +234,12 @@ export function useDocumentWebSocket({
 
         setPresenceIndicators((prev) => {
           const next = new Map(prev.map((ind) => [ind.key, ind]));
-          next.set(key, { key, sectionKey, writerDisplayName: presence.writer_display_name });
+          next.set(key, {
+            key,
+            sectionKey,
+            writerDisplayName: presence.writer_display_name,
+            writerType: presence.writer_type,
+          });
           return Array.from(next.values());
         });
         return;
@@ -252,7 +261,7 @@ export function useDocumentWebSocket({
       if (event.type === "doc:renamed") {
         const renamed = event as DocRenamedEvent;
         if (normalizeDocPath(renamed.old_path) === normalizeDocPath(decodedDocPath)) {
-          navigate(`/documents/${encodeURIComponent(renamed.new_path)}`, { replace: true });
+          navigate(`/docs/${toRouteDocPath(renamed.new_path)}`, { replace: true });
         }
         return;
       }

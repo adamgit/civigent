@@ -27,13 +27,18 @@ function writerInitials(name: string): string {
   return name.slice(0, 2).toUpperCase();
 }
 
-function sourceToLabel(source: string): { variant: "green" | "yellow" | "agent" | "muted" | "accent"; label: string } {
-  switch (source) {
-    case "agent_proposal": return { variant: "agent", label: "agent-write" };
-    case "human_auto_commit": return { variant: "green", label: "auto-commit" };
-    case "human_publish": return { variant: "accent", label: "published" };
-    default: return { variant: "muted", label: source };
+function writerTypeToLabel(writerType: string | undefined): { variant: "green" | "yellow" | "agent" | "muted" | "accent"; label: string } {
+  switch (writerType) {
+    case "agent": return { variant: "agent", label: "agent" };
+    case "human": return { variant: "accent", label: "human" };
+    default: return { variant: "muted", label: writerType ?? "unknown" };
   }
+}
+
+function classifyActivityWriterType(raw: string | undefined): "human" | "agent" | "unknown" {
+  if (raw === "human") return "human";
+  if (raw === "agent") return "agent";
+  return "unknown";
 }
 
 export function DashboardPage() {
@@ -92,7 +97,7 @@ export function DashboardPage() {
     () => items.filter(
       (item) =>
         item.writer_id === currentWriterId &&
-        (item.source === "human_auto_commit" || item.source === "human_publish"),
+        item.writer_type === "human",
     ),
     [currentWriterId, items],
   );
@@ -112,7 +117,7 @@ export function DashboardPage() {
 
   const yourDocsItems = useMemo(() => {
     return items
-      .filter((item) => item.source === "agent_proposal")
+      .filter((item) => item.writer_type === "agent")
       .filter((item) => {
         for (const section of item.sections) {
           const lastEdit = lastEditByDoc.get(section.doc_path);
@@ -167,7 +172,7 @@ export function DashboardPage() {
                 </div>
               ) : (
                 displayItems.slice(0, activeLimit).map((item) => {
-                  const { variant, label } = sourceToLabel(item.source);
+                  const { variant, label } = writerTypeToLabel(item.writer_type);
                   const docPaths = [...new Set(item.sections.map((s) => s.doc_path))];
                   const sectionLabels = item.sections.map(
                     (s) => s.heading_path.join(" > ") || "(root)",
@@ -176,7 +181,8 @@ export function DashboardPage() {
                     <ActivityFeedItem
                       key={item.id}
                       writerName={item.writer_display_name}
-                      writerKind={item.source === "agent_proposal" ? "agent" : "human"}
+                      writerKind={classifyActivityWriterType(item.writer_type)}
+                      writerKindRaw={item.writer_type}
                       writerInitials={writerInitials(item.writer_display_name)}
                       headline={
                         <>

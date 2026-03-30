@@ -15,9 +15,7 @@ import path from "node:path";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import { getContentRoot, getDataRoot, getSessionDocsContentRoot, getSessionAuthorsRoot, getSessionFragmentsRoot } from "./data-root.js";
 
-import { DocumentSkeleton } from "./document-skeleton.js";
-
-import { ContentLayer } from "./content-layer.js";
+import { ContentLayer, OverlayContentLayer } from "./content-layer.js";
 import { CanonicalStore } from "./canonical-store.js";
 import type { WriterIdentity } from "../types/shared.js";
 import type { DocSession } from "../crdt/ydoc-lifecycle.js";
@@ -182,7 +180,7 @@ export async function flushDocSessionToDisk(
       const fileId = sectionFileFromFragmentKey(fk);
       let headingPath: string[] = [];
       try {
-        headingPath = session.fragments.skeleton.resolveByFileId(fileId).headingPath;
+        headingPath = session.fragments.skeleton.expectByFileId(fileId).headingPath;
       } catch { /* section may have been deleted during structural change */ }
       return {
         docPath: session.docPath,
@@ -209,16 +207,13 @@ export async function flushDocSessionToDisk(
  * If the section file exists in the session overlay, return that content
  * (it represents unflushed/uncommitted edits). Otherwise fall back to canonical.
  *
- * Delegates to a composed ContentLayer: overlay layer with canonical fallback.
- * The ContentLayer handles skeleton resolution, overlay-first body reads,
- * and canonical fallback automatically.
+ * Delegates to OverlayContentLayer for overlay-first body reads.
  */
 export async function readSectionWithOverlay(
   docPath: string,
   headingPath: string[],
 ): Promise<string> {
-  const canonical = new ContentLayer(getContentRoot());
-  const overlay = new ContentLayer(getSessionDocsContentRoot(), canonical);
+  const overlay = new OverlayContentLayer(getSessionDocsContentRoot(), getContentRoot());
   const { SectionRef } = await import("../domain/section-ref.js");
   return overlay.readSection(new SectionRef(docPath, headingPath));
 }
@@ -227,16 +222,14 @@ export async function readSectionWithOverlay(
 
 /**
  * Read ALL section contents for a document in bulk, preferring session
- * overlay over canonical. Delegates to ContentLayer.readAllSections()
- * which unions both skeletons and reads content overlay-first in parallel.
+ * overlay over canonical. Delegates to OverlayContentLayer.readAllSections().
  *
  * @returns Map keyed by headingPath.join(">>") → content string
  */
 export async function readAllSectionsWithOverlay(
   docPath: string,
 ): Promise<Map<string, string>> {
-  const canonical = new ContentLayer(getContentRoot());
-  const overlay = new ContentLayer(getSessionDocsContentRoot(), canonical);
+  const overlay = new OverlayContentLayer(getSessionDocsContentRoot(), getContentRoot());
   return overlay.readAllSections(docPath);
 }
 
@@ -285,9 +278,13 @@ export async function commitSessionFilesToCanonical(
   const skeletonErrors: Array<{ docPath: string; error: string }> = [];
 
   for (const dp of docPaths) {
-    let skeleton: DocumentSkeleton;
+    const overlayLayer = new OverlayContentLayer(sessionDocsContentRoot, contentRoot);
     try {
-      skeleton = await DocumentSkeleton.fromDisk(dp, sessionDocsContentRoot, contentRoot);
+      const headingPaths = await overlayLayer.listHeadingPaths(dp);
+      validDocPaths.push(dp);
+      for (const hp of headingPaths) {
+        committedSections.push({ doc_path: dp, heading_path: hp });
+      }
     } catch (err) {
       skeletonErrors.push({
         docPath: dp,
@@ -295,10 +292,6 @@ export async function commitSessionFilesToCanonical(
       });
       continue;
     }
-    validDocPaths.push(dp);
-    skeleton.forEachSection((_h, _l, _sf, hp) => {
-      committedSections.push({ doc_path: dp, heading_path: [...hp] });
-    });
   }
 
   if (validDocPaths.length === 0) {
@@ -306,7 +299,7 @@ export async function commitSessionFilesToCanonical(
   }
 
   const [primaryWriter, ...coWriters] = contributors;
-  let commitMessage = `human edit: ${primaryWriter.displayName}\n\nWriter: ${primaryWriter.id}`;
+  let commitMessage = `human edit: ${primaryWriter.displayName}\n\nWriter: ${primaryWriter.id}\nWriter-Type: ${primaryWriter.type}`;
   if (coWriters.length > 0) {
     commitMessage += "\n" + coWriters
       .map((w) => `Co-authored-by: ${w.displayName} <${w.email ?? `${w.id}@knowledge-store.local`}>`)

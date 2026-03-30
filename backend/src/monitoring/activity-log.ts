@@ -10,7 +10,7 @@
  *   The envelope includes agent identity, session timing, and aggregate stats.
  */
 
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile } from "node:fs/promises";
 import path from "node:path";
 import { getMonitoringRoot } from "../storage/data-root.js";
 
@@ -104,8 +104,6 @@ export class ActivityLog {
 
     const line = JSON.stringify(record) + "\n";
 
-    // Ensure monitoring directory exists (no-op if already there)
-    await mkdir(getMonitoringRoot(), { recursive: true });
     await appendFile(getActivityLogPath(), line, "utf-8");
 
     this.sessions.delete(sessionId);

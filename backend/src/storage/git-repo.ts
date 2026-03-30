@@ -4,8 +4,24 @@ import path from "node:path";
 import { access } from "node:fs/promises";
 import { getContentGitPrefix } from "./data-root.js";
 import { parseSkeletonToEntries } from "./document-skeleton.js";
+import type { AttributionWriterType } from "../types/shared.js";
 
 const execFileAsync = promisify(execFile);
+
+export async function gitStatusPorcelain(cwd: string): Promise<Array<{code: string; filePath: string}>> {
+  const { stdout } = await execFileAsync(
+    "git",
+    ["-c", `safe.directory=${cwd}`, "status", "--porcelain"],
+    { cwd },
+  );
+  const lines = stdout.split("\n").filter(line => line.length > 0);
+  return lines.map(line => {
+    if (line.length < 4 || line[2] !== " ") {
+      throw new Error(`Unexpected git status --porcelain format: "${line}"`);
+    }
+    return { code: line.slice(0, 2), filePath: line.slice(3) };
+  });
+}
 
 export async function gitExec(args: string[], cwd: string): Promise<string> {
   // Keep safe.directory scoped to this git invocation to avoid mutating global git config.
@@ -14,7 +30,7 @@ export async function gitExec(args: string[], cwd: string): Promise<string> {
     ["-c", `safe.directory=${cwd}`, ...args],
     { cwd },
   );
-  return stdout.trim();
+  return stdout.trimEnd();
 }
 
 async function hasLocalGitDir(dataRoot: string): Promise<boolean> {
@@ -39,6 +55,7 @@ export interface GitLogEntry {
   sha: string;
   author_name: string;
   author_email: string;
+  writer_type: AttributionWriterType;
   timestamp_iso: string;
   message: string;
   changed_files: string[];
@@ -58,7 +75,7 @@ export async function gitLogRecent(
   const skip = opts.offset ?? 0;
   const args = [
     "log",
-    `--format=${COMMIT_DELIM}%H%x00%an%x00%ae%x00%aI%x00%s`,
+    `--format=${COMMIT_DELIM}%H%x00%an%x00%ae%x00%(trailers:key=Writer-Type,valueonly,separator=%x2c)%x00%aI%x00%s`,
     "--name-only",
     `-n`, String(limit),
     `--skip`, String(skip),
@@ -84,13 +101,17 @@ export async function gitLogRecent(
     const lines = block.split("\n").filter(Boolean);
     if (lines.length === 0) continue;
     const parts = lines[0].split("\0");
-    if (parts.length < 5) continue;
+    if (parts.length < 6) continue;
+    const rawWriterType = (parts[3] ?? "").split(",")[0]?.trim().toLowerCase() ?? "";
+    const writerType: AttributionWriterType =
+      rawWriterType === "agent" || rawWriterType === "human" ? rawWriterType : "unknown";
     entries.push({
       sha: parts[0],
       author_name: parts[1],
       author_email: parts[2],
-      timestamp_iso: parts[3],
-      message: parts[4],
+      writer_type: writerType,
+      timestamp_iso: parts[4],
+      message: parts[5],
       changed_files: lines.slice(1),
     });
   }

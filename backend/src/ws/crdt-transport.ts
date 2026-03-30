@@ -16,13 +16,16 @@ import type {
   DocSessionId,
   EditorFocusTarget,
   RequestedMode,
+  WriterType,
 } from "../types/shared.js";
+import { WS_CLOSE_AUTH_FAILED, WS_CLOSE_REASON_MAX_LENGTH } from "./crdt-protocol.js";
 
 // ─── Per-socket state ───────────────────────────────────────────
 
 export interface CrdtSocketState {
   clientInstanceId: ClientInstanceId;
   writerId: string;
+  writerType: WriterType;
   writerDisplayName: string;
   docPath: string;
   /** Applied server role for this socket. Updated by mode transition FSM. */
@@ -62,7 +65,7 @@ export function checkTokenExpired(ws: WebSocket, state: CrdtSocketState): boolea
   if (state.tokenExp === Infinity) return false; // single_user mode
   const nowSec = Math.floor(Date.now() / 1000);
   if (nowSec < state.tokenExp) return false;
-  ws.close(4011, "token_expired");
+  ws.close(WS_CLOSE_AUTH_FAILED, "token_expired");
   return true;
 }
 
@@ -77,6 +80,6 @@ export function rejectUpgrade(
   reason: string,
 ): void {
   wss.handleUpgrade(request, socket, head, (ws) => {
-    ws.close(code, reason.slice(0, 123));
+    ws.close(code, reason.slice(0, WS_CLOSE_REASON_MAX_LENGTH));
   });
 }

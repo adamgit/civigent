@@ -67,7 +67,7 @@ export function HomePage() {
   const humanEdits = useMemo(
     () =>
       items
-        .filter((i) => i.source === "human_auto_commit" || i.source === "human_publish")
+        .filter((i) => i.writer_type === "human")
         .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))
         .slice(0, 8),
     [items],
@@ -76,7 +76,7 @@ export function HomePage() {
   const agentActivity = useMemo(
     () =>
       items
-        .filter((i) => i.source === "agent_proposal")
+        .filter((i) => i.writer_type === "agent")
         .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))
         .slice(0, 8),
     [items],

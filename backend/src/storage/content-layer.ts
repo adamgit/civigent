@@ -2,22 +2,60 @@
  * ContentLayer — Uniform interface for reading/writing section content
  * from a content root directory.
  *
- * Constructed from a single contentRoot path. Supports overlay-first-then-
- * canonical reads via an optional fallback ContentLayer.
- *
- * One class, no subclasses. Compose two instances to get overlay behavior:
- *
- *   const canonical = new ContentLayer(getContentRoot());
- *   const overlay = new ContentLayer(getSessionDocsContentRoot(), canonical);
- *   // overlay.readSection() tries overlay root first, falls back to canonical
+ * Constructed from a single contentRoot path and used for canonical-only
+ * reads/writes. Overlay+canonical behavior lives in OverlayContentLayer.
  */
 
-import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdir, copyFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { DocumentSkeleton, DocumentSkeletonMutable, type FlatEntry, type ReplacementResult } from "./document-skeleton.js";
+import {
+  DocumentSkeleton,
+  DocumentSkeletonInternal,
+  readOverlayDocumentState,
+  resolveTombstonePath,
+  skeletonFileExists,
+  type FlatEntry,
+  type OverlayDocumentState,
+  type ReplacementResult,
+} from "./document-skeleton.js";
 import { ParsedDocument } from "./markdown-sections.js";
 import type { DocStructureNode } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
+
+/**
+ * Write a section body file, creating parent directories as needed.
+ * No-op for sub-skeleton entries (their files are skeleton listings, not body content).
+ */
+async function writeBodyFile(entry: FlatEntry, content: string): Promise<void> {
+  if (entry.isSubSkeleton) return;
+  await mkdir(path.dirname(entry.absolutePath), { recursive: true });
+  await writeFile(entry.absolutePath, content, "utf8");
+}
+
+function resolveDocSkeletonPath(contentRoot: string, docPath: string): string {
+  const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  return path.resolve(contentRoot, ...normalized.split("/"));
+}
+
+async function copyDirectoryRecursive(srcDir: string, destDir: string): Promise<void> {
+  let entries;
+  try {
+    entries = await readdir(srcDir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return; // No sections dir is valid
+    throw err;
+  }
+  await mkdir(destDir, { recursive: true });
+  for (const entry of entries) {
+    const srcPath = path.join(srcDir, entry.name);
+    const destPath = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      await copyDirectoryRecursive(srcPath, destPath);
+    } else {
+      await copyFile(srcPath, destPath);
+    }
+  }
+}
 
 export class SectionNotFoundError extends Error {}
 export class DocumentNotFoundError extends Error {}
@@ -49,11 +87,9 @@ function stripMatchingHeading(content: string, level: number, heading: string): 
 
 export class ContentLayer {
   readonly contentRoot: string;
-  private readonly fallback: ContentLayer | undefined;
 
-  constructor(contentRoot: string, fallback?: ContentLayer) {
+  constructor(contentRoot: string) {
     this.contentRoot = contentRoot;
-    this.fallback = fallback;
   }
 
   /**
@@ -80,34 +116,85 @@ export class ContentLayer {
   }
 
   /**
-   * Read the DocumentSkeleton for a document.
-   *
-   * When a fallback is configured, the skeleton is loaded with
-   * overlay-first-then-canonical semantics (DocumentSkeleton.fromDisk
-   * already supports this via its overlayRoot/canonicalRoot parameters).
-   *
-   * When no fallback is configured, both roots point to this.contentRoot
-   * (pure canonical read).
+   * Read the canonical DocumentSkeleton for a document.
    */
   private async readSkeleton(docPath: string): Promise<DocumentSkeleton> {
-    const canonicalRoot = this.fallback?.contentRoot ?? this.contentRoot;
-    return DocumentSkeleton.fromDisk(docPath, this.contentRoot, canonicalRoot);
+    if (!(await skeletonFileExists(docPath, this.contentRoot))) {
+      throw new DocumentNotFoundError(`No skeleton found for document: ${docPath}`);
+    }
+    return DocumentSkeleton.fromDisk(docPath, this.contentRoot, this.contentRoot);
+  }
+
+  /**
+   * Return all heading paths for a document.
+   */
+  async listHeadingPaths(docPath: string): Promise<string[][]> {
+    const skeleton = await this.readSkeleton(docPath);
+    const paths: string[][] = [];
+    skeleton.forEachSection((_h, _l, _sf, headingPath) => {
+      paths.push([...headingPath]);
+    });
+    return paths;
+  }
+
+  /**
+   * Return the absolute path to the `.sections/` directory for a document.
+   * Pure path computation — no disk read.
+   */
+  sectionsDirectory(docPath: string): string {
+    return DocumentSkeleton.sectionsDir(docPath, this.contentRoot);
+  }
+
+  /**
+   * Resolve a heading path to the absolute file path for its section body file.
+   */
+  async resolveSectionPath(docPath: string, headingPath: string[]): Promise<string> {
+    const skeleton = await this.readSkeleton(docPath);
+    try {
+      return skeleton.expect(headingPath).absolutePath;
+    } catch (err) {
+      throw new SectionNotFoundError((err as Error).message);
+    }
+  }
+
+  /**
+   * Resolve a heading path to its absolute file path and heading level.
+   */
+  async resolveSectionPathWithLevel(docPath: string, headingPath: string[]): Promise<{ absolutePath: string; level: number }> {
+    const skeleton = await this.readSkeleton(docPath);
+    try {
+      const entry = skeleton.expect(headingPath);
+      return { absolutePath: entry.absolutePath, level: entry.level };
+    } catch (err) {
+      throw new SectionNotFoundError((err as Error).message);
+    }
+  }
+
+  /**
+   * Resolve a section file ID (e.g. "sec_abc123def") to its entry.
+   */
+  async resolveSectionFileId(docPath: string, sectionFileId: string): Promise<{ absolutePath: string; headingPath: string[]; level: number }> {
+    const skeleton = await this.readSkeleton(docPath);
+    try {
+      const entry = skeleton.expectByFileId(sectionFileId);
+      return { absolutePath: entry.absolutePath, headingPath: entry.headingPath, level: entry.level };
+    } catch (err) {
+      throw new SectionNotFoundError((err as Error).message);
+    }
   }
 
   /**
    * Read a single section's body content.
    *
-   * Resolves (docPath, headingPath) → section file via the skeleton,
-   * reads the file under this layer's contentRoot. If the file doesn't
-   * exist and a fallback is configured, delegates to the fallback.
+   * Resolves (docPath, headingPath) → section file via the skeleton
+   * and reads the file under this layer's contentRoot.
    */
   async readSection(ref: SectionRef): Promise<string> {
     const skeleton = await this.readSkeleton(ref.docPath);
     let entry: FlatEntry;
     try {
-      entry = skeleton.resolve(ref.headingPath);
+      entry = skeleton.expect(ref.headingPath);
     } catch (err) {
-      if (this.fallback) return this.fallback.readSection(ref);
       throw new SectionNotFoundError((err as Error).message);
     }
 
@@ -115,8 +202,6 @@ export class ContentLayer {
       return await readFile(entry.absolutePath, "utf8");
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-      // File not on disk at this layer — try fallback
-      if (this.fallback) return this.fallback.readSection(ref);
       throw new SectionNotFoundError(
         `Section not found: (${ref.docPath}, [${ref.headingPath.join(" > ")}]).`,
       );
@@ -125,7 +210,7 @@ export class ContentLayer {
 
   /**
    * Read the full subtree rooted at headingPath: the section itself and all
-   * descendants. Reads body content via readSection (respects overlay fallback).
+   * descendants. Reads body content via readSection().
    * headingPath=[] returns all sections in the document.
    */
   async readSubtree(
@@ -164,16 +249,8 @@ export class ContentLayer {
 
       let entry: FlatEntry;
       try {
-        entry = skeleton.resolve(ref.headingPath);
-      } catch (e) {
-        if (!(e instanceof Error) || !e.message.startsWith("Skeleton integrity error")) throw e;
-        // Section not in skeleton — try fallback
-        if (this.fallback) {
-          try {
-            const content = await this.fallback.readSection(ref);
-            result.set(ref.globalKey, content);
-          } catch (fe) { if (!(fe instanceof SectionNotFoundError)) throw fe; }
-        }
+        entry = skeleton.expect(ref.headingPath);
+      } catch {
         continue;
       }
 
@@ -182,13 +259,6 @@ export class ContentLayer {
         result.set(ref.globalKey, content);
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-        // Try fallback
-        if (this.fallback) {
-          try {
-            const content = await this.fallback.readSection(ref);
-            result.set(ref.globalKey, content);
-          } catch (fe) { if (!(fe instanceof SectionNotFoundError)) throw fe; }
-        }
       }
     }
 
@@ -209,7 +279,7 @@ export class ContentLayer {
     content: string,
   ): Promise<void> {
     const skeleton = await this.readSkeleton(ref.docPath);
-    const entry = skeleton.resolve(ref.headingPath);
+    const entry = skeleton.expect(ref.headingPath);
     // Enforce body-only invariant: strip leading heading if it matches the skeleton entry
     const body = stripMatchingHeading(content, entry.level, entry.heading);
     // Guard: reject multi-heading content that should go through importMarkdownDocument
@@ -221,8 +291,7 @@ export class ContentLayer {
         `Use importMarkdownDocument() instead.`,
       );
     }
-    await mkdir(path.dirname(entry.absolutePath), { recursive: true });
-    await writeFile(entry.absolutePath, body, "utf8");
+    await writeBodyFile(entry, body);
   }
 
   /**
@@ -235,127 +304,33 @@ export class ContentLayer {
    * Returns the list of section targets (docPath + headingPath) for all
    * sections that were written, suitable for building proposal metadata.
    */
-  async importMarkdownDocument(
-    docPath: string,
-    markdown: string,
-  ): Promise<Array<{ doc_path: string; heading_path: string[] }>> {
-    const canonicalRoot = this.fallback?.contentRoot ?? this.contentRoot;
-    const parsed = new ParsedDocument(markdown);
-
-    // Load canonical skeleton for file-ID matching; empty skeleton for new docs
-    let canonicalSkeleton: DocumentSkeletonMutable;
-    try {
-      canonicalSkeleton = await DocumentSkeletonMutable.fromDisk(docPath, canonicalRoot, canonicalRoot);
-    } catch {
-      canonicalSkeleton = await DocumentSkeletonMutable.createEmpty(docPath, canonicalRoot);
-    }
-
-    // Build overlay skeleton — correct matching algorithm, no position fallback
-    const overlaySkeleton = canonicalSkeleton.buildOverlaySkeleton(parsed, this.contentRoot);
-
-    // Collect overlay entries in document order (same order as parsed.sections)
-    const overlayPaths: string[] = [];
-    overlaySkeleton.forEachSection((_heading, _level, _sectionFile, _headingPath, absolutePath) => {
-      overlayPaths.push(absolutePath);
-    });
-
-    // Write body files: both lists are in the same document order
-    for (let i = 0; i < parsed.sections.length && i < overlayPaths.length; i++) {
-      const absolutePath = overlayPaths[i];
-      const trimmedBody = parsed.sections[i].body.replace(/\n+$/, "");
-      await mkdir(path.dirname(absolutePath), { recursive: true });
-      await writeFile(absolutePath, trimmedBody ? trimmedBody + "\n" : "", "utf8");
-    }
-
-    // Write skeleton file
-    await overlaySkeleton.persist();
-
-    return parsed.sectionTargets(docPath);
-  }
-
   /**
-   * Read all sections for a document, unioning overlay and canonical skeletons.
-   *
-   * Approach 2: loads two independent skeletons (overlay-only via
-   * fromDisk(docPath, overlayRoot, overlayRoot) and canonical-only via
-   * fromDisk(docPath, canonicalRoot, canonicalRoot)), builds a union of
-   * heading keys with both absolute paths, then fires all readFile calls
-   * in parallel with overlay preference.
+   * Read all sections for a canonical document.
    *
    * Returns Map keyed by headingKey (e.g. "Heading A>>Sub B").
-   *
-   * FUTURE (Approach 4): If merge ordering or structural metadata becomes
-   * needed beyond content reads, introduce a SkeletonMergedView value object
-   * that pairs two DocumentSkeleton instances and provides a unified iteration.
    */
   async readAllSections(docPath: string): Promise<Map<string, string>> {
-    const overlayRoot = this.contentRoot;
-    const canonicalRoot = this.fallback?.contentRoot ?? this.contentRoot;
-
-    // Load each skeleton independently — not through the merged overlay path
-    interface PathPair { overlayPath: string | null; canonicalPath: string | null }
-    const union = new Map<string, PathPair>();
-
-    try {
-      const overlaySkeleton = await DocumentSkeleton.fromDisk(docPath, overlayRoot, overlayRoot);
-      overlaySkeleton.forEachSection((_h, _l, _sf, headingPath, absolutePath) => {
-        const key = SectionRef.headingKey(headingPath);
-        const existing = union.get(key);
-        if (existing) {
-          existing.overlayPath = absolutePath;
-        } else {
-          union.set(key, { overlayPath: absolutePath, canonicalPath: null });
-        }
-      });
-    } catch (e) { if (!(e instanceof DocumentNotFoundError)) throw e; }
-
-    try {
-      const canonicalSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
-      canonicalSkeleton.forEachSection((_h, _l, _sf, headingPath, absolutePath) => {
-        const key = SectionRef.headingKey(headingPath);
-        const existing = union.get(key);
-        if (existing) {
-          existing.canonicalPath = absolutePath;
-        } else {
-          union.set(key, { overlayPath: null, canonicalPath: absolutePath });
-        }
-      });
-    } catch (e) { if (!(e instanceof DocumentNotFoundError)) throw e; }
-
-    // Read all files in parallel, preferring overlay
+    const skeleton = await this.readSkeleton(docPath);
     const result = new Map<string, string>();
     const readTasks: Array<Promise<void>> = [];
 
-    for (const [key, paths] of union) {
+    skeleton.forEachSection((_heading, _level, _sectionFile, headingPath, absolutePath) => {
       readTasks.push(
         (async () => {
-          // Try overlay first
-          if (paths.overlayPath) {
-            try {
-              result.set(key, await readFile(paths.overlayPath, "utf8"));
-              return;
-            } catch (err) {
-              if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-              // Overlay file missing — fall through to canonical
-            }
+          const key = SectionRef.headingKey(headingPath);
+          try {
+            result.set(key, await readFile(absolutePath, "utf8"));
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+            throw new DocumentAssemblyError(
+              `Section "${key}" in document "${docPath}" is referenced by the skeleton but has no body file in the active layer. ` +
+              `This indicates data corruption — the skeleton and section files are out of sync.`,
+              { cause: err },
+            );
           }
-          // Fall back to canonical
-          if (paths.canonicalPath) {
-            try {
-              result.set(key, await readFile(paths.canonicalPath, "utf8"));
-              return;
-            } catch (err) {
-              if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-            }
-          }
-          // Both overlay and canonical missing — skeleton references a file that doesn't exist
-          throw new DocumentAssemblyError(
-            `Section "${key}" in document "${docPath}" is referenced by the skeleton but has no body file in any layer. ` +
-            `This indicates data corruption — the skeleton and section files are out of sync.`,
-          );
         })(),
       );
-    }
+    });
 
     await Promise.all(readTasks);
     return result;
@@ -364,9 +339,8 @@ export class ContentLayer {
   /**
    * Assemble a complete document from skeleton + section body files.
    *
-   * Reads all non-sub-skeleton entries from the skeleton in document order,
-   * concatenates their body content. Each section is read through this
-   * layer's read path (with fallback if configured).
+   * Reads all non-sub-skeleton entries from the skeleton in document order
+   * and concatenates their body content.
    */
   async readAssembledDocument(docPath: string): Promise<string> {
     const skeleton = await this.readSkeleton(docPath);
@@ -378,7 +352,7 @@ export class ContentLayer {
     });
 
     if (bodyEntries.length === 0) {
-      throw new DocumentNotFoundError(`No skeleton found for document: ${docPath}`);
+      return "";
     }
 
     const parts: string[] = [];
@@ -389,21 +363,10 @@ export class ContentLayer {
         content = await readFile(entry.absolutePath, "utf8");
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-        // Try fallback for this specific file
-        if (this.fallback) {
-          const relativePath = path.relative(this.contentRoot, entry.absolutePath);
-          const fallbackPath = path.join(this.fallback.contentRoot, relativePath);
-          try {
-            content = await readFile(fallbackPath, "utf8");
-          } catch (err2) {
-            if ((err2 as NodeJS.ErrnoException).code !== "ENOENT") throw err2;
-          }
-        }
-        if (content === undefined) {
-          throw new DocumentAssemblyError(
-            `Skeleton integrity check failed for "${docPath}": section file "${entry.sectionFile}" is referenced by the skeleton but has no body file in any layer. This indicates data corruption.`,
-          );
-        }
+        throw new DocumentAssemblyError(
+          `Skeleton integrity check failed for "${docPath}": section file "${entry.sectionFile}" is referenced by the skeleton but has no body file in the active layer. This indicates data corruption.`,
+          { cause: err },
+        );
       }
 
       if (content === undefined) continue;
@@ -430,7 +393,7 @@ export class ContentLayer {
  * OverlayContentLayer — skeleton-aware content layer with required canonical fallback.
  *
  * Owns skeleton loading (overlay-first-then-canonical), structural mutation,
- * and content writes. Callers never see or touch DocumentSkeletonMutable.
+ * and content writes. Callers never see or touch DocumentSkeletonInternal.
  *
  * Skeleton instances are cached per docPath for the lifetime of this layer,
  * so multiple writeSection + structural calls for the same document share
@@ -439,7 +402,7 @@ export class ContentLayer {
 export class OverlayContentLayer {
   readonly overlayRoot: string;
   readonly canonicalRoot: string;
-  private skeletonCache = new Map<string, DocumentSkeletonMutable>();
+  private skeletonCache = new Map<string, DocumentSkeletonInternal>();
 
   constructor(overlayRoot: string, canonicalRoot: string) {
     this.overlayRoot = overlayRoot;
@@ -447,20 +410,216 @@ export class OverlayContentLayer {
   }
 
   /**
-   * Load (or return cached) mutable skeleton for a document.
-   * Creates a new empty skeleton if the document doesn't exist.
+   * True only for a live document. Missing and tombstoned documents return false.
    */
-  private async loadSkeleton(docPath: string): Promise<DocumentSkeletonMutable> {
-    let skeleton = this.skeletonCache.get(docPath);
-    if (skeleton) return skeleton;
+  async documentExists(docPath: string): Promise<boolean> {
+    return (await this.getDocumentState(docPath)) === "live";
+  }
 
-    skeleton = await DocumentSkeletonMutable.fromDisk(docPath, this.overlayRoot, this.canonicalRoot);
-    if (skeleton.isEmpty) {
-      // New document — create with root section
-      skeleton = await DocumentSkeletonMutable.createEmpty(docPath, this.overlayRoot);
+  /**
+   * Resolve the effective document state across overlay + canonical roots.
+   * "tombstone" means the overlay explicitly shadows the doc as pending deletion.
+   */
+  async getDocumentState(docPath: string): Promise<OverlayDocumentState> {
+    if (this.skeletonCache.has(docPath)) return "live";
+    return readOverlayDocumentState(docPath, this.overlayRoot, this.canonicalRoot);
+  }
+
+  /**
+   * Create a new document. Throws if the document already exists (callers must check first).
+   * Creates the skeleton with root entry AND writes the root body file (empty string) atomically.
+   * Caches the resulting skeleton.
+   */
+  async createDocument(docPath: string): Promise<void> {
+    const state = await this.getDocumentState(docPath);
+    if (state === "live") {
+      throw new Error(`Cannot create document "${docPath}" — it already exists.`);
     }
+    if (state === "tombstone") {
+      throw new Error(`Cannot create document "${docPath}" — it is pending deletion in this overlay.`);
+    }
+    const skeleton = DocumentSkeletonInternal.inMemoryWithRoot(docPath, this.overlayRoot);
+
+    // Write the root body file so the document is not in a corrupt state
+    let rootEntry: FlatEntry | null = null;
+    skeleton.forEachSection((_heading, _level, sectionFile, headingPath, absolutePath) => {
+      if (!rootEntry) rootEntry = { headingPath: [...headingPath], heading: _heading, level: _level, sectionFile, absolutePath, isSubSkeleton: false };
+    });
+    if (rootEntry) {
+      await writeBodyFile(rootEntry, "");
+    }
+
+    await skeleton.persistInternal();
+    this.skeletonCache.set(docPath, skeleton);
+  }
+
+  /**
+   * Return a cached or disk-loaded writable skeleton. Creates nothing.
+   * Throws DocumentNotFoundError if the document does not exist.
+   */
+  async getWritableSkeleton(docPath: string): Promise<DocumentSkeletonInternal> {
+    const cached = this.skeletonCache.get(docPath);
+    if (cached) return cached;
+    const state = await this.getDocumentState(docPath);
+    if (state === "tombstone") {
+      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this overlay.`);
+    }
+    if (state === "missing") {
+      throw new DocumentNotFoundError(`Document "${docPath}" does not exist.`);
+    }
+    const skeleton = await DocumentSkeletonInternal.fromDisk(docPath, this.overlayRoot, this.canonicalRoot);
     this.skeletonCache.set(docPath, skeleton);
     return skeleton;
+  }
+
+  private async readSkeleton(docPath: string): Promise<DocumentSkeleton> {
+    const state = await this.getDocumentState(docPath);
+    if (state === "tombstone") {
+      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this overlay.`);
+    }
+    if (state === "missing") {
+      throw new DocumentNotFoundError(`Document "${docPath}" does not exist.`);
+    }
+    return DocumentSkeleton.fromDisk(docPath, this.overlayRoot, this.canonicalRoot);
+  }
+
+  /**
+   * Return the document's structural tree as DocStructureNode[].
+   * Uses overlay+canonical skeleton loading.
+   */
+  async getDocumentStructure(docPath: string): Promise<DocStructureNode[]> {
+    const skeleton = await this.readSkeleton(docPath);
+    return skeleton.structure;
+  }
+
+  /**
+   * Resolve a section file ID to its entry.
+   * Uses overlay+canonical skeleton loading.
+   */
+  async resolveSectionFileId(docPath: string, sectionFileId: string): Promise<{ absolutePath: string; headingPath: string[]; level: number; heading: string }> {
+    const skeleton = await this.readSkeleton(docPath);
+    try {
+      const entry = skeleton.expectByFileId(sectionFileId);
+      return { absolutePath: entry.absolutePath, headingPath: entry.headingPath, level: entry.level, heading: entry.heading };
+    } catch (err) {
+      throw new SectionNotFoundError((err as Error).message);
+    }
+  }
+
+  /**
+   * Resolve a heading path to the absolute file path for its section body file.
+   * Uses overlay+canonical skeleton loading.
+   */
+  async resolveSectionPath(docPath: string, headingPath: string[]): Promise<string> {
+    const skeleton = await this.readSkeleton(docPath);
+    try {
+      return skeleton.expect(headingPath).absolutePath;
+    } catch (err) {
+      throw new SectionNotFoundError((err as Error).message);
+    }
+  }
+
+  /**
+   * Resolve a heading path to its absolute file path and heading level.
+   * Uses overlay+canonical skeleton loading.
+   */
+  async resolveSectionPathWithLevel(docPath: string, headingPath: string[]): Promise<{ absolutePath: string; level: number }> {
+    const skeleton = await this.readSkeleton(docPath);
+    try {
+      const entry = skeleton.expect(headingPath);
+      return { absolutePath: entry.absolutePath, level: entry.level };
+    } catch (err) {
+      throw new SectionNotFoundError((err as Error).message);
+    }
+  }
+
+  /**
+   * Return all heading paths for a document.
+   */
+  async listHeadingPaths(docPath: string): Promise<string[][]> {
+    const skeleton = await this.readSkeleton(docPath);
+    const paths: string[][] = [];
+    skeleton.forEachSection((_h, _l, _sf, headingPath) => {
+      paths.push([...headingPath]);
+    });
+    return paths;
+  }
+
+  /**
+   * Return the absolute path to the `.sections/` directory for a document.
+   * Pure path computation — no disk read.
+   */
+  sectionsDirectory(docPath: string): string {
+    return DocumentSkeleton.sectionsDir(docPath, this.canonicalRoot);
+  }
+
+  /**
+   * List all heading paths from canonical, then write a tombstone marker
+   * to the overlay. Returns the heading paths (for building proposal metadata).
+   */
+  async tombstoneDocument(docPath: string): Promise<string[][]> {
+    const skeleton = await DocumentSkeleton.fromDisk(docPath, this.canonicalRoot, this.canonicalRoot);
+    const paths: string[][] = [];
+    skeleton.forEachSection((_h, _l, _sf, headingPath) => {
+      paths.push([...headingPath]);
+    });
+    await DocumentSkeleton.createTombstone(docPath, this.overlayRoot);
+    this.skeletonCache.delete(docPath);
+    return paths;
+  }
+
+  /**
+   * Copy a canonical document skeleton + section files into overlay at a new path.
+   * Used by proposal-backed move/rename flows that stage the destination document.
+   */
+  async copyCanonicalDocumentToOverlay(sourceDocPath: string, destinationDocPath: string): Promise<void> {
+    const canonicalSrcSkeletonPath = resolveDocSkeletonPath(this.canonicalRoot, sourceDocPath);
+    const overlayDestSkeletonPath = resolveDocSkeletonPath(this.overlayRoot, destinationDocPath);
+
+    await rm(resolveTombstonePath(destinationDocPath, this.overlayRoot), { force: true });
+    await mkdir(path.dirname(overlayDestSkeletonPath), { recursive: true });
+    await copyFile(canonicalSrcSkeletonPath, overlayDestSkeletonPath);
+    await copyDirectoryRecursive(
+      `${canonicalSrcSkeletonPath}.sections`,
+      `${overlayDestSkeletonPath}.sections`,
+    );
+    this.skeletonCache.delete(destinationDocPath);
+  }
+
+  async getSectionList(
+    docPath: string,
+  ): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>> {
+    const skeleton = await this.readSkeleton(docPath);
+    const sections: Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }> = [];
+    skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+      sections.push({ heading, level, sectionFile, headingPath: [...headingPath] });
+    });
+    return sections;
+  }
+
+  async readAllSections(docPath: string): Promise<Map<string, string>> {
+    const skeleton = await this.readSkeleton(docPath);
+    const result = new Map<string, string>();
+    const readTasks: Array<Promise<void>> = [];
+
+    skeleton.forEachSection((_heading, _level, _sectionFile, headingPath, absolutePath) => {
+      readTasks.push(
+        (async () => {
+          const key = SectionRef.headingKey(headingPath);
+          const content = await this.readBodyFromLayers(absolutePath);
+          if (content === null) {
+            throw new DocumentAssemblyError(
+              `Section "${key}" in document "${docPath}" is referenced by the skeleton but has no body file in any layer. ` +
+              `This indicates data corruption — the skeleton and section files are out of sync.`,
+            );
+          }
+          result.set(key, content);
+        })(),
+      );
+    });
+
+    await Promise.all(readTasks);
+    return result;
   }
 
   /**
@@ -470,22 +629,33 @@ export class OverlayContentLayer {
    * Level for auto-created headings is parent.level + 1.
    */
   async writeSection(ref: SectionRef, content: string): Promise<void> {
-    const skeleton = await this.loadSkeleton(ref.docPath);
+    const state = await this.getDocumentState(ref.docPath);
+    if (state === "tombstone") {
+      throw new DocumentNotFoundError(`Document "${ref.docPath}" is pending deletion in this overlay.`);
+    }
+    if (state === "missing") {
+      await this.createDocument(ref.docPath);
+    }
+    const skeleton = await this.getWritableSkeleton(ref.docPath);
 
     // Auto-create missing ancestor headings
-    await this.ensureHeadingPath(skeleton, ref.headingPath);
+    await this.ensureAncestorHeadings(skeleton, ref.headingPath);
 
-    const entry = skeleton.resolve(ref.headingPath);
+    const entry = skeleton.expect(ref.headingPath);
     // Strip leading heading if it matches the skeleton entry
     const body = stripMatchingHeading(content, entry.level, entry.heading);
-
-    await mkdir(path.dirname(entry.absolutePath), { recursive: true });
-    await writeFile(entry.absolutePath, body, "utf8");
-
-    // Persist skeleton if it was mutated by auto-creation
-    if (skeleton.dirty) {
-      await skeleton.persist();
+    // Guard: reject multi-heading content that should go through importMarkdownDocument
+    const hasHeadings = getParser().containsHeadings(body);
+    if (hasHeadings) {
+      throw new MultiSectionContentError(
+        `Multi-section content passed to writeSection() for (${ref.docPath}, ` +
+        `[${ref.headingPath.join(" > ")}]) — embedded heading(s) detected. ` +
+        `Use importMarkdownDocument() instead.`,
+      );
     }
+
+    await writeBodyFile(entry, body);
+
   }
 
   /**
@@ -496,31 +666,31 @@ export class OverlayContentLayer {
     docPath: string,
     markdown: string,
   ): Promise<Array<{ doc_path: string; heading_path: string[] }>> {
+    if ((await this.getDocumentState(docPath)) === "tombstone") {
+      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this overlay.`);
+    }
     const parsed = new ParsedDocument(markdown);
 
-    // Load canonical skeleton for file-ID matching; empty skeleton for new docs
-    let canonicalSkeleton: DocumentSkeletonMutable;
+    // Load canonical skeleton for file-ID matching; in-memory empty for new docs
+    let canonicalSkeleton: DocumentSkeletonInternal;
     try {
-      canonicalSkeleton = await DocumentSkeletonMutable.fromDisk(docPath, this.canonicalRoot, this.canonicalRoot);
+      canonicalSkeleton = await DocumentSkeletonInternal.fromDisk(docPath, this.canonicalRoot, this.canonicalRoot);
     } catch {
-      canonicalSkeleton = await DocumentSkeletonMutable.createEmpty(docPath, this.canonicalRoot);
+      canonicalSkeleton = DocumentSkeletonInternal.inMemoryEmpty(docPath, this.overlayRoot);
     }
 
-    const overlaySkeleton = canonicalSkeleton.buildOverlaySkeleton(parsed, this.overlayRoot);
+    const overlaySkeleton = await canonicalSkeleton.buildOverlaySkeleton(parsed, this.overlayRoot);
 
-    const overlayPaths: string[] = [];
-    overlaySkeleton.forEachSection((_heading, _level, _sectionFile, _headingPath, absolutePath) => {
-      overlayPaths.push(absolutePath);
+    const overlayEntries: FlatEntry[] = [];
+    overlaySkeleton.forEachSection((_heading, _level, sectionFile, headingPath, absolutePath) => {
+      overlayEntries.push({ headingPath: [...headingPath], heading: _heading, level: _level, sectionFile, absolutePath, isSubSkeleton: false });
     });
 
-    for (let i = 0; i < parsed.sections.length && i < overlayPaths.length; i++) {
-      const absolutePath = overlayPaths[i];
+    for (let i = 0; i < parsed.sections.length && i < overlayEntries.length; i++) {
       const trimmedBody = parsed.sections[i].body.replace(/\n+$/, "");
-      await mkdir(path.dirname(absolutePath), { recursive: true });
-      await writeFile(absolutePath, trimmedBody ? trimmedBody + "\n" : "", "utf8");
+      await writeBodyFile(overlayEntries[i], trimmedBody ? trimmedBody + "\n" : "");
     }
 
-    await overlaySkeleton.persist();
     this.skeletonCache.set(docPath, overlaySkeleton);
 
     return parsed.sectionTargets(docPath);
@@ -539,18 +709,21 @@ export class OverlayContentLayer {
     level: number,
     body: string = "",
   ): Promise<FlatEntry[]> {
-    const skeleton = await this.loadSkeleton(docPath);
-    const added = skeleton.insertSectionUnder(parentPath, { heading, level, body });
+    const state = await this.getDocumentState(docPath);
+    if (state === "tombstone") {
+      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this overlay.`);
+    }
+    if (state === "missing") {
+      await this.createDocument(docPath);
+    }
+    const skeleton = await this.getWritableSkeleton(docPath);
+    const added = await skeleton.insertSectionUnder(parentPath, { heading, level, body });
 
     // Write body file for each added entry (may include root children for sub-skeletons)
     for (const entry of added) {
-      if (!entry.isSubSkeleton) {
-        await mkdir(path.dirname(entry.absolutePath), { recursive: true });
-        await writeFile(entry.absolutePath, body, "utf8");
-      }
+      await writeBodyFile(entry, body);
     }
 
-    await skeleton.persist();
     return added;
   }
 
@@ -562,9 +735,8 @@ export class OverlayContentLayer {
     docPath: string,
     headingPath: string[],
   ): Promise<ReplacementResult> {
-    const skeleton = await this.loadSkeleton(docPath);
-    const result = skeleton.replace(headingPath, []);
-    await skeleton.persist();
+    const skeleton = await this.getWritableSkeleton(docPath);
+    const result = await skeleton.replace(headingPath, []);
     return result;
   }
 
@@ -578,10 +750,10 @@ export class OverlayContentLayer {
     newParentPath: string[],
     newLevel: number,
   ): Promise<{ removed: FlatEntry[]; added: FlatEntry[] }> {
-    const skeleton = await this.loadSkeleton(docPath);
+    const skeleton = await this.getWritableSkeleton(docPath);
 
     // Read body content before removal
-    const entry = skeleton.resolve(headingPath);
+    const entry = skeleton.expect(headingPath);
     let bodyContent = "";
     try {
       bodyContent = await readFile(entry.absolutePath, "utf8");
@@ -590,11 +762,11 @@ export class OverlayContentLayer {
     }
 
     // Remove from old position
-    const { removed } = skeleton.replace(headingPath, []);
+    const { removed } = await skeleton.replace(headingPath, []);
 
     // Insert at new position
     const heading = headingPath[headingPath.length - 1];
-    const added = skeleton.insertSectionUnder(newParentPath, {
+    const added = await skeleton.insertSectionUnder(newParentPath, {
       heading,
       level: newLevel,
       body: bodyContent,
@@ -602,13 +774,9 @@ export class OverlayContentLayer {
 
     // Write body file at new location
     for (const addedEntry of added) {
-      if (!addedEntry.isSubSkeleton) {
-        await mkdir(path.dirname(addedEntry.absolutePath), { recursive: true });
-        await writeFile(addedEntry.absolutePath, bodyContent, "utf8");
-      }
+      await writeBodyFile(addedEntry, bodyContent);
     }
 
-    await skeleton.persist();
     return { removed, added };
   }
 
@@ -620,10 +788,10 @@ export class OverlayContentLayer {
     headingPath: string[],
     newHeading: string,
   ): Promise<ReplacementResult> {
-    const skeleton = await this.loadSkeleton(docPath);
+    const skeleton = await this.getWritableSkeleton(docPath);
 
     // Read body content before replacement
-    const entry = skeleton.resolve(headingPath);
+    const entry = skeleton.expect(headingPath);
     let bodyContent = "";
     try {
       bodyContent = await readFile(entry.absolutePath, "utf8");
@@ -631,7 +799,7 @@ export class OverlayContentLayer {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
 
-    const result = skeleton.replace(headingPath, [{
+    const result = await skeleton.replace(headingPath, [{
       heading: newHeading,
       level: entry.level,
       body: bodyContent,
@@ -639,18 +807,14 @@ export class OverlayContentLayer {
 
     // Write body file at new location
     for (const addedEntry of result.added) {
-      if (!addedEntry.isSubSkeleton) {
-        await mkdir(path.dirname(addedEntry.absolutePath), { recursive: true });
-        await writeFile(addedEntry.absolutePath, bodyContent, "utf8");
-      }
+      await writeBodyFile(addedEntry, bodyContent);
     }
 
-    await skeleton.persist();
     return result;
   }
 
   /**
-   * Create a tombstone skeleton for document deletion.
+   * Create a tombstone marker for document deletion.
    */
   async deleteDocument(docPath: string): Promise<void> {
     await DocumentSkeleton.createTombstone(docPath, this.overlayRoot);
@@ -660,33 +824,41 @@ export class OverlayContentLayer {
   // ─── Read methods (delegated to readonly paths) ───────────
 
   async readSection(ref: SectionRef): Promise<string> {
-    const skeleton = await this.loadSkeleton(ref.docPath);
-    const entry = skeleton.resolve(ref.headingPath);
-    try {
-      return await readFile(entry.absolutePath, "utf8");
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-      // Try canonical fallback
-      const canonicalSkeleton = await DocumentSkeleton.fromDisk(ref.docPath, this.canonicalRoot, this.canonicalRoot);
-      try {
-        const canonicalEntry = canonicalSkeleton.resolve(ref.headingPath);
-        return await readFile(canonicalEntry.absolutePath, "utf8");
-      } catch {
-        throw new SectionNotFoundError(
-          `Section not found: (${ref.docPath}, [${ref.headingPath.join(" > ")}]).`,
-        );
-      }
+    const skeleton = await this.readSkeleton(ref.docPath);
+    const entry = skeleton.expect(ref.headingPath);
+    const content = await this.readBodyFromLayers(entry.absolutePath);
+    if (content === null) {
+      throw new SectionNotFoundError(`Section not found in any layer for "${ref.docPath}" [${ref.headingPath.join(" > ")}]`);
     }
+    return content;
   }
 
   // ─── Private helpers ──────────────────────────────────────
+
+  private async readBodyFromLayers(overlayPath: string): Promise<string | null> {
+    try {
+      return await readFile(overlayPath, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    const canonicalPath = path.join(
+      this.canonicalRoot,
+      path.relative(this.overlayRoot, overlayPath),
+    );
+    try {
+      return await readFile(canonicalPath, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    return null;
+  }
 
   /**
    * Ensure all headings in the path exist. Auto-creates missing ancestors.
    * Level for each auto-created heading is parent.level + 1.
    */
-  private async ensureHeadingPath(
-    skeleton: DocumentSkeletonMutable,
+  private async ensureAncestorHeadings(
+    skeleton: DocumentSkeletonInternal,
     headingPath: string[],
   ): Promise<void> {
     for (let i = 1; i <= headingPath.length; i++) {
@@ -694,11 +866,13 @@ export class OverlayContentLayer {
       if (skeleton.has(ancestorPath)) continue;
 
       const parentPath = ancestorPath.slice(0, -1);
-      const parentEntry = skeleton.resolve(parentPath);
-      const level = parentEntry.level + 1;
+      const parentLevel = parentPath.length === 0
+        ? 0
+        : skeleton.expect(parentPath).level;
+      const level = parentLevel + 1;
       const heading = ancestorPath[ancestorPath.length - 1];
 
-      const added = skeleton.insertSectionUnder(parentPath, {
+      const added = await skeleton.insertSectionUnder(parentPath, {
         heading,
         level,
         body: "",
@@ -706,10 +880,7 @@ export class OverlayContentLayer {
 
       // Write empty body files for auto-created entries
       for (const entry of added) {
-        if (!entry.isSubSkeleton) {
-          await mkdir(path.dirname(entry.absolutePath), { recursive: true });
-          await writeFile(entry.absolutePath, "", "utf8");
-        }
+        await writeBodyFile(entry, "");
       }
     }
   }

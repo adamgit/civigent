@@ -42,7 +42,9 @@ function cleanExpiredSessions(): void {
     if (now - entry.lastUsed > SESSION_TTL_MS) {
       sessions.delete(id);
       // Fire-and-forget: flush activity log for expired session
-      activityLog.flush(id).catch(() => {});
+      activityLog.flush(id).catch(() => {
+        /* flush is a best-effort appendFile — no caller to propagate to, no console/logger available in this process. Accepted trade-off: if disk write fails, session activity data is silently lost. */
+      });
     }
   }
 }

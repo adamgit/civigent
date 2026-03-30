@@ -326,7 +326,7 @@ describe("Crash Recovery Scenarios", () => {
 
     // Doc B: create and add raw fragments
     const { createSampleDocument: createDoc2 } = await import("../helpers/sample-content.js");
-    await createDoc2(ctx.rootDir, "eng/architecture.md");
+    await createDoc2(ctx.rootDir, "/eng/architecture.md");
 
     // Dirty Doc A's canonical
     const contentRoot = join(ctx.rootDir, "content");

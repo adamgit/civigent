@@ -12,7 +12,7 @@ describe("GET /api/proposals/:id — read proposal", () => {
     ctx = await createTestServer();
     await createSampleDocument(ctx.dataCtx.rootDir);
 
-    // Create an agent proposal that auto-commits
+    // Create an agent proposal and commit it explicitly
     const committedRes = await request(ctx.app)
       .post("/api/proposals")
       .set("Authorization", ctx.agentToken)
@@ -28,6 +28,10 @@ describe("GET /api/proposals/:id — read proposal", () => {
       });
 
     committedProposalId = committedRes.body.proposal_id;
+
+    await request(ctx.app)
+      .post(`/api/proposals/${committedProposalId}/commit`)
+      .set("Authorization", ctx.agentToken);
 
     // Create a human_reservation proposal (stays pending)
     const pendingRes = await request(ctx.app)

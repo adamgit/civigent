@@ -192,7 +192,7 @@ export async function acquireDocSession(
   writerIdentity?: WriterIdentity,
   socketId?: string,
 ): Promise<DocSession> {
-  const identity = writerIdentity ?? { id: writerId, type: "human" as const, displayName: writerId };
+  const identity = writerIdentity;
 
   // Fast path: session already exists (resolved) or creation is in-flight.
   // Concurrent callers for the same docPath share the single in-flight promise,
@@ -204,6 +204,9 @@ export async function acquireDocSession(
     if (existing) {
       if (socketId) existing.editorSocketIds.add(socketId);
     } else {
+      if (!identity) {
+        throw new Error(`acquireDocSession requires writerIdentity for new holder "${writerId}" on doc "${docPath}".`);
+      }
       session.holders.set(writerId, {
         identity,
         editorSocketIds: new Set(socketId ? [socketId] : []),
@@ -225,7 +228,7 @@ export async function acquireDocSession(
       const { buildRecoverySectionMarkdown } = await import("../storage/crash-recovery.js");
       const recoveryBody = buildRecoverySectionMarkdown(orphanedBodies);
       const recoverySection = { heading: "Recovered edits", level: 2, body: recoveryBody, headingPath: ["Recovered edits"] };
-      const addedEntries = fragments.skeleton.addSectionsFromRootSplit([recoverySection]);
+      const addedEntries = await fragments.skeleton.addSectionsFromRootSplit([recoverySection]);
       for (const addedEntry of addedEntries) {
         if (addedEntry.isSubSkeleton) continue;
         const isRoot = FragmentStore.isDocumentRoot(addedEntry);
@@ -235,9 +238,6 @@ export async function acquireDocSession(
           ? `${headingLine}\n\n${recoveryBody}`
           : headingLine;
         fragments.setFragmentContent(newKey, fragmentContent);
-      }
-      if (fragments.skeleton.dirty) {
-        await fragments.skeleton.persist();
       }
     }
 
@@ -300,6 +300,9 @@ export async function acquireDocSession(
   sessionPromises.set(docPath, creationPromise);
 
   const session = await creationPromise;
+  if (!identity) {
+    throw new Error(`acquireDocSession requires writerIdentity for initial holder "${writerId}" on doc "${docPath}".`);
+  }
   session.holders.set(writerId, {
     identity,
     editorSocketIds: new Set(socketId ? [socketId] : []),
@@ -574,12 +577,15 @@ export function joinSession(
   // Step 3: Replay presence state (synchronous — no async yield from step 2 to here)
   for (const [writerId, headingPath] of session.presenceManager.getAll()) {
     const holder = session.holders.get(writerId);
+    if (!holder) {
+      throw new Error(`Presence replay missing holder identity for writer "${writerId}" on doc "${session.docPath}".`);
+    }
     emitPresenceEvent({
       type: "presence:editing",
       doc_path: session.docPath,
       writer_id: writerId,
-      writer_display_name: holder?.identity.displayName ?? writerId,
-      writer_type: holder?.identity.type ?? "human",
+      writer_display_name: holder.identity.displayName,
+      writer_type: holder.identity.type,
       heading_path: headingPath,
     });
   }
@@ -875,10 +881,7 @@ export async function getSessionFileMtime(sectionKey: string): Promise<number | 
   // Check in-memory session first
   const session = sessions.get(docPath);
   if (session) {
-    let entry = null;
-    try { entry = session.fragments.skeleton.resolve(headingPath); } catch (e) {
-      if (!(e instanceof Error) || !e.message.startsWith("Skeleton integrity error")) throw e;
-    }
+    const entry = session.fragments.skeleton.find(headingPath);
     if (entry) {
       const targetFragmentKey = fragmentKeyFromSectionFile(entry.sectionFile, headingPath.length === 0);
       const fragmentTime = session.fragmentLastActivity.get(targetFragmentKey);

@@ -14,11 +14,11 @@ import path from "node:path";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { getContentRoot } from "./data-root.js";
 import {
-  DocumentSkeleton,
   type FlatEntry,
   serializeSkeletonEntries,
   generateSectionFilename,
 } from "./document-skeleton.js";
+import { ContentLayer } from "./content-layer.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -111,12 +111,18 @@ export async function applyDocumentMarkdownToDraft(
     skeletonChanged: false,
   };
 
-  // Load canonical skeleton via DocumentSkeleton
-  const canonicalSkeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
-  const canonicalFlat: FlatEntry[] = [];
-  canonicalSkeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
-    canonicalFlat.push({ headingPath: [...headingPath], heading, level, sectionFile, absolutePath, isSubSkeleton: false });
-  });
+  // Load canonical skeleton via ContentLayer
+  const layer = new ContentLayer(contentRoot);
+  const sectionList = await layer.getSectionList(docPath);
+  const sectionsDir = layer.sectionsDirectory(docPath);
+  const canonicalFlat: FlatEntry[] = sectionList.map(s => ({
+    headingPath: s.headingPath,
+    heading: s.heading,
+    level: s.level,
+    sectionFile: s.sectionFile,
+    absolutePath: path.join(sectionsDir, s.sectionFile),
+    isSubSkeleton: false,
+  }));
 
   // Build the draft skeleton path
   const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");

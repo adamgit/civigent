@@ -53,10 +53,10 @@ export function AgentFeedPage() {
 
   return (
     <section>
-      <SharedPageHeader title="Agent Activity Feed" backTo="/agents" />
+      <SharedPageHeader title="Agent Activity Feed" backTo="/agents-activity" />
 
       <div className="px-4 py-2 border-b border-gray-100">
-        <Link to="/agents" className="text-xs text-blue-600 hover:underline">
+        <Link to="/agents-activity" className="text-xs text-blue-600 hover:underline">
           &larr; Back to Agents
         </Link>
       </div>

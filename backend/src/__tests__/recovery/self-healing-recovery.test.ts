@@ -9,7 +9,7 @@
  * - recovery section appended for orphaned bodies → Fix: "Recovery section generation"
  * - recovery section is a normal editable section → EXPECTED PASS (uses existing skeleton mutation)
  * - recovery section committed to git during startup recovery → Fix: "Recovery section generation"
- * - empty overlay skeleton does not mask canonical → Fix: "Overlay skeleton masking fix"
+ * - empty overlay skeleton remains a live empty document → Fix: "Empty-doc format separation"
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -18,6 +18,8 @@ import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpe
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { DocumentSkeleton, FlatEntry } from "../../storage/document-skeleton.js";
+import type { WriterIdentity } from "../../types/shared.js";
+import { getHeadSha } from "../../storage/git-repo.js";
 
 function collectFlat(skeleton: DocumentSkeleton): FlatEntry[] {
   const entries: FlatEntry[] = [];
@@ -106,7 +108,9 @@ describe("Self-healing Recovery", () => {
 
     // acquireDocSession should detect orphaned bodies and append a recovery section
     const { acquireDocSession, releaseDocSession } = await import("../../crdt/ydoc-lifecycle.js");
-    const session = await acquireDocSession(SAMPLE_DOC_PATH);
+    const baseHead = await getHeadSha(ctx.rootDir);
+    const writerIdentity: WriterIdentity = { id: "recovery-test-writer", type: "human", displayName: "Recovery Test" };
+    const session = await acquireDocSession(SAMPLE_DOC_PATH, "recovery-test-writer", baseHead, writerIdentity);
 
     // Check that skeleton has a "Recovered edits" section
     const flat = collectFlat(session.fragments.skeleton);
@@ -140,14 +144,14 @@ describe("Self-healing Recovery", () => {
     await writeFile(join(sectionsDir, "sec_recovered_edits.md"), "Some recovered content.\n", "utf8");
 
     // Load skeleton and verify the recovery section exists
-    const { DocumentSkeleton: DS } = await import("../../storage/document-skeleton.js");
-    const skeleton = await DS.fromDisk(SAMPLE_DOC_PATH, contentRoot, contentRoot);
+    const { DocumentSkeletonInternal } = await import("../../storage/document-skeleton.js");
+    const skeleton = await DocumentSkeletonInternal.fromDisk(SAMPLE_DOC_PATH, contentRoot, contentRoot);
     const flat = collectFlat(skeleton);
     const recoveryEntry = flat.find((e) => e.heading === "Recovered edits");
     expect(recoveryEntry).toBeDefined();
 
     // Delete the recovery section via skeleton.replace (standard mutation)
-    skeleton.replace(["Recovered edits"], []);
+    await skeleton.replace(["Recovered edits"], []);
 
     // Verify it's gone
     const flatAfter = collectFlat(skeleton);
@@ -189,21 +193,24 @@ describe("Self-healing Recovery", () => {
     expect(result.sessionFilesRecovered).toBeGreaterThan(0);
   });
 
-  // ── Test: empty overlay skeleton is a valid tombstone (signals document deletion) ──
+  // ── Test: empty overlay skeleton is a live empty document, not a tombstone ──
 
-  it("empty overlay skeleton is treated as tombstone (isEmpty=true, no error)", async () => {
+  it("empty overlay skeleton shadows canonical as a live empty document", async () => {
     await createSampleDocument(ctx.rootDir);
 
     const contentRoot = join(ctx.rootDir, "content");
     const overlayRoot = join(ctx.rootDir, "sessions", "docs", "content");
     const overlayDocDir = join(overlayRoot, "ops");
 
-    // Write an empty overlay skeleton file (zero bytes) — this is a tombstone
+    // Write an empty overlay skeleton file (zero bytes)
     await mkdir(overlayDocDir, { recursive: true });
     await writeFile(join(overlayDocDir, "strategy.md"), "", "utf8");
 
     const { DocumentSkeleton } = await import("../../storage/document-skeleton.js");
     const skeleton = await DocumentSkeleton.fromDisk(SAMPLE_DOC_PATH, overlayRoot, contentRoot);
+    // Empty overlay should now remain visible as an empty live document.
+    expect(skeleton.overlayPersisted).toBe(true);
+    expect(skeleton.overlayTombstoned).toBe(false);
     expect(skeleton.isEmpty).toBe(true);
   });
 });

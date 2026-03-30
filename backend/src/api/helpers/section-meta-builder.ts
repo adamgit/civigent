@@ -13,7 +13,7 @@ import { readDocSectionCommitInfo, type SectionCommitInfo } from "../../storage/
 import { SectionPresence } from "../../domain/section-presence.js";
 import { SectionGuard } from "../../domain/section-guard.js";
 import { SectionRef } from "../../domain/section-ref.js";
-import type { WsServerEvent } from "../../types/shared.js";
+import type { WsServerEvent, AttributionWriterType } from "../../types/shared.js";
 import { resolveAuthenticatedWriter } from "../../auth/context.js";
 
 const SECTION_LENGTH_WARNING_THRESHOLD = 2000; // words
@@ -27,7 +27,7 @@ export interface SectionInvolvementMeta {
   crdt_session_active: boolean;
   section_length_warning: boolean;
   word_count: number;
-  last_editor?: { id: string; name: string; timestampMs: number; type: "human" | "agent"; seconds_ago: number };
+  last_editor?: { id: string; name: string; timestampMs: number; type: AttributionWriterType; seconds_ago: number };
 }
 
 /**
@@ -45,7 +45,7 @@ export async function buildSectionInvolvementMeta(
 ): Promise<Map<string, SectionInvolvementMeta>> {
   const [dirtyFileSet, gitCommitInfo, canonicalPaths, humanProposalLockIndex] = await Promise.all([
     SectionPresence.prefetchDirtyFiles(docPath),
-    readDocSectionCommitInfo(docPath, headingPaths.length),
+    readDocSectionCommitInfo(docPath),
     resolveAllSectionPaths(getContentRoot(), docPath),
     SectionPresence.prefetchHumanProposalLocks(),
   ]);
@@ -86,7 +86,7 @@ export async function buildSectionInvolvementMeta(
               id: commitInfo.writerId,
               name: commitInfo.authorName,
               timestampMs: commitInfo.timestampMs,
-              type: "human",
+              type: commitInfo.writerType,
               seconds_ago: Math.max(0, (nowMs - commitInfo.timestampMs) / 1000),
             }
           : undefined,

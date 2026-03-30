@@ -28,7 +28,6 @@ const sampleItems: ActivityItem[] = [
   {
     id: "act-1",
     timestamp: "2026-01-15T10:00:00.000Z",
-    source: "agent_proposal",
     writer_id: "agent-1",
     writer_type: "agent",
     writer_display_name: "Agent Alpha",
@@ -39,7 +38,6 @@ const sampleItems: ActivityItem[] = [
   {
     id: "act-2",
     timestamp: "2026-01-14T09:00:00.000Z",
-    source: "human_publish",
     writer_id: "test-user",
     writer_type: "human",
     writer_display_name: "Test User",
@@ -50,7 +48,6 @@ const sampleItems: ActivityItem[] = [
   {
     id: "act-3",
     timestamp: "2026-01-16T11:00:00.000Z",
-    source: "agent_proposal",
     writer_id: "agent-2",
     writer_type: "agent",
     writer_display_name: "Agent Beta",

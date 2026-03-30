@@ -1,5 +1,6 @@
 import { ContentPanel } from "../ContentPanel";
 import { WriterIdentity } from "../WriterIdentity";
+import type { AttributionWriterType, WriterType } from "../../types/shared.js";
 
 export interface ProposalTimelineEntry {
   id: number;
@@ -7,7 +8,7 @@ export interface ProposalTimelineEntry {
   proposal_id: string;
   writer_id: string;
   writer_display_name: string;
-  writer_kind: string;
+  writer_kind: WriterType;
   event: "created" | "status_changed" | "blocked";
   from_status?: string;
   to_status?: string;
@@ -17,6 +18,12 @@ export interface ProposalTimelineEntry {
 function formatTime(ts: number): string {
   const d = new Date(ts);
   return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function classifyWriterKind(raw: string | undefined): AttributionWriterType {
+  if (raw === "agent") return "agent";
+  if (raw === "human") return "human";
+  return "unknown";
 }
 
 interface ProposalTimelineProps {
@@ -53,7 +60,8 @@ export function ProposalTimeline({ entries }: ProposalTimelineProps) {
                 </span>
                 <WriterIdentity
                   name={entry.writer_display_name}
-                  kind={entry.writer_kind as "human" | "agent"}
+                  kind={classifyWriterKind(entry.writer_kind)}
+                  rawKind={entry.writer_kind}
                 />
                 <span className="text-text-muted" style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 10 }}>
                   {entry.proposal_id.length > 12 ? `${entry.proposal_id.slice(0, 6)}…${entry.proposal_id.slice(-3)}` : entry.proposal_id}

@@ -47,6 +47,7 @@ export interface PresenceIndicator {
   key: string;
   sectionKey: string;
   writerDisplayName: string;
+  writerType: string;
 }
 
 export interface PendingProposalIndicator {

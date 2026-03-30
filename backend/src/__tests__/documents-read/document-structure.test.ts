@@ -18,7 +18,7 @@ describe("GET /api/documents/:doc_path/structure", () => {
 
   it("returns doc_path and structure with heading tree", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/structure`)
+      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/structure`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -29,7 +29,7 @@ describe("GET /api/documents/:doc_path/structure", () => {
 
   it("returns structure nodes with heading, level, and children", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/structure`)
+      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/structure`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -49,7 +49,7 @@ describe("GET /api/documents/:doc_path/structure", () => {
 
   it("includes Overview and Timeline headings from sample document", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/structure`)
+      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/structure`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -60,7 +60,7 @@ describe("GET /api/documents/:doc_path/structure", () => {
 
   it("returns heading level 2 for top-level sections", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/structure`)
+      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/structure`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -75,7 +75,7 @@ describe("GET /api/documents/:doc_path/structure", () => {
     ctx.wsEvents.length = 0;
 
     await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/structure`)
+      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/structure`)
       .set("Authorization", ctx.agentToken);
 
     const readingEvents = ctx.wsEvents.filter((e) => e.type === "agent:reading");
@@ -88,7 +88,7 @@ describe("GET /api/documents/:doc_path/structure", () => {
     ctx.wsEvents.length = 0;
 
     await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/structure`)
+      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/structure`)
       .set("Authorization", ctx.humanToken);
 
     const readingEvents = ctx.wsEvents.filter((e) => e.type === "agent:reading");

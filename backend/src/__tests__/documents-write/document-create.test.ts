@@ -24,12 +24,12 @@ describe("PUT /api/documents/:doc_path (create)", () => {
       .send("# Test Document\n\nSome content here.\n");
 
     expect(res.status).toBe(201);
-    expect(res.body.doc_path).toBe("new/test-doc.md");
+    expect(res.body.doc_path).toBe("/new/test-doc.md");
   });
 
   it("returns 409 if document already exists", async () => {
     const res = await request(ctx.app)
-      .put(`/api/documents/${SAMPLE_DOC_PATH}`)
+      .put(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
       .set("Authorization", ctx.humanToken)
       .set("Content-Type", "text/markdown")
       .send("# Duplicate\n\nShould conflict.\n");

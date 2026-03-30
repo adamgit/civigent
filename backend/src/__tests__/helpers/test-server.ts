@@ -34,6 +34,10 @@ export async function createTestServer(): Promise<TestServerContext> {
 
   const humanId = "human-test-user";
   const agentId = "agent-test-bot";
+
+  // Align single-user admin identity with the test human user
+  process.env.KS_USER_ID = humanId;
+
   const humanToken = authFor(humanId, "human");
   const agentToken = authFor(agentId, "agent");
 

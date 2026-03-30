@@ -103,7 +103,7 @@ describe("AppLayout badges", () => {
       capturedWsHandler?.({
         type: "content:committed",
         doc_path: "ops/strategy.md",
-        source: "agent_proposal",
+        writer_type: "agent",
         writer_display_name: "Agent Alpha",
       } as WsServerEvent);
     });
@@ -143,7 +143,7 @@ describe("AppLayout badges", () => {
       capturedWsHandler?.({
         type: "content:committed",
         doc_path: "ops/strategy.md",
-        source: "human_publish",
+        writer_type: "human",
         writer_display_name: "A Human",
       } as WsServerEvent);
     });

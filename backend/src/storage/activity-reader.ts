@@ -15,6 +15,33 @@ import type {
   SectionTargetRef,
 } from "../types/shared.js";
 
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message.toLowerCase();
+  return String(error).toLowerCase();
+}
+
+function isNoHistoryHeadError(error: unknown): boolean {
+  const message = getErrorMessage(error);
+  return (
+    message.includes("does not have any commits") ||
+    message.includes("your current branch") ||
+    message.includes("not a valid object name head") ||
+    (message.includes("unknown revision") && message.includes("head")) ||
+    (message.includes("ambiguous argument") && message.includes("head"))
+  );
+}
+
+function isUnknownShaError(error: unknown): boolean {
+  const message = getErrorMessage(error);
+  return (
+    message.includes("unknown revision") ||
+    message.includes("bad revision") ||
+    message.includes("bad object") ||
+    message.includes("not a valid object name") ||
+    message.includes("ambiguous argument")
+  );
+}
+
 async function readCommittedProposals(): Promise<CommittedProposalDomain[]> {
   const proposals = await listProposals("committed");
   // listProposals("committed") only returns committed proposals; narrow the type.
@@ -44,7 +71,6 @@ export async function readActivity(limit: number, days: number): Promise<Activit
     items.push({
       id: proposal.id,
       timestamp: proposal.created_at,
-      source: "agent_proposal",
       writer_id: proposal.writer.id,
       writer_type: proposal.writer.type,
       writer_display_name: proposal.writer.displayName,
@@ -65,7 +91,8 @@ export async function readChangesSince(docPath: string, afterHead?: string): Pro
   let currentSha: string;
   try {
     currentSha = await getHeadSha(dataRoot);
-  } catch {
+  } catch (error) {
+    if (!isNoHistoryHeadError(error)) throw error;
     return { since_sha: afterHead || "", current_sha: "", changed: false, changed_sections: [] };
   }
 
@@ -76,7 +103,8 @@ export async function readChangesSince(docPath: string, afterHead?: string): Pro
   let allowedShas: Set<string>;
   try {
     allowedShas = await getCommitsBetween(dataRoot, afterHead);
-  } catch {
+  } catch (error) {
+    if (!isUnknownShaError(error)) throw error;
     return { since_sha: afterHead, current_sha: currentSha, changed: false, changed_sections: [] };
   }
 

@@ -10,7 +10,7 @@
  * Commit happens via commit_proposal, which promotes overlay → canonical.
  *
  * Document-level tools (delete_document, rename_document) also operate within
- * proposals using the tombstone pattern: delete writes an empty skeleton,
+ * proposals using the tombstone pattern: delete writes a tombstone marker,
  * rename writes tombstone at old path + full content at new path.
  */
 
@@ -18,7 +18,6 @@ import type { ToolRegistry, ToolHandler } from "../tool-registry.js";
 import { jsonToolResult } from "../tool-registry.js";
 import { makeToolErrorResult } from "../protocol.js";
 import { getContentRoot } from "../../storage/data-root.js";
-import { DocumentSkeleton } from "../../storage/document-skeleton.js";
 import { DocumentNotFoundError } from "../../storage/document-reader.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
 import { lookupDocSession, countEditorSockets } from "../../crdt/ydoc-lifecycle.js";
@@ -277,11 +276,10 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
   try {
     const overlayLayer = new OverlayContentLayer(proposalContentRoot, getContentRoot());
 
-    // Determine target level from existing skeleton
-    const skeleton = await DocumentSkeleton.fromDisk(docPath, proposalContentRoot, getContentRoot());
-    const resolvedEntry = skeleton.resolve(headingPath);
+    // Determine target level from overlay+canonical skeleton
+    const { level: currentLevel } = await overlayLayer.resolveSectionPathWithLevel(docPath, headingPath);
     const targetLevel = newParentPath.length === 0
-      ? resolvedEntry.level
+      ? currentLevel
       : newParentPath.length + 1;
 
     await overlayLayer.moveSection(docPath, headingPath, newParentPath, targetLevel);
@@ -435,17 +433,10 @@ const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
   if (sessionBlock) return sessionBlock;
 
   try {
-    const canonicalRoot = getContentRoot();
+    const overlayLayer = new OverlayContentLayer(proposalContentRoot, getContentRoot());
 
-    // Load canonical skeleton to get all sections for proposal metadata
-    const skeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
-    const headingPaths: string[][] = [];
-    skeleton.forEachSection((_heading, _level, _sectionFile, headingPath) => {
-      headingPaths.push([...headingPath]);
-    });
-
-    // Create tombstone skeleton in proposal overlay (auto-persists)
-    await DocumentSkeleton.createTombstone(docPath, proposalContentRoot);
+    // Read canonical headings and write tombstone in one step
+    const headingPaths = await overlayLayer.tombstoneDocument(docPath);
 
     // Add all document sections to proposal's sections[] metadata
     const existingSections = proposal.sections.filter(
@@ -525,21 +516,14 @@ const renameDocumentHandler: ToolHandler = async (args, ctx) => {
 
   try {
     const canonicalRoot = getContentRoot();
+    const overlayLayer = new OverlayContentLayer(proposalContentRoot, canonicalRoot);
 
-    // Load canonical skeleton for the old doc
-    const oldSkeleton = await DocumentSkeleton.fromDisk(docPath, canonicalRoot, canonicalRoot);
-    const headingPaths: string[][] = [];
-    oldSkeleton.forEachSection((_heading, _level, _sectionFile, headingPath) => {
-      headingPaths.push([...headingPath]);
-    });
-
-    // Step 1: Write tombstone at old path in proposal overlay (auto-persists)
-    await DocumentSkeleton.createTombstone(docPath, proposalContentRoot);
+    // Step 1: Read canonical headings and write tombstone at old path in one step
+    const headingPaths = await overlayLayer.tombstoneDocument(docPath);
 
     // Step 2: Copy full content to new path in proposal overlay.
     // Read all sections from canonical, then write through OverlayContentLayer.
     const subtree = await new ContentLayer(canonicalRoot).readSubtree(docPath, []);
-    const overlayLayer = new OverlayContentLayer(proposalContentRoot, canonicalRoot);
 
     for (const entry of subtree) {
       await overlayLayer.writeSection(

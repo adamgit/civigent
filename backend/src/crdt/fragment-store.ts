@@ -11,11 +11,12 @@
 
 import * as Y from "yjs";
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
 import { yDocToProsemirrorJSON, prosemirrorJSONToYDoc } from "y-prosemirror";
 import { getContentRoot, getSessionDocsContentRoot } from "../storage/data-root.js";
-import { DocumentSkeleton, DocumentSkeletonMutable, type FlatEntry } from "../storage/document-skeleton.js";
+import { DocumentSkeleton, DocumentSkeletonInternal, type FlatEntry } from "../storage/document-skeleton.js";
 import { parseDocumentMarkdown } from "../storage/markdown-sections.js";
 import { SectionRef } from "../domain/section-ref.js";
 import {
@@ -75,7 +76,7 @@ export class FragmentStore {
   /** The skeleton. Callers need access for structural queries
    *  (flat, resolve, structure) and for focus→fragmentKey mapping.
    *  Structural mutations during flush are internal to FragmentStore. */
-  readonly skeleton: DocumentSkeletonMutable;
+  readonly skeleton: DocumentSkeletonInternal;
 
   readonly docPath: string;
 
@@ -84,7 +85,7 @@ export class FragmentStore {
    *  tracks per-user attribution for the Mirror panel. */
   readonly dirtyKeys = new Set<string>();
 
-  private constructor(ydoc: Y.Doc, skeleton: DocumentSkeletonMutable, docPath: string) {
+  private constructor(ydoc: Y.Doc, skeleton: DocumentSkeletonInternal, docPath: string) {
     this.ydoc = ydoc;
     this.skeleton = skeleton;
     this.docPath = docPath;
@@ -106,15 +107,14 @@ export class FragmentStore {
       listRawFragments,
       readRawFragment,
     } = await import("../storage/session-store.js");
-    const { ContentLayer } = await import("../storage/content-layer.js");
+    const { OverlayContentLayer } = await import("../storage/content-layer.js");
 
     const ydoc = new Y.Doc();
     const canonicalRoot = getContentRoot();
     const overlayRoot = getSessionDocsContentRoot();
-    const canonical = new ContentLayer(canonicalRoot);
-    const overlay = new ContentLayer(overlayRoot, canonical);
+    const overlay = new OverlayContentLayer(overlayRoot, canonicalRoot);
 
-    const skeleton = await DocumentSkeletonMutable.fromDisk(docPath, overlayRoot, canonicalRoot);
+    const skeleton = await DocumentSkeletonInternal.fromDisk(docPath, overlayRoot, canonicalRoot);
 
     if (skeleton.isEmpty) {
       return { store: new FragmentStore(ydoc, skeleton, docPath), orphanedBodies: [] };
@@ -133,7 +133,7 @@ export class FragmentStore {
       }
     }
 
-    // Bulk-read overlay content as fallback via ContentLayer
+    // Bulk-read overlay content directly via OverlayContentLayer
     const bulkContent = await overlay.readAllSections(docPath);
 
     // Collect known section files for orphan detection
@@ -189,19 +189,17 @@ export class FragmentStore {
     const overlayDocPath = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
     const overlaySkeletonPath = path.resolve(overlayRoot, ...overlayDocPath.split("/"));
     const overlaySectionsDir = overlaySkeletonPath + ".sections";
-    try {
+    if (existsSync(overlaySectionsDir)) {
       const overlayFiles = await readdir(overlaySectionsDir);
       for (const file of overlayFiles) {
         if (!file.endsWith(".md")) continue;
         if (knownSectionFiles.has(file)) continue;
-        try {
-          const content = await readFile(path.join(overlaySectionsDir, file), "utf8");
-          if (content.trim()) {
-            orphanedBodies.push({ sectionFile: file, content: content.trim() });
-          }
-        } catch { /* skip unreadable */ }
+        const content = await readFile(path.join(overlaySectionsDir, file), "utf8");
+        if (content.trim()) {
+          orphanedBodies.push({ sectionFile: file, content: content.trim() });
+        }
       }
-    } catch { /* no overlay sections dir */ }
+    }
 
     // Scan raw fragment files
     for (const rawFile of rawFiles) {
@@ -265,14 +263,9 @@ export class FragmentStore {
     const full = this.extractMarkdown(fragmentKey);
     // Find the skeleton entry to get the level for heading stripping
     const sectionFileId = sectionFileFromFragmentKey(fragmentKey);
-    try {
-      const entry = this.skeleton.resolveByFileId(sectionFileId);
-      if (FragmentStore.isDocumentRoot(entry)) return full;
-      return FragmentStore.stripHeadingFromContent(full, entry.level);
-    } catch {
-      // If we can't resolve the entry, return as-is
-      return full;
-    }
+    const entry = this.skeleton.expectByFileId(sectionFileId);
+    if (FragmentStore.isDocumentRoot(entry)) return full;
+    return FragmentStore.stripHeadingFromContent(full, entry.level);
   }
 
   /**
@@ -284,39 +277,13 @@ export class FragmentStore {
   }
 
   /**
-   * Read the current heading text from a fragment's content.
-   * Fragments include their heading as the first node.
-   */
-  readFragmentHeading(fragmentKey: string): string | null {
-    try {
-      const pmJson = yDocToProsemirrorJSON(this.ydoc, fragmentKey) as any;
-      if (!pmJson?.content) return null;
-      for (const node of pmJson.content) {
-        if (node.type === "heading" && node.content) {
-          return node.content
-            .filter((child: any) => child.type === "text")
-            .map((child: any) => child.text ?? "")
-            .join("");
-        }
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
    * Read the live full content (heading+body) from the Y.Doc for a fragment.
    * Returns the current in-memory content (no disk staleness).
    * Returns null if the fragment key does not exist or has no content.
    */
   readLiveBody(fragmentKey: string): string | null {
-    try {
-      const body = this.extractMarkdown(fragmentKey);
-      return body || null;
-    } catch {
-      return null;
-    }
+    const body = this.extractMarkdown(fragmentKey);
+    return body || null;
   }
 
   /**
@@ -349,13 +316,9 @@ export class FragmentStore {
       const isRoot = FragmentStore.isDocumentRoot({ headingPath, level, heading });
       const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
 
-      try {
-        const content = this.extractMarkdown(fragmentKey);
-        if (content.trim()) {
-          parts.push(content);
-        }
-      } catch {
-        // Fragment missing — skip
+      const content = this.extractMarkdown(fragmentKey);
+      if (content.trim()) {
+        parts.push(content);
       }
     });
 
@@ -387,9 +350,6 @@ export class FragmentStore {
     const ops = await this.getSessionStoreOps();
     const writtenKeys: string[] = [];
 
-    // Ensure overlay skeleton exists before writing body files
-    await this.skeleton.writeSkeletonIfAbsent();
-
     const droppedKeys: Array<{ fragmentKey: string; error: unknown }> = [];
 
     for (const fragmentKey of keysToFlush) {
@@ -397,7 +357,7 @@ export class FragmentStore {
 
       let entry: FlatEntry;
       try {
-        entry = this.skeleton.resolveByFileId(sectionFileId);
+        entry = this.skeleton.expectByFileId(sectionFileId);
       } catch (err) {
         droppedKeys.push({ fragmentKey, error: err });
         continue;
@@ -424,11 +384,6 @@ export class FragmentStore {
       }
 
       writtenKeys.push(fragmentKey);
-    }
-
-    // Persist skeleton if modified
-    if (this.skeleton.dirty) {
-      await this.skeleton.persist();
     }
 
     if (droppedKeys.length > 0) {
@@ -547,7 +502,7 @@ export class FragmentStore {
     await this.writeDualFormat(entry, rootBody, rootBody, ops);
 
     // Add new sections to skeleton
-    const addedEntries = this.skeleton.addSectionsFromRootSplit(realSections);
+    const addedEntries = await this.skeleton.addSectionsFromRootSplit(realSections);
 
     const createdKeys: string[] = [];
     const newKeyMapping: string[] = [];
@@ -572,11 +527,6 @@ export class FragmentStore {
       bodyIdx++;
     }
 
-    // Persist skeleton
-    if (this.skeleton.dirty) {
-      await this.skeleton.persist();
-    }
-
     // Broadcast structure change (one-phase notification)
     if (opts?.broadcastStructureChange) {
       opts.broadcastStructureChange([{
@@ -597,7 +547,7 @@ export class FragmentStore {
   ): Promise<NormalizeResult> {
 
     // Update skeleton: replace old heading with new one
-    const result = this.skeleton.replace(entry.headingPath, [section]);
+    const result = await this.skeleton.replace(entry.headingPath, [section]);
 
     const createdKeys: string[] = [];
     const removedKeys: string[] = [];
@@ -627,11 +577,6 @@ export class FragmentStore {
       removedKeys.push(fragmentKey);
     }
 
-    // Persist skeleton
-    if (this.skeleton.dirty) {
-      await this.skeleton.persist();
-    }
-
     // Broadcast structure change
     if (opts?.broadcastStructureChange && (createdKeys.length > 0 || removedKeys.length > 0)) {
       opts.broadcastStructureChange([{
@@ -650,7 +595,7 @@ export class FragmentStore {
     ops: SessionStoreOps,
     opts?: { broadcastStructureChange?: (info: Array<{ oldKey: string; newKeys: string[] }>) => void },
   ): Promise<NormalizeResult> {
-    const result = this.skeleton.replace(entry.headingPath, [section]);
+    const result = await this.skeleton.replace(entry.headingPath, [section]);
 
     const createdKeys: string[] = [];
     const removedKeys: string[] = [];
@@ -674,10 +619,6 @@ export class FragmentStore {
       this.clearFragment(fragmentKey);
       await ops.deleteRawFragment(this.docPath, entry.sectionFile);
       removedKeys.push(fragmentKey);
-    }
-
-    if (this.skeleton.dirty) {
-      await this.skeleton.persist();
     }
 
     if (opts?.broadcastStructureChange) {
@@ -735,7 +676,7 @@ export class FragmentStore {
   ): Promise<NormalizeResult> {
 
     // Replace old section with multiple new sections in skeleton
-    const result = this.skeleton.replace(entry.headingPath, realSections);
+    const result = await this.skeleton.replace(entry.headingPath, realSections);
 
     const createdKeys: string[] = [];
 
@@ -757,11 +698,6 @@ export class FragmentStore {
 
       createdKeys.push(newKey);
       bodyIdx++;
-    }
-
-    // Persist skeleton
-    if (this.skeleton.dirty) {
-      await this.skeleton.persist();
     }
 
     // Broadcast structure change
@@ -819,7 +755,7 @@ export class FragmentStore {
     let mergeTarget: FlatEntry | null = prevEntry;
     let mergeKey: string = prevKey;
     if (!mergeTarget) {
-      try { mergeTarget = this.skeleton.resolveRoot(); } catch { mergeTarget = null; }
+      mergeTarget = this.skeleton.expectRoot();
       mergeKey = ROOT_FRAGMENT_KEY;
     }
     const parentEntry = mergeTarget;
@@ -842,15 +778,10 @@ export class FragmentStore {
     }
 
     // Remove old section from skeleton
-    this.skeleton.replace(entry.headingPath, []);
+    await this.skeleton.replace(entry.headingPath, []);
 
     this.clearFragment(fragmentKey);
     await ops.deleteRawFragment(this.docPath, entry.sectionFile);
-
-    // Persist skeleton
-    if (this.skeleton.dirty) {
-      await this.skeleton.persist();
-    }
 
     // Broadcast structure change
     if (opts?.broadcastStructureChange) {
@@ -888,11 +819,7 @@ export class FragmentStore {
   /** Resolve a FlatEntry for a fragment key, or null if not found. */
   resolveEntryForKey(fragmentKey: string): FlatEntry | null {
     const sectionFileId = sectionFileFromFragmentKey(fragmentKey);
-    try {
-      return this.skeleton.resolveByFileId(sectionFileId);
-    } catch {
-      return null;
-    }
+    return this.skeleton.findByFileId(sectionFileId);
   }
 
   /** Extract markdown from a Y.Doc fragment. */
@@ -946,7 +873,7 @@ export class FragmentStore {
     // issue that caused fromDisk to lazy-import it.
     contentLayer: import("../storage/content-layer.js").ContentLayer,
   ): Promise<void> {
-    const entry = this.skeleton.resolve(headingPath);
+    const entry = this.skeleton.expect(headingPath);
     const isRoot = FragmentStore.isDocumentRoot(entry);
     const fragmentKey = fragmentKeyFromSectionFile(entry.sectionFile, isRoot);
     const body = (await contentLayer.readSection(new SectionRef(this.docPath, headingPath)) ?? "")

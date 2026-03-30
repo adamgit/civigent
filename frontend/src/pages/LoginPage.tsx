@@ -59,19 +59,10 @@ export function LoginPage() {
     setMessage(null);
     setError(null);
     try {
-      const res = await fetch("/api/auth/bootstrap", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: bootstrapCode }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.message ?? "Bootstrap failed.");
-      } else {
-        setMessage("Admin role granted. You can now access admin features.");
-        setBootstrapAvailable(false);
-        setBootstrapCode("");
-      }
+      await apiClient.bootstrap(bootstrapCode);
+      setMessage("Admin role granted. You can now access admin features.");
+      setBootstrapAvailable(false);
+      setBootstrapCode("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

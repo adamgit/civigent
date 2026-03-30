@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { ContentLayer } from "../../storage/content-layer.js";
-import { DocumentSkeleton } from "../../storage/document-skeleton.js";
+import { DocumentSkeletonInternal } from "../../storage/document-skeleton.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 
@@ -19,11 +19,11 @@ describe("writeSection heading-stripping invariant", () => {
   beforeAll(async () => {
     ctx = await createTempDataRoot();
     // Build a skeleton: root + "Overview" (h2) + "Title" (h1) + "Deep Section" (h4)
-    const skeleton = DocumentSkeleton.createEmpty(DOC, ctx.contentDir);
-    skeleton.insertSectionUnder([], { heading: "Overview", level: 2, body: "" });
-    skeleton.insertSectionUnder([], { heading: "Title", level: 1, body: "" });
-    skeleton.insertSectionUnder([], { heading: "Deep Section", level: 4, body: "" });
-    await skeleton.persist();
+    const skeleton = DocumentSkeletonInternal.inMemoryWithRoot(DOC, ctx.contentDir);
+    await skeleton.persistInternal();
+    await skeleton.insertSectionUnder([], { heading: "Overview", level: 2, body: "" });
+    await skeleton.insertSectionUnder([], { heading: "Title", level: 1, body: "" });
+    await skeleton.insertSectionUnder([], { heading: "Deep Section", level: 4, body: "" });
     // Write initial body content for each section (needed for path resolution)
     const layer = new ContentLayer(ctx.contentDir);
     await layer.writeSection(new SectionRef(DOC, []), "root body");

@@ -18,7 +18,7 @@ describe("GET /api/documents/:doc_path", () => {
 
   it("returns assembled markdown content with doc_path, content, head_sha, sections_meta", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}`)
+      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -32,7 +32,7 @@ describe("GET /api/documents/:doc_path", () => {
 
   it("returns head_sha as a string", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}`)
+      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -42,7 +42,7 @@ describe("GET /api/documents/:doc_path", () => {
 
   it("returns sections_meta as an array", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}`)
+      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);

@@ -52,6 +52,15 @@
   animation: agents-pulse 2s ease-out infinite;
 }
 
+.agents-card-expanded-row {
+  flex-basis: 100%;
+  background: white;
+  border-radius: 0.5rem;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--color-footer-border);
+  overflow: hidden;
+}
+
 .agents-card--add-new {
   display: flex;
   flex-direction: column;

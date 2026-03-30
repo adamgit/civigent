@@ -6,10 +6,17 @@
  * proposal system — no direct skeleton creation, no direct git commits.
  */
 
-import { ContentLayer } from "./content-layer.js";
+import { OverlayContentLayer } from "./content-layer.js";
 import { getContentRoot } from "./data-root.js";
 import { createTransientProposal, updateProposalSections } from "./proposal-repository.js";
 import type { ProposalId, WriterIdentity } from "../types/shared.js";
+
+export class ImportValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ImportValidationError";
+  }
+}
 
 export interface ImportFile {
   docPath: string;
@@ -40,8 +47,23 @@ export async function importFilesToProposal(
     description,
   );
 
+  // Validate files at import boundary — reject internal storage artifacts
+  const SKELETON_MARKER_RE = /\{\{section:\s*\S+\}\}/;
+  for (const file of files) {
+    if (file.docPath.includes(".sections/")) {
+      throw new ImportValidationError(
+        `.sections/ paths are internal storage artifacts and cannot be imported: ${file.docPath}`,
+      );
+    }
+    if (SKELETON_MARKER_RE.test(file.content)) {
+      throw new ImportValidationError(
+        `File appears to be an internal skeleton file, not a valid markdown document: ${file.docPath}`,
+      );
+    }
+  }
+
   // Write each file through importMarkdownDocument — normalizes sections + manages skeleton
-  const fContentLayer = new ContentLayer(propContentRoot, new ContentLayer(contentRoot));
+  const fContentLayer = new OverlayContentLayer(propContentRoot, contentRoot);
   const allSectionTargets: Array<{ doc_path: string; heading_path: string[] }> = [];
   for (const file of files) {
     const targets = await fContentLayer.importMarkdownDocument(file.docPath, file.content);

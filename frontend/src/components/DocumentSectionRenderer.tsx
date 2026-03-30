@@ -69,7 +69,7 @@ export function DocumentSectionRenderer({
       data-section-index={i}
       data-fragment-key={fk}
       data-heading-path={JSON.stringify(section.heading_path)}
-      className={`relative mx-[-16px] px-[16px] py-[4px] rounded-md border-l-[2.5px] transition-all group ${
+      className={`relative mx-[-16px] px-[16px] rounded-md border-l-[2.5px] transition-all group ${
         isLockedByOtherHuman
           ? `bg-amber-50/50 border-l-amber-400 opacity-75`
           : isInProposal
@@ -113,7 +113,7 @@ export function DocumentSectionRenderer({
             <p className="text-xs">{crdtError}</p>
           </div>
         ) : (
-          <div className="relative my-2">
+          <div className="relative">
             {/* ReactMarkdown underlayer — visible until editor is ready */}
             <div className="doc-prose" style={{ display: isReady ? "none" : undefined }}>
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>

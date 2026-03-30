@@ -1,5 +1,5 @@
 import { type FormEvent, useMemo, useState } from "react";
-import { useOutletContext } from "react-router-dom";
+import { Link, useOutletContext } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { DocumentSearchField } from "../components/DocumentSearchField";
 import { ContentPanel } from "../components/ContentPanel";
@@ -110,14 +110,34 @@ export function DocsBrowserPage() {
         )}
         {newDocError && <p className="text-xs text-red-600 mb-3">{newDocError}</p>}
 
-        {/* Search/filter */}
+        {/* Recent docs + Search/filter row */}
         {!isEmpty && (
-          <div className="mb-4">
-            <DocumentSearchField
-              placeholder="Filter documents..."
-              value={query}
-              onChange={setQuery}
-            />
+          <div className="flex gap-3 mb-4 items-stretch">
+            <Link
+              to="/recent-docs"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                border: "1px solid #eae7e2",
+                borderRadius: 7,
+                padding: "8px 14px",
+                background: "white",
+                color: "#1d5a66",
+                fontSize: 13,
+                textDecoration: "none",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <span style={{ fontSize: 13, opacity: 0.5 }}>&#128337;</span> Recent
+            </Link>
+            <div className="flex-1">
+              <DocumentSearchField
+                placeholder="Filter documents..."
+                value={query}
+                onChange={setQuery}
+              />
+            </div>
           </div>
         )}
 

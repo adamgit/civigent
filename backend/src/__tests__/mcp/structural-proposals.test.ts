@@ -16,7 +16,7 @@ import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content
 let ctx: TestServerContext;
 let mcpSessionId: string;
 
-// Helper to call MCP tools via the JSON-RPC transport
+// Helper to call MCP tools via the JSON-RPC transport (tier 3 for structural tools)
 async function callMcpTool(
   toolName: string,
   args: Record<string, unknown>,
@@ -31,7 +31,7 @@ async function callMcpTool(
   }
 
   const res = await request(ctx.app)
-    .post("/mcp")
+    .post("/mcp/tier3")
     .set(headers)
     .send({
       jsonrpc: "2.0",
@@ -48,10 +48,10 @@ async function callMcpTool(
   return res.body;
 }
 
-// Helper to initialize MCP session
+// Helper to initialize MCP session (tier 3 for structural tools)
 async function initMcpSession(token: string = ctx.agentToken): Promise<void> {
   const res = await request(ctx.app)
-    .post("/mcp")
+    .post("/mcp/tier3")
     .set("Authorization", token)
     .set("Content-Type", "application/json")
     .send({
@@ -76,11 +76,19 @@ async function createProposal(
   token: string = ctx.agentToken,
 ): Promise<string> {
   const res = await request(ctx.app)
-    .post("/api/proposals")
+    .post("/api/proposals?replace=true")
     .set("Authorization", token)
-    .send({ intent, sections: [] });
+    .send({
+      intent,
+      sections: [{
+        doc_path: SAMPLE_DOC_PATH,
+        heading_path: ["Overview"],
+        content: "placeholder",
+      }],
+    });
 
-  expect(res.status).toBe(200);
+  expect(res.status).toBeGreaterThanOrEqual(200);
+  expect(res.status).toBeLessThan(300);
   return res.body.proposal_id;
 }
 
@@ -294,6 +302,7 @@ describe("structural tools via proposals", () => {
         .set("Authorization", ctx.agentToken);
 
       expect(commitRes.status).toBe(200);
+      expect(commitRes.body.outcome).toBe("accepted");
 
       // Now canonical should include the new section
       const newSkeleton = await readCanonicalSkeleton();

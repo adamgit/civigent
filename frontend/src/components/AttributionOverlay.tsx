@@ -10,14 +10,20 @@ interface AttributionOverlayProps {
 const LINE_COLORS: Record<BlameLineAttribution["type"], string> = {
   human: "rgba(251, 191, 36, 0.15)",   // amber at 15%
   agent: "rgba(147, 197, 253, 0.15)",  // blue at 15%
+  unknown: "rgba(239, 68, 68, 0.12)",  // red at 12%
   mixed: "rgba(196, 181, 253, 0.15)",  // purple at 15%
 };
 
 const TYPE_LABELS: Record<BlameLineAttribution["type"], string> = {
   human: "Human",
   agent: "Agent",
+  unknown: "Unknown",
   mixed: "Mixed",
 };
+
+function getBorderColor(fillColor: string): string {
+  return fillColor.replace(/0\.\d+\)$/, "0.6)");
+}
 
 /**
  * Inline colored-line attribution view.
@@ -80,14 +86,14 @@ export function AttributionOverlay({ lines, loading, content, error }: Attributi
     >
       {contentLines.map((text, index) => {
         const lineNum = index + 1;
-        const type = lineTypeMap.get(lineNum) ?? "human";
+        const type = lineTypeMap.get(lineNum) ?? "unknown";
         return (
           <div
             key={lineNum}
             style={{
               background: LINE_COLORS[type],
               padding: "0 8px",
-              borderLeft: `3px solid ${LINE_COLORS[type].replace("0.15)", "0.6)")}`,
+              borderLeft: `3px solid ${getBorderColor(LINE_COLORS[type])}`,
               display: "flex",
               gap: 8,
             }}

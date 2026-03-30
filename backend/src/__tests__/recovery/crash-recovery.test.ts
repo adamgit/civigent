@@ -15,12 +15,19 @@ describe("Crash Recovery", () => {
   });
 
   it("proposals stuck in committing/ are recovered on startup", async () => {
-    // Create a proposal file in the committing directory
+    const proposalId = "stuck-proposal-1";
+
+    // Create the committing directory with proper {id}/meta.json structure
     const committingDir = join(ctx.rootDir, "proposals", "committing");
-    await mkdir(committingDir, { recursive: true });
+    const proposalSubDir = join(committingDir, proposalId);
+    await mkdir(proposalSubDir, { recursive: true });
+
+    // Also ensure draft/ directory exists (recovery target)
+    const draftDir = join(ctx.rootDir, "proposals", "draft");
+    await mkdir(draftDir, { recursive: true });
 
     const proposalData = {
-      id: "stuck-proposal-1",
+      id: proposalId,
       writer: { id: "human-test", type: "human", displayName: "Test" },
       intent: "test stuck proposal",
       sections: [],
@@ -28,27 +35,25 @@ describe("Crash Recovery", () => {
     };
 
     await writeFile(
-      join(committingDir, "stuck-proposal-1.json"),
+      join(proposalSubDir, "meta.json"),
       JSON.stringify(proposalData, null, 2),
       "utf8",
     );
 
-    // Verify file exists in committing
-    const beforeFiles = await readdir(committingDir);
-    expect(beforeFiles).toContain("stuck-proposal-1.json");
+    // Verify directory exists in committing
+    const beforeEntries = await readdir(committingDir);
+    expect(beforeEntries).toContain(proposalId);
 
     // Run crash recovery
     const { detectAndRecoverCrash } = await import("../../storage/crash-recovery.js");
     await detectAndRecoverCrash();
 
-    // After recovery, proposal should be moved to pending
-    const pendingDir = join(ctx.rootDir, "proposals", 
-"draft");
-    const pendingFiles = await readdir(pendingDir).catch(() => []);
-    expect(pendingFiles).toContain("stuck-proposal-1.json");
+    // After recovery, proposal directory should be moved to draft
+    const draftEntries = await readdir(draftDir).catch(() => []);
+    expect(draftEntries).toContain(proposalId);
 
     // committing should be empty
     const afterCommitting = await readdir(committingDir).catch(() => []);
-    expect(afterCommitting).not.toContain("stuck-proposal-1.json");
+    expect(afterCommitting).not.toContain(proposalId);
   });
 });

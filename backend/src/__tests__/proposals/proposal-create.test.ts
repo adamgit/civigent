@@ -5,14 +5,19 @@ import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content
 
 describe("POST /api/proposals — create proposal", () => {
   let ctx: TestServerContext;
+  let prevAuthMode: string | undefined;
 
   beforeAll(async () => {
+    prevAuthMode = process.env.KS_AUTH_MODE;
+    process.env.KS_AUTH_MODE = "oidc";
     ctx = await createTestServer();
     await createSampleDocument(ctx.dataCtx.rootDir);
   });
 
   afterAll(async () => {
     await ctx.cleanup();
+    if (prevAuthMode === undefined) delete process.env.KS_AUTH_MODE;
+    else process.env.KS_AUTH_MODE = prevAuthMode;
   });
 
   it("creates proposal in pending status with outcome=accepted and no committed_head", async () => {

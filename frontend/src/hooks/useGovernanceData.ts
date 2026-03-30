@@ -79,8 +79,14 @@ export function useGovernanceData(
           : "";
 
         const lastEditor = section.last_editor;
+        const rawLastEditorType = lastEditor?.type as string | undefined;
+        const lastEditorKind = rawLastEditorType === "human"
+          ? "Human"
+          : rawLastEditorType === "agent"
+            ? "Agent"
+            : `UNKNOWN(${rawLastEditorType ?? "(missing)"})`;
         const lastEditorNote = lastEditor
-          ? `${lastEditor.name} edited ${formatRelativeTime(lastEditor.timestampMs)}`
+          ? `${lastEditor.name} [${lastEditorKind}] edited ${formatRelativeTime(lastEditor.timestampMs)}`
           : "";
 
         return {

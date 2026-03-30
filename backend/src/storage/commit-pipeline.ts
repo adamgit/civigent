@@ -82,7 +82,7 @@ export async function commitProposalToCanonical(
     const sectionList = proposal.sections
       .map((s) => `  - ${sectionGlobalKey(s.doc_path, s.heading_path)}`)
       .join("\n");
-    const commitMessage = `agent proposal: ${proposal.intent}\n\nSections:\n${sectionList}\n\nProposal: ${proposal.id}\nWriter: ${proposal.writer.id}`;
+    const commitMessage = `agent proposal: ${proposal.intent}\n\nSections:\n${sectionList}\n\nProposal: ${proposal.id}\nWriter: ${proposal.writer.id}\nWriter-Type: ${proposal.writer.type}`;
     const author = {
       name: proposal.writer.displayName,
       email: `${proposal.writer.id}@knowledge-store.local`,
@@ -136,7 +136,7 @@ export async function commitHumanChangesToCanonical(
   sessionDocsContentRoot: string,
   coAuthors?: Array<{ name: string; email: string }>,
 ): Promise<string> {
-  let commitMessage = `human edit: ${writer.displayName}\n\nWriter: ${writer.id}`;
+  let commitMessage = `human edit: ${writer.displayName}\n\nWriter: ${writer.id}\nWriter-Type: ${writer.type}`;
   if (coAuthors && coAuthors.length > 0) {
     const trailers = coAuthors.map((a) => `Co-authored-by: ${a.name} <${a.email}>`).join("\n");
     commitMessage += "\n" + trailers;

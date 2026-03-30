@@ -31,7 +31,7 @@ describe("POST /api/proposals/:id/commit — commit proposal", () => {
     expect(pendingRes.body.status).toBe("draft");
     pendingProposalId = pendingRes.body.proposal_id;
 
-    // Create an agent proposal that auto-commits
+    // Create an agent proposal (returns draft), then explicitly commit it
     const committedRes = await request(ctx.app)
       .post("/api/proposals")
       .set("Authorization", ctx.agentToken)
@@ -46,8 +46,14 @@ describe("POST /api/proposals/:id/commit — commit proposal", () => {
         ],
       });
 
-    expect(committedRes.body.status).toBe("committed");
+    expect(committedRes.body.status).toBe("draft");
     committedProposalId = committedRes.body.proposal_id;
+
+    const commitRes = await request(ctx.app)
+      .post(`/api/proposals/${committedProposalId}/commit`)
+      .set("Authorization", ctx.agentToken);
+
+    expect(commitRes.body.status).toBe("committed");
   });
 
   afterAll(async () => {
@@ -123,10 +129,12 @@ describe("POST /api/proposals/:id/commit — commit proposal", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns 401 without auth", async () => {
+  it("returns 403 without auth (single-user mode authenticates as human, not owner)", async () => {
     const res = await request(ctx.app)
       .post(`/api/proposals/${committedProposalId}/commit`);
 
-    expect(res.status).toBe(401);
+    // In single_user mode, unauthenticated requests resolve to the single-user
+    // identity (human), which doesn't own this agent proposal → 403
+    expect(res.status).toBe(403);
   });
 });

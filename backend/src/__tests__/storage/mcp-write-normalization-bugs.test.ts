@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ContentLayer, MultiSectionContentError } from "../../storage/content-layer.js";
+import { ContentLayer, OverlayContentLayer, MultiSectionContentError } from "../../storage/content-layer.js";
 import { DocumentSkeleton, serializeSkeletonEntries, type FlatEntry } from "../../storage/document-skeleton.js";
 import { parseDocumentMarkdown } from "../../storage/markdown-sections.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
@@ -84,7 +84,7 @@ describe("BUG1 FIXED: writeSection rejects multi-heading; importMarkdownDocument
       "Beta body content.",
     ].join("\n");
 
-    const layer = new ContentLayer(ctx.contentDir);
+    const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
     const ref = new SectionRef(docPath, []);
     await expect(layer.writeSection(ref, multiSectionMarkdown)).rejects.toThrow(MultiSectionContentError);
   });
@@ -106,7 +106,7 @@ describe("BUG1 FIXED: writeSection rejects multi-heading; importMarkdownDocument
       "Gamma body content.",
     ].join("\n");
 
-    const layer = new ContentLayer(ctx.contentDir);
+    const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
     const targets = await layer.importMarkdownDocument(docPath, multiSectionMarkdown);
 
     // Should return 4 section targets: root + Alpha + Beta + Gamma
@@ -148,7 +148,7 @@ describe("BUG1b FIXED: ContentLayer.writeSection() rejects multi-heading content
   afterAll(async () => { await ctx.cleanup(); });
 
   it("writeSection with multi-heading body now throws MultiSectionContentError", async () => {
-    const layer = new ContentLayer(ctx.contentDir);
+    const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
     const ref = new SectionRef(docPath, ["Overview"]);
 
     const multiHeadingContent = "## A\nText A.\n\n## B\nText B.\n";
@@ -160,7 +160,7 @@ describe("BUG1b FIXED: ContentLayer.writeSection() rejects multi-heading content
   });
 
   it("writeSection with single-section body still works", async () => {
-    const layer = new ContentLayer(ctx.contentDir);
+    const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
     const ref = new SectionRef(docPath, ["Overview"]);
 
     // Single-section content (no headings in body) should work fine

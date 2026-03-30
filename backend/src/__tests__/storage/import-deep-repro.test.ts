@@ -6,7 +6,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument } from "../helpers/sample-content.js";
 import { importFilesToProposal } from "../../storage/import-service.js";
 import { commitProposalToCanonical } from "../../storage/commit-pipeline.js";
-import { ContentLayer } from "../../storage/content-layer.js";
+import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
 import { getContentRoot, getSessionDocsContentRoot } from "../../storage/data-root.js";
 import { readAssembledDocument } from "../../storage/document-reader.js";
 import { SectionRef } from "../../domain/section-ref.js";
@@ -72,7 +72,7 @@ describe("deeply nested import repro", () => {
     await commitProposalToCanonical(id, scores);
 
     const sessionDocsContentRoot = getSessionDocsContentRoot();
-    const overlay = new ContentLayer(sessionDocsContentRoot, new ContentLayer(getContentRoot()));
+    const overlay = new OverlayContentLayer(sessionDocsContentRoot, getContentRoot());
 
     const allContent = await overlay.readAllSections(docPath);
     expect(allContent.size).toBeGreaterThanOrEqual(5);
@@ -113,7 +113,7 @@ describe("deeply nested import repro", () => {
 
     const contentRoot = getContentRoot();
     const sessionDocsContentRoot = getSessionDocsContentRoot();
-    const overlay = new ContentLayer(sessionDocsContentRoot, new ContentLayer(contentRoot));
+    const overlay = new OverlayContentLayer(sessionDocsContentRoot, contentRoot);
 
     for (const file of files) {
       const allContent = await overlay.readAllSections(file.docPath);
@@ -121,7 +121,7 @@ describe("deeply nested import repro", () => {
     }
   });
 
-  it("reimport of content directory (with .sections/ artifacts) corrupts documents", async () => {
+  it("reimport of content directory (with .sections/ artifacts) is rejected", async () => {
     // First: import a normal document
     const markdown = [
       "# Analysis Report",
@@ -147,8 +147,8 @@ describe("deeply nested import repro", () => {
     );
 
     const { readProposal } = await import("../../storage/proposal-repository.js");
-    let freshProposal = await readProposal(firstId);
-    let scores: Record<string, number> = {};
+    const freshProposal = await readProposal(firstId);
+    const scores: Record<string, number> = {};
     for (const s of freshProposal.sections) {
       scores[SectionRef.fromTarget(s).globalKey] = 0;
     }
@@ -176,30 +176,9 @@ describe("deeply nested import repro", () => {
       ),
     ];
 
-    console.log("=== Reimport files:", reimportFiles.map(f => ({ docPath: f.docPath, contentPreview: f.content.substring(0, 80) })));
-
-    const { id: secondId } = await importFilesToProposal(
-      reimportFiles,
-      writer,
-      "Reimport (simulating cp -r of content dir)",
-    );
-
-    freshProposal = await readProposal(secondId);
-    scores = {};
-    for (const s of freshProposal.sections) {
-      scores[SectionRef.fromTarget(s).globalKey] = 0;
-    }
-    await commitProposalToCanonical(secondId, scores);
-
-    // NOW try to read — this is where the bug manifests
-    const sessionDocsContentRoot = getSessionDocsContentRoot();
-    const overlay = new ContentLayer(sessionDocsContentRoot, new ContentLayer(contentRoot));
-
-    const allContent = await overlay.readAllSections(docPath);
-    expect(allContent.size).toBeGreaterThan(0);
-
-    const assembled = await readAssembledDocument(docPath);
-    expect(assembled).toContain("Report intro.");
-    expect(assembled).toContain("Finding details.");
+    // Import should be rejected — skeleton files and .sections/ paths are internal artifacts
+    await expect(
+      importFilesToProposal(reimportFiles, writer, "Reimport (simulating cp -r of content dir)"),
+    ).rejects.toThrow(/internal/i);
   });
 });

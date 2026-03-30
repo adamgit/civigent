@@ -8,7 +8,7 @@ import { ensureGitRepoReady } from "./storage/git-repo.js";
 import { detectAndRecoverCrash } from "./storage/crash-recovery.js";
 import { importContentFromDirectoryIfNeeded } from "./storage/content-import.js";
 import { setAutoCommitEventHandler, commitAllDirtySessions } from "./storage/auto-commit.js";
-import { validateOAuthConfig, getPublicUrl } from "./auth/oauth-config.js";
+import { validateOAuthConfig, getOidcPublicUrl } from "./auth/oauth-config.js";
 import { maybeGenerateBootstrapCode } from "./auth/service.js";
 import { isSystemReady, setSystemReady } from "./startup-state.js";
 
@@ -74,7 +74,7 @@ process.on("SIGINT", async () => {
 // Start listening IMMEDIATELY so the port is open and the startup gate can serve 503s.
 // Recovery runs after listen — requests hit the middleware gate until setSystemReady().
 server.listen(PORT, () => {
-  const displayUrl = getPublicUrl();
+  const displayUrl = getOidcPublicUrl();
   console.log(`\n  Civigent running at ${displayUrl} (starting up...)\n`);
   if (buildInfo) {
     const d = new Date(buildInfo.date);
@@ -101,5 +101,5 @@ console.log("  System ready — accepting requests.\n");
 await maybeGenerateBootstrapCode();
 
 console.log(`  Connect an agent:\n`);
-console.log(`    claude mcp add --transport http knowledge-store ${getPublicUrl()}/mcp\n`);
-console.log(`  Setup page: ${getPublicUrl()}/setup\n`);
+console.log(`    claude mcp add --transport http knowledge-store ${getOidcPublicUrl()}/mcp\n`);
+console.log(`  Setup page: ${getOidcPublicUrl()}/setup\n`);

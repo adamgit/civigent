@@ -1,6 +1,12 @@
 // ─── Writer Identity ───────────────────────────────────────────────
 
+/**
+ * Authoritative writer identity enum emitted by backend APIs/events.
+ * Frontends must treat any non-enum runtime value as UNKNOWN when consuming
+ * untyped payloads (e.g. legacy/history endpoints) and surface the raw value.
+ */
 export type WriterType = "human" | "agent";
+export type AttributionWriterType = WriterType | "unknown";
 
 export interface WriterIdentity {
   id: string;
@@ -267,7 +273,7 @@ export interface SectionState {
   heading_path: string[];
   last_human_commit_sha: string | null;
   last_editor_id: string | null;
-  last_editor_type: WriterType | null;
+  last_editor_type: AttributionWriterType | null;
   last_editor_display_name: string | null;
   crdt_session_active: boolean;
   crdt_holder_count: number;
@@ -358,7 +364,7 @@ export interface GetDocumentSectionsResponse {
     /** Section filename (e.g. "sec_abc123def.md"). Used by frontend to build
      *  stable fragment keys that survive heading renames. */
     section_file: string;
-    last_editor?: { id: string; name: string; timestampMs: number; type: WriterType; seconds_ago: number };
+    last_editor?: { id: string; name: string; timestampMs: number; type: AttributionWriterType; seconds_ago: number };
   }>;
 }
 
@@ -468,12 +474,9 @@ export interface PublishResponse {
 
 // ─── Activity ──────────────────────────────────────────────────────
 
-export type ActivityItemSource = "agent_proposal" | "human_auto_commit" | "human_publish";
-
 export interface ActivityItem {
   id: string;
   timestamp: string;
-  source: ActivityItemSource;
   writer_id: string;
   writer_type: WriterType;
   writer_display_name: string;
@@ -562,7 +565,6 @@ export interface ContentCommittedEvent {
   doc_path: string;
   sections: SectionTargetRef[];
   commit_sha: string;
-  source: ActivityItemSource;
   writer_id: string;
   writer_display_name: string;
   writer_type: WriterType;
@@ -745,7 +747,7 @@ export interface GetAgentsFullSummaryResponse {
 
 export interface BlameLineAttribution {
   line: number;
-  type: "human" | "agent" | "mixed";
+  type: AttributionWriterType | "mixed";
   author?: string;
 }
 

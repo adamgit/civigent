@@ -92,7 +92,9 @@ export function AppLayout() {
   const [systemStarting, setSystemStarting] = useState(true);
   const [windowFocused, setWindowFocused] = useState(() => document.hasFocus());
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
-  const [adminExpanded, setAdminExpanded] = useState(false);
+  const [adminExpanded, setAdminExpanded] = useState(() => {
+    try { return localStorage.getItem("ks_sidebar_admin_expanded") === "true"; } catch { return false; }
+  });
   const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
   const focusedDocPath = useMemo(() => parseRouteDocPath(location.pathname), [location.pathname]);
   const focusedDocPathRef = useRef<string | null>(focusedDocPath);
@@ -309,7 +311,7 @@ export function AppLayout() {
       scheduleTreeRefresh();
 
       // Only show toast for agent commits
-      if (event.source !== "agent_proposal") {
+      if (event.writer_type !== "agent") {
         return;
       }
       const currentFocusedDocPath = focusedDocPathRef.current;
@@ -382,11 +384,11 @@ export function AppLayout() {
         </div>
 
         {/* Sidebar tree */}
-        <div className="flex-1 px-2 py-0.5 overflow-y-auto">
+        <div className="flex-1 px-2 py-0.5 overflow-y-auto sidebar-scroll">
           <div className="flex items-center justify-between px-1.5 pt-2.5 pb-1.5">
-            <span className="text-[10.5px] font-semibold text-sidebar-heading uppercase tracking-wider">
-              Documents
-            </span>
+            <Link to="/docs" className="flex items-center gap-1.5 text-[10.5px] font-semibold text-sidebar-heading uppercase tracking-wider hover:text-sidebar-text-hover transition-colors" style={{ textDecoration: "none" }}>
+              <span className="opacity-50">&#128196;</span> All Documents
+            </Link>
             {!loadingTree && (
               <button
                 type="button"
@@ -460,22 +462,13 @@ export function AppLayout() {
 
         {/* Sidebar nav */}
         <nav className="px-2 pt-2.5 pb-3.5 border-t border-sidebar-border flex flex-col gap-px">
-          <Link to="/" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-            <span className="text-xs w-4 text-center opacity-50">&#127968;</span> Home
-          </Link>
-          <Link to="/docs" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-            <span className="text-xs w-4 text-center opacity-50">&#128196;</span> Docs
-          </Link>
-          <Link to="/recent-docs" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-            <span className="text-xs w-4 text-center opacity-50">&#128337;</span> Recent
-          </Link>
           <Link to="/setup" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
             <span className="text-xs w-4 text-center opacity-50">&#128268;</span> Connect Agent
           </Link>
           <Link to="/history" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
             <span className="text-xs w-4 text-center opacity-50">&#128336;</span> Audit Log
           </Link>
-          <Link to="/agents" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
+          <Link to="/agents-activity" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
             <span className="text-xs w-4 text-center opacity-50">&#129302;</span> Agents
           </Link>
           <div>
@@ -484,7 +477,7 @@ export function AppLayout() {
                 <span className="text-xs w-4 text-center opacity-50">&#9881;</span> Admin
               </Link>
               <button
-                onClick={() => setAdminExpanded(p => !p)}
+                onClick={() => setAdminExpanded(p => { const next = !p; try { localStorage.setItem("ks_sidebar_admin_expanded", String(next)); } catch {} return next; })}
                 className="px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all"
               >
                 {adminExpanded ? "\u25B4" : "\u25BE"}
@@ -501,11 +494,17 @@ export function AppLayout() {
                 <Link to="/coordination" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
                   <span className="text-xs w-4 text-center opacity-50">&#128301;</span> Coordination
                 </Link>
+                <Link to="/admin/agents-auth" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
+                  <span className="text-xs w-4 text-center opacity-50">&#128273;</span> Agent Keys
+                </Link>
                 <Link to="/agent-simulator" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
                   <span className="text-xs w-4 text-center opacity-50">&#129302;</span> Agent Sim
                 </Link>
                 <Link to="/imports" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
                   <span className="text-xs w-4 text-center opacity-50">&#128229;</span> Imports
+                </Link>
+                <Link to="/admin/agent-mcp-logs" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
+                  <span className="text-xs w-4 text-center opacity-50">&#128202;</span> Agent Monitoring
                 </Link>
                 <Link to="/admin/snapshots" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
                   <span className="text-xs w-4 text-center opacity-50">&#128247;</span> Snapshots
@@ -513,9 +512,6 @@ export function AppLayout() {
               </div>
             )}
           </div>
-          <Link to="/login" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-            <span className="text-xs w-4 text-center opacity-50">&#128274;</span> Login
-          </Link>
         </nav>
 
         {/* Version footer */}

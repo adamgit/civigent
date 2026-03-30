@@ -34,7 +34,7 @@ export const routeConfig: RouteObject[] = [
       { path: "proposals", element: <ProposalsPage /> },
       { path: "proposals/:id", element: <ProposalDetailPage /> },
       { path: "admin", element: <AdminPage /> },
-      { path: "admin/agents", element: <AgentKeysPage /> },
+      { path: "admin/agents-auth", element: <AgentKeysPage /> },
       { path: "admin/permissions", element: <PermissionsPage /> },
       { path: "admin/snapshots", element: <SnapshotsPage /> },
       { path: "admin/agent-mcp-logs", element: <AgentMcpLogsPage /> },
@@ -44,8 +44,8 @@ export const routeConfig: RouteObject[] = [
       { path: "coordination", element: <CoordinationPage /> },
       { path: "setup", element: <SetupPage /> },
       { path: "features", element: <FeaturesPage /> },
-      { path: "agents", element: <AgentsPage /> },
-      { path: "agents/feed", element: <AgentFeedPage /> },
+      { path: "agents-activity", element: <AgentsPage /> },
+      { path: "agents-activity/feed", element: <AgentFeedPage /> },
       { path: "imports", element: <ImportsPage /> },
       { path: "login", element: <LoginPage /> }
     ]

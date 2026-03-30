@@ -31,6 +31,13 @@ import type {
   ModeTransitionRequest,
   ModeTransitionResult,
 } from "../types/shared";
+import {
+  WS_CLOSE_AUTH_REQUIRED,
+  WS_CLOSE_DOCUMENT_RESTORED,
+  WS_CLOSE_IDLE_TIMEOUT,
+  WS_CLOSE_INVALID_URL,
+  WS_CLOSE_YDOC_INIT_FAILED,
+} from "./crdt-close-codes";
 
 // ─── Protocol constants (must match backend/src/ws/crdt-sync.ts) ───
 
@@ -355,7 +362,7 @@ export class CrdtProvider {
       // will not send MSG_MUTATE_RESULT for it. This prevents callers from hanging.
       this.rejectPendingMutates(new Error(`WebSocket closed (code ${event.code})`));
 
-      if (event.code === 4022) {
+      if (event.code === WS_CLOSE_DOCUMENT_RESTORED) {
         // Document restored — reconnect immediately (no exponential backoff).
         this.reconnectAttempts = 0;
         this.events.onSessionReinit?.();
@@ -363,16 +370,16 @@ export class CrdtProvider {
         return;
       }
 
-      if (event.code === 4001) {
+      if (event.code === WS_CLOSE_AUTH_REQUIRED) {
         this.setState("disconnected");
         return;
       }
-      if (event.code === 4020) {
+      if (event.code === WS_CLOSE_IDLE_TIMEOUT) {
         this.setState("disconnected");
         this.events.onIdleTimeout?.();
         return;
       }
-      if (event.code >= 4010 && event.code <= 4019) {
+      if (event.code >= WS_CLOSE_INVALID_URL && event.code <= WS_CLOSE_YDOC_INIT_FAILED) {
         this.setState("error");
         this.events.onError?.(event.reason || "Server rejected connection");
         return;

@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
-import { SystemPostureBar } from "../components/agents/SystemPostureBar.js";
-import { McpToolLegend } from "../components/agents/McpToolLegend.js";
 import { AgentCard } from "../components/agents/AgentCard.js";
+import { AgentCardExpanded } from "../components/agents/AgentCardExpanded.js";
 import type { AgentCardViewModel } from "../components/agents/types.js";
 import { avatarHueFromId } from "../components/agents/utils.js";
 import { apiClient } from "../services/api-client";
@@ -374,17 +373,6 @@ export function AgentsPage() {
         }
       />
 
-      <div className="px-4 py-3 flex flex-col gap-3">
-        {data ? (
-          <SystemPostureBar
-            preset={data.posture.preset}
-            summary={data.posture.description}
-          />
-        ) : null}
-
-        <McpToolLegend />
-      </div>
-
       {loading ? (
         <p className="px-4 text-sm text-gray-500">Loading agents...</p>
       ) : null}
@@ -395,13 +383,23 @@ export function AgentsPage() {
 
       {!loading && !error ? (
         <div className="agents-grid">
-          {viewModels.map((vm) => (
-            <AgentCard
-              key={vm.id}
-              vm={vm}
-              onClick={() => setExpandedId(expandedId === vm.id ? null : vm.id)}
-            />
-          ))}
+          {viewModels.flatMap((vm) => {
+            const items = [
+              <AgentCard
+                key={vm.id}
+                vm={vm}
+                onClick={() => setExpandedId(expandedId === vm.id ? null : vm.id)}
+              />,
+            ];
+            if (expandedId === vm.id) {
+              items.push(
+                <div key={`${vm.id}-expanded`} className="agents-card-expanded-row">
+                  <AgentCardExpanded vm={vm} />
+                </div>,
+              );
+            }
+            return items;
+          })}
           <button
             className="agents-card agents-card--add-new"
             onClick={() => setShowAddDialog(true)}

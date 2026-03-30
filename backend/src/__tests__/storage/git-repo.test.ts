@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { ensureGitRepoReady, getHeadSha, gitExec } from "../../storage/git-repo.js";
+import { ensureGitRepoReady, getHeadSha, gitExec, gitStatusPorcelain } from "../../storage/git-repo.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument } from "../helpers/sample-content.js";
 
@@ -36,5 +36,31 @@ describe("git-repo", () => {
     const output = await gitExec(["status", "--porcelain"], ctx.rootDir);
     // Output is a string (possibly empty if working tree is clean)
     expect(typeof output).toBe("string");
+  });
+
+  it("gitStatusPorcelain returns structured status entries for dirty files", async () => {
+    const { writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+
+    // Modify a tracked file under content/ without staging
+    const sectionsDir = join(ctx.rootDir, "content", "ops", "strategy.md.sections");
+    await writeFile(join(sectionsDir, "overview.md"), "modified content\n", "utf8");
+
+    const entries = await gitStatusPorcelain(ctx.rootDir);
+
+    // Should have at least one entry for the modified file
+    expect(entries.length).toBeGreaterThan(0);
+
+    const contentEntry = entries.find(e => e.filePath.startsWith("content/"));
+    expect(contentEntry).toBeDefined();
+    expect(contentEntry!.code).toBe(" M");
+
+    // Restore the file so subsequent tests aren't affected
+    await gitExec(["checkout", "--", "content/"], ctx.rootDir);
+  });
+
+  it("gitStatusPorcelain returns empty array for clean working tree", async () => {
+    const entries = await gitStatusPorcelain(ctx.rootDir);
+    expect(entries).toEqual([]);
   });
 });

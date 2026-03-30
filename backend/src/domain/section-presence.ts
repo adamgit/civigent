@@ -90,12 +90,7 @@ export class SectionPresence {
     const sessionDocsContentRoot = getSessionDocsContentRoot();
     const result = new Set<string>();
 
-    let overlayPaths: Map<string, { absolutePath: string }>;
-    try {
-      overlayPaths = await resolveAllSectionPaths(sessionDocsContentRoot, docPath);
-    } catch {
-      return result;
-    }
+    const overlayPaths = await resolveAllSectionPaths(sessionDocsContentRoot, docPath);
 
     const checks = [...overlayPaths.entries()].map(async ([key, resolved]) => {
       try {

@@ -11,7 +11,7 @@ import { makeToolErrorResult } from "../protocol.js";
 import { readAssembledDocument, DocumentNotFoundError } from "../../storage/document-reader.js";
 import { readDocumentsTree } from "../../storage/documents-tree.js";
 import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
-import { ContentLayer } from "../../storage/content-layer.js";
+import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { readDocumentStructure, flattenStructureToHeadingPaths } from "../../storage/heading-resolver.js";
 import {
@@ -21,14 +21,12 @@ import {
 } from "../../storage/proposal-repository.js";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import { resolveDocPathUnderContent, InvalidDocPathError } from "../../storage/path-utils.js";
-import { access, copyFile, mkdir, readdir } from "node:fs/promises";
-import path from "node:path";
+import { access } from "node:fs/promises";
 import {
   evaluateProposalHumanInvolvement,
   commitProposalToCanonical,
 } from "../../storage/commit-pipeline.js";
 import { SectionRef } from "../../domain/section-ref.js";
-import { DocumentSkeleton } from "../../storage/document-skeleton.js";
 import type { SectionScoreSnapshot } from "../../types/shared.js";
 import { checkDocPermission } from "../../auth/acl.js";
 
@@ -51,7 +49,7 @@ const readFileHandler: ToolHandler = async (args, ctx) => {
 
     // Broadcast agent:reading
     if (ctx.writer.type === "agent" && ctx.emitEvent) {
-      const structure = await readDocumentStructure(filePath).catch(() => []);
+      const structure = await readDocumentStructure(filePath);
       const headingPaths = flattenStructureToHeadingPaths(structure);
       ctx.emitEvent({
         type: "agent:reading",
@@ -164,15 +162,12 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
     return makeToolErrorResult(`Source document not found: ${source}`);
   }
 
-  // Load source skeleton to collect heading paths for proposal metadata
-  const sourceSkeleton = await DocumentSkeleton.fromDisk(source, canonicalContentRoot, canonicalContentRoot);
-  if (sourceSkeleton.isEmpty) {
+  // Load source heading paths for proposal metadata
+  const canonicalLayer = new ContentLayer(canonicalContentRoot);
+  const headingPaths = await canonicalLayer.listHeadingPaths(source);
+  if (headingPaths.length === 0) {
     return makeToolErrorResult(`Source document not found: ${source}`);
   }
-  const headingPaths: string[][] = [];
-  sourceSkeleton.forEachSection((_h, _l, _sf, hp) => {
-    headingPaths.push([...hp]);
-  });
 
   // Auto-withdraw any existing pending proposal
   const existing = await findDraftProposalByWriter(writer.id);
@@ -195,22 +190,12 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
     proposalSections,
   );
 
-  // Write tombstone at source path (createTombstone auto-persists)
-  await DocumentSkeleton.createTombstone(source, contentRoot);
+  // Write tombstone at source path in the proposal overlay
+  const moveOverlayLayer = new OverlayContentLayer(contentRoot, canonicalContentRoot);
+  await moveOverlayLayer.deleteDocument(source);
 
-  // Copy canonical skeleton file verbatim to overlay destination path
-  const normalizedSrc = source.replace(/\\/g, "/").replace(/^\/+/, "");
-  const normalizedDest = destination.replace(/\\/g, "/").replace(/^\/+/, "");
-  const canonicalSrcSkeletonPath = path.resolve(canonicalContentRoot, ...normalizedSrc.split("/"));
-  const overlaySrcSectionsDir = `${canonicalSrcSkeletonPath}.sections`;
-  const overlayDestSkeletonPath = path.resolve(contentRoot, ...normalizedDest.split("/"));
-  const overlayDestSectionsDir = `${overlayDestSkeletonPath}.sections`;
-
-  await mkdir(path.dirname(overlayDestSkeletonPath), { recursive: true });
-  await copyFile(canonicalSrcSkeletonPath, overlayDestSkeletonPath);
-
-  // Recursively copy canonical source.sections/ to overlay dest.sections/
-  await copyDirectoryRecursive(overlaySrcSectionsDir, overlayDestSectionsDir);
+  // Stage destination by copying canonical skeleton/body files into overlay.
+  await moveOverlayLayer.copyCanonicalDocumentToOverlay(source, destination);
 
   // Evaluate human involvement
   const { evaluation, sections } = await evaluateProposalHumanInvolvement(moveProposalId);
@@ -228,7 +213,6 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
         doc_path: destination,
         sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
         commit_sha: committedHead,
-        source: "agent_proposal",
         writer_id: writer.id,
         writer_display_name: writer.displayName,
         writer_type: writer.type,
@@ -316,7 +300,7 @@ async function writeDocumentViaProposal(
   );
 
   // Write each file through importMarkdownDocument which normalizes sections
-  const fContentLayer = new ContentLayer(contentRoot, new ContentLayer(canonicalContentRoot));
+  const fContentLayer = new OverlayContentLayer(contentRoot, canonicalContentRoot);
   for (const file of files) {
     const targets = await fContentLayer.importMarkdownDocument(file.path, file.content);
     allSectionTargets.push(...targets);
@@ -343,7 +327,6 @@ async function writeDocumentViaProposal(
         doc_path: sections[0]?.doc_path ?? "",
         sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
         commit_sha: committedHead,
-        source: "agent_proposal",
         writer_id: writer.id,
         writer_display_name: writer.displayName,
         writer_type: writer.type,
@@ -413,33 +396,29 @@ async function deleteDocumentViaProposal(
     return makeToolErrorResult("Cannot delete document with active editing session.");
   }
 
-  // Load canonical skeleton to get all sections for human-involvement evaluation
-  const skeleton = await DocumentSkeleton.fromDisk(docPath, canonicalContentRoot, canonicalContentRoot);
-  const headingPaths: string[][] = [];
-  skeleton.forEachSection((_heading, _level, _sectionFile, headingPath) => {
-    headingPaths.push([...headingPath]);
-  });
-
   // Auto-withdraw any existing pending proposal by this writer
   const existing = await findDraftProposalByWriter(writer.id);
   if (existing) {
     await transitionToWithdrawn(existing.id, "auto-withdrawn by new delete");
   }
 
-  // Create proposal with all sections as targets
+  // Create proposal (sections updated after tombstone reads canonical headings)
+  const { id: delProposalId, contentRoot } = await createTransientProposal(
+    { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
+    `Delete document: ${docPath}`,
+  );
+
+  // Read canonical headings and write a tombstone marker to the proposal overlay
+  const delOverlayLayer = new OverlayContentLayer(contentRoot, canonicalContentRoot);
+  const headingPaths = await delOverlayLayer.tombstoneDocument(docPath);
+
+  // Update proposal sections to match the canonical structure
   const proposalSections = headingPaths.map((hp) => ({
     doc_path: docPath,
     heading_path: hp,
   }));
-
-  const { id: delProposalId, contentRoot } = await createTransientProposal(
-    { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
-    `Delete document: ${docPath}`,
-    proposalSections,
-  );
-
-  // Write tombstone skeleton to proposal overlay (createTombstone auto-persists)
-  await DocumentSkeleton.createTombstone(docPath, contentRoot);
+  const { updateProposalSections: updateDelProposalSections } = await import("../../storage/proposal-repository.js");
+  await updateDelProposalSections(delProposalId, proposalSections);
 
   // Evaluate human involvement
   const { evaluation, sections } = await evaluateProposalHumanInvolvement(delProposalId);
@@ -457,7 +436,6 @@ async function deleteDocumentViaProposal(
         doc_path: docPath,
         sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
         commit_sha: committedHead,
-        source: "agent_proposal",
         writer_id: writer.id,
         writer_display_name: writer.displayName,
         writer_type: writer.type,
@@ -599,28 +577,6 @@ export function registerFilesystemTools(registry: ToolRegistry): void {
     moveFileHandler,
   );
 
-}
-
-// ─── Helpers ─────────────────────────────────────────────
-
-async function copyDirectoryRecursive(srcDir: string, destDir: string): Promise<void> {
-  let entries;
-  try {
-    entries = await readdir(srcDir, { withFileTypes: true });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return; // No sections dir is valid
-    throw err;
-  }
-  await mkdir(destDir, { recursive: true });
-  for (const entry of entries) {
-    const srcPath = path.join(srcDir, entry.name);
-    const destPath = path.join(destDir, entry.name);
-    if (entry.isDirectory()) {
-      await copyDirectoryRecursive(srcPath, destPath);
-    } else {
-      await copyFile(srcPath, destPath);
-    }
-  }
 }
 
 export function registerPlanChangesTool(registry: ToolRegistry): void {

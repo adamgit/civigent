@@ -93,7 +93,7 @@ const readDocHandler: ToolHandler = async (args, ctx) => {
   try {
     const content = await readAssembledDocument(docPath);
     const headSha = await getHeadSha(getDataRoot());
-    const structure = await readDocumentStructure(docPath).catch(() => []);
+    const structure = await readDocumentStructure(docPath);
     const headingPaths = flattenStructureToHeadingPaths(structure);
 
     // Broadcast agent:reading
@@ -351,7 +351,6 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
           doc_path: sections[0]?.doc_path ?? "",
           sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
           commit_sha: committedHead,
-          source: "agent_proposal",
           writer_id: ctx.writer.id,
           writer_display_name: ctx.writer.displayName,
           writer_type: ctx.writer.type,

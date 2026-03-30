@@ -47,17 +47,12 @@ function ImportDetailView({
       setUploading(true);
       setError(null);
       try {
-        const files: { name: string; content: string }[] = [];
-        for (const file of Array.from(fileList)) {
-          if (!file.name.toLowerCase().endsWith(".md")) continue;
-          const content = await file.text();
-          files.push({ name: file.webkitRelativePath || file.name, content });
-        }
+        const files = Array.from(fileList).filter((file) => file.name.toLowerCase().endsWith(".md"));
         if (files.length === 0) {
           setError("No .md files selected.");
           return;
         }
-        // Batch uploads to avoid hitting express JSON body size limit
+
         const BATCH_SIZE = 5;
         for (let i = 0; i < files.length; i += BATCH_SIZE) {
           await apiClient.uploadImportFiles(importId, files.slice(i, i + BATCH_SIZE));

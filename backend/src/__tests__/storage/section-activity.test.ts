@@ -17,7 +17,7 @@ describe("section-activity", () => {
   });
 
   it("readDocSectionCommitInfo returns a Map with entries for committed sections", async () => {
-    const result = await readDocSectionCommitInfo(SAMPLE_DOC_PATH, 3);
+    const result = await readDocSectionCommitInfo(SAMPLE_DOC_PATH);
     expect(result).toBeInstanceOf(Map);
     expect(result.size).toBeGreaterThanOrEqual(1);
 
@@ -30,7 +30,7 @@ describe("section-activity", () => {
   });
 
   it("readDocSectionCommitInfo keys are relative file paths", async () => {
-    const result = await readDocSectionCommitInfo(SAMPLE_DOC_PATH, 3);
+    const result = await readDocSectionCommitInfo(SAMPLE_DOC_PATH);
 
     for (const key of result.keys()) {
       expect(typeof key).toBe("string");
@@ -40,7 +40,7 @@ describe("section-activity", () => {
   });
 
   it("readDocSectionCommitInfo timestamp is recent (within last minute)", async () => {
-    const result = await readDocSectionCommitInfo(SAMPLE_DOC_PATH, 3);
+    const result = await readDocSectionCommitInfo(SAMPLE_DOC_PATH);
     const now = Date.now();
 
     for (const [, info] of result) {
@@ -51,7 +51,7 @@ describe("section-activity", () => {
   });
 
   it("getSecondsSinceLastHumanActivity returns a number or null", async () => {
-    const commitInfo = await readDocSectionCommitInfo(SAMPLE_DOC_PATH, 3);
+    const commitInfo = await readDocSectionCommitInfo(SAMPLE_DOC_PATH);
     const result = await getSecondsSinceLastHumanActivity(new SectionRef(SAMPLE_DOC_PATH, ["Overview"]), commitInfo);
 
     if (result !== null) {
@@ -60,8 +60,9 @@ describe("section-activity", () => {
     }
   });
 
-  it("getSecondsSinceLastHumanActivity returns null for non-existent section", async () => {
-    const result = await getSecondsSinceLastHumanActivity(new SectionRef(SAMPLE_DOC_PATH, ["Nonexistent"]), new Map());
-    expect(result).toBeNull();
+  it("getSecondsSinceLastHumanActivity throws for non-existent section", async () => {
+    await expect(
+      getSecondsSinceLastHumanActivity(new SectionRef(SAMPLE_DOC_PATH, ["Nonexistent"]), new Map()),
+    ).rejects.toThrow(/not found/i);
   });
 });

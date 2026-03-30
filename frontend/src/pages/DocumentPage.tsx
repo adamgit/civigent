@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { apiClient } from "../services/api-client";
 import { getLastDocumentVisitAt, markDocumentVisitedNow } from "../services/document-visit-history";
 import { SectionTransferService, type SectionTransfer } from "../services/section-transfer";
@@ -60,6 +60,7 @@ interface DocumentPageProps {
 
 export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const params = useParams();
+  const navigate = useNavigate();
   const decodedDocPath = useMemo(() => {
     if (typeof docPathOverride === "string" && docPathOverride.length > 0) {
       return docPathOverride;
@@ -75,6 +76,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [structureTree, setStructureTree] = useState<DocStructureNode[] | null>(null);
   const [showLoading, setShowLoading] = useState(false);
@@ -117,6 +119,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     focusedSectionIndex,
     setFocusedSectionIndex,
     crdtProvider,
+    crdtSynced,
     crdtState,
     crdtError,
     editingLoading,
@@ -545,6 +548,23 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
                     >
                       Rename
                     </button>
+                    <button
+                      className="text-xs text-red-600 hover:underline ml-1"
+                      onClick={async () => {
+                        if (!decodedDocPath) return;
+                        if (!window.confirm("Delete this document? This cannot be undone.")) return;
+                        setDeleteError(null);
+                        try {
+                          await apiClient.deleteDocument(decodedDocPath);
+                          navigate("/");
+                        } catch (err) {
+                          setDeleteError(err instanceof Error ? err.message : String(err));
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                    {deleteError && <span className="text-xs text-red-600 ml-1">{deleteError}</span>}
                   </>
                 )}
               </div>
@@ -592,9 +612,9 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
             const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path.length === 0);
             const sectionLabel = headingPathToLabel(section.heading_path);
             return (
-              <div key={fk} className="flex items-start">
+              <div key={fk} className="flex items-stretch">
                 {/* Left gutter — who changed this section */}
-                <div className="w-[200px] min-w-[100px] shrink flex justify-end pt-1">
+                <div className="w-[200px] min-w-[100px] shrink relative flex items-stretch justify-end pt-1">
                   <SummaryWhoChangedThisSection
                     editorId={section.last_editor?.id}
                     editorName={section.last_editor?.name}
@@ -619,7 +639,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
                     injectedByWriter={injectedByLabel.get(sectionLabel) ?? null}
                     hasRemotePresence={presenceIndicators.some((p) => p.sectionKey === sectionKey)}
                     dragOverSectionIndex={dragOverSectionIndex}
-                    crdtProvider={crdtProvider}
+                    crdtProvider={crdtSynced ? crdtProvider : null}
                     crdtError={crdtError}
                     proposalMode={proposalMode}
                     isReady={readyEditors.has(i)}

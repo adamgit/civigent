@@ -9,7 +9,8 @@ import path from "node:path";
 import { readFile, readdir } from "node:fs/promises";
 import { getContentRoot, getSessionDocsContentRoot, getSessionAuthorsRoot } from "./data-root.js";
 import { scanSessionFragmentDocPaths, listRawFragments, readRawFragment } from "./session-store.js";
-import { DocumentSkeleton, SECTIONS_DIR_SUFFIX } from "./document-skeleton.js";
+import { SECTIONS_DIR_SUFFIX } from "./document-skeleton.js";
+import { OverlayContentLayer, SectionNotFoundError } from "./content-layer.js";
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -44,6 +45,11 @@ export interface SessionState {
   };
 }
 
+function isSkeletonParseOrIntegrityError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.message.includes("Skeleton integrity error") || err.message.includes("Skeleton parse error");
+}
+
 // ─── Implementation ──────────────────────────────────────
 
 export async function getSessionState(): Promise<SessionState> {
@@ -53,28 +59,24 @@ export async function getSessionState(): Promise<SessionState> {
   let totalFragmentFiles = 0;
   for (const docPath of fragmentDocPaths) {
     const files = await listRawFragments(docPath);
-    let skeleton: DocumentSkeleton | null = null;
-    try {
-      skeleton = await DocumentSkeleton.fromDisk(
-        docPath,
-        getSessionDocsContentRoot(),
-        getContentRoot(),
-      );
-    } catch {
-      // Skeleton doesn't exist or is corrupt — fragments will show as unresolvable
-    }
+    const overlayLayer = new OverlayContentLayer(getSessionDocsContentRoot(), getContentRoot());
     const entries: FragmentFileInfo[] = [];
     for (const filename of files) {
       const content = await readRawFragment(docPath, filename);
       if (content === null) continue;
       const sizeBytes = Buffer.byteLength(content, "utf8");
       let sectionHeading: string | null = null;
-      if (skeleton) {
-        const fileId = filename.replace(/\.md$/, "");
-        try {
-          const entry = skeleton.resolveByFileId(fileId);
-          sectionHeading = entry.heading || "(root)";
-        } catch { /* fragment may not match any skeleton entry */ }
+      const fileId = filename.replace(/\.md$/, "");
+      try {
+        const entry = await overlayLayer.resolveSectionFileId(docPath, fileId);
+        sectionHeading = entry.heading || "(root)";
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (err instanceof SectionNotFoundError || code === "ENOENT") {
+          // Missing skeleton/section mapping is expected in this diagnostic view.
+        } else {
+          throw err;
+        }
       }
       entries.push({
         filename,
@@ -105,13 +107,21 @@ export async function getSessionState(): Promise<SessionState> {
     const fullPath = path.join(contentSubdir, relPath);
     const fileContent = await readFile(fullPath, "utf8");
 
-    const overlaySkeleton = await DocumentSkeleton.fromDisk(docPath, contentSubdir, getContentRoot());
+    const docOverlayLayer = new OverlayContentLayer(contentSubdir, getContentRoot());
     const sectionRefSet = new Set<string>();
-    overlaySkeleton.forEachSection((_h, _l, sectionFile) => {
-      sectionRefSet.add(sectionFile);
-    });
+    try {
+      const sectionList = await docOverlayLayer.getSectionList(docPath);
+      for (const s of sectionList) sectionRefSet.add(s.sectionFile);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || isSkeletonParseOrIntegrityError(err)) {
+        // Missing/corrupt skeleton is tolerated by this diagnostic inspector.
+      } else {
+        throw err;
+      }
+    }
 
-    const sectionsDir = DocumentSkeleton.sectionsDir(docPath, contentSubdir);
+    const sectionsDir = docOverlayLayer.sectionsDirectory(docPath);
     const sectionFiles: Array<{ filename: string; content: string; isOrphaned: boolean }> = [];
     try {
       const sectionEntries = await readdir(sectionsDir);
@@ -158,7 +168,9 @@ export async function getSessionState(): Promise<SessionState> {
       authors[writerId] = { filename: af, dirtySections };
       totalAuthors++;
     }
-  } catch { /* authors dir may not exist */ }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
 
   return {
     fragments,

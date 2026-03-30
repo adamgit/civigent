@@ -27,7 +27,7 @@ import {
 import { setPostCommitHook, commitProposalToCanonical } from "../../storage/commit-pipeline.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
-import type { SectionScoreSnapshot } from "../../types/shared.js";
+import type { SectionScoreSnapshot, WriterIdentity } from "../../types/shared.js";
 
 // ─── Mock commit-pipeline dependencies for test 6 ────────────────
 // These mocks are hoisted by Vitest but only used in test 6.
@@ -138,7 +138,8 @@ describe("Fragment injection after proposal commit", () => {
 
   it("injectAfterCommit does not pollute session.lastTouchedFragments", async () => {
     const baseHead = await getHeadSha(ctx.rootDir);
-    const session = await acquireDocSession(SAMPLE_DOC_PATH, "writer-inject-test", baseHead);
+    const writerIdentity: WriterIdentity = { id: "writer-inject-test", type: "human", displayName: "Inject Test Writer" };
+    const session = await acquireDocSession(SAMPLE_DOC_PATH, "writer-inject-test", baseHead, writerIdentity);
 
     // Find the "Overview" heading path
     let overviewHeadingPath: string[] | null = null;
@@ -180,7 +181,8 @@ describe("Fragment injection after proposal commit", () => {
 
   it("injectAfterCommit fires _yjsUpdateBroadcast with a non-empty delta", async () => {
     const baseHead = await getHeadSha(ctx.rootDir);
-    await acquireDocSession(SAMPLE_DOC_PATH, "writer-broadcast-test", baseHead);
+    const writerIdentity: WriterIdentity = { id: "writer-broadcast-test", type: "human", displayName: "Broadcast Test Writer" };
+    await acquireDocSession(SAMPLE_DOC_PATH, "writer-broadcast-test", baseHead, writerIdentity);
 
     const broadcastMock = vi.fn();
     setYjsUpdateBroadcast(broadcastMock);

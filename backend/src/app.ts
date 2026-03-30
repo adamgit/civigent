@@ -29,9 +29,18 @@ export function createApp(options?: CreateAppOptions) {
   // In production (quickstart Docker image), serve the frontend from ./public
   const publicDir = join(process.cwd(), "public");
   if (existsSync(publicDir)) {
-    app.use(express.static(publicDir));
+    app.use(express.static(publicDir, {
+      setHeaders(res, filePath) {
+        if (filePath.endsWith("/index.html") || filePath.endsWith("\\index.html")) {
+          res.setHeader("Cache-Control", "no-cache");
+        } else if (filePath.includes("/assets/") || filePath.includes("\\assets\\")) {
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        }
+      },
+    }));
     // SPA fallback — let the frontend router handle unmatched paths
     app.get("*", (_req, res) => {
+      res.setHeader("Cache-Control", "no-cache");
       res.sendFile(join(publicDir, "index.html"));
     });
   } else {

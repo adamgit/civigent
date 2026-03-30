@@ -1,39 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { describe, it, expect } from "vitest";
 import {
-  getDirtySessionFileSet,
   computeHumanInvolvementScore,
   evaluateSectionHumanInvolvement,
   INVOLVEMENT_THRESHOLD,
   JUSTIFICATION_REDUCTION,
 } from "../../domain/humanInvolvement.js";
-import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
-import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
-
-describe("human-involvement dirty files", () => {
-  let ctx: TempDataRootContext;
-
-  beforeAll(async () => {
-    ctx = await createTempDataRoot();
-    await createSampleDocument(ctx.rootDir);
-  });
-
-  afterAll(async () => {
-    await ctx.cleanup();
-  });
-
-  it("getDirtySessionFileSet returns a Set (possibly empty) for a document path", async () => {
-    const result = await getDirtySessionFileSet(SAMPLE_DOC_PATH);
-    expect(result).toBeInstanceOf(Set);
-  });
-
-  it("getDirtySessionFileSet returns empty Set when no session overlay exists", async () => {
-    const result = await getDirtySessionFileSet("nonexistent-doc.md");
-    expect(result).toBeInstanceOf(Set);
-    expect(result.size).toBe(0);
-  });
-});
 
 describe("computeHumanInvolvementScore", () => {
   it("returns 0 for null seconds", () => {
@@ -74,53 +45,14 @@ describe("computeHumanInvolvementScore", () => {
 });
 
 describe("evaluateSectionHumanInvolvement", () => {
-  it("returns score=1.0 and blocked for active CRDT session without pulse data", () => {
-    const result = evaluateSectionHumanInvolvement({
-      secondsSinceLastHumanActivity: null,
-      crdtSessionActive: true,
-      hasJustification: false,
-    });
-
-    expect(result.score).toBe(1.0);
-    expect(result.blocked).toBe(true);
-    expect(result.reason).toBe("live_session");
-  });
-
-  it("uses graduated level when CRDT session active and pulse data available", () => {
-    const result = evaluateSectionHumanInvolvement({
-      secondsSinceLastHumanActivity: null,
-      crdtSessionActive: true,
-      hasJustification: false,
-      graduatedLevel: 0.3,
-    });
-
-    expect(result.score).toBe(0.3);
-    expect(result.blocked).toBe(false);
-  });
-
-  it("graduated level above threshold blocks", () => {
-    const result = evaluateSectionHumanInvolvement({
-      secondsSinceLastHumanActivity: null,
-      crdtSessionActive: true,
-      hasJustification: false,
-      graduatedLevel: 0.8,
-    });
-
-    expect(result.score).toBe(0.8);
-    expect(result.blocked).toBe(true);
-    expect(result.reason).toBe("live_session");
-  });
-
   it("justification reduces score by JUSTIFICATION_REDUCTION", () => {
     const withoutJustification = evaluateSectionHumanInvolvement({
       secondsSinceLastHumanActivity: 100,
-      crdtSessionActive: false,
       hasJustification: false,
     });
 
     const withJustification = evaluateSectionHumanInvolvement({
       secondsSinceLastHumanActivity: 100,
-      crdtSessionActive: false,
       hasJustification: true,
     });
 
@@ -133,7 +65,6 @@ describe("evaluateSectionHumanInvolvement", () => {
   it("score below threshold is not blocked", () => {
     const result = evaluateSectionHumanInvolvement({
       secondsSinceLastHumanActivity: 10000,
-      crdtSessionActive: false,
       hasJustification: false,
     });
 
@@ -145,7 +76,6 @@ describe("evaluateSectionHumanInvolvement", () => {
   it("score at or above threshold is blocked with humanInvolvement_threshold reason", () => {
     const result = evaluateSectionHumanInvolvement({
       secondsSinceLastHumanActivity: 0,
-      crdtSessionActive: false,
       hasJustification: false,
     });
 
@@ -157,7 +87,6 @@ describe("evaluateSectionHumanInvolvement", () => {
   it("score never goes below 0 even with justification", () => {
     const result = evaluateSectionHumanInvolvement({
       secondsSinceLastHumanActivity: null,
-      crdtSessionActive: false,
       hasJustification: true,
     });
 

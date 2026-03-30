@@ -7,15 +7,18 @@ import { authFor } from "../helpers/auth.js";
 describe("GET /api/proposals and GET /api/my-proposals — list proposals", () => {
   let ctx: TestServerContext;
   let secondWriterToken: string;
+  let prevAuthMode: string | undefined;
 
   beforeAll(async () => {
+    prevAuthMode = process.env.KS_AUTH_MODE;
+    process.env.KS_AUTH_MODE = "oidc";
     ctx = await createTestServer();
     await createSampleDocument(ctx.dataCtx.rootDir);
 
     secondWriterToken = authFor("second-writer", "agent");
 
-    // Create a proposal from the primary agent (auto-commits)
-    await request(ctx.app)
+    // Create a proposal from the primary agent and commit it
+    const first = await request(ctx.app)
       .post("/api/proposals")
       .set("Authorization", ctx.agentToken)
       .send({
@@ -28,9 +31,12 @@ describe("GET /api/proposals and GET /api/my-proposals — list proposals", () =
           },
         ],
       });
-
-    // Create a proposal from a second writer (auto-commits)
     await request(ctx.app)
+      .post(`/api/proposals/${first.body.proposal_id}/commit`)
+      .set("Authorization", ctx.agentToken);
+
+    // Create a proposal from a second writer and commit it
+    const second = await request(ctx.app)
       .post("/api/proposals")
       .set("Authorization", secondWriterToken)
       .send({
@@ -43,14 +49,20 @@ describe("GET /api/proposals and GET /api/my-proposals — list proposals", () =
           },
         ],
       });
+    await request(ctx.app)
+      .post(`/api/proposals/${second.body.proposal_id}/commit`)
+      .set("Authorization", secondWriterToken);
   });
 
   afterAll(async () => {
     await ctx.cleanup();
+    if (prevAuthMode === undefined) delete process.env.KS_AUTH_MODE;
+    else process.env.KS_AUTH_MODE = prevAuthMode;
   });
 
   it("GET /api/proposals returns all proposals", async () => {
-    const res = await request(ctx.app).get("/api/proposals");
+    const res = await request(ctx.app).get("/api/proposals")
+      .set("Authorization", ctx.agentToken);
 
     expect(res.status).toBe(200);
     expect(res.body.proposals).toBeDefined();
@@ -59,7 +71,8 @@ describe("GET /api/proposals and GET /api/my-proposals — list proposals", () =
   });
 
   it("GET /api/proposals?status=committed returns only committed proposals", async () => {
-    const res = await request(ctx.app).get("/api/proposals?status=committed");
+    const res = await request(ctx.app).get("/api/proposals?status=committed")
+      .set("Authorization", ctx.agentToken);
 
     expect(res.status).toBe(200);
     expect(res.body.proposals).toBeDefined();
@@ -70,7 +83,8 @@ describe("GET /api/proposals and GET /api/my-proposals — list proposals", () =
   });
 
   it("GET /api/proposals?status=invalid returns 400", async () => {
-    const res = await request(ctx.app).get("/api/proposals?status=invalid");
+    const res = await request(ctx.app).get("/api/proposals?status=invalid")
+      .set("Authorization", ctx.agentToken);
 
     expect(res.status).toBe(400);
   });

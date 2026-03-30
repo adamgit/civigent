@@ -37,7 +37,7 @@ import { readFile, copyFile, mkdir, readdir, rm } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { ContentLayer } from "./content-layer.js";
 import { getContentGitPrefix } from "./data-root.js";
-import { parseSkeletonToEntries } from "./document-skeleton.js";
+import { parseSkeletonToEntries, TOMBSTONE_SUFFIX } from "./document-skeleton.js";
 import { gitExec, getHeadSha } from "./git-repo.js";
 
 export class CanonicalStore {
@@ -100,6 +100,8 @@ export class CanonicalStore {
     } catch (err) {
       // Best-effort rollback of canonical to last committed state
       const cp = getContentGitPrefix();
+      // Best-effort rollback: each step is independent and may no-op. Errors are
+      // intentionally suppressed — the original error is always rethrown below.
       await gitExec(["reset", "HEAD", "--", cp + "/"], this.dataRoot).catch(() => {});
       await gitExec(["checkout", "--", cp + "/"], this.dataRoot).catch(() => {});
       await gitExec(["clean", "-fd", cp + "/"], this.dataRoot).catch(() => {});
@@ -117,9 +119,9 @@ export class CanonicalStore {
       throw err;
     }
 
-    const skeletonEntries = allEntries.filter(entry => {
+    const stagingDocEntries = allEntries.filter(entry => {
       if (entry.isDirectory()) return false;
-      if (!entry.name.endsWith(".md")) return false;
+      if (!entry.name.endsWith(".md") && !entry.name.endsWith(TOMBSTONE_SUFFIX)) return false;
       const fullPath = path.join(entry.parentPath, entry.name);
       const relPath = path.relative(stagingRoot, fullPath).replace(/\\/g, "/");
       const parts = relPath.split("/");
@@ -129,16 +131,25 @@ export class CanonicalStore {
       return true;
     });
 
-    for (const entry of skeletonEntries) {
+    for (const entry of stagingDocEntries) {
       const fullSrc = path.join(entry.parentPath, entry.name);
       const relPath = path.relative(stagingRoot, fullSrc).replace(/\\/g, "/");
+      const isTombstone = relPath.endsWith(TOMBSTONE_SUFFIX);
+      const relDocPath = isTombstone ? relPath.slice(0, -TOMBSTONE_SUFFIX.length) : relPath;
 
       // docPaths filter: only process documents in the list
-      if (docPaths && !docPaths.some(dp => dp.replace(/\\/g, "/").replace(/^\/+/, "") === relPath)) continue;
+      if (docPaths && !docPaths.some(dp => dp.replace(/\\/g, "/").replace(/^\/+/, "") === relDocPath)) continue;
 
       const stagingSkeletonPath = fullSrc;
-      const canonicalSkeletonPath = path.join(this.canonicalRoot, relPath);
+      const canonicalSkeletonPath = path.join(this.canonicalRoot, relDocPath);
       const canonicalSectionsDir = canonicalSkeletonPath + ".sections";
+
+      if (isTombstone) {
+        try { await rm(canonicalSkeletonPath, { force: true }); } catch { /* already gone */ }
+        try { await rm(canonicalSectionsDir, { recursive: true, force: true }); } catch { /* already gone */ }
+        diag(`${relDocPath}: tombstone — deleted canonical skeleton and .sections/`);
+        continue;
+      }
 
       let stagingContent: string;
       try {
@@ -150,32 +161,25 @@ export class CanonicalStore {
 
       const stagingEntries = parseSkeletonToEntries(stagingContent);
 
-      if (stagingEntries.length === 0) {
-        // Tombstone: delete canonical skeleton and entire .sections/ directory
-        try { await rm(canonicalSkeletonPath, { force: true }); } catch { /* already gone */ }
-        try { await rm(canonicalSectionsDir, { recursive: true, force: true }); } catch { /* already gone */ }
-        diag(`${relPath}: tombstone — deleted canonical skeleton and .sections/`);
-      } else {
-        // Normal: diff section file names, delete orphans from canonical .sections/
-        let canonicalContent: string;
-        try {
-          canonicalContent = await readFile(canonicalSkeletonPath, "utf8");
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code === "ENOENT") continue; // new doc, no orphans
-          throw err;
-        }
-        const canonicalEntries = parseSkeletonToEntries(canonicalContent);
-        const stagingFiles = new Set(stagingEntries.map(e => e.sectionFile));
-        const orphans = canonicalEntries.filter(e => !stagingFiles.has(e.sectionFile));
-        for (const orphan of orphans) {
-          const orphanPath = path.join(canonicalSectionsDir, orphan.sectionFile);
-          try { await rm(orphanPath, { force: true }); } catch { /* already gone */ }
-          // If orphan was a sub-skeleton, also delete its .sections/ dir
-          try { await rm(orphanPath + ".sections", { recursive: true, force: true }); } catch { /* already gone */ }
-        }
-        if (orphans.length > 0) {
-          diag(`${relPath}: deleted ${orphans.length} orphaned body file(s)`);
-        }
+      // Normal: diff section file names, delete orphans from canonical .sections/
+      let canonicalContent: string;
+      try {
+        canonicalContent = await readFile(canonicalSkeletonPath, "utf8");
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") continue; // new doc, no orphans
+        throw err;
+      }
+      const canonicalEntries = parseSkeletonToEntries(canonicalContent);
+      const stagingFiles = new Set(stagingEntries.map(e => e.sectionFile));
+      const orphans = canonicalEntries.filter(e => !stagingFiles.has(e.sectionFile));
+      for (const orphan of orphans) {
+        const orphanPath = path.join(canonicalSectionsDir, orphan.sectionFile);
+        try { await rm(orphanPath, { force: true }); } catch { /* already gone */ }
+        // If orphan was a sub-skeleton, also delete its .sections/ dir
+        try { await rm(orphanPath + ".sections", { recursive: true, force: true }); } catch { /* already gone */ }
+      }
+      if (orphans.length > 0) {
+        diag(`${relDocPath}: deleted ${orphans.length} orphaned body file(s)`);
       }
     }
   }
@@ -194,6 +198,7 @@ export class CanonicalStore {
       if (entry.isDirectory()) continue;
       const fullSrc = path.join(entry.parentPath, entry.name);
       const relPath = path.relative(stagingRoot, fullSrc).replace(/\\/g, "/");
+      if (relPath.endsWith(TOMBSTONE_SUFFIX)) continue;
 
       // docPaths filter: only copy files belonging to documents in the list
       if (docPaths) {
