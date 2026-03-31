@@ -3,9 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import type { DocumentTreeEntry, EvaluatedSection } from "../types/shared.js";
 import { apiClient } from "../services/api-client.js";
 
-function toRouteDocPath(treePath: string): string {
-  return treePath.replace(/^\/+/, "");
-}
+import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 
 function toCanonicalDocPath(path: string): string {
   const trimmed = path.trim();
@@ -315,7 +313,7 @@ export function DocumentsTreeNav({
           return (
             <Link
               key={node.path}
-              to={`/docs/${toRouteDocPath(node.path)}`}
+              to={`/docs/${stripLeadingSlashForRoute(node.path)}`}
               onClick={handleClick}
               data-testid={isSelected ? `tree-node-selected-${node.path}` : undefined}
               className={`flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-[13px] cursor-pointer transition-all relative ${

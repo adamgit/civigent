@@ -4,6 +4,7 @@ import type { ActivityItem } from "../types/shared.js";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
 import { apiClient } from "../services/api-client";
 import { headingPathToLabel } from "./document-page-utils";
+import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 
 function relativeTime(iso: string): string {
   const seconds = Math.floor((Date.now() - Date.parse(iso)) / 1000);
@@ -244,7 +245,7 @@ export function HomePage() {
                 return (
                   <Link
                     key={item.id}
-                    to={docPaths[0] ? `/docs/${docPaths[0]}` : "/docs"}
+                    to={docPaths[0] ? `/docs/${stripLeadingSlashForRoute(docPaths[0])}` : "/docs"}
                     style={{
                       display: "flex",
                       alignItems: "center",
@@ -306,7 +307,7 @@ export function HomePage() {
                 return (
                   <Link
                     key={item.id}
-                    to={docPaths[0] ? `/docs/${docPaths[0]}` : "/docs"}
+                    to={docPaths[0] ? `/docs/${stripLeadingSlashForRoute(docPaths[0])}` : "/docs"}
                     style={{
                       display: "flex",
                       alignItems: "center",

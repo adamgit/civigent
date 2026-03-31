@@ -67,9 +67,7 @@ export interface UseDocumentWebSocketReturn {
   proposalsBySectionKey: Map<string, PendingProposalIndicator[]>;
 }
 
-function toRouteDocPath(docPath: string): string {
-  return docPath.replace(/^\/+/, "");
-}
+import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 
 // ─── Hook ─────────────────────────────────────────────────────────
 
@@ -261,7 +259,7 @@ export function useDocumentWebSocket({
       if (event.type === "doc:renamed") {
         const renamed = event as DocRenamedEvent;
         if (normalizeDocPath(renamed.old_path) === normalizeDocPath(decodedDocPath)) {
-          navigate(`/docs/${toRouteDocPath(renamed.new_path)}`, { replace: true });
+          navigate(`/docs/${stripLeadingSlashForRoute(renamed.new_path)}`, { replace: true });
         }
         return;
       }

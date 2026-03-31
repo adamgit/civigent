@@ -111,7 +111,7 @@ const sessions = new Map<string, DocSession>();
 const sessionPromises = new Map<string, Promise<DocSession>>();
 
 const IDLE_TIMEOUT_MS = 60_000;
-const FLUSH_DEBOUNCE_MS = 1_000;
+const FLUSH_DEBOUNCE_MS = 4_000;
 
 // ─── Pending restore notifications ───────────────────────────────
 
@@ -726,6 +726,43 @@ export function triggerDebouncedFlush(docPath: string): void {
     })();
     flushInFlight.set(session, promise);
   }, FLUSH_DEBOUNCE_MS);
+}
+
+/**
+ * Trigger an immediate flush for a document session.
+ * Cancels any pending debounce timer and flushes right away.
+ * Used when the user blurs the editor — ensures content hits disk before
+ * any potential page refresh.
+ */
+export function triggerImmediateFlush(docPath: string): void {
+  const session = sessions.get(docPath);
+  if (!session) return;
+
+  // Cancel pending debounce timer — the immediate flush supersedes it.
+  if (session.flushTimer) {
+    clearTimeout(session.flushTimer);
+    session.flushTimer = null;
+  }
+
+  // If a flush is already in flight, nothing more to do — the in-flight
+  // flush will write the latest state.
+  if (flushInFlight.has(session)) return;
+  if (session.state !== "active") return;
+
+  session.state = "flushing";
+  const promise = (async () => {
+    try {
+      if (_flushCallback) {
+        await _flushCallback(session);
+      }
+    } finally {
+      flushInFlight.delete(session);
+      if (session.state === "flushing") {
+        session.state = "active";
+      }
+    }
+  })();
+  flushInFlight.set(session, promise);
 }
 
 /**

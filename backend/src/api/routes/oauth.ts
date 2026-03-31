@@ -214,36 +214,15 @@ export function createOAuthRouter(): Router {
     }
 
     if (isSingleUserMode()) {
-      // Single-user auto-approve: serve HTML that auto-redirects after brief display
+      // Single-user auto-approve: direct 302 redirect so headless HTTP clients
+      // (e.g. Claude Code's OAuth client inside a container) can complete the
+      // flow without a browser to execute HTML. No privilege change — single-user
+      // mode already auto-approves unconditionally.
       const code = mintAuthCode(clientId, redirectUri, codeChallenge, codeChallengeMethod);
       const redirectTarget = new URL(redirectUri);
       redirectTarget.searchParams.set("code", code);
       if (state) redirectTarget.searchParams.set("state", state);
-      const finalUrl = redirectTarget.toString();
-
-      res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Agent Connecting</title>
-  <meta http-equiv="refresh" content="3;url=${escapeHtml(finalUrl)}">
-  <style>
-    body { font-family: system-ui, sans-serif; display: flex; align-items: center;
-           justify-content: center; min-height: 100vh; margin: 0; background: #f8f8f6; }
-    .card { background: white; padding: 2rem 3rem; border-radius: 8px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1); text-align: center; max-width: 400px; }
-    h1 { font-size: 1.1rem; margin: 0 0 0.5rem; }
-    p { color: #666; font-size: 0.9rem; margin: 0; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Agent &ldquo;${escapeHtml(client.agentName)}&rdquo; is connecting&hellip;</h1>
-    <p>Redirecting automatically in 3 seconds.</p>
-  </div>
-</body>
-</html>`);
+      res.redirect(302, redirectTarget.toString());
       return;
     }
 

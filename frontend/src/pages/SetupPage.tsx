@@ -10,6 +10,7 @@ type Tab = "claude-code" | "cursor";
 
 interface SetupInfo {
   defaultServerName: string;
+  internalPort: number;
 }
 
 /** mcp__<name>__<tool>  —  longest tool is read_doc_structure (18 chars) */
@@ -74,8 +75,11 @@ export function SetupPage() {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("claude-code");
   const [serverName, setServerName] = useState("");
+  const [connectionOrigin, setConnectionOrigin] = useState<"external" | "container">("external");
 
-  const mcpEndpoint = `${window.location.origin}/mcp`;
+  const mcpEndpoint = connectionOrigin === "container" && info
+    ? `http://localhost:${info.internalPort}/mcp`
+    : `${window.location.origin}/mcp`;
 
   const load = useCallback(async () => {
     try {
@@ -139,6 +143,27 @@ export function SetupPage() {
               )}
               <p style={{ color: "#aaa", fontSize: "0.75rem", margin: "0.3rem 0 0" }}>
                 {serverName.length}/{MAX_SERVER_NAME} characters
+              </p>
+            </div>
+
+            {/* Connection origin selector */}
+            <div style={{ marginBottom: "1.5rem" }}>
+              <label style={{ display: "block", fontWeight: 500, fontSize: "0.9rem", marginBottom: "0.3rem" }}>
+                Where does the agent run?
+              </label>
+              <select
+                value={connectionOrigin}
+                onChange={(e) => setConnectionOrigin(e.target.value as "external" | "container")}
+                className="input-field"
+                style={{ width: "100%", maxWidth: 350 }}
+              >
+                <option value="external">This machine or remote</option>
+                <option value="container">Inside app container</option>
+              </select>
+              <p style={{ color: "#888", fontSize: "0.78rem", margin: "0.3rem 0 0" }}>
+                {connectionOrigin === "external"
+                  ? "Agent runs on your computer, CI, or another server"
+                  : "Agent is installed inside this application's Docker container"}
               </p>
             </div>
 

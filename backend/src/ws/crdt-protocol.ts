@@ -55,6 +55,7 @@ export const MSG_MUTATE_RESULT = 10;
 export const MSG_RESTORE_NOTIFICATION = 0x0B;
 export const MSG_MODE_TRANSITION_REQUEST = 0x0C;
 export const MSG_MODE_TRANSITION_RESULT = 0x0D;
+export const MSG_FLUSH_REQUEST = 0x0E;
 
 // ─── WebSocket close codes ───────────────────────────────────────
 

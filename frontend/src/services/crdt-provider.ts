@@ -55,6 +55,7 @@ const MSG_MUTATE_RESULT = 10;
 const MSG_RESTORE_NOTIFICATION = 0x0B;
 const MSG_MODE_TRANSITION_REQUEST = 0x0C;
 const MSG_MODE_TRANSITION_RESULT = 0x0D;
+const MSG_FLUSH_REQUEST = 0x0E;
 
 /** Debounce interval for ACTIVITY_PULSE messages (ms). */
 const PULSE_DEBOUNCE_MS = 2500;
@@ -156,8 +157,11 @@ export class CrdtProvider {
     this.initialTransitionRequest = opts?.initialTransitionRequest ?? null;
 
     // Build WebSocket URL — per-document, no heading_path param.
+    // docPath is canonical (leading slash, e.g. "/ops/strategy.md") so we
+    // encode each segment and rejoin, skipping the empty first segment from split("/").
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    this.url = `${protocol}//${window.location.host}/ws/crdt/${docPath.split("/").map(encodeURIComponent).join("/")}?clientInstanceId=${encodeURIComponent(this.clientInstanceId)}`;
+    const encodedPath = docPath.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+    this.url = `${protocol}//${window.location.host}/ws/crdt/${encodedPath}?clientInstanceId=${encodeURIComponent(this.clientInstanceId)}`;
 
     // Track which fragments are modified per transaction (same pattern as backend).
     this.afterTxnHandler = (txn: Y.Transaction) => {
@@ -292,6 +296,14 @@ export class CrdtProvider {
     if (now - this.lastPulseSentAt < PULSE_DEBOUNCE_MS) return;
     this.lastPulseSentAt = now;
     this.sendRaw(MSG_ACTIVITY_PULSE, new Uint8Array(0));
+  }
+
+  /**
+   * Request an immediate server-side flush of dirty fragments to disk.
+   * Used on editor blur so content is persisted before a potential page refresh.
+   */
+  sendFlushRequest(): void {
+    this.sendRaw(MSG_FLUSH_REQUEST, new Uint8Array(0));
   }
 
   /**

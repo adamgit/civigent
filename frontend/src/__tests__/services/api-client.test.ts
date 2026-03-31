@@ -38,12 +38,6 @@ describe("api-client", () => {
 
   // ─── API method endpoints ─────────────────────────────────
 
-  it("getHealth calls /api/health", async () => {
-    fetchMock = installFetchMock(async () => jsonResponse({ ok: true }));
-    await apiClient.getHealth();
-    expect(fetchMock.calls.some((c) => String(c.input) === "/api/health")).toBe(true);
-  });
-
   it("getDocumentsTree calls /api/documents/tree", async () => {
     fetchMock = installFetchMock(async (input) => {
       if (String(input).includes("/api/auth/session")) {
@@ -145,8 +139,13 @@ describe("api-client", () => {
   // ─── credentials: "include" ───────────────────────────────
 
   it('sets credentials: "include" on all fetch calls', async () => {
-    fetchMock = installFetchMock(async () => jsonResponse({ ok: true }));
-    await apiClient.getHealth();
+    fetchMock = installFetchMock(async (input) => {
+      if (String(input).includes("/api/auth/session")) {
+        return jsonResponse({ authenticated: true, user: { id: "u" }, login_providers: [] });
+      }
+      return jsonResponse({ tree: [] });
+    });
+    await apiClient.getDocumentsTree();
     for (const call of fetchMock.calls) {
       expect(call.init?.credentials).toBe("include");
     }
@@ -158,13 +157,13 @@ describe("api-client", () => {
     fetchMock = installFetchMock(async () =>
       jsonResponse({ message: "Not found" }, { status: 404 }),
     );
-    await expect(apiClient.getHealth()).rejects.toThrow("Not found");
+    await expect(apiClient.getDocumentsTree()).rejects.toThrow("Not found");
   });
 
   it("non-ok response throws with raw text when not JSON", async () => {
     fetchMock = installFetchMock(async () =>
       new Response("Server Error", { status: 500 }),
     );
-    await expect(apiClient.getHealth()).rejects.toThrow("Server Error");
+    await expect(apiClient.getDocumentsTree()).rejects.toThrow("Server Error");
   });
 });

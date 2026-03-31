@@ -30,7 +30,6 @@ function writeNumberSetting(key: string, value: number): void {
 }
 
 export function AdminPage() {
-  const [health, setHealth] = useState<{ ok: boolean } | null>(null);
   const [proposals, setProposals] = useState<AnyProposal[]>([]);
   const [sessionWriterId, setSessionWriterId] = useState<string | null>(null);
   const [activityCount, setActivityCount] = useState(0);
@@ -47,15 +46,13 @@ export function AdminPage() {
     setLoading(true);
     setError(null);
     try {
-      const [healthRes, proposalsRes, activityRes, sessionRes, configRes, snapshotRes] = await Promise.all([
-        apiClient.getHealth(),
+      const [proposalsRes, activityRes, sessionRes, configRes, snapshotRes] = await Promise.all([
         apiClient.listProposals(),
         apiClient.getActivity(50, 7),
         apiClient.getSessionInfo(),
         apiClient.getAdminConfig(),
         apiClient.getAdminSnapshotHealth(),
       ]);
-      setHealth(healthRes);
       setProposals(proposalsRes.proposals);
       setActivityCount(activityRes.items.length);
       setSessionWriterId(sessionRes.authenticated && sessionRes.user?.id ? sessionRes.user.id : null);
@@ -130,7 +127,6 @@ export function AdminPage() {
       {error ? <p className="text-error">{error}</p> : null}
       {!loading && !error ? (
         <ul>
-          <li>Backend health: {health?.ok ? "ok" : "unknown"}</li>
           <li>Proposals total: {proposalCounts.total}</li>
           <li>Draft proposals: {proposalCounts.pending}</li>
           <li>Committed proposals: {proposalCounts.committed}</li>

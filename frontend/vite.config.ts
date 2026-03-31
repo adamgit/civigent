@@ -5,7 +5,7 @@ import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const rootPkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-const appVersion = rootPkg.version.split(".").slice(0, 2).join(".");
+const appVersion = rootPkg.version;
 let buildSha = "dev";
 try { buildSha = execSync("git rev-parse --short=7 HEAD", { encoding: "utf8" }).trim(); } catch { /* dev fallback */ }
 const buildDate = new Date().toISOString();

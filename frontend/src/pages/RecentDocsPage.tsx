@@ -6,6 +6,7 @@ import { ContentPanel } from "../components/ContentPanel";
 import { PageStatusBar } from "../components/PageStatusBar";
 import { apiClient } from "../services/api-client";
 import { listRecentDocs, rememberRecentDoc } from "../services/recent-docs";
+import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 
 function uniquePreserveOrder(values: string[]): string[] {
   const seen = new Set<string>();
@@ -17,10 +18,6 @@ function uniquePreserveOrder(values: string[]): string[] {
     out.push(normalized);
   }
   return out;
-}
-
-function normalizeDocPath(input: string): string {
-  return input.trim().replace(/^\/+/, "");
 }
 
 export function RecentDocsPage() {
@@ -62,10 +59,10 @@ export function RecentDocsPage() {
   }, [docs, query]);
 
   const openDoc = (docPath: string) => {
-    const normalized = normalizeDocPath(docPath);
-    if (!normalized) return;
-    rememberRecentDoc(normalized);
-    navigate(`/docs/${normalized}`);
+    const trimmed = docPath.trim();
+    if (!trimmed) return;
+    rememberRecentDoc(trimmed);
+    navigate(`/docs/${stripLeadingSlashForRoute(trimmed)}`);
   };
 
   const handleDirectOpen = (event: FormEvent<HTMLFormElement>) => {
@@ -110,7 +107,7 @@ export function RecentDocsPage() {
                     <span className="text-[10.5px] text-[#b8b2a8] shrink-0 w-[60px] text-right">Viewed</span>
                     <div className="flex-1 min-w-0">
                       <Link
-                        to={`/docs/${docPath}`}
+                        to={`/docs/${stripLeadingSlashForRoute(docPath)}`}
                         onClick={() => rememberRecentDoc(docPath)}
                         className="text-[13px] font-medium text-text-primary hover:text-[#1d5a66] cursor-pointer"
                       >
@@ -119,14 +116,14 @@ export function RecentDocsPage() {
                     </div>
                     <div className="flex gap-1 shrink-0">
                       <Link
-                        to={`/docs/${docPath}/edit`}
+                        to={`/docs/${stripLeadingSlashForRoute(docPath)}/edit`}
                         onClick={() => rememberRecentDoc(docPath)}
                         className="btn-small"
                       >
                         Edit
                       </Link>
                       <Link
-                        to={`/docs/${docPath}/reconcile`}
+                        to={`/docs/${stripLeadingSlashForRoute(docPath)}/reconcile`}
                         onClick={() => rememberRecentDoc(docPath)}
                         className="btn-small"
                         style={{ borderColor: "var(--color-agent-border)", color: "var(--color-agent-text)" }}

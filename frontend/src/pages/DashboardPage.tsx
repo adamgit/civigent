@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { headingPathToLabel } from "./document-page-utils";
+import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 import { ActivityTabStrip } from "../components/ActivityTabStrip";
 import { ContentPanel } from "../components/ContentPanel";
 import { ActivityFeedItem } from "../components/ActivityFeedItem";
@@ -192,7 +193,7 @@ export function DashboardPage() {
                           {docPaths.map((dp, i) => (
                             <span key={dp}>
                               {i > 0 && ", "}
-                              <Link to={`/docs/${dp}`} className="text-[#2d7a8a] hover:underline">{dp}</Link>
+                              <Link to={`/docs/${stripLeadingSlashForRoute(dp)}`} className="text-[#2d7a8a] hover:underline">{dp}</Link>
                             </span>
                           ))}
                         </>

@@ -4,6 +4,7 @@ import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
 import type { AnyProposal, ProposalDTO, EvaluatedSection } from "../types/shared.js";
 import { headingPathToLabel } from "./document-page-utils";
+import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 
 function involvementColor(score: number): string {
   if (score >= 0.8) return "#1e40af";
@@ -240,7 +241,7 @@ export function ProposalDetailPage() {
                   return (
                     <tr key={`${section.doc_path}-${section.heading_path.join("/")}-${idx}`}>
                       <td style={{ padding: "0.3rem" }}>
-                        <Link to={`/docs/${section.doc_path}`}>{section.doc_path}</Link>
+                        <Link to={`/docs/${stripLeadingSlashForRoute(section.doc_path)}`}>{section.doc_path}</Link>
                       </td>
                       <td style={{ padding: "0.3rem" }}>{headingPathToLabel(section.heading_path)}</td>
                       <td style={{ padding: "0.3rem", textAlign: "center", color: involvementColor(score) }}>
@@ -277,7 +278,7 @@ export function ProposalDetailPage() {
             <ul>
               {affectedDocs.map((docPath) => (
                 <li key={docPath}>
-                  <Link to={`/docs/${docPath}`}>{docPath}</Link>
+                  <Link to={`/docs/${stripLeadingSlashForRoute(docPath)}`}>{docPath}</Link>
                 </li>
               ))}
             </ul>

@@ -2,12 +2,38 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { apiClient, SystemStartingError, setUnauthorizedHandler, setSystemStartingHandler, setWriterId } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
+import { connectSystemEvents, type FatalReport } from "../services/system-events-client";
 import { DocumentsTreeNav } from "../components/DocumentsTreeNav";
 import { MirrorPanel } from "../components/MirrorPanel";
+import { SystemFatalScreen } from "../components/SystemFatalScreen";
 import { rememberRecentDoc } from "../services/recent-docs";
 import type { DocumentTreeEntry, AuthUser } from "../types/shared.js";
+import { stripLeadingSlashForRoute } from "./docsRouteUtils";
 
 const DOC_BADGES_STORAGE_KEY = "ks_doc_badges";
+const BUILD_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function formatBuildDate(raw: string): { shortLabel: string; longLabel: string } {
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) {
+    return { shortLabel: raw, longLabel: raw };
+  }
+
+  const day = pad2(date.getUTCDate());
+  const month = BUILD_MONTHS[date.getUTCMonth()];
+  const year = pad2(date.getUTCFullYear() % 100);
+  const hours = pad2(date.getUTCHours());
+  const minutes = pad2(date.getUTCMinutes());
+
+  return {
+    shortLabel: `${day}/${month}`,
+    longLabel: `${day} ${month} ${year} - ${hours}:${minutes}`,
+  };
+}
 
 function toCanonicalDocPath(path: string): string {
   const trimmed = path.trim();
@@ -78,6 +104,7 @@ export interface AppLayoutOutletContext {
 export function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
+  const buildDate = useMemo(() => formatBuildDate(__BUILD_DATE__), []);
   const [entries, setEntries] = useState<DocumentTreeEntry[]>([]);
   const [loadingTree, setLoadingTree] = useState(true);
   const [syncingTree, setSyncingTree] = useState(false);
@@ -90,6 +117,7 @@ export function AppLayout() {
   const [docBadges, setDocBadges] = useState<Set<string>>(() => readBadgeDocPaths());
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
   const [systemStarting, setSystemStarting] = useState(true);
+  const [fatalReport, setFatalReport] = useState<FatalReport | null>(null);
   const [windowFocused, setWindowFocused] = useState(() => document.hasFocus());
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
   const [adminExpanded, setAdminExpanded] = useState(() => {
@@ -135,7 +163,7 @@ export function AppLayout() {
     const docPath = path.endsWith(".md") ? path : `${path}.md`;
     await apiClient.createDocument(docPath);
     loadTree({ background: true }).catch(() => { /* non-fatal refresh */ });
-    navigate(`/docs/${docPath}`);
+    navigate(`/docs/${stripLeadingSlashForRoute(docPath)}`);
   }, [navigate]);
 
   const handleNewDocSubmit = (e: FormEvent) => {
@@ -189,56 +217,30 @@ export function AppLayout() {
     return () => setSystemStartingHandler(null);
   }, []);
 
-  // Initial health check — prevent flash of error UI by checking readiness first
+  // SSE connection for backend lifecycle state — replaces health polling
   useEffect(() => {
-    apiClient.getHealth()
-      .then((health) => {
-        if (!health.ready) {
-          setSystemStarting(true);
-        } else {
-          // System is ready — open the gate, load session and tree
-          setSystemStarting(false);
-          apiClient.getSessionInfo()
-            .then((session) => {
-              if (session.authenticated && session.user?.id) {
-                setWriterId(session.user.id);
-                setCurrentUser(session.user);
-              }
-            })
-            .catch(() => {});
-          loadTree().catch(() => {});
-        }
-      })
-      .catch(() => {
-        // Health endpoint unreachable (server not listening yet) — stay in startup state.
-        // The auto-retry interval will poll health and open the gate when ready.
-      });
+    const disconnect = connectSystemEvents((state) => {
+      if (state.state === "ready") {
+        setSystemStarting(false);
+        setFatalReport(null);
+        setTreeError(null);
+        loadTree().catch(() => {});
+        apiClient.getSessionInfo()
+          .then((session) => {
+            if (session.authenticated && session.user?.id) {
+              setWriterId(session.user.id);
+              setCurrentUser(session.user);
+            }
+          })
+          .catch(() => {});
+      } else if (state.state === "fatal" && state.fatal) {
+        setFatalReport(state.fatal);
+      } else {
+        setSystemStarting(true);
+      }
+    });
+    return disconnect;
   }, []);
-
-  // Auto-retry when system is starting up
-  useEffect(() => {
-    if (!systemStarting) return;
-    const timer = setInterval(() => {
-      apiClient.getHealth()
-        .then((health) => {
-          if (health.ready) {
-            setSystemStarting(false);
-            setTreeError(null);
-            loadTree().catch(() => {});
-            apiClient.getSessionInfo()
-              .then((session) => {
-                if (session.authenticated && session.user?.id) {
-                  setWriterId(session.user.id);
-                  setCurrentUser(session.user);
-                }
-              })
-              .catch(() => {});
-          }
-        })
-        .catch(() => { /* still starting */ });
-    }, 4000);
-    return () => clearInterval(timer);
-  }, [systemStarting]);
 
   useEffect(() => {
     const handleFocus = () => setWindowFocused(true);
@@ -371,6 +373,10 @@ export function AppLayout() {
     wsClient.blurDocument();
   }, [documentVisible, focusedDocPath, windowFocused, wsClient]);
 
+
+  if (fatalReport) {
+    return <SystemFatalScreen fatal={fatalReport} />;
+  }
 
   return (
     <div className="flex h-screen">
@@ -518,9 +524,9 @@ export function AppLayout() {
         <div className="px-3.5 py-2 border-t border-sidebar-border">
           <span
             className="text-[10px] text-sidebar-text/40"
-            title={`Built ${__BUILD_DATE__}`}
+            title={buildDate.longLabel}
           >
-            v{__APP_VERSION__} &middot; {__BUILD_SHA__}
+            v{__APP_VERSION__} &middot; {buildDate.shortLabel} &middot; {__BUILD_SHA__}
           </span>
         </div>
       </aside>
@@ -540,7 +546,7 @@ export function AppLayout() {
                 >
                   {toast.text}{" "}
                   <Link
-                    to={`/docs/${toast.docPath}`}
+                    to={`/docs/${stripLeadingSlashForRoute(toast.docPath)}`}
                     onClick={() => setToasts([])}
                     className="font-medium underline"
                   >

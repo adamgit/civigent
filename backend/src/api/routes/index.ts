@@ -333,14 +333,14 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   });
 
   // ─── Startup gate: reject requests during crash recovery ────
-  // Exempt: /health (used as ready probe), /auth/* (login page needs to load)
+  // Exempt: /build-info, /auth/* (login page needs to load)
   router.use((req: Request, res: Response, next: NextFunction) => {
     if (isSystemReady()) {
       next();
       return;
     }
     const p = req.path;
-    if (p === "/health" || p === "/build-info" || p.startsWith("/auth/")) {
+    if (p === "/build-info" || p.startsWith("/auth/")) {
       next();
       return;
     }
@@ -357,8 +357,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   // Routes that handle their own auth (e.g. public-doc exception) are also exempt here.
   router.use((req: Request, res: Response, next: NextFunction) => {
     const p = req.path;
-    // Always exempt: auth endpoints, health check
-    if (p === "/health" || p === "/build-info" || p.startsWith("/auth/")) {
+    // Always exempt: auth endpoints, build-info
+    if (p === "/build-info" || p.startsWith("/auth/")) {
       next();
       return;
     }
@@ -403,12 +403,6 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       return;
     }
     next();
-  });
-
-  // ─── Health ───────────────────────────────────────────
-
-  router.get("/health", (_req, res) => {
-    res.status(200).json({ status: "ok", ready: isSystemReady() });
   });
 
   router.get("/build-info", async (_req, res, next) => {
@@ -2395,6 +2389,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
     res.json({
       defaultServerName,
+      internalPort: Number(process.env.PORT ?? "3000"),
     });
   });
 

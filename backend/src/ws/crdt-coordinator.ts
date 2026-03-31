@@ -26,6 +26,7 @@ import {
   updateEditPulse,
   markFragmentDirty,
   triggerDebouncedFlush,
+  triggerImmediateFlush,
   normalizeFragment,
   setFlushCallback,
   setNormalizeBroadcast,
@@ -57,6 +58,7 @@ import {
   MSG_ACTIVITY_PULSE,
   MSG_SECTION_MUTATE,
   MSG_MODE_TRANSITION_REQUEST,
+  MSG_FLUSH_REQUEST,
   encodeSyncStep2,
   encodeUpdate,
   encodeSessionFlushStarted,
@@ -263,10 +265,9 @@ async function applyModeTransition(
     };
   }
 
-  state.requestedMode = request.requestedMode;
-  state.editorFocusTarget = request.editorFocusTarget;
-
   if (request.requestedMode === "none") {
+    state.requestedMode = request.requestedMode;
+    state.editorFocusTarget = request.editorFocusTarget;
     if (state.socketRole === "observer") {
       removeObserverHolder(state.docPath, state.writerId, state.socketId);
     } else {
@@ -275,7 +276,9 @@ async function applyModeTransition(
     }
     state.attachmentState = "detached";
     state.docSessionId = null;
+    state.joined = false;
     updateParticipant(state.clientInstanceId, {
+      clientRole: state.socketRole,
       requestedMode: state.requestedMode,
       editorFocusTarget: state.editorFocusTarget,
       attachmentState: state.attachmentState,
@@ -305,7 +308,7 @@ async function applyModeTransition(
         reason: "Read permission required for observer mode",
       };
     }
-    if (state.socketRole === "editor") {
+    if (state.attachmentState !== "detached") {
       return {
         kind: "rejected",
         requestId: request.requestId,
@@ -318,6 +321,8 @@ async function applyModeTransition(
       };
     }
 
+    state.requestedMode = request.requestedMode;
+    state.editorFocusTarget = request.editorFocusTarget;
     const session = lookupDocSession(state.docPath);
     state.socketRole = "observer";
     if (session) {
@@ -346,7 +351,7 @@ async function applyModeTransition(
         reason: "Write permission required for editor mode",
       };
     }
-    if (state.socketRole === "observer") {
+    if (state.attachmentState !== "detached") {
       return {
         kind: "rejected",
         requestId: request.requestId,
@@ -358,6 +363,8 @@ async function applyModeTransition(
         reason: "Transition to editor requires requesting none first",
       };
     }
+    state.requestedMode = request.requestedMode;
+    state.editorFocusTarget = request.editorFocusTarget;
     // Enforce single editor socket per user per document.
     for (const existingSocket of docSockets.get(state.docPath) ?? []) {
       if (existingSocket === socket) continue;
@@ -441,9 +448,13 @@ async function handleMessage(
       msgType === MSG_YJS_UPDATE ||
       msgType === MSG_SECTION_FOCUS ||
       msgType === MSG_ACTIVITY_PULSE ||
-      msgType === MSG_SECTION_MUTATE
+      msgType === MSG_SECTION_MUTATE ||
+      msgType === MSG_FLUSH_REQUEST
     ) {
-      return;
+      throw new Error(
+        `Observer socket sent write message (type 0x${msgType.toString(16)}) for ${state.docPath} — ` +
+        `socketRole=${state.socketRole}, attachmentState=${state.attachmentState}, requestedMode=${state.requestedMode}`,
+      );
     }
   }
   if (state.requestedMode === "none" && msgType !== MSG_MODE_TRANSITION_REQUEST) {
@@ -499,23 +510,19 @@ async function handleMessage(
       // Track which fragment this writer dirtied (for author metadata).
       const focusedPath = session!.presenceManager.getAll().get(state.writerId);
       if (focusedPath) {
-        try {
-          const entry = session!.fragments.skeleton.expect(focusedPath);
-          const fragmentKey = FragmentStore.fragmentKeyFor(entry);
-          session!.fragments.markDirty(fragmentKey);
-          const isNewlyDirty = markFragmentDirty(state.docPath, state.writerId, fragmentKey);
-          if (isNewlyDirty && onWsEvent) {
-            onWsEvent({
-              type: "dirty:changed",
-              writer_id: state.writerId,
-              doc_path: state.docPath,
-              heading_path: focusedPath,
-              dirty: true,
-              base_head: session!.baseHead,
-            });
-          }
-        } catch {
-          // Skeleton resolve can fail during structural changes — skip dirty tracking
+        const entry = session!.fragments.skeleton.expect(focusedPath);
+        const fragmentKey = FragmentStore.fragmentKeyFor(entry);
+        session!.fragments.markDirty(fragmentKey);
+        const isNewlyDirty = markFragmentDirty(state.docPath, state.writerId, fragmentKey);
+        if (isNewlyDirty && onWsEvent) {
+          onWsEvent({
+            type: "dirty:changed",
+            writer_id: state.writerId,
+            doc_path: state.docPath,
+            heading_path: focusedPath,
+            dirty: true,
+            base_head: session!.baseHead,
+          });
         }
       } else {
         // No focus set yet — mark only the fragments actually touched by this transaction
@@ -589,6 +596,10 @@ async function handleMessage(
         type: state.writerType,
         displayName: state.writerDisplayName,
       });
+      break;
+    }
+    case MSG_FLUSH_REQUEST: {
+      triggerImmediateFlush(state.docPath);
       break;
     }
     case MSG_SECTION_MUTATE: {
@@ -680,7 +691,6 @@ setBroadcastRestoreInvalidation((docPath) => broadcastRestoreInvalidation(docPat
 setIdleTimeoutHandler((docPath: string) => {
   const sockets = docSockets.get(docPath);
   if (!sockets) return;
-  const session = lookupDocSession(docPath);
   for (const client of [...sockets]) {
     if (client.readyState === WebSocket.OPEN) {
       const st = socketState.get(client);
@@ -722,21 +732,24 @@ export function createCrdtWsServer(): CrdtWsServer {
     setParticipantFromSocketState(state);
     addSocket(state.docPath, socket);
 
+    let messageChain: Promise<void> = Promise.resolve();
     socket.on("message", (raw) => {
       if (checkTokenExpired(socket, state)) return;
       const data = raw instanceof Buffer ? raw : Buffer.from(raw as ArrayBuffer);
-      handleMessage(socket, state, data);
+      messageChain = messageChain.then(() => handleMessage(socket, state, data));
     });
 
     socket.on("close", () => {
       removeSocket(state.docPath, socket);
       socketState.delete(socket);
       removeParticipant(state.clientInstanceId);
-      if (state.socketRole === "observer") {
-        removeObserverHolder(state.docPath, state.writerId, state.socketId);
-      } else if (state.socketRole === "editor") {
-        releaseDocSession(state.docPath, state.writerId, state.socketId)
-          .then((result) => finalizeSessionEnd(state, result));
+      if (state.attachmentState !== "detached") {
+        if (state.socketRole === "observer") {
+          removeObserverHolder(state.docPath, state.writerId, state.socketId);
+        } else if (state.socketRole === "editor") {
+          releaseDocSession(state.docPath, state.writerId, state.socketId)
+            .then((result) => finalizeSessionEnd(state, result));
+        }
       }
 
       // editingPresence: writer disconnected

@@ -236,6 +236,7 @@ If running behind nginx, Apache, or similar, ensure:
 1. **WebSocket upgrade** is supported for `/ws` paths
 2. **Proxy headers** are forwarded (`X-Forwarded-For`, `X-Forwarded-Proto`)
 3. **`KS_OIDC_PUBLIC_URL`** matches the externally reachable URL (not the internal port)
+4. **SSE responses** at `/api/system/events` are not buffered (set `proxy_buffering off` in nginx, or `X-Accel-Buffering: no` — only relevant in dev mode)
 
 ### Example nginx configuration
 
@@ -285,6 +286,12 @@ The backend responds to `GET /` with:
 ```json
 { "service": "civigent-backend", "status": "ok" }
 ```
+
+### Backend lifecycle SSE (dev only)
+
+In development, a lightweight supervisor process (`dev-supervisor.ts`) sits between the public port and the real backend (`server.ts`). If the backend worker crashes, the supervisor stays alive and broadcasts a fatal error report to all connected browsers via SSE at `GET /api/system/events`. The frontend renders a full-page error screen with the stack trace.
+
+This only applies to dev mode (`npm run dev`). Production deployments run `server.ts` directly — no supervisor, no SSE endpoint, no proxy overhead. Container restarts handle crash recovery in production.
 
 ---
 

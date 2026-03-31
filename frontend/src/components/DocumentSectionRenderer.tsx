@@ -130,6 +130,14 @@ export function DocumentSectionRenderer({
                   onFocusSection(i, section.heading_path, { x: e.clientX, y: e.clientY });
                 }
               }}
+              onBlur={(e) => {
+                // When focus leaves this editor section entirely (not just moving
+                // between child elements), request an immediate server-side flush
+                // so content is persisted before a potential page refresh.
+                if (!e.currentTarget.contains(e.relatedTarget as Node) && crdtProvider && !proposalMode) {
+                  crdtProvider.sendFlushRequest();
+                }
+              }}
             >
               <MilkdownEditor
                 ref={(handle) => onSetEditorRef(i, handle)}

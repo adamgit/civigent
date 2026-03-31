@@ -60,7 +60,9 @@ export interface PendingProposalIndicator {
 // ─── Pure helper functions ───────────────────────────────────────
 
 export function normalizeDocPath(path: string): string {
-  return path.trim().replace(/^\/+/, "");
+  // Canonical form: trim, collapse runs of slashes, ensure exactly one leading `/`.
+  const trimmed = path.trim().replace(/\/+/g, "/");
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
 }
 
 export function headingPathToLabel(path: string[]): string {

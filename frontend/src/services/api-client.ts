@@ -254,11 +254,6 @@ interface AuthMethodsResponse {
   bootstrap_available?: boolean;
 }
 
-interface HealthStatusResponse {
-  ok: boolean;
-  ready: boolean;
-}
-
 interface AuthTokenResponse {
   token: string;
   access_token: string;
@@ -345,10 +340,6 @@ async function tryRefreshAccessToken(): Promise<boolean> {
 }
 
 export const apiClient = {
-  async getHealth(): Promise<HealthStatusResponse> {
-    return requestJson<HealthStatusResponse>("/api/health", undefined, false);
-  },
-
   async getSessionInfo(): Promise<SessionInfoResponse> {
     return requestJson<SessionInfoResponse>("/api/auth/session");
   },
@@ -407,6 +398,7 @@ export const apiClient = {
 
   async getSetupInfo(): Promise<{
     defaultServerName: string;
+    internalPort: number;
   }> {
     return requestJson("/api/setup", undefined, false);
   },

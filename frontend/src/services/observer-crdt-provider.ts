@@ -111,8 +111,10 @@ export class ObserverCrdtProvider {
     this.clientInstanceId = opts?.clientInstanceId ?? crypto.randomUUID();
     this.initialTransitionRequest = opts?.initialTransitionRequest ?? null;
 
+    // docPath is canonical (leading slash) — encode segments, skip empty first from split("/").
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    this.url = `${protocol}//${window.location.host}/ws/crdt/${docPath.split("/").map(encodeURIComponent).join("/")}?clientInstanceId=${encodeURIComponent(this.clientInstanceId)}`;
+    const encodedPath = docPath.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+    this.url = `${protocol}//${window.location.host}/ws/crdt/${encodedPath}?clientInstanceId=${encodeURIComponent(this.clientInstanceId)}`;
   }
 
   get state(): ObserverConnectionState {

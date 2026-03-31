@@ -32,9 +32,9 @@ function buildViewModels(response: GetAgentsFullSummaryResponse): AgentCardViewM
 // ─── Policy badge ───────────────────────────────────────────────
 
 const POLICY_BADGE: Record<AgentAuthPolicy, { label: string; color: string; bg: string; title: string }> = {
-  open:     { label: "open",     color: "#166534", bg: "#dcfce7", title: "Any agent can self-register. Anonymous identities are allowed." },
+  open:     { label: "open",     color: "#7f1d1d", bg: "#fee2e2", title: "Any agent can self-register. Anonymous identities are allowed." },
   register: { label: "register", color: "#92400e", bg: "#fef3c7", title: "Only pre-registered agents can connect. Presenting the registered client_id is sufficient." },
-  verify:   { label: "verify",   color: "#7f1d1d", bg: "#fee2e2", title: "Pre-registration required AND the agent must prove possession of its client_secret at the token endpoint." },
+  verify:   { label: "verify",   color: "#166534", bg: "#dcfce7", title: "Pre-registration required AND the agent must prove possession of its client_secret at the token endpoint." },
 };
 
 function PolicyBadge({ policy }: { policy: AgentAuthPolicy }) {
@@ -50,7 +50,6 @@ function PolicyBadge({ policy }: { policy: AgentAuthPolicy }) {
         fontWeight: 600,
         color,
         background: bg,
-        marginLeft: "0.75rem",
         verticalAlign: "middle",
         cursor: "default",
         letterSpacing: "0.02em",
@@ -366,10 +365,15 @@ export function AgentsPage() {
     <section>
       <SharedPageHeader
         title={
-          <>
-            Agents
-            {adminConfig && <PolicyBadge policy={policy} />}
-          </>
+          <span className="inline-flex items-center gap-2.5">
+            <span>Agents</span>
+            {adminConfig ? (
+              <>
+                <span className="text-xs font-medium text-text-muted">Agent auth policy:</span>
+                <PolicyBadge policy={policy} />
+              </>
+            ) : null}
+          </span>
         }
       />
 

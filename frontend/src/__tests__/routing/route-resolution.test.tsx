@@ -188,7 +188,7 @@ describe("Route resolution", () => {
     renderRoute("/docs/path/to/doc.md");
     const el = await screen.findByTestId("document-page");
     expect(el).toBeDefined();
-    expect(el.getAttribute("data-doc-path")).toBe("path/to/doc.md");
+    expect(el.getAttribute("data-doc-path")).toBe("/path/to/doc.md");
   });
 
   it("/proposals renders ProposalsPage", async () => {

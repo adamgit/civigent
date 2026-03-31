@@ -479,6 +479,19 @@ Tab 3 ──port──┘
 
 ---
 
+## Dev supervisor and backend fatal SSE
+
+In development (`npm run dev`), a lightweight supervisor process (`backend/src/dev-supervisor.ts`) sits in front of the real backend (`backend/src/server.ts`):
+
+- **Supervisor** owns the public port, serves `GET /api/system/events` (SSE), and proxies all other HTTP/WS traffic to the worker via `http-proxy`.
+- **Worker** (`server.ts`) binds an ephemeral port, IPCs it to the supervisor, and sends lifecycle messages (`starting`, `listening`, `ready`, `fatal`).
+- If the worker crashes, the supervisor stays alive, retains the fatal error report in memory, and broadcasts it to all connected browsers via SSE. The frontend renders a full-page error screen with the stack trace.
+- New browser tabs that open after a crash immediately receive the retained fatal state.
+
+In production, `server.ts` runs directly — no supervisor, no SSE endpoint, no proxy hop. The supervised-mode code paths are dead code when `process.send` is undefined.
+
+---
+
 ## Invariants for implementers
 
 1. **DocumentSkeleton is canonical source of identity** — never independently derive paths from level numbers

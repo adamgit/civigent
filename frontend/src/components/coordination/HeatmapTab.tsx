@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { sectionGlobalKey, type GetHeatmapResponse, type HeatmapEntry, type AnyProposal } from "../../types/shared.js";
 import { headingPathToLabel } from "../../pages/document-page-utils";
+import { stripLeadingSlashForRoute } from "../../app/docsRouteUtils";
 
 function involvementColor(score: number): string {
   if (score >= 0.8) return "var(--color-humanInvolvement-dot-blocked, #1e40af)";
@@ -80,7 +81,7 @@ export function HeatmapTab({ heatmap, agentReadings, proposals, loading, error }
         Array.from(docGroups.entries()).map(([docPath, entries]) => (
           <div key={docPath} className="mb-5">
             <h3 className="text-sm font-semibold mb-1">
-              <Link to={`/docs/${docPath}`} className="text-text-primary hover:text-accent-text">{docPath}</Link>
+              <Link to={`/docs/${stripLeadingSlashForRoute(docPath)}`} className="text-text-primary hover:text-accent-text">{docPath}</Link>
             </h3>
             <table className="w-full text-xs" style={{ borderCollapse: "collapse" }}>
               <thead>
