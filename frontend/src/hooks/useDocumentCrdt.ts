@@ -29,7 +29,6 @@ export interface UseDocumentCrdtParams {
   decodedDocPath: string | null;
   sections: DocumentSection[];
   setSections: React.Dispatch<React.SetStateAction<DocumentSection[]>>;
-  setSectionsLoading: (b: boolean) => void;
   setError: (e: string | null) => void;
   setStatusMessage: (s: string | null) => void;
   loadSections: (docPath: string) => Promise<DocumentSection[]>;
@@ -71,8 +70,6 @@ export interface UseDocumentCrdtReturn {
   proposalSectionsRef: React.MutableRefObject<Map<string, { doc_path: string; heading_path: string[]; content: string }>>;
   proposalSaveTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
-  deferredEditIndexRef: React.MutableRefObject<number | null>;
-
   // Callbacks
   ensureProvider: () => Promise<CrdtProvider | null>;
   stopEditing: () => void;
@@ -94,7 +91,6 @@ export function useDocumentCrdt({
   decodedDocPath,
   sections,
   setSections,
-  setSectionsLoading,
   setError,
   setStatusMessage,
   loadSections,
@@ -144,8 +140,6 @@ export function useDocumentCrdt({
   const proposalSectionsRef = useRef<Map<string, { doc_path: string; heading_path: string[]; content: string }>>(new Map());
   const proposalSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mouseDownPosRef = useRef<{ x: number; y: number } | null>(null);
-  const deferredEditIndexRef = useRef<number | null>(null);
-  const deferredClickCoordsRef = useRef<{ x: number; y: number } | null>(null);
   const observerDocSessionIdRef = useRef<string | null>(null);
   // Stable ref to stopEditing, used in observer's onSessionReinit to break circular dep.
   const stopEditingRef = useRef<(() => void) | null>(null);
@@ -472,15 +466,7 @@ export function useDocumentCrdt({
         },
         onSynced: () => {
           setCrdtSynced(true);
-          // Y.Doc now has server state — apply deferred focus if pending
-          const deferredIdx = deferredEditIndexRef.current;
-          if (deferredIdx !== null) {
-            const coords = deferredClickCoordsRef.current;
-            deferredEditIndexRef.current = null;
-            deferredClickCoordsRef.current = null;
-            setFocusedSectionIndex(deferredIdx);
-            pendingFocusRef.current = { index: deferredIdx, position: "start", coords: coords ?? undefined };
-          }
+          setEditingLoading(false);
         },
         onError: (reason: string) => setCrdtError(`CRDT sync error: ${reason}`),
         onFlushStarted: () => {
@@ -555,7 +541,6 @@ export function useDocumentCrdt({
       provider.connect();
       setCrdtProvider(provider);
       crdtProviderRef.current = provider;
-      setEditingLoading(false);
       return provider;
     } catch (err) {
       setEditingLoading(false);
@@ -581,19 +566,11 @@ export function useDocumentCrdt({
 
   // ── Click-to-edit a section ─────────────────────────────────
   const startEditing = useCallback(async (sectionIndex: number, clickCoords?: { x: number; y: number }) => {
-    const hadProvider = !!crdtProviderRef.current;
     const provider = await ensureProvider();
     if (!provider) return;
 
-    if (hadProvider) {
-      // Existing provider — Y.Doc already has content, focus immediately
-      setFocusedSectionIndex(sectionIndex);
-      pendingFocusRef.current = { index: sectionIndex, position: "start", coords: clickCoords };
-    } else {
-      // New provider — defer focus until onSynced fires (Y.Doc is empty until then)
-      deferredEditIndexRef.current = sectionIndex;
-      deferredClickCoordsRef.current = clickCoords ?? null;
-    }
+    setFocusedSectionIndex(sectionIndex);
+    pendingFocusRef.current = { index: sectionIndex, position: "start", coords: clickCoords };
 
     // Notify server of section focus (editingPresence)
     const section = sections[sectionIndex];
@@ -785,8 +762,6 @@ export function useDocumentCrdt({
     proposalSectionsRef,
     proposalSaveTimerRef,
     mouseDownPosRef,
-    deferredEditIndexRef,
-
     // Callbacks
     ensureProvider,
     stopEditing,

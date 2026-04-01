@@ -736,7 +736,10 @@ export function createCrdtWsServer(): CrdtWsServer {
     socket.on("message", (raw) => {
       if (checkTokenExpired(socket, state)) return;
       const data = raw instanceof Buffer ? raw : Buffer.from(raw as ArrayBuffer);
-      messageChain = messageChain.then(() => handleMessage(socket, state, data));
+      messageChain = messageChain.then(() => handleMessage(socket, state, data)).then(null, (err) => {
+        socket.close(1011, "internal error");
+        throw err;
+      });
     });
 
     socket.on("close", () => {

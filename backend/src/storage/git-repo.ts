@@ -46,6 +46,20 @@ export async function getHeadSha(dataRoot: string): Promise<string> {
   return gitExec(["rev-parse", "HEAD"], dataRoot);
 }
 
+/**
+ * Read the Writer-Type trailer from a commit.
+ * Returns "human", "agent", or null if the trailer is missing/empty.
+ */
+export async function getCommitWriterType(dataRoot: string, sha: string): Promise<"human" | "agent" | null> {
+  const raw = await gitExec(
+    ["log", "-1", "--format=%(trailers:key=Writer-Type,valueonly)", sha],
+    dataRoot,
+  );
+  const value = raw.trim().toLowerCase();
+  if (value === "human" || value === "agent") return value;
+  return null;
+}
+
 export async function getCommitsBetween(dataRoot: string, afterSha: string): Promise<Set<string>> {
   const output = await gitExec(["rev-list", `${afterSha}..HEAD`], dataRoot);
   return new Set(output.split("\n").filter(Boolean));

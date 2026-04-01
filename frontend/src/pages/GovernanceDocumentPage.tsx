@@ -129,7 +129,6 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     decodedDocPath,
     sections,
     setSections,
-    setSectionsLoading,
     setError,
     setStatusMessage,
     loadSections,
@@ -319,7 +318,9 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   // ── Attribution overlay (blame) ──────────────────────────
   const [showAttribution, setShowAttribution] = useState(false);
   const sectionFiles = useMemo(() => sections.map((s) => s.section_file), [sections]);
-  const blameMap = useBlameData(decodedDocPath ?? "", sectionFiles, showAttribution && !sectionsLoading);
+  // Word-count fingerprint so blame re-fetches when content changes (e.g. after restore)
+  const contentFingerprint = useMemo(() => sections.map((s) => s.word_count).join(","), [sections]);
+  const blameMap = useBlameData(decodedDocPath ?? "", sectionFiles, showAttribution && !sectionsLoading, contentFingerprint);
 
   // ── B3: Stable section callbacks (extracted from sections.map) ───
   const handleFocusSection = useCallback((idx: number, headingPath: string[], coords: { x: number; y: number }) => {

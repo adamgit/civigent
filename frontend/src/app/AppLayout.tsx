@@ -116,7 +116,7 @@ export function AppLayout() {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [docBadges, setDocBadges] = useState<Set<string>>(() => readBadgeDocPaths());
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
-  const [systemStarting, setSystemStarting] = useState(true);
+  const [systemStarting, setSystemStarting] = useState(false);
   const [fatalReport, setFatalReport] = useState<FatalReport | null>(null);
   const [windowFocused, setWindowFocused] = useState(() => document.hasFocus());
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
@@ -217,7 +217,9 @@ export function AppLayout() {
     return () => setSystemStartingHandler(null);
   }, []);
 
-  // SSE connection for backend lifecycle state — replaces health polling
+  // SSE connection for backend lifecycle state (dev-only enhancement).
+  // In dev, the supervisor serves SSE with starting/ready/fatal transitions.
+  // In production, SSE is unavailable — the app works without it.
   useEffect(() => {
     const disconnect = connectSystemEvents((state) => {
       if (state.state === "ready") {
@@ -241,6 +243,52 @@ export function AppLayout() {
     });
     return disconnect;
   }, []);
+
+  // Initial data load — runs independently of SSE (which is dev-only).
+  // If the server is still starting, the 503 handler sets systemStarting=true
+  // and the recovery poll below takes over.
+  useEffect(() => {
+    loadTree().catch(() => {});
+    apiClient.getSessionInfo()
+      .then((session) => {
+        if (session.authenticated && session.user?.id) {
+          setWriterId(session.user.id);
+          setCurrentUser(session.user);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Recovery poll: when systemStarting is set (by 503 handler or SSE),
+  // poll until the server responds with a non-503 status, then recover.
+  useEffect(() => {
+    if (!systemStarting) return;
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch("/api/documents/tree", {
+          headers: { "X-Requested-With": "fetch" },
+          credentials: "include",
+        });
+        if (res.status !== 503) {
+          setSystemStarting(false);
+          setFatalReport(null);
+          setTreeError(null);
+          loadTree().catch(() => {});
+          apiClient.getSessionInfo()
+            .then((session) => {
+              if (session.authenticated && session.user?.id) {
+                setWriterId(session.user.id);
+                setCurrentUser(session.user);
+              }
+            })
+            .catch(() => {});
+        }
+      } catch {
+        // Network error — keep polling
+      }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [systemStarting]);
 
   useEffect(() => {
     const handleFocus = () => setWindowFocused(true);

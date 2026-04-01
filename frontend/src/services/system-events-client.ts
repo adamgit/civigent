@@ -3,7 +3,12 @@
  *
  * Opens a single EventSource to /api/system/events and exposes
  * the current lifecycle phase via a callback subscription.
- * EventSource handles reconnection automatically.
+ *
+ * EventSource's built-in reconnection only works for transient network
+ * errors. If the response arrives with the wrong MIME type (e.g. Vite's
+ * HTML error page when the backend is down), EventSource permanently
+ * aborts. This module handles that by detecting CLOSED state after an
+ * error and retrying with exponential backoff.
  */
 
 export interface FatalReport {
@@ -21,23 +26,54 @@ export interface SystemState {
 
 export type SystemStateListener = (state: SystemState) => void;
 
-export function connectSystemEvents(onState: SystemStateListener): () => void {
-  const es = new EventSource("/api/system/events");
+const INITIAL_RETRY_MS = 1000;
+const MAX_RETRY_MS = 10000;
 
-  es.addEventListener("system_state", (e) => {
-    try {
+export function connectSystemEvents(onState: SystemStateListener): () => void {
+  let es: EventSource | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retryMs = INITIAL_RETRY_MS;
+  let closed = false;
+
+  function connect(): void {
+    if (closed) return;
+    es = new EventSource("/api/system/events");
+
+    es.addEventListener("system_state", (e) => {
+      retryMs = INITIAL_RETRY_MS;
       const state: SystemState = JSON.parse(e.data);
       onState(state);
-    } catch (err) {
-      throw new Error(`Failed to parse system_state SSE event: ${err}`);
-    }
-  });
+    });
 
-  // EventSource auto-reconnects on error. Emit "starting" so the UI
-  // shows the startup state while the connection is being re-established.
-  es.addEventListener("error", () => {
-    onState({ state: "starting" });
-  });
+    es.addEventListener("error", () => {
+      // EventSource.CLOSED === 2: the browser gave up (e.g. wrong MIME type).
+      // Built-in reconnection won't fire, so we retry manually.
+      // NOTE: we intentionally do NOT report { state: "starting" } here.
+      // An SSE connection failure does not mean the system is starting —
+      // in production the SSE endpoint doesn't exist (supervisor is dev-only).
+      if (es && es.readyState === EventSource.CLOSED) {
+        es.close();
+        es = null;
+        scheduleRetry();
+      }
+      // If readyState is CONNECTING, EventSource is auto-reconnecting — let it.
+    });
+  }
 
-  return () => es.close();
+  function scheduleRetry(): void {
+    if (closed) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      connect();
+    }, retryMs);
+    retryMs = Math.min(retryMs * 2, MAX_RETRY_MS);
+  }
+
+  connect();
+
+  return () => {
+    closed = true;
+    if (retryTimer) clearTimeout(retryTimer);
+    if (es) es.close();
+  };
 }

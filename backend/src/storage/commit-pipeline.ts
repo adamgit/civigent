@@ -67,7 +67,7 @@ export async function commitProposalToCanonical(
   proposalId: ProposalId,
   scores: SectionScoreSnapshot,
   diagnostics?: string[],
-  options: { skipCrdtInjection?: boolean } = {},
+  options: { skipCrdtInjection?: boolean; restoreTargetSha?: string } = {},
 ): Promise<string> {
   const proposal = await readProposal(proposalId);
   const dataRoot = getDataRoot();
@@ -84,7 +84,15 @@ export async function commitProposalToCanonical(
           .map((s) => `  - ${sectionGlobalKey(s.doc_path, s.heading_path)}`)
           .join("\n")
       : "  (none — document-level operation)";
-    const commitMessage = `agent proposal: ${proposal.intent}\n\nSections:\n${sectionList}\n\nProposal: ${proposal.id}\nWriter: ${proposal.writer.id}\nWriter-Type: ${proposal.writer.type}`;
+    const trailers = [
+      `Proposal: ${proposal.id}`,
+      `Writer: ${proposal.writer.id}`,
+      `Writer-Type: ${proposal.writer.type}`,
+    ];
+    if (options.restoreTargetSha) {
+      trailers.push(`Restore-Target: ${options.restoreTargetSha}`);
+    }
+    const commitMessage = `agent proposal: ${proposal.intent}\n\nSections:\n${sectionList}\n\n${trailers.join("\n")}`;
     const author = {
       name: proposal.writer.displayName,
       email: `${proposal.writer.id}@knowledge-store.local`,

@@ -746,15 +746,21 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         return;
       }
 
+      // Inherit Writer-Type from the target commit so blame attribution reflects
+      // the original author, not who clicked the restore button.
+      const { getCommitWriterType } = await import("../../storage/git-repo.js");
+      const targetWriterType = await getCommitWriterType(getDataRoot(), sha);
+      const restoreWriter = targetWriterType ? { ...writer, type: targetWriterType as typeof writer.type } : writer;
+
       // Pre-commit any in-progress session before restore replaces canonical content.
       const preCommitResult = await preemptiveFlushAndCommit(docPath);
 
       const { createRestoreProposal } = await import("../../storage/restore-service.js");
-      const { proposal } = await createRestoreProposal(docPath, sha, writer);
+      const { proposal } = await createRestoreProposal(docPath, sha, restoreWriter);
 
       // Human explicitly requested this restore — commit directly, skip CRDT injection
       // (restore changes the entire skeleton; injectAfterCommit would corrupt the Y.Doc).
-      const committedSha = await commitProposalToCanonical(proposal.id, {}, undefined, { skipCrdtInjection: true });
+      const committedSha = await commitProposalToCanonical(proposal.id, {}, undefined, { skipCrdtInjection: true, restoreTargetSha: sha });
 
       // Invalidate live session and notify connected clients.
       await invalidateSessionForRestore(
@@ -780,10 +786,24 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       // Resolve sectionFile → absolute disk path via ContentLayer (handles sub-skeleton nesting)
       const contentRoot = getContentRoot();
-      const { absolutePath: sectionFilePath } = await new ContentLayer(contentRoot).resolveSectionFileId(docPath, sectionFile);
+      const { absolutePath: sectionFilePath, level, headingPath } = await new ContentLayer(contentRoot).resolveSectionFileId(docPath, sectionFile);
 
       const { computeSectionBlame } = await import("../../storage/section-blame.js");
       const lines = await computeSectionBlame(sectionFilePath);
+
+      // The sections API prepends "## Heading\n\n" to headed sections, so blame
+      // line numbers must be shifted to match the content the client sees.
+      const isHeaded = level > 0 && headingPath.length > 0;
+      if (isHeaded && lines.length > 0) {
+        const headingOffset = 2; // heading line + blank line
+        // Use the first blame entry's type for the heading lines
+        const headingType = lines[0].type;
+        for (const entry of lines) entry.line += headingOffset;
+        lines.unshift(
+          { line: 1, type: headingType },
+          { line: 2, type: headingType },
+        );
+      }
 
       const response: import("../../types/shared.js").BlameResponse = { lines };
       res.json(response);

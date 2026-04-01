@@ -88,7 +88,7 @@ export function SetupPage() {
       setServerName(data.defaultServerName);
       setPolicy(adminCfg.agent_auth_policy);
     } catch (err) {
-      setError((err as Error).message);
+      setError(err instanceof Error ? err.message : String(err));
     }
   }, []);
 

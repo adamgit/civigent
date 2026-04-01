@@ -11,54 +11,41 @@ interface BlameEntry {
 /**
  * Fetch git blame attribution for a set of section files.
  *
- * @param docPath - Document path (e.g. "ops/strategy.md")
- * @param sectionFiles - List of section filenames (e.g. ["--before-first-heading--abc123.md", "sec_overview_xyz.md"])
- * @param enabled - When false, no fetches are made and all entries are cleared
- * @returns Map from sectionFile → { loading, lines }
+ * Always fetches fresh data when enabled — no caching.
+ * Pass a changing `revision` value to force re-fetch when content changes
+ * but filenames stay the same (e.g. after a document restore).
  */
 export function useBlameData(
   docPath: string,
   sectionFiles: string[],
   enabled: boolean,
+  revision?: string,
 ): Map<string, BlameEntry> {
   const [blameMap, setBlameMap] = useState<Map<string, BlameEntry>>(new Map());
-  const abortRef = useRef<Map<string, AbortController>>(new Map());
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
+    // Abort any previous round of fetches
+    abortRef.current?.abort();
+    abortRef.current = null;
+
     if (!enabled || sectionFiles.length === 0) {
-      // Abort any in-flight requests and clear state
-      for (const controller of abortRef.current.values()) {
-        controller.abort();
-      }
-      abortRef.current.clear();
       setBlameMap(new Map());
       return;
     }
 
-    // Initialize loading state for all files
-    setBlameMap((prev) => {
-      const next = new Map(prev);
-      for (const file of sectionFiles) {
-        if (!next.has(file)) {
-          next.set(file, { loading: true, lines: null });
-        }
-      }
-      return next;
-    });
+    const controller = new AbortController();
+    abortRef.current = controller;
 
-    // Fetch blame for each file in parallel
+    // Start all sections as loading
+    const initial = new Map<string, BlameEntry>();
+    for (const file of sectionFiles) {
+      initial.set(file, { loading: true, lines: null });
+    }
+    setBlameMap(initial);
+
+    // Fetch all in parallel
     for (const sectionFile of sectionFiles) {
-      if (abortRef.current.has(sectionFile)) continue; // Already fetching
-
-      const controller = new AbortController();
-      abortRef.current.set(sectionFile, controller);
-
-      setBlameMap((prev) => {
-        const next = new Map(prev);
-        next.set(sectionFile, { loading: true, lines: prev.get(sectionFile)?.lines ?? null });
-        return next;
-      });
-
       apiClient
         .getBlame(docPath, sectionFile)
         .then((response) => {
@@ -80,20 +67,13 @@ export function useBlameData(
             });
             return next;
           });
-        })
-        .finally(() => {
-          abortRef.current.delete(sectionFile);
         });
     }
 
     return () => {
-      // Cleanup: abort all in-flight fetches when disabled or dependencies change
-      for (const controller of abortRef.current.values()) {
-        controller.abort();
-      }
-      abortRef.current.clear();
+      controller.abort();
     };
-  }, [docPath, enabled, sectionFiles.join(",")]);
+  }, [docPath, enabled, sectionFiles.join(","), revision]);
 
   return blameMap;
 }

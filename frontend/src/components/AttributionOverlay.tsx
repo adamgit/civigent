@@ -61,6 +61,8 @@ export function AttributionOverlay({ lines, loading, content, error }: Attributi
   }
 
   if (!lines || lines.length === 0) {
+    // Empty section (e.g. before-first-heading with no content) — nothing to render.
+    if (!content) return null;
     return (
       <div style={{ padding: "12px 0", color: "var(--color-status-red, #b91c1c)", fontSize: 12 }}>
         Attribution error: server returned no blame data for this section. Content exists so attribution must exist.
@@ -73,6 +75,8 @@ export function AttributionOverlay({ lines, loading, content, error }: Attributi
   for (const entry of lines) {
     lineTypeMap.set(entry.line, entry.type);
   }
+  // Lines beyond blame coverage (e.g. trailing newline artefact) inherit the last blamed type.
+  const lastBlamedType = lines.length > 0 ? lines[lines.length - 1].type : "unknown";
 
   return (
     <div
@@ -86,7 +90,7 @@ export function AttributionOverlay({ lines, loading, content, error }: Attributi
     >
       {contentLines.map((text, index) => {
         const lineNum = index + 1;
-        const type = lineTypeMap.get(lineNum) ?? "unknown";
+        const type = lineTypeMap.get(lineNum) ?? lastBlamedType;
         return (
           <div
             key={lineNum}

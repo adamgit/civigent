@@ -21,15 +21,34 @@ import {
 import { ParsedDocument } from "./markdown-sections.js";
 import type { DocStructureNode } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
+import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
 
 /**
  * Write a section body file, creating parent directories as needed.
  * No-op for sub-skeleton entries (their files are skeleton listings, not body content).
+ *
+ * All content is normalized via a markdownToJSON→jsonToMarkdown round-trip
+ * before writing to disk. This is the single normalization gate — every
+ * write path (MCP write_section, importMarkdownDocument, createSection,
+ * moveSection, renameSection, crash recovery) passes through here.
+ *
+ * The CRDT flush path (FragmentStore.extractMarkdown) inherently normalizes
+ * as a side-effect of Y.Doc→markdown serialization via jsonToMarkdown, so
+ * content from that path is already normalized — the second pass here is a
+ * no-op because the round-trip is idempotent. This double-application is
+ * unavoidable because extractMarkdown cannot produce markdown without
+ * jsonToMarkdown (it's the serialization step, not an optional normalization),
+ * and we cannot skip normalization here because all other write paths do not
+ * normalize. importMarkdownDocument uses ParsedDocument for structural
+ * splitting (CommonMark heading detection) but does not run the milkdown
+ * serializer round-trip, so normalization here is genuinely additive for
+ * that path.
  */
 async function writeBodyFile(entry: FlatEntry, content: string): Promise<void> {
   if (entry.isSubSkeleton) return;
+  const normalized = jsonToMarkdown(markdownToJSON(content));
   await mkdir(path.dirname(entry.absolutePath), { recursive: true });
-  await writeFile(entry.absolutePath, content, "utf8");
+  await writeFile(entry.absolutePath, normalized, "utf8");
 }
 
 function resolveDocSkeletonPath(contentRoot: string, docPath: string): string {
