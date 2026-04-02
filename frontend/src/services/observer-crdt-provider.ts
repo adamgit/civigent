@@ -26,6 +26,7 @@ import {
   WS_CLOSE_INVALID_URL,
   WS_CLOSE_YDOC_INIT_FAILED,
 } from "./crdt-close-codes";
+import { encodeDocPathForWs } from "../utils/path-encoding";
 
 // ─── Protocol constants (must match backend/src/ws/crdt-sync.ts) ───
 
@@ -113,7 +114,7 @@ export class ObserverCrdtProvider {
 
     // docPath is canonical (leading slash) — encode segments, skip empty first from split("/").
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const encodedPath = docPath.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+    const encodedPath = encodeDocPathForWs(docPath);
     this.url = `${protocol}//${window.location.host}/ws/crdt/${encodedPath}?clientInstanceId=${encodeURIComponent(this.clientInstanceId)}`;
   }
 

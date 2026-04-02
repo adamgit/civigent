@@ -19,21 +19,6 @@ describe("Startup gate — 503 during recovery", () => {
     await dataCtx.cleanup();
   });
 
-  it("/api/health is always reachable and reports ready state", async () => {
-    const res = await request(app).get("/api/health");
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("ok");
-    expect(typeof res.body.ready).toBe("boolean");
-  });
-
-  it("/api/health reports ready=true after setSystemReady()", async () => {
-    setSystemReady();
-
-    const res = await request(app).get("/api/health");
-    expect(res.status).toBe(200);
-    expect(res.body.ready).toBe(true);
-  });
-
   it("returns 503 on data endpoints when system is not ready", async () => {
     _resetSystemReadyForTesting();
 

@@ -222,7 +222,7 @@ describe("OAuth 2.1 flow", () => {
       else process.env.KS_AUTH_MODE = prevAuthMode;
     });
 
-    it("GET /oauth/authorize serves auto-redirect HTML with code", async () => {
+    it("GET /oauth/authorize redirects with authorization code in single-user mode", async () => {
       const regRes = await request(ctx.app)
         .post("/oauth/register")
         .send({ client_name: "Single User Agent" });
@@ -241,14 +241,12 @@ describe("OAuth 2.1 flow", () => {
           response_type: "code",
           state: "su-state",
         });
-      expect(authRes.status).toBe(200);
-      expect(authRes.headers["content-type"]).toMatch(/text\/html/);
-      expect(authRes.text).toContain("is connecting");
+      expect(authRes.status).toBe(302);
 
-      // Extract code from meta refresh
-      const codeMatch = authRes.text.match(/code=([^&"]+)/);
-      expect(codeMatch).not.toBeNull();
-      const authCode = decodeURIComponent(codeMatch![1]);
+      // Extract code from Location header
+      const location = new URL(authRes.headers["location"]);
+      const authCode = location.searchParams.get("code");
+      expect(authCode).toBeTruthy();
 
       // Exchange works
       const tokenRes = await request(ctx.app)

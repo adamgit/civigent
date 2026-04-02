@@ -221,6 +221,7 @@ export function AppLayout() {
   // In dev, the supervisor serves SSE with starting/ready/fatal transitions.
   // In production, SSE is unavailable — the app works without it.
   useEffect(() => {
+    if (!import.meta.env.DEV) return;
     const disconnect = connectSystemEvents((state) => {
       if (state.state === "ready") {
         setSystemStarting(false);

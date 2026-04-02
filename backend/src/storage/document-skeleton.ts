@@ -934,21 +934,52 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     const siblings = this.findSiblingList(parentPath);
     siblings.push(node);
 
+    const skeletonPathForParent = this.resolveSkeletonPathFor(parentPath);
+    const added = this.flattenNode(node, parentPath, skeletonPathForParent);
+
     // If the parent now has children and didn't have a root child before,
     // addBodyHoldersToParents will handle it on persist. But we need to
     // ensure the parent node gets root children if it just gained its first child.
+    // Also include the new body holder in the returned `added` array so callers
+    // write its body file.
     if (parentPath.length > 0) {
       const parentSiblings = this.findSiblingList(parentPath.slice(0, -1));
       const parentNode = parentSiblings.find(
         n => n.heading.toLowerCase() === parentPath[parentPath.length - 1].toLowerCase(),
       );
       if (parentNode) {
+        const hadBodyHolder = parentNode.children.some(c => c.level === 0 && c.heading === "");
         addBodyHoldersToParents([parentNode]);
+        if (!hadBodyHolder) {
+          const bodyHolder = parentNode.children.find(c => c.level === 0 && c.heading === "");
+          if (bodyHolder) {
+            const bodyHolderEntries = this.flattenNode(bodyHolder, parentPath, skeletonPathForParent);
+            added.push(...bodyHolderEntries);
+
+            // The parent was a leaf — its file held body content. persistInternal()
+            // will overwrite it with sub-skeleton markers. Read the body content
+            // now and write it to the body holder after persist so it isn't lost.
+            const grandparentSkeletonPath = this.resolveSkeletonPathFor(parentPath.slice(0, -1));
+            const parentBodyPath = path.join(`${grandparentSkeletonPath}.sections`, parentNode.sectionFile);
+            let parentBody = "";
+            try {
+              parentBody = await readFile(parentBodyPath, "utf8");
+            } catch {
+              // Parent body file may not exist yet (e.g. just inserted)
+            }
+
+            await this.persistInternal();
+
+            if (parentBody) {
+              const holderPath = bodyHolderEntries[0].absolutePath;
+              await mkdir(path.dirname(holderPath), { recursive: true });
+              await writeFile(holderPath, parentBody, "utf8");
+            }
+            return added;
+          }
+        }
       }
     }
-
-    const skeletonPathForParent = this.resolveSkeletonPathFor(parentPath);
-    const added = this.flattenNode(node, parentPath, skeletonPathForParent);
 
     await this.persistInternal();
     return added;

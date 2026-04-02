@@ -197,22 +197,32 @@ export interface RestoreCheckpoint {
 }
 
 /**
- * Check if the most recent commit touching a file is a restore checkpoint.
- * Returns the latest commit SHA and its Restore-Target trailer (if any).
+ * Walk the file's commit history to find the most recent restore checkpoint.
+ *
+ * Scans up to 50 commits backwards looking for one with a `Restore-Target:`
+ * trailer. This handles the case where post-restore edits have pushed the
+ * restore commit out of the -1 position.
  */
 export async function findLatestRestoreCheckpoint(absoluteFilePath: string): Promise<RestoreCheckpoint | null> {
   const dataRoot = getDataRoot();
   const { stdout } = await execFileAsync(
     "git",
-    ["log", "-1", "--format=%H%n%(trailers:key=Restore-Target,valueonly)", "--", absoluteFilePath],
+    ["log", "-50", "--format=%H%x00%(trailers:key=Restore-Target,valueonly)", "--", absoluteFilePath],
     { cwd: dataRoot },
   );
   const trimmed = stdout.trim();
   if (!trimmed) return null; // file has no git history
-  const lines = trimmed.split("\n");
-  const latestSha = lines[0];
-  const restoreTarget = lines[1]?.trim() || null;
-  return { latestSha, restoreTarget };
+
+  for (const line of trimmed.split("\n")) {
+    if (!line) continue;
+    const [sha, trailer] = line.split("\0");
+    const restoreTarget = trailer?.trim() || null;
+    if (restoreTarget) {
+      return { latestSha: sha, restoreTarget };
+    }
+  }
+
+  return null; // no restore checkpoint in recent history
 }
 
 // ─── Standard blame (no checkpoint) ─────────────────────────────

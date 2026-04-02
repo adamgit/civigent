@@ -1,3 +1,4 @@
+import { encodeDocPath } from "../utils/path-encoding.js";
 import type {
   AdminConfig,
   AuthUser,
@@ -102,11 +103,6 @@ export interface DocRestoreResponse {
 interface GetDocumentsTreeOptions {
   path?: string;
   recursive?: boolean;
-}
-
-/** Encode a doc path for use in URL paths — encodes each segment individually so slashes are preserved. */
-function encodeDocPath(docPath: string): string {
-  return docPath.split("/").map(encodeURIComponent).join("/");
 }
 
 const WRITER_ID_STORAGE_KEY = "ks_writer_id";
@@ -723,7 +719,7 @@ export const apiClient = {
 
   async getBlame(docPath: string, sectionFile: string): Promise<BlameResponse> {
     return requestJson<BlameResponse>(
-      `/api/documents/${encodeURIComponent(docPath)}/blame/${encodeURIComponent(sectionFile)}`,
+      `/api/documents/${encodeDocPath(docPath)}/blame/${encodeURIComponent(sectionFile)}`,
     );
   },
 
@@ -742,7 +738,7 @@ export const apiClient = {
   },
 
   async setDocAcl(docPath: string, perms: { read?: string; write?: string }): Promise<void> {
-    await requestJson(`/api/admin/acl/doc/${encodeURIComponent(docPath)}`, {
+    await requestJson(`/api/admin/acl/doc/${encodeDocPath(docPath)}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(perms),
@@ -750,7 +746,7 @@ export const apiClient = {
   },
 
   async removeDocAcl(docPath: string): Promise<void> {
-    await requestJson(`/api/admin/acl/doc/${encodeURIComponent(docPath)}`, {
+    await requestJson(`/api/admin/acl/doc/${encodeDocPath(docPath)}`, {
       method: "DELETE",
     });
   },

@@ -9,6 +9,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import request from "supertest";
 import path from "node:path";
 import { createApp } from "../app.js";
+import { setSystemReady } from "../startup-state.js";
 import { ensureGitRepoReady, getHeadSha } from "../storage/git-repo.js";
 import { ensureV3Directories, getDataRoot } from "../storage/data-root.js";
 import { acquireDocSession, releaseDocSession, lookupDocSession, setFlushCallback } from "../crdt/ydoc-lifecycle.js";
@@ -24,6 +25,7 @@ describe("API performance (dev-data)", () => {
     process.env.KS_DATA_ROOT = DEV_DATA;
     await ensureV3Directories();
     await ensureGitRepoReady(DEV_DATA);
+    setSystemReady();
     app = createApp();
   }, 30_000);
 

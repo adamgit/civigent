@@ -38,6 +38,7 @@ import {
   WS_CLOSE_INVALID_URL,
   WS_CLOSE_YDOC_INIT_FAILED,
 } from "./crdt-close-codes";
+import { encodeDocPathForWs } from "../utils/path-encoding";
 
 // ─── Protocol constants (must match backend/src/ws/crdt-sync.ts) ───
 
@@ -160,11 +161,12 @@ export class CrdtProvider {
     // docPath is canonical (leading slash, e.g. "/ops/strategy.md") so we
     // encode each segment and rejoin, skipping the empty first segment from split("/").
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const encodedPath = docPath.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+    const encodedPath = encodeDocPathForWs(docPath);
     this.url = `${protocol}//${window.location.host}/ws/crdt/${encodedPath}?clientInstanceId=${encodeURIComponent(this.clientInstanceId)}`;
 
     // Track which fragments are modified per transaction (same pattern as backend).
     this.afterTxnHandler = (txn: Y.Transaction) => {
+      if (txn.origin === this) return;
       if (doc.share.size !== this.lastShareSize) {
         this.reverseMap = new Map();
         for (const [name, shared] of doc.share) {

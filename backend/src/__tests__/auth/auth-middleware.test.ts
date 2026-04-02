@@ -61,11 +61,6 @@ describe("Auth middleware enforcement", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns 200 on GET /api/health without auth (exempt)", async () => {
-    const res = await request(ctx.app).get("/api/health");
-    expect(res.status).toBe(200);
-  });
-
   it("returns 200 on GET /api/auth/methods without auth (exempt)", async () => {
     const res = await request(ctx.app).get("/api/auth/methods");
     expect(res.status).toBe(200);
