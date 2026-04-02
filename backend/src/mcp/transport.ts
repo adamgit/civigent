@@ -116,7 +116,13 @@ export function createMcpRouter(options: McpTransportOptions): express.Router {
     res.status(200).json(response);
   });
 
-  // GET /mcp — SSE endpoint for server-initiated messages (not needed for stateless tools)
+  // GET /mcp — reject explicitly so the request doesn't fall through to the
+  // SPA catch-all (which would serve index.html as text/html, causing clients
+  // that probe for SSE to fail with "Invalid content type").
+  router.get("/", (_req: Request, res: Response) => {
+    res.status(405).setHeader("Allow", "POST, DELETE").end();
+  });
+
   // DELETE /mcp — session termination
   router.delete("/", async (req: Request, res: Response) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
