@@ -51,6 +51,7 @@ jobs:
           file: quickstart/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          no-cache: true
           tags: |
             ${{ env.REGISTRY }}/${{ steps.vars.outputs.image }}:latest
             ${{ env.REGISTRY }}/${{ steps.vars.outputs.image }}:sha-${{ steps.vars.outputs.short_sha }}
