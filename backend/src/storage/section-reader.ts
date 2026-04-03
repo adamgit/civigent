@@ -2,6 +2,7 @@ import { getContentRoot } from "./data-root.js";
 import { resolveHeadingPathWithLevel } from "./heading-resolver.js";
 import { ContentLayer } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
+import { prependHeading } from "./section-formatting.js";
 
 // Re-export from ContentLayer (callers import SectionNotFoundError from here)
 export { SectionNotFoundError } from "./content-layer.js";
@@ -43,7 +44,5 @@ export async function readSectionWithHeading(
   if (level === 0) return body;
 
   const heading = ref.headingPath[ref.headingPath.length - 1];
-  const headingLine = `${"#".repeat(level)} ${heading}`;
-  const trimmedBody = body.replace(/^\n+/, "").replace(/\n+$/, "");
-  return trimmedBody ? `${headingLine}\n\n${trimmedBody}\n` : `${headingLine}\n`;
+  return prependHeading(body, level, heading);
 }

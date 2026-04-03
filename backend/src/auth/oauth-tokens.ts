@@ -7,15 +7,9 @@
 
 import { createHmac, randomUUID, randomBytes, timingSafeEqual } from "node:crypto";
 import { getAgentAnonSalt } from "./oauth-config.js";
+import { base64UrlEncode } from "./encoding.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────
-
-function base64UrlEncode(buf: Buffer): string {
-  return buf.toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
-}
 
 function base64UrlDecode(str: string): Buffer {
   const normalized = str.replace(/-/g, "+").replace(/_/g, "/");

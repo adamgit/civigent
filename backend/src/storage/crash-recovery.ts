@@ -33,6 +33,7 @@ import {
   scanSessionFragmentDocPaths,
 } from "./session-store.js";
 import { recoverDocument, reconcileAndCleanup, writeRecoveredToCanonical, buildCompoundSkeleton, type DocumentRecoveryResult } from "./recovery-layers.js";
+import { sectionFileToName } from "./document-skeleton.js";
 
 // ─── Recovery I/O Context ────────────────────────────────────────────────────
 
@@ -125,15 +126,14 @@ export function buildRecoverySectionMarkdown(
   parts.push("| File | Status |");
   parts.push("|------|--------|");
   for (const orphan of orphans) {
-    const name = orphan.originalHeading ?? orphan.sectionFile.replace(/\.md$/, "").replace(/^sec_/, "");
+    const name = orphan.originalHeading ?? sectionFileToName(orphan.sectionFile);
     parts.push(`| ${name} | orphaned |`);
   }
   parts.push("");
 
   // Each orphaned body under a sub-heading
   for (const orphan of orphans) {
-    const heading = orphan.originalHeading
-      ?? orphan.sectionFile.replace(/\.md$/, "").replace(/^sec_/, "").replace(/_/g, " ");
+    const heading = orphan.originalHeading ?? sectionFileToName(orphan.sectionFile);
     parts.push(`### ${heading}\n`);
     parts.push(orphan.content);
     parts.push("");

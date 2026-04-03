@@ -5,15 +5,15 @@
  *   GET  /.well-known/oauth-protected-resource   — RFC 9728 PRM
  *   GET  /.well-known/oauth-authorization-server  — RFC 8414 AS metadata
  *   POST /oauth/register                          — RFC 7591 DCR
- *   GET  /oauth/authorize                         — Authorization (single-user auto-approve or consent)
- *   POST /oauth/authorize                         — Consent approval (multi-user)
+ *   GET  /oauth/authorize                         — Authorization (auto-approve, 302 redirect)
+ *   POST /oauth/authorize                         — Authorization via POST (auto-approve, 302 redirect)
  *   POST /oauth/token                             — Code exchange + refresh
  */
 
 import { Router, type Request, type Response } from "express";
 import { createHash } from "node:crypto";
+import { base64UrlEncode } from "../../auth/encoding.js";
 import { getOidcPublicUrl, getAgentAuthPolicy } from "../../auth/oauth-config.js";
-import { isSingleUserMode, resolveAuthenticatedWriter } from "../../auth/context.js";
 import {
   mintAnonClientId,
   validateAnonClientId,
@@ -213,66 +213,14 @@ export function createOAuthRouter(): Router {
       return;
     }
 
-    if (isSingleUserMode()) {
-      // Single-user auto-approve: direct 302 redirect so headless HTTP clients
-      // (e.g. Claude Code's OAuth client inside a container) can complete the
-      // flow without a browser to execute HTML. No privilege change — single-user
-      // mode already auto-approves unconditionally.
-      const code = mintAuthCode(clientId, redirectUri, codeChallenge, codeChallengeMethod);
-      const redirectTarget = new URL(redirectUri);
-      redirectTarget.searchParams.set("code", code);
-      if (state) redirectTarget.searchParams.set("state", state);
-      res.redirect(302, redirectTarget.toString());
-      return;
-    }
-
-    // Multi-user mode: require human session before showing consent page
-    const writer = resolveAuthenticatedWriter(req);
-    if (!writer) {
-      // No session — redirect to login with return_to back to this authorize URL
-      const returnTo = req.originalUrl;
-      res.redirect(302, `/login?return_to=${encodeURIComponent(returnTo)}`);
-      return;
-    }
-    if (writer.type === "agent") {
-      res.status(403).send("Agents cannot approve their own authorization.");
-      return;
-    }
-
-    const agentDisplayName = escapeHtml(client.agentName);
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Authorize Agent</title>
-  <style>
-    body { font-family: system-ui, sans-serif; display: flex; align-items: center;
-           justify-content: center; min-height: 100vh; margin: 0; background: #f8f8f6; }
-    .card { background: white; padding: 2rem 3rem; border-radius: 8px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1); text-align: center; max-width: 400px; }
-    h1 { font-size: 1.1rem; margin: 0 0 1rem; }
-    p { color: #666; font-size: 0.9rem; margin: 0 0 1.5rem; }
-    button { background: #2d7a8a; color: white; border: none; padding: 0.6rem 2rem;
-             border-radius: 4px; font-size: 0.95rem; cursor: pointer; }
-    button:hover { background: #256a78; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Allow &ldquo;${agentDisplayName}&rdquo; to connect to this Knowledge Store?</h1>
-    <p>This agent will be able to read and propose changes to documents.</p>
-    <form method="POST" action="/oauth/authorize">
-      <input type="hidden" name="client_id" value="${escapeHtml(clientId)}">
-      <input type="hidden" name="redirect_uri" value="${escapeHtml(redirectUri)}">
-      <input type="hidden" name="code_challenge" value="${escapeHtml(codeChallenge)}">
-      <input type="hidden" name="code_challenge_method" value="${escapeHtml(codeChallengeMethod)}">
-      <input type="hidden" name="state" value="${escapeHtml(state)}">
-      <button type="submit">Allow</button>
-    </form>
-  </div>
-</body>
-</html>`);
+    // Auto-approve: 302 redirect with auth code. Registration already enforces
+    // policy (anonymous blocked if not "open", pre-auth requires valid secret).
+    // Agents are the only consumers of this endpoint — humans use OIDC.
+    const code = mintAuthCode(clientId, redirectUri, codeChallenge, codeChallengeMethod);
+    const redirectTarget = new URL(redirectUri);
+    redirectTarget.searchParams.set("code", code);
+    if (state) redirectTarget.searchParams.set("state", state);
+    res.redirect(302, redirectTarget.toString());
   });
 
   // ── Consent approval (POST) ────────────────────────────────
@@ -285,26 +233,6 @@ export function createOAuthRouter(): Router {
     const codeChallengeMethod = typeof body.code_challenge_method === "string"
       ? body.code_challenge_method : "S256";
     const state = typeof body.state === "string" ? body.state : "";
-
-    // In multi-user mode, require a valid human session before minting auth codes
-    if (!isSingleUserMode()) {
-      const writer = resolveAuthenticatedWriter(req);
-      if (!writer) {
-        // Reconstruct the authorize URL for return_to
-        const params = new URLSearchParams();
-        if (clientId) params.set("client_id", clientId);
-        if (redirectUri) params.set("redirect_uri", redirectUri);
-        if (codeChallenge) params.set("code_challenge", codeChallenge);
-        if (codeChallengeMethod) params.set("code_challenge_method", codeChallengeMethod);
-        if (state) params.set("state", state);
-        res.redirect(302, `/login?return_to=${encodeURIComponent(`/oauth/authorize?${params.toString()}`)}`);
-        return;
-      }
-      if (writer.type === "agent") {
-        res.status(403).send("Agents cannot approve their own authorization.");
-        return;
-      }
-    }
 
     if (!clientId || !redirectUri || !codeChallenge) {
       res.status(400).send("Missing required parameters.");
@@ -384,12 +312,9 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
   }
 
   // PKCE verification: SHA256(code_verifier) must equal code_challenge
-  const computedChallenge = createHash("sha256")
-    .update(codeVerifier)
-    .digest("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
+  const computedChallenge = base64UrlEncode(
+    createHash("sha256").update(codeVerifier).digest()
+  );
 
   if (computedChallenge !== authCode.code_challenge) {
     res.status(400).json({ error: "invalid_grant", error_description: "PKCE verification failed." });
@@ -489,13 +414,3 @@ async function handleRefreshGrant(req: Request, res: Response): Promise<void> {
   }
 }
 
-// ─── HTML escaping ───────────────────────────────────────────────
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}

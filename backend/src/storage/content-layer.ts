@@ -22,6 +22,7 @@ import { ParsedDocument } from "./markdown-sections.js";
 import type { DocStructureNode } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
+import { prependHeading } from "./section-formatting.js";
 
 /**
  * Write a section body file, creating parent directories as needed.
@@ -413,9 +414,7 @@ export class ContentLayer {
       // Prepend heading for non-before-first-heading sections
       const isBeforeFirstHeading = entry.level === 0 && entry.heading === "";
       if (!isBeforeFirstHeading) {
-        const headingLine = `${"#".repeat(entry.level)} ${entry.heading}`;
-        const trimmed = content.replace(/^\n+/, "").replace(/\n+$/, "");
-        parts.push(trimmed ? `${headingLine}\n\n${trimmed}\n` : `${headingLine}\n`);
+        parts.push(prependHeading(content, entry.level, entry.heading));
       } else {
         const trimmedRoot = content.replace(/^\n+/, "").replace(/\n+$/, "");
         if (trimmedRoot) parts.push(trimmedRoot);

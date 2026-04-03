@@ -15,6 +15,7 @@ import {
   serializeSkeletonEntries,
   DocumentSkeleton,
   DocumentSkeletonInternal,
+  sectionFileToName,
   type SkeletonEntry,
   type SkeletonNode,
 } from "./document-skeleton.js";
@@ -241,7 +242,7 @@ export async function buildCompoundSkeleton(docPath: string): Promise<CompoundSk
 
   // Add appendix sections as flat entries (level 2, generic heading)
   for (const orphan of appendixSections) {
-    const name = orphan.sectionFile.replace(/\.md$/, "").replace(/^sec_/, "").replace(/_/g, " ");
+    const name = sectionFileToName(orphan.sectionFile);
     mergedEntries.push({
       heading: `Recovered: ${name}`,
       level: 2,
@@ -259,7 +260,7 @@ export async function buildCompoundSkeleton(docPath: string): Promise<CompoundSk
         deduped.push(entry);
         seenBfh = true;
       } else {
-        const name = entry.sectionFile.replace(/\.md$/, "").replace(/^sec_/, "").replace(/_/g, " ");
+        const name = sectionFileToName(entry.sectionFile);
         deduped.push({
           heading: `Recovered: ${name}`,
           level: 2,

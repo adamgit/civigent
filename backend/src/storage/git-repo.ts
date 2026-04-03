@@ -5,6 +5,7 @@ import { access } from "node:fs/promises";
 import { getContentGitPrefix } from "./data-root.js";
 import { parseSkeletonToEntries } from "./document-skeleton.js";
 import type { AttributionWriterType } from "../types/shared.js";
+import { prependHeading } from "./section-formatting.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -286,9 +287,7 @@ async function assembleSkeletonFromGit(
       const trimmed = bodyContent.replace(/^\n+/, "").replace(/\n+$/, "");
       if (trimmed) parts.push(trimmed);
     } else {
-      const headingLine = `${"#".repeat(entry.level)} ${entry.heading}`;
-      const trimmed = bodyContent.replace(/^\n+/, "").replace(/\n+$/, "");
-      parts.push(trimmed ? `${headingLine}\n\n${trimmed}\n` : `${headingLine}\n`);
+      parts.push(prependHeading(bodyContent, entry.level, entry.heading));
     }
   }
 

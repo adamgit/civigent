@@ -3,9 +3,11 @@ import { getContentRoot, getSnapshotRoot } from "./data-root.js";
 import { resolveDocPathUnderContent, InvalidDocPathError } from "./path-utils.js";
 import { ContentLayer } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
+import { prependHeading } from "./section-formatting.js";
 
 // Re-export error classes from ContentLayer (callers import from here)
 export { DocumentNotFoundError, DocumentAssemblyError } from "./content-layer.js";
+export { prependHeading } from "./section-formatting.js";
 
 function snapshotReadsEnabled(): boolean {
   const raw = String(process.env.KS_SNAPSHOT_ENABLED ?? "true").trim().toLowerCase();
@@ -48,9 +50,7 @@ export function prependHeadings(
     const key = SectionRef.headingKey(headingPath);
     const body = result.get(key);
     if (body == null) continue;
-    const headingLine = `${"#".repeat(level)} ${heading}`;
-    const trimmedBody = body.replace(/^\n+/, "").replace(/\n+$/, "");
-    result.set(key, trimmedBody ? `${headingLine}\n\n${trimmedBody}\n` : `${headingLine}\n`);
+    result.set(key, prependHeading(body, level, heading));
   }
   return result;
 }

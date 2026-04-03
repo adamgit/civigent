@@ -29,27 +29,21 @@ function generateCodeChallenge(verifier: string): string {
 }
 
 /**
- * Get an auth code via POST consent (works in multi-user mode).
- * The consent POST returns a 302 redirect with code in the Location header.
+ * Get an auth code via POST /oauth/authorize.
+ * Returns a 302 redirect with code in the Location header.
  */
-async function getAuthCodeViaConsent(
+async function getAuthCode(
   app: Express.Application,
   clientId: string,
   redirectUri: string,
   codeChallenge: string,
   codeChallengeMethod: string,
   state?: string,
-  humanBearerToken?: string,
 ): Promise<string> {
-  // Extract raw token from "Bearer xxx" format for cookie
-  const rawToken = humanBearerToken?.replace(/^Bearer\s+/, "");
-  const req$ = request(app)
+  const res = await request(app)
     .post("/oauth/authorize")
-    .type("form");
-  if (rawToken) {
-    req$.set("Cookie", `ks_access_token=${rawToken}`);
-  }
-  const res = await req$.send({
+    .type("form")
+    .send({
       client_id: clientId,
       redirect_uri: redirectUri,
       code_challenge: codeChallenge,
@@ -173,15 +167,14 @@ describe("OAuth 2.1 flow", () => {
       const codeVerifier = generateCodeVerifier();
       const codeChallenge = generateCodeChallenge(codeVerifier);
 
-      // Step 3: Get auth code via consent POST (with human session)
-      const authCode = await getAuthCodeViaConsent(
+      // Step 3: Get auth code via POST
+      const authCode = await getAuthCode(
         ctx.app,
         clientId,
         "http://localhost:9999/callback",
         codeChallenge,
         "S256",
         "test-state",
-        ctx.humanToken,
       );
 
       // Step 4: Token exchange
@@ -281,15 +274,12 @@ describe("OAuth 2.1 flow", () => {
       const codeVerifier = generateCodeVerifier();
       const codeChallenge = generateCodeChallenge(codeVerifier);
 
-      // Get auth code via consent POST
-      const authCode = await getAuthCodeViaConsent(
+      const authCode = await getAuthCode(
         ctx.app,
         PRE_AUTH_AGENT_ID,
         "http://localhost:9999/callback",
         codeChallenge,
         "S256",
-        undefined,
-        ctx.humanToken,
       );
 
       // ATTACK: Try to exchange the code WITHOUT providing client_secret
@@ -311,14 +301,12 @@ describe("OAuth 2.1 flow", () => {
       const codeVerifier = generateCodeVerifier();
       const codeChallenge = generateCodeChallenge(codeVerifier);
 
-      const authCode = await getAuthCodeViaConsent(
+      const authCode = await getAuthCode(
         ctx.app,
         PRE_AUTH_AGENT_ID,
         "http://localhost:9999/callback",
         codeChallenge,
         "S256",
-        undefined,
-        ctx.humanToken,
       );
 
       const tokenRes = await request(ctx.app)
@@ -339,14 +327,12 @@ describe("OAuth 2.1 flow", () => {
       const codeVerifier = generateCodeVerifier();
       const codeChallenge = generateCodeChallenge(codeVerifier);
 
-      const authCode = await getAuthCodeViaConsent(
+      const authCode = await getAuthCode(
         ctx.app,
         PRE_AUTH_AGENT_ID,
         "http://localhost:9999/callback",
         codeChallenge,
         "S256",
-        undefined,
-        ctx.humanToken,
       );
 
       const tokenRes = await request(ctx.app)
@@ -398,14 +384,12 @@ describe("OAuth 2.1 flow", () => {
       const codeVerifier = generateCodeVerifier();
       const codeChallenge = generateCodeChallenge(codeVerifier);
 
-      const authCode = await getAuthCodeViaConsent(
+      const authCode = await getAuthCode(
         ctx.app,
         clientId,
         "http://localhost:9999/callback",
         codeChallenge,
         "S256",
-        undefined,
-        ctx.humanToken,
       );
 
       // Use wrong verifier
@@ -460,9 +444,9 @@ describe("OAuth 2.1 flow", () => {
     });
   });
 
-  // ── Consent session verification ─────────────────────────────
+  // ── Authorization without session (multi-user mode) ──────────
 
-  describe("OAuth consent requires human session", () => {
+  describe("OAuth authorize works without human session in multi-user mode", () => {
     let prevAuthMode: string | undefined;
 
     beforeAll(() => {
@@ -475,29 +459,13 @@ describe("OAuth 2.1 flow", () => {
       else process.env.KS_AUTH_MODE = prevAuthMode;
     });
 
-    it("POST /oauth/authorize without session redirects to login", async () => {
-      const res = await request(ctx.app)
-        .post("/oauth/authorize")
-        .type("form")
-        .send({
-          client_id: "some-client",
-          redirect_uri: "http://localhost:9999/callback",
-          code_challenge: "test-challenge",
-          code_challenge_method: "S256",
-        });
-      expect(res.status).toBe(302);
-      expect(res.headers.location).toMatch(/^\/login\?return_to=/);
-    });
-
-    it("POST /oauth/authorize with valid human session issues auth code", async () => {
+    it("POST /oauth/authorize without session issues auth code", async () => {
       const codeVerifier = generateCodeVerifier();
       const codeChallenge = generateCodeChallenge(codeVerifier);
-      const rawToken = ctx.humanToken.replace(/^Bearer\s+/, "");
 
       const res = await request(ctx.app)
         .post("/oauth/authorize")
         .type("form")
-        .set("Cookie", `ks_access_token=${rawToken}`)
         .send({
           client_id: PRE_AUTH_AGENT_ID,
           redirect_uri: "http://localhost:9999/callback",
@@ -508,20 +476,21 @@ describe("OAuth 2.1 flow", () => {
       expect(res.headers.location).toMatch(/code=/);
     });
 
-    it("POST /oauth/authorize with agent bearer token returns 403", async () => {
-      const rawAgentToken = ctx.agentToken.replace(/^Bearer\s+/, "");
+    it("POST /oauth/authorize with agent bearer token succeeds", async () => {
+      const codeVerifier = generateCodeVerifier();
+      const codeChallenge = generateCodeChallenge(codeVerifier);
 
       const res = await request(ctx.app)
         .post("/oauth/authorize")
         .type("form")
-        .set("Cookie", `ks_access_token=${rawAgentToken}`)
         .send({
           client_id: PRE_AUTH_AGENT_ID,
           redirect_uri: "http://localhost:9999/callback",
-          code_challenge: "test-challenge",
+          code_challenge: codeChallenge,
           code_challenge_method: "S256",
         });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(302);
+      expect(res.headers.location).toMatch(/code=/);
     });
   });
 

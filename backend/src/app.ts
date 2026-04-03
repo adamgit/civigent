@@ -38,6 +38,10 @@ export function createApp(options?: CreateAppOptions) {
         }
       },
     }));
+    // Backend prefixes must 404 with JSON, not fall through to SPA index.html
+    app.use(["/api", "/mcp", "/oauth", "/.well-known"], (_req, res) => {
+      res.status(404).json({ error: "Not found" });
+    });
     // SPA fallback — let the frontend router handle unmatched paths
     app.get("*", (_req, res) => {
       res.setHeader("Cache-Control", "no-cache");

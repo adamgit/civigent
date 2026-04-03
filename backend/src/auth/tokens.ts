@@ -1,4 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { base64UrlEncode } from "./encoding.js";
 
 type TokenUse = "access" | "refresh" | "bootstrap";
 
@@ -23,14 +24,6 @@ function getAuthSecret(): string {
   return process.env.KS_AUTH_SECRET ?? DEFAULT_SECRET;
 }
 
-function base64UrlEncode(input: string): string {
-  return Buffer.from(input, "utf8")
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
-}
-
 function base64UrlDecode(input: string): string {
   const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
   const padLength = normalized.length % 4 === 0 ? 0 : 4 - (normalized.length % 4);
@@ -39,12 +32,9 @@ function base64UrlDecode(input: string): string {
 }
 
 function signValue(value: string): string {
-  return createHmac("sha256", getAuthSecret())
-    .update(value)
-    .digest("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
+  return base64UrlEncode(
+    createHmac("sha256", getAuthSecret()).update(value).digest()
+  );
 }
 
 function encodeToken(claims: AuthTokenClaims): string {

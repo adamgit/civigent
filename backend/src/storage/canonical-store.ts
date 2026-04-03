@@ -181,6 +181,26 @@ export class CanonicalStore {
       if (orphans.length > 0) {
         diag(`${relDocPath}: deleted ${orphans.length} orphaned body file(s)`);
       }
+
+      // Stale .sections/ directory cleanup: if a section was a parent (sub-skeleton)
+      // in canonical but is now a leaf in staging, its .sections/ subdirectory is stale
+      // debris. readTreeRecursive would descend into it and fail. Remove before copy pass.
+      const stagingSectionsDir = path.join(stagingRoot, relDocPath + ".sections");
+      for (const entry of stagingEntries) {
+        const canonicalSubSkelDir = path.join(canonicalSectionsDir, entry.sectionFile + ".sections");
+        let stagingBodyContent: string;
+        try {
+          stagingBodyContent = await readFile(path.join(stagingSectionsDir, entry.sectionFile), "utf8");
+        } catch {
+          continue; // no staging body file — skip
+        }
+        const isStillSubSkeleton = /\{\{section:\s*[^|}]+?\s*(?:\|[^}]*)?\}\}/.test(stagingBodyContent);
+        if (!isStillSubSkeleton) {
+          try {
+            await rm(canonicalSubSkelDir, { recursive: true, force: true });
+          } catch { /* already gone */ }
+        }
+      }
     }
   }
 

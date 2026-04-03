@@ -168,6 +168,14 @@ export async function readOverlayDocumentState(
  * guarantees this. The `--before-first-heading--` and `--section-body--` families also cannot
  * collide since `sec_` never starts with `--`.
  */
+/**
+ * Inverse of generateSectionFilename: extract a human-readable name from a section filename.
+ * "sec_my_heading_abc123.md" → "my heading abc123"
+ */
+export function sectionFileToName(sectionFile: string): string {
+  return sectionFile.replace(/\.md$/, "").replace(/^sec_/, "").replace(/_/g, " ");
+}
+
 export function generateSectionFilename(heading: string): string {
   const slug = heading
     .toLowerCase()
