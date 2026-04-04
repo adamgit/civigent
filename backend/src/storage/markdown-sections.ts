@@ -18,6 +18,7 @@ import {
   serializeSkeletonEntries,
   generateSectionFilename,
   generateBeforeFirstHeadingFilename,
+  headingsEqual,
 } from "./document-skeleton.js";
 import { ContentLayer } from "./content-layer.js";
 
@@ -155,7 +156,7 @@ export async function applyDocumentMarkdownToDraft(
     } else {
       for (let ci = 0; ci < canonicalFlat.length; ci++) {
         if (consumed.has(ci)) continue;
-        if (canonicalFlat[ci].heading.toLowerCase() === heading.toLowerCase()) {
+        if (headingsEqual(canonicalFlat[ci].heading, heading)) {
           matchedEntry = canonicalFlat[ci];
           consumed.add(ci);
           break;

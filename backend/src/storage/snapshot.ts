@@ -1,6 +1,7 @@
 import path from "node:path";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { getContentRoot, getDataRoot, getSnapshotRoot } from "./data-root.js";
+import { normalizeDocPath } from "./path-utils.js";
 import { DocumentNotFoundError } from "./content-layer.js";
 import { ContentLayer } from "./content-layer.js";
 import { getAdminConfig } from "../admin-config.js";
@@ -51,10 +52,6 @@ function pushHistory(record: SnapshotRunRecord): void {
   if (snapshotHistory.length > MAX_HISTORY_ENTRIES) {
     snapshotHistory.length = MAX_HISTORY_ENTRIES;
   }
-}
-
-function normalizeDocPath(docPath: string): string {
-  return docPath.replace(/\\/g, "/").replace(/^\/+/, "");
 }
 
 function normalizeDocPaths(docPaths: string[]): string[] {

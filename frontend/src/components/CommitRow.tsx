@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { CommitDetail } from "./CommitDetail";
 import type { AttributionWriterType } from "../types/shared.js";
+import { relativeTime } from "../utils/relativeTime";
+import { classifyWriterType } from "../utils/classifyWriterType";
 
 export interface GitLogEntry {
   sha: string;
@@ -10,23 +12,6 @@ export interface GitLogEntry {
   timestamp_iso: string;
   message: string;
   changed_files: string[];
-}
-
-function relativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
-function classifyWriterType(raw: string | undefined): "agent" | "human" | "unknown" {
-  if (raw === "agent") return "agent";
-  if (raw === "human") return "human";
-  return "unknown";
 }
 
 interface CommitRowProps {

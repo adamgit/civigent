@@ -32,13 +32,13 @@ import type {
 } from "../../types/shared.js";
 import { HUMAN_INVOLVEMENT_PRESETS } from "../../types/shared.js";
 import path from "node:path";
-import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { assertDataRootExists, getContentRoot, getDataRoot, getSessionDocsContentRoot, getSessionAuthorsRoot } from "../../storage/data-root.js";
 import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
 
 import { getSessionState } from "../../storage/session-inspector.js";
-import { getHeadSha, gitLogRecent, gitDiffForCommit } from "../../storage/git-repo.js";
+import { getHeadSha, gitLogRecent, gitDiffForCommit, isValidSha } from "../../storage/git-repo.js";
 import { readAssembledDocument, DocumentAssemblyError, DocumentNotFoundError, prependHeadings } from "../../storage/document-reader.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
 import { readActivity, readChangesSince } from "../../storage/activity-reader.js";
@@ -712,7 +712,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const { docPath, sha } = req.params;
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
-      if (!/^[0-9a-f]{7,40}$/i.test(sha)) {
+      if (!isValidSha(sha)) {
         sendApiError(res, 400, new Error(`Invalid SHA format: "${sha}"`));
         return;
       }
@@ -741,7 +741,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const writer = await requireDocWritePermission(req, res, docPath);
       if (!writer) return;
       const { sha } = req.body as { sha?: string };
-      if (!sha || !/^[0-9a-f]{7,40}$/i.test(sha)) {
+      if (!sha || !isValidSha(sha)) {
         sendApiError(res, 400, new Error(`Invalid or missing SHA in restore request for "${docPath}". Body: ${JSON.stringify(req.body)}`));
         return;
       }
@@ -770,6 +770,229 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         preCommitResult,
       );
       res.json({ committed_sha: committedSha });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ─── Document Diagnostics (MUST be before catch-all) ─────
+  router.get("/documents/:docPath(*)/diagnostics", async (req, res, next) => {
+    try {
+      const docPath = req.params.docPath;
+      const accessResult = await requireDocReadPermission(req, res, docPath);
+      if (!accessResult) return;
+
+      const contentRoot = getContentRoot();
+      const overlayContentRoot = getSessionDocsContentRoot();
+      const { getSessionFragmentsRoot } = await import("../../storage/data-root.js");
+      const fragmentsRoot = getSessionFragmentsRoot();
+      const { assessSkeleton, assessSectionContent } = await import("../../storage/recovery-layers.js");
+      const { resolveSkeletonPath, DocumentSkeleton } = await import("../../storage/document-skeleton.js");
+      const { normalizeDocPath } = await import("../../storage/path-utils.js");
+      const { fragmentKeyFromSectionFile } = await import("../../crdt/ydoc-fragments.js");
+
+      const normalizedDocPath = normalizeDocPath(docPath);
+      const canonicalSkeletonPath = resolveSkeletonPath(docPath, contentRoot);
+      const canonicalSectionsDir = canonicalSkeletonPath + ".sections";
+      const overlaySkeletonPath = resolveSkeletonPath(docPath, overlayContentRoot);
+      const overlaySectionsDir = overlaySkeletonPath + ".sections";
+      const fragmentDir = path.resolve(fragmentsRoot, ...normalizedDocPath.split("/"));
+
+      // ── Health checks ──
+      type HealthCheck = { name: string; pass: boolean; detail?: string };
+      const checks: HealthCheck[] = [];
+
+      let skeletonAssessment: Awaited<ReturnType<typeof assessSkeleton>> | null = null;
+      try {
+        skeletonAssessment = await assessSkeleton(canonicalSkeletonPath, canonicalSectionsDir);
+        checks.push({
+          name: "skeleton-parse",
+          pass: skeletonAssessment.parsedCleanly,
+          detail: skeletonAssessment.parsedCleanly
+            ? `${skeletonAssessment.entries.length} entries`
+            : skeletonAssessment.parseError?.message,
+        });
+      } catch (e) {
+        checks.push({ name: "skeleton-parse", pass: false, detail: (e as Error).message });
+      }
+
+      try {
+        const unreferenced = skeletonAssessment?.unreferencedFiles ?? [];
+        checks.push({
+          name: "no-unreferenced-files",
+          pass: unreferenced.length === 0,
+          detail: unreferenced.length > 0 ? unreferenced.join(", ") : undefined,
+        });
+      } catch (e) {
+        checks.push({ name: "no-unreferenced-files", pass: false, detail: (e as Error).message });
+      }
+
+      try {
+        const stale: string[] = [];
+        const entries = skeletonAssessment?.entries ?? [];
+        for (const entry of entries) {
+          const subDir = path.join(canonicalSectionsDir, entry.sectionFile + ".sections");
+          let subDirExists = false;
+          try { await readdir(subDir); subDirExists = true; } catch { /* no dir */ }
+          if (subDirExists) {
+            const bodyPath = path.join(canonicalSectionsDir, entry.sectionFile);
+            try {
+              const content = await readFile(bodyPath, "utf8");
+              if (!/\{\{section:\s*[^|}]+?\s*(?:\|[^}]*)?\}\}/.test(content)) {
+                stale.push(entry.sectionFile);
+              }
+            } catch { /* can't read body */ }
+          }
+        }
+        checks.push({
+          name: "no-stale-sections-dirs",
+          pass: stale.length === 0,
+          detail: stale.length > 0 ? stale.join(", ") : undefined,
+        });
+      } catch (e) {
+        checks.push({ name: "no-stale-sections-dirs", pass: false, detail: (e as Error).message });
+      }
+
+      try {
+        const missing: string[] = [];
+        for (const entry of skeletonAssessment?.entries ?? []) {
+          try {
+            await readFile(path.join(canonicalSectionsDir, entry.sectionFile), "utf8");
+          } catch {
+            missing.push(entry.sectionFile);
+          }
+        }
+        checks.push({
+          name: "all-sections-readable",
+          pass: missing.length === 0,
+          detail: missing.length > 0 ? missing.join(", ") : undefined,
+        });
+      } catch (e) {
+        checks.push({ name: "all-sections-readable", pass: false, detail: (e as Error).message });
+      }
+
+      try {
+        const unparseable: string[] = [];
+        for (const entry of skeletonAssessment?.entries ?? []) {
+          const result = await assessSectionContent(
+            path.join(canonicalSectionsDir, entry.sectionFile),
+            "canonical",
+          );
+          if (!result.parseable) unparseable.push(entry.sectionFile);
+        }
+        checks.push({
+          name: "all-sections-parseable",
+          pass: unparseable.length === 0,
+          detail: unparseable.length > 0 ? unparseable.join(", ") : undefined,
+        });
+      } catch (e) {
+        checks.push({ name: "all-sections-parseable", pass: false, detail: (e as Error).message });
+      }
+
+      try {
+        let exists = false;
+        try { await readFile(overlaySkeletonPath, "utf8"); exists = true; } catch { /* missing */ }
+        checks.push({ name: "overlay-skeleton-exists", pass: exists });
+      } catch (e) {
+        checks.push({ name: "overlay-skeleton-exists", pass: false, detail: (e as Error).message });
+      }
+
+      try {
+        const session = lookupDocSession(docPath);
+        checks.push({
+          name: "live-crdt-session",
+          pass: !!session,
+          detail: session ? "active session" : undefined,
+        });
+      } catch (e) {
+        checks.push({ name: "live-crdt-session", pass: false, detail: (e as Error).message });
+      }
+
+      // ── Section layer table ──
+      type LayerStatus = { exists: boolean; byteLength: number | null; contentPreview: string | null; error: string | null };
+      type SectionLayerInfo = {
+        headingKey: string;
+        headingPath: string[];
+        sectionFile: string;
+        canonical: LayerStatus;
+        overlay: LayerStatus;
+        fragment: LayerStatus;
+        crdt: LayerStatus;
+        winner: string;
+        error?: string;
+      };
+      const sections: SectionLayerInfo[] = [];
+
+      try {
+        const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
+        const sectionEntries: Array<{ heading: string; level: number; sectionFile: string; headingPath: string[]; absolutePath: string }> = [];
+        skeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
+          sectionEntries.push({ heading, level, sectionFile, headingPath: [...headingPath], absolutePath });
+        });
+
+        const session = lookupDocSession(docPath);
+
+        for (const entry of sectionEntries) {
+          try {
+            const headingKey = entry.headingPath.join(">>");
+            const isBfh = entry.level === 0 && entry.heading === "";
+            const fragKey = fragmentKeyFromSectionFile(entry.sectionFile, isBfh);
+
+            const readLayer = async (filePath: string): Promise<LayerStatus> => {
+              try {
+                const content = await readFile(filePath, "utf8");
+                return { exists: true, byteLength: Buffer.byteLength(content, "utf8"), contentPreview: content.slice(0, 200), error: null };
+              } catch (e) {
+                if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+                  return { exists: false, byteLength: null, contentPreview: null, error: null };
+                }
+                return { exists: false, byteLength: null, contentPreview: null, error: (e as Error).message };
+              }
+            };
+
+            const canonical = await readLayer(entry.absolutePath);
+            const overlay = await readLayer(path.join(overlayContentRoot, path.relative(contentRoot, entry.absolutePath)));
+            const fragment = await readLayer(path.join(fragmentDir, entry.sectionFile));
+
+            let crdt: LayerStatus = { exists: false, byteLength: null, contentPreview: null, error: null };
+            if (session) {
+              try {
+                const md = session.fragments.readLiveBody(fragKey);
+                if (md != null) {
+                  crdt = { exists: true, byteLength: Buffer.byteLength(md, "utf8"), contentPreview: md.slice(0, 200), error: null };
+                }
+              } catch (e) {
+                crdt = { exists: false, byteLength: null, contentPreview: null, error: (e as Error).message };
+              }
+            }
+
+            // Winner: CRDT > overlay > canonical (matching resolution order)
+            let winner = "none";
+            if (canonical.exists) winner = "canonical";
+            if (overlay.exists) winner = "overlay";
+            if (crdt.exists) winner = "crdt";
+
+            sections.push({ headingKey, headingPath: entry.headingPath, sectionFile: entry.sectionFile, canonical, overlay, fragment, crdt, winner });
+          } catch (e) {
+            sections.push({
+              headingKey: entry.headingPath.join(">>"),
+              headingPath: entry.headingPath,
+              sectionFile: entry.sectionFile,
+              canonical: { exists: false, byteLength: null, contentPreview: null, error: null },
+              overlay: { exists: false, byteLength: null, contentPreview: null, error: null },
+              fragment: { exists: false, byteLength: null, contentPreview: null, error: null },
+              crdt: { exists: false, byteLength: null, contentPreview: null, error: null },
+              winner: "error",
+              error: (e as Error).message,
+            });
+          }
+        }
+      } catch (e) {
+        // Skeleton couldn't be loaded — sections array stays empty, add a check
+        checks.push({ name: "section-layer-collection", pass: false, detail: (e as Error).message });
+      }
+
+      res.json({ doc_path: docPath, checks, sections });
     } catch (error) {
       next(error);
     }
@@ -2366,7 +2589,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   router.get("/git/log/:sha/diff", async (req, res, next) => {
     try {
       const { sha } = req.params;
-      if (!/^[0-9a-f]{7,40}$/i.test(sha)) {
+      if (!isValidSha(sha)) {
         sendApiError(res, 400, "Invalid SHA format");
         return;
       }

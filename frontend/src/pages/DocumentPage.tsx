@@ -11,6 +11,7 @@ import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
 import { DocumentSectionRenderer } from "../components/DocumentSectionRenderer";
 import { DocumentFooter } from "../components/DocumentFooter";
 import { DocumentHistory } from "../components/DocumentHistory";
+import DocumentDiagnostics from "../components/DocumentDiagnostics";
 import { useCrossSectionCopy } from "../hooks/useCrossSectionCopy";
 import { useViewingPresence } from "../hooks/useViewingPresence";
 import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
@@ -78,6 +79,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const [renameError, setRenameError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [structureTree, setStructureTree] = useState<DocStructureNode[] | null>(null);
   const [showLoading, setShowLoading] = useState(false);
   const [loadDurationMs, setLoadDurationMs] = useState<number | null>(null);
@@ -423,6 +425,8 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         docPath={decodedDocPath}
         showHistory={showHistory}
         onToggleHistory={() => setShowHistory((v) => !v)}
+        showDiagnostics={showDiagnostics}
+        onToggleDiagnostics={() => setShowDiagnostics((v) => !v)}
         crdtState={crdtState}
         persistenceSummary={persistenceSummary}
         isEditing={isEditing}
@@ -489,6 +493,11 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
             />
           </div>
         </div>
+      )}
+
+      {/* Diagnostics modal */}
+      {showDiagnostics && decodedDocPath && (
+        <DocumentDiagnostics docPath={decodedDocPath} onClose={() => setShowDiagnostics(false)} />
       )}
 
       {/* Canvas scroll area */}

@@ -3,6 +3,7 @@ import { decodeAndValidateToken, InvalidAuthTokenError, issueTokenPair, type Iss
 import { getSingleUserIdentity, isSingleUserMode, type AuthenticatedWriter } from "./context.js";
 import { hasAnyAdmin, grantAdmin } from "./acl.js";
 import { isOidcConfigured } from "./oauth-config.js";
+import { readEnvVar } from "../env.js";
 
 export interface AgentRegistrationInput {
   name: string;
@@ -24,7 +25,7 @@ type RuntimeAuthMode = "single_user" | "oidc" | "hybrid";
 const LEGAL_AUTH_MODES: ReadonlySet<string> = new Set(["single_user", "oidc", "hybrid"]);
 
 export function readRuntimeAuthMode(): RuntimeAuthMode {
-  const raw = process.env.KS_AUTH_MODE?.trim().toLowerCase() ?? "";
+  const raw = readEnvVar("KS_AUTH_MODE")?.toLowerCase() ?? "";
   if (!raw) {
     throw new Error(
       `FATAL: KS_AUTH_MODE is not set.\n` +

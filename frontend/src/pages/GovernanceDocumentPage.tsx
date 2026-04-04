@@ -10,6 +10,7 @@ import { DocumentTopbar } from "../components/DocumentTopbar";
 import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
 import { DocumentSectionRenderer } from "../components/DocumentSectionRenderer";
 import { DocumentFooter } from "../components/DocumentFooter";
+import DocumentDiagnostics from "../components/DocumentDiagnostics";
 import { useCrossSectionCopy } from "../hooks/useCrossSectionCopy";
 import {
   sectionHeadingKey,
@@ -55,6 +56,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   const [sectionsLoading, setSectionsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [structureTree, setStructureTree] = useState<DocStructureNode[] | null>(null);
   const [showLoading, setShowLoading] = useState(false);
   const [loadDurationMs, setLoadDurationMs] = useState<number | null>(null);
@@ -358,6 +360,8 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
         docPath={decodedDocPath}
         showHistory={showHistory}
         onToggleHistory={() => setShowHistory((v) => !v)}
+        showDiagnostics={showDiagnostics}
+        onToggleDiagnostics={() => setShowDiagnostics((v) => !v)}
         crdtState={crdtState}
         persistenceSummary={persistenceSummary}
         isEditing={isEditing}
@@ -373,6 +377,11 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
           Offline &mdash; changes won&apos;t be saved
         </div>
       ) : null}
+
+      {/* Diagnostics modal */}
+      {showDiagnostics && decodedDocPath && (
+        <DocumentDiagnostics docPath={decodedDocPath} onClose={() => setShowDiagnostics(false)} />
+      )}
 
       {/* Three-column governance layout scroll area */}
       <div className="flex-1 overflow-auto canvas-scroll px-5 pt-8 pb-24" style={{ background: "var(--color-page-bg)" }}>

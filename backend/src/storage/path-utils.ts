@@ -2,14 +2,19 @@ import path from "node:path";
 
 export class InvalidDocPathError extends Error {}
 
-function normalizeDocPath(rawDocPath: string): string {
+/** Normalize a doc path: forward slashes, strip leading slashes. */
+export function normalizeDocPath(docPath: string): string {
+  return docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+function normalizeDocPathStrict(rawDocPath: string): string {
   const forwardSlash = rawDocPath.replaceAll("\\", "/").trim();
   const withoutLeadingSlash = forwardSlash.replace(/^\/+/, "");
   return path.posix.normalize(withoutLeadingSlash);
 }
 
 export function resolveDocPathUnderContent(contentRoot: string, rawDocPath: string): string {
-  const normalized = normalizeDocPath(rawDocPath);
+  const normalized = normalizeDocPathStrict(rawDocPath);
   if (!normalized || normalized === "." || normalized === "..") {
     throw new InvalidDocPathError("Invalid doc path.");
   }

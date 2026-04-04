@@ -100,6 +100,37 @@ export interface DocRestoreResponse {
   }>;
 }
 
+export interface DiagLayerStatus {
+  exists: boolean;
+  byteLength: number | null;
+  contentPreview: string | null;
+  error: string | null;
+}
+
+export interface DiagSectionLayerInfo {
+  headingKey: string;
+  headingPath: string[];
+  sectionFile: string;
+  canonical: DiagLayerStatus;
+  overlay: DiagLayerStatus;
+  fragment: DiagLayerStatus;
+  crdt: DiagLayerStatus;
+  winner: string;
+  error?: string;
+}
+
+export interface DiagHealthCheck {
+  name: string;
+  pass: boolean;
+  detail?: string;
+}
+
+export interface DocDiagnosticsResponse {
+  doc_path: string;
+  checks: DiagHealthCheck[];
+  sections: DiagSectionLayerInfo[];
+}
+
 interface GetDocumentsTreeOptions {
   path?: string;
   recursive?: boolean;
@@ -781,5 +812,12 @@ export const apiClient = {
 
   async getAgentActivity(): Promise<{ sessions: AgentMcpSessionRecord[] }> {
     return requestJson<{ sessions: AgentMcpSessionRecord[] }>("/api/admin/agent-activity");
+  },
+
+  // --- Document diagnostics ---
+
+  async getDocDiagnostics(docPath: string): Promise<DocDiagnosticsResponse> {
+    const encoded = encodeDocPath(docPath);
+    return requestJson<DocDiagnosticsResponse>(`/api/documents/${encoded}/diagnostics`);
   },
 };

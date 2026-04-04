@@ -38,6 +38,7 @@
 import path from "node:path";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import type { DocStructureNode } from "../types/shared.js";
+import { normalizeDocPath } from "./path-utils.js";
 
 // ─── Skeleton file format helpers ────────────────────────────────
 // These are the canonical parsers/serializers for skeleton file content.
@@ -118,9 +119,6 @@ export const TOMBSTONE_SUFFIX = ".tombstone";
 
 export type OverlayDocumentState = "missing" | "live" | "tombstone";
 
-function normalizeDocPath(docPath: string): string {
-  return docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-}
 
 export function resolveSkeletonPath(docPath: string, contentRoot: string): string {
   return path.resolve(contentRoot, ...normalizeDocPath(docPath).split("/"));
@@ -176,12 +174,22 @@ export function sectionFileToName(sectionFile: string): string {
   return sectionFile.replace(/\.md$/, "").replace(/^sec_/, "").replace(/_/g, " ");
 }
 
-export function generateSectionFilename(heading: string): string {
-  const slug = heading
+/** Case-insensitive heading comparison. */
+export function headingsEqual(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/** Generate a URL/filename-safe slug from arbitrary text. */
+export function generateSlug(text: string): string {
+  return text
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "")
     .slice(0, 40);
+}
+
+export function generateSectionFilename(heading: string): string {
+  const slug = generateSlug(heading);
   const randomSuffix = Math.random().toString(36).slice(2, 8);
   return `sec_${slug}_${randomSuffix}.md`;
 }
@@ -460,7 +468,7 @@ export class DocumentSkeleton {
 
     for (let i = 0; i < headingPath.length; i++) {
       const target = headingPath[i];
-      const node = nodes.find(n => n.heading.toLowerCase() === target.toLowerCase());
+      const node = nodes.find(n => headingsEqual(n.heading, target));
       if (!node) return null;
       resolvedPath.push(node.heading);
       const sectionsDir = `${currentSkeletonPath}.sections`;
@@ -550,7 +558,7 @@ export class DocumentSkeleton {
     const parentPath = headingPath.slice(0, -1);
     const target = headingPath[headingPath.length - 1];
     const siblings = this.findSiblingList(parentPath);
-    const node = siblings.find(n => n.heading.toLowerCase() === target.toLowerCase());
+    const node = siblings.find(n => headingsEqual(n.heading, target));
     if (!node) {
       throw new Error(
         `Skeleton integrity error: heading "${target}" not found in ${this.docPath} ` +
@@ -617,7 +625,7 @@ export class DocumentSkeleton {
     if (parentPath.length === 0) return this.roots;
     let nodes = this.roots;
     for (const segment of parentPath) {
-      const node = nodes.find(n => n.heading.toLowerCase() === segment.toLowerCase());
+      const node = nodes.find(n => headingsEqual(n.heading, segment));
       if (!node) {
         throw new Error(
           `Skeleton integrity error: parent "${segment}" not found in ${this.docPath}`
@@ -632,7 +640,7 @@ export class DocumentSkeleton {
     let skPath = this.skeletonPath;
     let nodes = this.roots;
     for (const segment of parentPath) {
-      const node = nodes.find(n => n.heading.toLowerCase() === segment.toLowerCase());
+      const node = nodes.find(n => headingsEqual(n.heading, segment));
       if (!node) {
         throw new Error(
           `Skeleton integrity error: parent "${segment}" not found in ${this.docPath}`
@@ -775,7 +783,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     const parentPath = headingPath.slice(0, -1);
     const oldHeading = headingPath[headingPath.length - 1];
     const siblings = this.findSiblingList(parentPath);
-    const idx = siblings.findIndex(n => n.heading.toLowerCase() === oldHeading.toLowerCase());
+    const idx = siblings.findIndex(n => headingsEqual(n.heading, oldHeading));
 
     if (idx < 0) {
       throw new Error(
@@ -953,7 +961,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     if (parentPath.length > 0) {
       const parentSiblings = this.findSiblingList(parentPath.slice(0, -1));
       const parentNode = parentSiblings.find(
-        n => n.heading.toLowerCase() === parentPath[parentPath.length - 1].toLowerCase(),
+        n => headingsEqual(n.heading, parentPath[parentPath.length - 1]),
       );
       if (parentNode) {
         const hadBodyHolder = parentNode.children.some(c => c.level === 0 && c.heading === "");
@@ -1041,7 +1049,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
           if (cf.heading.toLowerCase() !== heading.toLowerCase()) continue;
           const cfParent = cf.headingPath.slice(0, -1);
           if (cfParent.length !== parentPath.length) continue;
-          if (cfParent.every((seg, i) => seg.toLowerCase() === parentPath[i].toLowerCase())) {
+          if (cfParent.every((seg, i) => headingsEqual(seg, parentPath[i]))) {
             matchedIdx = ci;
             break;
           }

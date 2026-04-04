@@ -10,24 +10,9 @@ import { PageStatusBar } from "../components/PageStatusBar";
 import type { ActivityItem } from "../types/shared.js";
 import { apiClient, resolveWriterId } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
-
-function readNumberSetting(key: string, fallback: number): number {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    const parsed = Number(raw);
-    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-    return Math.floor(parsed);
-  } catch {
-    return fallback;
-  }
-}
-
-function writerInitials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-  return name.slice(0, 2).toUpperCase();
-}
+import { writerInitials } from "../utils/writerInitials";
+import { classifyWriterType } from "../utils/classifyWriterType";
+import { readNumberSetting } from "../utils/numberSettings";
 
 function writerTypeToLabel(writerType: string | undefined): { variant: "green" | "yellow" | "agent" | "muted" | "accent"; label: string } {
   switch (writerType) {
@@ -37,11 +22,6 @@ function writerTypeToLabel(writerType: string | undefined): { variant: "green" |
   }
 }
 
-function classifyActivityWriterType(raw: string | undefined): "human" | "agent" | "unknown" {
-  if (raw === "human") return "human";
-  if (raw === "agent") return "agent";
-  return "unknown";
-}
 
 export function DashboardPage() {
   const [items, setItems] = useState<ActivityItem[]>([]);
@@ -183,7 +163,7 @@ export function DashboardPage() {
                     <ActivityFeedItem
                       key={item.id}
                       writerName={item.writer_display_name}
-                      writerKind={classifyActivityWriterType(item.writer_type)}
+                      writerKind={classifyWriterType(item.writer_type)}
                       writerKindRaw={item.writer_type}
                       writerInitials={writerInitials(item.writer_display_name)}
                       headline={

@@ -11,15 +11,16 @@
 
 import { discovery, buildAuthorizationUrl, authorizationCodeGrant } from "openid-client";
 import { getOidcPublicUrl } from "./oauth-config.js";
+import { readEnvVar } from "../env.js";
 
 let _cachedConfig: Awaited<ReturnType<typeof discovery>> | null = null;
 
 async function getOidcConfig(): Promise<Awaited<ReturnType<typeof discovery>>> {
   if (_cachedConfig) return _cachedConfig;
 
-  const issuer = process.env.KS_OIDC_ISSUER?.trim();
-  const clientId = process.env.KS_OIDC_CLIENT_ID?.trim();
-  const clientSecret = process.env.KS_OIDC_CLIENT_SECRET?.trim();
+  const issuer = readEnvVar("KS_OIDC_ISSUER");
+  const clientId = readEnvVar("KS_OIDC_CLIENT_ID");
+  const clientSecret = readEnvVar("KS_OIDC_CLIENT_SECRET");
 
   if (!issuer || !clientId) {
     throw new Error("KS_OIDC_ISSUER and KS_OIDC_CLIENT_ID are required for OIDC.");

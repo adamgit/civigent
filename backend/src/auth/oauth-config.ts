@@ -11,8 +11,8 @@
 import { randomBytes } from "node:crypto";
 import { isSingleUserMode } from "./context.js";
 import { readRuntimeAuthMode } from "./service.js";
-
-const DEFAULT_AUTH_SECRET = "development-insecure-secret";
+import { readEnvVar } from "../env.js";
+import { DEFAULT_AUTH_SECRET } from "./encoding.js";
 
 // ─── Lazy-initialized values ─────────────────────────────────────
 
@@ -30,8 +30,8 @@ let _anonSalt: string | null = null;
  *   - Port suffix omitted for standard ports (80/443)
  */
 export function getPublicUrl(): string {
-  const hostname = process.env.KS_EXTERNAL_HOSTNAME?.trim() || "localhost";
-  const port = process.env.KS_EXTERNAL_PORT?.trim() || "";
+  const hostname = readEnvVar("KS_EXTERNAL_HOSTNAME", "localhost");
+  const port = readEnvVar("KS_EXTERNAL_PORT", "");
   const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
   const scheme = isLocal ? "http" : "https";
   const standardPort = scheme === "https" ? "443" : "80";
@@ -46,7 +46,7 @@ export function getPublicUrl(): string {
  * Explicit `KS_OIDC_PUBLIC_URL` takes priority; otherwise derived via getPublicUrl().
  */
 export function getOidcPublicUrl(): string {
-  const explicit = process.env.KS_OIDC_PUBLIC_URL?.trim();
+  const explicit = readEnvVar("KS_OIDC_PUBLIC_URL");
   if (explicit) return explicit.replace(/\/+$/, "");
   return getPublicUrl();
 }
@@ -60,7 +60,7 @@ export function getOidcPublicUrl(): string {
 export function getAgentAnonSalt(): string {
   if (_anonSalt) return _anonSalt;
 
-  const fromEnv = process.env.KS_AGENT_ANON_SALT?.trim();
+  const fromEnv = readEnvVar("KS_AGENT_ANON_SALT");
   if (fromEnv) {
     _anonSalt = fromEnv;
     return _anonSalt;
@@ -87,9 +87,9 @@ export type AgentAuthPolicy = "open" | "register" | "verify";
  * Default: "open" for localhost/127.0.0.1, "register" for public hostnames.
  */
 export function getAgentAuthPolicy(): AgentAuthPolicy {
-  const val = process.env.KS_AGENT_AUTH_POLICY?.trim().toLowerCase();
+  const val = readEnvVar("KS_AGENT_AUTH_POLICY")?.toLowerCase();
   if (val === "open" || val === "register" || val === "verify") return val;
-  const hostname = process.env.KS_EXTERNAL_HOSTNAME?.trim() || "localhost";
+  const hostname = readEnvVar("KS_EXTERNAL_HOSTNAME", "localhost");
   const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
   return isLocal ? "open" : "register";
 }
@@ -100,14 +100,14 @@ export function getAgentAuthPolicy(): AgentAuthPolicy {
  * Returns true if both KS_OIDC_ISSUER and KS_OIDC_CLIENT_ID are set.
  */
 export function isOidcConfigured(): boolean {
-  return !!(process.env.KS_OIDC_ISSUER?.trim() && process.env.KS_OIDC_CLIENT_ID?.trim());
+  return !!(readEnvVar("KS_OIDC_ISSUER") && readEnvVar("KS_OIDC_CLIENT_ID"));
 }
 
 /**
  * Human-readable display name for the OIDC login button.
  */
 export function getOidcDisplayName(): string {
-  return process.env.KS_OIDC_DISPLAY_NAME?.trim() || "Sign in with SSO";
+  return readEnvVar("KS_OIDC_DISPLAY_NAME", "Sign in with SSO");
 }
 
 // ─── Startup validation ──────────────────────────────────────────
@@ -123,8 +123,8 @@ export function validateOAuthConfig(): void {
 
   const singleUser = isSingleUserMode();
 
-  const explicitOidcPublicUrl = process.env.KS_OIDC_PUBLIC_URL?.trim() || "";
-  const explicitExternalHostname = process.env.KS_EXTERNAL_HOSTNAME?.trim() || "";
+  const explicitOidcPublicUrl = readEnvVar("KS_OIDC_PUBLIC_URL", "");
+  const explicitExternalHostname = readEnvVar("KS_EXTERNAL_HOSTNAME", "");
 
   // Enforced matrix:
   // - single_user is mutually exclusive with explicit OIDC URL and explicit external hostname
@@ -148,7 +148,7 @@ export function validateOAuthConfig(): void {
   }
 
   // KS_EXTERNAL_PORT is always required — bare invocation without compose is not supported
-  if (!process.env.KS_EXTERNAL_PORT?.trim()) {
+  if (!readEnvVar("KS_EXTERNAL_PORT")) {
     throw new Error(
       `FATAL: KS_EXTERNAL_PORT is not set.\n` +
       `Running the server outside of a compose environment is not a supported mode.\n` +
@@ -160,7 +160,7 @@ export function validateOAuthConfig(): void {
 
   // KS_AUTH_SECRET must not be the default in non-single-user mode
   if (!singleUser) {
-    const secret = process.env.KS_AUTH_SECRET?.trim();
+    const secret = readEnvVar("KS_AUTH_SECRET");
     if (!secret || secret === DEFAULT_AUTH_SECRET) {
       throw new Error(
         `FATAL: KS_AUTH_SECRET must be set to a secure value in non-single-user mode.\n` +
@@ -173,14 +173,14 @@ export function validateOAuthConfig(): void {
   // KS_OIDC_ISSUER and KS_OIDC_CLIENT_ID are required in oidc or hybrid mode
   const authMode = readRuntimeAuthMode();
   if (authMode === "oidc" || authMode === "hybrid") {
-    if (!process.env.KS_OIDC_ISSUER?.trim()) {
+    if (!readEnvVar("KS_OIDC_ISSUER")) {
       throw new Error(
         `FATAL: KS_OIDC_ISSUER is required when KS_AUTH_MODE is "${authMode}".\n` +
         `Set it to the issuer URL of your OIDC provider.\n` +
         `Example: KS_OIDC_ISSUER=https://accounts.google.com`,
       );
     }
-    if (!process.env.KS_OIDC_CLIENT_ID?.trim()) {
+    if (!readEnvVar("KS_OIDC_CLIENT_ID")) {
       throw new Error(
         `FATAL: KS_OIDC_CLIENT_ID is required when KS_AUTH_MODE is "${authMode}".\n` +
         `Set it to the client ID registered with your OIDC provider.`,

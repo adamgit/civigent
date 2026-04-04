@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { SectionHeadingChip } from "./SectionHeadingChip";
 import { StatusPill } from "./StatusPill";
+import { relativeTime } from "../utils/relativeTime";
 
 interface ActivityFeedItemProps {
   writerName: string;
@@ -13,17 +14,6 @@ interface ActivityFeedItemProps {
   pillLabel: string;
   extraMeta?: string;
   sections: string[];
-}
-
-function relativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
 }
 
 export function ActivityFeedItem({

@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import type { IncomingHttpHeaders } from "node:http";
 import { decodeAndValidateToken, InvalidAuthTokenError, type AuthTokenClaims } from "./tokens.js";
 import { isAdmin, getDocReadPermission } from "./acl.js";
+import { readEnvVar } from "../env.js";
 
 export interface AuthenticatedWriter {
   id: string;
@@ -55,13 +56,13 @@ function toWriter(claims: AuthTokenClaims): AuthenticatedWriter {
 }
 
 export function isSingleUserMode(): boolean {
-  return String(process.env.KS_AUTH_MODE ?? "").toLowerCase() === "single_user";
+  return (readEnvVar("KS_AUTH_MODE") ?? "").toLowerCase() === "single_user";
 }
 
 export function getSingleUserIdentity(): AuthenticatedWriter {
-  const defaultName = process.env.KS_USER_NAME?.trim() || "Local User";
-  const defaultEmail = process.env.KS_USER_EMAIL?.trim() || "local-user@ks.local";
-  const defaultId = process.env.KS_USER_ID?.trim() || "human-ui";
+  const defaultName = readEnvVar("KS_USER_NAME", "Local User");
+  const defaultEmail = readEnvVar("KS_USER_EMAIL", "local-user@ks.local");
+  const defaultId = readEnvVar("KS_USER_ID", "human-ui");
   return {
     id: defaultId,
     type: "human",

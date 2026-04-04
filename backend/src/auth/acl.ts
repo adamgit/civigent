@@ -23,7 +23,8 @@
 import path from "node:path";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { getAuthRoot } from "../storage/data-root.js";
-import type { AuthenticatedWriter } from "./context.js";
+import { isSingleUserMode, type AuthenticatedWriter } from "./context.js";
+import { readEnvVar } from "../env.js";
 
 /** PermissionLevel is now a plain string — any role name is valid. */
 export type PermissionLevel = string;
@@ -85,12 +86,8 @@ export function invalidateCache(): void {
   _cache = null;
 }
 
-function isSingleUserMode(): boolean {
-  return String(process.env.KS_AUTH_MODE ?? "").toLowerCase() === "single_user";
-}
-
 function getSingleUserId(): string {
-  return process.env.KS_USER_ID?.trim() || "human-ui";
+  return readEnvVar("KS_USER_ID", "human-ui");
 }
 
 /**

@@ -75,7 +75,7 @@ content/
         └── sec_def456.md
 ```
 
-**Skeleton files** contain `{{section: filename.md}}` markers instead of inline content. This separates structure from content, enabling section-level operations.
+**Skeleton files** contain `{{section: filename.md}}` markers instead of inline content. This separates structure from content, enabling section-level operations. See [Internal Data Formats](developerdocs/internal-data-formats.md) for the full skeleton spec and section body newline policy.
 
 **Section files** can themselves be sub-skeletons (containing their own `{{section:}}` markers with their own `.sections/` directory). This recursive structure represents arbitrarily deep heading hierarchies.
 
@@ -548,5 +548,6 @@ data/
 
 ## What's next
 
+- [Internal Data Formats](developerdocs/internal-data-formats.md) — skeleton format, section body newline policy, boundary transforms
 - [Testing Guide](testing.md) — test patterns and infrastructure
 - [Error Handling](error-handling.md) — error philosophy and patterns

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient, resolveWriterId } from "../services/api-client";
 import type { AdminConfig, HumanInvolvementPresetName, GetAdminSnapshotHealthResponse, AnyProposal } from "../types/shared.js";
+import { readNumberSetting, writeNumberSetting } from "../utils/numberSettings";
 
 const HUMAN_INVOLVEMENT_PRESETS: { value: HumanInvolvementPresetName; label: string; description: string }[] = [
   { value: "yolo", label: "YOLO", description: "Almost no protection. ~30s wait." },
@@ -10,24 +11,6 @@ const HUMAN_INVOLVEMENT_PRESETS: { value: HumanInvolvementPresetName; label: str
   { value: "eager", label: "Eager", description: "~2 hour wait. Balanced for most teams." },
   { value: "conservative", label: "Conservative", description: "~8 hour wait. Maximum protection." },
 ];
-
-function readNumberSetting(key: string, fallback: number): number {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    const parsed = Number(raw);
-    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-    return Math.floor(parsed);
-  } catch {
-    return fallback;
-  }
-}
-
-function writeNumberSetting(key: string, value: number): void {
-  try {
-    localStorage.setItem(key, String(Math.max(1, Math.floor(value))));
-  } catch {}
-}
 
 export function AdminPage() {
   const [proposals, setProposals] = useState<AnyProposal[]>([]);

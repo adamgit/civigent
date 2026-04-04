@@ -8,7 +8,7 @@ This guide explains the ideas behind Civigent. Read this before diving into the 
 
 A **document** is a markdown file. Each heading (`#`, `##`, `###`, etc.) is the start of a "section".
 
-Sections are the fundamental unit of everything in the system:
+Sections are the fundamental unit of everything in the system (see [Internal Data Formats](developerdocs/internal-data-formats.md) for the storage-level details):
 - **Editing** happens one section at a time
 - **Conflict detection** is per-section
 - **Locking** is per-section

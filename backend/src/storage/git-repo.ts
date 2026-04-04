@@ -47,6 +47,10 @@ export async function getHeadSha(dataRoot: string): Promise<string> {
   return gitExec(["rev-parse", "HEAD"], dataRoot);
 }
 
+export function isValidSha(sha: string): boolean {
+  return /^[0-9a-f]{7,40}$/i.test(sha);
+}
+
 /**
  * Read the Writer-Type trailer from a commit.
  * Returns "human", "agent", or null if the trailer is missing/empty.

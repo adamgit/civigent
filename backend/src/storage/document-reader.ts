@@ -4,13 +4,14 @@ import { resolveDocPathUnderContent, InvalidDocPathError } from "./path-utils.js
 import { ContentLayer } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { prependHeading } from "./section-formatting.js";
+import { readEnvVar } from "../env.js";
 
 // Re-export error classes from ContentLayer (callers import from here)
 export { DocumentNotFoundError, DocumentAssemblyError } from "./content-layer.js";
 export { prependHeading } from "./section-formatting.js";
 
 function snapshotReadsEnabled(): boolean {
-  const raw = String(process.env.KS_SNAPSHOT_ENABLED ?? "true").trim().toLowerCase();
+  const raw = readEnvVar("KS_SNAPSHOT_ENABLED", "true").toLowerCase();
   return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
 }
 

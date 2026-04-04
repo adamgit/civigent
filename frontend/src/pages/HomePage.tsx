@@ -5,22 +5,8 @@ import type { AppLayoutOutletContext } from "../app/AppLayout";
 import { apiClient } from "../services/api-client";
 import { headingPathToLabel } from "./document-page-utils";
 import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
-
-function relativeTime(iso: string): string {
-  const seconds = Math.floor((Date.now() - Date.parse(iso)) / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
-function writerInitials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-  return name.slice(0, 2).toUpperCase();
-}
+import { relativeTime } from "../utils/relativeTime";
+import { writerInitials } from "../utils/writerInitials";
 
 const AVATAR_COLORS: Array<{ bg: string; fg: string }> = [
   { bg: "var(--color-accent-light)", fg: "var(--color-accent)" },

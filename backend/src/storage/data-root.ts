@@ -1,10 +1,11 @@
 import path from "node:path";
 import { access, mkdir } from "node:fs/promises";
+import { readEnvVar } from "../env.js";
 
 const DEFAULT_DATA_ROOT = "/app/data";
 
 export function getDataRoot(): string {
-  return path.resolve(process.env.KS_DATA_ROOT ?? DEFAULT_DATA_ROOT);
+  return path.resolve(readEnvVar("KS_DATA_ROOT", DEFAULT_DATA_ROOT));
 }
 
 export async function assertDataRootExists(): Promise<void> {
@@ -101,13 +102,13 @@ export function getAuthRoot(): string {
 // ─── Snapshots ─────────────────────────────────────────────────────
 
 export function getSnapshotRoot(): string {
-  return path.resolve(process.env.KS_SNAPSHOT_ROOT ?? path.join(getDataRoot(), "snapshots"));
+  return path.resolve(readEnvVar("KS_SNAPSHOT_ROOT", path.join(getDataRoot(), "snapshots")));
 }
 
 // ─── Import ────────────────────────────────────────────────────────
 
 export function getImportRoot(): string {
-  return path.resolve(process.env.KS_IMPORT_ROOT ?? "/import");
+  return path.resolve(readEnvVar("KS_IMPORT_ROOT", "/import"));
 }
 
 // ─── Monitoring ─────────────────────────────────────────────────────

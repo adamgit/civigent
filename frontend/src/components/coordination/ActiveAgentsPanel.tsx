@@ -4,6 +4,7 @@ import { SectionHeadingChip } from "../SectionHeadingChip";
 import { StatusPill } from "../StatusPill";
 import type { AnyProposal } from "../../types/shared.js";
 import type { AgentReadingState } from "./HeatmapTab";
+import { relativeTime } from "../../utils/relativeTime";
 
 function agentColor(actorId: string): string {
   let hash = 0;
@@ -11,15 +12,6 @@ function agentColor(actorId: string): string {
     hash = actorId.charCodeAt(i) + ((hash << 5) - hash);
   }
   return `hsl(${Math.abs(hash) % 360}, 60%, 50%)`;
-}
-
-function relativeTime(ms: number): string {
-  const diff = Date.now() - ms;
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  return `${Math.floor(minutes / 60)}h ago`;
 }
 
 interface ActiveAgentsPanelProps {

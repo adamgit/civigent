@@ -13,10 +13,7 @@
  */
 
 import { sectionHeadingKey, sectionGlobalKey, type SectionTargetRef } from "../types/shared.js";
-
-function normalizeDocPath(docPath: string): string {
-  return docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-}
+import { normalizeDocPath } from "../storage/path-utils.js";
 
 function normalizeHeadingPath(headingPath: string[]): string[] {
   return headingPath.map((segment) => segment.trim());

@@ -1,5 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { base64UrlEncode } from "./encoding.js";
+import { base64UrlEncode, DEFAULT_AUTH_SECRET } from "./encoding.js";
+import { readEnvVar } from "../env.js";
 
 type TokenUse = "access" | "refresh" | "bootstrap";
 
@@ -15,13 +16,12 @@ export interface AuthTokenClaims {
   jti: string;
 }
 
-const DEFAULT_SECRET = "development-insecure-secret";
 const ACCESS_TTL_SECONDS = 1800;
 const REFRESH_TTL_SECONDS = 2592000;
 const BOOTSTRAP_TTL_SECONDS = 2592000;
 
 function getAuthSecret(): string {
-  return process.env.KS_AUTH_SECRET ?? DEFAULT_SECRET;
+  return readEnvVar("KS_AUTH_SECRET", DEFAULT_AUTH_SECRET);
 }
 
 function base64UrlDecode(input: string): string {

@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { sectionGlobalKey, type GetHeatmapResponse, type HeatmapEntry, type AnyProposal } from "../../types/shared.js";
 import { headingPathToLabel } from "../../pages/document-page-utils";
 import { stripLeadingSlashForRoute } from "../../app/docsRouteUtils";
+import { relativeTime } from "../../utils/relativeTime";
 
 function involvementColor(score: number): string {
   if (score >= 0.8) return "var(--color-humanInvolvement-dot-blocked, #1e40af)";
@@ -15,17 +16,6 @@ function involvementLabel(score: number): string {
   if (score >= 0.5) return "Blocked";
   if (score >= 0.3) return "Moderate";
   return "Low";
-}
-
-function relativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
 }
 
 

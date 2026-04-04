@@ -7,7 +7,8 @@
 
 import { createHmac, randomUUID, randomBytes, timingSafeEqual } from "node:crypto";
 import { getAgentAnonSalt } from "./oauth-config.js";
-import { base64UrlEncode } from "./encoding.js";
+import { base64UrlEncode, DEFAULT_AUTH_SECRET } from "./encoding.js";
+import { readEnvVar } from "../env.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -131,7 +132,7 @@ function cleanExpiredNonces(): void {
 }
 
 function getAuthSecret(): string {
-  return process.env.KS_AUTH_SECRET ?? "development-insecure-secret";
+  return readEnvVar("KS_AUTH_SECRET", DEFAULT_AUTH_SECRET);
 }
 
 /**

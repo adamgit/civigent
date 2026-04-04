@@ -438,7 +438,7 @@ export async function recoverDocument(docPath: string): Promise<DocumentRecovery
   } catch { /* missing overlay skeleton is fine */ }
 
   // Iterate all sections in the compound skeleton
-  compound.skeleton.forEachSection((heading, _level, sectionFile, headingPath) => {
+  compound.skeleton.forEachSection((_heading, _level, _sectionFile, headingPath) => {
     // We'll collect the section files to assess — actual assessment happens below
     sections.push({
       doc_path: docPath,
