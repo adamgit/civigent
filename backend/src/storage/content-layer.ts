@@ -22,7 +22,7 @@ import { ParsedDocument } from "./markdown-sections.js";
 import type { DocStructureNode } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
-import { prependHeading, bodyFromDisk, stripHeadingFromFragment, type SectionBody, type FragmentContent } from "./section-formatting.js";
+import { prependHeading, bodyFromDisk, bodyToDisk, stripHeadingFromFragment, type SectionBody, type FragmentContent } from "./section-formatting.js";
 
 /**
  * Write a section body file, creating parent directories as needed.
@@ -396,7 +396,8 @@ export class ContentLayer {
       if (!isBeforeFirstHeading) {
         parts.push(prependHeading(content, entry.level, entry.heading));
       } else {
-        const trimmedRoot = content.replace(/^\n+/, "").replace(/\n+$/, "");
+        const body = bodyFromDisk(content);
+        const trimmedRoot = (body as string).replace(/^\n+/, "");
         if (trimmedRoot) parts.push(trimmedRoot);
       }
     }
@@ -704,8 +705,7 @@ export class OverlayContentLayer {
     });
 
     for (let i = 0; i < parsed.sections.length && i < overlayEntries.length; i++) {
-      const trimmedBody = parsed.sections[i].body.replace(/\n+$/, "");
-      await writeBodyFile(overlayEntries[i], trimmedBody ? trimmedBody + "\n" : "");
+      await writeBodyFile(overlayEntries[i], bodyToDisk(parsed.sections[i].body));
     }
 
     this.skeletonCache.set(this.cacheKey(docPath), overlaySkeleton);

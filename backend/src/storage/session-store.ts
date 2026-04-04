@@ -23,6 +23,7 @@ import type { FlushResult } from "../crdt/fragment-store.js";
 import {
   sectionFileFromFragmentKey,
 } from "../crdt/ydoc-fragments.js";
+import type { FragmentContent } from "./section-formatting.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ function getFragmentDir(docPath: string): string {
 export async function writeRawFragment(
   docPath: string,
   fragmentFile: string,
-  content: string,
+  content: FragmentContent | string,
 ): Promise<void> {
   const dir = getFragmentDir(docPath);
   await mkdir(dir, { recursive: true });

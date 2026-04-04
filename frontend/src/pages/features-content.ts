@@ -62,7 +62,10 @@ export const userFeatures = [
   "Import page: non-markdown files shown in amber, internal-format artifacts shown in red with explanatory tooltip",
   "Document page: left gutter shows who last changed each section, with HUMAN / AI badge and live age",
   "'Agent MCP Logs' admin page shows a timeline of AI agent activity per session",
-   "AI proposal changes appear in your open document in real time — no need to reload"
+   "AI proposal changes appear in your open document in real time — no need to reload",
+   "Setup page lets you choose whether the agent runs on your machine or inside the app container",
+  "Per-document diagnostics modal shows document health, storage layers, and detects corruption",
+  "Backend crashes now display a full-screen error page instead of silently breaking"
 ];
 
 export const architectureFeatures = [

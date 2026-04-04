@@ -22,7 +22,7 @@ import {
 } from "./document-skeleton.js";
 import { ContentLayer } from "./content-layer.js";
 import type { SectionBody, FragmentContent } from "./section-formatting.js";
-import { bodyFromParser, fragmentFromParser } from "./section-formatting.js";
+import { bodyFromParser, bodyFromDisk, bodyToDisk, fragmentFromParser } from "./section-formatting.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -184,7 +184,7 @@ export async function applyDocumentMarkdownToDraft(
     let canonicalBody = "";
     if (matchedEntry) {
       try {
-        canonicalBody = (await readFile(matchedEntry.absolutePath, "utf8")).replace(/\n+$/, "");
+        canonicalBody = bodyFromDisk(await readFile(matchedEntry.absolutePath, "utf8")) as string;
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
       }
@@ -195,7 +195,7 @@ export async function applyDocumentMarkdownToDraft(
     if (sectionBody !== canonicalBody || !matchedEntry) {
       const draftSectionPath = path.join(draftSectionsDir, sectionFile);
       await mkdir(path.dirname(draftSectionPath), { recursive: true });
-      await writeFile(draftSectionPath, sectionBody + "\n", "utf8");
+      await writeFile(draftSectionPath, bodyToDisk(sectionBody), "utf8");
       result.changedTargets.push({ headingPath: section.headingPath, sectionFile });
     }
   }

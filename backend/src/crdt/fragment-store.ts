@@ -29,6 +29,7 @@ import {
   bodyFromDisk,
   bodyFromOrphanFragment,
   bodyToDisk,
+  fragmentFromDisk,
   fragmentFromRemark,
   buildFragmentContent as buildFragmentContentFn,
   stripHeadingFromFragment,
@@ -167,7 +168,7 @@ export class FragmentStore {
 
       if (rawFileSet.has(sectionFile)) {
         // Raw fragment contains heading + body — use as-is (heading is first node)
-        sectionContent = fragmentFromRemark(rawContentMap.get(sectionFile) ?? "");
+        sectionContent = fragmentFromDisk(rawContentMap.get(sectionFile) ?? "");
         rawFragmentKeys.push(fragmentKey);
       } else {
         // Fallback: read from overlay/canonical (body-only files)

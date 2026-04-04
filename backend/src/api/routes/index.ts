@@ -762,6 +762,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       // (restore changes the entire skeleton; injectAfterCommit would corrupt the Y.Doc).
       const committedSha = await commitProposalToCanonical(proposal.id, {}, undefined, { skipCrdtInjection: true, restoreTargetSha: sha });
 
+      // Unconditionally clean session overlay so stale skeleton files never shadow restored canonical content.
+      const { cleanupSessionFiles } = await import("../../storage/session-store.js");
+      await cleanupSessionFiles(docPath);
+
       // Invalidate live session and notify connected clients.
       await invalidateSessionForRestore(
         docPath,
@@ -889,23 +893,63 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         checks.push({ name: "all-sections-parseable", pass: false, detail: (e as Error).message });
       }
 
+      let overlaySkeletonExists = false;
       try {
-        let exists = false;
-        try { await readFile(overlaySkeletonPath, "utf8"); exists = true; } catch { /* missing */ }
-        checks.push({ name: "overlay-skeleton-exists", pass: exists });
+        try { await readFile(overlaySkeletonPath, "utf8"); overlaySkeletonExists = true; } catch { /* missing */ }
+        checks.push({ name: "overlay-skeleton-exists", pass: overlaySkeletonExists });
       } catch (e) {
         checks.push({ name: "overlay-skeleton-exists", pass: false, detail: (e as Error).message });
       }
 
+      let hasLiveCrdtSession = false;
       try {
         const session = lookupDocSession(docPath);
+        hasLiveCrdtSession = !!session;
         checks.push({
           name: "live-crdt-session",
-          pass: !!session,
+          pass: hasLiveCrdtSession,
           detail: session ? "active session" : undefined,
         });
       } catch (e) {
         checks.push({ name: "live-crdt-session", pass: false, detail: (e as Error).message });
+      }
+
+      checks.push({
+        name: "overlay-skeleton-orphaned",
+        pass: !(overlaySkeletonExists && !hasLiveCrdtSession),
+        detail: overlaySkeletonExists && !hasLiveCrdtSession
+          ? "Overlay skeleton exists but no active CRDT session — stale file will shadow canonical content"
+          : undefined,
+      });
+
+      try {
+        if (overlaySkeletonExists) {
+          const [overlayContent, canonicalContent] = await Promise.all([
+            readFile(overlaySkeletonPath, "utf8").catch(() => null),
+            readFile(canonicalSkeletonPath, "utf8").catch(() => null),
+          ]);
+          if (overlayContent !== null && canonicalContent !== null) {
+            const match = overlayContent === canonicalContent;
+            const overlayAssessment = await assessSkeleton(overlaySkeletonPath, overlaySectionsDir);
+            checks.push({
+              name: "overlay-canonical-skeleton-match",
+              pass: match,
+              detail: match
+                ? undefined
+                : `overlay: ${overlayAssessment.entries.length} entries, canonical: ${skeletonAssessment?.entries.length ?? 0} entries`,
+            });
+          }
+        }
+      } catch (e) {
+        checks.push({ name: "overlay-canonical-skeleton-match", pass: false, detail: (e as Error).message });
+      }
+
+      try {
+        const overlayLayer = new OverlayContentLayer(overlayContentRoot, contentRoot);
+        await overlayLayer.readAllSections(docPath);
+        checks.push({ name: "overlay-read-path", pass: true });
+      } catch (e) {
+        checks.push({ name: "overlay-read-path", pass: false, detail: (e as Error).message });
       }
 
       // ── Section layer table ──
