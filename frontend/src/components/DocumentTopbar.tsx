@@ -15,6 +15,8 @@ interface DocumentTopbarProps {
   onToggleHistory: () => void;
   showDiagnostics: boolean;
   onToggleDiagnostics: () => void;
+  showOverwrite?: boolean;
+  onToggleOverwrite?: () => void;
   crdtState: CrdtConnectionState;
   persistenceSummary: PersistenceSummary;
   isEditing: boolean;
@@ -26,6 +28,8 @@ export function DocumentTopbar({
   onToggleHistory,
   showDiagnostics,
   onToggleDiagnostics,
+  showOverwrite,
+  onToggleOverwrite,
   crdtState,
   persistenceSummary,
   isEditing,
@@ -59,6 +63,17 @@ export function DocumentTopbar({
       >
         Diagnostics
       </button>
+
+      {/* Overwrite from Markdown toggle */}
+      {onToggleOverwrite && (
+        <button
+          onClick={onToggleOverwrite}
+          className={`text-[11px] px-2 py-1 rounded ${showOverwrite ? "bg-[#e8f4f6] text-[#1d5a66]" : "bg-[#f5f2ed] text-text-muted hover:text-text-primary"}`}
+          title="Overwrite document from raw markdown"
+        >
+          Overwrite
+        </button>
+      )}
 
       {/* Aggregated persistence indicator — derived from per-section state map */}
       <div className="flex items-center gap-[5px]">

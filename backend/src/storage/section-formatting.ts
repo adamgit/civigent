@@ -77,6 +77,38 @@ export function fragmentFromParser(raw: string): FragmentContent {
   return raw.replace(/\n+$/, "") as FragmentContent;
 }
 
+/** External/API content entering the branded domain → FragmentContent. */
+export function fragmentFromExternalContent(raw: string): FragmentContent {
+  return raw.replace(/\n+$/, "") as FragmentContent;
+}
+
+// ─── BFH identity + empty helpers ──────────────────────────────────
+//
+// BFH (before-first-heading) sections have no heading line, so their body
+// and fragment representations are identical. These helpers document that
+// identity instead of scattering `as unknown as` casts through the codebase.
+
+/** Empty section body (typed constant). */
+export const EMPTY_BODY = "" as SectionBody;
+
+/** Empty fragment content (typed constant). */
+export const EMPTY_FRAGMENT = "" as FragmentContent;
+
+/** BFH identity: body IS fragment when there's no heading. */
+export function bodyAsFragment(body: SectionBody): FragmentContent {
+  return body as unknown as FragmentContent;
+}
+
+/** BFH identity (reverse): fragment IS body when there's no heading. */
+export function fragmentAsBody(fragment: FragmentContent): SectionBody {
+  return fragment as unknown as SectionBody;
+}
+
+/** Strip leading newlines from a SectionBody without breaking the brand. */
+export function stripLeadingNewlines(body: SectionBody): SectionBody {
+  return (body as string).replace(/^\n+/, "") as SectionBody;
+}
+
 // ─── Conversion / combining functions ───────────────────────────────
 
 /**
@@ -84,10 +116,10 @@ export function fragmentFromParser(raw: string): FragmentContent {
  * BFH sections (level=0, heading="") return the body as-is.
  */
 export function buildFragmentContent(body: SectionBody, level: number, heading: string): FragmentContent {
-  if (level === 0 && heading === "") return body as unknown as FragmentContent;
+  if (level === 0 && heading === "") return bodyAsFragment(body);
   const headingLine = `${"#".repeat(level)} ${heading}`;
-  const trimmed = (body as string).trim();
-  return (trimmed ? `${headingLine}\n\n${trimmed}` : headingLine) as FragmentContent;
+  const bodyStr = body as string;
+  return (bodyStr.trim() ? `${headingLine}\n\n${bodyStr}` : headingLine) as FragmentContent;
 }
 
 /**
@@ -116,6 +148,21 @@ export function mergeOrphanIntoFragment(orphanBody: SectionBody, level: number, 
   return buildFragmentContent(orphanBody, level, heading);
 }
 
+/**
+ * Join fragments into final assembled document text.
+ * This is the single place that decides how fragments compose.
+ * Returns plain string — the assembled document is an output boundary.
+ *
+ * Uses "\n\n" separator: each fragment is a self-contained block (heading + body
+ * or body-only for BFH), and CommonMark requires a blank line before ATX headings
+ * for clean rendering. The previous prependHeading approach achieved this indirectly
+ * (trailing \n per fragment + \n join = \n\n between headed sections) but left
+ * BFH→headed with only \n. Using \n\n uniformly is correct markdown.
+ */
+export function assembleFragments(...fragments: FragmentContent[]): string {
+  return fragments.filter(Boolean).join("\n\n");
+}
+
 /** Join multiple section bodies with double-newline separator. */
 export function joinBodies(...bodies: SectionBody[]): SectionBody {
   return bodies
@@ -133,14 +180,3 @@ export function appendToBody(base: SectionBody, addition: SectionBody): SectionB
   return (baseStr + "\n\n" + addStr) as SectionBody;
 }
 
-/**
- * Format a single section with its heading prepended.
- * Trims leading/trailing newlines from the body, then produces:
- *   "## Heading\n\nbody\n"  (non-empty body)
- *   "## Heading\n"          (empty body)
- */
-export function prependHeading(body: string, level: number, heading: string): string {
-  const trimmed = body.replace(/^\n+/, "").replace(/\n+$/, "");
-  const h = "#".repeat(level) + " " + heading;
-  return trimmed ? h + "\n\n" + trimmed + "\n" : h + "\n";
-}

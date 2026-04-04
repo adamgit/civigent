@@ -22,7 +22,7 @@ import { ParsedDocument } from "./markdown-sections.js";
 import type { DocStructureNode } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
-import { prependHeading, bodyFromDisk, bodyToDisk, stripHeadingFromFragment, type SectionBody, type FragmentContent } from "./section-formatting.js";
+import { bodyFromDisk, bodyToDisk, stripHeadingFromFragment, buildFragmentContent, assembleFragments, bodyAsFragment, stripLeadingNewlines, fragmentFromExternalContent, type SectionBody, type FragmentContent } from "./section-formatting.js";
 
 /**
  * Write a section body file, creating parent directories as needed.
@@ -267,12 +267,8 @@ export class ContentLayer {
         skeletonCache.set(ref.docPath, skeleton);
       }
 
-      let entry: FlatEntry;
-      try {
-        entry = skeleton.expect(ref.headingPath);
-      } catch {
-        continue;
-      }
+      const entry = skeleton.find(ref.headingPath);
+      if (!entry) continue;
 
       try {
         const content = await readFile(entry.absolutePath, "utf8");
@@ -301,7 +297,7 @@ export class ContentLayer {
     const skeleton = await this.readSkeleton(ref.docPath);
     const entry = skeleton.expect(ref.headingPath);
     // Enforce body-only invariant: strip leading heading if it matches the skeleton entry
-    const body = stripHeadingFromFragment(content as FragmentContent, entry.level) as string;
+    const body = stripHeadingFromFragment(fragmentFromExternalContent(content), entry.level);
     // Guard: reject multi-heading content that should go through importMarkdownDocument
     const hasHeadings = getParser().containsHeadings(body);
     if (hasHeadings) {
@@ -375,12 +371,12 @@ export class ContentLayer {
       return "";
     }
 
-    const parts: string[] = [];
+    const parts: FragmentContent[] = [];
 
     for (const entry of bodyEntries) {
-      let content: string | undefined;
+      let content: SectionBody | undefined;
       try {
-        content = await readFile(entry.absolutePath, "utf8");
+        content = bodyFromDisk(await readFile(entry.absolutePath, "utf8"));
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
         throw new DocumentAssemblyError(
@@ -391,18 +387,17 @@ export class ContentLayer {
 
       if (content === undefined) continue;
 
-      // Prepend heading for non-before-first-heading sections
       const isBeforeFirstHeading = entry.level === 0 && entry.heading === "";
-      if (!isBeforeFirstHeading) {
-        parts.push(prependHeading(content, entry.level, entry.heading));
+      if (isBeforeFirstHeading) {
+        // BFH: body IS fragment content (strip leading newlines defensively)
+        const trimmed = stripLeadingNewlines(content);
+        if (trimmed) parts.push(bodyAsFragment(trimmed));
       } else {
-        const body = bodyFromDisk(content);
-        const trimmedRoot = (body as string).replace(/^\n+/, "");
-        if (trimmedRoot) parts.push(trimmedRoot);
+        parts.push(buildFragmentContent(content, entry.level, entry.heading));
       }
     }
 
-    return parts.join("\n");
+    return assembleFragments(...parts);
   }
 }
 
@@ -661,7 +656,7 @@ export class OverlayContentLayer {
 
     const entry = skeleton.expect(ref.headingPath);
     // Strip leading heading if it matches the skeleton entry
-    const body = stripHeadingFromFragment(content as FragmentContent, entry.level) as string;
+    const body = stripHeadingFromFragment(fragmentFromExternalContent(content), entry.level);
     // Guard: reject multi-heading content that should go through importMarkdownDocument
     const hasHeadings = getParser().containsHeadings(body);
     if (hasHeadings) {

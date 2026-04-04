@@ -23,7 +23,7 @@ import type { FlushResult } from "../crdt/fragment-store.js";
 import {
   sectionFileFromFragmentKey,
 } from "../crdt/ydoc-fragments.js";
-import type { FragmentContent } from "./section-formatting.js";
+import type { FragmentContent, SectionBody } from "./section-formatting.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -229,7 +229,7 @@ export async function readSectionWithOverlay(
  */
 export async function readAllSectionsWithOverlay(
   docPath: string,
-): Promise<Map<string, string>> {
+): Promise<Map<string, SectionBody>> {
   const overlay = new OverlayContentLayer(getSessionDocsContentRoot(), getContentRoot());
   return overlay.readAllSections(docPath);
 }

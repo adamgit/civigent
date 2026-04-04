@@ -94,7 +94,12 @@ function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
     return (
       <tr key={index} className="border-b border-gray-100">
         <td className="px-2 py-1 text-[11px] font-mono whitespace-nowrap">
-          <div>{section.headingKey || "(body holder)"}</div>
+          <div>
+            {section.headingKey || "(body holder)"}
+            {section.isSubSkeleton ? (
+              <span className="ml-1 inline-block px-1 py-0 rounded bg-purple-100 text-purple-700 text-[9px] font-semibold">sub-skeleton</span>
+            ) : null}
+          </div>
           <div className="text-gray-400 text-[10px]">{section.sectionFile}</div>
         </td>
         {renderLayerCell(section.canonical, section.winner === "canonical")}
@@ -105,6 +110,11 @@ function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
           <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${WINNER_COLORS[section.winner] ?? "bg-gray-100 text-gray-600"}`}>
             {section.winner}
           </span>
+          {section.winner === "none" && section.gitHistoryExists === true ? (
+            <div className="text-[9px] text-green-600 mt-0.5">exists in git history</div>
+          ) : section.winner === "none" && section.gitHistoryExists === false ? (
+            <div className="text-[9px] text-red-600 mt-0.5">never in git</div>
+          ) : null}
         </td>
       </tr>
     );

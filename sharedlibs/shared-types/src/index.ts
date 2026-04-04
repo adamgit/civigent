@@ -200,7 +200,7 @@ export interface AdminConfig {
 
 // ─── Proposal Model (v4 — layered storage / domain / DTO) ─────────
 
-export type ProposalStatus = "draft" | "pending" | "committing" | "committed" | "withdrawn";
+export type ProposalStatus = "draft" | "pending" | "inprogress" | "committing" | "committed" | "withdrawn";
 
 // ── Storage layer (what is stored in meta.json on disk) ────────────
 
@@ -219,19 +219,30 @@ export interface CommittedProposalFile extends ProposalFileBase {
   humanInvolvement_at_commit: Record<string, number>;
 }
 
+/** In-progress proposal meta.json — adds lock metadata from draft→inprogress transition. */
+export interface InProgressProposalFile extends ProposalFileBase {
+  locked_sections: ProposalSection[];
+  locked_at: string;
+}
+
 /** Withdrawn proposal meta.json — adds optional withdrawal reason. */
 export interface WithdrawnProposalFile extends ProposalFileBase {
   withdrawal_reason?: string;
 }
 
 /** Union of all proposal file variants for untyped disk reads. */
-export type AnyProposalFile = ProposalFileBase | CommittedProposalFile | WithdrawnProposalFile;
+export type AnyProposalFile = ProposalFileBase | InProgressProposalFile | CommittedProposalFile | WithdrawnProposalFile;
 
 // ── Domain layer (file + status, runtime representation) ──────────
 
 /** Draft, pending, or committing proposal (no terminal fields). */
 export interface DraftProposal extends ProposalFileBase {
   status: "draft" | "pending" | "committing";
+}
+
+/** In-progress proposal — locks acquired, human can edit before committing. */
+export interface InProgressProposal extends InProgressProposalFile {
+  status: "inprogress";
 }
 
 /** Committed proposal with required terminal fields. */
@@ -245,7 +256,7 @@ export interface WithdrawnProposalDomain extends WithdrawnProposalFile {
 }
 
 /** Discriminated union of all proposal domain states. */
-export type AnyProposal = DraftProposal | CommittedProposalDomain | WithdrawnProposalDomain;
+export type AnyProposal = DraftProposal | InProgressProposal | CommittedProposalDomain | WithdrawnProposalDomain;
 
 // ── DTO layer (enriched for API responses) ────────────────────────
 
@@ -255,8 +266,14 @@ export interface DraftProposalDTO extends DraftProposal {
   sections: EvaluatedSection[];
 }
 
+/** In-progress proposal DTO — adds evaluation computed at read time. */
+export interface InProgressProposalDTO extends InProgressProposal {
+  humanInvolvement_evaluation: ProposalHumanInvolvementEvaluation;
+  sections: EvaluatedSection[];
+}
+
 /** Union of all proposal DTO variants for API responses. */
-export type ProposalDTO = DraftProposalDTO | CommittedProposalDomain | WithdrawnProposalDomain;
+export type ProposalDTO = DraftProposalDTO | InProgressProposalDTO | CommittedProposalDomain | WithdrawnProposalDomain;
 
 
 // ── Proposal sub-types ────────────────────────────────────────────
@@ -383,6 +400,8 @@ export interface GetDocumentSectionsResponse {
      *  stable fragment keys that survive heading renames. */
     section_file: string;
     last_editor?: { id: string; name: string; timestampMs: number; type: AttributionWriterType; seconds_ago: number };
+    /** True when a human proposal (draft or inprogress) locks this section. */
+    blocked?: boolean;
   }>;
 }
 
@@ -469,6 +488,21 @@ export interface WithdrawProposalResponse {
   proposal_id: ProposalId;
   status: "withdrawn";
 }
+
+export interface AcquireLocksSuccess {
+  proposal_id: ProposalId;
+  acquired: true;
+  status: "inprogress";
+}
+
+export interface AcquireLocksFailure {
+  proposal_id: ProposalId;
+  acquired: false;
+  reason: string;
+  section?: SectionTargetRef;
+}
+
+export type AcquireLocksResponse = AcquireLocksSuccess | AcquireLocksFailure;
 
 export interface ReadProposalResponse {
   proposal: ProposalDTO;

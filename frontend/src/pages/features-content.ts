@@ -65,7 +65,8 @@ export const userFeatures = [
    "AI proposal changes appear in your open document in real time — no need to reload",
    "Setup page lets you choose whether the agent runs on your machine or inside the app container",
   "Per-document diagnostics modal shows document health, storage layers, and detects corruption",
-  "Backend crashes now display a full-screen error page instead of silently breaking"
+  "Backend crashes now display a full-screen error page instead of silently breaking",
+  "Admins can overwrite an entire document by pasting raw markdown, with the previous version recoverable from git history",
 ];
 
 export const architectureFeatures = [

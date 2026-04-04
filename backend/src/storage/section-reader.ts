@@ -2,7 +2,7 @@ import { getContentRoot } from "./data-root.js";
 import { resolveHeadingPathWithLevel } from "./heading-resolver.js";
 import { ContentLayer } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
-import { prependHeading } from "./section-formatting.js";
+import { buildFragmentContent, bodyAsFragment, type SectionBody, type FragmentContent } from "./section-formatting.js";
 
 // Re-export from ContentLayer (callers import SectionNotFoundError from here)
 export { SectionNotFoundError } from "./content-layer.js";
@@ -14,7 +14,7 @@ export { SectionNotFoundError } from "./content-layer.js";
 export async function readSection(
   docPath: string,
   headingPath: string[],
-): Promise<string> {
+): Promise<SectionBody> {
   const layer = new ContentLayer(getContentRoot());
   return layer.readSection(new SectionRef(docPath, headingPath));
 }
@@ -29,20 +29,20 @@ export async function readSection(
 export async function readSectionWithHeading(
   docPath: string,
   headingPath: string[],
-): Promise<string> {
+): Promise<FragmentContent> {
   const layer = new ContentLayer(getContentRoot());
   const ref = new SectionRef(docPath, headingPath);
 
   // Read body via ContentLayer
   const body = await layer.readSection(ref);
 
-  // For before-first-heading sections, return body only
-  if (ref.headingPath.length === 0) return body;
+  // For before-first-heading sections, body IS fragment content
+  if (ref.headingPath.length === 0) return bodyAsFragment(body);
 
   // Get the heading level from the skeleton
   const { level } = await resolveHeadingPathWithLevel(ref.docPath, ref.headingPath);
-  if (level === 0) return body;
+  if (level === 0) return bodyAsFragment(body);
 
   const heading = ref.headingPath[ref.headingPath.length - 1];
-  return prependHeading(body, level, heading);
+  return buildFragmentContent(body, level, heading);
 }

@@ -13,7 +13,7 @@ import { relativeTime } from "../utils/relativeTime";
 
 function statusPillVariant(status: string): "green" | "yellow" | "red" | "muted" {
   switch (status) {
-    case "draft": case "committing": return "yellow";
+    case "draft": case "inprogress": case "committing": return "yellow";
     case "committed": return "green";
     case "withdrawn": return "red";
     default: return "muted";
@@ -54,7 +54,7 @@ export function ProposalsPage() {
   const filteredProposals = useMemo(() => {
     return proposals.filter((p) => {
       // Status filter
-      if (statusFilter === "Inflight" && p.status !== "draft" && p.status !== "committing") return false;
+      if (statusFilter === "Inflight" && p.status !== "draft" && p.status !== "inprogress" && p.status !== "committing") return false;
       if (statusFilter === "Proposing" && p.status !== "draft") return false;
       if (statusFilter === "Committed" && p.status !== "committed") return false;
       if (statusFilter === "Cancelled" && p.status !== "withdrawn") return false;

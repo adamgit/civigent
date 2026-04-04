@@ -6,6 +6,7 @@ import { SectionRef } from "../domain/section-ref.js";
 import {
   getProposalsDraftRoot,
   getProposalsPendingRoot,
+  getProposalsInProgressRoot,
   getProposalsCommittingRoot,
   getProposalsCommittedRoot,
   getProposalsWithdrawnRoot,
@@ -14,6 +15,8 @@ import type {
   AnyProposal,
   AnyProposalFile,
   CommittedProposalFile,
+  InProgressProposal,
+  InProgressProposalFile,
   ProposalFileBase,
   ProposalId,
   ProposalSection,
@@ -26,7 +29,7 @@ import type {
 export class ProposalNotFoundError extends Error {}
 export class InvalidProposalStateError extends Error {}
 
-const ALL_STATUSES: ProposalStatus[] = ["draft", "pending", "committing", "committed", "withdrawn"];
+const ALL_STATUSES: ProposalStatus[] = ["draft", "pending", "inprogress", "committing", "committed", "withdrawn"];
 
 function statusDir(status: ProposalStatus): string {
   switch (status) {
@@ -34,6 +37,8 @@ function statusDir(status: ProposalStatus): string {
       return getProposalsDraftRoot();
     case "pending":
       return getProposalsPendingRoot();
+    case "inprogress":
+      return getProposalsInProgressRoot();
     case "committing":
       return getProposalsCommittingRoot();
     case "committed":
@@ -189,9 +194,10 @@ export async function readProposalWithContent(id: ProposalId): Promise<{ proposa
 }
 
 export async function listProposals(status?: ProposalStatus): Promise<AnyProposal[]> {
-  // Spec: "committing" proposals should be treated as pending for listing purposes
+  // Spec: active (non-terminal) proposals grouped under "draft" filter for listing purposes.
+  // This includes "inprogress" (human lock-held) and "committing" (commit in flight).
   const statuses = status
-    ? (status === "draft" ? ["draft", "committing"] as ProposalStatus[] : [status])
+    ? (status === "draft" ? ["draft", "inprogress", "committing"] as ProposalStatus[] : [status])
     : ALL_STATUSES;
   const proposals: AnyProposal[] = [];
 
@@ -253,11 +259,133 @@ export async function updateProposalSections(
   return { proposal: toProposal(file, status), contentRoot };
 }
 
+// ─── Lock acquisition (draft → inprogress) ────────────────────────
+
+export interface LockAcquisitionResult {
+  acquired: boolean;
+  proposal?: InProgressProposal;
+  reason?: string;
+  section?: ProposalSection;
+}
+
+/**
+ * Attempt to transition a human draft proposal to inprogress by acquiring
+ * section locks. Fails atomically if ANY targeted section has:
+ *   1. Active CRDT edit authority (someone editing in real-time)
+ *   2. Dirty session overlap (unsaved edits pending commit)
+ *   3. Another human inprogress proposal holding it
+ *
+ * Only human proposals may acquire locks. Agent proposals never enter inprogress.
+ */
+export async function transitionToInProgress(id: ProposalId): Promise<LockAcquisitionResult> {
+  const proposal = await readProposal(id);
+
+  if (proposal.status !== "draft") {
+    throw new InvalidProposalStateError(
+      `Cannot transition proposal ${id} to inprogress: status is ${proposal.status}, expected draft.`,
+    );
+  }
+
+  if (proposal.writer.type !== "human") {
+    throw new InvalidProposalStateError(
+      `Cannot transition proposal ${id} to inprogress: only human proposals may acquire locks.`,
+    );
+  }
+
+  // Dynamic import to avoid circular dependency (section-presence → proposal-repository)
+  const { SectionPresence } = await import("../domain/section-presence.js");
+
+  // Pre-fetch dirty file sets grouped by doc path
+  const docPaths = [...new Set(proposal.sections.map(s => s.doc_path))];
+  const dirtyFileSets = new Map<string, Set<string>>();
+  for (const docPath of docPaths) {
+    dirtyFileSets.set(docPath, await SectionPresence.prefetchDirtyFiles(docPath));
+  }
+
+  // Pre-fetch inprogress human proposal locks (excluding this proposal)
+  const inProgressLocks = await prefetchInProgressLocks(id);
+
+  // Atomic check: all sections must be free
+  for (const section of proposal.sections) {
+    const ref = SectionRef.fromTarget(section);
+
+    // Check 1: Active CRDT editing session
+    if (SectionPresence.checkLiveSessionOnly(ref)) {
+      return { acquired: false, reason: "Section is being actively edited", section };
+    }
+
+    // Check 2: Dirty session files
+    const dirtySet = dirtyFileSets.get(section.doc_path) ?? new Set();
+    if (dirtySet.has(ref.key)) {
+      return { acquired: false, reason: "Section has unsaved edits pending commit", section };
+    }
+
+    // Check 3: Another human inprogress proposal
+    const lock = inProgressLocks.get(ref.globalKey);
+    if (lock) {
+      return { acquired: false, reason: `Section is locked by ${lock.writerDisplayName}`, section };
+    }
+  }
+
+  // All checks passed — write enriched meta.json then atomic rename
+  const now = new Date().toISOString();
+  const { status: _s, ...rest } = proposal;
+  const file: InProgressProposalFile = {
+    ...rest,
+    locked_sections: proposal.sections,
+    locked_at: now,
+  };
+
+  await writeJsonFile(proposalPath("draft", id), file);
+
+  const fromDir = proposalDir("draft", id);
+  const toDir = proposalDir("inprogress", id);
+  await mkdir(statusDir("inprogress"), { recursive: true });
+  await rename(fromDir, toDir);
+
+  return { acquired: true, proposal: { ...file, status: "inprogress" } };
+}
+
+/**
+ * Scan inprogress proposals to build a lock index.
+ * Used by lock acquisition to check for conflicts with other held locks.
+ */
+async function prefetchInProgressLocks(
+  excludeProposalId: string,
+): Promise<Map<string, { writerId: string; writerDisplayName: string }>> {
+  const index = new Map<string, { writerId: string; writerDisplayName: string }>();
+  const inProgressProposals = await listProposals("inprogress");
+  for (const proposal of inProgressProposals) {
+    if (proposal.writer.type !== "human") continue;
+    if (proposal.id === excludeProposalId) continue;
+    for (const section of proposal.sections) {
+      const key = SectionRef.fromTarget(section).globalKey;
+      index.set(key, {
+        writerId: proposal.writer.id,
+        writerDisplayName: proposal.writer.displayName,
+      });
+    }
+  }
+  return index;
+}
+
+// ─── Standard state transitions ────────────────────────────────────
+
 export async function transitionToCommitting(id: ProposalId): Promise<AnyProposal> {
   const proposal = await readProposal(id);
-  if (proposal.status !== "draft" && proposal.status !== "pending") {
+
+  // Human proposals must go through inprogress (lock acquisition) before committing.
+  // "pending" is always allowed: transient proposals (import, restore, etc.) start there.
+  // Agent proposals proceed directly from draft or pending.
+  const isHuman = proposal.writer.type === "human";
+  const validSourceStatuses = isHuman
+    ? ["inprogress", "pending"]
+    : ["draft", "pending"];
+
+  if (!validSourceStatuses.includes(proposal.status)) {
+    const expected = validSourceStatuses.join(" or ");
     throw new InvalidProposalStateError(
-      `Cannot transition proposal ${id} to committing: status is ${proposal.status}, expected draft or pending.`,
+      `Cannot transition proposal ${id} to committing: status is ${proposal.status}, expected ${expected}.`,
     );
   }
 
@@ -302,9 +430,9 @@ export async function transitionToWithdrawn(
   reason?: string,
 ): Promise<AnyProposal> {
   const proposal = await readProposal(id);
-  if (proposal.status !== "draft" && proposal.status !== "pending") {
+  if (proposal.status !== "draft" && proposal.status !== "pending" && proposal.status !== "inprogress") {
     throw new InvalidProposalStateError(
-      `Cannot withdraw proposal ${id}: status is ${proposal.status}, expected draft or pending.`,
+      `Cannot withdraw proposal ${id}: status is ${proposal.status}, expected draft, pending, or inprogress.`,
     );
   }
 

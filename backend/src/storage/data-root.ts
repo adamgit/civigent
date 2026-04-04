@@ -31,6 +31,10 @@ export function getProposalsPendingRoot(): string {
   return path.join(getDataRoot(), "proposals", "pending");
 }
 
+export function getProposalsInProgressRoot(): string {
+  return path.join(getDataRoot(), "proposals", "inprogress");
+}
+
 export function getProposalsCommittingRoot(): string {
   return path.join(getDataRoot(), "proposals", "committing");
 }
@@ -124,6 +128,7 @@ export async function ensureV3Directories(): Promise<void> {
     getContentRoot(),
     getProposalsDraftRoot(),
     getProposalsPendingRoot(),
+    getProposalsInProgressRoot(),
     getProposalsCommittingRoot(),
     getProposalsCommittedRoot(),
     getProposalsWithdrawnRoot(),

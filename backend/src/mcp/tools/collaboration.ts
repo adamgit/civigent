@@ -40,7 +40,7 @@ import {
 import { SectionRef } from "../../domain/section-ref.js";
 import { INVOLVEMENT_THRESHOLD } from "../../domain/humanInvolvement.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
-import type { SectionScoreSnapshot } from "../../types/shared.js";
+import type { SectionScoreSnapshot, ProposalStatus } from "../../types/shared.js";
 import path from "node:path";
 import { checkDocPermission } from "../../auth/acl.js";
 
@@ -435,7 +435,7 @@ const listProposalsHandler: ToolHandler = async (args) => {
     return makeToolErrorResult(`Invalid status filter. Must be one of: ${validStatuses.join(", ")}`);
   }
 
-  const proposals = await listProposals(status as any);
+  const proposals = await listProposals(status as ProposalStatus | undefined);
   return jsonToolResult({ proposals });
 };
 
@@ -449,7 +449,7 @@ const myProposalsHandler: ToolHandler = async (args, ctx) => {
     return makeToolErrorResult(`Invalid status filter. Must be one of: ${validStatuses.join(", ")}`);
   }
 
-  const all = await listProposals(status as any);
+  const all = await listProposals(status as ProposalStatus | undefined);
   const mine = all.filter(p => p.writer.id === ctx.writer.id);
   return jsonToolResult({ proposals: mine });
 };

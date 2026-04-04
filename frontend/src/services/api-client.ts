@@ -27,6 +27,7 @@ import type {
   ReadSectionResponse,
   SessionInfoResponse,
   UpdateProposalRequest,
+  AcquireLocksResponse,
   WithdrawProposalResponse,
   WriterDirtyState,
 } from "../types/shared.js";
@@ -111,11 +112,13 @@ export interface DiagSectionLayerInfo {
   headingKey: string;
   headingPath: string[];
   sectionFile: string;
+  isSubSkeleton: boolean;
   canonical: DiagLayerStatus;
   overlay: DiagLayerStatus;
   fragment: DiagLayerStatus;
   crdt: DiagLayerStatus;
   winner: string;
+  gitHistoryExists?: boolean | null;
   error?: string;
 }
 
@@ -583,6 +586,14 @@ export const apiClient = {
     });
   },
 
+  async acquireLocks(id: ProposalId): Promise<AcquireLocksResponse> {
+    return requestJson<AcquireLocksResponse>(`/api/proposals/${encodeURIComponent(id)}/acquire-locks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+  },
+
   async commitProposal(id: ProposalId): Promise<CommitProposalResponse> {
     return requestJson<CommitProposalResponse>(`/api/proposals/${encodeURIComponent(id)}/commit`, {
       method: "POST",
@@ -671,6 +682,15 @@ export const apiClient = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sha }),
+    });
+  },
+
+  async overwriteDoc(docPath: string, markdown: string): Promise<{ committed_sha: string }> {
+    const encoded = encodeDocPath(docPath);
+    return requestJson<{ committed_sha: string }>(`/api/documents/${encoded}/overwrite`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ markdown }),
     });
   },
 

@@ -104,15 +104,25 @@ export class SectionPresence {
   }
 
   /**
-   * Pre-fetch human proposal lock index across all pending proposals.
+   * Pre-fetch human proposal lock index.
    * Returns Map keyed by SectionRef.globalKey.
+   *
+   * Context-aware blocking:
+   *   - "all" (default): blocks on both draft and inprogress human proposals.
+   *     Use for agent commit checks and human base-edit checks.
+   *   - "inprogress-only": blocks only on inprogress (lock-held) proposals.
+   *     Use for lock-acquisition checks (drafts don't block other lock attempts).
    */
   static async prefetchHumanProposalLocks(
     excludeProposalId?: string,
+    blockLevel: "all" | "inprogress-only" = "all",
   ): Promise<HumanProposalLockIndex> {
     const index: HumanProposalLockIndex = new Map();
-    const pending = await listProposals("draft");
-    for (const proposal of pending) {
+    // "all" scans draft+inprogress+committing; "inprogress-only" scans just inprogress
+    const proposals = blockLevel === "all"
+      ? await listProposals("draft")
+      : await listProposals("inprogress");
+    for (const proposal of proposals) {
       if (proposal.writer.type !== "human") continue;
       if (excludeProposalId && proposal.id === excludeProposalId) continue;
       for (const section of proposal.sections) {
@@ -164,13 +174,15 @@ export class SectionPresence {
   }
 
   /**
-   * Check if a pending human_reservation proposal locks this section.
+   * Check if a human proposal locks this section.
+   * Scans draft+inprogress by default (same as "all" context).
    */
   private static async checkHumanProposalLock(
     ref: SectionRef,
   ): Promise<HumanProposalLockInfo | null> {
-    const pending = await listProposals("draft");
-    for (const proposal of pending) {
+    // Single-section check always uses "all" context (draft+inprogress block)
+    const proposals = await listProposals("draft");
+    for (const proposal of proposals) {
       if (proposal.writer.type !== "human") continue;
       for (const section of proposal.sections) {
         if (

@@ -145,7 +145,7 @@ export function DocumentSectionRenderer({
                 crdtProvider={proposalMode ? null : crdtProvider}
                 fragmentKey={fk}
                 userName={resolveWriterId()}
-                readOnly={!isFocused}
+                readOnly={!isFocused || isLockedByOtherHuman}
                 onChange={proposalMode && onProposalSectionChange ? (md) => onProposalSectionChange(i, md) : undefined}
                 onCursorExit={(direction) => onCursorExit(i, direction)}
                 onCrossSectionDrop={(transfer) => onCrossSectionDrop(section, transfer)}

@@ -11,6 +11,7 @@ import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
 import { DocumentSectionRenderer } from "../components/DocumentSectionRenderer";
 import { DocumentFooter } from "../components/DocumentFooter";
 import DocumentDiagnostics from "../components/DocumentDiagnostics";
+import { OverwriteMarkdownModal } from "../components/OverwriteMarkdownModal";
 import { useCrossSectionCopy } from "../hooks/useCrossSectionCopy";
 import {
   sectionHeadingKey,
@@ -57,6 +58,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   const [error, setError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [showOverwrite, setShowOverwrite] = useState(false);
   const [structureTree, setStructureTree] = useState<DocStructureNode[] | null>(null);
   const [showLoading, setShowLoading] = useState(false);
   const [loadDurationMs, setLoadDurationMs] = useState<number | null>(null);
@@ -362,6 +364,8 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
         onToggleHistory={() => setShowHistory((v) => !v)}
         showDiagnostics={showDiagnostics}
         onToggleDiagnostics={() => setShowDiagnostics((v) => !v)}
+        showOverwrite={showOverwrite}
+        onToggleOverwrite={() => setShowOverwrite((v) => !v)}
         crdtState={crdtState}
         persistenceSummary={persistenceSummary}
         isEditing={isEditing}
@@ -381,6 +385,11 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
       {/* Diagnostics modal */}
       {showDiagnostics && decodedDocPath && (
         <DocumentDiagnostics docPath={decodedDocPath} onClose={() => setShowDiagnostics(false)} />
+      )}
+
+      {/* Overwrite from Markdown modal */}
+      {showOverwrite && decodedDocPath && (
+        <OverwriteMarkdownModal docPath={decodedDocPath} onClose={() => setShowOverwrite(false)} />
       )}
 
       {/* Three-column governance layout scroll area */}
@@ -495,7 +504,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       hasEditor={shouldMountEditor(i, focusedSectionIndex)}
                       isRestructuring={restructuringKeys.has(fk)}
                       isInProposal={!!(proposalMode && proposalSectionsRef.current.has(`${decodedDocPath}::${sectionKey}`))}
-                      isLockedByOtherHuman={!!(section as any).blocked}
+                      isLockedByOtherHuman={!!section.blocked}
                       highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
                       injectedByWriter={null}
                       hasRemotePresence={presenceIndicatorsRef.current.some((p) => p.sectionKey === sectionKey)}

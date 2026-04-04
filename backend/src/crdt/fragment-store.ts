@@ -28,6 +28,7 @@ import {
 import {
   bodyFromDisk,
   bodyFromOrphanFragment,
+  bodyFromParser,
   bodyToDisk,
   fragmentFromDisk,
   fragmentFromRemark,
@@ -35,6 +36,10 @@ import {
   stripHeadingFromFragment,
   joinBodies,
   appendToBody,
+  bodyAsFragment,
+  fragmentAsBody,
+  EMPTY_BODY,
+  EMPTY_FRAGMENT,
   type SectionBody,
   type FragmentContent,
 } from "../storage/section-formatting.js";
@@ -173,11 +178,11 @@ export class FragmentStore {
       } else {
         // Fallback: read from overlay/canonical (body-only files)
         const headingKey = SectionRef.headingKey([...headingPath]);
-        const bodyContent = (bulkContent?.get(headingKey) ?? "") as SectionBody;
+        const bodyContent = bulkContent?.get(headingKey) ?? EMPTY_BODY;
         sectionContent = FragmentStore.buildFragmentContent(bodyContent, level, heading);
       }
 
-      const pmJson = markdownToJSON(sectionContent as string || "");
+      const pmJson = markdownToJSON(sectionContent || "");
       const tempDoc = prosemirrorJSONToYDoc(getBackendSchema(), pmJson, fragmentKey);
       pendingUpdates.push(Y.encodeStateAsUpdate(tempDoc));
       tempDoc.destroy();
@@ -261,7 +266,7 @@ export class FragmentStore {
     // Find the skeleton entry to get the level for heading stripping
     const sectionFileId = sectionFileFromFragmentKey(fragmentKey);
     const entry = this.skeleton.expectByFileId(sectionFileId);
-    if (FragmentStore.isBeforeFirstHeading(entry)) return full as unknown as SectionBody;
+    if (FragmentStore.isBeforeFirstHeading(entry)) return fragmentAsBody(full);
     return stripHeadingFromFragment(full, entry.level);
   }
 
@@ -280,7 +285,7 @@ export class FragmentStore {
    */
   readLiveFragment(fragmentKey: string): FragmentContent | null {
     const content = this.extractMarkdown(fragmentKey);
-    return (content as string) ? content : null;
+    return content ? content : null;
   }
 
   /**
@@ -314,7 +319,7 @@ export class FragmentStore {
       const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBeforeFirstHeading);
 
       const content = this.extractMarkdown(fragmentKey);
-      if (content.trim()) {
+      if (content) {
         parts.push(content);
       }
     });
@@ -375,7 +380,7 @@ export class FragmentStore {
       //    differ (raw = heading+body, body = body-only after stripping).
       if (clean) {
         const body: SectionBody = isBeforeFirstHeading
-          ? this.extractMarkdown(fragmentKey) as unknown as SectionBody
+          ? fragmentAsBody(this.extractMarkdown(fragmentKey))
           : stripHeadingFromFragment(this.extractMarkdown(fragmentKey), entry.level);
         await this.writeBodyToDisk(entry, body);
       }
@@ -490,14 +495,14 @@ export class FragmentStore {
   ): Promise<NormalizeResult> {
     // Trim root body to content before first heading
     const rootParsed = parsed.find(s => s.headingPath.length === 0);
-    const rootBody = (rootParsed?.body ?? "") as SectionBody;
+    const rootBody = rootParsed ? bodyFromParser(rootParsed.body) : EMPTY_BODY;
 
     // Update root fragment in Y.Doc with trimmed body (clear first — Y.applyUpdate merges)
     // BFH fragment content = body (no heading to prepend)
-    this.setFragmentContent(fragmentKey, rootBody as unknown as FragmentContent, SERVER_INJECTION_ORIGIN);
+    this.setFragmentContent(fragmentKey, bodyAsFragment(rootBody), SERVER_INJECTION_ORIGIN);
 
     // Write root raw fragment + canonical-ready
-    await this.writeDualFormat(entry, rootBody as unknown as FragmentContent, rootBody, ops);
+    await this.writeDualFormat(entry, bodyAsFragment(rootBody), rootBody, ops);
 
     // Add new sections to skeleton
     const addedEntries = await this.skeleton.addSectionsFromBeforeFirstHeadingSplit(realSections);
@@ -509,7 +514,7 @@ export class FragmentStore {
       const addedEntry = addedEntries[i];
       if (addedEntry.isSubSkeleton) continue;
 
-      const body = (realSections[bodyIdx]?.body ?? "") as SectionBody;
+      const body = realSections[bodyIdx] ? bodyFromParser(realSections[bodyIdx].body) : EMPTY_BODY;
       const addedIsBfh = FragmentStore.isBeforeFirstHeading(addedEntry);
       const newKey = fragmentKeyFromSectionFile(addedEntry.sectionFile, addedIsBfh);
       const fragmentContent = FragmentStore.buildFragmentContent(body, addedEntry.level, addedEntry.heading);
@@ -679,7 +684,7 @@ export class FragmentStore {
 
       const addedIsBfh = FragmentStore.isBeforeFirstHeading(addedEntry);
       const newKey = fragmentKeyFromSectionFile(addedEntry.sectionFile, addedIsBfh);
-      const body = (realSections[bodyIdx]?.body ?? "") as SectionBody;
+      const body = realSections[bodyIdx] ? bodyFromParser(realSections[bodyIdx].body) : EMPTY_BODY;
       const fragmentContent = FragmentStore.buildFragmentContent(body, addedEntry.level, addedEntry.heading);
 
       this.populateFragment(newKey, fragmentContent, SERVER_INJECTION_ORIGIN);
@@ -752,8 +757,8 @@ export class FragmentStore {
       mergeTarget = addedEntries[0];
       mergeKey = BEFORE_FIRST_HEADING_KEY;
       // Initialize an empty fragment for the newly created BFH
-      const emptyFragment = "" as FragmentContent;
-      const emptyBody = "" as SectionBody;
+      const emptyFragment = EMPTY_FRAGMENT;
+      const emptyBody = EMPTY_BODY;
       this.populateFragment(mergeKey, emptyFragment, SERVER_INJECTION_ORIGIN);
       await this.writeDualFormat(mergeTarget, emptyFragment, emptyBody, ops);
     }
@@ -762,17 +767,17 @@ export class FragmentStore {
     const parentKey = mergeKey;
 
     // Append orphaned content to parent fragment (if any content exists)
-    if ((orphanedBody as string) && parentEntry) {
+    if (orphanedBody && parentEntry) {
       const existingContent = this.extractMarkdown(parentKey);
-      const mergedContent = ((existingContent as string).trim()
-        ? `${existingContent}\n\n${orphanedBody}`
-        : orphanedBody) as unknown as FragmentContent;
+      const mergedContent: FragmentContent = existingContent
+        ? fragmentFromRemark(`${existingContent}\n\n${orphanedBody}`)
+        : bodyAsFragment(orphanedBody);
       this.populateFragment(parentKey, mergedContent, SERVER_INJECTION_ORIGIN);
 
       const parentRawMd = this.extractMarkdown(parentKey);
       const parentIsBfh = FragmentStore.isBeforeFirstHeading(parentEntry);
       const canonicalBody: SectionBody = parentIsBfh
-        ? parentRawMd as unknown as SectionBody
+        ? fragmentAsBody(parentRawMd)
         : stripHeadingFromFragment(parentRawMd, parentEntry.level);
       await this.writeDualFormat(parentEntry, parentRawMd, canonicalBody, ops);
     }
@@ -844,7 +849,7 @@ export class FragmentStore {
    *  PRIVATE — always call setFragmentContent instead, which clears first.
    *  Y.applyUpdate merges — calling this on a non-empty fragment duplicates content. */
   private populateFragment(fragmentKey: string, markdown: FragmentContent, origin?: unknown): void {
-    const pmJson = markdownToJSON(markdown as string);
+    const pmJson = markdownToJSON(markdown);
     const tempDoc = prosemirrorJSONToYDoc(getBackendSchema(), pmJson, fragmentKey);
     Y.applyUpdate(this.ydoc, Y.encodeStateAsUpdate(tempDoc), origin);
     tempDoc.destroy();
@@ -876,7 +881,7 @@ export class FragmentStore {
     const entry = this.skeleton.expect(headingPath);
     const isBeforeFirstHeading = FragmentStore.isBeforeFirstHeading(entry);
     const fragmentKey = fragmentKeyFromSectionFile(entry.sectionFile, isBeforeFirstHeading);
-    const body = await contentLayer.readSection(new SectionRef(this.docPath, headingPath)) ?? "";
+    const body = await contentLayer.readSection(new SectionRef(this.docPath, headingPath)) ?? EMPTY_BODY;
     const markdown = FragmentStore.buildFragmentContent(body, entry.level, entry.heading);
     this.setFragmentContent(fragmentKey, markdown, SERVER_INJECTION_ORIGIN);
   }
@@ -885,8 +890,8 @@ export class FragmentStore {
    * Build full fragment content (heading+body) for populating a non-root Y.Doc fragment.
    * Root fragments pass body directly (no heading to prepend).
    */
-  static buildFragmentContent(body: SectionBody | string, level: number, heading: string): FragmentContent {
-    return buildFragmentContentFn(body as SectionBody, level, heading);
+  static buildFragmentContent(body: SectionBody, level: number, heading: string): FragmentContent {
+    return buildFragmentContentFn(body, level, heading);
   }
 
   /**

@@ -3,6 +3,7 @@ import request from "supertest";
 import { createTestServer, type TestServerContext } from "../helpers/test-server.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { authFor } from "../helpers/auth.js";
+import { transitionToInProgress } from "../../storage/proposal-repository.js";
 
 describe("POST /api/proposals/:id/commit — commit proposal", () => {
   let ctx: TestServerContext;
@@ -30,6 +31,10 @@ describe("POST /api/proposals/:id/commit — commit proposal", () => {
 
     expect(pendingRes.body.status).toBe("draft");
     pendingProposalId = pendingRes.body.proposal_id;
+
+    // Human proposals must acquire locks (draft → inprogress) before committing
+    const lockResult = await transitionToInProgress(pendingProposalId);
+    expect(lockResult.acquired).toBe(true);
 
     // Create an agent proposal (returns draft), then explicitly commit it
     const committedRes = await request(ctx.app)
@@ -92,6 +97,9 @@ describe("POST /api/proposals/:id/commit — commit proposal", () => {
 
     expect(createRes.body.status).toBe("draft");
     const proposalId = createRes.body.proposal_id;
+
+    // Human proposals must acquire locks before committing
+    await transitionToInProgress(proposalId);
 
     ctx.wsEvents.length = 0;
 

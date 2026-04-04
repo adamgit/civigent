@@ -185,6 +185,26 @@ export function ProposalDetailPage() {
     }
   }, [loadProposal, proposal]);
 
+  const handleAcquireLocks = useCallback(async () => {
+    if (!proposal) return;
+    setActionBusy(true);
+    setError(null);
+    try {
+      const resp = await apiClient.acquireLocks(proposal.id);
+      if (!resp.acquired) {
+        const sectionLabel = resp.section
+          ? ` (${resp.section.heading_path.join(" > ")})`
+          : "";
+        setError(`Lock failed${sectionLabel}: ${resp.reason}`);
+      }
+      await loadProposal();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(false);
+    }
+  }, [loadProposal, proposal]);
+
   const handleWithdraw = useCallback(async () => {
     if (!proposal) return;
     setActionBusy(true);
@@ -290,17 +310,26 @@ export function ProposalDetailPage() {
             <button type="button" onClick={() => void loadProposal()} disabled={actionBusy || loading}>
               Refresh
             </button>
+            {proposal.writer.type === "human" && proposal.status === "draft" ? (
+              <button
+                type="button"
+                onClick={handleAcquireLocks}
+                disabled={actionBusy || !proposal.sections.length}
+              >
+                Lock Sections
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={handleCommit}
-              disabled={actionBusy || proposal.status !== "draft"}
+              disabled={actionBusy || (proposal.writer.type === "human" ? proposal.status !== "inprogress" : proposal.status !== "draft")}
             >
-              Recommit
+              Commit
             </button>
             <button
               type="button"
               onClick={handleWithdraw}
-              disabled={actionBusy || proposal.status !== "draft"}
+              disabled={actionBusy || (proposal.status !== "draft" && proposal.status !== "inprogress")}
             >
               Withdraw
             </button>

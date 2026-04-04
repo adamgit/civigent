@@ -7,6 +7,7 @@ import type {
   CreateProposalResponse,
   CommitProposalResponse,
   WithdrawProposalResponse,
+  AcquireLocksResponse,
   UpdateProposalRequest,
   GetActivityResponse,
   GetAdminSnapshotHealthResponse,
@@ -29,16 +30,17 @@ import type {
   HumanInvolvementPresetName,
   SectionScoreSnapshot,
   ProposalDTO,
+  ProposalStatus,
 } from "../../types/shared.js";
 import { HUMAN_INVOLVEMENT_PRESETS } from "../../types/shared.js";
 import path from "node:path";
 import { access, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { assertDataRootExists, getContentRoot, getDataRoot, getSessionDocsContentRoot, getSessionAuthorsRoot } from "../../storage/data-root.js";
+import { assertDataRootExists, getContentRoot, getContentGitPrefix, getDataRoot, getSessionDocsContentRoot, getSessionAuthorsRoot } from "../../storage/data-root.js";
 import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
 
 import { getSessionState } from "../../storage/session-inspector.js";
-import { getHeadSha, gitLogRecent, gitDiffForCommit, isValidSha } from "../../storage/git-repo.js";
+import { getHeadSha, gitExec, gitLogRecent, gitDiffForCommit, isValidSha } from "../../storage/git-repo.js";
 import { readAssembledDocument, DocumentAssemblyError, DocumentNotFoundError, prependHeadings } from "../../storage/document-reader.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
 import { readActivity, readChangesSince } from "../../storage/activity-reader.js";
@@ -51,6 +53,7 @@ import {
   findDraftProposalByWriter,
   updateProposalSections,
   transitionToWithdrawn,
+  transitionToInProgress,
   ProposalNotFoundError,
   InvalidProposalStateError,
 } from "../../storage/proposal-repository.js";
@@ -632,6 +635,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       // 2. Involvement metadata via shared helper
       const involvementMeta = await buildSectionInvolvementMeta(docPath, headingPaths, bulkContent);
 
+      // 3. Human proposal lock index (draft+inprogress block other users)
+      const humanProposalLocks = await SectionPresence.prefetchHumanProposalLocks();
+
       // Build sections response
       const sections: GetDocumentSectionsResponse["sections"] = [];
       for (const headingPath of headingPaths) {
@@ -639,6 +645,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         const content = bulkContent.get(headingKey) ?? "";
         const meta = involvementMeta.get(headingKey);
         if (!meta) continue;
+
+        const globalKey = new SectionRef(docPath, headingPath).globalKey;
+        const blocked = humanProposalLocks.has(globalKey);
 
         sections.push({
           heading: headingPath[headingPath.length - 1] ?? "",
@@ -651,6 +660,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           word_count: meta.word_count,
           section_file: sectionFileByKey.get(headingKey) ?? "",
           last_editor: meta.last_editor,
+          ...(blocked ? { blocked: true } : {}),
         });
       }
 
@@ -773,6 +783,60 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         writer.displayName,
         preCommitResult,
       );
+      res.json({ committed_sha: committedSha });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ─── Overwrite from Raw Markdown ────────────────────────────
+  router.post("/documents/:docPath(*)/overwrite", async (req, res, next) => {
+    try {
+      const docPath = req.params.docPath;
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+
+      const { markdown } = req.body as { markdown?: string };
+      if (!markdown || typeof markdown !== "string") {
+        sendApiError(res, 400, new Error(`Missing or empty "markdown" field in overwrite request for "${docPath}".`));
+        return;
+      }
+
+      // Verify the document already exists in canonical
+      const contentRoot = getContentRoot();
+      const resolvedPath = resolveDocPathUnderContent(contentRoot, docPath);
+      try {
+        await access(resolvedPath);
+      } catch {
+        sendApiError(res, 404, new Error(`Document "${docPath}" does not exist in canonical. Use import for new documents.`));
+        return;
+      }
+
+      // Pre-commit any in-progress session before overwrite replaces canonical content.
+      const preCommitResult = await preemptiveFlushAndCommit(docPath);
+
+      const { id: proposalId, contentRoot: proposalContentRoot } = await createTransientProposal(
+        { id: admin.id, type: admin.type, displayName: admin.displayName, email: admin.email },
+        `Admin overwrite: ${docPath}`,
+      );
+
+      const overlayLayer = new OverlayContentLayer(proposalContentRoot, contentRoot);
+      const sectionTargets = await overlayLayer.importMarkdownDocument(docPath, markdown);
+
+      await updateProposalSections(proposalId, sectionTargets);
+
+      const committedSha = await commitProposalToCanonical(proposalId, {}, undefined, { skipCrdtInjection: true });
+
+      const { cleanupSessionFiles } = await import("../../storage/session-store.js");
+      await cleanupSessionFiles(docPath);
+
+      await invalidateSessionForRestore(
+        docPath,
+        committedSha.slice(0, 7),
+        admin.displayName,
+        preCommitResult,
+      );
+
       res.json({ committed_sha: committedSha });
     } catch (error) {
       next(error);
@@ -958,20 +1022,22 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         headingKey: string;
         headingPath: string[];
         sectionFile: string;
+        isSubSkeleton: boolean;
         canonical: LayerStatus;
         overlay: LayerStatus;
         fragment: LayerStatus;
         crdt: LayerStatus;
         winner: string;
+        gitHistoryExists?: boolean | null;
         error?: string;
       };
       const sections: SectionLayerInfo[] = [];
 
       try {
         const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
-        const sectionEntries: Array<{ heading: string; level: number; sectionFile: string; headingPath: string[]; absolutePath: string }> = [];
-        skeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
-          sectionEntries.push({ heading, level, sectionFile, headingPath: [...headingPath], absolutePath });
+        const sectionEntries: Array<{ heading: string; level: number; sectionFile: string; headingPath: string[]; absolutePath: string; isSubSkeleton: boolean }> = [];
+        skeleton.forEachNode((heading, level, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
+          sectionEntries.push({ heading, level, sectionFile, headingPath: [...headingPath], absolutePath, isSubSkeleton });
         });
 
         const session = lookupDocSession(docPath);
@@ -1016,12 +1082,13 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
             if (overlay.exists) winner = "overlay";
             if (crdt.exists) winner = "crdt";
 
-            sections.push({ headingKey, headingPath: entry.headingPath, sectionFile: entry.sectionFile, canonical, overlay, fragment, crdt, winner });
+            sections.push({ headingKey, headingPath: entry.headingPath, sectionFile: entry.sectionFile, isSubSkeleton: entry.isSubSkeleton, canonical, overlay, fragment, crdt, winner });
           } catch (e) {
             sections.push({
               headingKey: entry.headingPath.join(">>"),
               headingPath: entry.headingPath,
               sectionFile: entry.sectionFile,
+              isSubSkeleton: entry.isSubSkeleton,
               canonical: { exists: false, byteLength: null, contentPreview: null, error: null },
               overlay: { exists: false, byteLength: null, contentPreview: null, error: null },
               fragment: { exists: false, byteLength: null, contentPreview: null, error: null },
@@ -1034,6 +1101,40 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       } catch (e) {
         // Skeleton couldn't be loaded — sections array stays empty, add a check
         checks.push({ name: "section-layer-collection", pass: false, detail: (e as Error).message });
+      }
+
+      // For sections with winner === "none", check if the body file ever existed in git
+      const dataRoot = getDataRoot();
+      const contentGitPrefix = getContentGitPrefix();
+      for (const section of sections) {
+        if (section.winner !== "none") {
+          section.gitHistoryExists = null; // check skipped
+          continue;
+        }
+        try {
+          // Build git-relative path: content/<docPath>.sections/<sectionFile>
+          const gitRelPath = `${contentGitPrefix}/${docPath}.sections/${section.sectionFile}`;
+          const result = await gitExec(
+            ["log", "--all", "--diff-filter=A", "--format=%H", "--", gitRelPath],
+            dataRoot,
+          );
+          section.gitHistoryExists = result.trim().length > 0;
+        } catch {
+          section.gitHistoryExists = false;
+        }
+      }
+
+      // Health check: restore-feasible — fails if any section has no content and never existed in git
+      const unrecoverableSections = sections.filter(
+        s => s.winner === "none" && s.gitHistoryExists === false,
+      );
+      if (unrecoverableSections.length === 0) {
+        checks.push({ name: "restore-feasible", pass: true });
+      } else {
+        const details = unrecoverableSections.map(
+          s => `Section "${s.headingKey || s.sectionFile}" body file ${s.sectionFile} has never existed in git — restore cannot recover this section. The skeleton must be repaired.`,
+        );
+        checks.push({ name: "restore-feasible", pass: false, detail: details.join("\n") });
       }
 
       res.json({ doc_path: docPath, checks, sections });
@@ -1270,7 +1371,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         onWsEvent({
           type: "doc:structure-changed",
           doc_path: docPath,
-        } as any);
+        });
       }
 
       res.status(201).json({
@@ -1334,7 +1435,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         onWsEvent({
           type: "doc:structure-changed",
           doc_path: docPath,
-        } as any);
+        });
       }
 
       res.status(200).json({
@@ -1411,7 +1512,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         onWsEvent({
           type: "doc:structure-changed",
           doc_path: docPath,
-        } as any);
+        });
       }
 
       res.status(200).json({
@@ -1483,7 +1584,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         onWsEvent({
           type: "doc:structure-changed",
           doc_path: docPath,
-        } as any);
+        });
       }
 
       res.status(200).json({
@@ -1557,8 +1658,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
               last_commit_timestamp: commitInfo ? new Date(commitInfo.timestampMs).toISOString() : null,
             });
           }
-        } catch (err: any) {
-          if (err?.code !== "ENOENT") throw err;
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
         }
       }
 
@@ -1763,7 +1864,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         return;
       }
 
-      const proposals = await listProposals(statusFilter as any);
+      const proposals = await listProposals(statusFilter as ProposalStatus | undefined);
       const response: ListProposalsResponse = { proposals };
       res.json(response);
     } catch (error) {
@@ -1785,7 +1886,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         return;
       }
 
-      const allProposals = await listProposals(statusFilter as any);
+      const allProposals = await listProposals(statusFilter as ProposalStatus | undefined);
       const myProposals = allProposals.filter((p) => p.writer.id === writer.id);
       const response: ListProposalsResponse = { proposals: myProposals };
       res.json(response);
@@ -1953,6 +2054,56 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     }
   });
 
+  // POST /api/proposals/:id/acquire-locks — Transition draft → inprogress (human proposals only)
+  router.post("/proposals/:id/acquire-locks", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      const proposal = await readProposal(req.params.id);
+      if (proposal.writer.id !== writer.id) {
+        sendApiError(res, 403, "You can only acquire locks on your own proposals.");
+        return;
+      }
+
+      if (proposal.writer.type !== "human") {
+        sendApiError(res, 409, "Only human proposals can acquire locks.");
+        return;
+      }
+
+      if (proposal.status !== "draft") {
+        sendApiError(res, 409, `Cannot acquire locks: proposal is in ${proposal.status} state, expected draft.`);
+        return;
+      }
+
+      const result = await transitionToInProgress(req.params.id);
+
+      if (!result.acquired) {
+        const response: AcquireLocksResponse = {
+          proposal_id: proposal.id,
+          acquired: false,
+          reason: result.reason!,
+          section: result.section ? { doc_path: result.section.doc_path, heading_path: result.section.heading_path } : undefined,
+        };
+        res.json(response);
+        return;
+      }
+
+      const response: AcquireLocksResponse = {
+        proposal_id: proposal.id,
+        acquired: true,
+        status: "inprogress",
+      };
+      res.json(response);
+    } catch (error) {
+      if (error instanceof ProposalNotFoundError) {
+        sendApiError(res, 404, error.message);
+        return;
+      }
+      next(error);
+    }
+  });
+
   // POST /api/proposals/:id/commit — Commit a pending proposal
   router.post("/proposals/:id/commit", async (req, res, next) => {
     try {
@@ -1964,7 +2115,12 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         sendApiError(res, 403, "You can only commit your own proposals.");
         return;
       }
-      if (proposal.status !== "draft") {
+      // Human proposals commit from inprogress (after lock acquisition).
+      // Agent proposals commit from draft.
+      const committableStatuses = proposal.writer.type === "human"
+        ? ["inprogress"]
+        : ["draft"];
+      if (!committableStatuses.includes(proposal.status)) {
         sendApiError(res, 409, `Cannot commit proposal in ${proposal.status} state.`);
         return;
       }

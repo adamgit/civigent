@@ -34,6 +34,7 @@ export function ProposalPanel({
   const [intent, setIntent] = useState("");
   const [proposal, setProposal] = useState<AnyProposal | null>(null);
   const [creating, setCreating] = useState(false);
+  const [acquiringLocks, setAcquiringLocks] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,6 +87,29 @@ export function ProposalPanel({
       setCreating(false);
     }
   }, [intent, onEnterProposalMode]);
+
+  const handleAcquireLocks = useCallback(async () => {
+    if (!activeProposalId) return;
+    setAcquiringLocks(true);
+    setError(null);
+    try {
+      const resp = await apiClient.acquireLocks(activeProposalId);
+      if (!resp.acquired) {
+        const sectionLabel = resp.section
+          ? ` (${resp.section.heading_path.join(" > ")})`
+          : "";
+        setError(`Lock failed${sectionLabel}: ${resp.reason}`);
+      } else {
+        // Refresh proposal to reflect new inprogress status
+        const updated = await apiClient.getProposal(activeProposalId);
+        setProposal(updated.proposal);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAcquiringLocks(false);
+    }
+  }, [activeProposalId]);
 
   const handlePublish = useCallback(async () => {
     if (!activeProposalId) return;
@@ -205,26 +229,45 @@ export function ProposalPanel({
 
       {/* Actions */}
       <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}>
-        <button
-          type="button"
-          onClick={() => void handlePublish()}
-          disabled={publishing || cancelling || !proposal?.sections.length}
-          style={{
-            padding: "0.4rem 0.75rem",
-            fontSize: "0.85rem",
-            cursor: "pointer",
-            background: "#3b82f6",
-            color: "#fff",
-            border: "none",
-            borderRadius: "0.25rem",
-          }}
-        >
-          {publishing ? "Publishing..." : "Publish"}
-        </button>
+        {proposal?.status === "draft" ? (
+          <button
+            type="button"
+            onClick={() => void handleAcquireLocks()}
+            disabled={acquiringLocks || cancelling || !proposal?.sections.length}
+            style={{
+              padding: "0.4rem 0.75rem",
+              fontSize: "0.85rem",
+              cursor: "pointer",
+              background: "#f59e0b",
+              color: "#fff",
+              border: "none",
+              borderRadius: "0.25rem",
+            }}
+          >
+            {acquiringLocks ? "Locking..." : "Lock Sections"}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => void handlePublish()}
+            disabled={publishing || cancelling || proposal?.status !== "inprogress"}
+            style={{
+              padding: "0.4rem 0.75rem",
+              fontSize: "0.85rem",
+              cursor: "pointer",
+              background: "#3b82f6",
+              color: "#fff",
+              border: "none",
+              borderRadius: "0.25rem",
+            }}
+          >
+            {publishing ? "Publishing..." : "Publish"}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => void handleCancel()}
-          disabled={publishing || cancelling}
+          disabled={publishing || acquiringLocks || cancelling}
           style={{ padding: "0.4rem 0.75rem", fontSize: "0.85rem", cursor: "pointer" }}
         >
           {cancelling ? "Cancelling..." : "Cancel"}

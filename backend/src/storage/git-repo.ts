@@ -5,7 +5,7 @@ import { access } from "node:fs/promises";
 import { getContentGitPrefix } from "./data-root.js";
 import { parseSkeletonToEntries } from "./document-skeleton.js";
 import type { AttributionWriterType } from "../types/shared.js";
-import { prependHeading, bodyFromGit, bodyToDisk } from "./section-formatting.js";
+import { bodyFromGit, bodyToDisk, buildFragmentContent, assembleFragments, bodyAsFragment, type FragmentContent } from "./section-formatting.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -266,7 +266,7 @@ async function assembleSkeletonFromGit(
   sha: string,
   skeletonGitPath: string,
   missingSections: string[],
-): Promise<string[]> {
+): Promise<FragmentContent[]> {
   const skeletonContent = await gitShowFileOrNull(dataRoot, sha, skeletonGitPath);
   if (skeletonContent === null) {
     missingSections.push(skeletonGitPath);
@@ -275,7 +275,7 @@ async function assembleSkeletonFromGit(
 
   const entries = parseSkeletonToEntries(skeletonContent);
   const sectionsPrefix = skeletonGitPath + ".sections/";
-  const parts: string[] = [];
+  const parts: FragmentContent[] = [];
 
   for (const entry of entries) {
     const bodyGitPath = sectionsPrefix + entry.sectionFile;
@@ -296,9 +296,9 @@ async function assembleSkeletonFromGit(
     const isBeforeFirstHeading = entry.level === 0 && entry.heading === "";
     const body = bodyFromGit(bodyContent);
     if (isBeforeFirstHeading) {
-      if (body as string) parts.push(body as string);
+      if (body) parts.push(bodyAsFragment(body));
     } else {
-      parts.push(prependHeading(body as string, entry.level, entry.heading));
+      parts.push(buildFragmentContent(body, entry.level, entry.heading));
     }
   }
 
@@ -333,5 +333,5 @@ export async function assembleDocumentAtCommit(
 
   const missingSections: string[] = [];
   const parts = await assembleSkeletonFromGit(dataRoot, sha, skeletonGitPath, missingSections);
-  return { content: parts.join("\n"), missingSections };
+  return { content: assembleFragments(...parts), missingSections };
 }
