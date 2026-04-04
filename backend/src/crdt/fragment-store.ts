@@ -25,6 +25,18 @@ import {
   sectionFileFromFragmentKey,
   getBackendSchema,
 } from "./ydoc-fragments.js";
+import {
+  bodyFromDisk,
+  bodyFromOrphanFragment,
+  bodyToDisk,
+  fragmentFromRemark,
+  buildFragmentContent as buildFragmentContentFn,
+  stripHeadingFromFragment,
+  joinBodies,
+  appendToBody,
+  type SectionBody,
+  type FragmentContent,
+} from "../storage/section-formatting.js";
 
 // ─── Server injection origin ──────────────────────────────────────
 
@@ -37,7 +49,7 @@ export const SERVER_INJECTION_ORIGIN = Symbol('server-injection');
 
 export interface OrphanedBody {
   sectionFile: string;
-  content: string;
+  content: SectionBody;
 }
 
 export interface FromDiskResult {
@@ -151,20 +163,20 @@ export class FragmentStore {
       const isBeforeFirstHeading = FragmentStore.isBeforeFirstHeading({ headingPath, level, heading });
       const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBeforeFirstHeading);
 
-      let sectionContent: string;
+      let sectionContent: FragmentContent;
 
       if (rawFileSet.has(sectionFile)) {
         // Raw fragment contains heading + body — use as-is (heading is first node)
-        sectionContent = rawContentMap.get(sectionFile) ?? "";
+        sectionContent = fragmentFromRemark(rawContentMap.get(sectionFile) ?? "");
         rawFragmentKeys.push(fragmentKey);
       } else {
         // Fallback: read from overlay/canonical (body-only files)
         const headingKey = SectionRef.headingKey([...headingPath]);
-        const bodyContent = bulkContent?.get(headingKey) ?? "";
+        const bodyContent = (bulkContent?.get(headingKey) ?? "") as SectionBody;
         sectionContent = FragmentStore.buildFragmentContent(bodyContent, level, heading);
       }
 
-      const pmJson = markdownToJSON(sectionContent || "");
+      const pmJson = markdownToJSON(sectionContent as string || "");
       const tempDoc = prosemirrorJSONToYDoc(getBackendSchema(), pmJson, fragmentKey);
       pendingUpdates.push(Y.encodeStateAsUpdate(tempDoc));
       tempDoc.destroy();
@@ -199,7 +211,7 @@ export class FragmentStore {
         if (knownSectionFiles.has(file)) continue;
         const content = await readFile(path.join(overlaySectionsDir, file), "utf8");
         if (content.trim()) {
-          orphanedBodies.push({ sectionFile: file, content: content.trim() });
+          orphanedBodies.push({ sectionFile: file, content: bodyFromDisk(content) });
         }
       }
     }
@@ -211,30 +223,11 @@ export class FragmentStore {
       if (orphanedBodies.some(o => o.sectionFile === rawFile)) continue;
       const content = rawContentMap.get(rawFile);
       if (content && content.trim()) {
-        orphanedBodies.push({ sectionFile: rawFile, content: content.trim() });
+        orphanedBodies.push({ sectionFile: rawFile, content: bodyFromOrphanFragment(content) });
       }
     }
 
     return { store, orphanedBodies };
-  }
-
-  /**
-   * Strip the leading heading line from markdown content to get body-only.
-   * Fragments store "## Heading\n\nBody..." — this extracts just "Body...".
-   * Used when writing canonical-ready (body-only) files to sessions/docs/.
-   */
-  static stripHeadingFromContent(markdown: string, level: number): string {
-    const headingPrefix = "#".repeat(level) + " ";
-    const lines = markdown.split("\n");
-    if (lines.length > 0 && lines[0].startsWith(headingPrefix)) {
-      // Remove heading line and any blank line after it
-      let startIdx = 1;
-      while (startIdx < lines.length && lines[startIdx].trim() === "") {
-        startIdx++;
-      }
-      return lines.slice(startIdx).join("\n").replace(/\n+$/, "");
-    }
-    return markdown.replace(/\n+$/, "");
   }
 
   // ─── Fragment key derivation ───────────────────────────────────
@@ -262,20 +255,20 @@ export class FragmentStore {
    * Read body-only content from a fragment, suitable for canonical disk writing.
    * Strips the leading heading line (fragments store heading+body).
    */
-  readBodyForDisk(fragmentKey: string): string {
+  readBodyForDisk(fragmentKey: string): SectionBody {
     const full = this.extractMarkdown(fragmentKey);
     // Find the skeleton entry to get the level for heading stripping
     const sectionFileId = sectionFileFromFragmentKey(fragmentKey);
     const entry = this.skeleton.expectByFileId(sectionFileId);
-    if (FragmentStore.isBeforeFirstHeading(entry)) return full;
-    return FragmentStore.stripHeadingFromContent(full, entry.level);
+    if (FragmentStore.isBeforeFirstHeading(entry)) return full as unknown as SectionBody;
+    return stripHeadingFromFragment(full, entry.level);
   }
 
   /**
    * Read the full fragment content (heading + body) from the Y.Doc.
    * Non-root fragments include their heading as the first node.
    */
-  readFullContent(fragmentKey: string): string {
+  readFullContent(fragmentKey: string): FragmentContent {
     return this.extractMarkdown(fragmentKey);
   }
 
@@ -284,22 +277,22 @@ export class FragmentStore {
    * Returns the current in-memory content (no disk staleness).
    * Returns null if the fragment key does not exist or has no content.
    */
-  readLiveBody(fragmentKey: string): string | null {
-    const body = this.extractMarkdown(fragmentKey);
-    return body || null;
+  readLiveFragment(fragmentKey: string): FragmentContent | null {
+    const content = this.extractMarkdown(fragmentKey);
+    return (content as string) ? content : null;
   }
 
   /**
    * Bulk-read all live content from the Y.Doc for every section in the skeleton.
-   * Returns Map<headingKey, string> with the same key shape as readAllSectionsWithOverlay.
-   * Only includes entries that have live Y.Doc content (non-null readLiveBody).
+   * Returns Map<headingKey, FragmentContent> with the same key shape as readAllSectionsWithOverlay.
+   * Only includes entries that have live Y.Doc content (non-null readLiveFragment).
    */
-  readAllLiveContent(): Map<string, string> {
-    const result = new Map<string, string>();
+  readAllLiveContent(): Map<string, FragmentContent> {
+    const result = new Map<string, FragmentContent>();
     this.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
       const isBeforeFirstHeading = FragmentStore.isBeforeFirstHeading({ headingPath, level, heading });
       const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBeforeFirstHeading);
-      const live = this.readLiveBody(fragmentKey);
+      const live = this.readLiveFragment(fragmentKey);
       if (live != null) {
         result.set(SectionRef.headingKey([...headingPath]), live);
       }
@@ -380,9 +373,9 @@ export class FragmentStore {
       //    the body file only when structurally clean. The raw + body content
       //    differ (raw = heading+body, body = body-only after stripping).
       if (clean) {
-        const body = isBeforeFirstHeading
-          ? this.extractMarkdown(fragmentKey)
-          : FragmentStore.stripHeadingFromContent(this.extractMarkdown(fragmentKey), entry.level);
+        const body: SectionBody = isBeforeFirstHeading
+          ? this.extractMarkdown(fragmentKey) as unknown as SectionBody
+          : stripHeadingFromFragment(this.extractMarkdown(fragmentKey), entry.level);
         await this.writeBodyToDisk(entry, body);
       }
 
@@ -496,13 +489,14 @@ export class FragmentStore {
   ): Promise<NormalizeResult> {
     // Trim root body to content before first heading
     const rootParsed = parsed.find(s => s.headingPath.length === 0);
-    const rootBody = rootParsed?.body ?? "";
+    const rootBody = (rootParsed?.body ?? "") as SectionBody;
 
     // Update root fragment in Y.Doc with trimmed body (clear first — Y.applyUpdate merges)
-    this.setFragmentContent(fragmentKey, rootBody, SERVER_INJECTION_ORIGIN);
+    // BFH fragment content = body (no heading to prepend)
+    this.setFragmentContent(fragmentKey, rootBody as unknown as FragmentContent, SERVER_INJECTION_ORIGIN);
 
     // Write root raw fragment + canonical-ready
-    await this.writeDualFormat(entry, rootBody, rootBody, ops);
+    await this.writeDualFormat(entry, rootBody as unknown as FragmentContent, rootBody, ops);
 
     // Add new sections to skeleton
     const addedEntries = await this.skeleton.addSectionsFromBeforeFirstHeadingSplit(realSections);
@@ -514,7 +508,7 @@ export class FragmentStore {
       const addedEntry = addedEntries[i];
       if (addedEntry.isSubSkeleton) continue;
 
-      const body = realSections[bodyIdx]?.body ?? "";
+      const body = (realSections[bodyIdx]?.body ?? "") as SectionBody;
       const addedIsBfh = FragmentStore.isBeforeFirstHeading(addedEntry);
       const newKey = fragmentKeyFromSectionFile(addedEntry.sectionFile, addedIsBfh);
       const fragmentContent = FragmentStore.buildFragmentContent(body, addedEntry.level, addedEntry.heading);
@@ -642,15 +636,10 @@ export class FragmentStore {
   ): Promise<NormalizeResult> {
 
     // Collect orphan content that appeared before the heading
-    const preamble = parsed
-      .filter(s => s.headingPath.length === 0)
-      .map(s => s.body)
-      .join("\n");
+    const preamble = joinBodies(...parsed.filter(s => s.headingPath.length === 0).map(s => s.body));
 
     // Combine: heading body first, then orphan preamble (preserves all content)
-    const combinedBody = section.body
-      ? (preamble ? section.body + "\n\n" + preamble : section.body)
-      : preamble;
+    const combinedBody = appendToBody(section.body, preamble);
 
     const fragmentContent = FragmentStore.buildFragmentContent(
       combinedBody,
@@ -689,7 +678,7 @@ export class FragmentStore {
 
       const addedIsBfh = FragmentStore.isBeforeFirstHeading(addedEntry);
       const newKey = fragmentKeyFromSectionFile(addedEntry.sectionFile, addedIsBfh);
-      const body = realSections[bodyIdx]?.body ?? "";
+      const body = (realSections[bodyIdx]?.body ?? "") as SectionBody;
       const fragmentContent = FragmentStore.buildFragmentContent(body, addedEntry.level, addedEntry.heading);
 
       this.populateFragment(newKey, fragmentContent, SERVER_INJECTION_ORIGIN);
@@ -719,10 +708,7 @@ export class FragmentStore {
   ): Promise<NormalizeResult> {
 
     // Collect orphaned body text (content remaining after heading was deleted)
-    const orphanedBody = parsed
-      .filter(s => s.headingPath.length === 0)
-      .map(s => s.body)
-      .join("\n");
+    const orphanedBody = joinBodies(...parsed.filter(s => s.headingPath.length === 0).map(s => s.body));
 
     // Find the preceding body-holding section in document order.
     // Walk all sections, track the last non-sub-skeleton entry before the deleted one.
@@ -765,26 +751,28 @@ export class FragmentStore {
       mergeTarget = addedEntries[0];
       mergeKey = BEFORE_FIRST_HEADING_KEY;
       // Initialize an empty fragment for the newly created BFH
-      this.populateFragment(mergeKey, "", SERVER_INJECTION_ORIGIN);
-      await this.writeDualFormat(mergeTarget, "", "", ops);
+      const emptyFragment = "" as FragmentContent;
+      const emptyBody = "" as SectionBody;
+      this.populateFragment(mergeKey, emptyFragment, SERVER_INJECTION_ORIGIN);
+      await this.writeDualFormat(mergeTarget, emptyFragment, emptyBody, ops);
     }
 
     const parentEntry = mergeTarget;
     const parentKey = mergeKey;
 
     // Append orphaned content to parent fragment (if any content exists)
-    if (orphanedBody && parentEntry) {
+    if ((orphanedBody as string) && parentEntry) {
       const existingContent = this.extractMarkdown(parentKey);
-      const mergedContent = existingContent.trim()
-        ? existingContent + "\n\n" + orphanedBody
-        : orphanedBody;
+      const mergedContent = ((existingContent as string).trim()
+        ? `${existingContent}\n\n${orphanedBody}`
+        : orphanedBody) as unknown as FragmentContent;
       this.populateFragment(parentKey, mergedContent, SERVER_INJECTION_ORIGIN);
 
       const parentRawMd = this.extractMarkdown(parentKey);
       const parentIsBfh = FragmentStore.isBeforeFirstHeading(parentEntry);
-      const canonicalBody = parentIsBfh
-        ? parentRawMd
-        : FragmentStore.stripHeadingFromContent(parentRawMd, parentEntry.level);
+      const canonicalBody: SectionBody = parentIsBfh
+        ? parentRawMd as unknown as SectionBody
+        : stripHeadingFromFragment(parentRawMd, parentEntry.level);
       await this.writeDualFormat(parentEntry, parentRawMd, canonicalBody, ops);
     }
 
@@ -834,9 +822,9 @@ export class FragmentStore {
   }
 
   /** Extract markdown from a Y.Doc fragment. */
-  private extractMarkdown(fragmentKey: string): string {
+  private extractMarkdown(fragmentKey: string): FragmentContent {
     const pmJson = yDocToProsemirrorJSON(this.ydoc, fragmentKey);
-    return jsonToMarkdown(pmJson as Record<string, unknown>);
+    return fragmentFromRemark(jsonToMarkdown(pmJson as Record<string, unknown>));
   }
 
   /** Clear all content from a Y.Doc fragment.
@@ -854,8 +842,8 @@ export class FragmentStore {
    *  Pass origin (e.g. SERVER_INJECTION_ORIGIN) to stamp the transaction source.
    *  PRIVATE — always call setFragmentContent instead, which clears first.
    *  Y.applyUpdate merges — calling this on a non-empty fragment duplicates content. */
-  private populateFragment(fragmentKey: string, markdown: string, origin?: unknown): void {
-    const pmJson = markdownToJSON(markdown);
+  private populateFragment(fragmentKey: string, markdown: FragmentContent, origin?: unknown): void {
+    const pmJson = markdownToJSON(markdown as string);
     const tempDoc = prosemirrorJSONToYDoc(getBackendSchema(), pmJson, fragmentKey);
     Y.applyUpdate(this.ydoc, Y.encodeStateAsUpdate(tempDoc), origin);
     tempDoc.destroy();
@@ -867,7 +855,7 @@ export class FragmentStore {
    * replaces, so calling populateFragment on a non-empty fragment duplicates content.
    * Pass origin (e.g. SERVER_INJECTION_ORIGIN) to stamp the transaction source.
    */
-  setFragmentContent(fragmentKey: string, markdown: string, origin?: unknown): void {
+  setFragmentContent(fragmentKey: string, markdown: FragmentContent, origin?: unknown): void {
     this.clearFragment(fragmentKey, origin);
     this.populateFragment(fragmentKey, markdown, origin);
   }
@@ -896,10 +884,8 @@ export class FragmentStore {
    * Build full fragment content (heading+body) for populating a non-root Y.Doc fragment.
    * Root fragments pass body directly (no heading to prepend).
    */
-  static buildFragmentContent(body: string, level: number, heading: string): string {
-    if (level === 0 && heading === "") return body;
-    const headingLine = `${"#".repeat(level)} ${heading}`;
-    return body.trim() ? `${headingLine}\n\n${body}` : headingLine;
+  static buildFragmentContent(body: SectionBody | string, level: number, heading: string): FragmentContent {
+    return buildFragmentContentFn(body as SectionBody, level, heading);
   }
 
   /**
@@ -907,18 +893,17 @@ export class FragmentStore {
    * Fragments already store heading+body, so this is just extractMarkdown().
    * Root fragments (level=0, heading="") have body only — returned as-is.
    */
-  private reconstructFullMarkdown(fragmentKey: string, _level: number, _heading: string): string {
+  private reconstructFullMarkdown(fragmentKey: string, _level: number, _heading: string): FragmentContent {
     return this.extractMarkdown(fragmentKey);
   }
 
   /**
    * Write a body-only file to the session overlay (sessions/docs/).
-   * Standardizes trailing newline to exactly one.
+   * Standardizes trailing newline to exactly one via bodyToDisk.
    */
-  private async writeBodyToDisk(entry: FlatEntry, body: string): Promise<void> {
+  private async writeBodyToDisk(entry: FlatEntry, body: SectionBody): Promise<void> {
     await mkdir(path.dirname(entry.absolutePath), { recursive: true });
-    const trimmed = body.replace(/\n+$/, "");
-    await writeFile(entry.absolutePath, trimmed ? trimmed + "\n" : "", "utf8");
+    await writeFile(entry.absolutePath, bodyToDisk(body), "utf8");
   }
 
   /**
@@ -927,8 +912,8 @@ export class FragmentStore {
    */
   private async writeDualFormat(
     entry: FlatEntry,
-    rawMarkdown: string,
-    body: string,
+    rawMarkdown: FragmentContent,
+    body: SectionBody,
     sessionStoreOps: SessionStoreOps,
   ): Promise<void> {
     await sessionStoreOps.writeRawFragment(this.docPath, entry.sectionFile, rawMarkdown);
@@ -955,6 +940,6 @@ export class FragmentStore {
 
 /** Resolved session-store operations, passed through to avoid per-method imports. */
 interface SessionStoreOps {
-  writeRawFragment: (docPath: string, sectionFile: string, content: string) => Promise<void>;
+  writeRawFragment: (docPath: string, sectionFile: string, content: FragmentContent | string) => Promise<void>;
   deleteRawFragment: (docPath: string, sectionFile: string) => Promise<void>;
 }

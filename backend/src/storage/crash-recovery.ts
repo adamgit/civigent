@@ -34,6 +34,7 @@ import {
 } from "./session-store.js";
 import { recoverDocument, reconcileAndCleanup, writeRecoveredToCanonical, buildCompoundSkeleton, type DocumentRecoveryResult } from "./recovery-layers.js";
 import { sectionFileToName } from "./document-skeleton.js";
+import { bodyFromRecoveryAssembly, type SectionBody } from "./section-formatting.js";
 
 // ─── Recovery I/O Context ────────────────────────────────────────────────────
 
@@ -115,7 +116,7 @@ function formatCrashReport(ctx: RecoveryContext, dataRoot: string, err: unknown)
  */
 export function buildRecoverySectionMarkdown(
   orphans: Array<{ sectionFile: string; content: string; originalHeading?: string }>,
-): string {
+): SectionBody {
   const parts: string[] = [];
 
   parts.push("The editing session structure was damaged during a crash.");
@@ -139,7 +140,7 @@ export function buildRecoverySectionMarkdown(
     parts.push("");
   }
 
-  return parts.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
+  return bodyFromRecoveryAssembly(parts.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd());
 }
 
 export interface CrashRecoveryResult {

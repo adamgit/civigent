@@ -20,6 +20,7 @@ import {
   type SkeletonNode,
 } from "./document-skeleton.js";
 import { getContentRoot, getSessionDocsContentRoot, getSessionFragmentsRoot } from "./data-root.js";
+import { bodyFromRecoveryAssembly, bodyToDisk } from "./section-formatting.js";
 
 // ─── Skeleton Assessment ──────────────────────────────────────────
 
@@ -607,6 +608,6 @@ export async function writeRecoveredToCanonical(
     const diag = recovery.sectionDiagnostics[i];
     if (!diag) continue;
     const bodyPath = path.join(sectionsDir, diag.sectionFile);
-    await writeFile(bodyPath, recovery.sections[i].content + "\n", "utf8");
+    await writeFile(bodyPath, bodyToDisk(bodyFromRecoveryAssembly(recovery.sections[i].content)), "utf8");
   }
 }

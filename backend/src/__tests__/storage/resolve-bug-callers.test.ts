@@ -92,14 +92,14 @@ describe("ContentLayer.readSection() — sub-skeleton bug", () => {
   it("readSection for heading WITHOUT children returns correct body content", async () => {
     const ref = new SectionRef(NESTED_DOC_PATH, ["Introduction"]);
     const content = await layer.readSection(ref);
-    expect(content).toBe("Intro body.\n");
+    expect(content).toBe("Intro body.");
   });
 
   it("readSection for heading WITH children returns body content (fixed)", async () => {
     const ref = new SectionRef(NESTED_DOC_PATH, ["Details"]);
     const content = await layer.readSection(ref);
     // FIXED: Now returns body content from the root child file
-    expect(content).toBe("Details body.\n");
+    expect(content).toBe("Details body.");
     expect(content).not.toContain("{{section:");
   });
 });

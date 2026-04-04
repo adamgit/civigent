@@ -21,6 +21,8 @@ import {
   headingsEqual,
 } from "./document-skeleton.js";
 import { ContentLayer } from "./content-layer.js";
+import type { SectionBody, FragmentContent } from "./section-formatting.js";
+import { bodyFromParser, fragmentFromParser } from "./section-formatting.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -32,9 +34,9 @@ export interface ParsedSection {
   /** Heading depth (1-6) */
   level: number;
   /** Section body content (everything after the heading line, trimmed) */
-  body: string;
+  body: SectionBody;
   /** Full content including heading line */
-  fullContent: string;
+  fullContent: FragmentContent;
 }
 
 export interface ApplyResult {

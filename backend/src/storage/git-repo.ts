@@ -5,7 +5,7 @@ import { access } from "node:fs/promises";
 import { getContentGitPrefix } from "./data-root.js";
 import { parseSkeletonToEntries } from "./document-skeleton.js";
 import type { AttributionWriterType } from "../types/shared.js";
-import { prependHeading } from "./section-formatting.js";
+import { prependHeading, bodyFromGit, bodyToDisk } from "./section-formatting.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -24,6 +24,12 @@ export async function gitStatusPorcelain(cwd: string): Promise<Array<{code: stri
   });
 }
 
+/**
+ * Run a git command and return its stdout.
+ * The `.trimEnd()` removes the trailing newline that git always appends to stdout.
+ * This is a git process boundary, not a content boundary — callers reading file
+ * content from git should additionally apply `bodyFromGit()` or `bodyFromDisk()`.
+ */
 export async function gitExec(args: string[], cwd: string): Promise<string> {
   // Keep safe.directory scoped to this git invocation to avoid mutating global git config.
   const { stdout } = await execFileAsync(
@@ -225,7 +231,8 @@ export async function extractHistoricalTree(
     const relativePath = filePath.slice(gitPrefix.length);
     const targetPath = path.join(targetDir, relativePath);
     await mkdir(path.dirname(targetPath), { recursive: true });
-    await writeFile(targetPath, content, "utf8");
+    // Re-normalize through bodyFromGit→bodyToDisk to ensure trailing \n on disk
+    await writeFile(targetPath, bodyToDisk(bodyFromGit(content)), "utf8");
   }
 }
 
@@ -287,11 +294,11 @@ async function assembleSkeletonFromGit(
     }
 
     const isBeforeFirstHeading = entry.level === 0 && entry.heading === "";
+    const body = bodyFromGit(bodyContent);
     if (isBeforeFirstHeading) {
-      const trimmed = bodyContent.replace(/^\n+/, "").replace(/\n+$/, "");
-      if (trimmed) parts.push(trimmed);
+      if (body as string) parts.push(body as string);
     } else {
-      parts.push(prependHeading(bodyContent, entry.level, entry.heading));
+      parts.push(prependHeading(body as string, entry.level, entry.heading));
     }
   }
 

@@ -233,10 +233,7 @@ export async function acquireDocSession(
         if (addedEntry.isSubSkeleton) continue;
         const isBfh = FragmentStore.isBeforeFirstHeading(addedEntry);
         const newKey = fragmentKeyFromSectionFile(addedEntry.sectionFile, isBfh);
-        const headingLine = `${"#".repeat(addedEntry.level)} ${addedEntry.heading}`;
-        const fragmentContent = recoveryBody.trim()
-          ? `${headingLine}\n\n${recoveryBody}`
-          : headingLine;
+        const fragmentContent = FragmentStore.buildFragmentContent(recoveryBody, addedEntry.level, addedEntry.heading);
         fragments.setFragmentContent(newKey, fragmentContent);
       }
     }

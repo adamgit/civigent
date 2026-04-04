@@ -22,7 +22,7 @@ import { ParsedDocument } from "./markdown-sections.js";
 import type { DocStructureNode } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
-import { prependHeading } from "./section-formatting.js";
+import { prependHeading, bodyFromDisk, stripHeadingFromFragment, type SectionBody, type FragmentContent } from "./section-formatting.js";
 
 /**
  * Write a section body file, creating parent directories as needed.
@@ -84,26 +84,6 @@ export class MultiSectionContentError extends Error {}
 
 import { getParser } from "./markdown-parser.js";
 
-/**
- * Strip a leading heading line if it matches the skeleton entry's heading text and level.
- * No-op for before-first-heading sections (level=0, heading="") and for content that is already body-only.
- * Idempotent: body-only input passes through unchanged.
- */
-function stripMatchingHeading(content: string, level: number, heading: string): string {
-  // Before-first-heading sections have no heading line to strip
-  if (level === 0 && heading === "") return content;
-
-  const expectedPrefix = "#".repeat(level) + " " + heading;
-  const lines = content.split("\n");
-  if (lines.length === 0 || lines[0] !== expectedPrefix) return content;
-
-  // Strip heading line and any blank lines after it
-  let startIdx = 1;
-  while (startIdx < lines.length && lines[startIdx].trim() === "") {
-    startIdx++;
-  }
-  return lines.slice(startIdx).join("\n");
-}
 
 export class ContentLayer {
   readonly contentRoot: string;
@@ -209,7 +189,7 @@ export class ContentLayer {
    * Resolves (docPath, headingPath) → section file via the skeleton
    * and reads the file under this layer's contentRoot.
    */
-  async readSection(ref: SectionRef): Promise<string> {
+  async readSection(ref: SectionRef): Promise<SectionBody> {
     const skeleton = await this.readSkeleton(ref.docPath);
     let entry: FlatEntry;
     try {
@@ -219,7 +199,7 @@ export class ContentLayer {
     }
 
     try {
-      return await readFile(entry.absolutePath, "utf8");
+      return bodyFromDisk(await readFile(entry.absolutePath, "utf8"));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
       throw new SectionNotFoundError(
@@ -321,7 +301,7 @@ export class ContentLayer {
     const skeleton = await this.readSkeleton(ref.docPath);
     const entry = skeleton.expect(ref.headingPath);
     // Enforce body-only invariant: strip leading heading if it matches the skeleton entry
-    const body = stripMatchingHeading(content, entry.level, entry.heading);
+    const body = stripHeadingFromFragment(content as FragmentContent, entry.level) as string;
     // Guard: reject multi-heading content that should go through importMarkdownDocument
     const hasHeadings = getParser().containsHeadings(body);
     if (hasHeadings) {
@@ -349,9 +329,9 @@ export class ContentLayer {
    *
    * Returns Map keyed by headingKey (e.g. "Heading A>>Sub B").
    */
-  async readAllSections(docPath: string): Promise<Map<string, string>> {
+  async readAllSections(docPath: string): Promise<Map<string, SectionBody>> {
     const skeleton = await this.readSkeleton(docPath);
-    const result = new Map<string, string>();
+    const result = new Map<string, SectionBody>();
     const readTasks: Array<Promise<void>> = [];
 
     skeleton.forEachSection((_heading, _level, _sectionFile, headingPath, absolutePath) => {
@@ -359,7 +339,7 @@ export class ContentLayer {
         (async () => {
           const key = SectionRef.headingKey(headingPath);
           try {
-            result.set(key, await readFile(absolutePath, "utf8"));
+            result.set(key, bodyFromDisk(await readFile(absolutePath, "utf8")));
           } catch (err) {
             if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
             throw new DocumentAssemblyError(
@@ -634,9 +614,9 @@ export class OverlayContentLayer {
     return sections;
   }
 
-  async readAllSections(docPath: string): Promise<Map<string, string>> {
+  async readAllSections(docPath: string): Promise<Map<string, SectionBody>> {
     const skeleton = await this.readSkeleton(docPath);
-    const result = new Map<string, string>();
+    const result = new Map<string, SectionBody>();
     const readTasks: Array<Promise<void>> = [];
 
     skeleton.forEachSection((_heading, _level, _sectionFile, headingPath, absolutePath) => {
@@ -650,7 +630,7 @@ export class OverlayContentLayer {
               `This indicates data corruption — the skeleton and section files are out of sync.`,
             );
           }
-          result.set(key, content);
+          result.set(key, bodyFromDisk(content));
         })(),
       );
     });
@@ -680,7 +660,7 @@ export class OverlayContentLayer {
 
     const entry = skeleton.expect(ref.headingPath);
     // Strip leading heading if it matches the skeleton entry
-    const body = stripMatchingHeading(content, entry.level, entry.heading);
+    const body = stripHeadingFromFragment(content as FragmentContent, entry.level) as string;
     // Guard: reject multi-heading content that should go through importMarkdownDocument
     const hasHeadings = getParser().containsHeadings(body);
     if (hasHeadings) {
@@ -888,14 +868,14 @@ export class OverlayContentLayer {
 
   // ─── Read methods (delegated to readonly paths) ───────────
 
-  async readSection(ref: SectionRef): Promise<string> {
+  async readSection(ref: SectionRef): Promise<SectionBody> {
     const skeleton = await this.readSkeleton(ref.docPath);
     const entry = skeleton.expect(ref.headingPath);
     const content = await this.readBodyFromLayers(entry.absolutePath);
     if (content === null) {
       throw new SectionNotFoundError(`Section not found in any layer for "${ref.docPath}" [${ref.headingPath.join(" > ")}]`);
     }
-    return content;
+    return bodyFromDisk(content);
   }
 
   // ─── Private helpers ──────────────────────────────────────

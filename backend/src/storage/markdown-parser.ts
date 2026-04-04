@@ -9,6 +9,7 @@
  */
 
 import type { ParsedSection } from "./markdown-sections.js";
+import { bodyFromParser, fragmentFromParser } from "./section-formatting.js";
 
 // ─── Parser interface ───────────────────────────────────────────
 
@@ -93,8 +94,8 @@ class CommonMarkParser implements MarkdownSectionParser {
         headingPath: [...headingPath],
         heading: currentHeading,
         level: currentLevel,
-        body: body.replace(/\n+$/, ""),
-        fullContent: fullContent.replace(/\n+$/, ""),
+        body: bodyFromParser(body),
+        fullContent: fragmentFromParser(fullContent),
       });
     };
 

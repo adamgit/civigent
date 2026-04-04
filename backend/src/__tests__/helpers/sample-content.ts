@@ -5,15 +5,17 @@ import { gitExec } from "../../storage/git-repo.js";
 export const SAMPLE_DOC_PATH = "/ops/strategy.md";
 export const SAMPLE_DOC_PATH_2 = "/eng/architecture.md";
 
+/** Body content as returned by readSection (no trailing newline). */
 export const SAMPLE_SECTIONS = {
-  preamble: "This is the strategy document preamble.\n",
-  overview: "The overview covers our strategic goals.\n",
-  timeline: "Q1: Planning. Q2: Execution. Q3: Review.\n",
+  preamble: "This is the strategy document preamble.",
+  overview: "The overview covers our strategic goals.",
+  timeline: "Q1: Planning. Q2: Execution. Q3: Review.",
 };
 
+/** Body content as returned by readSection (no trailing newline). */
 export const SAMPLE_SECTIONS_2 = {
-  preamble: "Architecture document preamble.\n",
-  principles: "We follow SOLID principles.\n",
+  preamble: "Architecture document preamble.",
+  principles: "We follow SOLID principles.",
 };
 
 /**
@@ -50,9 +52,9 @@ export async function createSampleDocument(
   await writeFile(skeletonPath, skeleton, "utf8");
 
   // Write section files
-  await writeFile(join(sectionsDir, "--before-first-heading--sample.md"), SAMPLE_SECTIONS.preamble, "utf8");
-  await writeFile(join(sectionsDir, "overview.md"), SAMPLE_SECTIONS.overview, "utf8");
-  await writeFile(join(sectionsDir, "timeline.md"), SAMPLE_SECTIONS.timeline, "utf8");
+  await writeFile(join(sectionsDir, "--before-first-heading--sample.md"), SAMPLE_SECTIONS.preamble + "\n", "utf8");
+  await writeFile(join(sectionsDir, "overview.md"), SAMPLE_SECTIONS.overview + "\n", "utf8");
+  await writeFile(join(sectionsDir, "timeline.md"), SAMPLE_SECTIONS.timeline + "\n", "utf8");
 
   // Git commit the document
   await gitExec(["add", "content/"], dataRoot);
@@ -101,8 +103,8 @@ export async function createSampleDocument2(
   ].join("\n");
 
   await writeFile(skeletonPath, skeleton, "utf8");
-  await writeFile(join(sectionsDir, "--before-first-heading--sample.md"), SAMPLE_SECTIONS_2.preamble, "utf8");
-  await writeFile(join(sectionsDir, "principles.md"), SAMPLE_SECTIONS_2.principles, "utf8");
+  await writeFile(join(sectionsDir, "--before-first-heading--sample.md"), SAMPLE_SECTIONS_2.preamble + "\n", "utf8");
+  await writeFile(join(sectionsDir, "principles.md"), SAMPLE_SECTIONS_2.principles + "\n", "utf8");
 
   await gitExec(["add", "content/"], dataRoot);
   await gitExec(

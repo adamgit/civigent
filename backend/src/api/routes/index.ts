@@ -957,7 +957,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
             let crdt: LayerStatus = { exists: false, byteLength: null, contentPreview: null, error: null };
             if (session) {
               try {
-                const md = session.fragments.readLiveBody(fragKey);
+                const md = session.fragments.readLiveFragment(fragKey);
                 if (md != null) {
                   crdt = { exists: true, byteLength: Buffer.byteLength(md, "utf8"), contentPreview: md.slice(0, 200), error: null };
                 }

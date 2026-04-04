@@ -44,6 +44,7 @@ import {
 } from "../crdt/ydoc-lifecycle.js";
 import { setPostCommitHook } from "../storage/commit-pipeline.js";
 import { FragmentStore } from "../crdt/fragment-store.js";
+import { fragmentFromRemark, type FragmentContent } from "../storage/section-formatting.js";
 import { getHeadSha } from "../storage/git-repo.js";
 import { getDataRoot } from "../storage/data-root.js";
 import { flushDocSessionToDisk, commitSessionFilesToCanonical, cleanupSessionFiles } from "../storage/session-store.js";
@@ -619,7 +620,7 @@ async function handleMessage(
       }
 
       const svBefore = Y.encodeStateVector(doc!);
-      session!.fragments.setFragmentContent(parsed.fragmentKey, parsed.markdown);
+      session!.fragments.setFragmentContent(parsed.fragmentKey, fragmentFromRemark(parsed.markdown));
       session!.fragments.markDirty(parsed.fragmentKey);
       markFragmentDirty(state.docPath, state.writerId, parsed.fragmentKey);
 
