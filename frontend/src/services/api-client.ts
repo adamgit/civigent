@@ -88,6 +88,8 @@ export interface DocHistoryPreviewResponse {
   doc_path: string;
   sha: string;
   content: string;
+  corrupt?: boolean;
+  missingSections?: string[];
 }
 
 export interface DocRestoreResponse {

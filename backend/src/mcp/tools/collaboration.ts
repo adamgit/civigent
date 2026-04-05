@@ -1,25 +1,23 @@
 /**
  * Tier 3 MCP tools — collaboration surface with explicit proposals.
  *
- * Tools: list_docs, read_doc, read_doc_structure, read_section,
+ * Tools: list_documents, list_sections, search_text,
+ *        read_doc, read_doc_structure, read_section,
  *        create_proposal, commit_proposal, cancel_proposal,
  *        list_proposals, read_proposal, write_section
  */
 
 import type { ToolRegistry, ToolHandler } from "../tool-registry.js";
-import { jsonToolResult, textToolResult } from "../tool-registry.js";
+import { jsonToolResult } from "../tool-registry.js";
 import { makeToolErrorResult } from "../protocol.js";
 import { readAssembledDocument, DocumentNotFoundError } from "../../storage/document-reader.js";
-import { readDocumentsTree } from "../../storage/documents-tree.js";
 import { readSectionWithHeading, SectionNotFoundError } from "../../storage/section-reader.js";
-import { getContentRoot, getDataRoot, getSessionDocsContentRoot } from "../../storage/data-root.js";
+import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
 import { OverlayContentLayer } from "../../storage/content-layer.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import {
   readDocumentStructure,
-  readDocumentStructureWithOverlay,
   flattenStructureToHeadingPaths,
-  resolveAllSectionPaths,
   HeadingNotFoundError,
 } from "../../storage/heading-resolver.js";
 import {
@@ -40,9 +38,18 @@ import {
 import { SectionRef } from "../../domain/section-ref.js";
 import { INVOLVEMENT_THRESHOLD } from "../../domain/humanInvolvement.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
-import type { SectionScoreSnapshot, ProposalStatus } from "../../types/shared.js";
-import path from "node:path";
+import type { SectionScoreSnapshot, ProposalStatus, ProposalSection } from "../../types/shared.js";
 import { checkDocPermission } from "../../auth/acl.js";
+import { emitCatalogMutationEvents, summarizeProposalCatalogMutations } from "../catalog-events.js";
+import {
+  listReadableDocuments,
+  listReadableSections,
+  searchReadableText,
+  DiscoveryValidationError,
+  DiscoveryNotFoundError,
+  SearchTextPatternError,
+  SearchTextExecutionError,
+} from "../../storage/discovery.js";
 
 /**
  * Derive a human-readable block_reason from an evaluation result for MCP responses.
@@ -66,16 +73,73 @@ function deriveBlockReason(evaluation: {
   return "blocked";
 }
 
-// ─── list_docs ───────────────────────────────────────────
+// ─── discovery/search ────────────────────────────────────
 
-const listDocsHandler: ToolHandler = async (args) => {
-  const dirPath = (args.path as string | undefined) ?? "";
+const listDocumentsHandler: ToolHandler = async (args, ctx) => {
+  const root = args.root as string | undefined;
   try {
-    const tree = await readDocumentsTree(dirPath);
-    return jsonToolResult({ entries: tree });
+    const documents = await listReadableDocuments(ctx.writer, root);
+    return jsonToolResult({ documents });
   } catch (error) {
-    if (error instanceof InvalidDocPathError) {
-      return makeToolErrorResult(`Invalid path: ${dirPath}`);
+    if (error instanceof DiscoveryValidationError) {
+      return makeToolErrorResult(error.message);
+    }
+    if (error instanceof DiscoveryNotFoundError) {
+      return makeToolErrorResult(error.message);
+    }
+    throw error;
+  }
+};
+
+const listSectionsHandler: ToolHandler = async (args, ctx) => {
+  const pathScope = args.path as string | undefined;
+  try {
+    const sections = await listReadableSections(ctx.writer, pathScope);
+    return jsonToolResult({ sections });
+  } catch (error) {
+    if (error instanceof DiscoveryValidationError) {
+      return makeToolErrorResult(error.message);
+    }
+    if (error instanceof DiscoveryNotFoundError) {
+      return makeToolErrorResult(error.message);
+    }
+    throw error;
+  }
+};
+
+const searchTextHandler: ToolHandler = async (args, ctx) => {
+  const pattern = args.pattern;
+  const syntax = args.syntax;
+
+  if (typeof pattern !== "string" || pattern.length === 0) {
+    return makeToolErrorResult("Missing required parameter: pattern");
+  }
+  if (syntax !== "literal" && syntax !== "regexp") {
+    return makeToolErrorResult('Missing required parameter: syntax ("literal" or "regexp")');
+  }
+
+  try {
+    const matches = await searchReadableText(ctx.writer, {
+      pattern,
+      syntax,
+      root: args.root as string | undefined,
+      case_sensitive: args.case_sensitive as boolean | undefined,
+      max_results: args.max_results as number | undefined,
+      context_bytes: args.context_bytes as number | undefined,
+    });
+    return jsonToolResult({ matches });
+  } catch (error) {
+    if (error instanceof DiscoveryValidationError) {
+      return makeToolErrorResult(error.message);
+    }
+    if (error instanceof DiscoveryNotFoundError) {
+      return makeToolErrorResult(error.message);
+    }
+    if (error instanceof SearchTextPatternError) {
+      return makeToolErrorResult(error.message);
+    }
+    if (error instanceof SearchTextExecutionError) {
+      return makeToolErrorResult(error.message);
     }
     throw error;
   }
@@ -131,8 +195,7 @@ const readDocStructureHandler: ToolHandler = async (args, ctx) => {
   if (!structReadOk) return makeToolErrorResult(`Permission denied: you do not have read access to "${docPath}".`);
 
   try {
-    const sessionDocsContentRoot = getSessionDocsContentRoot();
-    const structure = await readDocumentStructureWithOverlay(docPath, sessionDocsContentRoot);
+    const structure = await readDocumentStructure(docPath);
 
     // Broadcast agent:reading
     if (ctx.writer.type === "agent" && ctx.emitEvent) {
@@ -271,10 +334,25 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
 
   // Write section content through OverlayContentLayer — skeleton resolution,
   // ancestor auto-creation, and content writing are handled internally.
+  // When writeSection auto-splits multi-heading content, it returns expanded targets.
   const overlayLayer = new OverlayContentLayer(contentRoot, getContentRoot());
+  let expandedSections: ProposalSection[] = [];
 
   for (const s of sections) {
-    await overlayLayer.writeSection(SectionRef.fromTarget(s), s.content);
+    const splitTargets = await overlayLayer.writeSection(SectionRef.fromTarget(s), s.content);
+    if (splitTargets) {
+      expandedSections.push(...splitTargets.map(t => ({
+        doc_path: t.doc_path,
+        heading_path: t.heading_path,
+      })));
+    } else {
+      expandedSections.push({ doc_path: s.doc_path, heading_path: s.heading_path });
+    }
+  }
+
+  // If any section was auto-split, update the proposal's section metadata
+  if (expandedSections.length !== sections.length) {
+    await updateProposalSections(mcpProposalId, expandedSections);
   }
 
   // Evaluate immediately (informational — agent must call commit_proposal explicitly)
@@ -333,6 +411,7 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
     const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
 
     if (evaluation.all_sections_accepted) {
+      const catalogMutations = await summarizeProposalCatalogMutations(proposal);
       const scores: SectionScoreSnapshot = {};
       for (const s of sections) {
         scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
@@ -348,7 +427,7 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
       if (ctx.emitEvent) {
         ctx.emitEvent({
           type: "content:committed",
-          doc_path: sections[0]?.doc_path ?? "",
+          doc_path: sections[0]?.doc_path ?? catalogMutations.renamed?.newPath ?? catalogMutations.createdDocPaths[0] ?? "",
           sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
           commit_sha: committedHead,
           writer_id: ctx.writer.id,
@@ -357,6 +436,7 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
           contributor_ids: [ctx.writer.id],
           seconds_ago: 0,
         });
+        emitCatalogMutationEvents(ctx.emitEvent, catalogMutations, ctx.writer, committedHead);
       }
 
       return jsonToolResult({
@@ -541,18 +621,31 @@ const writeSectionHandler: ToolHandler = async (args, ctx) => {
 
     // Write section content through OverlayContentLayer
     const overlayLayer = new OverlayContentLayer(updContentRoot, getContentRoot());
-    await overlayLayer.writeSection(new SectionRef(docPath, headingPath), content);
+    const splitTargets = await overlayLayer.writeSection(new SectionRef(docPath, headingPath), content);
 
-    // Broadcast proposal:draft with updated sections
-    if (ctx.emitEvent && updated.sections.length > 0) {
+    // If auto-split occurred, update proposal sections with the expanded targets
+    if (splitTargets) {
+      const remainingSections = updated.sections.filter(
+        (s) => !(s.doc_path === docPath && JSON.stringify(s.heading_path) === JSON.stringify(headingPath)),
+      );
+      const expandedSections = [
+        ...remainingSections,
+        ...splitTargets.map(t => ({ doc_path: t.doc_path, heading_path: t.heading_path })),
+      ];
+      await updateProposalSections(proposalId, expandedSections);
+    }
+
+    // Broadcast proposal:draft with updated sections (re-read to get current state)
+    const broadcastProposal = splitTargets ? await readProposal(proposalId) : updated;
+    if (ctx.emitEvent && broadcastProposal.sections.length > 0) {
       ctx.emitEvent({
         type: "proposal:draft",
-        proposal_id: updated.id,
-        doc_path: updated.sections[0].doc_path,
-        heading_paths: updated.sections.map((s) => s.heading_path),
+        proposal_id: broadcastProposal.id,
+        doc_path: broadcastProposal.sections[0].doc_path,
+        heading_paths: broadcastProposal.sections.map((s) => s.heading_path),
         writer_id: ctx.writer.id,
         writer_display_name: ctx.writer.displayName,
-        intent: updated.intent,
+        intent: broadcastProposal.intent,
       });
     }
 
@@ -580,16 +673,50 @@ const writeSectionHandler: ToolHandler = async (args, ctx) => {
 export function registerCollaborationTools(registry: ToolRegistry): void {
   registry.register(
     {
-      name: "list_docs",
-      description: "List documents and directories in the Knowledge Store.",
+      name: "list_documents",
+      description: "List readable documents under a canonical root path with lightweight section counts.",
       inputSchema: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Directory path to list (empty for root)" },
+          root: { type: "string", description: 'Canonical absolute scope path (default "/"). Supports folder or single document paths.' },
         },
       },
     },
-    listDocsHandler,
+    listDocumentsHandler,
+  );
+
+  registry.register(
+    {
+      name: "list_sections",
+      description: "List readable sections under a canonical scope without returning body text.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: 'Canonical absolute scope path (default "/"). Supports folder or single document paths.' },
+        },
+      },
+    },
+    listSectionsHandler,
+  );
+
+  registry.register(
+    {
+      name: "search_text",
+      description: "Run lexical search across canonical readable section bodies using literal or regular-expression syntax.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          pattern: { type: "string", description: "Search pattern." },
+          syntax: { type: "string", enum: ["literal", "regexp"], description: "Search syntax mode." },
+          root: { type: "string", description: 'Canonical absolute scope path (default "/"). Supports folder or single document paths.' },
+          case_sensitive: { type: "boolean", description: "Whether matching is case-sensitive (default false)." },
+          max_results: { type: "number", description: "Global max number of matches to return (default 20)." },
+          context_bytes: { type: "number", description: "Approximate byte context around each match (default 100)." },
+        },
+        required: ["pattern", "syntax"],
+      },
+    },
+    searchTextHandler,
   );
 
   registry.register(

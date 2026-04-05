@@ -78,6 +78,13 @@ import {
   DocumentsTreePathNotFoundError,
   InvalidDocumentsTreePathError,
 } from "../../storage/documents-tree.js";
+import {
+  searchReadableText,
+  DiscoveryValidationError,
+  DiscoveryNotFoundError,
+  SearchTextPatternError,
+} from "../../storage/discovery.js";
+import { emitCatalogMutationEvents } from "../../mcp/catalog-events.js";
 import { resolveAuthenticatedWriter, requireAdmin, isSingleUserMode, type AuthenticatedWriter } from "../../auth/context.js";
 import {
   getDocReadPermission,
@@ -785,6 +792,11 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       );
       res.json({ committed_sha: committedSha });
     } catch (error) {
+      const { RestoreValidationError } = await import("../../storage/restore-service.js");
+      if (error instanceof RestoreValidationError) {
+        sendApiError(res, 422, error);
+        return;
+      }
       next(error);
     }
   });
@@ -1237,13 +1249,17 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       // Broadcast doc:renamed to all connected clients, plus catalog:changed for tree refresh
       if (onWsEvent) {
-        onWsEvent({
-          type: "doc:renamed",
-          old_path: docPath,
-          new_path: newPath,
-          committed_head: committedHead,
-        });
-        onWsEvent({ type: "catalog:changed" });
+        emitCatalogMutationEvents(
+          onWsEvent,
+          {
+            catalogChanged: true,
+            createdDocPaths: [newPath],
+            deletedDocPaths: [docPath],
+            renamed: { oldPath: docPath, newPath },
+          },
+          writer,
+          committedHead,
+        );
       }
 
       res.status(200).json({ old_path: docPath, new_path: newPath, committed_head: committedHead });
@@ -1288,6 +1304,78 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
       if (error instanceof InvalidDocPathError) {
         sendApiError(res, 400, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // ─── Canonical lexical search (manual/debug) ───────────
+
+  router.get("/search", async (req, res, next) => {
+    try {
+      const pattern = req.query.pattern;
+      const syntax = req.query.syntax;
+      const root = req.query.root;
+      const caseSensitiveRaw = req.query.case_sensitive;
+      const maxResultsRaw = req.query.max_results;
+      const contextBytesRaw = req.query.context_bytes;
+
+      if (typeof pattern !== "string" || pattern.length === 0) {
+        sendApiError(res, 400, "pattern query param is required.");
+        return;
+      }
+      if (syntax !== "literal" && syntax !== "regexp") {
+        sendApiError(res, 400, 'syntax query param is required and must be "literal" or "regexp".');
+        return;
+      }
+
+      let caseSensitive: boolean | undefined;
+      if (caseSensitiveRaw !== undefined) {
+        if (caseSensitiveRaw === "true") {
+          caseSensitive = true;
+        } else if (caseSensitiveRaw === "false") {
+          caseSensitive = false;
+        } else {
+          sendApiError(res, 400, 'case_sensitive must be "true" or "false".');
+          return;
+        }
+      }
+
+      let maxResults: number | undefined;
+      if (maxResultsRaw !== undefined) {
+        if (typeof maxResultsRaw !== "string" || !/^\d+$/.test(maxResultsRaw)) {
+          sendApiError(res, 400, "max_results must be an integer >= 1.");
+          return;
+        }
+        maxResults = Number.parseInt(maxResultsRaw, 10);
+      }
+
+      let contextBytes: number | undefined;
+      if (contextBytesRaw !== undefined) {
+        if (typeof contextBytesRaw !== "string" || !/^\d+$/.test(contextBytesRaw)) {
+          sendApiError(res, 400, "context_bytes must be an integer >= 0.");
+          return;
+        }
+        contextBytes = Number.parseInt(contextBytesRaw, 10);
+      }
+
+      const matches = await searchReadableText(resolveAuthenticatedWriter(req), {
+        pattern,
+        syntax,
+        root: typeof root === "string" ? root : undefined,
+        case_sensitive: caseSensitive,
+        max_results: maxResults,
+        context_bytes: contextBytes,
+      });
+      res.json({ matches });
+    } catch (error) {
+      if (error instanceof DiscoveryValidationError || error instanceof SearchTextPatternError) {
+        sendApiError(res, 400, error.message);
+        return;
+      }
+      if (error instanceof DiscoveryNotFoundError) {
+        sendApiError(res, 404, error.message);
         return;
       }
       next(error);
@@ -3204,7 +3292,16 @@ function registerDocumentCatchAllRoutes(
       }
 
       if (onWsEvent) {
-        onWsEvent({ type: "catalog:changed" });
+        emitCatalogMutationEvents(
+          onWsEvent,
+          {
+            catalogChanged: true,
+            createdDocPaths: [docPath],
+            deletedDocPaths: [],
+            renamed: null,
+          },
+          writer,
+        );
       }
       res.status(201).json({ doc_path: docPath, committed_head: committedHead });
     } catch (error) {
@@ -3371,7 +3468,16 @@ function registerDocumentCatchAllRoutes(
       }
 
       if (onWsEvent) {
-        onWsEvent({ type: "catalog:changed" });
+        emitCatalogMutationEvents(
+          onWsEvent,
+          {
+            catalogChanged: true,
+            createdDocPaths: [],
+            deletedDocPaths: [docPath],
+            renamed: null,
+          },
+          writer,
+        );
       }
       res.status(200).json({ doc_path: docPath, deleted: true, committed_head: committedHead });
     } catch (error) {

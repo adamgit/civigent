@@ -114,6 +114,7 @@ interface DocumentsTreeNavProps {
   storageKey?: string;
   forceExpandAll?: boolean;
   badgedDocPaths?: Iterable<string>;
+  flashDocKinds?: ReadonlyMap<string, "human" | "agent">;
   onDocumentOpen?: (docPath: string) => void;
   onTreeRefresh?: () => void;
 }
@@ -124,6 +125,7 @@ export function DocumentsTreeNav({
   storageKey = "ks_docs_tree_expanded",
   forceExpandAll = false,
   badgedDocPaths,
+  flashDocKinds,
   onDocumentOpen,
   onTreeRefresh,
 }: DocumentsTreeNavProps) {
@@ -306,6 +308,7 @@ export function DocumentsTreeNav({
           }
 
           const isSelected = selectedDocPath === node.path;
+          const flashKind = flashDocKinds?.get(node.path) ?? null;
           const handleClick = (_event: MouseEvent<HTMLAnchorElement>) => {
             onDocumentOpen?.(node.path);
           };
@@ -320,7 +323,7 @@ export function DocumentsTreeNav({
                 isSelected
                   ? "bg-sidebar-active-bg text-sidebar-active-text font-medium"
                   : "text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover"
-              }`}
+              } ${flashKind === "agent" ? "tree-row-flash-agent" : flashKind === "human" ? "tree-row-flash-human" : ""}`}
               style={{ paddingLeft }}
             >
               <span className="text-[13px] opacity-45 w-4 text-center">&#128196;</span>

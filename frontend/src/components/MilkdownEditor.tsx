@@ -108,6 +108,8 @@ export interface MilkdownEditorProps {
   readOnly?: boolean;
   /** CRDT provider for collaborative editing. When set, editor binds to Y.Doc. */
   crdtProvider?: CrdtProvider | null;
+  /** Whether the CRDT provider has completed initial sync (Y.Doc has content). */
+  crdtSynced?: boolean;
   /** Y.XmlFragment key within the Y.Doc to bind to (e.g. "section::Overview"). */
   fragmentKey?: string;
   /** User's display name for cursor presence. */
@@ -120,6 +122,8 @@ export interface MilkdownEditorProps {
   onCrossSectionDrop?: (transfer: SectionTransfer) => void;
   /** Called when the editor is fully initialized and has content (safe to display). */
   onReady?: () => void;
+  /** Called when the editor is being destroyed (cleanup). */
+  onUnready?: () => void;
 }
 
 // ─── Default cursor colors (assigned by hashing name) ────
@@ -151,19 +155,32 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     onHeadingPathChange,
     readOnly = false,
     crdtProvider,
+    crdtSynced = false,
     fragmentKey = "prosemirror",
     userName = "Anonymous",
     userColor,
     onCursorExit,
     onCrossSectionDrop,
     onReady,
+    onUnready,
   } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const crepeRef = useRef<Crepe | null>(null);
   const readyRef = useRef(false);
+  const crepeCreatedRef = useRef(false);
+  const crdtAttachedRef = useRef(false);
+  const basePMPluginsRef = useRef<Plugin[]>([]);
   const deferredFocusRef = useRef<"start" | "end" | null>(null);
   const headingPathRef = useRef<string[]>([]);
+
+  // Refs for values accessed from async callbacks / the CRDT attachment helper
+  const crdtProviderRef = useRef(crdtProvider);
+  crdtProviderRef.current = crdtProvider;
+  const crdtSyncedRef = useRef(crdtSynced);
+  crdtSyncedRef.current = crdtSynced;
+  const fragmentKeyRef = useRef(fragmentKey);
+  fragmentKeyRef.current = fragmentKey;
 
   // Keep callback refs stable to avoid re-creating Crepe on every render.
   const onChangeRef = useRef(onChange);
@@ -176,6 +193,8 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   onCrossSectionDropRef.current = onCrossSectionDrop;
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
+  const onUnreadyRef = useRef(onUnready);
+  onUnreadyRef.current = onUnready;
   const [ready, setReady] = useState(false);
 
   // ── Focus helper (safe to call only after create() resolves) ──
@@ -242,18 +261,86 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     },
   }));
 
-  // ── Create / destroy Crepe ─────────────────────────────
+  // ── CRDT attachment helper ───────────────────────────────
+  // Called from both Effect 1 (.then) and Effect 2 when crdtProvider changes.
+  // Reads from refs so it works from async callbacks without stale closures.
+
+  function tryAttachCrdt(): void {
+    const crepe = crepeRef.current;
+    const provider = crdtProviderRef.current;
+    if (!crepe || !provider || !crepeCreatedRef.current || crdtAttachedRef.current) return;
+
+    const view = crepe.editor.ctx.get(editorViewCtx);
+    basePMPluginsRef.current = [...view.state.plugins];
+
+    const fk = fragmentKeyRef.current;
+    const yXmlFragment = provider.doc.getXmlFragment(fk);
+    const awareness = provider.awareness;
+    const color = userColor ?? pickColor(userName);
+
+    const newState = view.state.reconfigure({
+      plugins: [
+        ...view.state.plugins,
+        ySyncPlugin(yXmlFragment),
+        yCursorPlugin(awareness, { cursorBuilder: buildCollabCursor }),
+        yUndoPlugin(),
+      ],
+    });
+    view.updateState(newState);
+
+    awareness.setLocalStateField("user", {
+      name: userName,
+      color,
+      viewingSections: [fk],
+    });
+
+    crdtAttachedRef.current = true;
+  }
+
+  function detachCrdt(): void {
+    const crepe = crepeRef.current;
+    if (!crepe || !crdtAttachedRef.current) return;
+    try {
+      const view = crepe.editor.ctx.get(editorViewCtx);
+      const newState = view.state.reconfigure({ plugins: basePMPluginsRef.current });
+      view.updateState(newState);
+    } catch {
+      // Editor might be mid-destroy — nothing to detach.
+    }
+    crdtAttachedRef.current = false;
+  }
+
+  // Ready gate: editor is ready when Crepe is created AND either (a) no CRDT
+  // or (b) CRDT provider has synced (Y.Doc has content).
+  function checkAndSetReady(crepe: Crepe): void {
+    if (readyRef.current) return;
+    const needsSync = !!crdtProviderRef.current;
+    if (needsSync && !crdtSyncedRef.current) return;
+
+    readyRef.current = true;
+    setReady(true);
+    onReadyRef.current?.();
+
+    const pendingPos = deferredFocusRef.current;
+    if (pendingPos) {
+      deferredFocusRef.current = null;
+      doFocus(crepe, pendingPos);
+    }
+  }
+
+  // ── Effect 1: Crepe lifecycle ─────────────────────────
+  // Deps: [fragmentKey] only. Creates Crepe once per fragment.
+  // CRDT plugin attachment is handled by Effect 2.
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    // When CRDT provider is present, the editor initializes from the Y.Doc
-    // (which already has the collaborative state). The `markdown` prop is
-    // only used as fallback for non-collaborative mode.
+    let destroyed = false;
+
     const crepe = new Crepe({
       root: container,
-      defaultValue: crdtProvider ? "" : markdown,
+      defaultValue: markdown,
       features: {
         [CrepeFeature.CodeMirror]: false,
         [CrepeFeature.ImageBlock]: false,
@@ -268,13 +355,9 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
       },
     });
 
-    // NOTE: y-prosemirror plugins (ySyncPlugin, yCursorPlugin, yUndoPlugin)
-    // are NOT added here. They are added AFTER crepe.create() resolves via
-    // ProseMirror's native reconfigure(). This is critical because
-    // yCursorPlugin's plugin view immediately fires an awareness listener on
-    // init, which queues a setTimeout dispatch. If that dispatch lands before
-    // Milkdown finishes setting up its context system (editorState, etc.),
-    // it throws "Context 'editorState' not found".
+    // NOTE: y-prosemirror plugins are attached in Effect 2 via reconfigure(),
+    // AFTER crepe.create() resolves. This avoids the yCursorPlugin awareness
+    // dispatch racing with Milkdown context setup.
 
     // ── Cross-section cursor exit keymap ────────────────
 
@@ -304,8 +387,6 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     })));
 
     // ── Drag-source tracking ─────────────────────────────
-    // Records which fragment/range is being dragged so the drop target
-    // can detect cross-section drops.
 
     const fragmentKeyCapture = fragmentKey;
     crepe.editor.use($prose(() => new Plugin({
@@ -325,8 +406,6 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     })));
 
     // ── Cross-section drop interception ────────────────
-    // If a drop comes from a different section, intercept it and route
-    // through the SectionTransferService via onCrossSectionDrop callback.
 
     crepe.editor.use($prose(() => new Plugin({
       props: {
@@ -334,30 +413,26 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
           const dropCb = onCrossSectionDropRef.current;
           if (!dropCb || !event) return false;
 
-          // Is this a cross-section drop?
           const source = dragSourceInfo;
           if (!source || source.fragmentKey === fragmentKeyCapture) return false;
 
-          // Cross-section drop detected — intercept
           event.preventDefault();
 
           const dt = event.dataTransfer;
           const plainText = dt?.getData("text/plain") ?? "";
 
-          // Extract markdown from the source ProseMirror document
           const sourceView = source.view;
           const sourceFrom = source.from;
           const sourceTo = source.to;
           const slice = sourceView.state.doc.slice(sourceFrom, sourceTo);
           const docNode = sourceView.state.doc.type.create(null, slice.content);
-          const markdown = proseMirrorNodeToMarkdown(docNode);
+          const md = proseMirrorNodeToMarkdown(docNode);
 
           const deleteSourceCallback = () => {
             const tr = sourceView.state.tr.delete(sourceFrom, sourceTo);
             sourceView.dispatch(tr);
           };
 
-          // Compute insertion offset from drop position
           let insertionOffset: number | undefined;
           const posResult = view.posAtCoords({ left: event.clientX, top: event.clientY });
           if (posResult) {
@@ -367,10 +442,10 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 
           const transfer: SectionTransfer = {
             sourceFragmentKey: source.fragmentKey,
-            sourceHeadingPath: [],  // Resolved by caller
+            sourceHeadingPath: [],
             targetFragmentKey: fragmentKeyCapture,
-            targetHeadingPath: [],  // Resolved by caller
-            content: { markdown, plainText },
+            targetHeadingPath: [],
+            content: { markdown: md, plainText },
             sourceSliceRange: { from: sourceFrom, to: sourceTo },
             deleteFromSource: true,
             insertionOffset,
@@ -389,7 +464,6 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
     crepe.on((listener) => {
-      // Content changes (debounced 300ms).
       listener.markdownUpdated((_ctx, md, _prevMd) => {
         if (debounceTimer !== null) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
@@ -398,14 +472,12 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
         }, 300);
       });
 
-      // Selection changes → heading path resolution.
       listener.selectionUpdated((_ctx, selection, _prevSelection) => {
         try {
           const doc = selection.$anchor.doc;
           const pos = selection.$anchor.pos;
           const newPath = resolveHeadingPathFromDoc(doc, pos);
 
-          // Only notify if the path actually changed.
           const prev = headingPathRef.current;
           if (
             newPath.length !== prev.length ||
@@ -424,111 +496,96 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 
     crepeRef.current = crepe;
     readyRef.current = false;
+    crepeCreatedRef.current = false;
+    crdtAttachedRef.current = false;
     deferredFocusRef.current = null;
 
+    let cleanupDragListeners: (() => void) | null = null;
+
     crepe.create().then(() => {
-      // Guard: if this Crepe instance was already torn down, bail.
-      if (crepeRef.current !== crepe) return;
+      if (destroyed || crepeRef.current !== crepe) return;
+      crepeCreatedRef.current = true;
 
-      // ── Attach y-prosemirror plugins AFTER Milkdown context is ready ──
-      // We use ProseMirror's native reconfigure() so the plugins are added
-      // to the existing EditorView without going through Milkdown's async
-      // plugin loader. By this point all Milkdown contexts (editorState,
-      // etc.) are fully initialized, so y-prosemirror's eager awareness
-      // dispatch won't crash.
-      if (crdtProvider) {
-        const view = crepe.editor.ctx.get(editorViewCtx);
-        const yXmlFragment = crdtProvider.doc.getXmlFragment(fragmentKey);
-        const awareness = crdtProvider.awareness;
-        const color = userColor ?? pickColor(userName);
-
-        const newState = view.state.reconfigure({
-          plugins: [
-            ...view.state.plugins,
-            ySyncPlugin(yXmlFragment),
-            yCursorPlugin(awareness, { cursorBuilder: buildCollabCursor }),
-            yUndoPlugin(),
-          ],
-        });
-        view.updateState(newState);
-
-        // Set awareness AFTER plugins are active so listeners are registered.
-        // viewingPresence: include fragmentKey so other users see which section
-        // we're viewing from the earliest moment of interaction.
-        awareness.setLocalStateField("user", {
-          name: userName,
-          color,
-          viewingSections: [fragmentKey],
-        });
-      }
-
-      // ── Native dragstart/dragend on container ──────────────
-      // ProseMirror's handleDOMEvents only fires for events on the editor's
-      // own view DOM. Crepe's BlockEdit drag handle is a sibling element
-      // outside the view DOM, so we need a native listener on the container
-      // to catch handle-initiated drags.
+      // Native dragstart/dragend on container for BlockEdit handle
       const view = crepe.editor.ctx.get(editorViewCtx);
-      const onDragStart = () => {
+      const onDragStart = (e: Event) => {
+        const target = (e as DragEvent).target as HTMLElement;
+        if (!target.closest?.(".milkdown-block-handle")) return;
         const { from, to } = view.state.selection;
         dragSourceInfo = { fragmentKey: fragmentKeyCapture, from, to, view };
       };
-      const onDragEnd = () => {
-        dragSourceInfo = null;
-      };
-      container.addEventListener("dragstart", onDragStart);
+      const onDragEnd = () => { dragSourceInfo = null; };
+      container.addEventListener("dragstart", onDragStart as EventListener);
       container.addEventListener("dragend", onDragEnd);
       cleanupDragListeners = () => {
-        container.removeEventListener("dragstart", onDragStart);
+        container.removeEventListener("dragstart", onDragStart as EventListener);
         container.removeEventListener("dragend", onDragEnd);
       };
 
-      readyRef.current = true;
-      setReady(true);
-      onReadyRef.current?.();
-
-      // If focus() was called while we were initializing, fire it now.
-      const pendingPos = deferredFocusRef.current;
-      if (pendingPos) {
-        deferredFocusRef.current = null;
-        doFocus(crepe, pendingPos);
-      }
+      // Attach CRDT if provider is already available
+      tryAttachCrdt();
+      checkAndSetReady(crepe);
     }).catch((err) => {
       throw err;
     });
 
-    let cleanupDragListeners: (() => void) | null = null;
-
     return () => {
+      destroyed = true;
       cleanupDragListeners?.();
       if (debounceTimer !== null) clearTimeout(debounceTimer);
 
-      // Silence the ProseMirror EditorView's dispatch before the async
-      // crepe.destroy() starts. Milkdown's destroy is async and removes
-      // the editorStateCtx context slice BEFORE it destroys the
-      // ProseMirror view, leaving a window where deferred y-prosemirror
-      // dispatches (setTimeout(0) from yCursorPlugin awareness updates)
-      // reach a still-alive view whose Milkdown context is already torn
-      // down, throwing "Context 'editorState' not found".
-      // Nulling dispatch prevents those stale dispatches from reaching
-      // the half-destroyed context. Milkdown's own cleanup doesn't use
-      // dispatch, so this is safe.
+      // Silence ProseMirror dispatch before async crepe.destroy() starts.
+      // Prevents stale y-prosemirror awareness dispatches from crashing
+      // on the half-destroyed Milkdown context.
       try {
         const view = crepe.editor.ctx.get(editorViewCtx);
         view.dispatch = () => {};
       } catch {
-        // Editor might not be fully created yet — nothing to silence.
+        // Editor might not be fully created yet.
       }
 
       readyRef.current = false;
       setReady(false);
+      onUnreadyRef.current?.();
+      crepeCreatedRef.current = false;
+      crdtAttachedRef.current = false;
       deferredFocusRef.current = null;
       crepeRef.current = null;
       void crepe.destroy();
     };
-    // crdtProvider and fragmentKey in deps: remount if CRDT connection or fragment changes.
-    // markdown intentionally excluded — only used as initial value for non-CRDT mode.
+    // markdown intentionally excluded — only used as initial value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [crdtProvider, fragmentKey]);
+  }, [fragmentKey]);
+
+  // ── Effect 2: CRDT plugin attachment ──────────────────
+  // Deps: [crdtProvider]. Attaches/detaches y-prosemirror plugins without
+  // remounting Crepe. If Crepe isn't created yet, tryAttachCrdt is a no-op
+  // and Effect 1's .then() will pick it up.
+
+  useEffect(() => {
+    if (!crdtProvider) return;
+    tryAttachCrdt();
+    // Also check ready state — crdtSynced may already be true
+    if (crepeRef.current) checkAndSetReady(crepeRef.current);
+
+    return () => {
+      // Detach plugins if Crepe is still alive (not being destroyed by Effect 1)
+      if (crepeRef.current && crepeCreatedRef.current) {
+        detachCrdt();
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [crdtProvider]);
+
+  // ── Effect 3: crdtSynced ready gate ───────────────────
+  // When crdtSynced transitions to true, check if we can mark ready.
+
+  useEffect(() => {
+    if (crdtSynced && crepeRef.current && crepeCreatedRef.current) {
+      checkAndSetReady(crepeRef.current);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [crdtSynced]);
 
   // ── Read-only toggling ─────────────────────────────────
 

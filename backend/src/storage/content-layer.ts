@@ -6,7 +6,7 @@
  * reads/writes. Overlay+canonical behavior lives in OverlayContentLayer.
  */
 
-import { readFile, writeFile, mkdir, copyFile, readdir, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdir, copyFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   DocumentSkeleton,
@@ -22,7 +22,7 @@ import { ParsedDocument } from "./markdown-sections.js";
 import type { DocStructureNode } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
-import { bodyFromDisk, bodyToDisk, stripHeadingFromFragment, buildFragmentContent, assembleFragments, bodyAsFragment, stripLeadingNewlines, fragmentFromExternalContent, type SectionBody, type FragmentContent } from "./section-formatting.js";
+import { bodyFromDisk, bodyFromParser, bodyToDisk, stripHeadingFromFragment, buildFragmentContent, assembleFragments, bodyAsFragment, stripLeadingNewlines, fragmentFromExternalContent, type SectionBody, type FragmentContent } from "./section-formatting.js";
 
 /**
  * Write a section body file, creating parent directories as needed.
@@ -82,6 +82,13 @@ export class DocumentNotFoundError extends Error {}
 export class DocumentAssemblyError extends Error {}
 export class MultiSectionContentError extends Error {}
 
+export interface SectionDiscoveryEntry {
+  heading: string;
+  headingPath: string[];
+  absolutePath: string;
+  bodySizeBytes: number;
+}
+
 import { getParser } from "./markdown-parser.js";
 
 
@@ -113,6 +120,44 @@ export class ContentLayer {
       sections.push({ heading, level, sectionFile, headingPath: [...headingPath] });
     });
     return sections;
+  }
+
+  /**
+   * Return discovery rows for real sections only (no structural/sub-skeleton nodes).
+   * Includes the canonical absolute body-file path and body file size in bytes.
+   */
+  async getSectionDiscoveryList(docPath: string): Promise<SectionDiscoveryEntry[]> {
+    const skeleton = await this.readSkeleton(docPath);
+    const baseEntries: Array<{ heading: string; headingPath: string[]; absolutePath: string }> = [];
+    skeleton.forEachSection((heading, _level, _sectionFile, headingPath, absolutePath) => {
+      baseEntries.push({
+        heading,
+        headingPath: [...headingPath],
+        absolutePath,
+      });
+    });
+
+    const sizedEntries = await Promise.all(
+      baseEntries.map(async (entry) => {
+        let bodySizeBytes = 0;
+        try {
+          const fileStat = await stat(entry.absolutePath);
+          bodySizeBytes = fileStat.isFile() ? fileStat.size : 0;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            throw error;
+          }
+        }
+        return {
+          heading: entry.heading,
+          headingPath: entry.headingPath,
+          absolutePath: entry.absolutePath,
+          bodySizeBytes,
+        };
+      }),
+    );
+
+    return sizedEntries;
   }
 
   /**
@@ -298,13 +343,14 @@ export class ContentLayer {
     const entry = skeleton.expect(ref.headingPath);
     // Enforce body-only invariant: strip leading heading if it matches the skeleton entry
     const body = stripHeadingFromFragment(fragmentFromExternalContent(content), entry.level);
-    // Guard: reject multi-heading content that should go through importMarkdownDocument
+    // Guard: reject multi-heading content — canonical writes must not mutate skeleton structure
     const hasHeadings = getParser().containsHeadings(body);
     if (hasHeadings) {
       throw new MultiSectionContentError(
         `Multi-section content passed to writeSection() for (${ref.docPath}, ` +
         `[${ref.headingPath.join(" > ")}]) — embedded heading(s) detected. ` +
-        `Use importMarkdownDocument() instead.`,
+        `Split content into separate writeSection() calls, one per heading. ` +
+        `In create_proposal, pass each heading as a separate entry in the sections array.`,
       );
     }
     await writeBodyFile(entry, body);
@@ -641,7 +687,10 @@ export class OverlayContentLayer {
    *
    * Level for auto-created headings is parent.level + 1.
    */
-  async writeSection(ref: SectionRef, content: string): Promise<void> {
+  async writeSection(
+    ref: SectionRef,
+    content: string,
+  ): Promise<Array<{ doc_path: string; heading_path: string[] }> | void> {
     const state = await this.getDocumentState(ref.docPath);
     if (state === "tombstone") {
       throw new DocumentNotFoundError(`Document "${ref.docPath}" is pending deletion in this overlay.`);
@@ -656,19 +705,38 @@ export class OverlayContentLayer {
 
     const entry = skeleton.expect(ref.headingPath);
     // Strip leading heading if it matches the skeleton entry
-    const body = stripHeadingFromFragment(fragmentFromExternalContent(content), entry.level);
-    // Guard: reject multi-heading content that should go through importMarkdownDocument
+    const fragment = fragmentFromExternalContent(content);
+    const body = stripHeadingFromFragment(fragment, entry.level);
+
     const hasHeadings = getParser().containsHeadings(body);
-    if (hasHeadings) {
-      throw new MultiSectionContentError(
-        `Multi-section content passed to writeSection() for (${ref.docPath}, ` +
-        `[${ref.headingPath.join(" > ")}]) — embedded heading(s) detected. ` +
-        `Use importMarkdownDocument() instead.`,
-      );
+    if (!hasHeadings) {
+      await writeBodyFile(entry, body);
+      return;
     }
 
-    await writeBodyFile(entry, body);
+    // Auto-split: multi-heading content gets split into sub-sections via skeleton.replace.
+    // Use the original fragment (before heading stripping) so all headings are preserved.
+    // If the content doesn't start with a heading at the entry's level, prepend it.
+    const fragmentStr = fragment as string;
+    const headingPrefix = "#".repeat(entry.level) + " ";
+    const fullMarkdown = fragmentStr.startsWith(headingPrefix)
+      ? fragmentStr
+      : buildFragmentContent(bodyFromParser(body as string), entry.level, entry.heading) as string;
+    const parsedSections = getParser().parseDocumentMarkdown(fullMarkdown);
+    const result = await skeleton.replace(ref.headingPath, parsedSections);
 
+    const createdTargets: Array<{ doc_path: string; heading_path: string[] }> = [];
+    let bodyIdx = 0;
+    for (const addedEntry of result.added) {
+      if (addedEntry.isSubSkeleton) continue;
+      const sectionBody = parsedSections[bodyIdx]
+        ? bodyFromParser(parsedSections[bodyIdx].body as string)
+        : "";
+      await writeBodyFile(addedEntry, sectionBody);
+      createdTargets.push({ doc_path: ref.docPath, heading_path: addedEntry.headingPath });
+      bodyIdx++;
+    }
+    return createdTargets;
   }
 
   /**

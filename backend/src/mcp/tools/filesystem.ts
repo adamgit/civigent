@@ -29,6 +29,7 @@ import {
 import { SectionRef } from "../../domain/section-ref.js";
 import type { SectionScoreSnapshot } from "../../types/shared.js";
 import { checkDocPermission } from "../../auth/acl.js";
+import { canonicalDocumentExists, emitCatalogMutationEvents } from "../catalog-events.js";
 
 // ─── read_file ───────────────────────────────────────────
 
@@ -217,6 +218,17 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
         contributor_ids: [writer.id],
         seconds_ago: 0,
       });
+      emitCatalogMutationEvents(
+        ctx.emitEvent,
+        {
+          catalogChanged: true,
+          createdDocPaths: [destination],
+          deletedDocPaths: [source],
+          renamed: { oldPath: source, newPath: destination },
+        },
+        writer,
+        committedHead,
+      );
     }
 
     return jsonToolResult({
@@ -264,6 +276,7 @@ async function writeDocumentViaProposal(
   ctx: import("../tool-registry.js").ToolContext,
 ): Promise<import("../protocol.js").McpToolCallResult> {
   const writer = ctx.writer;
+  const createdDocPaths: string[] = [];
 
   // Check write permission for all target documents
   for (const file of files) {
@@ -284,6 +297,12 @@ async function writeDocumentViaProposal(
     doc_path: string;
     heading_path: string[];
   }> = [];
+
+  for (const file of files) {
+    if (!(await canonicalDocumentExists(file.path))) {
+      createdDocPaths.push(file.path);
+    }
+  }
 
   // Check for existing pending proposal and auto-withdraw
   const existing = await findDraftProposalByWriter(writer.id);
@@ -322,7 +341,7 @@ async function writeDocumentViaProposal(
     if (ctx.emitEvent) {
       ctx.emitEvent({
         type: "content:committed",
-        doc_path: sections[0]?.doc_path ?? "",
+        doc_path: sections[0]?.doc_path ?? files[0]?.path ?? "",
         sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
         commit_sha: committedHead,
         writer_id: writer.id,
@@ -331,6 +350,16 @@ async function writeDocumentViaProposal(
         contributor_ids: [writer.id],
         seconds_ago: 0,
       });
+      emitCatalogMutationEvents(
+        ctx.emitEvent,
+        {
+          catalogChanged: createdDocPaths.length > 0,
+          createdDocPaths,
+          deletedDocPaths: [],
+          renamed: null,
+        },
+        writer,
+      );
     }
 
     return jsonToolResult({
@@ -440,6 +469,16 @@ async function deleteDocumentViaProposal(
         contributor_ids: [writer.id],
         seconds_ago: 0,
       });
+      emitCatalogMutationEvents(
+        ctx.emitEvent,
+        {
+          catalogChanged: true,
+          createdDocPaths: [],
+          deletedDocPaths: [docPath],
+          renamed: null,
+        },
+        writer,
+      );
     }
 
     return jsonToolResult({

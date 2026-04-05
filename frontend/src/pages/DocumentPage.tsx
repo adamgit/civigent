@@ -410,6 +410,15 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     });
   }, []);
 
+  const handleEditorUnready = useCallback((idx: number) => {
+    setReadyEditors(prev => {
+      if (!prev.has(idx)) return prev;
+      const next = new Set(prev);
+      next.delete(idx);
+      return next;
+    });
+  }, []);
+
   const handleCrossSectionDrop = useCallback((sec: DocumentSection, transfer: SectionTransfer) => {
     transfer.targetHeadingPath = sec.heading_path;
     const srcSection = sectionsRef.current.find(s =>
@@ -650,7 +659,8 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
                     injectedByWriter={injectedByLabel.get(sectionLabel) ?? null}
                     hasRemotePresence={presenceIndicators.some((p) => p.sectionKey === sectionKey)}
                     dragOverSectionIndex={dragOverSectionIndex}
-                    crdtProvider={crdtSynced ? crdtProvider : null}
+                    crdtProvider={crdtProvider}
+                    crdtSynced={crdtSynced}
                     crdtError={crdtError}
                     proposalMode={proposalMode}
                     isReady={readyEditors.has(i)}
@@ -659,6 +669,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
                     onFocusSection={handleFocusSection}
                     onSetEditorRef={setEditorRef}
                     onEditorReady={handleEditorReady}
+                    onEditorUnready={handleEditorUnready}
                     onProposalSectionChange={proposalMode ? handleProposalSectionChange : undefined}
                     onCursorExit={handleCursorExit}
                     onCrossSectionDrop={handleCrossSectionDrop}

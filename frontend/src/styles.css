@@ -36,6 +36,10 @@
   --color-agent-border: #c9b8e8;
   --color-agent-text: #6b4fa0;
 
+  /* Human colors */
+  --color-human-light: #e8f4f6;
+  --color-human-text: #1d5a66;
+
   /* Second agent */
   --color-agent2: #c47a2a;
   --color-agent2-light: #fdf4ea;
@@ -114,6 +118,26 @@ a {
 .section-drop-blocked {
   border-top: 2px solid var(--color-status-red);
   opacity: 0.6;
+}
+
+@keyframes tree-row-flash-agent {
+  0% { background: var(--color-agent-light); color: var(--color-agent-text); }
+  60% { background: var(--color-agent-light); color: var(--color-agent-text); }
+  100% { background: transparent; color: inherit; }
+}
+
+@keyframes tree-row-flash-human {
+  0% { background: var(--color-human-light); color: var(--color-human-text); }
+  60% { background: var(--color-human-light); color: var(--color-human-text); }
+  100% { background: transparent; color: inherit; }
+}
+
+.tree-row-flash-agent {
+  animation: tree-row-flash-agent 2.8s ease-out 1;
+}
+
+.tree-row-flash-human {
+  animation: tree-row-flash-human 2.8s ease-out 1;
 }
 
 /* ===== WRITER TYPE BADGES (human / AI) — explicit colors, dark-mode agnostic ===== */

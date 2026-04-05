@@ -35,7 +35,9 @@ All writes in tier 3 go through the proposal system. Create a proposal, write se
 
 ### Reading
 
-- **list_docs** - List all documents
+- **list_documents** - List readable documents in canonical scope
+- **list_sections** - List readable sections with heading paths and body sizes (without body text)
+- **search_text** - Lexical search over readable canonical section bodies (`literal` or `regexp`)
 - **read_doc** - Read full assembled document content
 - **read_doc_structure** - Read document heading hierarchy
 - **read_section** - Read a single section by heading path

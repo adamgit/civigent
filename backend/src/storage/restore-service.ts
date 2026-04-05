@@ -12,10 +12,12 @@ import path from "node:path";
 import type { WriterIdentity, AnyProposal, ProposalSection } from "../types/shared.js";
 import { getContentRoot, getDataRoot, getContentGitPrefix } from "./data-root.js";
 import { gitShowFile, extractHistoricalTree } from "./git-repo.js";
-import { ContentLayer, DocumentNotFoundError } from "./content-layer.js";
+import { ContentLayer, DocumentNotFoundError, DocumentAssemblyError } from "./content-layer.js";
 import { resolveSkeletonPath } from "./document-skeleton.js";
 import { createTransientProposal, updateProposalSections, readProposal } from "./proposal-repository.js";
 import { SectionRef } from "../domain/section-ref.js";
+
+export class RestoreValidationError extends Error {}
 
 export interface RestoreResult {
   proposal: AnyProposal;
@@ -61,8 +63,23 @@ export async function createRestoreProposal(
   const overlaySectionsDir = overlaySkeletonPath + ".sections";
   await extractHistoricalTree(dataRoot, targetSha, sectionsDirGitPrefix, overlaySectionsDir);
 
-  // Read the restored skeleton to get heading paths for proposal sections
+  // Validate that all body files referenced by the restored skeleton exist.
+  // If any are missing, the historical commit is corrupt and restore is a dead end.
   const overlayLayer = new ContentLayer(contentRoot);
+  try {
+    await overlayLayer.readAllSections(docPath);
+  } catch (err) {
+    if (err instanceof DocumentAssemblyError) {
+      throw new RestoreValidationError(
+        `Restore to ${targetSha.slice(0, 8)} failed: the historical commit is missing section body files: ${err.message}. ` +
+        `This version cannot be restored because the corruption exists in git history. ` +
+        `Use the diagnostics page to identify the affected sections.`,
+      );
+    }
+    throw err;
+  }
+
+  // Read the restored skeleton to get heading paths for proposal sections
   const restoredHeadingPaths = await overlayLayer.listHeadingPaths(docPath);
   const restoredTargets: ProposalSection[] = restoredHeadingPaths.map(hp => ({
     doc_path: docPath,

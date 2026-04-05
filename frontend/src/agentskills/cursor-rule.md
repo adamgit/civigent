@@ -9,13 +9,29 @@ alwaysApply: true
 You have access to a Knowledge Store via MCP tools (prefixed `mcp__%%name%%__`).
 These tools let you read, write, and manage structured wiki documents.
 
-The system operates at **section-level granularity**. Sections are identified by a `heading_path` — an array of heading strings like `["Chapter 1", "Section A"]`. An empty array `[]` means the before-first-heading section (content before the first heading).
+The system operates at **section-level granularity**. Sections are identified by a `heading_path` parameter which is a **JSON array of strings** representing the path through nested headings. An empty array `[]` means the before-first-heading section (content before the first heading).
+
+**Critical:** `heading_path` must be passed as a real JSON array, never as a string. Correct: `["Chapter 1", "Section A"]`. Wrong: `"[\"Chapter 1\", \"Section A\"]"`.
+
+### Examples
+
+Read a top-level section called "Overview":
+```
+read_section(doc_path: "/my-doc.md", heading_path: ["Overview"])
+```
+
+Read a nested section "Weapons" inside "Ship Building":
+```
+read_section(doc_path: "/my-doc.md", heading_path: ["Ship Building", "Weapons"])
+```
 
 ## Reading & Research
 
-1. **Find documents:** `list_docs` returns all documents in the store.
-2. **Understand structure:** `read_doc_structure` shows a document's section tree (headings and nesting).
-3. **Read content:** `read_section` reads a specific section by `doc_path` and `heading_path`. Use `read_doc` for an entire document.
+1. **Find documents:** `list_documents` returns readable documents in canonical scope.
+2. **Inspect section inventory:** `list_sections` returns section headings and `body_size_bytes` without body text.
+3. **Search before reading:** `search_text` supports `syntax: "literal" | "regexp"` for exact phrases and patterns.
+4. **Understand structure:** `read_doc_structure` shows a document's section tree (headings and nesting).
+5. **Read content:** `read_section` reads a specific section by `doc_path` and `heading_path` (JSON array of strings). Use `read_doc` for an entire document.
 
 ## Making Changes (Proposal Workflow)
 

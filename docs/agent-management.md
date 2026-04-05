@@ -83,13 +83,15 @@ Adds intent declaration before writes. The agent describes what it plans to do, 
 |------|---------|
 | `plan_changes` | Declare intent before making changes |
 
-### Tier 3: Full collaboration (17 tools)
+### Tier 3: Full collaboration (19 tools)
 
 Explicit proposal management with fine-grained control over the collaboration workflow.
 
 | Tool | Purpose |
 |------|---------|
-| `list_docs` | List all documents |
+| `list_documents` | List readable documents in canonical scope |
+| `list_sections` | List readable sections and body sizes (no body text) |
+| `search_text` | Search readable canonical section bodies (literal or regexp) |
 | `read_doc` | Read a complete document |
 | `read_doc_structure` | Read document heading structure |
 | `read_section` | Read a specific section |
@@ -116,12 +118,13 @@ Explicit proposal management with fine-grained control over the collaboration wo
 The typical agent workflow is:
 
 ```
-1. Read content:     read_doc / read_section / read_doc_structure
-2. Create proposal:  create_proposal (with sections and optional justifications)
-3. Check evaluation: The response shows which sections are blocked/accepted
-4. Modify if needed: write_section (adjust blocked sections, add justifications)
-5. Commit:           commit_proposal
-6. If blocked:       Wait for human activity to age out, modify proposal, or withdraw
+1. Discover content: list_documents / list_sections / search_text / read_doc_structure
+2. Read content:     read_doc / read_section
+3. Create proposal:  create_proposal (with sections and optional justifications)
+4. Check evaluation: The response shows which sections are blocked/accepted
+5. Modify if needed: write_section (adjust blocked sections, add justifications)
+6. Commit:           commit_proposal
+7. If blocked:       Wait for human activity to age out, modify proposal, or withdraw
 ```
 
 ### Only one proposal allowed at a time per agent

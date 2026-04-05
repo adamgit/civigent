@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ContentLayer, OverlayContentLayer, MultiSectionContentError } from "../../storage/content-layer.js";
+import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
 import { DocumentSkeleton, serializeSkeletonEntries, type FlatEntry } from "../../storage/document-skeleton.js";
 import { parseDocumentMarkdown } from "../../storage/markdown-sections.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
@@ -71,7 +71,7 @@ describe("BUG1 FIXED: writeSection rejects multi-heading; importMarkdownDocument
 
   afterAll(async () => { await ctx.cleanup(); });
 
-  it("writeSection to root with multi-heading markdown now throws", async () => {
+  it("writeSection to root with multi-heading markdown auto-splits in overlay", async () => {
     const multiSectionMarkdown = [
       "New preamble.",
       "",
@@ -86,7 +86,13 @@ describe("BUG1 FIXED: writeSection rejects multi-heading; importMarkdownDocument
 
     const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
     const ref = new SectionRef(docPath, []);
-    await expect(layer.writeSection(ref, multiSectionMarkdown)).rejects.toThrow(MultiSectionContentError);
+    const result = await layer.writeSection(ref, multiSectionMarkdown);
+    expect(Array.isArray(result)).toBe(true);
+    const targets = result as Array<{ doc_path: string; heading_path: string[] }>;
+    expect(targets.length).toBeGreaterThanOrEqual(2);
+    const headings = targets.map(t => t.heading_path);
+    expect(headings).toContainEqual(["Alpha"]);
+    expect(headings).toContainEqual(["Beta"]);
   });
 
   it("importMarkdownDocument normalizes multi-section markdown into skeleton + body files", async () => {
@@ -147,16 +153,19 @@ describe("BUG1b FIXED: ContentLayer.writeSection() rejects multi-heading content
 
   afterAll(async () => { await ctx.cleanup(); });
 
-  it("writeSection with multi-heading body now throws MultiSectionContentError", async () => {
+  it("writeSection with multi-heading body auto-splits in overlay", async () => {
     const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
     const ref = new SectionRef(docPath, ["Overview"]);
 
     const multiHeadingContent = "## A\nText A.\n\n## B\nText B.\n";
 
-    // FIXED: Now throws instead of writing verbatim
-    await expect(
-      layer.writeSection(ref, multiHeadingContent),
-    ).rejects.toThrow(MultiSectionContentError);
+    const result = await layer.writeSection(ref, multiHeadingContent);
+    expect(Array.isArray(result)).toBe(true);
+    const targets = result as Array<{ doc_path: string; heading_path: string[] }>;
+    expect(targets.length).toBeGreaterThanOrEqual(2);
+    const headings = targets.map(t => t.heading_path);
+    expect(headings).toContainEqual(["A"]);
+    expect(headings).toContainEqual(["B"]);
   });
 
   it("writeSection with single-section body still works", async () => {

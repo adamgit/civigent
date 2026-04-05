@@ -698,6 +698,10 @@ export interface ProposalWithdrawnEvent {
 
 export interface CatalogChangedEvent {
   type: "catalog:changed";
+  added_doc_paths?: string[];
+  removed_doc_paths?: string[];
+  writer_type?: WriterType;
+  writer_display_name?: string;
 }
 
 export interface ProposalInjectedIntoSessionEvent {

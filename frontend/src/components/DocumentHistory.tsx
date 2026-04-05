@@ -13,6 +13,8 @@ export function DocumentHistory({ docPath, onRestored }: DocumentHistoryProps) {
   const [error, setError] = useState<string | null>(null);
   const [previewSha, setPreviewSha] = useState<string | null>(null);
   const [previewContent, setPreviewContent] = useState<string | null>(null);
+  const [previewCorrupt, setPreviewCorrupt] = useState(false);
+  const [previewMissingSections, setPreviewMissingSections] = useState<string[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
   const [confirmSha, setConfirmSha] = useState<string | null>(null);
@@ -33,13 +35,19 @@ export function DocumentHistory({ docPath, onRestored }: DocumentHistoryProps) {
     if (previewSha === sha) {
       setPreviewSha(null);
       setPreviewContent(null);
+      setPreviewCorrupt(false);
+      setPreviewMissingSections([]);
       return;
     }
     setPreviewSha(sha);
     setPreviewLoading(true);
+    setPreviewCorrupt(false);
+    setPreviewMissingSections([]);
     try {
       const res = await apiClient.getDocHistoryPreview(docPath, sha);
       setPreviewContent(res.content);
+      setPreviewCorrupt(res.corrupt ?? false);
+      setPreviewMissingSections(res.missingSections ?? []);
     } catch (err) {
       setPreviewContent(`Failed to load preview: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -122,6 +130,13 @@ export function DocumentHistory({ docPath, onRestored }: DocumentHistoryProps) {
                     Cancel
                   </button>
                 </div>
+              ) : (previewSha === v.sha && previewCorrupt) ? (
+                <span
+                  className="text-[11px] px-2 py-1 rounded bg-red-50 text-red-400 cursor-not-allowed"
+                  title="Cannot restore — commit has missing sections that would reproduce corruption"
+                >
+                  Restore unavailable
+                </span>
               ) : (
                 <button
                   onClick={() => setConfirmSha(v.sha)}
@@ -138,9 +153,21 @@ export function DocumentHistory({ docPath, onRestored }: DocumentHistoryProps) {
               {previewLoading ? (
                 <div className="text-xs text-text-muted">Loading preview...</div>
               ) : (
-                <pre className="text-xs bg-[#faf8f5] p-3 rounded overflow-auto max-h-[300px] whitespace-pre-wrap font-mono">
-                  {previewContent}
-                </pre>
+                <>
+                  {previewCorrupt && (
+                    <div className="mb-2 p-2 rounded bg-red-50 border border-red-200 text-xs text-red-800">
+                      <strong>Warning:</strong> this commit has {previewMissingSections.length} missing section(s) — content shown is incomplete. Restoring this version will reproduce the corruption.
+                      <ul className="mt-1 ml-4 list-disc">
+                        {previewMissingSections.map((s) => (
+                          <li key={s} className="font-mono">{s}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <pre className="text-xs bg-[#faf8f5] p-3 rounded overflow-auto max-h-[300px] whitespace-pre-wrap font-mono">
+                    {previewContent}
+                  </pre>
+                </>
               )}
             </div>
           )}

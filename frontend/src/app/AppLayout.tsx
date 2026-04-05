@@ -7,11 +7,19 @@ import { DocumentsTreeNav } from "../components/DocumentsTreeNav";
 import { MirrorPanel } from "../components/MirrorPanel";
 import { SystemFatalScreen } from "../components/SystemFatalScreen";
 import { rememberRecentDoc } from "../services/recent-docs";
-import type { DocumentTreeEntry, AuthUser } from "../types/shared.js";
+import type { DocumentTreeEntry, AuthUser, CatalogChangedEvent } from "../types/shared.js";
 import { stripLeadingSlashForRoute } from "./docsRouteUtils";
 
 const DOC_BADGES_STORAGE_KEY = "ks_doc_badges";
+const TREE_ROW_FLASH_DURATION_MS = 2800;
 const BUILD_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+type TreeRowFlashKind = "human" | "agent";
+
+interface TreeRowFlashEntry {
+  kind: TreeRowFlashKind;
+  expiresAt: number;
+}
 
 function pad2(value: number): string {
   return String(value).padStart(2, "0");
@@ -115,6 +123,7 @@ export function AppLayout() {
   const [newDocError, setNewDocError] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [docBadges, setDocBadges] = useState<Set<string>>(() => readBadgeDocPaths());
+  const [treeRowFlashes, setTreeRowFlashes] = useState<Map<string, TreeRowFlashEntry>>(new Map());
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
   const [systemStarting, setSystemStarting] = useState(false);
   const [fatalReport, setFatalReport] = useState<FatalReport | null>(null);
@@ -130,6 +139,22 @@ export function AppLayout() {
   const documentVisibleRef = useRef(documentVisible);
   const nextToastIdRef = useRef(1);
   const previousFocusedDocPathRef = useRef<string | null>(null);
+
+  const queueTreeRowFlashes = useCallback((docPaths: string[] | undefined, writerType?: string) => {
+    if (!Array.isArray(docPaths) || docPaths.length === 0) {
+      return;
+    }
+    const kind: TreeRowFlashKind = writerType === "agent" ? "agent" : "human";
+    const expiresAt = Date.now() + TREE_ROW_FLASH_DURATION_MS;
+    setTreeRowFlashes((previous) => {
+      const next = new Map(previous);
+      for (const docPath of docPaths) {
+        const normalized = toCanonicalDocPath(docPath);
+        next.set(normalized, { kind, expiresAt });
+      }
+      return next;
+    });
+  }, []);
 
   const loadTree = (options?: { background?: boolean }) => {
     if (options?.background) {
@@ -337,6 +362,28 @@ export function AppLayout() {
   }, [focusedDocPath]);
 
   useEffect(() => {
+    if (treeRowFlashes.size === 0) {
+      return;
+    }
+    const now = Date.now();
+    const nextExpiry = Math.min(...Array.from(treeRowFlashes.values(), (entry) => entry.expiresAt));
+    const waitMs = Math.max(0, nextExpiry - now);
+    const timer = window.setTimeout(() => {
+      const cutoff = Date.now();
+      setTreeRowFlashes((previous) => {
+        const next = new Map(previous);
+        for (const [docPath, entry] of next.entries()) {
+          if (entry.expiresAt <= cutoff) {
+            next.delete(docPath);
+          }
+        }
+        return next;
+      });
+    }, waitMs + 10);
+    return () => window.clearTimeout(timer);
+  }, [treeRowFlashes]);
+
+  useEffect(() => {
     wsClient.connect();
     let refreshTimer: number | null = null;
     const scheduleTreeRefresh = () => {
@@ -352,6 +399,10 @@ export function AppLayout() {
         return;
       }
       if (event.type === "catalog:changed" || event.type === "doc:renamed") {
+        if (event.type === "catalog:changed") {
+          const catalogChanged = event as CatalogChangedEvent;
+          queueTreeRowFlashes(catalogChanged.added_doc_paths, catalogChanged.writer_type);
+        }
         scheduleTreeRefresh();
         return;
       }
@@ -402,6 +453,11 @@ export function AppLayout() {
       wsClient.disconnect();
     };
   }, [wsClient]);
+
+  const flashDocKinds = useMemo(
+    () => new Map(Array.from(treeRowFlashes.entries(), ([docPath, entry]) => [docPath, entry.kind])),
+    [treeRowFlashes],
+  );
 
   // Send sessionDeparture when navigating away from a document
   useEffect(() => {
@@ -509,6 +565,7 @@ export function AppLayout() {
               entries={entries}
               storageKey="ks_sidebar_tree_expanded"
               badgedDocPaths={docBadges}
+              flashDocKinds={flashDocKinds}
               onDocumentOpen={rememberRecentDoc}
               onTreeRefresh={() => loadTree({ background: true })}
             />

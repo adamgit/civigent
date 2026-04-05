@@ -80,6 +80,10 @@ export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionD
   const handleDragOver = useCallback((e: DragEvent) => {
     if (!transferService) return;
 
+    // Let native text-selection drags pass through unmolested
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && !dragSourceInfo) return;
+
     const sectionEl = (e.target as HTMLElement)?.closest?.("[data-section-index]");
     if (!sectionEl) return;
 
@@ -123,6 +127,10 @@ export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionD
 
   const handleDrop = useCallback(async (e: DragEvent) => {
     if (!transferService) return;
+
+    // Let native text-selection drags pass through unmolested
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && !dragSourceInfo) return;
 
     const sectionEl = (e.target as HTMLElement)?.closest?.("[data-section-index]");
     if (!sectionEl) return;

@@ -36,7 +36,7 @@
  */
 
 import path from "node:path";
-import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { access, readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import type { DocStructureNode } from "../types/shared.js";
 import { normalizeDocPath } from "./path-utils.js";
 
@@ -701,19 +701,54 @@ export class DocumentSkeleton {
     return result;
   }
 
-  protected async writeTree(nodes: SkeletonNode[], skeletonPath: string): Promise<void> {
+  /**
+   * Write a skeleton file and recurse into sub-skeletons.
+   *
+   * When inside a sub-skeleton (isSubSkeleton=true), body holder entries
+   * (level=0, heading="") get an empty body file created if one doesn't
+   * already exist on disk. This prevents dangling references: writeTree
+   * overwrites the parent section's body file with sub-skeleton markers,
+   * so the body holder file that replaces it must exist. Callers like
+   * insertSectionUnder write the body file themselves, in which case
+   * the existence check makes this a no-op.
+   *
+   * This intentionally crosses the "skeleton writes skeleton files,
+   * body writes happen through ContentLayer" boundary for this one case —
+   * it's the single place where the skeleton layer creates a structural
+   * dependency that requires a body file to exist.
+   */
+  protected async writeTree(
+    nodes: SkeletonNode[],
+    skeletonPath: string,
+    isSubSkeleton = false,
+  ): Promise<void> {
     const content = serializeSkeletonEntries(
       nodes.map(n => ({ heading: n.heading, level: n.level, sectionFile: n.sectionFile })),
     );
     await mkdir(path.dirname(skeletonPath), { recursive: true });
     await writeFile(skeletonPath, content, "utf8");
 
-    // Recurse into children that have their own sub-skeletons
     const sectionsDir = `${skeletonPath}.sections`;
+
+    // Ensure body holder files exist inside sub-skeletons
+    if (isSubSkeleton) {
+      for (const node of nodes) {
+        if (node.level === 0 && node.heading === "") {
+          const bodyFilePath = path.join(sectionsDir, node.sectionFile);
+          const exists = await access(bodyFilePath).then(() => true, () => false);
+          if (!exists) {
+            await mkdir(sectionsDir, { recursive: true });
+            await writeFile(bodyFilePath, "", "utf8");
+          }
+        }
+      }
+    }
+
+    // Recurse into children that have their own sub-skeletons
     for (const node of nodes) {
       if (node.children.length > 0) {
         const childSkeletonPath = path.join(sectionsDir, node.sectionFile);
-        await this.writeTree(node.children, childSkeletonPath);
+        await this.writeTree(node.children, childSkeletonPath, true);
       }
     }
   }

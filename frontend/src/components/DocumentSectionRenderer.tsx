@@ -23,6 +23,7 @@ export interface DocumentSectionRendererProps {
   hasRemotePresence: boolean;
   dragOverSectionIndex: number | null;
   crdtProvider: CrdtProvider | null;
+  crdtSynced: boolean;
   crdtError: string | null;
   proposalMode: boolean;
   isReady: boolean;
@@ -31,6 +32,7 @@ export interface DocumentSectionRendererProps {
   onFocusSection: (index: number, headingPath: string[], coords: { x: number; y: number }) => void;
   onSetEditorRef: (index: number, handle: MilkdownEditorHandle | null) => void;
   onEditorReady: (index: number) => void;
+  onEditorUnready?: (index: number) => void;
   onProposalSectionChange?: (index: number, markdown: string) => void;
   onCursorExit: (index: number, direction: "up" | "down") => void;
   onCrossSectionDrop: (section: DocumentSection, transfer: SectionTransfer) => void;
@@ -50,6 +52,7 @@ export function DocumentSectionRenderer({
   hasRemotePresence,
   dragOverSectionIndex,
   crdtProvider,
+  crdtSynced,
   crdtError,
   proposalMode,
   isReady,
@@ -58,6 +61,7 @@ export function DocumentSectionRenderer({
   onFocusSection,
   onSetEditorRef,
   onEditorReady,
+  onEditorUnready,
   onProposalSectionChange,
   onCursorExit,
   onCrossSectionDrop,
@@ -86,6 +90,8 @@ export function DocumentSectionRenderer({
       onMouseLeave={() => setHoveredSection(null)}
       onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
       onClick={isLockedByOtherHuman ? undefined : hasEditor ? undefined : (e) => {
+        if (e.shiftKey || e.button !== 0 || e.defaultPrevented) return;
+        if (window.getSelection()?.isCollapsed === false) return;
         const down = mouseDownPosRef.current;
         if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
         void onStartEditing(i, { x: e.clientX, y: e.clientY });
@@ -124,6 +130,8 @@ export function DocumentSectionRenderer({
               style={{ minHeight: isReady ? undefined : 60 }}
               onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
               onClick={(e) => {
+                if (e.shiftKey || e.button !== 0 || e.defaultPrevented) return;
+                if (window.getSelection()?.isCollapsed === false) return;
                 const down = mouseDownPosRef.current;
                 if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
                 if (!isFocused) {
@@ -143,6 +151,7 @@ export function DocumentSectionRenderer({
                 ref={(handle) => onSetEditorRef(i, handle)}
                 markdown={section.content}
                 crdtProvider={proposalMode ? null : crdtProvider}
+                crdtSynced={crdtSynced}
                 fragmentKey={fk}
                 userName={resolveWriterId()}
                 readOnly={!isFocused || isLockedByOtherHuman}
@@ -150,6 +159,7 @@ export function DocumentSectionRenderer({
                 onCursorExit={(direction) => onCursorExit(i, direction)}
                 onCrossSectionDrop={(transfer) => onCrossSectionDrop(section, transfer)}
                 onReady={() => onEditorReady(i)}
+                onUnready={onEditorUnready ? () => onEditorUnready(i) : undefined}
               />
             </div>
           </div>
