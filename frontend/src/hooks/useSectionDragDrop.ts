@@ -104,7 +104,7 @@ export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionD
 
       // Position drop indicator
       if (sectionEl instanceof HTMLElement) {
-        const range = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | null;
+        const range = document.caretRangeFromPoint?.(e.clientX, e.clientY) ?? null;
         if (range) {
           const rect = range.getBoundingClientRect();
           const containerRect = sectionEl.getBoundingClientRect();
@@ -204,7 +204,7 @@ export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionD
     let insertionOffset: number | undefined;
     const sectionContent = getSectionContent?.(idx);
     if (sectionContent && e.clientX && e.clientY) {
-      const range = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | null;
+      const range = document.caretRangeFromPoint?.(e.clientX, e.clientY) ?? null;
       if (range && sectionEl instanceof HTMLElement) {
         insertionOffset = domPosToMarkdownOffset(sectionEl, range, sectionContent);
       }

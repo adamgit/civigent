@@ -33,7 +33,7 @@ RUN cd frontend && npm run build
 
 # ── Production image ────────────────────────────────
 FROM node:24-alpine AS prod
-RUN apk add --no-cache git su-exec
+RUN apk add --no-cache git su-exec ripgrep
 WORKDIR /app
 
 # Backend production deps

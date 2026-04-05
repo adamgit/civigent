@@ -119,7 +119,7 @@ const searchTextHandler: ToolHandler = async (args, ctx) => {
   }
 
   try {
-    const matches = await searchReadableText(ctx.writer, {
+    const result = await searchReadableText(ctx.writer, {
       pattern,
       syntax,
       root: args.root as string | undefined,
@@ -127,7 +127,7 @@ const searchTextHandler: ToolHandler = async (args, ctx) => {
       max_results: args.max_results as number | undefined,
       context_bytes: args.context_bytes as number | undefined,
     });
-    return jsonToolResult({ matches });
+    return jsonToolResult(result);
   } catch (error) {
     if (error instanceof DiscoveryValidationError) {
       return makeToolErrorResult(error.message);

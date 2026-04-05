@@ -257,7 +257,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
       getSections: () => sectionsRef.current.map(s => ({
         heading_path: s.heading_path,
         fragment_key: fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0),
-        blocked: !!(s as any).blocked,
+        blocked: !!s.blocked,
       })),
       getPresenceIndicators: () => presenceIndicatorsRef.current.map(p => ({
         sectionKey: p.sectionKey,

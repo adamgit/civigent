@@ -218,7 +218,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   useImperativeHandle(ref, () => ({
     getMarkdown(): string {
       const crepe = crepeRef.current;
-      if (!crepe) return markdown;
+      if (!crepe || !readyRef.current) return markdown;
       const raw = crepe.getMarkdown();
       return normalizeMarkdown(raw);
     },
@@ -269,6 +269,11 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     const crepe = crepeRef.current;
     const provider = crdtProviderRef.current;
     if (!crepe || !provider || !crepeCreatedRef.current || crdtAttachedRef.current) return;
+    // CRITICAL: ySyncPlugin's _forceRerender() replaces ProseMirror content
+    // with Y.XmlFragment content on attach. If Y.XmlFragment is empty (pre-sync),
+    // this wipes the editor and can propagate empty state to the server, corrupting
+    // the document. MUST wait until Y.Doc is synced and fragments are populated.
+    if (!crdtSyncedRef.current) return;
 
     const view = crepe.editor.ctx.get(editorViewCtx);
     basePMPluginsRef.current = [...view.state.plugins];
@@ -578,10 +583,12 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   }, [crdtProvider]);
 
   // ── Effect 3: crdtSynced ready gate ───────────────────
-  // When crdtSynced transitions to true, check if we can mark ready.
+  // When crdtSynced transitions to true, attach CRDT plugins (if not yet
+  // attached) and check if we can mark ready.
 
   useEffect(() => {
     if (crdtSynced && crepeRef.current && crepeCreatedRef.current) {
+      tryAttachCrdt();
       checkAndSetReady(crepeRef.current);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

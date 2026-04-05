@@ -9,7 +9,7 @@
  */
 
 import { getSchemaSpec } from "@ks/milkdown-serializer";
-import { Schema } from "prosemirror-model";
+import { Schema, type SchemaSpec } from "prosemirror-model";
 
 // ─── Fragment key helpers ────────────────────────────────────────
 
@@ -43,7 +43,7 @@ export function sectionFileFromFragmentKey(key: string): string {
 let _backendSchema: Schema | null = null;
 export function getBackendSchema(): Schema {
   if (!_backendSchema) {
-    _backendSchema = new Schema(getSchemaSpec() as any);
+    _backendSchema = new Schema(getSchemaSpec() as SchemaSpec);
   }
   return _backendSchema;
 }

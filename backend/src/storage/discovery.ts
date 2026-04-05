@@ -1,9 +1,10 @@
 import path from "node:path";
 import { access, readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { performance } from "node:perf_hooks";
 import { checkDocPermission } from "../auth/acl.js";
 import type { AuthenticatedWriter } from "../auth/context.js";
-import { ContentLayer, DocumentNotFoundError } from "./content-layer.js";
+import { ContentLayer, DocumentNotFoundError, SectionNotFoundError } from "./content-layer.js";
 import {
   readDocumentsTree,
   DocumentsTreePathNotFoundError,
@@ -32,6 +33,19 @@ export interface SearchTextMatch {
   heading_path: string[];
   match_context: string;
   match_offset_bytes: number;
+}
+
+export interface SearchTextTimings {
+  total_ms: number;
+  scope_and_acl_ms: number;
+  ripgrep_ms: number;
+  match_mapping_ms: number;
+  context_read_ms: number;
+}
+
+export interface SearchTextResult {
+  matches: SearchTextMatch[];
+  timings: SearchTextTimings;
 }
 
 export interface SearchTextInput {
@@ -79,8 +93,6 @@ interface RawRipgrepMatch {
   startByte: number;
   endByte: number;
 }
-
-const MAX_FILES_PER_RG_BATCH = 500;
 
 function parseDiscoveryScopePath(rawPath: string | undefined, fieldName: string): ParsedScope {
   const trimmed = (rawPath ?? "/").trim();
@@ -248,6 +260,26 @@ function extractContext(content: Buffer, startByte: number, endByte: number, con
   return content.subarray(contextStart, contextEnd).toString("utf8");
 }
 
+function roundMs(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function deriveDocPathFromMatchedFile(contentRoot: string, absolutePath: string): string | null {
+  const relative = path.relative(contentRoot, absolutePath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return null;
+  }
+
+  const segments = relative.split(path.sep).filter(Boolean);
+  const docIndex = segments.findIndex((segment) => segment.endsWith(".md.sections"));
+  if (docIndex < 0) {
+    return null;
+  }
+
+  const docLeaf = segments[docIndex].slice(0, -".sections".length);
+  return "/" + [...segments.slice(0, docIndex), docLeaf].join("/");
+}
+
 function collectRawMatchesFromRgJsonLine(
   line: string,
   results: RawRipgrepMatch[],
@@ -293,22 +325,22 @@ function collectRawMatchesFromRgJsonLine(
   }
 }
 
-async function runRipgrepBatch(
+async function runRipgrepInScope(
   pattern: string,
   syntax: "literal" | "regexp",
   caseSensitive: boolean,
-  files: string[],
+  absoluteScopePath: string,
   maxResults: number,
 ): Promise<RawRipgrepMatch[]> {
   return await new Promise<RawRipgrepMatch[]>((resolve, reject) => {
-    const args = ["--json", "--no-messages"];
+    const args = ["--json", "--no-messages", "--glob", "**/*.sections/**"];
     if (syntax === "literal") {
       args.push("--fixed-strings");
     }
     if (!caseSensitive) {
       args.push("--ignore-case");
     }
-    args.push("-e", pattern, "--", ...files);
+    args.push("-e", pattern, "--", absoluteScopePath);
 
     const child = spawn("rg", args, {
       stdio: ["ignore", "pipe", "pipe"],
@@ -368,6 +400,8 @@ async function runRipgrepBatch(
         processLine(stdoutBuffer);
       }
 
+      const stderrText = stderrBuffer.trim();
+
       if (shouldStopEarly) {
         settleResolve(matches.slice(0, maxResults));
         return;
@@ -379,32 +413,23 @@ async function runRipgrepBatch(
       }
 
       if (code === 2) {
-        const reason = stderrBuffer.trim() || "Invalid search pattern.";
-        settleReject(new SearchTextPatternError(reason));
+        if (syntax === "regexp") {
+          const reason = stderrText || "ripgrep rejected the regexp pattern.";
+          settleReject(new SearchTextPatternError(reason));
+          return;
+        }
+
+        const reason =
+          stderrText ||
+          "ripgrep failed while running literal search (exit code 2). This usually indicates an execution or file-path issue, not an invalid literal pattern.";
+        settleReject(new SearchTextExecutionError(reason));
         return;
       }
 
-      const reason = stderrBuffer.trim() || `ripgrep exited with code ${code ?? "unknown"}.`;
+      const reason = stderrText || `ripgrep exited with code ${code ?? "unknown"}.`;
       settleReject(new SearchTextExecutionError(reason));
     });
   });
-}
-
-async function runRipgrepMatches(
-  pattern: string,
-  syntax: "literal" | "regexp",
-  caseSensitive: boolean,
-  files: string[],
-  maxResults: number,
-): Promise<RawRipgrepMatch[]> {
-  const allMatches: RawRipgrepMatch[] = [];
-  for (let i = 0; i < files.length && allMatches.length < maxResults; i += MAX_FILES_PER_RG_BATCH) {
-    const remaining = maxResults - allMatches.length;
-    const batch = files.slice(i, i + MAX_FILES_PER_RG_BATCH);
-    const batchMatches = await runRipgrepBatch(pattern, syntax, caseSensitive, batch, remaining);
-    allMatches.push(...batchMatches);
-  }
-  return allMatches.slice(0, maxResults);
 }
 
 export async function listReadableDocuments(
@@ -469,66 +494,117 @@ export async function listReadableSections(
 export async function searchReadableText(
   writer: AuthenticatedWriter | null,
   input: SearchTextInput,
-): Promise<SearchTextMatch[]> {
+): Promise<SearchTextResult> {
+  const totalStart = performance.now();
   const normalized = normalizeSearchTextInput(input);
-  const { docPaths } = await resolveScopedReadableDocuments(writer, normalized.root, "root");
+  const scopeStart = performance.now();
+  const { scope, docPaths } = await resolveScopedReadableDocuments(writer, normalized.root, "root");
+  const scopeAndAclMs = performance.now() - scopeStart;
+  const contentRoot = getContentRoot();
+  const readableDocSet = new Set(docPaths);
 
-  const layer = new ContentLayer(getContentRoot());
-  const searchableFiles = new Map<string, SearchableSectionFile>();
-
-  for (const docPath of docPaths) {
-    let sections;
+  let absoluteSearchScope = contentRoot;
+  if (scope.kind === "folder") {
+    absoluteSearchScope = path.join(contentRoot, scope.normalized_path.replace(/^\/+/, ""));
+  } else if (scope.kind === "document") {
+    absoluteSearchScope = resolveDocPathUnderContent(contentRoot, scope.normalized_path) + ".sections";
     try {
-      sections = await layer.getSectionDiscoveryList(docPath);
+      await access(absoluteSearchScope);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") {
+        return {
+          matches: [],
+          timings: {
+            total_ms: roundMs(performance.now() - totalStart),
+            scope_and_acl_ms: roundMs(scopeAndAclMs),
+            ripgrep_ms: 0,
+            match_mapping_ms: 0,
+            context_read_ms: 0,
+          },
+        };
+      }
+      throw error;
+    }
+  }
+
+  const ripgrepStart = performance.now();
+  const rawMatches = await runRipgrepInScope(
+    normalized.pattern,
+    normalized.syntax,
+    normalized.case_sensitive,
+    absoluteSearchScope,
+    normalized.max_results,
+  );
+  const ripgrepMs = performance.now() - ripgrepStart;
+  if (rawMatches.length === 0) {
+    return {
+      matches: [],
+      timings: {
+        total_ms: roundMs(performance.now() - totalStart),
+        scope_and_acl_ms: roundMs(scopeAndAclMs),
+        ripgrep_ms: roundMs(ripgrepMs),
+        match_mapping_ms: 0,
+        context_read_ms: 0,
+      },
+    };
+  }
+
+  const matchMappingStart = performance.now();
+  const searchableFiles = new Map<string, SearchableSectionFile>();
+  const layer = new ContentLayer(contentRoot);
+
+  for (const rawMatch of rawMatches) {
+    const docPath = deriveDocPathFromMatchedFile(contentRoot, rawMatch.absolutePath);
+    if (!docPath || !readableDocSet.has(docPath)) {
+      continue;
+    }
+
+    const sectionFileId = path.basename(rawMatch.absolutePath);
+    try {
+      const resolved = await layer.resolveSectionFileId(docPath, sectionFileId);
+      if (resolved.absolutePath !== rawMatch.absolutePath) {
+        continue;
+      }
+      searchableFiles.set(`${rawMatch.absolutePath}:${rawMatch.startByte}:${rawMatch.endByte}`, {
+        docPath,
+        headingPath: resolved.headingPath,
+        absolutePath: rawMatch.absolutePath,
+      });
     } catch (error) {
       if (error instanceof DocumentNotFoundError) {
         continue;
       }
+      if (error instanceof SectionNotFoundError) {
+        continue;
+      }
       throw error;
     }
-
-    for (const section of sections) {
-      searchableFiles.set(section.absolutePath, {
-        docPath,
-        headingPath: section.headingPath,
-        absolutePath: section.absolutePath,
-      });
-    }
   }
-
-  if (searchableFiles.size === 0) {
-    return [];
-  }
-
-  const rawMatches = await runRipgrepMatches(
-    normalized.pattern,
-    normalized.syntax,
-    normalized.case_sensitive,
-    [...searchableFiles.keys()],
-    normalized.max_results,
-  );
-  if (rawMatches.length === 0) {
-    return [];
-  }
+  const matchMappingMs = performance.now() - matchMappingStart;
 
   const fileCache = new Map<string, Buffer>();
   const matches: SearchTextMatch[] = [];
+  let contextReadMs = 0;
   for (const match of rawMatches) {
     if (matches.length >= normalized.max_results) break;
 
-    const fileMeta = searchableFiles.get(match.absolutePath);
+    const fileMeta = searchableFiles.get(`${match.absolutePath}:${match.startByte}:${match.endByte}`);
     if (!fileMeta) continue;
 
     let fileContent = fileCache.get(fileMeta.absolutePath);
     if (!fileContent) {
+      const contextReadStart = performance.now();
       try {
         fileContent = await readFile(fileMeta.absolutePath);
       } catch (error) {
+        contextReadMs += performance.now() - contextReadStart;
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
           continue;
         }
         throw error;
       }
+      contextReadMs += performance.now() - contextReadStart;
       fileCache.set(fileMeta.absolutePath, fileContent);
     }
 
@@ -540,5 +616,14 @@ export async function searchReadableText(
     });
   }
 
-  return matches;
+  return {
+    matches,
+    timings: {
+      total_ms: roundMs(performance.now() - totalStart),
+      scope_and_acl_ms: roundMs(scopeAndAclMs),
+      ripgrep_ms: roundMs(ripgrepMs),
+      match_mapping_ms: roundMs(matchMappingMs),
+      context_read_ms: roundMs(contextReadMs),
+    },
+  };
 }

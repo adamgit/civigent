@@ -20,6 +20,7 @@ import { AgentFeedPage } from "../pages/AgentFeedPage";
 import { ImportsPage } from "../pages/ImportsPage";
 import { SnapshotsPage } from "../pages/SnapshotsPage";
 import { AgentMcpLogsPage } from "../pages/AgentMcpLogsPage";
+import { SearchTextPage } from "../pages/SearchTextPage";
 import type { RouteObject } from "react-router-dom";
 
 export const routeConfig: RouteObject[] = [
@@ -47,6 +48,7 @@ export const routeConfig: RouteObject[] = [
       { path: "agents-activity", element: <AgentsPage /> },
       { path: "agents-activity/feed", element: <AgentFeedPage /> },
       { path: "imports", element: <ImportsPage /> },
+      { path: "search-text", element: <SearchTextPage /> },
       { path: "login", element: <LoginPage /> }
     ]
   }

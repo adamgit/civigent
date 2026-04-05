@@ -167,6 +167,56 @@ export function HomePage() {
           </Link>
         </div>
 
+        {/* Manual search */}
+        <form
+          action="/search-text"
+          method="GET"
+          style={{
+            marginBottom: "2rem",
+            background: "var(--color-sidebar-bg)",
+            borderRadius: 12,
+            padding: "14px 18px",
+          }}
+        >
+          <input type="hidden" name="root" value="/" />
+          <input type="hidden" name="case_sensitive" value="false" />
+          <input type="hidden" name="max_results" value="20" />
+          <input type="hidden" name="context_bytes" value="100" />
+
+          <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 8 }}>
+            Manual text search
+          </label>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              type="text"
+              name="pattern"
+              placeholder="Search /api/search"
+              className="input-field"
+              style={{ flex: 1, height: 34 }}
+              required
+            />
+            <select
+              name="syntax"
+              defaultValue="literal"
+              className="input-field"
+              style={{ width: 120, height: 34 }}
+            >
+              <option value="literal">Plaintext</option>
+              <option value="regexp">Regexp</option>
+            </select>
+            <button
+              type="submit"
+              className="btn-secondary"
+              style={{ height: 34, whiteSpace: "nowrap" }}
+            >
+              Search
+            </button>
+          </div>
+          <p style={{ marginTop: 6, fontSize: 11, color: "var(--color-text-muted)" }}>
+            Opens formatted search results inside the app.
+          </p>
+        </form>
+
         {/* How it works */}
         <div style={{ marginBottom: "2rem" }}>
           <p style={{ fontSize: 12, fontWeight: 500, color: "var(--color-text-muted)", letterSpacing: "0.04em", marginBottom: 10 }}>

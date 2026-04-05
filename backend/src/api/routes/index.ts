@@ -83,6 +83,7 @@ import {
   DiscoveryValidationError,
   DiscoveryNotFoundError,
   SearchTextPatternError,
+  SearchTextExecutionError,
 } from "../../storage/discovery.js";
 import { emitCatalogMutationEvents } from "../../mcp/catalog-events.js";
 import { resolveAuthenticatedWriter, requireAdmin, isSingleUserMode, type AuthenticatedWriter } from "../../auth/context.js";
@@ -1360,7 +1361,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         contextBytes = Number.parseInt(contextBytesRaw, 10);
       }
 
-      const matches = await searchReadableText(resolveAuthenticatedWriter(req), {
+      const result = await searchReadableText(resolveAuthenticatedWriter(req), {
         pattern,
         syntax,
         root: typeof root === "string" ? root : undefined,
@@ -1368,7 +1369,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         max_results: maxResults,
         context_bytes: contextBytes,
       });
-      res.json({ matches });
+      res.json(result);
     } catch (error) {
       if (error instanceof DiscoveryValidationError || error instanceof SearchTextPatternError) {
         sendApiError(res, 400, error.message);
@@ -1376,6 +1377,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
       if (error instanceof DiscoveryNotFoundError) {
         sendApiError(res, 404, error.message);
+        return;
+      }
+      if (error instanceof SearchTextExecutionError) {
+        sendApiError(res, 502, error.message);
         return;
       }
       next(error);

@@ -104,6 +104,23 @@ export function AdminPage() {
       <h2>Snapshots</h2>
       <p><Link to="/admin/snapshots">View snapshot history</Link> — per-batch file counts, timestamps, and errors.</p>
 
+      <h2>Manual Search</h2>
+      <p>Raw `GET /api/search` form for quick backend/manual testing.</p>
+      <form action="/api/search" method="GET" target="_blank" style={{ display: "grid", gap: "0.5rem", maxWidth: "42rem" }}>
+        <input type="hidden" name="root" value="/" />
+        <input type="hidden" name="case_sensitive" value="false" />
+        <input type="hidden" name="max_results" value="20" />
+        <input type="hidden" name="context_bytes" value="100" />
+        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+          <input type="text" name="pattern" placeholder="Search /api/search" className="input-field" style={{ flex: 1, minWidth: "16rem", height: 34 }} required />
+          <select name="syntax" defaultValue="literal" className="input-field" style={{ width: "8rem", height: 34 }}>
+            <option value="literal">Plaintext</option>
+            <option value="regexp">Regexp</option>
+          </select>
+          <button type="submit">Search raw GET</button>
+        </div>
+      </form>
+
       <h2>Operational Snapshot</h2>
       <p><button type="button" onClick={() => void reloadOperationalSnapshot()}>Refresh snapshot</button></p>
       {loading ? <p>Loading operational snapshot...</p> : null}
