@@ -29,6 +29,17 @@ import type {
 export class ProposalNotFoundError extends Error {}
 export class InvalidProposalStateError extends Error {}
 
+/**
+ * Returns true if the proposal is in a state where its sections can be modified.
+ * Draft proposals are always mutable. Human proposals in inprogress are also mutable
+ * (they hold section locks and can continue editing before final commit).
+ */
+export function isProposalMutable(proposal: AnyProposal): boolean {
+  if (proposal.status === "draft") return true;
+  if (proposal.status === "inprogress" && proposal.writer.type === "human") return true;
+  return false;
+}
+
 const ALL_STATUSES: ProposalStatus[] = ["draft", "pending", "inprogress", "committing", "committed", "withdrawn"];
 
 function statusDir(status: ProposalStatus): string {
@@ -233,6 +244,11 @@ export async function findDraftProposalByWriter(writerId: string): Promise<AnyPr
   return pending.find((p) => p.writer.id === writerId) ?? null;
 }
 
+export async function countDraftsByWriter(writerId: string): Promise<number> {
+  const pending = await listProposals("draft");
+  return pending.filter((p) => p.writer.id === writerId).length;
+}
+
 export interface UpdateProposalResult {
   proposal: AnyProposal;
   contentRoot: string;
@@ -244,9 +260,9 @@ export async function updateProposalSections(
   intent?: string,
 ): Promise<UpdateProposalResult> {
   const { status, filePath } = await locateProposal(id);
-  if (status !== "draft" && status !== "pending") {
+  if (status !== "draft" && status !== "pending" && status !== "inprogress") {
     throw new InvalidProposalStateError(
-      `Cannot update proposal ${id}: status is ${status}, expected draft or pending.`,
+      `Cannot update proposal ${id}: status is ${status}, expected draft, pending, or inprogress.`,
     );
   }
   const file = await readJsonFile(filePath);

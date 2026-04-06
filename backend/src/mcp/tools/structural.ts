@@ -24,6 +24,7 @@ import { lookupDocSession, countEditorSockets } from "../../crdt/ydoc-lifecycle.
 import {
   readProposal,
   updateProposalSections,
+  isProposalMutable,
   ProposalNotFoundError,
   InvalidProposalStateError,
 } from "../../storage/proposal-repository.js";
@@ -45,12 +46,12 @@ async function loadAndValidateProposal(
     if (proposal.writer.id !== writerId) {
       return makeToolErrorResult("You can only modify your own proposals.");
     }
-    if (proposal.status !== "draft") {
+    if (!isProposalMutable(proposal)) {
       return makeToolErrorResult(`Cannot modify proposal in ${proposal.status} state.`);
     }
     // Derive content root from proposal
     const { proposalContentRoot } = await import("../../storage/proposal-repository.js");
-    const contentRoot = proposalContentRoot(proposalId, "draft");
+    const contentRoot = proposalContentRoot(proposalId, proposal.status);
     return { proposal, contentRoot };
   } catch (error) {
     if (error instanceof ProposalNotFoundError) {

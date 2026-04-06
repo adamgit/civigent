@@ -28,6 +28,7 @@ import {
   findDraftProposalByWriter,
   updateProposalSections,
   transitionToWithdrawn,
+  isProposalMutable,
   ProposalNotFoundError,
   InvalidProposalStateError,
 } from "../../storage/proposal-repository.js";
@@ -306,19 +307,13 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
 
   const writer = ctx.writer;
 
-  // Check for existing pending proposal
-  const existing = await findDraftProposalByWriter(writer.id);
-  if (existing) {
-    const replaceFlag = args.replace as boolean | undefined;
-    if (replaceFlag) {
+  // Draft limit: tier-3 agents (collaboration tools) may have multiple drafts.
+  // replace=true auto-withdraws the most recent existing draft for convenience.
+  const replaceFlag = args.replace as boolean | undefined;
+  if (replaceFlag) {
+    const existing = await findDraftProposalByWriter(writer.id);
+    if (existing) {
       await transitionToWithdrawn(existing.id, "auto-withdrawn by replace flag");
-    } else {
-      return jsonToolResult({
-        success: false,
-        error: "You already have a pending proposal.",
-        existing_proposal_id: existing.id,
-        hint: "Set replace=true to auto-withdraw the existing proposal, or cancel it first.",
-      });
     }
   }
 
@@ -600,7 +595,7 @@ const writeSectionHandler: ToolHandler = async (args, ctx) => {
     if (proposal.writer.id !== ctx.writer.id) {
       return makeToolErrorResult("You can only modify your own proposals.");
     }
-    if (proposal.status !== "draft") {
+    if (!isProposalMutable(proposal)) {
       return makeToolErrorResult(`Cannot modify proposal in ${proposal.status} state.`);
     }
 

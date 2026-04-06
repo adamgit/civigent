@@ -54,6 +54,7 @@ import {
   updateProposalSections,
   transitionToWithdrawn,
   transitionToInProgress,
+  isProposalMutable,
   ProposalNotFoundError,
   InvalidProposalStateError,
 } from "../../storage/proposal-repository.js";
@@ -1811,18 +1812,14 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         }
       }
 
-      // Check for existing pending proposal (single-pending-per-writer invariant)
-      const existing = await findDraftProposalByWriter(writer.id);
-      if (existing) {
-        const replaceFlag = req.query.replace === "true";
-        if (replaceFlag) {
+      // Draft limit: humans and tier-3 agents may have multiple drafts.
+      // Tier-1/tier-2 agents enforce maxDrafts=1 at the MCP/filesystem tool level.
+      // replace=true auto-withdraws the most recent existing draft for convenience.
+      const replaceFlag = req.query.replace === "true";
+      if (replaceFlag) {
+        const existing = await findDraftProposalByWriter(writer.id);
+        if (existing) {
           await transitionToWithdrawn(existing.id, "auto-withdrawn by replace flag");
-        } else {
-          res.status(409).json({
-            error: "Writer already has a pending proposal.",
-            existing_proposal_id: existing.id,
-          });
-          return;
         }
       }
 
@@ -2035,7 +2032,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         sendApiError(res, 403, "You can only modify your own proposals.");
         return;
       }
-      if (proposal.status !== "draft") {
+      if (!isProposalMutable(proposal)) {
         sendApiError(res, 409, `Cannot modify proposal in ${proposal.status} state.`);
         return;
       }

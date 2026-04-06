@@ -7,91 +7,17 @@ import { DocumentsTreeNav } from "../components/DocumentsTreeNav";
 import { MirrorPanel } from "../components/MirrorPanel";
 import { SystemFatalScreen } from "../components/SystemFatalScreen";
 import { rememberRecentDoc } from "../services/recent-docs";
-import type { DocumentTreeEntry, AuthUser, CatalogChangedEvent } from "../types/shared.js";
+import type { DocumentTreeEntry, AuthUser } from "../types/shared.js";
 import { stripLeadingSlashForRoute } from "./docsRouteUtils";
+import { DOC_BADGES_STORAGE_KEY, formatBuildDate, toCanonicalDocPath, readBadgeDocPaths, writeBadgeDocPaths, parseRouteDocPath, classifyWsEvent } from "./app-layout-utils";
 
-const DOC_BADGES_STORAGE_KEY = "ks_doc_badges";
 const TREE_ROW_FLASH_DURATION_MS = 2800;
-const BUILD_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 type TreeRowFlashKind = "human" | "agent";
 
 interface TreeRowFlashEntry {
   kind: TreeRowFlashKind;
   expiresAt: number;
-}
-
-function pad2(value: number): string {
-  return String(value).padStart(2, "0");
-}
-
-function formatBuildDate(raw: string): { shortLabel: string; longLabel: string } {
-  const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) {
-    return { shortLabel: raw, longLabel: raw };
-  }
-
-  const day = pad2(date.getUTCDate());
-  const month = BUILD_MONTHS[date.getUTCMonth()];
-  const year = pad2(date.getUTCFullYear() % 100);
-  const hours = pad2(date.getUTCHours());
-  const minutes = pad2(date.getUTCMinutes());
-
-  return {
-    shortLabel: `${day}/${month}`,
-    longLabel: `${day} ${month} ${year} - ${hours}:${minutes}`,
-  };
-}
-
-function toCanonicalDocPath(path: string): string {
-  const trimmed = path.trim();
-  if (!trimmed) {
-    return "/";
-  }
-  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-}
-
-function readBadgeDocPaths(): Set<string> {
-  try {
-    const raw = localStorage.getItem(DOC_BADGES_STORAGE_KEY);
-    if (!raw) {
-      return new Set<string>();
-    }
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) {
-      return new Set<string>();
-    }
-    return new Set(
-      parsed
-        .filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
-        .map((entry) => toCanonicalDocPath(entry)),
-    );
-  } catch {
-    return new Set<string>();
-  }
-}
-
-function writeBadgeDocPaths(paths: Set<string>): void {
-  try {
-    localStorage.setItem(DOC_BADGES_STORAGE_KEY, JSON.stringify(Array.from(paths)));
-  } catch {
-    // Ignore storage write failures in constrained environments.
-  }
-}
-
-function parseRouteDocPath(pathname: string): string | null {
-  if (!pathname.startsWith("/docs/")) {
-    return null;
-  }
-  const encodedPath = pathname.slice("/docs/".length);
-  if (!encodedPath) {
-    return null;
-  }
-  try {
-    return toCanonicalDocPath(decodeURIComponent(encodedPath));
-  } catch {
-    return toCanonicalDocPath(encodedPath);
-  }
 }
 
 interface ToastEntry {
@@ -395,56 +321,33 @@ export function AppLayout() {
       }, 180);
     };
     wsClient.onEvent((event) => {
-      if (event.type === "dirty:changed") {
-        return;
-      }
-      if (event.type === "catalog:changed" || event.type === "doc:renamed") {
-        if (event.type === "catalog:changed") {
-          const catalogChanged = event as CatalogChangedEvent;
-          queueTreeRowFlashes(catalogChanged.added_doc_paths, catalogChanged.writer_type);
-        }
-        scheduleTreeRefresh();
-        return;
-      }
-      if (event.type !== "content:committed") {
-        return;
-      }
-      const committedDocPath = toCanonicalDocPath(event.doc_path);
-      scheduleTreeRefresh();
-
-      // Only show toast for agent commits
-      if (event.writer_type !== "agent") {
-        return;
-      }
-      const currentFocusedDocPath = focusedDocPathRef.current;
       const tabActive = windowFocusedRef.current && documentVisibleRef.current;
-      if (currentFocusedDocPath === committedDocPath && tabActive) {
-        return;
+      const result = classifyWsEvent(event, focusedDocPathRef.current, tabActive);
+
+      if (result.flashDocPaths) {
+        queueTreeRowFlashes(result.flashDocPaths, result.flashWriterType);
       }
-      setDocBadges((previous) => {
-        if (previous.has(committedDocPath)) {
-          return previous;
-        }
-        const next = new Set(previous);
-        next.add(committedDocPath);
-        return next;
-      });
-      if (!tabActive) {
-        return;
+      if (result.refreshTree) {
+        scheduleTreeRefresh();
       }
-      const toastId = nextToastIdRef.current;
-      nextToastIdRef.current += 1;
-      setToasts((previous) => [
-        ...previous,
-        {
-          id: toastId,
-          docPath: committedDocPath,
-          text: `${event.writer_display_name} updated ${committedDocPath}`,
-        },
-      ]);
-      window.setTimeout(() => {
-        setToasts((previous) => previous.filter((entry) => entry.id !== toastId));
-      }, 4500);
+      if (result.addBadge) {
+        const badge = result.addBadge;
+        setDocBadges((previous) => {
+          if (previous.has(badge)) return previous;
+          const next = new Set(previous);
+          next.add(badge);
+          return next;
+        });
+      }
+      if (result.showToast) {
+        const toastId = nextToastIdRef.current;
+        nextToastIdRef.current += 1;
+        const { text, docPath } = result.showToast;
+        setToasts((previous) => [...previous, { id: toastId, docPath, text }]);
+        window.setTimeout(() => {
+          setToasts((previous) => previous.filter((entry) => entry.id !== toastId));
+        }, 4500);
+      }
     });
     return () => {
       if (refreshTimer != null) {
