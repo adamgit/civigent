@@ -6,8 +6,8 @@
  */
 
 import type React from "react";
-import { Link, useOutletContext } from "react-router-dom";
-import type { AppLayoutOutletContext } from "../app/AppLayout";
+import { Link } from "react-router-dom";
+import { useCurrentUser } from "../contexts/CurrentUserContext";
 
 interface SharedPageHeaderProps {
   title: React.ReactNode;
@@ -23,7 +23,7 @@ function userInitials(displayName: string): string {
 }
 
 export function SharedPageHeader({ title, backTo }: SharedPageHeaderProps) {
-  const { currentUser } = useOutletContext<AppLayoutOutletContext>();
+  const currentUser = useCurrentUser();
 
   return (
     <div

@@ -57,10 +57,10 @@ describe("LoginPage flows", () => {
   it("single-user login calls loginSingleUser and redirects", async () => {
     renderLogin();
     await waitFor(() => {
-      expect(screen.getByText("Use single-user session")).toBeDefined();
+      expect(screen.getByTestId("login-single-user")).toBeDefined();
     });
 
-    fireEvent.click(screen.getByText("Use single-user session"));
+    fireEvent.click(screen.getByTestId("login-single-user"));
 
     await waitFor(() => {
       const loginCalls = fetchMock.mock.calls.filter(

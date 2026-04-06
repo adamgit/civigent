@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { SectionNavigator } from "../../components/SectionNavigator";
 import type { DocStructureNode } from "../../types/shared";
 
@@ -18,6 +18,7 @@ const sampleStructure: DocStructureNode[] = [
 
 describe("SectionNavigator", () => {
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
   });
 
@@ -57,7 +58,7 @@ describe("SectionNavigator", () => {
 
   it("add button calls onCreateSection with parent path", () => {
     const onCreateSection = vi.fn();
-    vi.spyOn(window, "prompt").mockReturnValue("New Section");
+    vi.stubGlobal("prompt", vi.fn(() => "New Section"));
 
     render(
       <SectionNavigator
@@ -79,7 +80,7 @@ describe("SectionNavigator", () => {
 
   it("rename button calls onRenameSection with new heading", () => {
     const onRenameSection = vi.fn();
-    vi.spyOn(window, "prompt").mockReturnValue("Updated Title");
+    vi.stubGlobal("prompt", vi.fn(() => "Updated Title"));
 
     render(
       <SectionNavigator
@@ -100,7 +101,7 @@ describe("SectionNavigator", () => {
 
   it("delete button calls onDeleteSection with path", () => {
     const onDeleteSection = vi.fn();
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.stubGlobal("confirm", vi.fn(() => true));
 
     render(
       <SectionNavigator
@@ -177,7 +178,7 @@ describe("SectionNavigator", () => {
 
   it("'+ Add section' button at root level calls onCreateSection with null parent", () => {
     const onCreateSection = vi.fn();
-    vi.spyOn(window, "prompt").mockReturnValue("Root Section");
+    vi.stubGlobal("prompt", vi.fn(() => "Root Section"));
 
     render(
       <SectionNavigator

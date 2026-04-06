@@ -25,7 +25,7 @@ import {
   type PendingProposalIndicator,
   normalizeDocPath,
   headingPathToLabel,
-  fragmentKeyFromSectionFile,
+  getSectionFragmentKey,
   HIGHLIGHT_DURATION_MS,
 } from "../pages/document-page-utils";
 import type { CrdtProvider } from "../services/crdt-provider";
@@ -151,7 +151,7 @@ export function useDocumentWebSocket({
               const hpKey = sectionHeadingKey(s.heading_path);
               const match = sectionsRef.current.find((sec) => sectionHeadingKey(sec.heading_path) === hpKey);
               if (match) {
-                const fk = fragmentKeyFromSectionFile(match.section_file, match.heading_path.length === 0);
+                const fk = getSectionFragmentKey(match);
                 next.delete(fk); // clean = absent from the map
               }
             }
@@ -183,7 +183,7 @@ export function useDocumentWebSocket({
                 resp.sections.map((s) => [sectionHeadingKey(s.heading_path), s]),
               );
               for (let i = 0; i < next.length; i++) {
-                const fk = fragmentKeyFromSectionFile(next[i].section_file, next[i].heading_path.length === 0);
+                const fk = getSectionFragmentKey(next[i]);
                 if (crdtBound.has(fk)) continue; // skip sections with live editors
                 const key = sectionHeadingKey(next[i].heading_path);
                 const fresh = freshByKey.get(key);
@@ -284,7 +284,7 @@ export function useDocumentWebSocket({
         }
 
         // Snapshot old section keys before reload so we can detect removals.
-        const oldKeys = new Set(secs.map((s) => fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0)));
+        const oldKeys = new Set(secs.map((s) => getSectionFragmentKey(s)));
 
         // Refresh section list and structure tree, then detect removed sections.
         // Use the returned sections directly — sectionsRef.current is not yet updated
@@ -295,7 +295,7 @@ export function useDocumentWebSocket({
           // on the dead socket to clear them.
           if (mountedEditorFragmentKeysRef.current.size === 0) return;
 
-          const newKeys = new Set(newSections.map((s) => fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0)));
+          const newKeys = new Set(newSections.map((s) => getSectionFragmentKey(s)));
           const removedKeys = [...oldKeys].filter((k) => !newKeys.has(k));
           if (removedKeys.length > 0) {
             setDeletionPlaceholders((prev) => {
@@ -303,7 +303,7 @@ export function useDocumentWebSocket({
               for (const rk of removedKeys) {
                 if (next.some((p) => p.fragmentKey === rk)) continue;
                 // Find the old section's heading from the snapshot
-                const oldSec = secs.find((s) => fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0) === rk);
+                const oldSec = secs.find((s) => getSectionFragmentKey(s) === rk);
                 next.push({
                   fragmentKey: rk,
                   formerHeading: oldSec ? (oldSec.heading_path[oldSec.heading_path.length - 1] ?? "") : "",

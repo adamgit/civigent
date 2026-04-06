@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { DocumentsTreeNav } from "../../components/DocumentsTreeNav";
 import type { DocumentTreeEntry } from "../../types/shared";
@@ -35,6 +35,7 @@ describe("DocumentsTreeNav", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
     localStorage.clear();
   });

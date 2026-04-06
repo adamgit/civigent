@@ -9,8 +9,9 @@
  * There is NO periodic timer. Commits only happen on the above triggers.
  */
 
-import { getAllSessions, lookupDocSession, type DocSession } from "../crdt/ydoc-lifecycle.js";
-import { FragmentStore } from "../crdt/fragment-store.js";
+import path from "node:path";
+import { readFile } from "node:fs/promises";
+import { getAllSessions, lookupDocSession, normalizeAllFragments, type DocSession } from "../crdt/ydoc-lifecycle.js";
 import { fragmentKeyFromSectionFile } from "../crdt/ydoc-fragments.js";
 
 import {
@@ -18,6 +19,7 @@ import {
   commitSessionFilesToCanonical,
   cleanupSessionFiles,
 } from "./session-store.js";
+import { getSessionAuthorsRoot } from "./data-root.js";
 import type { WriterIdentity, WsServerEvent, SectionTargetRef } from "../types/shared.js";
 
 export interface AutoCommitResult {
@@ -32,12 +34,63 @@ export function setAutoCommitEventHandler(handler: (event: WsServerEvent) => voi
   onWsEvent = handler;
 }
 
+function sameHeadingPath(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((segment, index) => segment === b[index]);
+}
+
+function sessionHasMatchingDirtyScope(
+  session: DocSession,
+  writerId: string,
+  headingPaths?: string[][],
+): boolean {
+  const dirtyFragments = session.perUserDirty.get(writerId);
+  if (!dirtyFragments || dirtyFragments.size === 0) {
+    return false;
+  }
+  if (!headingPaths || headingPaths.length === 0) {
+    return true;
+  }
+
+  let matched = false;
+  session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+    if (matched) return;
+    const isBeforeFirstHeading = level === 0 && heading === "";
+    const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBeforeFirstHeading);
+    if (!dirtyFragments.has(fragmentKey)) return;
+    if (headingPaths.some((target) => sameHeadingPath(target, headingPath))) {
+      matched = true;
+    }
+  });
+  return matched;
+}
+
+async function readWriterDirtySections(
+  writerId: string,
+): Promise<Array<{ docPath: string; headingPath: string[] }>> {
+  const authorFile = path.join(getSessionAuthorsRoot(), `${writerId}.json`);
+  try {
+    const raw = await readFile(authorFile, "utf8");
+    const data = JSON.parse(raw) as {
+      writerId: string;
+      dirtySections?: Array<{ docPath?: string; headingPath?: string[] }>;
+    };
+    if (!Array.isArray(data.dirtySections)) {
+      return [];
+    }
+    return data.dirtySections
+      .filter((entry) => typeof entry.docPath === "string")
+      .map((entry) => ({
+        docPath: entry.docPath!,
+        headingPath: Array.isArray(entry.headingPath) ? entry.headingPath : [],
+      }));
+  } catch {
+    return [];
+  }
+}
+
 /**
- * Commit dirty sections for a specific writer from active sessions.
- * Used by the "Publish Now" manual action (user is still connected).
- *
- * Uses forEachSection() visitor with stable fragment keys (section-file-ID-based)
- * so heading renames don't cause key mismatches.
+ * Commit a writer's unpublished session content from canonical-ready session files.
+ * Used by the "Publish Now" manual action while the session stays alive.
  */
 export async function commitDirtySections(
   writer: WriterIdentity,
@@ -45,145 +98,127 @@ export async function commitDirtySections(
   headingPaths?: string[][],
 ): Promise<AutoCommitResult> {
   const sessions = getAllSessions();
-  const sectionsToCommit: Array<{ doc_path: string; heading_path: string[]; content: string }> = [];
-  for (const [, session] of sessions) {
+  const activeSessions = [...sessions.values()].filter((session) => {
+    if (!session.holders.has(writer.id)) return false;
+    if (docPath && session.docPath !== docPath) return false;
+    return sessionHasMatchingDirtyScope(session, writer.id, headingPaths);
+  });
+
+  const docPathsToCommit = new Set<string>(activeSessions.map((session) => session.docPath));
+  const diskDirtySections = await readWriterDirtySections(writer.id);
+  for (const entry of diskDirtySections) {
+    if (docPath && entry.docPath !== docPath) continue;
+    if (headingPaths && headingPaths.length > 0 && !headingPaths.some((target) => sameHeadingPath(target, entry.headingPath))) {
+      continue;
+    }
+    docPathsToCommit.add(entry.docPath);
+  }
+
+  if (docPathsToCommit.size === 0) {
+    return { committed: false, sectionsPublished: [] };
+  }
+
+  // Flush first, then normalize against the live Y.Doc before committing from sessions/docs/.
+  for (const session of [...sessions.values()]) {
     if (!session.holders.has(writer.id)) continue;
-    if (docPath && session.docPath !== docPath) continue;
-
-    const dirtyFragments = session.perUserDirty.get(writer.id);
-    if (!dirtyFragments || dirtyFragments.size === 0) continue;
-
-    // Flush session to disk first so the overlay skeleton is up to date
+    if (!docPathsToCommit.has(session.docPath)) continue;
     await flushDocSessionToDisk(session);
-
-    // Iterate skeleton entries — stable fragment keys mean no rename ambiguity
-    session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
-      const isBeforeFirstHeading = level === 0 && heading === "";
-      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBeforeFirstHeading);
-      if (!dirtyFragments.has(fragmentKey)) return;
-      if (headingPaths && !headingPaths.some(
-        (target) => JSON.stringify(target) === JSON.stringify(headingPath),
-      )) return;
-
-      const markdown = session.fragments.readBodyForDisk(fragmentKey);
-      if (!markdown) return;
-
-      sectionsToCommit.push({
-        doc_path: session.docPath,
-        heading_path: [...headingPath],
-        content: markdown,
-      });
-    });
+    await normalizeAllFragments(session);
   }
 
-  if (sectionsToCommit.length === 0) {
-    return { committed: false, sectionsPublished: [] };
-  }
-
-  // Build contributors: primary writer + any session contributors (writers who sent activity pulses).
-  const contributors: WriterIdentity[] = [writer];
-  const seenContributorIds = new Set([writer.id]);
-  for (const [, session] of sessions) {
-    if (!session.holders.has(writer.id)) continue;
-    if (docPath && session.docPath !== docPath) continue;
-    for (const [contribId, contribIdentity] of session.contributors) {
-      if (!seenContributorIds.has(contribId)) {
-        seenContributorIds.add(contribId);
-        contributors.push(contribIdentity);
-      }
-    }
-  }
-
-  // Flush ensures disk is current. Commit from disk (handles skeleton promotion).
+  const sectionsPublished: SectionTargetRef[] = [];
   let commitSha: string | undefined;
-  for (const dp of new Set(sectionsToCommit.map((s) => s.doc_path))) {
-    const result = await commitSessionFilesToCanonical(contributors, dp);
-    if (result.sectionsCommitted > 0) {
-      await cleanupSessionFiles(dp);
-      if (result.commitSha) {
-        commitSha = result.commitSha;
-      }
-    }
-  }
+  const docEvents: Array<{
+    docPath: string;
+    commitSha: string;
+    sections: SectionTargetRef[];
+    contributorIds: string[];
+    writerIdsCleared: string[];
+  }> = [];
 
-  if (!commitSha) {
-    return { committed: false, sectionsPublished: [] };
-  }
-
-  // Clear dirty state for ALL writers' committed sections (not just publisher).
-  // The CRDT merge means the committed content includes all writers' edits.
-  const otherWriterCleared: Array<{ writerId: string; doc_path: string; heading_path: string[] }> = [];
-  for (const [, session] of sessions) {
-    for (const [otherWriterId, dirtyFragments] of session.perUserDirty) {
-      for (const section of sectionsToCommit) {
-        if (session.docPath === section.doc_path) {
-          try {
-            const entry = session.fragments.skeleton.expect(section.heading_path);
-            const fk = FragmentStore.fragmentKeyFor(entry);
-            if (dirtyFragments.has(fk)) {
-              dirtyFragments.delete(fk);
-              if (otherWriterId !== writer.id) {
-                otherWriterCleared.push({
-                  writerId: otherWriterId,
-                  doc_path: section.doc_path,
-                  heading_path: section.heading_path,
-                });
-              }
-            }
-          } catch {
-            // Heading path no longer resolves — section was renamed/restructured
-            // during editing. The dirty entry stays (harmless stale reference).
-          }
+  for (const dp of docPathsToCommit) {
+    const docSessions = [...sessions.values()].filter((session) => session.docPath === dp);
+    const contributors: WriterIdentity[] = [writer];
+    const seenContributorIds = new Set([writer.id]);
+    for (const session of docSessions) {
+      for (const [contribId, contribIdentity] of session.contributors) {
+        if (!seenContributorIds.has(contribId)) {
+          seenContributorIds.add(contribId);
+          contributors.push(contribIdentity);
         }
       }
     }
-    // Update baseHead
-    if (sectionsToCommit.some((s) => s.doc_path === session.docPath)) {
-      session.baseHead = commitSha;
+    const result = await commitSessionFilesToCanonical(contributors, dp);
+    if (result.skeletonErrors.length > 0) {
+      throw new Error(
+        `commitDirtySections: commit skipped for ${dp}: ` +
+        result.skeletonErrors.map((entry) => entry.error).join("\n"),
+      );
+    }
+    if (result.sectionsCommitted > 0) {
+      await cleanupSessionFiles(dp);
+      if (!result.commitSha) {
+        continue;
+      }
+      commitSha = result.commitSha;
+      sectionsPublished.push(...result.committedSections);
+
+      const writerIdsCleared = new Set<string>([writer.id]);
+      for (const session of docSessions) {
+        for (const [otherWriterId, dirtyFragments] of session.perUserDirty) {
+          if (dirtyFragments.size > 0) {
+            writerIdsCleared.add(otherWriterId);
+          }
+          for (const fk of dirtyFragments) {
+            session.fragmentFirstActivity.delete(fk);
+            session.fragmentLastActivity.delete(fk);
+          }
+          dirtyFragments.clear();
+        }
+        session.baseHead = result.commitSha;
+      }
+
+      docEvents.push({
+        docPath: dp,
+        commitSha: result.commitSha,
+        sections: result.committedSections,
+        contributorIds: contributors.map((contributor) => contributor.id),
+        writerIdsCleared: [...writerIdsCleared],
+      });
     }
   }
 
-  const sectionsPublished = sectionsToCommit.map((s) => ({
-    doc_path: s.doc_path,
-    heading_path: s.heading_path,
-  }));
+  if (!commitSha || sectionsPublished.length === 0) {
+    return { committed: false, sectionsPublished: [] };
+  }
 
   if (onWsEvent) {
-    onWsEvent({
-      type: "content:committed",
-      doc_path: sectionsToCommit[0].doc_path,
-      sections: sectionsPublished,
-      commit_sha: commitSha,
-      writer_id: writer.id,
-      writer_display_name: writer.displayName,
-      writer_type: writer.type,
-      contributor_ids: contributors.map((c) => c.id),
-      seconds_ago: 0,
-    });
-
-    for (const section of sectionsPublished) {
+    for (const event of docEvents) {
       onWsEvent({
-        type: "dirty:changed",
+        type: "content:committed",
+        doc_path: event.docPath,
+        sections: event.sections,
+        commit_sha: event.commitSha,
         writer_id: writer.id,
-        doc_path: section.doc_path,
-        heading_path: section.heading_path,
-        dirty: false,
-        base_head: null,
-        committed_head: commitSha,
+        writer_display_name: writer.displayName,
+        writer_type: writer.type,
+        contributor_ids: event.contributorIds,
+        seconds_ago: 0,
       });
-    }
 
-    // Emit dirty:changed for other writers whose dirty state was cleared
-    for (const cleared of otherWriterCleared) {
-      onWsEvent({
-        type: "dirty:changed",
-        writer_id: cleared.writerId,
-        doc_path: cleared.doc_path,
-        heading_path: cleared.heading_path,
-        dirty: false,
-        base_head: null,
-        committed_head: commitSha,
-      });
+      for (const writerId of event.writerIdsCleared) {
+        for (const section of event.sections) {
+          onWsEvent({
+            type: "dirty:changed",
+            writer_id: writerId,
+            doc_path: section.doc_path,
+            heading_path: section.heading_path,
+            dirty: false,
+            base_head: null,
+            committed_head: event.commitSha,
+          });
+        }
+      }
     }
   }
 

@@ -136,6 +136,7 @@ export function LoginPage() {
 
                 {/* Single-user session */}
                 <button
+                  data-testid="login-single-user"
                   onClick={() => void handleSingleUserLogin()}
                   disabled={working || !supportsSingleUser}
                   className="w-full flex items-center gap-2.5 mb-2"
@@ -222,6 +223,7 @@ export function LoginPage() {
 
               {/* Session management */}
               <button
+                data-testid="logout"
                 onClick={() => void handleLogout()}
                 disabled={working}
                 className="btn-secondary w-full"

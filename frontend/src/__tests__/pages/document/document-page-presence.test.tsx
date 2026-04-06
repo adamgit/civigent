@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import { render, screen, waitFor, act, cleanup } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { jsonResponse } from "../../helpers/fetch-mocks";
 import type { WsServerEvent } from "../../../types/shared";
@@ -30,6 +30,15 @@ vi.mock("../../../services/crdt-provider", () => ({
     disconnect = vi.fn();
     destroy = vi.fn();
     focusSection = vi.fn();
+  },
+}));
+
+vi.mock("../../../services/observer-crdt-provider", () => ({
+  ObserverCrdtProvider: class {
+    connect = vi.fn();
+    disconnect = vi.fn();
+    destroy = vi.fn();
+    doc = { on: vi.fn() };
   },
 }));
 
@@ -93,38 +102,36 @@ function renderDocPage() {
   );
 }
 
+function mockFetch() {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
+    const urlStr = String(url);
+    if (urlStr.includes("/sections")) {
+      return jsonResponse(sectionsResponse);
+    }
+    if (urlStr.includes("/structure")) {
+      return jsonResponse({ structure: [] });
+    }
+    if (urlStr.includes("/changes-since")) {
+      return jsonResponse({ changed_sections: [] });
+    }
+    return jsonResponse({});
+  });
+}
+
 describe("DocumentPage presence", () => {
   beforeEach(() => {
-    vi.useFakeTimers();
     capturedWsHandler = null;
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
-      const urlStr = String(url);
-      if (urlStr.includes("/sections")) {
-        return jsonResponse(sectionsResponse);
-      }
-      if (urlStr.includes("/structure")) {
-        return jsonResponse({ structure: [] });
-      }
-      if (urlStr.includes("/changes-since")) {
-        return jsonResponse({ changed_sections: [] });
-      }
-      return jsonResponse({});
-    });
+    mockFetch();
   });
 
   afterEach(() => {
-    vi.useRealTimers();
+    cleanup();
     vi.restoreAllMocks();
     localStorage.clear();
   });
 
   it("presence:editing event shows other user name on affected section", async () => {
-    await act(async () => {
-      renderDocPage();
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
+    renderDocPage();
     await waitFor(() => {
       expect(screen.getByText("Overview.")).toBeDefined();
     });
@@ -132,9 +139,11 @@ describe("DocumentPage presence", () => {
     act(() => {
       capturedWsHandler?.({
         type: "presence:editing",
+        writer_id: "user-alice",
+        writer_display_name: "Alice",
+        writer_type: "human",
         doc_path: "test.md",
         heading_path: ["Overview"],
-        writer_display_name: "Alice",
       } as WsServerEvent);
     });
 
@@ -144,12 +153,7 @@ describe("DocumentPage presence", () => {
   });
 
   it("presence:done event removes presence indicator", async () => {
-    await act(async () => {
-      renderDocPage();
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
+    renderDocPage();
     await waitFor(() => {
       expect(screen.getByText("Overview.")).toBeDefined();
     });
@@ -158,9 +162,11 @@ describe("DocumentPage presence", () => {
     act(() => {
       capturedWsHandler?.({
         type: "presence:editing",
+        writer_id: "user-alice",
+        writer_display_name: "Alice",
+        writer_type: "human",
         doc_path: "test.md",
         heading_path: ["Overview"],
-        writer_display_name: "Alice",
       } as WsServerEvent);
     });
 
@@ -172,9 +178,11 @@ describe("DocumentPage presence", () => {
     act(() => {
       capturedWsHandler?.({
         type: "presence:done",
+        writer_id: "user-alice",
+        writer_display_name: "Alice",
+        writer_type: "human",
         doc_path: "test.md",
         heading_path: ["Overview"],
-        writer_display_name: "Alice",
       } as WsServerEvent);
     });
 
@@ -184,12 +192,7 @@ describe("DocumentPage presence", () => {
   });
 
   it("agent:reading event shows agent indicator on affected sections", async () => {
-    await act(async () => {
-      renderDocPage();
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
+    renderDocPage();
     await waitFor(() => {
       expect(screen.getByText("Overview.")).toBeDefined();
     });
@@ -197,9 +200,10 @@ describe("DocumentPage presence", () => {
     act(() => {
       capturedWsHandler?.({
         type: "agent:reading",
+        actor_id: "agent-1",
+        actor_display_name: "Agent Bot",
         doc_path: "test.md",
         heading_paths: [["Overview"]],
-        writer_display_name: "Agent Bot",
       } as WsServerEvent);
     });
 
@@ -209,36 +213,33 @@ describe("DocumentPage presence", () => {
   });
 
   it("agent reading indicator expires after 5 seconds", async () => {
-    await act(async () => {
-      renderDocPage();
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
+    renderDocPage();
     await waitFor(() => {
       expect(screen.getByText("Overview.")).toBeDefined();
     });
 
+    // Install fake timers BEFORE the event so the expiry interval is created under fake timers
+    vi.useFakeTimers();
+
     act(() => {
       capturedWsHandler?.({
         type: "agent:reading",
+        actor_id: "agent-1",
+        actor_display_name: "Agent Bot",
         doc_path: "test.md",
         heading_paths: [["Overview"]],
-        writer_display_name: "Agent Bot",
       } as WsServerEvent);
     });
 
-    await waitFor(() => {
-      expect(screen.getByText(/Agent Bot/)).toBeDefined();
-    });
+    // Indicator should be visible immediately
+    expect(screen.getByText(/Agent Bot/)).toBeDefined();
 
     // Advance past expiry (5s + buffer)
     await act(async () => {
       await vi.advanceTimersByTimeAsync(6000);
     });
 
-    await waitFor(() => {
-      expect(screen.queryByText(/Agent Bot/)).toBeNull();
-    });
+    expect(screen.queryByText(/Agent Bot/)).toBeNull();
+    vi.useRealTimers();
   });
 });

@@ -19,7 +19,7 @@ import { ContentLayer, OverlayContentLayer } from "./content-layer.js";
 import { CanonicalStore } from "./canonical-store.js";
 import type { WriterIdentity } from "../types/shared.js";
 import type { DocSession } from "../crdt/ydoc-lifecycle.js";
-import type { FlushResult } from "../crdt/fragment-store.js";
+import type { FlushResult } from "../crdt/document-fragments.js";
 import {
   sectionFileFromFragmentKey,
 } from "../crdt/ydoc-fragments.js";
@@ -155,7 +155,7 @@ export async function scanSessionFragmentDocPaths(): Promise<string[]> {
  * Thin wrapper around FragmentStore.flush() that handles session-level
  * concerns (dirty tracking cleanup, author metadata).
  */
-export { type FlushResult } from "../crdt/fragment-store.js";
+export { type FlushResult } from "../crdt/document-fragments.js";
 
 export async function flushDocSessionToDisk(
   session: DocSession,
@@ -165,11 +165,6 @@ export async function flushDocSessionToDisk(
   }
 
   const result = await session.fragments.flush();
-
-  // Clean perUserDirty tracking for all flushed keys (Mirror panel attribution)
-  for (const dirtySet of session.perUserDirty.values()) {
-    for (const key of result.writtenKeys) dirtySet.delete(key);
-  }
 
   // Update author metadata files
   const authorsRoot = getSessionAuthorsRoot();

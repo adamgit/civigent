@@ -16,6 +16,7 @@ import { OverwriteMarkdownModal } from "../components/OverwriteMarkdownModal";
 import { useCrossSectionCopy } from "../hooks/useCrossSectionCopy";
 import { useViewingPresence } from "../hooks/useViewingPresence";
 import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
+import { DocumentResourceModel } from "../models/document-resource-model";
 import type { Awareness } from "y-protocols/awareness";
 import {
   sectionHeadingKey,
@@ -25,13 +26,13 @@ import {
 import {
   type DocumentSection,
   headingPathToLabel,
-  fragmentKeyFromSectionFile,
+  getSectionFragmentKey,
   formatRelativeAgeFromMs,
   getDocDisplayName,
   shouldMountEditor,
   LOADING_REVEAL_DELAY_MS,
 } from "./document-page-utils";
-import { useDocumentCrdt } from "../hooks/useDocumentCrdt";
+import { useDocumentSessionController } from "../hooks/useDocumentSessionController";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
 import { SummaryWhoChangedThisSection } from "../components/SummaryWhoChangedThisSection.js";
 
@@ -96,6 +97,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const [lastVisitSeed, setLastVisitSeed] = useState<{ docPath: string; since: string | null } | null>(null);
 
   const sectionsContainerRef = useRef<HTMLDivElement>(null);
+  const resourceModel = useMemo(() => new DocumentResourceModel(), []);
 
   // ── Load sections ────────────────────────────────────────
   const loadSections = useCallback(async (docPath: string): Promise<DocumentSection[]> => {
@@ -104,9 +106,9 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     setSectionsLoading(true);
     setError(null);
     try {
-      const sectionsResp = await apiClient.getDocumentSections(docPath);
-      setSections(sectionsResp.sections);
-      return sectionsResp.sections;
+      const nextSections = await resourceModel.loadSections(docPath);
+      setSections(nextSections);
+      return nextSections;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       return [];
@@ -116,7 +118,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
       }
       setSectionsLoading(false);
     }
-  }, []);
+  }, [resourceModel]);
 
   // ── CRDT hook ─────────────────────────────────────────────
   const {
@@ -158,7 +160,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     setViewingSections,
     requestMode,
     stopObserver,
-  } = useDocumentCrdt({
+  } = useDocumentSessionController({
     decodedDocPath,
     sections,
     setSections,
@@ -256,7 +258,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
       crdtProvider: activeCrdtProvider,
       getSections: () => sectionsRef.current.map(s => ({
         heading_path: s.heading_path,
-        fragment_key: fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0),
+        fragment_key: getSectionFragmentKey(s),
         blocked: !!s.blocked,
       })),
       getPresenceIndicators: () => presenceIndicatorsRef.current.map(p => ({
@@ -276,7 +278,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     transferService: transferServiceRef.current,
     getFragmentKey: (idx) => {
       const s = sectionsRef.current[idx];
-      return s ? fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0) : null;
+      return s ? getSectionFragmentKey(s) : null;
     },
     getHeadingPath: (idx) => {
       const s = sectionsRef.current[idx];
@@ -307,12 +309,12 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     if (!decodedDocPath) return;
     let cancelled = false;
     setStructureTree(null);
-    apiClient.getDocumentStructure(decodedDocPath).then((resp) => {
+    resourceModel.loadStructure(decodedDocPath).then((structure) => {
       if (cancelled) return;
-      setStructureTree(resp.structure);
+      setStructureTree(structure);
     }).catch(() => { /* non-fatal background fetch */ });
     return () => { cancelled = true; };
-  }, [decodedDocPath]);
+  }, [decodedDocPath, resourceModel]);
 
   // ── Delayed loading reveal (suppress flicker on fast loads) ──
   useEffect(() => {
@@ -422,7 +424,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const handleCrossSectionDrop = useCallback((sec: DocumentSection, transfer: SectionTransfer) => {
     transfer.targetHeadingPath = sec.heading_path;
     const srcSection = sectionsRef.current.find(s =>
-      fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0) === transfer.sourceFragmentKey,
+      getSectionFragmentKey(s) === transfer.sourceFragmentKey,
     );
     if (srcSection) transfer.sourceHeadingPath = srcSection.heading_path;
     void transferServiceRef.current?.execute(transfer);
@@ -497,8 +499,8 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
                 // Trigger a re-fetch of sections by re-navigating
                 if (decodedDocPath) {
                   setSectionsLoading(true);
-                  apiClient.getDocumentSections(decodedDocPath).then(
-                    (res) => { setSections(res.sections); setSectionsLoading(false); },
+                  resourceModel.loadSections(decodedDocPath).then(
+                    (nextSections) => { setSections(nextSections); setSectionsLoading(false); },
                     () => { setSectionsLoading(false); },
                   );
                 }
@@ -542,7 +544,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
                       if (!decodedDocPath || !renameValue.trim()) return;
                       setRenameError(null);
                       try {
-                        await apiClient.renameDocument(decodedDocPath, renameValue.trim());
+                        await resourceModel.renameDocument(decodedDocPath, renameValue.trim());
                         setRenaming(false);
                       } catch (err) {
                         setRenameError(err instanceof Error ? err.message : String(err));
@@ -575,7 +577,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
                         if (!window.confirm("Delete this document? This cannot be undone.")) return;
                         setDeleteError(null);
                         try {
-                          await apiClient.deleteDocument(decodedDocPath);
+                          await resourceModel.deleteDocument(decodedDocPath);
                           navigate("/");
                         } catch (err) {
                           setDeleteError(err instanceof Error ? err.message : String(err));
@@ -629,7 +631,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
           {/* Section rows — each is a flex row so left gutter aligns with its section */}
           {!sectionsLoading ? sections.map((section, i) => {
             const sectionKey = sectionHeadingKey(section.heading_path);
-            const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path.length === 0);
+            const fk = getSectionFragmentKey(section);
             const sectionLabel = headingPathToLabel(section.heading_path);
             return (
               <div key={fk} className="flex items-stretch">
@@ -657,7 +659,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
                     isLockedByOtherHuman={!!section.blocked}
                     highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
                     injectedByWriter={injectedByLabel.get(sectionLabel) ?? null}
-                    hasRemotePresence={presenceIndicators.some((p) => p.sectionKey === sectionKey)}
+                    remotePresenceNames={presenceIndicators.filter((p) => p.sectionKey === sectionKey).map((p) => p.writerDisplayName)}
                     dragOverSectionIndex={dragOverSectionIndex}
                     crdtProvider={crdtProvider}
                     crdtSynced={crdtSynced}

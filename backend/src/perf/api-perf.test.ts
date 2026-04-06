@@ -14,7 +14,9 @@ import { ensureGitRepoReady, getHeadSha } from "../storage/git-repo.js";
 import { ensureV3Directories, getDataRoot } from "../storage/data-root.js";
 import { acquireDocSession, releaseDocSession, lookupDocSession, setFlushCallback } from "../crdt/ydoc-lifecycle.js";
 import { flushDocSessionToDisk } from "../storage/session-store.js";
+import type { WriterIdentity } from "../types/shared.js";
 
+const PERF_WRITER: WriterIdentity = { id: "perf-writer", type: "human", displayName: "Perf Writer", email: "perf@test.local" };
 const DEV_DATA = path.resolve(__dirname, "../../../dev-data");
 const MAX_MS = 10_000;
 
@@ -57,7 +59,7 @@ describe("API performance (dev-data)", () => {
 
   async function enterEditMode(docPath: string, writerId: string) {
     const baseHead = await getHeadSha(getDataRoot());
-    await acquireDocSession(docPath, writerId, baseHead);
+    await acquireDocSession(docPath, writerId, baseHead, PERF_WRITER);
   }
 
   // ── Test 1: Sidebar ──────────────────────────────────────

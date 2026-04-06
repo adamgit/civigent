@@ -396,6 +396,8 @@ export interface GetDocumentSectionsResponse {
     crdt_session_active: boolean;
     section_length_warning: boolean;
     word_count: number;
+    /** Opaque backend-owned CRDT fragment identity. */
+    fragment_key: string;
     /** Section filename (e.g. "sec_abc123def.md"). Used by frontend to build
      *  stable fragment keys that survive heading renames. */
     section_file: string;

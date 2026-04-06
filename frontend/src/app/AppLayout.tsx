@@ -7,6 +7,7 @@ import { DocumentsTreeNav } from "../components/DocumentsTreeNav";
 import { MirrorPanel } from "../components/MirrorPanel";
 import { SystemFatalScreen } from "../components/SystemFatalScreen";
 import { rememberRecentDoc } from "../services/recent-docs";
+import { CurrentUserProvider } from "../contexts/CurrentUserContext";
 import type { DocumentTreeEntry, AuthUser } from "../types/shared.js";
 import { stripLeadingSlashForRoute } from "./docsRouteUtils";
 import { DOC_BADGES_STORAGE_KEY, formatBuildDate, toCanonicalDocPath, readBadgeDocPaths, writeBadgeDocPaths, parseRouteDocPath, classifyWsEvent } from "./app-layout-utils";
@@ -32,7 +33,6 @@ export interface AppLayoutOutletContext {
   treeSyncing: boolean;
   treeError: string | null;
   createDoc: (path: string) => Promise<void>;
-  currentUser: AuthUser | null;
 }
 
 export function AppLayout() {
@@ -565,18 +565,20 @@ export function AppLayout() {
               ))}
             </div>
           ) : null}
-          {systemStarting ? (
-            <div className="flex flex-col items-center justify-center h-full gap-4 text-text-faint">
-              <div className="flex gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse" />
-                <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse [animation-delay:300ms]" />
-                <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse [animation-delay:600ms]" />
+          <CurrentUserProvider currentUser={currentUser}>
+            {systemStarting ? (
+              <div className="flex flex-col items-center justify-center h-full gap-4 text-text-faint">
+                <div className="flex gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse" />
+                  <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse [animation-delay:300ms]" />
+                  <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse [animation-delay:600ms]" />
+                </div>
+                <p className="text-sm">The system is starting up. This page will refresh automatically.</p>
               </div>
-              <p className="text-sm">The system is starting up. This page will refresh automatically.</p>
-            </div>
-          ) : (
-            <Outlet context={{ entries, treeLoading: loadingTree, treeSyncing: syncingTree, treeError, createDoc, currentUser } satisfies AppLayoutOutletContext} />
-          )}
+            ) : (
+              <Outlet context={{ entries, treeLoading: loadingTree, treeSyncing: syncingTree, treeError, createDoc } satisfies AppLayoutOutletContext} />
+            )}
+          </CurrentUserProvider>
         </main>
         <MirrorPanel />
       </div>

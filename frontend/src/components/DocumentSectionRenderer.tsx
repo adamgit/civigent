@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 import { MilkdownEditor, type MilkdownEditorHandle } from "./MilkdownEditor";
 import type { CrdtProvider } from "../services/crdt-provider";
 import type { SectionPersistenceState, DocumentSection } from "../pages/document-page-utils";
-import { headingPathToLabel, fragmentKeyFromSectionFile } from "../pages/document-page-utils";
+import { headingPathToLabel } from "../pages/document-page-utils";
 import { resolveWriterId } from "../services/api-client";
 import type { SectionTransfer } from "../services/section-transfer";
 import { useSectionHover } from "../contexts/sectionHoverUtils";
@@ -20,7 +20,7 @@ export interface DocumentSectionRendererProps {
   isLockedByOtherHuman: boolean;
   highlightLabel: string | null;
   injectedByWriter: string | null;
-  hasRemotePresence: boolean;
+  remotePresenceNames: string[];
   dragOverSectionIndex: number | null;
   crdtProvider: CrdtProvider | null;
   crdtSynced: boolean;
@@ -49,7 +49,7 @@ export function DocumentSectionRenderer({
   isLockedByOtherHuman,
   highlightLabel,
   injectedByWriter,
-  hasRemotePresence,
+  remotePresenceNames,
   dragOverSectionIndex,
   crdtProvider,
   crdtSynced,
@@ -82,7 +82,7 @@ export function DocumentSectionRenderer({
           ? `bg-green-50/70 border-l-green-400 cursor-pointer hover:bg-section-hover`
           : isFocused
           ? `cursor-pointer hover:bg-section-hover border-l-accent-emphasis`
-          : hasRemotePresence
+          : remotePresenceNames.length > 0
           ? `cursor-pointer hover:bg-section-hover border-l-blue-400`
           : `cursor-pointer hover:bg-section-hover border-l-transparent`
       }${dragOverSectionIndex === i ? " section-drop-target" : ""}${injectedByWriter ? " section-injected-flash" : ""}`}
@@ -104,6 +104,13 @@ export function DocumentSectionRenderer({
         </span>
       ) : null}
 
+      {/* Remote presence — who else is editing this section */}
+      {remotePresenceNames.length > 0 ? (
+        <span className="text-[10px] text-blue-600">
+          {remotePresenceNames.join(", ")} editing
+        </span>
+      ) : null}
+
       {/* Section body: editor or static preview */}
       {isRestructuring ? (
         <div className="py-3">
@@ -120,10 +127,12 @@ export function DocumentSectionRenderer({
           </div>
         ) : (
           <div className="relative">
-            {/* ReactMarkdown underlayer — visible until editor is ready */}
-            <div className="doc-prose" style={{ display: isReady ? "none" : undefined }}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
-            </div>
+            {/* ReactMarkdown underlayer — shown until editor is ready, then unmounted */}
+            {!isReady && (
+              <div className="doc-prose">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
+              </div>
+            )}
             {/* MilkdownEditor overlay — absolute until ready, then back in flow */}
             <div
               className={isReady ? "" : "absolute inset-0"}
@@ -155,6 +164,7 @@ export function DocumentSectionRenderer({
                 fragmentKey={fk}
                 userName={resolveWriterId()}
                 readOnly={!isFocused || isLockedByOtherHuman}
+                expectsCrdt={!proposalMode}
                 onChange={proposalMode && onProposalSectionChange ? (md) => onProposalSectionChange(i, md) : undefined}
                 onCursorExit={(direction) => onCursorExit(i, direction)}
                 onCrossSectionDrop={(transfer) => onCrossSectionDrop(section, transfer)}

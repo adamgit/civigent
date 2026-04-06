@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act, cleanup } from "@testing-library/react";
 import { jsonResponse } from "../helpers/fetch-mocks";
 
 let wsOnEventHandler: ((event: unknown) => void) | null = null;
@@ -30,7 +30,7 @@ let fetchMock: ReturnType<typeof vi.fn>;
 
 describe("MirrorPanel", () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     wsOnEventHandler = null;
 
     fetchMock = vi.fn().mockImplementation(async (url: unknown, init?: RequestInit) => {
@@ -50,6 +50,7 @@ describe("MirrorPanel", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
     vi.useRealTimers();
   });

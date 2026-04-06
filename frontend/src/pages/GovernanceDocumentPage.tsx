@@ -13,6 +13,7 @@ import { DocumentFooter } from "../components/DocumentFooter";
 import DocumentDiagnostics from "../components/DocumentDiagnostics";
 import { OverwriteMarkdownModal } from "../components/OverwriteMarkdownModal";
 import { useCrossSectionCopy } from "../hooks/useCrossSectionCopy";
+import { DocumentResourceModel } from "../models/document-resource-model";
 import {
   sectionHeadingKey,
   type DocStructureNode,
@@ -20,13 +21,13 @@ import {
 import {
   type DocumentSection,
   headingPathToLabel,
-  fragmentKeyFromSectionFile,
+  getSectionFragmentKey,
   formatRelativeAgeFromMs,
   getDocDisplayName,
   shouldMountEditor,
   LOADING_REVEAL_DELAY_MS,
 } from "./document-page-utils";
-import { useDocumentCrdt } from "../hooks/useDocumentCrdt";
+import { useDocumentSessionController } from "../hooks/useDocumentSessionController";
 import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
 import { useGovernanceData } from "../hooks/useGovernanceData";
 import { useBlameData } from "../hooks/useBlameData";
@@ -69,6 +70,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   const [lastVisitSeed, setLastVisitSeed] = useState<{ docPath: string; since: string | null } | null>(null);
 
   const sectionsContainerRef = useRef<HTMLDivElement>(null);
+  const resourceModel = useMemo(() => new DocumentResourceModel(), []);
 
   // ── Load sections ────────────────────────────────────────
   const loadSections = useCallback(async (docPath: string): Promise<DocumentSection[]> => {
@@ -77,9 +79,9 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     setSectionsLoading(true);
     setError(null);
     try {
-      const sectionsResp = await apiClient.getDocumentSections(docPath);
-      setSections(sectionsResp.sections);
-      return sectionsResp.sections;
+      const nextSections = await resourceModel.loadSections(docPath);
+      setSections(nextSections);
+      return nextSections;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       return [];
@@ -89,7 +91,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
       }
       setSectionsLoading(false);
     }
-  }, []);
+  }, [resourceModel]);
 
   // ── CRDT hook ─────────────────────────────────────────────
   const {
@@ -130,7 +132,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     setViewingSections,
     requestMode,
     stopObserver,
-  } = useDocumentCrdt({
+  } = useDocumentSessionController({
     decodedDocPath,
     sections,
     setSections,
@@ -183,7 +185,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
       crdtProvider: activeCrdtProvider,
       getSections: () => sectionsRef.current.map(s => ({
         heading_path: s.heading_path,
-        fragment_key: fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0),
+        fragment_key: getSectionFragmentKey(s),
         blocked: !!s.blocked,
       })),
       getPresenceIndicators: () => presenceIndicatorsRef.current.map(p => ({
@@ -203,7 +205,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     transferService: transferServiceRef.current,
     getFragmentKey: (idx) => {
       const s = sectionsRef.current[idx];
-      return s ? fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0) : null;
+      return s ? getSectionFragmentKey(s) : null;
     },
     getHeadingPath: (idx) => {
       const s = sectionsRef.current[idx];
@@ -234,12 +236,12 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     if (!decodedDocPath) return;
     let cancelled = false;
     setStructureTree(null);
-    apiClient.getDocumentStructure(decodedDocPath).then((resp) => {
+    resourceModel.loadStructure(decodedDocPath).then((structure) => {
       if (cancelled) return;
-      setStructureTree(resp.structure);
+      setStructureTree(structure);
     }).catch(() => { /* non-fatal background fetch */ });
     return () => { cancelled = true; };
-  }, [decodedDocPath]);
+  }, [decodedDocPath, resourceModel]);
 
   // ── Delayed loading reveal (suppress flicker on fast loads) ──
   useEffect(() => {
@@ -358,7 +360,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   const handleCrossSectionDrop = useCallback((sec: DocumentSection, transfer: SectionTransfer) => {
     transfer.targetHeadingPath = sec.heading_path;
     const srcSection = sectionsRef.current.find(s =>
-      fragmentKeyFromSectionFile(s.section_file, s.heading_path.length === 0) === transfer.sourceFragmentKey,
+      getSectionFragmentKey(s) === transfer.sourceFragmentKey,
     );
     if (srcSection) transfer.sourceHeadingPath = srcSection.heading_path;
     void transferServiceRef.current?.execute(transfer);
@@ -475,7 +477,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
 
             {!sectionsLoading ? sections.map((section, i) => {
               const sectionKey = sectionHeadingKey(section.heading_path);
-              const fk = fragmentKeyFromSectionFile(section.section_file, section.heading_path.length === 0);
+              const fk = getSectionFragmentKey(section);
               const sectionLabel = headingPathToLabel(section.heading_path);
 
               const blameEntry = showAttribution ? blameMap.get(section.section_file) : undefined;
@@ -517,7 +519,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       isLockedByOtherHuman={!!section.blocked}
                       highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
                       injectedByWriter={null}
-                      hasRemotePresence={presenceIndicatorsRef.current.some((p) => p.sectionKey === sectionKey)}
+                      remotePresenceNames={presenceIndicatorsRef.current.filter((p) => p.sectionKey === sectionKey).map((p) => p.writerDisplayName)}
                       dragOverSectionIndex={dragOverSectionIndex}
                       crdtProvider={crdtProvider}
                       crdtSynced={crdtSynced}

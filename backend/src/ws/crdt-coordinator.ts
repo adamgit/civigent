@@ -17,17 +17,9 @@ import { resolveWriterWithExpiry } from "../auth/context.js";
 import { checkDocPermission } from "../auth/acl.js";
 import {
   lookupDocSession,
-  acquireDocSession,
   releaseDocSession,
-  getDocSessionId,
-  updateSectionFocus,
   joinSession,
   updateActivity,
-  updateEditPulse,
-  markFragmentDirty,
-  triggerDebouncedFlush,
-  triggerImmediateFlush,
-  normalizeFragment,
   setFlushCallback,
   setNormalizeBroadcast,
   setYjsUpdateBroadcast,
@@ -37,14 +29,12 @@ import {
   addObserverHolder,
   removeObserverHolder,
   countEditorSockets,
-  addContributor,
   getPendingRestoreNotification,
   setBroadcastRestoreInvalidation,
   type DocSession,
 } from "../crdt/ydoc-lifecycle.js";
 import { setPostCommitHook } from "../storage/commit-pipeline.js";
-import { FragmentStore } from "../crdt/fragment-store.js";
-import { fragmentFromRemark, type FragmentContent } from "../storage/section-formatting.js";
+import { documentSessionRegistry } from "../crdt/document-session-registry.js";
 import { getHeadSha } from "../storage/git-repo.js";
 import { getDataRoot } from "../storage/data-root.js";
 import { flushDocSessionToDisk, commitSessionFilesToCanonical, cleanupSessionFiles } from "../storage/session-store.js";
@@ -324,7 +314,8 @@ async function applyModeTransition(
 
     state.requestedMode = request.requestedMode;
     state.editorFocusTarget = request.editorFocusTarget;
-    const session = lookupDocSession(state.docPath);
+    const liveSession = documentSessionRegistry.get(state.docPath);
+    const session = liveSession?.raw;
     state.socketRole = "observer";
     if (session) {
       addObserverHolder(session, state.writerId, {
@@ -333,7 +324,7 @@ async function applyModeTransition(
         displayName: state.writerDisplayName,
       }, state.socketId);
       joinAndNotify(session, socket, state);
-      state.docSessionId = session.docSessionId;
+      state.docSessionId = liveSession!.docSessionId;
       state.attachmentState = "attached_to_session";
     } else {
       state.docSessionId = null;
@@ -375,15 +366,18 @@ async function applyModeTransition(
       }
     }
     const baseHead = await getHeadSha(getDataRoot());
-    const session = await acquireDocSession(
-      state.docPath,
-      state.writerId,
+    const liveSession = await documentSessionRegistry.getOrCreate({
+      docPath: state.docPath,
       baseHead,
-      { id: state.writerId, type: state.writerType, displayName: state.writerDisplayName },
-      state.socketId,
-    );
+      initialEditor: {
+        writerId: state.writerId,
+        identity: { id: state.writerId, type: state.writerType, displayName: state.writerDisplayName },
+        socketId: state.socketId,
+      },
+    });
+    const session = liveSession.raw;
     state.socketRole = "editor";
-    state.docSessionId = session.docSessionId;
+    state.docSessionId = liveSession.docSessionId;
     state.attachmentState = "attached_to_session";
 
     joinAndNotify(session, socket, state);
@@ -463,7 +457,8 @@ async function handleMessage(
   }
 
   const activeSession = lookupDocSession(state.docPath);
-  const session = activeSession;
+  const liveSession = activeSession ? documentSessionRegistry.get(state.docPath) : null;
+  const session = liveSession?.raw ?? null;
   const doc = session?.fragments.ydoc;
 
   if (!doc && msgType !== MSG_MODE_TRANSITION_REQUEST) {
@@ -504,37 +499,30 @@ async function handleMessage(
       break;
     }
     case MSG_YJS_UPDATE: {
-      Y.applyUpdate(doc!, payload);
-      broadcastToOthers(state.docPath, socket, encodeUpdate(payload));
-      updateActivity(state.docPath);
-
-      // Track which fragment this writer dirtied (for author metadata).
-      const focusedPath = session!.presenceManager.getAll().get(state.writerId);
-      if (focusedPath) {
-        const entry = session!.fragments.skeleton.expect(focusedPath);
-        const fragmentKey = FragmentStore.fragmentKeyFor(entry);
-        session!.fragments.markDirty(fragmentKey);
-        const isNewlyDirty = markFragmentDirty(state.docPath, state.writerId, fragmentKey);
-        if (isNewlyDirty && onWsEvent) {
-          onWsEvent({
-            type: "dirty:changed",
-            writer_id: state.writerId,
-            doc_path: state.docPath,
-            heading_path: focusedPath,
-            dirty: true,
-            base_head: session!.baseHead,
-          });
+      const command = liveSession!.applyYjsUpdate(state.writerId, payload);
+      for (const message of command.socketMessages ?? []) {
+        if (message.audience === "others") {
+          broadcastToOthers(state.docPath, socket, encodeUpdate(message.payload));
+        } else if (message.audience === "all") {
+          broadcastToAll(state.docPath, encodeUpdate(message.payload));
+        } else {
+          sendToSocket(socket, encodeUpdate(message.payload));
         }
-      } else {
-        // No focus set yet — mark only the fragments actually touched by this transaction
-        for (const fragmentKey of session!.lastTouchedFragments) {
-          session!.fragments.markDirty(fragmentKey);
-          markFragmentDirty(state.docPath, state.writerId, fragmentKey);
-        }
-        session!.lastTouchedFragments.clear();
       }
 
-      triggerDebouncedFlush(state.docPath);
+      // Broadcast dirty:changed events for newly-dirtied fragments
+      for (const change of command.dirtyChanges ?? []) {
+        if (onWsEvent) {
+          onWsEvent({
+            type: "dirty:changed",
+            writer_id: change.writerId,
+            doc_path: state.docPath,
+            heading_path: change.headingPath,
+            dirty: change.dirty,
+            base_head: liveSession!.baseHead,
+          });
+        }
+      }
       break;
     }
     case MSG_AWARENESS: {
@@ -550,49 +538,30 @@ async function handleMessage(
         .decode(payload)
         .split("\x00")
         .filter(Boolean);
-      // headingPath=[] is a valid focus (before-first-heading section), not "no focus"
       state.editorFocusTarget = headingPath.length > 0
         ? { kind: "heading_path", heading_path: headingPath }
         : { kind: "before_first_heading" };
       updateParticipant(state.clientInstanceId, { editorFocusTarget: state.editorFocusTarget });
 
-      const { oldFocus } = updateSectionFocus(state.docPath, state.writerId, headingPath);
+      const command = await liveSession!.setFocus(
+        state.writerId,
+        headingPath,
+        {
+          id: state.writerId,
+          type: state.writerType,
+          displayName: state.writerDisplayName,
+        },
+      );
 
-      // Normalize the LEFT (old) fragment on focus change
-      if (oldFocus) {
-        const oldEntry = session!.fragments.skeleton.find(oldFocus);
-        if (oldEntry) {
-          const oldKey = FragmentStore.fragmentKeyFor(oldEntry);
-          await normalizeFragment(state.docPath, oldKey);
-        }
-      }
-
-      // Broadcast editingPresence events
       if (onWsEvent) {
-        if (oldFocus) {
-          onWsEvent({
-            type: "presence:done",
-            writer_id: state.writerId,
-            writer_display_name: state.writerDisplayName,
-            writer_type: state.writerType,
-            doc_path: state.docPath,
-            heading_path: oldFocus,
-          });
+        for (const event of command.hubEvents ?? []) {
+          onWsEvent(event);
         }
-        onWsEvent({
-          type: "presence:editing",
-          doc_path: state.docPath,
-          writer_id: state.writerId,
-          writer_display_name: state.writerDisplayName,
-          writer_type: state.writerType,
-          heading_path: headingPath,
-        });
       }
       break;
     }
     case MSG_ACTIVITY_PULSE: {
-      updateEditPulse(state.docPath, state.writerId);
-      addContributor(state.docPath, state.writerId, {
+      liveSession!.recordActivityPulse(state.writerId, {
         id: state.writerId,
         type: state.writerType,
         displayName: state.writerDisplayName,
@@ -600,7 +569,7 @@ async function handleMessage(
       break;
     }
     case MSG_FLUSH_REQUEST: {
-      triggerImmediateFlush(state.docPath);
+      liveSession!.flushNow();
       break;
     }
     case MSG_SECTION_MUTATE: {
@@ -613,23 +582,22 @@ async function handleMessage(
         break;
       }
 
-      const entry = session!.fragments.resolveEntryForKey(parsed.fragmentKey);
-      if (!entry) {
-        sendToSocket(socket, encodeMutateResult(false, `Fragment key not found: ${parsed.fragmentKey}`));
+      const command = liveSession!.mutateSection(state.writerId, parsed.fragmentKey, parsed.markdown);
+      if (command.error) {
+        sendToSocket(socket, encodeMutateResult(false, command.error));
         break;
       }
 
-      const svBefore = Y.encodeStateVector(doc!);
-      session!.fragments.setFragmentContent(parsed.fragmentKey, fragmentFromRemark(parsed.markdown));
-      session!.fragments.markDirty(parsed.fragmentKey);
-      markFragmentDirty(state.docPath, state.writerId, parsed.fragmentKey);
-
-      const update = Y.encodeStateAsUpdate(doc!, svBefore);
-      if (update.length > 0) {
-        broadcastToOthers(state.docPath, socket, encodeUpdate(update));
+      for (const message of command.socketMessages ?? []) {
+        if (message.audience === "others") {
+          broadcastToOthers(state.docPath, socket, encodeUpdate(message.payload));
+        } else if (message.audience === "all") {
+          broadcastToAll(state.docPath, encodeUpdate(message.payload));
+        } else {
+          sendToSocket(socket, encodeUpdate(message.payload));
+        }
       }
 
-      triggerDebouncedFlush(state.docPath);
       sendToSocket(socket, encodeMutateResult(true));
       break;
     }
@@ -810,7 +778,7 @@ export function createCrdtWsServer(): CrdtWsServer {
         socketRole: "observer",
         requestedMode: "none",
         attachmentState: "detached",
-        docSessionId: getDocSessionId(route.docPath),
+        docSessionId: documentSessionRegistry.getSessionId(route.docPath),
         editorFocusTarget: null,
         tokenExp,
         canRead,

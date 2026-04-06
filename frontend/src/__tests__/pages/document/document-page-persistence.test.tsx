@@ -6,7 +6,7 @@ import { jsonResponse } from "../../helpers/fetch-mocks";
 // --- CrdtProvider mock with callback capture ---
 
 type ProviderOpts = {
-  onLocalUpdate?: () => void;
+  onLocalUpdate?: (modifiedFragmentKeys: string[]) => void;
   onFlushStarted?: () => void;
   onSessionFlushed?: (payload: { writtenKeys: string[]; deletedKeys: string[] }) => void;
   onStateChange?: (state: string) => void;
@@ -22,6 +22,10 @@ vi.mock("../../../services/crdt-provider", () => ({
     constructor(_doc: unknown, _docPath: string, opts: ProviderOpts) {
       capturedOpts = opts;
     }
+    awareness = {
+      getLocalState: () => ({ user: {} }),
+      setLocalStateField: vi.fn(),
+    };
     connect = vi.fn();
     disconnect = vi.fn();
     destroy = vi.fn();
@@ -138,7 +142,7 @@ describe("DocumentPage persistence", () => {
     });
 
     // Simulate local update callback
-    capturedOpts!.onLocalUpdate?.();
+    capturedOpts!.onLocalUpdate?.(["section::sec_overview"]);
 
     await waitFor(() => {
       expect(screen.getByText("Unsaved")).toBeDefined();
@@ -157,7 +161,7 @@ describe("DocumentPage persistence", () => {
     });
 
     // Mark dirty
-    capturedOpts!.onLocalUpdate?.();
+    capturedOpts!.onLocalUpdate?.(["section::sec_overview"]);
     await waitFor(() => {
       expect(screen.getByText("Unsaved")).toBeDefined();
     });
@@ -181,7 +185,7 @@ describe("DocumentPage persistence", () => {
     });
 
     // Mark dirty then flush
-    capturedOpts!.onLocalUpdate?.();
+    capturedOpts!.onLocalUpdate?.(["section::sec_overview"]);
     capturedOpts!.onFlushStarted?.();
     capturedOpts!.onSessionFlushed?.({
       writtenKeys: ["section::sec_overview"],

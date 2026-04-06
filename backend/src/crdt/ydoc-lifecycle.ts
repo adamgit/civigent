@@ -18,6 +18,7 @@ import type {
 } from "../types/shared.js";
 import type { PreemptiveCommitResult } from "../storage/auto-commit.js";
 import { FragmentStore, SERVER_INJECTION_ORIGIN } from "./fragment-store.js";
+import { DocumentFragments } from "./document-fragments.js";
 import { fragmentKeyFromSectionFile } from "./ydoc-fragments.js";
 import { PresenceManager } from "./presence-manager.js";
 import { SectionRef } from "../domain/section-ref.js";
@@ -54,7 +55,7 @@ export interface HolderEntry {
 export interface DocSession {
   /** Explicit lifecycle state. Drives entry guards and transition assertions. */
   state: SessionState;
-  fragments: FragmentStore;                // Y.Doc + skeleton paired together
+  fragments: DocumentFragments;                // Y.Doc + skeleton paired together
   docPath: string;
   /** All connected participants (editors + observers) keyed by writerId. */
   holders: Map<string, HolderEntry>;
@@ -222,7 +223,7 @@ export async function acquireDocSession(
   // Store the promise BEFORE the first await so any concurrent caller hits
   // the fast path above instead of spawning a second fromDisk() call.
   const creationPromise = (async (): Promise<DocSession> => {
-    const { store: fragments, orphanedBodies } = await FragmentStore.fromDisk(docPath);
+    const { store: fragments, orphanedBodies } = await DocumentFragments.fromDisk(docPath);
     if (orphanedBodies.length > 0) {
       // Append a "Recovered edits" section so the user can review orphaned content
       const { buildRecoverySectionMarkdown } = await import("../storage/crash-recovery.js");
@@ -650,7 +651,7 @@ export function removeObserverHolder(docPath: string, writerId: string, socketId
  * Normalize all fragments in a session that have embedded headings.
  * Called on disconnect (after flush) and shutdown.
  */
-async function normalizeAllFragments(session: DocSession): Promise<void> {
+export async function normalizeAllFragments(session: DocSession): Promise<void> {
   const fragments = session.fragments;
 
   // Collect fragment keys first (normalization may mutate the skeleton)

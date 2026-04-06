@@ -78,6 +78,11 @@ export function fragmentKeyFromSectionFile(sectionFile: string, isBeforeFirstHea
   return "section::" + stem;
 }
 
+/** Read the opaque backend-owned fragment key for a section. */
+export function getSectionFragmentKey(section: DocumentSection): string {
+  return section.fragment_key;
+}
+
 export function formatRelativeAgeFromMs(changedAtMs: number): string {
   return relativeTime(changedAtMs);
 }

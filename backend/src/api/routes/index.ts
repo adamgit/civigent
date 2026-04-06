@@ -70,6 +70,7 @@ import {
   countEditorSockets,
   invalidateSessionForRestore,
 } from "../../crdt/ydoc-lifecycle.js";
+import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { preemptiveFlushAndCommit } from "../../storage/auto-commit.js";
 import { SectionGuard } from "../../domain/section-guard.js";
 import { readDocSectionCommitInfo, type SectionCommitInfo } from "../../storage/section-activity.js";
@@ -668,6 +669,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           section_length_warning: meta.section_length_warning,
           word_count: meta.word_count,
           section_file: sectionFileByKey.get(headingKey) ?? "",
+          fragment_key: fragmentKeyFromSectionFile(
+            sectionFileByKey.get(headingKey) ?? "",
+            headingPath.length === 0,
+          ),
           last_editor: meta.last_editor,
           ...(blocked ? { blocked: true } : {}),
         });

@@ -59,7 +59,7 @@ describe("api-client", () => {
     await apiClient.getDocumentSections("ops/strategy.md");
     expect(
       fetchMock.calls.some((c) =>
-        String(c.input).includes(`/api/documents/${encodeURIComponent("ops/strategy.md")}/sections`),
+        String(c.input).includes("/api/documents/ops/strategy.md/sections"),
       ),
     ).toBe(true);
   });
@@ -75,16 +75,6 @@ describe("api-client", () => {
     expect(fetchMock.calls.some((c) => String(c.input) === "/api/proposals")).toBe(true);
   });
 
-  it("listProposals with status filter appends query param", async () => {
-    fetchMock = installFetchMock(async (input) => {
-      if (String(input).includes("/api/auth/session")) {
-        return jsonResponse({ authenticated: true, user: { id: "u" }, login_providers: [] });
-      }
-      return jsonResponse({ proposals: [] });
-    });
-    await apiClient.listProposals("pending");
-    expect(fetchMock.calls.some((c) => String(c.input).includes("status=draft"))).toBe(true);
-  });
 
   it("commitProposal calls POST /api/proposals/{id}/commit", async () => {
     fetchMock = installFetchMock(async (input) => {

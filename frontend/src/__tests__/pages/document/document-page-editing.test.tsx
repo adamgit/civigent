@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { jsonResponse } from "../../helpers/fetch-mocks";
 
@@ -15,6 +15,10 @@ vi.mock("../../../services/crdt-provider", () => ({
       // Store callbacks for test access
       (this as any)._opts = opts;
     }
+    awareness = {
+      getLocalState: () => ({ user: {} }),
+      setLocalStateField: vi.fn(),
+    };
     connect = mockProviderConnect;
     disconnect = vi.fn();
     destroy = mockProviderDestroy;
@@ -35,13 +39,21 @@ vi.mock("../../../services/ws-client", () => ({
   },
 }));
 
-vi.mock("../../../components/MilkdownEditor", () => ({
-  MilkdownEditor: (props: { fragmentKey?: string }) => (
-    <div data-testid="milkdown-editor" data-fragment-key={props.fragmentKey}>
-      Editor:{props.fragmentKey}
-    </div>
-  ),
-}));
+vi.mock("../../../components/MilkdownEditor", async () => {
+  const React = await import("react");
+  return {
+    MilkdownEditor: React.forwardRef(
+      (props: { fragmentKey?: string; onReady?: () => void }, _ref: unknown) => {
+        React.useEffect(() => { props.onReady?.(); }, []);
+        return (
+          <div data-testid="milkdown-editor" data-fragment-key={props.fragmentKey}>
+            Editor:{props.fragmentKey}
+          </div>
+        );
+      },
+    ),
+  };
+});
 
 vi.mock("../../../components/ProposalPanel", () => ({
   ProposalPanel: () => <div data-testid="proposal-panel">ProposalPanel</div>,
@@ -130,6 +142,7 @@ describe("DocumentPage editing", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
     localStorage.clear();
   });
