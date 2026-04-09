@@ -13,6 +13,7 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import * as Y from "yjs";
+import { isDevSupervised } from "../runtime/system-state.js";
 import { resolveWriterWithExpiry } from "../auth/context.js";
 import { checkDocPermission } from "../auth/acl.js";
 import {
@@ -714,7 +715,11 @@ export function createCrdtWsServer(): CrdtWsServer {
       const data = raw instanceof Buffer ? raw : Buffer.from(raw as ArrayBuffer);
       messageChain = messageChain.then(() => handleMessage(socket, state, data)).then(null, (err) => {
         socket.close(1011, "internal error");
-        throw err;
+        if (isDevSupervised) {
+          throw err;
+        }
+        // Production: log and keep the server alive — one bad socket must not kill all users
+        console.error(`[crdt-coordinator] unhandled error for ${state.docPath}:`, err);
       });
     });
 

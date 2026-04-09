@@ -10,11 +10,13 @@ CMD ["npm", "run", "dev"]
 
 # ── Build target ──────────────────────────────────────
 FROM base AS build
+ARG BUILD_SHA=dev
+ARG BUILD_DATE=1970-01-01T00:00:00Z
 COPY package*.json ./
 RUN npm install
 COPY . .
 RUN npm run build \
- && echo "{\"version\":\"$(node -p "require('./package.json').version")\",\"sha\":\"$(git rev-parse --short=7 HEAD)\",\"date\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > dist/build-info.json
+ && echo "{\"version\":\"$(node -p "require('./package.json').version")\",\"sha\":\"${BUILD_SHA}\",\"date\":\"${BUILD_DATE}\"}" > dist/build-info.json
 
 # ── Production target ─────────────────────────────────
 FROM base AS prod

@@ -19,7 +19,7 @@ export function formatBuildDate(raw: string): { shortLabel: string; longLabel: s
   const minutes = pad2(date.getUTCMinutes());
 
   return {
-    shortLabel: `${day}/${month}`,
+    shortLabel: `${day}/${month} ${hours}:${minutes}`,
     longLabel: `${day} ${month} ${year} - ${hours}:${minutes}`,
   };
 }

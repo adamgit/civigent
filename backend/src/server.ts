@@ -11,13 +11,11 @@ import { setAutoCommitEventHandler, commitAllDirtySessions } from "./storage/aut
 import { validateOAuthConfig, getOidcPublicUrl } from "./auth/oauth-config.js";
 import { maybeGenerateBootstrapCode } from "./auth/service.js";
 import { isSystemReady, setSystemReady } from "./startup-state.js";
+import { isDevSupervised } from "./runtime/system-state.js";
 import type { FatalReport, WorkerIpcMessage } from "./runtime/system-state.js";
 
-// Supervised mode: true when forked by dev-supervisor with an IPC channel
-const supervised = typeof process.send === "function";
-
 function ipcSend(msg: WorkerIpcMessage): void {
-  if (supervised) process.send!(msg);
+  if (isDevSupervised) process.send!(msg);
 }
 
 // ─── Process-boundary fatal handlers (installed before any async work) ───
@@ -31,7 +29,7 @@ process.on("unhandledRejection", (reason) => {
 // In supervised mode, catch fatal errors and IPC them to the parent before exiting.
 // In direct (production) mode, no handler is installed — Node's default crash
 // behavior (print stack + exit 1) is preserved.
-if (supervised) {
+if (isDevSupervised) {
   process.on("uncaughtException", (err) => {
     const error = err instanceof Error ? err : new Error(String(err));
     const report: FatalReport = {
@@ -110,7 +108,7 @@ ipcSend({ type: "starting" });
 // Start listening IMMEDIATELY so the port is open and the startup gate can serve 503s.
 // Recovery runs after listen — requests hit the middleware gate until setSystemReady().
 // When supervised: bind port 0 (OS-assigned) so the parent owns the public port.
-const listenPort = supervised ? 0 : PORT;
+const listenPort = isDevSupervised ? 0 : PORT;
 server.listen(listenPort, () => {
   const boundPort = (server.address() as { port: number }).port;
   ipcSend({ type: "listening", port: boundPort });

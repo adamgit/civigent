@@ -2,6 +2,8 @@
 FROM node:24-alpine AS build
 RUN apk add --no-cache git
 WORKDIR /src
+ARG BUILD_SHA=dev
+ARG BUILD_DATE=1970-01-01T00:00:00Z
 
 # Install dependencies for all three packages
 COPY package*.json ./
@@ -26,9 +28,11 @@ RUN cd sharedlibs/milkdown-serializer && npm run build \
 COPY backend backend
 RUN cd backend && npm run build
 COPY package.json ./package.json
-RUN echo "{\"version\":\"$(node -p "require('./package.json').version")\",\"sha\":\"$(git rev-parse --short=7 HEAD)\",\"date\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > backend/dist/build-info.json
+RUN echo "{\"version\":\"$(node -p "require('./package.json').version")\",\"sha\":\"${BUILD_SHA}\",\"date\":\"${BUILD_DATE}\"}" > backend/dist/build-info.json
 
 COPY frontend frontend
+ENV BUILD_SHA="${BUILD_SHA}"
+ENV BUILD_DATE="${BUILD_DATE}"
 RUN cd frontend && npm run build
 
 # ── Production image ────────────────────────────────

@@ -6,6 +6,14 @@
  */
 
 // ---------------------------------------------------------------------------
+// Dev-supervised mode detection
+// ---------------------------------------------------------------------------
+
+/** True when the process was forked by the dev-supervisor (IPC channel present).
+ *  False in production where `node dist/server.js` runs directly. */
+export const isDevSupervised = typeof process.send === "function";
+
+// ---------------------------------------------------------------------------
 // System lifecycle state
 // ---------------------------------------------------------------------------
 

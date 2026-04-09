@@ -533,9 +533,9 @@ export function AppLayout() {
         <div className="px-3.5 py-2 border-t border-sidebar-border">
           <span
             className="text-[10px] text-sidebar-text/40"
-            title={buildDate.longLabel}
+            title={__BUILD_SHA__}
           >
-            v{__APP_VERSION__} &middot; {buildDate.shortLabel} &middot; {__BUILD_SHA__}
+            v{__APP_VERSION__} &middot; {buildDate.shortLabel}
           </span>
         </div>
       </aside>

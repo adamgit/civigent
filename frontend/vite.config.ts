@@ -6,9 +6,11 @@ import { readFileSync } from "node:fs";
 
 const rootPkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const appVersion = rootPkg.version;
-let buildSha = "dev";
-try { buildSha = execSync("git rev-parse --short=7 HEAD", { encoding: "utf8" }).trim(); } catch { /* dev fallback */ }
-const buildDate = new Date().toISOString();
+let buildSha = process.env.BUILD_SHA ?? "dev";
+if (buildSha === "dev") {
+  try { buildSha = execSync("git rev-parse HEAD", { encoding: "utf8" }).trim(); } catch { /* dev fallback */ }
+}
+const buildDate = process.env.BUILD_DATE ?? new Date().toISOString();
 
 const backendTarget = process.env.VITE_BACKEND_TARGET ?? "http://localhost:3000";
 const backendUrl = new URL(backendTarget);
