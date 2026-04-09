@@ -895,6 +895,44 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       type HealthCheck = { name: string; pass: boolean; detail?: string };
       const checks: HealthCheck[] = [];
 
+      function collectDuplicateFragmentKeyDetails(
+        skeleton: {
+          forEachSection: (
+            cb: (
+              heading: string,
+              level: number,
+              sectionFile: string,
+              headingPath: string[],
+              absolutePath: string,
+            ) => void,
+          ) => void;
+        },
+      ): string[] {
+        const seen = new Map<string, { sectionFile: string; headingPath: string[] }>();
+        const duplicates: string[] = [];
+        skeleton.forEachSection((heading: string, level: number, sectionFile: string, headingPath: string[]) => {
+          const fragmentKey = fragmentKeyFromSectionFile(
+            sectionFile,
+            level === 0 && heading === "" && headingPath.length === 0,
+          );
+          const existing = seen.get(fragmentKey);
+          if (!existing) {
+            seen.set(fragmentKey, { sectionFile, headingPath: [...headingPath] });
+            return;
+          }
+          const existingLabel = existing.headingPath.length > 0
+            ? existing.headingPath.join(" > ")
+            : "(before first heading)";
+          const incomingLabel = headingPath.length > 0
+            ? headingPath.join(" > ")
+            : "(before first heading)";
+          duplicates.push(
+            `${fragmentKey}: ${existing.sectionFile} [${existingLabel}] conflicts with ${sectionFile} [${incomingLabel}]`,
+          );
+        });
+        return duplicates;
+      }
+
       let skeletonAssessment: Awaited<ReturnType<typeof assessSkeleton>> | null = null;
       try {
         skeletonAssessment = await assessSkeleton(canonicalSkeletonPath, canonicalSectionsDir);
@@ -1039,6 +1077,18 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         checks.push({ name: "overlay-read-path", pass: true });
       } catch (e) {
         checks.push({ name: "overlay-read-path", pass: false, detail: (e as Error).message });
+      }
+
+      try {
+        const recursiveSkeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
+        const duplicateFragmentKeys = collectDuplicateFragmentKeyDetails(recursiveSkeleton);
+        checks.push({
+          name: "duplicate-fragment-keys",
+          pass: duplicateFragmentKeys.length === 0,
+          detail: duplicateFragmentKeys.length > 0 ? duplicateFragmentKeys.join(" | ") : undefined,
+        });
+      } catch (e) {
+        checks.push({ name: "duplicate-fragment-keys", pass: false, detail: (e as Error).message });
       }
 
       // ── Section layer table ──

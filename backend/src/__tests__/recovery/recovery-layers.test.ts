@@ -1,7 +1,10 @@
+import * as Y from "yjs";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { assessSkeleton, assessSectionContent, buildCompoundSkeleton, recoverDocument, reconcileAndCleanup } from "../../storage/recovery-layers.js";
+import { DocumentFragments } from "../../crdt/document-fragments.js";
+import { DocumentSkeleton } from "../../storage/document-skeleton.js";
+import { assessSkeleton, assessSectionContent, buildCompoundSkeleton, recoverDocument, reconcileAndCleanup, writeRecoveredToCanonical } from "../../storage/recovery-layers.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 
 describe("assessSkeleton", () => {
@@ -542,6 +545,93 @@ describe("recoverDocument — before-first-heading", () => {
       // Both headings recovered
       expect(result.sections.some(s => s.heading_path[0] === "First Heading")).toBe(true);
       expect(result.sections.some(s => s.heading_path[0] === "Second Heading")).toBe(true);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+});
+
+async function createRecoveredSectionFileReuseFixture(
+  ctx: TempDataRootContext,
+  docPath: string,
+): Promise<{ reusedSectionFile: string }> {
+  const contentRoot = join(ctx.rootDir, "content");
+  const skeletonPath = join(contentRoot, docPath);
+  const sectionsDir = `${skeletonPath}.sections`;
+  const subSkeletonFile = "sec_open_questions_shared.md";
+  const reusedSectionFile = "--section-body--collision.md";
+
+  await mkdir(sectionsDir, { recursive: true });
+
+  await writeFile(skeletonPath, [
+    "{{section: _root.md}}",
+    "## Open Questions",
+    `{{section: ${subSkeletonFile}}}`,
+  ].join("\n"));
+  await writeFile(join(sectionsDir, "_root.md"), "Root preamble.\n");
+
+  await writeFile(join(sectionsDir, subSkeletonFile), [
+    `{{section: ${reusedSectionFile}}}`,
+    "### Mission Gameplay",
+    "{{section: sec_mission_gameplay_shared.md}}",
+  ].join("\n"));
+
+  const nestedSectionsDir = join(sectionsDir, `${subSkeletonFile}.sections`);
+  await mkdir(nestedSectionsDir, { recursive: true });
+  await writeFile(join(nestedSectionsDir, reusedSectionFile), "Open Questions body.\n");
+  await writeFile(join(nestedSectionsDir, "sec_mission_gameplay_shared.md"), "Mission gameplay body.\n");
+
+  // Simulate the orphaned appendix file that crash recovery currently lifts into a
+  // top-level "Recovered:" section without minting a fresh sectionFile id.
+  await writeFile(
+    join(sectionsDir, reusedSectionFile),
+    "Recovered orphan content that should have received a fresh file id.\n",
+  );
+
+  return { reusedSectionFile };
+}
+
+describe("crash recovery appendix sectionFile reuse", () => {
+  it("mints a fresh sectionFile for a Recovered section instead of reusing a nested body-holder file", async () => {
+    const ctx = await createTempDataRoot();
+    try {
+      const DOC_PATH = "test-recovered-reuse";
+      const { reusedSectionFile } = await createRecoveredSectionFileReuseFixture(ctx, DOC_PATH);
+
+      const compound = await buildCompoundSkeleton(DOC_PATH);
+      const recovery = await recoverDocument(DOC_PATH);
+      await writeRecoveredToCanonical(DOC_PATH, recovery, compound.skeleton);
+
+      const skeleton = await DocumentSkeleton.fromDisk(DOC_PATH, ctx.contentDir, ctx.contentDir);
+      const reusedEntries: Array<{ heading: string; headingPath: string[]; sectionFile: string }> = [];
+      skeleton.forEachSection((heading, _level, sectionFile, headingPath) => {
+        if (sectionFile === reusedSectionFile) {
+          reusedEntries.push({ heading, headingPath: [...headingPath], sectionFile });
+        }
+      });
+
+      // Desired behavior: the nested Open Questions body-holder may keep the
+      // original file id, but the synthesized Recovered appendix section must
+      // be assigned a fresh file id so no duplicate sectionFile survives.
+      expect(reusedEntries).toHaveLength(1);
+      expect(reusedEntries[0]?.headingPath.join(">>")).toBe("Open Questions");
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  it("allows CRDT bootstrap after recovery instead of producing a duplicate fragment-key collision", async () => {
+    const ctx = await createTempDataRoot();
+    try {
+      const DOC_PATH = "test-recovered-reuse-error";
+      await createRecoveredSectionFileReuseFixture(ctx, DOC_PATH);
+
+      const compound = await buildCompoundSkeleton(DOC_PATH);
+      const recovery = await recoverDocument(DOC_PATH);
+      await writeRecoveredToCanonical(DOC_PATH, recovery, compound.skeleton);
+
+      const skeleton = await DocumentSkeleton.fromDisk(DOC_PATH, ctx.contentDir, ctx.contentDir);
+      expect(() => new DocumentFragments(new Y.Doc(), skeleton, DOC_PATH)).not.toThrow();
     } finally {
       await ctx.cleanup();
     }

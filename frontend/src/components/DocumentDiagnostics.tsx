@@ -15,9 +15,9 @@ interface DocumentDiagnosticsProps {
 function renderChecks(checks: DiagHealthCheck[]) {
   try {
     return (
-      <div className="mb-6">
-        <h3 className="text-sm font-semibold mb-2">Health Checks</h3>
-        <div className="border border-gray-200 rounded">
+      <div className="h-full min-h-0 flex flex-col">
+        <h3 className="text-sm font-semibold mb-2 shrink-0">Health Checks</h3>
+        <div className="border border-gray-200 rounded overflow-y-auto min-h-0 flex-1">
           {checks.map((check, i) => (
             <div
               key={check.name}
@@ -37,7 +37,7 @@ function renderChecks(checks: DiagHealthCheck[]) {
     );
   } catch (e) {
     return (
-      <div className="text-red-600 text-sm mb-6">
+      <div className="text-red-600 text-sm">
         Failed to render health checks: {e instanceof Error ? e.message : String(e)}
       </div>
     );
@@ -133,9 +133,9 @@ function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
 function renderSectionTable(sections: DiagSectionLayerInfo[]) {
   try {
     return (
-      <div>
-        <h3 className="text-sm font-semibold mb-2">Section Layers</h3>
-        <div className="overflow-x-auto border border-gray-200 rounded">
+      <div className="h-full min-h-0 flex flex-col">
+        <h3 className="text-sm font-semibold mb-2 shrink-0">Section Layers</h3>
+        <div className="overflow-auto border border-gray-200 rounded min-h-0 flex-1">
           <table className="w-full border-collapse">
             <thead>
               <tr className="bg-gray-50 sticky top-0">
@@ -190,14 +190,14 @@ export default function DocumentDiagnostics({ docPath, onClose }: DocumentDiagno
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative bg-white rounded-lg shadow-xl max-w-[95vw] max-h-[90vh] w-[1100px] overflow-y-auto p-6">
+      <div className="relative bg-white rounded-lg shadow-xl max-w-[96vw] w-[1450px] h-[90vh] p-6 flex flex-col">
         <button
           onClick={onClose}
           className="absolute top-3 right-3 text-gray-400 hover:text-gray-700 text-lg leading-none"
         >
           &times;
         </button>
-        <h2 className="text-lg font-semibold mb-4">Diagnostics: {docPath}</h2>
+        <h2 className="text-lg font-semibold mb-4 shrink-0">Diagnostics: {docPath}</h2>
 
         {!data && !error && (
           <p className="text-gray-500 text-sm">Loading diagnostics...</p>
@@ -210,10 +210,10 @@ export default function DocumentDiagnostics({ docPath, onClose }: DocumentDiagno
         )}
 
         {data && (
-          <>
+          <div className="grid grid-cols-1 xl:grid-cols-[340px_minmax(0,1fr)] gap-4 min-h-0 flex-1">
             {renderChecks(data.checks)}
             {renderSectionTable(data.sections)}
-          </>
+          </div>
         )}
       </div>
     </div>

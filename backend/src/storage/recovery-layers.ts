@@ -15,6 +15,7 @@ import {
   serializeSkeletonEntries,
   DocumentSkeleton,
   DocumentSkeletonInternal,
+  generateSectionFilename,
   sectionFileToName,
   type SkeletonEntry,
   type SkeletonNode,
@@ -137,7 +138,7 @@ export async function assessSectionContent(
 
 export interface CompoundSkeletonResult {
   skeleton: DocumentSkeleton;
-  appendixSections: Array<{ sectionFile: string; source: string }>;
+  appendixSections: Array<{ sectionFile: string; recoveredSectionFile: string; source: string }>;
   overlayAssessment: SkeletonAssessment;
   canonicalAssessment: SkeletonAssessment;
 }
@@ -163,6 +164,15 @@ function entriesToNodes(entries: SkeletonEntry[]): SkeletonNode[] {
     sectionFile: e.sectionFile,
     children: [],
   }));
+}
+
+function mintRecoveredSectionFile(name: string, usedSectionFiles: Set<string>): string {
+  let candidate = "";
+  do {
+    candidate = generateSectionFilename(`Recovered ${name}`);
+  } while (usedSectionFiles.has(candidate));
+  usedSectionFiles.add(candidate);
+  return candidate;
 }
 
 /**
@@ -209,17 +219,17 @@ export async function buildCompoundSkeleton(docPath: string): Promise<CompoundSk
   }
 
   // Discover orphan files: on disk in either layer but not in any skeleton entry
-  const appendixSections: Array<{ sectionFile: string; source: string }> = [];
+  const appendixSections: Array<{ sectionFile: string; recoveredSectionFile: string; source: string }> = [];
 
   for (const file of overlayAssessment.filesOnDisk) {
     if (!mergedSectionFiles.has(file)) {
-      appendixSections.push({ sectionFile: file, source: "overlay" });
+      appendixSections.push({ sectionFile: file, recoveredSectionFile: "", source: "overlay" });
       mergedSectionFiles.add(file);
     }
   }
   for (const file of canonicalAssessment.filesOnDisk) {
     if (!mergedSectionFiles.has(file)) {
-      appendixSections.push({ sectionFile: file, source: "canonical" });
+      appendixSections.push({ sectionFile: file, recoveredSectionFile: "", source: "canonical" });
       mergedSectionFiles.add(file);
     }
   }
@@ -236,7 +246,7 @@ export async function buildCompoundSkeleton(docPath: string): Promise<CompoundSk
 
   for (const file of fragmentFiles) {
     if (!mergedSectionFiles.has(file)) {
-      appendixSections.push({ sectionFile: file, source: "fragment" });
+      appendixSections.push({ sectionFile: file, recoveredSectionFile: "", source: "fragment" });
       mergedSectionFiles.add(file);
     }
   }
@@ -244,10 +254,12 @@ export async function buildCompoundSkeleton(docPath: string): Promise<CompoundSk
   // Add appendix sections as flat entries (level 2, generic heading)
   for (const orphan of appendixSections) {
     const name = sectionFileToName(orphan.sectionFile);
+    const recoveredSectionFile = mintRecoveredSectionFile(name, mergedSectionFiles);
+    orphan.recoveredSectionFile = recoveredSectionFile;
     mergedEntries.push({
       heading: `Recovered: ${name}`,
       level: 2,
-      sectionFile: orphan.sectionFile,
+      sectionFile: recoveredSectionFile,
     });
   }
 
@@ -262,12 +274,17 @@ export async function buildCompoundSkeleton(docPath: string): Promise<CompoundSk
         seenBfh = true;
       } else {
         const name = sectionFileToName(entry.sectionFile);
+        const recoveredSectionFile = mintRecoveredSectionFile(name, mergedSectionFiles);
         deduped.push({
           heading: `Recovered: ${name}`,
           level: 2,
-          sectionFile: entry.sectionFile,
+          sectionFile: recoveredSectionFile,
         });
-        appendixSections.push({ sectionFile: entry.sectionFile, source: "dedup" });
+        appendixSections.push({
+          sectionFile: entry.sectionFile,
+          recoveredSectionFile,
+          source: "dedup",
+        });
       }
     } else {
       deduped.push(entry);
@@ -431,6 +448,9 @@ export async function recoverDocument(docPath: string): Promise<DocumentRecovery
   const fragmentDir = path.resolve(fragmentsRoot, ...normalizedDoc.split("/"));
   const overlayPaths = resolveDocPaths(docPath, overlayContentRoot);
   const canonicalPaths = resolveDocPaths(docPath, contentRoot);
+  const appendixByRecoveredSectionFile = new Map(
+    compound.appendixSections.map((entry) => [entry.recoveredSectionFile, entry]),
+  );
 
   // Track overlay skeleton file as consumed
   try {
@@ -456,9 +476,11 @@ export async function recoverDocument(docPath: string): Promise<DocumentRecovery
   });
 
   for (const { headingPath, sectionFile } of sectionEntries) {
-    const fragmentPath = path.join(fragmentDir, sectionFile);
-    const overlayPath = path.join(overlayPaths.sectionsDir, sectionFile);
-    const canonicalPath = path.join(canonicalPaths.sectionsDir, sectionFile);
+    const appendixInfo = appendixByRecoveredSectionFile.get(sectionFile);
+    const sourceSectionFile = appendixInfo?.sectionFile ?? sectionFile;
+    const fragmentPath = path.join(fragmentDir, sourceSectionFile);
+    const overlayPath = path.join(overlayPaths.sectionsDir, sourceSectionFile);
+    const canonicalPath = path.join(canonicalPaths.sectionsDir, sourceSectionFile);
 
     const [fragment, overlay, canonical] = await Promise.all([
       assessSectionContent(fragmentPath, "fragment"),
@@ -470,9 +492,9 @@ export async function recoverDocument(docPath: string): Promise<DocumentRecovery
     if (fragment.rawText !== null) consumedSessionFiles.add(fragmentPath);
     if (overlay.rawText !== null) consumedSessionFiles.add(overlayPath);
 
-    const isOrphan = compound.appendixSections.some((a) => a.sectionFile === sectionFile);
+    const isOrphan = appendixInfo !== undefined;
 
-    const { content, diagnostic } = decideContent(fragment, overlay, canonical, sectionFile);
+    const { content, diagnostic } = decideContent(fragment, overlay, canonical, sourceSectionFile);
 
     // Wrap appendix sections with position-unknown notice
     const finalContent = isOrphan ? wrapAppendix(content) : content;
@@ -603,11 +625,16 @@ export async function writeRecoveredToCanonical(
   const skeletonContent = serializeSkeletonEntries(entries);
   await writeFile(skeletonPath, skeletonContent, "utf8");
 
+  const persistedSectionFiles: string[] = [];
+  compoundSkeleton.forEachSection((_heading, _level, sectionFile) => {
+    persistedSectionFiles.push(sectionFile);
+  });
+
   // Write each section's body content
   for (let i = 0; i < recovery.sections.length; i++) {
-    const diag = recovery.sectionDiagnostics[i];
-    if (!diag) continue;
-    const bodyPath = path.join(sectionsDir, diag.sectionFile);
+    const persistedSectionFile = persistedSectionFiles[i];
+    if (!persistedSectionFile) continue;
+    const bodyPath = path.join(sectionsDir, persistedSectionFile);
     await writeFile(bodyPath, bodyToDisk(bodyFromRecoveryAssembly(recovery.sections[i].content)), "utf8");
   }
 }

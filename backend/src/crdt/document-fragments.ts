@@ -627,6 +627,25 @@ export class DocumentFragments {
     this.orderedFragmentKeys = [];
 
     this.skeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
+      const fragmentKey = fragmentKeyFromSectionFile(
+        sectionFile,
+        DocumentFragments.isBeforeFirstHeading({ headingPath }),
+      );
+      const existingHeadingPath = this.headingPathByFragmentKey.get(fragmentKey);
+      const existingSectionFile = this.sectionFileByFragmentKey.get(fragmentKey);
+      if (existingHeadingPath || existingSectionFile) {
+        const existingHeadingLabel = existingHeadingPath && existingHeadingPath.length > 0
+          ? existingHeadingPath.join(" > ")
+          : "(before first heading)";
+        const incomingHeadingLabel = headingPath.length > 0
+          ? headingPath.join(" > ")
+          : "(before first heading)";
+        throw new Error(
+          `Duplicate fragment key "${fragmentKey}" in "${this.docPath}": ` +
+          `sectionFile "${sectionFile}" for headingPath=[${incomingHeadingLabel}] conflicts with ` +
+          `existing sectionFile "${existingSectionFile ?? sectionFile}" for headingPath=[${existingHeadingLabel}].`,
+        );
+      }
       this.upsertIndexEntry({
         heading,
         level,
@@ -635,9 +654,7 @@ export class DocumentFragments {
         absolutePath,
         isSubSkeleton: false,
       });
-      this.orderedFragmentKeys.push(
-        fragmentKeyFromSectionFile(sectionFile, DocumentFragments.isBeforeFirstHeading({ headingPath })),
-      );
+      this.orderedFragmentKeys.push(fragmentKey);
     });
   }
 
