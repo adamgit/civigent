@@ -18,6 +18,7 @@ import {
   generateSectionFilename,
   generateBeforeFirstHeadingFilename,
   headingsEqual,
+  type ContentEntry,
   type FlatEntry,
   type OverlayDocumentState,
   type SkeletonNode,
@@ -59,8 +60,14 @@ import type { ParsedSection } from "./markdown-sections.js";
  * milkdown serializer round-trip, so normalization here is genuinely
  * additive for that path.
  */
-async function writeBodyFile(entry: FlatEntry, content: string): Promise<void> {
-  if (entry.isSubSkeleton) return;
+async function writeBodyFile(entry: ContentEntry | FlatEntry, content: string): Promise<void> {
+  if ("kind" in entry) {
+    if (entry.kind !== "content_entry") {
+      throw new Error("writeBodyFile only accepts content entries.");
+    }
+  } else if (entry.isSubSkeleton) {
+    return;
+  }
   const normalized = jsonToMarkdown(markdownToJSON(content));
   await mkdir(path.dirname(entry.absolutePath), { recursive: true });
   await writeFile(entry.absolutePath, normalized, "utf8");
@@ -69,6 +76,17 @@ async function writeBodyFile(entry: FlatEntry, content: string): Promise<void> {
 function resolveDocSkeletonPath(contentRoot: string, docPath: string): string {
   const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
   return path.resolve(contentRoot, ...normalized.split("/"));
+}
+
+function flatEntryFromContentEntry(entry: ContentEntry): FlatEntry {
+  return {
+    headingPath: [...entry.headingPath],
+    heading: entry.heading,
+    level: entry.level,
+    sectionFile: entry.sectionFile,
+    absolutePath: entry.absolutePath,
+    isSubSkeleton: false,
+  };
 }
 
 async function copyDirectoryRecursive(srcDir: string, destDir: string): Promise<void> {
@@ -326,7 +344,7 @@ export class ContentLayer {
   async resolveSectionPath(docPath: string, headingPath: string[]): Promise<string> {
     const skeleton = await this.readSkeleton(docPath);
     try {
-      return skeleton.requireEntryByHeadingPath(headingPath).absolutePath;
+      return skeleton.requireContentEntryByHeadingPath(headingPath).absolutePath;
     } catch (err) {
       throw new SectionNotFoundError((err as Error).message);
     }
@@ -338,7 +356,7 @@ export class ContentLayer {
   async resolveSectionPathWithLevel(docPath: string, headingPath: string[]): Promise<{ absolutePath: string; level: number }> {
     const skeleton = await this.readSkeleton(docPath);
     try {
-      const entry = skeleton.requireEntryByHeadingPath(headingPath);
+      const entry = skeleton.requireContentEntryByHeadingPath(headingPath);
       return { absolutePath: entry.absolutePath, level: entry.level };
     } catch (err) {
       throw new SectionNotFoundError((err as Error).message);
@@ -366,9 +384,9 @@ export class ContentLayer {
    */
   async readSection(ref: SectionRef): Promise<SectionBody> {
     const skeleton = await this.readSkeleton(ref.docPath);
-    let entry: FlatEntry;
+    let entry: ContentEntry;
     try {
-      entry = skeleton.requireEntryByHeadingPath(ref.headingPath);
+      entry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
     } catch (err) {
       throw new SectionNotFoundError((err as Error).message);
     }
@@ -442,7 +460,7 @@ export class ContentLayer {
         skeletonCache.set(ref.docPath, skeleton);
       }
 
-      const entry = skeleton.findEntryByHeadingPath(ref.headingPath);
+      const entry = skeleton.findContentEntryByHeadingPath(ref.headingPath);
       if (!entry) continue;
 
       try {
@@ -489,7 +507,7 @@ export class ContentLayer {
     content: string,
   ): Promise<void> {
     const skeleton = await this.readSkeleton(ref.docPath);
-    const entry = skeleton.requireEntryByHeadingPath(ref.headingPath);
+    const entry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
     // Enforce body-only invariant: strip leading heading if it matches the skeleton entry
     const body = stripHeadingFromFragment(fragmentFromExternalContent(content), entry.level);
     // Guard: reject multi-heading content — canonical writes must not mutate skeleton structure
@@ -769,7 +787,7 @@ export class OverlayContentLayer {
   async resolveSectionPath(docPath: string, headingPath: string[]): Promise<string> {
     const skeleton = await this.readSkeleton(docPath);
     try {
-      return skeleton.requireEntryByHeadingPath(headingPath).absolutePath;
+      return skeleton.requireContentEntryByHeadingPath(headingPath).absolutePath;
     } catch (err) {
       throw new SectionNotFoundError((err as Error).message);
     }
@@ -782,7 +800,7 @@ export class OverlayContentLayer {
   async resolveSectionPathWithLevel(docPath: string, headingPath: string[]): Promise<{ absolutePath: string; level: number }> {
     const skeleton = await this.readSkeleton(docPath);
     try {
-      const entry = skeleton.requireEntryByHeadingPath(headingPath);
+      const entry = skeleton.requireContentEntryByHeadingPath(headingPath);
       return { absolutePath: entry.absolutePath, level: entry.level };
     } catch (err) {
       throw new SectionNotFoundError((err as Error).message);
@@ -1150,10 +1168,10 @@ export class OverlayContentLayer {
       return ref.headingPath.length;
     }
     const skeleton = await this.readSkeleton(ref.docPath);
-    const existing = skeleton.findEntryByHeadingPath(ref.headingPath);
+    const existing = skeleton.findStructuralNodeByHeadingPath(ref.headingPath);
     if (existing) return existing.level;
     for (let i = ref.headingPath.length - 1; i >= 1; i--) {
-      const ancestor = skeleton.findEntryByHeadingPath(ref.headingPath.slice(0, i));
+      const ancestor = skeleton.findStructuralNodeByHeadingPath(ref.headingPath.slice(0, i));
       if (ancestor) return ancestor.level + (ref.headingPath.length - i);
     }
     return ref.headingPath.length;
@@ -1249,7 +1267,7 @@ export class OverlayContentLayer {
         isBfhOnlyPayload
         && skeleton.allContentEntries().some((e) => e.headingPath.length > 0)
       ) {
-        const bfhEntry = skeleton.findEntryByHeadingPath([]);
+        const bfhEntry = skeleton.findContentEntryByHeadingPath([]);
         if (bfhEntry) {
           // Body identity check: if the BFH body already matches the
           // payload byte-for-byte, return the same empty-change shape that
@@ -1273,10 +1291,10 @@ export class OverlayContentLayer {
             parsedSections[0].body as unknown as string,
           );
           return {
-            writtenEntries: [bfhEntry],
+            writtenEntries: [flatEntryFromContentEntry(bfhEntry)],
             removedEntries: [],
             fragmentKeyRemaps: [],
-            liveReloadEntries: [bfhEntry],
+            liveReloadEntries: [flatEntryFromContentEntry(bfhEntry)],
             structureChange: null,
           };
         }
@@ -1343,9 +1361,9 @@ export class OverlayContentLayer {
       skeleton.subtreeEntries(ref.headingPath).length > 1;
     if (headedSections.length === 1 && targetIsSubSkeletonParent) {
       const single = headedSections[0];
-      const entry = skeleton.requireEntryByHeadingPath(ref.headingPath);
+      const entry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
       if (single.heading === entry.heading && single.level === entry.level) {
-        // Body-only update on a sub-skeleton parent. requireEntryByHeadingPath
+        // Body-only update on a sub-skeleton parent. requireContentEntryByHeadingPath
         // already collapsed to the body-holder child, so writing entry's
         // absolutePath updates the parent's own body without touching any
         // descendant section.
@@ -1355,10 +1373,10 @@ export class OverlayContentLayer {
           single.body as unknown as string,
         );
         return {
-          writtenEntries: [entry],
+          writtenEntries: [flatEntryFromContentEntry(entry)],
           removedEntries: [],
           fragmentKeyRemaps: [],
-          liveReloadEntries: [entry],
+          liveReloadEntries: [flatEntryFromContentEntry(entry)],
           structureChange: null,
         };
       }
@@ -1378,13 +1396,13 @@ export class OverlayContentLayer {
         single.body as unknown as string,
       );
       return {
-        writtenEntries: [newEntry],
+        writtenEntries: [flatEntryFromContentEntry(newEntry)],
         removedEntries: [],
         fragmentKeyRemaps: [],
-        liveReloadEntries: [newEntry],
+        liveReloadEntries: [flatEntryFromContentEntry(newEntry)],
         structureChange: {
-          oldEntry,
-          newEntries: [newEntry],
+          oldEntry: flatEntryFromContentEntry(oldEntry),
+          newEntries: [flatEntryFromContentEntry(newEntry)],
         },
       };
     }
@@ -1444,10 +1462,10 @@ export class OverlayContentLayer {
     // independent file operations and don't need to share a transaction.
     if (headedSections.length === 1 && !targetIsSubSkeletonParent) {
       const single = headedSections[0];
-      const entry = skeleton.requireEntryByHeadingPath(ref.headingPath);
+      const entry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
       if (single.heading === entry.heading && single.level === entry.level) {
-        const writtenEntries: FlatEntry[] = [entry];
-        const liveReloadEntries: FlatEntry[] = [entry];
+        const writtenEntries: FlatEntry[] = [flatEntryFromContentEntry(entry)];
+        const liveReloadEntries: FlatEntry[] = [flatEntryFromContentEntry(entry)];
 
         if (hasOrphan) {
           const prevHolder = skeleton.findPreviousBodyHolder(entry.sectionFile);
@@ -1519,7 +1537,7 @@ export class OverlayContentLayer {
    *   2. Bail if cardinalities mismatch.
    *   3. For each parsed section, translate its parser-relative heading
    *      path to absolute by prepending headingPath.slice(0, -1), look up
-   *      the live entry via findEntryByHeadingPath (which collapses
+   *      the live entry via findContentEntryByHeadingPath (which collapses
    *      sub-skeleton parents to their body holders while reporting the
    *      parent's own heading/level), and compare heading/level/body
    *      bytes. Any mismatch returns false.
@@ -1548,7 +1566,7 @@ export class OverlayContentLayer {
     const parentPrefix = headingPath.length === 0 ? [] : headingPath.slice(0, -1);
     for (const parsed of parsedSections) {
       const absoluteHeadingPath = [...parentPrefix, ...parsed.headingPath];
-      const liveEntry = skeleton.findEntryByHeadingPath(absoluteHeadingPath);
+      const liveEntry = skeleton.findContentEntryByHeadingPath(absoluteHeadingPath);
       if (!liveEntry) return false;
       if (liveEntry.heading !== parsed.heading) return false;
       if (liveEntry.level !== parsed.level) return false;
@@ -1641,7 +1659,7 @@ export class OverlayContentLayer {
 
   async readSection(ref: SectionRef): Promise<SectionBody> {
     const skeleton = await this.readSkeleton(ref.docPath);
-    const entry = skeleton.requireEntryByHeadingPath(ref.headingPath);
+    const entry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
     const content = await this.readBodyFromLayers(entry.absolutePath);
     if (content === null) {
       throw new SectionNotFoundError(`Section not found in any layer for "${ref.docPath}" [${ref.headingPath.join(" > ")}]`);
@@ -1698,7 +1716,7 @@ export class OverlayContentLayer {
 
   private async writeOverlayBodyFile(
     docPath: string,
-    entry: FlatEntry,
+    entry: ContentEntry | FlatEntry,
     content: string,
   ): Promise<void> {
     await this.ensureOverlaySkeletonForWrite(docPath);
@@ -1710,7 +1728,7 @@ export class OverlayContentLayer {
     headingPath: string[],
     body: SectionBody,
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
-    const deletedEntry = skeleton.requireEntryByHeadingPath(headingPath);
+    const deletedEntry = skeleton.requireContentEntryByHeadingPath(headingPath);
     const deletion = await skeleton.deleteHeadingPreservingBody(headingPath);
     for (const removed of deletion.removed) {
       if (removed.isSubSkeleton) {
@@ -1748,7 +1766,7 @@ export class OverlayContentLayer {
         ? [deletion.mergeTarget]
         : [],
       structureChange: {
-        oldEntry: deletedEntry,
+        oldEntry: flatEntryFromContentEntry(deletedEntry),
         newEntries: [],
       },
     };
@@ -1837,14 +1855,14 @@ export class OverlayContentLayer {
     docPath: string,
     headingPath: string[],
     newHeading: string,
-  ): Promise<FlatEntry> {
+  ): Promise<ContentEntry> {
     if (headingPath.length === 0) {
       throw new Error(
         `Cannot rename the before-first-heading section in ${docPath} — it has no heading.`,
       );
     }
     const skeleton = await this.getWritableSkeleton(docPath);
-    const oldEntry = skeleton.requireEntryByHeadingPath(headingPath);
+    const oldEntry = skeleton.requireContentEntryByHeadingPath(headingPath);
     const targetIsSubSkeletonParent = skeleton.subtreeEntries(headingPath).length > 1;
 
     // Temporary hotfix: preserve descendants by retitling sub-skeleton
@@ -1918,11 +1936,7 @@ export class OverlayContentLayer {
         write.content,
       );
     }
-    const newEntry = plan.added.find((e) => !e.isSubSkeleton);
-    if (!newEntry) {
-      throw new Error(`renameHeading produced no content entry in ${docPath}`);
-    }
-    return newEntry;
+    return skeleton.requireContentEntryByHeadingPath([...headingPath.slice(0, -1), newHeading]);
   }
 
   private async retitleSubSkeletonParentInPlace(
@@ -1931,14 +1945,14 @@ export class OverlayContentLayer {
     headingPath: string[],
     newHeading: string,
     newLevel: number,
-  ): Promise<{ oldEntry: FlatEntry; newEntry: FlatEntry }> {
+  ): Promise<{ oldEntry: ContentEntry; newEntry: ContentEntry }> {
     if (headingPath.length === 0) {
       throw new Error(
         `Cannot retitle the before-first-heading section in ${docPath} — it has no heading.`,
       );
     }
 
-    const oldEntry = skeleton.requireEntryByHeadingPath(headingPath);
+    const oldEntry = skeleton.requireContentEntryByHeadingPath(headingPath);
     const parentPath = headingPath.slice(0, -1);
     const target = headingPath[headingPath.length - 1];
     await skeleton.applyStructuralMutationTransaction((ctx) => {
@@ -1958,7 +1972,7 @@ export class OverlayContentLayer {
     });
 
     const newHeadingPath = [...parentPath, newHeading];
-    const newEntry = skeleton.requireEntryByHeadingPath(newHeadingPath);
+    const newEntry = skeleton.requireContentEntryByHeadingPath(newHeadingPath);
     return { oldEntry, newEntry };
   }
 
@@ -2098,9 +2112,13 @@ export class OverlayContentLayer {
     options?: { leadingOrphanBody?: SectionBody },
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
     const skeleton = await this.getWritableSkeleton(docPath);
-    const targetEntry = skeleton.findEntryByHeadingPath(headingPath);
-    if (!targetEntry) {
+    const targetNode = skeleton.findStructuralNodeByHeadingPath(headingPath);
+    if (!targetNode) {
       throw staleHeadingPath(docPath, headingPath, "cannot rewrite");
+    }
+    const targetContentEntry = skeleton.findContentEntryByHeadingPath(headingPath);
+    if (!targetContentEntry) {
+      throw staleHeadingPath(docPath, headingPath, "cannot rewrite content");
     }
 
     const parentPath = headingPath.slice(0, -1);
@@ -2127,7 +2145,7 @@ export class OverlayContentLayer {
     let preMutationMergeTarget: FlatEntry | null = null;
     let existingMergeBody: SectionBody = "" as SectionBody;
     if (hasOrphan) {
-      preMutationMergeTarget = skeleton.findPreviousBodyHolder(targetEntry.sectionFile);
+      preMutationMergeTarget = skeleton.findPreviousBodyHolder(targetNode.sectionFile);
       if (preMutationMergeTarget) {
         existingMergeBody = bodyFromDisk(
           (await this.readBodyFromLayers(preMutationMergeTarget.absolutePath)) ?? "",
@@ -2137,7 +2155,7 @@ export class OverlayContentLayer {
 
     const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
       const siblings = ctx.findSiblingList(parentPath);
-      const idx = siblings.findIndex((n) => n.sectionFile === targetEntry.sectionFile);
+      const idx = siblings.findIndex((n) => n.sectionFile === targetNode.sectionFile);
       if (idx < 0) {
         throw staleHeadingPath(docPath, headingPath, "cannot rewrite");
       }
@@ -2225,7 +2243,7 @@ export class OverlayContentLayer {
       fragmentKeyRemaps: plan.fragmentKeyRemaps,
       liveReloadEntries,
       structureChange: {
-        oldEntry: targetEntry,
+        oldEntry: flatEntryFromContentEntry(targetContentEntry),
         newEntries: addedNonSub,
       },
     };
@@ -2264,7 +2282,7 @@ export class OverlayContentLayer {
       }
     }
     if (leafParentPath !== null) {
-      const entry = skeleton.requireEntryByHeadingPath(leafParentPath);
+      const entry = skeleton.requireContentEntryByHeadingPath(leafParentPath);
       leafParentBody = bodyFromDisk((await this.readBodyFromLayers(entry.absolutePath)) ?? "");
     }
 
@@ -2286,7 +2304,7 @@ export class OverlayContentLayer {
         const parentSiblings = ctx.findSiblingList(parentPath);
         const level = parentPath.length === 0
           ? 1
-          : skeleton.requireEntryByHeadingPath(parentPath).level + 1;
+          : skeleton.requireStructuralNodeByHeadingPath(parentPath).level + 1;
         const heading = ancestorPath[ancestorPath.length - 1];
         const node: SkeletonNode = {
           heading,

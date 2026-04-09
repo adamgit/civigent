@@ -236,6 +236,26 @@ export interface FlatEntry {
   isSubSkeleton: boolean;
 }
 
+export interface ContentEntry {
+  kind: "content_entry";
+  headingPath: string[];
+  heading: string;
+  level: number;
+  sectionFile: string;
+  absolutePath: string;
+  storageRole: "direct_section" | "body_holder" | "before_first_heading";
+}
+
+export interface StructuralNodeEntry {
+  kind: "structural_node";
+  headingPath: string[];
+  heading: string;
+  level: number;
+  sectionFile: string;
+  absolutePath: string;
+  hasChildren: boolean;
+}
+
 
 export interface ReplacementResult {
   /** Entries removed from the flat list */
@@ -394,40 +414,72 @@ export class DocumentSkeleton {
     }));
   }
 
+  protected makeStructuralNodeEntry(
+    node: SkeletonNode,
+    parentPath: string[],
+    parentSkeletonPath: string,
+  ): StructuralNodeEntry {
+    const isBfh = node.level === 0 && node.heading === "";
+    const headingPath = isBfh ? [...parentPath] : [...parentPath, node.heading];
+    const absolutePath = path.join(`${parentSkeletonPath}.sections`, node.sectionFile);
+    return {
+      kind: "structural_node",
+      headingPath,
+      heading: node.heading,
+      level: node.level,
+      sectionFile: node.sectionFile,
+      absolutePath,
+      hasChildren: node.children.length > 0,
+    };
+  }
+
+  protected makeContentEntry(
+    structuralNode: StructuralNodeEntry,
+    bodyHolderSectionFile?: string,
+  ): ContentEntry {
+    if (bodyHolderSectionFile) {
+      return {
+        kind: "content_entry",
+        headingPath: [...structuralNode.headingPath],
+        heading: structuralNode.heading,
+        level: structuralNode.level,
+        sectionFile: bodyHolderSectionFile,
+        absolutePath: path.join(`${structuralNode.absolutePath}.sections`, bodyHolderSectionFile),
+        storageRole: structuralNode.headingPath.length === 0 ? "before_first_heading" : "body_holder",
+      };
+    }
+    return {
+      kind: "content_entry",
+      headingPath: [...structuralNode.headingPath],
+      heading: structuralNode.heading,
+      level: structuralNode.level,
+      sectionFile: structuralNode.sectionFile,
+      absolutePath: structuralNode.absolutePath,
+      storageRole: structuralNode.headingPath.length === 0 ? "before_first_heading" : "direct_section",
+    };
+  }
+
   /**
-   * Resolve the before-first-heading section directly from this.roots — no flat materialization.
+   * Resolve the before-first-heading content entry directly from this.roots — no flat materialization.
    * Returns null if the skeleton is empty (tombstone) or has no before-first-heading section.
    */
-  expectBeforeFirstHeading(): FlatEntry | null {
+  protected findBeforeFirstHeadingContentEntry(): ContentEntry | null {
     const rootNode = this.roots.find(n => n.level === 0 && n.heading === "");
     if (!rootNode) {
       return null;
     }
-    const sectionsDir = `${this.skeletonPath}.sections`;
-    // If root has children, follow through to its root child (body file)
-    if (rootNode.children.length > 0) {
-      const rootChild = rootNode.children.find(c => c.level === 0 && c.heading === "");
-      if (rootChild) {
-        const absPath = path.join(sectionsDir, rootNode.sectionFile);
-        const childSectionsDir = `${absPath}.sections`;
-        return {
-          headingPath: [],
-          heading: rootNode.heading,
-          level: rootNode.level,
-          sectionFile: rootChild.sectionFile,
-          absolutePath: path.join(childSectionsDir, rootChild.sectionFile),
-          isSubSkeleton: false,
-        };
-      }
-    }
-    return {
-      headingPath: [],
-      heading: rootNode.heading,
-      level: rootNode.level,
-      sectionFile: rootNode.sectionFile,
-      absolutePath: path.join(sectionsDir, rootNode.sectionFile),
-      isSubSkeleton: false,
-    };
+    const structuralNode = this.makeStructuralNodeEntry(rootNode, [], this.skeletonPath);
+    const bodyHolder = rootNode.children.find(c => c.level === 0 && c.heading === "");
+    return this.makeContentEntry(structuralNode, bodyHolder?.sectionFile);
+  }
+
+  /**
+   * Resolve the before-first-heading structural node directly from this.roots.
+   * Returns null if the skeleton is empty (tombstone) or has no BFH node.
+   */
+  protected findBeforeFirstHeadingStructuralNode(): StructuralNodeEntry | null {
+    const rootNode = this.roots.find(n => n.level === 0 && n.heading === "");
+    return rootNode ? this.makeStructuralNodeEntry(rootNode, [], this.skeletonPath) : null;
   }
 
   /**
@@ -437,11 +489,18 @@ export class DocumentSkeleton {
    */
   requireEntryBySectionFileId(sectionFileId: string): FlatEntry {
     if (sectionFileId === "__beforeFirstHeading__") {
-      const root = this.expectBeforeFirstHeading();
+      const root = this.findBeforeFirstHeadingContentEntry();
       if (!root) {
         throw new Error(`No before-first-heading section in ${this.docPath}. The document may have no content before its first heading.`);
       }
-      return root;
+      return {
+        headingPath: root.headingPath,
+        heading: root.heading,
+        level: root.level,
+        sectionFile: root.sectionFile,
+        absolutePath: root.absolutePath,
+        isSubSkeleton: false,
+      };
     }
 
     const targetFile = sectionFileId.endsWith(".md") ? sectionFileId : sectionFileId + ".md";
@@ -460,7 +519,15 @@ export class DocumentSkeleton {
    */
   findEntryBySectionFileId(sectionFileId: string): FlatEntry | null {
     if (sectionFileId === "__beforeFirstHeading__") {
-      return this.expectBeforeFirstHeading();
+      const root = this.findBeforeFirstHeadingContentEntry();
+      return root ? {
+        headingPath: root.headingPath,
+        heading: root.heading,
+        level: root.level,
+        sectionFile: root.sectionFile,
+        absolutePath: root.absolutePath,
+        isSubSkeleton: false,
+      } : null;
     }
 
     const targetFile = sectionFileId.endsWith(".md") ? sectionFileId : sectionFileId + ".md";
@@ -496,11 +563,47 @@ export class DocumentSkeleton {
     return null;
   }
 
-  /** Look up a section by heading path. Returns null if not found. */
-  findEntryByHeadingPath(headingPath: string[]): FlatEntry | null {
-    // Before-first-heading section: headingPath=[]
+  /** Look up a content entry by heading path. Returns null if not found. */
+  findContentEntryByHeadingPath(headingPath: string[]): ContentEntry | null {
     if (headingPath.length === 0) {
-      return this.expectBeforeFirstHeading();
+      return this.findBeforeFirstHeadingContentEntry();
+    }
+
+    const structuralNode = this.findStructuralNodeByHeadingPath(headingPath);
+    if (!structuralNode) return null;
+
+    let nodes = this.roots;
+    for (let i = 0; i < headingPath.length; i++) {
+      const target = headingPath[i];
+      const node = nodes.find(n => headingsEqual(n.heading, target));
+      if (!node) return null;
+      if (i === headingPath.length - 1) {
+        const bodyHolder = node.children.find(c => c.level === 0 && c.heading === "");
+        return this.makeContentEntry(structuralNode, bodyHolder?.sectionFile);
+      }
+      nodes = node.children;
+    }
+    return this.makeContentEntry(structuralNode);
+  }
+
+  /** Resolve a content entry by heading path. Throws if not found. */
+  requireContentEntryByHeadingPath(headingPath: string[]): ContentEntry {
+    const entry = this.findContentEntryByHeadingPath(headingPath);
+    if (!entry) {
+      if (headingPath.length === 0) {
+        throw new Error(`No before-first-heading section in ${this.docPath}. The document may have no content before its first heading.`);
+      }
+      throw new Error(
+        `Skeleton integrity error: content entry for heading path [${headingPath.join(" > ")}] not found in ${this.docPath}`
+      );
+    }
+    return entry;
+  }
+
+  /** Look up a structural node by heading path. Returns null if not found. */
+  findStructuralNodeByHeadingPath(headingPath: string[]): StructuralNodeEntry | null {
+    if (headingPath.length === 0) {
+      return this.findBeforeFirstHeadingStructuralNode();
     }
 
     let nodes = this.roots;
@@ -512,60 +615,35 @@ export class DocumentSkeleton {
       const node = nodes.find(n => headingsEqual(n.heading, target));
       if (!node) return null;
       resolvedPath.push(node.heading);
-      const sectionsDir = `${currentSkeletonPath}.sections`;
-      const absPath = path.join(sectionsDir, node.sectionFile);
 
       if (i === headingPath.length - 1) {
-        // If this node has children, its file is a sub-skeleton — follow through
-        // to the root child (level=0, heading="") which holds the actual body content.
-        if (node.children.length > 0) {
-          const rootChild = node.children.find(c => c.level === 0 && c.heading === "");
-          if (rootChild) {
-            const childSectionsDir = `${absPath}.sections`;
-            return {
-              headingPath: [...resolvedPath],
-              heading: node.heading,
-              level: node.level,
-              sectionFile: rootChild.sectionFile,
-              absolutePath: path.join(childSectionsDir, rootChild.sectionFile),
-              isSubSkeleton: false,
-            };
-          }
-        }
-        return {
-          headingPath: [...resolvedPath],
-          heading: node.heading,
-          level: node.level,
-          sectionFile: node.sectionFile,
-          absolutePath: absPath,
-          isSubSkeleton: false,
-        };
+        return this.makeStructuralNodeEntry(node, resolvedPath.slice(0, -1), currentSkeletonPath);
       }
 
-      currentSkeletonPath = absPath;
+      currentSkeletonPath = path.join(`${currentSkeletonPath}.sections`, node.sectionFile);
       nodes = node.children;
     }
 
     return null;
   }
 
-  /** Resolve a section by heading path. Throws if not found. */
-  requireEntryByHeadingPath(headingPath: string[]): FlatEntry {
-    const entry = this.findEntryByHeadingPath(headingPath);
-    if (!entry) {
+  /** Resolve a structural node by heading path. Throws if not found. */
+  requireStructuralNodeByHeadingPath(headingPath: string[]): StructuralNodeEntry {
+    const node = this.findStructuralNodeByHeadingPath(headingPath);
+    if (!node) {
       if (headingPath.length === 0) {
         throw new Error(`No before-first-heading section in ${this.docPath}. The document may have no content before its first heading.`);
       }
       throw new Error(
-        `Skeleton integrity error: heading path [${headingPath.join(" > ")}] not found in ${this.docPath}`
+        `Skeleton integrity error: structural node for heading path [${headingPath.join(" > ")}] not found in ${this.docPath}`
       );
     }
-    return entry;
+    return node;
   }
 
   /** Check whether a heading path exists in the skeleton. */
   has(headingPath: string[]): boolean {
-    return this.findEntryByHeadingPath(headingPath) !== null;
+    return this.findStructuralNodeByHeadingPath(headingPath) !== null;
   }
 
   /**
@@ -1028,11 +1106,11 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
       );
     }
 
-    const targetEntry = this.findEntryByHeadingPath(headingPath);
+    const targetEntry = this.findStructuralNodeByHeadingPath(headingPath);
     if (!targetEntry) {
       throw staleHeadingPath(this.docPath, headingPath, "deleteHeadingPreservingBody");
     }
-    if (targetEntry.isSubSkeleton) {
+    if (targetEntry.hasChildren) {
       throw new Error(
         `deleteHeadingPreservingBody cannot delete sub-skeleton parents in ${this.docPath}: ` +
         `the entry at [${headingPath.join(" > ")}] owns child sections. ` +

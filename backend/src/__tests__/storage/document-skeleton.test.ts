@@ -171,34 +171,34 @@ describe("DocumentSkeleton.expect() — flat document (no sub-skeletons)", () =>
 
   afterAll(async () => { await ctx.cleanup(); });
 
-  it("resolve(['Overview']) returns correct absolutePath, level, heading, isSubSkeleton=false", () => {
-    const entry = skeleton.requireEntryByHeadingPath(["Overview"]);
+  it("resolve(['Overview']) returns correct absolutePath, level, heading, direct content entry", () => {
+    const entry = skeleton.requireContentEntryByHeadingPath(["Overview"]);
     expect(entry.heading).toBe("Overview");
     expect(entry.level).toBe(2);
     expect(entry.sectionFile).toBe("overview.md");
     expect(entry.absolutePath).toContain("overview.md");
     expect(entry.absolutePath).toContain(".sections");
-    expect(entry.isSubSkeleton).toBe(false);
+    expect(entry.storageRole).toBe("direct_section");
     expect(entry.headingPath).toEqual(["Overview"]);
   });
 
   it("resolve(['Timeline']) returns correct entry", () => {
-    const entry = skeleton.requireEntryByHeadingPath(["Timeline"]);
+    const entry = skeleton.requireContentEntryByHeadingPath(["Timeline"]);
     expect(entry.heading).toBe("Timeline");
     expect(entry.level).toBe(2);
-    expect(entry.isSubSkeleton).toBe(false);
+    expect(entry.storageRole).toBe("direct_section");
   });
 
-  it("resolve([]) returns root section with isSubSkeleton=false", () => {
-    const entry = skeleton.requireEntryByHeadingPath([]);
+  it("resolve([]) returns root section content entry", () => {
+    const entry = skeleton.requireContentEntryByHeadingPath([]);
     expect(entry.heading).toBe("");
     expect(entry.level).toBe(0);
-    expect(entry.isSubSkeleton).toBe(false);
+    expect(entry.storageRole).toBe("before_first_heading");
     expect(entry.headingPath).toEqual([]);
   });
 
   it("expect() throws for nonexistent heading", () => {
-    expect(() => skeleton.requireEntryByHeadingPath(["Nonexistent"])).toThrow(/not found/);
+    expect(() => skeleton.requireContentEntryByHeadingPath(["Nonexistent"])).toThrow(/not found/);
   });
 });
 
@@ -222,10 +222,10 @@ describe("DocumentSkeleton.expect() — nested document (sub-skeletons)", () => 
   });
 
   it("resolve(['Details']) follows through to root child body file (fixed behavior)", () => {
-    const entry = skeleton.requireEntryByHeadingPath(["Details"]);
+    const entry = skeleton.requireContentEntryByHeadingPath(["Details"]);
     expect(entry.heading).toBe("Details");
     expect(entry.level).toBe(2);
-    expect(entry.isSubSkeleton).toBe(false);
+    expect(entry.storageRole).toBe("body_holder");
     // absolutePath now points to the root child body file, not the sub-skeleton
     expect(entry.absolutePath).toContain("_details_root.md");
     expect(entry.absolutePath).toContain("details.md.sections");
@@ -234,26 +234,26 @@ describe("DocumentSkeleton.expect() — nested document (sub-skeletons)", () => 
   });
 
   it("resolve(['Introduction']) returns body file with isSubSkeleton=false (correct)", () => {
-    const entry = skeleton.requireEntryByHeadingPath(["Introduction"]);
+    const entry = skeleton.requireContentEntryByHeadingPath(["Introduction"]);
     expect(entry.heading).toBe("Introduction");
-    expect(entry.isSubSkeleton).toBe(false);
+    expect(entry.storageRole).toBe("direct_section");
     expect(entry.absolutePath).toContain("intro.md");
   });
 
   it("resolve(['Details', 'Sub-Detail A']) returns child body with isSubSkeleton=false", () => {
-    const entry = skeleton.requireEntryByHeadingPath(["Details", "Sub-Detail A"]);
+    const entry = skeleton.requireContentEntryByHeadingPath(["Details", "Sub-Detail A"]);
     expect(entry.heading).toBe("Sub-Detail A");
     expect(entry.level).toBe(3);
-    expect(entry.isSubSkeleton).toBe(false);
+    expect(entry.storageRole).toBe("direct_section");
     expect(entry.absolutePath).toContain("sub_a.md");
     expect(entry.headingPath).toEqual(["Details", "Sub-Detail A"]);
   });
 
-  it("resolve([]) returns root section — root has no children so isSubSkeleton=false", () => {
-    const entry = skeleton.requireEntryByHeadingPath([]);
+  it("resolve([]) returns root section content entry — root has no children", () => {
+    const entry = skeleton.requireContentEntryByHeadingPath([]);
     expect(entry.heading).toBe("");
     expect(entry.level).toBe(0);
-    expect(entry.isSubSkeleton).toBe(false);
+    expect(entry.storageRole).toBe("before_first_heading");
   });
 });
 
@@ -300,10 +300,10 @@ describe("DocumentSkeleton.expect([]) — root with children", () => {
     );
 
     const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
-    const root = skeleton.requireEntryByHeadingPath([]);
+    const root = skeleton.requireContentEntryByHeadingPath([]);
     expect(root.heading).toBe("");
     expect(root.level).toBe(0);
-    expect(root.isSubSkeleton).toBe(false);
+    expect(root.storageRole).toBe("before_first_heading");
     // Should point to the root child body file, not the sub-skeleton
     expect(root.absolutePath).toContain("_root_body.md");
     expect(root.sectionFile).toBe("_root_body.md");

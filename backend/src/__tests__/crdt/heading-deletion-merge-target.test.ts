@@ -203,7 +203,7 @@ describe("Heading deletion merge target", () => {
     const store = await buildDocumentFragmentsForTest(noBfhDocPath);
 
     // Verify no BFH exists
-    expect(store.skeleton.findEntryByHeadingPath([])).toBeNull();
+    expect(store.skeleton.findContentEntryByHeadingPath([])).toBeNull();
 
     const aKey = "section::sec_a";
     replaceFragmentWithBodyOnly(store.ydoc, aKey, "Orphaned A content.");
@@ -213,7 +213,7 @@ describe("Heading deletion merge target", () => {
     expect(result.removedKeys).toContain(aKey);
 
     // A BFH section should now exist with the orphaned content
-    const bfhEntry = store.skeleton.findEntryByHeadingPath([]);
+    const bfhEntry = store.skeleton.findContentEntryByHeadingPath([]);
     expect(bfhEntry).not.toBeNull();
 
     const bfhKey = "section::__beforeFirstHeading__";
