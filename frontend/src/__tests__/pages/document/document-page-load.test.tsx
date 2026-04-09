@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { jsonResponse } from "../../helpers/fetch-mocks";
 import { sampleSections } from "../../helpers/sample-data";
@@ -90,6 +90,7 @@ describe("DocumentPage load", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
     localStorage.clear();
   });
@@ -131,7 +132,7 @@ describe("DocumentPage load", () => {
   it("displays doc path in header", async () => {
     renderDocPage("ops/strategy.md");
     await waitFor(() => {
-      expect(screen.getByText("ops/strategy.md")).toBeDefined();
+      expect(screen.getAllByText("ops/strategy.md").length).toBeGreaterThan(0);
     });
   });
 });

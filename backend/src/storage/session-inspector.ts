@@ -8,8 +8,8 @@
 import path from "node:path";
 import { readFile, readdir } from "node:fs/promises";
 import { getContentRoot, getSessionDocsContentRoot, getSessionAuthorsRoot } from "./data-root.js";
-import { scanSessionFragmentDocPaths, listRawFragments, readRawFragment } from "./session-store.js";
-import { SECTIONS_DIR_SUFFIX } from "./document-skeleton.js";
+import { scanSessionFragmentDocPaths, listRawFragments, readRawFragment, scanSessionDocPaths } from "./session-store.js";
+import { DocumentSkeleton } from "./document-skeleton.js";
 import { OverlayContentLayer, SectionNotFoundError } from "./content-layer.js";
 
 // ─── Types ───────────────────────────────────────────────
@@ -25,6 +25,8 @@ export interface FragmentFileInfo {
 export interface DocOverlayInfo {
   skeleton: { filename: string; content: string; sectionRefs: string[] } | null;
   sections: Array<{ filename: string; content: string; isOrphaned: boolean }>;
+  health: "ok" | "corrupt_missing_overlay_skeleton" | "corrupt_skeleton";
+  issues: string[];
 }
 
 export interface AuthorInfo {
@@ -42,6 +44,8 @@ export interface SessionState {
     totalOverlaySections: number;
     totalAuthors: number;
     orphanedSections: number;
+    corruptOverlayDocs: number;
+    missingOverlaySkeletonDocs: number;
   };
 }
 
@@ -95,51 +99,80 @@ export async function getSessionState(): Promise<SessionState> {
   let totalOverlayDocs = 0;
   let totalOverlaySections = 0;
   let orphanedSections = 0;
+  let corruptOverlayDocs = 0;
+  let missingOverlaySkeletonDocs = 0;
   const contentSubdir = getSessionDocsContentRoot();
   let overlayDocPaths: string[] = [];
   try {
-    overlayDocPaths = await readdirRecursiveFiles(contentSubdir);
+    overlayDocPaths = await scanSessionDocPaths();
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
-  for (const relPath of overlayDocPaths) {
-    const docPath = relPath;
-    const fullPath = path.join(contentSubdir, relPath);
-    const fileContent = await readFile(fullPath, "utf8");
+  for (const docPath of overlayDocPaths) {
+    const overlaySkeletonPath = path.join(contentSubdir, docPath);
+    const sectionsDir = `${overlaySkeletonPath}.sections`;
+    let skeletonContent: string | null = null;
+    const issues: string[] = [];
 
-    const docOverlayLayer = new OverlayContentLayer(contentSubdir, getContentRoot());
-    const sectionRefSet = new Set<string>();
     try {
-      const sectionList = await docOverlayLayer.getSectionList(docPath);
-      for (const s of sectionList) sectionRefSet.add(s.sectionFile);
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "ENOENT" || isSkeletonParseOrIntegrityError(err)) {
-        // Missing/corrupt skeleton is tolerated by this diagnostic inspector.
-      } else {
-        throw err;
-      }
-    }
-
-    const sectionsDir = docOverlayLayer.sectionsDirectory(docPath);
-    const sectionFiles: Array<{ filename: string; content: string; isOrphaned: boolean }> = [];
-    try {
-      const sectionEntries = await readdir(sectionsDir);
-      for (const sf of sectionEntries) {
-        if (!sf.endsWith(".md")) continue;
-        const sContent = await readFile(path.join(sectionsDir, sf), "utf8");
-        const isOrphaned = !sectionRefSet.has(sf);
-        sectionFiles.push({ filename: sf, content: sContent, isOrphaned });
-        totalOverlaySections++;
-        if (isOrphaned) orphanedSections++;
-      }
+      skeletonContent = await readFile(overlaySkeletonPath, "utf8");
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
 
+    const sectionRefSet = new Set<string>();
+    if (skeletonContent !== null) {
+      try {
+        const overlayOnlySkeleton = await DocumentSkeleton.fromDisk(
+          docPath,
+          contentSubdir,
+          contentSubdir,
+        );
+        for (const entry of overlayOnlySkeleton.allStructuralEntries()) {
+          const relative = toPosix(path.relative(sectionsDir, entry.absolutePath));
+          if (!relative.startsWith("../")) {
+            sectionRefSet.add(relative);
+          }
+        }
+      } catch (err) {
+        if (isSkeletonParseOrIntegrityError(err)) {
+          issues.push((err as Error).message);
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    const sectionFiles: Array<{ filename: string; content: string; isOrphaned: boolean }> = [];
+    const rawSectionFiles = await readSectionFilesRecursive(sectionsDir);
+    for (const sf of rawSectionFiles) {
+      const isOrphaned = !sectionRefSet.has(sf.filename);
+      sectionFiles.push({ filename: sf.filename, content: sf.content, isOrphaned });
+      totalOverlaySections++;
+      if (isOrphaned) orphanedSections++;
+    }
+
+    let health: DocOverlayInfo["health"] = "ok";
+    if (skeletonContent === null && rawSectionFiles.length > 0) {
+      health = "corrupt_missing_overlay_skeleton";
+      missingOverlaySkeletonDocs++;
+      issues.push(
+        `Found ${rawSectionFiles.length} file(s) under "${docPath}.sections" but no overlay skeleton "${docPath}".`,
+      );
+    } else if (issues.length > 0) {
+      health = "corrupt_skeleton";
+    }
+    if (health !== "ok") {
+      corruptOverlayDocs++;
+    }
+
     docs[docPath] = {
-      skeleton: { filename: path.basename(fullPath), content: fileContent, sectionRefs: [...sectionRefSet] },
+      skeleton: skeletonContent === null
+        ? null
+        : { filename: path.basename(overlaySkeletonPath), content: skeletonContent, sectionRefs: [...sectionRefSet] },
       sections: sectionFiles,
+      health,
+      issues,
     };
     totalOverlayDocs++;
   }
@@ -182,23 +215,43 @@ export async function getSessionState(): Promise<SessionState> {
       totalOverlaySections,
       totalAuthors,
       orphanedSections,
+      corruptOverlayDocs,
+      missingOverlaySkeletonDocs,
     },
   };
 }
 
 // ─── Helpers ─────────────────────────────────────────────
 
-async function readdirRecursiveFiles(dir: string, prefix = ""): Promise<string[]> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  const results: string[] = [];
+function toPosix(p: string): string {
+  return p.replace(/\\/g, "/");
+}
+
+async function readSectionFilesRecursive(
+  sectionsDir: string,
+  prefix = "",
+): Promise<Array<{ filename: string; content: string }>> {
+  let entries;
+  try {
+    entries = await readdir(sectionsDir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+
+  const out: Array<{ filename: string; content: string }> = [];
   for (const entry of entries) {
     const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const fullPath = path.join(sectionsDir, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name.endsWith(SECTIONS_DIR_SUFFIX)) continue;
-      results.push(...await readdirRecursiveFiles(path.join(dir, entry.name), rel));
-    } else if (entry.name.endsWith(".md")) {
-      results.push(rel);
+      out.push(...await readSectionFilesRecursive(fullPath, rel));
+      continue;
     }
+    if (!entry.name.endsWith(".md")) continue;
+    out.push({
+      filename: toPosix(rel),
+      content: await readFile(fullPath, "utf8"),
+    });
   }
-  return results;
+  return out;
 }

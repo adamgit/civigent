@@ -123,7 +123,11 @@ const createSectionHandler: ToolHandler = async (args, ctx) => {
     const overlayLayer = new OverlayContentLayer(proposalContentRoot, getContentRoot());
 
     // Auto-create headings and write content atomically through OverlayContentLayer
-    await overlayLayer.writeSection(new SectionRef(docPath, headingPath), content);
+    {
+      const ref = new SectionRef(docPath, headingPath);
+      const heading = headingPath.length === 0 ? "" : headingPath[headingPath.length - 1]!;
+      await overlayLayer.upsertSection(ref, heading, content);
+    }
 
     // Update proposal sections metadata
     const existingSections = proposal.sections.filter(
@@ -198,7 +202,7 @@ const deleteSectionHandler: ToolHandler = async (args, ctx) => {
 
   try {
     const overlayLayer = new OverlayContentLayer(proposalContentRoot, getContentRoot());
-    await overlayLayer.deleteSection(docPath, headingPath);
+    await overlayLayer.deleteSubtree(docPath, headingPath);
 
     // Update proposal sections metadata
     const existingSections = proposal.sections.filter(
@@ -283,7 +287,7 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
       ? currentLevel
       : newParentPath.length + 1;
 
-    await overlayLayer.moveSection(docPath, headingPath, newParentPath, targetLevel);
+    await overlayLayer.moveSubtree(docPath, headingPath, newParentPath, targetLevel);
 
     // Update proposal sections metadata
     const existingSections = proposal.sections.filter(
@@ -360,7 +364,7 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
 
   try {
     const overlayLayer = new OverlayContentLayer(proposalContentRoot, getContentRoot());
-    await overlayLayer.renameSection(docPath, headingPath, newHeading);
+    await overlayLayer.renameHeading(docPath, headingPath, newHeading);
     const newHeadingPath = [...headingPath.slice(0, -1), newHeading];
 
     // Update proposal sections metadata with new heading path
@@ -519,25 +523,24 @@ const renameDocumentHandler: ToolHandler = async (args, ctx) => {
     const canonicalRoot = getContentRoot();
     const overlayLayer = new OverlayContentLayer(proposalContentRoot, canonicalRoot);
 
-    // Step 1: Read canonical headings and write tombstone at old path in one step
-    const headingPaths = await overlayLayer.tombstoneDocument(docPath);
+    // Snapshot heading paths from the canonical source BEFORE the rename
+    // so we can populate proposal section metadata for both old (tombstoned)
+    // and new (created) entries. The dedicated `renameDocument(...)`
+    // primitive returns void per item 287; per item 303, proposal metadata
+    // updates remain caller-side rather than being absorbed into the storage
+    // primitive.
+    const headingPaths = await new ContentLayer(canonicalRoot).listHeadingPaths(docPath);
 
-    // Step 2: Copy full content to new path in proposal overlay.
-    // Create the destination document skeleton first (needed for live-empty docs
-    // where no writeSection calls would otherwise create it).
-    await overlayLayer.createDocument(newPath);
-    const subtree = await new ContentLayer(canonicalRoot).readAllSubtreeEntries(docPath);
+    // Dedicated rename primitive (items 287/297) — replaces the previous
+    // open-coded tombstoneDocument + createDocument + readAllSubtreeEntries
+    // + looped writeSection pattern. The new primitive preserves structure
+    // and body state directly via document-level file copy + tombstone,
+    // never reinterpreting the source as a sequence of user section upserts.
+    await overlayLayer.renameDocument(docPath, newPath);
 
-    for (const entry of subtree) {
-      await overlayLayer.writeSection(
-        new SectionRef(newPath, entry.headingPath),
-        entry.bodyContent,
-      );
-    }
-
-    // Step 3: Update proposal sections metadata — add entries for new-path sections
-    // Include both old-path sections (being deleted by tombstone) and new-path
-    // sections so evaluateProposalHumanInvolvement checks contention on both.
+    // Update proposal sections metadata — add entries for both old-path
+    // (being deleted by tombstone) and new-path (created by copy) sections
+    // so evaluateProposalHumanInvolvement checks contention on both.
     const existingSections = proposal.sections.filter(
       (s) => s.doc_path !== docPath && s.doc_path !== newPath,
     );
@@ -584,14 +587,14 @@ export function registerStructuralTools(registry: ToolRegistry): void {
   registry.register(
     {
       name: "create_section",
-      description: "Create a new section within a document. Operates within a proposal.",
+      description: "Create a section at the specified heading path within a document. Operates within a proposal. Missing ancestor headings are auto-created.",
       inputSchema: {
         type: "object",
         properties: {
           proposal_id: { type: "string", description: "Active proposal ID (required)" },
           doc_path: { type: "string", description: "Document path (must end with .md)" },
           heading_path: { type: "array", items: { type: "string" }, description: "Heading path for the new section" },
-          content: { type: "string", description: "Initial content (markdown)" },
+          content: { type: "string", description: "Initial content (markdown). Describes the section as the user wants it to read after the call." },
         },
         required: ["proposal_id", "doc_path", "heading_path"],
       },

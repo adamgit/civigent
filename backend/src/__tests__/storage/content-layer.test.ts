@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { ContentLayer } from "../../storage/content-layer.js";
-import { DocumentSkeletonInternal } from "../../storage/document-skeleton.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 
@@ -18,20 +19,36 @@ describe("writeSection heading-stripping invariant", () => {
 
   beforeAll(async () => {
     ctx = await createTempDataRoot();
-    // Build a skeleton: before-first-heading + "Overview" (h2) + "Title" (h1) + "Deep Section" (h4)
-    const skeleton = DocumentSkeletonInternal.inMemoryEmpty(DOC, ctx.contentDir);
-    await skeleton.persistInternal();
-    // Explicitly create the before-first-heading section (this test needs it for heading stripping tests)
-    await skeleton.insertSectionUnder([], { heading: "", level: 0, body: "" });
-    await skeleton.insertSectionUnder([], { heading: "Overview", level: 2, body: "" });
-    await skeleton.insertSectionUnder([], { heading: "Title", level: 1, body: "" });
-    await skeleton.insertSectionUnder([], { heading: "Deep Section", level: 4, body: "" });
-    // Write initial body content for each section (needed for path resolution)
-    const layer = new ContentLayer(ctx.contentDir);
-    await layer.writeSection(new SectionRef(DOC, []), "root body");
-    await layer.writeSection(new SectionRef(DOC, ["Overview"]), "");
-    await layer.writeSection(new SectionRef(DOC, ["Title"]), "");
-    await layer.writeSection(new SectionRef(DOC, ["Deep Section"]), "");
+    // Build a skeleton via raw file I/O so each entry retains its intended heading
+    // level: BFH + "Overview" (h2) + "Title" (h1) + "Deep Section" (h4). The skeleton
+    // entries within a single file are siblings (nesting is by sub-skeleton files,
+    // not heading-level numbers — see document-skeleton.ts:1554), so flat mixed
+    // levels are valid. The level recorded per entry is what writeSection passes
+    // into stripHeadingFromFragment, so the intended heading-stripping behavior
+    // depends on getting these levels right.
+    const skeletonPath = join(ctx.contentDir, DOC);
+    const sectionsDir = `${skeletonPath}.sections`;
+    await mkdir(sectionsDir, { recursive: true });
+    const skeleton = [
+      "{{section: --before-first-heading--strip-test.md}}",
+      "",
+      "## Overview",
+      "{{section: overview.md}}",
+      "",
+      "# Title",
+      "{{section: title.md}}",
+      "",
+      "#### Deep Section",
+      "{{section: deep-section.md}}",
+      "",
+    ].join("\n");
+    await writeFile(skeletonPath, skeleton, "utf8");
+    // Empty body files so writeSection's path resolution finds them on disk;
+    // each test overwrites the relevant file via writeAndRead before reading.
+    await writeFile(join(sectionsDir, "--before-first-heading--strip-test.md"), "", "utf8");
+    await writeFile(join(sectionsDir, "overview.md"), "", "utf8");
+    await writeFile(join(sectionsDir, "title.md"), "", "utf8");
+    await writeFile(join(sectionsDir, "deep-section.md"), "", "utf8");
   });
 
   afterAll(async () => { await ctx.cleanup(); });

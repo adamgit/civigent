@@ -1,5 +1,5 @@
 /**
- * SessionFacade — high-level API wrapping DocSession + FragmentStore + PresenceManager.
+ * SessionFacade — high-level API wrapping DocSession + DocumentFragments + PresenceManager.
  *
  * Provides atomic compound operations so the coordinator can remain a message router
  * (decode binary → call facade → encode response/broadcast) without reaching into
@@ -8,19 +8,17 @@
 
 import * as Y from "yjs";
 import type { DocSession } from "./ydoc-lifecycle.js";
-import { FragmentStore } from "./fragment-store.js";
 import {
   markFragmentDirty,
   updateSectionFocus,
   updateActivity,
   updateEditPulse,
   addContributor,
-  triggerDebouncedFlush,
-  triggerImmediateFlush,
+  triggerDebouncedSessionOverlayImport,
+  triggerImmediateSessionOverlayImport,
   normalizeFragment,
 } from "./ydoc-lifecycle.js";
 import { fragmentFromRemark } from "../storage/section-formatting.js";
-import { fragmentKeyFromSectionFile } from "./ydoc-fragments.js";
 import type { WriterIdentity } from "../types/shared.js";
 
 // ─── Facade ──────────────────────────────────────────────
@@ -55,12 +53,7 @@ export class SessionFacade {
   }
 
   getFragmentKeys(): string[] {
-    const keys: string[] = [];
-    this.session.fragments.skeleton.forEachSection((_heading, _level, sectionFile, headingPath) => {
-      const isBfh = FragmentStore.isBeforeFirstHeading({ headingPath, level: _level, heading: _heading });
-      keys.push(fragmentKeyFromSectionFile(sectionFile, isBfh));
-    });
-    return keys;
+    return this.session.fragments.getFragmentKeys();
   }
 
   // ── Commands ────────────────────────────────────────────
@@ -86,8 +79,7 @@ export class SessionFacade {
     // Track which fragment this writer dirtied
     const focusedPath = session.presenceManager.getAll().get(writerId);
     if (focusedPath !== undefined) {
-      const entry = session.fragments.skeleton.expect(focusedPath);
-      const fragmentKey = FragmentStore.fragmentKeyFor(entry);
+      const fragmentKey = session.fragments.requireFragmentKeyForHeadingPath(focusedPath);
       session.fragments.markDirty(fragmentKey);
       const isNewlyDirty = markFragmentDirty(session.docPath, writerId, fragmentKey);
       if (isNewlyDirty) {
@@ -104,7 +96,7 @@ export class SessionFacade {
       session.lastTouchedFragments.clear();
     }
 
-    triggerDebouncedFlush(session.docPath);
+    triggerDebouncedSessionOverlayImport(session.docPath);
     return { newlyDirtyKeys, touchedKeys };
   }
 
@@ -121,9 +113,8 @@ export class SessionFacade {
 
     let oldFragmentKey: string | null = null;
     if (oldFocus) {
-      const oldEntry = session.fragments.skeleton.find(oldFocus);
-      if (oldEntry) {
-        oldFragmentKey = FragmentStore.fragmentKeyFor(oldEntry);
+      oldFragmentKey = session.fragments.findFragmentKeyForHeadingPath(oldFocus);
+      if (oldFragmentKey) {
         await normalizeFragment(session.docPath, oldFragmentKey);
       }
     }
@@ -141,7 +132,7 @@ export class SessionFacade {
     writerId: string,
   ): { update: Uint8Array; error?: string } {
     const session = this.session;
-    const entry = session.fragments.resolveEntryForKey(fragmentKey);
+    const entry = session.fragments.resolveEntryForFragmentKey(fragmentKey);
     if (!entry) {
       return { update: new Uint8Array(), error: `Fragment key not found: ${fragmentKey}` };
     }
@@ -152,13 +143,13 @@ export class SessionFacade {
     markFragmentDirty(session.docPath, writerId, fragmentKey);
 
     const update = Y.encodeStateAsUpdate(session.fragments.ydoc, svBefore);
-    triggerDebouncedFlush(session.docPath);
+    triggerDebouncedSessionOverlayImport(session.docPath);
     return { update };
   }
 
-  /** Trigger an immediate flush to disk. */
-  flush(): void {
-    triggerImmediateFlush(this.session.docPath);
+  /** Trigger an immediate session-overlay import. */
+  importToSessionOverlayNow(): void {
+    triggerImmediateSessionOverlayImport(this.session.docPath);
   }
 
   /** Record an activity pulse from a writer. */

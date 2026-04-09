@@ -39,7 +39,7 @@ import {
 import { SectionRef } from "../../domain/section-ref.js";
 import { INVOLVEMENT_THRESHOLD } from "../../domain/humanInvolvement.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
-import type { SectionScoreSnapshot, ProposalStatus, ProposalSection } from "../../types/shared.js";
+import type { SectionScoreSnapshot, ProposalStatus } from "../../types/shared.js";
 import { checkDocPermission } from "../../auth/acl.js";
 import { emitCatalogMutationEvents, summarizeProposalCatalogMutations } from "../catalog-events.js";
 import {
@@ -328,26 +328,23 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
   );
 
   // Write section content through OverlayContentLayer — skeleton resolution,
-  // ancestor auto-creation, and content writing are handled internally.
-  // When writeSection auto-splits multi-heading content, it returns expanded targets.
+  // ancestor auto-creation, and parser-driven subtree rewrite are handled
+  // internally by upsertSection(...). Per items 246/258, the previous
+  // splitTargets reaction (which captured `writeSection`'s return value
+  // and post-hoc updated the proposal's section metadata when content
+  // was auto-split) has been deleted. The proposal's section metadata
+  // remains keyed to the originally-requested target headings; if a
+  // caller's payload contained embedded headings that triggered an
+  // internal subtree rewrite, the originating target heading is still
+  // the canonical proposal anchor and any newly-materialized child
+  // headings are derivable from a subsequent document read rather than
+  // from a side-channel return value.
   const overlayLayer = new OverlayContentLayer(contentRoot, getContentRoot());
-  let expandedSections: ProposalSection[] = [];
 
   for (const s of sections) {
-    const splitTargets = await overlayLayer.writeSection(SectionRef.fromTarget(s), s.content);
-    if (splitTargets) {
-      expandedSections.push(...splitTargets.map(t => ({
-        doc_path: t.doc_path,
-        heading_path: t.heading_path,
-      })));
-    } else {
-      expandedSections.push({ doc_path: s.doc_path, heading_path: s.heading_path });
-    }
-  }
-
-  // If any section was auto-split, update the proposal's section metadata
-  if (expandedSections.length !== sections.length) {
-    await updateProposalSections(mcpProposalId, expandedSections);
+    const ref = SectionRef.fromTarget(s);
+    const heading = ref.headingPath.length === 0 ? "" : ref.headingPath[ref.headingPath.length - 1]!;
+    await overlayLayer.upsertSection(ref, heading, s.content);
   }
 
   // Evaluate immediately (informational — agent must call commit_proposal explicitly)
@@ -614,24 +611,25 @@ const writeSectionHandler: ToolHandler = async (args, ctx) => {
       updatedSections,
     );
 
-    // Write section content through OverlayContentLayer
+    // Write section content through OverlayContentLayer. Per items
+    // 246/260, the previous splitTargets reaction (which captured
+    // `writeSection`'s return value and post-hoc updated proposal
+    // section metadata when auto-split occurred) has been deleted. The
+    // proposal's section metadata stays keyed to the originally-
+    // requested target heading; any internal subtree rewrite triggered
+    // by embedded headings in the user payload no longer leaks back
+    // through a side-channel return value.
     const overlayLayer = new OverlayContentLayer(updContentRoot, getContentRoot());
-    const splitTargets = await overlayLayer.writeSection(new SectionRef(docPath, headingPath), content);
-
-    // If auto-split occurred, update proposal sections with the expanded targets
-    if (splitTargets) {
-      const remainingSections = updated.sections.filter(
-        (s) => !(s.doc_path === docPath && JSON.stringify(s.heading_path) === JSON.stringify(headingPath)),
-      );
-      const expandedSections = [
-        ...remainingSections,
-        ...splitTargets.map(t => ({ doc_path: t.doc_path, heading_path: t.heading_path })),
-      ];
-      await updateProposalSections(proposalId, expandedSections);
+    {
+      const ref = new SectionRef(docPath, headingPath);
+      const heading = headingPath.length === 0 ? "" : headingPath[headingPath.length - 1]!;
+      await overlayLayer.upsertSection(ref, heading, content);
     }
 
-    // Broadcast proposal:draft with updated sections (re-read to get current state)
-    const broadcastProposal = splitTargets ? await readProposal(proposalId) : updated;
+    // Broadcast proposal:draft with the updated proposal we already
+    // have in hand (no re-read needed — the previous re-read existed
+    // only to catch post-split section expansion, which is gone).
+    const broadcastProposal = updated;
     if (ctx.emitEvent && broadcastProposal.sections.length > 0) {
       ctx.emitEvent({
         type: "proposal:draft",
@@ -797,14 +795,14 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   registry.register(
     {
       name: "write_section",
-      description: "Write content to a specific section within an existing pending proposal. Adds or updates a section in the proposal.",
+      description: "Replace the content at the specified heading path within an existing pending proposal. Creates the section (and any missing ancestors) if it does not yet exist.",
       inputSchema: {
         type: "object",
         properties: {
           proposal_id: { type: "string", description: "ID of the pending proposal" },
           doc_path: { type: "string", description: "Document path (must end with .md)" },
           heading_path: { type: "array", items: { type: "string" }, description: "Section heading path" },
-          content: { type: "string", description: "New section content (markdown)" },
+          content: { type: "string", description: "Section content (markdown). Describes the section as the user wants it to read after the call." },
           justification: { type: "string", description: "Optional justification for overwriting this section" },
         },
         required: ["proposal_id", "doc_path", "heading_path", "content"],

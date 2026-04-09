@@ -12,8 +12,8 @@ import { createApp } from "../app.js";
 import { setSystemReady } from "../startup-state.js";
 import { ensureGitRepoReady, getHeadSha } from "../storage/git-repo.js";
 import { ensureV3Directories, getDataRoot } from "../storage/data-root.js";
-import { acquireDocSession, releaseDocSession, lookupDocSession, setFlushCallback } from "../crdt/ydoc-lifecycle.js";
-import { flushDocSessionToDisk } from "../storage/session-store.js";
+import { acquireDocSession, releaseDocSession, lookupDocSession, setSessionOverlayImportCallback } from "../crdt/ydoc-lifecycle.js";
+import { importSessionDirtyFragmentsToOverlay } from "../storage/session-store.js";
 import type { WriterIdentity } from "../types/shared.js";
 
 const PERF_WRITER: WriterIdentity = { id: "perf-writer", type: "human", displayName: "Perf Writer", email: "perf@test.local" };
@@ -175,8 +175,8 @@ describe("API performance (dev-data)", () => {
   // doesn't block the event loop beyond the budget.
 
   it("Flush doc doesn't block event loop > budget", async () => {
-    setFlushCallback(async (s) => {
-      await flushDocSessionToDisk(s);
+    setSessionOverlayImportCallback(async (s) => {
+      await importSessionDirtyFragmentsToOverlay(s);
     });
 
     const docPath = await getFirstDocPath();
@@ -185,7 +185,7 @@ describe("API performance (dev-data)", () => {
     expect(session).toBeDefined();
 
     const start = performance.now();
-    await flushDocSessionToDisk(session);
+    await importSessionDirtyFragmentsToOverlay(session);
     const elapsed = performance.now() - start;
 
     await releaseDocSession(docPath, "perf-test-flush");

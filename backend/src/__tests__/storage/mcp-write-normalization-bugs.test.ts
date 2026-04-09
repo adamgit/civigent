@@ -60,7 +60,7 @@ async function createStandardDoc(
 
 // ─── BUG1-TEST: MCP write path doesn't split multi-section markdown ─
 
-describe("BUG1 FIXED: writeSection rejects multi-heading; importMarkdownDocument normalizes", () => {
+describe("BUG1 FIXED: writeSection rejects multi-heading; upsertDocumentFromMarkdown normalizes", () => {
   let ctx: TempDataRootContext;
   const docPath = "test/standard.md";
 
@@ -71,7 +71,7 @@ describe("BUG1 FIXED: writeSection rejects multi-heading; importMarkdownDocument
 
   afterAll(async () => { await ctx.cleanup(); });
 
-  it("writeSection to root with multi-heading markdown auto-splits in overlay", async () => {
+  it("upsertSectionFromMarkdown to root with multi-heading markdown auto-splits in overlay", async () => {
     const multiSectionMarkdown = [
       "New preamble.",
       "",
@@ -86,16 +86,16 @@ describe("BUG1 FIXED: writeSection rejects multi-heading; importMarkdownDocument
 
     const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
     const ref = new SectionRef(docPath, []);
-    const result = await layer.writeSection(ref, multiSectionMarkdown);
-    expect(Array.isArray(result)).toBe(true);
-    const targets = result as Array<{ doc_path: string; heading_path: string[] }>;
+    await layer.upsertSection(ref, "", multiSectionMarkdown, { contentIsFullMarkdown: true });
+    const headingPaths = await layer.listHeadingPaths(docPath);
+    const targets = headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp }));
     expect(targets.length).toBeGreaterThanOrEqual(2);
     const headings = targets.map(t => t.heading_path);
     expect(headings).toContainEqual(["Alpha"]);
     expect(headings).toContainEqual(["Beta"]);
   });
 
-  it("importMarkdownDocument normalizes multi-section markdown into skeleton + body files", async () => {
+  it("upsertDocumentFromMarkdown normalizes multi-section markdown into skeleton + body files", async () => {
     const multiSectionMarkdown = [
       "New preamble.",
       "",
@@ -113,7 +113,11 @@ describe("BUG1 FIXED: writeSection rejects multi-heading; importMarkdownDocument
     ].join("\n");
 
     const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
-    const targets = await layer.importMarkdownDocument(docPath, multiSectionMarkdown);
+    // Per items 307/354 the new primitive returns void; section targets are
+    // derived by reading back via listHeadingPaths.
+    await layer.upsertDocumentFromMarkdown(docPath, multiSectionMarkdown);
+    const headingPaths = await layer.listHeadingPaths(docPath);
+    const targets = headingPaths.map(hp => ({ doc_path: docPath, heading_path: hp }));
 
     // Should return 4 section targets: root + Alpha + Beta + Gamma
     expect(targets).toHaveLength(4);
@@ -142,7 +146,7 @@ describe("BUG1 FIXED: writeSection rejects multi-heading; importMarkdownDocument
 
 // ─── BUG1b-TEST: writeSection accepts multi-heading content without error ─
 
-describe("BUG1b FIXED: ContentLayer.writeSection() rejects multi-heading content", () => {
+describe("BUG1b FIXED: Overlay upsertSectionFromMarkdown normalizes multi-heading content", () => {
   let ctx: TempDataRootContext;
   const docPath = "test/standard.md";
 
@@ -153,28 +157,28 @@ describe("BUG1b FIXED: ContentLayer.writeSection() rejects multi-heading content
 
   afterAll(async () => { await ctx.cleanup(); });
 
-  it("writeSection with multi-heading body auto-splits in overlay", async () => {
+  it("upsertSectionFromMarkdown with multi-heading body auto-splits in overlay", async () => {
     const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
     const ref = new SectionRef(docPath, ["Overview"]);
 
     const multiHeadingContent = "## A\nText A.\n\n## B\nText B.\n";
 
-    const result = await layer.writeSection(ref, multiHeadingContent);
-    expect(Array.isArray(result)).toBe(true);
-    const targets = result as Array<{ doc_path: string; heading_path: string[] }>;
+    await layer.upsertSection(ref, "A", multiHeadingContent, { contentIsFullMarkdown: true });
+    const headingPaths = await layer.listHeadingPaths(docPath);
+    const targets = headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp }));
     expect(targets.length).toBeGreaterThanOrEqual(2);
     const headings = targets.map(t => t.heading_path);
     expect(headings).toContainEqual(["A"]);
     expect(headings).toContainEqual(["B"]);
   });
 
-  it("writeSection with single-section body still works", async () => {
+  it("upsertSectionFromMarkdown with single headed section still works", async () => {
     const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
     const ref = new SectionRef(docPath, ["Overview"]);
 
-    // Single-section content (no headings in body) should work fine
+    // Single-section headed markdown should preserve the targeted section.
     await expect(
-      layer.writeSection(ref, "Just plain body text.\n"),
+      layer.upsertSection(ref, "Overview", "## Overview\n\nJust plain body text.\n", { contentIsFullMarkdown: true }),
     ).resolves.not.toThrow();
   });
 });

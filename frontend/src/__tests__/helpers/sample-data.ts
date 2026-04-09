@@ -53,19 +53,27 @@ export const sampleHeatmapEntry = {
 
 export const sampleSections = [
   {
+    heading: "",
     heading_path: [] as string[],
+    depth: 0,
     content: "Document preamble.\n",
     humanInvolvement_score: 0,
     crdt_session_active: false,
     section_length_warning: false,
     word_count: 2,
+    fragment_key: "frag:sec_root",
+    section_file: "sec_root.md",
   },
   {
+    heading: "Overview",
     heading_path: ["Overview"],
-    content: "The overview.\n",
+    depth: 1,
+    content: "# Overview\nThe overview.\n",
     humanInvolvement_score: 0,
     crdt_session_active: false,
     section_length_warning: false,
     word_count: 2,
+    fragment_key: "frag:sec_overview",
+    section_file: "sec_overview.md",
   },
 ];

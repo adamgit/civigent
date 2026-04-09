@@ -2,21 +2,30 @@
  * Tests for Y.Doc fragment injection after proposal commit.
  *
  * Covers:
- *   1 — content replaced via reloadSectionFromCanonical
- *   2 — dirty tracking not polluted after injection
+ *   1 — content replaced via replaceFragmentFromProvidedContent + SERVER_INJECTION_ORIGIN
+ *   2 — dirty tracking not polluted after server-injection-origin replacement
  *   3 — lastTouchedFragments not polluted after injectAfterCommit
  *   4 — broadcast fired with non-empty delta after injectAfterCommit
  *   5 — no active session: injectAfterCommit is a safe no-op
  *   6 — hook wiring: commitProposalToCanonical fires the post-commit hook
+ *
+ * Items 331-347 redesigned the fragment-ownership API so the runtime layer no
+ * longer treats DocumentFragments as a self-loading object. Tests that previously
+ * mocked a ContentLayer and called `reloadSectionFromCanonical(headingPath, mockLayer)`
+ * have been rewritten to (a) build fragments via the explicit
+ * `buildDocumentFragmentsForTest(...)` helper and (b) drive the new policy-free
+ * `replaceFragmentFromProvidedContent(...)` primitive directly. The injection
+ * layer that previously baked source-selection policy into the fragment store now
+ * lives entirely in `injectAfterCommit(...)` itself.
  */
 
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
-import { mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import * as Y from "yjs";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
-import { FragmentStore, SERVER_INJECTION_ORIGIN } from "../../crdt/fragment-store.js";
+import { DocumentFragments, SERVER_INJECTION_ORIGIN } from "../../crdt/document-fragments.js";
+import { buildDocumentFragmentsForTest } from "../helpers/build-document-fragments.js";
 import {
   acquireDocSession,
   destroyAllSessions,
@@ -27,6 +36,7 @@ import {
 import { setPostCommitHook, commitProposalToCanonical } from "../../storage/commit-pipeline.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
+import type { FragmentContent } from "../../storage/section-formatting.js";
 import type { SectionScoreSnapshot, WriterIdentity } from "../../types/shared.js";
 
 // ─── Mock commit-pipeline dependencies for test 6 ────────────────
@@ -76,47 +86,45 @@ describe("Fragment injection after proposal commit", () => {
 
   // ─── Test 1: content replaced ─────────────────────────────────
 
-  it("reloadSectionFromCanonical replaces Y.Doc fragment with injected content", async () => {
-    const { store } = await FragmentStore.fromDisk(SAMPLE_DOC_PATH);
+  it("replaceFragmentFromProvidedContent with SERVER_INJECTION_ORIGIN replaces fragment content", async () => {
+    const store = await buildDocumentFragmentsForTest(SAMPLE_DOC_PATH);
 
     // Find the "Overview" section fragment key
     let overviewKey: string | null = null;
-    let overviewHeadingPath: string[] | null = null;
+    let overviewLevel = 0;
     store.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
       if (heading === "Overview") {
-        const isRoot = FragmentStore.isBeforeFirstHeading({ headingPath, level, heading });
+        const isRoot = DocumentFragments.isBeforeFirstHeading({ headingPath, level, heading });
         overviewKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
-        overviewHeadingPath = [...headingPath];
+        overviewLevel = level;
       }
     });
     expect(overviewKey).not.toBeNull();
 
-    const newContent = "This is the NEW injected overview content.";
+    // Caller resolves the source (this test simulates "content layer returned this")
+    // and builds the FragmentContent inline — exactly the pattern injectAfterCommit uses.
+    const newBody = "This is the NEW injected overview content." as never;
+    const content: FragmentContent = DocumentFragments.buildFragmentContent(newBody, overviewLevel, "Overview");
 
-    // Mock ContentLayer returning new canonical content
-    const mockContentLayer = {
-      readSection: vi.fn().mockResolvedValue(newContent),
-    } as any;
-
-    await store.reloadSectionFromCanonical(overviewHeadingPath!, mockContentLayer);
+    store.replaceFragmentFromProvidedContent(overviewKey!, content, { origin: SERVER_INJECTION_ORIGIN });
 
     const assembled = store.assembleMarkdown();
-    expect(assembled).toContain(newContent);
+    expect(assembled).toContain("This is the NEW injected overview content.");
     expect(assembled).not.toContain("The overview covers our strategic goals");
   });
 
   // ─── Test 2: dirty tracking not polluted ──────────────────────
 
-  it("reloadSectionFromCanonical does not add the key to dirtyKeys", async () => {
-    const { store } = await FragmentStore.fromDisk(SAMPLE_DOC_PATH);
+  it("replaceFragmentFromProvidedContent with SERVER_INJECTION_ORIGIN does not pollute dirtyKeys", async () => {
+    const store = await buildDocumentFragmentsForTest(SAMPLE_DOC_PATH);
 
     let overviewKey: string | null = null;
-    let overviewHeadingPath: string[] | null = null;
+    let overviewLevel = 0;
     store.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
       if (heading === "Overview") {
-        const isRoot = FragmentStore.isBeforeFirstHeading({ headingPath, level, heading });
+        const isRoot = DocumentFragments.isBeforeFirstHeading({ headingPath, level, heading });
         overviewKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
-        overviewHeadingPath = [...headingPath];
+        overviewLevel = level;
       }
     });
     expect(overviewKey).not.toBeNull();
@@ -124,13 +132,11 @@ describe("Fragment injection after proposal commit", () => {
     // Confirm dirtyKeys is clean before injection
     expect(store.dirtyKeys.has(overviewKey!)).toBe(false);
 
-    const mockContentLayer = {
-      readSection: vi.fn().mockResolvedValue("Some new body content."),
-    } as any;
+    const content = DocumentFragments.buildFragmentContent("Some new body content." as never, overviewLevel, "Overview");
+    store.replaceFragmentFromProvidedContent(overviewKey!, content, { origin: SERVER_INJECTION_ORIGIN });
 
-    await store.reloadSectionFromCanonical(overviewHeadingPath!, mockContentLayer);
-
-    // dirtyKeys must NOT contain the injected fragment key
+    // dirtyKeys must NOT contain the injected fragment key — server-origin transactions
+    // are marked by the afterTransaction guard, not by the API surface itself.
     expect(store.dirtyKeys.has(overviewKey!)).toBe(false);
   });
 
@@ -141,37 +147,34 @@ describe("Fragment injection after proposal commit", () => {
     const writerIdentity: WriterIdentity = { id: "writer-inject-test", type: "human", displayName: "Inject Test Writer" };
     const session = await acquireDocSession(SAMPLE_DOC_PATH, "writer-inject-test", baseHead, writerIdentity);
 
-    // Find the "Overview" heading path
-    let overviewHeadingPath: string[] | null = null;
+    // Find the "Overview" fragment key for the assertion
     let overviewKey: string | null = null;
     session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
       if (heading === "Overview") {
-        const isRoot = FragmentStore.isBeforeFirstHeading({ headingPath, level, heading });
+        const isRoot = DocumentFragments.isBeforeFirstHeading({ headingPath, level, heading });
         overviewKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
-        overviewHeadingPath = [...headingPath];
       }
     });
-    expect(overviewHeadingPath).not.toBeNull();
+    expect(overviewKey).not.toBeNull();
 
     // Wire a broadcast to prevent errors (actual content doesn't matter for this test)
     setYjsUpdateBroadcast(() => {});
 
-    // Create a minimal ContentLayer that returns new content
-    const { ContentLayer } = await import("../../storage/content-layer.js");
-    // Use real canonical content (fromDisk already populated the session)
-    // We inject by calling injectAfterCommit with a mocked content layer
-    // by patching the module-level import via the ydoc-lifecycle function.
-    // Instead, call reloadSectionFromCanonical directly on session.fragments
-    // after confirming lastTouchedFragments is clean.
+    // Write new canonical content so injectAfterCommit's internal ContentLayer.readSection
+    // call returns something distinct from the session's current state.
+    const contentRoot = join(ctx.rootDir, "content");
+    const sectionsDir = join(contentRoot, `${SAMPLE_DOC_PATH}.sections`);
+    await writeFile(join(sectionsDir, "overview.md"), "Injected content for test 3.\n", "utf8");
 
     // Clear touched set before injection
     session.lastTouchedFragments.clear();
 
-    // Perform injection via the public API (reloadSectionFromCanonical with SERVER_INJECTION_ORIGIN)
-    const mockContentLayer = {
-      readSection: vi.fn().mockResolvedValue("Injected content for test 3."),
-    } as any;
-    await session.fragments.reloadSectionFromCanonical(overviewHeadingPath!, mockContentLayer);
+    // Drive injection through the real injectAfterCommit (it now reads canonical
+    // inline and stamps SERVER_INJECTION_ORIGIN on the replace).
+    await injectAfterCommit(SAMPLE_DOC_PATH, [["Overview"]], {
+      proposalId: "test-prop-injecttest",
+      writerDisplayName: "Inject Test Writer",
+    });
 
     // lastTouchedFragments must NOT contain the injected key
     expect(session.lastTouchedFragments.has(overviewKey!)).toBe(false);
@@ -192,7 +195,10 @@ describe("Fragment injection after proposal commit", () => {
     const sectionsDir = join(contentRoot, `${SAMPLE_DOC_PATH}.sections`);
     await writeFile(join(sectionsDir, "overview.md"), "Brand new canonical overview.\n", "utf8");
 
-    await injectAfterCommit(SAMPLE_DOC_PATH, [["Overview"]]);
+    await injectAfterCommit(SAMPLE_DOC_PATH, [["Overview"]], {
+      proposalId: "test-prop-broadcasttest",
+      writerDisplayName: "Broadcast Test Writer",
+    });
 
     expect(broadcastMock).toHaveBeenCalledOnce();
     const [calledDocPath, calledUpdate] = broadcastMock.mock.calls[0];
@@ -214,7 +220,12 @@ describe("Fragment injection after proposal commit", () => {
     const ghostPath = "nonexistent/doc.md";
     expect(lookupDocSession(ghostPath)).toBeUndefined();
 
-    await expect(injectAfterCommit(ghostPath, [["SomeSection"]])).resolves.toBeUndefined();
+    await expect(
+      injectAfterCommit(ghostPath, [["SomeSection"]], {
+        proposalId: "test-prop-ghost",
+        writerDisplayName: "Ghost Writer",
+      }),
+    ).resolves.toBeUndefined();
 
     expect(broadcastMock).not.toHaveBeenCalled();
 

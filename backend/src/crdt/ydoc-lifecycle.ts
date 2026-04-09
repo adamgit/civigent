@@ -17,11 +17,10 @@ import type {
   DocSessionId,
 } from "../types/shared.js";
 import type { PreemptiveCommitResult } from "../storage/auto-commit.js";
-import { FragmentStore, SERVER_INJECTION_ORIGIN } from "./fragment-store.js";
-import { DocumentFragments } from "./document-fragments.js";
-import { fragmentKeyFromSectionFile } from "./ydoc-fragments.js";
+import { DocumentFragments, SERVER_INJECTION_ORIGIN } from "./document-fragments.js";
 import { PresenceManager } from "./presence-manager.js";
 import { SectionRef } from "../domain/section-ref.js";
+import { EMPTY_BODY, type FragmentContent } from "../storage/section-formatting.js";
 
 // ─── Session state machine ───────────────────────────────────────
 
@@ -176,14 +175,14 @@ export function getSessionsForWriter(writerId: string): DocSession[] {
 
 // ─── Session Acquire / Release ───────────────────────────────────
 
-export interface FlushCallback {
+export interface SessionOverlayImportCallback {
   (session: DocSession): Promise<void>;
 }
 
-let _flushCallback: FlushCallback | null = null;
+let _sessionOverlayImportCallback: SessionOverlayImportCallback | null = null;
 
-export function setFlushCallback(cb: FlushCallback): void {
-  _flushCallback = cb;
+export function setSessionOverlayImportCallback(cb: SessionOverlayImportCallback): void {
+  _sessionOverlayImportCallback = cb;
 }
 
 export async function acquireDocSession(
@@ -219,23 +218,81 @@ export async function acquireDocSession(
     return session;
   }
 
-  // Slow path: Build FragmentStore from disk (session overlay or canonical).
+  // Slow path: explicit DocumentFragments construction sequence (item 341).
   // Store the promise BEFORE the first await so any concurrent caller hits
-  // the fast path above instead of spawning a second fromDisk() call.
+  // the fast path above instead of spawning a second construction.
+  //
+  // Sequence:
+  //   1. Load mutable skeleton from disk (overlay → canonical resolution)
+  //   2. Choose per-section startup content from runtime sources
+  //      (raw fragments are freshest; fall back to overlay/canonical body)
+  //   3. Construct DocumentFragments with empty Y.Doc + the loaded skeleton
+  //   4. Bulk-apply chosen content via replaceFragmentsFromProvidedContent
+  //   5. Normalize any sections that were sourced from raw fragments
+  //
+  // Crash recovery (orphaned bodies, Recovered edits salvage) is INTENTIONALLY
+  // absent here. Per item 343: real crash recovery only runs on server start
+  // via `backend/src/storage/crash-recovery.ts`. Per-session acquisition must
+  // not append recovery sections, surface orphan bodies, or perform any other
+  // crash-recovery behavior on reconnect.
   const creationPromise = (async (): Promise<DocSession> => {
-    const { store: fragments, orphanedBodies } = await DocumentFragments.fromDisk(docPath);
-    if (orphanedBodies.length > 0) {
-      // Append a "Recovered edits" section so the user can review orphaned content
-      const { buildRecoverySectionMarkdown } = await import("../storage/crash-recovery.js");
-      const recoveryBody = buildRecoverySectionMarkdown(orphanedBodies);
-      const recoverySection = { heading: "Recovered edits", level: 2, body: recoveryBody, headingPath: ["Recovered edits"] };
-      const addedEntries = await fragments.skeleton.addSectionsFromBeforeFirstHeadingSplit([recoverySection]);
-      for (const addedEntry of addedEntries) {
-        if (addedEntry.isSubSkeleton) continue;
-        const isBfh = FragmentStore.isBeforeFirstHeading(addedEntry);
-        const newKey = fragmentKeyFromSectionFile(addedEntry.sectionFile, isBfh);
-        const fragmentContent = FragmentStore.buildFragmentContent(recoveryBody, addedEntry.level, addedEntry.heading);
-        fragments.setFragmentContent(newKey, fragmentContent);
+    // Lazy-imported to avoid circular dependencies
+    // (session-store ↔ ydoc-lifecycle, content-layer ↔ session-store).
+    const { DocumentSkeletonInternal } = await import("../storage/document-skeleton.js");
+    const { OverlayContentLayer } = await import("../storage/content-layer.js");
+    const { listRawFragments, readRawFragment } = await import("../storage/session-store.js");
+    const { fragmentFromDisk } = await import("../storage/section-formatting.js");
+
+    const canonicalRoot = getContentRoot();
+    const overlayRoot = getSessionDocsContentRoot();
+    const overlay = new OverlayContentLayer(overlayRoot, canonicalRoot);
+
+    const skeleton = await DocumentSkeletonInternal.fromDisk(docPath, overlayRoot, canonicalRoot);
+    const ydoc = new Y.Doc();
+    const fragments = new DocumentFragments(ydoc, skeleton, docPath);
+
+    if (!skeleton.areSkeletonRootsEmpty) {
+      // Read raw fragment files (sessions/fragments/) — crash-safe heading+body
+      // format. These take precedence over body files when present.
+      const rawFiles = await listRawFragments(docPath);
+      const rawFileSet = new Set(rawFiles);
+      const rawContentMap = new Map<string, string>();
+      for (const rawFile of rawFiles) {
+        const content = await readRawFragment(docPath, rawFile);
+        if (content !== null) rawContentMap.set(rawFile, content);
+      }
+
+      // Bulk-read overlay/canonical body content for the fall-back case
+      const bulkContent = await overlay.readAllSections(docPath);
+
+      // Build the caller-provided content map by walking the skeleton and
+      // choosing per-section source from the runtime inputs above.
+      const contentMap = new Map<string, FragmentContent>();
+      const rawSourcedKeys: string[] = [];
+
+      skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+        const fragmentKey = fragments.requireFragmentKeyForHeadingPath([...headingPath]);
+
+        if (rawFileSet.has(sectionFile)) {
+          // Raw fragment already contains heading + body — pass through
+          contentMap.set(fragmentKey, fragmentFromDisk(rawContentMap.get(sectionFile) ?? ""));
+          rawSourcedKeys.push(fragmentKey);
+        } else {
+          // Fall back to body-only file content
+          const headingKey = SectionRef.headingKey([...headingPath]);
+          const bodyContent = bulkContent?.get(headingKey) ?? EMPTY_BODY;
+          contentMap.set(fragmentKey, DocumentFragments.buildFragmentContent(bodyContent, level, heading));
+        }
+      });
+
+      // Single explicit multi-fragment apply step.
+      fragments.replaceFragmentsFromProvidedContent(contentMap);
+
+      // Sections sourced from raw fragments may carry structural drift
+      // (level/heading changes that the on-disk normalizer didn't run yet).
+      // Normalize them now so the live Y.Doc matches the skeleton invariants.
+      for (const fragmentKey of rawSourcedKeys) {
+        await fragments.normalizeStructure(fragmentKey);
       }
     }
 
@@ -346,12 +403,12 @@ export async function releaseDocSession(
       session.flushTimer = null;
     }
 
-    // If a flush is currently in-flight (state === "flushing"), wait for it to complete
+    // If an import is currently in-flight (state === "flushing"), wait for it to complete
     // before taking exclusive "committing" ownership of the session.
     if (session.state === "flushing") {
-      const inflight = flushInFlight.get(session);
+      const inflight = sessionOverlayImportInFlight.get(session);
       if (inflight) await inflight;
-      // After awaiting, state has transitioned back to "active" (in flush finally block).
+      // After awaiting, state has transitioned back to "active" (in import finally block).
     }
 
     // Guard against double-commit (e.g., two concurrent close events for the last editor).
@@ -361,16 +418,18 @@ export async function releaseDocSession(
 
     // Capture contributors before session is destroyed.
     const contributors = Array.from(session.contributors.values());
+    // Snapshot scope before import: import clears DocumentFragments.dirtyKeys.
+    const normalizeScope = collectTouchedFragmentKeysForNormalization(session);
 
-    // Flush to disk before destroying (run even if the inflight flush completed above —
+    // Import to session overlay before destroying (run even if the inflight import completed above —
     // new dirty fragments may have been marked between the inflight flush and this point).
-    if (_flushCallback) {
-      await _flushCallback(session);
+    if (_sessionOverlayImportCallback) {
+      await _sessionOverlayImportCallback(session);
     }
 
     try {
-      // Normalize any fragments with embedded headings
-      await normalizeAllFragments(session);
+      // Normalize only fragments touched in this session.
+      await normalizeFragmentKeys(session, normalizeScope);
     } finally {
       // Always clean up timers and destroy Y.Doc, even if normalization fails
       if (session.idleTimeoutTimer) {
@@ -503,8 +562,21 @@ export async function injectAfterCommit(
 
   const svBefore = Y.encodeStateVector(session.fragments.ydoc);
 
+  // Caller-owned source policy (item 345): runtime code reads canonical content,
+  // builds the full FragmentContent (heading + body for non-root, body for root),
+  // and delegates to the policy-free `replaceFragmentFromProvidedContent(...)`
+  // primitive on DocumentFragments. No source-flavored wrapper is involved.
   for (const headingPath of headingPaths) {
-    await session.fragments.reloadSectionFromCanonical(headingPath, layer);
+    const fragmentKey = session.fragments.requireFragmentKeyForHeadingPath(headingPath);
+    const entry = session.fragments.resolveEntryForFragmentKey(fragmentKey);
+    if (!entry) {
+      throw new Error(`Fragment mapping drift in ${docPath}: no live entry for headingPath=[${headingPath.join(" > ")}].`);
+    }
+    const body = await layer.readSection(new SectionRef(docPath, headingPath));
+    const content = DocumentFragments.buildFragmentContent(body, entry.level, entry.heading);
+    session.fragments.replaceFragmentFromProvidedContent(fragmentKey, content, {
+      origin: SERVER_INJECTION_ORIGIN,
+    });
   }
 
   const update = Y.encodeStateAsUpdate(session.fragments.ydoc, svBefore);
@@ -648,6 +720,23 @@ export function removeObserverHolder(docPath: string, writerId: string, socketId
 }
 
 /**
+ * Collect fragment keys that should be normalized at session end/shutdown.
+ *
+ * Includes keys from both tracking sources:
+ * - `fragments.dirtyKeys`: dirty since last flush (cleared by flush)
+ * - `perUserDirty`: session-scoped attribution, survives flushes
+ */
+function collectTouchedFragmentKeysForNormalization(session: DocSession): Set<string> {
+  const keys = new Set<string>(session.fragments.dirtyKeys);
+  for (const dirtySet of session.perUserDirty.values()) {
+    for (const key of dirtySet) {
+      keys.add(key);
+    }
+  }
+  return keys;
+}
+
+/**
  * Normalize all fragments in a session that have embedded headings.
  * Called on disconnect (after flush) and shutdown.
  */
@@ -655,13 +744,32 @@ export async function normalizeAllFragments(session: DocSession): Promise<void> 
   const fragments = session.fragments;
 
   // Collect fragment keys first (normalization may mutate the skeleton)
-  const keys: string[] = [];
-  fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-    const isBfh = FragmentStore.isBeforeFirstHeading({ headingPath, level, heading });
-    keys.push(fragmentKeyFromSectionFile(sectionFile, isBfh));
-  });
+  const keys = fragments.getFragmentKeys();
 
   for (const fragmentKey of keys) {
+    const broadcastOpts = _normalizeBroadcast
+      ? { broadcastStructureChange: (info: Array<{ oldKey: string; newKeys: string[] }>) => _normalizeBroadcast!(session.docPath, info) }
+      : undefined;
+    await fragments.normalizeStructure(fragmentKey, broadcastOpts);
+  }
+}
+
+/**
+ * Normalize a specific subset of fragment keys in a session.
+ * Used by scoped publish flows so unrelated sections are not touched.
+ *
+ * Skips keys whose entry no longer exists in the skeleton — normalization can
+ * remove keys mid-loop (e.g., heading deletion merges into a sibling), and a
+ * subsequent iteration over the original snapshot would otherwise hit a stale key.
+ */
+export async function normalizeFragmentKeys(
+  session: DocSession,
+  fragmentKeys: Set<string>,
+): Promise<void> {
+  const fragments = session.fragments;
+
+  for (const fragmentKey of fragmentKeys) {
+    if (!fragments.resolveEntryForFragmentKey(fragmentKey)) continue;
     const broadcastOpts = _normalizeBroadcast
       ? { broadcastStructureChange: (info: Array<{ oldKey: string; newKeys: string[] }>) => _normalizeBroadcast!(session.docPath, info) }
       : undefined;
@@ -684,15 +792,15 @@ export async function normalizeFragment(docPath: string, fragmentKey: string): P
 
 // ─── Debounced flush ─────────────────────────────────────────────
 
-/** Tracks in-flight flush promises per session. */
-const flushInFlight = new WeakMap<DocSession, Promise<void>>();
+/** Tracks in-flight session-overlay import promises per session. */
+const sessionOverlayImportInFlight = new WeakMap<DocSession, Promise<void>>();
 
 /**
  * Trigger a debounced flush for a document session.
  * Resets the 1s timer on every call — flush fires 1s after the LAST edit.
  * Called from crdt-sync.ts when a YJS_UPDATE is received.
  */
-export function triggerDebouncedFlush(docPath: string): void {
+export function triggerDebouncedSessionOverlayImport(docPath: string): void {
   const session = sessions.get(docPath);
   if (!session) return;
 
@@ -703,18 +811,18 @@ export function triggerDebouncedFlush(docPath: string): void {
 
   session.flushTimer = setTimeout(() => {
     session.flushTimer = null;
-    if (flushInFlight.has(session)) return;
+    if (sessionOverlayImportInFlight.has(session)) return;
     // Skip if session is no longer "active" (e.g., released while timer was pending).
     if (session.state !== "active") return;
     // "active" → "flushing": flush I/O begins.
     session.state = "flushing";
     const promise = (async () => {
       try {
-        if (_flushCallback) {
-          await _flushCallback(session);
+        if (_sessionOverlayImportCallback) {
+          await _sessionOverlayImportCallback(session);
         }
       } finally {
-        flushInFlight.delete(session);
+        sessionOverlayImportInFlight.delete(session);
         // "flushing" → "active": flush I/O complete.
         // (Only reset if still "flushing" — releaseDocSession may have transitioned to "committing".)
         if (session.state === "flushing") {
@@ -722,7 +830,7 @@ export function triggerDebouncedFlush(docPath: string): void {
         }
       }
     })();
-    flushInFlight.set(session, promise);
+    sessionOverlayImportInFlight.set(session, promise);
   }, FLUSH_DEBOUNCE_MS);
 }
 
@@ -732,7 +840,7 @@ export function triggerDebouncedFlush(docPath: string): void {
  * Used when the user blurs the editor — ensures content hits disk before
  * any potential page refresh.
  */
-export function triggerImmediateFlush(docPath: string): void {
+export function triggerImmediateSessionOverlayImport(docPath: string): void {
   const session = sessions.get(docPath);
   if (!session) return;
 
@@ -744,38 +852,38 @@ export function triggerImmediateFlush(docPath: string): void {
 
   // If a flush is already in flight, nothing more to do — the in-flight
   // flush will write the latest state.
-  if (flushInFlight.has(session)) return;
+  if (sessionOverlayImportInFlight.has(session)) return;
   if (session.state !== "active") return;
 
   session.state = "flushing";
   const promise = (async () => {
     try {
-      if (_flushCallback) {
-        await _flushCallback(session);
+      if (_sessionOverlayImportCallback) {
+        await _sessionOverlayImportCallback(session);
       }
     } finally {
-      flushInFlight.delete(session);
+      sessionOverlayImportInFlight.delete(session);
       if (session.state === "flushing") {
         session.state = "active";
       }
     }
   })();
-  flushInFlight.set(session, promise);
+  sessionOverlayImportInFlight.set(session, promise);
 }
 
 /**
  * Pause flushing for a session: cancel pending timer and await any in-flight flush.
  * Used by renameDocument to prevent flush/rename overlap.
- * Caller must call triggerDebouncedFlush(newPath) after rename to restart.
+ * Caller must call triggerDebouncedSessionOverlayImport(newPath) after rename to restart.
  */
-export async function pauseFlush(docPath: string): Promise<void> {
+export async function pauseSessionOverlayImport(docPath: string): Promise<void> {
   const session = sessions.get(docPath);
   if (!session) return;
   if (session.flushTimer) {
     clearTimeout(session.flushTimer);
     session.flushTimer = null;
   }
-  const inflight = flushInFlight.get(session);
+  const inflight = sessionOverlayImportInFlight.get(session);
   if (inflight) {
     await inflight;
   }
@@ -892,11 +1000,13 @@ export async function flushAndDestroyAll(): Promise<void> {
   for (const session of sessions.values()) {
     // Cancel pending debounce — we flush immediately
     if (session.flushTimer) clearTimeout(session.flushTimer);
-    if (_flushCallback) {
-      await _flushCallback(session);
+    // Snapshot scope before flush: flush clears DocumentFragments.dirtyKeys.
+    const normalizeScope = collectTouchedFragmentKeysForNormalization(session);
+    if (_sessionOverlayImportCallback) {
+      await _sessionOverlayImportCallback(session);
     }
     // Normalize after flush, before destroy
-    await normalizeAllFragments(session);
+    await normalizeFragmentKeys(session, normalizeScope);
     if (session.idleTimeoutTimer) clearTimeout(session.idleTimeoutTimer);
     session.fragments.ydoc.destroy();
   }
@@ -916,9 +1026,8 @@ export async function getSessionFileMtime(sectionKey: string): Promise<number | 
   // Check in-memory session first
   const session = sessions.get(docPath);
   if (session) {
-    const entry = session.fragments.skeleton.find(headingPath);
-    if (entry) {
-      const targetFragmentKey = fragmentKeyFromSectionFile(entry.sectionFile, headingPath.length === 0);
+    const targetFragmentKey = session.fragments.findFragmentKeyForHeadingPath(headingPath);
+    if (targetFragmentKey) {
       const fragmentTime = session.fragmentLastActivity.get(targetFragmentKey);
       if (fragmentTime != null) {
         return fragmentTime;
@@ -927,12 +1036,13 @@ export async function getSessionFileMtime(sectionKey: string): Promise<number | 
     return null;
   }
 
-  // No in-memory session — check disk file mtime for orphaned sessions
+  // No in-memory session — check disk file mtime from the effective
+  // overlay+canonical view so sparse session overlays still resolve.
   const sessionDocsContentRoot = getSessionDocsContentRoot();
 
   try {
-    const { ContentLayer } = await import("../storage/content-layer.js");
-    const layer = new ContentLayer(sessionDocsContentRoot);
+    const { OverlayContentLayer } = await import("../storage/content-layer.js");
+    const layer = new OverlayContentLayer(sessionDocsContentRoot, getContentRoot());
     const filePath = await layer.resolveSectionPath(docPath, headingPath);
     const { stat } = await import("node:fs/promises");
     const stats = await stat(filePath);
@@ -976,7 +1086,7 @@ export function getPendingRestoreNotification(
  *      available the instant clients begin reconnecting).
  *   2. Broadcast close code 4022 to all connected sockets (via callback).
  *   3. Destroy the live session synchronously — data was already committed by
- *      preemptiveFlushAndCommit; no further flush/commit is needed.
+ *      preemptiveImportNormalizeAndCommit; no further import/commit is needed.
  */
 export async function invalidateSessionForRestore(
   docPath: string,
@@ -1006,7 +1116,7 @@ export async function invalidateSessionForRestore(
     _broadcastRestoreInvalidation(docPath);
   }
 
-  // Destroy the live session — all dirty data was committed in preemptiveFlushAndCommit.
+  // Destroy the live session — all dirty data was committed in preemptiveImportNormalizeAndCommit.
   const session = sessions.get(docPath);
   if (session) {
     assertState(session, ["active", "flushing"]);

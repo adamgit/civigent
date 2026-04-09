@@ -109,12 +109,12 @@ describe("multi-heading auto-split in proposals", () => {
     const data = JSON.parse(res.result.content[0].text);
     expect(data.proposal_id).toBeDefined();
 
-    // The proposal's sections should include the split results (Overview, Details, Summary)
-    // plus Timeline (unchanged from original — not in this proposal though)
+    // Per items 246/258: proposal section metadata is keyed to the originally-requested
+    // target headings only — auto-split successors are deliberately NOT reflected in the
+    // proposal's `sections` payload. The actual split is verified below via read_section
+    // and read_doc_structure against canonical after commit.
     const sectionHeadings = data.sections.map((s: any) => s.heading_path);
     expect(sectionHeadings).toContainEqual(["Overview"]);
-    expect(sectionHeadings).toContainEqual(["Details"]);
-    expect(sectionHeadings).toContainEqual(["Summary"]);
 
     // Each sub-section should be readable via read_section
     const overviewRes = await callMcpTool("read_section", {
@@ -202,10 +202,12 @@ describe("multi-heading auto-split in proposals", () => {
     const writeData = JSON.parse(writeRes.result.content[0].text);
     expect(writeData.proposal_id).toBe(proposalId);
 
-    // The proposal sections should now include both Timeline and Milestones
+    // Per items 246/258: proposal section metadata is keyed to the originally-requested
+    // target headings only — auto-split successors are deliberately NOT reflected in the
+    // proposal's `sections` payload. The actual split is verified below via read_section
+    // against canonical after commit.
     const sectionHeadings = writeData.sections.map((s: any) => s.heading_path);
     expect(sectionHeadings).toContainEqual(["Timeline"]);
-    expect(sectionHeadings).toContainEqual(["Milestones"]);
 
     // Commit and verify
     const commitRes = await callMcpTool("commit_proposal", {

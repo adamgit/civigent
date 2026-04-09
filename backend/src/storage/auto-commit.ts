@@ -11,11 +11,10 @@
 
 import path from "node:path";
 import { readFile } from "node:fs/promises";
-import { getAllSessions, lookupDocSession, normalizeAllFragments, type DocSession } from "../crdt/ydoc-lifecycle.js";
-import { fragmentKeyFromSectionFile } from "../crdt/ydoc-fragments.js";
+import { getAllSessions, lookupDocSession, normalizeFragmentKeys, type DocSession } from "../crdt/ydoc-lifecycle.js";
 
 import {
-  flushDocSessionToDisk,
+  importSessionDirtyFragmentsToOverlay,
   commitSessionFilesToCanonical,
   cleanupSessionFiles,
 } from "./session-store.js";
@@ -38,29 +37,32 @@ function sameHeadingPath(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((segment, index) => segment === b[index]);
 }
 
-function sessionHasMatchingDirtyScope(
+/**
+ * Return the subset of a writer's dirty fragment keys that fall within the
+ * supplied headingPaths scope. When headingPaths is undefined/empty, returns
+ * the writer's full dirty key set (a publish without a scope still operates
+ * only on what THAT writer dirtied — never the union of all writers).
+ */
+function matchingDirtyFragmentKeys(
   session: DocSession,
   writerId: string,
   headingPaths?: string[][],
-): boolean {
+): Set<string> {
   const dirtyFragments = session.perUserDirty.get(writerId);
   if (!dirtyFragments || dirtyFragments.size === 0) {
-    return false;
+    return new Set();
   }
   if (!headingPaths || headingPaths.length === 0) {
-    return true;
+    return new Set(dirtyFragments);
   }
 
-  let matched = false;
-  session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-    if (matched) return;
-    const isBeforeFirstHeading = level === 0 && heading === "";
-    const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBeforeFirstHeading);
-    if (!dirtyFragments.has(fragmentKey)) return;
-    if (headingPaths.some((target) => sameHeadingPath(target, headingPath))) {
-      matched = true;
+  const matched = new Set<string>();
+  for (const headingPath of headingPaths) {
+    const fragmentKey = session.fragments.findFragmentKeyForHeadingPath(headingPath);
+    if (fragmentKey && dirtyFragments.has(fragmentKey)) {
+      matched.add(fragmentKey);
     }
-  });
+  }
   return matched;
 }
 
@@ -101,7 +103,7 @@ export async function commitDirtySections(
   const activeSessions = [...sessions.values()].filter((session) => {
     if (!session.holders.has(writer.id)) return false;
     if (docPath && session.docPath !== docPath) return false;
-    return sessionHasMatchingDirtyScope(session, writer.id, headingPaths);
+    return matchingDirtyFragmentKeys(session, writer.id, headingPaths).size > 0;
   });
 
   const docPathsToCommit = new Set<string>(activeSessions.map((session) => session.docPath));
@@ -118,12 +120,41 @@ export async function commitDirtySections(
     return { committed: false, sectionsPublished: [] };
   }
 
-  // Flush first, then normalize against the live Y.Doc before committing from sessions/docs/.
+  // Capture the publishing writer's scoped dirty fragment keys per session BEFORE
+  // flush+normalize. Two reasons to snapshot before normalization:
+  //  1. Normalization mutates dirty key sets (it can add new dirty keys for split
+  //     fragments and remove keys for collapsed ones). The "what to clear after
+  //     commit" set must reflect what THIS writer originally asked to publish.
+  //  2. Normalization can restructure the skeleton, so we also snapshot each
+  //     captured key's current heading path here for downstream `dirty:changed`
+  //     events. The path is meaningful even if the fragment key disappears later.
+  //
+  // Bug D: post-commit cleanup must only clear the publishing writer's dirty
+  // entries — never another writer's unrelated dirty state in the same session.
+  const publisherScopePerSession = new Map<DocSession, {
+    keys: Set<string>;
+    keyToHeadingPath: Map<string, string[]>;
+  }>();
+
+  // Flush first, then normalize ONLY this writer's dirty fragments (scoped if
+  // headingPaths supplied) against the live Y.Doc before committing from
+  // sessions/docs/. Normalizing every fragment would touch sections this
+  // writer never edited and can corrupt unrelated content (Bug A).
   for (const session of [...sessions.values()]) {
     if (!session.holders.has(writer.id)) continue;
     if (!docPathsToCommit.has(session.docPath)) continue;
-    await flushDocSessionToDisk(session);
-    await normalizeAllFragments(session);
+    const matched = matchingDirtyFragmentKeys(session, writer.id, headingPaths);
+    const keyToHeadingPath = new Map<string, string[]>();
+    for (const fragmentKey of matched) {
+      const resolvedHeadingPath = session.fragments.findHeadingPathForFragmentKey(fragmentKey);
+      if (resolvedHeadingPath) {
+        keyToHeadingPath.set(fragmentKey, [...resolvedHeadingPath]);
+      }
+    }
+    publisherScopePerSession.set(session, { keys: matched, keyToHeadingPath });
+
+    await importSessionDirtyFragmentsToOverlay(session, { fragmentKeys: matched });
+    await normalizeFragmentKeys(session, matched);
   }
 
   const sectionsPublished: SectionTargetRef[] = [];
@@ -133,7 +164,7 @@ export async function commitDirtySections(
     commitSha: string;
     sections: SectionTargetRef[];
     contributorIds: string[];
-    writerIdsCleared: string[];
+    publisherClearedHeadingPaths: string[][];
   }> = [];
 
   for (const dp of docPathsToCommit) {
@@ -163,18 +194,39 @@ export async function commitDirtySections(
       commitSha = result.commitSha;
       sectionsPublished.push(...result.committedSections);
 
-      const writerIdsCleared = new Set<string>([writer.id]);
+      // Per-doc dedup of cleared heading paths so a writer holding multiple
+      // sessions for the same doc only emits one dirty:changed event per path.
+      const seenClearedPaths = new Set<string>();
+      const publisherClearedHeadingPaths: string[][] = [];
+
       for (const session of docSessions) {
-        for (const [otherWriterId, dirtyFragments] of session.perUserDirty) {
-          if (dirtyFragments.size > 0) {
-            writerIdsCleared.add(otherWriterId);
+        const scope = publisherScopePerSession.get(session);
+        if (scope) {
+          const writerDirty = session.perUserDirty.get(writer.id);
+          for (const fk of scope.keys) {
+            if (writerDirty?.has(fk)) {
+              writerDirty.delete(fk);
+            }
+            // Activity timestamps are session-wide (not per-writer). Only
+            // delete them if no other writer still holds this fragment dirty.
+            let stillDirtyByOther = false;
+            for (const [otherWriterId, otherDirty] of session.perUserDirty) {
+              if (otherWriterId === writer.id) continue;
+              if (otherDirty.has(fk)) { stillDirtyByOther = true; break; }
+            }
+            if (!stillDirtyByOther) {
+              session.fragmentFirstActivity.delete(fk);
+              session.fragmentLastActivity.delete(fk);
+            }
           }
-          for (const fk of dirtyFragments) {
-            session.fragmentFirstActivity.delete(fk);
-            session.fragmentLastActivity.delete(fk);
+          for (const [, headingPath] of scope.keyToHeadingPath) {
+            const dedupKey = headingPath.join(">>");
+            if (seenClearedPaths.has(dedupKey)) continue;
+            seenClearedPaths.add(dedupKey);
+            publisherClearedHeadingPaths.push(headingPath);
           }
-          dirtyFragments.clear();
         }
+        // baseHead update is global and correct regardless of writer scope.
         session.baseHead = result.commitSha;
       }
 
@@ -183,7 +235,7 @@ export async function commitDirtySections(
         commitSha: result.commitSha,
         sections: result.committedSections,
         contributorIds: contributors.map((contributor) => contributor.id),
-        writerIdsCleared: [...writerIdsCleared],
+        publisherClearedHeadingPaths,
       });
     }
   }
@@ -206,18 +258,19 @@ export async function commitDirtySections(
         seconds_ago: 0,
       });
 
-      for (const writerId of event.writerIdsCleared) {
-        for (const section of event.sections) {
-          onWsEvent({
-            type: "dirty:changed",
-            writer_id: writerId,
-            doc_path: section.doc_path,
-            heading_path: section.heading_path,
-            dirty: false,
-            base_head: null,
-            committed_head: event.commitSha,
-          });
-        }
+      // Bug D: dirty:changed events are scoped to the publishing writer × the
+      // heading paths the writer actually published. We never emit these for
+      // other writers (their dirty state was not touched).
+      for (const headingPath of event.publisherClearedHeadingPaths) {
+        onWsEvent({
+          type: "dirty:changed",
+          writer_id: writer.id,
+          doc_path: event.docPath,
+          heading_path: headingPath,
+          dirty: false,
+          base_head: null,
+          committed_head: event.commitSha,
+        });
       }
     }
   }
@@ -243,7 +296,7 @@ export interface PreemptiveCommitResult {
  * Does NOT emit hub events — the caller (restore route + invalidateSessionForRestore)
  * delivers notifications via MSG_RESTORE_NOTIFICATION.
  */
-export async function preemptiveFlushAndCommit(
+export async function preemptiveImportNormalizeAndCommit(
   docPath: string,
 ): Promise<PreemptiveCommitResult | null> {
   const session = lookupDocSession(docPath);
@@ -257,13 +310,12 @@ export async function preemptiveFlushAndCommit(
   for (const [writerId, dirtySet] of session.perUserDirty) {
     if (dirtySet.size === 0) continue;
     const dirtyHeadingPaths: string[][] = [];
-    session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-      const isBeforeFirstHeading = level === 0 && heading === "";
-      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBeforeFirstHeading);
-      if (dirtySet.has(fragmentKey)) {
+    for (const fragmentKey of dirtySet) {
+      const headingPath = session.fragments.findHeadingPathForFragmentKey(fragmentKey);
+      if (headingPath) {
         dirtyHeadingPaths.push([...headingPath]);
       }
-    });
+    }
     affectedWriters.push({ writerId, dirtyHeadingPaths });
   }
 
@@ -274,7 +326,7 @@ export async function preemptiveFlushAndCommit(
   }
 
   // Flush the normalised content to disk.
-  await flushDocSessionToDisk(session);
+  await importSessionDirtyFragmentsToOverlay(session);
 
   // Commit session files to canonical. Use contributors for correct git attribution.
   const result = await commitSessionFilesToCanonical(
@@ -283,7 +335,7 @@ export async function preemptiveFlushAndCommit(
   );
   if (result.sectionsCommitted === 0 || !result.commitSha) {
     throw new Error(
-      `preemptiveFlushAndCommit: commit for "${docPath}" produced no result ` +
+      `preemptiveImportNormalizeAndCommit: commit for "${docPath}" produced no result ` +
       `(sectionsCommitted=${result.sectionsCommitted}, commitSha=${result.commitSha ?? "null"})`,
     );
   }
@@ -306,7 +358,7 @@ export async function commitAllDirtySessions(): Promise<void> {
 
   // Phase 1: Flush all active sessions to disk
   for (const [, session] of sessions) {
-    await flushDocSessionToDisk(session);
+    await importSessionDirtyFragmentsToOverlay(session);
   }
 
   // Phase 2: Commit all session files from disk (including just-flushed

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { jsonResponse } from "../../helpers/fetch-mocks";
 
@@ -57,30 +57,39 @@ import { DocumentPage } from "../../../pages/DocumentPage";
 const multiSectionResponse = {
   sections: [
     {
+      heading: "",
       heading_path: [] as string[],
+      depth: 0,
       content: "Preamble content.\n",
       humanInvolvement_score: 0,
       crdt_session_active: false,
       section_length_warning: false,
       word_count: 2,
+      fragment_key: "frag:sec_root",
       section_file: "sec_root.md",
     },
     {
+      heading: "Overview",
       heading_path: ["Overview"],
-      content: "The overview section.\n",
+      depth: 1,
+      content: "# Overview\nThe overview section.\n",
       humanInvolvement_score: 0.2,
       crdt_session_active: false,
       section_length_warning: false,
       word_count: 3,
+      fragment_key: "frag:sec_overview",
       section_file: "sec_overview.md",
     },
     {
+      heading: "Details",
       heading_path: ["Details"],
-      content: "The details.\n",
+      depth: 1,
+      content: "# Details\nThe details.\n",
       humanInvolvement_score: 0.6,
       crdt_session_active: true,
       section_length_warning: false,
       word_count: 2,
+      fragment_key: "frag:sec_details",
       section_file: "sec_details.md",
     },
   ],
@@ -119,6 +128,7 @@ describe("DocumentPage sections", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
     localStorage.clear();
   });

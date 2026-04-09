@@ -25,7 +25,6 @@ const pendingProposal: AnyProposal = {
       content: "Updated goals.\n",
       humanInvolvement_score: 0.65,
       blocked: true,
-      block_reason: "involvement_threshold",
     },
   ],
   created_at: "2026-01-01T00:00:00.000Z",
@@ -39,7 +38,6 @@ const pendingProposal: AnyProposal = {
         heading_path: ["Goals"],
         humanInvolvement_score: 0.65,
         blocked: true,
-        block_reason: "involvement_threshold",
       },
     ],
     passed_sections: [
@@ -98,7 +96,7 @@ describe("ProposalDetailPage display", () => {
     renderDetail("prop-1");
     await waitFor(() => {
       expect(screen.queryByText("Loading proposal...")).toBeNull();
-      expect(screen.getByText(/pending/)).toBeDefined();
+      expect(screen.getByText("draft")).toBeDefined();
     });
   });
 
@@ -133,10 +131,10 @@ describe("ProposalDetailPage display", () => {
     });
   });
 
-  it("blocked sections show block reason", async () => {
+  it("blocked sections are marked as blocked", async () => {
     renderDetail("prop-1");
     await waitFor(() => {
-      expect(screen.getByText(/involvement_threshold/)).toBeDefined();
+      expect(screen.getByText("Blocked")).toBeDefined();
     });
   });
 

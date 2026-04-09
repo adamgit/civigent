@@ -72,21 +72,27 @@ import { DocumentPage } from "../../../pages/DocumentPage";
 const sectionsResponse = {
   sections: [
     {
+      heading: "",
       heading_path: [] as string[],
+      depth: 0,
       content: "Root.\n",
       humanInvolvement_score: 0,
       crdt_session_active: false,
       section_length_warning: false,
       word_count: 1,
+      fragment_key: "frag:sec_root",
       section_file: "sec_root.md",
     },
     {
+      heading: "Overview",
       heading_path: ["Overview"],
-      content: "Overview.\n",
+      depth: 1,
+      content: "# Overview\nOverview.\n",
       humanInvolvement_score: 0,
       crdt_session_active: false,
       section_length_warning: false,
       word_count: 1,
+      fragment_key: "frag:sec_overview",
       section_file: "sec_overview.md",
     },
   ],

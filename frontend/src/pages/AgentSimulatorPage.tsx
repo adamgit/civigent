@@ -891,7 +891,7 @@ export function AgentSimulatorPage() {
                 disabled={committing}
                 className="text-xs px-3 py-1.5 bg-green-600 text-white rounded border-none cursor-pointer disabled:opacity-50"
               >
-                {committing ? "..." : "Commit"}
+                {committing ? "..." : "Publish"}
               </button>
               <input
                 type="text"

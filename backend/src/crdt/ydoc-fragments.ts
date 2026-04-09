@@ -4,7 +4,7 @@
  * Fragment key = "section::" + sectionFileId (filename stem, e.g. "sec_abc123def").
  * Before-first-heading section uses the synthetic constant "section::__beforeFirstHeading__".
  *
- * Content operations (read, write, restructure, assemble) are in FragmentStore.
+ * Content operations (read, write, restructure, assemble) are in DocumentFragments.
  * This module provides key derivation, schema, and session-level helpers.
  */
 

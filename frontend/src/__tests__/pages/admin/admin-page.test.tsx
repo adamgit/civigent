@@ -87,13 +87,6 @@ describe("AdminPage", () => {
     localStorage.clear();
   });
 
-  it("shows backend health status", async () => {
-    renderAdmin();
-    await waitFor(() => {
-      expect(screen.getByText(/Backend health: ok/)).toBeDefined();
-    });
-  });
-
   it("shows proposal counts (pending, committed, withdrawn)", async () => {
     renderAdmin();
     await waitFor(() => {

@@ -20,7 +20,7 @@ export interface DocumentSectionRendererProps {
   isLockedByOtherHuman: boolean;
   highlightLabel: string | null;
   injectedByWriter: string | null;
-  remotePresenceNames: string[];
+  hasRemotePresence: boolean;
   dragOverSectionIndex: number | null;
   crdtProvider: CrdtProvider | null;
   crdtSynced: boolean;
@@ -49,7 +49,7 @@ export function DocumentSectionRenderer({
   isLockedByOtherHuman,
   highlightLabel,
   injectedByWriter,
-  remotePresenceNames,
+  hasRemotePresence,
   dragOverSectionIndex,
   crdtProvider,
   crdtSynced,
@@ -82,7 +82,7 @@ export function DocumentSectionRenderer({
           ? `bg-green-50/70 border-l-green-400 cursor-pointer hover:bg-section-hover`
           : isFocused
           ? `cursor-pointer hover:bg-section-hover border-l-accent-emphasis`
-          : remotePresenceNames.length > 0
+          : hasRemotePresence
           ? `cursor-pointer hover:bg-section-hover border-l-blue-400`
           : `cursor-pointer hover:bg-section-hover border-l-transparent`
       }${dragOverSectionIndex === i ? " section-drop-target" : ""}${injectedByWriter ? " section-injected-flash" : ""}`}
@@ -104,10 +104,10 @@ export function DocumentSectionRenderer({
         </span>
       ) : null}
 
-      {/* Remote presence — who else is editing this section */}
-      {remotePresenceNames.length > 0 ? (
+      {/* Remote presence indicator */}
+      {hasRemotePresence ? (
         <span className="text-[10px] text-blue-600">
-          {remotePresenceNames.join(", ")} editing
+          Someone else is editing
         </span>
       ) : null}
 
@@ -152,7 +152,7 @@ export function DocumentSectionRenderer({
                 // between child elements), request an immediate server-side flush
                 // so content is persisted before a potential page refresh.
                 if (!e.currentTarget.contains(e.relatedTarget as Node) && crdtProvider && !proposalMode) {
-                  crdtProvider.sendFlushRequest();
+                  crdtProvider.sendSessionOverlayImportRequest();
                 }
               }}
             >

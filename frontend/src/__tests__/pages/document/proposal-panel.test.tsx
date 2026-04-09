@@ -101,6 +101,18 @@ describe("ProposalPanel", () => {
   });
 
   it("'Publish' button calls commit and exits proposal mode", async () => {
+    // Publish only renders when proposal is in `inprogress` status (after locks acquired).
+    fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/api/proposals") && init?.method === "POST" && urlStr.includes("/commit")) {
+        return jsonResponse({ status: "committed" });
+      }
+      if (urlStr.includes("/api/proposals/")) {
+        return jsonResponse({ proposal: { ...sampleProposal, status: "inprogress" } });
+      }
+      return jsonResponse({});
+    });
+
     render(
       <ProposalPanel
         activeProposalId="prop-1"

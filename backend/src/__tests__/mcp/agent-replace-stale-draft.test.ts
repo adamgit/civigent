@@ -1,15 +1,20 @@
 /**
  * US-5: Agent replaces a stale draft with replace=true.
  *
+ * Tier-3 agents are exempt from the single-draft limit per the spec — they may
+ * have multiple simultaneous drafts. This test exercises the replace=true convenience
+ * which auto-withdraws one existing draft (whichever findDraftProposalByWriter returns
+ * first) before creating the new proposal.
+ *
  * Flow:
  * 1. create_proposal as contentpilot → draft P1, accepted
- * 2. create_proposal same writer without replace → error with existing_proposal_id=P1
- * 3. my_proposals status=draft → exactly 1 = P1
- * 4. create_proposal with replace=true, 2 sections → new draft P2, P2 ≠ P1
- * 5. read_proposal P1 → withdrawn
- * 6. commit_proposal P2 → committed
+ * 2. create_proposal same writer without replace → second draft allowed (tier-3 exempt) → P2
+ * 3. my_proposals status=draft → 2 entries (P1 and P2)
+ * 4. create_proposal with replace=true, 2 sections → withdraws ONE existing draft, creates P3
+ * 5. verify exactly one of P1/P2 is withdrawn
+ * 6. commit_proposal P3 → committed
  * 7. read_section both headings → new content
- * 8. create_proposal with replace=true when no existing draft → succeeds (idempotent)
+ * 8. create_proposal with replace=true (still has surviving draft) → succeeds
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -104,29 +109,32 @@ describe("US-5: replace stale draft with replace=true", () => {
     expect(data1.outcome).toBe("accepted");
     const P1 = data1.proposal_id;
 
-    // ── Step 2: create_proposal same writer WITHOUT replace → error ──
+    // ── Step 2: create_proposal same writer WITHOUT replace → second draft allowed (tier-3 exempt) ──
     const res2 = await callMcpTool("create_proposal", {
-      intent: "Conflicting draft",
+      intent: "Second draft (tier-3 exempt from single-draft limit)",
       sections: [
         {
           doc_path: SAMPLE_DOC_PATH,
           heading_path: ["Overview"],
-          content: "Should fail.\n",
+          content: "P2 overview content.\n",
         },
       ],
     });
 
     const data2 = JSON.parse(res2.result.content[0].text);
-    expect(data2.success).toBe(false);
-    expect(data2.existing_proposal_id).toBe(P1);
+    expect(data2.status).toBe("draft");
+    expect(data2.outcome).toBe("accepted");
+    const P2 = data2.proposal_id;
+    expect(P2).not.toBe(P1);
 
-    // ── Step 3: my_proposals status=draft → exactly 1 = P1 ──
+    // ── Step 3: my_proposals status=draft → 2 entries (P1 and P2) ──
     const myRes = await callMcpTool("my_proposals", { status: "draft" });
     const myData = JSON.parse(myRes.result.content[0].text);
-    expect(myData.proposals).toHaveLength(1);
-    expect(myData.proposals[0].id).toBe(P1);
+    expect(myData.proposals).toHaveLength(2);
+    const draftIds = myData.proposals.map((p: { id: string }) => p.id).sort();
+    expect(draftIds).toEqual([P1, P2].sort());
 
-    // ── Step 4: create_proposal with replace=true, 2 sections → new P2 ──
+    // ── Step 4: create_proposal with replace=true, 2 sections → withdraws one existing draft, creates P3 ──
     const res4 = await callMcpTool("create_proposal", {
       intent: "Replacement draft with two sections",
       replace: true,
@@ -134,12 +142,12 @@ describe("US-5: replace stale draft with replace=true", () => {
         {
           doc_path: SAMPLE_DOC_PATH,
           heading_path: ["Overview"],
-          content: "P2 overview content.\n",
+          content: "P3 overview content.\n",
         },
         {
           doc_path: SAMPLE_DOC_PATH,
           heading_path: ["Timeline"],
-          content: "P2 timeline content.\n",
+          content: "P3 timeline content.\n",
         },
       ],
     });
@@ -147,41 +155,47 @@ describe("US-5: replace stale draft with replace=true", () => {
     const data4 = JSON.parse(res4.result.content[0].text);
     expect(data4.status).toBe("draft");
     expect(data4.outcome).toBe("accepted");
-    const P2 = data4.proposal_id;
-    expect(P2).not.toBe(P1);
+    const P3 = data4.proposal_id;
+    expect(P3).not.toBe(P1);
+    expect(P3).not.toBe(P2);
 
-    // ── Step 5: read_proposal P1 → withdrawn ──
+    // ── Step 5: verify exactly one of P1/P2 is now withdrawn ──
     const readP1 = await callMcpTool("read_proposal", { proposal_id: P1 });
-    const p1Data = JSON.parse(readP1.result.content[0].text);
-    expect(p1Data.proposal.status).toBe("withdrawn");
+    const readP2 = await callMcpTool("read_proposal", { proposal_id: P2 });
+    const p1Status = JSON.parse(readP1.result.content[0].text).proposal.status;
+    const p2Status = JSON.parse(readP2.result.content[0].text).proposal.status;
+    const withdrawnCount = [p1Status, p2Status].filter((s) => s === "withdrawn").length;
+    const draftCount = [p1Status, p2Status].filter((s) => s === "draft").length;
+    expect(withdrawnCount).toBe(1);
+    expect(draftCount).toBe(1);
 
-    // ── Step 6: commit_proposal P2 → committed ──
-    const commitRes = await callMcpTool("commit_proposal", { proposal_id: P2 });
+    // ── Step 6: commit_proposal P3 → committed ──
+    const commitRes = await callMcpTool("commit_proposal", { proposal_id: P3 });
     const commitData = JSON.parse(commitRes.result.content[0].text);
     expect(commitData.status).toBe("committed");
 
-    // ── Step 7: read_section both headings → new content ──
+    // ── Step 7: read_section both headings → new content from P3 ──
     const readOverview = await callMcpTool("read_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Overview"],
     });
-    expect(JSON.parse(readOverview.result.content[0].text).content).toContain("P2 overview");
+    expect(JSON.parse(readOverview.result.content[0].text).content).toContain("P3 overview");
 
     const readTimeline = await callMcpTool("read_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Timeline"],
     });
-    expect(JSON.parse(readTimeline.result.content[0].text).content).toContain("P2 timeline");
+    expect(JSON.parse(readTimeline.result.content[0].text).content).toContain("P3 timeline");
 
-    // ── Step 8: create_proposal with replace=true when no existing draft → succeeds ──
+    // ── Step 8: create_proposal with replace=true (still has surviving draft) → succeeds ──
     const res8 = await callMcpTool("create_proposal", {
-      intent: "Idempotent replace when no draft exists",
+      intent: "Replace surviving draft after commit",
       replace: true,
       sections: [
         {
           doc_path: SAMPLE_DOC_PATH,
           heading_path: ["Overview"],
-          content: "P3 content.\n",
+          content: "P4 content.\n",
         },
       ],
     });

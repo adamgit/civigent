@@ -7,9 +7,9 @@
  *   0x01 (SYNC_STEP_2)     + Y.encodeStateAsUpdate(doc, stateVector)
  *   0x02 (YJS_UPDATE)       + incremental update bytes
  *   0x03 (AWARENESS)        + encoded awareness update (opaque relay)
- *   0x04 (SESSION_FLUSHED)  + empty (notification only)
+ *   0x04 (SESSION_OVERLAY_IMPORTED)  + empty (notification only)
  *   0x05 (SECTION_FOCUS)    + heading path segments separated by \x00
- *   0x06 (FLUSH_STARTED)    + empty (notification only)
+ *   0x06 (SESSION_OVERLAY_IMPORT_STARTED) + empty (notification only)
  *   0x07 (ACTIVITY_PULSE)   + empty (client → server: human is actively editing)
  *   0x08 (STRUCTURE_WILL_CHANGE) + JSON old→new key mapping (server → client)
  *   0x09 (SECTION_MUTATE)      + JSON { fragmentKey, markdown } (client → server)
@@ -46,9 +46,9 @@ const MSG_SYNC_STEP_1 = 0;
 const MSG_SYNC_STEP_2 = 1;
 const MSG_YJS_UPDATE = 2;
 const MSG_AWARENESS = 3;
-const MSG_SESSION_FLUSHED = 4;
+const MSG_SESSION_OVERLAY_IMPORTED = 4;
 const MSG_SECTION_FOCUS = 5;
-const MSG_SESSION_FLUSH_STARTED = 6;
+const MSG_SESSION_OVERLAY_IMPORT_STARTED = 6;
 const MSG_ACTIVITY_PULSE = 7;
 const MSG_STRUCTURE_WILL_CHANGE = 8;
 const MSG_SECTION_MUTATE = 9;
@@ -56,7 +56,7 @@ const MSG_MUTATE_RESULT = 10;
 const MSG_RESTORE_NOTIFICATION = 0x0B;
 const MSG_MODE_TRANSITION_REQUEST = 0x0C;
 const MSG_MODE_TRANSITION_RESULT = 0x0D;
-const MSG_FLUSH_REQUEST = 0x0E;
+const MSG_SESSION_OVERLAY_IMPORT_REQUEST = 0x0E;
 
 /** Debounce interval for ACTIVITY_PULSE messages (ms). */
 const PULSE_DEBOUNCE_MS = 2500;
@@ -70,7 +70,7 @@ export type CrdtConnectionState =
   | "reconnecting"
   | "error";
 
-export interface SessionFlushedPayload {
+export interface SessionOverlayImportedPayload {
   writtenKeys: string[];
   deletedKeys: string[];
 }
@@ -85,10 +85,10 @@ export interface CrdtProviderEvents {
   onSynced?: () => void;
   onError?: (reason: string) => void;
   onIdleTimeout?: () => void;
-  /** Server is about to begin flushing dirty fragments to disk. */
-  onFlushStarted?: () => void;
-  /** Server confirmed fragments were flushed to disk. Payload lists written/deleted keys. */
-  onSessionFlushed?: (payload: SessionFlushedPayload) => void;
+  /** Server is about to begin importing dirty fragments into the session overlay. */
+  onSessionOverlayImportStarted?: () => void;
+  /** Server confirmed import into session overlay. Payload lists written/deleted keys. */
+  onSessionOverlayImported?: (payload: SessionOverlayImportedPayload) => void;
   /** Server is about to restructure fragments — old keys will be cleared, new keys populated. */
   onStructureWillChange?: (restructures: StructureWillChangePayload[]) => void;
   /** Fired when a local Y.Doc update is sent to the server (user keystroke).
@@ -301,11 +301,11 @@ export class CrdtProvider {
   }
 
   /**
-   * Request an immediate server-side flush of dirty fragments to disk.
+   * Request an immediate server-side import of dirty fragments into session overlay.
    * Used on editor blur so content is persisted before a potential page refresh.
    */
-  sendFlushRequest(): void {
-    this.sendRaw(MSG_FLUSH_REQUEST, new Uint8Array(0));
+  sendSessionOverlayImportRequest(): void {
+    this.sendRaw(MSG_SESSION_OVERLAY_IMPORT_REQUEST, new Uint8Array(0));
   }
 
   /**
@@ -451,11 +451,11 @@ export class CrdtProvider {
         applyAwarenessUpdate(this.awareness, payload, "remote");
         break;
       }
-      case MSG_SESSION_FLUSH_STARTED: {
-        this.events.onFlushStarted?.();
+      case MSG_SESSION_OVERLAY_IMPORT_STARTED: {
+        this.events.onSessionOverlayImportStarted?.();
         break;
       }
-      case MSG_SESSION_FLUSHED: {
+      case MSG_SESSION_OVERLAY_IMPORTED: {
         // Payload: newline-separated written keys, \x00 separator, newline-separated deleted keys.
         const text = new TextDecoder().decode(payload);
         const nullIdx = text.indexOf("\x00");
@@ -463,7 +463,7 @@ export class CrdtProvider {
         const deletedPart = nullIdx >= 0 ? text.slice(nullIdx + 1) : "";
         const writtenKeys = modifiedPart ? modifiedPart.split("\n").filter(Boolean) : [];
         const deletedKeys = deletedPart ? deletedPart.split("\n").filter(Boolean) : [];
-        this.events.onSessionFlushed?.({ writtenKeys, deletedKeys });
+        this.events.onSessionOverlayImported?.({ writtenKeys, deletedKeys });
         break;
       }
       case MSG_STRUCTURE_WILL_CHANGE: {

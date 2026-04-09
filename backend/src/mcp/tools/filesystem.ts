@@ -191,7 +191,7 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
 
   // Write tombstone at source path in the proposal overlay
   const moveOverlayLayer = new OverlayContentLayer(contentRoot, canonicalContentRoot);
-  await moveOverlayLayer.deleteDocument(source);
+  await moveOverlayLayer.tombstoneDocumentExplicit(source);
 
   // Stage destination by copying canonical skeleton/body files into overlay.
   await moveOverlayLayer.copyCanonicalDocumentToOverlay(source, destination);
@@ -316,11 +316,18 @@ async function writeDocumentViaProposal(
     intent,
   );
 
-  // Write each file through importMarkdownDocument which normalizes sections
+  // Write each file through upsertDocumentFromMarkdown (clear/create to
+  // live-empty, then root-target upsert), then read back the resulting
+  // heading paths via listHeadingPaths to build proposal section metadata.
+  // The storage primitive returns nothing — proposal metadata derivation
+  // lives here at the MCP-tool layer.
   const fContentLayer = new OverlayContentLayer(contentRoot, canonicalContentRoot);
   for (const file of files) {
-    const targets = await fContentLayer.importMarkdownDocument(file.path, file.content);
-    allSectionTargets.push(...targets);
+    await fContentLayer.upsertDocumentFromMarkdown(file.path, file.content);
+    const headingPaths = await fContentLayer.listHeadingPaths(file.path);
+    for (const hp of headingPaths) {
+      allSectionTargets.push({ doc_path: file.path, heading_path: hp });
+    }
   }
 
   // Update proposal sections to match the actual normalized structure

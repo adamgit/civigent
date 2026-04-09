@@ -219,7 +219,7 @@ export function LoginPage() {
               )}
 
               {message && <p className="text-xs text-green-700 mb-3">{message}</p>}
-              {error && <p className="text-error mb-3">{error}</p>}
+              {error && <p data-testid="login-error" className="text-error mb-3">{error}</p>}
 
               {/* Session management */}
               <button

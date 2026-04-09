@@ -1,25 +1,27 @@
 /**
  * Self-healing recovery tests.
  *
- * These tests document the desired behavior for resilient crash recovery.
- * Most are EXPECTED TO FAIL until the corresponding fix is implemented:
+ * After items 331-347 (DocumentFragments redesign), session acquisition no longer
+ * performs orphan-body scans or appends "Recovered edits" sections — that
+ * behavior was an anti-pattern bolted into the deleted `FragmentStore.fromDisk(...)`
+ * factory. Real crash recovery now lives ONLY in `storage/crash-recovery.ts` and
+ * runs at server start. This test file covers the surviving non-recovery
+ * invariants (corruption-must-throw, manual recovery-section editability,
+ * end-to-end crash-recovery pipeline, empty-overlay live-doc semantics).
  *
- * - corrupt session skeleton falls back to canonical → Fix: "FragmentStore.fromDisk must always succeed"
- * - orphaned session bodies collected → Fix: "FragmentStore.fromDisk must always succeed"
- * - recovery section appended for orphaned bodies → Fix: "Recovery section generation"
- * - recovery section is a normal editable section → EXPECTED PASS (uses existing skeleton mutation)
- * - recovery section committed to git during startup recovery → Fix: "Recovery section generation"
- * - empty overlay skeleton remains a live empty document → Fix: "Empty-doc format separation"
+ * The old "orphaned session bodies collected" and "recovery section appended for
+ * orphaned bodies" tests were deleted along with item 343 — they tested behavior
+ * that no longer exists. Crash recovery itself is exhaustively covered by the
+ * sibling files `crash-recovery.test.ts`, `crash-recovery-gaps.test.ts`, and
+ * `crash-recovery-scenarios.test.ts` in this directory.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
-import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
+import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { DocumentSkeleton, FlatEntry } from "../../storage/document-skeleton.js";
-import type { WriterIdentity } from "../../types/shared.js";
-import { getHeadSha } from "../../storage/git-repo.js";
 
 function collectFlat(skeleton: DocumentSkeleton): FlatEntry[] {
   const entries: FlatEntry[] = [];
@@ -40,7 +42,7 @@ describe("Self-healing Recovery", () => {
     await ctx.cleanup();
   });
 
-  // ── Test: corrupt session skeleton falls back to canonical ──
+  // ── Test: corrupt session skeleton throws (corruption must not be hidden) ──
 
   it("corrupt session skeleton throws instead of silently falling back", async () => {
     await createSampleDocument(ctx.rootDir);
@@ -62,65 +64,23 @@ describe("Self-healing Recovery", () => {
     await writeFile(join(sessionSectionsDir, "_root2.md"), "duplicate root\n", "utf8");
     await writeFile(join(sessionSectionsDir, "overview.md"), "updated overview\n", "utf8");
 
-    // FragmentStore.fromDisk MUST throw — corruption must not be hidden
-    const { FragmentStore } = await import("../../crdt/fragment-store.js");
-    await expect(FragmentStore.fromDisk(SAMPLE_DOC_PATH)).rejects.toThrow("duplicate root");
+    // The corruption is detected by the skeleton-load layer (validateNoDuplicateRoots),
+    // which is the layer the explicit acquireDocSession sequence calls. Item 333 deleted
+    // the self-loading FragmentStore.fromDisk wrapper, so the test now exercises the
+    // skeleton primitive directly — same call site, same throw, same invariant.
+    const { DocumentSkeletonInternal } = await import("../../storage/document-skeleton.js");
+    const { getContentRoot, getSessionDocsContentRoot } = await import("../../storage/data-root.js");
+    await expect(
+      DocumentSkeletonInternal.fromDisk(SAMPLE_DOC_PATH, getSessionDocsContentRoot(), getContentRoot()),
+    ).rejects.toThrow("duplicate root");
   });
 
-  // ── Test: orphaned session bodies collected ──
-
-  it("orphaned session bodies collected", async () => {
-    await createSampleDocument(ctx.rootDir);
-
-    // Write session overlay body files: A, B exist in canonical, "sec_new_section_xyz.md" does not
-    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
-    const sessionSectionsDir = `${join(sessionContentDir, "ops", "strategy.md")}.sections`;
-    await mkdir(sessionSectionsDir, { recursive: true });
-
-    await writeFile(join(sessionSectionsDir, "overview.md"), "session overview content\n", "utf8");
-    await writeFile(join(sessionSectionsDir, "timeline.md"), "session timeline content\n", "utf8");
-    await writeFile(join(sessionSectionsDir, "sec_new_section_xyz.md"), "orphaned content from deleted heading\n", "utf8");
-
-    const { FragmentStore } = await import("../../crdt/fragment-store.js");
-
-    const { store, orphanedBodies } = await FragmentStore.fromDisk(SAMPLE_DOC_PATH);
-
-    // orphanedBodies should contain the session file that doesn't match canonical skeleton
-    expect(Array.isArray(orphanedBodies)).toBe(true);
-
-    const orphanFiles = orphanedBodies.map(o => o.sectionFile);
-    expect(orphanFiles).toContain("sec_new_section_xyz.md");
-
-    store.ydoc.destroy();
-  });
-
-  // ── Test: recovery section appended for orphaned bodies ──
-
-  it("recovery section appended for orphaned bodies", async () => {
-    await createSampleDocument(ctx.rootDir);
-
-    // Write session overlay with an orphaned body file
-    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
-    const sessionSectionsDir = `${join(sessionContentDir, "ops", "strategy.md")}.sections`;
-    await mkdir(sessionSectionsDir, { recursive: true });
-
-    await writeFile(join(sessionSectionsDir, "sec_orphan.md"), "orphaned data\n", "utf8");
-
-    // acquireDocSession should detect orphaned bodies and append a recovery section
-    const { acquireDocSession, releaseDocSession } = await import("../../crdt/ydoc-lifecycle.js");
-    const baseHead = await getHeadSha(ctx.rootDir);
-    const writerIdentity: WriterIdentity = { id: "recovery-test-writer", type: "human", displayName: "Recovery Test" };
-    const session = await acquireDocSession(SAMPLE_DOC_PATH, "recovery-test-writer", baseHead, writerIdentity);
-
-    // Check that skeleton has a "Recovered edits" section
-    const flat = collectFlat(session.fragments.skeleton);
-    const recoveryEntry = flat.find(
-      (e) => e.heading.toLowerCase().includes("recovered"),
-    );
-    expect(recoveryEntry).toBeDefined();
-
-    await releaseDocSession(SAMPLE_DOC_PATH);
-  });
+  // NOTE: the previous "orphaned session bodies collected" and "recovery section
+  // appended for orphaned bodies" tests were deleted alongside item 343. Both
+  // tested behavior that lived inside the deleted FragmentStore.fromDisk recovery
+  // branch, which item 343 explicitly removed because crash recovery is illegal
+  // outside of server-start crash-recovery.ts. The end-to-end crash recovery
+  // pipeline (which IS legal) is covered in `crash-recovery*.test.ts`.
 
   // ── Test: recovery section is a normal editable section ──
 
@@ -145,13 +105,16 @@ describe("Self-healing Recovery", () => {
 
     // Load skeleton and verify the recovery section exists
     const { DocumentSkeletonInternal } = await import("../../storage/document-skeleton.js");
-    const skeleton = await DocumentSkeletonInternal.fromDisk(SAMPLE_DOC_PATH, contentRoot, contentRoot);
+    const skeleton = await DocumentSkeletonInternal.mutableFromDisk(SAMPLE_DOC_PATH, contentRoot, contentRoot);
     const flat = collectFlat(skeleton);
     const recoveryEntry = flat.find((e) => e.heading === "Recovered edits");
     expect(recoveryEntry).toBeDefined();
 
-    // Delete the recovery section via skeleton.replace (standard mutation)
-    await skeleton.replace(["Recovered edits"], []);
+    // Delete the recovery section via the dedicated DSInternal heading-deletion
+    // operation (item 143). This is the sanctioned replacement for the deleted
+    // `replace([target], [])` primitive — it internalizes previous-section
+    // selection, body-merge target derivation, and body-holder side effects.
+    await skeleton.deleteHeadingPreservingBody(["Recovered edits"]);
 
     // Verify it's gone
     const flatAfter = collectFlat(skeleton);
@@ -209,8 +172,12 @@ describe("Self-healing Recovery", () => {
     const { DocumentSkeleton } = await import("../../storage/document-skeleton.js");
     const skeleton = await DocumentSkeleton.fromDisk(SAMPLE_DOC_PATH, overlayRoot, contentRoot);
     // Empty overlay should now remain visible as an empty live document.
-    expect(skeleton.overlayPersisted).toBe(true);
-    expect(skeleton.overlayTombstoned).toBe(false);
-    expect(skeleton.isEmpty).toBe(true);
+    // `loadedFromOverlay` reflects that the overlay file (even though empty)
+    // won structure resolution and shadowed the canonical document — this is
+    // exactly the semantic the deleted `overlayPersisted` getter expressed
+    // here (item 137/159 split).
+    expect(skeleton.loadedFromOverlay).toBe(true);
+    expect(skeleton.isTombstonedInOverlay).toBe(false);
+    expect(skeleton.areSkeletonRootsEmpty).toBe(true);
   });
 });

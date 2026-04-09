@@ -519,7 +519,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       isLockedByOtherHuman={!!section.blocked}
                       highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
                       injectedByWriter={null}
-                      remotePresenceNames={presenceIndicatorsRef.current.filter((p) => p.sectionKey === sectionKey).map((p) => p.writerDisplayName)}
+                      hasRemotePresence={presenceIndicatorsRef.current.some((p) => p.sectionKey === sectionKey)}
                       dragOverSectionIndex={dragOverSectionIndex}
                       crdtProvider={crdtProvider}
                       crdtSynced={crdtSynced}

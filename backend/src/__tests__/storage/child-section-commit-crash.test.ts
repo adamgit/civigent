@@ -19,8 +19,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { FragmentStore } from "../../crdt/fragment-store.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
+import { buildDocumentFragmentsForTest } from "../helpers/build-document-fragments.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { gitExec } from "../../storage/git-repo.js";
 import type { DocumentSkeleton, FlatEntry } from "../../storage/document-skeleton.js";
@@ -66,7 +66,7 @@ describe("ROOT_FRAGMENT_KEY collision", () => {
   afterEach(async () => { await ctx.cleanup(); });
 
   it("normalizeSectionSplit must not create duplicate skeleton entries when a section gains children", async () => {
-    const { store: fragments } = await FragmentStore.fromDisk(DOC_PATH);
+    const fragments = await buildDocumentFragmentsForTest(DOC_PATH);
 
     // Find Background fragment key
     let bgKey: string | null = null;
@@ -107,10 +107,10 @@ describe("ROOT_FRAGMENT_KEY collision", () => {
     tempDoc.destroy();
     fragments.markDirty(bgKey!);
 
-    // Flush then normalize (production order: flush on debounce, normalize on disconnect)
-    await fragments.flush();
-    const result = await fragments.normalizeStructure(bgKey!);
-    expect(result.changed).toBe(true);
+    // Flush the dirty fragment to the session overlay. The flush itself rewrites the
+    // subtree (Background gains a child) and rebuilds the skeleton index from disk —
+    // no separate normalize step is needed for this incremental-CRDT scenario.
+    await fragments.importDirtyFragmentsToSessionOverlay();
 
     // INVARIANT: exactly one Background entry at level 1 in the skeleton
     const flat = collectFlat(fragments.skeleton);

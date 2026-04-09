@@ -14,7 +14,6 @@
 
 import { SectionRef } from "./section-ref.js";
 import { lookupDocSession, getSectionEditPulse } from "../crdt/ydoc-lifecycle.js";
-import { fragmentKeyFromSectionFile } from "../crdt/ydoc-fragments.js";
 import type { SectionCommitInfo } from "../storage/section-activity.js";
 
 export class SectionRecency {
@@ -42,9 +41,8 @@ export class SectionRecency {
     // 1. In-memory fragment activity (Y.Doc update timestamp)
     const session = lookupDocSession(ref.docPath);
     if (session) {
-      const entry = session.fragments.skeleton.find(ref.headingPath);
-      if (entry) {
-        const fk = fragmentKeyFromSectionFile(entry.sectionFile, ref.isBeforeFirstHeading);
+      const fk = session.fragments.findFragmentKeyForHeadingPath(ref.headingPath);
+      if (fk) {
         const fragmentTime = session.fragmentLastActivity?.get(fk);
         if (fragmentTime != null) {
           return Math.max(0, (now - fragmentTime) / 1000);

@@ -121,11 +121,11 @@ describe("AdminPage config", () => {
     });
 
     // Change limit setting
-    const limitInput = screen.getByDisplayValue("20");
+    const limitInput = screen.getByLabelText(/What's New limit/);
     fireEvent.change(limitInput, { target: { value: "50" } });
 
     // Change days setting
-    const daysInput = screen.getByDisplayValue("7");
+    const daysInput = screen.getByLabelText(/What's New days/);
     fireEvent.change(daysInput, { target: { value: "14" } });
 
     // Save
@@ -145,7 +145,7 @@ describe("AdminPage config", () => {
       expect(screen.queryByText("Loading operational snapshot...")).toBeNull();
     });
 
-    expect((screen.getByDisplayValue("30") as HTMLInputElement).value).toBe("30");
-    expect((screen.getByDisplayValue("10") as HTMLInputElement).value).toBe("10");
+    expect((screen.getByLabelText(/What's New limit/) as HTMLInputElement).value).toBe("30");
+    expect((screen.getByLabelText(/What's New days/) as HTMLInputElement).value).toBe("10");
   });
 });

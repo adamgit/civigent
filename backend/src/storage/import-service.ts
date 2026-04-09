@@ -31,9 +31,11 @@ export interface ImportFilesToProposalResult {
 /**
  * Import markdown files into the Knowledge Store through a proposal.
  *
- * Creates a proposal, writes each file through importMarkdownDocument
- * (which normalizes sections and manages the skeleton), then updates
- * proposal metadata to match the actual section structure.
+ * Creates a proposal, writes each file through `upsertDocumentFromMarkdown`
+ * (clear/create to live-empty, then root-target upsert), then reads back the
+ * resulting heading paths via `listHeadingPaths(...)` to build proposal
+ * section metadata. The storage primitive owns ONLY the storage mutation;
+ * proposal metadata derivation lives here.
  */
 export async function importFilesToProposal(
   files: ImportFile[],
@@ -62,12 +64,16 @@ export async function importFilesToProposal(
     }
   }
 
-  // Write each file through importMarkdownDocument — normalizes sections + manages skeleton
+  // Write each file through upsertDocumentFromMarkdown, then read back the
+  // normalized heading paths to build proposal section metadata.
   const fContentLayer = new OverlayContentLayer(propContentRoot, contentRoot);
   const allSectionTargets: Array<{ doc_path: string; heading_path: string[] }> = [];
   for (const file of files) {
-    const targets = await fContentLayer.importMarkdownDocument(file.docPath, file.content);
-    allSectionTargets.push(...targets);
+    await fContentLayer.upsertDocumentFromMarkdown(file.docPath, file.content);
+    const headingPaths = await fContentLayer.listHeadingPaths(file.docPath);
+    for (const hp of headingPaths) {
+      allSectionTargets.push({ doc_path: file.docPath, heading_path: hp });
+    }
   }
 
   // Update proposal sections to match actual normalized structure

@@ -294,10 +294,10 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 - normalizeStructure() writes updated raw fragments + canonical-ready files
 
 ### `debounced-flush.test.ts`
-- triggerDebouncedFlush resets 1s timer on each call (flush fires after last edit)
-- Debounced flush fires the registered flush callback
-- Last holder disconnect cancels pending debounce and flushes immediately
-- Shutdown cancels pending debounce and flushes immediately
+- triggerDebouncedSessionOverlayImport resets 1s timer on each call (import fires after last edit)
+- Debounced import fires the registered session-overlay import callback
+- Last holder disconnect cancels pending debounce and imports immediately
+- Shutdown cancels pending debounce and imports immediately
 
 ### `raw-fragment-io.test.ts`
 - writeRawFragment creates file in sessions/fragments/{docPath}/{sectionFile}
@@ -344,7 +344,7 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 - Creating a DocSession initializes Y.Doc with fragments from canonical
 - DocSession with session overlay reconstructs from overlay + canonical
 - Adding a holder increments holders set
-- Removing last holder triggers flush and Y.Doc destruction
+- Removing last holder triggers session-overlay import and Y.Doc destruction
 - lookupDocSession returns session by docPath
 - getAllSessions returns all active sessions
 - getSessionsForWriter returns sessions where writer is a holder
@@ -373,7 +373,7 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 ### `ws-hub-events.test.ts`
 - content:committed event contains doc_path, sections, commit_sha, source, writer info
 - agent:reading event contains actor_id, actor_display_name, doc_path, heading_paths
-- session:flushed event contains doc_path
+- session:overlay-imported event contains doc_path
 - dirty:changed event contains writer_id, doc_path, dirty flag
 - presence events (presence:editing, presence:done) contain writer and section info
 
@@ -385,8 +385,8 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 - Client connects to /ws/crdt/:docPath and receives sync step 2 with full doc state
 - Client sends YJS_UPDATE and other clients receive it
 - SECTION_FOCUS message updates server sectionFocus map
-- SESSION_FLUSH_STARTED (0x06) is sent before flush I/O
-- SESSION_FLUSHED (0x04) carries written/deleted fragment key lists
+- SESSION_OVERLAY_IMPORT_STARTED (0x06) is sent before session-overlay import I/O
+- SESSION_OVERLAY_IMPORTED (0x04) carries written/deleted fragment key lists
 - AWARENESS messages are relayed between clients
 - Disconnect removes holder from DocSession
 
@@ -451,7 +451,7 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 - Observer receives initial Y.Doc state when editing session exists
 - Observer receives MSG_YJS_UPDATE when editor makes changes
 - Observer receives MSG_STRUCTURE_WILL_CHANGE on normalization
-- Observer receives MSG_SESSION_FLUSHED on flush
+- Observer receives MSG_SESSION_OVERLAY_IMPORTED on session-overlay import
 - Observer connection does NOT prevent session idle timeout
 - Observer connection does NOT trigger presence:editing events
 - Observer disconnect does NOT trigger commitSessionFilesToCanonical

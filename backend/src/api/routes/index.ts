@@ -71,7 +71,7 @@ import {
   invalidateSessionForRestore,
 } from "../../crdt/ydoc-lifecycle.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
-import { preemptiveFlushAndCommit } from "../../storage/auto-commit.js";
+import { preemptiveImportNormalizeAndCommit } from "../../storage/auto-commit.js";
 import { SectionGuard } from "../../domain/section-guard.js";
 import { readDocSectionCommitInfo, type SectionCommitInfo } from "../../storage/section-activity.js";
 import { SectionPresence } from "../../domain/section-presence.js";
@@ -777,7 +777,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const restoreWriter = targetWriterType ? { ...writer, type: targetWriterType as typeof writer.type } : writer;
 
       // Pre-commit any in-progress session before restore replaces canonical content.
-      const preCommitResult = await preemptiveFlushAndCommit(docPath);
+      const preCommitResult = await preemptiveImportNormalizeAndCommit(docPath);
 
       const { createRestoreProposal } = await import("../../storage/restore-service.js");
       const { proposal } = await createRestoreProposal(docPath, sha, restoreWriter);
@@ -832,7 +832,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       // Pre-commit any in-progress session before overwrite replaces canonical content.
-      const preCommitResult = await preemptiveFlushAndCommit(docPath);
+      const preCommitResult = await preemptiveImportNormalizeAndCommit(docPath);
 
       const { id: proposalId, contentRoot: proposalContentRoot } = await createTransientProposal(
         { id: admin.id, type: admin.type, displayName: admin.displayName, email: admin.email },
@@ -840,7 +840,13 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       );
 
       const overlayLayer = new OverlayContentLayer(proposalContentRoot, contentRoot);
-      const sectionTargets = await overlayLayer.importMarkdownDocument(docPath, markdown);
+      // upsertDocumentFromMarkdown owns ONLY the storage mutation:
+      // clear/create to live-empty, then root-target upsert. Read back the
+      // resulting heading paths via listHeadingPaths to build proposal
+      // section metadata at this layer.
+      await overlayLayer.upsertDocumentFromMarkdown(docPath, markdown);
+      const headingPaths = await overlayLayer.listHeadingPaths(docPath);
+      const sectionTargets = headingPaths.map(hp => ({ doc_path: docPath, heading_path: hp }));
 
       await updateProposalSections(proposalId, sectionTargets);
 
@@ -1229,15 +1235,22 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         `Rename document: ${docPath} -> ${newPath}`,
       );
       const overlayLayer = new OverlayContentLayer(proposalContentRoot, canonicalRoot);
-      const headingPaths = await overlayLayer.tombstoneDocument(docPath);
-      const subtree = await new ContentLayer(canonicalRoot).readAllSubtreeEntries(docPath);
-      // Create the destination document (skeleton). For live-empty docs this is the
-      // only operation; for docs with sections, writeSection auto-creates but we need
-      // the skeleton to exist even if there are zero sections.
-      await overlayLayer.createDocument(newPath);
-      for (const entry of subtree) {
-        await overlayLayer.writeSection(new SectionRef(newPath, entry.headingPath), entry.bodyContent);
-      }
+
+      // Snapshot heading paths from the canonical source BEFORE the rename,
+      // so we can populate proposal section metadata for both old (tombstoned)
+      // and new (created) entries. The dedicated `renameDocument(...)`
+      // primitive returns void per item 287; per item 303, proposal metadata
+      // updates remain caller-side rather than being absorbed into the
+      // storage primitive.
+      const headingPaths = await new ContentLayer(canonicalRoot).listHeadingPaths(docPath);
+
+      // Dedicated rename primitive (items 287/297) — replaces the previous
+      // open-coded tombstoneDocument + createDocument + readAllSubtreeEntries
+      // + looped writeSection pattern. The new primitive preserves structure
+      // and body state directly via document-level file copy + tombstone,
+      // never reinterpreting the source as a sequence of user section upserts.
+      await overlayLayer.renameDocument(docPath, newPath);
+
       await updateProposalSections(proposalId, [
         ...headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp })),
         ...headingPaths.map((hp) => ({ doc_path: newPath, heading_path: hp })),
@@ -1419,74 +1432,41 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     return { evaluation, sections, committedHead };
   }
 
-  // POST /api/documents/:docPath/sections — Create a new section
-  router.post("/documents/:docPath(*)/sections", async (req, res, next) => {
-    try {
-      const docPath = req.params.docPath;
-      const writer = await requireDocWritePermission(req, res, docPath);
-      if (!writer) return;
-
-      // Prevent structural changes during active CRDT editing
-      const activeSession = lookupDocSession(docPath);
-      if (activeSession) {
-        sendApiError(res, 409, "Cannot modify document structure while an active editing session exists.");
-        return;
-      }
-
-      const { heading, content } = req.body ?? {};
-
-      if (!heading || typeof heading !== "string") {
-        sendApiError(res, 400, "heading (string) is required.");
-        return;
-      }
-
-      const contentRoot = getContentRoot();
-      const { id: proposalId, contentRoot: proposalContentRoot } = await createTransientProposal(
-        { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
-        `Create section "${heading}" in ${docPath}`,
-      );
-      const overlayLayer = new OverlayContentLayer(proposalContentRoot, contentRoot);
-
-      // Determine the heading level from context
-      // Default: level 2 (##) for top-level sections
-      const level = req.body.level ?? 2;
-
-      await overlayLayer.createSection(docPath, [], heading, level, content ?? "");
-      await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: [heading] }]);
-      const { evaluation, sections, committedHead } = await evaluateAndMaybeCommitTransientProposal(proposalId);
-      if (!committedHead) {
-        res.status(409).json({
-          doc_path: docPath,
-          proposal_id: proposalId,
-          status: "draft",
-          outcome: "blocked",
-          blocked_sections: sections.filter((s) => s.blocked),
-        });
-        return;
-      }
-
-      // Broadcast structure change
-      if (onWsEvent) {
-        onWsEvent({
-          type: "doc:structure-changed",
-          doc_path: docPath,
-        });
-      }
-
-      res.status(201).json({
-        doc_path: docPath,
-        heading_path: [heading],
-        created: true,
-        committed_head: committedHead,
-        evaluation,
-      });
-    } catch (error) {
-      if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-        sendApiError(res, 404, error);
-        return;
-      }
-      next(error);
-    }
+  // POST /api/documents/:docPath/sections — DISABLED per items 323-327.
+  //
+  // The route was previously a maybe-structural / maybe-content API: it
+  // mixed structural inputs (`heading`, `level`) with arbitrary markdown
+  // `content`, with no defined contract for how the two should reconcile.
+  // Concrete example: a request with `level = 2` and `content` starting
+  // with `# New Heading` is ambiguous — should the server preserve level 2,
+  // normalize to the markdown's own heading level, reject the request, or
+  // split/rewrite the structure to match the markdown?
+  //
+  // The route is intentionally unsupported until ONE contract is chosen.
+  // The two candidate redesign directions for future implementers are:
+  //   (a) redesign as a pure upsert-style content API around
+  //       `OverlayContentLayer.upsertSection(...)`, where the
+  //       request body is purely user markdown and any structural inputs
+  //       are derived from the markdown itself; OR
+  //   (b) redesign as a strictly structural API with content rules that
+  //       forbid structural ambiguity (e.g. reject `content` containing
+  //       any heading markers, or require body-only content).
+  // Do NOT silently keep the previous mixed contract.
+  router.post("/documents/:docPath(*)/sections", async (_req, res) => {
+    sendApiError(
+      res,
+      410,
+      "POST /api/documents/:docPath/sections is disabled because it mixed " +
+        "structural inputs (heading, level) with arbitrary markdown content " +
+        "without a defined reconciliation contract. Example: level=2 with " +
+        "content starting `# New Heading` is ambiguous (preserve level 2? " +
+        "normalize to the markdown heading? reject? split/rewrite?). The " +
+        "route must not be re-enabled until ONE contract is chosen. Future " +
+        "implementers: either (a) redesign as a pure upsert-style content " +
+        "API around upsertSection(), or (b) redesign as a " +
+        "strictly structural API with content rules that forbid structural " +
+        "ambiguity.",
+    );
   });
 
   // DELETE /api/documents/:docPath/sections/:headingPath — Delete a section
@@ -1516,7 +1496,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       );
       const overlayLayer = new OverlayContentLayer(proposalContentRoot, contentRoot);
 
-      await overlayLayer.deleteSection(docPath, headingPath);
+      await overlayLayer.deleteSubtree(docPath, headingPath);
       await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: headingPath }]);
       const { evaluation, sections, committedHead } = await evaluateAndMaybeCommitTransientProposal(proposalId);
       if (!committedHead) {
@@ -1593,7 +1573,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         ? resolvedLevel
         : new_parent_path.length + 1;
 
-      await overlayLayer.moveSection(docPath, headingPath, new_parent_path, targetLevel);
+      await overlayLayer.moveSubtree(docPath, headingPath, new_parent_path, targetLevel);
       await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: headingPath }]);
       const { evaluation, sections, committedHead } = await evaluateAndMaybeCommitTransientProposal(proposalId);
       if (!committedHead) {
@@ -1664,7 +1644,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       );
       const overlayLayer = new OverlayContentLayer(proposalContentRoot, contentRoot);
 
-      await overlayLayer.renameSection(docPath, headingPath, new_heading);
+      await overlayLayer.renameHeading(docPath, headingPath, new_heading);
       const newHeadingPath = [...headingPath.slice(0, -1), new_heading];
       await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: newHeadingPath }]);
       const { evaluation, sections, committedHead } = await evaluateAndMaybeCommitTransientProposal(proposalId);
@@ -1880,11 +1860,17 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         sections,
       );
 
-      // Write section content to proposal's content directory
+      // Write section content to proposal's content directory through the
+      // caller-facing upsert API. Per items 247/255, this path no longer
+      // captures any split-result return value — proposal section metadata
+      // is built from the original `sections` argument and cannot be
+      // post-hoc augmented by parser classification of the user payload.
       if (sectionContents.length > 0) {
         const overlayLayer = new OverlayContentLayer(propContentRoot, getContentRoot());
         for (const sc of sectionContents) {
-          await overlayLayer.writeSection(new SectionRef(sc.doc_path, sc.heading_path), sc.content);
+          const ref = new SectionRef(sc.doc_path, sc.heading_path);
+          const heading = sc.heading_path.length === 0 ? "" : sc.heading_path[sc.heading_path.length - 1]!;
+          await overlayLayer.upsertSection(ref, heading, sc.content);
         }
       }
 
@@ -2100,10 +2086,17 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       );
 
       // Write updated section content to proposal's content directory
+      // through the caller-facing upsert API. Per items 247/255, no
+      // split-result reaction — proposal section metadata stays keyed to
+      // the originally-requested target headings; any internal subtree
+      // rewrite triggered by embedded headings in the user payload no
+      // longer leaks back through a side-channel return value.
       {
         const overlayLayer = new OverlayContentLayer(updContentRoot, getContentRoot());
         for (const s of body.sections) {
-          await overlayLayer.writeSection(new SectionRef(s.doc_path, s.heading_path), s.content);
+          const ref = new SectionRef(s.doc_path, s.heading_path);
+          const heading = s.heading_path.length === 0 ? "" : s.heading_path[s.heading_path.length - 1]!;
+          await overlayLayer.upsertSection(ref, heading, s.content);
         }
       }
 
@@ -2397,19 +2390,12 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           const prefix = "section::";
           let headingPath: string[] = [];
           if (fragmentKey.startsWith(prefix)) {
-            const fileId = fragmentKey.slice(prefix.length);
-            if (fileId === "__beforeFirstHeading__") {
-              headingPath = [];
-            } else {
-              try {
-                const entry = session.fragments.skeleton.expectByFileId(fileId);
-                headingPath = entry.headingPath;
-              } catch {
-                // Fragment references a section no longer in skeleton (e.g. deleted)
-                // — skip this dirty entry
-                continue;
-              }
+            const resolvedHeadingPath = session.fragments.findHeadingPathForFragmentKey(fragmentKey);
+            if (resolvedHeadingPath == null) {
+              // Fragment references a section no longer in the live mapping
+              continue;
             }
+            headingPath = resolvedHeadingPath;
           }
           docMap.get(session.docPath)!.push({
             heading_path: headingPath,
@@ -3269,21 +3255,37 @@ function registerDocumentCatchAllRoutes(
       const writer = await requireDocWritePermission(req, res, docPath);
       if (!writer) return;
       const contentRoot = getContentRoot();
-      const resolvedPath = resolveDocPathUnderContent(contentRoot, docPath);
 
-      try {
-        await access(resolvedPath);
-        sendApiError(res, 409, "Document already exists.");
-        return;
-      } catch {
-        // File does not exist — proceed
-      }
+      // Validate the doc path before we touch any storage layer. This
+      // throws InvalidDocPathError on traversal/.md/normalization failures
+      // and is caught by the outer error handler below — same behavior the
+      // previous resolveDocPathUnderContent(...) call provided, just made
+      // explicit instead of being a side-effect of building a path we no
+      // longer need to read directly.
+      resolveDocPathUnderContent(contentRoot, docPath);
 
+      // Per item 186: ask the overlay-aware document-state resolver instead
+      // of doing a raw filesystem `access(resolvedPath)`. The previous code
+      // walked the canonical path with `access`, swallowed any non-ENOENT
+      // error as "missing" (a real bug — EACCES would be silently treated
+      // as "create-allowed"), and used a different primitive than the one
+      // `OverlayContentLayer.createDocument(...)` would later apply. This
+      // route now uses the same state-resolver as storage so there is one
+      // authoritative answer.
       const { id: proposalId, contentRoot: proposalContentRoot } = await createTransientProposal(
         { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
         `Create document: ${docPath}`,
       );
       const overlayLayer = new OverlayContentLayer(proposalContentRoot, contentRoot);
+      const state = await overlayLayer.getDocumentState(docPath);
+      if (state === "live") {
+        sendApiError(res, 409, "Document already exists.");
+        return;
+      }
+      if (state === "tombstone") {
+        sendApiError(res, 409, "Document is pending deletion.");
+        return;
+      }
       await overlayLayer.createDocument(docPath);
       await updateProposalSections(proposalId, []);
       const { sections, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId);
@@ -3372,7 +3374,13 @@ function registerDocumentCatchAllRoutes(
         intent,
       );
       const proposalContentLayer = new OverlayContentLayer(patchContentRoot, getContentRoot());
-      const patchTargets = await proposalContentLayer.importMarkdownDocument(docPath, patchedContent);
+      // upsertDocumentFromMarkdown owns ONLY the storage mutation:
+      // clear/create to live-empty, then root-target upsert. Read back the
+      // resulting heading paths via listHeadingPaths to build proposal
+      // section metadata at this layer.
+      await proposalContentLayer.upsertDocumentFromMarkdown(docPath, patchedContent);
+      const patchHeadingPaths = await proposalContentLayer.listHeadingPaths(docPath);
+      const patchTargets = patchHeadingPaths.map(hp => ({ doc_path: docPath, heading_path: hp }));
       await updateProposalSections(patchProposalId, patchTargets);
 
       const { evaluation, sections } = await evaluateProposalHumanInvolvement(patchProposalId);

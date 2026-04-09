@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { jsonResponse } from "../../helpers/fetch-mocks";
 
@@ -76,21 +76,27 @@ import { DocumentPage } from "../../../pages/DocumentPage";
 const sectionsResponse = {
   sections: [
     {
+      heading: "",
       heading_path: [] as string[],
+      depth: 0,
       content: "Root.\n",
       humanInvolvement_score: 0,
       crdt_session_active: false,
       section_length_warning: false,
       word_count: 1,
+      fragment_key: "frag:sec_root",
       section_file: "sec_root.md",
     },
     {
+      heading: "Overview",
       heading_path: ["Overview"],
-      content: "Overview.\n",
+      depth: 1,
+      content: "# Overview\nOverview.\n",
       humanInvolvement_score: 0,
       crdt_session_active: false,
       section_length_warning: false,
       word_count: 1,
+      fragment_key: "frag:sec_overview",
       section_file: "sec_overview.md",
     },
   ],
@@ -129,6 +135,7 @@ describe("DocumentPage proposal mode", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
     localStorage.clear();
   });
@@ -155,12 +162,15 @@ describe("DocumentPage proposal mode", () => {
         return jsonResponse({
           sections: [
             {
+              heading: "Overview",
               heading_path: ["Overview"],
-              content: "Overview.\n",
+              depth: 1,
+              content: "# Overview\nOverview.\n",
               humanInvolvement_score: 0,
               crdt_session_active: false,
               section_length_warning: false,
               word_count: 1,
+              fragment_key: "frag:sec_overview",
               section_file: "sec_overview.md",
               block_reason: "human_proposal",
             },

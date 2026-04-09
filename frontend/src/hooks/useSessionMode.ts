@@ -314,7 +314,7 @@ export function useSessionMode({
           setEditingLoading(false);
         },
         onError: (reason: string) => setCrdtError(`CRDT sync error: ${reason}`),
-        onFlushStarted: () => {
+        onSessionOverlayImportStarted: () => {
           setSectionPersistence((prev) => {
             const next = new Map(prev);
             for (const [key, state] of next) {
@@ -323,7 +323,7 @@ export function useSessionMode({
             return next;
           });
         },
-        onSessionFlushed: ({ writtenKeys, deletedKeys }) => {
+        onSessionOverlayImported: ({ writtenKeys, deletedKeys }) => {
           setSectionPersistence((prev) => {
             const next = new Map(prev);
             for (const key of writtenKeys) {

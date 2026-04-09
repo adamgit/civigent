@@ -49,7 +49,7 @@ describe("ProposalDetailPage actions", () => {
       if (urlStr.includes("/api/proposals/prop-1/commit") && init?.method === "POST") {
         return jsonResponse({ status: "committed" });
       }
-      if (urlStr.includes("/api/proposals/prop-1/withdraw") && init?.method === "POST") {
+      if (urlStr.includes("/api/proposals/prop-1/cancel") && init?.method === "POST") {
         return jsonResponse({ status: "withdrawn" });
       }
       if (urlStr.includes("/api/proposals/prop-1")) {
@@ -67,13 +67,13 @@ describe("ProposalDetailPage actions", () => {
     vi.restoreAllMocks();
   });
 
-  it("'Recommit' button calls commitProposal for draft proposals", async () => {
+  it("'Publish' button calls commitProposal for draft proposals", async () => {
     renderDetail("prop-1");
     await waitFor(() => {
-      expect(screen.getByText("Recommit")).toBeDefined();
+      expect(screen.getByText("Publish")).toBeDefined();
     });
 
-    fireEvent.click(screen.getByText("Recommit"));
+    fireEvent.click(screen.getByText("Publish"));
 
     await waitFor(() => {
       const commitCalls = fetchMock.mock.calls.filter(
@@ -95,7 +95,7 @@ describe("ProposalDetailPage actions", () => {
     await waitFor(() => {
       const withdrawCalls = fetchMock.mock.calls.filter(
         (call: [unknown, RequestInit?]) =>
-          String(call[0]).includes("/withdraw") && call[1]?.method === "POST",
+          String(call[0]).includes("/cancel") && call[1]?.method === "POST",
       );
       expect(withdrawCalls.length).toBeGreaterThan(0);
     });
@@ -104,12 +104,12 @@ describe("ProposalDetailPage actions", () => {
   it("action buttons disabled when proposal is committed", async () => {
     renderDetail("prop-committed");
     await waitFor(() => {
-      expect(screen.getByText("Recommit")).toBeDefined();
+      expect(screen.getByText("Publish")).toBeDefined();
     });
 
-    const recommitBtn = screen.getByText("Recommit") as HTMLButtonElement;
+    const publishBtn = screen.getByText("Publish") as HTMLButtonElement;
     const withdrawBtn = screen.getByText("Withdraw") as HTMLButtonElement;
-    expect(recommitBtn.disabled).toBe(true);
+    expect(publishBtn.disabled).toBe(true);
     expect(withdrawBtn.disabled).toBe(true);
   });
 

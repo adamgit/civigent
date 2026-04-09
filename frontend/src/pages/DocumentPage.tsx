@@ -8,7 +8,7 @@ import { rememberRecentDoc } from "../services/recent-docs";
 import { ProposalPanel } from "../components/ProposalPanel";
 import { DocumentTopbar } from "../components/DocumentTopbar";
 import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
-import { DocumentSectionRenderer } from "../components/DocumentSectionRenderer";
+import { DocumentCanvas } from "../components/DocumentCanvas";
 import { DocumentFooter } from "../components/DocumentFooter";
 import { DocumentHistory } from "../components/DocumentHistory";
 import DocumentDiagnostics from "../components/DocumentDiagnostics";
@@ -29,12 +29,10 @@ import {
   getSectionFragmentKey,
   formatRelativeAgeFromMs,
   getDocDisplayName,
-  shouldMountEditor,
   LOADING_REVEAL_DELAY_MS,
 } from "./document-page-utils";
 import { useDocumentSessionController } from "../hooks/useDocumentSessionController";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
-import { SummaryWhoChangedThisSection } from "../components/SummaryWhoChangedThisSection.js";
 
 // ─── viewingPresence: small component to call the hook per-section ──
 
@@ -628,78 +626,33 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
             <div className="w-[200px] min-w-[100px] shrink" />
           </div>
 
-          {/* Section rows — each is a flex row so left gutter aligns with its section */}
-          {!sectionsLoading ? sections.map((section, i) => {
-            const sectionKey = sectionHeadingKey(section.heading_path);
-            const fk = getSectionFragmentKey(section);
-            const sectionLabel = headingPathToLabel(section.heading_path);
-            return (
-              <div key={fk} className="flex items-stretch">
-                {/* Left gutter — who changed this section */}
-                <div className="w-[200px] min-w-[100px] shrink relative flex items-stretch justify-end pt-1">
-                  <SummaryWhoChangedThisSection
-                    editorId={section.last_editor?.id}
-                    editorName={section.last_editor?.name}
-                    secondsAgo={section.last_editor?.seconds_ago}
-                    writerType={section.last_editor?.type}
-                    sectionIndex={i}
-                  />
-                </div>
-
-                {/* Center — section content */}
-                <div className="flex-1 min-w-[700px] bg-canvas-bg border-x border-[rgba(0,0,0,0.06)] px-14">
-                  <DocumentSectionRenderer
-                    section={section}
-                    index={i}
-                    fragmentKey={fk}
-                    isFocused={focusedSectionIndex === i}
-                    hasEditor={shouldMountEditor(i, focusedSectionIndex)}
-                    isRestructuring={restructuringKeys.has(fk)}
-                    isInProposal={!!(proposalMode && proposalSectionsRef.current.has(`${decodedDocPath}::${sectionKey}`))}
-                    isLockedByOtherHuman={!!section.blocked}
-                    highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
-                    injectedByWriter={injectedByLabel.get(sectionLabel) ?? null}
-                    remotePresenceNames={presenceIndicators.filter((p) => p.sectionKey === sectionKey).map((p) => p.writerDisplayName)}
-                    dragOverSectionIndex={dragOverSectionIndex}
-                    crdtProvider={crdtProvider}
-                    crdtSynced={crdtSynced}
-                    crdtError={crdtError}
-                    proposalMode={proposalMode}
-                    isReady={readyEditors.has(i)}
-                    mouseDownPosRef={mouseDownPosRef}
-                    onStartEditing={startEditing}
-                    onFocusSection={handleFocusSection}
-                    onSetEditorRef={setEditorRef}
-                    onEditorReady={handleEditorReady}
-                    onEditorUnready={handleEditorUnready}
-                    onProposalSectionChange={proposalMode ? handleProposalSectionChange : undefined}
-                    onCursorExit={handleCursorExit}
-                    onCrossSectionDrop={handleCrossSectionDrop}
-                  />
-                </div>
-
-                {/* Right gutter — empty placeholder */}
-                <div className="w-[200px] min-w-[100px] shrink" />
-              </div>
-            );
-          }) : null}
-
-          {/* Deletion placeholders */}
-          {deletionPlaceholders.map((placeholder) => (
-            <div key={`deleting:${placeholder.fragmentKey}`} className="flex">
-              <div className="w-[200px] min-w-[100px] shrink" />
-              <div className="flex-1 min-w-[700px] bg-canvas-bg border-x border-[rgba(0,0,0,0.06)] px-14">
-                <div className="relative m-[-16px] p-[4px_16px] rounded-md border-l-[2.5px] border-l-amber-300 bg-amber-50/30">
-                  <div className="flex items-center gap-1.5 py-1">
-                    <span className="w-[5px] h-[5px] rounded-full bg-amber-400" />
-                    <span className="text-[10px] text-amber-700 line-through">{placeholder.formerHeading || "(before first heading)"}</span>
-                    <span className="text-[9px] text-amber-500 ml-1">Deletion pending\u2026</span>
-                  </div>
-                </div>
-              </div>
-              <div className="w-[200px] min-w-[100px] shrink" />
-            </div>
-          ))}
+          <DocumentCanvas
+            sections={sections}
+            sectionsLoading={sectionsLoading}
+            focusedSectionIndex={focusedSectionIndex}
+            restructuringKeys={restructuringKeys}
+            proposalMode={proposalMode}
+            proposalSectionsRef={proposalSectionsRef}
+            decodedDocPath={decodedDocPath}
+            recentlyChangedByLabel={recentlyChangedByLabel}
+            injectedByLabel={injectedByLabel}
+            presenceIndicators={presenceIndicators}
+            dragOverSectionIndex={dragOverSectionIndex}
+            crdtProvider={crdtProvider}
+            crdtSynced={crdtSynced}
+            crdtError={crdtError}
+            readyEditors={readyEditors}
+            deletionPlaceholders={deletionPlaceholders}
+            mouseDownPosRef={mouseDownPosRef}
+            onStartEditing={startEditing}
+            onFocusSection={handleFocusSection}
+            onSetEditorRef={setEditorRef}
+            onEditorReady={handleEditorReady}
+            onEditorUnready={handleEditorUnready}
+            onProposalSectionChange={handleProposalSectionChange}
+            onCursorExit={handleCursorExit}
+            onCrossSectionDrop={handleCrossSectionDrop}
+          />
 
           {/* Footer row — closes the paper */}
           <div className="flex">

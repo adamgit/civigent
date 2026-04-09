@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { LoginPage } from "../../../pages/LoginPage";
 import { jsonResponse } from "../../helpers/fetch-mocks";
@@ -51,6 +51,7 @@ describe("LoginPage flows", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
   });
 
@@ -79,10 +80,10 @@ describe("LoginPage flows", () => {
   it("successful login shows confirmation message", async () => {
     renderLogin();
     await waitFor(() => {
-      expect(screen.getByText("Use single-user session")).toBeDefined();
+      expect(screen.getByTestId("login-single-user")).toBeDefined();
     });
 
-    fireEvent.click(screen.getByText("Use single-user session"));
+    fireEvent.click(screen.getByTestId("login-single-user"));
 
     await waitFor(() => {
       expect(screen.getByText(/Authenticated as Test User/)).toBeDefined();
@@ -92,10 +93,10 @@ describe("LoginPage flows", () => {
   it("successful login redirects to returnTo path", async () => {
     renderLogin(["/login?returnTo=/docs"]);
     await waitFor(() => {
-      expect(screen.getByText("Use single-user session")).toBeDefined();
+      expect(screen.getByTestId("login-single-user")).toBeDefined();
     });
 
-    fireEvent.click(screen.getByText("Use single-user session"));
+    fireEvent.click(screen.getByTestId("login-single-user"));
 
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith("/docs");
@@ -106,7 +107,7 @@ describe("LoginPage flows", () => {
     fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
       const urlStr = String(url);
       if (urlStr.includes("/api/auth/methods")) {
-        return jsonResponse({ methods: ["single_user"] });
+        return jsonResponse({ methods: [{ type: "single_user", displayName: "Single-user session" }] });
       }
       if (urlStr.includes("/api/auth/login") && init?.method === "POST") {
         throw new Error("Invalid credentials");
@@ -116,23 +117,23 @@ describe("LoginPage flows", () => {
 
     renderLogin();
     await waitFor(() => {
-      expect(screen.getByText("Use single-user session")).toBeDefined();
+      expect(screen.getByTestId("login-single-user")).toBeDefined();
     });
 
-    fireEvent.click(screen.getByText("Use single-user session"));
+    fireEvent.click(screen.getByTestId("login-single-user"));
 
     await waitFor(() => {
-      expect(screen.getByText(/Auth error: Invalid credentials/)).toBeDefined();
+      expect(screen.getByTestId("login-error")).toBeDefined();
     });
   });
 
   it("logout button calls logout and shows message", async () => {
     renderLogin();
     await waitFor(() => {
-      expect(screen.getByText("Clear session")).toBeDefined();
+      expect(screen.getByTestId("logout")).toBeDefined();
     });
 
-    fireEvent.click(screen.getByText("Clear session"));
+    fireEvent.click(screen.getByTestId("logout"));
 
     await waitFor(() => {
       const logoutCalls = fetchMock.mock.calls.filter(

@@ -14,6 +14,8 @@ interface FragmentFileInfo {
 interface OverlayDocInfo {
   skeleton: { filename: string; content: string; sectionRefs: string[] } | null;
   sections: Array<{ filename: string; content: string; isOrphaned: boolean }>;
+  health: "ok" | "corrupt_missing_overlay_skeleton" | "corrupt_skeleton";
+  issues: string[];
 }
 
 interface AuthorInfo {
@@ -31,6 +33,8 @@ interface SessionStateResponse {
     totalOverlaySections: number;
     totalAuthors: number;
     orphanedSections: number;
+    corruptOverlayDocs: number;
+    missingOverlaySkeletonDocs: number;
   };
 }
 
@@ -122,6 +126,16 @@ export function SessionInspectorPage() {
               ) : (
                 <span>
                   {summary!.totalFragmentFiles} fragment files · {summary!.totalOverlayDocs} overlay docs · {summary!.totalAuthors} authors
+                  {summary!.corruptOverlayDocs > 0 && (
+                    <span className="text-red-600 ml-1">
+                      · ⚠ {summary!.corruptOverlayDocs} corrupt docs
+                    </span>
+                  )}
+                  {summary!.missingOverlaySkeletonDocs > 0 && (
+                    <span className="text-red-600 ml-1">
+                      · ⚠ {summary!.missingOverlaySkeletonDocs} missing skeleton
+                    </span>
+                  )}
                   {summary!.orphanedSections > 0 && (
                     <span className="text-yellow-600 ml-1">
                       · ⚠ {summary!.orphanedSections} orphaned
@@ -195,9 +209,22 @@ export function SessionInspectorPage() {
                   ) : (
                     Object.entries(data.docs).map(([docPath, info]) => (
                       <div key={docPath} className="mb-3">
-                        <div className="text-xs font-semibold text-text-secondary mb-1" style={{ fontFamily: "var(--font-mono)" }}>
-                          {docPath}
+                        <div className="text-xs font-semibold text-text-secondary mb-1 flex items-center gap-2" style={{ fontFamily: "var(--font-mono)" }}>
+                          <span>{docPath}</span>
+                          {info.health !== "ok" && (
+                            <span
+                              className="text-[10px] bg-red-100 text-red-700 px-1 rounded font-semibold"
+                              style={{ fontFamily: "var(--font-ui)" }}
+                            >
+                              CORRUPT
+                            </span>
+                          )}
                         </div>
+                        {info.issues.map((issue, idx) => (
+                          <div key={idx} className="ml-4 text-[11px] text-red-700 mb-1">
+                            {issue}
+                          </div>
+                        ))}
                         {info.skeleton && (
                           <div className="ml-4 mb-2">
                             <div className="text-[11px] text-text-muted mb-1">Skeleton: {info.skeleton.filename}</div>

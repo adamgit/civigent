@@ -324,7 +324,7 @@ export function ProposalDetailPage() {
               onClick={handleCommit}
               disabled={actionBusy || (proposal.writer.type === "human" ? proposal.status !== "inprogress" : proposal.status !== "draft")}
             >
-              Commit
+              Publish
             </button>
             <button
               type="button"

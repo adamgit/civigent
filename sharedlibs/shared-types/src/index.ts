@@ -398,8 +398,7 @@ export interface GetDocumentSectionsResponse {
     word_count: number;
     /** Opaque backend-owned CRDT fragment identity. */
     fragment_key: string;
-    /** Section filename (e.g. "sec_abc123def.md"). Used by frontend to build
-     *  stable fragment keys that survive heading renames. */
+    /** Section filename (e.g. "sec_abc123def.md"). Useful for UI metadata. */
     section_file: string;
     last_editor?: { id: string; name: string; timestampMs: number; type: AttributionWriterType; seconds_ago: number };
     /** True when a human proposal (draft or inprogress) locks this section. */
@@ -669,8 +668,8 @@ export interface DocStructureChangedEvent {
   doc_path: string;
 }
 
-export interface SessionFlushedEvent {
-  type: "session:flushed";
+export interface SessionOverlayImportedEvent {
+  type: "session:overlay-imported";
   doc_path: string;
 }
 
@@ -721,7 +720,7 @@ export type WsServerEvent =
   | PresenceEditingEvent
   | PresenceDoneEvent
   | DocStructureChangedEvent
-  | SessionFlushedEvent
+  | SessionOverlayImportedEvent
   | DocRenamedEvent
   | ProposalDraftEvent
   | ProposalWithdrawnEvent

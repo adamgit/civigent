@@ -13,6 +13,7 @@ import { KnowledgeStoreWsClient } from "../services/ws-client";
 import { writerInitials } from "../utils/writerInitials";
 import { classifyWriterType } from "../utils/classifyWriterType";
 import { readNumberSetting } from "../utils/numberSettings";
+import { lastEditTimeByDoc, agentItemsAfterUserEdit, sortActivityNewestFirst } from "../services/activity-grouping";
 
 function writerTypeToLabel(writerType: string | undefined): { variant: "green" | "yellow" | "agent" | "muted" | "accent"; label: string } {
   switch (writerType) {
@@ -75,45 +76,17 @@ export function DashboardPage() {
     };
   }, [activeDays, activeLimit, wsClient]);
 
-  const humanItemsByCurrentUser = useMemo(
-    () => items.filter(
-      (item) =>
-        item.writer_id === currentWriterId &&
-        item.writer_type === "human",
-    ),
+  const lastEditByDoc = useMemo(
+    () => lastEditTimeByDoc(items, currentWriterId),
     [currentWriterId, items],
   );
 
-  const lastEditByDoc = useMemo(() => {
-    const out = new Map<string, string>();
-    for (const item of humanItemsByCurrentUser) {
-      for (const section of item.sections) {
-        const prior = out.get(section.doc_path);
-        if (!prior || Date.parse(item.timestamp) > Date.parse(prior)) {
-          out.set(section.doc_path, item.timestamp);
-        }
-      }
-    }
-    return out;
-  }, [humanItemsByCurrentUser]);
-
-  const yourDocsItems = useMemo(() => {
-    return items
-      .filter((item) => item.writer_type === "agent")
-      .filter((item) => {
-        for (const section of item.sections) {
-          const lastEdit = lastEditByDoc.get(section.doc_path);
-          if (lastEdit && Date.parse(item.timestamp) > Date.parse(lastEdit)) return true;
-        }
-        return false;
-      })
-      .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
-  }, [items, lastEditByDoc]);
-
-  const allItems = useMemo(
-    () => [...items].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)),
-    [items],
+  const yourDocsItems = useMemo(
+    () => sortActivityNewestFirst(agentItemsAfterUserEdit(items, lastEditByDoc)),
+    [items, lastEditByDoc],
   );
+
+  const allItems = useMemo(() => sortActivityNewestFirst(items), [items]);
 
   const displayItems = activeTab === "your-docs" ? yourDocsItems : allItems;
 

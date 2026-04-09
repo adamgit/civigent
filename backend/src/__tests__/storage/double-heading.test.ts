@@ -24,6 +24,10 @@ describe("double-heading bug fix", () => {
 
   const writer = { id: "agent-test", type: "agent" as const, displayName: "Test Agent" };
 
+  function preserveHeadingMarkdown(level: number, heading: string, body: string): string {
+    return `${"#".repeat(level)} ${heading}\n\n${body}`;
+  }
+
   it("proposal with headed content does not produce doubled headings after commit", async () => {
     const headedContent = "## Overview\n\nUpdated overview content.\n";
 
@@ -34,9 +38,11 @@ describe("double-heading bug fix", () => {
     );
 
     const pContentLayer = new OverlayContentLayer(contentRoot, getContentRoot());
-    await pContentLayer.writeSection(
+    await pContentLayer.upsertSection(
       new SectionRef(SAMPLE_DOC_PATH, ["Overview"]),
+      "Overview",
       headedContent,
+      { contentIsFullMarkdown: true },
     );
 
     const { sections } = await evaluateProposalHumanInvolvement(id);
@@ -55,7 +61,7 @@ describe("double-heading bug fix", () => {
     expect(assembled).toContain("Updated overview content.");
   });
 
-  it("proposal with body-only content passes through unchanged", async () => {
+  it("proposal with headed single-section content preserves a single timeline heading", async () => {
     const bodyOnlyContent = "Body-only content for timeline.\n";
 
     const { id, contentRoot } = await createProposal(
@@ -65,9 +71,11 @@ describe("double-heading bug fix", () => {
     );
 
     const pContentLayer = new OverlayContentLayer(contentRoot, getContentRoot());
-    await pContentLayer.writeSection(
+    await pContentLayer.upsertSection(
       new SectionRef(SAMPLE_DOC_PATH, ["Timeline"]),
-      bodyOnlyContent,
+      "Timeline",
+      preserveHeadingMarkdown(2, "Timeline", bodyOnlyContent.trimEnd()),
+      { contentIsFullMarkdown: true },
     );
 
     const { sections } = await evaluateProposalHumanInvolvement(id);

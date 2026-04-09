@@ -91,7 +91,7 @@ describe("DocsBrowserPage", () => {
 
   it("search input filters tree entries", () => {
     renderDocsBrowser();
-    const filterInput = screen.getByLabelText("Filter tree");
+    const filterInput = screen.getByPlaceholderText("Filter documents...");
     fireEvent.change(filterInput, { target: { value: "strategy" } });
 
     // Tree should only contain entries matching "strategy"
@@ -107,7 +107,7 @@ describe("DocsBrowserPage", () => {
 
   it("force-expands all directories during active search", () => {
     renderDocsBrowser();
-    const filterInput = screen.getByLabelText("Filter tree");
+    const filterInput = screen.getByPlaceholderText("Filter documents...");
     fireEvent.change(filterInput, { target: { value: "strat" } });
     expect(treeForceExpandAll).toBe(true);
   });

@@ -3,6 +3,7 @@ import request from "supertest";
 import { createTestServer, type TestServerContext } from "../helpers/test-server.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { authFor } from "../helpers/auth.js";
+import { listProposals } from "../../storage/proposal-repository.js";
 
 describe("Proposal single-pending invariant", () => {
   let ctx: TestServerContext;
@@ -16,10 +17,10 @@ describe("Proposal single-pending invariant", () => {
     await ctx.cleanup();
   });
 
-  it("rejects second pending proposal from same writer without replace flag", async () => {
+  it("allows multiple pending proposals from same human writer", async () => {
+    // Humans are exempt from the single-draft limit per spec invariant 11.
     const writerToken = authFor("invariant-writer-1", "human");
 
-    // First proposal stays pending (human_reservation)
     const first = await request(ctx.app)
       .post("/api/proposals")
       .set("Authorization", writerToken)
@@ -38,7 +39,6 @@ describe("Proposal single-pending invariant", () => {
     expect(first.status).toBe(201);
     expect(first.body.status).toBe("draft");
 
-    // Second proposal without replace — should be rejected
     const second = await request(ctx.app)
       .post("/api/proposals")
       .set("Authorization", writerToken)
@@ -54,8 +54,10 @@ describe("Proposal single-pending invariant", () => {
         ],
       });
 
-    expect(second.status).toBe(409);
-    expect(second.body.existing_proposal_id).toBe(first.body.proposal_id);
+    expect(second.status).toBe(201);
+    expect(second.body.status).toBe("draft");
+    expect(second.body.proposal_id).toBeDefined();
+    expect(second.body.proposal_id).not.toBe(first.body.proposal_id);
   });
 
   it("replace=true withdraws old pending and creates new one", async () => {
@@ -101,6 +103,52 @@ describe("Proposal single-pending invariant", () => {
     // Verify old proposal was withdrawn
     const oldRes = await request(ctx.app).get(`/api/proposals/${first.body.proposal_id}`);
     expect(oldRes.body.proposal.status).toBe("withdrawn");
+  });
+
+  it("tier-3 agent can create multiple drafts via REST without conflict", async () => {
+    // Tier-3 agents (and humans) are exempt from the single-draft limit per spec invariant 11.
+    const writerToken = authFor("multi-draft-agent", "agent");
+
+    const first = await request(ctx.app)
+      .post("/api/proposals")
+      .set("Authorization", writerToken)
+      .send({
+        intent: "Tier-3 agent first draft",
+        sections: [
+          {
+            doc_path: SAMPLE_DOC_PATH,
+            heading_path: ["Overview"],
+            content: "Agent first.\n",
+          },
+        ],
+      });
+
+    expect(first.status).toBe(201);
+    expect(first.body.proposal_id).toBeDefined();
+
+    const second = await request(ctx.app)
+      .post("/api/proposals")
+      .set("Authorization", writerToken)
+      .send({
+        intent: "Tier-3 agent second draft",
+        sections: [
+          {
+            doc_path: SAMPLE_DOC_PATH,
+            heading_path: ["Timeline"],
+            content: "Agent second.\n",
+          },
+        ],
+      });
+
+    expect(second.status).toBe(201);
+    expect(second.body.proposal_id).toBeDefined();
+    expect(second.body.proposal_id).not.toBe(first.body.proposal_id);
+
+    // Both drafts should appear in the draft listing for this writer
+    const drafts = await listProposals("draft");
+    const writerDrafts = drafts.filter((p) => p.writer.id === "multi-draft-agent");
+    const writerDraftIds = writerDrafts.map((p) => p.id).sort();
+    expect(writerDraftIds).toEqual([first.body.proposal_id, second.body.proposal_id].sort());
   });
 
   it("two proposals from different writers both succeed", async () => {

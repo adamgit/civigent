@@ -9,7 +9,7 @@
  *   0x00 SYNC_STEP_1     — State vector (bidirectional for initial sync)
  *   0x01 SYNC_STEP_2     — State diff (bidirectional for initial sync)
  *   0x02 YJS_UPDATE       — Incremental Y.js update (server → client only)
- *   0x04 SESSION_FLUSHED  — Flush notification (server → client)
+ *   0x04 SESSION_OVERLAY_IMPORTED — Import notification (server → client)
  *   0x08 STRUCTURE_WILL_CHANGE — Restructure notification (server → client)
  */
 
@@ -33,7 +33,7 @@ import { encodeDocPathForWs } from "../utils/path-encoding";
 const MSG_SYNC_STEP_1 = 0;
 const MSG_SYNC_STEP_2 = 1;
 const MSG_YJS_UPDATE = 2;
-const MSG_SESSION_FLUSHED = 4;
+const MSG_SESSION_OVERLAY_IMPORTED = 4;
 const MSG_STRUCTURE_WILL_CHANGE = 8;
 const MSG_RESTORE_NOTIFICATION = 0x0B;
 const MSG_MODE_TRANSITION_REQUEST = 0x0C;
@@ -59,8 +59,8 @@ export interface ObserverCrdtProviderEvents {
   /** Fired (debounced ~100ms) when the Y.Doc is updated by an editor.
    *  Only fires after the initial sync has completed (synced === true). */
   onChange?: () => void;
-  /** Server confirmed fragments were flushed to disk. */
-  onSessionFlushed?: () => void;
+  /** Server confirmed fragments were imported into session overlay. */
+  onSessionOverlayImported?: () => void;
   /** Server is about to restructure fragments. */
   onStructureWillChange?: (restructures: Array<{ oldKey: string; newKeys: string[] }>) => void;
   /** Editing session ended — observer should fall back to REST content. */
@@ -249,8 +249,8 @@ export class ObserverCrdtProvider {
         this.scheduleOnChange();
         break;
       }
-      case MSG_SESSION_FLUSHED: {
-        this.events.onSessionFlushed?.();
+      case MSG_SESSION_OVERLAY_IMPORTED: {
+        this.events.onSessionOverlayImported?.();
         break;
       }
       case MSG_STRUCTURE_WILL_CHANGE: {

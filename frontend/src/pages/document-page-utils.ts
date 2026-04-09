@@ -70,14 +70,6 @@ export function headingPathToLabel(path: string[]): string {
   return path.length === 0 ? "(before first heading)" : path.join(" > ");
 }
 
-/** Build a stable fragment key from a section filename.
- *  Before-first-heading sections (empty heading at level 0) use "__beforeFirstHeading__". */
-export function fragmentKeyFromSectionFile(sectionFile: string, isBeforeFirstHeading: boolean): string {
-  if (isBeforeFirstHeading) return "section::__beforeFirstHeading__";
-  const stem = sectionFile.replace(/\.md$/, "");
-  return "section::" + stem;
-}
-
 /** Read the opaque backend-owned fragment key for a section. */
 export function getSectionFragmentKey(section: DocumentSection): string {
   return section.fragment_key;

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import { render, screen, waitFor, act, cleanup } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { jsonResponse } from "../../helpers/fetch-mocks";
 import type { WsServerEvent } from "../../../types/shared";
@@ -84,21 +84,27 @@ describe("DocumentPage realtime", () => {
         return jsonResponse({
           sections: [
             {
+              heading: "",
               heading_path: [],
+              depth: 0,
               content: "Root.\n",
               humanInvolvement_score: 0,
               crdt_session_active: false,
               section_length_warning: false,
               word_count: 1,
+              fragment_key: "frag:sec_root",
               section_file: "sec_root.md",
             },
             {
+              heading: "Overview",
               heading_path: ["Overview"],
-              content: `Overview v${sectionsFetchCount}.\n`,
+              depth: 1,
+              content: `# Overview\nOverview v${sectionsFetchCount}.\n`,
               humanInvolvement_score: 0,
               crdt_session_active: false,
               section_length_warning: false,
               word_count: 2,
+              fragment_key: "frag:sec_overview",
               section_file: "sec_overview.md",
             },
           ],
@@ -115,6 +121,7 @@ describe("DocumentPage realtime", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
     localStorage.clear();
   });
@@ -151,12 +158,15 @@ describe("DocumentPage realtime", () => {
         return jsonResponse({
           sections: [
             {
+              heading: "",
               heading_path: [],
+              depth: 0,
               content: "Root.\n",
               humanInvolvement_score: 0,
               crdt_session_active: false,
               section_length_warning: false,
               word_count: 1,
+              fragment_key: "frag:sec_root",
               section_file: "sec_root.md",
             },
           ],

@@ -10,6 +10,7 @@ import { apiClient } from "../services/api-client";
 import type { AnyProposal, ProposalStatus } from "../types/shared.js";
 import { headingPathToLabel } from "./document-page-utils";
 import { relativeTime } from "../utils/relativeTime";
+import { filterProposals, STATUS_FILTERS, WRITER_FILTERS } from "../services/proposal-filter";
 
 function statusPillVariant(status: string): "green" | "yellow" | "red" | "muted" {
   switch (status) {
@@ -19,9 +20,6 @@ function statusPillVariant(status: string): "green" | "yellow" | "red" | "muted"
     default: return "muted";
   }
 }
-
-const STATUS_FILTERS = ["All", "Inflight", "Proposing", "Committed", "Cancelled"] as const;
-const WRITER_FILTERS = ["All writers", "Human", "Agent"] as const;
 
 export function ProposalsPage() {
   const [statusFilter, setStatusFilter] = useState<string>("All");
@@ -51,24 +49,10 @@ export function ProposalsPage() {
     return () => { cancelled = true; };
   }, []);
 
-  const filteredProposals = useMemo(() => {
-    return proposals.filter((p) => {
-      // Status filter
-      if (statusFilter === "Inflight" && p.status !== "draft" && p.status !== "inprogress" && p.status !== "committing") return false;
-      if (statusFilter === "Proposing" && p.status !== "draft") return false;
-      if (statusFilter === "Committed" && p.status !== "committed") return false;
-      if (statusFilter === "Cancelled" && p.status !== "withdrawn") return false;
-      // Writer filter
-      if (writerFilter === "Human" && p.writer.type !== "human") return false;
-      if (writerFilter === "Agent" && p.writer.type !== "agent") return false;
-      // Search
-      if (query.trim()) {
-        const q = query.toLowerCase();
-        if (!p.intent.toLowerCase().includes(q) && !p.id.toLowerCase().includes(q)) return false;
-      }
-      return true;
-    });
-  }, [proposals, statusFilter, writerFilter, query]);
+  const filteredProposals = useMemo(
+    () => filterProposals(proposals, { statusFilter, writerFilter, query }),
+    [proposals, statusFilter, writerFilter, query],
+  );
 
   const inflight = proposals.filter((p) => p.status === "draft" || p.status === "committing").length;
   const committed = proposals.filter((p) => p.status === "committed").length;

@@ -6,7 +6,7 @@
  * - Duplicate sections in API responses
  * - `assembleMarkdown` including raw `{{section:` content from sub-skeleton files
  * - `normalizeAllFragments` processing sub-skeleton file as a real fragment
- * - `FragmentStore` creating a fragment for the sub-skeleton file itself
+ * - `DocumentFragments` creating a fragment for the sub-skeleton file itself
  *
  * ALL TESTS IN THIS FILE ARE EXPECTED TO FAIL until the bug is fixed.
  * The fix: `forEachSection` / `walkNodes` should skip sub-skeleton entry nodes
@@ -144,8 +144,8 @@ describe("BUG: assembleMarkdown includes raw skeleton markers from sub-skeleton 
   afterAll(async () => { await ctx.cleanup(); });
 
   it("assembleMarkdown output contains no {{section: markers [EXPECTED TO FAIL]", async () => {
-    const { FragmentStore } = await import("../../crdt/fragment-store.js");
-    const { store } = await FragmentStore.fromDisk(NESTED_DOC_PATH);
+    const { buildDocumentFragmentsForTest } = await import("../helpers/build-document-fragments.js");
+    const store = await buildDocumentFragmentsForTest(NESTED_DOC_PATH);
     const markdown = store.assembleMarkdown();
     store.ydoc.destroy();
 
@@ -172,14 +172,14 @@ describe("BUG: normalizeAllFragments processes sub-skeleton sectionFile as a fra
 
   it("normalizeAllFragments fragment key set contains no sub-skeleton sectionFile keys [EXPECTED TO FAIL]", async () => {
     const { fragmentKeyFromSectionFile } = await import("../../crdt/ydoc-fragments.js");
-    const { FragmentStore } = await import("../../crdt/fragment-store.js");
+    const { DocumentFragments } = await import("../../crdt/document-fragments.js");
 
     const skeleton = await DocumentSkeleton.fromDisk(NESTED_DOC_PATH, ctx.contentDir, ctx.contentDir);
 
     // Reproduce the key-collection logic from normalizeAllFragments
     const keys: string[] = [];
     skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-      const isBeforeFirstHeading = FragmentStore.isBeforeFirstHeading({ headingPath: [...headingPath], level, heading });
+      const isBeforeFirstHeading = DocumentFragments.isBeforeFirstHeading({ headingPath: [...headingPath], level, heading });
       keys.push(fragmentKeyFromSectionFile(sectionFile, isBeforeFirstHeading));
     });
 
@@ -193,9 +193,9 @@ describe("BUG: normalizeAllFragments processes sub-skeleton sectionFile as a fra
   });
 });
 
-// ─── Test 5: FragmentStore no sub-skeleton fragments ─────────────
+// ─── Test 5: DocumentFragments no sub-skeleton fragments ─────────────
 
-describe("BUG: FragmentStore constructor creates fragments for sub-skeleton sectionFiles", () => {
+describe("BUG: DocumentFragments constructor creates fragments for sub-skeleton sectionFiles", () => {
   let ctx: TempDataRootContext;
 
   beforeAll(async () => {
@@ -205,11 +205,11 @@ describe("BUG: FragmentStore constructor creates fragments for sub-skeleton sect
 
   afterAll(async () => { await ctx.cleanup(); });
 
-  it("FragmentStore has no fragment key derived from a sub-skeleton sectionFile [EXPECTED TO FAIL]", async () => {
+  it("DocumentFragments has no fragment key derived from a sub-skeleton sectionFile [EXPECTED TO FAIL]", async () => {
     const { fragmentKeyFromSectionFile } = await import("../../crdt/ydoc-fragments.js");
-    const { FragmentStore } = await import("../../crdt/fragment-store.js");
+    const { buildDocumentFragmentsForTest } = await import("../helpers/build-document-fragments.js");
 
-    const { store } = await FragmentStore.fromDisk(NESTED_DOC_PATH);
+    const store = await buildDocumentFragmentsForTest(NESTED_DOC_PATH);
 
     // "details.md" is a sub-skeleton file. Its fragment key should not exist in the store.
     const subSkeletonKey = fragmentKeyFromSectionFile("details.md", false);
@@ -219,7 +219,7 @@ describe("BUG: FragmentStore constructor creates fragments for sub-skeleton sect
 
     expect(
       hasSubSkeletonFragment,
-      `FragmentStore should not have a fragment for sub-skeleton key "${subSkeletonKey}"`,
+      `DocumentFragments should not have a fragment for sub-skeleton key "${subSkeletonKey}"`,
     ).toBe(false);
   });
 });

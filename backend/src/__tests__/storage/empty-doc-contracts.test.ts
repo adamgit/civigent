@@ -25,7 +25,7 @@ describe("Empty document contracts", () => {
   it("doc with only before-first-heading section is valid", async () => {
     const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
     await overlay.createDocument("/test/bfh-only.md");
-    await overlay.writeSection(new SectionRef("/test/bfh-only.md", []), "preamble content");
+    await overlay.upsertSection(new SectionRef("/test/bfh-only.md", []), "", "preamble content");
     expect(await overlay.getDocumentState("/test/bfh-only.md")).toBe("live");
     const sections = await overlay.getSectionList("/test/bfh-only.md");
     expect(sections).toHaveLength(1);
@@ -39,11 +39,11 @@ describe("Empty document contracts", () => {
     const docPath = "/test/bfh-remove.md";
     const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
     await overlay.createDocument(docPath);
-    await overlay.writeSection(new SectionRef(docPath, []), "temp");
+    await overlay.upsertSection(new SectionRef(docPath, []), "", "temp");
     // Verify it exists
     expect((await overlay.getSectionList(docPath)).length).toBe(1);
-    // Remove the before-first-heading section via deleteSection
-    await overlay.deleteSection(docPath, []);
+    // Remove the before-first-heading section via deleteSubtree
+    await overlay.deleteSubtree(docPath, []);
     // Document is still live with zero sections
     expect(await overlay.getDocumentState(docPath)).toBe("live");
     expect(await overlay.getSectionList(docPath)).toHaveLength(0);
@@ -60,7 +60,11 @@ describe("Empty document contracts", () => {
     // First, create a doc in canonical via a same-root layer (simulates committed state)
     const canonical = new OverlayContentLayer(canonicalDir, canonicalDir);
     await canonical.createDocument("/test/to-tombstone.md");
-    await canonical.writeSection(new SectionRef("/test/to-tombstone.md", ["Temp"]), "content");
+    await canonical.upsertSection(
+      new SectionRef("/test/to-tombstone.md", ["Temp"]),
+      "Temp",
+      "content",
+    );
 
     // Now use an overlay layer: create a live-empty doc, tombstone the existing one
     const overlay = new OverlayContentLayer(overlayDir, canonicalDir);
@@ -73,11 +77,15 @@ describe("Empty document contracts", () => {
     expect(await overlay.getDocumentState("/test/nonexistent.md")).toBe("missing");
   });
 
-  it("writeSection(['Overview']) on empty doc creates only that section (no synthetic bfh)", async () => {
+  it("upsertSectionFromMarkdown(['Overview']) on empty doc creates only that section (no synthetic bfh)", async () => {
     const docPath = "/test/no-synth-bfh.md";
     const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
     await overlay.createDocument(docPath);
-    await overlay.writeSection(new SectionRef(docPath, ["Overview"]), "overview text");
+    await overlay.upsertSection(
+      new SectionRef(docPath, ["Overview"]),
+      "Overview",
+      "overview text",
+    );
     const sections = await overlay.getSectionList(docPath);
     expect(sections).toHaveLength(1);
     expect(sections[0].heading).toBe("Overview");

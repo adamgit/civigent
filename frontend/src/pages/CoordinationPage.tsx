@@ -9,6 +9,7 @@ import type { ProposalTimelineEntry } from "../components/coordination/ProposalT
 import { apiClient } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
 import { sectionGlobalKey, type GetHeatmapResponse, type AnyProposal, type WsServerEvent } from "../types/shared.js";
+import { diffProposalsForTimeline } from "../services/proposal-timeline-diff";
 
 const TABS = [
   { label: "Heatmap", key: "heatmap" },
@@ -47,43 +48,17 @@ export function CoordinationPage() {
       const proposalList = result.proposals ?? [];
       setProposals(proposalList);
 
-      // Diff proposals for timeline
-      const prevMap = prevProposalMapRef.current;
-      const newEntries: ProposalTimelineEntry[] = [];
-      for (const p of proposalList) {
-        const prev = prevMap.get(p.id);
-        if (!prev) {
-          timelineIdRef.current++;
-          newEntries.push({
-            id: timelineIdRef.current,
-            timestamp: Date.now(),
-            proposal_id: p.id,
-            writer_id: p.writer.id,
-            writer_display_name: p.writer.displayName,
-            writer_kind: p.writer.type,
-            event: "created",
-            to_status: p.status,
-            intent: p.intent,
-          });
-        } else if (prev.status !== p.status) {
-          timelineIdRef.current++;
-          newEntries.push({
-            id: timelineIdRef.current,
-            timestamp: Date.now(),
-            proposal_id: p.id,
-            writer_id: p.writer.id,
-            writer_display_name: p.writer.displayName,
-            writer_kind: p.writer.type,
-            event: "status_changed",
-            from_status: prev.status,
-            to_status: p.status,
-          });
-        }
+      const { entries, nextMap, nextIdSeed } = diffProposalsForTimeline(
+        prevProposalMapRef.current,
+        proposalList,
+        Date.now(),
+        timelineIdRef.current,
+      );
+      timelineIdRef.current = nextIdSeed;
+      prevProposalMapRef.current = nextMap;
+      if (entries.length > 0) {
+        setProposalTimeline((prev) => [...entries, ...prev].slice(0, 200));
       }
-      if (newEntries.length > 0) {
-        setProposalTimeline((prev) => [...newEntries, ...prev].slice(0, 200));
-      }
-      prevProposalMapRef.current = new Map(proposalList.map((p) => [p.id, { status: p.status }]));
     } catch {
       // non-fatal poll
     }

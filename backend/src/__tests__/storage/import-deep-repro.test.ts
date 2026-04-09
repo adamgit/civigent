@@ -160,9 +160,13 @@ describe("deeply nested import repro", () => {
     const skeletonContent = await readFile(skeletonPath, "utf8");
     expect(skeletonContent).toContain("{{section:");
 
-    // Gather all canonical files for this document
+    // Gather all canonical files for this document. `.sections/` directories can
+    // contain sub-skeleton subdirectories when a parent section has children, so
+    // filter to regular files only — the test only needs at least one section file
+    // path under `.sections/` to verify the import-rejection contract.
     const sectionsDir = `${skeletonPath}.sections`;
-    const sectionFiles = await readdir(sectionsDir);
+    const sectionEntries = await readdir(sectionsDir, { withFileTypes: true });
+    const sectionFiles = sectionEntries.filter((e) => e.isFile()).map((e) => e.name);
 
     // Simulate: user copies the CONTENT DIRECTORY (including .sections/) into staging
     // The skeleton file (with {{section:}} markers) AND section body files both get imported

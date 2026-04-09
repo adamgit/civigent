@@ -1,14 +1,12 @@
 import * as Y from "yjs";
 import { fragmentFromRemark } from "../storage/section-formatting.js";
 import type { ModeTransitionResult, WsServerEvent, WriterIdentity } from "../types/shared.js";
-import { FragmentStore } from "./fragment-store.js";
-import { FragmentNormalizer } from "./fragment-normalizer.js";
 import type { DocSession } from "./ydoc-lifecycle.js";
 import {
   addContributor,
   markFragmentDirty,
-  triggerDebouncedFlush,
-  triggerImmediateFlush,
+  triggerDebouncedSessionOverlayImport,
+  triggerImmediateSessionOverlayImport,
   updateActivity,
   updateEditPulse,
   updateSectionFocus,
@@ -51,8 +49,6 @@ export interface SessionJoinSnapshot {
  * It centralizes runtime sequencing while reusing existing lifecycle/storage code.
  */
 export class LiveDocumentSession {
-  private readonly normalizer = new FragmentNormalizer();
-
   constructor(private readonly session: DocSession) {}
 
   get docPath(): string {
@@ -82,8 +78,7 @@ export class LiveDocumentSession {
     const dirtyChanges: SessionDirtyChange[] = [];
     const focusedPath = this.session.presenceManager.getAll().get(writerId);
     if (focusedPath !== undefined) {
-      const entry = this.session.fragments.skeleton.expect(focusedPath);
-      const fragmentKey = FragmentStore.fragmentKeyFor(entry);
+      const fragmentKey = this.session.fragments.requireFragmentKeyForHeadingPath(focusedPath);
       this.session.fragments.markDirty(fragmentKey);
       const isNewlyDirty = markFragmentDirty(this.session.docPath, writerId, fragmentKey);
       if (isNewlyDirty) {
@@ -97,7 +92,7 @@ export class LiveDocumentSession {
       this.session.lastTouchedFragments.clear();
     }
 
-    triggerDebouncedFlush(this.session.docPath);
+    triggerDebouncedSessionOverlayImport(this.session.docPath);
     return {
       socketMessages: [{ audience: "others", payload }],
       dirtyChanges,
@@ -108,10 +103,9 @@ export class LiveDocumentSession {
     const { oldFocus } = updateSectionFocus(this.session.docPath, writerId, headingPath);
 
     if (oldFocus) {
-      const oldEntry = this.session.fragments.skeleton.find(oldFocus);
-      if (oldEntry) {
-        const oldFragmentKey = FragmentStore.fragmentKeyFor(oldEntry);
-        await this.normalizer.normalize(oldFragmentKey, this.session.fragments, {
+      const oldFragmentKey = this.session.fragments.findFragmentKeyForHeadingPath(oldFocus);
+      if (oldFragmentKey) {
+        await this.session.fragments.normalizeStructure(oldFragmentKey, {
           broadcastStructureChange: undefined,
         });
       }
@@ -142,7 +136,7 @@ export class LiveDocumentSession {
   }
 
   mutateSection(writerId: string, fragmentKey: string, markdown: string): SessionCommandResult {
-    const entry = this.session.fragments.resolveEntryForKey(fragmentKey);
+    const entry = this.session.fragments.resolveEntryForFragmentKey(fragmentKey);
     if (!entry) {
       return { error: `Fragment key not found: ${fragmentKey}` };
     }
@@ -153,7 +147,7 @@ export class LiveDocumentSession {
     markFragmentDirty(this.session.docPath, writerId, fragmentKey);
 
     const update = Y.encodeStateAsUpdate(this.session.fragments.ydoc, svBefore);
-    triggerDebouncedFlush(this.session.docPath);
+    triggerDebouncedSessionOverlayImport(this.session.docPath);
 
     return {
       socketMessages: update.length > 0 ? [{ audience: "others", payload: update }] : [],
@@ -167,8 +161,8 @@ export class LiveDocumentSession {
     return {};
   }
 
-  flushNow(): SessionCommandResult {
-    triggerImmediateFlush(this.session.docPath);
+  importToSessionOverlayNow(): SessionCommandResult {
+    triggerImmediateSessionOverlayImport(this.session.docPath);
     return {};
   }
 

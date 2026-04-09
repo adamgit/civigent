@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { gitExec } from "../../storage/git-repo.js";
-import { FragmentStore } from "../../crdt/fragment-store.js";
+import { buildDocumentFragmentsForTest } from "../helpers/build-document-fragments.js";
 import * as Y from "yjs";
 
 const NESTED_DOC_PATH = "test/nested-doc.md";
@@ -110,7 +110,7 @@ describe("Heading deletion merge target", () => {
   });
 
   it("sibling merge: delete ## B merges into ## A", async () => {
-    const { store } = await FragmentStore.fromDisk(NESTED_DOC_PATH);
+    const store = await buildDocumentFragmentsForTest(NESTED_DOC_PATH);
 
     // Verify initial content
     const bKey = "section::sec_b";
@@ -131,7 +131,7 @@ describe("Heading deletion merge target", () => {
   });
 
   it("nested sibling merge: delete ### SubB merges into ### SubA", async () => {
-    const { store } = await FragmentStore.fromDisk(NESTED_DOC_PATH);
+    const store = await buildDocumentFragmentsForTest(NESTED_DOC_PATH);
 
     const subbKey = "section::sec_subb";
     const subaKey = "section::sec_suba";
@@ -151,7 +151,7 @@ describe("Heading deletion merge target", () => {
   });
 
   it("first child merge: delete ### SubA merges into ## B (parent body)", async () => {
-    const { store } = await FragmentStore.fromDisk(NESTED_DOC_PATH);
+    const store = await buildDocumentFragmentsForTest(NESTED_DOC_PATH);
 
     const subaKey = "section::sec_suba";
     const bKey = "section::sec_b";
@@ -200,10 +200,10 @@ describe("Heading deletion merge target", () => {
       ctx.rootDir,
     );
 
-    const { store } = await FragmentStore.fromDisk(noBfhDocPath);
+    const store = await buildDocumentFragmentsForTest(noBfhDocPath);
 
     // Verify no BFH exists
-    expect(store.skeleton.expectBeforeFirstHeading()).toBeNull();
+    expect(store.skeleton.findEntryByHeadingPath([])).toBeNull();
 
     const aKey = "section::sec_a";
     replaceFragmentWithBodyOnly(store.ydoc, aKey, "Orphaned A content.");
@@ -213,7 +213,7 @@ describe("Heading deletion merge target", () => {
     expect(result.removedKeys).toContain(aKey);
 
     // A BFH section should now exist with the orphaned content
-    const bfhEntry = store.skeleton.expectBeforeFirstHeading();
+    const bfhEntry = store.skeleton.findEntryByHeadingPath([]);
     expect(bfhEntry).not.toBeNull();
 
     const bfhKey = "section::__beforeFirstHeading__";
@@ -222,7 +222,7 @@ describe("Heading deletion merge target", () => {
   });
 
   it("first top-level section: delete ## A merges into root", async () => {
-    const { store } = await FragmentStore.fromDisk(NESTED_DOC_PATH);
+    const store = await buildDocumentFragmentsForTest(NESTED_DOC_PATH);
 
     const aKey = "section::sec_a";
     const rootKey = "section::__beforeFirstHeading__";

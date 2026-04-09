@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { SectionNavigator } from "../../components/SectionNavigator";
 import type { DocStructureNode } from "../../types/shared";
 
@@ -18,7 +18,6 @@ const sampleStructure: DocStructureNode[] = [
 
 describe("SectionNavigator", () => {
   afterEach(() => {
-    cleanup();
     vi.restoreAllMocks();
   });
 

@@ -20,7 +20,7 @@ import {
   releaseDocSession,
   joinSession,
   updateActivity,
-  setFlushCallback,
+  setSessionOverlayImportCallback,
   setNormalizeBroadcast,
   setYjsUpdateBroadcast,
   setPostCommitNotify,
@@ -37,7 +37,7 @@ import { setPostCommitHook } from "../storage/commit-pipeline.js";
 import { documentSessionRegistry } from "../crdt/document-session-registry.js";
 import { getHeadSha } from "../storage/git-repo.js";
 import { getDataRoot } from "../storage/data-root.js";
-import { flushDocSessionToDisk, commitSessionFilesToCanonical, cleanupSessionFiles } from "../storage/session-store.js";
+import { importSessionDirtyFragmentsToOverlay, commitSessionFilesToCanonical, cleanupSessionFiles } from "../storage/session-store.js";
 import type { WsServerEvent, WriterIdentity } from "../types/shared.js";
 import type { ClientInstanceId, RemoteParticipant, ModeTransitionRequest, ModeTransitionResult } from "../types/shared.js";
 import {
@@ -49,11 +49,11 @@ import {
   MSG_ACTIVITY_PULSE,
   MSG_SECTION_MUTATE,
   MSG_MODE_TRANSITION_REQUEST,
-  MSG_FLUSH_REQUEST,
+  MSG_SESSION_OVERLAY_IMPORT_REQUEST,
   encodeSyncStep2,
   encodeUpdate,
-  encodeSessionFlushStarted,
-  encodeSessionFlushed,
+  encodeSessionOverlayImportStarted,
+  encodeSessionOverlayImported,
   encodeStructureWillChange,
   encodeMutateResult,
   encodeRestoreNotification,
@@ -111,15 +111,22 @@ function removeParticipant(clientInstanceId: ClientInstanceId): void {
 }
 
 /**
- * Guard-and-join helper: joins a session for a socket if not already joined,
- * then delivers any pending restore notification.
+ * Guard-and-join helper: delivers any pending restore notification BEFORE joining
+ * the session, then joins.
+ *
+ * Ordering rationale: the client's onRestoreNotification handler fires when
+ * MSG_SYNC_STEP_2 is received with a pending notification already buffered. So
+ * MSG_RESTORE_NOTIFICATION must arrive on the wire before MSG_SYNC_STEP_2 (which
+ * joinSession sends). Reversing this order silently breaks the restore banner.
+ *
+ * Exported for unit tests (`backend/src/__tests__/ws/join-and-notify-ordering.test.ts`).
  */
-function joinAndNotify(session: DocSession, socket: WebSocket, st: CrdtSocketState): void {
+export function joinAndNotify(session: DocSession, socket: WebSocket, st: CrdtSocketState): void {
   if (st.joined) return;
-  joinSession(session, (msg) => socket.send(msg), (event) => { if (onWsEvent) onWsEvent(event); });
-  st.joined = true;
   const notification = getPendingRestoreNotification(st.docPath, st.writerId);
   if (notification) sendToSocket(socket, encodeRestoreNotification(notification));
+  joinSession(session, (msg) => socket.send(msg), (event) => { if (onWsEvent) onWsEvent(event); });
+  st.joined = true;
 }
 
 function addSocket(docPath: string, socket: WebSocket): void {
@@ -444,7 +451,7 @@ async function handleMessage(
       msgType === MSG_SECTION_FOCUS ||
       msgType === MSG_ACTIVITY_PULSE ||
       msgType === MSG_SECTION_MUTATE ||
-      msgType === MSG_FLUSH_REQUEST
+      msgType === MSG_SESSION_OVERLAY_IMPORT_REQUEST
     ) {
       throw new Error(
         `Observer socket sent write message (type 0x${msgType.toString(16)}) for ${state.docPath} — ` +
@@ -568,8 +575,8 @@ async function handleMessage(
       });
       break;
     }
-    case MSG_FLUSH_REQUEST: {
-      liveSession!.flushNow();
+    case MSG_SESSION_OVERLAY_IMPORT_REQUEST: {
+      liveSession!.importToSessionOverlayNow();
       break;
     }
     case MSG_SECTION_MUTATE: {
@@ -604,25 +611,25 @@ async function handleMessage(
   }
 }
 
-// ─── Flush-to-session callback ──────────────────────────────────
+// ─── Session-overlay import callback ────────────────────────────
 
-async function flushToSession(session: DocSession): Promise<void> {
+async function importDirtyFragmentsToSessionOverlay(session: DocSession): Promise<void> {
   const hasDirtyFragments = session.fragments.dirtyKeys.size > 0;
   if (hasDirtyFragments) {
-    broadcastToAll(session.docPath, encodeSessionFlushStarted());
+    broadcastToAll(session.docPath, encodeSessionOverlayImportStarted());
   }
 
-  const { writtenKeys, deletedKeys } = await flushDocSessionToDisk(session);
+  const { writtenKeys, deletedKeys } = await importSessionDirtyFragmentsToOverlay(session);
 
   if (writtenKeys.length > 0 || deletedKeys.length > 0) {
-    broadcastToAll(session.docPath, encodeSessionFlushed(writtenKeys, deletedKeys));
+    broadcastToAll(session.docPath, encodeSessionOverlayImported(writtenKeys, deletedKeys));
     if (onWsEvent) {
-      onWsEvent({ type: "session:flushed", doc_path: session.docPath });
+      onWsEvent({ type: "session:overlay-imported", doc_path: session.docPath });
     }
   }
 }
 
-setFlushCallback(flushToSession);
+setSessionOverlayImportCallback(importDirtyFragmentsToSessionOverlay);
 
 setNormalizeBroadcast((docPath, info) => {
   broadcastToAll(docPath, encodeStructureWillChange(info));

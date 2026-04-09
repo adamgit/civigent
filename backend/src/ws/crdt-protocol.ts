@@ -9,9 +9,9 @@
  *   0x01 SYNC_STEP_2          — State diff  (client→server and server→client)
  *   0x02 YJS_UPDATE            — Incremental Yjs update (bidirectional)
  *   0x03 AWARENESS             — Awareness data
- *   0x04 SESSION_FLUSHED       — Server → Client notification
+ *   0x04 SESSION_OVERLAY_IMPORTED — Server → Client notification
  *   0x05 SECTION_FOCUS         — Client → Server heading path (segments separated by \x00)
- *   0x06 SESSION_FLUSH_STARTED — Server → Client: flush beginning
+ *   0x06 SESSION_OVERLAY_IMPORT_STARTED — Server → Client: import beginning
  *   0x07 ACTIVITY_PULSE        — Client → Server: human is actively editing (debounced ~2-3s)
  *   0x08 STRUCTURE_WILL_CHANGE — Server → Client: about to restructure fragments (old→new key mapping)
  *   0x09 SECTION_MUTATE        — Client → Server: replace fragment content (JSON { fragmentKey, markdown })
@@ -45,9 +45,9 @@ export const MSG_SYNC_STEP_1 = 0;
 export const MSG_SYNC_STEP_2 = 1;
 export const MSG_YJS_UPDATE = 2;
 export const MSG_AWARENESS = 3;
-export const MSG_SESSION_FLUSHED = 4;
+export const MSG_SESSION_OVERLAY_IMPORTED = 4;
 export const MSG_SECTION_FOCUS = 5;
-export const MSG_SESSION_FLUSH_STARTED = 6;
+export const MSG_SESSION_OVERLAY_IMPORT_STARTED = 6;
 export const MSG_ACTIVITY_PULSE = 7;
 export const MSG_STRUCTURE_WILL_CHANGE = 8;
 export const MSG_SECTION_MUTATE = 9;
@@ -55,7 +55,7 @@ export const MSG_MUTATE_RESULT = 10;
 export const MSG_RESTORE_NOTIFICATION = 0x0B;
 export const MSG_MODE_TRANSITION_REQUEST = 0x0C;
 export const MSG_MODE_TRANSITION_RESULT = 0x0D;
-export const MSG_FLUSH_REQUEST = 0x0E;
+export const MSG_SESSION_OVERLAY_IMPORT_REQUEST = 0x0E;
 
 // ─── WebSocket close codes ───────────────────────────────────────
 
@@ -91,18 +91,18 @@ export function encodeUpdate(update: Uint8Array): Uint8Array {
   return buf;
 }
 
-export function encodeSessionFlushStarted(): Uint8Array {
-  return new Uint8Array([MSG_SESSION_FLUSH_STARTED]);
+export function encodeSessionOverlayImportStarted(): Uint8Array {
+  return new Uint8Array([MSG_SESSION_OVERLAY_IMPORT_STARTED]);
 }
 
-export function encodeSessionFlushed(writtenKeys: string[], deletedKeys: string[]): Uint8Array {
+export function encodeSessionOverlayImported(writtenKeys: string[], deletedKeys: string[]): Uint8Array {
   let text = writtenKeys.join("\n");
   if (deletedKeys.length > 0) {
     text += "\x00" + deletedKeys.join("\n");
   }
   const payload = new TextEncoder().encode(text);
   const buf = new Uint8Array(1 + payload.length);
-  buf[0] = MSG_SESSION_FLUSHED;
+  buf[0] = MSG_SESSION_OVERLAY_IMPORTED;
   buf.set(payload, 1);
   return buf;
 }

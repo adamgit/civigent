@@ -354,8 +354,8 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 - YJS_UPDATE messages applied to Y.Doc
 - Local Y.Doc changes sent as YJS_UPDATE to server
 - AWARENESS messages relayed bidirectionally
-- SESSION_FLUSH_STARTED (0x06) triggers onFlushStarted callback
-- SESSION_FLUSHED (0x04) triggers onSessionFlushed with parsed keys
+- SESSION_OVERLAY_IMPORT_STARTED (0x06) triggers onSessionOverlayImportStarted callback
+- SESSION_OVERLAY_IMPORTED (0x04) triggers onSessionOverlayImported with parsed keys
 - SECTION_FOCUS (0x05) sent when focusSection called
 - destroy cleans up WebSocket and Y.Doc observers
 - Connection state transitions trigger onStateChange
@@ -497,7 +497,7 @@ Mock KnowledgeStoreWsClient that:
 
 ### `mock-crdt-provider.ts`
 Mock CrdtProvider that:
-- Exposes event callbacks (onFlushStarted, onSessionFlushed, etc.)
+- Exposes event callbacks (onSessionOverlayImportStarted, onSessionOverlayImported, etc.)
 - Tracks focusSection calls
 - Simulates connection state changes
 

@@ -39,6 +39,7 @@ import path from "node:path";
 import { access, readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import type { DocStructureNode } from "../types/shared.js";
 import { normalizeDocPath } from "./path-utils.js";
+import { staleHeadingPath } from "./skeleton-errors.js";
 
 // ─── Skeleton file format helpers ────────────────────────────────
 // These are the canonical parsers/serializers for skeleton file content.
@@ -248,7 +249,32 @@ export interface ReplacementResult {
 export class DocumentSkeleton {
   readonly docPath: string;
   protected roots: SkeletonNode[];
-  protected _overlayPersisted: boolean = false;
+
+  // ── Three independent provenance/state concepts (do NOT collapse) ──
+  //
+  // 1. loadedFromOverlay: the structural nodes currently held in this
+  //    instance were read from the overlay skeleton file (not the
+  //    canonical fallback). True for any DocumentSkeleton constructed
+  //    via fromDisk that found and parsed an overlay skeleton file.
+  //
+  // 2. overlaySkeletonFileExisted: at the moment fromDisk was called,
+  //    SOME overlay marker existed for this docPath — either a live
+  //    skeleton file or a tombstone. This is a strict superset of
+  //    loadedFromOverlay (a tombstone makes file-existed true even
+  //    though no nodes loaded).
+  //
+  // 3. hasBeenWrittenToOverlay: this specific in-memory instance has
+  //    successfully persisted its state to the overlay since being
+  //    constructed (via flushToOverlay or by being created via a
+  //    factory that auto-persists). It is allowed for a freshly-loaded
+  //    readonly DocumentSkeleton to have all three false-true-false
+  //    independently of each other.
+  //
+  // Item 137 explicitly forbids collapsing these into one property.
+  protected _loadedFromOverlay: boolean = false;
+  protected _overlaySkeletonFileExisted: boolean = false;
+  protected _hasBeenWrittenToOverlay: boolean = false;
+
   protected _overlayTombstoned: boolean = false;
   protected readonly overlayRoot: string;
 
@@ -262,14 +288,29 @@ export class DocumentSkeleton {
     this.overlayRoot = overlayRoot;
   }
 
-  /** True when the overlay contained a skeleton file (vs falling back to canonical). */
-  get overlayPersisted(): boolean { return this._overlayPersisted; }
+  /**
+   * True when this instance's structural nodes were resolved from the
+   * overlay skeleton file rather than from the canonical fallback.
+   */
+  get loadedFromOverlay(): boolean { return this._loadedFromOverlay; }
+
+  /**
+   * True when an overlay file (live skeleton OR tombstone) existed at the
+   * moment of load. Strict superset of loadedFromOverlay.
+   */
+  get overlaySkeletonFileExisted(): boolean { return this._overlaySkeletonFileExisted; }
+
+  /**
+   * True when this in-memory instance has persisted its state to the
+   * overlay since being constructed.
+   */
+  get hasBeenWrittenToOverlay(): boolean { return this._hasBeenWrittenToOverlay; }
 
   /** True when the overlay contains a tombstone marker for this document. */
-  get overlayTombstoned(): boolean { return this._overlayTombstoned; }
+  get isTombstonedInOverlay(): boolean { return this._overlayTombstoned; }
 
   /** True when the loaded skeleton tree has zero section entries. */
-  get isEmpty(): boolean { return this.roots.length === 0; }
+  get areSkeletonRootsEmpty(): boolean { return this.roots.length === 0; }
 
   /**
    * Depth-first visitor over all sections. Zero intermediate allocation.
@@ -394,7 +435,7 @@ export class DocumentSkeleton {
    * Uses a recursive tree walk with early return — no flat materialization.
    * Throws if not found.
    */
-  expectByFileId(sectionFileId: string): FlatEntry {
+  requireEntryBySectionFileId(sectionFileId: string): FlatEntry {
     if (sectionFileId === "__beforeFirstHeading__") {
       const root = this.expectBeforeFirstHeading();
       if (!root) {
@@ -414,10 +455,10 @@ export class DocumentSkeleton {
 
   /**
    * Find a section by its section file ID (filename stem, e.g. "sec_abc123def").
-   * Returns null if not found (no throw). Prefer this over expectByFileId when
+   * Returns null if not found (no throw). Prefer this over requireEntryBySectionFileId when
    * callers need find-or-null semantics.
    */
-  findByFileId(sectionFileId: string): FlatEntry | null {
+  findEntryBySectionFileId(sectionFileId: string): FlatEntry | null {
     if (sectionFileId === "__beforeFirstHeading__") {
       return this.expectBeforeFirstHeading();
     }
@@ -456,7 +497,7 @@ export class DocumentSkeleton {
   }
 
   /** Look up a section by heading path. Returns null if not found. */
-  find(headingPath: string[]): FlatEntry | null {
+  findEntryByHeadingPath(headingPath: string[]): FlatEntry | null {
     // Before-first-heading section: headingPath=[]
     if (headingPath.length === 0) {
       return this.expectBeforeFirstHeading();
@@ -509,8 +550,8 @@ export class DocumentSkeleton {
   }
 
   /** Resolve a section by heading path. Throws if not found. */
-  expect(headingPath: string[]): FlatEntry {
-    const entry = this.find(headingPath);
+  requireEntryByHeadingPath(headingPath: string[]): FlatEntry {
+    const entry = this.findEntryByHeadingPath(headingPath);
     if (!entry) {
       if (headingPath.length === 0) {
         throw new Error(`No before-first-heading section in ${this.docPath}. The document may have no content before its first heading.`);
@@ -524,7 +565,7 @@ export class DocumentSkeleton {
 
   /** Check whether a heading path exists in the skeleton. */
   has(headingPath: string[]): boolean {
-    return this.find(headingPath) !== null;
+    return this.findEntryByHeadingPath(headingPath) !== null;
   }
 
   /**
@@ -538,6 +579,57 @@ export class DocumentSkeleton {
       entries.push({ headingPath: [...hp], heading, level, sectionFile, absolutePath, isSubSkeleton: false });
     });
     return entries;
+  }
+
+  /**
+   * Return ALL structural entries — both content sections AND sub-skeleton
+   * body-holder/parent nodes — in document order.
+   *
+   * This is the structural-layer counterpart of allContentEntries(). Callers
+   * that currently rebuild the same result by running forEachNode(...) with
+   * their own accumulator should prefer this helper so the allocation and
+   * headingPath copying are consolidated in one place.
+   *
+   * Used by recovery, persistence inspection, and anything that needs to
+   * reason about the skeleton tree as a whole rather than just its
+   * content-facing slice.
+   */
+  allStructuralEntries(): FlatEntry[] {
+    const entries: FlatEntry[] = [];
+    this.forEachNode((heading, level, sectionFile, hp, absolutePath, isSubSkeleton) => {
+      entries.push({
+        headingPath: [...hp],
+        heading,
+        level,
+        sectionFile,
+        absolutePath,
+        isSubSkeleton,
+      });
+    });
+    return entries;
+  }
+
+  /**
+   * Serialize the full structural tree as a flat SkeletonEntry[] preserving
+   * document order. Unlike allStructuralEntries() this strips the runtime
+   * (absolutePath / isSubSkeleton / headingPath) fields, producing the exact
+   * shape that parseSkeletonToEntries()/serializeSkeletonEntries() operate on.
+   *
+   * Crash recovery previously rebuilt this by hand from forEachNode; pulling
+   * the construction into one method removes that duplication and guarantees
+   * callers get the same traversal order as the on-disk writer.
+   *
+   * NOTE: this is a flat snapshot across the entire (possibly nested) tree.
+   * It is NOT a round-trip of the on-disk sub-skeleton file layout — those
+   * files live in separate directories. Use this for payloads that need a
+   * single linear list of structural entries.
+   */
+  serializeStructuralEntries(): SkeletonEntry[] {
+    const out: SkeletonEntry[] = [];
+    this.forEachNode((heading, level, sectionFile) => {
+      out.push({ heading, level, sectionFile });
+    });
+    return out;
   }
 
   /**
@@ -571,28 +663,11 @@ export class DocumentSkeleton {
 
   // --- Static factories ---
 
-  /**
-   * Create a tombstone marker file at the given doc path in the overlay root.
-   * Auto-persists atomically; returns a readonly instance.
-   */
-  static async createTombstone(
-    docPath: string,
-    overlayRoot: string,
-  ): Promise<DocumentSkeleton> {
-    const skeleton = new DocumentSkeleton(docPath, [], overlayRoot);
-    const tombstonePath = resolveTombstonePath(docPath, overlayRoot);
-    await mkdir(path.dirname(tombstonePath), { recursive: true });
-    await rm(skeleton.skeletonPath, { force: true });
-    await rm(`${skeleton.skeletonPath}.sections`, { recursive: true, force: true });
-    await writeFile(
-      tombstonePath,
-      `This file marks file ${normalizeDocPath(docPath)} to be deleted when this proposal is committed\n`,
-      "utf8",
-    );
-    skeleton._overlayPersisted = true;
-    skeleton._overlayTombstoned = true;
-    return skeleton;
-  }
+  // NOTE per checklist item 93: createTombstone has been removed from
+  // readonly DocumentSkeleton. Tombstone creation is a mutating disk
+  // operation and now lives behind ContentLayer. The previous implementation
+  // (which silently auto-persisted) violated the readonly contract of this
+  // class.
 
   /**
    * Derive the sections directory path for a given document.
@@ -610,7 +685,8 @@ export class DocumentSkeleton {
     const { nodes, overlayExisted, overlayTombstoned } = await buildSkeletonTree(docPath, overlayRoot, canonicalRoot);
     validateNoDuplicateRoots(nodes, docPath);
     const skeleton = new DocumentSkeleton(docPath, nodes, overlayRoot);
-    skeleton._overlayPersisted = overlayExisted;
+    skeleton._loadedFromOverlay = overlayExisted && !overlayTombstoned;
+    skeleton._overlaySkeletonFileExisted = overlayExisted;
     skeleton._overlayTombstoned = overlayTombstoned;
     return skeleton;
   }
@@ -764,390 +840,569 @@ export class DocumentSkeleton {
  */
 export class DocumentSkeletonInternal extends DocumentSkeleton {
 
+  // NOTE per checklist items 97/99/101/109: the following caller-facing
+  // primitives have been deleted from this class:
+  //
+  //   - replace(headingPath, newSections)            [item 97]
+  //   - addSectionsFromBeforeFirstHeadingSplit(...)  [item 99]
+  //   - insertSectionUnder(parentPath, section)      [item 101]
+  //   - buildOverlaySkeleton(parsed, overlayRoot)    [item 109]
+  //
+  // These were structurally overloaded (one primitive papered over delete,
+  // rename, sibling-split, child-insert) and forced callers to know about
+  // BFH/root-position mechanics. Their replacements live behind explicit
+  // ContentLayer / DocumentFragments operations. Compile errors at the old call
+  // sites are EXPECTED — the callers will be reworked in a follow-up pass
+  // through the OverlayContentLayer / DocumentFragments migration items in this
+  // checklist.
+
+  // --- Document-order navigation helpers ----------------------------
+
   /**
-   * Replace the section at headingPath with one or more new sections.
+   * Walk forEachSection in document order and return the last
+   * body-holding section emitted strictly BEFORE the section identified
+   * by `targetSectionFile`. Returns null if `targetSectionFile` is the
+   * very first body-holder in the document. Throws if `targetSectionFile`
+   * is not present in the skeleton at all (corrupted skeleton or stale
+   * caller-provided id).
    *
-   * Handles three cases based on the levels of the replacement sections
-   * relative to the original:
-   *   - Same level, same heading: rename (no-op structurally if only body changed)
-   *   - Same level, different heading or multiple at same level: sibling split
-   *   - Deeper level: child insertion
+   * Used by item 145 `deleteHeadingPreservingBody` to locate the orphan
+   * absorption target, and by item 369 `rewriteSubtreeFromParsedMarkdown`
+   * to locate the merge target for `leadingOrphanBody` absorption.
    *
-   * Always generates fresh sectionFile names. Never reuses.
-   *
-   * The `added` entries are returned in the same order as `newSections`.
+   * Snapshot semantics — the returned FlatEntry is captured before any
+   * caller mutation, so its absolutePath/sectionFile remain valid even
+   * if the caller subsequently mutates the skeleton (the previous
+   * body-holder is structurally upstream of the target and is not
+   * affected by deletions or rewrites of the target subtree).
    */
-  async replace(
-    headingPath: string[],
-    newSections: Array<{ heading: string; level: number; body: string }>,
-  ): Promise<ReplacementResult> {
-    // Before-first-heading section: search this.roots for the level=0, heading="" node
-    if (headingPath.length === 0) {
-      const idx = this.roots.findIndex(n => n.level === 0 && n.heading === "");
-      if (idx < 0) {
-        throw new Error(
-          `Skeleton integrity error: before-first-heading section not found in ${this.docPath}`
-        );
+  findPreviousBodyHolder(targetSectionFile: string): FlatEntry | null {
+    let snapshot: FlatEntry | null = null;
+    let foundTarget = false;
+    this.forEachSection((heading, level, sectionFile, hp, absolutePath) => {
+      if (foundTarget) return;
+      if (sectionFile === targetSectionFile) {
+        foundTarget = true;
+        return;
       }
-      const oldNode = this.roots[idx];
-      const removed = this.flattenNode(oldNode, [], this.skeletonPath);
-      // Build replacement nodes from newSections
-      const added: FlatEntry[] = [];
-      const replacementNodes: SkeletonNode[] = [];
-      for (const sec of newSections) {
-        const sectionFile = (sec.level === 0 && sec.heading === "")
-          ? generateBeforeFirstHeadingFilename()
-          : generateSectionFilename(sec.heading);
-        const node: SkeletonNode = { heading: sec.heading, level: sec.level, sectionFile, children: [] };
-        replacementNodes.push(node);
-        const absPath = path.join(`${this.skeletonPath}.sections`, sectionFile);
-        added.push({
-          headingPath: sec.heading === "" ? [] : [sec.heading],
-          heading: sec.heading,
-          level: sec.level,
-          sectionFile,
-          absolutePath: absPath,
-          isSubSkeleton: false,
-        });
-      }
-      this.roots.splice(idx, 1, ...replacementNodes);
-      await this.persistInternal();
-      return { removed, added };
-    }
-
-    const parentPath = headingPath.slice(0, -1);
-    const oldHeading = headingPath[headingPath.length - 1];
-    const siblings = this.findSiblingList(parentPath);
-    const idx = siblings.findIndex(n => headingsEqual(n.heading, oldHeading));
-
-    if (idx < 0) {
+      snapshot = {
+        headingPath: [...hp],
+        heading,
+        level,
+        sectionFile,
+        absolutePath,
+        isSubSkeleton: false,
+      };
+    });
+    if (!foundTarget) {
       throw new Error(
-        `Skeleton integrity error: cannot replace "${oldHeading}" — not found ` +
-        `under [${parentPath.join(" > ")}] in ${this.docPath}`
+        `Skeleton integrity error in ${this.docPath}: target sectionFile ` +
+        `${targetSectionFile} was not emitted by forEachSection. ` +
+        `The skeleton may be corrupted or the caller passed a stale id.`,
       );
     }
+    return snapshot;
+  }
 
-    const oldNode = siblings[idx];
-    const originalLevel = oldNode.level;
+  // --- Transaction primitive ----------------------------------------
 
-    const removed = this.flattenNode(oldNode, parentPath, this.resolveSkeletonPathFor(parentPath));
-    const added: FlatEntry[] = [];
-
-    // Partition new sections: those at original level are siblings,
-    // those deeper are children of the first section
-    const atLevel: Array<{ heading: string; level: number; body: string }> = [];
-    const deeper: Array<{ heading: string; level: number; body: string }> = [];
-
-    for (const sec of newSections) {
-      if (sec.level <= originalLevel) {
-        atLevel.push(sec);
-      } else {
-        deeper.push(sec);
-      }
-    }
-
-    // Build replacement nodes
-    const replacementNodes: SkeletonNode[] = [];
-
-    for (let i = 0; i < atLevel.length; i++) {
-      const sec = atLevel[i];
-      const sectionFile = generateSectionFilename(sec.heading);
-      const node: SkeletonNode = {
-        heading: sec.heading,
-        level: sec.level,
-        sectionFile,
-        children: [],
-      };
-
-      // Attach deeper sections as children of the FIRST sibling-level node
-      if (i === 0) {
-        for (const child of deeper) {
-          const childFile = generateSectionFilename(child.heading);
-          node.children.push({
-            heading: child.heading,
-            level: child.level,
-            sectionFile: childFile,
-            children: [],
-          });
+  /**
+   * Apply a coordinated structural mutation as a single transaction,
+   * returning a plan of the body writes and fragment-key remaps the caller
+   * must perform to honor the change.
+   *
+   * This is the low-level replacement for the tangle of side-effects the
+   * deleted replace()/insertSectionUnder() primitives used to carry out
+   * implicitly. Instead of fetching-then-writing-then-remapping inline and
+   * asking callers to hand-stitch the aftermath, the mutation function
+   * receives a typed MutationTransactionContext and returns a record of the
+   * structural decisions it made. The method then:
+   *
+   *   1. Validates that the returned plan is internally consistent.
+   *   2. Persists the skeleton via flushToOverlay().
+   *   3. Returns the plan to the caller, who is responsible for performing
+   *      the body-file writes and fragment-key remaps declared in the plan.
+   *
+   * Callers MUST NOT short-circuit around this — either act on the full
+   * plan or roll the mutation back by not calling it at all.
+   *
+   * This method is the only sanctioned way for other modules in this
+   * package to mutate the skeleton tree after the removal of replace()
+   * and its siblings.
+   */
+  async applyStructuralMutationTransaction(
+    mutate: (ctx: MutationTransactionContext) => StructuralMutationPlan | Promise<StructuralMutationPlan>,
+  ): Promise<StructuralMutationPlan> {
+    const ctx: MutationTransactionContext = {
+      roots: this.roots,
+      docPath: this.docPath,
+      findSiblingList: (parentPath) => this.findSiblingList(parentPath),
+      resolveSkeletonPathFor: (parentPath) => this.resolveSkeletonPathFor(parentPath),
+      flattenNode: (node, parentPath, parentSkeletonPath) =>
+        this.flattenNode(node, parentPath, parentSkeletonPath),
+      addBodyHoldersToParents: (nodes) => addBodyHoldersToParents(nodes),
+      createBfhAtFront: () => {
+        if (this.roots[0]?.level === 0 && this.roots[0]?.heading === "") {
+          throw new Error(
+            `createBfhAtFront() called in ${this.docPath} but a BFH ` +
+            `already exists at the front of roots. Caller must check first.`,
+          );
         }
-      }
-
-      replacementNodes.push(node);
-    }
-
-    // Any node that gained children needs a root child to hold its body,
-    // since its file will become a sub-skeleton (overwritten by persist()).
-    addBodyHoldersToParents(replacementNodes);
-
-    // Splice into the sibling list
-    siblings.splice(idx, 1, ...replacementNodes);
-
-    // Compute added flat entries
-    const skeletonPathForParent = this.resolveSkeletonPathFor(parentPath);
-    for (const node of replacementNodes) {
-      added.push(...this.flattenNode(node, parentPath, skeletonPathForParent));
-    }
-
-    await this.persistInternal();
-    return { removed, added };
-  }
-
-  /**
-   * Insert new sections from a before-first-heading fragment split.
-   *
-   * When the user types heading(s) inside the before-first-heading section, the BFH
-   * fragment contains both the preamble body and one or more headed sections.
-   * This method adds those headed sections as siblings of the BFH entry in
-   * this.roots (NOT as children, to avoid sub-skeleton file conflicts
-   * with root's body file).
-   *
-   * Among themselves, new sections may nest (e.g. ## A followed by ### B
-   * makes B a child of A) using the same level-based tree building as
-   * buildTreeFromEntries.
-   *
-   * @returns FlatEntry[] for all added sections (depth-first order,
-   *          matching the document-order of newSections).
-   */
-  async addSectionsFromBeforeFirstHeadingSplit(
-    newSections: Array<{ heading: string; level: number; body: string }>,
-  ): Promise<FlatEntry[]> {
-    const rootIdx = this.roots.findIndex(n => n.level === 0 && n.heading === "");
-    if (rootIdx < 0) {
-      // No BFH section exists — nothing to split. This is valid for documents
-      // that have no content before their first heading.
-      return [];
-    }
-
-    // Build tree from newSections (level-based nesting among themselves)
-    const newNodes: SkeletonNode[] = [];
-    const stack: Array<{ level: number; node: SkeletonNode }> = [];
-
-    for (const sec of newSections) {
-      while (stack.length > 0 && stack[stack.length - 1].level >= sec.level) {
-        stack.pop();
-      }
-
-      const sectionFile = generateSectionFilename(sec.heading);
-      const node: SkeletonNode = {
-        heading: sec.heading,
-        level: sec.level,
-        sectionFile,
-        children: [],
-      };
-
-      const parent = stack[stack.length - 1]?.node;
-      if (parent) {
-        parent.children.push(node);
-      } else {
-        newNodes.push(node);
-      }
-
-      stack.push({ level: sec.level, node });
-    }
-
-    // Any node that gained children needs a root child to hold its body,
-    // since its file will become a sub-skeleton (overwritten by persist()).
-    addBodyHoldersToParents(newNodes);
-
-    // Insert after root in this.roots
-    this.roots.splice(rootIdx + 1, 0, ...newNodes);
-
-    // Compute FlatEntries for the added nodes
-    const added: FlatEntry[] = [];
-    for (const node of newNodes) {
-      added.push(...this.flattenNode(node, [], this.skeletonPath));
-    }
-
-    await this.persistInternal();
-    return added;
-  }
-
-  /**
-   * Insert a section (with optional body) under a specified parent heading path.
-   * If parentPath is empty ([]), the section is added at root level (after root node).
-   * Returns FlatEntry[] for the inserted section.
-   */
-  async insertSectionUnder(
-    parentPath: string[],
-    section: { heading: string; level: number; body: string },
-  ): Promise<FlatEntry[]> {
-    const isBfh = section.level === 0 && section.heading === "";
-    const sectionFile = isBfh
-      ? generateBeforeFirstHeadingFilename()
-      : generateSectionFilename(section.heading);
-    const node: SkeletonNode = {
-      heading: section.heading,
-      level: section.level,
-      sectionFile,
-      children: [],
+        const bfhFileName = generateBeforeFirstHeadingFilename();
+        const bfhNode: SkeletonNode = {
+          heading: "",
+          level: 0,
+          sectionFile: bfhFileName,
+          children: [],
+        };
+        this.roots.unshift(bfhNode);
+        const bfhEntries = this.flattenNode(bfhNode, [], this.resolveSkeletonPathFor([]));
+        const bfhEntry = bfhEntries.find((e) => e.headingPath.length === 0);
+        if (!bfhEntry) {
+          throw new Error(
+            `Skeleton integrity error in ${this.docPath}: ` +
+            `auto-created BFH did not flatten to headingPath=[]`,
+          );
+        }
+        return bfhEntry;
+      },
     };
 
-    const siblings = this.findSiblingList(parentPath);
-    siblings.push(node);
+    const plan = await mutate(ctx);
+    validateMutationPlan(plan, this.docPath);
+    await this.flushToOverlay();
+    return plan;
+  }
 
-    const skeletonPathForParent = this.resolveSkeletonPathFor(parentPath);
-    const added = this.flattenNode(node, parentPath, skeletonPathForParent);
+  // --- Heading deletion with structural body absorption (item 145) ---
 
-    // If the parent now has children and didn't have a root child before,
-    // addBodyHoldersToParents will handle it on persist. But we need to
-    // ensure the parent node gets root children if it just gained its first child.
-    // Also include the new body holder in the returned `added` array so callers
-    // write its body file.
-    if (parentPath.length > 0) {
-      const parentSiblings = this.findSiblingList(parentPath.slice(0, -1));
-      const parentNode = parentSiblings.find(
-        n => headingsEqual(n.heading, parentPath[parentPath.length - 1]),
+  /**
+   * Delete a heading section while declaring the structurally correct
+   * absorption target for its orphaned body content.
+   *
+   * Per checklist items 143/145, this absorbs the previous-section walking,
+   * document-start fabrication, and BFH/root-position branching that used
+   * to live inside `DocumentFragments.normalizeHeadingDeletion`. Callers (now
+   * just DocumentFragments) request the semantic action and never make
+   * structural decisions themselves.
+   *
+   * Algorithm:
+   *   1. Walk forEachSection in document order, stopping at the deleted
+   *      heading. The last body-holding section emitted before the stop
+   *      is the merge target.
+   *   2. If no merge target was emitted (the deleted heading was the very
+   *      first body-holding section in the document, AND there is no BFH),
+   *      a fresh BFH section is created at the front of `roots` to serve
+   *      as the merge target. The plan emits an empty body file write for
+   *      the new BFH.
+   *   3. Inside the transaction the deleted entry is spliced from its
+   *      parent sibling list and the entire removed subtree is reported.
+   *
+   * The body merge itself (reading the merge target's existing content,
+   * appending the orphan body, writing back) is NOT performed here — the
+   * caller (DocumentFragments) owns the Y.Doc state and must do that step.
+   * This method only declares "where the orphan body belongs" structurally.
+   *
+   * Throws if:
+   *   - `headingPath === []` (the BFH is not deletable via heading deletion)
+   *   - `headingPath` does not resolve in the current skeleton
+   *   - the resolved entry is a sub-skeleton parent (use deleteSubtree
+   *     for whole-subtree removal — body absorption only makes sense for
+   *     leaf body-holding sections)
+   */
+  async deleteHeadingPreservingBody(
+    headingPath: string[],
+  ): Promise<{
+    removed: FlatEntry[];
+    mergeTarget: FlatEntry;
+    mergeTargetWasCreated: boolean;
+    bodyWrites: Array<{ absolutePath: string; content: string }>;
+    fragmentKeyRemaps: Array<{ from: string; to: string | null }>;
+  }> {
+    if (headingPath.length === 0) {
+      throw new Error(
+        `deleteHeadingPreservingBody([]) is illegal in ${this.docPath} — ` +
+        `the before-first-heading section cannot be removed via heading deletion. ` +
+        `Use OverlayContentLayer.tombstoneDocumentExplicit() to remove the entire document, ` +
+        `or clear the BFH body content directly via DocumentFragments.`,
       );
-      if (parentNode) {
-        const hadBodyHolder = parentNode.children.some(c => c.level === 0 && c.heading === "");
-        addBodyHoldersToParents([parentNode]);
-        if (!hadBodyHolder) {
-          const bodyHolder = parentNode.children.find(c => c.level === 0 && c.heading === "");
-          if (bodyHolder) {
-            const bodyHolderEntries = this.flattenNode(bodyHolder, parentPath, skeletonPathForParent);
-            added.push(...bodyHolderEntries);
-
-            // The parent was a leaf — its file held body content. persistInternal()
-            // will overwrite it with sub-skeleton markers. Read the body content
-            // now and write it to the body holder after persist so it isn't lost.
-            const grandparentSkeletonPath = this.resolveSkeletonPathFor(parentPath.slice(0, -1));
-            const parentBodyPath = path.join(`${grandparentSkeletonPath}.sections`, parentNode.sectionFile);
-            let parentBody = "";
-            try {
-              parentBody = await readFile(parentBodyPath, "utf8");
-            } catch {
-              // Parent body file may not exist yet (e.g. just inserted)
-            }
-
-            await this.persistInternal();
-
-            if (parentBody) {
-              const holderPath = bodyHolderEntries[0].absolutePath;
-              await mkdir(path.dirname(holderPath), { recursive: true });
-              await writeFile(holderPath, parentBody, "utf8");
-            }
-            return added;
-          }
-        }
-      }
     }
 
-    await this.persistInternal();
-    return added;
+    const targetEntry = this.findEntryByHeadingPath(headingPath);
+    if (!targetEntry) {
+      throw staleHeadingPath(this.docPath, headingPath, "deleteHeadingPreservingBody");
+    }
+    if (targetEntry.isSubSkeleton) {
+      throw new Error(
+        `deleteHeadingPreservingBody cannot delete sub-skeleton parents in ${this.docPath}: ` +
+        `the entry at [${headingPath.join(" > ")}] owns child sections. ` +
+        `Use OverlayContentLayer.deleteSubtree() to remove the whole subtree instead.`,
+      );
+    }
+
+    // Walk forEachSection in document order to find the last body-holding
+    // section emitted before the deleted target. Snapshot it BEFORE the
+    // mutation so its absolutePath/sectionFile remain valid (the mutation
+    // only affects the deleted entry, never the merge target).
+    const mergeTargetSnapshot = this.findPreviousBodyHolder(targetEntry.sectionFile);
+
+    // Capture across the closure boundary
+    let resolvedMergeTarget: FlatEntry | null = mergeTargetSnapshot;
+    let mergeTargetWasCreated = false;
+
+    const plan = await this.applyStructuralMutationTransaction((ctx) => {
+      const removed: FlatEntry[] = [];
+      const added: FlatEntry[] = [];
+      const bodyWrites: Array<{ absolutePath: string; content: string }> = [];
+      const fragmentKeyRemaps: Array<{ from: string; to: string | null }> = [];
+
+      // (1) Auto-create a BFH section if there is no preceding body-holder.
+      if (!resolvedMergeTarget) {
+        const bfhEntry = ctx.createBfhAtFront();
+        added.push(bfhEntry);
+        bodyWrites.push({ absolutePath: bfhEntry.absolutePath, content: "" });
+        resolvedMergeTarget = bfhEntry;
+        mergeTargetWasCreated = true;
+      }
+
+      // (2) Splice the deleted entry out of its parent sibling list.
+      const parentPath = headingPath.slice(0, -1);
+      const siblingList = ctx.findSiblingList(parentPath);
+      const idx = siblingList.findIndex((n) => n.sectionFile === targetEntry.sectionFile);
+      if (idx < 0) {
+        throw new Error(
+          `Skeleton integrity error in ${this.docPath}: target sectionFile ` +
+          `${targetEntry.sectionFile} not found in expected parent sibling list at ` +
+          `[${parentPath.join(" > ")}]`,
+        );
+      }
+      const removedNode = siblingList.splice(idx, 1)[0];
+
+      const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
+      const removedEntries = ctx.flattenNode(removedNode, parentPath, parentSkeletonPath);
+      removed.push(...removedEntries);
+
+      // (3) The deleted heading's fragment key disappears with no replacement.
+      // Convention matches the explicit OverlayContentLayer operations:
+      // emit raw section file ids in the remap; the caller is responsible
+      // for translating to fragment-key encoding.
+      fragmentKeyRemaps.push({ from: targetEntry.sectionFile, to: null });
+
+      return { removed, added, bodyWrites, fragmentKeyRemaps };
+    });
+
+    if (!resolvedMergeTarget) {
+      // Defensive: the algorithm above always sets resolvedMergeTarget
+      // (either from the snapshot or from BFH creation in branch 1).
+      throw new Error(
+        `Skeleton integrity error in ${this.docPath}: deleteHeadingPreservingBody ` +
+        `failed to resolve a merge target for headingPath=[${headingPath.join(" > ")}]`,
+      );
+    }
+
+    return {
+      removed: plan.removed,
+      mergeTarget: resolvedMergeTarget,
+      mergeTargetWasCreated,
+      bodyWrites: plan.bodyWrites,
+      fragmentKeyRemaps: plan.fragmentKeyRemaps,
+    };
+  }
+
+  // --- Dedicated normalization operations for DocumentFragments (item 119) ---
+
+  /**
+   * Replace a heading node in place, preserving all of its descendants.
+   *
+   * This is the dedicated DSInternal operation for DocumentFragments's
+   * `normalizeHeadingRename` and `normalizeHeadingLevelChange` paths. The
+   * caller passes the post-normalization heading text and level for the
+   * exact node currently at `headingPath`; the operation:
+   *
+   *   1. Locates the node by walking the parent sibling list and matching
+   *      the last heading-path segment via `headingsEqual`.
+   *   2. Constructs a fresh `SkeletonNode` with the new heading/level and a
+   *      newly minted sectionFile (always — the rename/level-change paths in
+   *      DocumentFragments handle the "key did not actually change" case
+   *      themselves by comparing the old and new fragment keys post-hoc).
+   *   3. Splices the new node in over the old one, preserving its `children`.
+   *   4. Returns the structural plan (`removed`/`added`/`fragmentKeyRemaps`)
+   *      for the caller to act on. NO body writes are emitted — DocumentFragments
+   *      owns the Y.Doc fragment / writeDualFormat side and writes its own
+   *      raw + canonical-ready content after this method returns.
+   *
+   * Throws `staleHeadingPath` if `headingPath` does not resolve, or rejects
+   * `headingPath === []` (the BFH section is not renameable / re-levelable
+   * via this primitive — its heading is the empty string and its level is 0
+   * by definition).
+   */
+  async replaceHeadingNodeInPlace(
+    headingPath: string[],
+    newHeading: string,
+    newLevel: number,
+  ): Promise<StructuralMutationPlan> {
+    if (headingPath.length === 0) {
+      throw new Error(
+        `replaceHeadingNodeInPlace([]) is illegal in ${this.docPath} — ` +
+        `the before-first-heading section has heading="" and level=0 by ` +
+        `definition and cannot be renamed or re-leveled in place.`,
+      );
+    }
+
+    return await this.applyStructuralMutationTransaction((ctx) => {
+      const parentPath = headingPath.slice(0, -1);
+      const target = headingPath[headingPath.length - 1];
+      const siblings = ctx.findSiblingList(parentPath);
+      const idx = siblings.findIndex((n) => headingsEqual(n.heading, target));
+      if (idx < 0) {
+        throw staleHeadingPath(this.docPath, headingPath, "replaceHeadingNodeInPlace");
+      }
+      const oldNode = siblings[idx];
+      const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
+      const removed = ctx.flattenNode(oldNode, parentPath, parentSkeletonPath);
+
+      const newSectionFile = generateSectionFilename(newHeading);
+      const newNode: SkeletonNode = {
+        heading: newHeading,
+        level: newLevel,
+        sectionFile: newSectionFile,
+        children: oldNode.children,
+      };
+      siblings.splice(idx, 1, newNode);
+      const added = ctx.flattenNode(newNode, parentPath, parentSkeletonPath);
+
+      return {
+        removed,
+        added,
+        bodyWrites: [],
+        fragmentKeyRemaps: [{ from: oldNode.sectionFile, to: newSectionFile }],
+      } satisfies StructuralMutationPlan;
+    });
   }
 
   /**
-   * Build an overlay DocumentSkeletonInternal from a parsed document.
+   * Split a single heading node into multiple new sections from a parsed
+   * markdown payload.
    *
-   * For each section in `parsed`, reuses the canonical section file ID if the
-   * heading text (case-insensitive) and parent heading path both match an unconsumed
-   * canonical entry. Otherwise mints a fresh file ID.
+   * This is the dedicated DSInternal operation for DocumentFragments's
+   * `normalizeSectionSplit` path. The caller passes the parsed sections that
+   * resulted from re-parsing the dirty fragment's content; the operation:
    *
-   * No position-based fallback. A renamed heading always gets a fresh file ID.
-   * Two sections that share a heading at different depths are never confused.
+   *   1. Locates the original node at `headingPath`.
+   *   2. Partitions parsed sections into "at the original level" and
+   *      "deeper than the original level". The first at-level section
+   *      becomes the parent of all deeper sections (matching how
+   *      `OverlayContentLayer.rewriteSubtreeFromParsedMarkdown` shapes its
+   *      output, since both routes describe the same structural intent).
+   *   3. Replaces the original node in its parent sibling list with the
+   *      new at-level nodes (sub-skeleton body holders are added by
+   *      `addBodyHoldersToParents` if needed).
+   *   4. Returns the structural plan (`removed`/`added`/`fragmentKeyRemaps`).
+   *      No body writes — DocumentFragments owns Y.Doc fragment populate +
+   *      writeDualFormat after this method returns.
    *
-   * Persists the overlay skeleton before returning it.
+   * Rejects `headingPath === []` (BFH split is not modeled here — BFH
+   * normalization paths in DocumentFragments handle root-position fragments
+   * separately).
    */
-  async buildOverlaySkeleton(
-    parsed: { readonly sections: ReadonlyArray<{ headingPath: string[]; heading: string; level: number }> },
-    overlayContentRoot: string,
-  ): Promise<DocumentSkeletonInternal> {
-    // Collect canonical flat entries for matching
-    const canonicalFlat: FlatEntry[] = [];
-    this.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
-      canonicalFlat.push({ headingPath: [...headingPath], heading, level, sectionFile, absolutePath, isSubSkeleton: false });
-    });
+  async splitHeadingNode(
+    headingPath: string[],
+    parsedSections: ReadonlyArray<{ heading: string; level: number; headingPath: readonly string[] }>,
+  ): Promise<StructuralMutationPlan> {
+    if (headingPath.length === 0) {
+      throw new Error(
+        `splitHeadingNode([]) is illegal in ${this.docPath} — ` +
+        `BFH/root-position split is not modeled by this primitive.`,
+      );
+    }
+    if (parsedSections.length === 0) {
+      throw new Error(
+        `splitHeadingNode requires at least one parsed section in ${this.docPath} ` +
+        `for headingPath=[${headingPath.join(" > ")}].`,
+      );
+    }
 
-    const consumed = new Set<number>();
-    const nodes: SkeletonNode[] = [];
+    return await this.applyStructuralMutationTransaction((ctx) => {
+      const parentPath = headingPath.slice(0, -1);
+      const target = headingPath[headingPath.length - 1];
+      const siblings = ctx.findSiblingList(parentPath);
+      const idx = siblings.findIndex((n) => headingsEqual(n.heading, target));
+      if (idx < 0) {
+        throw staleHeadingPath(this.docPath, headingPath, "splitHeadingNode");
+      }
+      const oldNode = siblings[idx];
+      const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
+      const removed = ctx.flattenNode(oldNode, parentPath, parentSkeletonPath);
 
-    for (const section of parsed.sections) {
-      const isBfh = section.headingPath.length === 0;
-      const heading = section.heading;
-
-      let matchedIdx = -1;
-      if (isBfh) {
-        // Match the canonical root entry (level=0, heading="")
-        for (let ci = 0; ci < canonicalFlat.length; ci++) {
-          if (consumed.has(ci)) continue;
-          if (canonicalFlat[ci].level === 0 && canonicalFlat[ci].heading === "") {
-            matchedIdx = ci;
-            break;
+      const originalLevel = oldNode.level;
+      const atLevel: Array<(typeof parsedSections)[number]> = [];
+      const deeper: Array<(typeof parsedSections)[number]> = [];
+      for (const sec of parsedSections) {
+        if (sec.level <= originalLevel) atLevel.push(sec);
+        else deeper.push(sec);
+      }
+      const replacements: SkeletonNode[] = atLevel.map((sec, i) => {
+        const node: SkeletonNode = {
+          heading: sec.heading,
+          level: sec.level,
+          sectionFile: generateSectionFilename(sec.heading),
+          children: [],
+        };
+        if (i === 0) {
+          for (const child of deeper) {
+            node.children.push({
+              heading: child.heading,
+              level: child.level,
+              sectionFile: generateSectionFilename(child.heading),
+              children: [],
+            });
           }
         }
-      } else {
-        // Match by heading text AND parent path — no cross-path ID theft
-        const parentPath = section.headingPath.slice(0, -1);
-        for (let ci = 0; ci < canonicalFlat.length; ci++) {
-          if (consumed.has(ci)) continue;
-          const cf = canonicalFlat[ci];
-          if (cf.heading.toLowerCase() !== heading.toLowerCase()) continue;
-          const cfParent = cf.headingPath.slice(0, -1);
-          if (cfParent.length !== parentPath.length) continue;
-          if (cfParent.every((seg, i) => headingsEqual(seg, parentPath[i]))) {
-            matchedIdx = ci;
-            break;
-          }
+        return node;
+      });
+      ctx.addBodyHoldersToParents(replacements);
+      siblings.splice(idx, 1, ...replacements);
+
+      const added: FlatEntry[] = [];
+      for (const node of replacements) {
+        added.push(...ctx.flattenNode(node, parentPath, parentSkeletonPath));
+      }
+
+      return {
+        removed,
+        added,
+        bodyWrites: [],
+        fragmentKeyRemaps: [{ from: oldNode.sectionFile, to: replacements[0]?.sectionFile ?? null }],
+      } satisfies StructuralMutationPlan;
+    });
+  }
+
+  /**
+   * Append new top-level sections after the existing roots, building a
+   * nested tree from each section's `headingPath` so multi-level inputs
+   * (e.g., h1 with h2 children, two h1 siblings each with their own h2)
+   * land at the correct depth instead of being flattened.
+   *
+   * This is the dedicated normalization/recovery operation for callers that
+   * used to invoke the deleted `addSectionsFromBeforeFirstHeadingSplit(...)`
+   * primitive. Two known call sites (item 123):
+   *
+   *   - DocumentFragments.normalizeRootSplit: a heading was typed inside the
+   *     BFH fragment, splitting the BFH content into preamble + new sibling
+   *     sections. The BFH itself stays at the front of `roots` (untouched
+   *     by this method) and the parser-derived sections are appended after.
+   *
+   *   - acquireDocSession crash-recovery flow: appends a "Recovered edits"
+   *     section so orphaned body content surfaces in the doc.
+   *
+   * Algorithm:
+   *   1. Walk `parsedSections` in document order. For each section, mint a
+   *      `SkeletonNode` and record it in a `headingPath → node` lookup.
+   *   2. If `headingPath.slice(0, -1)` exists in the lookup, attach the new
+   *      node as a child of that node (preserving nesting). Otherwise it
+   *      becomes a new root-level node.
+   *   3. Run `addBodyHoldersToParents(newRoots)` to materialize body-holder
+   *      files for any new root that has children.
+   *   4. Push the new roots onto `ctx.roots` (after any pre-existing nodes,
+   *      including the BFH if present), and emit added FlatEntries via the
+   *      structural plan.
+   *
+   * No body writes are emitted — callers (DocumentFragments + ydoc-lifecycle)
+   * own the Y.Doc fragment populate / writeDualFormat side and handle their
+   * own bodies after this method returns.
+   */
+  async appendRootSections(
+    parsedSections: ReadonlyArray<{ heading: string; level: number; headingPath: readonly string[] }>,
+  ): Promise<StructuralMutationPlan> {
+    if (parsedSections.length === 0) {
+      throw new Error(
+        `appendRootSections requires at least one parsed section in ${this.docPath}.`,
+      );
+    }
+    return await this.applyStructuralMutationTransaction((ctx) => {
+      const newRoots: SkeletonNode[] = [];
+      const lookup = new Map<string, SkeletonNode>();
+      const SEP = "\u0000";
+
+      for (const sec of parsedSections) {
+        const node: SkeletonNode = {
+          heading: sec.heading,
+          level: sec.level,
+          sectionFile: generateSectionFilename(sec.heading),
+          children: [],
+        };
+        const key = sec.headingPath.join(SEP);
+        lookup.set(key, node);
+
+        const parentKey = sec.headingPath.slice(0, -1).join(SEP);
+        const parentNode = parentKey.length > 0 ? lookup.get(parentKey) : undefined;
+        if (parentNode) {
+          parentNode.children.push(node);
+        } else {
+          newRoots.push(node);
         }
       }
 
-      if (matchedIdx >= 0) consumed.add(matchedIdx);
+      ctx.addBodyHoldersToParents(newRoots);
+      ctx.roots.push(...newRoots);
 
-      const sectionFile = matchedIdx >= 0
-        ? canonicalFlat[matchedIdx].sectionFile
-        : isBfh ? generateBeforeFirstHeadingFilename() : generateSectionFilename(heading);
+      const added: FlatEntry[] = [];
+      for (const node of newRoots) {
+        added.push(...ctx.flattenNode(node, [], ctx.resolveSkeletonPathFor([])));
+      }
 
-      nodes.push({
-        heading: isBfh ? "" : heading,
-        level: section.level,
-        sectionFile,
-        children: [],
-      });
-    }
-
-    const overlay = new DocumentSkeletonInternal(this.docPath, nodes, overlayContentRoot);
-    await overlay.persistInternal();
-    return overlay;
+      return {
+        removed: [],
+        added,
+        bodyWrites: [],
+        fragmentKeyRemaps: [],
+      } satisfies StructuralMutationPlan;
+    });
   }
 
   // --- Persistence ---
 
-  /** Persist skeleton to the overlay root. Always writes unconditionally. */
-  async persistInternal(): Promise<void> {
+  /**
+   * Persist skeleton to the overlay root. Always writes unconditionally.
+   *
+   * Flips hasBeenWrittenToOverlay true. Does NOT change loadedFromOverlay
+   * (that reflects load-time provenance only). overlaySkeletonFileExisted
+   * is also flipped true because the act of writing guarantees a file is
+   * now present.
+   *
+   * PROTECTED per checklist items 139/141: this method must not be called
+   * from outside the DocumentSkeleton/DocumentSkeletonInternal class
+   * hierarchy. External callers should mutate skeletons via
+   * `applyStructuralMutationTransaction(...)` (which persists exactly once
+   * after the mutation closure runs) or via the explicit operations on
+   * `OverlayContentLayer`. The previous public visibility allowed callers
+   * to bypass the transaction primitive, which was the root cause of
+   * coordination bugs (skeleton persisted before body writes finished,
+   * fragment remaps performed against the wrong-version skeleton, etc).
+   */
+  protected async flushToOverlay(): Promise<void> {
     await rm(resolveTombstonePath(this.docPath, this.overlayRoot), { force: true });
     await this.writeTree(this.roots, this.skeletonPath);
-    this._overlayPersisted = true;
+    this._overlaySkeletonFileExisted = true;
+    this._hasBeenWrittenToOverlay = true;
     this._overlayTombstoned = false;
   }
 
   // --- Static factories ---
 
-  /**
-   * Create a tombstone marker file.
-   * Persists immediately and returns the internal instance.
-   */
-  static override async createTombstone(
-    docPath: string,
-    overlayRoot: string,
-  ): Promise<DocumentSkeletonInternal> {
-    const skeleton = new DocumentSkeletonInternal(docPath, [], overlayRoot);
-    const tombstonePath = resolveTombstonePath(docPath, overlayRoot);
-    await mkdir(path.dirname(tombstonePath), { recursive: true });
-    await rm(skeleton.skeletonPath, { force: true });
-    await rm(`${skeleton.skeletonPath}.sections`, { recursive: true, force: true });
-    await writeFile(
-      tombstonePath,
-      `This file marks file ${normalizeDocPath(docPath)} to be deleted when this proposal is committed\n`,
-      "utf8",
-    );
-    skeleton._overlayPersisted = true;
-    skeleton._overlayTombstoned = true;
-    return skeleton;
-  }
+  // NOTE per checklist item 105: createTombstone has been removed from
+  // DocumentSkeletonInternal as well. The non-negotiable contract from
+  // item 133 only requires that the readonly DocumentSkeleton lose this
+  // capability — but item 105 also strips it from the internal subclass
+  // because tombstone creation is a ContentLayer-level concern and does
+  // not belong on a class whose remaining role is structural mutation.
 
   /**
    * Create an in-memory-only empty skeleton (no disk I/O).
-   * Used for new-doc imports where buildOverlaySkeleton handles everything.
+   *
+   * Used as a starting point for new-doc imports and for tests that need
+   * a blank mutable skeleton. The returned instance has no persisted state
+   * — callers must invoke flushToOverlay() to write it.
    */
   static inMemoryEmpty(
     docPath: string,
@@ -1156,15 +1411,52 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     return new DocumentSkeletonInternal(docPath, [], overlayRoot);
   }
 
+  /**
+   * The single blessed entry point for transitioning a document from
+   * "missing" to "persisted live-empty in the overlay" at the skeleton
+   * layer (item 166).
+   *
+   * Constructs a zero-root in-memory skeleton, flushes it to the overlay
+   * via the protected flushToOverlay() pathway, and returns the writable
+   * instance so the CURRENT caller can use it immediately within the same
+   * operation if needed. No hidden extra writes — exactly one structural
+   * file is written (the empty overlay skeleton file), nothing else.
+   *
+   * This method exists so that `OverlayContentLayer.createDocument(...)`
+   * has ONE sanctioned skeleton-layer call to make for new-doc creation
+   * instead of having to know the inMemoryEmpty(...) → flushToOverlay()
+   * choreography. After item 161, flushToOverlay is `protected` and is
+   * not directly callable from outside the DSInternal class hierarchy.
+   *
+   * Per item 195: this method does NOT exist to feed any cross-call
+   * cache. The returned instance is for SAME-OPERATION use only — the
+   * caller may use it immediately and discard it, or ignore the return
+   * value entirely. Subsequent operations on the same docPath must
+   * fresh-load via `mutableFromDisk(...)`.
+   *
+   * Caller responsibilities NOT covered by this method:
+   *   - State policy (reject "live", reject "tombstone", only act on
+   *     "missing") — those decisions stay in OverlayContentLayer.
+   */
+  static async persistNewEmptyToOverlay(
+    docPath: string,
+    overlayRoot: string,
+  ): Promise<DocumentSkeletonInternal> {
+    const skeleton = new DocumentSkeletonInternal(docPath, [], overlayRoot);
+    await skeleton.flushToOverlay();
+    return skeleton;
+  }
+
   // --- Static factories ---
-  // inMemoryEmpty: creates a live-empty document (zero sections)
-  // fromDisk: loads an existing document's skeleton from overlay+canonical
-  // fromNodes: builds from pre-assembled nodes (used by crash recovery)
-  // createTombstone: creates a deletion marker
+  // inMemoryEmpty:             creates an in-memory-only empty skeleton (no disk writes)
+  // persistNewEmptyToOverlay:  creates AND persists a live-empty doc to the overlay (item 166)
+  // mutableFromDisk:           loads from overlay+canonical, NEVER writes
+  // materializeOverlayIfMissing: separate explicit step that persists if needed
+  // fromNodes:                 builds from pre-assembled nodes (used by crash recovery)
 
   /**
    * Construct a skeleton from pre-assembled nodes. Used by crash recovery to build
-   * a compound skeleton from multiple sources without going through fromDisk().
+   * a compound skeleton from multiple sources without going through mutableFromDisk().
    * targetRoot is used as both overlay and canonical root (recovery writes directly
    * to canonical).
    */
@@ -1177,7 +1469,15 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     return new DocumentSkeletonInternal(docPath, nodes, targetRoot);
   }
 
-  static override async fromDisk(
+  /**
+   * Load a mutable skeleton from disk. This is a PURE LOAD — it never
+   * writes anything to disk. Per checklist item 107, the previous
+   * DocumentSkeletonInternal.fromDisk silently auto-persisted to overlay
+   * when it loaded from canonical fallback, which violated its name and
+   * surprised callers. That hidden write has been split off into the
+   * separate materializeOverlayIfMissing() instance method below.
+   */
+  static async mutableFromDisk(
     docPath: string,
     overlayRoot: string,
     canonicalRoot: string,
@@ -1185,12 +1485,30 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     const { nodes, overlayExisted, overlayTombstoned } = await buildSkeletonTree(docPath, overlayRoot, canonicalRoot);
     validateNoDuplicateRoots(nodes, docPath);
     const skeleton = new DocumentSkeletonInternal(docPath, nodes, overlayRoot);
-    skeleton._overlayPersisted = overlayExisted;
+    skeleton._loadedFromOverlay = overlayExisted && !overlayTombstoned;
+    skeleton._overlaySkeletonFileExisted = overlayExisted;
     skeleton._overlayTombstoned = overlayTombstoned;
-    if (!overlayExisted && nodes.length > 0) {
-      await skeleton.persistInternal();
-    }
     return skeleton;
+  }
+
+  /**
+   * If this instance was loaded from canonical fallback (no overlay file
+   * existed) AND it has at least one structural node, persist it into the
+   * overlay so subsequent reads find it where they expect.
+   *
+   * Idempotent: calling this on an instance that already has an overlay
+   * file is a no-op. Calling it on an empty skeleton is a no-op (an empty
+   * skeleton has nothing to materialize).
+   *
+   * This is intentionally a separate explicit step from mutableFromDisk —
+   * the previous combined behavior performed a hidden write inside a method
+   * called "fromDisk", which violated the principle of least surprise and
+   * masked the materialization in stack traces.
+   */
+  async materializeOverlayIfMissing(): Promise<void> {
+    if (this._overlaySkeletonFileExisted) return;
+    if (this.roots.length === 0) return;
+    await this.flushToOverlay();
   }
 }
 
@@ -1310,6 +1628,106 @@ function addBodyHoldersToParents(nodes: SkeletonNode[]): void {
       }
       // Recurse into children
       addBodyHoldersToParents(node.children);
+    }
+  }
+}
+
+// ─── Structural mutation transaction (item 71) ───────────────────
+
+/**
+ * Context handed to a mutation closure by
+ * DocumentSkeletonInternal.applyStructuralMutationTransaction.
+ *
+ * The closure mutates `roots` directly (it is the live tree). The helpers
+ * are the same private builders DSInternal uses internally; exposing them
+ * keeps mutation logic from having to re-derive sibling lookup, sub-skeleton
+ * path resolution, or body-holder insertion.
+ */
+export interface MutationTransactionContext {
+  readonly roots: SkeletonNode[];
+  readonly docPath: string;
+  findSiblingList(parentPath: string[]): SkeletonNode[];
+  resolveSkeletonPathFor(parentPath: string[]): string;
+  flattenNode(node: SkeletonNode, parentPath: string[], parentSkeletonPath: string): FlatEntry[];
+  addBodyHoldersToParents(nodes: SkeletonNode[]): void;
+  /**
+   * Mint a fresh BFH section node at the front of `roots` and return its
+   * flattened entry. Caller is responsible for pushing the returned entry
+   * into its plan's `added` list, declaring an empty `bodyWrites` entry
+   * for it (or its own initial body), and emitting any `fragmentKeyRemaps`.
+   *
+   * Throws if a BFH already exists at the front of `roots` — caller must
+   * check `roots[0]?.level === 0 && roots[0]?.heading === ""` first.
+   */
+  createBfhAtFront(): FlatEntry;
+}
+
+/**
+ * Plan returned from a structural mutation closure.
+ *
+ * The closure declares which entries it removed, which it added, and any
+ * fragment-key remaps the caller must perform after the skeleton is
+ * persisted. Body writes are NOT carried out here — the caller iterates
+ * `bodyWrites` after the transaction returns and writes them through its
+ * own ContentLayer-aware writer.
+ *
+ * This is an explicit hand-off contract that replaces the implicit ordering
+ * the deleted replace()/insertSectionUnder() primitives used to perform
+ * inline (which was a frequent source of partial-write bugs).
+ */
+export interface StructuralMutationPlan {
+  removed: FlatEntry[];
+  added: FlatEntry[];
+  /**
+   * Bodies the caller must write after the transaction returns.
+   * absolutePath comes from the post-mutation flat entry; content is the
+   * raw body string the caller wants to land at that path.
+   */
+  bodyWrites: Array<{ absolutePath: string; content: string }>;
+  /**
+   * Fragment-key remaps the caller (typically DocumentFragments) must apply.
+   * `from` is the old fragment key that no longer exists post-mutation;
+   * `to` is the new key (or null if the old key was simply removed).
+   */
+  fragmentKeyRemaps: Array<{ from: string; to: string | null }>;
+}
+
+/**
+ * Validate that a returned mutation plan is internally consistent.
+ *
+ * The current checks are conservative — they catch shape errors and the
+ * most common copy/paste mistakes — but the contract is that any caller
+ * MUST be able to apply the plan without consulting the skeleton again.
+ * As more invariants are discovered (e.g. body writes pointing at sub-
+ * skeleton paths) they should be added here.
+ */
+function validateMutationPlan(plan: StructuralMutationPlan, docPath: string): void {
+  if (!Array.isArray(plan.removed) || !Array.isArray(plan.added)) {
+    throw new Error(
+      `Skeleton mutation plan validation failed in ${docPath}: ` +
+      `removed and added must be arrays.`,
+    );
+  }
+  if (!Array.isArray(plan.bodyWrites) || !Array.isArray(plan.fragmentKeyRemaps)) {
+    throw new Error(
+      `Skeleton mutation plan validation failed in ${docPath}: ` +
+      `bodyWrites and fragmentKeyRemaps must be arrays.`,
+    );
+  }
+  for (const w of plan.bodyWrites) {
+    if (typeof w.absolutePath !== "string" || w.absolutePath.length === 0) {
+      throw new Error(
+        `Skeleton mutation plan validation failed in ${docPath}: ` +
+        `bodyWrites entry has empty absolutePath.`,
+      );
+    }
+  }
+  for (const r of plan.fragmentKeyRemaps) {
+    if (typeof r.from !== "string" || r.from.length === 0) {
+      throw new Error(
+        `Skeleton mutation plan validation failed in ${docPath}: ` +
+        `fragmentKeyRemaps entry has empty from-key.`,
+      );
     }
   }
 }

@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DocumentSkeleton, DocumentSkeletonInternal, type FlatEntry, type SkeletonNode } from "../../storage/document-skeleton.js";
+import { DocumentSkeleton, DocumentSkeletonInternal, type FlatEntry } from "../../storage/document-skeleton.js";
+import { OverlayContentLayer } from "../../storage/content-layer.js";
+import { SectionRef } from "../../domain/section-ref.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { gitExec } from "../../storage/git-repo.js";
@@ -61,18 +63,29 @@ describe("DocumentSkeleton", () => {
   });
 
   it("inMemoryEmpty creates valid skeleton with zero sections", async () => {
-    const skeleton = DocumentSkeletonInternal.inMemoryEmpty("new-doc.md", ctx.contentDir);
-    await skeleton.persistInternal();
+    // Use the OverlayContentLayer.createDocument(...) explicit operation rather
+    // than the deleted skeleton.persistInternal() primitive — this is the
+    // sanctioned path for materializing a live-empty doc in the overlay.
+    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    await overlay.createDocument("new-doc.md");
+    const skeleton = await DocumentSkeleton.fromDisk("new-doc.md", ctx.contentDir, ctx.contentDir);
     expect(skeleton.docPath).toBe("new-doc.md");
-    expect(skeleton.isEmpty).toBe(true);
+    expect(skeleton.areSkeletonRootsEmpty).toBe(true);
     const flat = collectFlat(skeleton);
     expect(flat).toHaveLength(0);
   });
 
   it("mutation auto-persists skeleton and can be re-read", async () => {
-    const skeleton = DocumentSkeletonInternal.inMemoryEmpty("persist-test.md", ctx.contentDir);
-    await skeleton.persistInternal();
-    await skeleton.insertSectionUnder([], { heading: "Persisted", level: 1, body: "" });
+    // Use the public markdown-upsert path rather than any DSInternal
+    // structural primitive — caller-facing mutation belongs on the storage
+    // layer, not on DocumentSkeletonInternal.
+    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    await overlay.createDocument("persist-test.md");
+    await overlay.upsertSection(
+      new SectionRef("persist-test.md", ["Persisted"]),
+      "Persisted",
+      "",
+    );
 
     const reloaded = await DocumentSkeleton.fromDisk(
       "persist-test.md",
@@ -159,7 +172,7 @@ describe("DocumentSkeleton.expect() — flat document (no sub-skeletons)", () =>
   afterAll(async () => { await ctx.cleanup(); });
 
   it("resolve(['Overview']) returns correct absolutePath, level, heading, isSubSkeleton=false", () => {
-    const entry = skeleton.expect(["Overview"]);
+    const entry = skeleton.requireEntryByHeadingPath(["Overview"]);
     expect(entry.heading).toBe("Overview");
     expect(entry.level).toBe(2);
     expect(entry.sectionFile).toBe("overview.md");
@@ -170,14 +183,14 @@ describe("DocumentSkeleton.expect() — flat document (no sub-skeletons)", () =>
   });
 
   it("resolve(['Timeline']) returns correct entry", () => {
-    const entry = skeleton.expect(["Timeline"]);
+    const entry = skeleton.requireEntryByHeadingPath(["Timeline"]);
     expect(entry.heading).toBe("Timeline");
     expect(entry.level).toBe(2);
     expect(entry.isSubSkeleton).toBe(false);
   });
 
   it("resolve([]) returns root section with isSubSkeleton=false", () => {
-    const entry = skeleton.expect([]);
+    const entry = skeleton.requireEntryByHeadingPath([]);
     expect(entry.heading).toBe("");
     expect(entry.level).toBe(0);
     expect(entry.isSubSkeleton).toBe(false);
@@ -185,7 +198,7 @@ describe("DocumentSkeleton.expect() — flat document (no sub-skeletons)", () =>
   });
 
   it("expect() throws for nonexistent heading", () => {
-    expect(() => skeleton.expect(["Nonexistent"])).toThrow(/not found/);
+    expect(() => skeleton.requireEntryByHeadingPath(["Nonexistent"])).toThrow(/not found/);
   });
 });
 
@@ -209,7 +222,7 @@ describe("DocumentSkeleton.expect() — nested document (sub-skeletons)", () => 
   });
 
   it("resolve(['Details']) follows through to root child body file (fixed behavior)", () => {
-    const entry = skeleton.expect(["Details"]);
+    const entry = skeleton.requireEntryByHeadingPath(["Details"]);
     expect(entry.heading).toBe("Details");
     expect(entry.level).toBe(2);
     expect(entry.isSubSkeleton).toBe(false);
@@ -221,14 +234,14 @@ describe("DocumentSkeleton.expect() — nested document (sub-skeletons)", () => 
   });
 
   it("resolve(['Introduction']) returns body file with isSubSkeleton=false (correct)", () => {
-    const entry = skeleton.expect(["Introduction"]);
+    const entry = skeleton.requireEntryByHeadingPath(["Introduction"]);
     expect(entry.heading).toBe("Introduction");
     expect(entry.isSubSkeleton).toBe(false);
     expect(entry.absolutePath).toContain("intro.md");
   });
 
   it("resolve(['Details', 'Sub-Detail A']) returns child body with isSubSkeleton=false", () => {
-    const entry = skeleton.expect(["Details", "Sub-Detail A"]);
+    const entry = skeleton.requireEntryByHeadingPath(["Details", "Sub-Detail A"]);
     expect(entry.heading).toBe("Sub-Detail A");
     expect(entry.level).toBe(3);
     expect(entry.isSubSkeleton).toBe(false);
@@ -237,7 +250,7 @@ describe("DocumentSkeleton.expect() — nested document (sub-skeletons)", () => 
   });
 
   it("resolve([]) returns root section — root has no children so isSubSkeleton=false", () => {
-    const entry = skeleton.expect([]);
+    const entry = skeleton.requireEntryByHeadingPath([]);
     expect(entry.heading).toBe("");
     expect(entry.level).toBe(0);
     expect(entry.isSubSkeleton).toBe(false);
@@ -287,7 +300,7 @@ describe("DocumentSkeleton.expect([]) — root with children", () => {
     );
 
     const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
-    const root = skeleton.expect([]);
+    const root = skeleton.requireEntryByHeadingPath([]);
     expect(root.heading).toBe("");
     expect(root.level).toBe(0);
     expect(root.isSubSkeleton).toBe(false);
@@ -310,7 +323,7 @@ describe("DocumentSkeleton.expectByFileId() — nested document", () => {
   afterAll(async () => { await ctx.cleanup(); });
 
   it("resolveByFileId for sub-skeleton file returns isSubSkeleton=true (broken: callers get skeleton path)", () => {
-    const entry = skeleton.expectByFileId("details.md");
+    const entry = skeleton.requireEntryBySectionFileId("details.md");
     expect(entry.heading).toBe("Details");
     expect(entry.isSubSkeleton).toBe(true);
     expect(entry.absolutePath).toContain("details.md");
@@ -319,7 +332,7 @@ describe("DocumentSkeleton.expectByFileId() — nested document", () => {
   });
 
   it("resolveByFileId for root child within sub-skeleton returns the body file path", () => {
-    const entry = skeleton.expectByFileId("_details_root.md");
+    const entry = skeleton.requireEntryBySectionFileId("_details_root.md");
     expect(entry.heading).toBe("");
     expect(entry.level).toBe(0);
     expect(entry.isSubSkeleton).toBe(false);
@@ -328,7 +341,7 @@ describe("DocumentSkeleton.expectByFileId() — nested document", () => {
   });
 
   it("resolveByFileId for a leaf child returns body file with isSubSkeleton=false", () => {
-    const entry = skeleton.expectByFileId("sub_a.md");
+    const entry = skeleton.requireEntryBySectionFileId("sub_a.md");
     expect(entry.heading).toBe("Sub-Detail A");
     expect(entry.level).toBe(3);
     expect(entry.isSubSkeleton).toBe(false);
@@ -336,14 +349,14 @@ describe("DocumentSkeleton.expectByFileId() — nested document", () => {
   });
 
   it("resolveByFileId('__beforeFirstHeading__') returns the before-first-heading section", () => {
-    const entry = skeleton.expectByFileId("__beforeFirstHeading__");
+    const entry = skeleton.requireEntryBySectionFileId("__beforeFirstHeading__");
     expect(entry.heading).toBe("");
     expect(entry.level).toBe(0);
     expect(entry.headingPath).toEqual([]);
   });
 
   it("resolveByFileId throws for nonexistent file ID", () => {
-    expect(() => skeleton.expectByFileId("nonexistent.md")).toThrow(/not found/);
+    expect(() => skeleton.requireEntryBySectionFileId("nonexistent.md")).toThrow(/not found/);
   });
 });
 
@@ -360,7 +373,7 @@ describe("DocumentSkeleton.expectByFileId('__beforeFirstHeading__') — BFH with
   it("resolveByFileId('__beforeFirstHeading__') when BFH has no children returns isSubSkeleton=false", async () => {
     // The nested doc's BFH has no children
     const skeleton = await DocumentSkeleton.fromDisk(NESTED_DOC_PATH, ctx.contentDir, ctx.contentDir);
-    const entry = skeleton.expectByFileId("__beforeFirstHeading__");
+    const entry = skeleton.requireEntryBySectionFileId("__beforeFirstHeading__");
     expect(entry.heading).toBe("");
     expect(entry.level).toBe(0);
     expect(entry.isSubSkeleton).toBe(false);
@@ -395,7 +408,7 @@ describe("DocumentSkeleton.expectByFileId('__beforeFirstHeading__') — BFH with
     );
 
     const skeleton = await DocumentSkeleton.fromDisk(docPath, ctx.contentDir, ctx.contentDir);
-    const entry = skeleton.expectByFileId("__beforeFirstHeading__");
+    const entry = skeleton.requireEntryBySectionFileId("__beforeFirstHeading__");
     expect(entry.heading).toBe("");
     expect(entry.level).toBe(0);
     expect(entry.isSubSkeleton).toBe(false);
@@ -450,126 +463,51 @@ describe("DocumentSkeleton.fromNodes", () => {
 });
 
 // ─── buildOverlaySkeleton regression tests ───────────────────────
-
-describe("DocumentSkeleton.buildOverlaySkeleton — file-identity matching", () => {
-  it("rename a heading mints a fresh file ID (no position-based reuse)", async () => {
-    const ctx = await createTempDataRoot();
-    try {
-      const canonicalDir = join(ctx.rootDir, "canonical");
-      const overlayDir = join(ctx.rootDir, "overlay");
-
-      // Canonical: root, Section A (sec_a.md), Section B (sec_b.md)
-      const canonicalNodes: SkeletonNode[] = [
-        { heading: "", level: 0, sectionFile: "_root.md", children: [] },
-        { heading: "Section A", level: 2, sectionFile: "sec_a.md", children: [] },
-        { heading: "Section B", level: 2, sectionFile: "sec_b.md", children: [] },
-      ];
-      const canonical = DocumentSkeletonInternal.fromNodes("test/rename.md", canonicalNodes, canonicalDir);
-
-      // Parsed: Section A renamed to "Renamed A", Section B unchanged
-      const parsed = {
-        sections: [
-          { headingPath: [] as string[], heading: "", level: 0 },
-          { headingPath: ["Renamed A"], heading: "Renamed A", level: 2 },
-          { headingPath: ["Section B"], heading: "Section B", level: 2 },
-        ],
-      };
-
-      const overlay = await canonical.buildOverlaySkeleton(parsed, overlayDir);
-
-      const flat: Array<{ heading: string; sectionFile: string }> = [];
-      overlay.forEachSection((heading, _level, sectionFile) => {
-        flat.push({ heading, sectionFile });
-      });
-
-      // "Renamed A" must get a fresh ID — not sec_a.md
-      expect(flat[1].heading).toBe("Renamed A");
-      expect(flat[1].sectionFile).not.toBe("sec_a.md");
-
-      // "Section B" must keep its canonical ID
-      expect(flat[2].heading).toBe("Section B");
-      expect(flat[2].sectionFile).toBe("sec_b.md");
-    } finally {
-      await ctx.cleanup();
-    }
-  });
-
-  it("two sections share heading at different depths — no cross-path ID theft", async () => {
-    const ctx = await createTempDataRoot();
-    try {
-      const canonicalDir = join(ctx.rootDir, "canonical");
-      const overlayDir = join(ctx.rootDir, "overlay");
-
-      // Canonical with sub-skeleton structure:
-      //   root, Part 1 (sub-sk: p1.md), Part 1 root body (_p1_root.md),
-      //   Part 1 > Summary (sum1.md), Part 2 (sub-sk: p2.md), Part 2 root body (_p2_root.md),
-      //   Part 2 > Summary (sum2.md)
-      const canonicalNodes: SkeletonNode[] = [
-        { heading: "", level: 0, sectionFile: "_root.md", children: [] },
-        {
-          heading: "Part 1", level: 1, sectionFile: "p1.md",
-          children: [
-            { heading: "", level: 0, sectionFile: "_p1_root.md", children: [] },
-            { heading: "Summary", level: 2, sectionFile: "sum1.md", children: [] },
-          ],
-        },
-        {
-          heading: "Part 2", level: 1, sectionFile: "p2.md",
-          children: [
-            { heading: "", level: 0, sectionFile: "_p2_root.md", children: [] },
-            { heading: "Summary", level: 2, sectionFile: "sum2.md", children: [] },
-          ],
-        },
-      ];
-      const canonical = DocumentSkeletonInternal.fromNodes("test/cross-path.md", canonicalNodes, canonicalDir);
-
-      // Parsed: only Part 2 > Summary is present (no Part 1 > Summary)
-      // The buggy algorithm would grab sum1.md (first "Summary" in pool).
-      // The correct algorithm matches by parent path, so it must pick sum2.md.
-      const parsed = {
-        sections: [
-          { headingPath: [] as string[], heading: "", level: 0 },
-          { headingPath: ["Part 1"], heading: "Part 1", level: 1 },
-          { headingPath: ["Part 2"], heading: "Part 2", level: 1 },
-          { headingPath: ["Part 2", "Summary"], heading: "Summary", level: 2 },
-        ],
-      };
-
-      const overlay = await canonical.buildOverlaySkeleton(parsed, overlayDir);
-
-      const flat: Array<{ heading: string; headingPath: string[]; sectionFile: string }> = [];
-      overlay.forEachSection((heading, _level, sectionFile, headingPath) => {
-        flat.push({ heading, headingPath: [...headingPath], sectionFile });
-      });
-
-      // The "Summary" section must match ["Part 2", "Summary"] → sum2.md, not sum1.md
-      const summaryEntry = flat.find(e => e.heading === "Summary");
-      expect(summaryEntry).toBeDefined();
-      expect(summaryEntry!.sectionFile).toBe("sum2.md");
-      expect(summaryEntry!.sectionFile).not.toBe("sum1.md");
-    } finally {
-      await ctx.cleanup();
-    }
-  });
-});
+//
+// REMOVED — the `buildOverlaySkeleton(...)` method was deleted from
+// `DocumentSkeletonInternal` (item 109/145). The semantic guarantees this
+// describe block protected ("rename a heading mints a fresh file ID, no
+// position-based reuse" and "no cross-path ID theft when the same heading
+// text appears at different depths") still live in code as the
+// `private static reuseSectionFileIdsFromCanonical(...)` helper added by
+// item 147. Per item 307 the helper is now reachable from a public caller:
+// `OverlayContentLayer.upsertDocumentFromMarkdown(...)` invokes
+// `OverlayContentLayer.upsertDocumentFromMarkdown(...)` previously depended on
+// a document-level parsed-markdown replacement helper that preserved canonical
+// section-file IDs. That helper has now been deleted; whole-document markdown
+// upsert mints fresh structure through the ordinary root-target upsert path.
+//
+// Regression tests for those two semantic guarantees should be re-added
+// at the public-API level (exercising `upsertDocumentFromMarkdown(...)`
+// over a canonical doc, then asserting that section files of unchanged
+// headings were preserved). That expectation no longer matches the current
+// design, so these tests remain removed until a separately-justified ID-reuse
+// optimization exists again.
 
 describe("DocumentSkeleton tombstone", () => {
-  it("createTombstone writes a marker that shadows canonical reads", async () => {
+  it("tombstoneDocumentExplicit writes a marker that shadows canonical reads", async () => {
     const ctx = await createTempDataRoot();
     try {
       // Write a real document in canonical
       await createSampleDocument(ctx.rootDir);
 
-      // Create a tombstone in the overlay via the proper API
+      // Create a tombstone in the overlay via the explicit OverlayContentLayer
+      // operation. `DocumentSkeleton.createTombstone(...)` was deleted in
+      // item 93/133 — readonly DS no longer hosts tombstone writes; the
+      // mutating concern lives on the mutating abstraction.
       const overlayDir = join(ctx.rootDir, "overlay", "content");
-      await DocumentSkeleton.createTombstone(SAMPLE_DOC_PATH, overlayDir);
+      const overlay = new OverlayContentLayer(overlayDir, ctx.contentDir);
+      await overlay.tombstoneDocumentExplicit(SAMPLE_DOC_PATH);
 
       // Re-read: overlay has the persisted tombstone marker, so fromDisk should
       // shadow canonical and expose the document as empty + tombstoned.
       const skeleton = await DocumentSkeleton.fromDisk(SAMPLE_DOC_PATH, overlayDir, ctx.contentDir);
-      expect(skeleton.overlayPersisted).toBe(true);
-      expect(skeleton.overlayTombstoned).toBe(true);
-      expect(skeleton.isEmpty).toBe(true);
+      // loadedFromOverlay reflects that overlay won structure resolution
+      // (the tombstone is in the overlay, shadowing canonical) — semantically
+      // closest to the previous overlayPersisted check.
+      expect(skeleton.overlaySkeletonFileExisted).toBe(true);
+      expect(skeleton.isTombstonedInOverlay).toBe(true);
+      expect(skeleton.areSkeletonRootsEmpty).toBe(true);
     } finally {
       await ctx.cleanup();
     }
