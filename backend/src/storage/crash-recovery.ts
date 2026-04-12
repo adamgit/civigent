@@ -4,10 +4,10 @@
  * Recovers from:
  * - Proposals stuck in `committing` state (crash during git commit)
  * - Dirty working tree (uncommitted changes in content/ or proposals/)
- * - Session files in sessions/docs/ (crash during editing — uncommitted Y.Doc flushes)
+ * - Session files in sessions/sections/ (crash during editing — uncommitted Y.Doc flushes)
  *
  * Session recovery:
- *   On server start, scans sessions/docs/ for any files.
+ *   On server start, scans sessions/sections/ for any files.
  *   Reads session state using existing heading resolver APIs.
  *   Compares against canonical and commits differences under "crash recovery" identity.
  *   Deletes all session content files and author metadata (clean slate).
@@ -26,12 +26,10 @@
 
 import { readdir, readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { getDataRoot, getContentRoot, getContentGitPrefix, getProposalsGitPrefix, getProposalsCommittingRoot, getProposalsPendingRoot, getSessionDocsContentRoot, getSessionFragmentsRoot } from "./data-root.js";
+import { getDataRoot, getContentRoot, getContentGitPrefix, getProposalsGitPrefix, getProposalsCommittingRoot, getProposalsPendingRoot, getSessionSectionsContentRoot, getSessionFragmentsRoot } from "./data-root.js";
 import { gitExec, gitStatusPorcelain } from "./git-repo.js";
 import { rollbackCommittingToDraft } from "./proposal-repository.js";
-import {
-  scanSessionFragmentDocPaths,
-} from "./session-store.js";
+import { scanSessionFragmentDocPaths, scanSessionDocPaths } from "./session-scan.js";
 import { recoverDocument, reconcileAndCleanup, writeRecoveredToCanonical, buildCompoundSkeleton, type DocumentRecoveryResult } from "./recovery-layers.js";
 import { sectionFileToName } from "./document-skeleton.js";
 import { bodyFromRecoveryAssembly, type SectionBody } from "./section-formatting.js";
@@ -173,12 +171,12 @@ function extractDocPathFromContentFile(filePath: string): string | null {
  * any other error.
  */
 async function hasSessionFilesForDoc(docPath: string, ctx: RecoveryContext): Promise<boolean> {
-  const sessionDocsContentRoot = getSessionDocsContentRoot();
+  const sessionSectionsContentRoot = getSessionSectionsContentRoot();
   const sessionFragmentsRoot = getSessionFragmentsRoot();
   const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
 
   // Check session docs overlay
-  const overlayPath = path.join(sessionDocsContentRoot, ...normalized.split("/"));
+  const overlayPath = path.join(sessionSectionsContentRoot, ...normalized.split("/"));
   try {
     await ctx.fs(`readFile ${overlayPath}`, () => readFile(overlayPath, "utf8"));
     return true;
@@ -187,7 +185,7 @@ async function hasSessionFilesForDoc(docPath: string, ctx: RecoveryContext): Pro
   }
 
   // Check session docs sections dir
-  const sectionsDir = path.join(sessionDocsContentRoot, `${normalized}.sections`);
+  const sectionsDir = path.join(sessionSectionsContentRoot, `${normalized}.sections`);
   try {
     const entries = await ctx.fs(`readdir ${sectionsDir}`, () => readdir(sectionsDir));
     if (entries.length > 0) return true;
@@ -347,7 +345,6 @@ async function recoverCommittingProposals(ctx: RecoveryContext): Promise<boolean
  * Discover all document paths that have session state (overlay docs or raw fragments).
  */
 async function discoverSessionDocPaths(): Promise<string[]> {
-  const { scanSessionDocPaths } = await import("./session-store.js");
   const fragmentDocPaths = await scanSessionFragmentDocPaths();
   const overlayDocPaths = await scanSessionDocPaths();
   const all = new Set([...fragmentDocPaths, ...overlayDocPaths]);

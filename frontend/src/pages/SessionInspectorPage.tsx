@@ -200,7 +200,7 @@ export function SessionInspectorPage() {
                 onClick={() => setExpandedDocs(!expandedDocs)}
                 className="w-full text-left px-4 py-2.5 text-xs font-semibold text-text-primary bg-[#faf8f5] border-b border-[#eae7e2] hover:bg-[#f5f2ed] transition-colors"
               >
-                {expandedDocs ? "▾" : "▸"} Canonical-Ready Overlay (sessions/docs/)
+                {expandedDocs ? "▾" : "▸"} Canonical-Ready Overlay (sessions/sections/)
               </button>
               {expandedDocs && (
                 <div className="p-3">

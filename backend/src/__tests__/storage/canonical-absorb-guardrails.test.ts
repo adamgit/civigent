@@ -12,7 +12,7 @@ import {
 } from "../helpers/sample-content.js";
 import {
   commitSessionFilesToCanonical,
-  getSessionDocsContentRoot,
+  getSessionSectionsContentRoot,
 } from "../../storage/session-store.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { parseSkeletonToEntries, serializeSkeletonEntries } from "../../storage/document-skeleton.js";
@@ -51,7 +51,7 @@ async function stageOverlayDocFromCanonical(contentDir: string, docPath: string)
   const canonicalSkeletonPath = join(contentDir, diskRelative);
   const canonicalSectionsDir = `${canonicalSkeletonPath}.sections`;
 
-  const overlayRoot = getSessionDocsContentRoot();
+  const overlayRoot = getSessionSectionsContentRoot();
   const overlaySkeletonPath = join(overlayRoot, diskRelative);
   const overlaySectionsDir = `${overlaySkeletonPath}.sections`;
 

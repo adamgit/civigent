@@ -7,8 +7,9 @@
 
 import path from "node:path";
 import { readFile, readdir } from "node:fs/promises";
-import { getContentRoot, getSessionDocsContentRoot, getSessionAuthorsRoot } from "./data-root.js";
-import { scanSessionFragmentDocPaths, listRawFragments, readRawFragment, scanSessionDocPaths } from "./session-store.js";
+import { getContentRoot, getSessionSectionsContentRoot, getSessionAuthorsRoot } from "./data-root.js";
+import { listRawFragments, readRawFragment } from "./session-store.js";
+import { scanSessionFragmentDocPaths, scanSessionDocPaths } from "./session-scan.js";
 import { DocumentSkeleton } from "./document-skeleton.js";
 import { OverlayContentLayer, SectionNotFoundError } from "./content-layer.js";
 
@@ -63,7 +64,7 @@ export async function getSessionState(): Promise<SessionState> {
   let totalFragmentFiles = 0;
   for (const docPath of fragmentDocPaths) {
     const files = await listRawFragments(docPath);
-    const overlayLayer = new OverlayContentLayer(getSessionDocsContentRoot(), getContentRoot());
+    const overlayLayer = new OverlayContentLayer(getSessionSectionsContentRoot(), getContentRoot());
     const entries: FragmentFileInfo[] = [];
     for (const filename of files) {
       const content = await readRawFragment(docPath, filename);
@@ -101,7 +102,7 @@ export async function getSessionState(): Promise<SessionState> {
   let orphanedSections = 0;
   let corruptOverlayDocs = 0;
   let missingOverlaySkeletonDocs = 0;
-  const contentSubdir = getSessionDocsContentRoot();
+  const contentSubdir = getSessionSectionsContentRoot();
   let overlayDocPaths: string[] = [];
   try {
     overlayDocPaths = await scanSessionDocPaths();

@@ -173,7 +173,7 @@ export async function resolveAllSectionPaths(
 }
 
 /**
- * Read document structure, checking an overlay root first (e.g. sessions/docs/content/).
+ * Read document structure, checking an overlay root first (e.g. sessions/sections/content/).
  * Uses OverlayContentLayer for overlay+canonical skeleton loading.
  */
 export async function readDocumentStructureWithOverlay(

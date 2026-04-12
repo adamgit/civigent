@@ -35,7 +35,7 @@ import type {
 import { HUMAN_INVOLVEMENT_PRESETS } from "../../types/shared.js";
 import path from "node:path";
 import { access, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { assertDataRootExists, getContentRoot, getContentGitPrefix, getDataRoot, getSessionDocsContentRoot, getSessionAuthorsRoot } from "../../storage/data-root.js";
+import { assertDataRootExists, getContentRoot, getContentGitPrefix, getDataRoot, getSessionSectionsContentRoot, getSessionAuthorsRoot } from "../../storage/data-root.js";
 import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
 
@@ -599,8 +599,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const docPath = req.params.docPath;
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
-      const sessionDocsContentRoot = getSessionDocsContentRoot();
-      const structure = await readDocumentStructureWithOverlay(docPath, sessionDocsContentRoot);
+      const sessionSectionsContentRoot = getSessionSectionsContentRoot();
+      const structure = await readDocumentStructureWithOverlay(docPath, sessionSectionsContentRoot);
 
       broadcastAgentReading(req, docPath, flattenStructureToHeadingPaths(structure), onWsEvent);
 
@@ -620,7 +620,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const docPath = req.params.docPath;
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
-      const overlay = new OverlayContentLayer(getSessionDocsContentRoot(), getContentRoot());
+      const overlay = new OverlayContentLayer(getSessionSectionsContentRoot(), getContentRoot());
       const sectionList = await overlay.getSectionList(docPath);
 
       // Build headingPaths and sectionFileByKey from the section list
@@ -631,7 +631,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       // ── Batch pre-fetch: all I/O happens here, loop below is pure compute ──
       const liveSession = lookupDocSession(docPath);
-      const sectionsOverlayRoot = getSessionDocsContentRoot();
+      const sectionsOverlayRoot = getSessionSectionsContentRoot();
       const sectionsOverlay = new OverlayContentLayer(sectionsOverlayRoot, getContentRoot());
       const bulkContent = prependHeadings(sectionList, await sectionsOverlay.readAllSections(docPath));
 
@@ -2918,7 +2918,7 @@ function registerDocumentCatchAllRoutes(
       const structure = await readDocumentStructure(docPath);
       const headingPaths = flattenStructureToHeadingPaths(structure);
 
-      const docOverlayRoot = getSessionDocsContentRoot();
+      const docOverlayRoot = getSessionSectionsContentRoot();
       const docOverlay = new OverlayContentLayer(docOverlayRoot, getContentRoot());
       const bulkContent = await docOverlay.readAllSections(docPath);
       const involvementMeta = await buildSectionInvolvementMeta(docPath, headingPaths, bulkContent);
@@ -3161,8 +3161,8 @@ function registerDocumentCatchAllRoutes(
         return;
       }
 
-      const sessionDocsContentRoot = getSessionDocsContentRoot();
-      const sessionDocPath = resolveDocPathUnderContent(sessionDocsContentRoot, docPath);
+      const sessionSectionsContentRoot = getSessionSectionsContentRoot();
+      const sessionDocPath = resolveDocPathUnderContent(sessionSectionsContentRoot, docPath);
       let hasDirtySessionFiles = false;
       try { await access(sessionDocPath); hasDirtySessionFiles = true; } catch { /* not found */ }
       if (!hasDirtySessionFiles) {

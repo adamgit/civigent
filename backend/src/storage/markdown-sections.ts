@@ -99,7 +99,7 @@ export class ParsedDocument {
  *
  * @param docPath - Document path (e.g., "docs/guide.md")
  * @param markdown - Full assembled markdown content
- * @param draftRoot - Root directory for draft output (e.g., sessions/docs/content/)
+ * @param draftRoot - Root directory for draft output (e.g., sessions/sections/content/)
  * @returns ApplyResult describing what changed
  */
 export async function applyDocumentMarkdownToDraft(

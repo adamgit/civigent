@@ -6,8 +6,9 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import * as Y from "yjs";
 import { CrdtProvider, type CrdtConnectionState, type StructureWillChangePayload } from "../services/crdt-provider";
+import { CrdtTransport } from "../services/crdt-transport";
+import { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 import { ObserverCrdtProvider } from "../services/observer-crdt-provider";
 import { fragmentToMarkdown } from "../services/fragment-to-markdown";
 import {
@@ -46,6 +47,10 @@ export interface UseSessionModeParams {
 
 export interface UseSessionModeReturn {
   crdtProvider: CrdtProvider | null;
+  /** New store/transport surface — populated whenever the editor session
+   *  is active. Consumers migrating off `crdtProvider` should prefer these. */
+  store: BrowserFragmentReplicaStore | null;
+  transport: CrdtTransport | null;
   crdtSynced: boolean;
   crdtState: CrdtConnectionState;
   crdtError: string | null;
@@ -79,6 +84,8 @@ export function useSessionMode({
 
   // ── State ──────────────────────────────────────────────
   const [crdtProvider, setCrdtProvider] = useState<CrdtProvider | null>(null);
+  const [store, setStore] = useState<BrowserFragmentReplicaStore | null>(null);
+  const [transport, setTransport] = useState<CrdtTransport | null>(null);
   const [crdtSynced, setCrdtSynced] = useState(false);
   const [crdtState, setCrdtState] = useState<CrdtConnectionState>("disconnected");
   const [crdtError, setCrdtError] = useState<string | null>(null);
@@ -95,6 +102,8 @@ export function useSessionMode({
 
   // ── Refs ───────────────────────────────────────────────
   const crdtProviderRef = useRef<CrdtProvider | null>(null);
+  const transportRef = useRef<CrdtTransport | null>(null);
+  const storeRef = useRef<BrowserFragmentReplicaStore | null>(null);
   const controllerStateRef = useRef<DocumentSessionControllerState>(controllerState);
   const observerRef = useRef<ObserverCrdtProvider | null>(null);
   const observerDocSessionIdRef = useRef<string | null>(null);
@@ -229,14 +238,30 @@ export function useSessionMode({
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      crdtProviderRef.current?.destroy();
+      storeRef.current?.destroy();
+      storeRef.current = null;
+      transportRef.current?.destroy();
+      transportRef.current = null;
+      crdtProviderRef.current = null;
       observerRef.current?.destroy();
     };
   }, []);
 
   // ── Stop editing ───────────────────────────────────────
   const stopEditing = useCallback(() => {
-    if (crdtProviderRef.current) {
+    if (transportRef.current) {
+      storeRef.current?.destroy();
+      transportRef.current.destroy();
+      storeRef.current = null;
+      transportRef.current = null;
+      crdtProviderRef.current = null;
+      setStore(null);
+      setTransport(null);
+      setCrdtProvider(null);
+      setCrdtSynced(false);
+      setCrdtState("disconnected");
+    } else if (crdtProviderRef.current) {
+      // Legacy path (should not happen now that ensureProvider uses transport).
       crdtProviderRef.current.destroy();
       setCrdtProvider(null);
       setCrdtSynced(false);
@@ -292,7 +317,6 @@ export function useSessionMode({
     setEditingLoading(true);
 
     try {
-      const doc = new Y.Doc();
       const transition: ModeTransitionRequest = {
         requestId: crypto.randomUUID(),
         clientInstanceId: clientInstanceIdRef.current,
@@ -305,7 +329,9 @@ export function useSessionMode({
         requestedMode: "editor",
         pendingTransition: transition,
       }));
-      const provider = new CrdtProvider(doc, decodedDocPath, {
+      const nextTransport = new CrdtTransport(decodedDocPath, {
+        clientInstanceId: clientInstanceIdRef.current,
+        initialTransitionRequest: transition,
         onStateChange: (state: CrdtConnectionState) => {
           setCrdtState(state);
         },
@@ -371,13 +397,20 @@ export function useSessionMode({
             loadSections(decodedDocPath);
           }
         },
-      }, {
-        clientInstanceId: clientInstanceIdRef.current,
-        initialTransitionRequest: transition,
       });
-      provider.connect();
+      const nextStore = new BrowserFragmentReplicaStore(
+        nextTransport.doc,
+        nextTransport.awareness,
+      );
+      nextTransport.attachStore(nextStore);
+      nextTransport.connect();
+      const provider = nextTransport.rawProvider;
       setCrdtProvider(provider);
+      setStore(nextStore);
+      setTransport(nextTransport);
       crdtProviderRef.current = provider;
+      transportRef.current = nextTransport;
+      storeRef.current = nextStore;
       return provider;
     } catch (err) {
       setEditingLoading(false);
@@ -439,6 +472,8 @@ export function useSessionMode({
 
   return {
     crdtProvider,
+    store,
+    transport,
     crdtSynced,
     crdtState,
     crdtError,

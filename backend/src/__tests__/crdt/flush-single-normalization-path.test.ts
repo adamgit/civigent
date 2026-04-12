@@ -6,7 +6,7 @@ import { destroyAllSessions } from "../../crdt/ydoc-lifecycle.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
 import { OverlayContentLayer } from "../../storage/content-layer.js";
-import { getSessionDocsContentRoot } from "../../storage/session-store.js";
+import { getSessionSectionsContentRoot } from "../../storage/session-store.js";
 import { getContentRoot } from "../../storage/data-root.js";
 import type { WriterIdentity } from "../../types/shared.js";
 
@@ -75,8 +75,8 @@ describe("flush uses the single normalization routine", () => {
     expect(result.deletedKeys).toEqual([]);
     expect(live.raw.fragments.readFullContent(overviewKey)).toContain("Overview body after flush-only body edit.");
 
-    const sessionDocs = new OverlayContentLayer(getSessionDocsContentRoot(), getContentRoot());
-    const sections = await sessionDocs.readAllSections(SAMPLE_DOC_PATH);
+    const sessionSections = new OverlayContentLayer(getSessionSectionsContentRoot(), getContentRoot());
+    const sections = await sessionSections.readAllSections(SAMPLE_DOC_PATH);
     expect(sections.get("Overview")).toContain("Overview body after flush-only body edit.");
     expect(sections.get("Timeline")).toContain(SAMPLE_SECTIONS.timeline);
   });
@@ -161,8 +161,8 @@ describe("flush uses the single normalization routine", () => {
     expect(result.deletedKeys).toContain(overviewKey);
     expect(events).toEqual([{ oldKey: overviewKey, newKeys: [] }]);
 
-    const sessionDocs = new OverlayContentLayer(getSessionDocsContentRoot(), getContentRoot());
-    const sections = await sessionDocs.readAllSections(SAMPLE_DOC_PATH);
+    const sessionSections = new OverlayContentLayer(getSessionSectionsContentRoot(), getContentRoot());
+    const sections = await sessionSections.readAllSections(SAMPLE_DOC_PATH);
     expect(sections.has("Overview")).toBe(false);
     expect(sections.get("")).toContain("Overview orphan body after heading deletion.");
     expect(sections.get("")).toContain(SAMPLE_SECTIONS.preamble);

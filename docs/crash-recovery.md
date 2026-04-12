@@ -112,9 +112,9 @@ The single source of truth. Every committed document skeleton + body file lives 
 
 ---
 
-### B. Session Overlay (docs) — `data/sessions/docs/content/`
+### B. Session Overlay (docs) — `data/sessions/sections/content/`
 
-Mirrors the `content/` structure. When a Y.Doc is flushed to disk, normalized body files land here. Skeleton files are also written here when structural changes happen (heading renames, splits). Read with overlay-first semantics: `new ContentLayer(sessionDocsContent, new ContentLayer(canonical))`.
+Mirrors the `content/` structure. When a Y.Doc is flushed to disk, normalized body files land here. Skeleton files are also written here when structural changes happen (heading renames, splits). Read with overlay-first semantics: `new ContentLayer(sessionSectionsContent, new ContentLayer(canonical))`.
 
 **Lifetime:** Created when `flush()` runs on a dirty Y.Doc. Deleted by `cleanupSessionFiles()` after successful commit, or on crash recovery.
 

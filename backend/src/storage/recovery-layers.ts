@@ -20,7 +20,7 @@ import {
   type SkeletonEntry,
   type SkeletonNode,
 } from "./document-skeleton.js";
-import { getContentRoot, getSessionDocsContentRoot, getSessionFragmentsRoot } from "./data-root.js";
+import { getContentRoot, getSessionSectionsContentRoot, getSessionFragmentsRoot } from "./data-root.js";
 import { bodyFromRecoveryAssembly, bodyToDisk } from "./section-formatting.js";
 
 // ─── Skeleton Assessment ──────────────────────────────────────────
@@ -181,7 +181,7 @@ function mintRecoveredSectionFile(name: string, usedSectionFiles: Set<string>): 
  */
 export async function buildCompoundSkeleton(docPath: string): Promise<CompoundSkeletonResult> {
   const contentRoot = getContentRoot();
-  const overlayContentRoot = getSessionDocsContentRoot();
+  const overlayContentRoot = getSessionSectionsContentRoot();
   const fragmentsRoot = getSessionFragmentsRoot();
 
   const overlayPaths = resolveDocPaths(docPath, overlayContentRoot);
@@ -434,7 +434,7 @@ function decideContent(
  */
 export async function recoverDocument(docPath: string): Promise<DocumentRecoveryResult> {
   const contentRoot = getContentRoot();
-  const overlayContentRoot = getSessionDocsContentRoot();
+  const overlayContentRoot = getSessionSectionsContentRoot();
   const fragmentsRoot = getSessionFragmentsRoot();
 
   const compound = await buildCompoundSkeleton(docPath);
@@ -528,7 +528,7 @@ export interface ReconciliationResult {
  * List all session files on disk for a given document.
  */
 async function listAllSessionFiles(docPath: string): Promise<string[]> {
-  const overlayContentRoot = getSessionDocsContentRoot();
+  const overlayContentRoot = getSessionSectionsContentRoot();
   const fragmentsRoot = getSessionFragmentsRoot();
   const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
   const files: string[] = [];
@@ -582,7 +582,7 @@ export async function reconcileAndCleanup(
   }
 
   // All files accounted for — safe to delete
-  const overlayContentRoot = getSessionDocsContentRoot();
+  const overlayContentRoot = getSessionSectionsContentRoot();
   const fragmentsRoot = getSessionFragmentsRoot();
   const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
 

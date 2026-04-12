@@ -22,7 +22,7 @@ describe("Crash Recovery Scenarios", () => {
     await createSampleDocument(ctx.rootDir);
 
     // Write a session overlay with a skeleton containing duplicate roots
-    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionContentDir = join(ctx.rootDir, "sessions", "sections", "content");
     const sessionDocDir = join(sessionContentDir, "ops");
     const sessionSectionsDir = `${join(sessionDocDir, "strategy.md")}.sections`;
     await mkdir(sessionSectionsDir, { recursive: true });
@@ -47,7 +47,7 @@ describe("Crash Recovery Scenarios", () => {
     await createSampleDocument(ctx.rootDir);
 
     // Write valid session overlay with updated content for Overview section
-    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionContentDir = join(ctx.rootDir, "sessions", "sections", "content");
     const sessionDocDir = join(sessionContentDir, "ops");
     const sessionSectionsDir = `${join(sessionDocDir, "strategy.md")}.sections`;
     await mkdir(sessionSectionsDir, { recursive: true });
@@ -136,7 +136,7 @@ describe("Crash Recovery Scenarios", () => {
     await writeFile(skeletonPath, originalSkeleton + "\n## Ghost\n{{section: ghost.md}}\n", "utf8");
 
     // Write valid session overlay with updated content
-    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionContentDir = join(ctx.rootDir, "sessions", "sections", "content");
     const sessionDocDir = join(sessionContentDir, "ops");
     const sessionSectionsDir = `${join(sessionDocDir, "strategy.md")}.sections`;
     await mkdir(sessionSectionsDir, { recursive: true });
@@ -208,7 +208,7 @@ describe("Crash Recovery Scenarios", () => {
     await createSampleDocument(ctx.rootDir);
 
     // Write session overlay with updated content for 2 sections
-    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionContentDir = join(ctx.rootDir, "sessions", "sections", "content");
     const sessionDocDir = join(sessionContentDir, "ops");
     const sessionSectionsDir = `${join(sessionDocDir, "strategy.md")}.sections`;
     await mkdir(sessionSectionsDir, { recursive: true });
@@ -242,7 +242,7 @@ describe("Crash Recovery Scenarios", () => {
     await writeFile(skeletonPath, originalSkeleton.replace("## Timeline", "## Renamed"), "utf8");
 
     // Write valid session overlay
-    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionContentDir = join(ctx.rootDir, "sessions", "sections", "content");
     const sessionDocDir = join(sessionContentDir, "ops");
     const sessionSectionsDir = `${join(sessionDocDir, "strategy.md")}.sections`;
     await mkdir(sessionSectionsDir, { recursive: true });
@@ -335,7 +335,7 @@ describe("Crash Recovery Scenarios", () => {
     await writeFile(skeletonA, origA + "\n## Corrupt\n{{section: corrupt.md}}\n", "utf8");
 
     // Write session overlay for Doc A
-    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionContentDir = join(ctx.rootDir, "sessions", "sections", "content");
     const sessionDocDir = join(sessionContentDir, "ops");
     const sessionSectionsDir = `${join(sessionDocDir, "strategy.md")}.sections`;
     await mkdir(sessionSectionsDir, { recursive: true });
@@ -376,7 +376,7 @@ describe("Crash Recovery Scenarios", () => {
     await createSampleDocument(ctx.rootDir, SAMPLE_DOC_PATH_2);
 
     // Good doc: valid session overlay
-    const goodSessionDir = join(ctx.rootDir, "sessions", "docs", "content", "ops");
+    const goodSessionDir = join(ctx.rootDir, "sessions", "sections", "content", "ops");
     const goodSessionSectionsDir = `${join(goodSessionDir, "strategy.md")}.sections`;
     await mkdir(goodSessionSectionsDir, { recursive: true });
     await writeFile(join(goodSessionDir, "strategy.md"),
@@ -388,7 +388,7 @@ describe("Crash Recovery Scenarios", () => {
 
     // Bad doc: create a session overlay where the skeleton is a directory instead of file
     // This causes cleanup (rm) to fail with EISDIR, but recovery still produces content
-    const badSessionDir = join(ctx.rootDir, "sessions", "docs", "content", "eng");
+    const badSessionDir = join(ctx.rootDir, "sessions", "sections", "content", "eng");
     await mkdir(badSessionDir, { recursive: true });
     await mkdir(join(badSessionDir, "architecture.md"), { recursive: true });
     const badSectionsDir = `${join(badSessionDir, "architecture.md")}.sections`;
@@ -410,7 +410,7 @@ describe("Crash Recovery Scenarios", () => {
   it("per-document isolation: bad doc session files are preserved when cleanup fails", async () => {
     await createSampleDocument(ctx.rootDir, SAMPLE_DOC_PATH_2);
 
-    const badSessionDir = join(ctx.rootDir, "sessions", "docs", "content", "eng");
+    const badSessionDir = join(ctx.rootDir, "sessions", "sections", "content", "eng");
     await mkdir(badSessionDir, { recursive: true });
     await mkdir(join(badSessionDir, "architecture.md"), { recursive: true });
     const badSectionsDir = `${join(badSessionDir, "architecture.md")}.sections`;

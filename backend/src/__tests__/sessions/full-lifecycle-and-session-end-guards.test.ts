@@ -22,8 +22,10 @@ import {
 import { commitDirtySections } from "../../storage/auto-commit.js";
 import type { WriterIdentity, ModeTransitionResult, ModeTransitionRequest } from "../../types/shared.js";
 import { ContentLayer } from "../../storage/content-layer.js";
-import { buildDocumentFragmentsForTest } from "../helpers/build-document-fragments.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
+import { markdownToJSON } from "@ks/milkdown-serializer";
+import { prosemirrorJSONToYDoc } from "y-prosemirror";
+import { getBackendSchema } from "../../crdt/ydoc-fragments.js";
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
 import {
   acquireDocSession,
@@ -181,6 +183,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
   let port: number;
   let writer: WriterIdentity;
   let writerToken: string;
+  let openSockets: WebSocket[] = [];
 
   beforeEach(async () => {
     ctx = await createTempDataRoot();
@@ -221,6 +224,8 @@ describe("full lifecycle + session-end normalization guardrails", () => {
 
   afterEach(async () => {
     destroyAllSessions();
+    for (const s of openSockets) { if (s.readyState === WebSocket.OPEN) s.close(); }
+    openSockets = [];
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await ctx.cleanup();
   });
@@ -231,8 +236,12 @@ describe("full lifecycle + session-end normalization guardrails", () => {
       `ws://localhost:${port}/ws/crdt${SAMPLE_DOC_PATH}?clientInstanceId=${clientInstanceId}`,
       { headers: { Authorization: `Bearer ${writerToken}` } },
     );
+    openSockets.push(ws);
     await waitForOpen(ws);
 
+    // Register SYNC_STEP_2 listener BEFORE the mode transition, because
+    // joinAndNotify sends SYNC_STEP_2 before the mode transition result.
+    const syncPromise = waitForMessage(ws, (msg) => msg[0] === MSG_SYNC_STEP_2);
     const editorResult = await requestModeTransition(ws, {
       requestId: crypto.randomUUID(),
       clientInstanceId,
@@ -242,7 +251,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
     });
     expect(editorResult.kind).toBe("success");
 
-    await waitForMessage(ws, (msg) => msg[0] === MSG_SYNC_STEP_2);
+    await syncPromise;
 
     const sectionsBefore = await fetchSections(app, writerToken);
     const overview = sectionsBefore.find((section) => section.heading === "Overview");
@@ -283,6 +292,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
       `ws://localhost:${port}/ws/crdt${SAMPLE_DOC_PATH}?clientInstanceId=${clientInstanceId}`,
       { headers: { Authorization: `Bearer ${writerToken}` } },
     );
+    openSockets.push(ws);
     await waitForOpen(ws);
 
     const editor = await requestModeTransition(ws, {
@@ -343,6 +353,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
       `ws://localhost:${port}/ws/crdt${SAMPLE_DOC_PATH}?clientInstanceId=${clientInstanceId}`,
       { headers: { Authorization: `Bearer ${writerToken}` } },
     );
+    openSockets.push(ws);
     await waitForOpen(ws);
     await requestModeTransition(ws, {
       requestId: crypto.randomUUID(),
@@ -393,7 +404,12 @@ describe("full lifecycle + session-end normalization guardrails", () => {
       `ws://localhost:${port}/ws/crdt${SAMPLE_DOC_PATH}?clientInstanceId=${clientInstanceId}`,
       { headers: { Authorization: `Bearer ${writerToken}` } },
     );
+    openSockets.push(ws);
     await waitForOpen(ws);
+
+    // Register SYNC_STEP_2 listener BEFORE the mode transition, because
+    // joinAndNotify sends SYNC_STEP_2 before the mode transition result.
+    const syncPromise = waitForMessage(ws, (msg) => msg[0] === MSG_SYNC_STEP_2);
     await requestModeTransition(ws, {
       requestId: crypto.randomUUID(),
       clientInstanceId,
@@ -401,7 +417,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
       requestedMode: "editor",
       editorFocusTarget: null,
     });
-    await waitForMessage(ws, (msg) => msg[0] === MSG_SYNC_STEP_2);
+    const syncMsg = await syncPromise;
 
     const sectionsBefore = await fetchSections(app, writerToken);
     const overview = sectionsBefore.find((section) => section.heading === "Overview");
@@ -409,13 +425,26 @@ describe("full lifecycle + session-end normalization guardrails", () => {
     expect(overview).toBeDefined();
     expect(timelineBefore).toBeDefined();
 
-    const store = await buildDocumentFragmentsForTest(SAMPLE_DOC_PATH);
-    const svBefore = Y.encodeStateVector(store.ydoc);
-    store.setFragmentContent(
-      overview!.fragment_key,
-      fragmentFromRemark(`${overview!.content}\n\nNo-focus YJS path line.`),
-    );
-    const payload = Y.encodeStateAsUpdate(store.ydoc, svBefore);
+    // Build a client-side Y.Doc from the server's sync state (not from disk).
+    // An independently-constructed Y.Doc has different Y.js item IDs, so
+    // clearFragment deletes would be no-ops when applied cross-doc, causing
+    // duplicate content.
+    const clientDoc = new Y.Doc();
+    Y.applyUpdate(clientDoc, syncMsg.subarray(1));
+    const svBefore = Y.encodeStateVector(clientDoc);
+
+    // Clear the existing fragment (same approach as DocumentFragments.clearFragment)
+    const fragment = clientDoc.getXmlFragment(overview!.fragment_key);
+    clientDoc.transact(() => { while (fragment.length > 0) fragment.delete(0, 1); });
+
+    // Populate with new content (same approach as DocumentFragments.populateFragment)
+    const newMarkdown = `${overview!.content}\n\nNo-focus YJS path line.`;
+    const pmJson = markdownToJSON(newMarkdown);
+    const tempDoc = prosemirrorJSONToYDoc(getBackendSchema(), pmJson, overview!.fragment_key);
+    Y.applyUpdate(clientDoc, Y.encodeStateAsUpdate(tempDoc));
+    tempDoc.destroy();
+
+    const payload = Y.encodeStateAsUpdate(clientDoc, svBefore);
 
     ws.send(encodeMessage(MSG_YJS_UPDATE, payload));
     ws.send(encodeMessage(MSG_SESSION_OVERLAY_IMPORT_REQUEST, new Uint8Array(0)));
@@ -448,6 +477,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
       `ws://localhost:${port}/ws/crdt${SAMPLE_DOC_PATH}?clientInstanceId=${editorClient}`,
       { headers: { Authorization: `Bearer ${writerToken}` } },
     );
+    openSockets.push(editorWs);
     await waitForOpen(editorWs);
     await requestModeTransition(editorWs, {
       requestId: crypto.randomUUID(),
@@ -461,6 +491,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
       `ws://localhost:${port}/ws/crdt${SAMPLE_DOC_PATH}?clientInstanceId=${observerClient}`,
       { headers: { Authorization: `Bearer ${writerToken}` } },
     );
+    openSockets.push(observerWs);
     await waitForOpen(observerWs);
     await requestModeTransition(observerWs, {
       requestId: crypto.randomUUID(),
@@ -482,6 +513,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
       `ws://localhost:${port}/ws/crdt${SAMPLE_DOC_PATH}?clientInstanceId=client-observer-reopen`,
       { headers: { Authorization: `Bearer ${writerToken}` } },
     );
+    openSockets.push(newObserver);
     await waitForOpen(newObserver);
     const result = await requestModeTransition(newObserver, {
       requestId: crypto.randomUUID(),
@@ -503,6 +535,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
       `ws://localhost:${port}/ws/crdt${SAMPLE_DOC_PATH}?clientInstanceId=${clientInstanceId}`,
       { headers: { Authorization: `Bearer ${writerToken}` } },
     );
+    openSockets.push(ws);
     await waitForOpen(ws);
     await requestModeTransition(ws, {
       requestId: crypto.randomUUID(),

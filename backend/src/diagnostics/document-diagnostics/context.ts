@@ -1,6 +1,6 @@
 import path from "node:path";
 import { readdir } from "node:fs/promises";
-import { getContentRoot, getContentGitPrefix, getDataRoot, getSessionDocsContentRoot, getSessionFragmentsRoot } from "../../storage/data-root.js";
+import { getContentRoot, getContentGitPrefix, getDataRoot, getSessionSectionsContentRoot, getSessionFragmentsRoot } from "../../storage/data-root.js";
 import { assessSkeleton, type SkeletonAssessment } from "../../storage/recovery-layers.js";
 import { resolveSkeletonPath, DocumentSkeleton, parseSkeletonToEntries } from "../../storage/document-skeleton.js";
 import { normalizeDocPath } from "../../storage/path-utils.js";
@@ -82,7 +82,7 @@ export interface DocumentDiagnosticsContext {
 export function createDocumentDiagnosticsContext(docPath: string): DocumentDiagnosticsContext {
   const dataRoot = getDataRoot();
   const contentRoot = getContentRoot();
-  const overlayContentRoot = getSessionDocsContentRoot();
+  const overlayContentRoot = getSessionSectionsContentRoot();
   const fragmentsRoot = getSessionFragmentsRoot();
   const contentGitPrefix = getContentGitPrefix();
   const normalizedDocPath = normalizeDocPath(docPath);

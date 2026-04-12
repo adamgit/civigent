@@ -49,7 +49,7 @@ describe("Self-healing Recovery", () => {
 
     // Write a session overlay skeleton with duplicate root entries
     // (triggers validateNoDuplicateRoots in DocumentSkeleton.fromDisk)
-    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionContentDir = join(ctx.rootDir, "sessions", "sections", "content");
     const sessionDocDir = join(sessionContentDir, "ops");
     const sessionSectionsDir = `${join(sessionDocDir, "strategy.md")}.sections`;
     await mkdir(sessionSectionsDir, { recursive: true });
@@ -69,9 +69,9 @@ describe("Self-healing Recovery", () => {
     // the self-loading FragmentStore.fromDisk wrapper, so the test now exercises the
     // skeleton primitive directly — same call site, same throw, same invariant.
     const { DocumentSkeletonInternal } = await import("../../storage/document-skeleton.js");
-    const { getContentRoot, getSessionDocsContentRoot } = await import("../../storage/data-root.js");
+    const { getContentRoot, getSessionSectionsContentRoot } = await import("../../storage/data-root.js");
     await expect(
-      DocumentSkeletonInternal.fromDisk(SAMPLE_DOC_PATH, getSessionDocsContentRoot(), getContentRoot()),
+      DocumentSkeletonInternal.fromDisk(SAMPLE_DOC_PATH, getSessionSectionsContentRoot(), getContentRoot()),
     ).rejects.toThrow("duplicate root");
   });
 
@@ -132,7 +132,7 @@ describe("Self-healing Recovery", () => {
     await createSampleDocument(ctx.rootDir);
 
     // Write a corrupt session skeleton + orphaned body files
-    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionContentDir = join(ctx.rootDir, "sessions", "sections", "content");
     const sessionDocDir = join(sessionContentDir, "ops");
     const sessionSectionsDir = `${join(sessionDocDir, "strategy.md")}.sections`;
     await mkdir(sessionSectionsDir, { recursive: true });
@@ -162,7 +162,7 @@ describe("Self-healing Recovery", () => {
     await createSampleDocument(ctx.rootDir);
 
     const contentRoot = join(ctx.rootDir, "content");
-    const overlayRoot = join(ctx.rootDir, "sessions", "docs", "content");
+    const overlayRoot = join(ctx.rootDir, "sessions", "sections", "content");
     const overlayDocDir = join(overlayRoot, "ops");
 
     // Write an empty overlay skeleton file (zero bytes)

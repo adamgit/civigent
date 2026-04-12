@@ -5,11 +5,11 @@
  *   - Created when first writer connects to a document
  *   - Destroyed when last holder disconnects (after flush to disk)
  *   - Survives mid-session commits (baseHead updated)
- *   - Reconstructed from canonical + sessions/docs/ overlay on reconnect
+ *   - Reconstructed from canonical + sessions/sections/ overlay on reconnect
  */
 
 import * as Y from "yjs";
-import { getContentRoot, getSessionDocsContentRoot } from "../storage/data-root.js";
+import { getContentRoot, getSessionSectionsContentRoot } from "../storage/data-root.js";
 import type {
   WriterIdentity,
   WsServerEvent,
@@ -18,6 +18,9 @@ import type {
 } from "../types/shared.js";
 import type { PreemptiveCommitResult } from "../storage/auto-commit.js";
 import { DocumentFragments, SERVER_INJECTION_ORIGIN } from "./document-fragments.js";
+import type { LiveFragmentStringsStore } from "./live-fragment-strings-store.js";
+import type { RawFragmentRecoveryBuffer } from "../storage/raw-fragment-recovery-buffer.js";
+import type { AcceptResult, StagedSectionsStore } from "../storage/staged-sections-store.js";
 import { PresenceManager } from "./presence-manager.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { EMPTY_BODY, type FragmentContent } from "../storage/section-formatting.js";
@@ -55,6 +58,13 @@ export interface DocSession {
   /** Explicit lifecycle state. Drives entry guards and transition assertions. */
   state: SessionState;
   fragments: DocumentFragments;                // Y.Doc + skeleton paired together
+  /** Store references — same object identities held inside `fragments`, surfaced
+   *  directly on the session so slimmed DocSession logic can reach them without
+   *  going through DocumentFragments. During the transition they alias
+   *  `fragments.liveStrings`, `fragments.rawRecovery`, `fragments.stagedSections`. */
+  liveFragments: LiveFragmentStringsStore;
+  recoveryBuffer: RawFragmentRecoveryBuffer;
+  stagedSections: StagedSectionsStore;
   docPath: string;
   /** All connected participants (editors + observers) keyed by writerId. */
   holders: Map<string, HolderEntry>;
@@ -244,7 +254,7 @@ export async function acquireDocSession(
     const { fragmentFromDisk } = await import("../storage/section-formatting.js");
 
     const canonicalRoot = getContentRoot();
-    const overlayRoot = getSessionDocsContentRoot();
+    const overlayRoot = getSessionSectionsContentRoot();
     const overlay = new OverlayContentLayer(overlayRoot, canonicalRoot);
 
     const skeleton = await DocumentSkeletonInternal.fromDisk(docPath, overlayRoot, canonicalRoot);
@@ -330,6 +340,9 @@ export async function acquireDocSession(
     const newSession: DocSession = {
       state: "acquiring",
       fragments,
+      liveFragments: fragments.liveStrings,
+      recoveryBuffer: fragments.rawRecovery,
+      stagedSections: fragments.stagedSections,
       docPath,
       holders: new Map(),   // Callers add themselves after awaiting the promise
       presenceManager: new PresenceManager(),
@@ -470,6 +483,65 @@ export function updateSectionFocus(
   return { oldFocus: previous };
 }
 
+// ─── Fragment key ↔ heading path lookup ──────────────────────────
+
+/**
+ * Session-level bidirectional index accessors. These delegate to the
+ * DocumentFragments-owned index during the transition; once DocSession owns
+ * its own index (built from skeleton at acquisition, updated from
+ * `result.updatedIndex` after structural changes), these will read from it
+ * directly without going through `session.fragments`.
+ */
+export function findKeyForHeadingPath(session: DocSession, headingPath: string[]): string | null {
+  return session.fragments.findFragmentKeyForHeadingPath(headingPath);
+}
+
+export function requireKeyForHeadingPath(session: DocSession, headingPath: string[]): string {
+  return session.fragments.requireFragmentKeyForHeadingPath(headingPath);
+}
+
+export function findHeadingPathForKey(session: DocSession, fragmentKey: string): string[] | null {
+  return session.fragments.findHeadingPathForFragmentKey(fragmentKey);
+}
+
+export function requireHeadingPathForKey(session: DocSession, fragmentKey: string): string[] {
+  return session.fragments.requireHeadingPathForFragmentKey(fragmentKey);
+}
+
+/**
+ * Apply the result of `stagedSections.acceptLiveFragments(...)` back onto
+ * the DocSession.
+ *
+ * During the transition, the legacy delegate bound inside DocumentFragments
+ * already mutates the Y.Doc inline via `importDirtyFragmentsToSessionOverlay`
+ * → `reconcileLiveFragmentsFromDetailedResult` and rebuilds the session index
+ * through `DocumentFragments.rebuildIndexFromSkeleton()`. It therefore always
+ * returns `structuralChange: null` and `updatedIndex: null`, and this helper
+ * is effectively a no-op for that path.
+ *
+ * Once the native (non-legacy) acceptance path lands, a non-null
+ * `structuralChange` will drive `liveFragments.applyStructuralChange(...)`
+ * and a non-null `updatedIndex` will replace the session's bidirectional
+ * fragment-key ↔ heading-path index. Broadcast of structural remaps is
+ * separately driven by the normalize-broadcast callback during the
+ * transition; this helper does not duplicate that work.
+ */
+export function applyAcceptResult(session: DocSession, result: AcceptResult): void {
+  if (result.structuralChange) {
+    session.liveFragments.applyStructuralChange(result.structuralChange);
+  }
+  // `updatedIndex` is authoritative once the native path produces it. The
+  // legacy delegate leaves this null; the session's index is rebuilt by
+  // DocumentFragments.rebuildIndexFromSkeleton() during the legacy
+  // reconciliation pass, so no action is required here in that case.
+  if (result.updatedIndex) {
+    // Transitional placeholder: the session-owned index lives in
+    // DocumentFragments until B5.4 moves it onto DocSession directly.
+    // Once that happens, replace the two maps from `result.updatedIndex`
+    // here synchronously.
+  }
+}
+
 // ─── Per-user dirty tracking ─────────────────────────────────────
 
 /**
@@ -557,7 +629,7 @@ export async function injectAfterCommit(
   // Lazy-import to avoid circular dependency (content-layer → session-store → ydoc-lifecycle)
   const { ContentLayer } = await import("../storage/content-layer.js");
   // getContentRoot() is the canonical root — reads just-committed canonical content,
-  // not the session overlay (getSessionDocsContentRoot would read the in-progress overlay).
+  // not the session overlay (getSessionSectionsContentRoot would read the in-progress overlay).
   const layer = new ContentLayer(getContentRoot());
 
   const svBefore = Y.encodeStateVector(session.fragments.ydoc);
@@ -574,9 +646,7 @@ export async function injectAfterCommit(
     }
     const body = await layer.readSection(new SectionRef(docPath, headingPath));
     const content = DocumentFragments.buildFragmentContent(body, entry.level, entry.heading);
-    session.fragments.replaceFragmentFromProvidedContent(fragmentKey, content, {
-      origin: SERVER_INJECTION_ORIGIN,
-    });
+    session.liveFragments.replaceFragmentString(fragmentKey, content, SERVER_INJECTION_ORIGIN);
   }
 
   const update = Y.encodeStateAsUpdate(session.fragments.ydoc, svBefore);
@@ -726,7 +796,7 @@ export function removeObserverHolder(docPath: string, writerId: string, socketId
  * - `fragments.dirtyKeys`: dirty since last flush (cleared by flush)
  * - `perUserDirty`: session-scoped attribution, survives flushes
  */
-function collectTouchedFragmentKeysForNormalization(session: DocSession): Set<string> {
+export function collectTouchedFragmentKeysForNormalization(session: DocSession): Set<string> {
   const keys = new Set<string>(session.fragments.dirtyKeys);
   for (const dirtySet of session.perUserDirty.values()) {
     for (const key of dirtySet) {
@@ -1038,11 +1108,11 @@ export async function getSessionFileMtime(sectionKey: string): Promise<number | 
 
   // No in-memory session — check disk file mtime from the effective
   // overlay+canonical view so sparse session overlays still resolve.
-  const sessionDocsContentRoot = getSessionDocsContentRoot();
+  const sessionSectionsContentRoot = getSessionSectionsContentRoot();
 
   try {
     const { OverlayContentLayer } = await import("../storage/content-layer.js");
-    const layer = new OverlayContentLayer(sessionDocsContentRoot, getContentRoot());
+    const layer = new OverlayContentLayer(sessionSectionsContentRoot, getContentRoot());
     const filePath = await layer.resolveSectionPath(docPath, headingPath);
     const { stat } = await import("node:fs/promises");
     const stats = await stat(filePath);
@@ -1128,7 +1198,8 @@ export async function invalidateSessionForRestore(
       clearTimeout(session.idleTimeoutTimer);
       session.idleTimeoutTimer = null;
     }
-    session.fragments.ydoc.destroy();
+    const { teardownSessionStores } = await import("../storage/restore-teardown.js");
+    await teardownSessionStores(session.liveFragments, session.stagedSections, session.recoveryBuffer);
     session.state = "ended";
     sessions.delete(docPath);
     sessionPromises.delete(docPath);

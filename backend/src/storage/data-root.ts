@@ -54,8 +54,8 @@ export function getSessionsRoot(): string {
 }
 
 /** Crash-safety layer: dirty section content + skeletons (mirrors content/ structure) */
-export function getSessionDocsRoot(): string {
-  return path.join(getDataRoot(), "sessions", "docs");
+export function getSessionSectionsRoot(): string {
+  return path.join(getDataRoot(), "sessions", "sections");
 }
 
 /** Raw fragment files: verbatim markdown from Y.XmlFragment (heading + body) */
@@ -68,9 +68,9 @@ export function getSessionAuthorsRoot(): string {
   return path.join(getDataRoot(), "sessions", "authors");
 }
 
-/** The content subdirectory of the session docs overlay root. */
-export function getSessionDocsContentRoot(): string {
-  return path.join(getSessionDocsRoot(), "content");
+/** The content subdirectory of the session sections overlay root. */
+export function getSessionSectionsContentRoot(): string {
+  return path.join(getSessionSectionsRoot(), "content");
 }
 
 /** Root directory for import staging areas (one subdir per import ID). */
@@ -132,7 +132,7 @@ export async function ensureV3Directories(): Promise<void> {
     getProposalsCommittingRoot(),
     getProposalsCommittedRoot(),
     getProposalsWithdrawnRoot(),
-    getSessionDocsRoot(),
+    getSessionSectionsRoot(),
     getSessionFragmentsRoot(),
     getSessionAuthorsRoot(),
     getAuthRoot(),

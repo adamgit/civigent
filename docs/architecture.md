@@ -98,11 +98,11 @@ We have one format that mirrors Layer1 and one that mirrors Layer3. This enables
 | Format | Location | Purpose | Freshness |
 |--------|----------|---------|-----------|
 | **Raw fragments** | `sessions/fragments/` | Crash-safety layer. One file per dirty Y.XmlFragment. Verbatim markdown (may contain embedded headings during structural edits). | ~1-2 seconds |
-| **Canonical-ready** | `sessions/docs/content/` | Structurally valid session content. Mirrors canonical structure. Used by REST APIs and commit pipeline. | Written on flush when clean, or after normalization. |
+| **Canonical-ready** | `sessions/sections/content/` | Structurally valid session content. Mirrors canonical structure. Used by REST APIs and commit pipeline. | Written on flush when clean, or after normalization. |
 
 **Author metadata** (`sessions/authors/{writerId}.json`): Tracks which user dirtied which sections. Used by the Mirror panel and auth-log attribution. Per-user, not per-session.
 
-The overlay-first pattern: when reading content, the system checks `sessions/docs/content/` first, then falls back to `content/`. This ensures page reloads show unpublished changes.
+The overlay-first pattern: when reading content, the system checks `sessions/sections/content/` first, then falls back to `content/`. This ensures page reloads show unpublished changes.
 
 ### Layer 3: Y.Doc (in-memory CRDT)
 
@@ -290,7 +290,7 @@ Scores are included in REST API responses (computed at request time) and polled 
 Triggered by user typing/editing, or by timer, disconnect, or shutdown. This is the main autosave.
 
 1. Write raw fragments to `sessions/fragments/` (always — crash safety)
-2. If structurally clean (no embedded headings), also write canonical-ready to `sessions/docs/content/` ... otherwise the write to `sessions` is done by the later Normalization stage (see below)
+2. If structurally clean (no embedded headings), also write canonical-ready to `sessions/sections/content/` ... otherwise the write to `sessions` is done by the later Normalization stage (see below)
 3. Send SESSION_FLUSHED to connected clients (triggers green dots)
 4. Update author metadata in `sessions/authors/`
 
@@ -314,11 +314,11 @@ Detects embedded headings in fragments and splits them into proper sub-sections.
 
 Runs when human indicates a set of related edits have been performed, or (as fallback) on various heuristic catch-alls: e.g. after session destruction, manual publish, shutdown, or crash recovery.
 
-1. Read dirty sections from `sessions/docs/content/`
+1. Read dirty sections from `sessions/sections/content/`
 2. Compare against canonical
 3. Write changed sections to canonical `content/`
 4. Make git commit (with writer attribution)
-5. Delete committed files from both `sessions/docs/` and `sessions/fragments/`
+5. Delete committed files from both `sessions/sections/` and `sessions/fragments/`
 6. Update author metadata — remove committed sections
 
 ### Proposal commit (agent or human)
@@ -337,7 +337,7 @@ On server start:
 
 1. Scan `sessions/fragments/` (source of truth — always fresh within ~2s)
 2. Normalize all fragments (resolve embedded headings)
-3. Write results to `sessions/docs/content/`
+3. Write results to `sessions/sections/content/`
 4. Compare against canonical
 5. Commit under "crash recovery" identity
 6. Clean up all session files
@@ -499,7 +499,7 @@ In production, `server.ts` runs directly — no supervisor, no SSE endpoint, no 
 3. **All durable state visible on disk** — `ls` shows complete system state; no hidden database
 4. **REST endpoints return canonical-ready only** — never read raw fragments (may contain un-normalized content)
 5. **Human-involvement is a 0-1 float** — single threshold (0.5), never cached, computed on every evaluation
-6. **Dirty ownership contract**: Content dirtiness is shared (`sessions/docs/`); attribution dirtiness is per-user (`sessions/authors/`)
+6. **Dirty ownership contract**: Content dirtiness is shared (`sessions/sections/`); attribution dirtiness is per-user (`sessions/authors/`)
 
 ---
 

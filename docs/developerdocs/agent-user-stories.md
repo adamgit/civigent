@@ -81,7 +81,7 @@ All tests live in `backend/src/__tests__/mcp/` alongside the existing `structura
 
 We only fake external systems and actors:
 - **Human git commits** — `git commit` with `--trailer Writer-Type: human` and `--date` to control HI score decay
-- **Dirty session files** — write a file to `sessions/docs/{docPath}.sections/{sectionFile}` to simulate an active human editor (hard block)
+- **Dirty session files** — write a file to `sessions/sections/{docPath}.sections/{sectionFile}` to simulate an active human editor (hard block)
 - **Agent identity** — `authFor("archbot-1", "agent")`, `authFor("contentpilot", "agent")`, etc.
 - **HI preset** — default "eager" (midpoint=7200s, steepness=1.2). At threshold=0.5: score=0.5 at exactly 2 hours since last human edit
 
@@ -149,7 +149,7 @@ no human activity → score = 0.0 → passes
 
 **Setup:**
 1. `createTestServer()`, `createSampleDocument()` (has `§ Overview` and `§ Timeline`)
-2. Write a dirty session file at `sessions/docs/ops/strategy.md.sections/timeline.md` to hard-block `§ Timeline`
+2. Write a dirty session file at `sessions/sections/ops/strategy.md.sections/timeline.md` to hard-block `§ Timeline`
 3. `initMcpSession()` with archbot agent token
 
 **Steps:**
@@ -180,7 +180,7 @@ no human activity → score = 0.0 → passes
    - Assert: content is still original ("Q1: Planning. Q2: Execution. Q3: Review.")
 
 6. **Cleanup: remove dirty session file, verify unblocked**
-   - Delete `sessions/docs/ops/strategy.md.sections/timeline.md`
+   - Delete `sessions/sections/ops/strategy.md.sections/timeline.md`
    - `callMcpTool("create_proposal", { intent: "Now update timeline", replace: true, sections: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Timeline"], content: "New timeline" }] })`
    - Assert: `outcome === "accepted"` (no longer blocked)
 

@@ -18,7 +18,7 @@
  */
 
 import * as Y from "yjs";
-import { getContentRoot, getSessionDocsContentRoot } from "../../storage/data-root.js";
+import { getContentRoot, getSessionSectionsContentRoot } from "../../storage/data-root.js";
 import { DocumentFragments } from "../../crdt/document-fragments.js";
 import { DocumentSkeletonInternal } from "../../storage/document-skeleton.js";
 import { OverlayContentLayer } from "../../storage/content-layer.js";
@@ -48,7 +48,7 @@ import { SectionRef } from "../../domain/section-ref.js";
  */
 export async function buildDocumentFragmentsForTest(docPath: string): Promise<DocumentFragments> {
   const canonicalRoot = getContentRoot();
-  const overlayRoot = getSessionDocsContentRoot();
+  const overlayRoot = getSessionSectionsContentRoot();
   const overlay = new OverlayContentLayer(overlayRoot, canonicalRoot);
 
   const skeleton = await DocumentSkeletonInternal.fromDisk(docPath, overlayRoot, canonicalRoot);

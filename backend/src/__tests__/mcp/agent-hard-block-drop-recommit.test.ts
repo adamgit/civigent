@@ -79,7 +79,7 @@ async function initMcpSession(): Promise<void> {
 }
 
 describe("US-4: hard-block, drop blocked section, recommit", () => {
-  let sessionDocsContentRoot: string;
+  let sessionSectionsContentRoot: string;
   const diskRelative = SAMPLE_DOC_PATH.replace(/^\//, "");
 
   beforeAll(async () => {
@@ -87,15 +87,15 @@ describe("US-4: hard-block, drop blocked section, recommit", () => {
     await createSampleDocument(ctx.dataCtx.rootDir);
 
     // Set up dirty session file for Timeline to hard-block it
-    sessionDocsContentRoot = join(ctx.dataCtx.rootDir, "sessions", "docs", "content");
-    const overlaySkeletonDir = join(sessionDocsContentRoot, join(diskRelative, "..").replace(/\\/g, "/"));
-    const overlaySectionsDir = join(sessionDocsContentRoot, `${diskRelative}.sections`);
+    sessionSectionsContentRoot = join(ctx.dataCtx.rootDir, "sessions", "sections", "content");
+    const overlaySkeletonDir = join(sessionSectionsContentRoot, join(diskRelative, "..").replace(/\\/g, "/"));
+    const overlaySectionsDir = join(sessionSectionsContentRoot, `${diskRelative}.sections`);
     await mkdir(overlaySkeletonDir, { recursive: true });
     await mkdir(overlaySectionsDir, { recursive: true });
 
     // Copy skeleton so heading resolution works in the overlay
     const canonicalSkeleton = join(ctx.dataCtx.rootDir, "content", diskRelative);
-    await copyFile(canonicalSkeleton, join(sessionDocsContentRoot, diskRelative));
+    await copyFile(canonicalSkeleton, join(sessionSectionsContentRoot, diskRelative));
 
     // Write a dirty session file for Timeline
     await writeFile(join(overlaySectionsDir, "timeline.md"), "dirty timeline content from session");
@@ -195,10 +195,10 @@ describe("US-4: hard-block, drop blocked section, recommit", () => {
     );
 
     // ── Step 7: Remove dirty file, create_proposal for Timeline → accepted ──
-    const overlaySectionsDir = join(sessionDocsContentRoot, `${diskRelative}.sections`);
+    const overlaySectionsDir = join(sessionSectionsContentRoot, `${diskRelative}.sections`);
     await rm(join(overlaySectionsDir, "timeline.md"), { force: true });
     // Also remove the overlay skeleton so the dirty file check returns clean
-    await rm(join(sessionDocsContentRoot, diskRelative), { force: true });
+    await rm(join(sessionSectionsContentRoot, diskRelative), { force: true });
 
     const res7 = await callMcpTool("create_proposal", {
       intent: "Now update timeline after human is done",

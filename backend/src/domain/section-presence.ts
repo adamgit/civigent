@@ -19,7 +19,7 @@ import { access } from "node:fs/promises";
 import path from "node:path";
 import { SectionRef } from "./section-ref.js";
 import { lookupDocSession, countEditorSockets } from "../crdt/ydoc-lifecycle.js";
-import { getSessionDocsContentRoot } from "../storage/data-root.js";
+import { getSessionSectionsContentRoot } from "../storage/data-root.js";
 import { resolveHeadingPathUnderRoot } from "../storage/heading-resolver.js";
 import { resolveAllSectionPaths } from "../storage/heading-resolver.js";
 import { listProposals } from "../storage/proposal-repository.js";
@@ -87,10 +87,10 @@ export class SectionPresence {
    * Returns Set of SectionRef.headingKey() strings.
    */
   static async prefetchDirtyFiles(docPath: string): Promise<Set<string>> {
-    const sessionDocsContentRoot = getSessionDocsContentRoot();
+    const sessionSectionsContentRoot = getSessionSectionsContentRoot();
     const result = new Set<string>();
 
-    const overlayPaths = await resolveAllSectionPaths(sessionDocsContentRoot, docPath);
+    const overlayPaths = await resolveAllSectionPaths(sessionSectionsContentRoot, docPath);
 
     const checks = [...overlayPaths.entries()].map(async ([key, resolved]) => {
       try {
@@ -159,10 +159,10 @@ export class SectionPresence {
    * Check if a dirty session file exists on disk for this section.
    */
   private static async checkDirtyFile(ref: SectionRef): Promise<boolean> {
-    const sessionDocsContentRoot = getSessionDocsContentRoot();
+    const sessionSectionsContentRoot = getSessionSectionsContentRoot();
     try {
       const sectionPath = await resolveHeadingPathUnderRoot(
-        sessionDocsContentRoot,
+        sessionSectionsContentRoot,
         ref.docPath,
         ref.headingPath,
       );

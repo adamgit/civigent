@@ -63,13 +63,13 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 - Each section includes heading_path, content, humanInvolvement_score, word_count
 - section_length_warning is true when word_count exceeds threshold
 - Sections overlay from active Y.Doc session when present
-- Sections overlay from sessions/docs/ when Y.Doc absent but dirty files exist
+- Sections overlay from sessions/sections/ when Y.Doc absent but dirty files exist
 - Returns canonical content when no session or dirty files exist
 
 ### `document-structure.test.ts`
 - GET /api/documents/:docPath/structure returns heading tree
 - Structure reflects skeleton files, including nested sub-skeletons
-- Structure overlays from sessions/docs/ when dirty skeleton exists
+- Structure overlays from sessions/sections/ when dirty skeleton exists
 
 ### `document-changes-since.test.ts`
 - GET /api/documents/:docPath/changes-since?after_head=SHA returns changed sections
@@ -187,7 +187,7 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 - Admin config change to preset affects subsequent evaluations
 
 ### `human-involvement-dirty-files.test.ts`
-- getDirtySessionFileSet correctly identifies dirty files in sessions/docs/
+- getDirtySessionFileSet correctly identifies dirty files in sessions/sections/
 - Dirty files for a section mark it as actively edited for human-involvement purposes
 
 ---
@@ -276,7 +276,7 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 
 ### `fragment-store-flush.test.ts`
 - flush() writes raw fragment files to sessions/fragments/ for every dirty key
-- flush() writes canonical-ready to sessions/docs/ only when structurally clean
+- flush() writes canonical-ready to sessions/sections/ only when structurally clean
 - flush() skips canonical-ready write when fragment contains embedded headings
 - flush() clears dirtyKeys after successful flush
 - flush() returns writtenKeys listing all flushed fragment keys
@@ -309,15 +309,15 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 - scanSessionFragmentDocPaths returns all docPaths with raw fragments
 
 ### `crash-recovery-fragments.test.ts`
-- Crash recovery reads raw fragments from sessions/fragments/ before sessions/docs/
+- Crash recovery reads raw fragments from sessions/fragments/ before sessions/sections/
 - Raw fragments with embedded headings are normalized during recovery
-- Normalized content produces canonical-ready files in sessions/docs/
+- Normalized content produces canonical-ready files in sessions/sections/
 - Recovery commits differences under "crash-recovery" identity
 - All session files (docs, fragments, authors) cleaned up after recovery
 
 ### `fragment-store-from-disk.test.ts`
 - fromDisk prefers raw fragments when sessions/fragments/ has files
-- fromDisk falls back to overlay (sessions/docs/) when no raw fragments exist
+- fromDisk falls back to overlay (sessions/sections/) when no raw fragments exist
 - fromDisk strips heading from raw fragment to get body-only for Y.Doc
 - fromDisk normalizes fragments with embedded headings after loading
 
@@ -331,8 +331,8 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 - Missing overlay sections fall back to canonical
 
 ### `auto-commit.test.ts`
-- commitDirtySections reads from sessions/docs/ and writes to canonical
-- Committed section files are deleted from sessions/docs/
+- commitDirtySections reads from sessions/sections/ and writes to canonical
+- Committed section files are deleted from sessions/sections/
 - Git commit is created with correct attribution
 - commitAllDirtySessions iterates all active sessions
 

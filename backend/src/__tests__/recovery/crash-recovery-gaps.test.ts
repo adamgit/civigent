@@ -27,8 +27,8 @@ describe("Crash Recovery Test Gaps", () => {
     try {
       const sessionFragments = join(ctx.rootDir, "sessions", "fragments");
       await chmod(sessionFragments, 0o755).catch(() => {});
-      const sessionDocs = join(ctx.rootDir, "sessions", "docs");
-      await chmod(sessionDocs, 0o755).catch(() => {});
+      const sessionSections = join(ctx.rootDir, "sessions", "sections");
+      await chmod(sessionSections, 0o755).catch(() => {});
     } catch {}
     await ctx.cleanup();
   });
@@ -38,7 +38,7 @@ describe("Crash Recovery Test Gaps", () => {
     docPath: string,
     sections: Record<string, string>,
   ): Promise<void> {
-    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionContentDir = join(ctx.rootDir, "sessions", "sections", "content");
     const docDir = join(sessionContentDir, ...docPath.replace(".md", "").split("/"));
     const sectionsDir = `${join(sessionContentDir, docPath)}.sections`;
     await mkdir(sectionsDir, { recursive: true });
@@ -76,12 +76,12 @@ describe("Crash Recovery Test Gaps", () => {
 
     // Corrupt doc 1's session directory — make sections dir unreadable
     const corruptDir = join(
-      ctx.rootDir, "sessions", "docs", "content",
+      ctx.rootDir, "sessions", "sections", "content",
       `${SAMPLE_DOC_PATH}.sections`,
     );
     // Write a file that will cause skeleton parsing issues
     await writeFile(
-      join(ctx.rootDir, "sessions", "docs", "content", SAMPLE_DOC_PATH),
+      join(ctx.rootDir, "sessions", "sections", "content", SAMPLE_DOC_PATH),
       "\0\0\0CORRUPT_BINARY\0\0\0",
       "utf8",
     );
@@ -102,7 +102,7 @@ describe("Crash Recovery Test Gaps", () => {
     await createSampleDocument(ctx.rootDir);
 
     // Write session files that exist but corrupt the skeleton in a way that causes throw
-    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionContentDir = join(ctx.rootDir, "sessions", "sections", "content");
     const sessionDocDir = join(sessionContentDir, "ops");
     await mkdir(sessionDocDir, { recursive: true });
 
@@ -157,7 +157,7 @@ describe("Crash Recovery Test Gaps", () => {
 
     // Session files should still be on disk
     const sessionOverlay = join(
-      ctx.rootDir, "sessions", "docs", "content",
+      ctx.rootDir, "sessions", "sections", "content",
       `${SAMPLE_DOC_PATH}.sections`, "overview.md",
     );
     const fileExists = await access(sessionOverlay).then(() => true).catch(() => false);
@@ -196,7 +196,7 @@ describe("Crash Recovery Test Gaps", () => {
 
     // Session files should now be cleaned up
     const sessionOverlay = join(
-      ctx.rootDir, "sessions", "docs", "content",
+      ctx.rootDir, "sessions", "sections", "content",
       `${SAMPLE_DOC_PATH}.sections`, "overview.md",
     );
     const fileExists = await access(sessionOverlay).then(() => true).catch(() => false);
@@ -254,7 +254,7 @@ describe("Crash Recovery Test Gaps", () => {
 
     // Also write updated sub-skeleton content
     const sessionSubDir = join(
-      ctx.rootDir, "sessions", "docs", "content",
+      ctx.rootDir, "sessions", "sections", "content",
       `${docPath}.sections`, "overview.md.sections",
     );
     await mkdir(sessionSubDir, { recursive: true });
@@ -305,7 +305,7 @@ describe("Crash Recovery Test Gaps", () => {
     await createSampleDocument(ctx.rootDir);
 
     // Write session overlay skeleton referencing two sections but only one body file
-    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionContentDir = join(ctx.rootDir, "sessions", "sections", "content");
     const sessionDocDir = join(sessionContentDir, "ops");
     const sessionSectionsDir = `${join(sessionDocDir, "strategy.md")}.sections`;
     await mkdir(sessionSectionsDir, { recursive: true });
@@ -335,7 +335,7 @@ describe("Crash Recovery Test Gaps", () => {
     const docPath = "orphan/new-doc.md";
 
     // Write session overlay for a doc that doesn't exist in canonical
-    const sessionContentDir = join(ctx.rootDir, "sessions", "docs", "content");
+    const sessionContentDir = join(ctx.rootDir, "sessions", "sections", "content");
     const sessionSectionsDir = join(sessionContentDir, `${docPath}.sections`);
     await mkdir(sessionSectionsDir, { recursive: true });
 

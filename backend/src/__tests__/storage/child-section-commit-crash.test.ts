@@ -40,7 +40,7 @@ describe("ROOT_FRAGMENT_KEY collision", () => {
 
   beforeEach(async () => {
     ctx = await createTempDataRoot();
-    await mkdir(join(ctx.rootDir, "sessions", "docs", "content"), { recursive: true });
+    await mkdir(join(ctx.rootDir, "sessions", "sections", "content"), { recursive: true });
     await mkdir(join(ctx.rootDir, "sessions", "fragments"), { recursive: true });
     await mkdir(join(ctx.rootDir, "sessions", "authors"), { recursive: true });
 

@@ -9,35 +9,33 @@
  * both (construct, import to session overlay, assemble) are methods here.
  */
 
-import * as Y from "yjs";
-import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
-import { yDocToProsemirrorJSON, prosemirrorJSONToYDoc } from "y-prosemirror";
+import type * as Y from "yjs";
 import { DocumentSkeletonInternal, type DocumentSkeleton, type FlatEntry } from "../storage/document-skeleton.js";
 import { parseDocumentMarkdown } from "../storage/markdown-sections.js";
-import { OverlayContentLayer, type UpsertSectionFromMarkdownDetailedResult } from "../storage/content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
-import { getContentRoot, getSessionDocsContentRoot } from "../storage/data-root.js";
+import { getContentRoot, getSessionSectionsContentRoot } from "../storage/data-root.js";
 import {
   fragmentKeyFromSectionFile,
-  sectionFileFromFragmentKey,
-  getBackendSchema,
 } from "./ydoc-fragments.js";
 import {
   bodyFromParser,
   bodyAsFragment,
-  fragmentFromRemark,
   buildFragmentContent as buildFragmentContentFn,
   fragmentAsBody,
   type SectionBody,
   type FragmentContent,
 } from "../storage/section-formatting.js";
+import {
+  LiveFragmentStringsStore,
+  SERVER_INJECTION_ORIGIN,
+} from "./live-fragment-strings-store.js";
+import { RawFragmentRecoveryBuffer } from "../storage/raw-fragment-recovery-buffer.js";
+import { StagedSectionsStore, type AcceptResult } from "../storage/staged-sections-store.js";
 
-// ─── Server injection origin ──────────────────────────────────────
-
-/** Unforgeable Symbol used to stamp server-authoritative Y.Doc mutations.
- *  The afterTransaction guard checks txn.origin === SERVER_INJECTION_ORIGIN
- *  to suppress dirty tracking for injected updates. */
-export const SERVER_INJECTION_ORIGIN = Symbol('server-injection');
+// Re-exported from live-fragment-strings-store so existing importers of
+// DocumentFragments.SERVER_INJECTION_ORIGIN keep working. The authoritative
+// definition lives on the new store.
+export { SERVER_INJECTION_ORIGIN };
 
 // ─── Import result ───────────────────────────────────────────────
 
@@ -77,6 +75,25 @@ export class DocumentFragments {
 
   readonly docPath: string;
 
+  /** Adapter: the new backend-boundary-1 store. During the transition, this
+   *  DocumentFragments holds a LiveFragmentStringsStore internally and
+   *  delegates all Y.Doc content reads/writes through it. Later refactor
+   *  stages will unwrap this adapter entirely. */
+  readonly liveStrings: LiveFragmentStringsStore;
+
+  /** Adapter: the new crash-recovery sidecar. Owns sessions/fragments/ I/O.
+   *  Not a pipeline stage — writes are for crash safety only. */
+  readonly rawRecovery: RawFragmentRecoveryBuffer;
+
+  /** Adapter: the new backend-boundary-2 store. Owns sessions/sections/
+   *  staging + boundary-3 tracking. Implements the native
+   *  `acceptLiveFragments(liveStore, scope)` entry point from
+   *  store-architecture.md. `importDirtyFragmentsToSessionOverlay` and
+   *  `normalizeStructure` on this class are now thin wrappers that call
+   *  through to the store's native path and apply the returned
+   *  `StructuralChange` to `liveStrings` (plus the local index). */
+  readonly stagedSections: StagedSectionsStore;
+
   /** Fragment keys modified since last session-overlay import. Updated on Y.Doc changes,
    *  cleared after a successful import. Separate from perUserDirty which
    *  tracks per-user attribution for the Mirror panel. */
@@ -100,6 +117,9 @@ export class DocumentFragments {
     this.skeleton = skeleton;
     this.docPath = docPath;
     this.rebuildIndexFromSkeleton();
+    this.liveStrings = new LiveFragmentStringsStore(ydoc, this.orderedFragmentKeys, docPath);
+    this.rawRecovery = new RawFragmentRecoveryBuffer(docPath);
+    this.stagedSections = new StagedSectionsStore(docPath);
   }
 
   static fragmentKeyFor(entry: FlatEntry): string {
@@ -142,36 +162,6 @@ export class DocumentFragments {
   findHeadingPathForFragmentKey(fragmentKey: string): string[] | null {
     const headingPath = this.headingPathByFragmentKey.get(fragmentKey);
     return headingPath ? [...headingPath] : null;
-  }
-
-  /**
-   * Detect a fragment whose CRDT content has had its heading deleted —
-   * i.e. the parsed payload is one level-0 orphan with non-empty body
-   * AND the fragment is NOT the BFH (which legitimately has headingPath=[]).
-   * Used by `normalizeStructure` to recursively pre-normalize chains of
-   * orphan-only predecessors before dispatching to the content layer.
-   */
-  private fragmentIsOrphanOnly(fragmentKey: string, headingPath: string[]): boolean {
-    // BFH (headingPath=[]) is a legitimate level-0 root section, not a
-    // pending heading deletion.
-    if (headingPath.length === 0) return false;
-    const content = this.extractMarkdown(fragmentKey);
-    if (!content) return false;
-    const parsed = parseDocumentMarkdown(content);
-    if (parsed.length !== 1) return false;
-    const only = parsed[0];
-    if (only.level !== 0 || only.heading !== "") return false;
-    return (only.body as unknown as string).trim().length > 0;
-  }
-
-  /**
-   * Return the immediate predecessor fragment key in document order, or
-   * null if `fragmentKey` is the first key (or not in the index at all).
-   */
-  private findImmediatePredecessorFragmentKey(fragmentKey: string): string | null {
-    const idx = this.orderedFragmentKeys.indexOf(fragmentKey);
-    if (idx <= 0) return null;
-    return this.orderedFragmentKeys[idx - 1];
   }
 
   // ─── Content reads ─────────────────────────────────────────────
@@ -245,13 +235,36 @@ export class DocumentFragments {
   // ─── Import dirty fragments to session overlay ─────────────────
 
   /**
-   * Import dirty in-memory Y.Doc fragments into the session overlay.
+   * Transitional wrapper over the native
+   * `StagedSectionsStore.acceptLiveFragments(...)` path.
    *
-   * For every dirty fragment:
-   * 1. Persist raw fragment markdown to `sessions/fragments/` (crash-safe source record)
-   * 2. Reconcile markdown into `sessions/docs/content/` through OverlayContentLayer
-   *    (may include structural outcomes such as rewrites/splits/deletions)
-   * 3. Reconcile in-memory fragment indices/skeleton to the resulting on-disk structure
+   * Still exposed on DocumentFragments because many callers (production
+   * `session-store.ts`, `auto-commit.ts`, and ~40 test sites with
+   * monkey-patches) depend on this public method name. When Group C
+   * finishes rewiring those callers to `stagedSections.acceptLiveFragments`
+   * directly and Group B5 moves the heading-path index onto DocSession,
+   * this wrapper will be removed.
+   *
+   * Steps, mirroring the `store-architecture.md` session-pipeline flow:
+   *   1. Intersect the caller's scope with this document's dirty keys and
+   *      clear them from `dirtyKeys` (the old boundary-2 tracker). The
+   *      native path clears `liveStrings.aheadOfStagedKeys` separately —
+   *      this wrapper maintains the legacy `dirtyKeys` mirror for callers
+   *      that still read it.
+   *   2. Write raw recovery files for every key in scope BEFORE accepting.
+   *      This preserves the crash-safety ordering: if the server dies
+   *      between the raw write and the overlay write, recovery reads the
+   *      raw file.
+   *   3. Call `stagedSections.acceptLiveFragments(liveStrings, scope)`.
+   *   4. If the result carries a `StructuralChange`, apply it to the live
+   *      Y.Doc via `liveStrings.applyStructuralChange(...)` and rebuild
+   *      the local heading-path index from `updatedIndex` (plus reload
+   *      `this.skeleton` from disk for callers that still read it).
+   *   5. For the raw-recovery sidecar: delete raw files for removed
+   *      fragment keys and rewrite raw files for fragments whose content
+   *      changed as a side-effect of structural reconciliation (keeps the
+   *      raw recovery buffer aligned with the current fragment-key set).
+   *   6. Invoke `broadcastStructureChange` with the remap list.
    */
   async importDirtyFragmentsToSessionOverlay(
     opts?: {
@@ -276,53 +289,20 @@ export class DocumentFragments {
     } else {
       this.dirtyKeys.clear();
     }
-  
-    const ops = await this.getSessionStoreOps();
-    const contentLayer = new OverlayContentLayer(getSessionDocsContentRoot(), getContentRoot());
-  
-    const writtenKeys: string[] = [];
-    const deletedKeys: string[] = [];
+
+    // Raw recovery snapshot (pre-accept) — mirrors the per-fragment raw
+    // write the legacy path did inside its inner loop.
     const droppedKeys: Array<{ fragmentKey: string; error: unknown }> = [];
-  
     for (const fragmentKey of keysToFlush) {
       const headingPath = this.findHeadingPathForFragmentKey(fragmentKey);
       if (!headingPath) {
         droppedKeys.push({ fragmentKey, error: new Error("fragment key no longer resolves to a heading path") });
         continue;
       }
-  
-      const rawMarkdown = this.reconstructFullMarkdown(fragmentKey, 0, "");
-      const fragmentFileId = sectionFileFromFragmentKey(fragmentKey);
-      const rawFragmentFile = fragmentFileId.endsWith(".md")
-        ? fragmentFileId
-        : `${fragmentFileId}.md`;
-  
-      await ops.writeRawFragment(this.docPath, rawFragmentFile, rawMarkdown);
-  
-      const ref = new SectionRef(this.docPath, headingPath);
-      const result = this.fragmentIsOrphanOnly(fragmentKey, headingPath)
-        ? await contentLayer.upsertSectionMergingToPrevious(ref, rawMarkdown)
-        : await (() => {
-            const parsed = parseDocumentMarkdown(rawMarkdown);
-            const firstHeaded = parsed.find((sec) => !(sec.level === 0 && sec.heading === ""));
-            const heading = headingPath.length === 0
-              ? ""
-              : (firstHeaded?.heading ?? headingPath[headingPath.length - 1] ?? "");
-            return contentLayer.upsertSection(ref, heading, rawMarkdown, { contentIsFullMarkdown: true });
-          })();
-  
-      await this.applyDetailedUpsertResult(
-        result,
-        contentLayer,
-        ops,
-        opts,
-      );
-  
-  
-      writtenKeys.push(...result.writtenEntries.map((entry) => DocumentFragments.fragmentKeyFor(entry)));
-      deletedKeys.push(...result.removedEntries.map((entry) => DocumentFragments.fragmentKeyFor(entry)));
+      const rawMarkdown = this.liveStrings.readFragmentString(fragmentKey);
+      await this.rawRecovery.writeFragment(fragmentKey, rawMarkdown);
     }
-  
+
     if (droppedKeys.length > 0) {
       const details = droppedKeys
         .map(({ fragmentKey, error }) =>
@@ -333,10 +313,30 @@ export class DocumentFragments {
         `importDirtyFragmentsToSessionOverlay(): ${droppedKeys.length} dirty fragment(s) could not be resolved in skeleton and were NOT written to disk:\n${details}`,
       );
     }
-  
-    return { writtenKeys, deletedKeys };
+
+    const acceptResult = await this.stagedSections.acceptLiveFragments(this.liveStrings, keysToFlush);
+
+    await this.applyAcceptResult(acceptResult, opts);
+
+    return {
+      writtenKeys: [...acceptResult.writtenKeys],
+      deletedKeys: [...acceptResult.deletedKeys],
+    };
   }
 
+  /**
+   * Thin wrapper over the native `stagedSections.acceptLiveFragments` path
+   * for the per-fragment structural normalization triggers (focus change,
+   * publish, session end). During the transition, `DocSession`-equivalent
+   * orchestration still lives on DocumentFragments, so this method owns:
+   *
+   *   1. Writing the raw-recovery snapshot before accept.
+   *   2. Calling `stagedSections.acceptLiveFragments(liveStrings, { key })`.
+   *   3. Applying the returned `AcceptResult` to the live Y.Doc + local
+   *      heading-path index via `applyAcceptResult`.
+   *   4. Returning a legacy `NormalizeResult` for callers that still
+   *      consume `changed/createdKeys/removedKeys`.
+   */
   async normalizeStructure(
     fragmentKey: string,
     opts?: {
@@ -347,93 +347,99 @@ export class DocumentFragments {
     if (!headingPath) {
       return { changed: false, createdKeys: [], removedKeys: [] };
     }
-
-    // ── BUG2-followup-C — pre-normalize orphan-only predecessors ──────
-    //
-    // Convergence under arbitrary normalization key order requires that
-    // when an orphan-only fragment X (= a fragment whose original heading
-    // has been deleted in the CRDT, leaving only body content) is being
-    // normalized, its immediate predecessor in document order must NOT
-    // itself be a dirty orphan-only fragment. Otherwise the disk-level
-    // merge in `OverlayContentLayer.deleteSectionAndAbsorbOrphanBody`
-    // writes the merged body into the predecessor's body file, then
-    // `reconcileLiveFragmentsFromDetailedResult` re-reads it back into
-    // the predecessor's CRDT — clobbering the predecessor's pending
-    // heading deletion and silently losing the user's intent.
-    //
-    // Pre-normalizing the predecessor recursively absorbs it into the
-    // nearest stable section first. Each predecessor absorption deletes
-    // that predecessor entry, so the chain is processed in document
-    // order regardless of the order normalize was originally called in.
-    // The recursion depth is bounded by the chain length of consecutive
-    // orphan-only predecessors. See
-    // `targeted-normalization-sequential-matrix.test.ts > sequential
-    // normalization should converge to same final doc across key order
-    // permutations`.
-    if (this.fragmentIsOrphanOnly(fragmentKey, headingPath)) {
-      while (true) {
-        const predKey = this.findImmediatePredecessorFragmentKey(fragmentKey);
-        if (!predKey) break;
-        const predHeadingPath = this.findHeadingPathForFragmentKey(predKey);
-        if (!predHeadingPath) break;
-        if (!this.fragmentIsOrphanOnly(predKey, predHeadingPath)) break;
-        await this.normalizeStructure(predKey, opts);
-        // The recursive call deleted predKey and reloaded the skeleton.
-        // The next loop iteration re-reads the new immediate predecessor.
-      }
-
-      // Our own fragmentKey/headingPath/sectionFile are unchanged: we
-      // were never the absorption target of any recursive call (the
-      // chain only ever absorbs predecessors INTO their own merge target,
-      // never into the originating call's fragment).
-    }
-
     const sectionFile = this.sectionFileByFragmentKey.get(fragmentKey);
     if (!sectionFile) {
       return { changed: false, createdKeys: [], removedKeys: [] };
     }
 
-    const ops = await this.getSessionStoreOps();
-    const contentLayer = new OverlayContentLayer(getSessionDocsContentRoot(), getContentRoot());
-    const rawMarkdown = this.reconstructFullMarkdown(fragmentKey, 0, "");
-    await ops.writeRawFragment(this.docPath, this.rawFragmentFileForSectionFile(sectionFile), rawMarkdown);
+    // Mark the key ahead-of-staged so `acceptLiveFragments` processes it
+    // even if there has been no CRDT-level dirty signal yet. The legacy
+    // path processed whatever key the caller passed regardless of dirty
+    // state, so we need this noop-safe mark to preserve behavior.
+    this.liveStrings.noteAheadOfStaged(fragmentKey);
 
-    const ref = new SectionRef(this.docPath, headingPath);
-    const result = this.fragmentIsOrphanOnly(fragmentKey, headingPath)
-      ? await contentLayer.upsertSectionMergingToPrevious(ref, rawMarkdown)
-      : await (() => {
-          const parsed = parseDocumentMarkdown(rawMarkdown);
-          const firstHeaded = parsed.find((sec) => !(sec.level === 0 && sec.heading === ""));
-          const heading = headingPath.length === 0
-            ? ""
-            : (firstHeaded?.heading ?? headingPath[headingPath.length - 1] ?? "");
-          return contentLayer.upsertSection(ref, heading, rawMarkdown, { contentIsFullMarkdown: true });
-        })();
+    const rawMarkdown = this.liveStrings.readFragmentString(fragmentKey);
+    await this.rawRecovery.writeFragment(fragmentKey, rawMarkdown);
 
-    await this.applyDetailedUpsertResult(
-      result,
-      contentLayer,
-      ops,
-      opts,
-    );
+    const scope = new Set<string>([fragmentKey]);
+    const acceptResult = await this.stagedSections.acceptLiveFragments(this.liveStrings, scope);
+
+    await this.applyAcceptResult(acceptResult, opts);
+
+    const removedKeys = [...acceptResult.deletedKeys];
+    // Callers of `normalizeStructure` expect `createdKeys` to list NEW
+    // fragment keys spawned by a structural split, excluding the source
+    // key. Derive from the remap chain: every `newKeys` entry whose oldKey
+    // is the source fragment contributes here.
+    const createdKeys: string[] = [];
+    for (const remap of acceptResult.remaps) {
+      if (remap.oldKey !== fragmentKey) continue;
+      for (const k of remap.newKeys) {
+        if (k !== fragmentKey) createdKeys.push(k);
+      }
+    }
 
     return {
-      // "changed" reflects ANY material change to the document — structural
-      // mutation OR a body-only write/orphan absorption from the stable-
-      // target dispatch path. The narrower `structureChange !== null`
-      // signal misses the latter and would surface clean orphan-absorption
-      // edits as no-ops to the caller.
       changed:
-        result.structureChange !== null
-        || result.writtenEntries.length > 0
-        || result.removedEntries.length > 0,
-      createdKeys: result.structureChange
-        ? result.structureChange.newEntries
-            .map((entry) => DocumentFragments.fragmentKeyFor(entry))
-            .filter((key) => key !== fragmentKey)
-        : [],
-      removedKeys: result.removedEntries.map((entry) => DocumentFragments.fragmentKeyFor(entry)),
+        acceptResult.structuralChange !== null
+        || acceptResult.writtenKeys.length > 0
+        || acceptResult.deletedKeys.length > 0,
+      createdKeys,
+      removedKeys,
     };
+  }
+
+  /**
+   * Apply an `AcceptResult` returned by `stagedSections.acceptLiveFragments`
+   * back onto this DocumentFragments instance (transitional): updates the
+   * live Y.Doc via `liveStrings.applyStructuralChange`, reloads the local
+   * skeleton reference and heading-path index, rewrites raw recovery files
+   * for newly-written fragment keys, deletes raw files for removed keys,
+   * and invokes the optional structure-change broadcast callback.
+   *
+   * When `StagedSectionsStore` becomes the pipeline owner and DocSession
+   * holds the heading-path index (Group B5 → Group C finish), this logic
+   * moves into `DocSession.applyAcceptResult`.
+   */
+  private async applyAcceptResult(
+    result: AcceptResult,
+    opts?: {
+      broadcastStructureChange?: (info: Array<{ oldKey: string; newKeys: string[] }>) => void;
+    },
+  ): Promise<void> {
+    if (result.structuralChange !== null) {
+      // (1) Reconcile the live Y.Doc with the new fragment content.
+      this.liveStrings.applyStructuralChange(result.structuralChange);
+
+      // (2) Reload the local skeleton reference. Tests and a handful of
+      // production callers still read `fragments.skeleton.forEachSection`
+      // directly; until that consumer set is gone, reload from disk so
+      // the reference stays in sync with the staging directory.
+      this.skeleton = await DocumentSkeletonInternal.mutableFromDisk(
+        this.docPath,
+        getSessionSectionsContentRoot(),
+        getContentRoot(),
+      );
+      this.rebuildIndexFromSkeleton();
+
+      // (3) Rewrite raw recovery files for fragments whose content changed
+      // as a side-effect of structural reconciliation, and delete raw
+      // files for removed fragment keys. This mirrors the legacy
+      // `reconcileLiveFragmentsFromDetailedResult` behavior so crash
+      // recovery sees a raw-file set that matches the current fragment
+      // layout.
+      for (const removedKey of result.structuralChange.removedKeys) {
+        this.dirtyKeys.delete(removedKey);
+        await this.rawRecovery.deleteFragment(removedKey);
+      }
+      for (const [reloadKey, content] of result.structuralChange.contentByKey) {
+        await this.rawRecovery.writeFragment(reloadKey, content);
+      }
+    }
+
+    if (opts?.broadcastStructureChange && result.remaps.length > 0) {
+      opts.broadcastStructureChange([...result.remaps]);
+    }
   }
 
   /** Resolve a FlatEntry for a fragment key, or null if not found. */
@@ -461,43 +467,18 @@ export class DocumentFragments {
     };
   }
 
-  /** Extract markdown from a Y.Doc fragment. */
+  /** Extract markdown from a Y.Doc fragment. Delegated to LiveFragmentStringsStore. */
   private extractMarkdown(fragmentKey: string): FragmentContent {
-    const pmJson = yDocToProsemirrorJSON(this.ydoc, fragmentKey);
-    return fragmentFromRemark(jsonToMarkdown(pmJson as Record<string, unknown>));
-  }
-
-  /** Clear all content from a Y.Doc fragment.
-   *  Pass origin (e.g. SERVER_INJECTION_ORIGIN) to stamp the transaction source. */
-  private clearFragment(fragmentKey: string, origin?: unknown): void {
-    this.ydoc.transact(() => {
-      const fragment = this.ydoc.getXmlFragment(fragmentKey);
-      while (fragment.length > 0) {
-        fragment.delete(0, 1);
-      }
-    }, origin);
-  }
-
-  /** Populate a Y.Doc fragment from markdown content (heading+body for non-root, body for root).
-   *  Pass origin (e.g. SERVER_INJECTION_ORIGIN) to stamp the transaction source.
-   *  PRIVATE — always call setFragmentContent instead, which clears first.
-   *  Y.applyUpdate merges — calling this on a non-empty fragment duplicates content. */
-  private populateFragment(fragmentKey: string, markdown: FragmentContent, origin?: unknown): void {
-    const pmJson = markdownToJSON(markdown);
-    const tempDoc = prosemirrorJSONToYDoc(getBackendSchema(), pmJson, fragmentKey);
-    Y.applyUpdate(this.ydoc, Y.encodeStateAsUpdate(tempDoc), origin);
-    tempDoc.destroy();
+    return this.liveStrings.readFragmentString(fragmentKey);
   }
 
   /**
-   * Atomically replace a Y.Doc fragment's content: clear existing content then populate.
-   * This is the only safe way to set fragment content — Y.applyUpdate merges rather than
-   * replaces, so calling populateFragment on a non-empty fragment duplicates content.
+   * Atomically replace a Y.Doc fragment's content. Delegated to
+   * LiveFragmentStringsStore, which owns the clear+populate mechanics.
    * Pass origin (e.g. SERVER_INJECTION_ORIGIN) to stamp the transaction source.
    */
   setFragmentContent(fragmentKey: string, markdown: FragmentContent, origin?: unknown): void {
-    this.clearFragment(fragmentKey, origin);
-    this.populateFragment(fragmentKey, markdown, origin);
+    this.liveStrings.replaceFragmentString(fragmentKey, markdown, origin);
   }
 
   /**
@@ -537,31 +518,7 @@ export class DocumentFragments {
     map: Map<string, FragmentContent>,
     opts?: { origin?: unknown },
   ): void {
-    if (map.size === 0) return;
-
-    // Phase 1: clear all target fragments in one transaction so partial state
-    // is never visible.
-    this.ydoc.transact(() => {
-      for (const fragmentKey of map.keys()) {
-        const fragment = this.ydoc.getXmlFragment(fragmentKey);
-        while (fragment.length > 0) {
-          fragment.delete(0, 1);
-        }
-      }
-    }, opts?.origin);
-
-    // Phase 2: build all updates from caller content, merge, and apply in one shot.
-    const pendingUpdates: Uint8Array[] = [];
-    for (const [fragmentKey, content] of map) {
-      const pmJson = markdownToJSON(content);
-      const tempDoc = prosemirrorJSONToYDoc(getBackendSchema(), pmJson, fragmentKey);
-      pendingUpdates.push(Y.encodeStateAsUpdate(tempDoc));
-      tempDoc.destroy();
-    }
-    if (pendingUpdates.length > 0) {
-      const merged = Y.mergeUpdates(pendingUpdates);
-      Y.applyUpdate(this.ydoc, merged, opts?.origin);
-    }
+    this.liveStrings.replaceFragmentStrings(map, opts?.origin);
   }
 
   /**
@@ -570,54 +527,6 @@ export class DocumentFragments {
    */
   static buildFragmentContent(body: SectionBody, level: number, heading: string): FragmentContent {
     return buildFragmentContentFn(body, level, heading);
-  }
-
-  /**
-   * Extract full markdown (heading + body) from the Y.Doc fragment.
-   * Fragments already store heading+body, so this is just extractMarkdown().
-   * Root fragments (level=0, heading="") have body only — returned as-is.
-   */
-  private reconstructFullMarkdown(fragmentKey: string, _level: number, _heading: string): FragmentContent {
-    return this.extractMarkdown(fragmentKey);
-  }
-
-  private async applyDetailedUpsertResult(
-    result: UpsertSectionFromMarkdownDetailedResult,
-    contentLayer: OverlayContentLayer,
-    ops: SessionStoreOps,
-    opts?: {
-      broadcastStructureChange?: (info: Array<{ oldKey: string; newKeys: string[] }>) => void;
-    },
-  ): Promise<void> {
-    await this.reconcileLiveFragmentsFromDetailedResult(result, contentLayer, ops);
-    if (result.structureChange !== null) {
-      // Structural mutations land on the OverlayContentLayer's own writable
-      // skeleton (a fresh `mutableFromDisk` instance) and are flushed to
-      // overlay disk. Our cached `this.skeleton` is now stale — read methods
-      // like `expectBeforeFirstHeading()` would observe pre-mutation state
-      // (e.g. an auto-created BFH would be invisible). Re-read from overlay
-      // disk and rebuild the fragment indices from the new skeleton.
-      // `fragmentKeyRemaps` alone is insufficient: it only tells us "key X
-      // became key Y", not the new SkeletonNode tree shape or newly-
-      // materialized body-holder/BFH entries.
-      for (const removed of result.removedEntries) {
-        this.dirtyKeys.delete(DocumentFragments.fragmentKeyFor(removed));
-      }
-      this.skeleton = await DocumentSkeletonInternal.mutableFromDisk(
-        this.docPath,
-        getSessionDocsContentRoot(),
-        getContentRoot(),
-      );
-      this.rebuildIndexFromSkeleton();
-    } else {
-      this.applyDetailedUpsertResultToIndex(null, result);
-    }
-    if (!opts?.broadcastStructureChange || !result.structureChange) return;
-
-    opts.broadcastStructureChange([{
-      oldKey: DocumentFragments.fragmentKeyFor(result.structureChange.oldEntry),
-      newKeys: result.structureChange.newEntries.map((entry) => DocumentFragments.fragmentKeyFor(entry)),
-    }]);
   }
 
   private rebuildIndexFromSkeleton(): void {
@@ -658,56 +567,6 @@ export class DocumentFragments {
     });
   }
 
-  private applyDetailedUpsertResultToIndex(
-    sourceFragmentKey: string | null,
-    result: UpsertSectionFromMarkdownDetailedResult,
-  ): void {
-    const previousOrder = [...this.orderedFragmentKeys];
-    const previousKeySet = new Set(previousOrder);
-    const removedKeys = result.removedEntries.map((entry) => DocumentFragments.fragmentKeyFor(entry));
-    const removedKeySet = new Set(removedKeys);
-    const firstRemovedIndex = removedKeys
-      .map((key) => previousOrder.indexOf(key))
-      .filter((idx) => idx >= 0)
-      .sort((a, b) => a - b)[0];
-
-    const newEntries = result.writtenEntries.filter((entry) => {
-      const key = DocumentFragments.fragmentKeyFor(entry);
-      return removedKeySet.has(key) || !previousKeySet.has(key);
-    });
-    const newNonBfhKeys = newEntries
-      .filter((entry) => entry.headingPath.length > 0)
-      .map((entry) => DocumentFragments.fragmentKeyFor(entry));
-    const newBfhKeys = newEntries
-      .filter((entry) => entry.headingPath.length === 0)
-      .map((entry) => DocumentFragments.fragmentKeyFor(entry));
-
-    this.orderedFragmentKeys = previousOrder.filter((key) => !removedKeySet.has(key));
-
-    if (newNonBfhKeys.length > 0) {
-      const insertionIndex = firstRemovedIndex !== undefined
-        ? firstRemovedIndex
-        : (() => {
-            const sourceIndex = sourceFragmentKey === null
-              ? -1
-              : this.orderedFragmentKeys.indexOf(sourceFragmentKey);
-            return sourceIndex >= 0 ? sourceIndex + 1 : this.orderedFragmentKeys.length;
-          })();
-      this.orderedFragmentKeys.splice(insertionIndex, 0, ...newNonBfhKeys);
-    }
-    if (newBfhKeys.length > 0) {
-      this.orderedFragmentKeys.unshift(...newBfhKeys);
-    }
-
-    for (const fragmentKey of removedKeys) {
-      this.removeIndexEntry(fragmentKey);
-      this.dirtyKeys.delete(fragmentKey);
-    }
-    for (const entry of result.writtenEntries) {
-      this.upsertIndexEntry(entry);
-    }
-  }
-
   private upsertIndexEntry(entry: FlatEntry): void {
     if (entry.isSubSkeleton) return;
 
@@ -732,98 +591,4 @@ export class DocumentFragments {
     this.sectionFileByFragmentKey.delete(fragmentKey);
   }
 
-  private async reconcileLiveFragmentsFromDetailedResult(
-    result: UpsertSectionFromMarkdownDetailedResult,
-    contentLayer: OverlayContentLayer,
-    ops: SessionStoreOps,
-  ): Promise<void> {
-    if (result.liveReloadEntries.length === 0 && result.removedEntries.length === 0) {
-      return;
-    }
-
-    const reloadMap = new Map<string, FragmentContent>();
-    for (const entry of result.liveReloadEntries) {
-      const body = await contentLayer.readSection(new SectionRef(this.docPath, entry.headingPath));
-      const content = entry.headingPath.length === 0
-        ? bodyAsFragment(body)
-        : DocumentFragments.buildFragmentContent(body, entry.level, entry.heading);
-      const fragmentKey = DocumentFragments.fragmentKeyFor(entry);
-      reloadMap.set(fragmentKey, content);
-    }
-
-    for (const entry of result.removedEntries) {
-      await ops.deleteRawFragment(this.docPath, this.rawFragmentFileForSectionFile(entry.sectionFile));
-    }
-    for (const entry of result.liveReloadEntries) {
-      const fragmentKey = DocumentFragments.fragmentKeyFor(entry);
-      const content = reloadMap.get(fragmentKey);
-      if (content) {
-        await ops.writeRawFragment(this.docPath, this.rawFragmentFileForSectionFile(entry.sectionFile), content);
-      }
-    }
-
-    this.replaceAndDeleteFragmentsFromProvidedContent(
-      reloadMap,
-      result.removedEntries.map((entry) => DocumentFragments.fragmentKeyFor(entry)),
-      { origin: SERVER_INJECTION_ORIGIN },
-    );
-  }
-
-  private replaceAndDeleteFragmentsFromProvidedContent(
-    map: Map<string, FragmentContent>,
-    deleteKeys: string[],
-    opts?: { origin?: unknown },
-  ): void {
-    const keysToClear = new Set<string>([...deleteKeys, ...map.keys()]);
-    if (keysToClear.size === 0) return;
-
-    this.ydoc.transact(() => {
-      for (const fragmentKey of keysToClear) {
-        const fragment = this.ydoc.getXmlFragment(fragmentKey);
-        while (fragment.length > 0) {
-          fragment.delete(0, 1);
-        }
-      }
-    }, opts?.origin);
-
-    const pendingUpdates: Uint8Array[] = [];
-    for (const [fragmentKey, content] of map) {
-      const pmJson = markdownToJSON(content);
-      const tempDoc = prosemirrorJSONToYDoc(getBackendSchema(), pmJson, fragmentKey);
-      pendingUpdates.push(Y.encodeStateAsUpdate(tempDoc));
-      tempDoc.destroy();
-    }
-    if (pendingUpdates.length > 0) {
-      const merged = Y.mergeUpdates(pendingUpdates);
-      Y.applyUpdate(this.ydoc, merged, opts?.origin);
-    }
-  }
-
-  private rawFragmentFileForSectionFile(sectionFile: string): string {
-    return sectionFile.endsWith(".md") ? sectionFile : `${sectionFile}.md`;
-  }
-
-
-  /**
-   * Lazy-resolved session-store operations. Avoids circular dependency
-   * (session-store imports from ydoc-lifecycle which imports document-fragments).
-   */
-  private _sessionStoreOps: SessionStoreOps | null = null;
-  private async getSessionStoreOps(): Promise<SessionStoreOps> {
-    if (!this._sessionStoreOps) {
-      const mod = await import("../storage/session-store.js");
-      this._sessionStoreOps = {
-        writeRawFragment: mod.writeRawFragment,
-        deleteRawFragment: mod.deleteRawFragment,
-      };
-    }
-    return this._sessionStoreOps;
-  }
-
-}
-
-/** Resolved session-store operations, passed through to avoid per-method imports. */
-interface SessionStoreOps {
-  writeRawFragment: (docPath: string, sectionFile: string, content: FragmentContent | string) => Promise<void>;
-  deleteRawFragment: (docPath: string, sectionFile: string) => Promise<void>;
 }

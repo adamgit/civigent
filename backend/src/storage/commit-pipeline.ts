@@ -98,7 +98,7 @@ export async function commitProposalToCanonical(
       email: `${proposal.writer.id}@knowledge-store.local`,
     };
 
-    const headSha = await store.absorb(overlayRoot, commitMessage, author, { diagnostics });
+    const { commitSha: headSha } = await store.absorbChangedSections(overlayRoot, commitMessage, author, { diagnostics });
 
     // Transition to committed
     await transitionToCommitted(proposal.id, headSha, scores);
@@ -138,12 +138,12 @@ export async function commitProposalToCanonical(
 
 /**
  * Write human CRDT session changes to canonical and create a git commit.
- * sessionDocsContentRoot is the sessions/docs/content/ directory —
+ * sessionSectionsContentRoot is the sessions/sections/content/ directory —
  * a valid staging root in skeleton+section-file layout.
  */
 export async function commitHumanChangesToCanonical(
   writer: WriterIdentity,
-  sessionDocsContentRoot: string,
+  sessionSectionsContentRoot: string,
   coAuthors?: Array<{ name: string; email: string }>,
 ): Promise<string> {
   let commitMessage = `human edit: ${writer.displayName}\n\nWriter: ${writer.id}\nWriter-Type: ${writer.type}`;
@@ -153,5 +153,6 @@ export async function commitHumanChangesToCanonical(
   }
   const author = { name: writer.displayName, email: writer.email || "human@knowledge-store.local" };
   const store = new CanonicalStore(getContentRoot(), getDataRoot());
-  return store.absorb(sessionDocsContentRoot, commitMessage, author);
+  const { commitSha } = await store.absorbChangedSections(sessionSectionsContentRoot, commitMessage, author);
+  return commitSha;
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
+import React from "react";
+import { render, screen, waitFor, fireEvent, cleanup, act } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { jsonResponse } from "../../helpers/fetch-mocks";
 
@@ -133,9 +134,43 @@ describe("DocumentPage persistence", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    vi.useRealTimers();
     localStorage.clear();
   });
 
-  // Text assertion tests for status bar copy ("Unsaved", "waiting for save", "All changes saved")
-  // were removed — they assert exact UI text that changes frequently and add no behavioral value.
+  it("does not leave the UI stuck in 'waiting for save confirmation' forever when save confirmation never arrives", async () => {
+    renderDocPage();
+    await waitFor(() => {
+      expect(screen.getByText("Overview.")).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByText("Overview."));
+
+    await waitFor(() => {
+      expect(capturedOpts).not.toBeNull();
+    });
+
+    act(() => {
+      capturedOpts?.onLocalUpdate?.(["frag:sec_overview"]);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("1 unsaved section")).toBeDefined();
+    });
+
+    act(() => {
+      capturedOpts?.onSessionOverlayImportStarted?.();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("1 section waiting for save confirmation")).toBeDefined();
+    });
+
+    vi.useFakeTimers();
+    act(() => {
+      vi.advanceTimersByTime(30000);
+    });
+
+    expect(screen.queryByText("1 section waiting for save confirmation")).toBeNull();
+  });
 });

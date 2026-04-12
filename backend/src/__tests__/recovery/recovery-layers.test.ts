@@ -145,7 +145,7 @@ describe("buildCompoundSkeleton", () => {
 
   it("with valid overlay + canonical uses overlay when it has more entries", async () => {
     // Create overlay with an extra section
-    const overlayRoot = join(ctx.rootDir, "sessions", "docs", "content");
+    const overlayRoot = join(ctx.rootDir, "sessions", "sections", "content");
     const overlaySkeleton = join(overlayRoot, DOC_PATH);
     const overlaySections = `${overlaySkeleton}.sections`;
     await mkdir(overlaySections, { recursive: true });
@@ -181,7 +181,7 @@ describe("buildCompoundSkeleton", () => {
 
   it("with truncated overlay falls back to canonical + picks up missing entries", async () => {
     // Create overlay with truncated skeleton (missing Timeline)
-    const overlayRoot = join(ctx.rootDir, "sessions", "docs", "content");
+    const overlayRoot = join(ctx.rootDir, "sessions", "sections", "content");
     const overlaySkeleton = join(overlayRoot, DOC_PATH);
     const overlaySections = `${overlaySkeleton}.sections`;
     await mkdir(overlaySections, { recursive: true });

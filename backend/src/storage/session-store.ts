@@ -1,21 +1,21 @@
 /**
  * Session Store — Single owner of ALL session file operations.
  *
- * Session files live under sessions/docs/content/ (mirroring canonical
+ * Session files live under sessions/sections/content/ (mirroring canonical
  * content/ structure) and sessions/authors/ (per-user attribution).
  *
  * Lifecycle:
- *   importSessionDirtyFragmentsToOverlay() — Y.Doc → reconcile markdown → write to sessions/docs/
+ *   importSessionDirtyFragmentsToOverlay() — Y.Doc → reconcile markdown → write to sessions/sections/
  *   readSectionWithOverlay()         — read a section, preferring session overlay over canonical
- *   commitSessionFilesToCanonical()  — read from sessions/docs/, commit to canonical via git
+ *   commitSessionFilesToCanonical()  — read from sessions/sections/, commit to canonical via git
  *   cleanupSessionFiles()            — delete session files after commit or on crash recovery
  */
 
 import path from "node:path";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
-import { getContentRoot, getDataRoot, getSessionDocsContentRoot, getSessionAuthorsRoot, getSessionFragmentsRoot } from "./data-root.js";
+import { getContentRoot, getDataRoot, getSessionSectionsContentRoot, getSessionAuthorsRoot, getSessionFragmentsRoot } from "./data-root.js";
 
-import { ContentLayer, OverlayContentLayer, DocumentNotFoundError } from "./content-layer.js";
+import { OverlayContentLayer } from "./content-layer.js";
 import { CanonicalStore } from "./canonical-store.js";
 import { parseSkeletonToEntries } from "./document-skeleton.js";
 import type { WriterIdentity } from "../types/shared.js";
@@ -25,7 +25,7 @@ import type { FragmentContent, SectionBody } from "./section-formatting.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
-export { getSessionDocsContentRoot } from "./data-root.js";
+export { getSessionSectionsContentRoot } from "./data-root.js";
 
 // ─── Raw fragment file I/O (sessions/fragments/) ─────────────────
 
@@ -110,40 +110,9 @@ export async function listRawFragments(docPath: string): Promise<string[]> {
   }
 }
 
-/**
- * Scan for all document paths that have raw fragment files.
- * Returns an array of docPath strings.
- */
-export async function scanSessionFragmentDocPaths(): Promise<string[]> {
-  const root = getSessionFragmentsRoot();
-  const result: string[] = [];
-
-  async function walk(dir: string, prefix: string): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw err;
-    }
-
-    // Check if this directory contains .md files (it's a fragment dir)
-    const hasMdFiles = entries.some((e) => e.isFile() && e.name.endsWith(".md"));
-    if (hasMdFiles) {
-      result.push(prefix);
-    }
-
-    // Recurse into subdirectories (for nested doc paths like "docs/guide.md")
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        await walk(path.join(dir, entry.name), prefix ? `${prefix}/${entry.name}` : entry.name);
-      }
-    }
-  }
-
-  await walk(root, "");
-  return result;
-}
+// `scanSessionFragmentDocPaths` and `scanSessionDocPaths` live in
+// `./session-scan.ts`. Imports should reference that module directly —
+// session-store is no longer a re-export shim for scanning utilities.
 
 // ─── importSessionDirtyFragmentsToOverlay ────────────────────────
 
@@ -199,7 +168,7 @@ export async function importSessionDirtyFragmentsToOverlay(
 // ─── readSectionWithOverlay ──────────────────────────────────────
 
 /**
- * Read a section, checking the session overlay (sessions/docs/content/) first.
+ * Read a section, checking the session overlay (sessions/sections/content/) first.
  * If the section file exists in the session overlay, return that content
  * (it represents unflushed/uncommitted edits). Otherwise fall back to canonical.
  *
@@ -209,7 +178,7 @@ export async function readSectionWithOverlay(
   docPath: string,
   headingPath: string[],
 ): Promise<string> {
-  const overlay = new OverlayContentLayer(getSessionDocsContentRoot(), getContentRoot());
+  const overlay = new OverlayContentLayer(getSessionSectionsContentRoot(), getContentRoot());
   const { SectionRef } = await import("../domain/section-ref.js");
   return overlay.readSection(new SectionRef(docPath, headingPath));
 }
@@ -225,14 +194,14 @@ export async function readSectionWithOverlay(
 export async function readAllSectionsWithOverlay(
   docPath: string,
 ): Promise<Map<string, SectionBody>> {
-  const overlay = new OverlayContentLayer(getSessionDocsContentRoot(), getContentRoot());
+  const overlay = new OverlayContentLayer(getSessionSectionsContentRoot(), getContentRoot());
   return overlay.readAllSections(docPath);
 }
 
 // ─── commitSessionFilesToCanonical ───────────────────────────────
 
 /**
- * Read dirty section files from sessions/docs/content/, promote overlay
+ * Read dirty section files from sessions/sections/content/, promote overlay
  * skeletons to canonical (handling heading renames), and commit to
  * canonical via the commit pipeline.
  *
@@ -262,9 +231,10 @@ export async function commitSessionFilesToCanonical(
   docPath?: string,
 ): Promise<CommitSessionResult> {
   const contentRoot = getContentRoot();
-  const sessionDocsContentRoot = getSessionDocsContentRoot();
+  const sessionSectionsContentRoot = getSessionSectionsContentRoot();
 
   // Determine which documents to process
+  const { scanSessionDocPaths } = await import("./session-scan.js");
   const docPaths = docPath ? [docPath] : await scanSessionDocPaths();
 
   // Pre-validate overlay skeletons (per-doc error isolation: corrupt overlay for
@@ -276,10 +246,10 @@ export async function commitSessionFilesToCanonical(
   let totalProcessedSections = 0;
 
   for (const dp of docPaths) {
-    const overlayLayer = new OverlayContentLayer(sessionDocsContentRoot, contentRoot);
+    const overlayLayer = new OverlayContentLayer(sessionSectionsContentRoot, contentRoot);
     try {
       const headingPaths = await overlayLayer.listHeadingPaths(dp);
-      await validateOverlayStagingDocIntegrity(dp, sessionDocsContentRoot);
+      await validateOverlayStagingDocIntegrity(dp, sessionSectionsContentRoot);
       validDocPaths.push(dp);
       totalProcessedSections += headingPaths.length;
     } catch (err) {
@@ -295,24 +265,6 @@ export async function commitSessionFilesToCanonical(
     return { sectionsCommitted: 0, committedSections: [], skeletonErrors };
   }
 
-  // Capture canonical content per validDocPath BEFORE absorb so we can compute
-  // the actual changed-section set after absorb. Documents that do not yet
-  // exist in canonical (new docs) are represented as an empty map; every
-  // section in the after-snapshot will then be reported as new/changed.
-  const canonicalLayer = new ContentLayer(contentRoot);
-  const beforeContent = new Map<string, Map<string, SectionBody>>();
-  for (const dp of validDocPaths) {
-    try {
-      beforeContent.set(dp, await canonicalLayer.readAllSections(dp));
-    } catch (err) {
-      if (err instanceof DocumentNotFoundError) {
-        beforeContent.set(dp, new Map());
-        continue;
-      }
-      throw err;
-    }
-  }
-
   const [primaryWriter, ...coWriters] = contributors;
   let commitMessage = `human edit: ${primaryWriter.displayName}\n\nWriter: ${primaryWriter.id}\nWriter-Type: ${primaryWriter.type}`;
   if (coWriters.length > 0) {
@@ -323,38 +275,22 @@ export async function commitSessionFilesToCanonical(
   const author = { name: primaryWriter.displayName, email: primaryWriter.email ?? "human@knowledge-store.local" };
 
   const store = new CanonicalStore(contentRoot, getDataRoot());
-  // When committing a single doc, filter to only that doc's files so other writers'
-  // pending session edits are not absorbed. absorb() handles filtering internally.
-  const absorbOpts = docPath ? { docPaths: validDocPaths } : undefined;
-  const commitSha = await store.absorb(sessionDocsContentRoot, commitMessage, author, absorbOpts);
+  // Always pass the full validDocPaths set so the store can compute its
+  // pre/post-commit snapshot diff against the exact same scope that we
+  // validated. When committing a single doc, this also filters absorb to
+  // that doc's files so other writers' pending session edits are not
+  // absorbed.
+  const { commitSha, changedSections } = await store.absorbChangedSections(
+    sessionSectionsContentRoot,
+    commitMessage,
+    author,
+    { docPaths: validDocPaths },
+  );
 
-  // Diff canonical-after vs canonical-before to derive the actual changed
-  // heading-path set. Anything in only one snapshot, or whose body changed,
-  // is reported as a committed section. Sections present unchanged in both
-  // snapshots are intentionally NOT reported (Bug C: previously every
-  // skeleton path was reported regardless of whether it was touched).
-  const committedSections: Array<{ doc_path: string; heading_path: string[] }> = [];
-  for (const dp of validDocPaths) {
-    let afterSections: Map<string, SectionBody>;
-    try {
-      afterSections = await canonicalLayer.readAllSections(dp);
-    } catch (err) {
-      if (err instanceof DocumentNotFoundError) {
-        afterSections = new Map();
-      } else {
-        throw err;
-      }
-    }
-    const beforeSections = beforeContent.get(dp)!;
-    const allKeys = new Set<string>([...beforeSections.keys(), ...afterSections.keys()]);
-    for (const key of allKeys) {
-      const before = beforeSections.get(key) ?? null;
-      const after = afterSections.get(key) ?? null;
-      if (before === after) continue;
-      const headingPath = key === "" ? [] : key.split(">>");
-      committedSections.push({ doc_path: dp, heading_path: headingPath });
-    }
-  }
+  const committedSections = changedSections.map(({ docPath: dp, headingPath }) => ({
+    doc_path: dp,
+    heading_path: headingPath,
+  }));
 
   return { sectionsCommitted: totalProcessedSections, commitSha, committedSections, skeletonErrors };
 }
@@ -412,12 +348,12 @@ async function listRelativeFilesRecursive(dir: string, relPrefix = ""): Promise<
 
 async function validateOverlayStagingDocIntegrity(
   docPath: string,
-  sessionDocsContentRoot: string,
+  sessionSectionsContentRoot: string,
 ): Promise<void> {
   const normalized = normalizeDocPathForDisk(docPath);
-  const overlaySkeletonPath = path.resolve(sessionDocsContentRoot, ...normalized.split("/"));
+  const overlaySkeletonPath = path.resolve(sessionSectionsContentRoot, ...normalized.split("/"));
 
-  // Overlay invariant: section/body files in sessions/docs/content must never
+  // Overlay invariant: section/body files in sessions/sections/content must never
   // exist without an overlay skeleton for the same doc path.
   try {
     await readFile(overlaySkeletonPath, "utf8");
@@ -453,58 +389,7 @@ async function validateOverlayStagingDocIntegrity(
 }
 
 
-// ─── scanSessionDocPaths ─────────────────────────────────────────
-
-/**
- * Scan sessions/docs/content/ to discover which documents have session
- * overlay files on disk. Returns doc paths (e.g. "docs/guide.md").
- *
- * Detects documents both by overlay skeleton files (.md) and by
- * .sections/ directories (which exist even when only body content changed
- * without a skeleton change).
- */
-export async function scanSessionDocPaths(): Promise<string[]> {
-  const sessionDocsContentRoot = getSessionDocsContentRoot();
-  const docPaths: string[] = [];
-  await walkForDocPaths(sessionDocsContentRoot, "", docPaths);
-  return docPaths;
-}
-
-async function walkForDocPaths(
-  dir: string,
-  relativePath: string,
-  result: string[],
-): Promise<void> {
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw err;
-  }
-
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    const relPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
-
-    if (entry.isDirectory()) {
-      if (entry.name.endsWith(".sections")) {
-        // A .sections/ directory implies a document skeleton at the parent level
-        const docPath = relPath.replace(/\.sections$/, "");
-        if (!result.includes(docPath)) {
-          result.push(docPath);
-        }
-      } else {
-        await walkForDocPaths(fullPath, relPath, result);
-      }
-    } else if (entry.isFile() && entry.name.endsWith(".md")) {
-      // Skeleton file — this is a document
-      if (!result.includes(relPath)) {
-        result.push(relPath);
-      }
-    }
-  }
-}
+// scanSessionDocPaths relocated to ./session-scan.ts
 
 // ─── cleanupSessionFiles ─────────────────────────────────────────
 
@@ -516,14 +401,14 @@ async function walkForDocPaths(
  *                  If omitted, cleans up ALL session files (used on crash recovery).
  */
 export async function cleanupSessionFiles(docPath?: string): Promise<void> {
-  const sessionDocsContentRoot = getSessionDocsContentRoot();
+  const sessionSectionsContentRoot = getSessionSectionsContentRoot();
   const sessionAuthorsRoot = getSessionAuthorsRoot();
   const sessionFragmentsRoot = getSessionFragmentsRoot();
 
   if (docPath) {
     // Clean up session files for a specific document
     const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-    const skeletonPath = path.resolve(sessionDocsContentRoot, ...normalized.split("/"));
+    const skeletonPath = path.resolve(sessionSectionsContentRoot, ...normalized.split("/"));
     const sectionsDir = `${skeletonPath}.sections`;
 
     await rm(skeletonPath, { force: true });
@@ -557,7 +442,7 @@ export async function cleanupSessionFiles(docPath?: string): Promise<void> {
     }
   } else {
     // Clean up all session files (docs, fragments, authors)
-    await rm(sessionDocsContentRoot, { recursive: true, force: true });
+    await rm(sessionSectionsContentRoot, { recursive: true, force: true });
     await rm(sessionFragmentsRoot, { recursive: true, force: true });
     await rm(sessionAuthorsRoot, { recursive: true, force: true });
   }

@@ -11,7 +11,7 @@
 
 import path from "node:path";
 import { readFile } from "node:fs/promises";
-import { getAllSessions, lookupDocSession, normalizeFragmentKeys, type DocSession } from "../crdt/ydoc-lifecycle.js";
+import { getAllSessions, lookupDocSession, normalizeFragmentKeys, collectTouchedFragmentKeysForNormalization, type DocSession } from "../crdt/ydoc-lifecycle.js";
 
 import {
   importSessionDirtyFragmentsToOverlay,
@@ -138,7 +138,7 @@ export async function commitDirtySections(
 
   // Flush first, then normalize ONLY this writer's dirty fragments (scoped if
   // headingPaths supplied) against the live Y.Doc before committing from
-  // sessions/docs/. Normalizing every fragment would touch sections this
+  // sessions/sections/. Normalizing every fragment would touch sections this
   // writer never edited and can corrupt unrelated content (Bug A).
   for (const session of [...sessions.values()]) {
     if (!session.holders.has(writer.id)) continue;
@@ -356,9 +356,12 @@ export async function preemptiveImportNormalizeAndCommit(
 export async function commitAllDirtySessions(): Promise<void> {
   const sessions = getAllSessions();
 
-  // Phase 1: Flush all active sessions to disk
+  // Phase 1: Flush all active sessions to disk, then normalize.
+  // Snapshot scope BEFORE flush — flush clears DocumentFragments.dirtyKeys.
   for (const [, session] of sessions) {
+    const normalizeScope = collectTouchedFragmentKeysForNormalization(session);
     await importSessionDirtyFragmentsToOverlay(session);
+    await normalizeFragmentKeys(session, normalizeScope);
   }
 
   // Phase 2: Commit all session files from disk (including just-flushed
