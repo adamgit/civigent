@@ -8,11 +8,14 @@ import { ensureGitRepoReady } from "./storage/git-repo.js";
 import { detectAndRecoverCrash } from "./storage/crash-recovery.js";
 import { importContentFromDirectoryIfNeeded } from "./storage/content-import.js";
 import { setAutoCommitEventHandler } from "./storage/auto-commit.js";
-import { validateOAuthConfig, getOidcPublicUrl } from "./auth/oauth-config.js";
+import { validateOAuthConfig, getMCPPublicURL, getOidcPublicUrl, isMCPPublicURLFromHeadersEnabled } from "./auth/oauth-config.js";
 import { maybeGenerateBootstrapCode } from "./auth/service.js";
 import { isSystemReady, setSystemReady } from "./startup-state.js";
 import { isDevSupervised } from "./runtime/system-state.js";
 import type { FatalReport, WorkerIpcMessage } from "./runtime/system-state.js";
+
+const ANSI_BOLD_YELLOW = "\x1b[1;33m";
+const ANSI_RESET = "\x1b[0m";
 
 function ipcSend(msg: WorkerIpcMessage): void {
   if (isDevSupervised) process.send!(msg);
@@ -108,6 +111,13 @@ server.listen(listenPort, () => {
 
   const displayUrl = getOidcPublicUrl();
   console.log(`\n  Civigent running at ${displayUrl} (starting up...)\n`);
+  if (isMCPPublicURLFromHeadersEnabled()) {
+    console.log(
+      `${ANSI_BOLD_YELLOW}  WARNING: KS_MCP_PUBLIC_URL_FROM_HEADERS=true is enabled.${ANSI_RESET}\n` +
+      `${ANSI_BOLD_YELLOW}  MCP OAuth URLs will be derived from request/proxy headers.${ANSI_RESET}\n` +
+      `${ANSI_BOLD_YELLOW}  Only use this behind a trusted proxy that overwrites forwarded headers.${ANSI_RESET}\n`,
+    );
+  }
   if (buildInfo) {
     const d = new Date(buildInfo.date);
     const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -133,6 +143,8 @@ console.log("  System ready — accepting requests.\n");
 // Print bootstrap code to stdout if OIDC is configured but no admin exists
 await maybeGenerateBootstrapCode();
 
+const startupAgentUrl = getMCPPublicURL();
+const startupDisplayUrl = getOidcPublicUrl();
 console.log(`  Connect an agent:\n`);
-console.log(`    claude mcp add --transport http knowledge-store ${getOidcPublicUrl()}/mcp\n`);
-console.log(`  Setup page: ${getOidcPublicUrl()}/setup\n`);
+console.log(`    claude mcp add --transport http knowledge-store ${startupAgentUrl}/mcp\n`);
+console.log(`  Setup page: ${startupDisplayUrl}/setup\n`);

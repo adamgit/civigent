@@ -1,7 +1,7 @@
 {
   "name": "knowledge-store",
   "private": true,
-  "version": "3.5.1",
+  "version": "3.5.2",
   "scripts": {
     "build": "cd sharedlibs/milkdown-serializer && npm run build && cd ../../backend && npm run build && cd ../frontend && npm run build",
     "dev": "bash ./devtools/dev.sh",

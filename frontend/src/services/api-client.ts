@@ -453,6 +453,7 @@ export const apiClient = {
   async getSetupInfo(): Promise<{
     defaultServerName: string;
     internalPort: number;
+    mcpUrl: string;
   }> {
     return requestJson("/api/setup", undefined, false);
   },

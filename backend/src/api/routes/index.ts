@@ -107,7 +107,7 @@ import {
 } from "../../auth/acl.js";
 import { listAuthMethods, buildOidcIdentity, isBootstrapAvailable, redeemBootstrapCode } from "../../auth/service.js";
 import { issueTokenPair } from "../../auth/tokens.js";
-import { isOidcConfigured, getOidcDisplayName, getOidcPublicUrl } from "../../auth/oauth-config.js";
+import { isOidcConfigured, getMCPPublicURL, getOidcDisplayName, getOidcPublicUrl } from "../../auth/oauth-config.js";
 import { generateOidcState, generateOidcNonce, storeOidcState, retrieveAndClearOidcState } from "../../auth/oidc-state.js";
 import { buildOidcRedirectUrl, redeemOidcCode } from "../../auth/oidc-provider.js";
 import type { AuthMethod } from "../../types/shared.js";
@@ -2725,6 +2725,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     res.json({
       defaultServerName,
       internalPort: Number(process.env.PORT ?? "3000"),
+      mcpUrl: `${getMCPPublicURL(req)}/mcp`,
     });
   });
 

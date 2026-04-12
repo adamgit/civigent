@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
 import { McpServer } from "./server.js";
 import type { McpSession } from "./tool-registry.js";
 import { resolveAuthenticatedWriter, type AuthenticatedWriter } from "../auth/context.js";
-import { getOidcPublicUrl } from "../auth/oauth-config.js";
+import { getMCPPublicURL } from "../auth/oauth-config.js";
 import type { WsServerEvent } from "../types/shared.js";
 import { JSONRPC_ERRORS, makeErrorResponse } from "./protocol.js";
 import { activityLog } from "../monitoring/activity-log.js";
@@ -66,7 +66,7 @@ export function createMcpRouter(options: McpTransportOptions): express.Router {
     // that skip/fail OAuth silently inherit the human identity.
     const writer = resolveAuthenticatedWriter(req, { requireExplicitAuth: true });
     if (!writer) {
-      const resourceUrl = `${getOidcPublicUrl()}/.well-known/oauth-protected-resource`;
+      const resourceUrl = `${getMCPPublicURL(req)}/.well-known/oauth-protected-resource`;
       res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${resourceUrl}"`);
       res.status(401).json(
         makeErrorResponse(null, JSONRPC_ERRORS.INTERNAL_ERROR, "Authentication required"),

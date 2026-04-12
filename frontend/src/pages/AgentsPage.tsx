@@ -202,14 +202,21 @@ function ConnectionInstructions({
 
 // ─── Add agent dialog ───────────────────────────────────────────
 
-function AddAgentDialog({ policy, onDone }: { policy: AgentAuthPolicy; onDone: () => void }) {
+function AddAgentDialog({
+  policy,
+  mcpUrl,
+  onDone,
+}: {
+  policy: AgentAuthPolicy;
+  mcpUrl: string;
+  onDone: () => void;
+}) {
   const [name, setName] = useState("");
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [alsoGenerateSecret, setAlsoGenerateSecret] = useState(false);
   const [result, setResult] = useState<{ agentId: string; secret: string | null } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const mcpUrl = `${window.location.origin}/mcp`;
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
@@ -342,6 +349,7 @@ function AddAgentDialog({ policy, onDone }: { policy: AgentAuthPolicy; onDone: (
 export function AgentsPage() {
   const [data, setData] = useState<GetAgentsFullSummaryResponse | null>(null);
   const [adminConfig, setAdminConfig] = useState<AdminConfig | null>(null);
+  const [mcpUrl, setMcpUrl] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -350,8 +358,12 @@ export function AgentsPage() {
   const loadAgents = () => {
     setLoading(true);
     setError(null);
-    Promise.all([apiClient.getAgentsSummary(), apiClient.getAdminConfig()])
-      .then(([res, cfg]) => { setData(res); setAdminConfig(cfg); })
+    Promise.all([apiClient.getAgentsSummary(), apiClient.getAdminConfig(), apiClient.getSetupInfo()])
+      .then(([res, cfg, setup]) => {
+        setData(res);
+        setAdminConfig(cfg);
+        setMcpUrl(setup.mcpUrl);
+      })
       .catch((err) => { setError(err instanceof Error ? err.message : String(err)); })
       .finally(() => { setLoading(false); });
   };
@@ -417,7 +429,11 @@ export function AgentsPage() {
       ) : null}
 
       {showAddDialog ? (
-        <AddAgentDialog policy={policy} onDone={() => { setShowAddDialog(false); loadAgents(); }} />
+        <AddAgentDialog
+          policy={policy}
+          mcpUrl={mcpUrl || `${window.location.origin}/mcp`}
+          onDone={() => { setShowAddDialog(false); loadAgents(); }}
+        />
       ) : null}
     </section>
   );

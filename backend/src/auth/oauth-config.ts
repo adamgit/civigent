@@ -2,12 +2,15 @@
  * OAuth configuration — env var handling and startup validation.
  *
  * Env vars:
- *   KS_OIDC_PUBLIC_URL        — explicit public URL override (otherwise derived)
- *   KS_AUTH_SECRET        — JWT signing secret (must not be default in non-single-user mode)
- *   KS_AGENT_ANON_SALT    — HMAC key for stateless anonymous client_id tokens
- *   KS_AGENT_AUTH_POLICY  — "open" | "register" | "verify" (default: open for localhost, register otherwise)
+ *   KS_OIDC_PUBLIC_URL              — explicit public URL override for human OIDC
+ *   KS_MCP_PUBLIC_URL               — explicit public URL override for MCP agent OAuth
+ *   KS_MCP_PUBLIC_URL_FROM_HEADERS  — derive MCP public URL from trusted request/proxy headers
+ *   KS_AUTH_SECRET                  — JWT signing secret (must not be default in non-single-user mode)
+ *   KS_AGENT_ANON_SALT              — HMAC key for stateless anonymous client_id tokens
+ *   KS_AGENT_AUTH_POLICY            — "open" | "register" | "verify" (default: open for localhost, register otherwise)
  */
 
+import type { Request } from "express";
 import { randomBytes } from "node:crypto";
 import { isSingleUserMode } from "./context.js";
 import { readRuntimeAuthMode } from "./service.js";
@@ -39,6 +42,49 @@ export function getPublicUrl(): string {
   return `${scheme}://${hostname}${portSuffix}`;
 }
 
+function normalizeConfiguredPublicUrl(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1";
+}
+
+function parseForwardedHeader(forwarded: string): { proto?: string; host?: string } {
+  const firstEntry = forwarded.split(",")[0] ?? "";
+  const protoMatch = /(?:^|;)\s*proto=([^;,\s]+)/i.exec(firstEntry);
+  const hostMatch = /(?:^|;)\s*host="?([^;",\s]+)"?/i.exec(firstEntry);
+  return {
+    proto: protoMatch?.[1]?.trim(),
+    host: hostMatch?.[1]?.trim(),
+  };
+}
+
+function firstHeaderValue(value: string | undefined): string | undefined {
+  return value?.split(",")[0]?.trim() || undefined;
+}
+
+function deriveMCPPublicURLFromRequest(req: Request): string | null {
+  const forwarded = parseForwardedHeader(String(req.headers.forwarded ?? ""));
+  const forwardedHost = firstHeaderValue(req.get("x-forwarded-host") ?? undefined);
+  const forwardedPort = firstHeaderValue(req.get("x-forwarded-port") ?? undefined);
+  const rawHost = forwarded.host ?? forwardedHost ?? req.get("host") ?? undefined;
+  if (!rawHost) return null;
+
+  const hasPortInHost = /^\[.*\](:\d+)?$/.test(rawHost) ? /\]:\d+$/.test(rawHost) : /:\d+$/.test(rawHost);
+  const host = !hasPortInHost && forwardedPort ? `${rawHost}:${forwardedPort}` : rawHost;
+
+  const rawProto = firstHeaderValue(forwarded.proto ?? req.get("x-forwarded-proto") ?? undefined);
+  const proto = (rawProto ?? "").toLowerCase();
+  const scheme = proto === "http" || proto === "https"
+    ? proto
+    : req.secure
+      ? "https"
+      : "http";
+
+  return `${scheme}://${host}`.replace(/\/+$/, "");
+}
+
 // ─── KS_OIDC_PUBLIC_URL ───────────────────────────────────────────────
 
 /**
@@ -47,7 +93,30 @@ export function getPublicUrl(): string {
  */
 export function getOidcPublicUrl(): string {
   const explicit = readEnvVar("KS_OIDC_PUBLIC_URL");
-  if (explicit) return explicit.replace(/\/+$/, "");
+  if (explicit) return normalizeConfiguredPublicUrl(explicit);
+  return getPublicUrl();
+}
+
+// ─── KS_MCP_PUBLIC_URL ────────────────────────────────────────────────
+
+export function isMCPPublicURLFromHeadersEnabled(): boolean {
+  return readEnvVar("KS_MCP_PUBLIC_URL_FROM_HEADERS", "").trim().toLowerCase() === "true";
+}
+
+/**
+ * Get the public URL of this server for MCP agent OAuth metadata.
+ * Explicit `KS_MCP_PUBLIC_URL` takes priority unless header-derived mode is enabled.
+ * When `KS_MCP_PUBLIC_URL_FROM_HEADERS=true`, the server reflects trusted proxy/request
+ * headers when a Request is available; otherwise it falls back to getPublicUrl().
+ */
+export function getMCPPublicURL(req?: Request): string {
+  if (isMCPPublicURLFromHeadersEnabled() && req) {
+    const derived = deriveMCPPublicURLFromRequest(req);
+    if (derived) return derived;
+  }
+
+  const explicit = readEnvVar("KS_MCP_PUBLIC_URL");
+  if (explicit) return normalizeConfiguredPublicUrl(explicit);
   return getPublicUrl();
 }
 
@@ -124,13 +193,24 @@ export function validateOAuthConfig(): void {
   const singleUser = isSingleUserMode();
 
   const explicitOidcPublicUrl = readEnvVar("KS_OIDC_PUBLIC_URL", "");
+  const explicitMcpPublicUrl = readEnvVar("KS_MCP_PUBLIC_URL", "");
+  const mcpPublicUrlFromHeaders = isMCPPublicURLFromHeadersEnabled();
   const explicitExternalHostname = readEnvVar("KS_EXTERNAL_HOSTNAME", "");
+
+  if (mcpPublicUrlFromHeaders && explicitMcpPublicUrl) {
+    throw new Error(
+      `FATAL: KS_MCP_PUBLIC_URL_FROM_HEADERS=true is mutually exclusive with KS_MCP_PUBLIC_URL.\n` +
+      `Choose exactly one MCP public URL strategy:\n` +
+      `- Set KS_MCP_PUBLIC_URL explicitly, OR\n` +
+      `- Set KS_MCP_PUBLIC_URL_FROM_HEADERS=true and let the server derive the MCP URL from trusted request/proxy headers.`,
+    );
+  }
 
   // Enforced matrix:
   // - single_user is mutually exclusive with explicit OIDC URL and explicit external hostname
   // - non-single-user requires at least one of explicit OIDC URL or explicit external hostname
   if (singleUser) {
-    const isLoopback = explicitExternalHostname === "localhost" || explicitExternalHostname === "127.0.0.1";
+    const isLoopback = isLoopbackHostname(explicitExternalHostname);
     if (explicitOidcPublicUrl || (explicitExternalHostname && !isLoopback)) {
       throw new Error(
         `FATAL: KS_AUTH_MODE=single_user is mutually exclusive with KS_OIDC_PUBLIC_URL and KS_EXTERNAL_HOSTNAME.\n` +

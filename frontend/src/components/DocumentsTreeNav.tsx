@@ -238,7 +238,7 @@ export function DocumentsTreeNav({
   }, []);
 
   const dirActionButtons = (folderPath: string, stopPropagation = false) => (
-    <span className="ml-auto flex gap-1 opacity-0 group-hover:opacity-60">
+    <span className="flex gap-1 opacity-0 group-hover:opacity-60">
       <button
         type="button"
         title={`Export ${getDisplayName(folderPath)} as ZIP`}
@@ -273,6 +273,7 @@ export function DocumentsTreeNav({
           if (node.type === "directory") {
             const isExpanded = effectiveExpanded.has(node.path);
             const childEntries = Array.isArray(node.children) ? node.children : [];
+            const hasChildren = childEntries.length > 0;
             return (
               <div key={node.path}>
                 <div
@@ -287,7 +288,17 @@ export function DocumentsTreeNav({
                     {isExpanded ? "\u{1F4C1}" : "\u{1F4C1}"}
                   </span>
                   <span className="truncate">{getDisplayName(node.path)}/</span>
-                  {dirActionButtons(node.path, true)}
+                  <span className="ml-auto flex items-center gap-1">
+                    {!isExpanded ? (
+                      <span
+                        aria-hidden="true"
+                        className={`h-2 w-2 rounded-full border border-sidebar-text-hover ${
+                          hasChildren ? "bg-sidebar-text-hover" : "bg-transparent"
+                        }`}
+                      />
+                    ) : null}
+                    {dirActionButtons(node.path, true)}
+                  </span>
                 </div>
                 {isExpanded ? (
                   <div data-testid={`tree-node-expanded-${node.path}`}>

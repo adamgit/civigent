@@ -11,6 +11,7 @@ type Tab = "claude-code" | "cursor";
 interface SetupInfo {
   defaultServerName: string;
   internalPort: number;
+  mcpUrl: string;
 }
 
 /** mcp__<name>__<tool>  —  longest tool is read_doc_structure (18 chars) */
@@ -79,7 +80,7 @@ export function SetupPage() {
 
   const mcpEndpoint = connectionOrigin === "container" && info
     ? `http://localhost:${info.internalPort}/mcp`
-    : `${window.location.origin}/mcp`;
+    : (info?.mcpUrl ?? `${window.location.origin}/mcp`);
 
   const load = useCallback(async () => {
     try {
@@ -206,9 +207,13 @@ export function SetupPage() {
                 <CopyBlock content={`claude mcp remove ${serverName}`} />
 
                 <h3 style={{ fontSize: "0.95rem", margin: "2rem 0 0.5rem" }}>Optional: Install the Knowledge Store skill</h3>
+                <CopyBlock content={`mkdir -p ~/.claude/skills/{serverName}`} />
                 <p style={{ color: "#555", fontSize: "0.9rem", margin: "0 0 0.5rem" }}>
-                  Save this file as <code>.claude/skills/{serverName}/SKILL.md</code> in your project
-                  to get guided workflows for research, proposals, and document editing:
+                  Save this file as:
+                </p>
+                <CopyBlock content={`~/.claude/skills/{serverName}/SKILL.md`} />
+                <p style={{ color: "#555", fontSize: "0.9rem", margin: "0 0 0.5rem" }}>
+                  File: 
                 </p>
                 <CopyBlock label="SKILL.md" content={skillTemplate.replaceAll("%%name%%", serverName)} />
               </div>

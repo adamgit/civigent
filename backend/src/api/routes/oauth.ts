@@ -13,7 +13,7 @@
 import { Router, type Request, type Response } from "express";
 import { createHash } from "node:crypto";
 import { base64UrlEncode } from "../../auth/encoding.js";
-import { getOidcPublicUrl, getAgentAuthPolicy } from "../../auth/oauth-config.js";
+import { getMCPPublicURL, getAgentAuthPolicy } from "../../auth/oauth-config.js";
 import {
   mintAnonClientId,
   validateAnonClientId,
@@ -101,8 +101,8 @@ export function createOAuthRouter(): Router {
 
   // ── Discovery: Protected Resource Metadata (RFC 9728) ──────
 
-  router.get("/.well-known/oauth-protected-resource", (_req: Request, res: Response) => {
-    const publicUrl = getOidcPublicUrl();
+  router.get("/.well-known/oauth-protected-resource", (req: Request, res: Response) => {
+    const publicUrl = getMCPPublicURL(req);
     res.json({
       resource: publicUrl,
       authorization_servers: [publicUrl],
@@ -111,8 +111,8 @@ export function createOAuthRouter(): Router {
 
   // ── Discovery: Authorization Server Metadata (RFC 8414) ────
 
-  router.get("/.well-known/oauth-authorization-server", (_req: Request, res: Response) => {
-    const publicUrl = getOidcPublicUrl();
+  router.get("/.well-known/oauth-authorization-server", (req: Request, res: Response) => {
+    const publicUrl = getMCPPublicURL(req);
     res.json({
       issuer: publicUrl,
       authorization_endpoint: `${publicUrl}/oauth/authorize`,
