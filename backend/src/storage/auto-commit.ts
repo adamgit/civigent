@@ -11,14 +11,10 @@
 
 import path from "node:path";
 import { readFile } from "node:fs/promises";
-import { getAllSessions, lookupDocSession, normalizeFragmentKeys, collectTouchedFragmentKeysForNormalization, type DocSession } from "../crdt/ydoc-lifecycle.js";
+import { getAllSessions, applyAcceptResult, findKeyForHeadingPath, findHeadingPathForKey, persistAuthorMetadata, type DocSession } from "../crdt/ydoc-lifecycle.js";
 
-import {
-  importSessionDirtyFragmentsToOverlay,
-  commitSessionFilesToCanonical,
-  cleanupSessionFiles,
-} from "./session-store.js";
-import { getSessionAuthorsRoot } from "./data-root.js";
+import { CanonicalStore } from "./canonical-store.js";
+import { getContentRoot, getDataRoot, getSessionSectionsContentRoot, getSessionAuthorsRoot } from "./data-root.js";
 import type { WriterIdentity, WsServerEvent, SectionTargetRef } from "../types/shared.js";
 
 export interface AutoCommitResult {
@@ -58,7 +54,7 @@ function matchingDirtyFragmentKeys(
 
   const matched = new Set<string>();
   for (const headingPath of headingPaths) {
-    const fragmentKey = session.fragments.findFragmentKeyForHeadingPath(headingPath);
+    const fragmentKey = findKeyForHeadingPath(session, headingPath);
     if (fragmentKey && dirtyFragments.has(fragmentKey)) {
       matched.add(fragmentKey);
     }
@@ -146,15 +142,22 @@ export async function commitDirtySections(
     const matched = matchingDirtyFragmentKeys(session, writer.id, headingPaths);
     const keyToHeadingPath = new Map<string, string[]>();
     for (const fragmentKey of matched) {
-      const resolvedHeadingPath = session.fragments.findHeadingPathForFragmentKey(fragmentKey);
+      const resolvedHeadingPath = findHeadingPathForKey(session, fragmentKey);
       if (resolvedHeadingPath) {
         keyToHeadingPath.set(fragmentKey, [...resolvedHeadingPath]);
       }
     }
     publisherScopePerSession.set(session, { keys: matched, keyToHeadingPath });
 
-    await importSessionDirtyFragmentsToOverlay(session, { fragmentKeys: matched });
-    await normalizeFragmentKeys(session, matched);
+    // Store boundary pattern: mark ahead-of-staged → raw snapshot →
+    // accept (with structural normalization) → apply result.
+    // Replaces legacy importSessionDirtyFragmentsToOverlay + normalizeFragmentKeys.
+    for (const key of matched) {
+      session.liveFragments.noteAheadOfStaged(key);
+    }
+    await session.recoveryBuffer.snapshotFromLive(session.liveFragments, matched);
+    const acceptResult = await session.stagedSections.acceptLiveFragments(session.liveFragments, matched);
+    await applyAcceptResult(session, acceptResult);
   }
 
   const sectionsPublished: SectionTargetRef[] = [];
@@ -179,20 +182,42 @@ export async function commitDirtySections(
         }
       }
     }
-    const result = await commitSessionFilesToCanonical(contributors, dp);
-    if (result.skeletonErrors.length > 0) {
-      throw new Error(
-        `commitDirtySections: commit skipped for ${dp}: ` +
-        result.skeletonErrors.map((entry) => entry.error).join("\n"),
-      );
+    // Inline canonical absorb — replaces legacy commitSessionFilesToCanonical.
+    const [primaryWriter, ...coWriters] = contributors;
+    let commitMsg = `human edit: ${primaryWriter.displayName}\n\nWriter: ${primaryWriter.id}\nWriter-Type: ${primaryWriter.type}`;
+    if (coWriters.length > 0) {
+      commitMsg += "\n" + coWriters
+        .map((w) => `Co-authored-by: ${w.displayName} <${w.email ?? `${w.id}@knowledge-store.local`}>`)
+        .join("\n");
     }
-    if (result.sectionsCommitted > 0) {
-      await cleanupSessionFiles(dp);
-      if (!result.commitSha) {
-        continue;
+    const commitAuthor = { name: primaryWriter.displayName, email: primaryWriter.email ?? "human@knowledge-store.local" };
+
+    const canonicalStore = new CanonicalStore(getContentRoot(), getDataRoot());
+    const absorbResult = await canonicalStore.absorbChangedSections(
+      getSessionSectionsContentRoot(),
+      commitMsg,
+      commitAuthor,
+      { docPaths: [dp] },
+    );
+
+    if (absorbResult.changedSections.length > 0) {
+      // Clear ahead-of-canonical tracking and delete raw fragment files
+      // for published keys only (other writers' fragments survive publish).
+      for (const session of docSessions) {
+        const scope = publisherScopePerSession.get(session);
+        if (scope) {
+          session.stagedSections.clearAheadOfCanonical(scope.keys);
+          for (const key of scope.keys) {
+            await session.recoveryBuffer.deleteFragment(key);
+          }
+        }
       }
-      commitSha = result.commitSha;
-      sectionsPublished.push(...result.committedSections);
+      commitSha = absorbResult.commitSha;
+      const committedSections = absorbResult.changedSections.map(({ docPath: cdp, headingPath }) => ({
+        doc_path: cdp,
+        heading_path: headingPath,
+      }));
+      sectionsPublished.push(...committedSections);
 
       // Per-doc dedup of cleared heading paths so a writer holding multiple
       // sessions for the same doc only emits one dirty:changed event per path.
@@ -227,16 +252,21 @@ export async function commitDirtySections(
           }
         }
         // baseHead update is global and correct regardless of writer scope.
-        session.baseHead = result.commitSha;
+        session.baseHead = absorbResult.commitSha;
       }
 
       docEvents.push({
         docPath: dp,
-        commitSha: result.commitSha,
-        sections: result.committedSections,
+        commitSha: absorbResult.commitSha,
+        sections: committedSections,
         contributorIds: contributors.map((contributor) => contributor.id),
         publisherClearedHeadingPaths,
       });
+
+      // Re-persist author metadata to reflect cleared dirty state on disk.
+      for (const session of docSessions) {
+        await persistAuthorMetadata(session);
+      }
     }
   }
 
@@ -285,95 +315,11 @@ export interface PreemptiveCommitResult {
   affectedWriters: Array<{ writerId: string; dirtyHeadingPaths: string[][] }>;
 }
 
-/**
- * Flush, normalise, and commit a document's live session before a restore replaces
- * its canonical content.
- *
- * Returns null if no live session exists or if the session has no dirty content.
- * Throws if the commit does not produce a git commit SHA (restore must not proceed
- * with a failed pre-commit).
- *
- * Does NOT emit hub events — the caller (restore route + invalidateSessionForRestore)
- * delivers notifications via MSG_RESTORE_NOTIFICATION.
- */
-export async function preemptiveImportNormalizeAndCommit(
-  docPath: string,
-): Promise<PreemptiveCommitResult | null> {
-  const session = lookupDocSession(docPath);
-  if (!session) return null;
+// preemptiveImportNormalizeAndCommit was dissolved into the restore and overwrite
+// routes (BNATIVE.8c). The inline store boundary pattern replaces the legacy pipeline.
 
-  // No dirty content — nothing to commit.
-  if (session.fragments.dirtyKeys.size === 0) return null;
-
-  // Build affectedWriters BEFORE normalization alters the key set.
-  const affectedWriters: Array<{ writerId: string; dirtyHeadingPaths: string[][] }> = [];
-  for (const [writerId, dirtySet] of session.perUserDirty) {
-    if (dirtySet.size === 0) continue;
-    const dirtyHeadingPaths: string[][] = [];
-    for (const fragmentKey of dirtySet) {
-      const headingPath = session.fragments.findHeadingPathForFragmentKey(fragmentKey);
-      if (headingPath) {
-        dirtyHeadingPaths.push([...headingPath]);
-      }
-    }
-    affectedWriters.push({ writerId, dirtyHeadingPaths });
-  }
-
-  // Normalise all dirty fragments (snapshot Set before iterating — normalisation adds new keys).
-  const dirtySnapshot = new Set(session.fragments.dirtyKeys);
-  for (const key of dirtySnapshot) {
-    await session.fragments.normalizeStructure(key);
-  }
-
-  // Flush the normalised content to disk.
-  await importSessionDirtyFragmentsToOverlay(session);
-
-  // Commit session files to canonical. Use contributors for correct git attribution.
-  const result = await commitSessionFilesToCanonical(
-    Array.from(session.contributors.values()),
-    docPath,
-  );
-  if (result.sectionsCommitted === 0 || !result.commitSha) {
-    throw new Error(
-      `preemptiveImportNormalizeAndCommit: commit for "${docPath}" produced no result ` +
-      `(sectionsCommitted=${result.sectionsCommitted}, commitSha=${result.commitSha ?? "null"})`,
-    );
-  }
-
-  // Remove session overlay so reconnecting clients load canonical (restored) content.
-  await cleanupSessionFiles(docPath);
-
-  return { committedSha: result.commitSha, affectedWriters };
-}
-
-/**
- * Commit all dirty sessions and orphaned disk files. Used at shutdown.
- *
- * First flushes all active Y.Docs to disk, then commits everything
- * from disk via commitSessionFilesToCanonical (which handles skeleton
- * promotion for heading renames).
- */
-export async function commitAllDirtySessions(): Promise<void> {
-  const sessions = getAllSessions();
-
-  // Phase 1: Flush all active sessions to disk, then normalize.
-  // Snapshot scope BEFORE flush — flush clears DocumentFragments.dirtyKeys.
-  for (const [, session] of sessions) {
-    const normalizeScope = collectTouchedFragmentKeysForNormalization(session);
-    await importSessionDirtyFragmentsToOverlay(session);
-    await normalizeFragmentKeys(session, normalizeScope);
-  }
-
-  // Phase 2: Commit all session files from disk (including just-flushed
-  // active sessions and any previously orphaned files)
-  const writer: WriterIdentity = {
-    id: "system-shutdown",
-    type: "human",
-    displayName: "Shutdown Auto-Commit",
-  };
-
-  const result = await commitSessionFilesToCanonical([writer]);
-  if (result.sectionsCommitted > 0) {
-    await cleanupSessionFiles();
-  }
-}
+// commitAllDirtySessions was deleted by BNATIVE.8b. Crash recovery at startup
+// handles the case where the server dies with dirty sessions — raw fragment
+// sidecars + session overlay files survive on disk and are recovered by
+// detectAndRecoverCrash. The shutdown handler was best-effort anyway (SIGKILL,
+// OOM, power loss all bypass it).

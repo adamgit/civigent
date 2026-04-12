@@ -69,9 +69,12 @@ import {
   lookupDocSession,
   countEditorSockets,
   invalidateSessionForRestore,
+  applyAcceptResult,
+  findHeadingPathForKey,
+  collectTouchedFragmentKeysForNormalization,
 } from "../../crdt/ydoc-lifecycle.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
-import { preemptiveImportNormalizeAndCommit } from "../../storage/auto-commit.js";
+import type { PreemptiveCommitResult } from "../../storage/auto-commit.js";
 import { SectionGuard } from "../../domain/section-guard.js";
 import { readDocSectionCommitInfo, type SectionCommitInfo } from "../../storage/section-activity.js";
 import { SectionPresence } from "../../domain/section-presence.js";
@@ -637,8 +640,12 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       // Overlay live content from Y.Doc where available
       if (liveSession) {
-        for (const [key, live] of liveSession.fragments.readAllLiveContent()) {
-          bulkContent.set(key, live);
+        for (const fragmentKey of liveSession.orderedFragmentKeys) {
+          const content = liveSession.liveFragments.readFragmentString(fragmentKey);
+          const hp = liveSession.headingPathByFragmentKey.get(fragmentKey);
+          if (content && hp) {
+            bulkContent.set(SectionRef.headingKey([...hp]), content);
+          }
         }
       }
 
@@ -777,7 +784,57 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const restoreWriter = targetWriterType ? { ...writer, type: targetWriterType as typeof writer.type } : writer;
 
       // Pre-commit any in-progress session before restore replaces canonical content.
-      const preCommitResult = await preemptiveImportNormalizeAndCommit(docPath);
+      // Inline store boundary pattern (BNATIVE.8c).
+      let preCommitResult: PreemptiveCommitResult | null = null;
+      const preCommitSession = lookupDocSession(docPath);
+      const dirtySnapshot = preCommitSession ? collectTouchedFragmentKeysForNormalization(preCommitSession) : new Set<string>();
+      if (preCommitSession && dirtySnapshot.size > 0) {
+        // Capture affectedWriters BEFORE normalization remaps fragment keys.
+        const affectedWriters: Array<{ writerId: string; dirtyHeadingPaths: string[][] }> = [];
+        for (const [writerId, dirtySet] of preCommitSession.perUserDirty) {
+          if (dirtySet.size === 0) continue;
+          const dirtyHeadingPaths: string[][] = [];
+          for (const fragmentKey of dirtySet) {
+            const headingPath = findHeadingPathForKey(preCommitSession, fragmentKey);
+            if (headingPath) dirtyHeadingPaths.push([...headingPath]);
+          }
+          affectedWriters.push({ writerId, dirtyHeadingPaths });
+        }
+
+        // Store boundary: snapshot → accept → apply → commit.
+        for (const key of dirtySnapshot) {
+          preCommitSession.liveFragments.noteAheadOfStaged(key);
+        }
+        await preCommitSession.recoveryBuffer.snapshotFromLive(preCommitSession.liveFragments, dirtySnapshot);
+        const acceptResult = await preCommitSession.stagedSections.acceptLiveFragments(preCommitSession.liveFragments, dirtySnapshot);
+        await applyAcceptResult(preCommitSession, acceptResult);
+
+        // Inline canonical absorb — replaces legacy commitSessionFilesToCanonical.
+        const restoreContributors = Array.from(preCommitSession.contributors.values());
+        const [rpw, ...rCoWriters] = restoreContributors;
+        let rCommitMsg = `human edit: ${rpw.displayName}\n\nWriter: ${rpw.id}\nWriter-Type: ${rpw.type}`;
+        if (rCoWriters.length > 0) {
+          rCommitMsg += "\n" + rCoWriters
+            .map((w) => `Co-authored-by: ${w.displayName} <${w.email ?? `${w.id}@knowledge-store.local`}>`)
+            .join("\n");
+        }
+        const rAuthor = { name: rpw.displayName, email: rpw.email ?? "human@knowledge-store.local" };
+
+        const { CanonicalStore } = await import("../../storage/canonical-store.js");
+        const canonicalStore = new CanonicalStore(getContentRoot(), getDataRoot());
+        const absorbResult = await canonicalStore.absorbChangedSections(
+          getSessionSectionsContentRoot(),
+          rCommitMsg,
+          rAuthor,
+          { docPaths: [docPath] },
+        );
+        if (absorbResult.changedSections.length === 0) {
+          throw new Error(
+            `Pre-commit for restore of "${docPath}" produced no changes`,
+          );
+        }
+        preCommitResult = { committedSha: absorbResult.commitSha, affectedWriters };
+      }
 
       const { createRestoreProposal } = await import("../../storage/restore-service.js");
       const { proposal } = await createRestoreProposal(docPath, sha, restoreWriter);
@@ -785,10 +842,6 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       // Human explicitly requested this restore — commit directly, skip CRDT injection
       // (restore changes the entire skeleton; injectAfterCommit would corrupt the Y.Doc).
       const committedSha = await commitProposalToCanonical(proposal.id, {}, undefined, { skipCrdtInjection: true, restoreTargetSha: sha });
-
-      // Unconditionally clean session overlay so stale skeleton files never shadow restored canonical content.
-      const { cleanupSessionFiles } = await import("../../storage/session-store.js");
-      await cleanupSessionFiles(docPath);
 
       // Invalidate live session and notify connected clients.
       await invalidateSessionForRestore(
@@ -832,7 +885,55 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       // Pre-commit any in-progress session before overwrite replaces canonical content.
-      const preCommitResult = await preemptiveImportNormalizeAndCommit(docPath);
+      // Inline store boundary pattern (BNATIVE.8c).
+      let preCommitResult: PreemptiveCommitResult | null = null;
+      const preCommitSession = lookupDocSession(docPath);
+      const dirtySnapshotOw = preCommitSession ? collectTouchedFragmentKeysForNormalization(preCommitSession) : new Set<string>();
+      if (preCommitSession && dirtySnapshotOw.size > 0) {
+        const affectedWriters: Array<{ writerId: string; dirtyHeadingPaths: string[][] }> = [];
+        for (const [writerId, dirtySet] of preCommitSession.perUserDirty) {
+          if (dirtySet.size === 0) continue;
+          const dirtyHeadingPaths: string[][] = [];
+          for (const fragmentKey of dirtySet) {
+            const headingPath = findHeadingPathForKey(preCommitSession, fragmentKey);
+            if (headingPath) dirtyHeadingPaths.push([...headingPath]);
+          }
+          affectedWriters.push({ writerId, dirtyHeadingPaths });
+        }
+
+        for (const key of dirtySnapshotOw) {
+          preCommitSession.liveFragments.noteAheadOfStaged(key);
+        }
+        await preCommitSession.recoveryBuffer.snapshotFromLive(preCommitSession.liveFragments, dirtySnapshotOw);
+        const acceptResult = await preCommitSession.stagedSections.acceptLiveFragments(preCommitSession.liveFragments, dirtySnapshotOw);
+        await applyAcceptResult(preCommitSession, acceptResult);
+
+        // Inline canonical absorb — replaces legacy commitSessionFilesToCanonical.
+        const owContributors = Array.from(preCommitSession.contributors.values());
+        const [opw, ...oCoWriters] = owContributors;
+        let oCommitMsg = `human edit: ${opw.displayName}\n\nWriter: ${opw.id}\nWriter-Type: ${opw.type}`;
+        if (oCoWriters.length > 0) {
+          oCommitMsg += "\n" + oCoWriters
+            .map((w) => `Co-authored-by: ${w.displayName} <${w.email ?? `${w.id}@knowledge-store.local`}>`)
+            .join("\n");
+        }
+        const oAuthor = { name: opw.displayName, email: opw.email ?? "human@knowledge-store.local" };
+
+        const { CanonicalStore } = await import("../../storage/canonical-store.js");
+        const owCanonicalStore = new CanonicalStore(getContentRoot(), getDataRoot());
+        const owAbsorbResult = await owCanonicalStore.absorbChangedSections(
+          getSessionSectionsContentRoot(),
+          oCommitMsg,
+          oAuthor,
+          { docPaths: [docPath] },
+        );
+        if (owAbsorbResult.changedSections.length === 0) {
+          throw new Error(
+            `Pre-commit for overwrite of "${docPath}" produced no changes`,
+          );
+        }
+        preCommitResult = { committedSha: owAbsorbResult.commitSha, affectedWriters };
+      }
 
       const { id: proposalId, contentRoot: proposalContentRoot } = await createTransientProposal(
         { id: admin.id, type: admin.type, displayName: admin.displayName, email: admin.email },
@@ -851,9 +952,6 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       await updateProposalSections(proposalId, sectionTargets);
 
       const committedSha = await commitProposalToCanonical(proposalId, {}, undefined, { skipCrdtInjection: true });
-
-      const { cleanupSessionFiles } = await import("../../storage/session-store.js");
-      await cleanupSessionFiles(docPath);
 
       await invalidateSessionForRestore(
         docPath,
@@ -2103,7 +2201,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           const prefix = "section::";
           let headingPath: string[] = [];
           if (fragmentKey.startsWith(prefix)) {
-            const resolvedHeadingPath = session.fragments.findHeadingPathForFragmentKey(fragmentKey);
+            const resolvedHeadingPath = findHeadingPathForKey(session, fragmentKey);
             if (resolvedHeadingPath == null) {
               // Fragment references a section no longer in the live mapping
               continue;

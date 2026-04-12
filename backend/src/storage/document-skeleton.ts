@@ -929,10 +929,9 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
   // These were structurally overloaded (one primitive papered over delete,
   // rename, sibling-split, child-insert) and forced callers to know about
   // BFH/root-position mechanics. Their replacements live behind explicit
-  // ContentLayer / DocumentFragments operations. Compile errors at the old call
+  // ContentLayer / StagedSectionsStore operations. Compile errors at the old call
   // sites are EXPECTED — the callers will be reworked in a follow-up pass
-  // through the OverlayContentLayer / DocumentFragments migration items in this
-  // checklist.
+  // through the OverlayContentLayer / store migration items in this checklist.
 
   // --- Document-order navigation helpers ----------------------------
 
@@ -1060,8 +1059,8 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    *
    * Per checklist items 143/145, this absorbs the previous-section walking,
    * document-start fabrication, and BFH/root-position branching that used
-   * to live inside `DocumentFragments.normalizeHeadingDeletion`. Callers (now
-   * just DocumentFragments) request the semantic action and never make
+   * to live inside the normalization pipeline. Callers (now
+   * StagedSectionsStore) request the semantic action and never make
    * structural decisions themselves.
    *
    * Algorithm:
@@ -1078,7 +1077,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    *
    * The body merge itself (reading the merge target's existing content,
    * appending the orphan body, writing back) is NOT performed here — the
-   * caller (DocumentFragments) owns the Y.Doc state and must do that step.
+   * caller (StagedSectionsStore + LiveFragmentStringsStore) owns the Y.Doc state and must do that step.
    * This method only declares "where the orphan body belongs" structurally.
    *
    * Throws if:
@@ -1102,7 +1101,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
         `deleteHeadingPreservingBody([]) is illegal in ${this.docPath} — ` +
         `the before-first-heading section cannot be removed via heading deletion. ` +
         `Use OverlayContentLayer.tombstoneDocumentExplicit() to remove the entire document, ` +
-        `or clear the BFH body content directly via DocumentFragments.`,
+        `or clear the BFH body content directly via LiveFragmentStringsStore.`,
       );
     }
 
@@ -1187,25 +1186,25 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     };
   }
 
-  // --- Dedicated normalization operations for DocumentFragments (item 119) ---
+  // --- Dedicated normalization operations for StagedSectionsStore ---
 
   /**
    * Replace a heading node in place, preserving all of its descendants.
    *
-   * This is the dedicated DSInternal operation for DocumentFragments's
-   * `normalizeHeadingRename` and `normalizeHeadingLevelChange` paths. The
-   * caller passes the post-normalization heading text and level for the
-   * exact node currently at `headingPath`; the operation:
+   * This is the dedicated DSInternal operation for the
+   * `normalizeHeadingRename` and `normalizeHeadingLevelChange` paths in
+   * StagedSectionsStore. The caller passes the post-normalization heading
+   * text and level for the exact node currently at `headingPath`; the operation:
    *
    *   1. Locates the node by walking the parent sibling list and matching
    *      the last heading-path segment via `headingsEqual`.
    *   2. Constructs a fresh `SkeletonNode` with the new heading/level and a
-   *      newly minted sectionFile (always — the rename/level-change paths in
-   *      DocumentFragments handle the "key did not actually change" case
-   *      themselves by comparing the old and new fragment keys post-hoc).
+   *      newly minted sectionFile (always — the rename/level-change paths
+   *      handle the "key did not actually change" case themselves by
+   *      comparing the old and new fragment keys post-hoc).
    *   3. Splices the new node in over the old one, preserving its `children`.
    *   4. Returns the structural plan (`removed`/`added`/`fragmentKeyRemaps`)
-   *      for the caller to act on. NO body writes are emitted — DocumentFragments
+   *      for the caller to act on. NO body writes are emitted — the caller
    *      owns the Y.Doc fragment / writeDualFormat side and writes its own
    *      raw + canonical-ready content after this method returns.
    *
@@ -1262,9 +1261,10 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * Split a single heading node into multiple new sections from a parsed
    * markdown payload.
    *
-   * This is the dedicated DSInternal operation for DocumentFragments's
-   * `normalizeSectionSplit` path. The caller passes the parsed sections that
-   * resulted from re-parsing the dirty fragment's content; the operation:
+   * This is the dedicated DSInternal operation for the
+   * `normalizeSectionSplit` path in StagedSectionsStore. The caller passes
+   * the parsed sections that resulted from re-parsing the dirty fragment's
+   * content; the operation:
    *
    *   1. Locates the original node at `headingPath`.
    *   2. Partitions parsed sections into "at the original level" and
@@ -1276,11 +1276,11 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    *      new at-level nodes (sub-skeleton body holders are added by
    *      `addBodyHoldersToParents` if needed).
    *   4. Returns the structural plan (`removed`/`added`/`fragmentKeyRemaps`).
-   *      No body writes — DocumentFragments owns Y.Doc fragment populate +
+   *      No body writes — the caller owns Y.Doc fragment populate +
    *      writeDualFormat after this method returns.
    *
    * Rejects `headingPath === []` (BFH split is not modeled here — BFH
-   * normalization paths in DocumentFragments handle root-position fragments
+   * normalization paths in StagedSectionsStore handle root-position fragments
    * separately).
    */
   async splitHeadingNode(
@@ -1365,7 +1365,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * used to invoke the deleted `addSectionsFromBeforeFirstHeadingSplit(...)`
    * primitive. Two known call sites (item 123):
    *
-   *   - DocumentFragments.normalizeRootSplit: a heading was typed inside the
+   *   - StagedSectionsStore.normalizeRootSplit: a heading was typed inside the
    *     BFH fragment, splitting the BFH content into preamble + new sibling
    *     sections. The BFH itself stays at the front of `roots` (untouched
    *     by this method) and the parser-derived sections are appended after.
@@ -1385,7 +1385,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    *      including the BFH if present), and emit added FlatEntries via the
    *      structural plan.
    *
-   * No body writes are emitted — callers (DocumentFragments + ydoc-lifecycle)
+   * No body writes are emitted — callers (StagedSectionsStore + ydoc-lifecycle)
    * own the Y.Doc fragment populate / writeDualFormat side and handle their
    * own bodies after this method returns.
    */
@@ -1763,7 +1763,7 @@ export interface StructuralMutationPlan {
    */
   bodyWrites: Array<{ absolutePath: string; content: string }>;
   /**
-   * Fragment-key remaps the caller (typically DocumentFragments) must apply.
+   * Fragment-key remaps the caller (typically StagedSectionsStore) must apply.
    * `from` is the old fragment key that no longer exists post-mutation;
    * `to` is the new key (or null if the old key was simply removed).
    */

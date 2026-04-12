@@ -7,10 +7,10 @@ import {
   markFragmentDirty,
   setSessionOverlayImportCallback,
   destroyAllSessions,
+  flushDirtyToOverlay,
 } from "../../crdt/ydoc-lifecycle.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
+
 import { commitDirtySections, setAutoCommitEventHandler } from "../../storage/auto-commit.js";
-import { importSessionDirtyFragmentsToOverlay } from "../../storage/session-store.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import type { WriterIdentity, WsServerEvent } from "../../types/shared.js";
@@ -25,7 +25,7 @@ describe("multi-writer publish does not touch co-editors' dirty state (Bug D)", 
     ctx = await createTempDataRoot();
     await createSampleDocument(ctx.rootDir);
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
   });
 
@@ -43,29 +43,29 @@ describe("multi-writer publish does not touch co-editors' dirty state (Bug D)", 
 
     // Find the fragment key for "Overview" section
     let overviewKey: string | null = null;
-    session.fragments.skeleton.forEachSection((heading, level, sectionFile) => {
-      if (heading === "Overview") {
-        const isBfh = level === 0 && heading === "";
-        overviewKey = fragmentKeyFromSectionFile(sectionFile, isBfh);
+    for (const [key, hp] of session.headingPathByFragmentKey) {
+      if (hp[hp.length - 1] === "Overview") {
+        overviewKey = key;
+        break;
       }
-    });
+    }
     expect(overviewKey).not.toBeNull();
 
     // Both writers dirty the same section. We mutate the actual fragment
-    // content so the canonical-diff in commitSessionFilesToCanonical produces
+    // content so the canonical-diff in canonical absorb produces
     // a real changed-section list (Bug C narrowing requires real content
     // change to register a publish — marking dirty without mutation no
     // longer counts).
-    const overviewBefore = session.fragments.readFullContent(overviewKey!);
-    session.fragments.setFragmentContent(
+    const overviewBefore = session.liveFragments.readFragmentString(overviewKey!);
+    session.liveFragments.replaceFragmentString(
       overviewKey!,
       fragmentFromRemark(`${overviewBefore}\n\nShared edit by writer A and writer B.`),
     );
-    session.fragments.markDirty(overviewKey!);
+    session.liveFragments.noteAheadOfStaged(overviewKey!);
     markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey!);
     markFragmentDirty(SAMPLE_DOC_PATH, writerB.id, overviewKey!);
     // Pre-flush to write overlay files (simulates debounced flush in production)
-    await importSessionDirtyFragmentsToOverlay(session);
+    await flushDirtyToOverlay(session);
     // Re-mark perUserDirty since flush cleared it
     markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey!);
     markFragmentDirty(SAMPLE_DOC_PATH, writerB.id, overviewKey!);

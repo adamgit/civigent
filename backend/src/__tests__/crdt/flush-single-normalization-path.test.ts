@@ -2,12 +2,16 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
-import { destroyAllSessions } from "../../crdt/ydoc-lifecycle.js";
+import {
+  destroyAllSessions,
+  findKeyForHeadingPath,
+  findHeadingPathForKey,
+  applyAcceptResult,
+} from "../../crdt/ydoc-lifecycle.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
 import { OverlayContentLayer } from "../../storage/content-layer.js";
-import { getSessionSectionsContentRoot } from "../../storage/session-store.js";
-import { getContentRoot } from "../../storage/data-root.js";
+import { getSessionSectionsContentRoot, getContentRoot } from "../../storage/data-root.js";
 import type { WriterIdentity } from "../../types/shared.js";
 
 const writer: WriterIdentity = {
@@ -38,9 +42,10 @@ function writeDirtyFragment(
   headingPath: string[],
   markdown: string,
 ): string {
-  const fragmentKey = live.raw.fragments.requireFragmentKeyForHeadingPath(headingPath);
-  live.raw.fragments.setFragmentContent(fragmentKey, fragmentFromRemark(markdown));
-  live.raw.fragments.markDirty(fragmentKey);
+  const fragmentKey = findKeyForHeadingPath(live, headingPath);
+  if (!fragmentKey) throw new Error(`No fragment key for headingPath=[${headingPath.join(" > ")}]`);
+  live.liveFragments.replaceFragmentString(fragmentKey, fragmentFromRemark(markdown));
+  live.liveFragments.noteAheadOfStaged(fragmentKey);
   return fragmentKey;
 }
 
@@ -66,14 +71,16 @@ describe("flush uses the single normalization routine", () => {
     );
 
     const events: Array<{ oldKey: string; newKeys: string[] }> = [];
-    const result = await live.raw.fragments.importDirtyFragmentsToSessionOverlay({
-      broadcastStructureChange: (info) => events.push(...info),
-    });
+    const scope = live.liveFragments.getAheadOfStagedKeys();
+    await live.recoveryBuffer.snapshotFromLive(live.liveFragments, scope);
+    const result = await live.stagedSections.acceptLiveFragments(live.liveFragments, scope);
+    if (result.remaps.length > 0) events.push(...result.remaps);
+    await applyAcceptResult(live, result);
 
     expect(events).toEqual([]);
     expect(result.writtenKeys).toContain(overviewKey);
     expect(result.deletedKeys).toEqual([]);
-    expect(live.raw.fragments.readFullContent(overviewKey)).toContain("Overview body after flush-only body edit.");
+    expect(live.liveFragments.readFragmentString(overviewKey)).toContain("Overview body after flush-only body edit.");
 
     const sessionSections = new OverlayContentLayer(getSessionSectionsContentRoot(), getContentRoot());
     const sections = await sessionSections.readAllSections(SAMPLE_DOC_PATH);
@@ -90,17 +97,19 @@ describe("flush uses the single normalization routine", () => {
     );
 
     const events: Array<{ oldKey: string; newKeys: string[] }> = [];
-    const result = await live.raw.fragments.importDirtyFragmentsToSessionOverlay({
-      broadcastStructureChange: (info) => events.push(...info),
-    });
+    const scope = live.liveFragments.getAheadOfStagedKeys();
+    await live.recoveryBuffer.snapshotFromLive(live.liveFragments, scope);
+    const result = await live.stagedSections.acceptLiveFragments(live.liveFragments, scope);
+    if (result.remaps.length > 0) events.push(...result.remaps);
+    await applyAcceptResult(live, result);
 
-    const renamedKey = live.raw.fragments.findFragmentKeyForHeadingPath(["Timeline Renamed"]);
+    const renamedKey = findKeyForHeadingPath(live, ["Timeline Renamed"]);
     expect(renamedKey).toBeTruthy();
-    expect(live.raw.fragments.findHeadingPathForFragmentKey(timelineKey)).toBeNull();
+    expect(findHeadingPathForKey(live, timelineKey)).toBeNull();
     expect(result.deletedKeys).toContain(timelineKey);
     expect(events).toEqual([{ oldKey: timelineKey, newKeys: [renamedKey!] }]);
 
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const assembled = live.orderedFragmentKeys.map((k) => live.liveFragments.readFragmentString(k)).join("");
     expect(assembled).toContain("## Timeline Renamed");
     expect(assembled).not.toContain("## Timeline\n");
   });
@@ -122,19 +131,21 @@ describe("flush uses the single normalization routine", () => {
     );
 
     const events: Array<{ oldKey: string; newKeys: string[] }> = [];
-    const result = await live.raw.fragments.importDirtyFragmentsToSessionOverlay({
-      broadcastStructureChange: (info) => events.push(...info),
-    });
+    const scope = live.liveFragments.getAheadOfStagedKeys();
+    await live.recoveryBuffer.snapshotFromLive(live.liveFragments, scope);
+    const result = await live.stagedSections.acceptLiveFragments(live.liveFragments, scope);
+    if (result.remaps.length > 0) events.push(...result.remaps);
+    await applyAcceptResult(live, result);
 
-    const overviewAfterKey = live.raw.fragments.findFragmentKeyForHeadingPath(["Overview"]);
-    const followUpKey = live.raw.fragments.findFragmentKeyForHeadingPath(["Follow Up"]);
+    const overviewAfterKey = findKeyForHeadingPath(live, ["Overview"]);
+    const followUpKey = findKeyForHeadingPath(live, ["Follow Up"]);
     expect(overviewAfterKey).toBeTruthy();
     expect(followUpKey).toBeTruthy();
     expect(result.writtenKeys).toEqual(expect.arrayContaining([overviewAfterKey!, followUpKey!]));
     expect(result.deletedKeys).toContain(overviewKey);
     expect(events).toEqual([{ oldKey: overviewKey, newKeys: [overviewAfterKey!, followUpKey!] }]);
 
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const assembled = live.orderedFragmentKeys.map((k) => live.liveFragments.readFragmentString(k)).join("");
     expect(assembled).toContain("## Overview");
     expect(assembled).toContain("## Follow Up");
     expect(assembled).toContain("Follow up body after split.");
@@ -149,15 +160,18 @@ describe("flush uses the single normalization routine", () => {
     );
 
     const events: Array<{ oldKey: string; newKeys: string[] }> = [];
-    const result = await live.raw.fragments.importDirtyFragmentsToSessionOverlay({
-      broadcastStructureChange: (info) => events.push(...info),
-    });
+    const scope = live.liveFragments.getAheadOfStagedKeys();
+    await live.recoveryBuffer.snapshotFromLive(live.liveFragments, scope);
+    const result = await live.stagedSections.acceptLiveFragments(live.liveFragments, scope);
+    if (result.remaps.length > 0) events.push(...result.remaps);
+    await applyAcceptResult(live, result);
 
-    const bfhKey = live.raw.fragments.requireFragmentKeyForHeadingPath([]);
-    const bfhContent = live.raw.fragments.readFullContent(bfhKey);
+    const bfhKey = findKeyForHeadingPath(live, []);
+    if (!bfhKey) throw new Error("Missing BFH fragment key after normalization");
+    const bfhContent = live.liveFragments.readFragmentString(bfhKey);
     expect(bfhContent).toContain(SAMPLE_SECTIONS.preamble);
     expect(bfhContent).toContain("Overview orphan body after heading deletion.");
-    expect(live.raw.fragments.findHeadingPathForFragmentKey(overviewKey)).toBeNull();
+    expect(findHeadingPathForKey(live, overviewKey)).toBeNull();
     expect(result.deletedKeys).toContain(overviewKey);
     expect(events).toEqual([{ oldKey: overviewKey, newKeys: [] }]);
 

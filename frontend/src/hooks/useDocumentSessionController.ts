@@ -1,15 +1,16 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type React from "react";
 import { DocumentSessionController } from "../controllers/document-session-controller";
 import {
   shouldMountEditor,
   type DeletionPlaceholder,
-  type SectionPersistenceState,
   getSectionFragmentKey,
   type DocumentSection,
 } from "../pages/document-page-utils";
 import { sectionHeadingKey, type ContentCommittedEvent, type DocumentSessionControllerState, type EditorFocusTarget, type RequestedMode, type RestoreNotificationPayload } from "../types/shared.js";
 import type { CrdtConnectionState, CrdtProvider } from "../services/crdt-provider";
+import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
+import type { CrdtTransport } from "../services/crdt-transport";
 import type { MilkdownEditorHandle } from "../components/MilkdownEditor";
 import {
   useSessionMode,
@@ -33,14 +34,15 @@ export interface UseDocumentSessionControllerReturn {
   focusedSectionIndex: number | null;
   setFocusedSectionIndex: React.Dispatch<React.SetStateAction<number | null>>;
   crdtProvider: CrdtProvider | null;
+  store: BrowserFragmentReplicaStore | null;
+  storeRef: React.MutableRefObject<BrowserFragmentReplicaStore | null>;
+  transport: CrdtTransport | null;
   crdtSynced: boolean;
   crdtState: CrdtConnectionState;
   crdtError: string | null;
   editingLoading: boolean;
   readyEditors: Set<number>;
   setReadyEditors: React.Dispatch<React.SetStateAction<Set<number>>>;
-  sectionPersistence: Map<string, SectionPersistenceState>;
-  setSectionPersistence: React.Dispatch<React.SetStateAction<Map<string, SectionPersistenceState>>>;
   deletionPlaceholders: DeletionPlaceholder[];
   setDeletionPlaceholders: React.Dispatch<React.SetStateAction<DeletionPlaceholder[]>>;
   restructuringKeys: Set<string>;
@@ -96,7 +98,6 @@ export function useDocumentSessionController(
     setStatusMessage: params.setStatusMessage,
     loadSections: params.loadSections,
     onRestoreNotification: params.onRestoreNotification,
-    setSectionPersistence: persistence.setSectionPersistence,
     setDeletionPlaceholders: persistence.setDeletionPlaceholders,
     setRestructuringKeys: persistence.setRestructuringKeys,
     onStopEditing: () => {
@@ -104,6 +105,9 @@ export function useDocumentSessionController(
       registry.editorRefs.current.clear();
     },
   });
+
+  const storeRef = useRef<BrowserFragmentReplicaStore | null>(null);
+  useEffect(() => { storeRef.current = session.store; }, [session.store]);
 
   const registry = useEditorRegistry({ sections: params.sections });
 
@@ -148,14 +152,15 @@ export function useDocumentSessionController(
     focusedSectionIndex: focus.focusedSectionIndex,
     setFocusedSectionIndex: focus.setFocusedSectionIndex,
     crdtProvider: session.crdtProvider,
+    store: session.store,
+    storeRef,
+    transport: session.transport,
     crdtSynced: session.crdtSynced,
     crdtState: session.crdtState,
     crdtError: session.crdtError,
     editingLoading: session.editingLoading,
     readyEditors: registry.readyEditors,
     setReadyEditors: registry.setReadyEditors,
-    sectionPersistence: persistence.sectionPersistence,
-    setSectionPersistence: persistence.setSectionPersistence,
     deletionPlaceholders: persistence.deletionPlaceholders,
     setDeletionPlaceholders: persistence.setDeletionPlaceholders,
     restructuringKeys: persistence.restructuringKeys,
@@ -247,21 +252,20 @@ export function useDocumentSessionController(
     },
     handleCommittedSections: (event: ContentCommittedEvent) => {
       const committedHeadingKeys = new Set(event.sections.map((s) => sectionHeadingKey(s.heading_path)));
-      runtime.setSectionPersistence((prev) => {
-        const next = new Map(prev);
-        for (const section of params.sections) {
-          if (committedHeadingKeys.has(sectionHeadingKey(section.heading_path))) {
-            next.delete(getSectionFragmentKey(section));
-          }
+      const store = runtime.storeRef.current;
+      if (!store) return;
+      const fragmentKeys: string[] = [];
+      for (const section of params.sections) {
+        if (committedHeadingKeys.has(sectionHeadingKey(section.heading_path))) {
+          fragmentKeys.push(getSectionFragmentKey(section));
         }
-        return next;
-      });
+      }
+      store.markSectionsClean(fragmentKeys);
     },
   }), [
     params.sections,
     params.setSections,
     runtime.setReadyEditors,
-    runtime.setSectionPersistence,
     runtime.startEditing,
     runtime.setFocusedSectionIndex,
     runtime.pendingFocusRef,
@@ -278,4 +282,3 @@ export function useDocumentSessionController(
     sessionController,
   };
 }
-

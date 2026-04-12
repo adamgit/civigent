@@ -47,7 +47,7 @@ import type { ParsedSection } from "./markdown-sections.js";
  * write path (MCP write_section, upsertDocumentFromMarkdown, upsertSection,
  * moveSection, renameSection, crash recovery) passes through here.
  *
- * The CRDT flush path (DocumentFragments.extractMarkdown) inherently normalizes
+ * The CRDT flush path (LiveFragmentStringsStore → markdown extraction) inherently normalizes
  * as a side-effect of Y.Doc→markdown serialization via jsonToMarkdown, so
  * content from that path is already normalized — the second pass here is a
  * no-op because the round-trip is idempotent. This double-application is
@@ -667,7 +667,7 @@ export class OverlayContentLayer {
    *
    * Semantic job: after a successful call, the overlay contains exactly an
    * empty skeleton file for `docPath` and nothing else — no body files, no
-   * CRDT/DocumentFragments involvement, no extra writes. Subsequent callers can
+   * CRDT involvement, no extra writes. Subsequent callers can
    * safely add sections via `upsertSection(...)`.
    *
    * State policy (enforced here, not in the DS layer):

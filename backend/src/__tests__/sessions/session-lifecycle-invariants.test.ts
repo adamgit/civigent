@@ -15,8 +15,8 @@ import {
   getAllSessions,
   destroyAllSessions,
   setSessionOverlayImportCallback,
+  flushDirtyToOverlay,
 } from "../../crdt/ydoc-lifecycle.js";
-import { importSessionDirtyFragmentsToOverlay } from "../../storage/session-store.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import type { WriterIdentity } from "../../types/shared.js";
 
@@ -43,7 +43,7 @@ describe("A1: Session Lifecycle Invariants", () => {
     await createSampleDocument(ctx.rootDir);
     baseHead = await getHeadSha(ctx.rootDir);
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
   });
 
@@ -68,7 +68,7 @@ describe("A1: Session Lifecycle Invariants", () => {
     expect(session.baseHead).toBe(baseHead);
 
     // Fragment keys should be populated from skeleton
-    const fragmentKeys = session.fragments.getFragmentKeys();
+    const fragmentKeys = session.orderedFragmentKeys;
     expect(fragmentKeys.length).toBeGreaterThanOrEqual(3); // BFH + Overview + Timeline
   });
 
@@ -83,9 +83,9 @@ describe("A1: Session Lifecycle Invariants", () => {
       "sock-a2",
     );
 
-    const fragmentKeys = session.fragments.getFragmentKeys();
+    const fragmentKeys = session.orderedFragmentKeys;
     for (const key of fragmentKeys) {
-      const content = session.fragments.reconstructFullMarkdown(key, 0, "");
+      const content = session.liveFragments.readFragmentString(key);
       // Every fragment should have non-null content (may be empty string for BFH)
       expect(content).toBeDefined();
       expect(typeof content).toBe("string");

@@ -8,7 +8,8 @@
 import path from "node:path";
 import { readFile, readdir } from "node:fs/promises";
 import { getContentRoot, getSessionSectionsContentRoot, getSessionAuthorsRoot } from "./data-root.js";
-import { listRawFragments, readRawFragment } from "./session-store.js";
+import { RawFragmentRecoveryBuffer } from "./raw-fragment-recovery-buffer.js";
+import { sectionFileFromFragmentKey } from "../crdt/ydoc-fragments.js";
 import { scanSessionFragmentDocPaths, scanSessionDocPaths } from "./session-scan.js";
 import { DocumentSkeleton } from "./document-skeleton.js";
 import { OverlayContentLayer, SectionNotFoundError } from "./content-layer.js";
@@ -63,15 +64,16 @@ export async function getSessionState(): Promise<SessionState> {
   const fragments: Record<string, FragmentFileInfo[]> = {};
   let totalFragmentFiles = 0;
   for (const docPath of fragmentDocPaths) {
-    const files = await listRawFragments(docPath);
+    const buffer = new RawFragmentRecoveryBuffer(docPath);
+    const fragmentKeys = await buffer.listFragmentKeys();
     const overlayLayer = new OverlayContentLayer(getSessionSectionsContentRoot(), getContentRoot());
     const entries: FragmentFileInfo[] = [];
-    for (const filename of files) {
-      const content = await readRawFragment(docPath, filename);
+    for (const fragmentKey of fragmentKeys) {
+      const content = await buffer.readFragment(fragmentKey);
       if (content === null) continue;
       const sizeBytes = Buffer.byteLength(content, "utf8");
       let sectionHeading: string | null = null;
-      const fileId = filename.replace(/\.md$/, "");
+      const fileId = sectionFileFromFragmentKey(fragmentKey);
       try {
         const entry = await overlayLayer.resolveSectionFileId(docPath, fileId);
         sectionHeading = entry.heading || "(before first heading)";
@@ -83,6 +85,7 @@ export async function getSessionState(): Promise<SessionState> {
           throw err;
         }
       }
+      const filename = `${fileId}.md`;
       entries.push({
         filename,
         sizeBytes,

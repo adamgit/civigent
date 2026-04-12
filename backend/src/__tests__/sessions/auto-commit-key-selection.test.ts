@@ -2,11 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
+
 import { getHeadSha } from "../../storage/git-repo.js";
 import { commitDirtySections } from "../../storage/auto-commit.js";
-import { destroyAllSessions, setSessionOverlayImportCallback } from "../../crdt/ydoc-lifecycle.js";
-import { importSessionDirtyFragmentsToOverlay } from "../../storage/session-store.js";
+import { destroyAllSessions, setSessionOverlayImportCallback, markFragmentDirty, flushDirtyToOverlay, findKeyForHeadingPath } from "../../crdt/ydoc-lifecycle.js";
+import { fragmentFromRemark } from "../../storage/section-formatting.js";
 import type { WriterIdentity } from "../../types/shared.js";
 
 const writer: WriterIdentity = {
@@ -24,13 +24,7 @@ function findHeadingKey(
   live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
   heading: string,
 ): string {
-  let key: string | null = null;
-  live.raw.fragments.skeleton.forEachSection((entryHeading, level, sectionFile, headingPath) => {
-    const isBfh = headingPath.length === 0 && level === 0 && entryHeading === "";
-    if (entryHeading === heading) {
-      key = fragmentKeyFromSectionFile(sectionFile, isBfh);
-    }
-  });
+  const key = findKeyForHeadingPath(live, [heading]);
   if (!key) {
     throw new Error(`Missing key for heading "${heading}"`);
   }
@@ -58,9 +52,10 @@ async function appendEdit(
   line: string,
 ): Promise<void> {
   const key = findHeadingKey(live, heading);
-  const before = live.raw.fragments.readFullContent(key);
-  const result = live.mutateSection(writer.id, key, `${before}\n\n${line}`);
-  expect(result.error).toBeUndefined();
+  const before = live.liveFragments.readFragmentString(key);
+  live.liveFragments.replaceFragmentString(key, fragmentFromRemark(`${before}\n\n${line}`));
+  live.liveFragments.noteAheadOfStaged(key);
+  markFragmentDirty(SAMPLE_DOC_PATH, writer.id, key);
 }
 
 describe("auto-commit scoped normalization key selection", () => {
@@ -70,7 +65,7 @@ describe("auto-commit scoped normalization key selection", () => {
     ctx = await createTempDataRoot();
     await createSampleDocument(ctx.rootDir);
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
   });
 
@@ -84,19 +79,21 @@ describe("auto-commit scoped normalization key selection", () => {
     await appendEdit(live, "Overview", "Overview edit for single-target scope.");
     await appendEdit(live, "Timeline", "Timeline edit that should not be normalized in overview scope.");
 
+    // Spy on stagedSections.acceptLiveFragments to capture the normalization scope.
+    // normalizeFragmentKeys now calls stores directly instead of fragments.normalizeStructure.
     const normalizedKeys: string[] = [];
-    const fragmentsAny = live.raw.fragments as any;
-    const originalNormalize = fragmentsAny.normalizeStructure.bind(live.raw.fragments);
-    fragmentsAny.normalizeStructure = async (fragmentKey: string, opts?: unknown) => {
-      normalizedKeys.push(fragmentKey);
-      return originalNormalize(fragmentKey, opts);
+    const stagedAny = live.stagedSections as any;
+    const originalAccept = stagedAny.acceptLiveFragments.bind(live.stagedSections);
+    stagedAny.acceptLiveFragments = async (liveStore: unknown, scope: ReadonlySet<string>) => {
+      for (const key of scope) normalizedKeys.push(key);
+      return originalAccept(liveStore, scope);
     };
 
     try {
       const result = await commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
       expect(result.committed).toBe(true);
     } finally {
-      fragmentsAny.normalizeStructure = originalNormalize;
+      stagedAny.acceptLiveFragments = originalAccept;
     }
 
     const overviewKey = findHeadingKey(live, "Overview");
@@ -109,18 +106,18 @@ describe("auto-commit scoped normalization key selection", () => {
     await appendEdit(live, "Timeline", "Timeline edit for multi-target scope.");
 
     const normalizedKeys: string[] = [];
-    const fragmentsAny = live.raw.fragments as any;
-    const originalNormalize = fragmentsAny.normalizeStructure.bind(live.raw.fragments);
-    fragmentsAny.normalizeStructure = async (fragmentKey: string, opts?: unknown) => {
-      normalizedKeys.push(fragmentKey);
-      return originalNormalize(fragmentKey, opts);
+    const stagedAny = live.stagedSections as any;
+    const originalAccept = stagedAny.acceptLiveFragments.bind(live.stagedSections);
+    stagedAny.acceptLiveFragments = async (liveStore: unknown, scope: ReadonlySet<string>) => {
+      for (const key of scope) normalizedKeys.push(key);
+      return originalAccept(liveStore, scope);
     };
 
     try {
       const result = await commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"], ["Timeline"]]);
       expect(result.committed).toBe(true);
     } finally {
-      fragmentsAny.normalizeStructure = originalNormalize;
+      stagedAny.acceptLiveFragments = originalAccept;
     }
 
     const overviewKey = findHeadingKey(live, "Overview");
@@ -137,18 +134,18 @@ describe("auto-commit scoped normalization key selection", () => {
     await appendEdit(live, "Overview", "Overview edit for unscoped publish.");
 
     const normalizedKeys: string[] = [];
-    const fragmentsAny = live.raw.fragments as any;
-    const originalNormalize = fragmentsAny.normalizeStructure.bind(live.raw.fragments);
-    fragmentsAny.normalizeStructure = async (fragmentKey: string, opts?: unknown) => {
-      normalizedKeys.push(fragmentKey);
-      return originalNormalize(fragmentKey, opts);
+    const stagedAny = live.stagedSections as any;
+    const originalAccept = stagedAny.acceptLiveFragments.bind(live.stagedSections);
+    stagedAny.acceptLiveFragments = async (liveStore: unknown, scope: ReadonlySet<string>) => {
+      for (const key of scope) normalizedKeys.push(key);
+      return originalAccept(liveStore, scope);
     };
 
     try {
       const result = await commitDirtySections(writer, SAMPLE_DOC_PATH);
       expect(result.committed).toBe(true);
     } finally {
-      fragmentsAny.normalizeStructure = originalNormalize;
+      stagedAny.acceptLiveFragments = originalAccept;
     }
 
     const overviewKey = findHeadingKey(live, "Overview");

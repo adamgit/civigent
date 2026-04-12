@@ -54,7 +54,6 @@ export interface UseDocumentSessionOptions {
   onSessionReinit?: () => void;
   onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
   onModeTransitionResult?: (result: ModeTransitionResult) => void;
-  onSessionOverlayImportStarted?: () => void;
   onSessionOverlayImported?: (payload: SessionOverlayImportedPayload) => void;
 }
 
@@ -80,7 +79,6 @@ export function useDocumentSession(
     onSessionReinit,
     onRestoreNotification,
     onModeTransitionResult,
-    onSessionOverlayImportStarted,
     onSessionOverlayImported,
   } = opts;
 
@@ -93,7 +91,6 @@ export function useDocumentSession(
     onSessionReinit,
     onRestoreNotification,
     onModeTransitionResult,
-    onSessionOverlayImportStarted,
     onSessionOverlayImported,
   });
   callbacksRef.current = {
@@ -102,7 +99,6 @@ export function useDocumentSession(
     onSessionReinit,
     onRestoreNotification,
     onModeTransitionResult,
-    onSessionOverlayImportStarted,
     onSessionOverlayImported,
   };
 
@@ -120,8 +116,6 @@ export function useDocumentSession(
       onSessionReinit: () => callbacksRef.current.onSessionReinit?.(),
       onRestoreNotification: (p) => callbacksRef.current.onRestoreNotification?.(p),
       onModeTransitionResult: (r) => callbacksRef.current.onModeTransitionResult?.(r),
-      onSessionOverlayImportStarted: () =>
-        callbacksRef.current.onSessionOverlayImportStarted?.(),
       onSessionOverlayImported: (p) =>
         callbacksRef.current.onSessionOverlayImported?.(p),
     };

@@ -12,11 +12,11 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { DocumentSkeleton, type FlatEntry } from "../../storage/document-skeleton.js";
-import { DocumentFragments } from "../../crdt/document-fragments.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { gitExec } from "../../storage/git-repo.js";
 import { SectionRef } from "../../domain/section-ref.js";
+import * as Y from "yjs";
 
 const NESTED_DOC_PATH = "test/nested-doc.md";
 
@@ -209,9 +209,9 @@ describe("commitHumanChangesToCanonical — sub-skeleton path verification", () 
   });
 });
 
-// ─── DocumentFragments.fragmentKeyFor() ──────────────────────────────
+// ─── fragmentKeyFromSectionFile() ──────────────────────────────
 
-describe("DocumentFragments.fragmentKeyFor() — sub-skeleton context", () => {
+describe("fragmentKeyFromSectionFile() — sub-skeleton context", () => {
   let ctx: TempDataRootContext;
 
   beforeAll(async () => {
@@ -232,7 +232,7 @@ describe("DocumentFragments.fragmentKeyFor() — sub-skeleton context", () => {
     expect(entry.sectionFile).toBe("_details_root.md");
     expect(entry.heading).toBe("Details");
     expect(entry.level).toBe(2);
-    const key = DocumentFragments.fragmentKeyFor(entry);
+    const key = fragmentKeyFromSectionFile(entry.sectionFile, entry.headingPath.length === 0);
     // heading="Details", level=2 → isRoot=false → key from sectionFile
     expect(key).toBe("section::_details_root");
   });
@@ -242,7 +242,7 @@ describe("DocumentFragments.fragmentKeyFor() — sub-skeleton context", () => {
       NESTED_DOC_PATH, ctx.contentDir, ctx.contentDir,
     );
     const entry = skeleton.requireContentEntryByHeadingPath(["Details"]);
-    const fromStore = DocumentFragments.fragmentKeyFor(entry);
+    const fromStore = fragmentKeyFromSectionFile(entry.sectionFile, entry.headingPath.length === 0);
     const fromHelper = fragmentKeyFromSectionFile(entry.sectionFile, false);
     expect(fromStore).toBe(fromHelper);
   });
@@ -302,7 +302,7 @@ describe("Auto-commit dirty fragment key derivation — sub-skeleton context", (
 
     // FIXED: resolve(["Details"]) now returns the root child body entry
     const resolveEntry = skeleton.requireContentEntryByHeadingPath(["Details"]);
-    const resolveKey = DocumentFragments.fragmentKeyFor(resolveEntry);
+    const resolveKey = fragmentKeyFromSectionFile(resolveEntry.sectionFile, resolveEntry.headingPath.length === 0);
     // heading/level preserved from parent, sectionFile from root child
     expect(resolveEntry.sectionFile).toBe("_details_root.md");
     expect(resolveKey).toBe("section::_details_root");

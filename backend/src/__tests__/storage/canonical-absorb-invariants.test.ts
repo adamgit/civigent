@@ -90,7 +90,7 @@ describe("A8: Canonical Store (absorb) Invariants", () => {
     });
 
     const store = new CanonicalStore(ctx.contentDir, ctx.rootDir);
-    const commitSha = await store.absorb(stagingRoot, "test: absorb A8.1", AUTHOR);
+    const { commitSha } = await store.absorbChangedSections(stagingRoot, "test: absorb A8.1", AUTHOR);
 
     // Git HEAD should have advanced
     expect(commitSha).toBeTruthy();
@@ -139,7 +139,7 @@ describe("A8: Canonical Store (absorb) Invariants", () => {
     expect(filesBefore).toContain("timeline.md");
 
     const store = new CanonicalStore(ctx.contentDir, ctx.rootDir);
-    await store.absorb(stagingRoot, "test: absorb A8.2 orphan deletion", AUTHOR);
+    await store.absorbChangedSections(stagingRoot, "test: absorb A8.2 orphan deletion", AUTHOR);
 
     // timeline.md should be deleted from canonical (orphaned by new skeleton)
     const filesAfter = await readdir(canonicalSectionsDir);
@@ -168,7 +168,7 @@ describe("A8: Canonical Store (absorb) Invariants", () => {
 
     // absorb should throw due to git failure
     await expect(
-      badStore.absorb(stagingRoot, "test: absorb should fail", AUTHOR),
+      badStore.absorbChangedSections(stagingRoot, "test: absorb should fail", AUTHOR),
     ).rejects.toThrow();
 
     // After rollback, canonical should be restored (best-effort)
@@ -203,7 +203,7 @@ describe("A8: Canonical Store (absorb) Invariants", () => {
 
     // absorb from the custom staging root (not the session overlay)
     const store = new CanonicalStore(ctx.contentDir, ctx.rootDir);
-    const commitSha = await store.absorb(customStagingRoot, "test: absorb A8.4 custom staging", AUTHOR);
+    const { commitSha } = await store.absorbChangedSections(customStagingRoot, "test: absorb A8.4 custom staging", AUTHOR);
     expect(commitSha).toBeTruthy();
 
     // Content should be in canonical

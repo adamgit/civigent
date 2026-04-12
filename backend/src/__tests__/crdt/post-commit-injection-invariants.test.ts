@@ -16,7 +16,6 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
-import { DocumentFragments, SERVER_INJECTION_ORIGIN } from "../../crdt/document-fragments.js";
 import {
   acquireDocSession,
   destroyAllSessions,
@@ -24,11 +23,13 @@ import {
   setYjsUpdateBroadcast,
   injectAfterCommit,
   setSessionOverlayImportCallback,
+  flushDirtyToOverlay,
+  findKeyForHeadingPath,
+  type DocSession,
 } from "../../crdt/ydoc-lifecycle.js";
-import { importSessionDirtyFragmentsToOverlay } from "../../storage/session-store.js";
 import { setPostCommitHook, commitProposalToCanonical } from "../../storage/commit-pipeline.js";
 import { getHeadSha } from "../../storage/git-repo.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
+
 import type { WriterIdentity } from "../../types/shared.js";
 
 // ─── Mocks for commitProposalToCanonical (test A11.3) ────────────
@@ -59,14 +60,8 @@ const writer: WriterIdentity = {
   email: "injection@test.local",
 };
 
-function findOverviewKey(session: { fragments: DocumentFragments }): string {
-  let key: string | null = null;
-  session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-    if (heading === "Overview") {
-      const isRoot = DocumentFragments.isBeforeFirstHeading({ headingPath, level, heading });
-      key = fragmentKeyFromSectionFile(sectionFile, isRoot);
-    }
-  });
+function findOverviewKey(session: DocSession): string {
+  const key = findKeyForHeadingPath(session, ["Overview"]);
   if (!key) throw new Error("Missing Overview fragment key");
   return key;
 }
@@ -78,7 +73,7 @@ describe("A11: Post-Commit Injection Invariants", () => {
     ctx = await createTempDataRoot();
     await createSampleDocument(ctx.rootDir);
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
   });
 
@@ -101,7 +96,7 @@ describe("A11: Post-Commit Injection Invariants", () => {
     );
 
     const overviewKey = findOverviewKey(session);
-    const originalContent = session.fragments.readFullContent(overviewKey);
+    const originalContent = session.liveFragments.readFragmentString(overviewKey);
 
     // Wire broadcast to capture (prevents errors)
     const broadcasts: Uint8Array[] = [];
@@ -121,7 +116,7 @@ describe("A11: Post-Commit Injection Invariants", () => {
     });
 
     // Y.Doc should now contain the injected content
-    const afterContent = session.fragments.readFullContent(overviewKey);
+    const afterContent = session.liveFragments.readFragmentString(overviewKey);
     expect(String(afterContent)).toContain(uniqueMarker);
     expect(String(afterContent)).not.toBe(String(originalContent));
 
@@ -144,9 +139,10 @@ describe("A11: Post-Commit Injection Invariants", () => {
 
     const overviewKey = findOverviewKey(session);
 
-    // Confirm clean state
-    expect(session.fragments.dirtyKeys.has(overviewKey)).toBe(false);
-    expect(session.lastTouchedFragments.has(overviewKey)).toBe(false);
+    // Confirm clean state — clear ahead-of-staged from acquisition loading
+    session.liveFragments.clearAheadOfStaged([overviewKey]);
+    expect(session.liveFragments.isAheadOfStaged(overviewKey)).toBe(false);
+    expect(session.liveFragments.isAheadOfStaged(overviewKey)).toBe(false);
 
     // Wire broadcast
     setYjsUpdateBroadcast(() => {});
@@ -162,10 +158,10 @@ describe("A11: Post-Commit Injection Invariants", () => {
     });
 
     // dirtyKeys must NOT be polluted — SERVER_INJECTION_ORIGIN skips the afterTransaction dirty guard
-    expect(session.fragments.dirtyKeys.has(overviewKey)).toBe(false);
+    expect(session.liveFragments.isAheadOfStaged(overviewKey)).toBe(false);
 
-    // lastTouchedFragments must NOT be polluted either
-    expect(session.lastTouchedFragments.has(overviewKey)).toBe(false);
+    // aheadOfStagedKeys must NOT be polluted either (server injection suppresses boundary-2 tracking)
+    expect(session.liveFragments.isAheadOfStaged(overviewKey)).toBe(false);
 
     // perUserDirty should not contain any entries for the overview key
     for (const [_writerId, dirtySet] of session.perUserDirty) {
@@ -206,8 +202,8 @@ describe("A11: Post-Commit Injection Invariants", () => {
     vi.mocked(transitionToCommitted).mockResolvedValue(undefined);
 
     const absorbSpy = vi
-      .spyOn(CanonicalStore.prototype, "absorb")
-      .mockResolvedValue("deadbeef111");
+      .spyOn(CanonicalStore.prototype, "absorbChangedSections")
+      .mockResolvedValue({ commitSha: "deadbeef111", changedSections: [] });
 
     // Track whether the post-commit hook is called
     const hookCalls: Array<{ docPath: string; headingPaths: string[][] }> = [];

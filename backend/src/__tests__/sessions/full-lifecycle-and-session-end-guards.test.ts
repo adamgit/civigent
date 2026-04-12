@@ -34,10 +34,30 @@ import {
   flushAndDestroyAll,
   setSessionOverlayImportCallback,
   destroyAllSessions,
+  flushDirtyToOverlay,
 } from "../../crdt/ydoc-lifecycle.js";
 import { getHeadSha } from "../../storage/git-repo.js";
-import { importSessionDirtyFragmentsToOverlay, commitSessionFilesToCanonical, cleanupSessionFiles } from "../../storage/session-store.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
+import { CanonicalStore } from "../../storage/canonical-store.js";
+import { getContentRoot, getDataRoot, getSessionSectionsContentRoot, getSessionFragmentsRoot } from "../../storage/data-root.js";
+import { rm } from "node:fs/promises";
+import path from "node:path";
+
+async function cleanupSessionOverlay(docPath: string): Promise<void> {
+  const overlayRoot = getSessionSectionsContentRoot();
+  const skelPath = path.join(overlayRoot, ...docPath.split("/"));
+  await rm(skelPath, { force: true });
+  await rm(`${skelPath}.sections`, { recursive: true, force: true });
+  const fragDir = path.join(getSessionFragmentsRoot(), docPath);
+  await rm(fragDir, { recursive: true, force: true });
+}
+
+async function commitToCanonical(writers: WriterIdentity[], docPath: string) {
+  const store = new CanonicalStore(getContentRoot(), getDataRoot());
+  const [primary] = writers;
+  const commitMsg = `human edit: ${primary.displayName}\n\nWriter: ${primary.id}`;
+  const author = { name: primary.displayName, email: primary.email ?? "human@knowledge-store.local" };
+  return store.absorbChangedSections(getSessionSectionsContentRoot(), commitMsg, author, { docPaths: [docPath] });
+}
 
 function rawToUint8Array(raw: WebSocket.RawData): Uint8Array {
   if (raw instanceof Uint8Array) return raw;
@@ -580,7 +600,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
 
   it("session-end should normalize only explicitly dirty keys (future guardrail)", async () => {
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
 
     const baseHead = await getHeadSha(ctx.rootDir);
@@ -594,30 +614,32 @@ describe("full lifecycle + session-end normalization guardrails", () => {
 
     let overviewKey: string | null = null;
     let timelineKey: string | null = null;
-    session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-      const isBfh = headingPath.length === 0 && level === 0 && heading === "";
-      const key = fragmentKeyFromSectionFile(sectionFile, isBfh);
-      if (heading === "Overview") overviewKey = key;
-      if (heading === "Timeline") timelineKey = key;
-    });
+    for (const [fragmentKey, headingPath] of session.headingPathByFragmentKey) {
+      const heading = headingPath[headingPath.length - 1] ?? "";
+      if (heading === "Overview") overviewKey = fragmentKey;
+      if (heading === "Timeline") timelineKey = fragmentKey;
+    }
     expect(overviewKey).not.toBeNull();
     expect(timelineKey).not.toBeNull();
 
     markFragmentDirty(SAMPLE_DOC_PATH, writer.id, overviewKey!);
-    session.fragments.markDirty(overviewKey!);
+    session.liveFragments.noteAheadOfStaged(overviewKey!);
 
+    // Spy on stagedSections.acceptLiveFragments to capture normalization scope.
+    // normalizeFragmentKeys now calls stores directly instead of fragments.normalizeStructure.
     const normalizedKeys: string[] = [];
-    const originalNormalize = session.fragments.normalizeStructure.bind(session.fragments);
-    session.fragments.normalizeStructure = (async (fragmentKey: string, opts?: unknown) => {
-      normalizedKeys.push(fragmentKey);
-      return originalNormalize(fragmentKey, opts as any);
-    }) as typeof session.fragments.normalizeStructure;
+    const stagedAny = session.stagedSections as any;
+    const originalAccept = stagedAny.acceptLiveFragments.bind(session.stagedSections);
+    stagedAny.acceptLiveFragments = async (liveStore: unknown, scope: ReadonlySet<string>) => {
+      for (const key of scope) normalizedKeys.push(key);
+      return originalAccept(liveStore, scope);
+    };
 
     try {
       const released = await releaseDocSession(SAMPLE_DOC_PATH, writer.id, "sock-scope-guard");
       expect(released.sessionEnded).toBe(true);
     } finally {
-      session.fragments.normalizeStructure = originalNormalize;
+      stagedAny.acceptLiveFragments = originalAccept;
     }
 
     expect(new Set(normalizedKeys)).toEqual(new Set([overviewKey!]));
@@ -626,7 +648,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
 
   it("detach commit should not restructure untouched malformed sibling section", async () => {
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
 
     const baseHead = await getHeadSha(ctx.rootDir);
@@ -646,25 +668,23 @@ describe("full lifecycle + session-end normalization guardrails", () => {
     expect(overview).toBeDefined();
     expect(timeline).toBeDefined();
 
-    const mutate = live.mutateSection(
-      writer.id,
-      overview!.fragment_key,
-      `${overview!.content}\n\nDetach preserve edit.`,
-    );
-    expect(mutate.error).toBeUndefined();
+    live.liveFragments.replaceFragmentString(overview!.fragment_key, fragmentFromRemark(`${overview!.content}\n\nDetach preserve edit.`), undefined);
+    live.liveFragments.noteAheadOfStaged(overview!.fragment_key);
+    markFragmentDirty(SAMPLE_DOC_PATH, writer.id, overview!.fragment_key);
 
     // Untouched malformed sibling
-    live.raw.fragments.setFragmentContent(
+    live.liveFragments.replaceFragmentString(
       timeline!.fragment_key,
       fragmentFromRemark("Timeline malformed sibling that should never become canonical."),
+      undefined,
     );
 
     const released = await releaseDocSession(SAMPLE_DOC_PATH, writer.id, "sock-detach-preserve");
     expect(released.sessionEnded).toBe(true);
 
-    const commitResult = await commitSessionFilesToCanonical([writer], SAMPLE_DOC_PATH);
-    if (commitResult.sectionsCommitted > 0) {
-      await cleanupSessionFiles(SAMPLE_DOC_PATH);
+    const commitResult = await commitToCanonical([writer], SAMPLE_DOC_PATH);
+    if (commitResult.changedSections.length > 0) {
+      await cleanupSessionOverlay(SAMPLE_DOC_PATH);
     }
 
     const canonical = new ContentLayer(ctx.contentDir);
@@ -676,7 +696,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
 
   it("flushAndDestroyAll should not perform implicit global normalization sweep (future guardrail)", async () => {
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
 
     const baseHead = await getHeadSha(ctx.rootDir);
@@ -690,29 +710,31 @@ describe("full lifecycle + session-end normalization guardrails", () => {
 
     let overviewKey: string | null = null;
     let timelineKey: string | null = null;
-    session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-      const isBfh = headingPath.length === 0 && level === 0 && heading === "";
-      const key = fragmentKeyFromSectionFile(sectionFile, isBfh);
-      if (heading === "Overview") overviewKey = key;
-      if (heading === "Timeline") timelineKey = key;
-    });
+    for (const [fragmentKey, headingPath] of session.headingPathByFragmentKey) {
+      const heading = headingPath[headingPath.length - 1] ?? "";
+      if (heading === "Overview") overviewKey = fragmentKey;
+      if (heading === "Timeline") timelineKey = fragmentKey;
+    }
     expect(overviewKey).not.toBeNull();
     expect(timelineKey).not.toBeNull();
 
     markFragmentDirty(SAMPLE_DOC_PATH, writer.id, overviewKey!);
-    session.fragments.markDirty(overviewKey!);
+    session.liveFragments.noteAheadOfStaged(overviewKey!);
 
+    // Spy on stagedSections.acceptLiveFragments to capture normalization scope.
+    // normalizeFragmentKeys now calls stores directly instead of fragments.normalizeStructure.
     const normalizedKeys: string[] = [];
-    const originalNormalize = session.fragments.normalizeStructure.bind(session.fragments);
-    session.fragments.normalizeStructure = (async (fragmentKey: string, opts?: unknown) => {
-      normalizedKeys.push(fragmentKey);
-      return originalNormalize(fragmentKey, opts as any);
-    }) as typeof session.fragments.normalizeStructure;
+    const stagedAny = session.stagedSections as any;
+    const originalAccept = stagedAny.acceptLiveFragments.bind(session.stagedSections);
+    stagedAny.acceptLiveFragments = async (liveStore: unknown, scope: ReadonlySet<string>) => {
+      for (const key of scope) normalizedKeys.push(key);
+      return originalAccept(liveStore, scope);
+    };
 
     try {
       await flushAndDestroyAll();
     } finally {
-      session.fragments.normalizeStructure = originalNormalize;
+      stagedAny.acceptLiveFragments = originalAccept;
     }
 
     expect(new Set(normalizedKeys)).toEqual(new Set([overviewKey!]));

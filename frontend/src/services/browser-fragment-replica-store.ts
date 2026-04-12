@@ -5,7 +5,7 @@
  *   - the Y.Doc and Awareness instances (imperative binding targets for
  *     Milkdown and y-protocols — exposed as readonly fields)
  *   - connection state, synced flag, error string
- *   - per-fragment persistence state (clean / dirty / pending / flushed / deleting)
+ *   - per-fragment persistence state (clean / dirty / received / deleting)
  *
  * Integrates with React via `useSyncExternalStore(subscribe, getSnapshot)`.
  * Snapshot getters return referentially stable values: the same object
@@ -36,11 +36,14 @@ export type CrdtConnectionState =
 
 /**
  * Per-section persistence lifecycle:
- *   clean → dirty → pending → flushed → clean
- * "deleting" is a terminal holding state for sections removed from the
- * Y.Doc (used to keep a placeholder rendered until cleanup).
+ *   clean → dirty → received → clean
+ *
+ * "dirty"    — local edit, NOT yet confirmed received by server
+ * "received" — server ACKd receipt (data in server RAM)
+ * "clean"    — committed to canonical (absent from map)
+ * "deleting" — terminal holding state for sections removed from Y.Doc
  */
-export type SectionPersistenceState = "clean" | "dirty" | "pending" | "flushed" | "deleting";
+export type SectionPersistenceState = "clean" | "dirty" | "received" | "deleting";
 
 type Listener = () => void;
 
@@ -68,6 +71,7 @@ export class BrowserFragmentReplicaStore {
   private _synced = false;
   private _error: string | null = null;
   private _sectionPersistence: Map<string, SectionPersistenceState> = new Map();
+  private _dirtySince: Map<string, number> = new Map();
   private _version = 0;
 
   private _snapshot: ReplicaSnapshot;
@@ -117,6 +121,13 @@ export class BrowserFragmentReplicaStore {
   getSectionPersistenceForKey = (fragmentKey: string): SectionPersistenceState =>
     this._sectionPersistence.get(fragmentKey) ?? "clean";
 
+  /**
+   * Returns the timestamp (ms) when a fragment first entered the "dirty" state.
+   * Undefined if the fragment is not currently dirty.
+   */
+  getDirtySince = (fragmentKey: string): number | undefined =>
+    this._dirtySince.get(fragmentKey);
+
   // ─── Mutations ─────────────────────────────────────────────────
   //
   // All mutation methods follow the same pattern: short-circuit when no
@@ -144,16 +155,17 @@ export class BrowserFragmentReplicaStore {
 
   /**
    * Move sections into the `"dirty"` state — called when a local Y.Doc
-   * update is produced. Sections currently in a later stage (pending /
-   * flushed) are dropped back to `"dirty"` because the user edited them
-   * again after the last flush.
+   * update is produced. Sections currently in `"received"` are dropped
+   * back to `"dirty"` because the user edited them again.
    */
   markSectionsEdited(fragmentKeys: Iterable<string>): void {
     if (this.destroyed) return;
     let changed = false;
+    const now = Date.now();
     for (const key of fragmentKeys) {
       if (this._sectionPersistence.get(key) !== "dirty") {
         this._sectionPersistence.set(key, "dirty");
+        if (!this._dirtySince.has(key)) this._dirtySince.set(key, now);
         changed = true;
       }
     }
@@ -161,36 +173,16 @@ export class BrowserFragmentReplicaStore {
   }
 
   /**
-   * Move dirty sections to `"pending"` — called when the client sends
-   * a flush request (or learns the server has begun an overlay import
-   * for these keys). Sections that are not currently `"dirty"` are left
-   * alone: the state machine only allows dirty → pending.
+   * Mark sections as `"received"` — server ACKd receipt of a MSG_YJS_UPDATE.
+   * Data is now in server RAM (not yet on disk). Only transitions `"dirty"`
+   * → `"received"`. Keys already in a later state are left alone.
    */
-  promoteEditedToSaving(fragmentKeys: Iterable<string>): void {
+  markSectionsReceived(fragmentKeys: Iterable<string>): void {
     if (this.destroyed) return;
     let changed = false;
     for (const key of fragmentKeys) {
       if (this._sectionPersistence.get(key) === "dirty") {
-        this._sectionPersistence.set(key, "pending");
-        changed = true;
-      }
-    }
-    if (changed) this.bumpSectionMap();
-  }
-
-  /**
-   * Mark sections as `"flushed"` — called when the server acknowledges a
-   * successful overlay import. Accepts any non-deleting prior state
-   * because the server may know about keys that never passed through the
-   * local pending state (e.g. multi-writer scenarios).
-   */
-  markSectionsSaved(fragmentKeys: Iterable<string>): void {
-    if (this.destroyed) return;
-    let changed = false;
-    for (const key of fragmentKeys) {
-      const current = this._sectionPersistence.get(key);
-      if (current !== "flushed" && current !== "deleting") {
-        this._sectionPersistence.set(key, "flushed");
+        this._sectionPersistence.set(key, "received");
         changed = true;
       }
     }
@@ -200,14 +192,36 @@ export class BrowserFragmentReplicaStore {
   /**
    * Drop sections back to `"clean"` — called when `content:committed`
    * arrives for these sections (they are now durable in canonical, so
-   * the lifecycle wraps around).
+   * the lifecycle wraps around). Only cleans sections in `"received"`
+   * state. Sections that are `"dirty"` have new edits the commit
+   * didn't include — those must NOT be cleared.
    */
   markSectionsClean(fragmentKeys: Iterable<string>): void {
     if (this.destroyed) return;
     let changed = false;
     for (const key of fragmentKeys) {
+      const current = this._sectionPersistence.get(key);
+      if (current === "received") {
+        this._sectionPersistence.delete(key);
+        this._dirtySince.delete(key);
+        changed = true;
+      }
+    }
+    if (changed) this.bumpSectionMap();
+  }
+
+  /**
+   * Unconditionally remove sections from the persistence map regardless
+   * of current state. Used for `deletedKeys` reported by the server
+   * (sections that no longer exist in the document structure).
+   */
+  forceCleanSections(fragmentKeys: Iterable<string>): void {
+    if (this.destroyed) return;
+    let changed = false;
+    for (const key of fragmentKeys) {
       if (this._sectionPersistence.has(key)) {
         this._sectionPersistence.delete(key);
+        this._dirtySince.delete(key);
         changed = true;
       }
     }

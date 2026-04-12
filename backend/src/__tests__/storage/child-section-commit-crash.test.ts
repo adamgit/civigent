@@ -19,11 +19,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
-import { buildDocumentFragmentsForTest } from "../helpers/build-document-fragments.js";
+import { buildDocumentFragmentsForTest, type TestDocSession } from "../helpers/build-document-fragments.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { gitExec } from "../../storage/git-repo.js";
-import type { DocumentSkeleton, FlatEntry } from "../../storage/document-skeleton.js";
+import { DocumentSkeletonInternal, type DocumentSkeleton, type FlatEntry } from "../../storage/document-skeleton.js";
+import { applyAcceptResult, type DocSession } from "../../crdt/ydoc-lifecycle.js";
+import { getContentRoot, getSessionSectionsContentRoot } from "../../storage/data-root.js";
 
 function collectFlat(skeleton: DocumentSkeleton): FlatEntry[] {
   const entries: FlatEntry[] = [];
@@ -66,15 +67,16 @@ describe("ROOT_FRAGMENT_KEY collision", () => {
   afterEach(async () => { await ctx.cleanup(); });
 
   it("normalizeSectionSplit must not create duplicate skeleton entries when a section gains children", async () => {
-    const fragments = await buildDocumentFragmentsForTest(DOC_PATH);
+    const fragments: TestDocSession = await buildDocumentFragmentsForTest(DOC_PATH);
 
-    // Find Background fragment key
+    // Find Background fragment key from the heading-path index
     let bgKey: string | null = null;
-    fragments.skeleton.forEachSection((heading, _level, sectionFile) => {
-      if (heading === "Background") {
-        bgKey = fragmentKeyFromSectionFile(sectionFile, false);
+    for (const [key, hp] of fragments.headingPathByFragmentKey) {
+      if (hp.length > 0 && hp[hp.length - 1] === "Background") {
+        bgKey = key;
+        break;
       }
-    });
+    }
     expect(bgKey).toBeTruthy();
 
     // Simulate user typing a child heading inside the Background section.
@@ -105,15 +107,26 @@ describe("ROOT_FRAGMENT_KEY collision", () => {
     const tempDoc = prosemirrorJSONToYDoc(getBackendSchema(), pmJson, bgKey!);
     Y.applyUpdate(fragments.ydoc, Y.encodeStateAsUpdate(tempDoc));
     tempDoc.destroy();
-    fragments.markDirty(bgKey!);
+    fragments.liveFragments.noteAheadOfStaged(bgKey!);
 
-    // Flush the dirty fragment to the session overlay. The flush itself rewrites the
-    // subtree (Background gains a child) and rebuilds the skeleton index from disk —
-    // no separate normalize step is needed for this incremental-CRDT scenario.
-    await fragments.importDirtyFragmentsToSessionOverlay();
+    // Flush the dirty fragment to the session overlay — inline the
+    // importDirtyFragmentsToSessionOverlay steps:
+    // 1. Write raw recovery snapshot
+    const rawMarkdown = fragments.liveFragments.readFragmentString(bgKey!);
+    await fragments.recoveryBuffer.writeFragment(bgKey!, rawMarkdown);
+    // 2. Accept live fragments
+    const scope = new Set<string>([bgKey!]);
+    const acceptResult = await fragments.stagedSections.acceptLiveFragments(fragments.liveFragments, scope);
+    // 3. Apply the structural change
+    await applyAcceptResult(fragments as DocSession, acceptResult);
+
+    // Reload skeleton from disk for verification (skeleton was rebuilt on disk by accept)
+    const overlayRoot = getSessionSectionsContentRoot();
+    const canonicalRoot = getContentRoot();
+    const skeleton = await DocumentSkeletonInternal.fromDisk(DOC_PATH, overlayRoot, canonicalRoot);
 
     // INVARIANT: exactly one Background entry at level 1 in the skeleton
-    const flat = collectFlat(fragments.skeleton);
+    const flat = collectFlat(skeleton);
     const bgEntries = flat.filter(e => e.heading === "Background" && e.level === 1);
     expect(bgEntries).toHaveLength(1);
 
@@ -127,7 +140,7 @@ describe("ROOT_FRAGMENT_KEY collision", () => {
     // The root fragment should still contain only the original root preamble,
     // not Background's body merged in via BEFORE_FIRST_HEADING_KEY collision.
     const { BEFORE_FIRST_HEADING_KEY } = await import("../../crdt/ydoc-fragments.js");
-    const rootContent = fragments.readFullContent(BEFORE_FIRST_HEADING_KEY);
+    const rootContent = fragments.liveFragments.readFragmentString(BEFORE_FIRST_HEADING_KEY);
     expect(rootContent).not.toContain("primary maintainer");
 
     fragments.ydoc.destroy();

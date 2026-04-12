@@ -2,15 +2,16 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { commitDirtySections, setAutoCommitEventHandler } from "../../storage/auto-commit.js";
 import {
   acquireDocSession,
   destroyAllSessions,
   setSessionOverlayImportCallback,
+  markFragmentDirty,
+  flushDirtyToOverlay,
+  findKeyForHeadingPath,
 } from "../../crdt/ydoc-lifecycle.js";
-import { importSessionDirtyFragmentsToOverlay } from "../../storage/session-store.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
 import type { WriterIdentity, WsServerEvent } from "../../types/shared.js";
@@ -37,13 +38,7 @@ function findHeadingKey(
   live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
   heading: string,
 ): string {
-  let key: string | null = null;
-  live.raw.fragments.skeleton.forEachSection((entryHeading, level, sectionFile, headingPath) => {
-    const isBfh = headingPath.length === 0 && level === 0 && entryHeading === "";
-    if (entryHeading === heading) {
-      key = fragmentKeyFromSectionFile(sectionFile, isBfh);
-    }
-  });
+  const key = findKeyForHeadingPath(live, [heading]);
   if (!key) {
     throw new Error(`Missing fragment key for heading "${heading}"`);
   }
@@ -115,7 +110,7 @@ describe("publish event contract, cross-reload invariants, and multi-writer scop
     ctx = await createTempDataRoot();
     await createSampleDocument(ctx.rootDir);
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
     setAutoCommitEventHandler(() => {});
   });
@@ -129,13 +124,10 @@ describe("publish event contract, cross-reload invariants, and multi-writer scop
   it("publish event contract should match actual canonical diff for scoped publish", async () => {
     const live = await openLiveSession(ctx.rootDir, writerA, "sock-event-contract");
     const overviewKey = findHeadingKey(live, "Overview");
-    const before = live.raw.fragments.readFullContent(overviewKey);
-    const mutateResult = live.mutateSection(
-      writerA.id,
-      overviewKey,
-      `${before}\n\nOverview edit for publish event contract.`,
-    );
-    expect(mutateResult.error).toBeUndefined();
+    const before = live.liveFragments.readFragmentString(overviewKey);
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark(`${before}\n\nOverview edit for publish event contract.`));
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
 
     const canonical = new ContentLayer(ctx.contentDir);
     const beforeSections = await canonical.readAllSections(SAMPLE_DOC_PATH);
@@ -162,16 +154,13 @@ describe("publish event contract, cross-reload invariants, and multi-writer scop
     const overviewKey = findHeadingKey(live, "Overview");
     const timelineKey = findHeadingKey(live, "Timeline");
 
-    const overviewBefore = live.raw.fragments.readFullContent(overviewKey);
-    const mutateResult = live.mutateSection(
-      writerA.id,
-      overviewKey,
-      `${overviewBefore}\n\nOverview edit before scoped publish and reconnect.`,
-    );
-    expect(mutateResult.error).toBeUndefined();
+    const overviewBefore = live.liveFragments.readFragmentString(overviewKey);
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark(`${overviewBefore}\n\nOverview edit before scoped publish and reconnect.`));
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
 
     // Transient malformed state in untouched Timeline.
-    live.raw.fragments.setFragmentContent(
+    live.liveFragments.replaceFragmentString(
       timelineKey,
       fragmentFromRemark("Timeline malformed body-only content that should never persist."),
     );
@@ -185,7 +174,7 @@ describe("publish event contract, cross-reload invariants, and multi-writer scop
 
     const canonical = new ContentLayer(ctx.contentDir);
     const canonicalAssembled = await canonical.readAssembledDocument(SAMPLE_DOC_PATH);
-    const reopenedAssembled = reopened.raw.fragments.assembleMarkdown();
+    const reopenedAssembled = reopened.orderedFragmentKeys.map((k) => reopened.liveFragments.readFragmentString(k)).join("");
 
     for (const assembled of [canonicalAssembled, reopenedAssembled]) {
       expect(countOccurrences(assembled, "## Overview")).toBe(1);
@@ -218,22 +207,16 @@ describe("publish event contract, cross-reload invariants, and multi-writer scop
     const overviewKey = findHeadingKey(live, "Overview");
     const timelineKey = findHeadingKey(live, "Timeline");
 
-    const overviewBefore = live.raw.fragments.readFullContent(overviewKey);
-    const writerAEdit = live.mutateSection(
-      writerA.id,
-      overviewKey,
-      `${overviewBefore}\n\nWriter A scoped publish edit.`,
-    );
-    expect(writerAEdit.error).toBeUndefined();
+    const overviewBefore = live.liveFragments.readFragmentString(overviewKey);
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark(`${overviewBefore}\n\nWriter A scoped publish edit.`));
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
 
     // Writer B has a dirty malformed Timeline, but Writer A publishes only Overview.
-    const writerBEdit = live.mutateSection(
-      writerB.id,
-      timelineKey,
-      "Writer B malformed body-only timeline content.",
-    );
-    expect(writerBEdit.error).toBeUndefined();
-    expect(live.raw.perUserDirty.get(writerB.id)?.has(timelineKey)).toBe(true);
+    live.liveFragments.replaceFragmentString(timelineKey, fragmentFromRemark("Writer B malformed body-only timeline content."));
+    live.liveFragments.noteAheadOfStaged(timelineKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writerB.id, timelineKey);
+    expect(live.perUserDirty.get(writerB.id)?.has(timelineKey)).toBe(true);
 
     const events: WsServerEvent[] = [];
     setAutoCommitEventHandler((event) => events.push(event));
@@ -248,7 +231,7 @@ describe("publish event contract, cross-reload invariants, and multi-writer scop
     expect(assembled).not.toContain("Writer B malformed body-only timeline content.");
 
     // Writer B's unrelated dirty state should not be cleared by Writer A's scoped publish.
-    expect(live.raw.perUserDirty.get(writerB.id)?.has(timelineKey)).toBe(true);
+    expect(live.perUserDirty.get(writerB.id)?.has(timelineKey)).toBe(true);
     const writerBDirtyClearedKeys = keysFromDirtyClearedEvents(events, writerB.id);
     expect(writerBDirtyClearedKeys.has("Timeline")).toBe(false);
   });

@@ -32,13 +32,25 @@ import {
   countEditorSockets,
   getPendingRestoreNotification,
   setBroadcastRestoreInvalidation,
+  markFragmentDirty,
+  addContributor,
+  updateEditPulse,
+  updateSectionFocus,
+  triggerDebouncedSessionOverlayImport,
+  triggerImmediateSessionOverlayImport,
+  normalizeFragment,
+  findKeyForHeadingPath,
+  findHeadingPathForKey,
   type DocSession,
+  cleanupAuthorMetadata,
 } from "../crdt/ydoc-lifecycle.js";
+import { fragmentFromRemark } from "../storage/section-formatting.js";
 import { setPostCommitHook } from "../storage/commit-pipeline.js";
 import { documentSessionRegistry } from "../crdt/document-session-registry.js";
 import { getHeadSha } from "../storage/git-repo.js";
-import { getDataRoot } from "../storage/data-root.js";
-import { importSessionDirtyFragmentsToOverlay, commitSessionFilesToCanonical, cleanupSessionFiles } from "../storage/session-store.js";
+import { getContentRoot, getDataRoot, getSessionSectionsContentRoot } from "../storage/data-root.js";
+import { CanonicalStore } from "../storage/canonical-store.js";
+import { RawFragmentRecoveryBuffer } from "../storage/raw-fragment-recovery-buffer.js";
 import type { WsServerEvent, WriterIdentity } from "../types/shared.js";
 import type { ClientInstanceId, RemoteParticipant, ModeTransitionRequest, ModeTransitionResult } from "../types/shared.js";
 import {
@@ -59,6 +71,7 @@ import {
   encodeMutateResult,
   encodeRestoreNotification,
   encodeModeTransitionResult,
+  encodeUpdateReceived,
   decodeMessage,
   parseCrdtUrl,
   WS_CLOSE_DOCUMENT_RESTORED,
@@ -203,22 +216,49 @@ async function finalizeSessionEnd(state: CrdtSocketState, result: Awaited<Return
     primaryWriter,
     ...result.contributors.filter((c) => c.id !== state.writerId),
   ];
-  const commitResult = await commitSessionFilesToCanonical(contributors, state.docPath);
-  if (commitResult.skeletonErrors.length > 0) {
-    throw new Error(
-      `Session commit skipped for ${state.docPath}: corrupt overlay skeleton. ` +
-      `Session files preserved on disk. Remove the corrupt overlay to recover.\n` +
-      commitResult.skeletonErrors.map(e => e.error).join("\n"),
-    );
+
+  // Inline canonical absorb — replaces legacy commitSessionFilesToCanonical.
+  const [pw, ...coWriters] = contributors;
+  let commitMsg = `human edit: ${pw.displayName}\n\nWriter: ${pw.id}\nWriter-Type: ${pw.type}`;
+  if (coWriters.length > 0) {
+    commitMsg += "\n" + coWriters
+      .map((w) => `Co-authored-by: ${w.displayName} <${w.email ?? `${w.id}@knowledge-store.local`}>`)
+      .join("\n");
   }
-  if (commitResult.sectionsCommitted > 0) {
-    await cleanupSessionFiles(state.docPath);
-    if (onWsEvent && commitResult.commitSha) {
+  const commitAuthor = { name: pw.displayName, email: pw.email ?? "human@knowledge-store.local" };
+
+  const canonicalStore = new CanonicalStore(getContentRoot(), getDataRoot());
+  const absorbResult = await canonicalStore.absorbChangedSections(
+    getSessionSectionsContentRoot(),
+    commitMsg,
+    commitAuthor,
+    { docPaths: [state.docPath] },
+  );
+
+  if (absorbResult.changedSections.length > 0) {
+    // Session is over — clean up overlay files and raw fragments for this doc.
+    const { rm } = await import("node:fs/promises");
+    const path = await import("node:path");
+    const sessionsContentRoot = getSessionSectionsContentRoot();
+    const normalized = state.docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+    const skeletonPath = path.resolve(sessionsContentRoot, ...normalized.split("/"));
+    await rm(skeletonPath, { force: true });
+    await rm(`${skeletonPath}.sections`, { recursive: true, force: true });
+    const recoveryBuffer = new RawFragmentRecoveryBuffer(state.docPath);
+    await recoveryBuffer.deleteAllFragments();
+    await cleanupAuthorMetadata(state.docPath);
+
+    const committedSections = absorbResult.changedSections.map(({ docPath: dp, headingPath }) => ({
+      doc_path: dp,
+      heading_path: headingPath,
+    }));
+
+    if (onWsEvent) {
       onWsEvent({
         type: "content:committed",
         doc_path: state.docPath,
-        sections: commitResult.committedSections,
-        commit_sha: commitResult.commitSha,
+        sections: committedSections,
+        commit_sha: absorbResult.commitSha,
         writer_id: contributors[0].id,
         writer_display_name: contributors[0].displayName,
         writer_type: contributors[0].type,
@@ -228,7 +268,7 @@ async function finalizeSessionEnd(state: CrdtSocketState, result: Awaited<Return
 
       // Emit dirty:changed for all contributors so each frontend can clear its dirty state.
       for (const contributor of contributors) {
-        for (const section of commitResult.committedSections) {
+        for (const section of committedSections) {
           onWsEvent({
             type: "dirty:changed",
             writer_id: contributor.id,
@@ -236,7 +276,7 @@ async function finalizeSessionEnd(state: CrdtSocketState, result: Awaited<Return
             heading_path: section.heading_path,
             dirty: false,
             base_head: null,
-            committed_head: commitResult.commitSha,
+            committed_head: absorbResult.commitSha,
           });
         }
       }
@@ -322,8 +362,7 @@ async function applyModeTransition(
 
     state.requestedMode = request.requestedMode;
     state.editorFocusTarget = request.editorFocusTarget;
-    const liveSession = documentSessionRegistry.get(state.docPath);
-    const session = liveSession?.raw;
+    const session = documentSessionRegistry.get(state.docPath);
     state.socketRole = "observer";
     if (session) {
       addObserverHolder(session, state.writerId, {
@@ -332,7 +371,7 @@ async function applyModeTransition(
         displayName: state.writerDisplayName,
       }, state.socketId);
       joinAndNotify(session, socket, state);
-      state.docSessionId = liveSession!.docSessionId;
+      state.docSessionId = session.docSessionId;
       state.attachmentState = "attached_to_session";
     } else {
       state.docSessionId = null;
@@ -374,7 +413,7 @@ async function applyModeTransition(
       }
     }
     const baseHead = await getHeadSha(getDataRoot());
-    const liveSession = await documentSessionRegistry.getOrCreate({
+    const session = await documentSessionRegistry.getOrCreate({
       docPath: state.docPath,
       baseHead,
       initialEditor: {
@@ -383,9 +422,8 @@ async function applyModeTransition(
         socketId: state.socketId,
       },
     });
-    const session = liveSession.raw;
     state.socketRole = "editor";
-    state.docSessionId = liveSession.docSessionId;
+    state.docSessionId = session.docSessionId;
     state.attachmentState = "attached_to_session";
 
     joinAndNotify(session, socket, state);
@@ -464,10 +502,8 @@ async function handleMessage(
     return;
   }
 
-  const activeSession = lookupDocSession(state.docPath);
-  const liveSession = activeSession ? documentSessionRegistry.get(state.docPath) : null;
-  const session = liveSession?.raw ?? null;
-  const doc = session?.fragments.ydoc;
+  const session = lookupDocSession(state.docPath);
+  const doc = session?.ydoc;
 
   if (!doc && msgType !== MSG_MODE_TRANSITION_REQUEST) {
     // While detached/waiting there is no doc to process sync/update messages against.
@@ -507,30 +543,35 @@ async function handleMessage(
       break;
     }
     case MSG_YJS_UPDATE: {
-      const command = liveSession!.applyYjsUpdate(state.writerId, payload);
-      for (const message of command.socketMessages ?? []) {
-        if (message.audience === "others") {
-          broadcastToOthers(state.docPath, socket, encodeUpdate(message.payload));
-        } else if (message.audience === "all") {
-          broadcastToAll(state.docPath, encodeUpdate(message.payload));
-        } else {
-          sendToSocket(socket, encodeUpdate(message.payload));
-        }
+      // Apply the Yjs binary update — returns exact set of touched fragment keys.
+      // applyClientUpdate internally marks each touched key ahead-of-staged.
+      const touchedKeys = session!.liveFragments.applyClientUpdate(state.writerId, payload, undefined);
+
+      updateActivity(session!.docPath);
+
+      // ACK receipt back to the sender with the exact fragment keys that were applied.
+      if (touchedKeys.size > 0) {
+        sendToSocket(socket, encodeUpdateReceived([...touchedKeys]));
       }
 
-      // Broadcast dirty:changed events for newly-dirtied fragments
-      for (const change of command.dirtyChanges ?? []) {
-        if (onWsEvent) {
+      // Mark each touched key dirty and emit dirty:changed events
+      for (const fragmentKey of touchedKeys) {
+        const isNewlyDirty = markFragmentDirty(session!.docPath, state.writerId, fragmentKey);
+        if (isNewlyDirty && onWsEvent) {
+          const headingPath = findHeadingPathForKey(session!, fragmentKey) ?? [];
           onWsEvent({
             type: "dirty:changed",
-            writer_id: change.writerId,
+            writer_id: state.writerId,
             doc_path: state.docPath,
-            heading_path: change.headingPath,
-            dirty: change.dirty,
-            base_head: liveSession!.baseHead,
+            heading_path: headingPath,
+            dirty: true,
+            base_head: session!.baseHead,
           });
         }
       }
+
+      triggerDebouncedSessionOverlayImport(session!.docPath);
+      broadcastToOthers(state.docPath, socket, encodeUpdate(payload));
       break;
     }
     case MSG_AWARENESS: {
@@ -551,25 +592,46 @@ async function handleMessage(
         : { kind: "before_first_heading" };
       updateParticipant(state.clientInstanceId, { editorFocusTarget: state.editorFocusTarget });
 
-      const command = await liveSession!.setFocus(
-        state.writerId,
-        headingPath,
-        {
-          id: state.writerId,
-          type: state.writerType,
-          displayName: state.writerDisplayName,
-        },
-      );
+      const { oldFocus } = updateSectionFocus(session!.docPath, state.writerId, headingPath);
+      const identity: WriterIdentity = {
+        id: state.writerId,
+        type: state.writerType,
+        displayName: state.writerDisplayName,
+      };
+
+      // Focus-change normalization on the departed section
+      if (oldFocus) {
+        const oldFragmentKey = findKeyForHeadingPath(session!, oldFocus);
+        if (oldFragmentKey) {
+          await normalizeFragment(session!.docPath, oldFragmentKey);
+        }
+      }
 
       if (onWsEvent) {
-        for (const event of command.hubEvents ?? []) {
-          onWsEvent(event);
+        if (oldFocus) {
+          onWsEvent({
+            type: "presence:done",
+            writer_id: state.writerId,
+            writer_display_name: identity.displayName,
+            writer_type: identity.type,
+            doc_path: session!.docPath,
+            heading_path: oldFocus,
+          });
         }
+        onWsEvent({
+          type: "presence:editing",
+          doc_path: session!.docPath,
+          writer_id: state.writerId,
+          writer_display_name: identity.displayName,
+          writer_type: identity.type,
+          heading_path: headingPath,
+        });
       }
       break;
     }
     case MSG_ACTIVITY_PULSE: {
-      liveSession!.recordActivityPulse(state.writerId, {
+      updateEditPulse(session!.docPath, state.writerId);
+      addContributor(session!.docPath, state.writerId, {
         id: state.writerId,
         type: state.writerType,
         displayName: state.writerDisplayName,
@@ -577,7 +639,7 @@ async function handleMessage(
       break;
     }
     case MSG_SESSION_OVERLAY_IMPORT_REQUEST: {
-      liveSession!.importToSessionOverlayNow();
+      triggerImmediateSessionOverlayImport(session!.docPath);
       break;
     }
     case MSG_SECTION_MUTATE: {
@@ -590,20 +652,32 @@ async function handleMessage(
         break;
       }
 
-      const command = liveSession!.mutateSection(state.writerId, parsed.fragmentKey, parsed.markdown);
-      if (command.error) {
-        sendToSocket(socket, encodeMutateResult(false, command.error));
+      const headingPath = findHeadingPathForKey(session!, parsed.fragmentKey);
+      if (!headingPath) {
+        sendToSocket(socket, encodeMutateResult(false, `Fragment key not found: ${parsed.fragmentKey}`));
         break;
       }
 
-      for (const message of command.socketMessages ?? []) {
-        if (message.audience === "others") {
-          broadcastToOthers(state.docPath, socket, encodeUpdate(message.payload));
-        } else if (message.audience === "all") {
-          broadcastToAll(state.docPath, encodeUpdate(message.payload));
-        } else {
-          sendToSocket(socket, encodeUpdate(message.payload));
-        }
+      const svBefore = Y.encodeStateVector(session!.ydoc);
+      session!.liveFragments.replaceFragmentString(parsed.fragmentKey, fragmentFromRemark(parsed.markdown), undefined);
+      markFragmentDirty(session!.docPath, state.writerId, parsed.fragmentKey);
+
+      const update = Y.encodeStateAsUpdate(session!.ydoc, svBefore);
+      triggerDebouncedSessionOverlayImport(session!.docPath);
+
+      if (update.length > 0) {
+        broadcastToOthers(state.docPath, socket, encodeUpdate(update));
+      }
+
+      if (onWsEvent) {
+        onWsEvent({
+          type: "dirty:changed",
+          writer_id: state.writerId,
+          doc_path: state.docPath,
+          heading_path: headingPath,
+          dirty: true,
+          base_head: session!.baseHead,
+        });
       }
 
       sendToSocket(socket, encodeMutateResult(true));
@@ -613,14 +687,51 @@ async function handleMessage(
 }
 
 // ─── Session-overlay import callback ────────────────────────────
+//
+// BNATIVE.5: Reads `aheadOfStagedKeys` as the single source of "what
+// needs flushing". For each key: raw recovery snapshot (always), then
+// structural cleanliness gate — structurally clean keys get accepted
+// to the staging overlay, structurally dirty keys are deferred to
+// focus-change / publish / session-end.
 
 async function importDirtyFragmentsToSessionOverlay(session: DocSession): Promise<void> {
-  const hasDirtyFragments = session.fragments.dirtyKeys.size > 0;
-  if (hasDirtyFragments) {
-    broadcastToAll(session.docPath, encodeSessionOverlayImportStarted());
+  const aheadKeys = session.liveFragments.getAheadOfStagedKeys();
+  if (aheadKeys.size === 0) return;
+
+  broadcastToAll(session.docPath, encodeSessionOverlayImportStarted());
+
+  // 1. Raw recovery snapshot for ALL ahead-of-staged keys (crash safety).
+  const scope = new Set(aheadKeys);
+  await session.recoveryBuffer.snapshotFromLive(session.liveFragments, scope);
+
+  // 2. Two-tier gate: only structurally clean keys proceed to overlay write.
+  const cleanKeys = new Set<string>();
+  for (const key of scope) {
+    if (session.stagedSections.isStructurallyClean(session.liveFragments, key)) {
+      cleanKeys.add(key);
+    }
+    // Structurally dirty keys remain in aheadOfStagedKeys (deferred).
   }
 
-  const { writtenKeys, deletedKeys } = await importSessionDirtyFragmentsToOverlay(session);
+  let writtenKeys: string[] = [];
+  let deletedKeys: string[] = [];
+
+  if (cleanKeys.size > 0) {
+    // 3. Accept clean keys into staging overlay.
+    //    acceptLiveFragments internally clears aheadOfStaged for accepted keys.
+    const acceptResult = await session.stagedSections.acceptLiveFragments(
+      session.liveFragments,
+      cleanKeys,
+    );
+
+    // Body-only accepts (structuralChange === null) need no Y.Doc mutation
+    // or broadcast — the overlay write is the only side-effect, and
+    // acceptLiveFragments already did it. applyAcceptResult is a no-op for
+    // body-only results, so we skip it entirely in the debounced flush path.
+
+    writtenKeys = [...acceptResult.writtenKeys];
+    deletedKeys = [...acceptResult.deletedKeys];
+  }
 
   if (writtenKeys.length > 0 || deletedKeys.length > 0) {
     broadcastToAll(session.docPath, encodeSessionOverlayImported(writtenKeys, deletedKeys));

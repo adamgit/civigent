@@ -16,14 +16,13 @@ import {
   destroyAllSessions,
   markFragmentDirty,
   setSessionOverlayImportCallback,
+  flushDirtyToOverlay,
+  findKeyForHeadingPath,
 } from "../../crdt/ydoc-lifecycle.js";
-import {
-  importSessionDirtyFragmentsToOverlay,
-  listRawFragments,
-} from "../../storage/session-store.js";
+import { RawFragmentRecoveryBuffer } from "../../storage/raw-fragment-recovery-buffer.js";
 import { getSessionSectionsContentRoot, getSessionFragmentsRoot } from "../../storage/data-root.js";
 import { getHeadSha } from "../../storage/git-repo.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
+
 import type { WriterIdentity } from "../../types/shared.js";
 
 const writer: WriterIdentity = {
@@ -37,13 +36,7 @@ function findHeadingKey(
   live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
   heading: string,
 ): string {
-  let key: string | null = null;
-  live.raw.fragments.skeleton.forEachSection((entryHeading, level, sectionFile, headingPath) => {
-    const isBfh = headingPath.length === 0 && level === 0 && entryHeading === "";
-    if (entryHeading === heading) {
-      key = fragmentKeyFromSectionFile(sectionFile, isBfh);
-    }
-  });
+  const key = findKeyForHeadingPath(live, [heading]);
   if (!key) throw new Error(`Missing fragment key for heading "${heading}"`);
   return key;
 }
@@ -63,7 +56,7 @@ describe("A3: Debounced Flush Invariants", () => {
     await createSampleDocument(ctx.rootDir);
     baseHead = await getHeadSha(ctx.rootDir);
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
   });
 
@@ -85,18 +78,24 @@ describe("A3: Debounced Flush Invariants", () => {
 
     // Edit Overview via Y.js
     const remoteDoc = new Y.Doc();
-    Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(live.raw.fragments.ydoc));
+    Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(live.ydoc));
     const svBefore = Y.encodeStateVector(remoteDoc);
     remoteDoc.transact(() => {
       appendParagraph(remoteDoc.getXmlFragment(overviewKey), "A3.1 flush test.");
     });
-    live.applyYjsUpdate(writer.id, Y.encodeStateAsUpdate(remoteDoc, svBefore));
+    {
+      const touched = live.liveFragments.applyClientUpdate(writer.id, Y.encodeStateAsUpdate(remoteDoc, svBefore), undefined);
+      for (const key of touched) {
+        live.liveFragments.noteAheadOfStaged(key);
+        markFragmentDirty(SAMPLE_DOC_PATH, writer.id, key);
+      }
+    }
 
     // Flush
-    await importSessionDirtyFragmentsToOverlay(live.raw);
+    await flushDirtyToOverlay(live);
 
     // Raw fragments should exist
-    const rawFragments = await listRawFragments(SAMPLE_DOC_PATH);
+    const rawFragments = await new RawFragmentRecoveryBuffer(SAMPLE_DOC_PATH).listFragmentKeys();
     expect(rawFragments.length).toBeGreaterThan(0);
   });
 
@@ -113,14 +112,20 @@ describe("A3: Debounced Flush Invariants", () => {
 
     // Edit Overview (structurally clean: no embedded headings)
     const remoteDoc = new Y.Doc();
-    Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(live.raw.fragments.ydoc));
+    Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(live.ydoc));
     const svBefore = Y.encodeStateVector(remoteDoc);
     remoteDoc.transact(() => {
       appendParagraph(remoteDoc.getXmlFragment(overviewKey), "A3.2 overlay test.");
     });
-    live.applyYjsUpdate(writer.id, Y.encodeStateAsUpdate(remoteDoc, svBefore));
+    {
+      const touched = live.liveFragments.applyClientUpdate(writer.id, Y.encodeStateAsUpdate(remoteDoc, svBefore), undefined);
+      for (const key of touched) {
+        live.liveFragments.noteAheadOfStaged(key);
+        markFragmentDirty(SAMPLE_DOC_PATH, writer.id, key);
+      }
+    }
 
-    await importSessionDirtyFragmentsToOverlay(live.raw);
+    await flushDirtyToOverlay(live);
 
     // Session overlay should have files
     const overlayRoot = getSessionSectionsContentRoot();
@@ -148,20 +153,26 @@ describe("A3: Debounced Flush Invariants", () => {
 
     // Make dirty
     const remoteDoc = new Y.Doc();
-    Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(live.raw.fragments.ydoc));
+    Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(live.ydoc));
     const svBefore = Y.encodeStateVector(remoteDoc);
     remoteDoc.transact(() => {
       appendParagraph(remoteDoc.getXmlFragment(overviewKey), "A3.3 dirty→clean test.");
     });
-    live.applyYjsUpdate(writer.id, Y.encodeStateAsUpdate(remoteDoc, svBefore));
+    {
+      const touched = live.liveFragments.applyClientUpdate(writer.id, Y.encodeStateAsUpdate(remoteDoc, svBefore), undefined);
+      for (const key of touched) {
+        live.liveFragments.noteAheadOfStaged(key);
+        markFragmentDirty(SAMPLE_DOC_PATH, writer.id, key);
+      }
+    }
 
-    expect(live.raw.fragments.dirtyKeys.has(overviewKey)).toBe(true);
+    expect(live.liveFragments.isAheadOfStaged(overviewKey)).toBe(true);
 
     // Flush
-    await importSessionDirtyFragmentsToOverlay(live.raw);
+    await flushDirtyToOverlay(live);
 
     // Dirty keys cleared after flush
-    expect(live.raw.fragments.dirtyKeys.has(overviewKey)).toBe(false);
+    expect(live.liveFragments.isAheadOfStaged(overviewKey)).toBe(false);
   });
 
   // ── A3.4 ──────────────────────────────────────────────────────────
@@ -174,15 +185,13 @@ describe("A3: Debounced Flush Invariants", () => {
     });
 
     // No edits, so nothing dirty
-    expect(live.raw.fragments.dirtyKeys.size).toBe(0);
+    expect(live.liveFragments.getAheadOfStagedKeys().size).toBe(0);
 
-    // Flush should be a no-op
-    const result = await importSessionDirtyFragmentsToOverlay(live.raw);
-    expect(result.writtenKeys).toHaveLength(0);
-    expect(result.deletedKeys).toHaveLength(0);
+    // Flush should be a no-op (returns void; no files written)
+    await flushDirtyToOverlay(live);
 
     // No raw fragments should exist
-    const rawFragments = await listRawFragments(SAMPLE_DOC_PATH);
+    const rawFragments = await new RawFragmentRecoveryBuffer(SAMPLE_DOC_PATH).listFragmentKeys();
     expect(rawFragments.length).toBe(0);
   });
 });

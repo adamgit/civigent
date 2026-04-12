@@ -88,9 +88,16 @@ Your local source files are bind-mounted into the containers, so edits you make 
 
 ### Running tests
 
+Show passes + failures:
 ```bash
 cd backend && npm test       # backend
 cd frontend && npm test      # frontend
+```
+
+Show failures only:
+```bash
+cd backend && npx vitest --reporter=dot
+cd frontend && DEBUG_PRINT_LIMIT=300 npx vitest --reporter=dot
 ```
 
 ## Core maintainers

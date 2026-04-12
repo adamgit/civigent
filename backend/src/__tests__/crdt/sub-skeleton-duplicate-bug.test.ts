@@ -6,7 +6,7 @@
  * - Duplicate sections in API responses
  * - `assembleMarkdown` including raw `{{section:` content from sub-skeleton files
  * - `normalizeAllFragments` processing sub-skeleton file as a real fragment
- * - `DocumentFragments` creating a fragment for the sub-skeleton file itself
+ * - Fragment store creating a fragment for the sub-skeleton file itself
  *
  * ALL TESTS IN THIS FILE ARE EXPECTED TO FAIL until the bug is fixed.
  * The fix: `forEachSection` / `walkNodes` should skip sub-skeleton entry nodes
@@ -27,7 +27,7 @@ const NESTED_DOC_PATH = "test/nested-bug-doc.md";
  * Creates a document with sub-skeleton structure:
  *   root: _root.md
  *   ## Introduction: intro.md (flat leaf)
- *   ## Details: details.md (sub-skeleton — has children)
+ *   ## Details: details.md (sub-skeleton -- has children)
  *     root child of Details: _details_root.md
  *     ### Sub-Detail A: sub_a.md
  */
@@ -146,14 +146,22 @@ describe("BUG: assembleMarkdown includes raw skeleton markers from sub-skeleton 
   it("assembleMarkdown output contains no {{section: markers [EXPECTED TO FAIL]", async () => {
     const { buildDocumentFragmentsForTest } = await import("../helpers/build-document-fragments.js");
     const store = await buildDocumentFragmentsForTest(NESTED_DOC_PATH);
-    const markdown = store.assembleMarkdown();
+
+    // Assemble markdown from the session
+    const parts: string[] = [];
+    for (const key of store.orderedFragmentKeys) {
+      const content = store.liveFragments.readFragmentString(key);
+      if (content) parts.push(content);
+    }
+    const markdown = parts.join("\n\n");
+
     store.ydoc.destroy();
 
-    // The sub-skeleton file details.md contains "{{section: _details_root.md}}" —
+    // The sub-skeleton file details.md contains "{{section: _details_root.md}}" --
     // if the bug exists, assembleMarkdown reads that fragment and includes the raw skeleton markers.
     // Note: this test currently passes because readAllSections uses headingKeys (not raw file content)
     // so the "Details" heading key maps to "Details body." (from _details_root.md), not the sub-skeleton format.
-    // The duplicate "Details" section in the output is the actual bug — content appears twice.
+    // The duplicate "Details" section in the output is the actual bug -- content appears twice.
     expect(markdown).not.toContain("{{section:");
   });
 });
@@ -172,18 +180,17 @@ describe("BUG: normalizeAllFragments processes sub-skeleton sectionFile as a fra
 
   it("normalizeAllFragments fragment key set contains no sub-skeleton sectionFile keys [EXPECTED TO FAIL]", async () => {
     const { fragmentKeyFromSectionFile } = await import("../../crdt/ydoc-fragments.js");
-    const { DocumentFragments } = await import("../../crdt/document-fragments.js");
 
     const skeleton = await DocumentSkeleton.fromDisk(NESTED_DOC_PATH, ctx.contentDir, ctx.contentDir);
 
     // Reproduce the key-collection logic from normalizeAllFragments
     const keys: string[] = [];
-    skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-      const isBeforeFirstHeading = DocumentFragments.isBeforeFirstHeading({ headingPath: [...headingPath], level, heading });
+    skeleton.forEachSection((_heading, _level, sectionFile, headingPath) => {
+      const isBeforeFirstHeading = headingPath.length === 0;
       keys.push(fragmentKeyFromSectionFile(sectionFile, isBeforeFirstHeading));
     });
 
-    // "details.md" is a sub-skeleton — its key should NOT be in the list.
+    // "details.md" is a sub-skeleton -- its key should NOT be in the list.
     // The real key for "Details" heading content is derived from "_details_root.md".
     const subSkeletonKey = fragmentKeyFromSectionFile("details.md", false);
     expect(
@@ -193,9 +200,9 @@ describe("BUG: normalizeAllFragments processes sub-skeleton sectionFile as a fra
   });
 });
 
-// ─── Test 5: DocumentFragments no sub-skeleton fragments ─────────────
+// ─── Test 5: No sub-skeleton fragments in store ─────────────
 
-describe("BUG: DocumentFragments constructor creates fragments for sub-skeleton sectionFiles", () => {
+describe("BUG: Fragment store creates fragments for sub-skeleton sectionFiles", () => {
   let ctx: TempDataRootContext;
 
   beforeAll(async () => {
@@ -205,7 +212,7 @@ describe("BUG: DocumentFragments constructor creates fragments for sub-skeleton 
 
   afterAll(async () => { await ctx.cleanup(); });
 
-  it("DocumentFragments has no fragment key derived from a sub-skeleton sectionFile [EXPECTED TO FAIL]", async () => {
+  it("Fragment store has no fragment key derived from a sub-skeleton sectionFile [EXPECTED TO FAIL]", async () => {
     const { fragmentKeyFromSectionFile } = await import("../../crdt/ydoc-fragments.js");
     const { buildDocumentFragmentsForTest } = await import("../helpers/build-document-fragments.js");
 
@@ -219,7 +226,7 @@ describe("BUG: DocumentFragments constructor creates fragments for sub-skeleton 
 
     expect(
       hasSubSkeletonFragment,
-      `DocumentFragments should not have a fragment for sub-skeleton key "${subSkeletonKey}"`,
+      `Fragment store should not have a fragment for sub-skeleton key "${subSkeletonKey}"`,
     ).toBe(false);
   });
 });

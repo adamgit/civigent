@@ -11,15 +11,14 @@ import { relativeTime } from "../utils/relativeTime";
  *
  * Transitions:
  *   clean ──[local Y.Doc update on focused section]──► dirty
- *   dirty ──[SESSION_FLUSH_STARTED received]──► pending
- *   pending ──[SESSION_FLUSHED payload includes this key]──► flushed
- *   flushed ──[local Y.Doc update on focused section]──► dirty
- *   clean ──[appears in SESSION_FLUSHED payload]──► flushed  (server knows more)
- *   any ──[content:committed includes this section]──► clean
+ *   dirty ──[MSG_UPDATE_RECEIVED]──► received
+ *   received ──[content:committed includes this section]──► clean
  *
  * "deleting" is a terminal holding state for sections removed from the Y.Doc.
+ *
+ * @deprecated Prefer the canonical definition in browser-fragment-replica-store.ts
  */
-export type SectionPersistenceState = "clean" | "dirty" | "pending" | "flushed" | "deleting";
+export type SectionPersistenceState = "clean" | "dirty" | "received" | "deleting";
 
 export interface DeletionPlaceholder {
   fragmentKey: string;

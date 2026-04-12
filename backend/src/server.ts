@@ -7,7 +7,7 @@ import { assertDataRootExists, getContentRoot, getDataRoot, getImportRoot, ensur
 import { ensureGitRepoReady } from "./storage/git-repo.js";
 import { detectAndRecoverCrash } from "./storage/crash-recovery.js";
 import { importContentFromDirectoryIfNeeded } from "./storage/content-import.js";
-import { setAutoCommitEventHandler, commitAllDirtySessions } from "./storage/auto-commit.js";
+import { setAutoCommitEventHandler } from "./storage/auto-commit.js";
 import { validateOAuthConfig, getOidcPublicUrl } from "./auth/oauth-config.js";
 import { maybeGenerateBootstrapCode } from "./auth/service.js";
 import { isSystemReady, setSystemReady } from "./startup-state.js";
@@ -92,16 +92,9 @@ server.on("upgrade", (request, socket, head) => {
 // Validate OAuth config before anything else — fail fast on misconfiguration
 validateOAuthConfig();
 
-// Graceful shutdown: commit all dirty sessions
-process.on("SIGTERM", async () => {
-  await commitAllDirtySessions();
-  process.exit(0);
-});
-
-process.on("SIGINT", async () => {
-  await commitAllDirtySessions();
-  process.exit(0);
-});
+// Graceful shutdown: crash recovery at startup handles the case where the
+// server dies with dirty sessions (BNATIVE.8b). Raw fragment sidecars +
+// session overlay files survive on disk and are recovered by detectAndRecoverCrash.
 
 ipcSend({ type: "starting" });
 

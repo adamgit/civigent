@@ -16,7 +16,6 @@ import {
   type ProposalWithdrawnEvent,
 } from "../types/shared.js";
 import {
-  type SectionPersistenceState,
   type DeletionPlaceholder,
   type DocumentSection,
   type RecentlyChangedSectionEntry,
@@ -29,6 +28,7 @@ import {
   HIGHLIGHT_DURATION_MS,
 } from "../pages/document-page-utils";
 import type { CrdtProvider } from "../services/crdt-provider";
+import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 
 // ─── Hook parameters ─────────────────────────────────────────────
 
@@ -43,7 +43,7 @@ export interface UseDocumentWebSocketParams {
   mountedEditorFragmentKeysRef: React.MutableRefObject<Set<string>>;
   pendingStructureRefocusRef: React.MutableRefObject<string[] | null>;
   setRestructuringKeys: React.Dispatch<React.SetStateAction<Set<string>>>;
-  setSectionPersistence: React.Dispatch<React.SetStateAction<Map<string, SectionPersistenceState>>>;
+  storeRef: React.MutableRefObject<BrowserFragmentReplicaStore | null>;
   setDeletionPlaceholders: React.Dispatch<React.SetStateAction<DeletionPlaceholder[]>>;
   setStructureTree: React.Dispatch<React.SetStateAction<DocStructureNode[] | null>>;
   loadSections: (docPath: string) => Promise<DocumentSection[]>;
@@ -80,7 +80,7 @@ export function useDocumentWebSocket({
   mountedEditorFragmentKeysRef,
   pendingStructureRefocusRef,
   setRestructuringKeys,
-  setSectionPersistence,
+  storeRef,
   setDeletionPlaceholders,
   setStructureTree,
   loadSections,
@@ -139,24 +139,18 @@ export function useDocumentWebSocket({
           return Array.from(next.values());
         });
 
-        // Committed sections → clean in the persistence map
+        // Committed sections → clean in the persistence store (only flushed→clean)
         const myWriterId = resolveWriterId();
         const isMyCommit = committed.writer_id === myWriterId ||
           (committed.contributor_ids?.includes(myWriterId) ?? false);
-        if (isMyCommit) {
-          setSectionPersistence((prev) => {
-            const next = new Map(prev);
-            for (const s of committed.sections) {
-              // Look up section_file from current sections state
-              const hpKey = sectionHeadingKey(s.heading_path);
-              const match = sectionsRef.current.find((sec) => sectionHeadingKey(sec.heading_path) === hpKey);
-              if (match) {
-                const fk = getSectionFragmentKey(match);
-                next.delete(fk); // clean = absent from the map
-              }
-            }
-            return next;
-          });
+        if (isMyCommit && storeRef.current) {
+          const committedFragmentKeys: string[] = [];
+          for (const s of committed.sections) {
+            const hpKey = sectionHeadingKey(s.heading_path);
+            const match = sectionsRef.current.find((sec) => sectionHeadingKey(sec.heading_path) === hpKey);
+            if (match) committedFragmentKeys.push(getSectionFragmentKey(match));
+          }
+          storeRef.current.markSectionsClean(committedFragmentKeys);
         }
 
         // Clear draft proposal indicators for committed sections
@@ -312,12 +306,7 @@ export function useDocumentWebSocket({
               }
               return next;
             });
-            // Mark deleted sections as "deleting" in persistence map
-            setSectionPersistence((prev) => {
-              const next = new Map(prev);
-              for (const rk of removedKeys) next.set(rk, "deleting");
-              return next;
-            });
+            storeRef.current?.markSectionsDeleting(removedKeys);
           }
         });
         apiClient.getDocumentStructure(decodedDocPath).then((resp) => {

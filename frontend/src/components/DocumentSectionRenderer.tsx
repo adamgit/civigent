@@ -2,8 +2,9 @@ import React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MilkdownEditor, type MilkdownEditorHandle } from "./MilkdownEditor";
-import type { CrdtProvider } from "../services/crdt-provider";
-import type { SectionPersistenceState, DocumentSection } from "../pages/document-page-utils";
+import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
+import type { CrdtTransport } from "../services/crdt-transport";
+import type { DocumentSection } from "../pages/document-page-utils";
 import { headingPathToLabel } from "../pages/document-page-utils";
 import { resolveWriterId } from "../services/api-client";
 import type { SectionTransfer } from "../services/section-transfer";
@@ -22,7 +23,8 @@ export interface DocumentSectionRendererProps {
   injectedByWriter: string | null;
   hasRemotePresence: boolean;
   dragOverSectionIndex: number | null;
-  crdtProvider: CrdtProvider | null;
+  store: BrowserFragmentReplicaStore | null;
+  transport: CrdtTransport | null;
   crdtSynced: boolean;
   crdtError: string | null;
   proposalMode: boolean;
@@ -51,7 +53,8 @@ export function DocumentSectionRenderer({
   injectedByWriter,
   hasRemotePresence,
   dragOverSectionIndex,
-  crdtProvider,
+  store,
+  transport,
   crdtSynced,
   crdtError,
   proposalMode,
@@ -151,15 +154,16 @@ export function DocumentSectionRenderer({
                 // When focus leaves this editor section entirely (not just moving
                 // between child elements), request an immediate server-side flush
                 // so content is persisted before a potential page refresh.
-                if (!e.currentTarget.contains(e.relatedTarget as Node) && crdtProvider && !proposalMode) {
-                  crdtProvider.sendSessionOverlayImportRequest();
+                if (!e.currentTarget.contains(e.relatedTarget as Node) && transport && !proposalMode) {
+                  transport.sendSessionOverlayImportRequest();
                 }
               }}
             >
               <MilkdownEditor
                 ref={(handle) => onSetEditorRef(i, handle)}
                 markdown={section.content}
-                crdtProvider={proposalMode ? null : crdtProvider}
+                store={proposalMode ? null : store}
+                transport={proposalMode ? null : transport}
                 crdtSynced={crdtSynced}
                 fragmentKey={fk}
                 userName={resolveWriterId()}

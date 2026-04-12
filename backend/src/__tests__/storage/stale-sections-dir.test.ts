@@ -41,7 +41,7 @@ describe("CanonicalStore stale .sections/ cleanup", () => {
     await writeFile(childFile, "child content\n");
 
     // Absorb into canonical — creates the parent-with-child structure
-    await store.absorb(stagingA, "initial: parent with child", author);
+    await store.absorbChangedSections(stagingA, "initial: parent with child", author);
 
     // Verify canonical has the .sections/ directory
     const canonicalSubSkelDir = join(ctx.contentDir, "test-doc.md.sections", "sec_parent.md.sections");
@@ -60,7 +60,7 @@ describe("CanonicalStore stale .sections/ cleanup", () => {
     await writeFile(parentFileB, "parent is now a leaf\n");
 
     // Absorb the restore — should clean up stale .sections/ dir
-    await store.absorb(stagingB, "restore: parent back to leaf", author);
+    await store.absorbChangedSections(stagingB, "restore: parent back to leaf", author);
 
     // Verify: stale .sections/ directory is gone
     expect(existsSync(canonicalSubSkelDir)).toBe(false);

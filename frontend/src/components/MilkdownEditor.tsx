@@ -6,10 +6,10 @@
  * changes to consuming code.
  *
  * CRDT integration:
- *   When `crdtProvider` is passed, the editor binds to the Y.Doc via
- *   y-prosemirror (ySyncPlugin, yCursorPlugin, yUndoPlugin). The editor
- *   initializes from the Y.Doc state (not from the `markdown` prop),
- *   showing the live collaborative state.
+ *   When `store` (BrowserFragmentReplicaStore) is passed, the editor
+ *   binds to `store.doc` via y-prosemirror (ySyncPlugin, yCursorPlugin,
+ *   yUndoPlugin). The editor initializes from the Y.Doc state (not from
+ *   the `markdown` prop), showing the live collaborative state.
  *
  *   The `fragmentKey` prop selects which Y.XmlFragment within the Y.Doc
  *   the editor binds to. Each section of a document has its own fragment
@@ -17,7 +17,7 @@
  *
  * Public interface:
  *   Props:    markdown, onChange, onHeadingPathChange, readOnly,
- *             crdtProvider, fragmentKey, userName, userColor, onCursorExit
+ *             store, transport, fragmentKey, userName, userColor, onCursorExit
  *   Handle:   getMarkdown(), getActiveHeadingPath(), focus()
  */
 
@@ -77,7 +77,8 @@ function buildCollabCursor(user: { name?: string; color?: string }): HTMLElement
 
   return cursor;
 }
-import type { CrdtProvider } from "../services/crdt-provider";
+import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
+import type { CrdtTransport } from "../services/crdt-transport";
 
 // ─────────────────────────────────────────────────────────
 // Public types
@@ -99,7 +100,7 @@ export interface MilkdownEditorHandle {
 }
 
 export interface MilkdownEditorProps {
-  /** Initial markdown content (used only when no crdtProvider). */
+  /** Initial markdown content (used only when no store). */
   markdown: string;
   /** Called when the document content changes (debounced). */
   onChange?: (markdown: string) => void;
@@ -107,9 +108,11 @@ export interface MilkdownEditorProps {
   onHeadingPathChange?: (headingPath: string[]) => void;
   /** Toggle read-only mode. */
   readOnly?: boolean;
-  /** CRDT provider for collaborative editing. When set, editor binds to Y.Doc. */
-  crdtProvider?: CrdtProvider | null;
-  /** Whether the CRDT provider has completed initial sync (Y.Doc has content). */
+  /** Fragment replica store for collaborative editing. When set, editor binds to store.doc. */
+  store?: BrowserFragmentReplicaStore | null;
+  /** CRDT transport for wire-side calls (overlay import requests, etc.). */
+  transport?: CrdtTransport | null;
+  /** Whether the CRDT transport has completed initial sync (Y.Doc has content). */
   crdtSynced?: boolean;
   /** Y.XmlFragment key within the Y.Doc to bind to (e.g. "section::Overview"). */
   fragmentKey?: string;
@@ -158,7 +161,8 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     onChange,
     onHeadingPathChange,
     readOnly = false,
-    crdtProvider,
+    store,
+    transport,
     crdtSynced = false,
     fragmentKey = "prosemirror",
     userName = "Anonymous",
@@ -176,8 +180,8 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   const headingPathRef = useRef<string[]>([]);
 
   // Refs for async callbacks that need current prop values
-  const crdtProviderRef = useRef(crdtProvider);
-  crdtProviderRef.current = crdtProvider;
+  const storeRef = useRef(store);
+  storeRef.current = store;
   const crdtSyncedRef = useRef(crdtSynced);
   crdtSyncedRef.current = crdtSynced;
 
@@ -268,14 +272,14 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   function attachCrdt(
     ctrl: EditorLifecycleController,
     crepe: Crepe,
-    provider: CrdtProvider,
+    replicaStore: BrowserFragmentReplicaStore,
     fk: string,
   ): void {
     const view = crepe.editor.ctx.get(editorViewCtx);
     ctrl.setBasePlugins([...view.state.plugins]);
 
-    const yXmlFragment = provider.doc.getXmlFragment(fk);
-    const awareness = provider.awareness;
+    const yXmlFragment = replicaStore.doc.getXmlFragment(fk);
+    const awareness = replicaStore.awareness;
     const color = userColor ?? pickColor(userName);
 
     const newState = view.state.reconfigure({
@@ -513,16 +517,16 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
       // Catch up with state that arrived while Crepe was creating.
       // Effects B/C may have fired while state was "creating" and were no-ops.
       // Read from refs to get current prop values (not stale closure values).
-      const provider = crdtProviderRef.current;
-      if (provider && ctrl.state === "created") {
+      const currentStore = storeRef.current;
+      if (currentStore && ctrl.state === "created") {
         ctrl.send("crdt_provider_set");
         if (crdtSyncedRef.current) {
           ctrl.send("crdt_synced");
-          attachCrdt(ctrl, crepe, provider, fragmentKeyCapture);
+          attachCrdt(ctrl, crepe, currentStore, fragmentKeyCapture);
           markReady(crepe);
         }
-      } else if (!provider && ctrl.state === "created") {
-        // No CRDT provider — editor is ready immediately
+      } else if (!currentStore && ctrl.state === "created") {
+        // No CRDT store — editor is ready immediately
         markReady(crepe);
       }
     }).catch((err) => {
@@ -552,14 +556,14 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fragmentKey]);
 
-  // ── Effect B: CRDT provider change (deps: [crdtProvider]) ──
+  // ── Effect B: Store change (deps: [store]) ──
   // Sends crdt_provider_set or crdt_provider_removed to controller.
 
   useEffect(() => {
     const ctrl = controllerRef.current;
     if (!ctrl) return;
 
-    if (crdtProvider) {
+    if (store) {
       // Only send if controller is in a state that accepts this event
       if (ctrl.state === "created") {
         ctrl.send("crdt_provider_set");
@@ -568,20 +572,20 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 
     return () => {
       const c = controllerRef.current;
-      if (c && crdtProvider && (c.state === "awaiting_sync" || c.state === "ready")) {
+      if (c && store && (c.state === "awaiting_sync" || c.state === "ready")) {
         detachCrdt(c);
         c.send("crdt_provider_removed");
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [crdtProvider]);
+  }, [store]);
 
   // ── Effect C: crdtSynced gate (deps: [crdtSynced]) ────
   // When crdtSynced transitions to true, triggers CRDT attachment.
 
   useEffect(() => {
     const ctrl = controllerRef.current;
-    if (!ctrl || !crdtSynced || !crdtProvider) return;
+    if (!ctrl || !crdtSynced || !store) return;
     if (ctrl.state !== "awaiting_sync") return;
 
     const crepe = ctrl.getCrepe();
@@ -589,7 +593,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 
     ctrl.send("crdt_synced");
     // Now in "attaching" — perform the actual attachment
-    attachCrdt(ctrl, crepe, crdtProvider, fragmentKey);
+    attachCrdt(ctrl, crepe, store, fragmentKey);
     // attachCrdt sends "attach_done" → state is now "ready"
     markReady(crepe);
     // eslint-disable-next-line react-hooks/exhaustive-deps

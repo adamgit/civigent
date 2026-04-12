@@ -1,6 +1,7 @@
 import React from "react";
 import { DocumentSectionRenderer } from "./DocumentSectionRenderer";
-import type { CrdtProvider } from "../services/crdt-provider";
+import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
+import type { CrdtTransport } from "../services/crdt-transport";
 import type { MilkdownEditorHandle } from "./MilkdownEditor";
 import type {
   DeletionPlaceholder,
@@ -29,7 +30,8 @@ export interface DocumentCanvasProps {
   injectedByLabel: Map<string, string>;
   presenceIndicators: Array<{ sectionKey: string }>;
   dragOverSectionIndex: number | null;
-  crdtProvider: CrdtProvider | null;
+  store: BrowserFragmentReplicaStore | null;
+  transport: CrdtTransport | null;
   crdtSynced: boolean;
   crdtError: string | null;
   readyEditors: Set<number>;
@@ -57,7 +59,8 @@ export function DocumentCanvas({
   injectedByLabel,
   presenceIndicators,
   dragOverSectionIndex,
-  crdtProvider,
+  store,
+  transport,
   crdtSynced,
   crdtError,
   readyEditors,
@@ -106,7 +109,8 @@ export function DocumentCanvas({
                 injectedByWriter={injectedByLabel.get(sectionLabel) ?? null}
                 hasRemotePresence={presenceIndicators.some((p) => p.sectionKey === sectionKey)}
                 dragOverSectionIndex={dragOverSectionIndex}
-                crdtProvider={crdtProvider}
+                store={store}
+                transport={transport}
                 crdtSynced={crdtSynced}
                 crdtError={crdtError}
                 proposalMode={proposalMode}

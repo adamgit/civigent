@@ -1,13 +1,7 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import type { CrdtConnectionState } from "../services/crdt-provider";
-
-export interface PersistenceSummary {
-  dirtyCount: number;
-  pendingCount: number;
-  flushedCount: number;
-  deletingCount: number;
-  total: number;
-}
+import { type SectionSaveInfo, type SectionSaveState, SAVE_STATE_META } from "../services/section-save-state";
 
 interface DocumentTopbarProps {
   docPath: string | null;
@@ -18,7 +12,8 @@ interface DocumentTopbarProps {
   showOverwrite?: boolean;
   onToggleOverwrite?: () => void;
   crdtState: CrdtConnectionState;
-  persistenceSummary: PersistenceSummary;
+  aggregateSaveState: SectionSaveState;
+  sectionSaveInfos: SectionSaveInfo[];
   isEditing: boolean;
 }
 
@@ -31,9 +26,30 @@ export function DocumentTopbar({
   showOverwrite,
   onToggleOverwrite,
   crdtState,
-  persistenceSummary,
+  aggregateSaveState,
+  sectionSaveInfos,
   isEditing,
 }: DocumentTopbarProps) {
+  const [popupOpen, setPopupOpen] = useState(false);
+
+  const meta = SAVE_STATE_META[aggregateSaveState];
+  const hasSections = sectionSaveInfos.length > 0;
+
+  const indicatorLabel =
+    crdtState === "error" ? "Sync error"
+    : crdtState === "reconnecting" ? "Reconnecting\u2026"
+    : crdtState === "connecting" ? "Syncing\u2026"
+    : hasSections ? meta.label
+    : isEditing ? "Up to date"
+    : "";
+
+  const dotClass =
+    crdtState === "error" ? "bg-red-500"
+    : crdtState === "reconnecting" ? "bg-red-500 animate-[pulse-dot_1.5s_ease-in-out_infinite]"
+    : crdtState === "connecting" ? "bg-amber-400 animate-[pulse-dot_1.5s_ease-in-out_infinite]"
+    : hasSections ? meta.dotClass
+    : "bg-green-500";
+
   return (
     <header className="h-[--spacing-topbar-h] min-h-[--spacing-topbar-h] bg-topbar-bg border-b border-topbar-border flex items-center px-4 gap-2.5">
       <Link
@@ -75,28 +91,51 @@ export function DocumentTopbar({
         </button>
       )}
 
-      {/* Aggregated persistence indicator — derived from per-section state map */}
-      <div className="flex items-center gap-[5px]">
-        <div className={`w-[7px] h-[7px] rounded-full ${
-          crdtState === "error" ? "bg-status-red"
-          : crdtState === "reconnecting" ? "bg-status-red animate-[pulse-dot_1.5s_ease-in-out_infinite]"
-          : crdtState === "connecting" ? "bg-status-yellow animate-[pulse-dot_1.5s_ease-in-out_infinite]"
-          : persistenceSummary.pendingCount > 0 ? "bg-amber-400"
-          : persistenceSummary.dirtyCount > 0 ? "bg-blue-400"
-          : persistenceSummary.flushedCount > 0 ? "bg-status-green opacity-70"
-          : persistenceSummary.total === 0 && isEditing ? "bg-status-green"
-          : "bg-status-green"
-        }`} />
-        <span className="text-[11px] text-text-muted">
-          {crdtState === "error" ? "Sync error"
-          : crdtState === "reconnecting" ? "Reconnecting\u2026"
-          : crdtState === "connecting" ? "Syncing\u2026"
-          : persistenceSummary.pendingCount > 0 ? `${persistenceSummary.pendingCount} section${persistenceSummary.pendingCount > 1 ? "s" : ""} waiting for save confirmation`
-          : persistenceSummary.dirtyCount > 0 ? `${persistenceSummary.dirtyCount} unsaved section${persistenceSummary.dirtyCount > 1 ? "s" : ""}`
-          : persistenceSummary.flushedCount > 0 ? "All changes saved"
-          : isEditing ? "Up to date"
-          : ""}
-        </span>
+      {/* Aggregated persistence indicator with per-section popup */}
+      <div className="relative">
+        <button
+          type="button"
+          className="flex items-center gap-[5px] cursor-pointer hover:opacity-80"
+          onClick={() => hasSections && setPopupOpen((v) => !v)}
+          title={hasSections ? "Click to see per-section save status" : undefined}
+        >
+          <div className={`w-[7px] h-[7px] rounded-full ${dotClass}`} />
+          <span className="text-[11px] text-text-muted">
+            {indicatorLabel}
+          </span>
+        </button>
+
+        {/* Per-section popup (Bug 4) */}
+        {popupOpen && hasSections && (
+          <>
+            <div
+              className="fixed inset-0 z-40"
+              onClick={() => setPopupOpen(false)}
+            />
+            <div className="absolute right-0 top-full mt-1 z-50 bg-white border border-[#e0ddd8] rounded-md shadow-lg min-w-[260px] max-w-[360px] py-1.5">
+              <div className="px-3 py-1 text-[10px] font-semibold text-text-muted uppercase tracking-wider border-b border-[#f0ede8] mb-1">
+                Section Save Status
+              </div>
+              {sectionSaveInfos.map((info) => {
+                const sm = SAVE_STATE_META[info.state];
+                return (
+                  <div
+                    key={info.fragmentKey}
+                    className="flex items-center gap-2 px-3 py-1 hover:bg-[#faf8f5]"
+                  >
+                    <div className={`w-[6px] h-[6px] rounded-full shrink-0 ${sm.dotClass}`} />
+                    <span className="text-[11px] text-text-primary truncate flex-1">
+                      {info.sectionLabel}
+                    </span>
+                    <span className={`text-[10px] font-medium shrink-0 ${sm.color}`}>
+                      {sm.label}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
       </div>
     </header>
   );

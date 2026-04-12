@@ -3,7 +3,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { gitExec } from "../../storage/git-repo.js";
-import { buildDocumentFragmentsForTest } from "../helpers/build-document-fragments.js";
+import { buildDocumentFragmentsForTest, type TestDocSession } from "../helpers/build-document-fragments.js";
+import { applyAcceptResult, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
 
 /**
@@ -11,24 +12,24 @@ import { fragmentFromRemark } from "../../storage/section-formatting.js";
  *
  * Bug B: when normalizeHeadingDeletion merges an orphan body into a preceding section,
  * document-fragments.ts:775 calls populateFragment instead of setFragmentContent. Y.applyUpdate
- * MERGES (does not replace) — so the merged target ends up with duplicated content.
+ * MERGES (does not replace) -- so the merged target ends up with duplicated content.
  *
  * These tests do NOT exercise commitDirtySections or any publish path. They drive the
  * fragment store directly so that the bug surface is unambiguous: open from disk, mutate
  * one fragment, normalize, assemble, count occurrences.
  *
  * All cases use countOccurrences === 1 (rather than `not.toContain`) so that any duplication
- * — even if substring overlap with surrounding text obscures it — fails the assertion.
+ * -- even if substring overlap with surrounding text obscures it -- fails the assertion.
  *
  * NOTE: these tests are EXPECTED TO FAIL until Bug B is fixed in document-fragments.ts:775
- * (change `populateFragment` → `setFragmentContent`). They are an independent regression
+ * (change `populateFragment` -> `setFragmentContent`). They are an independent regression
  * harness for that future fix; do NOT fix the bug as part of this checklist item.
  */
 
 const DOC_PATH = "test/bug-b-doc.md";
 
 interface DocSpec {
-  /** Skeleton entries in document order — heading + sectionFile + body. */
+  /** Skeleton entries in document order -- heading + sectionFile + body. */
   sections: Array<{
     /** "" for the BFH section, otherwise the heading text. */
     heading: string;
@@ -92,6 +93,30 @@ function countOccurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
+/** Assemble full markdown from a session by reading all ordered fragment strings. */
+function assembleMarkdown(store: TestDocSession): string {
+  const parts: string[] = [];
+  for (const key of store.orderedFragmentKeys) {
+    const content = store.liveFragments.readFragmentString(key);
+    if (content) parts.push(content);
+  }
+  return parts.join("\n\n");
+}
+
+/**
+ * Inline normalizeStructure equivalent for TestDocSession.
+ */
+async function normalizeStructure(
+  store: TestDocSession,
+  fragmentKey: string,
+): Promise<void> {
+  store.liveFragments.noteAheadOfStaged(fragmentKey);
+  const scope = new Set([fragmentKey]);
+  await store.recoveryBuffer.writeFragment(fragmentKey, store.liveFragments.readFragmentString(fragmentKey));
+  const acceptResult = await store.stagedSections.acceptLiveFragments(store.liveFragments, scope);
+  await applyAcceptResult(store as DocSession, acceptResult);
+}
+
 describe("normalizeHeadingDeletion: orphan-body merge does not duplicate content (Bug B)", () => {
   let ctx: TempDataRootContext;
 
@@ -116,11 +141,11 @@ describe("normalizeHeadingDeletion: orphan-body merge does not duplicate content
     const betaKey = "section::sec_beta";
 
     // User deletes the "## Beta" heading line, leaving only body content.
-    store.setFragmentContent(betaKey, fragmentFromRemark("Orphan body unique 5eaa."));
+    store.liveFragments.replaceFragmentString(betaKey, fragmentFromRemark("Orphan body unique 5eaa."));
 
-    await store.normalizeStructure(betaKey);
+    await normalizeStructure(store, betaKey);
 
-    const assembled = store.assembleMarkdown();
+    const assembled = assembleMarkdown(store);
 
     expect(countOccurrences(assembled, "## Alpha")).toBe(1);
     expect(countOccurrences(assembled, "Alpha body unique 7c2d.")).toBe(1);
@@ -138,15 +163,15 @@ describe("normalizeHeadingDeletion: orphan-body merge does not duplicate content
     const store = await buildDocumentFragmentsForTest(DOC_PATH);
     const alphaKey = "section::sec_alpha";
 
-    store.setFragmentContent(alphaKey, fragmentFromRemark("Orphan body unique 9c30."));
+    store.liveFragments.replaceFragmentString(alphaKey, fragmentFromRemark("Orphan body unique 9c30."));
 
-    await store.normalizeStructure(alphaKey);
+    await normalizeStructure(store, alphaKey);
 
-    const assembled = store.assembleMarkdown();
+    const assembled = assembleMarkdown(store);
 
     expect(countOccurrences(assembled, "Preamble body unique 4b8e.")).toBe(1);
     expect(countOccurrences(assembled, "Orphan body unique 9c30.")).toBe(1);
-    // The "## Alpha" heading should be gone — its body got merged into BFH.
+    // The "## Alpha" heading should be gone -- its body got merged into BFH.
     expect(countOccurrences(assembled, "## Alpha")).toBe(0);
   });
 
@@ -167,11 +192,11 @@ describe("normalizeHeadingDeletion: orphan-body merge does not duplicate content
     const store = await buildDocumentFragmentsForTest(DOC_PATH);
     const betaKey = "section::sec_beta";
 
-    store.setFragmentContent(betaKey, fragmentFromRemark("Orphan body unique 22ee."));
+    store.liveFragments.replaceFragmentString(betaKey, fragmentFromRemark("Orphan body unique 22ee."));
 
-    await store.normalizeStructure(betaKey);
+    await normalizeStructure(store, betaKey);
 
-    const assembled = store.assembleMarkdown();
+    const assembled = assembleMarkdown(store);
 
     expect(countOccurrences(assembled, "## Alpha")).toBe(1);
     expect(countOccurrences(assembled, "Alpha first paragraph unique e88b.")).toBe(1);
@@ -192,16 +217,16 @@ describe("normalizeHeadingDeletion: orphan-body merge does not duplicate content
     const store = await buildDocumentFragmentsForTest(DOC_PATH);
     const betaKey = "section::sec_beta";
 
-    store.setFragmentContent(
+    store.liveFragments.replaceFragmentString(
       betaKey,
       fragmentFromRemark(
         "Orphan first paragraph unique 4d4d.\n\nOrphan second paragraph unique 9090.\n\nOrphan third paragraph unique 1ab2.",
       ),
     );
 
-    await store.normalizeStructure(betaKey);
+    await normalizeStructure(store, betaKey);
 
-    const assembled = store.assembleMarkdown();
+    const assembled = assembleMarkdown(store);
 
     expect(countOccurrences(assembled, "## Alpha")).toBe(1);
     expect(countOccurrences(assembled, "Alpha body unique a17e.")).toBe(1);
@@ -223,18 +248,18 @@ describe("normalizeHeadingDeletion: orphan-body merge does not duplicate content
     const store = await buildDocumentFragmentsForTest(DOC_PATH);
     const betaKey = "section::sec_beta";
 
-    store.setFragmentContent(betaKey, fragmentFromRemark("Orphan body unique d77d."));
+    store.liveFragments.replaceFragmentString(betaKey, fragmentFromRemark("Orphan body unique d77d."));
 
-    await store.normalizeStructure(betaKey);
+    await normalizeStructure(store, betaKey);
 
-    const assembled = store.assembleMarkdown();
+    const assembled = assembleMarkdown(store);
 
-    // Preceding (Alpha) merge target — heading + original body + orphan body, each exactly once.
+    // Preceding (Alpha) merge target -- heading + original body + orphan body, each exactly once.
     expect(countOccurrences(assembled, "## Alpha")).toBe(1);
     expect(countOccurrences(assembled, "Alpha body unique a44a.")).toBe(1);
     expect(countOccurrences(assembled, "Orphan body unique d77d.")).toBe(1);
 
-    // Following (Gamma) section — must be preserved untouched, exactly once.
+    // Following (Gamma) section -- must be preserved untouched, exactly once.
     expect(countOccurrences(assembled, "## Gamma")).toBe(1);
     expect(countOccurrences(assembled, "Gamma body unique c66c.")).toBe(1);
   });

@@ -9,15 +9,16 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
+
 import { getHeadSha } from "../../storage/git-repo.js";
 import { commitDirtySections, setAutoCommitEventHandler } from "../../storage/auto-commit.js";
 import {
   destroyAllSessions,
   markFragmentDirty,
   setSessionOverlayImportCallback,
+  flushDirtyToOverlay,
+  findKeyForHeadingPath,
 } from "../../crdt/ydoc-lifecycle.js";
-import { importSessionDirtyFragmentsToOverlay } from "../../storage/session-store.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
 import type { WriterIdentity, WsServerEvent } from "../../types/shared.js";
@@ -40,13 +41,7 @@ function findHeadingKey(
   live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
   heading: string,
 ): string {
-  let key: string | null = null;
-  live.raw.fragments.skeleton.forEachSection((entryHeading, level, sectionFile, headingPath) => {
-    const isBfh = headingPath.length === 0 && level === 0 && entryHeading === "";
-    if (entryHeading === heading) {
-      key = fragmentKeyFromSectionFile(sectionFile, isBfh);
-    }
-  });
+  const key = findKeyForHeadingPath(live, [heading]);
   if (!key) throw new Error(`Missing fragment key for heading "${heading}"`);
   return key;
 }
@@ -60,7 +55,7 @@ describe("A5: Publish Flow Invariants", () => {
     await createSampleDocument(ctx.rootDir);
     baseHead = await getHeadSha(ctx.rootDir);
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
     setAutoCommitEventHandler(() => {});
   });
@@ -91,13 +86,17 @@ describe("A5: Publish Flow Invariants", () => {
     const timelineKey = findHeadingKey(live, "Timeline");
 
     // Writer A edits Overview
-    live.mutateSection(writerA.id, overviewKey, "## Overview\n\nWriter A published this.");
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark("## Overview\n\nWriter A published this."));
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
 
     // Writer B edits Timeline
-    live.mutateSection(writerB.id, timelineKey, "## Timeline\n\nWriter B unpublished edit.");
+    live.liveFragments.replaceFragmentString(timelineKey, fragmentFromRemark("## Timeline\n\nWriter B unpublished edit."));
+    live.liveFragments.noteAheadOfStaged(timelineKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writerB.id, timelineKey);
 
     // Pre-flush both
-    await importSessionDirtyFragmentsToOverlay(live.raw);
+    await flushDirtyToOverlay(live);
     // Re-mark perUserDirty since flush cleared it
     markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
     markFragmentDirty(SAMPLE_DOC_PATH, writerB.id, timelineKey);
@@ -118,7 +117,7 @@ describe("A5: Publish Flow Invariants", () => {
     expect(String(afterSections.get("Overview"))).toContain("Writer A published this.");
 
     // Writer B's dirty state should still be intact
-    expect(live.raw.perUserDirty.get(writerB.id)?.has(timelineKey)).toBe(true);
+    expect(live.perUserDirty.get(writerB.id)?.has(timelineKey)).toBe(true);
   });
 
   // ── A5.2 ──────────────────────────────────────────────────────────
@@ -133,11 +132,9 @@ describe("A5: Publish Flow Invariants", () => {
     const overviewKey = findHeadingKey(live, "Overview");
 
     // Inject content with an embedded heading (structurally dirty)
-    live.mutateSection(
-      writerA.id,
-      overviewKey,
-      "## Overview\n\nOriginal overview.\n\n## Injected Section\n\nInjected content.",
-    );
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark("## Overview\n\nOriginal overview.\n\n## Injected Section\n\nInjected content."));
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
 
     // Publish — should normalize (split) before committing
     const result = await commitDirtySections(writerA, SAMPLE_DOC_PATH);
@@ -165,15 +162,17 @@ describe("A5: Publish Flow Invariants", () => {
     const overviewKey = findHeadingKey(live, "Overview");
 
     // Edit and verify dirty
-    live.mutateSection(writerA.id, overviewKey, "## Overview\n\nPublished overview content.");
-    expect(live.raw.perUserDirty.get(writerA.id)?.has(overviewKey)).toBe(true);
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark("## Overview\n\nPublished overview content."));
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
+    expect(live.perUserDirty.get(writerA.id)?.has(overviewKey)).toBe(true);
 
     // Publish
     const result = await commitDirtySections(writerA, SAMPLE_DOC_PATH);
     expect(result.committed).toBe(true);
 
     // After publish, writer A's dirty state for this key should be cleared
-    expect(live.raw.perUserDirty.get(writerA.id)?.has(overviewKey)).toBe(false);
+    expect(live.perUserDirty.get(writerA.id)?.has(overviewKey)).toBe(false);
   });
 
   // ── A5.4 ──────────────────────────────────────────────────────────
@@ -188,7 +187,9 @@ describe("A5: Publish Flow Invariants", () => {
     const overviewKey = findHeadingKey(live, "Overview");
 
     // Edit Overview only
-    live.mutateSection(writerA.id, overviewKey, "## Overview\n\nA5.4 event test content.");
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark("## Overview\n\nA5.4 event test content."));
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
 
     const events: WsServerEvent[] = [];
     setAutoCommitEventHandler((event) => events.push(event));
@@ -232,7 +233,9 @@ describe("A5: Publish Flow Invariants", () => {
     const overviewKey = findHeadingKey(live, "Overview");
 
     // Edit Overview
-    live.mutateSection(writerA.id, overviewKey, "## Overview\n\nA5.5 dirty:changed test.");
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark("## Overview\n\nA5.5 dirty:changed test."));
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
 
     const events: WsServerEvent[] = [];
     setAutoCommitEventHandler((event) => events.push(event));
@@ -266,7 +269,9 @@ describe("A5: Publish Flow Invariants", () => {
     const overviewKey = findHeadingKey(live, "Overview");
 
     const uniqueMarker = `A5.6 canonical verification ${Date.now()}`;
-    live.mutateSection(writerA.id, overviewKey, `## Overview\n\n${uniqueMarker}`);
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark(`## Overview\n\n${uniqueMarker}`));
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
 
     const result = await commitDirtySections(writerA, SAMPLE_DOC_PATH);
     expect(result.committed).toBe(true);

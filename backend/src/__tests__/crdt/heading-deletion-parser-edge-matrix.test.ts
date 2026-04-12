@@ -1,24 +1,60 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
-import { DocumentFragments } from "../../crdt/document-fragments.js";
-import { buildDocumentFragmentsForTest } from "../helpers/build-document-fragments.js";
+import { buildDocumentFragmentsForTest, type TestDocSession } from "../helpers/build-document-fragments.js";
+import { applyAcceptResult, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
 import { getParser } from "../../storage/markdown-parser.js";
 
-function findKeyByHeading(store: DocumentFragments, headingName: string): string {
-  let key: string | null = null;
-  store.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-    const isBfh = headingPath.length === 0 && level === 0 && heading === "";
-    if (heading === headingName) {
-      key = fragmentKeyFromSectionFile(sectionFile, isBfh);
-    }
-  });
-  if (!key) {
-    throw new Error(`Missing fragment key for heading "${headingName}"`);
+function findKeyByHeading(store: TestDocSession, headingName: string): string {
+  for (const [key, hp] of store.headingPathByFragmentKey) {
+    const heading = hp[hp.length - 1] || "";
+    if (heading === headingName) return key;
   }
-  return key;
+  throw new Error(`Missing fragment key for heading "${headingName}"`);
+}
+
+/** Assemble full markdown from a session by reading all ordered fragment strings. */
+function assembleMarkdown(store: TestDocSession): string {
+  const parts: string[] = [];
+  for (const key of store.orderedFragmentKeys) {
+    const content = store.liveFragments.readFragmentString(key);
+    if (content) parts.push(content);
+  }
+  return parts.join("\n\n");
+}
+
+/**
+ * Inline normalizeStructure equivalent for TestDocSession.
+ */
+async function normalizeStructure(
+  store: TestDocSession,
+  fragmentKey: string,
+): Promise<{ changed: boolean; createdKeys: string[]; removedKeys: string[] }> {
+  store.liveFragments.noteAheadOfStaged(fragmentKey);
+  const scope = new Set([fragmentKey]);
+  await store.recoveryBuffer.writeFragment(fragmentKey, store.liveFragments.readFragmentString(fragmentKey));
+  const acceptResult = await store.stagedSections.acceptLiveFragments(store.liveFragments, scope);
+  await applyAcceptResult(store as DocSession, acceptResult);
+
+  const removedKeys = [...(acceptResult.structuralChange?.removedKeys ?? [])];
+  const createdKeys: string[] = [];
+  for (const remap of acceptResult.remaps) {
+    if (remap.oldKey !== fragmentKey) continue;
+    for (const k of remap.newKeys) {
+      if (k !== fragmentKey) createdKeys.push(k);
+    }
+  }
+
+  return {
+    changed:
+      acceptResult.structuralChange !== undefined && acceptResult.structuralChange !== null
+      || acceptResult.writtenKeys.length > 0
+      || acceptResult.deletedKeys.length > 0,
+    createdKeys,
+    removedKeys,
+  };
 }
 
 describe("heading deletion parser-edge matrix (realSections.length === 0 path)", () => {
@@ -78,14 +114,14 @@ describe("heading deletion parser-edge matrix (realSections.length === 0 path)",
     const store = await buildDocumentFragmentsForTest(SAMPLE_DOC_PATH);
     const timelineKey = findKeyByHeading(store, "Timeline");
 
-    store.setFragmentContent(timelineKey, fragmentFromRemark(markdown));
-    const result = await store.normalizeStructure(timelineKey);
-    const assembled = store.assembleMarkdown();
+    store.liveFragments.replaceFragmentString(timelineKey, fragmentFromRemark(markdown));
+    const result = await normalizeStructure(store, timelineKey);
+    const assembled = assembleMarkdown(store);
 
     if (expectDeleted) {
       expect(result.removedKeys).toContain(timelineKey);
       // Use the project's CommonMark-aware parser to check for a real
-      // level-2 "Timeline" heading. A line-prefix regex is too strict —
+      // level-2 "Timeline" heading. A line-prefix regex is too strict --
       // some test cases legitimately preserve the literal text `## Timeline`
       // inside a fenced code block in the absorbed body, even after the
       // structural heading itself has been deleted.

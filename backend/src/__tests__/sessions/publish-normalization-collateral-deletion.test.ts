@@ -3,12 +3,12 @@ import * as Y from "yjs";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
+
 import { getHeadSha } from "../../storage/git-repo.js";
 import { commitDirtySections } from "../../storage/auto-commit.js";
 import { ContentLayer } from "../../storage/content-layer.js";
-import { destroyAllSessions, setSessionOverlayImportCallback } from "../../crdt/ydoc-lifecycle.js";
-import { importSessionDirtyFragmentsToOverlay } from "../../storage/session-store.js";
+import { destroyAllSessions, setSessionOverlayImportCallback, markFragmentDirty, flushDirtyToOverlay } from "../../crdt/ydoc-lifecycle.js";
+import { fragmentFromRemark } from "../../storage/section-formatting.js";
 import type { WriterIdentity } from "../../types/shared.js";
 
 function replaceFragmentWithBodyOnly(
@@ -41,7 +41,7 @@ describe("publish normalization collateral deletion regression", () => {
     ctx = await createTempDataRoot();
     await createSampleDocument(ctx.rootDir);
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
   });
 
@@ -64,29 +64,25 @@ describe("publish normalization collateral deletion regression", () => {
 
     let overviewKey: string | null = null;
     let timelineKey: string | null = null;
-    live.raw.fragments.skeleton.forEachSection((heading, level, sectionFile) => {
-      const isBfh = level === 0 && heading === "";
-      const key = fragmentKeyFromSectionFile(sectionFile, isBfh);
+    for (const [key, hp] of live.headingPathByFragmentKey) {
+      const heading = hp[hp.length - 1] ?? "";
       if (heading === "Overview") overviewKey = key;
       if (heading === "Timeline") timelineKey = key;
-    });
+    }
 
     expect(overviewKey).not.toBeNull();
     expect(timelineKey).not.toBeNull();
 
     // Simulate a normal edit in "Overview".
-    const overviewBefore = live.raw.fragments.readFullContent(overviewKey!);
-    const mutateResult = live.mutateSection(
-      writer.id,
-      overviewKey!,
-      `${overviewBefore}\n\nExtra line added during editing.`,
-    );
-    expect(mutateResult.error).toBeUndefined();
+    const overviewBefore = live.liveFragments.readFragmentString(overviewKey!);
+    live.liveFragments.replaceFragmentString(overviewKey!, fragmentFromRemark(`${overviewBefore}\n\nExtra line added during editing.`));
+    live.liveFragments.noteAheadOfStaged(overviewKey!);
+    markFragmentDirty(SAMPLE_DOC_PATH, writer.id, overviewKey!);
 
     // Simulate a transient fragment state where another section loses its heading node.
     // This section is intentionally NOT edited via mutateSection.
     replaceFragmentWithBodyOnly(
-      live.raw.fragments.ydoc,
+      live.ydoc,
       timelineKey!,
       "Timeline body-only content from transient state.",
     );

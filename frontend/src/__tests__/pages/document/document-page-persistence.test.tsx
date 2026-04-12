@@ -1,176 +1,145 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import React from "react";
-import { render, screen, waitFor, fireEvent, cleanup, act } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { jsonResponse } from "../../helpers/fetch-mocks";
+/**
+ * Persistence state-machine integration tests.
+ *
+ * Exercises the full chain: BrowserFragmentReplicaStore mutations →
+ * resolveSaveState → worstSaveState, matching the real protocol
+ * sequences the DocumentPage drives.
+ *
+ * No rendered DOM — tests the state machine directly, so label text
+ * changes never break these.
+ */
 
-// --- CrdtProvider mock with callback capture ---
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import * as Y from "yjs";
+import { Awareness } from "y-protocols/awareness";
+import { BrowserFragmentReplicaStore } from "../../../services/browser-fragment-replica-store.js";
+import { resolveSaveState, worstSaveState, type SectionSaveState } from "../../../services/section-save-state.js";
 
-type ProviderOpts = {
-  onLocalUpdate?: (modifiedFragmentKeys: string[]) => void;
-  onSessionOverlayImportStarted?: () => void;
-  onSessionOverlayImported?: (payload: { writtenKeys: string[]; deletedKeys: string[] }) => void;
-  onStateChange?: (state: string) => void;
-  onSynced?: () => void;
-  onError?: (reason: string) => void;
-  onIdleTimeout?: () => void;
-};
+const FRAG_A = "section::alpha";
+const FRAG_B = "section::beta";
 
-let capturedOpts: ProviderOpts | null = null;
-
-vi.mock("../../../services/crdt-provider", () => ({
-  CrdtProvider: class {
-    constructor(_doc: unknown, _docPath: string, opts: ProviderOpts) {
-      capturedOpts = opts;
-    }
-    awareness = {
-      getLocalState: () => ({ user: {} }),
-      setLocalStateField: vi.fn(),
-    };
-    connect = vi.fn();
-    disconnect = vi.fn();
-    destroy = vi.fn();
-    focusSection = vi.fn();
-  },
-}));
-
-vi.mock("../../../services/ws-client", () => ({
-  KnowledgeStoreWsClient: class {
-    connect = vi.fn();
-    disconnect = vi.fn();
-    onEvent = vi.fn();
-    subscribe = vi.fn();
-    unsubscribe = vi.fn();
-    focusDocument = vi.fn();
-    blurDocument = vi.fn();
-    sessionDeparture = vi.fn();
-  },
-}));
-
-vi.mock("../../../components/MilkdownEditor", () => ({
-  MilkdownEditor: () => <div data-testid="milkdown-editor">Editor</div>,
-}));
-
-vi.mock("../../../components/ProposalPanel", () => ({
-  ProposalPanel: () => <div data-testid="proposal-panel">ProposalPanel</div>,
-}));
-
-vi.mock("../../../services/recent-docs", () => ({
-  rememberRecentDoc: vi.fn(),
-}));
-
-vi.mock("../../../services/document-visit-history", () => ({
-  getLastDocumentVisitAt: () => null,
-  markDocumentVisitedNow: vi.fn(),
-}));
-
-vi.mock("../../../services/api-client", async (importOriginal) => {
-  const orig = (await importOriginal()) as Record<string, unknown>;
-  return {
-    ...orig,
-    resolveWriterId: () => "test-user",
-  };
-});
-
-import { DocumentPage } from "../../../pages/DocumentPage";
-
-const sectionsResponse = {
-  sections: [
-    {
-      heading: "",
-      heading_path: [] as string[],
-      depth: 0,
-      content: "Root.\n",
-      humanInvolvement_score: 0,
-      crdt_session_active: false,
-      section_length_warning: false,
-      word_count: 1,
-      fragment_key: "frag:sec_root",
-      section_file: "sec_root.md",
-    },
-    {
-      heading: "Overview",
-      heading_path: ["Overview"],
-      depth: 1,
-      content: "# Overview\nOverview.\n",
-      humanInvolvement_score: 0,
-      crdt_session_active: false,
-      section_length_warning: false,
-      word_count: 1,
-      fragment_key: "frag:sec_overview",
-      section_file: "sec_overview.md",
-    },
-  ],
-};
-
-function renderDocPage() {
-  return render(
-    <MemoryRouter initialEntries={["/docs/test.md"]}>
-      <Routes>
-        <Route path="/docs/*" element={<DocumentPage docPathOverride="test.md" />} />
-      </Routes>
-    </MemoryRouter>,
+function resolve(
+  store: BrowserFragmentReplicaStore,
+  key: string,
+  nowMs = 1000,
+): SectionSaveState {
+  return resolveSaveState(
+    store.getSectionPersistence().get(key),
+    store.getConnectionState(),
+    store.getDirtySince(key),
+    nowMs,
   );
 }
 
 describe("DocumentPage persistence", () => {
+  let doc: Y.Doc;
+  let awareness: Awareness;
+  let store: BrowserFragmentReplicaStore;
+
   beforeEach(() => {
-    capturedOpts = null;
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
-      const urlStr = String(url);
-      if (urlStr.includes("/sections")) {
-        return jsonResponse(sectionsResponse);
-      }
-      if (urlStr.includes("/structure")) {
-        return jsonResponse({ structure: [] });
-      }
-      if (urlStr.includes("/changes-since")) {
-        return jsonResponse({ changed_sections: [] });
-      }
-      return jsonResponse({});
-    });
+    doc = new Y.Doc();
+    awareness = new Awareness(doc);
+    store = new BrowserFragmentReplicaStore(doc, awareness);
+    store.setConnectionState("connected");
   });
 
   afterEach(() => {
-    cleanup();
-    vi.restoreAllMocks();
-    vi.useRealTimers();
-    localStorage.clear();
+    awareness.destroy();
+    doc.destroy();
   });
 
-  it("does not leave the UI stuck in 'waiting for save confirmation' forever when save confirmation never arrives", async () => {
-    renderDocPage();
-    await waitFor(() => {
-      expect(screen.getByText("Overview.")).toBeDefined();
+  // ─── Happy path: full lifecycle ────────────────────────────────
+
+  describe("full persistence lifecycle (happy path)", () => {
+    it("clean → dirty → received → clean", () => {
+      expect(resolve(store, FRAG_A)).toBe("saved");
+
+      store.markSectionsEdited([FRAG_A]);
+      expect(resolve(store, FRAG_A)).toBe("not_received");
+
+      store.markSectionsReceived([FRAG_A]);
+      expect(resolve(store, FRAG_A)).toBe("received_in_ram");
+
+      store.markSectionsClean([FRAG_A]);
+      expect(resolve(store, FRAG_A)).toBe("saved");
+    });
+  });
+
+  // ─── Connection failure modes ──────────────────────────────────
+
+  describe("connection failure while dirty", () => {
+    it("dirty + disconnected = send_failed_no_retry", () => {
+      store.markSectionsEdited([FRAG_A]);
+      store.setConnectionState("disconnected");
+      expect(resolve(store, FRAG_A)).toBe("send_failed_no_retry");
     });
 
-    fireEvent.click(screen.getByText("Overview."));
-
-    await waitFor(() => {
-      expect(capturedOpts).not.toBeNull();
+    it("dirty + error = send_failed_no_retry", () => {
+      store.markSectionsEdited([FRAG_A]);
+      store.setConnectionState("error");
+      expect(resolve(store, FRAG_A)).toBe("send_failed_no_retry");
     });
 
-    act(() => {
-      capturedOpts?.onLocalUpdate?.(["frag:sec_overview"]);
+    it("dirty + reconnecting = send_failed_will_retry", () => {
+      store.markSectionsEdited([FRAG_A]);
+      store.setConnectionState("reconnecting");
+      expect(resolve(store, FRAG_A)).toBe("send_failed_will_retry");
     });
 
-    await waitFor(() => {
-      expect(screen.getByText("1 unsaved section")).toBeDefined();
+    it("dirty + connecting = send_failed_will_retry", () => {
+      store.markSectionsEdited([FRAG_A]);
+      store.setConnectionState("connecting");
+      expect(resolve(store, FRAG_A)).toBe("send_failed_will_retry");
+    });
+  });
+
+  // ─── Receipt timeout ───────────────────────────────────────────
+
+  describe("receipt timeout detection", () => {
+    it("dirty section becomes receipt_timeout after 10s without server ACK", () => {
+      store.markSectionsEdited([FRAG_A]);
+      const dirtySince = store.getDirtySince(FRAG_A)!;
+
+      expect(resolve(store, FRAG_A, dirtySince + 5_000)).toBe("not_received");
+      expect(resolve(store, FRAG_A, dirtySince + 10_001)).toBe("receipt_timeout");
     });
 
-    act(() => {
-      capturedOpts?.onSessionOverlayImportStarted?.();
+    it("receipt clears the timeout — received state does not time out", () => {
+      store.markSectionsEdited([FRAG_A]);
+      const dirtySince = store.getDirtySince(FRAG_A)!;
+
+      store.markSectionsReceived([FRAG_A]);
+      expect(resolve(store, FRAG_A, dirtySince + 20_000)).toBe("received_in_ram");
+    });
+  });
+
+  // ─── Aggregate (worst-of) ──────────────────────────────────────
+
+  describe("worstSaveState aggregation", () => {
+    it("empty list = saved", () => {
+      expect(worstSaveState([])).toBe("saved");
     });
 
-    await waitFor(() => {
-      expect(screen.getByText("1 section waiting for save confirmation")).toBeDefined();
+    it("worst-of picks the highest-risk state", () => {
+      expect(worstSaveState(["saved", "received_in_ram"])).toBe("received_in_ram");
+      expect(worstSaveState(["received_in_ram", "not_received"])).toBe("not_received");
+      expect(worstSaveState(["not_received", "send_failed_no_retry"])).toBe("send_failed_no_retry");
     });
 
-    vi.useFakeTimers();
-    act(() => {
-      vi.advanceTimersByTime(30000);
+    it("receipt_timeout outranks not_received", () => {
+      expect(worstSaveState(["not_received", "receipt_timeout"])).toBe("receipt_timeout");
     });
+  });
 
-    expect(screen.queryByText("1 section waiting for save confirmation")).toBeNull();
+  // ─── Deleting state ────────────────────────────────────────────
+
+  describe("deleting state", () => {
+    it("deleting sections resolve to deleting regardless of connection", () => {
+      store.markSectionsDeleting([FRAG_A]);
+      expect(resolve(store, FRAG_A)).toBe("deleting");
+
+      store.setConnectionState("error");
+      expect(resolve(store, FRAG_A)).toBe("deleting");
+    });
   });
 });

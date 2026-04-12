@@ -1,16 +1,16 @@
 /**
- * usePersistenceState — dirty/pending/flushed/clean per section,
- * deletion placeholders, and restructuring keys.
+ * usePersistenceState — deletion placeholders and restructuring keys.
  *
- * Extracted from useDocumentCrdt. No dependencies on other extracted hooks.
+ * Per-section persistence state (dirty/pending/flushed/clean) lives in
+ * BrowserFragmentReplicaStore and is consumed via useSyncExternalStore
+ * in the page components. This hook only tracks ephemeral UI state that
+ * the store does not model.
  */
 
 import { useState } from "react";
-import type { SectionPersistenceState, DeletionPlaceholder } from "../pages/document-page-utils";
+import type { DeletionPlaceholder } from "../pages/document-page-utils";
 
 export interface UsePersistenceStateReturn {
-  sectionPersistence: Map<string, SectionPersistenceState>;
-  setSectionPersistence: React.Dispatch<React.SetStateAction<Map<string, SectionPersistenceState>>>;
   deletionPlaceholders: DeletionPlaceholder[];
   setDeletionPlaceholders: React.Dispatch<React.SetStateAction<DeletionPlaceholder[]>>;
   restructuringKeys: Set<string>;
@@ -18,13 +18,10 @@ export interface UsePersistenceStateReturn {
 }
 
 export function usePersistenceState(): UsePersistenceStateReturn {
-  const [sectionPersistence, setSectionPersistence] = useState<Map<string, SectionPersistenceState>>(new Map());
   const [deletionPlaceholders, setDeletionPlaceholders] = useState<DeletionPlaceholder[]>([]);
   const [restructuringKeys, setRestructuringKeys] = useState<Set<string>>(new Set());
 
   return {
-    sectionPersistence,
-    setSectionPersistence,
     deletionPlaceholders,
     setDeletionPlaceholders,
     restructuringKeys,

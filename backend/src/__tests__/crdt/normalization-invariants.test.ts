@@ -12,10 +12,11 @@ import { documentSessionRegistry } from "../../crdt/document-session-registry.js
 import {
   destroyAllSessions,
   setSessionOverlayImportCallback,
+  flushDirtyToOverlay,
+  findKeyForHeadingPath,
+  applyAcceptResult,
 } from "../../crdt/ydoc-lifecycle.js";
-import { importSessionDirtyFragmentsToOverlay } from "../../storage/session-store.js";
 import { getHeadSha } from "../../storage/git-repo.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
 import type { WriterIdentity } from "../../types/shared.js";
 
@@ -30,13 +31,7 @@ function findHeadingKey(
   live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
   heading: string,
 ): string {
-  let key: string | null = null;
-  live.raw.fragments.skeleton.forEachSection((entryHeading, level, sectionFile, headingPath) => {
-    const isBfh = headingPath.length === 0 && level === 0 && entryHeading === "";
-    if (entryHeading === heading) {
-      key = fragmentKeyFromSectionFile(sectionFile, isBfh);
-    }
-  });
+  const key = findKeyForHeadingPath(live, [heading]);
   if (!key) throw new Error(`Missing fragment key for heading "${heading}"`);
   return key;
 }
@@ -44,12 +39,7 @@ function findHeadingKey(
 function findBfhKey(
   live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
 ): string {
-  let key: string | null = null;
-  live.raw.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-    if (headingPath.length === 0 && level === 0 && heading === "") {
-      key = fragmentKeyFromSectionFile(sectionFile, true);
-    }
-  });
+  const key = findKeyForHeadingPath(live, []);
   if (!key) throw new Error("Missing BFH fragment key");
   return key;
 }
@@ -63,7 +53,7 @@ describe("A4: Normalization Invariants", () => {
     await createSampleDocument(ctx.rootDir);
     baseHead = await getHeadSha(ctx.rootDir);
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
   });
 
@@ -84,20 +74,25 @@ describe("A4: Normalization Invariants", () => {
     const overviewKey = findHeadingKey(live, "Overview");
 
     // Inject content with an embedded heading into Overview
-    live.raw.fragments.setFragmentContent(
+    live.liveFragments.replaceFragmentString(
       overviewKey,
       fragmentFromRemark("## Overview\n\nOriginal overview text.\n\n## New Embedded Heading\n\nNew section content."),
     );
 
-    await importSessionDirtyFragmentsToOverlay(live.raw, { fragmentKeys: new Set([overviewKey]) });
-    const result = await live.raw.fragments.normalizeStructure(overviewKey);
+    // normalizeStructure triggers accept which both writes to overlay and
+    // detects+applies the structural split in a single pass (post-BNATIVE.10).
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    const scope = new Set([overviewKey]);
+    await live.recoveryBuffer.snapshotFromLive(live.liveFragments, scope);
+    const result = await live.stagedSections.acceptLiveFragments(live.liveFragments, scope);
+    await applyAcceptResult(live, result);
 
-    expect(result.changed).toBe(true);
+    expect(result.structuralChange !== null).toBe(true);
     // After split, new fragment keys should be created
-    expect(result.createdKeys.length).toBeGreaterThanOrEqual(1);
+    expect(result.writtenKeys.length).toBeGreaterThanOrEqual(1);
 
     // The assembled markdown should contain both headings
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const assembled = live.orderedFragmentKeys.map((k) => live.liveFragments.readFragmentString(k)).join("");
     expect(assembled).toContain("## Overview");
     expect(assembled).toContain("## New Embedded Heading");
     expect(assembled).toContain("New section content.");
@@ -115,20 +110,25 @@ describe("A4: Normalization Invariants", () => {
     const timelineKey = findHeadingKey(live, "Timeline");
 
     // Remove the heading but keep body content (simulates heading deletion)
-    live.raw.fragments.setFragmentContent(
+    live.liveFragments.replaceFragmentString(
       timelineKey,
       fragmentFromRemark("Timeline body without heading."),
     );
 
-    await importSessionDirtyFragmentsToOverlay(live.raw, { fragmentKeys: new Set([timelineKey]) });
-    const result = await live.raw.fragments.normalizeStructure(timelineKey);
+    // normalizeStructure triggers accept which handles the orphan merge
+    // in a single pass (post-BNATIVE.10).
+    live.liveFragments.noteAheadOfStaged(timelineKey);
+    const scope = new Set([timelineKey]);
+    await live.recoveryBuffer.snapshotFromLive(live.liveFragments, scope);
+    const result = await live.stagedSections.acceptLiveFragments(live.liveFragments, scope);
+    await applyAcceptResult(live, result);
 
-    expect(result.changed).toBe(true);
+    expect(result.structuralChange !== null).toBe(true);
     // The orphan key should have been removed (merged into previous)
-    expect(result.removedKeys).toContain(timelineKey);
+    expect(result.deletedKeys).toContain(timelineKey);
 
     // Assembled markdown should still contain the merged content
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const assembled = live.orderedFragmentKeys.map((k) => live.liveFragments.readFragmentString(k)).join("");
     expect(assembled).toContain("Timeline body without heading.");
   });
 
@@ -144,17 +144,21 @@ describe("A4: Normalization Invariants", () => {
     const overviewKey = findHeadingKey(live, "Overview");
 
     // Rename heading from "Overview" to "Summary"
-    live.raw.fragments.setFragmentContent(
+    live.liveFragments.replaceFragmentString(
       overviewKey,
       fragmentFromRemark("## Summary\n\nRenamed overview content."),
     );
 
-    await importSessionDirtyFragmentsToOverlay(live.raw, { fragmentKeys: new Set([overviewKey]) });
-    const result = await live.raw.fragments.normalizeStructure(overviewKey);
+    await flushDirtyToOverlay(live);
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    const scope = new Set([overviewKey]);
+    await live.recoveryBuffer.snapshotFromLive(live.liveFragments, scope);
+    const result = await live.stagedSections.acceptLiveFragments(live.liveFragments, scope);
+    await applyAcceptResult(live, result);
 
     // Heading rename should produce structural change
     // The skeleton should now have "Summary" instead of "Overview"
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const assembled = live.orderedFragmentKeys.map((k) => live.liveFragments.readFragmentString(k)).join("");
     expect(assembled).toContain("## Summary");
     expect(assembled).toContain("Renamed overview content.");
   });
@@ -171,16 +175,20 @@ describe("A4: Normalization Invariants", () => {
     const overviewKey = findHeadingKey(live, "Overview");
 
     // Change heading level from ## to ###
-    live.raw.fragments.setFragmentContent(
+    live.liveFragments.replaceFragmentString(
       overviewKey,
       fragmentFromRemark("### Overview\n\nLevel-changed overview content."),
     );
 
-    await importSessionDirtyFragmentsToOverlay(live.raw, { fragmentKeys: new Set([overviewKey]) });
-    const result = await live.raw.fragments.normalizeStructure(overviewKey);
+    await flushDirtyToOverlay(live);
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    const scope = new Set([overviewKey]);
+    await live.recoveryBuffer.snapshotFromLive(live.liveFragments, scope);
+    const result = await live.stagedSections.acceptLiveFragments(live.liveFragments, scope);
+    await applyAcceptResult(live, result);
 
     // The assembled markdown should reflect the level change
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const assembled = live.orderedFragmentKeys.map((k) => live.liveFragments.readFragmentString(k)).join("");
     expect(assembled).toContain("### Overview");
     expect(assembled).toContain("Level-changed overview content.");
   });
@@ -197,17 +205,21 @@ describe("A4: Normalization Invariants", () => {
     const bfhKey = findBfhKey(live);
 
     // Modify BFH content (should remain structurally valid with 0 headings)
-    live.raw.fragments.setFragmentContent(
+    live.liveFragments.replaceFragmentString(
       bfhKey,
       fragmentFromRemark("Updated preamble content for BFH test."),
     );
 
-    await importSessionDirtyFragmentsToOverlay(live.raw, { fragmentKeys: new Set([bfhKey]) });
-    const result = await live.raw.fragments.normalizeStructure(bfhKey);
+    await flushDirtyToOverlay(live);
+    live.liveFragments.noteAheadOfStaged(bfhKey);
+    const scope = new Set([bfhKey]);
+    await live.recoveryBuffer.snapshotFromLive(live.liveFragments, scope);
+    const result = await live.stagedSections.acceptLiveFragments(live.liveFragments, scope);
+    await applyAcceptResult(live, result);
 
     // BFH with 0 headings should be structurally clean (no split/merge)
     // Content should be preserved
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const assembled = live.orderedFragmentKeys.map((k) => live.liveFragments.readFragmentString(k)).join("");
     expect(assembled).toContain("Updated preamble content for BFH test.");
   });
 
@@ -225,17 +237,22 @@ describe("A4: Normalization Invariants", () => {
     const overviewKey = findHeadingKey(live, "Overview");
 
     // Inject embedded heading to force a split
-    live.raw.fragments.setFragmentContent(
+    live.liveFragments.replaceFragmentString(
       overviewKey,
       fragmentFromRemark("## Overview\n\nOriginal.\n\n## Broadcast Test\n\nBroadcast content."),
     );
 
-    await importSessionDirtyFragmentsToOverlay(live.raw, { fragmentKeys: new Set([overviewKey]) });
-    await live.raw.fragments.normalizeStructure(overviewKey, {
-      broadcastStructureChange: (info) => {
-        broadcasts.push(info);
-      },
-    });
+    // normalizeStructure triggers accept + broadcast in a single pass.
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    const scope = new Set([overviewKey]);
+    await live.recoveryBuffer.snapshotFromLive(live.liveFragments, scope);
+    const result = await live.stagedSections.acceptLiveFragments(live.liveFragments, scope);
+    await applyAcceptResult(live, result);
+
+    // applyAcceptResult broadcasts remaps internally; check the result directly.
+    if (result.remaps.length > 0) {
+      broadcasts.push(result.remaps);
+    }
 
     // Broadcast should have been called with remap data
     expect(broadcasts.length).toBeGreaterThan(0);
@@ -258,24 +275,24 @@ describe("A4: Normalization Invariants", () => {
     const overviewKey = findHeadingKey(live, "Overview");
 
     // Force a structural change (split)
-    live.raw.fragments.setFragmentContent(
+    live.liveFragments.replaceFragmentString(
       overviewKey,
       fragmentFromRemark("## Overview\n\nKept.\n\n## Extra\n\nExtra content."),
     );
 
-    await importSessionDirtyFragmentsToOverlay(live.raw, { fragmentKeys: new Set([overviewKey]) });
-    await live.raw.fragments.normalizeStructure(overviewKey);
+    await flushDirtyToOverlay(live);
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    const scope = new Set([overviewKey]);
+    await live.recoveryBuffer.snapshotFromLive(live.liveFragments, scope);
+    const result = await live.stagedSections.acceptLiveFragments(live.liveFragments, scope);
+    await applyAcceptResult(live, result);
 
-    // Gather skeleton section files
-    const skeletonKeys = new Set<string>();
-    live.raw.fragments.skeleton.forEachSection((_h, _l, sectionFile, headingPath) => {
-      const isBfh = headingPath.length === 0 && _l === 0 && _h === "";
-      skeletonKeys.add(fragmentKeyFromSectionFile(sectionFile, isBfh));
-    });
+    // Gather index-tracked keys (the authoritative set after normalization)
+    const indexKeys = new Set(live.headingPathByFragmentKey.keys());
 
-    // Y.Doc fragment keys should match skeleton keys
-    const fragmentKeys = new Set(live.raw.fragments.getFragmentKeys());
-    expect(fragmentKeys).toEqual(skeletonKeys);
+    // Y.Doc fragment keys should match index keys
+    const fragmentKeys = new Set(live.orderedFragmentKeys);
+    expect(fragmentKeys).toEqual(indexKeys);
   });
 
   // ── A4.8 ──────────────────────────────────────────────────────────
@@ -291,26 +308,27 @@ describe("A4: Normalization Invariants", () => {
     const timelineKey = findHeadingKey(live, "Timeline");
 
     // Make both Overview and Timeline into orphans (body-only, no heading)
-    live.raw.fragments.setFragmentContent(
+    live.liveFragments.replaceFragmentString(
       overviewKey,
       fragmentFromRemark("Overview orphan body."),
     );
-    live.raw.fragments.setFragmentContent(
+    live.liveFragments.replaceFragmentString(
       timelineKey,
       fragmentFromRemark("Timeline orphan body."),
     );
 
-    // Flush both
-    await importSessionDirtyFragmentsToOverlay(live.raw, {
-      fragmentKeys: new Set([overviewKey, timelineKey]),
-    });
-
-    // Normalizing Timeline should also handle Overview (predecessor convergence)
-    const result = await live.raw.fragments.normalizeStructure(timelineKey);
-    expect(result.changed).toBe(true);
+    // Normalizing Timeline should also handle Overview (predecessor convergence).
+    // Mark both keys ahead-of-staged so accept processes them.
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    live.liveFragments.noteAheadOfStaged(timelineKey);
+    const scope = new Set([overviewKey, timelineKey]);
+    await live.recoveryBuffer.snapshotFromLive(live.liveFragments, scope);
+    const result = await live.stagedSections.acceptLiveFragments(live.liveFragments, scope);
+    await applyAcceptResult(live, result);
+    expect(result.structuralChange !== null).toBe(true);
 
     // Both orphan keys should be removed (merged into BFH/previous)
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const assembled = live.orderedFragmentKeys.map((k) => live.liveFragments.readFragmentString(k)).join("");
     expect(assembled).toContain("Overview orphan body.");
     expect(assembled).toContain("Timeline orphan body.");
   });

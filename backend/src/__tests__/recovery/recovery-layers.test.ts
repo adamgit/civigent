@@ -1,11 +1,10 @@
-import * as Y from "yjs";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { DocumentFragments } from "../../crdt/document-fragments.js";
 import { DocumentSkeleton } from "../../storage/document-skeleton.js";
 import { assessSkeleton, assessSectionContent, buildCompoundSkeleton, recoverDocument, reconcileAndCleanup, writeRecoveredToCanonical } from "../../storage/recovery-layers.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
+import { buildDocumentFragmentsForTest } from "../helpers/build-document-fragments.js";
 
 describe("assessSkeleton", () => {
   let ctx: TempDataRootContext;
@@ -630,8 +629,11 @@ describe("crash recovery appendix sectionFile reuse", () => {
       const recovery = await recoverDocument(DOC_PATH);
       await writeRecoveredToCanonical(DOC_PATH, recovery, compound.skeleton);
 
-      const skeleton = await DocumentSkeleton.fromDisk(DOC_PATH, ctx.contentDir, ctx.contentDir);
-      expect(() => new DocumentFragments(new Y.Doc(), skeleton, DOC_PATH)).not.toThrow();
+      // Building a test session from disk exercises the same skeleton walk +
+      // fragment-key derivation that DocumentFragments constructor does.
+      // A duplicate fragment-key collision would throw here.
+      const session = await buildDocumentFragmentsForTest(DOC_PATH);
+      session.ydoc.destroy();
     } finally {
       await ctx.cleanup();
     }

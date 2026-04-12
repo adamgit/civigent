@@ -24,6 +24,13 @@ import type { LiveFragmentStringsStore } from "../crdt/live-fragment-strings-sto
 import type { StagedSectionsStore } from "./staged-sections-store.js";
 import type { RawFragmentRecoveryBuffer } from "./raw-fragment-recovery-buffer.js";
 
+/**
+ * Precondition: caller MUST have completed the full pipeline (canonical
+ * commit succeeded) or be performing total session destruction (restore,
+ * overwrite). Must NOT be called for partial operations like publish —
+ * publish must use scoped per-key deletion to preserve other writers'
+ * fragments and overlay state.
+ */
 export async function teardownSessionStores(
   liveFragments: LiveFragmentStringsStore,
   stagedSections: StagedSectionsStore,

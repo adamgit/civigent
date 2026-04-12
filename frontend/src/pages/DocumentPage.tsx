@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { apiClient } from "../services/api-client";
 import { getLastDocumentVisitAt, markDocumentVisitedNow } from "../services/document-visit-history";
@@ -33,6 +33,7 @@ import {
 } from "./document-page-utils";
 import { useDocumentSessionController } from "../hooks/useDocumentSessionController";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
+import { type SectionSaveInfo, resolveSaveState, worstSaveState } from "../services/section-save-state";
 
 // ─── viewingPresence: small component to call the hook per-section ──
 
@@ -123,14 +124,15 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     focusedSectionIndex,
     setFocusedSectionIndex,
     crdtProvider,
+    store,
+    storeRef,
+    transport,
     crdtSynced,
     crdtState,
     crdtError,
     editingLoading,
     readyEditors,
     setReadyEditors,
-    sectionPersistence,
-    setSectionPersistence,
     deletionPlaceholders,
     setDeletionPlaceholders,
     restructuringKeys,
@@ -234,7 +236,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     mountedEditorFragmentKeysRef,
     pendingStructureRefocusRef,
     setRestructuringKeys,
-    setSectionPersistence,
+    storeRef,
     setDeletionPlaceholders,
     setStructureTree,
     loadSections,
@@ -376,20 +378,36 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   // ── Derived ──────────────────────────────────────────────
   const docTitle = decodedDocPath ? getDocDisplayName(decodedDocPath) : "Untitled";
 
-  // Aggregated persistence summary — derived from per-section map (never lies)
-  const persistenceSummary = useMemo(() => {
-    let dirtyCount = 0;
-    let pendingCount = 0;
-    let flushedCount = 0;
-    let deletingCount = 0;
-    for (const state of sectionPersistence.values()) {
-      if (state === "dirty") dirtyCount++;
-      else if (state === "pending") pendingCount++;
-      else if (state === "flushed") flushedCount++;
-      else if (state === "deleting") deletingCount++;
+  // Subscribe to persistence state from the store via useSyncExternalStore
+  const emptyMap = useMemo(() => new Map() as ReadonlyMap<string, import("../services/browser-fragment-replica-store").SectionPersistenceState>, []);
+  const subscribeStore = useMemo(() => store?.subscribe ?? ((_cb: () => void) => () => {}), [store]);
+  const sectionPersistence = useSyncExternalStore(
+    subscribeStore,
+    () => store?.getSectionPersistence() ?? emptyMap,
+  );
+
+  // Per-section save states resolved through the user-facing state machine
+  const now = Date.now();
+  const sectionSaveInfos: SectionSaveInfo[] = useMemo(() => {
+    const infos: SectionSaveInfo[] = [];
+    for (const section of sections) {
+      const fk = getSectionFragmentKey(section);
+      const ps = sectionPersistence.get(fk);
+      if (ps === undefined) continue; // clean — not in the map
+      const state = resolveSaveState(ps, crdtState, store?.getDirtySince(fk), now);
+      infos.push({
+        fragmentKey: fk,
+        sectionLabel: headingPathToLabel(section.heading_path),
+        state,
+      });
     }
-    return { dirtyCount, pendingCount, flushedCount, deletingCount, total: sectionPersistence.size };
-  }, [sectionPersistence]);
+    return infos;
+  }, [sectionPersistence, sections, crdtState, store, now]);
+
+  const aggregateSaveState = useMemo(
+    () => worstSaveState(sectionSaveInfos.map((s) => s.state)),
+    [sectionSaveInfos],
+  );
 
   // ── B3: Stable section callbacks (extracted from sections.map) ───
   const handleFocusSection = useCallback((idx: number, headingPath: string[], coords: { x: number; y: number }) => {
@@ -441,7 +459,8 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         showOverwrite={showOverwrite}
         onToggleOverwrite={() => setShowOverwrite((v) => !v)}
         crdtState={crdtState}
-        persistenceSummary={persistenceSummary}
+        aggregateSaveState={aggregateSaveState}
+        sectionSaveInfos={sectionSaveInfos}
         isEditing={isEditing}
       />
 
@@ -638,7 +657,8 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
             injectedByLabel={injectedByLabel}
             presenceIndicators={presenceIndicators}
             dragOverSectionIndex={dragOverSectionIndex}
-            crdtProvider={crdtProvider}
+            store={store}
+            transport={transport}
             crdtSynced={crdtSynced}
             crdtError={crdtError}
             readyEditors={readyEditors}

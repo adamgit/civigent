@@ -4,10 +4,10 @@ import { mkdir, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { getHeadSha, gitExec } from "../../storage/git-repo.js";
-import { destroyAllSessions } from "../../crdt/ydoc-lifecycle.js";
+import { destroyAllSessions, applyAcceptResult } from "../../crdt/ydoc-lifecycle.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
+import type { DocSession } from "../../crdt/ydoc-lifecycle.js";
 import type { WriterIdentity } from "../../types/shared.js";
 
 const writer: WriterIdentity = {
@@ -121,35 +121,27 @@ async function openSession(
 }
 
 function findFragmentKeyByHeading(
-  live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
+  live: DocSession,
   headingName: string,
 ): string {
-  let key: string | null = null;
-  live.raw.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-    const isBfh = headingPath.length === 0 && level === 0 && heading === "";
+  for (const [fragmentKey, headingPath] of live.headingPathByFragmentKey) {
+    const heading = headingPath[headingPath.length - 1] ?? "";
     if (heading === headingName) {
-      key = fragmentKeyFromSectionFile(sectionFile, isBfh);
+      return fragmentKey;
     }
-  });
-  if (!key) {
-    throw new Error(`Missing fragment key for heading "${headingName}"`);
   }
-  return key;
+  throw new Error(`Missing fragment key for heading "${headingName}"`);
 }
 
 function findBfhFragmentKey(
-  live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
+  live: DocSession,
 ): string {
-  let key: string | null = null;
-  live.raw.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-    if (headingPath.length === 0 && level === 0 && heading === "") {
-      key = fragmentKeyFromSectionFile(sectionFile, true);
+  for (const [fragmentKey, headingPath] of live.headingPathByFragmentKey) {
+    if (headingPath.length === 0) {
+      return fragmentKey;
     }
-  });
-  if (!key) {
-    throw new Error("Missing BFH fragment key");
   }
-  return key;
+  throw new Error("Missing BFH fragment key");
 }
 
 function countOccurrences(haystack: string, needle: string): number {
@@ -157,11 +149,53 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 function setFragmentMarkdown(
-  live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
+  live: DocSession,
   fragmentKey: string,
   markdown: string,
 ): void {
-  live.raw.fragments.setFragmentContent(fragmentKey, fragmentFromRemark(markdown));
+  live.liveFragments.replaceFragmentString(fragmentKey, fragmentFromRemark(markdown), undefined);
+}
+
+/** Session-level equivalent of DocumentFragments.normalizeStructure that returns a result. */
+async function normalizeStructure(
+  live: DocSession,
+  fragmentKey: string,
+): Promise<{ changed: boolean; createdKeys: string[]; removedKeys: string[] }> {
+  if (!live.headingPathByFragmentKey.has(fragmentKey)) {
+    return { changed: false, createdKeys: [], removedKeys: [] };
+  }
+  live.liveFragments.noteAheadOfStaged(fragmentKey);
+  await live.recoveryBuffer.writeFragment(fragmentKey, live.liveFragments.readFragmentString(fragmentKey));
+  const scope = new Set<string>([fragmentKey]);
+  const acceptResult = await live.stagedSections.acceptLiveFragments(live.liveFragments, scope);
+  await applyAcceptResult(live, acceptResult);
+
+  const removedKeys = [...acceptResult.deletedKeys];
+  const createdKeys: string[] = [];
+  for (const remap of acceptResult.remaps) {
+    if (remap.oldKey !== fragmentKey) continue;
+    for (const k of remap.newKeys) {
+      if (k !== fragmentKey) createdKeys.push(k);
+    }
+  }
+  return {
+    changed:
+      acceptResult.structuralChange !== null
+      || acceptResult.writtenKeys.length > 0
+      || acceptResult.deletedKeys.length > 0,
+    createdKeys,
+    removedKeys,
+  };
+}
+
+/** Assemble full markdown from a session by reading all ordered fragment strings. */
+function assembleMarkdownFromSession(live: DocSession): string {
+  const parts: string[] = [];
+  for (const key of live.orderedFragmentKeys) {
+    const content = live.liveFragments.readFragmentString(key);
+    if (content) parts.push(content);
+  }
+  return parts.join("\n\n");
 }
 
 describe("normalization boundary matrix", () => {
@@ -187,8 +221,8 @@ describe("normalization boundary matrix", () => {
       "Timeline orphaned body after heading deletion.",
     );
 
-    const result = await live.raw.fragments.normalizeStructure(timelineKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, timelineKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(result.removedKeys).toContain(timelineKey);
@@ -206,8 +240,8 @@ describe("normalization boundary matrix", () => {
     const live = await openSession(ctx.rootDir, THREE_SECTION_SPEC.docPath);
 
     const timelineKey = findFragmentKeyByHeading(live, "Timeline");
-    const result = await live.raw.fragments.normalizeStructure(timelineKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, timelineKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(false);
     expect(result.createdKeys).toEqual([]);
@@ -232,8 +266,8 @@ describe("normalization boundary matrix", () => {
       ].join("\n"),
     );
 
-    const result = await live.raw.fragments.normalizeStructure(timelineKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, timelineKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).toContain("## Timeline Renamed");
@@ -259,8 +293,8 @@ describe("normalization boundary matrix", () => {
       ].join("\n"),
     );
 
-    const result = await live.raw.fragments.normalizeStructure(timelineKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, timelineKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).toContain("### Timeline");
@@ -287,8 +321,8 @@ describe("normalization boundary matrix", () => {
       ].join("\n"),
     );
 
-    const result = await live.raw.fragments.normalizeStructure(timelineKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, timelineKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(result.removedKeys).not.toContain(timelineKey);
@@ -314,8 +348,8 @@ describe("normalization boundary matrix", () => {
       ].join("\n"),
     );
 
-    const result = await live.raw.fragments.normalizeStructure(overviewKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, overviewKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).toContain("## Overview");
@@ -341,8 +375,8 @@ describe("normalization boundary matrix", () => {
       ].join("\n"),
     );
 
-    const result = await live.raw.fragments.normalizeStructure(risksKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, risksKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).toContain("## Risks");
@@ -370,8 +404,8 @@ describe("normalization boundary matrix", () => {
       ].join("\n"),
     );
 
-    const result = await live.raw.fragments.normalizeStructure(timelineKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, timelineKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).toContain("## Overview");
@@ -401,8 +435,8 @@ describe("normalization boundary matrix", () => {
       ].join("\n"),
     );
 
-    const result = await live.raw.fragments.normalizeStructure(overviewKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, overviewKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).toContain("## Overview");
@@ -430,8 +464,8 @@ describe("normalization boundary matrix", () => {
       ].join("\n"),
     );
 
-    const result = await live.raw.fragments.normalizeStructure(risksKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, risksKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).toContain("## Overview");
@@ -451,8 +485,8 @@ describe("normalization boundary matrix", () => {
       "Orphaned overview body after heading deletion.",
     );
 
-    const result = await live.raw.fragments.normalizeStructure(overviewKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, overviewKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).not.toContain("## Overview");
@@ -472,8 +506,8 @@ describe("normalization boundary matrix", () => {
       "Orphaned risks body after heading deletion.",
     );
 
-    const result = await live.raw.fragments.normalizeStructure(risksKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, risksKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).not.toContain("## Risks");
@@ -489,8 +523,8 @@ describe("normalization boundary matrix", () => {
     const timelineKey = findFragmentKeyByHeading(live, "Timeline");
     setFragmentMarkdown(live, timelineKey, "");
 
-    const result = await live.raw.fragments.normalizeStructure(timelineKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, timelineKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).not.toContain("## Timeline");
@@ -509,8 +543,8 @@ describe("normalization boundary matrix", () => {
       "Body that remains after the heading is removed.",
     );
 
-    const result = await live.raw.fragments.normalizeStructure(soloKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, soloKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).not.toContain("## Solo");
@@ -537,8 +571,8 @@ describe("normalization boundary matrix", () => {
       ].join("\n"),
     );
 
-    const result = await live.raw.fragments.normalizeStructure(soloKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, soloKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).toContain("## Solo");
@@ -561,8 +595,8 @@ describe("normalization boundary matrix", () => {
       ].join("\n"),
     );
 
-    const result = await live.raw.fragments.normalizeStructure(soloKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, soloKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).toContain("## Solo Renamed");
@@ -585,8 +619,8 @@ describe("normalization boundary matrix", () => {
       ].join("\n"),
     );
 
-    const result = await live.raw.fragments.normalizeStructure(soloKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, soloKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).toContain("### Solo");
@@ -610,8 +644,8 @@ describe("normalization boundary matrix", () => {
       ].join("\n"),
     );
 
-    const result = await live.raw.fragments.normalizeStructure(bfhKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, bfhKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(result.createdKeys.length).toBeGreaterThan(0);
@@ -643,8 +677,8 @@ describe("normalization boundary matrix", () => {
       ].join("\n"),
     );
 
-    const result = await live.raw.fragments.normalizeStructure(bfhKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, bfhKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(result.createdKeys.length).toBeGreaterThan(1);
@@ -672,8 +706,8 @@ describe("normalization boundary matrix", () => {
       ].join("\n"),
     );
 
-    const result = await live.raw.fragments.normalizeStructure(bfhKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, bfhKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).toContain("## New Heading");
@@ -701,8 +735,8 @@ describe("normalization boundary matrix", () => {
       ].join("\n"),
     );
 
-    const result = await live.raw.fragments.normalizeStructure(bfhKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, bfhKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(true);
     expect(assembled).toContain("## Heading One");
@@ -715,8 +749,8 @@ describe("normalization boundary matrix", () => {
     const live = await openSession(ctx.rootDir, BFH_ONLY_SPEC.docPath);
 
     const bfhKey = findBfhFragmentKey(live);
-    const result = await live.raw.fragments.normalizeStructure(bfhKey);
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const result = await normalizeStructure(live, bfhKey);
+    const assembled = assembleMarkdownFromSession(live);
 
     expect(result.changed).toBe(false);
     expect(result.createdKeys).toEqual([]);

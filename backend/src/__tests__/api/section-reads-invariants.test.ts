@@ -16,10 +16,9 @@ import {
   acquireDocSession,
   destroyAllSessions,
   setSessionOverlayImportCallback,
+  flushDirtyToOverlay,
 } from "../../crdt/ydoc-lifecycle.js";
-import { importSessionDirtyFragmentsToOverlay } from "../../storage/session-store.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import type { WriterIdentity } from "../../types/shared.js";
 
@@ -37,7 +36,7 @@ describe("A9: REST API Section Reads Invariants", () => {
     ctx = await createTestServer();
     await createSampleDocument(ctx.dataCtx.rootDir);
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
   });
 
@@ -86,19 +85,20 @@ describe("A9: REST API Section Reads Invariants", () => {
 
     // Find the Overview fragment key
     let overviewKey: string | null = null;
-    session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-      const isBfh = headingPath.length === 0 && level === 0 && heading === "";
+    for (const [fragmentKey, headingPath] of session.headingPathByFragmentKey) {
+      const heading = headingPath[headingPath.length - 1] ?? "";
       if (heading === "Overview") {
-        overviewKey = fragmentKeyFromSectionFile(sectionFile, isBfh);
+        overviewKey = fragmentKey;
       }
-    });
+    }
     expect(overviewKey).not.toBeNull();
 
     // Modify content in Y.Doc (live session, not flushed to disk)
     const uniqueMarker = `LIVE_YDOC_CONTENT_${Date.now()}`;
-    session.fragments.setFragmentContent(
+    session.liveFragments.replaceFragmentString(
       overviewKey!,
       fragmentFromRemark(`## Overview\n\n${uniqueMarker}`),
+      undefined,
     );
 
     // Query the API — should get live content, NOT canonical
@@ -146,13 +146,13 @@ describe("A9: REST API Section Reads Invariants", () => {
     expect(hasOverview).toBe(true);
     expect(hasTimeline).toBe(true);
 
-    // The skeleton structure from the live session should match what the API returns
+    // The session's heading index should match what the API returns
     const skeletonHeadings: string[][] = [];
-    session.fragments.skeleton.forEachSection((_h, _l, _sf, headingPath) => {
+    for (const [, headingPath] of session.headingPathByFragmentKey) {
       skeletonHeadings.push([...headingPath]);
-    });
+    }
 
-    // API section count should match skeleton entry count
+    // API section count should match session entry count
     expect(res1.body.sections.length).toBe(skeletonHeadings.length);
 
     // Clean up

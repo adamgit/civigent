@@ -4,12 +4,16 @@ import { dirname, join } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { getHeadSha, gitExec } from "../../storage/git-repo.js";
 import { commitDirtySections } from "../../storage/auto-commit.js";
 import { ContentLayer } from "../../storage/content-layer.js";
-import { destroyAllSessions, setSessionOverlayImportCallback } from "../../crdt/ydoc-lifecycle.js";
-import { importSessionDirtyFragmentsToOverlay } from "../../storage/session-store.js";
+import {
+  destroyAllSessions,
+  setSessionOverlayImportCallback,
+  markFragmentDirty,
+  flushDirtyToOverlay,
+  findKeyForHeadingPath,
+} from "../../crdt/ydoc-lifecycle.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
 import type { WriterIdentity } from "../../types/shared.js";
 
@@ -75,13 +79,7 @@ function findFragmentKeyByHeading(
   live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
   headingName: string,
 ): string {
-  let key: string | null = null;
-  live.raw.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-    const isBfh = headingPath.length === 0 && level === 0 && heading === "";
-    if (heading === headingName) {
-      key = fragmentKeyFromSectionFile(sectionFile, isBfh);
-    }
-  });
+  const key = findKeyForHeadingPath(live, [headingName]);
   if (!key) {
     throw new Error(`Missing fragment key for heading "${headingName}"`);
   }
@@ -91,12 +89,7 @@ function findFragmentKeyByHeading(
 function findBfhFragmentKey(
   live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
 ): string {
-  let key: string | null = null;
-  live.raw.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-    if (headingPath.length === 0 && level === 0 && heading === "") {
-      key = fragmentKeyFromSectionFile(sectionFile, true);
-    }
-  });
+  const key = findKeyForHeadingPath(live, []);
   if (!key) {
     throw new Error("Missing BFH fragment key");
   }
@@ -126,7 +119,7 @@ function poisonHeadingAsBodyOnly(
   body: string,
 ): void {
   const key = findFragmentKeyByHeading(live, heading);
-  live.raw.fragments.setFragmentContent(key, fragmentFromRemark(body));
+  live.liveFragments.replaceFragmentString(key, fragmentFromRemark(body));
 }
 
 async function appendEditToHeading(
@@ -135,9 +128,10 @@ async function appendEditToHeading(
   extraLine: string,
 ): Promise<void> {
   const key = findFragmentKeyByHeading(live, heading);
-  const before = live.raw.fragments.readFullContent(key);
-  const result = live.mutateSection(writer.id, key, `${before}\n\n${extraLine}`);
-  expect(result.error).toBeUndefined();
+  const before = live.liveFragments.readFragmentString(key);
+  live.liveFragments.replaceFragmentString(key, fragmentFromRemark(`${before}\n\n${extraLine}`));
+  live.liveFragments.noteAheadOfStaged(key);
+  markFragmentDirty(live.docPath, writer.id, key);
 }
 
 describe("publish normalization scope matrix", () => {
@@ -146,7 +140,7 @@ describe("publish normalization scope matrix", () => {
   beforeEach(async () => {
     ctx = await createTempDataRoot();
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
   });
 
@@ -163,16 +157,13 @@ describe("publish normalization scope matrix", () => {
     const overviewKey = findFragmentKeyByHeading(live, "Overview");
     const timelineKey = findFragmentKeyByHeading(live, "Timeline");
 
-    const overviewBefore = live.raw.fragments.readFullContent(overviewKey);
-    const mutateResult = live.mutateSection(
-      writer.id,
-      overviewKey,
-      `${overviewBefore}\n\nOverview line added by user edit.`,
-    );
-    expect(mutateResult.error).toBeUndefined();
+    const overviewBefore = live.liveFragments.readFragmentString(overviewKey);
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark(`${overviewBefore}\n\nOverview line added by user edit.`));
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writer.id, overviewKey);
 
     // Simulate transient malformed state in an untouched section.
-    live.raw.fragments.setFragmentContent(
+    live.liveFragments.replaceFragmentString(
       timelineKey,
       fragmentFromRemark("Timeline transient body-only content that should never be published."),
     );
@@ -197,15 +188,12 @@ describe("publish normalization scope matrix", () => {
     const overviewKey = findFragmentKeyByHeading(live, "Overview");
     const timelineKey = findFragmentKeyByHeading(live, "Timeline");
 
-    const overviewBefore = live.raw.fragments.readFullContent(overviewKey);
-    const mutateResult = live.mutateSection(
-      writer.id,
-      overviewKey,
-      `${overviewBefore}\n\nOverview change that should be the only published edit.`,
-    );
-    expect(mutateResult.error).toBeUndefined();
+    const overviewBefore = live.liveFragments.readFragmentString(overviewKey);
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark(`${overviewBefore}\n\nOverview change that should be the only published edit.`));
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(THREE_SECTION_DOC_PATH, writer.id, overviewKey);
 
-    live.raw.fragments.setFragmentContent(
+    live.liveFragments.replaceFragmentString(
       timelineKey,
       fragmentFromRemark("Timeline transient body-only content from untouched section."),
     );
@@ -324,7 +312,7 @@ describe("publish normalization scope matrix", () => {
 
     await appendEditToHeading(live, "Overview", "Overview edit while BFH is malformed.");
     const bfhKey = findBfhFragmentKey(live);
-    live.raw.fragments.setFragmentContent(
+    live.liveFragments.replaceFragmentString(
       bfhKey,
       fragmentFromRemark([
         "Malformed BFH preamble.",

@@ -57,6 +57,7 @@ const MSG_RESTORE_NOTIFICATION = 0x0B;
 const MSG_MODE_TRANSITION_REQUEST = 0x0C;
 const MSG_MODE_TRANSITION_RESULT = 0x0D;
 const MSG_SESSION_OVERLAY_IMPORT_REQUEST = 0x0E;
+const MSG_UPDATE_RECEIVED = 0x0F;
 
 /** Debounce interval for ACTIVITY_PULSE messages (ms). */
 const PULSE_DEBOUNCE_MS = 2500;
@@ -85,8 +86,6 @@ export interface CrdtProviderEvents {
   onSynced?: () => void;
   onError?: (reason: string) => void;
   onIdleTimeout?: () => void;
-  /** Server is about to begin importing dirty fragments into the session overlay. */
-  onSessionOverlayImportStarted?: () => void;
   /** Server confirmed import into session overlay. Payload lists written/deleted keys. */
   onSessionOverlayImported?: (payload: SessionOverlayImportedPayload) => void;
   /** Server is about to restructure fragments — old keys will be cleared, new keys populated. */
@@ -101,6 +100,9 @@ export interface CrdtProviderEvents {
   onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
   /** Server-authoritative result for this tab's requested CRDT mode transition. */
   onModeTransitionResult?: (result: ModeTransitionResult) => void;
+  /** Server confirmed it received and applied a MSG_YJS_UPDATE.
+   *  Payload is the list of fragment keys the server touched. */
+  onUpdateReceived?: (fragmentKeys: string[]) => void;
 }
 
 // ─── Provider ──────────────────────────────────────────────────────
@@ -451,10 +453,6 @@ export class CrdtProvider {
         applyAwarenessUpdate(this.awareness, payload, "remote");
         break;
       }
-      case MSG_SESSION_OVERLAY_IMPORT_STARTED: {
-        this.events.onSessionOverlayImportStarted?.();
-        break;
-      }
       case MSG_SESSION_OVERLAY_IMPORTED: {
         // Payload: newline-separated written keys, \x00 separator, newline-separated deleted keys.
         const text = new TextDecoder().decode(payload);
@@ -523,6 +521,14 @@ export class CrdtProvider {
           return;
         }
         this.events.onModeTransitionResult?.(result);
+        break;
+      }
+      case MSG_UPDATE_RECEIVED: {
+        const text = new TextDecoder().decode(payload);
+        const fragmentKeys = text ? text.split("\n").filter(Boolean) : [];
+        if (fragmentKeys.length > 0) {
+          this.events.onUpdateReceived?.(fragmentKeys);
+        }
         break;
       }
       default:

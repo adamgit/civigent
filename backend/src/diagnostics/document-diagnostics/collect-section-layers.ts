@@ -52,7 +52,7 @@ export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Pro
         let crdt: DiagLayerStatus = { exists: false, byteLength: null, contentPreview: null, error: null };
         if (session) {
           try {
-            const md = session.fragments.readLiveFragment(fragKey);
+            const md = session.liveFragments.readFragmentString(fragKey) || null;
             if (md != null) {
               crdt = {
                 exists: true,

@@ -1,14 +1,15 @@
 /// <reference types="node" />
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import path, { dirname, join } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { getHeadSha, gitExec } from "../../storage/git-repo.js";
-import { destroyAllSessions, normalizeFragmentKeys } from "../../crdt/ydoc-lifecycle.js";
+import { destroyAllSessions, normalizeFragmentKeys, markFragmentDirty, applyAcceptResult, flushDirtyToOverlay } from "../../crdt/ydoc-lifecycle.js";
+import type { DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
-import { importSessionDirtyFragmentsToOverlay, commitSessionFilesToCanonical, cleanupSessionFiles } from "../../storage/session-store.js";
+import { CanonicalStore } from "../../storage/canonical-store.js";
+import { getContentRoot, getDataRoot, getSessionSectionsContentRoot, getSessionFragmentsRoot } from "../../storage/data-root.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import type { WriterIdentity } from "../../types/shared.js";
 
@@ -18,6 +19,23 @@ const WRITER: WriterIdentity = {
   displayName: "Targeted Normalization Writer",
   email: "targeted-normalization@test.local",
 };
+
+async function cleanupSessionOverlay(docPath: string): Promise<void> {
+  const overlayRoot = getSessionSectionsContentRoot();
+  const skelPath = path.join(overlayRoot, ...docPath.split("/"));
+  await rm(skelPath, { force: true });
+  await rm(`${skelPath}.sections`, { recursive: true, force: true });
+  const fragDir = path.join(getSessionFragmentsRoot(), docPath);
+  await rm(fragDir, { recursive: true, force: true });
+}
+
+async function commitToCanonical(writers: WriterIdentity[], docPath: string) {
+  const store = new CanonicalStore(getContentRoot(), getDataRoot());
+  const [primary] = writers;
+  const commitMsg = `human edit: ${primary.displayName}\n\nWriter: ${primary.id}`;
+  const author = { name: primary.displayName, email: primary.email ?? "human@knowledge-store.local" };
+  return store.absorbChangedSections(getSessionSectionsContentRoot(), commitMsg, author, { docPaths: [docPath] });
+}
 
 type SectionSpec = {
   heading: string;
@@ -81,31 +99,27 @@ async function openSession(rootDir: string, docPath: string, socketId = "sock-ta
 }
 
 function findFragmentKeyByHeading(
-  live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
+  live: DocSession,
   headingName: string,
 ): string {
-  let key: string | null = null;
-  live.raw.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-    const isBfh = headingPath.length === 0 && level === 0 && heading === "";
+  for (const [fragmentKey, headingPath] of live.headingPathByFragmentKey) {
+    const heading = headingPath[headingPath.length - 1] ?? "";
     if (heading === headingName) {
-      key = fragmentKeyFromSectionFile(sectionFile, isBfh);
+      return fragmentKey;
     }
-  });
-  if (!key) throw new Error(`Missing fragment key for heading "${headingName}"`);
-  return key;
+  }
+  throw new Error(`Missing fragment key for heading "${headingName}"`);
 }
 
 function findBeforeFirstHeadingKey(
-  live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
+  live: DocSession,
 ): string {
-  let key: string | null = null;
-  live.raw.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-    if (headingPath.length === 0 && level === 0 && heading === "") {
-      key = fragmentKeyFromSectionFile(sectionFile, true);
+  for (const [fragmentKey, headingPath] of live.headingPathByFragmentKey) {
+    if (headingPath.length === 0) {
+      return fragmentKey;
     }
-  });
-  if (!key) throw new Error("Missing before-first-heading key");
-  return key;
+  }
+  throw new Error("Missing before-first-heading key");
 }
 
 function countOccurrences(haystack: string, needle: string): number {
@@ -114,13 +128,55 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 async function normalizeInOrder(
-  live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
+  live: DocSession,
   order: string[],
 ): Promise<void> {
   for (const key of order) {
-    if (!live.raw.fragments.resolveEntryForFragmentKey(key)) continue;
-    await live.raw.fragments.normalizeStructure(key);
+    if (!live.headingPathByFragmentKey.has(key)) continue;
+    await normalizeStructureWithResult(live, key);
   }
+}
+
+/** Session-level equivalent of DocumentFragments.normalizeStructure that returns a result. */
+async function normalizeStructureWithResult(
+  live: DocSession,
+  fragmentKey: string,
+): Promise<{ changed: boolean; createdKeys: string[]; removedKeys: string[] }> {
+  if (!live.headingPathByFragmentKey.has(fragmentKey)) {
+    return { changed: false, createdKeys: [], removedKeys: [] };
+  }
+  live.liveFragments.noteAheadOfStaged(fragmentKey);
+  await live.recoveryBuffer.writeFragment(fragmentKey, live.liveFragments.readFragmentString(fragmentKey));
+  const scope = new Set<string>([fragmentKey]);
+  const acceptResult = await live.stagedSections.acceptLiveFragments(live.liveFragments, scope);
+  await applyAcceptResult(live, acceptResult);
+
+  const removedKeys = [...acceptResult.deletedKeys];
+  const createdKeys: string[] = [];
+  for (const remap of acceptResult.remaps) {
+    if (remap.oldKey !== fragmentKey) continue;
+    for (const k of remap.newKeys) {
+      if (k !== fragmentKey) createdKeys.push(k);
+    }
+  }
+  return {
+    changed:
+      acceptResult.structuralChange !== null
+      || acceptResult.writtenKeys.length > 0
+      || acceptResult.deletedKeys.length > 0,
+    createdKeys,
+    removedKeys,
+  };
+}
+
+/** Assemble full markdown from a session by reading all ordered fragment strings. */
+function assembleMarkdownFromSession(live: DocSession): string {
+  const parts: string[] = [];
+  for (const key of live.orderedFragmentKeys) {
+    const content = live.liveFragments.readFragmentString(key);
+    if (content) parts.push(content);
+  }
+  return parts.join("\n\n");
 }
 
 describe("targeted normalization + sequential multi-key matrix", () => {
@@ -153,24 +209,21 @@ describe("targeted normalization + sequential multi-key matrix", () => {
     const risksKey = findFragmentKeyByHeading(live, "Risks");
     const bfhKey = findBeforeFirstHeadingKey(live);
 
-    const timelineBefore = live.raw.fragments.readFullContent(timelineKey);
-    const risksBefore = live.raw.fragments.readFullContent(risksKey);
-    const bfhBefore = live.raw.fragments.readFullContent(bfhKey);
+    const timelineBefore = live.liveFragments.readFragmentString(timelineKey);
+    const risksBefore = live.liveFragments.readFragmentString(risksKey);
+    const bfhBefore = live.liveFragments.readFragmentString(bfhKey);
 
-    const overviewBefore = live.raw.fragments.readFullContent(overviewKey);
-    const mutateResult = live.mutateSection(
-      WRITER.id,
-      overviewKey,
-      `${overviewBefore}\n\nScoped overview edit.`,
-    );
-    expect(mutateResult.error).toBeUndefined();
+    const overviewBefore = live.liveFragments.readFragmentString(overviewKey);
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark(`${overviewBefore}\n\nScoped overview edit.`), undefined);
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(spec.docPath, WRITER.id, overviewKey);
 
-    await normalizeFragmentKeys(live.raw, new Set([overviewKey]));
+    await normalizeFragmentKeys(live, new Set([overviewKey]));
 
-    expect(live.raw.fragments.readFullContent(timelineKey)).toBe(timelineBefore);
-    expect(live.raw.fragments.readFullContent(risksKey)).toBe(risksBefore);
-    expect(live.raw.fragments.readFullContent(bfhKey)).toBe(bfhBefore);
-    expect(live.raw.fragments.readFullContent(overviewKey)).toContain("Scoped overview edit.");
+    expect(live.liveFragments.readFragmentString(timelineKey)).toBe(timelineBefore);
+    expect(live.liveFragments.readFragmentString(risksKey)).toBe(risksBefore);
+    expect(live.liveFragments.readFragmentString(bfhKey)).toBe(bfhBefore);
+    expect(live.liveFragments.readFragmentString(overviewKey)).toContain("Scoped overview edit.");
   });
 
   it("targeted heading deletion on first section should merge into BFH without blank-only artifact", async () => {
@@ -187,11 +240,11 @@ describe("targeted normalization + sequential multi-key matrix", () => {
     const overviewKey = findFragmentKeyByHeading(live, "Overview");
     const bfhKey = findBeforeFirstHeadingKey(live);
 
-    live.raw.fragments.setFragmentContent(overviewKey, fragmentFromRemark("Orphan body after first heading deletion."));
-    await normalizeFragmentKeys(live.raw, new Set([overviewKey]));
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark("Orphan body after first heading deletion."), undefined);
+    await normalizeFragmentKeys(live, new Set([overviewKey]));
 
-    const assembled = live.raw.fragments.assembleMarkdown();
-    const bfhContent = live.raw.fragments.readFullContent(bfhKey);
+    const assembled = assembleMarkdownFromSession(live);
+    const bfhContent = live.liveFragments.readFragmentString(bfhKey);
 
     expect(assembled).not.toContain("## Overview");
     expect(assembled).toContain("## Timeline");
@@ -213,10 +266,10 @@ describe("targeted normalization + sequential multi-key matrix", () => {
     const live = await openSession(ctx.rootDir, spec.docPath);
     const risksKey = findFragmentKeyByHeading(live, "Risks");
 
-    live.raw.fragments.setFragmentContent(risksKey, fragmentFromRemark("Orphan last-section body."));
-    await normalizeFragmentKeys(live.raw, new Set([risksKey]));
+    live.liveFragments.replaceFragmentString(risksKey, fragmentFromRemark("Orphan last-section body."), undefined);
+    await normalizeFragmentKeys(live, new Set([risksKey]));
 
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const assembled = assembleMarkdownFromSession(live);
     expect(assembled).toContain("## Overview");
     expect(assembled).toContain("## Timeline");
     expect(assembled).not.toContain("## Risks");
@@ -238,14 +291,14 @@ describe("targeted normalization + sequential multi-key matrix", () => {
     const live = await openSession(ctx.rootDir, spec.docPath);
     const apiKey = findFragmentKeyByHeading(live, "API");
     const governanceKey = findFragmentKeyByHeading(live, "Governance");
-    const governanceBefore = live.raw.fragments.readFullContent(governanceKey);
+    const governanceBefore = live.liveFragments.readFragmentString(governanceKey);
 
-    live.raw.fragments.setFragmentContent(apiKey, fragmentFromRemark("API orphan body from heading deletion."));
-    await normalizeFragmentKeys(live.raw, new Set([apiKey]));
+    live.liveFragments.replaceFragmentString(apiKey, fragmentFromRemark("API orphan body from heading deletion."), undefined);
+    await normalizeFragmentKeys(live, new Set([apiKey]));
 
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const assembled = assembleMarkdownFromSession(live);
     expect(assembled).toContain("## Governance");
-    expect(live.raw.fragments.readFullContent(governanceKey)).toBe(governanceBefore);
+    expect(live.liveFragments.readFragmentString(governanceKey)).toBe(governanceBefore);
   });
 
   it("targeted normalize + flush + commit should preserve newline boundary and avoid empty BFH artifact", async () => {
@@ -261,13 +314,13 @@ describe("targeted normalization + sequential multi-key matrix", () => {
     const live = await openSession(ctx.rootDir, spec.docPath);
     const overviewKey = findFragmentKeyByHeading(live, "Overview");
 
-    live.raw.fragments.setFragmentContent(overviewKey, fragmentFromRemark("Boundary orphan body."));
-    await normalizeFragmentKeys(live.raw, new Set([overviewKey]));
-    await importSessionDirtyFragmentsToOverlay(live.raw);
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark("Boundary orphan body."), undefined);
+    await normalizeFragmentKeys(live, new Set([overviewKey]));
+    await flushDirtyToOverlay(live);
 
-    const commitResult = await commitSessionFilesToCanonical([WRITER], spec.docPath);
-    if (commitResult.sectionsCommitted > 0) {
-      await cleanupSessionFiles(spec.docPath);
+    const commitResult = await commitToCanonical([WRITER], spec.docPath);
+    if (commitResult.changedSections.length > 0) {
+      await cleanupSessionOverlay(spec.docPath);
     }
 
     const canonical = new ContentLayer(ctx.contentDir);
@@ -312,8 +365,8 @@ describe("targeted normalization + sequential multi-key matrix", () => {
       const cKey = findFragmentKeyByHeading(live, "C");
       const dKey = findFragmentKeyByHeading(live, "D");
 
-      live.raw.fragments.setFragmentContent(bKey, fragmentFromRemark("B orphan permutation body."));
-      live.raw.fragments.setFragmentContent(cKey, fragmentFromRemark("C orphan permutation body."));
+      live.liveFragments.replaceFragmentString(bKey, fragmentFromRemark("B orphan permutation body."), undefined);
+      live.liveFragments.replaceFragmentString(cKey, fragmentFromRemark("C orphan permutation body."), undefined);
 
       const orderKind = orders[i];
       const order = orderKind === "forward"
@@ -323,7 +376,7 @@ describe("targeted normalization + sequential multi-key matrix", () => {
           : [bKey, dKey, aKey, cKey];
 
       await normalizeInOrder(live, order);
-      outputs.push(live.raw.fragments.assembleMarkdown());
+      outputs.push(assembleMarkdownFromSession(live));
     }
 
     expect(outputs[0]).toBe(outputs[1]);
@@ -344,18 +397,14 @@ describe("targeted normalization + sequential multi-key matrix", () => {
     const live = await openSession(ctx.rootDir, spec.docPath);
     const bKey = findFragmentKeyByHeading(live, "B");
 
-    live.raw.fragments.setFragmentContent(bKey, fragmentFromRemark("B orphan stale-key body."));
+    live.liveFragments.replaceFragmentString(bKey, fragmentFromRemark("B orphan stale-key body."), undefined);
 
-    const keySnapshot: string[] = [];
-    live.raw.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-      const isBfh = headingPath.length === 0 && level === 0 && heading === "";
-      keySnapshot.push(fragmentKeyFromSectionFile(sectionFile, isBfh));
-    });
+    const keySnapshot = [...live.orderedFragmentKeys];
 
-    await live.raw.fragments.normalizeStructure(bKey);
-    await normalizeFragmentKeys(live.raw, new Set(keySnapshot));
+    await normalizeStructureWithResult(live, bKey);
+    await normalizeFragmentKeys(live, new Set(keySnapshot));
 
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const assembled = assembleMarkdownFromSession(live);
     expect(assembled).toContain("## A");
     expect(assembled).toContain("## C");
   });
@@ -374,26 +423,18 @@ describe("targeted normalization + sequential multi-key matrix", () => {
     const live = await openSession(ctx.rootDir, spec.docPath);
     const bKey = findFragmentKeyByHeading(live, "B");
 
-    live.raw.fragments.setFragmentContent(bKey, fragmentFromRemark("B orphan idempotence body."));
-    const firstKeys: string[] = [];
-    live.raw.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-      const isBfh = headingPath.length === 0 && level === 0 && heading === "";
-      firstKeys.push(fragmentKeyFromSectionFile(sectionFile, isBfh));
-    });
+    live.liveFragments.replaceFragmentString(bKey, fragmentFromRemark("B orphan idempotence body."), undefined);
+    const firstKeys = [...live.orderedFragmentKeys];
     await normalizeInOrder(live, firstKeys);
-    const afterFirst = live.raw.fragments.assembleMarkdown();
+    const afterFirst = assembleMarkdownFromSession(live);
 
-    const secondKeys: string[] = [];
-    live.raw.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-      const isBfh = headingPath.length === 0 && level === 0 && heading === "";
-      secondKeys.push(fragmentKeyFromSectionFile(sectionFile, isBfh));
-    });
+    const secondKeys = [...live.orderedFragmentKeys];
 
     for (const key of secondKeys) {
-      const result = await live.raw.fragments.normalizeStructure(key);
+      const result = await normalizeStructureWithResult(live, key);
       expect(result.changed).toBe(false);
     }
-    const afterSecond = live.raw.fragments.assembleMarkdown();
+    const afterSecond = assembleMarkdownFromSession(live);
     expect(afterSecond).toBe(afterFirst);
   });
 
@@ -411,12 +452,12 @@ describe("targeted normalization + sequential multi-key matrix", () => {
     const live = await openSession(ctx.rootDir, spec.docPath);
     const timelineKey = findFragmentKeyByHeading(live, "Timeline");
     const risksKey = findFragmentKeyByHeading(live, "Risks");
-    const risksBefore = live.raw.fragments.readFullContent(risksKey);
+    const risksBefore = live.liveFragments.readFragmentString(risksKey);
 
-    live.raw.fragments.setFragmentContent(timelineKey, fragmentFromRemark("Timeline orphan for contamination guard."));
+    live.liveFragments.replaceFragmentString(timelineKey, fragmentFromRemark("Timeline orphan for contamination guard."), undefined);
     await normalizeInOrder(live, [timelineKey]);
 
-    expect(live.raw.fragments.readFullContent(risksKey)).toBe(risksBefore);
+    expect(live.liveFragments.readFragmentString(risksKey)).toBe(risksBefore);
   });
 
   it("merge content should appear exactly once under sequential heading-deletion normalization", async () => {
@@ -434,11 +475,11 @@ describe("targeted normalization + sequential multi-key matrix", () => {
     const bKey = findFragmentKeyByHeading(live, "B");
     const cKey = findFragmentKeyByHeading(live, "C");
 
-    live.raw.fragments.setFragmentContent(bKey, fragmentFromRemark("B orphan merged once."));
-    live.raw.fragments.setFragmentContent(cKey, fragmentFromRemark("C orphan merged once."));
+    live.liveFragments.replaceFragmentString(bKey, fragmentFromRemark("B orphan merged once."), undefined);
+    live.liveFragments.replaceFragmentString(cKey, fragmentFromRemark("C orphan merged once."), undefined);
     await normalizeInOrder(live, [bKey, cKey]);
 
-    const assembled = live.raw.fragments.assembleMarkdown();
+    const assembled = assembleMarkdownFromSession(live);
     expect(countOccurrences(assembled, "B orphan merged once.")).toBe(1);
     expect(countOccurrences(assembled, "C orphan merged once.")).toBe(1);
   });

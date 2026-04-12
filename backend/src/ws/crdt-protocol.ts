@@ -19,6 +19,7 @@
  *   0x0B RESTORE_NOTIFICATION  — Server → Client: document restored (JSON RestoreNotificationPayload)
  *   0x0C MODE_TRANSITION_REQUEST — Client → Server: request mode transition (JSON ModeTransitionRequest)
  *   0x0D MODE_TRANSITION_RESULT  — Server → Client: transition ack/reject (JSON ModeTransitionResult)
+ *   0x0F UPDATE_RECEIVED        — Server → Client: receipt ACK for MSG_YJS_UPDATE (newline-separated fragment keys)
  *
  * Close codes (application-level, above 4000):
  *   4001 — auth_required
@@ -56,6 +57,7 @@ export const MSG_RESTORE_NOTIFICATION = 0x0B;
 export const MSG_MODE_TRANSITION_REQUEST = 0x0C;
 export const MSG_MODE_TRANSITION_RESULT = 0x0D;
 export const MSG_SESSION_OVERLAY_IMPORT_REQUEST = 0x0E;
+export const MSG_UPDATE_RECEIVED = 0x0F;
 
 // ─── WebSocket close codes ───────────────────────────────────────
 
@@ -149,6 +151,14 @@ export function encodeModeTransitionResult(payload: ModeTransitionResult): Uint8
   msg[0] = MSG_MODE_TRANSITION_RESULT;
   msg.set(json, 1);
   return msg;
+}
+
+export function encodeUpdateReceived(fragmentKeys: string[]): Uint8Array {
+  const payload = new TextEncoder().encode(fragmentKeys.join("\n"));
+  const buf = new Uint8Array(1 + payload.length);
+  buf[0] = MSG_UPDATE_RECEIVED;
+  buf.set(payload, 1);
+  return buf;
 }
 
 /** Parse the message type and payload from a raw binary frame. Returns null for empty frames. */

@@ -8,8 +8,10 @@
  *   - Reconstructed from canonical + sessions/sections/ overlay on reconnect
  */
 
+import path from "node:path";
+import { writeFile, readFile, mkdir, readdir, rm } from "node:fs/promises";
 import * as Y from "yjs";
-import { getContentRoot, getSessionSectionsContentRoot } from "../storage/data-root.js";
+import { getContentRoot, getSessionSectionsContentRoot, getSessionAuthorsRoot } from "../storage/data-root.js";
 import type {
   WriterIdentity,
   WsServerEvent,
@@ -17,13 +19,19 @@ import type {
   DocSessionId,
 } from "../types/shared.js";
 import type { PreemptiveCommitResult } from "../storage/auto-commit.js";
-import { DocumentFragments, SERVER_INJECTION_ORIGIN } from "./document-fragments.js";
-import type { LiveFragmentStringsStore } from "./live-fragment-strings-store.js";
-import type { RawFragmentRecoveryBuffer } from "../storage/raw-fragment-recovery-buffer.js";
-import type { AcceptResult, StagedSectionsStore } from "../storage/staged-sections-store.js";
+import { LiveFragmentStringsStore, SERVER_INJECTION_ORIGIN } from "./live-fragment-strings-store.js";
+import { RawFragmentRecoveryBuffer } from "../storage/raw-fragment-recovery-buffer.js";
+import { StagedSectionsStore, type AcceptResult } from "../storage/staged-sections-store.js";
 import { PresenceManager } from "./presence-manager.js";
 import { SectionRef } from "../domain/section-ref.js";
-import { EMPTY_BODY, type FragmentContent } from "../storage/section-formatting.js";
+import {
+  EMPTY_BODY,
+  buildFragmentContent as buildFragmentContentFn,
+  type FragmentContent,
+} from "../storage/section-formatting.js";
+import { fragmentKeyFromSectionFile } from "./ydoc-fragments.js";
+
+export { SERVER_INJECTION_ORIGIN };
 
 // ─── Session state machine ───────────────────────────────────────
 
@@ -57,15 +65,20 @@ export interface HolderEntry {
 export interface DocSession {
   /** Explicit lifecycle state. Drives entry guards and transition assertions. */
   state: SessionState;
-  fragments: DocumentFragments;                // Y.Doc + skeleton paired together
-  /** Store references — same object identities held inside `fragments`, surfaced
-   *  directly on the session so slimmed DocSession logic can reach them without
-   *  going through DocumentFragments. During the transition they alias
-   *  `fragments.liveStrings`, `fragments.rawRecovery`, `fragments.stagedSections`. */
+  /** The Y.Doc instance backing this session's CRDT state. */
+  ydoc: Y.Doc;
+  /** Backend-boundary-1 store: Y.Doc ↔ live fragment string reads/writes. */
   liveFragments: LiveFragmentStringsStore;
   recoveryBuffer: RawFragmentRecoveryBuffer;
   stagedSections: StagedSectionsStore;
   docPath: string;
+  /** Bidirectional index: fragment key → heading path. Authoritative after BNATIVE.10.
+   *  Built at acquisition from skeleton walk, updated from AcceptResult.updatedIndex. */
+  headingPathByFragmentKey: Map<string, string[]>;
+  /** Bidirectional index: heading-path key (joined with ">>") → fragment key. */
+  fragmentKeyByHeadingPathKey: Map<string, string>;
+  /** Ordered fragment keys matching the document's section order. */
+  orderedFragmentKeys: string[];
   /** All connected participants (editors + observers) keyed by writerId. */
   holders: Map<string, HolderEntry>;
   /** Server-authoritative section focus. Set from SECTION_FOCUS binary messages in crdt-sync.ts. */
@@ -90,10 +103,6 @@ export interface DocSession {
   baseHead: string;                        // Git HEAD when session was created (updated on commit)
   lastWriterId: string;                    // Last writer who edited
   flushTimer: ReturnType<typeof setTimeout> | null;
-  /** Fragment keys touched by the most recent Y.Doc transaction(s).
-   *  Populated by an afterTransaction listener, consumed by the no-focus
-   *  dirty-tracking path in crdt-sync.ts, then cleared. */
-  lastTouchedFragments: Set<string>;
   /** All writers who sent at least one MSG_ACTIVITY_PULSE during this session.
    *  Accumulated by the coordinator; used to build the git co-author list at commit time. */
   contributors: Map<string, WriterIdentity>;
@@ -228,7 +237,7 @@ export async function acquireDocSession(
     return session;
   }
 
-  // Slow path: explicit DocumentFragments construction sequence (item 341).
+  // Slow path: explicit store construction sequence.
   // Store the promise BEFORE the first await so any concurrent caller hits
   // the fast path above instead of spawning a second construction.
   //
@@ -236,8 +245,8 @@ export async function acquireDocSession(
   //   1. Load mutable skeleton from disk (overlay → canonical resolution)
   //   2. Choose per-section startup content from runtime sources
   //      (raw fragments are freshest; fall back to overlay/canonical body)
-  //   3. Construct DocumentFragments with empty Y.Doc + the loaded skeleton
-  //   4. Bulk-apply chosen content via replaceFragmentsFromProvidedContent
+  //   3. Construct LiveFragmentStringsStore + RawFragmentRecoveryBuffer + StagedSectionsStore
+  //   4. Bulk-apply chosen content via replaceFragmentStrings
   //   5. Normalize any sections that were sourced from raw fragments
   //
   // Crash recovery (orphaned bodies, Recovered edits salvage) is INTENTIONALLY
@@ -247,10 +256,9 @@ export async function acquireDocSession(
   // crash-recovery behavior on reconnect.
   const creationPromise = (async (): Promise<DocSession> => {
     // Lazy-imported to avoid circular dependencies
-    // (session-store ↔ ydoc-lifecycle, content-layer ↔ session-store).
+    // (content-layer ↔ document-skeleton).
     const { DocumentSkeletonInternal } = await import("../storage/document-skeleton.js");
     const { OverlayContentLayer } = await import("../storage/content-layer.js");
-    const { listRawFragments, readRawFragment } = await import("../storage/session-store.js");
     const { fragmentFromDisk } = await import("../storage/section-formatting.js");
 
     const canonicalRoot = getContentRoot();
@@ -259,17 +267,33 @@ export async function acquireDocSession(
 
     const skeleton = await DocumentSkeletonInternal.fromDisk(docPath, overlayRoot, canonicalRoot);
     const ydoc = new Y.Doc();
-    const fragments = new DocumentFragments(ydoc, skeleton, docPath);
+
+    // BNATIVE.9/10: derive orderedKeys + bidirectional index from skeleton walk.
+    const orderedKeys: string[] = [];
+    const headingPathByFragmentKey = new Map<string, string[]>();
+    const fragmentKeyByHeadingPathKey = new Map<string, string>();
+    skeleton.forEachSection((_heading, _level, sectionFile, headingPath) => {
+      const isBfh = headingPath.length === 0;
+      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBfh);
+      orderedKeys.push(fragmentKey);
+      const hp = [...headingPath];
+      headingPathByFragmentKey.set(fragmentKey, hp);
+      fragmentKeyByHeadingPathKey.set(SectionRef.headingKey(hp), fragmentKey);
+    });
+
+    const liveStrings = new LiveFragmentStringsStore(ydoc, orderedKeys, docPath);
+    const rawRecovery = new RawFragmentRecoveryBuffer(docPath);
+    const stagedSections = new StagedSectionsStore(docPath);
 
     if (!skeleton.areSkeletonRootsEmpty) {
       // Read raw fragment files (sessions/fragments/) — crash-safe heading+body
       // format. These take precedence over body files when present.
-      const rawFiles = await listRawFragments(docPath);
-      const rawFileSet = new Set(rawFiles);
+      const rawFragmentKeys = await rawRecovery.listFragmentKeys();
+      const rawKeySet = new Set(rawFragmentKeys);
       const rawContentMap = new Map<string, string>();
-      for (const rawFile of rawFiles) {
-        const content = await readRawFragment(docPath, rawFile);
-        if (content !== null) rawContentMap.set(rawFile, content);
+      for (const rawKey of rawFragmentKeys) {
+        const content = await rawRecovery.readFragment(rawKey);
+        if (content !== null) rawContentMap.set(rawKey, content);
       }
 
       // Bulk-read overlay/canonical body content for the fall-back case
@@ -281,69 +305,71 @@ export async function acquireDocSession(
       const rawSourcedKeys: string[] = [];
 
       skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-        const fragmentKey = fragments.requireFragmentKeyForHeadingPath([...headingPath]);
+        const hpKey = SectionRef.headingKey([...headingPath]);
+        const fragmentKey = fragmentKeyByHeadingPathKey.get(hpKey);
+        if (!fragmentKey) {
+          throw new Error(`No fragment key for headingPath=[${headingPath.join(" > ")}] in "${docPath}".`);
+        }
 
-        if (rawFileSet.has(sectionFile)) {
+        if (rawKeySet.has(fragmentKey)) {
           // Raw fragment already contains heading + body — pass through
-          contentMap.set(fragmentKey, fragmentFromDisk(rawContentMap.get(sectionFile) ?? ""));
+          contentMap.set(fragmentKey, fragmentFromDisk(rawContentMap.get(fragmentKey) ?? ""));
           rawSourcedKeys.push(fragmentKey);
         } else {
           // Fall back to body-only file content
           const headingKey = SectionRef.headingKey([...headingPath]);
           const bodyContent = bulkContent?.get(headingKey) ?? EMPTY_BODY;
-          contentMap.set(fragmentKey, DocumentFragments.buildFragmentContent(bodyContent, level, heading));
+          contentMap.set(fragmentKey, buildFragmentContentFn(bodyContent, level, heading));
         }
       });
 
-      // Single explicit multi-fragment apply step.
-      fragments.replaceFragmentsFromProvidedContent(contentMap);
+      // Single explicit multi-fragment apply step. Use SERVER_INJECTION_ORIGIN
+      // so the afterTransaction listener doesn't mark all keys ahead-of-staged
+      // from the initial population — only subsequent client edits should be dirty.
+      liveStrings.replaceFragmentStrings(contentMap, SERVER_INJECTION_ORIGIN);
 
       // Sections sourced from raw fragments may carry structural drift
       // (level/heading changes that the on-disk normalizer didn't run yet).
       // Normalize them now so the live Y.Doc matches the skeleton invariants.
       for (const fragmentKey of rawSourcedKeys) {
-        await fragments.normalizeStructure(fragmentKey);
+        liveStrings.noteAheadOfStaged(fragmentKey);
+        const rawMarkdown = liveStrings.readFragmentString(fragmentKey);
+        await rawRecovery.writeFragment(fragmentKey, rawMarkdown);
+        const scope = new Set<string>([fragmentKey]);
+        const acceptResult = await stagedSections.acceptLiveFragments(liveStrings, scope);
+        if (acceptResult.structuralChange) {
+          liveStrings.applyStructuralChange(acceptResult.structuralChange);
+          if (acceptResult.updatedIndex) {
+            headingPathByFragmentKey.clear();
+            fragmentKeyByHeadingPathKey.clear();
+            orderedKeys.length = 0;
+            for (const entry of acceptResult.updatedIndex) {
+              const hp = [...entry.headingPath];
+              headingPathByFragmentKey.set(entry.fragmentKey, hp);
+              fragmentKeyByHeadingPathKey.set(SectionRef.headingKey(hp), entry.fragmentKey);
+              orderedKeys.push(entry.fragmentKey);
+            }
+          }
+          for (const removedKey of acceptResult.structuralChange.removedKeys) {
+            await rawRecovery.deleteFragment(removedKey);
+          }
+          for (const [reloadKey, content] of acceptResult.structuralChange.contentByKey) {
+            await rawRecovery.writeFragment(reloadKey, content);
+          }
+        }
       }
     }
-
-    const touchedSet = new Set<string>();
-
-    // Build a reverse lookup: AbstractType → fragment key name.
-    // Updated lazily when share map grows (new fragments added by normalization).
-    let reverseMap = new Map<object, string>();
-    let lastShareSize = 0;
-
-    function rebuildReverseMap(): void {
-      reverseMap = new Map();
-      for (const [name, shared] of fragments.ydoc.share) {
-        reverseMap.set(shared, name);
-      }
-      lastShareSize = fragments.ydoc.share.size;
-    }
-
-    // Register afterTransaction listener to track which fragments were modified.
-    // This avoids the O(N) mark-all-dirty cascade when no focus is set.
-    fragments.ydoc.on("afterTransaction", (txn: import("yjs").Transaction) => {
-      // Server-injected updates (stamped with SERVER_INJECTION_ORIGIN) must not
-      // be attributed as user edits — skip dirty tracking entirely.
-      if (txn.origin === SERVER_INJECTION_ORIGIN) return;
-      if (fragments.ydoc.share.size !== lastShareSize) rebuildReverseMap();
-      for (const [type] of txn.changed) {
-        // Walk up to the root shared type
-        let current: any = type;
-        while (current._item?.parent) current = current._item.parent;
-        const name = reverseMap.get(current);
-        if (name) touchedSet.add(name);
-      }
-    });
 
     const newSession: DocSession = {
       state: "acquiring",
-      fragments,
-      liveFragments: fragments.liveStrings,
-      recoveryBuffer: fragments.rawRecovery,
-      stagedSections: fragments.stagedSections,
+      ydoc,
+      liveFragments: liveStrings,
+      recoveryBuffer: rawRecovery,
+      stagedSections: stagedSections,
       docPath,
+      headingPathByFragmentKey,
+      fragmentKeyByHeadingPathKey,
+      orderedFragmentKeys: orderedKeys,
       holders: new Map(),   // Callers add themselves after awaiting the promise
       presenceManager: new PresenceManager(),
       perUserDirty: new Map(),
@@ -356,7 +382,6 @@ export async function acquireDocSession(
       baseHead,
       lastWriterId: writerId,
       flushTimer: null,
-      lastTouchedFragments: touchedSet,
       contributors: new Map(),
       docSessionId: crypto.randomUUID(),
     };
@@ -431,18 +456,23 @@ export async function releaseDocSession(
 
     // Capture contributors before session is destroyed.
     const contributors = Array.from(session.contributors.values());
-    // Snapshot scope before import: import clears DocumentFragments.dirtyKeys.
-    const normalizeScope = collectTouchedFragmentKeysForNormalization(session);
-
-    // Import to session overlay before destroying (run even if the inflight import completed above —
-    // new dirty fragments may have been marked between the inflight flush and this point).
-    if (_sessionOverlayImportCallback) {
-      await _sessionOverlayImportCallback(session);
-    }
 
     try {
-      // Normalize only fragments touched in this session.
-      await normalizeFragmentKeys(session, normalizeScope);
+      // Session-end store boundary pattern: single accept with scoped dirty keys
+      // that both flushes body-only changes and runs structural normalization.
+      // Replaces the legacy two-step (import callback + normalizeFragmentKeys).
+      //
+      // Scope to dirty keys only — normalizing untouched sections can corrupt
+      // unrelated content with malformed headings (Bug A).
+      const normalizeScope = collectTouchedFragmentKeysForNormalization(session);
+      for (const key of normalizeScope) {
+        session.liveFragments.noteAheadOfStaged(key);
+      }
+      if (normalizeScope.size > 0) {
+        await session.recoveryBuffer.snapshotFromLive(session.liveFragments, normalizeScope);
+        const result = await session.stagedSections.acceptLiveFragments(session.liveFragments, normalizeScope);
+        await applyAcceptResult(session, result);
+      }
     } finally {
       // Always clean up timers and destroy Y.Doc, even if normalization fails
       if (session.idleTimeoutTimer) {
@@ -451,7 +481,7 @@ export async function releaseDocSession(
 
       // "committing" → "ended": teardown complete.
       session.state = "ended";
-      session.fragments.ydoc.destroy();
+      session.ydoc.destroy();
       sessions.delete(docPath);
       sessionPromises.delete(docPath);
     }
@@ -486,59 +516,75 @@ export function updateSectionFocus(
 // ─── Fragment key ↔ heading path lookup ──────────────────────────
 
 /**
- * Session-level bidirectional index accessors. These delegate to the
- * DocumentFragments-owned index during the transition; once DocSession owns
- * its own index (built from skeleton at acquisition, updated from
- * `result.updatedIndex` after structural changes), these will read from it
- * directly without going through `session.fragments`.
+ * Session-level bidirectional index accessors. Read directly from DocSession's
+ * own index (built from skeleton at acquisition, updated from
+ * AcceptResult.updatedIndex after structural changes).
  */
 export function findKeyForHeadingPath(session: DocSession, headingPath: string[]): string | null {
-  return session.fragments.findFragmentKeyForHeadingPath(headingPath);
+  return session.fragmentKeyByHeadingPathKey.get(SectionRef.headingKey([...headingPath])) ?? null;
 }
 
 export function requireKeyForHeadingPath(session: DocSession, headingPath: string[]): string {
-  return session.fragments.requireFragmentKeyForHeadingPath(headingPath);
+  const key = findKeyForHeadingPath(session, headingPath);
+  if (key) return key;
+  throw new Error(
+    `No live fragment key exists for headingPath=[${headingPath.join(" > ")}] in "${session.docPath}".`,
+  );
 }
 
 export function findHeadingPathForKey(session: DocSession, fragmentKey: string): string[] | null {
-  return session.fragments.findHeadingPathForFragmentKey(fragmentKey);
+  const hp = session.headingPathByFragmentKey.get(fragmentKey);
+  return hp ? [...hp] : null;
 }
 
 export function requireHeadingPathForKey(session: DocSession, fragmentKey: string): string[] {
-  return session.fragments.requireHeadingPathForFragmentKey(fragmentKey);
+  const hp = findHeadingPathForKey(session, fragmentKey);
+  if (hp) return hp;
+  throw new Error(
+    `No live heading path exists for fragmentKey="${fragmentKey}" in "${session.docPath}".`,
+  );
 }
 
 /**
  * Apply the result of `stagedSections.acceptLiveFragments(...)` back onto
- * the DocSession.
- *
- * During the transition, the legacy delegate bound inside DocumentFragments
- * already mutates the Y.Doc inline via `importDirtyFragmentsToSessionOverlay`
- * → `reconcileLiveFragmentsFromDetailedResult` and rebuilds the session index
- * through `DocumentFragments.rebuildIndexFromSkeleton()`. It therefore always
- * returns `structuralChange: null` and `updatedIndex: null`, and this helper
- * is effectively a no-op for that path.
- *
- * Once the native (non-legacy) acceptance path lands, a non-null
- * `structuralChange` will drive `liveFragments.applyStructuralChange(...)`
- * and a non-null `updatedIndex` will replace the session's bidirectional
- * fragment-key ↔ heading-path index. Broadcast of structural remaps is
- * separately driven by the normalize-broadcast callback during the
- * transition; this helper does not duplicate that work.
+ * the DocSession: reconcile the live Y.Doc, rebuild DocSession's index from
+ * updatedIndex, rebuild DocSession's bidirectional heading-path index,
+ * update raw recovery files for structural changes, and broadcast remaps.
  */
-export function applyAcceptResult(session: DocSession, result: AcceptResult): void {
+export async function applyAcceptResult(
+  session: DocSession,
+  result: AcceptResult,
+): Promise<void> {
   if (result.structuralChange) {
+    // (1) Reconcile the live Y.Doc with the new fragment layout.
     session.liveFragments.applyStructuralChange(result.structuralChange);
+
+    // (2) Rebuild DocSession's authoritative index from updatedIndex.
+    if (result.updatedIndex) {
+      session.headingPathByFragmentKey.clear();
+      session.fragmentKeyByHeadingPathKey.clear();
+      session.orderedFragmentKeys = [];
+      for (const entry of result.updatedIndex) {
+        const hp = [...entry.headingPath];
+        session.headingPathByFragmentKey.set(entry.fragmentKey, hp);
+        session.fragmentKeyByHeadingPathKey.set(SectionRef.headingKey(hp), entry.fragmentKey);
+        session.orderedFragmentKeys.push(entry.fragmentKey);
+      }
+    }
+
+    // (3) Update raw recovery: delete files for removed keys, rewrite for
+    // restructured content so crash recovery sees the current fragment layout.
+    for (const removedKey of result.structuralChange.removedKeys) {
+      await session.recoveryBuffer.deleteFragment(removedKey);
+    }
+    for (const [reloadKey, content] of result.structuralChange.contentByKey) {
+      await session.recoveryBuffer.writeFragment(reloadKey, content);
+    }
   }
-  // `updatedIndex` is authoritative once the native path produces it. The
-  // legacy delegate leaves this null; the session's index is rebuilt by
-  // DocumentFragments.rebuildIndexFromSkeleton() during the legacy
-  // reconciliation pass, so no action is required here in that case.
-  if (result.updatedIndex) {
-    // Transitional placeholder: the session-owned index lives in
-    // DocumentFragments until B5.4 moves it onto DocSession directly.
-    // Once that happens, replace the two maps from `result.updatedIndex`
-    // here synchronously.
+
+  // (4) Broadcast structural remaps to connected clients.
+  if (_normalizeBroadcast && result.remaps.length > 0) {
+    _normalizeBroadcast(session.docPath, [...result.remaps]);
   }
 }
 
@@ -626,30 +672,29 @@ export async function injectAfterCommit(
   const session = lookupDocSession(docPath);
   if (!session) return;
 
-  // Lazy-import to avoid circular dependency (content-layer → session-store → ydoc-lifecycle)
+  // Lazy-import to avoid circular dependency (content-layer → ydoc-lifecycle)
   const { ContentLayer } = await import("../storage/content-layer.js");
   // getContentRoot() is the canonical root — reads just-committed canonical content,
   // not the session overlay (getSessionSectionsContentRoot would read the in-progress overlay).
   const layer = new ContentLayer(getContentRoot());
 
-  const svBefore = Y.encodeStateVector(session.fragments.ydoc);
+  const svBefore = Y.encodeStateVector(session.ydoc);
 
   // Caller-owned source policy (item 345): runtime code reads canonical content,
   // builds the full FragmentContent (heading + body for non-root, body for root),
-  // and delegates to the policy-free `replaceFragmentFromProvidedContent(...)`
-  // primitive on DocumentFragments. No source-flavored wrapper is involved.
+  // and delegates to the policy-free `replaceFragmentString(...)` on the live store.
   for (const headingPath of headingPaths) {
-    const fragmentKey = session.fragments.requireFragmentKeyForHeadingPath(headingPath);
-    const entry = session.fragments.resolveEntryForFragmentKey(fragmentKey);
-    if (!entry) {
-      throw new Error(`Fragment mapping drift in ${docPath}: no live entry for headingPath=[${headingPath.join(" > ")}].`);
-    }
+    const fragmentKey = requireKeyForHeadingPath(session, headingPath);
+    // Level and heading are derivable from the heading path:
+    // level = path length (0 for BFH, path.length for sections), heading = last element.
+    const level = headingPath.length;
+    const heading = headingPath.length > 0 ? headingPath[headingPath.length - 1] : "";
     const body = await layer.readSection(new SectionRef(docPath, headingPath));
-    const content = DocumentFragments.buildFragmentContent(body, entry.level, entry.heading);
+    const content = buildFragmentContentFn(body, level, heading);
     session.liveFragments.replaceFragmentString(fragmentKey, content, SERVER_INJECTION_ORIGIN);
   }
 
-  const update = Y.encodeStateAsUpdate(session.fragments.ydoc, svBefore);
+  const update = Y.encodeStateAsUpdate(session.ydoc, svBefore);
   if (update.length > 0) {
     if (_yjsUpdateBroadcast) {
       _yjsUpdateBroadcast(docPath, update);
@@ -701,14 +746,14 @@ export function joinSession(
 
   // Step 1: Push full Y.Doc state to the joining socket so it receives all content immediately.
   // Pre-connected observers whose SYNC_STEP_1 was dropped (no session existed yet) depend on this.
-  const fullUpdate = Y.encodeStateAsUpdate(session.fragments.ydoc);
+  const fullUpdate = Y.encodeStateAsUpdate(session.ydoc);
   const syncStep2 = new Uint8Array(1 + fullUpdate.length);
   syncStep2[0] = MSG_SYNC_STEP_2_BYTE;
   syncStep2.set(fullUpdate, 1);
   sendRaw(syncStep2);
 
   // Step 2: Send SYNC_STEP_1 so the client can contribute any local state the server lacks
-  const sv = Y.encodeStateVector(session.fragments.ydoc);
+  const sv = Y.encodeStateVector(session.ydoc);
   const syncStep1 = new Uint8Array(1 + sv.length);
   syncStep1[0] = MSG_SYNC_STEP_1_BYTE;
   syncStep1.set(sv, 1);
@@ -790,14 +835,94 @@ export function removeObserverHolder(docPath: string, writerId: string, socketId
 }
 
 /**
+ * Flush all ahead-of-staged keys through the store boundary pipeline:
+ * raw snapshot → accept → applyAcceptResult. Used by tests and perf
+ * benchmarks. Production flush is in the coordinator (adds two-tier
+ * structural-cleanliness gating and WebSocket broadcast).
+ */
+export async function flushDirtyToOverlay(session: DocSession): Promise<void> {
+  const scope = session.liveFragments.getAheadOfStagedKeys();
+  if (scope.size === 0) return;
+  await session.recoveryBuffer.snapshotFromLive(session.liveFragments, scope);
+  const result = await session.stagedSections.acceptLiveFragments(session.liveFragments, scope);
+  await applyAcceptResult(session, result);
+  await persistAuthorMetadata(session);
+}
+
+/**
+ * Persist per-writer dirty-state to sessions/authors/{writerId}.json so that
+ * the "unpublished changes" UI survives server restarts. Written on every
+ * flush — cheap (small JSON), avoids a separate timer.
+ */
+export async function persistAuthorMetadata(session: DocSession): Promise<void> {
+  const authorsRoot = getSessionAuthorsRoot();
+  await mkdir(authorsRoot, { recursive: true });
+  for (const [writerId, dirtyKeys] of session.perUserDirty) {
+    if (dirtyKeys.size === 0) continue;
+    const dirtySections: Array<{ docPath: string; headingPath: string[]; firstChangedAt: string }> = [];
+    for (const fragmentKey of dirtyKeys) {
+      const hp = session.headingPathByFragmentKey.get(fragmentKey);
+      if (!hp) continue;
+      const ts = session.fragmentFirstActivity.get(fragmentKey);
+      dirtySections.push({
+        docPath: session.docPath,
+        headingPath: hp,
+        firstChangedAt: ts ? new Date(ts).toISOString() : new Date().toISOString(),
+      });
+    }
+    const data = { writerId, dirtySections };
+    await writeFile(path.join(authorsRoot, `${writerId}.json`), JSON.stringify(data, null, 2), "utf8");
+  }
+}
+
+/**
+ * Clean up author metadata after publish or session end.
+ *
+ * Per-docPath variant: filter out entries for the given docPath from each
+ * author JSON file, deleting the file if no entries remain.
+ * Blanket variant (no docPath): wipe the entire sessions/authors/ directory.
+ */
+export async function cleanupAuthorMetadata(docPath?: string): Promise<void> {
+  const authorsRoot = getSessionAuthorsRoot();
+  if (!docPath) {
+    try { await rm(authorsRoot, { recursive: true, force: true }); } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    return;
+  }
+  let authorFiles: string[];
+  try { authorFiles = await readdir(authorsRoot); } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw err;
+  }
+  for (const fileName of authorFiles) {
+    if (!fileName.endsWith(".json")) continue;
+    const authorFilePath = path.join(authorsRoot, fileName);
+    try {
+      const raw = await readFile(authorFilePath, "utf8");
+      const data = JSON.parse(raw) as { writerId: string; dirtySections: Array<{ docPath: string }> };
+      const remaining = data.dirtySections.filter((s) => s.docPath !== docPath);
+      if (remaining.length === 0) {
+        await rm(authorFilePath, { force: true });
+      } else if (remaining.length < data.dirtySections.length) {
+        await writeFile(authorFilePath, JSON.stringify({ ...data, dirtySections: remaining }, null, 2), "utf8");
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+  }
+}
+
+/**
  * Collect fragment keys that should be normalized at session end/shutdown.
  *
- * Includes keys from both tracking sources:
- * - `fragments.dirtyKeys`: dirty since last flush (cleared by flush)
- * - `perUserDirty`: session-scoped attribution, survives flushes
+ * Uses `perUserDirty` as the single dirty-tracking source (BNATIVE.10).
+ * `fragments.dirtyKeys` is eliminated — `liveFragments.aheadOfStagedKeys`
+ * handles the debounced flush pipeline separately, and `perUserDirty` is the
+ * session-scoped attribution that drives normalization scope.
  */
 export function collectTouchedFragmentKeysForNormalization(session: DocSession): Set<string> {
-  const keys = new Set<string>(session.fragments.dirtyKeys);
+  const keys = new Set<string>();
   for (const dirtySet of session.perUserDirty.values()) {
     for (const key of dirtySet) {
       keys.add(key);
@@ -809,19 +934,20 @@ export function collectTouchedFragmentKeysForNormalization(session: DocSession):
 /**
  * Normalize all fragments in a session that have embedded headings.
  * Called on disconnect (after flush) and shutdown.
+ *
+ * Uses the store boundary pattern: mark ahead-of-staged → raw snapshot →
+ * accept into staging → apply accept result.
  */
 export async function normalizeAllFragments(session: DocSession): Promise<void> {
-  const fragments = session.fragments;
-
-  // Collect fragment keys first (normalization may mutate the skeleton)
-  const keys = fragments.getFragmentKeys();
-
-  for (const fragmentKey of keys) {
-    const broadcastOpts = _normalizeBroadcast
-      ? { broadcastStructureChange: (info: Array<{ oldKey: string; newKeys: string[] }>) => _normalizeBroadcast!(session.docPath, info) }
-      : undefined;
-    await fragments.normalizeStructure(fragmentKey, broadcastOpts);
+  // Snapshot keys upfront — normalization may mutate the key set.
+  const keys = [...session.orderedFragmentKeys];
+  for (const key of keys) {
+    session.liveFragments.noteAheadOfStaged(key);
   }
+  const scope = new Set(keys);
+  await session.recoveryBuffer.snapshotFromLive(session.liveFragments, scope);
+  const result = await session.stagedSections.acceptLiveFragments(session.liveFragments, scope);
+  await applyAcceptResult(session, result);
 }
 
 /**
@@ -829,35 +955,45 @@ export async function normalizeAllFragments(session: DocSession): Promise<void> 
  * Used by scoped publish flows so unrelated sections are not touched.
  *
  * Skips keys whose entry no longer exists in the skeleton — normalization can
- * remove keys mid-loop (e.g., heading deletion merges into a sibling), and a
- * subsequent iteration over the original snapshot would otherwise hit a stale key.
+ * remove keys mid-loop (e.g., heading deletion merges into a sibling).
+ *
+ * Uses the store boundary pattern: mark ahead-of-staged → raw snapshot →
+ * accept into staging → apply accept result.
  */
 export async function normalizeFragmentKeys(
   session: DocSession,
   fragmentKeys: Set<string>,
 ): Promise<void> {
-  const fragments = session.fragments;
-
-  for (const fragmentKey of fragmentKeys) {
-    if (!fragments.resolveEntryForFragmentKey(fragmentKey)) continue;
-    const broadcastOpts = _normalizeBroadcast
-      ? { broadcastStructureChange: (info: Array<{ oldKey: string; newKeys: string[] }>) => _normalizeBroadcast!(session.docPath, info) }
-      : undefined;
-    await fragments.normalizeStructure(fragmentKey, broadcastOpts);
+  // Filter to keys that still exist in the session index.
+  const validKeys = new Set<string>();
+  for (const key of fragmentKeys) {
+    if (session.headingPathByFragmentKey.has(key)) {
+      session.liveFragments.noteAheadOfStaged(key);
+      validKeys.add(key);
+    }
   }
+  if (validKeys.size === 0) return;
+
+  await session.recoveryBuffer.snapshotFromLive(session.liveFragments, validKeys);
+  const result = await session.stagedSections.acceptLiveFragments(session.liveFragments, validKeys);
+  await applyAcceptResult(session, result);
 }
 
 /**
  * Normalize a single fragment by key. Called on focus change (left fragment).
+ *
+ * Uses the store boundary pattern: mark ahead-of-staged → raw snapshot →
+ * accept into staging → apply accept result.
  */
 export async function normalizeFragment(docPath: string, fragmentKey: string): Promise<void> {
   const session = sessions.get(docPath);
   if (!session) return;
 
-  const broadcastOpts = _normalizeBroadcast
-    ? { broadcastStructureChange: (info: Array<{ oldKey: string; newKeys: string[] }>) => _normalizeBroadcast!(docPath, info) }
-    : undefined;
-  await session.fragments.normalizeStructure(fragmentKey, broadcastOpts);
+  session.liveFragments.noteAheadOfStaged(fragmentKey);
+  const scope = new Set([fragmentKey]);
+  await session.recoveryBuffer.snapshotFromLive(session.liveFragments, scope);
+  const result = await session.stagedSections.acceptLiveFragments(session.liveFragments, scope);
+  await applyAcceptResult(session, result);
 }
 
 // ─── Debounced flush ─────────────────────────────────────────────
@@ -1057,7 +1193,7 @@ export function destroyAllSessions(): void {
   for (const session of sessions.values()) {
     if (session.idleTimeoutTimer) clearTimeout(session.idleTimeoutTimer);
     if (session.flushTimer) clearTimeout(session.flushTimer);
-    session.fragments.ydoc.destroy();
+    session.ydoc.destroy();
   }
   sessions.clear();
   sessionPromises.clear();
@@ -1070,15 +1206,18 @@ export async function flushAndDestroyAll(): Promise<void> {
   for (const session of sessions.values()) {
     // Cancel pending debounce — we flush immediately
     if (session.flushTimer) clearTimeout(session.flushTimer);
-    // Snapshot scope before flush: flush clears DocumentFragments.dirtyKeys.
+    // Session-end store boundary: single accept with scoped dirty keys.
     const normalizeScope = collectTouchedFragmentKeysForNormalization(session);
-    if (_sessionOverlayImportCallback) {
-      await _sessionOverlayImportCallback(session);
+    for (const key of normalizeScope) {
+      session.liveFragments.noteAheadOfStaged(key);
     }
-    // Normalize after flush, before destroy
-    await normalizeFragmentKeys(session, normalizeScope);
+    if (normalizeScope.size > 0) {
+      await session.recoveryBuffer.snapshotFromLive(session.liveFragments, normalizeScope);
+      const result = await session.stagedSections.acceptLiveFragments(session.liveFragments, normalizeScope);
+      await applyAcceptResult(session, result);
+    }
     if (session.idleTimeoutTimer) clearTimeout(session.idleTimeoutTimer);
-    session.fragments.ydoc.destroy();
+    session.ydoc.destroy();
   }
   sessions.clear();
   sessionPromises.clear();
@@ -1096,7 +1235,7 @@ export async function getSessionFileMtime(sectionKey: string): Promise<number | 
   // Check in-memory session first
   const session = sessions.get(docPath);
   if (session) {
-    const targetFragmentKey = session.fragments.findFragmentKeyForHeadingPath(headingPath);
+    const targetFragmentKey = findKeyForHeadingPath(session, headingPath);
     if (targetFragmentKey) {
       const fragmentTime = session.fragmentLastActivity.get(targetFragmentKey);
       if (fragmentTime != null) {
@@ -1156,7 +1295,7 @@ export function getPendingRestoreNotification(
  *      available the instant clients begin reconnecting).
  *   2. Broadcast close code 4022 to all connected sockets (via callback).
  *   3. Destroy the live session synchronously — data was already committed by
- *      preemptiveImportNormalizeAndCommit; no further import/commit is needed.
+ *      the inline pre-commit at the call site; no further import/commit is needed.
  */
 export async function invalidateSessionForRestore(
   docPath: string,

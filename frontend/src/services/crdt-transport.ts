@@ -72,8 +72,8 @@ export interface CrdtTransportOptions {
   onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
   /** Server-authoritative result for this tab's requested CRDT mode transition. */
   onModeTransitionResult?: (result: ModeTransitionResult) => void;
-  /** Called right before the server writes the dirty-fragment import. */
-  onSessionOverlayImportStarted?: () => void;
+  /** Server ACK: it received and applied a MSG_YJS_UPDATE (data is in server RAM). */
+  onUpdateReceived?: (fragmentKeys: string[]) => void;
   /** Called after a confirmed session-overlay import with the full payload. */
   onSessionOverlayImported?: (payload: SessionOverlayImportedPayload) => void;
 }
@@ -108,14 +108,12 @@ export class CrdtTransport {
         onIdleTimeout: () => {
           this.opts.onIdleTimeout?.();
         },
-        onSessionOverlayImportStarted: () => {
-          this.opts.onSessionOverlayImportStarted?.();
+        onUpdateReceived: (fragmentKeys) => {
+          this.store?.markSectionsReceived(fragmentKeys);
+          this.opts.onUpdateReceived?.(fragmentKeys);
         },
         onSessionOverlayImported: (payload) => {
-          // dirty → pending is driven by onSessionOverlayImportStarted in
-          // legacy code; here we route the final states to the store.
-          this.store?.markSectionsSaved(payload.writtenKeys);
-          this.store?.markSectionsClean(payload.deletedKeys);
+          this.store?.forceCleanSections(payload.deletedKeys);
           this.opts.onSessionOverlayImported?.(payload);
         },
         onStructureWillChange: (restructures) => {

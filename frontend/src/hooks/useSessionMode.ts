@@ -21,7 +21,6 @@ import {
 } from "../types/shared.js";
 import {
   type DocumentSection,
-  type SectionPersistenceState,
   type DeletionPlaceholder,
   getSectionFragmentKey,
 } from "../pages/document-page-utils";
@@ -36,8 +35,6 @@ export interface UseSessionModeParams {
   setStatusMessage: (s: string | null) => void;
   loadSections: (docPath: string) => Promise<DocumentSection[]>;
   onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
-  // Cross-hook callbacks wired by composition layer
-  setSectionPersistence: React.Dispatch<React.SetStateAction<Map<string, SectionPersistenceState>>>;
   setDeletionPlaceholders: React.Dispatch<React.SetStateAction<DeletionPlaceholder[]>>;
   setRestructuringKeys: React.Dispatch<React.SetStateAction<Set<string>>>;
   onStopEditing?: () => void;
@@ -47,8 +44,6 @@ export interface UseSessionModeParams {
 
 export interface UseSessionModeReturn {
   crdtProvider: CrdtProvider | null;
-  /** New store/transport surface — populated whenever the editor session
-   *  is active. Consumers migrating off `crdtProvider` should prefer these. */
   store: BrowserFragmentReplicaStore | null;
   transport: CrdtTransport | null;
   crdtSynced: boolean;
@@ -75,7 +70,6 @@ export function useSessionMode({
   setStatusMessage,
   loadSections,
   onRestoreNotification,
-  setSectionPersistence,
   setDeletionPlaceholders,
   setRestructuringKeys,
   onStopEditing,
@@ -261,14 +255,12 @@ export function useSessionMode({
       setCrdtSynced(false);
       setCrdtState("disconnected");
     } else if (crdtProviderRef.current) {
-      // Legacy path (should not happen now that ensureProvider uses transport).
       crdtProviderRef.current.destroy();
       setCrdtProvider(null);
       setCrdtSynced(false);
       setCrdtState("disconnected");
     }
     setCrdtError(null);
-    setSectionPersistence(new Map());
     setDeletionPlaceholders([]);
     setRestructuringKeys(new Set());
     onStopEditingRef.current?.();
@@ -301,7 +293,7 @@ export function useSessionMode({
         onModeTransitionResult: applyModeTransitionResult,
       });
     }
-  }, [decodedDocPath, startObserver, applyModeTransitionResult, setSectionPersistence, setDeletionPlaceholders, setRestructuringKeys]);
+  }, [decodedDocPath, startObserver, applyModeTransitionResult, setDeletionPlaceholders, setRestructuringKeys]);
 
   useEffect(() => { stopEditingRef.current = stopEditing; }, [stopEditing]);
 
@@ -340,26 +332,7 @@ export function useSessionMode({
           setEditingLoading(false);
         },
         onError: (reason: string) => setCrdtError(`CRDT sync error: ${reason}`),
-        onSessionOverlayImportStarted: () => {
-          setSectionPersistence((prev) => {
-            const next = new Map(prev);
-            for (const [key, state] of next) {
-              if (state === "dirty") next.set(key, "pending");
-            }
-            return next;
-          });
-        },
-        onSessionOverlayImported: ({ writtenKeys, deletedKeys }) => {
-          setSectionPersistence((prev) => {
-            const next = new Map(prev);
-            for (const key of writtenKeys) {
-              next.set(key, "flushed");
-            }
-            for (const key of deletedKeys) {
-              next.delete(key);
-            }
-            return next;
-          });
+        onSessionOverlayImported: ({ deletedKeys }) => {
           if (deletedKeys.length > 0) {
             setDeletionPlaceholders((prev) =>
               prev.filter((p) => !deletedKeys.includes(p.fragmentKey)),
@@ -372,17 +345,6 @@ export function useSessionMode({
             keys.add(r.oldKey);
           }
           setRestructuringKeys(keys);
-        },
-        onLocalUpdate: (modifiedFragmentKeys: string[]) => {
-          if (modifiedFragmentKeys.length > 0) {
-            setSectionPersistence((prev) => {
-              const next = new Map(prev);
-              for (const fk of modifiedFragmentKeys) {
-                next.set(fk, "dirty");
-              }
-              return next;
-            });
-          }
         },
         onSessionReinit: () => {
           stopEditing();
@@ -417,7 +379,7 @@ export function useSessionMode({
       setCrdtError(err instanceof Error ? err.message : String(err));
       return null;
     }
-  }, [decodedDocPath, stopEditing, stopObserver, loadSections, setError, setStatusMessage, onRestoreNotification, applyModeTransitionResult, setSectionPersistence, setDeletionPlaceholders, setRestructuringKeys]);
+  }, [decodedDocPath, stopEditing, stopObserver, loadSections, setError, setStatusMessage, onRestoreNotification, applyModeTransitionResult, setDeletionPlaceholders, setRestructuringKeys]);
 
   // ── Request mode ───────────────────────────────────────
   const requestMode = useCallback(async (mode: RequestedMode, focusTarget?: EditorFocusTarget | null): Promise<void> => {

@@ -3,10 +3,10 @@ import * as Y from "yjs";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
-import { destroyAllSessions } from "../../crdt/ydoc-lifecycle.js";
+import { destroyAllSessions, updateSectionFocus, markFragmentDirty } from "../../crdt/ydoc-lifecycle.js";
+import type { DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import type { WriterIdentity } from "../../types/shared.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 
 const writer: WriterIdentity = {
   id: "focused-multifrag-writer",
@@ -16,20 +16,16 @@ const writer: WriterIdentity = {
 };
 
 function findHeadingKey(
-  live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
+  live: DocSession,
   heading: string,
 ): string {
-  let key: string | null = null;
-  live.raw.fragments.skeleton.forEachSection((entryHeading, level, sectionFile, headingPath) => {
-    const isBfh = headingPath.length === 0 && level === 0 && entryHeading === "";
+  for (const [fragmentKey, headingPath] of live.headingPathByFragmentKey) {
+    const entryHeading = headingPath[headingPath.length - 1] ?? "";
     if (entryHeading === heading) {
-      key = fragmentKeyFromSectionFile(sectionFile, isBfh);
+      return fragmentKey;
     }
-  });
-  if (!key) {
-    throw new Error(`Missing fragment key for heading "${heading}"`);
   }
-  return key;
+  throw new Error(`Missing fragment key for heading "${heading}"`);
 }
 
 function appendParagraph(fragment: Y.XmlFragment, text: string): void {
@@ -66,10 +62,10 @@ describe("focused multi-fragment dirty tracking regression", () => {
     const overviewKey = findHeadingKey(live, "Overview");
     const timelineKey = findHeadingKey(live, "Timeline");
 
-    await live.setFocus(writer.id, ["Overview"], writer);
+    updateSectionFocus(live.docPath, writer.id, ["Overview"]);
 
     const remoteDoc = new Y.Doc();
-    Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(live.raw.fragments.ydoc));
+    Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(live.ydoc));
     const before = Y.encodeStateVector(remoteDoc);
 
     remoteDoc.transact(() => {
@@ -84,12 +80,15 @@ describe("focused multi-fragment dirty tracking regression", () => {
     });
 
     const payload = Y.encodeStateAsUpdate(remoteDoc, before);
-    const result = live.applyYjsUpdate(writer.id, payload);
+    const touchedKeys = live.liveFragments.applyClientUpdate(writer.id, payload, undefined);
+    for (const key of touchedKeys) {
+      live.liveFragments.noteAheadOfStaged(key);
+      markFragmentDirty(SAMPLE_DOC_PATH, writer.id, key);
+    }
 
-    expect(result.error).toBeUndefined();
-    expect(live.raw.fragments.dirtyKeys.has(overviewKey)).toBe(true);
-    expect(live.raw.fragments.dirtyKeys.has(timelineKey)).toBe(true);
-    expect(live.raw.perUserDirty.get(writer.id)?.has(overviewKey)).toBe(true);
-    expect(live.raw.perUserDirty.get(writer.id)?.has(timelineKey)).toBe(true);
+    expect(live.liveFragments.isAheadOfStaged(overviewKey)).toBe(true);
+    expect(live.liveFragments.isAheadOfStaged(timelineKey)).toBe(true);
+    expect(live.perUserDirty.get(writer.id)?.has(overviewKey)).toBe(true);
+    expect(live.perUserDirty.get(writer.id)?.has(timelineKey)).toBe(true);
   });
 });

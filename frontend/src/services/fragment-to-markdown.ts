@@ -1,7 +1,7 @@
 /**
  * Convert a Y.Doc XmlFragment to markdown string.
  *
- * Uses the same pipeline as the backend's DocumentFragments:
+ * Uses the same pipeline as the backend's LiveFragmentStringsStore:
  *   XmlFragment → ProseMirror JSON → markdown
  */
 

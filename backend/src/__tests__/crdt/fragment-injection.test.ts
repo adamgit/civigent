@@ -2,19 +2,19 @@
  * Tests for Y.Doc fragment injection after proposal commit.
  *
  * Covers:
- *   1 — content replaced via replaceFragmentFromProvidedContent + SERVER_INJECTION_ORIGIN
- *   2 — dirty tracking not polluted after server-injection-origin replacement
- *   3 — lastTouchedFragments not polluted after injectAfterCommit
- *   4 — broadcast fired with non-empty delta after injectAfterCommit
- *   5 — no active session: injectAfterCommit is a safe no-op
- *   6 — hook wiring: commitProposalToCanonical fires the post-commit hook
+ *   1 -- content replaced via replaceFragmentString + SERVER_INJECTION_ORIGIN
+ *   2 -- dirty tracking not polluted after server-injection-origin replacement
+ *   3 -- aheadOfStagedKeys not polluted after injectAfterCommit
+ *   4 -- broadcast fired with non-empty delta after injectAfterCommit
+ *   5 -- no active session: injectAfterCommit is a safe no-op
+ *   6 -- hook wiring: commitProposalToCanonical fires the post-commit hook
  *
  * Items 331-347 redesigned the fragment-ownership API so the runtime layer no
  * longer treats DocumentFragments as a self-loading object. Tests that previously
  * mocked a ContentLayer and called `reloadSectionFromCanonical(headingPath, mockLayer)`
  * have been rewritten to (a) build fragments via the explicit
  * `buildDocumentFragmentsForTest(...)` helper and (b) drive the new policy-free
- * `replaceFragmentFromProvidedContent(...)` primitive directly. The injection
+ * `replaceFragmentString(...)` primitive directly. The injection
  * layer that previously baked source-selection policy into the fragment store now
  * lives entirely in `injectAfterCommit(...)` itself.
  */
@@ -24,8 +24,8 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
-import { DocumentFragments, SERVER_INJECTION_ORIGIN } from "../../crdt/document-fragments.js";
-import { buildDocumentFragmentsForTest } from "../helpers/build-document-fragments.js";
+import { buildDocumentFragmentsForTest, type TestDocSession, SERVER_INJECTION_ORIGIN } from "../helpers/build-document-fragments.js";
+import { buildFragmentContent } from "../../storage/section-formatting.js";
 import {
   acquireDocSession,
   destroyAllSessions,
@@ -63,6 +63,18 @@ vi.mock("../../storage/snapshot.js", async (importOriginal) => {
   };
 });
 
+// ─── Helpers ─────────────────────────────────────────────────────
+
+/** Assemble full markdown from a TestDocSession by reading all ordered fragment strings. */
+function assembleMarkdown(store: TestDocSession): string {
+  const parts: string[] = [];
+  for (const key of store.orderedFragmentKeys) {
+    const content = store.liveFragments.readFragmentString(key);
+    if (content) parts.push(content);
+  }
+  return parts.join("\n\n");
+}
+
 // ─── Shared test setup ────────────────────────────────────────────
 
 describe("Fragment injection after proposal commit", () => {
@@ -86,75 +98,77 @@ describe("Fragment injection after proposal commit", () => {
 
   // ─── Test 1: content replaced ─────────────────────────────────
 
-  it("replaceFragmentFromProvidedContent with SERVER_INJECTION_ORIGIN replaces fragment content", async () => {
+  it("replaceFragmentString with SERVER_INJECTION_ORIGIN replaces fragment content", async () => {
     const store = await buildDocumentFragmentsForTest(SAMPLE_DOC_PATH);
 
-    // Find the "Overview" section fragment key
+    // Find the "Overview" section fragment key and level from the heading-path index
     let overviewKey: string | null = null;
     let overviewLevel = 0;
-    store.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+    for (const [key, hp] of store.headingPathByFragmentKey) {
+      const heading = hp[hp.length - 1] || "";
       if (heading === "Overview") {
-        const isRoot = DocumentFragments.isBeforeFirstHeading({ headingPath, level, heading });
-        overviewKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
-        overviewLevel = level;
+        overviewKey = key;
+        // Determine level from heading path depth: top-level headings are level 2
+        overviewLevel = hp.length === 0 ? 0 : hp.length + 1;
       }
-    });
+    }
     expect(overviewKey).not.toBeNull();
 
     // Caller resolves the source (this test simulates "content layer returned this")
-    // and builds the FragmentContent inline — exactly the pattern injectAfterCommit uses.
+    // and builds the FragmentContent inline -- exactly the pattern injectAfterCommit uses.
     const newBody = "This is the NEW injected overview content." as never;
-    const content: FragmentContent = DocumentFragments.buildFragmentContent(newBody, overviewLevel, "Overview");
+    const content: FragmentContent = buildFragmentContent(newBody, overviewLevel, "Overview");
 
-    store.replaceFragmentFromProvidedContent(overviewKey!, content, { origin: SERVER_INJECTION_ORIGIN });
+    store.liveFragments.replaceFragmentString(overviewKey!, content, SERVER_INJECTION_ORIGIN);
 
-    const assembled = store.assembleMarkdown();
+    const assembled = assembleMarkdown(store);
     expect(assembled).toContain("This is the NEW injected overview content.");
     expect(assembled).not.toContain("The overview covers our strategic goals");
   });
 
   // ─── Test 2: dirty tracking not polluted ──────────────────────
 
-  it("replaceFragmentFromProvidedContent with SERVER_INJECTION_ORIGIN does not pollute dirtyKeys", async () => {
+  it("replaceFragmentString with SERVER_INJECTION_ORIGIN does not pollute aheadOfStagedKeys", async () => {
     const store = await buildDocumentFragmentsForTest(SAMPLE_DOC_PATH);
 
     let overviewKey: string | null = null;
     let overviewLevel = 0;
-    store.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+    for (const [key, hp] of store.headingPathByFragmentKey) {
+      const heading = hp[hp.length - 1] || "";
       if (heading === "Overview") {
-        const isRoot = DocumentFragments.isBeforeFirstHeading({ headingPath, level, heading });
-        overviewKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
-        overviewLevel = level;
+        overviewKey = key;
+        overviewLevel = hp.length === 0 ? 0 : hp.length + 1;
       }
-    });
+    }
     expect(overviewKey).not.toBeNull();
 
-    // Confirm dirtyKeys is clean before injection
-    expect(store.dirtyKeys.has(overviewKey!)).toBe(false);
+    // Clear ahead-of-staged from initial population so we can isolate the injection effect.
+    store.liveFragments.clearAheadOfStaged([overviewKey!]);
+    expect(store.liveFragments.isAheadOfStaged(overviewKey!)).toBe(false);
 
-    const content = DocumentFragments.buildFragmentContent("Some new body content." as never, overviewLevel, "Overview");
-    store.replaceFragmentFromProvidedContent(overviewKey!, content, { origin: SERVER_INJECTION_ORIGIN });
+    const content = buildFragmentContent("Some new body content." as never, overviewLevel, "Overview");
+    store.liveFragments.replaceFragmentString(overviewKey!, content, SERVER_INJECTION_ORIGIN);
 
-    // dirtyKeys must NOT contain the injected fragment key — server-origin transactions
-    // are marked by the afterTransaction guard, not by the API surface itself.
-    expect(store.dirtyKeys.has(overviewKey!)).toBe(false);
+    // aheadOfStagedKeys must NOT contain the injected fragment key -- server-origin
+    // transactions are skipped by the afterTransaction listener.
+    expect(store.liveFragments.isAheadOfStaged(overviewKey!)).toBe(false);
   });
 
-  // ─── Test 3: lastTouchedFragments not polluted ────────────────
+  // ─── Test 3: aheadOfStagedKeys not polluted by server injection ──
 
-  it("injectAfterCommit does not pollute session.lastTouchedFragments", async () => {
+  it("injectAfterCommit does not pollute liveFragments.aheadOfStagedKeys", async () => {
     const baseHead = await getHeadSha(ctx.rootDir);
     const writerIdentity: WriterIdentity = { id: "writer-inject-test", type: "human", displayName: "Inject Test Writer" };
     const session = await acquireDocSession(SAMPLE_DOC_PATH, "writer-inject-test", baseHead, writerIdentity);
 
     // Find the "Overview" fragment key for the assertion
     let overviewKey: string | null = null;
-    session.fragments.skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+    for (const [fragmentKey, headingPath] of session.headingPathByFragmentKey) {
+      const heading = headingPath[headingPath.length - 1] ?? "";
       if (heading === "Overview") {
-        const isRoot = DocumentFragments.isBeforeFirstHeading({ headingPath, level, heading });
-        overviewKey = fragmentKeyFromSectionFile(sectionFile, isRoot);
+        overviewKey = fragmentKey;
       }
-    });
+    }
     expect(overviewKey).not.toBeNull();
 
     // Wire a broadcast to prevent errors (actual content doesn't matter for this test)
@@ -166,8 +180,8 @@ describe("Fragment injection after proposal commit", () => {
     const sectionsDir = join(contentRoot, `${SAMPLE_DOC_PATH}.sections`);
     await writeFile(join(sectionsDir, "overview.md"), "Injected content for test 3.\n", "utf8");
 
-    // Clear touched set before injection
-    session.lastTouchedFragments.clear();
+    // Clear ahead-of-staged state before injection
+    session.liveFragments.clearAheadOfStaged([overviewKey!]);
 
     // Drive injection through the real injectAfterCommit (it now reads canonical
     // inline and stamps SERVER_INJECTION_ORIGIN on the replace).
@@ -176,8 +190,8 @@ describe("Fragment injection after proposal commit", () => {
       writerDisplayName: "Inject Test Writer",
     });
 
-    // lastTouchedFragments must NOT contain the injected key
-    expect(session.lastTouchedFragments.has(overviewKey!)).toBe(false);
+    // aheadOfStagedKeys must NOT contain the injected key (server injection suppresses tracking)
+    expect(session.liveFragments.isAheadOfStaged(overviewKey!)).toBe(false);
   });
 
   // ─── Test 4: broadcast fired with non-empty delta ─────────────
@@ -255,10 +269,9 @@ describe("Fragment injection after proposal commit", () => {
     vi.mocked(transitionToCommitting).mockResolvedValue(undefined);
     vi.mocked(transitionToCommitted).mockResolvedValue(undefined);
 
-    // Mock CanonicalStore.prototype.absorb to avoid real git operations
     const absorbSpy = vi
-      .spyOn(CanonicalStore.prototype, "absorb")
-      .mockResolvedValue("deadbeef000");
+      .spyOn(CanonicalStore.prototype, "absorbChangedSections")
+      .mockResolvedValue({ commitSha: "deadbeef000", changedSections: [] });
 
     const hookMock = vi.fn().mockResolvedValue(undefined);
     setPostCommitHook(hookMock);

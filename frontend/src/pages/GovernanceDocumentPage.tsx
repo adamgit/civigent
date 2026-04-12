@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useParams } from "react-router-dom";
 import { apiClient } from "../services/api-client";
 import { getLastDocumentVisitAt, markDocumentVisitedNow } from "../services/document-visit-history";
@@ -35,6 +35,7 @@ import { GovernanceLeftGutter } from "../components/GovernanceLeftGutter";
 import { GovernanceRightGutter } from "../components/GovernanceRightGutter";
 import { AttributionOverlay } from "../components/AttributionOverlay";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
+import { type SectionSaveInfo, resolveSaveState, worstSaveState } from "../services/section-save-state";
 import "../governance-gutters.css";
 
 // ─── Component ───────────────────────────────────────────────────
@@ -98,14 +99,15 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     focusedSectionIndex,
     setFocusedSectionIndex,
     crdtProvider,
+    store,
+    storeRef,
+    transport,
     crdtSynced,
     crdtState,
     crdtError,
     editingLoading,
     readyEditors,
     setReadyEditors,
-    sectionPersistence,
-    setSectionPersistence,
     deletionPlaceholders,
     setDeletionPlaceholders,
     restructuringKeys,
@@ -164,7 +166,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     mountedEditorFragmentKeysRef,
     pendingStructureRefocusRef,
     setRestructuringKeys,
-    setSectionPersistence,
+    storeRef,
     setDeletionPlaceholders,
     setStructureTree,
     loadSections,
@@ -305,19 +307,35 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   // ── Derived ──────────────────────────────────────────────
   const docTitle = decodedDocPath ? getDocDisplayName(decodedDocPath) : "Untitled";
 
-  const persistenceSummary = useMemo(() => {
-    let dirtyCount = 0;
-    let pendingCount = 0;
-    let flushedCount = 0;
-    let deletingCount = 0;
-    for (const state of sectionPersistence.values()) {
-      if (state === "dirty") dirtyCount++;
-      else if (state === "pending") pendingCount++;
-      else if (state === "flushed") flushedCount++;
-      else if (state === "deleting") deletingCount++;
+  // Subscribe to persistence state from the store via useSyncExternalStore
+  const emptyMap = useMemo(() => new Map() as ReadonlyMap<string, import("../services/browser-fragment-replica-store").SectionPersistenceState>, []);
+  const subscribeStore = useMemo(() => store?.subscribe ?? ((_cb: () => void) => () => {}), [store]);
+  const sectionPersistence = useSyncExternalStore(
+    subscribeStore,
+    () => store?.getSectionPersistence() ?? emptyMap,
+  );
+
+  const now = Date.now();
+  const sectionSaveInfos: SectionSaveInfo[] = useMemo(() => {
+    const infos: SectionSaveInfo[] = [];
+    for (const section of sections) {
+      const fk = getSectionFragmentKey(section);
+      const ps = sectionPersistence.get(fk);
+      if (ps === undefined) continue;
+      const state = resolveSaveState(ps, crdtState, store?.getDirtySince(fk), now);
+      infos.push({
+        fragmentKey: fk,
+        sectionLabel: headingPathToLabel(section.heading_path),
+        state,
+      });
     }
-    return { dirtyCount, pendingCount, flushedCount, deletingCount, total: sectionPersistence.size };
-  }, [sectionPersistence]);
+    return infos;
+  }, [sectionPersistence, sections, crdtState, store, now]);
+
+  const aggregateSaveState = useMemo(
+    () => worstSaveState(sectionSaveInfos.map((s) => s.state)),
+    [sectionSaveInfos],
+  );
 
   // ── Governance data (left + right gutters) ─────────────────
   const { leftGutterSections, rightGutterGroups } = useGovernanceData(sections);
@@ -379,7 +397,8 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
         showOverwrite={showOverwrite}
         onToggleOverwrite={() => setShowOverwrite((v) => !v)}
         crdtState={crdtState}
-        persistenceSummary={persistenceSummary}
+        aggregateSaveState={aggregateSaveState}
+        sectionSaveInfos={sectionSaveInfos}
         isEditing={isEditing}
       />
 
@@ -521,7 +540,8 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       injectedByWriter={null}
                       hasRemotePresence={presenceIndicatorsRef.current.some((p) => p.sectionKey === sectionKey)}
                       dragOverSectionIndex={dragOverSectionIndex}
-                      crdtProvider={crdtProvider}
+                      store={store}
+                      transport={transport}
                       crdtSynced={crdtSynced}
                       crdtError={crdtError}
                       proposalMode={proposalMode}

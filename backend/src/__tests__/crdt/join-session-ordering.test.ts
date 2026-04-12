@@ -80,7 +80,7 @@ describe("joinSession message ordering", () => {
       const receiverDoc = new Y.Doc();
       Y.applyUpdate(receiverDoc, payload);
       // The doc should have fragment keys matching the source session
-      const sourceKeys = Array.from(session.fragments.ydoc.share.keys()).sort();
+      const sourceKeys = Array.from(session.ydoc.share.keys()).sort();
       const receiverKeys = Array.from(receiverDoc.share.keys()).sort();
       expect(receiverKeys).toEqual(sourceKeys);
     } finally {

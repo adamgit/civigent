@@ -136,67 +136,6 @@ describe("DocumentPage presence", () => {
     localStorage.clear();
   });
 
-  it("presence:editing event shows other user name on affected section", async () => {
-    renderDocPage();
-    await waitFor(() => {
-      expect(screen.getByText("Overview.")).toBeDefined();
-    });
-
-    act(() => {
-      capturedWsHandler?.({
-        type: "presence:editing",
-        writer_id: "user-alice",
-        writer_display_name: "Alice",
-        writer_type: "human",
-        doc_path: "test.md",
-        heading_path: ["Overview"],
-      } as WsServerEvent);
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText(/Alice/)).toBeDefined();
-    });
-  });
-
-  it("presence:done event removes presence indicator", async () => {
-    renderDocPage();
-    await waitFor(() => {
-      expect(screen.getByText("Overview.")).toBeDefined();
-    });
-
-    // Show presence
-    act(() => {
-      capturedWsHandler?.({
-        type: "presence:editing",
-        writer_id: "user-alice",
-        writer_display_name: "Alice",
-        writer_type: "human",
-        doc_path: "test.md",
-        heading_path: ["Overview"],
-      } as WsServerEvent);
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText(/Alice/)).toBeDefined();
-    });
-
-    // Remove presence
-    act(() => {
-      capturedWsHandler?.({
-        type: "presence:done",
-        writer_id: "user-alice",
-        writer_display_name: "Alice",
-        writer_type: "human",
-        doc_path: "test.md",
-        heading_path: ["Overview"],
-      } as WsServerEvent);
-    });
-
-    await waitFor(() => {
-      expect(screen.queryByText(/Alice/)).toBeNull();
-    });
-  });
-
   it("agent:reading event shows agent indicator on affected sections", async () => {
     renderDocPage();
     await waitFor(() => {

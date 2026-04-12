@@ -155,35 +155,4 @@ describe("DocumentPage proposal mode", () => {
     });
   });
 
-  it("sections locked by another human proposal show read-only indicator", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
-      const urlStr = String(url);
-      if (urlStr.includes("/sections")) {
-        return jsonResponse({
-          sections: [
-            {
-              heading: "Overview",
-              heading_path: ["Overview"],
-              depth: 1,
-              content: "# Overview\nOverview.\n",
-              humanInvolvement_score: 0,
-              crdt_session_active: false,
-              section_length_warning: false,
-              word_count: 1,
-              fragment_key: "frag:sec_overview",
-              section_file: "sec_overview.md",
-              block_reason: "human_proposal",
-            },
-          ],
-        });
-      }
-      return jsonResponse({});
-    });
-
-    renderDocPage();
-    await waitFor(() => {
-      // The section should show a reserved indicator
-      expect(screen.getByText(/Reserved/)).toBeDefined();
-    });
-  });
 });

@@ -3,7 +3,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { gitExec } from "../../storage/git-repo.js";
-import { buildDocumentFragmentsForTest } from "../helpers/build-document-fragments.js";
+import { buildDocumentFragmentsForTest, type TestDocSession } from "../helpers/build-document-fragments.js";
+import { applyAcceptResult, findKeyForHeadingPath, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import * as Y from "yjs";
 
 const NESTED_DOC_PATH = "test/nested-doc.md";
@@ -97,6 +98,38 @@ function replaceFragmentWithBodyOnly(
   });
 }
 
+/**
+ * Inline normalizeStructure equivalent for TestDocSession.
+ */
+async function normalizeStructure(
+  store: TestDocSession,
+  fragmentKey: string,
+): Promise<{ changed: boolean; createdKeys: string[]; removedKeys: string[] }> {
+  store.liveFragments.noteAheadOfStaged(fragmentKey);
+  const scope = new Set([fragmentKey]);
+  await store.recoveryBuffer.writeFragment(fragmentKey, store.liveFragments.readFragmentString(fragmentKey));
+  const acceptResult = await store.stagedSections.acceptLiveFragments(store.liveFragments, scope);
+  await applyAcceptResult(store as DocSession, acceptResult);
+
+  const removedKeys = [...(acceptResult.structuralChange?.removedKeys ?? [])];
+  const createdKeys: string[] = [];
+  for (const remap of acceptResult.remaps) {
+    if (remap.oldKey !== fragmentKey) continue;
+    for (const k of remap.newKeys) {
+      if (k !== fragmentKey) createdKeys.push(k);
+    }
+  }
+
+  return {
+    changed:
+      acceptResult.structuralChange !== undefined && acceptResult.structuralChange !== null
+      || acceptResult.writtenKeys.length > 0
+      || acceptResult.deletedKeys.length > 0,
+    createdKeys,
+    removedKeys,
+  };
+}
+
 describe("Heading deletion merge target", () => {
   let ctx: TempDataRootContext;
 
@@ -115,18 +148,18 @@ describe("Heading deletion merge target", () => {
     // Verify initial content
     const bKey = "section::sec_b";
     const aKey = "section::sec_a";
-    const aContentBefore = store.readFullContent(aKey);
+    const aContentBefore = store.liveFragments.readFragmentString(aKey);
     expect(aContentBefore).toContain("Content of section A");
 
     // Replace B's fragment with body-only content (heading deleted)
     replaceFragmentWithBodyOnly(store.ydoc, bKey, "Orphaned B content.");
 
-    const result = await store.normalizeStructure(bKey);
+    const result = await normalizeStructure(store, bKey);
     expect(result.changed).toBe(true);
     expect(result.removedKeys).toContain(bKey);
 
     // Orphaned content from B should merge into A (the preceding section)
-    const aContentAfter = store.readFullContent(aKey);
+    const aContentAfter = store.liveFragments.readFragmentString(aKey);
     expect(aContentAfter).toContain("Orphaned B content");
   });
 
@@ -135,18 +168,18 @@ describe("Heading deletion merge target", () => {
 
     const subbKey = "section::sec_subb";
     const subaKey = "section::sec_suba";
-    const subaContentBefore = store.readFullContent(subaKey);
+    const subaContentBefore = store.liveFragments.readFragmentString(subaKey);
     expect(subaContentBefore).toContain("Content of subsection A");
 
     // Delete SubB's heading, leaving only body
     replaceFragmentWithBodyOnly(store.ydoc, subbKey, "Orphaned SubB content.");
 
-    const result = await store.normalizeStructure(subbKey);
+    const result = await normalizeStructure(store, subbKey);
     expect(result.changed).toBe(true);
     expect(result.removedKeys).toContain(subbKey);
 
     // Should merge into SubA (preceding sibling in document order)
-    const subaContentAfter = store.readFullContent(subaKey);
+    const subaContentAfter = store.liveFragments.readFragmentString(subaKey);
     expect(subaContentAfter).toContain("Orphaned SubB content");
   });
 
@@ -155,18 +188,18 @@ describe("Heading deletion merge target", () => {
 
     const subaKey = "section::sec_suba";
     const bKey = "section::sec_b";
-    const bContentBefore = store.readFullContent(bKey);
+    const bContentBefore = store.liveFragments.readFragmentString(bKey);
     expect(bContentBefore).toContain("Content of section B");
 
     // Delete SubA's heading, leaving only body
     replaceFragmentWithBodyOnly(store.ydoc, subaKey, "Orphaned SubA content.");
 
-    const result = await store.normalizeStructure(subaKey);
+    const result = await normalizeStructure(store, subaKey);
     expect(result.changed).toBe(true);
     expect(result.removedKeys).toContain(subaKey);
 
     // Should merge into B (the preceding section in document order, which is the parent)
-    const bContentAfter = store.readFullContent(bKey);
+    const bContentAfter = store.liveFragments.readFragmentString(bKey);
     expect(bContentAfter).toContain("Orphaned SubA content");
   });
 
@@ -203,21 +236,21 @@ describe("Heading deletion merge target", () => {
     const store = await buildDocumentFragmentsForTest(noBfhDocPath);
 
     // Verify no BFH exists
-    expect(store.skeleton.findContentEntryByHeadingPath([])).toBeNull();
+    expect(findKeyForHeadingPath(store as DocSession, [])).toBeNull();
 
     const aKey = "section::sec_a";
     replaceFragmentWithBodyOnly(store.ydoc, aKey, "Orphaned A content.");
 
-    const result = await store.normalizeStructure(aKey);
+    const result = await normalizeStructure(store, aKey);
     expect(result.changed).toBe(true);
     expect(result.removedKeys).toContain(aKey);
 
     // A BFH section should now exist with the orphaned content
-    const bfhEntry = store.skeleton.findContentEntryByHeadingPath([]);
-    expect(bfhEntry).not.toBeNull();
+    const bfhKey = findKeyForHeadingPath(store as DocSession, []);
+    expect(bfhKey).not.toBeNull();
 
-    const bfhKey = "section::__beforeFirstHeading__";
-    const bfhContent = store.readFullContent(bfhKey);
+    const bfhKeyStr = "section::__beforeFirstHeading__";
+    const bfhContent = store.liveFragments.readFragmentString(bfhKeyStr);
     expect(bfhContent).toContain("Orphaned A content");
   });
 
@@ -226,18 +259,18 @@ describe("Heading deletion merge target", () => {
 
     const aKey = "section::sec_a";
     const rootKey = "section::__beforeFirstHeading__";
-    const rootContentBefore = store.readFullContent(rootKey);
+    const rootContentBefore = store.liveFragments.readFragmentString(rootKey);
     expect(rootContentBefore).toContain("Root preamble");
 
     // Delete A's heading, leaving only body
     replaceFragmentWithBodyOnly(store.ydoc, aKey, "Orphaned A content.");
 
-    const result = await store.normalizeStructure(aKey);
+    const result = await normalizeStructure(store, aKey);
     expect(result.changed).toBe(true);
     expect(result.removedKeys).toContain(aKey);
 
     // Should merge into root (the only section preceding ## A)
-    const rootContentAfter = store.readFullContent(rootKey);
+    const rootContentAfter = store.liveFragments.readFragmentString(rootKey);
     expect(rootContentAfter).toContain("Orphaned A content");
   });
 });

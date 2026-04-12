@@ -155,7 +155,7 @@ buildFragmentContent(body: SectionBody, level: number, heading: string): Fragmen
       the SectionBody as FragmentContent without prepending.
 
 stripHeadingFromFragment(content: FragmentContent, level: number): SectionBody
-    ��� Remove ATX heading line and blank separator. Input is already in-memory
+    Remove ATX heading line and blank separator. Input is already in-memory
       form (no trailing \n to strip). Replaces FragmentStore.stripHeadingFromContent.
 
 mergeOrphanIntoFragment(existing: FragmentContent, orphan: SectionBody): FragmentContent

@@ -15,10 +15,15 @@ import {
   markFragmentDirty,
   setSessionOverlayImportCallback,
   releaseDocSession,
+  flushDirtyToOverlay,
+  findKeyForHeadingPath,
 } from "../../crdt/ydoc-lifecycle.js";
-import { importSessionDirtyFragmentsToOverlay, commitSessionFilesToCanonical, cleanupSessionFiles } from "../../storage/session-store.js";
+import { CanonicalStore } from "../../storage/canonical-store.js";
 import { getHeadSha } from "../../storage/git-repo.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
+import { getContentRoot, getDataRoot, getSessionSectionsContentRoot, getSessionFragmentsRoot } from "../../storage/data-root.js";
+import { rm } from "node:fs/promises";
+import path from "node:path";
+
 import type { WriterIdentity } from "../../types/shared.js";
 
 const writerA: WriterIdentity = {
@@ -35,17 +40,20 @@ const writerB: WriterIdentity = {
   email: "writer-b@test.local",
 };
 
+async function cleanupSessionOverlay(docPath: string): Promise<void> {
+  const overlayRoot = getSessionSectionsContentRoot();
+  const skelPath = path.join(overlayRoot, ...docPath.split("/"));
+  await rm(skelPath, { force: true });
+  await rm(`${skelPath}.sections`, { recursive: true, force: true });
+  const fragDir = path.join(getSessionFragmentsRoot(), docPath);
+  await rm(fragDir, { recursive: true, force: true });
+}
+
 function findHeadingKey(
   live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
   heading: string,
 ): string {
-  let key: string | null = null;
-  live.raw.fragments.skeleton.forEachSection((entryHeading, level, sectionFile, headingPath) => {
-    const isBfh = headingPath.length === 0 && level === 0 && entryHeading === "";
-    if (entryHeading === heading) {
-      key = fragmentKeyFromSectionFile(sectionFile, isBfh);
-    }
-  });
+  const key = findKeyForHeadingPath(live, [heading]);
   if (!key) throw new Error(`Missing fragment key for heading "${heading}"`);
   return key;
 }
@@ -54,6 +62,14 @@ function appendParagraph(fragment: Y.XmlFragment, text: string): void {
   const paragraph = new Y.XmlElement("paragraph");
   paragraph.insert(0, [new Y.XmlText(text)]);
   fragment.insert(fragment.length, [paragraph]);
+}
+
+async function commitToCanonical(writers: WriterIdentity[], docPath: string) {
+  const store = new CanonicalStore(getContentRoot(), getDataRoot());
+  const [primary] = writers;
+  const commitMsg = `human edit: ${primary.displayName}\n\nWriter: ${primary.id}`;
+  const author = { name: primary.displayName, email: primary.email ?? "human@knowledge-store.local" };
+  return store.absorbChangedSections(getSessionSectionsContentRoot(), commitMsg, author, { docPaths: [docPath] });
 }
 
 describe("A2: Fragment Dirty Tracking & Attribution Invariants", () => {
@@ -65,7 +81,7 @@ describe("A2: Fragment Dirty Tracking & Attribution Invariants", () => {
     await createSampleDocument(ctx.rootDir);
     baseHead = await getHeadSha(ctx.rootDir);
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
   });
 
@@ -88,7 +104,7 @@ describe("A2: Fragment Dirty Tracking & Attribution Invariants", () => {
 
     // Build a remote doc from the session's Y.Doc state
     const remoteDoc = new Y.Doc();
-    Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(live.raw.fragments.ydoc));
+    Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(live.ydoc));
     const svBefore = Y.encodeStateVector(remoteDoc);
 
     // Edit ONLY the Overview fragment
@@ -97,12 +113,15 @@ describe("A2: Fragment Dirty Tracking & Attribution Invariants", () => {
     });
 
     const payload = Y.encodeStateAsUpdate(remoteDoc, svBefore);
-    const result = live.applyYjsUpdate(writerA.id, payload);
-    expect(result.error).toBeUndefined();
+    const touchedKeys = live.liveFragments.applyClientUpdate(writerA.id, payload, undefined);
+    for (const key of touchedKeys) {
+      live.liveFragments.noteAheadOfStaged(key);
+      markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, key);
+    }
 
     // Overview should be dirty, Timeline should NOT
-    expect(live.raw.fragments.dirtyKeys.has(overviewKey)).toBe(true);
-    expect(live.raw.fragments.dirtyKeys.has(timelineKey)).toBe(false);
+    expect(live.liveFragments.isAheadOfStaged(overviewKey)).toBe(true);
+    expect(live.liveFragments.isAheadOfStaged(timelineKey)).toBe(false);
   });
 
   // ── A2.2 ──────────────────────────────────────────────────────────
@@ -131,8 +150,8 @@ describe("A2: Fragment Dirty Tracking & Attribution Invariants", () => {
     markFragmentDirty(SAMPLE_DOC_PATH, writerB.id, timelineKey);
 
     // Check attribution
-    const aDirty = live.raw.perUserDirty.get(writerA.id);
-    const bDirty = live.raw.perUserDirty.get(writerB.id);
+    const aDirty = live.perUserDirty.get(writerA.id);
+    const bDirty = live.perUserDirty.get(writerB.id);
 
     expect(aDirty).toBeDefined();
     expect(bDirty).toBeDefined();
@@ -154,14 +173,14 @@ describe("A2: Fragment Dirty Tracking & Attribution Invariants", () => {
     const overviewKey = findHeadingKey(live, "Overview");
 
     // No activity timestamps initially
-    expect(live.raw.fragmentFirstActivity.has(overviewKey)).toBe(false);
+    expect(live.fragmentFirstActivity.has(overviewKey)).toBe(false);
 
     const beforeMark = Date.now();
     markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
     const afterMark = Date.now();
 
-    const firstActivity = live.raw.fragmentFirstActivity.get(overviewKey);
-    const lastActivity = live.raw.fragmentLastActivity.get(overviewKey);
+    const firstActivity = live.fragmentFirstActivity.get(overviewKey);
+    const lastActivity = live.fragmentLastActivity.get(overviewKey);
 
     expect(firstActivity).toBeDefined();
     expect(lastActivity).toBeDefined();
@@ -173,8 +192,8 @@ describe("A2: Fragment Dirty Tracking & Attribution Invariants", () => {
     const firstActivityBefore = firstActivity!;
     markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
 
-    expect(live.raw.fragmentFirstActivity.get(overviewKey)).toBe(firstActivityBefore);
-    expect(live.raw.fragmentLastActivity.get(overviewKey)!).toBeGreaterThanOrEqual(lastActivity!);
+    expect(live.fragmentFirstActivity.get(overviewKey)).toBe(firstActivityBefore);
+    expect(live.fragmentLastActivity.get(overviewKey)!).toBeGreaterThanOrEqual(lastActivity!);
   });
 
   // ── A2.4 ──────────────────────────────────────────────────────────
@@ -189,26 +208,26 @@ describe("A2: Fragment Dirty Tracking & Attribution Invariants", () => {
     const overviewKey = findHeadingKey(live, "Overview");
 
     // Initially not dirty
-    expect(live.raw.fragments.dirtyKeys.size).toBe(0);
+    expect(live.liveFragments.getAheadOfStagedKeys().size).toBe(0);
 
     // Mark dirty
     markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
-    live.raw.fragments.markDirty(overviewKey);
-    expect(live.raw.fragments.dirtyKeys.size).toBeGreaterThan(0);
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    expect(live.liveFragments.getAheadOfStagedKeys().size).toBeGreaterThan(0);
 
     // Flush to disk
-    await importSessionDirtyFragmentsToOverlay(live.raw);
+    await flushDirtyToOverlay(live);
 
     // After flush, dirtyKeys should be cleared
-    expect(live.raw.fragments.dirtyKeys.size).toBe(0);
+    expect(live.liveFragments.getAheadOfStagedKeys().size).toBe(0);
 
     // Commit to canonical
-    const result = await commitSessionFilesToCanonical([writerA], SAMPLE_DOC_PATH);
-    if (result.sectionsCommitted > 0) {
-      await cleanupSessionFiles(SAMPLE_DOC_PATH);
+    const result = await commitToCanonical([writerA], SAMPLE_DOC_PATH);
+    if (result.changedSections.length > 0) {
+      await cleanupSessionOverlay(SAMPLE_DOC_PATH);
     }
 
     // After commit, still clean
-    expect(live.raw.fragments.dirtyKeys.size).toBe(0);
+    expect(live.liveFragments.getAheadOfStagedKeys().size).toBe(0);
   });
 });

@@ -7,27 +7,27 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { readdir, rm } from "node:fs/promises";
+import path, { join } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
-import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
+
 import { getHeadSha } from "../../storage/git-repo.js";
 import {
   destroyAllSessions,
   releaseDocSession,
   setSessionOverlayImportCallback,
   lookupDocSession,
+  markFragmentDirty,
+  flushDirtyToOverlay,
+  findKeyForHeadingPath,
 } from "../../crdt/ydoc-lifecycle.js";
-import {
-  importSessionDirtyFragmentsToOverlay,
-  commitSessionFilesToCanonical,
-  cleanupSessionFiles,
-  listRawFragments,
-} from "../../storage/session-store.js";
-import { getSessionSectionsContentRoot, getSessionFragmentsRoot } from "../../storage/data-root.js";
+import { RawFragmentRecoveryBuffer } from "../../storage/raw-fragment-recovery-buffer.js";
+import { CanonicalStore } from "../../storage/canonical-store.js";
+import { getContentRoot, getDataRoot, getSessionSectionsContentRoot, getSessionFragmentsRoot } from "../../storage/data-root.js";
 import { ContentLayer } from "../../storage/content-layer.js";
+import { fragmentFromRemark } from "../../storage/section-formatting.js";
 import type { WriterIdentity } from "../../types/shared.js";
 
 const writer: WriterIdentity = {
@@ -37,19 +37,30 @@ const writer: WriterIdentity = {
   email: "end@test.local",
 };
 
+async function cleanupSessionOverlay(docPath: string): Promise<void> {
+  const overlayRoot = getSessionSectionsContentRoot();
+  const skelPath = path.join(overlayRoot, ...docPath.split("/"));
+  await rm(skelPath, { force: true });
+  await rm(`${skelPath}.sections`, { recursive: true, force: true });
+  const fragDir = path.join(getSessionFragmentsRoot(), docPath);
+  await rm(fragDir, { recursive: true, force: true });
+}
+
 function findHeadingKey(
   live: Awaited<ReturnType<typeof documentSessionRegistry.getOrCreate>>,
   heading: string,
 ): string {
-  let key: string | null = null;
-  live.raw.fragments.skeleton.forEachSection((entryHeading, level, sectionFile, headingPath) => {
-    const isBfh = headingPath.length === 0 && level === 0 && entryHeading === "";
-    if (entryHeading === heading) {
-      key = fragmentKeyFromSectionFile(sectionFile, isBfh);
-    }
-  });
+  const key = findKeyForHeadingPath(live, [heading]);
   if (!key) throw new Error(`Missing fragment key for heading "${heading}"`);
   return key;
+}
+
+async function commitToCanonical(writers: WriterIdentity[], docPath: string) {
+  const store = new CanonicalStore(getContentRoot(), getDataRoot());
+  const [primary] = writers;
+  const commitMsg = `human edit: ${primary.displayName}\n\nWriter: ${primary.id}`;
+  const author = { name: primary.displayName, email: primary.email ?? "human@knowledge-store.local" };
+  return store.absorbChangedSections(getSessionSectionsContentRoot(), commitMsg, author, { docPaths: [docPath] });
 }
 
 describe("A6: Session End Flow Invariants", () => {
@@ -61,7 +72,7 @@ describe("A6: Session End Flow Invariants", () => {
     await createSampleDocument(ctx.rootDir);
     baseHead = await getHeadSha(ctx.rootDir);
     setSessionOverlayImportCallback(async (session) => {
-      await importSessionDirtyFragmentsToOverlay(session);
+      await flushDirtyToOverlay(session);
     });
   });
 
@@ -83,9 +94,11 @@ describe("A6: Session End Flow Invariants", () => {
     const uniqueMarker = `A6.1 session end ${Date.now()}`;
 
     // Edit Overview
-    live.mutateSection(writer.id, overviewKey, `## Overview\n\n${uniqueMarker}`);
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark(`## Overview\n\n${uniqueMarker}`));
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writer.id, overviewKey);
 
-    // Release last holder — triggers flush + normalize
+    // Release last holder �� triggers flush + normalize
     const result = await releaseDocSession(SAMPLE_DOC_PATH, writer.id, "sock-a61");
     expect(result.sessionEnded).toBe(true);
 
@@ -93,14 +106,14 @@ describe("A6: Session End Flow Invariants", () => {
     expect(lookupDocSession(SAMPLE_DOC_PATH)).toBeUndefined();
 
     // Now commit to canonical (as the coordinator would)
-    const commitResult = await commitSessionFilesToCanonical(
+    const commitResult = await commitToCanonical(
       [writer],
       SAMPLE_DOC_PATH,
     );
-    expect(commitResult.sectionsCommitted).toBeGreaterThan(0);
+    expect(commitResult.changedSections.length).toBeGreaterThan(0);
 
     // Clean up session files
-    await cleanupSessionFiles(SAMPLE_DOC_PATH);
+    await cleanupSessionOverlay(SAMPLE_DOC_PATH);
 
     // Verify content is in canonical
     const canonical = new ContentLayer(ctx.contentDir);
@@ -124,8 +137,8 @@ describe("A6: Session End Flow Invariants", () => {
     // Attempt commit — even though nothing was dirty, the commit pipeline
     // may produce a git commit (due to --allow-empty). The invariant is:
     // committedSections is empty (no sections actually changed in canonical).
-    const commitResult = await commitSessionFilesToCanonical([writer], SAMPLE_DOC_PATH);
-    expect(commitResult.committedSections).toHaveLength(0);
+    const commitResult = await commitToCanonical([writer], SAMPLE_DOC_PATH);
+    expect(commitResult.changedSections).toHaveLength(0);
   });
 
   // ── A6.3 ──────────────────────────────────────────────────────────
@@ -140,22 +153,24 @@ describe("A6: Session End Flow Invariants", () => {
     const overviewKey = findHeadingKey(live, "Overview");
 
     // Edit to create dirty state
-    live.mutateSection(writer.id, overviewKey, "## Overview\n\nA6.3 raw fragment cleanup test.");
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark("## Overview\n\nA6.3 raw fragment cleanup test."));
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writer.id, overviewKey);
 
     // Flush to create raw fragment files
-    await importSessionDirtyFragmentsToOverlay(live.raw);
+    await flushDirtyToOverlay(live);
 
     // Verify raw fragments exist
-    const rawBefore = await listRawFragments(SAMPLE_DOC_PATH);
+    const rawBefore = await new RawFragmentRecoveryBuffer(SAMPLE_DOC_PATH).listFragmentKeys();
     expect(rawBefore.length).toBeGreaterThan(0);
 
     // Release + commit + cleanup
     await releaseDocSession(SAMPLE_DOC_PATH, writer.id, "sock-a63");
-    await commitSessionFilesToCanonical([writer], SAMPLE_DOC_PATH);
-    await cleanupSessionFiles(SAMPLE_DOC_PATH);
+    await commitToCanonical([writer], SAMPLE_DOC_PATH);
+    await cleanupSessionOverlay(SAMPLE_DOC_PATH);
 
     // Raw fragments should be gone
-    const rawAfter = await listRawFragments(SAMPLE_DOC_PATH);
+    const rawAfter = await new RawFragmentRecoveryBuffer(SAMPLE_DOC_PATH).listFragmentKeys();
     expect(rawAfter.length).toBe(0);
   });
 
@@ -171,8 +186,10 @@ describe("A6: Session End Flow Invariants", () => {
     const overviewKey = findHeadingKey(live, "Overview");
 
     // Edit to create overlay files
-    live.mutateSection(writer.id, overviewKey, "## Overview\n\nA6.4 overlay cleanup test.");
-    await importSessionDirtyFragmentsToOverlay(live.raw);
+    live.liveFragments.replaceFragmentString(overviewKey, fragmentFromRemark("## Overview\n\nA6.4 overlay cleanup test."));
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writer.id, overviewKey);
+    await flushDirtyToOverlay(live);
 
     // Verify overlay files exist
     const overlayRoot = getSessionSectionsContentRoot();
@@ -186,8 +203,8 @@ describe("A6: Session End Flow Invariants", () => {
 
     // Release + commit + cleanup
     await releaseDocSession(SAMPLE_DOC_PATH, writer.id, "sock-a64");
-    await commitSessionFilesToCanonical([writer], SAMPLE_DOC_PATH);
-    await cleanupSessionFiles(SAMPLE_DOC_PATH);
+    await commitToCanonical([writer], SAMPLE_DOC_PATH);
+    await cleanupSessionOverlay(SAMPLE_DOC_PATH);
 
     // Overlay files should be gone
     let overlayAfter: string[] = [];
