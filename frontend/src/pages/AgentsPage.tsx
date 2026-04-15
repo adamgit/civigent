@@ -113,7 +113,7 @@ function ConnectionInstructions({
   );
 
   const claudeCodeCmd = policy === "verify" && secret
-    ? `claude mcp add --transport http --client-id ${agentId} --client-secret ${secret} my-agent ${mcpUrl}`
+    ? `claude mcp add --transport http --client-id ${agentId} --client-secret my-agent ${mcpUrl}`
     : `claude mcp add --transport http --client-id ${agentId} my-agent ${mcpUrl}`;
 
   const cursorConfig = JSON.stringify(
@@ -150,7 +150,11 @@ function ConnectionInstructions({
               {copiedField === "claude-cmd" ? "Copied" : "Copy"}
             </button>
           </div>
-          <p className="add-agent-dialog__tab-hint">A browser window will open for the consent step, then the agent is connected.</p>
+          <p className="add-agent-dialog__tab-hint">
+            {policy === "verify" && secret
+              ? "Claude Code will prompt for the client secret, then open a browser window for the consent step."
+              : "A browser window will open for the consent step, then the agent is connected."}
+          </p>
         </div>
       )}
 

@@ -147,8 +147,10 @@ claude mcp add --transport http --client-id <client_id> my-agent https://your-se
 
 With a secret (required for `verify` policy):
 ```bash
-claude mcp add --transport http --client-id <client_id> --client-secret <secret> my-agent https://your-server/mcp
+claude mcp add --transport http --client-id <client_id> --client-secret my-agent https://your-server/mcp
 ```
+
+Claude Code will prompt for the client secret after you run the command.
 
 **Cursor** — add to `~/.cursor/mcp.json` or `.cursor/mcp.json` in your project:
 ```json

@@ -10,7 +10,7 @@
  *   POST /oauth/token                             — Code exchange + refresh
  */
 
-import { Router, type Request, type Response } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import { createHash } from "node:crypto";
 import { base64UrlEncode } from "../../auth/encoding.js";
 import { getMCPPublicURL, getAgentAuthPolicy } from "../../auth/oauth-config.js";
@@ -127,157 +127,173 @@ export function createOAuthRouter(): Router {
 
   // ── DCR: Dynamic Client Registration (RFC 7591) ────────────
 
-  router.post("/oauth/register", async (req: Request, res: Response) => {
-    if (!checkRegisterRateLimit()) {
-      res.status(429).json({
-        error: "too_many_requests",
-        error_description: "Too many registration requests. Try again later.",
-      });
-      return;
-    }
-    const body = req.body as Record<string, unknown>;
-    const clientName = typeof body.client_name === "string" ? body.client_name.trim() : "";
-    const clientSecret = typeof body.client_secret === "string" ? body.client_secret : null;
-    const redirectUris = Array.isArray(body.redirect_uris) ? body.redirect_uris : [];
-    const grantTypes = Array.isArray(body.grant_types) ? body.grant_types : ["authorization_code"];
-
-    // Path 1: Pre-authenticated agent (has client_secret)
-    if (clientSecret) {
-      const entry = await lookupAgentBySecret(clientSecret);
-      if (!entry) {
-        res.status(401).json({ error: "invalid_client", error_description: "Invalid client secret." });
+  router.post("/oauth/register", async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!checkRegisterRateLimit()) {
+        res.status(429).json({
+          error: "too_many_requests",
+          error_description: "Too many registration requests. Try again later.",
+        });
         return;
       }
+      const body = req.body as Record<string, unknown>;
+      const clientName = typeof body.client_name === "string" ? body.client_name.trim() : "";
+      const clientSecret = typeof body.client_secret === "string" ? body.client_secret : null;
+      const redirectUris = Array.isArray(body.redirect_uris) ? body.redirect_uris : [];
+      const grantTypes = Array.isArray(body.grant_types) ? body.grant_types : ["authorization_code"];
+
+      // Path 1: Pre-authenticated agent (has client_secret)
+      if (clientSecret) {
+        const entry = await lookupAgentBySecret(clientSecret);
+        if (!entry) {
+          res.status(401).json({ error: "invalid_client", error_description: "Invalid client secret." });
+          return;
+        }
+        res.status(201).json({
+          client_id: entry.agentId,
+          client_name: entry.displayName,
+          redirect_uris: redirectUris,
+          grant_types: grantTypes,
+          token_endpoint_auth_method: "client_secret_post",
+        });
+        return;
+      }
+
+      // Path 2: Anonymous agent (no client_secret)
+      if (getAgentAuthPolicy() !== "open") {
+        res.status(403).json({
+          error: "access_denied",
+          error_description: "Anonymous agent registration is disabled. Contact the administrator to register a named agent identity.",
+        });
+        return;
+      }
+
+      if (!clientName) {
+        res.status(400).json({
+          error: "invalid_client_metadata",
+          error_description: "client_name is required.",
+        });
+        return;
+      }
+
+      const clientId = mintAnonClientId(clientName);
       res.status(201).json({
-        client_id: entry.agentId,
-        client_name: entry.displayName,
+        client_id: clientId,
+        client_name: clientName,
         redirect_uris: redirectUris,
         grant_types: grantTypes,
-        token_endpoint_auth_method: "client_secret_post",
+        token_endpoint_auth_method: "none",
       });
-      return;
+    } catch (error) {
+      next(error);
     }
-
-    // Path 2: Anonymous agent (no client_secret)
-    if (getAgentAuthPolicy() !== "open") {
-      res.status(403).json({
-        error: "access_denied",
-        error_description: "Anonymous agent registration is disabled. Contact the administrator to register a named agent identity.",
-      });
-      return;
-    }
-
-    if (!clientName) {
-      res.status(400).json({
-        error: "invalid_client_metadata",
-        error_description: "client_name is required.",
-      });
-      return;
-    }
-
-    const clientId = mintAnonClientId(clientName);
-    res.status(201).json({
-      client_id: clientId,
-      client_name: clientName,
-      redirect_uris: redirectUris,
-      grant_types: grantTypes,
-      token_endpoint_auth_method: "none",
-    });
   });
 
   // ── Authorization endpoint ─────────────────────────────────
 
-  router.get("/oauth/authorize", async (req: Request, res: Response) => {
-    const clientId = typeof req.query.client_id === "string" ? req.query.client_id : "";
-    const redirectUri = typeof req.query.redirect_uri === "string" ? req.query.redirect_uri : "";
-    const codeChallenge = typeof req.query.code_challenge === "string" ? req.query.code_challenge : "";
-    const codeChallengeMethod = typeof req.query.code_challenge_method === "string"
-      ? req.query.code_challenge_method : "S256";
-    const state = typeof req.query.state === "string" ? req.query.state : "";
-    const responseType = typeof req.query.response_type === "string" ? req.query.response_type : "code";
+  router.get("/oauth/authorize", async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const clientId = typeof req.query.client_id === "string" ? req.query.client_id : "";
+      const redirectUri = typeof req.query.redirect_uri === "string" ? req.query.redirect_uri : "";
+      const codeChallenge = typeof req.query.code_challenge === "string" ? req.query.code_challenge : "";
+      const codeChallengeMethod = typeof req.query.code_challenge_method === "string"
+        ? req.query.code_challenge_method : "S256";
+      const state = typeof req.query.state === "string" ? req.query.state : "";
+      const responseType = typeof req.query.response_type === "string" ? req.query.response_type : "code";
 
-    // Validate required params
-    if (!clientId || !redirectUri || !codeChallenge) {
-      res.status(400).send("Missing required OAuth parameters (client_id, redirect_uri, code_challenge).");
-      return;
-    }
-    if (responseType !== "code") {
-      res.status(400).send("Only response_type=code is supported.");
-      return;
-    }
+      // Validate required params
+      if (!clientId || !redirectUri || !codeChallenge) {
+        res.status(400).send("Missing required OAuth parameters (client_id, redirect_uri, code_challenge).");
+        return;
+      }
+      if (responseType !== "code") {
+        res.status(400).send("Only response_type=code is supported.");
+        return;
+      }
 
-    // Validate client_id
-    const client = await resolveClientId(clientId);
-    if (!client) {
-      res.status(400).send("Invalid or expired client_id.");
-      return;
-    }
+      // Validate client_id
+      const client = await resolveClientId(clientId);
+      if (!client) {
+        res.status(400).send("Invalid or expired client_id.");
+        return;
+      }
 
-    // Auto-approve: 302 redirect with auth code. Registration already enforces
-    // policy (anonymous blocked if not "open", pre-auth requires valid secret).
-    // Agents are the only consumers of this endpoint — humans use OIDC.
-    const code = mintAuthCode(clientId, redirectUri, codeChallenge, codeChallengeMethod);
-    const redirectTarget = new URL(redirectUri);
-    redirectTarget.searchParams.set("code", code);
-    if (state) redirectTarget.searchParams.set("state", state);
-    res.redirect(302, redirectTarget.toString());
+      // Auto-approve: 302 redirect with auth code. Registration already enforces
+      // policy (anonymous blocked if not "open", pre-auth requires valid secret).
+      // Agents are the only consumers of this endpoint — humans use OIDC.
+      const code = mintAuthCode(clientId, redirectUri, codeChallenge, codeChallengeMethod);
+      const redirectTarget = new URL(redirectUri);
+      redirectTarget.searchParams.set("code", code);
+      if (state) redirectTarget.searchParams.set("state", state);
+      res.redirect(302, redirectTarget.toString());
+    } catch (error) {
+      next(error);
+    }
   });
 
   // ── Consent approval (POST) ────────────────────────────────
 
-  router.post("/oauth/authorize", async (req: Request, res: Response) => {
-    const body = req.body as Record<string, unknown>;
-    const clientId = typeof body.client_id === "string" ? body.client_id : "";
-    const redirectUri = typeof body.redirect_uri === "string" ? body.redirect_uri : "";
-    const codeChallenge = typeof body.code_challenge === "string" ? body.code_challenge : "";
-    const codeChallengeMethod = typeof body.code_challenge_method === "string"
-      ? body.code_challenge_method : "S256";
-    const state = typeof body.state === "string" ? body.state : "";
+  router.post("/oauth/authorize", async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const body = req.body as Record<string, unknown>;
+      const clientId = typeof body.client_id === "string" ? body.client_id : "";
+      const redirectUri = typeof body.redirect_uri === "string" ? body.redirect_uri : "";
+      const codeChallenge = typeof body.code_challenge === "string" ? body.code_challenge : "";
+      const codeChallengeMethod = typeof body.code_challenge_method === "string"
+        ? body.code_challenge_method : "S256";
+      const state = typeof body.state === "string" ? body.state : "";
 
-    if (!clientId || !redirectUri || !codeChallenge) {
-      res.status(400).send("Missing required parameters.");
-      return;
+      if (!clientId || !redirectUri || !codeChallenge) {
+        res.status(400).send("Missing required parameters.");
+        return;
+      }
+
+      const client = await resolveClientId(clientId);
+      if (!client) {
+        res.status(400).send("Invalid or expired client_id.");
+        return;
+      }
+
+      const code = mintAuthCode(clientId, redirectUri, codeChallenge, codeChallengeMethod);
+      const redirectTarget = new URL(redirectUri);
+      redirectTarget.searchParams.set("code", code);
+      if (state) redirectTarget.searchParams.set("state", state);
+
+      res.redirect(302, redirectTarget.toString());
+    } catch (error) {
+      next(error);
     }
-
-    const client = await resolveClientId(clientId);
-    if (!client) {
-      res.status(400).send("Invalid or expired client_id.");
-      return;
-    }
-
-    const code = mintAuthCode(clientId, redirectUri, codeChallenge, codeChallengeMethod);
-    const redirectTarget = new URL(redirectUri);
-    redirectTarget.searchParams.set("code", code);
-    if (state) redirectTarget.searchParams.set("state", state);
-
-    res.redirect(302, redirectTarget.toString());
   });
 
   // ── Token endpoint ─────────────────────────────────────────
 
-  router.post("/oauth/token", async (req: Request, res: Response) => {
-    if (!checkTokenRateLimit()) {
-      res.status(429)
-        .setHeader("Retry-After", "60")
-        .json({
-          error: "too_many_requests",
-          error_description: "Too many token requests. Try again later.",
+  router.post("/oauth/token", async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!checkTokenRateLimit()) {
+        res.status(429)
+          .setHeader("Retry-After", "60")
+          .json({
+            error: "too_many_requests",
+            error_description: "Too many token requests. Try again later.",
+          });
+        return;
+      }
+
+      const body = req.body as Record<string, unknown>;
+      const grantType = typeof body.grant_type === "string" ? body.grant_type : "";
+
+      if (grantType === "authorization_code") {
+        await handleAuthCodeGrant(req, res);
+      } else if (grantType === "refresh_token") {
+        await handleRefreshGrant(req, res);
+      } else {
+        res.status(400).json({
+          error: "unsupported_grant_type",
+          error_description: `Unsupported grant_type: ${grantType}`,
         });
-      return;
-    }
-
-    const body = req.body as Record<string, unknown>;
-    const grantType = typeof body.grant_type === "string" ? body.grant_type : "";
-
-    if (grantType === "authorization_code") {
-      await handleAuthCodeGrant(req, res);
-    } else if (grantType === "refresh_token") {
-      await handleRefreshGrant(req, res);
-    } else {
-      res.status(400).json({
-        error: "unsupported_grant_type",
-        error_description: `Unsupported grant_type: ${grantType}`,
-      });
+      }
+    } catch (error) {
+      next(error);
     }
   });
 

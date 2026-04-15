@@ -186,12 +186,12 @@ export function SetupPage() {
                   <>
                     <CopyBlock content={
                       policy === "verify"
-                        ? `claude mcp add --transport http --client-id ${preAuthClientId} --client-secret <your-secret> ${serverName} ${mcpEndpoint}`
+                        ? `claude mcp add --transport http --client-id ${preAuthClientId} --client-secret ${serverName} ${mcpEndpoint}`
                         : `claude mcp add --transport http --client-id ${preAuthClientId} ${serverName} ${mcpEndpoint}`
                     } />
                     {policy === "verify" && (
                       <p style={{ margin: "0 0 0.5rem", color: "#b45309", fontSize: "0.85rem" }}>
-                        Replace <code>&lt;your-secret&gt;</code> with the client secret you received when registering this agent.
+                        Claude Code will prompt for the client secret after you run the command.
                       </p>
                     )}
                   </>
