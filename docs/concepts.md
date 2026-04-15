@@ -143,11 +143,30 @@ Every change is tracked in git. You can browse the full history in the Audit log
 
 The data directory is a standard git repository. You can also use regular git tools to inspect history.
 
-It is NOT connected to any other git repositories and CANNOT be used to publish to e.g. a GitHub repo. It is part of the system internals and is private. However: there is nothing stopping you from connecting it and synching to a downstream repo - but behaviour of the core system is undefined once you make the git repo non-private / multi-system.
+It is NOT connected to any other git repositories and CANNOT be used to publish to e.g. a GitHub repo. It is part of the system internals and is private.
 
 ### Storing your data in git
 
-Git itself allows nested git-in-git as a core feature - there's nothing wrong with putting your entire data folder into your own git repo (in fact: this is recommended). The internal private git repo will simply be ignored by your outer one (or you can optionally configure git to store it as well, in order to store the git history / audit log into your main repo).
+Warning: for a given `data/` directory, run exactly one writable Civigent instance.
+
+Do not run two separate Civigent servers against two separate copies of the same data and try to keep them in sync with Git afterwards. Civigent is not designed for that. If two hosts both accept writes, their session state, proposal state, and internal audit-log state can diverge, and Git is not enough to safely reconcile them back into one coherent system.
+
+The `data/` directory contains both:
+
+- the document files and other on-disk state
+- a private internal Git repository at `data/.git/` that powers Civigent's audit log
+
+That internal Git repository is part of the application's private state.
+
+You may place your whole deployment inside your own external Git repository, but you must choose explicitly what you want that outer repository to do:
+
+- track the `data/` files themselves
+- track a backup/export of the internal audit-log history
+- or both
+
+Do not rely on Git's default nested-repository behaviour as a backup strategy. If the outer repository sees `data/` as an embedded Git repository, it may record only a pointer to the inner repository state rather than the actual file contents or full audit-log history.
+
+See the Deployment Guide for supported backup patterns.
 
 ---
 

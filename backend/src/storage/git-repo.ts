@@ -57,6 +57,19 @@ export function isValidSha(sha: string): boolean {
   return /^[0-9a-f]{7,40}$/i.test(sha);
 }
 
+export async function getLatestCommitTimestampIso(dataRoot: string): Promise<string | null> {
+  try {
+    const output = await gitExec(["log", "-1", "--format=%aI"], dataRoot);
+    return output || null;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg.includes("does not have any commits") || msg.includes("unknown revision")) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 /**
  * Read the Writer-Type trailer from a commit.
  * Returns "human", "agent", or null if the trailer is missing/empty.

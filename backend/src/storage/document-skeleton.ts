@@ -264,6 +264,26 @@ export interface ReplacementResult {
   added: FlatEntry[];
 }
 
+export interface CollapseParentResult {
+  /** Entries removed from the skeleton (target sub-skeleton entry + body holder only). */
+  removed: FlatEntry[];
+  /** The merge target — where the orphan body should be absorbed. */
+  mergeTarget: FlatEntry;
+  /** Whether the merge target was auto-created (BFH fabrication). */
+  mergeTargetWasCreated: boolean;
+  /** The target's body-holder entry (OLD position) — carries the orphan body content.
+   *  Null when the target had no body-holder child. */
+  bodyHolderEntry: FlatEntry | null;
+  /** Promoted children entries in their OLD positions (for pre-reading bodies). */
+  oldPromotedEntries: FlatEntry[];
+  /** Promoted children entries in their NEW positions (for writing bodies). */
+  promotedEntries: FlatEntry[];
+  /** Body file writes the caller must perform (e.g. empty BFH body). */
+  bodyWrites: Array<{ absolutePath: string; content: string }>;
+  /** Fragment key remaps (from → null for deleted keys). */
+  fragmentKeyRemaps: Array<{ from: string; to: string | null }>;
+}
+
 // ─── DocumentSkeleton (readonly) ────────────────────────────────
 
 export class DocumentSkeleton {
@@ -1181,6 +1201,280 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
       removed: plan.removed,
       mergeTarget: resolvedMergeTarget,
       mergeTargetWasCreated,
+      bodyWrites: plan.bodyWrites,
+      fragmentKeyRemaps: plan.fragmentKeyRemaps,
+    };
+  }
+
+  // --- Parent heading collapse (item 32) --------------------------------
+
+  /**
+   * Collapse a parent heading node: remove it from the skeleton,
+   * reparent its children, and declare the merge target for the orphan
+   * body.
+   *
+   * A "parent heading" is a heading that owns a sub-skeleton (has
+   * children). Collapsing it:
+   *
+   *   1. Finds the merge target (previous body holder in document order).
+   *   2. Removes the target from its parent sibling list.
+   *   3. Partitions the target's children into body-holder (carries the
+   *      orphan body content) and promoted (the real child headings).
+   *   4. Re-nests promoted children:
+   *      - If the merge target's heading path equals the target's parent
+   *        path → insert at the target's former position in the same
+   *        sibling list (the merge target is the parent or a preceding
+   *        body holder at the same tree level).
+   *      - Otherwise → insert as children of the merge target heading
+   *        node (the merge target is a preceding sibling).
+   *   5. Ensures body holders exist for any newly-parented nodes.
+   *
+   * Returns a CollapseParentResult that the caller (OverlayContentLayer)
+   * uses to drive body reads, writes, file deletion, and fragment
+   * reconciliation.
+   *
+   * Throws if:
+   *   - headingPath === [] (BFH cannot be collapsed)
+   *   - headingPath does not resolve
+   *   - the resolved entry is NOT a sub-skeleton parent (leaf sections
+   *     use deleteHeadingPreservingBody instead)
+   */
+  async collapseParentHeading(
+    headingPath: string[],
+  ): Promise<CollapseParentResult> {
+    if (headingPath.length === 0) {
+      throw new Error(
+        `collapseParentHeading([]) is illegal in ${this.docPath} — ` +
+        `the before-first-heading section cannot be collapsed.`,
+      );
+    }
+
+    const targetEntry = this.findStructuralNodeByHeadingPath(headingPath);
+    if (!targetEntry) {
+      throw staleHeadingPath(this.docPath, headingPath, "collapseParentHeading");
+    }
+    if (!targetEntry.hasChildren) {
+      throw new Error(
+        `collapseParentHeading requires a sub-skeleton parent in ${this.docPath}: ` +
+        `the entry at [${headingPath.join(" > ")}] has no children. ` +
+        `Use deleteHeadingPreservingBody() for leaf sections instead.`,
+      );
+    }
+
+    // Pre-capture the target's children from the actual SkeletonNode so we
+    // can separate body-holder from promoted before the transaction.
+    const parentPath = headingPath.slice(0, -1);
+    const preSiblings = this.findSiblingList(parentPath);
+    const targetNode = preSiblings.find(n => headingsEqual(n.heading, headingPath[headingPath.length - 1]));
+    if (!targetNode) {
+      throw staleHeadingPath(this.docPath, headingPath, "collapseParentHeading");
+    }
+
+    // The target is a sub-skeleton parent — forEachSection emits its
+    // body-holder child, not the parent file itself. Use the body-holder's
+    // sectionFile for the document-order walk so findPreviousBodyHolder
+    // can locate it.
+    const bodyHolderNode = targetNode.children.find(c => c.level === 0 && c.heading === "");
+    if (!bodyHolderNode) {
+      throw new Error(
+        `Skeleton integrity error in ${this.docPath}: sub-skeleton parent ` +
+        `at [${headingPath.join(" > ")}] has no body-holder child.`,
+      );
+    }
+
+    // Snapshot the merge target BEFORE the mutation.
+    const mergeTargetSnapshot = this.findPreviousBodyHolder(bodyHolderNode.sectionFile);
+
+    let resolvedMergeTarget: FlatEntry | null = mergeTargetSnapshot;
+    let mergeTargetWasCreated = false;
+
+    const promotedNodes = targetNode.children.filter(c => !(c.level === 0 && c.heading === ""));
+
+    // Capture body-holder flat entry before mutation (old absolutePath).
+    const targetSkeletonPath = this.resolveSkeletonPathFor(parentPath);
+    const targetNodeAbsPath = path.join(`${targetSkeletonPath}.sections`, targetNode.sectionFile);
+    let bodyHolderEntry: FlatEntry | null = null;
+    if (bodyHolderNode) {
+      bodyHolderEntry = {
+        headingPath: [...headingPath],
+        heading: bodyHolderNode.heading,
+        level: bodyHolderNode.level,
+        sectionFile: bodyHolderNode.sectionFile,
+        absolutePath: path.join(`${targetNodeAbsPath}.sections`, bodyHolderNode.sectionFile),
+        isSubSkeleton: false,
+      };
+    }
+
+    // Capture promoted entries in OLD positions for the caller's pre-read.
+    const oldPromotedEntries: FlatEntry[] = [];
+    for (const pn of promotedNodes) {
+      oldPromotedEntries.push(
+        ...this.flattenNode(pn, headingPath, targetNodeAbsPath)
+          .filter(e => !e.isSubSkeleton),
+      );
+    }
+
+    let newPromotedEntries: FlatEntry[] = [];
+
+    const plan = await this.applyStructuralMutationTransaction((ctx) => {
+      const removed: FlatEntry[] = [];
+      const added: FlatEntry[] = [];
+      const bodyWrites: Array<{ absolutePath: string; content: string }> = [];
+      const fragmentKeyRemaps: Array<{ from: string; to: string | null }> = [];
+
+      // (1) Auto-create BFH if no merge target exists.
+      if (!resolvedMergeTarget) {
+        const bfhEntry = ctx.createBfhAtFront();
+        added.push(bfhEntry);
+        bodyWrites.push({ absolutePath: bfhEntry.absolutePath, content: "" });
+        resolvedMergeTarget = bfhEntry;
+        mergeTargetWasCreated = true;
+      }
+
+      // (2) Remove the target from its parent sibling list.
+      const siblings = ctx.findSiblingList(parentPath);
+      const idx = siblings.findIndex(n => n.sectionFile === targetEntry.sectionFile);
+      if (idx < 0) {
+        throw new Error(
+          `Skeleton integrity error in ${this.docPath}: target sectionFile ` +
+          `${targetEntry.sectionFile} not found in expected parent sibling list at ` +
+          `[${parentPath.join(" > ")}]`,
+        );
+      }
+      const removedNode = siblings.splice(idx, 1)[0];
+
+      const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
+
+      // Only the target's own sub-skeleton entry and its body holder are
+      // truly removed. Promoted children are MOVED to the merge target,
+      // not deleted — they must NOT appear in the removed list.
+      const targetAbsPath = path.join(`${parentSkeletonPath}.sections`, removedNode.sectionFile);
+      removed.push({
+        headingPath: [...parentPath, removedNode.heading],
+        heading: removedNode.heading,
+        level: removedNode.level,
+        sectionFile: removedNode.sectionFile,
+        absolutePath: targetAbsPath,
+        isSubSkeleton: true,
+      });
+      const bhChild = removedNode.children.find(c => c.level === 0 && c.heading === "");
+      if (bhChild) {
+        removed.push({
+          headingPath: [...parentPath, removedNode.heading],
+          heading: "",
+          level: 0,
+          sectionFile: bhChild.sectionFile,
+          absolutePath: path.join(`${targetAbsPath}.sections`, bhChild.sectionFile),
+          isSubSkeleton: false,
+        });
+      }
+
+      // Body holder fragment key disappears (its content is absorbed into
+      // the merge target). The target's sub-skeleton sectionFile is NOT a
+      // fragment key — only body files produce fragment keys.
+      if (bodyHolderNode) {
+        fragmentKeyRemaps.push({ from: bodyHolderNode.sectionFile, to: null });
+      }
+
+      // (3) Re-nest promoted children.
+      const mergeTargetHeadingPath = resolvedMergeTarget!.headingPath;
+      const pathsEqual = parentPath.length === mergeTargetHeadingPath.length
+        && parentPath.every((seg, i) => headingsEqual(seg, mergeTargetHeadingPath[i]));
+
+      if (pathsEqual) {
+        // Merge target is at the same tree level (parent, or a sibling that
+        // is a body holder of the parent). Insert promoted children at the
+        // target's former position in the same sibling list.
+        // (Re-fetch siblings in case the list reference shifted after splice.)
+        const currentSiblings = ctx.findSiblingList(parentPath);
+        const insertIdx = Math.min(idx, currentSiblings.length);
+        currentSiblings.splice(insertIdx, 0, ...promotedNodes);
+      } else {
+        // Merge target is a preceding sibling heading. Insert promoted
+        // children as children of the merge target node.
+        const mergeTargetSiblings = ctx.findSiblingList(mergeTargetHeadingPath.slice(0, -1));
+        const mergeNode = mergeTargetSiblings.find(
+          n => headingsEqual(n.heading, mergeTargetHeadingPath[mergeTargetHeadingPath.length - 1]),
+        );
+        if (!mergeNode) {
+          throw new Error(
+            `Skeleton integrity error in ${this.docPath}: merge target node ` +
+            `[${mergeTargetHeadingPath.join(" > ")}] not found after splice.`,
+          );
+        }
+        mergeNode.children.push(...promotedNodes);
+      }
+
+      // (4) Ensure body holders exist for any newly-parented nodes.
+      ctx.addBodyHoldersToParents(ctx.roots);
+
+      // (5) Flatten promoted entries in their NEW positions.
+      const newParentPath = pathsEqual ? parentPath : mergeTargetHeadingPath;
+      const newParentSkeletonPath = ctx.resolveSkeletonPathFor(newParentPath);
+      for (const pn of promotedNodes) {
+        const entries = ctx.flattenNode(pn, newParentPath, newParentSkeletonPath);
+        newPromotedEntries.push(...entries.filter(e => !e.isSubSkeleton));
+        added.push(...entries);
+      }
+
+      // (6) If the merge target transitioned from leaf to parent (it
+      // gained promoted children), addBodyHoldersToParents created a new
+      // body-holder child for it. The old leaf sectionFile will be
+      // overwritten with skeleton markers by flushToOverlay, so update
+      // resolvedMergeTarget to point to the body holder and emit a
+      // fragment key remap.
+      if (!mergeTargetWasCreated) {
+        const mtHP = resolvedMergeTarget!.headingPath;
+        if (mtHP.length > 0) {
+          const mtParent = mtHP.slice(0, -1);
+          const mtSiblings = ctx.findSiblingList(mtParent);
+          const mtNode = mtSiblings.find(
+            n => headingsEqual(n.heading, mtHP[mtHP.length - 1]),
+          );
+          if (mtNode && mtNode.children.length > 0) {
+            const bhChild = mtNode.children.find(
+              c => c.level === 0 && c.heading === "",
+            );
+            if (bhChild && resolvedMergeTarget!.sectionFile !== bhChild.sectionFile) {
+              const oldSF = resolvedMergeTarget!.sectionFile;
+              const mtParentSkPath = ctx.resolveSkeletonPathFor(mtParent);
+              const mtAbsPath = path.join(
+                `${mtParentSkPath}.sections`, mtNode.sectionFile,
+              );
+              const bhAbsPath = path.join(
+                `${mtAbsPath}.sections`, bhChild.sectionFile,
+              );
+              resolvedMergeTarget = {
+                headingPath: [...mtHP],
+                heading: "",
+                level: 0,
+                sectionFile: bhChild.sectionFile,
+                absolutePath: bhAbsPath,
+                isSubSkeleton: false,
+              };
+              fragmentKeyRemaps.push({ from: oldSF, to: bhChild.sectionFile });
+            }
+          }
+        }
+      }
+
+      return { removed, added, bodyWrites, fragmentKeyRemaps };
+    });
+
+    if (!resolvedMergeTarget) {
+      throw new Error(
+        `Skeleton integrity error in ${this.docPath}: collapseParentHeading ` +
+        `failed to resolve a merge target for headingPath=[${headingPath.join(" > ")}]`,
+      );
+    }
+
+    return {
+      removed: plan.removed,
+      mergeTarget: resolvedMergeTarget,
+      mergeTargetWasCreated,
+      bodyHolderEntry,
+      oldPromotedEntries,
+      promotedEntries: newPromotedEntries,
       bodyWrites: plan.bodyWrites,
       fragmentKeyRemaps: plan.fragmentKeyRemaps,
     };

@@ -11,7 +11,7 @@
  *           applyAcceptResult(no broadcast, no holders) -> absorbChangedSections -> cleanup
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import request from "supertest";
 import { WebSocket } from "ws";
@@ -42,6 +42,7 @@ import {
   flushDirtyToOverlay,
 } from "../../crdt/ydoc-lifecycle.js";
 import { setCrdtEventHandler } from "../../ws/crdt-coordinator.js";
+import { CanonicalStore } from "../../storage/canonical-store.js";
 
 // ─── Wire helpers ──────────────────────────────────────────────
 
@@ -382,6 +383,209 @@ describe("lifecycle boundary crossings", () => {
     const timelineBefore = sectionsBefore.find((s) => s.heading === "Timeline");
     const timelineAfter = sectionsAfter.find((s) => s.heading === "Timeline");
     expect(timelineAfter?.content).toBe(timelineBefore!.content);
+
+    ws.close();
+  });
+
+  it("B18.2a: publish should not overlap a blur-triggered acceptLiveFragments on the same session", async () => {
+    setSessionOverlayImportCallback(async (session) => {
+      await flushDirtyToOverlay(session);
+    });
+
+    const clientInstanceId = "client-publish-overlap";
+    const ws = new WebSocket(
+      `ws://localhost:${port}/ws/crdt${SAMPLE_DOC_PATH}?clientInstanceId=${clientInstanceId}`,
+      { headers: { Authorization: `Bearer ${writerToken}` } },
+    );
+    openSockets.push(ws);
+    await waitForOpen(ws);
+
+    const syncPromise = waitForMessage(ws, (msg) => msg[0] === MSG_SYNC_STEP_2);
+    const editorResult = await requestModeTransition(ws, {
+      requestId: crypto.randomUUID(),
+      clientInstanceId,
+      docPath: SAMPLE_DOC_PATH,
+      requestedMode: "editor",
+      editorFocusTarget: null,
+    });
+    expect(editorResult.kind).toBe("success");
+    await syncPromise;
+
+    const sectionsBefore = await fetchSections(app, writerToken);
+    const overview = sectionsBefore.find((s) => s.heading === "Overview");
+    expect(overview).toBeDefined();
+
+    const mutateResult = await sendSectionMutate(
+      ws,
+      overview!.fragment_key,
+      `${overview!.content}\n\nBlur publish overlap line.`,
+    );
+    expect(mutateResult.success).toBe(true);
+
+    const session = documentSessionRegistry.get(SAMPLE_DOC_PATH);
+    expect(session).toBeDefined();
+
+    const stagedAny = session!.stagedSections as {
+      acceptLiveFragments: typeof session!.stagedSections.acceptLiveFragments;
+    };
+    const recoveryAny = session!.recoveryBuffer as {
+      snapshotFromLive: typeof session!.recoveryBuffer.snapshotFromLive;
+    };
+    const originalAccept = stagedAny.acceptLiveFragments.bind(session!.stagedSections);
+    const originalSnapshot = recoveryAny.snapshotFromLive.bind(session!.recoveryBuffer);
+
+    let overlapDetected = false;
+    let firstAcceptHolding = false;
+    let releaseFirstAccept: (() => void) | null = null;
+    let resolveFirstAcceptStarted: (() => void) | null = null;
+    let resolveSecondAcceptStarted: (() => void) | null = null;
+
+    const firstAcceptStarted = new Promise<void>((resolve) => {
+      resolveFirstAcceptStarted = resolve;
+    });
+    const secondAcceptStarted = new Promise<void>((resolve) => {
+      resolveSecondAcceptStarted = resolve;
+    });
+    const firstAcceptGate = new Promise<void>((resolve) => {
+      releaseFirstAccept = resolve;
+    });
+
+    recoveryAny.snapshotFromLive = async (...args) => {
+      if (args.length === 0) {
+        throw new Error("snapshotFromLive called without arguments");
+      }
+      return { snapshotKeys: new Set<string>() };
+    };
+    stagedAny.acceptLiveFragments = async (...args) => {
+      if (args.length < 2) {
+        throw new Error("acceptLiveFragments called without arguments");
+      }
+      if (firstAcceptHolding) {
+        overlapDetected = true;
+        resolveSecondAcceptStarted?.();
+      } else {
+        firstAcceptHolding = true;
+        resolveFirstAcceptStarted?.();
+        await firstAcceptGate;
+      }
+      return originalAccept(args[0], args[1]);
+    };
+
+    try {
+      ws.send(encodeMessage(MSG_SESSION_OVERLAY_IMPORT_REQUEST, new Uint8Array(0)));
+      await firstAcceptStarted;
+
+      const publishPromise = commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
+      const sawConcurrentAccept = await Promise.race([
+        secondAcceptStarted.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 75)),
+      ]);
+
+      expect(sawConcurrentAccept).toBe(false);
+      expect(overlapDetected).toBe(false);
+
+      releaseFirstAccept?.();
+      await publishPromise;
+    } finally {
+      releaseFirstAccept?.();
+      stagedAny.acceptLiveFragments = originalAccept;
+      recoveryAny.snapshotFromLive = originalSnapshot;
+    }
+
+    ws.close();
+  });
+
+  it("B18.2b: publish should not reach canonical absorb while a blur flush is still in flight", async () => {
+    let releaseImport: (() => void) | null = null;
+    let resolveImportStarted: (() => void) | null = null;
+    let importFinished = false;
+
+    const importStarted = new Promise<void>((resolve) => {
+      resolveImportStarted = resolve;
+    });
+    const importGate = new Promise<void>((resolve) => {
+      releaseImport = resolve;
+    });
+
+    setSessionOverlayImportCallback(async (session) => {
+      resolveImportStarted?.();
+      await importGate;
+      await flushDirtyToOverlay(session);
+      importFinished = true;
+    });
+
+    const clientInstanceId = "client-publish-absorb-race";
+    const ws = new WebSocket(
+      `ws://localhost:${port}/ws/crdt${SAMPLE_DOC_PATH}?clientInstanceId=${clientInstanceId}`,
+      { headers: { Authorization: `Bearer ${writerToken}` } },
+    );
+    openSockets.push(ws);
+    await waitForOpen(ws);
+
+    const syncPromise = waitForMessage(ws, (msg) => msg[0] === MSG_SYNC_STEP_2);
+    const editorResult = await requestModeTransition(ws, {
+      requestId: crypto.randomUUID(),
+      clientInstanceId,
+      docPath: SAMPLE_DOC_PATH,
+      requestedMode: "editor",
+      editorFocusTarget: null,
+    });
+    expect(editorResult.kind).toBe("success");
+    await syncPromise;
+
+    const sectionsBefore = await fetchSections(app, writerToken);
+    const overview = sectionsBefore.find((s) => s.heading === "Overview");
+    expect(overview).toBeDefined();
+
+    const mutateResult = await sendSectionMutate(
+      ws,
+      overview!.fragment_key,
+      `${overview!.content}\n\nCanonical absorb should wait for blur flush.`,
+    );
+    expect(mutateResult.success).toBe(true);
+
+    const session = documentSessionRegistry.get(SAMPLE_DOC_PATH);
+    expect(session).toBeDefined();
+    const recoveryAny = session!.recoveryBuffer as {
+      snapshotFromLive: typeof session!.recoveryBuffer.snapshotFromLive;
+    };
+    const originalSnapshot = recoveryAny.snapshotFromLive.bind(session!.recoveryBuffer);
+    recoveryAny.snapshotFromLive = async () => ({ snapshotKeys: new Set<string>() });
+
+    let absorbStartedBeforeImportFinished = false;
+    let resolveAbsorbStarted: (() => void) | null = null;
+    const absorbStarted = new Promise<void>((resolve) => {
+      resolveAbsorbStarted = resolve;
+    });
+    const originalAbsorb = CanonicalStore.prototype.absorbChangedSections;
+    const absorbSpy = vi.spyOn(CanonicalStore.prototype, "absorbChangedSections").mockImplementation(
+      async function (...args) {
+        absorbStartedBeforeImportFinished ||= !importFinished;
+        resolveAbsorbStarted?.();
+        return await originalAbsorb.apply(this, args);
+      },
+    );
+
+    try {
+      ws.send(encodeMessage(MSG_SESSION_OVERLAY_IMPORT_REQUEST, new Uint8Array(0)));
+      await importStarted;
+
+      const publishPromise = commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
+      const absorbWhileImportBlocked = await Promise.race([
+        absorbStarted.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 75)),
+      ]);
+
+      expect(absorbWhileImportBlocked).toBe(false);
+      expect(absorbStartedBeforeImportFinished).toBe(false);
+
+      releaseImport?.();
+      await publishPromise;
+    } finally {
+      releaseImport?.();
+      recoveryAny.snapshotFromLive = originalSnapshot;
+      absorbSpy.mockRestore();
+    }
 
     ws.close();
   });

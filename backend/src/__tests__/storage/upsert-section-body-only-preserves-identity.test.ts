@@ -38,7 +38,7 @@
  *   2. The skeleton's `level` and `heading` for that path are unchanged.
  *   3. The on-disk body bytes match the new content.
  *   4. The detailed result reports no `removedEntries`, no `fragmentKeyRemaps`,
- *      no `structureChange`, and lists the targeted entry as the sole
+ *      no `structureChanges`, and lists the targeted entry as the sole
  *      `writtenEntries` member.
  */
 
@@ -148,7 +148,7 @@ describe("upsertSection body-only must preserve section identity", () => {
 
     expect(result.removedEntries).toEqual([]);
     expect(result.fragmentKeyRemaps).toEqual([]);
-    expect(result.structureChange).toBeNull();
+    expect(result.structureChanges).toEqual([]);
     expect(result.writtenEntries.map((e) => e.headingPath)).toEqual([["Overview"]]);
   });
 
@@ -178,7 +178,7 @@ describe("upsertSection body-only must preserve section identity", () => {
 
     expect(result.removedEntries).toEqual([]);
     expect(result.fragmentKeyRemaps).toEqual([]);
-    expect(result.structureChange).toBeNull();
+    expect(result.structureChanges).toEqual([]);
     expect(result.writtenEntries.map((e) => e.headingPath)).toEqual([["Subsection"]]);
   });
 
@@ -208,7 +208,7 @@ describe("upsertSection body-only must preserve section identity", () => {
 
     expect(result.removedEntries).toEqual([]);
     expect(result.fragmentKeyRemaps).toEqual([]);
-    expect(result.structureChange).toBeNull();
+    expect(result.structureChanges).toEqual([]);
     expect(result.writtenEntries.map((e) => e.headingPath)).toEqual([["Deep"]]);
   });
 });

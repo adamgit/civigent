@@ -98,9 +98,9 @@ function renderChecks(checks: DiagHealthCheck[]) {
       return acc;
     }, {});
     return (
-      <div className="h-full min-h-0 flex flex-col">
-        <h3 className="text-sm font-semibold mb-2 shrink-0">Health Checks</h3>
-        <div className="min-h-0 flex-1 overflow-y-auto space-y-3">
+      <div>
+        <h3 className="text-sm font-semibold mb-2">Health Checks</h3>
+        <div className="space-y-3">
           {Object.entries(grouped).map(([category, categoryChecks]) => (
             <div key={category} className="border border-gray-200 rounded">
               <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500 border-b border-gray-100">
@@ -223,9 +223,9 @@ function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
 function renderSectionTable(sections: DiagSectionLayerInfo[]) {
   try {
     return (
-      <div className="h-full min-h-0 flex flex-col">
-        <h3 className="text-sm font-semibold mb-2 shrink-0">Section Layers</h3>
-        <div className="overflow-auto border border-gray-200 rounded min-h-0 flex-1">
+      <div>
+        <h3 className="text-sm font-semibold mb-2">Section Layers</h3>
+        <div className="overflow-x-auto border border-gray-200 rounded">
           <table className="w-full border-collapse">
             <thead>
               <tr className="bg-gray-50 sticky top-0">
@@ -289,28 +289,28 @@ export default function DocumentDiagnostics({ docPath, onClose }: DocumentDiagno
         </button>
         <h2 className="text-lg font-semibold mb-4 shrink-0">Diagnostics: {docPath}</h2>
 
-        {!data && !error && (
-          <p className="text-gray-500 text-sm">Loading diagnostics...</p>
-        )}
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+          {!data && !error && (
+            <p className="text-gray-500 text-sm">Loading diagnostics...</p>
+          )}
 
-        {error && (
-          <div className="text-red-600 text-sm">
-            Failed to load diagnostics: {error}
-          </div>
-        )}
-
-        {data && (
-          <div className="grid grid-cols-1 xl:grid-cols-[340px_minmax(0,1fr)] gap-4 min-h-0 flex-1">
-            <div className="min-h-0 flex flex-col gap-4">
-              {renderSummary(data.summary)}
-              {renderRestoreProvenance(data.restore_provenance)}
-              <div className="min-h-0 flex-1">
-                {renderChecks(data.checks)}
-              </div>
+          {error && (
+            <div className="text-red-600 text-sm">
+              Failed to load diagnostics: {error}
             </div>
-            {renderSectionTable(data.sections)}
-          </div>
-        )}
+          )}
+
+          {data && (
+            <div className="grid grid-cols-1 xl:grid-cols-[340px_340px_minmax(0,1fr)] gap-4">
+              <div className="flex flex-col gap-4">
+                {renderSummary(data.summary)}
+                {renderRestoreProvenance(data.restore_provenance)}
+              </div>
+              {renderChecks(data.checks)}
+              {renderSectionTable(data.sections)}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

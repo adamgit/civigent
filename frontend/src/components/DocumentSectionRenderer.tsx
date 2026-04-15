@@ -7,7 +7,7 @@ import type { CrdtTransport } from "../services/crdt-transport";
 import type { DocumentSection } from "../pages/document-page-utils";
 import { headingPathToLabel } from "../pages/document-page-utils";
 import { resolveWriterId } from "../services/api-client";
-import type { SectionTransfer } from "../services/section-transfer";
+import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import { useSectionHover } from "../contexts/sectionHoverUtils";
 
 export interface DocumentSectionRendererProps {
@@ -27,6 +27,7 @@ export interface DocumentSectionRendererProps {
   transport: CrdtTransport | null;
   crdtSynced: boolean;
   crdtError: string | null;
+  transferService: SectionTransferService | null;
   proposalMode: boolean;
   isReady: boolean;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
@@ -57,6 +58,7 @@ export function DocumentSectionRenderer({
   transport,
   crdtSynced,
   crdtError,
+  transferService,
   proposalMode,
   isReady,
   mouseDownPosRef,
@@ -170,6 +172,7 @@ export function DocumentSectionRenderer({
                 readOnly={!isFocused || isLockedByOtherHuman}
                 expectsCrdt={!proposalMode}
                 onChange={proposalMode && onProposalSectionChange ? (md) => onProposalSectionChange(i, md) : undefined}
+                canDrop={transferService ? () => transferService.canDrop(fk) : undefined}
                 onCursorExit={(direction) => onCursorExit(i, direction)}
                 onCrossSectionDrop={(transfer) => onCrossSectionDrop(section, transfer)}
                 onReady={() => onEditorReady(i)}

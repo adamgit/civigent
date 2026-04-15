@@ -117,6 +117,7 @@ interface DocumentsTreeNavProps {
   flashDocKinds?: ReadonlyMap<string, "human" | "agent">;
   onDocumentOpen?: (docPath: string) => void;
   onTreeRefresh?: () => void;
+  onCreateDocumentInFolder?: (folderPath: string) => void;
 }
 
 export function DocumentsTreeNav({
@@ -128,6 +129,7 @@ export function DocumentsTreeNav({
   flashDocKinds,
   onDocumentOpen,
   onTreeRefresh,
+  onCreateDocumentInFolder,
 }: DocumentsTreeNavProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -142,6 +144,24 @@ export function DocumentsTreeNav({
   const sortedEntries = useMemo(() => entries, [entries]);
   const badgeSet = useMemo(() => new Set(badgedDocPaths ?? []), [badgedDocPaths]);
   const allDirectoryPaths = useMemo(() => collectDirectoryPaths(entries), [entries]);
+  const pathTypeMap = useMemo(() => {
+    const map = new Map<string, "file" | "directory">();
+    const stack = [...entries];
+    while (stack.length > 0) {
+      const node = stack.pop();
+      if (!node) {
+        continue;
+      }
+      map.set(node.path, node.type);
+      if (node.type === "directory" && Array.isArray(node.children)) {
+        stack.push(...node.children);
+      }
+    }
+    return map;
+  }, [entries]);
+  const selectedPathType = selectedDocPath ? pathTypeMap.get(selectedDocPath) ?? null : null;
+  const selectedFilePath = selectedPathType === "file" ? selectedDocPath : null;
+  const selectedFolderPath = selectedPathType === "directory" ? selectedDocPath : null;
 
   useEffect(() => {
     writeExpandedState(storageKey, expanded);
@@ -238,11 +258,22 @@ export function DocumentsTreeNav({
   }, []);
 
   const dirActionButtons = (folderPath: string, stopPropagation = false) => (
-    <span className="flex gap-1 opacity-0 group-hover:opacity-60">
+    <span className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
+      <button
+        type="button"
+        title={`Create a new document in ${getDisplayName(folderPath)}`}
+        className="text-sidebar-text/55 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[12px] leading-none transition-colors"
+        onClick={(e) => {
+          if (stopPropagation) e.stopPropagation();
+          onCreateDocumentInFolder?.(folderPath);
+        }}
+      >
+        +
+      </button>
       <button
         type="button"
         title={`Export ${getDisplayName(folderPath)} as ZIP`}
-        className="hover:!opacity-100 bg-transparent border-none cursor-pointer p-0 text-[11px] leading-none transition-opacity"
+        className="text-sidebar-text/55 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[11px] leading-none transition-colors"
         onClick={(e) => {
           if (stopPropagation) e.stopPropagation();
           triggerExport(folderPath);
@@ -253,7 +284,7 @@ export function DocumentsTreeNav({
       <button
         type="button"
         title={`Import .md files into ${getDisplayName(folderPath)}`}
-        className="hover:!opacity-100 bg-transparent border-none cursor-pointer p-0 text-[11px] leading-none transition-opacity"
+        className="text-sidebar-text/55 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[11px] leading-none transition-colors"
         onClick={(e) => {
           if (stopPropagation) e.stopPropagation();
           triggerImport(folderPath);
@@ -274,26 +305,44 @@ export function DocumentsTreeNav({
             const isExpanded = effectiveExpanded.has(node.path);
             const childEntries = Array.isArray(node.children) ? node.children : [];
             const hasChildren = childEntries.length > 0;
+            const isSelectedFolder = selectedFolderPath === node.path;
             return (
               <div key={node.path}>
                 <div
                   role="button"
                   tabIndex={0}
-                  className="group flex items-center gap-[7px] w-full px-1.5 py-[5px] rounded-[5px] text-[13px] text-sidebar-text bg-transparent border-none font-[family-name:var(--font-ui)] text-left cursor-pointer hover:bg-white/45 hover:text-sidebar-text-hover transition-all"
+                  className={`group flex items-center gap-[7px] w-full px-1.5 py-[5px] rounded-[5px] text-[13px] bg-transparent border-none font-[family-name:var(--font-ui)] text-left cursor-pointer transition-all ${
+                    isSelectedFolder
+                      ? "bg-sidebar-active-bg text-sidebar-active-text font-medium"
+                      : "text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover"
+                  }`}
                   style={{ paddingLeft }}
                   onClick={() => toggleDirectory(node.path)}
                   onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleDirectory(node.path); } }}
                 >
-                  <span className="text-[13px] opacity-45 w-4 text-center">
-                    {isExpanded ? "\u{1F4C1}" : "\u{1F4C1}"}
-                  </span>
+                  <button
+                    type="button"
+                    title={`Open ${getDisplayName(node.path)} folder page`}
+                    aria-label={`Open ${getDisplayName(node.path)} folder page`}
+                    className={`w-4 p-0 text-center bg-transparent border-none cursor-pointer transition-colors ${
+                      isSelectedFolder
+                        ? "text-sidebar-active-text"
+                        : "text-sidebar-text/55 group-hover:text-sidebar-text-hover hover:text-accent"
+                    }`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      navigate(`/docs/${stripLeadingSlashForRoute(node.path)}`);
+                    }}
+                  >
+                    &#128193;
+                  </button>
                   <span className="truncate">{getDisplayName(node.path)}/</span>
                   <span className="ml-auto flex items-center gap-1">
                     {!isExpanded ? (
                       <span
                         aria-hidden="true"
-                        className={`h-2 w-2 rounded-full border border-sidebar-text-hover ${
-                          hasChildren ? "bg-sidebar-text-hover" : "bg-transparent"
+                        className={`h-2 w-2 rounded-full border border-sidebar-marker ${
+                          hasChildren ? "bg-sidebar-marker" : "bg-transparent"
                         }`}
                       />
                     ) : null}
@@ -318,7 +367,7 @@ export function DocumentsTreeNav({
             );
           }
 
-          const isSelected = selectedDocPath === node.path;
+          const isSelected = selectedFilePath === node.path;
           const flashKind = flashDocKinds?.get(node.path) ?? null;
           const handleClick = (_event: MouseEvent<HTMLAnchorElement>) => {
             onDocumentOpen?.(node.path);

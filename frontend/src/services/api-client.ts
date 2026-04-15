@@ -28,6 +28,7 @@ import type {
   SessionInfoResponse,
   UpdateProposalRequest,
   AcquireLocksResponse,
+  AllSessionStatusesResponse,
   WithdrawProposalResponse,
   WriterDirtyState,
 } from "../types/shared.js";
@@ -662,6 +663,10 @@ export const apiClient = {
 
   async getWriterDirtyState(writerId: string): Promise<WriterDirtyState> {
     return requestJson<WriterDirtyState>(`/api/writers/${encodeURIComponent(writerId)}/dirty`);
+  },
+
+  async getAllSessionStatuses(): Promise<AllSessionStatusesResponse> {
+    return requestJson<AllSessionStatusesResponse>("/api/session-statuses/all");
   },
 
   // --- Session state ---

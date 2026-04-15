@@ -100,7 +100,7 @@ export class StagedSectionsStore {
    *    from disk so the next iteration's predecessor chain and heading-
    *    path lookups observe the updated structure.
    * 4. Accumulates `writtenEntries`, `removedEntries`, `liveReloadEntries`,
-   *    and per-upsert `structureChange` across all processed keys.
+   *    and per-upsert `structureChanges` across all processed keys.
    * 5. After all upserts: if any live-reloads or removals were recorded,
    *    reads post-overlay body content for each live-reload key and packages
    *    everything into a `StructuralChange` the caller can hand to
@@ -200,6 +200,12 @@ export class StagedSectionsStore {
           if (!predEntry) break;
           const predContent = liveStore.readFragmentString(predKey);
           if (!isOrphanOnly(predEntry.headingPath, predContent)) break;
+          // Only treat predecessor as orphan-only if it was actually dirty
+          // (user modified it). Unmodified body-holder fragments are
+          // naturally body-only — their orphan-only shape does NOT indicate
+          // heading deletion. Without this check, the loop would
+          // incorrectly collapse every parent body-holder predecessor.
+          if (!aheadOfStaged.has(predKey)) break;
           // Recursive call — processes the predecessor regardless of scope
           // membership. Each recursion absorbs predKey into its own merge
           // target and reloads the skeleton view so the next iteration
@@ -208,7 +214,15 @@ export class StagedSectionsStore {
         }
       }
 
-      const ref = new SectionRef(this.docPath, headingPath);
+      // After predecessor convergence, the skeleton may have been
+      // restructured (e.g. a parent heading collapsed, promoting this
+      // fragment to a new headingPath). Re-fetch from the index so the
+      // SectionRef uses the current headingPath, not the stale one
+      // captured before the loop.
+      const refreshedEntry = indexByKey.get(fragmentKey);
+      if (!refreshedEntry) return;
+
+      const ref = new SectionRef(this.docPath, refreshedEntry.headingPath);
       let result: UpsertSectionFromMarkdownDetailedResult;
       if (isOrphanOnly(headingPath, rawMarkdown)) {
         result = await contentLayer.upsertSectionMergingToPrevious(ref, rawMarkdown);
@@ -254,12 +268,12 @@ export class StagedSectionsStore {
         liveReloadKeySet.add(liveKey);
       }
 
-      if (result.structureChange !== null) {
+      for (const sc of result.structureChanges) {
         const oldKey = fragmentKeyFromSectionFile(
-          result.structureChange.oldEntry.sectionFile,
-          result.structureChange.oldEntry.headingPath.length === 0,
+          sc.oldEntry.sectionFile,
+          sc.oldEntry.headingPath.length === 0,
         );
-        const newKeys = result.structureChange.newEntries.map((e) =>
+        const newKeys = sc.newEntries.map((e) =>
           fragmentKeyFromSectionFile(e.sectionFile, e.headingPath.length === 0),
         );
         remaps.push({ oldKey, newKeys });
@@ -268,7 +282,7 @@ export class StagedSectionsStore {
       // If this upsert mutated structure (or added/removed entries), reload
       // the skeleton view so subsequent iterations see the new shape.
       if (
-        result.structureChange !== null
+        result.structureChanges.length > 0
         || result.removedEntries.length > 0
         || result.writtenEntries.length > 0
       ) {

@@ -30,7 +30,7 @@ describe("section upsert runtime result contract", () => {
     expect(result.removedEntries).toEqual([]);
     expect(result.fragmentKeyRemaps).toEqual([]);
     expect(result.liveReloadEntries.map((entry) => entry.headingPath)).toEqual([["Overview"]]);
-    expect(result.structureChange).toBeNull();
+    expect(result.structureChanges).toEqual([]);
   });
 
   it("heading deletion reports deleted target separately from merge-target reload", async () => {
@@ -43,8 +43,8 @@ describe("section upsert runtime result contract", () => {
 
     expect(result.removedEntries.map((entry) => entry.headingPath)).toEqual([["Overview"]]);
     expect(result.liveReloadEntries.map((entry) => entry.headingPath)).toEqual([[]]);
-    expect(result.structureChange?.oldEntry.headingPath).toEqual(["Overview"]);
-    expect(result.structureChange?.newEntries).toEqual([]);
+    expect(result.structureChanges[0]?.oldEntry.headingPath).toEqual(["Overview"]);
+    expect(result.structureChanges[0]?.newEntries).toEqual([]);
 
     const rootBody = await overlay.readSection(new SectionRef(SAMPLE_DOC_PATH, []));
     expect(rootBody).toContain("Overview body after heading deletion.");
@@ -77,8 +77,8 @@ describe("section upsert runtime result contract", () => {
       ["Overview"],
       ["Follow Up"],
     ]);
-    expect(result.structureChange?.oldEntry.headingPath).toEqual(["Overview"]);
-    expect(result.structureChange?.newEntries.map((entry) => entry.headingPath)).toEqual([
+    expect(result.structureChanges[0]?.oldEntry.headingPath).toEqual(["Overview"]);
+    expect(result.structureChanges[0]?.newEntries.map((entry) => entry.headingPath)).toEqual([
       ["Overview"],
       ["Follow Up"],
     ]);

@@ -24,6 +24,7 @@ import {
   type DeletionPlaceholder,
   getSectionFragmentKey,
 } from "../pages/document-page-utils";
+import { randomUuid } from "../utils/random-uuid";
 
 // ─── Params ──────────────────────────────────────────────
 
@@ -74,7 +75,7 @@ export function useSessionMode({
   setRestructuringKeys,
   onStopEditing,
 }: UseSessionModeParams): UseSessionModeReturn {
-  const clientInstanceIdRef = useRef<string>(crypto.randomUUID());
+  const clientInstanceIdRef = useRef<string>(randomUuid());
 
   // ── State ──────────────────────────────────────────────
   const [crdtProvider, setCrdtProvider] = useState<CrdtProvider | null>(null);
@@ -212,7 +213,7 @@ export function useSessionMode({
     observerDocSessionIdRef.current = next;
     stopObserver();
     const transition: ModeTransitionRequest = {
-      requestId: crypto.randomUUID(),
+      requestId: randomUuid(),
       clientInstanceId: clientInstanceIdRef.current,
       docPath: decodedDocPath,
       requestedMode: "observer",
@@ -276,7 +277,7 @@ export function useSessionMode({
     // Re-create observer
     if (decodedDocPath) {
       const transition: ModeTransitionRequest = {
-        requestId: crypto.randomUUID(),
+        requestId: randomUuid(),
         clientInstanceId: clientInstanceIdRef.current,
         docPath: decodedDocPath,
         requestedMode: "observer",
@@ -310,7 +311,7 @@ export function useSessionMode({
 
     try {
       const transition: ModeTransitionRequest = {
-        requestId: crypto.randomUUID(),
+        requestId: randomUuid(),
         clientInstanceId: clientInstanceIdRef.current,
         docPath: decodedDocPath,
         requestedMode: "editor",
@@ -407,7 +408,7 @@ export function useSessionMode({
         return;
       }
       const transition: ModeTransitionRequest = {
-        requestId: crypto.randomUUID(),
+        requestId: randomUuid(),
         clientInstanceId: clientInstanceIdRef.current,
         docPath: decodedDocPath,
         requestedMode: "observer",

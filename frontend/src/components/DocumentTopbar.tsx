@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import type { CrdtConnectionState } from "../services/crdt-provider";
 import { type SectionSaveInfo, type SectionSaveState, SAVE_STATE_META } from "../services/section-save-state";
+import { SessionStatusPill } from "./SessionStatusPill";
 
 interface DocumentTopbarProps {
   docPath: string | null;
@@ -61,6 +62,8 @@ export function DocumentTopbar({
       <span className="font-[family-name:var(--font-ui)] text-sm font-medium text-text-primary flex-1 truncate">
         {docPath ?? "No document selected"}
       </span>
+
+      <SessionStatusPill />
 
       {/* Version history toggle */}
       <button

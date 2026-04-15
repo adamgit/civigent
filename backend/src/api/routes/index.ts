@@ -12,6 +12,7 @@ import type {
   GetActivityResponse,
   GetAdminSnapshotHealthResponse,
   GetAdminSnapshotHistoryResponse,
+  AllSessionStatusesResponse,
   GetDocumentResponse,
   GetDocumentSectionsResponse,
   GetDocumentsTreeResponse,
@@ -119,6 +120,7 @@ import {
   updateAdminConfig,
 } from "../../admin-config.js";
 import { commitDirtySections } from "../../storage/auto-commit.js";
+import { readAllSessionStatuses } from "../../storage/session-statuses.js";
 import { SECTIONS_DIR_SUFFIX } from "../../storage/document-skeleton.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import {
@@ -2245,6 +2247,17 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           dirty_sections,
         })),
       };
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/session-statuses/all", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+      const response: AllSessionStatusesResponse = await readAllSessionStatuses();
       res.json(response);
     } catch (error) {
       next(error);

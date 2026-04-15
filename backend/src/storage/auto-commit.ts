@@ -11,7 +11,7 @@
 
 import path from "node:path";
 import { readFile } from "node:fs/promises";
-import { getAllSessions, applyAcceptResult, findKeyForHeadingPath, findHeadingPathForKey, persistAuthorMetadata, type DocSession } from "../crdt/ydoc-lifecycle.js";
+import { getAllSessions, applyAcceptResult, findKeyForHeadingPath, findHeadingPathForKey, persistAuthorMetadata, awaitPendingSessionImport, type DocSession } from "../crdt/ydoc-lifecycle.js";
 
 import { CanonicalStore } from "./canonical-store.js";
 import { getContentRoot, getDataRoot, getSessionSectionsContentRoot, getSessionAuthorsRoot } from "./data-root.js";
@@ -139,6 +139,12 @@ export async function commitDirtySections(
   for (const session of [...sessions.values()]) {
     if (!session.holders.has(writer.id)) continue;
     if (!docPathsToCommit.has(session.docPath)) continue;
+
+    // Serialize with any in-flight blur flush. Publish must not overlap a
+    // blur-triggered acceptLiveFragments or reach absorbChangedSections while
+    // a blur flush is still writing to session overlay files.
+    await awaitPendingSessionImport(session.docPath);
+
     const matched = matchingDirtyFragmentKeys(session, writer.id, headingPaths);
     const keyToHeadingPath = new Map<string, string[]>();
     for (const fragmentKey of matched) {

@@ -39,6 +39,7 @@ import {
   WS_CLOSE_YDOC_INIT_FAILED,
 } from "./crdt-close-codes";
 import { encodeDocPathForWs } from "../utils/path-encoding";
+import { randomUuid } from "../utils/random-uuid";
 
 // ─── Protocol constants (must match backend/src/ws/crdt-sync.ts) ───
 
@@ -156,7 +157,7 @@ export class CrdtProvider {
     this.awareness = new Awareness(doc);
     this.events = events;
     this.docPath = docPath;
-    this.clientInstanceId = opts?.clientInstanceId ?? crypto.randomUUID();
+    this.clientInstanceId = opts?.clientInstanceId ?? randomUuid();
     this.initialTransitionRequest = opts?.initialTransitionRequest ?? null;
 
     // Build WebSocket URL — per-document, no heading_path param.
@@ -556,7 +557,7 @@ export class CrdtProvider {
 
   private sendModeTransitionRequest(): void {
     const request: ModeTransitionRequest = this.initialTransitionRequest ?? {
-      requestId: crypto.randomUUID(),
+      requestId: randomUuid(),
       clientInstanceId: this.clientInstanceId,
       docPath: this.docPath,
       requestedMode: "editor",

@@ -4,7 +4,6 @@ import { apiClient, SystemStartingError, setUnauthorizedHandler, setSystemStarti
 import { KnowledgeStoreWsClient } from "../services/ws-client";
 import { connectSystemEvents, type FatalReport } from "../services/system-events-client";
 import { DocumentsTreeNav } from "../components/DocumentsTreeNav";
-import { MirrorPanel } from "../components/MirrorPanel";
 import { SystemFatalScreen } from "../components/SystemFatalScreen";
 import { rememberRecentDoc } from "../services/recent-docs";
 import { CurrentUserProvider } from "../contexts/CurrentUserContext";
@@ -33,6 +32,7 @@ export interface AppLayoutOutletContext {
   treeSyncing: boolean;
   treeError: string | null;
   createDoc: (path: string) => Promise<void>;
+  refreshTree: () => Promise<void>;
 }
 
 export function AppLayout() {
@@ -116,6 +116,14 @@ export function AppLayout() {
     loadTree({ background: true }).catch(() => { /* non-fatal refresh */ });
     navigate(`/docs/${stripLeadingSlashForRoute(docPath)}`);
   }, [navigate]);
+
+  const openCreateDocInFolder = useCallback((folderPath: string) => {
+    const trimmedFolder = folderPath === "/" ? "" : folderPath.replace(/\/+$/, "");
+    const prefill = trimmedFolder ? `${trimmedFolder}/` : "";
+    setShowNewDocForm(true);
+    setNewDocPath(prefill);
+    setNewDocError(null);
+  }, []);
 
   const handleNewDocSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -471,6 +479,7 @@ export function AppLayout() {
               flashDocKinds={flashDocKinds}
               onDocumentOpen={rememberRecentDoc}
               onTreeRefresh={() => loadTree({ background: true })}
+              onCreateDocumentInFolder={openCreateDocInFolder}
             />
           ) : null}
         </div>
@@ -576,11 +585,22 @@ export function AppLayout() {
                 <p className="text-sm">The system is starting up. This page will refresh automatically.</p>
               </div>
             ) : (
-              <Outlet context={{ entries, treeLoading: loadingTree, treeSyncing: syncingTree, treeError, createDoc } satisfies AppLayoutOutletContext} />
+              <Outlet
+                context={{
+                  entries,
+                  treeLoading: loadingTree,
+                  treeSyncing: syncingTree,
+                  treeError,
+                  createDoc,
+                  refreshTree: () => loadTree({ background: true }),
+                } satisfies AppLayoutOutletContext}
+              />
             )}
           </CurrentUserProvider>
         </main>
-        <MirrorPanel />
+        {/* Publish mirror intentionally hidden while the unpublished-changes UX is redesigned.
+            Users are misusing the current flow, so we are disabling this entry point until
+            there is a safer plan for publish behavior during active editing. */}
       </div>
     </div>
   );

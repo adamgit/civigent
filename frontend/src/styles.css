@@ -13,6 +13,7 @@
   --color-sidebar-active-bg: rgba(255, 255, 255, 0.65);
   --color-sidebar-active-text: #1a1610;
   --color-sidebar-heading: #8a8279;
+  --color-sidebar-marker: #998866;
 
   /* Topbar */
   --color-topbar-bg: #ffffff;
@@ -262,15 +263,60 @@ a {
   margin-bottom: 12px;
 }
 .doc-prose ul,
-.doc-prose ol {
+.doc-prose ol,
+.milkdown .ProseMirror ul,
+.milkdown .ProseMirror ol {
   font-family: var(--font-body);
   font-size: 15.5px;
   color: var(--color-text-primary);
   line-height: 1.72;
-  margin-bottom: 12px;
+  margin: 0 0 12px;
   padding-left: 22px;
 }
-.doc-prose li {
+.doc-prose ul,
+.milkdown .ProseMirror ul {
+  list-style-position: outside;
+  list-style-type: disc;
+}
+.doc-prose ol,
+.milkdown .ProseMirror ol {
+  list-style-position: outside;
+  list-style-type: decimal;
+}
+.doc-prose ul ul,
+.doc-prose ol ul,
+.milkdown .ProseMirror ul ul,
+.milkdown .ProseMirror ol ul {
+  list-style-type: circle;
+}
+.doc-prose ul ul ul,
+.doc-prose ol ul ul,
+.milkdown .ProseMirror ul ul ul,
+.milkdown .ProseMirror ol ul ul {
+  list-style-type: square;
+}
+.doc-prose ol ol,
+.milkdown .ProseMirror ol ol {
+  list-style-type: lower-alpha;
+}
+.doc-prose ol ol ol,
+.milkdown .ProseMirror ol ol ol {
+  list-style-type: lower-roman;
+}
+.doc-prose li,
+.milkdown .ProseMirror li {
+  display: list-item;
+  margin-bottom: 3px;
+}
+.doc-prose li > p,
+.milkdown .ProseMirror li > p {
+  margin: 0;
+}
+.doc-prose li > ul,
+.doc-prose li > ol,
+.milkdown .ProseMirror li > ul,
+.milkdown .ProseMirror li > ol {
+  margin-top: 3px;
   margin-bottom: 3px;
 }
 .doc-prose code {
@@ -413,18 +459,6 @@ a {
   line-height: 1.72;
   margin-bottom: 12px;
   padding: 0;
-}
-.milkdown .ProseMirror ul,
-.milkdown .ProseMirror ol {
-  font-family: var(--font-body);
-  font-size: 15.5px;
-  color: var(--color-text-primary);
-  line-height: 1.72;
-  margin-bottom: 12px;
-  padding-left: 22px;
-}
-.milkdown .ProseMirror li {
-  margin-bottom: 3px;
 }
 .milkdown .ProseMirror code {
   font-family: var(--font-mono);

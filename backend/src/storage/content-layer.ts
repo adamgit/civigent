@@ -231,10 +231,10 @@ export interface UpsertSectionFromMarkdownDetailedResult {
   removedEntries: FlatEntry[];
   fragmentKeyRemaps: StructuralMutationPlan["fragmentKeyRemaps"];
   liveReloadEntries: FlatEntry[];
-  structureChange: {
+  structureChanges: Array<{
     oldEntry: FlatEntry;
     newEntries: FlatEntry[];
-  } | null;
+  }>;
 }
 
 import { getParser } from "./markdown-parser.js";
@@ -1240,7 +1240,7 @@ export class OverlayContentLayer {
           removedEntries: [],
           fragmentKeyRemaps: [],
           liveReloadEntries: [],
-          structureChange: null,
+          structureChanges: [],
         };
       }
 
@@ -1282,7 +1282,7 @@ export class OverlayContentLayer {
               removedEntries: [],
               fragmentKeyRemaps: [],
               liveReloadEntries: [],
-              structureChange: null,
+              structureChanges: [],
             };
           }
           await this.writeOverlayBodyFile(
@@ -1295,7 +1295,7 @@ export class OverlayContentLayer {
             removedEntries: [],
             fragmentKeyRemaps: [],
             liveReloadEntries: [flatEntryFromContentEntry(bfhEntry)],
-            structureChange: null,
+            structureChanges: [],
           };
         }
         // No BFH entry exists yet — fall through to the rewrite path so
@@ -1329,12 +1329,20 @@ export class OverlayContentLayer {
     }
 
     // No headed content at all → user emptied the section / replaced its
-    // heading with body-only text. Delegate to the existing delete-and-
-    // absorb primitive; its `.trim()` guard suppresses the merge-target
-    // write when the orphan body is empty, so the "user truly emptied
-    // everything" and "user replaced heading with whitespace" cases land
-    // in the same code path.
+    // heading with body-only text. Check whether the target is a
+    // sub-skeleton parent (has descendants). If so, route to
+    // collapseParentAndAbsorbOrphanBody which preserves descendants and
+    // reparents them. Otherwise fall through to the existing leaf-only
+    // delete-and-absorb primitive.
     if (headedSections.length === 0) {
+      const isParent = skeleton.subtreeEntries(ref.headingPath).length > 1;
+      if (isParent) {
+        return await this.collapseParentAndAbsorbOrphanBody(
+          skeleton,
+          ref.headingPath,
+          leadingOrphanBody,
+        );
+      }
       return await this.deleteSectionAndAbsorbOrphanBody(
         skeleton,
         ref.headingPath,
@@ -1377,7 +1385,7 @@ export class OverlayContentLayer {
           removedEntries: [],
           fragmentKeyRemaps: [],
           liveReloadEntries: [flatEntryFromContentEntry(entry)],
-          structureChange: null,
+          structureChanges: [],
         };
       }
       // Heading text or level differs on a sub-skeleton parent. Preserve all
@@ -1400,10 +1408,10 @@ export class OverlayContentLayer {
         removedEntries: [],
         fragmentKeyRemaps: [],
         liveReloadEntries: [flatEntryFromContentEntry(newEntry)],
-        structureChange: {
+        structureChanges: [{
           oldEntry: flatEntryFromContentEntry(oldEntry),
           newEntries: [flatEntryFromContentEntry(newEntry)],
-        },
+        }],
       };
     }
 
@@ -1440,7 +1448,7 @@ export class OverlayContentLayer {
         removedEntries: [],
         fragmentKeyRemaps: [],
         liveReloadEntries: [],
-        structureChange: null,
+        structureChanges: [],
       };
     }
 
@@ -1507,7 +1515,7 @@ export class OverlayContentLayer {
           removedEntries: [],
           fragmentKeyRemaps: [],
           liveReloadEntries,
-          structureChange: null,
+          structureChanges: [],
         };
       }
     }
@@ -1765,10 +1773,140 @@ export class OverlayContentLayer {
       liveReloadEntries: deletion.mergeTargetWasCreated || (orphanBody as string).trim()
         ? [deletion.mergeTarget]
         : [],
-      structureChange: {
+      structureChanges: [{
         oldEntry: flatEntryFromContentEntry(deletedEntry),
         newEntries: [],
-      },
+      }],
+    };
+  }
+
+  /**
+   * Collapse a parent heading: delete the target heading, reparent its
+   * descendants under the previous heading, and merge the orphan body
+   * into the merge target.
+   *
+   * This is the parent-aware companion to deleteSectionAndAbsorbOrphanBody.
+   * While that method rejects sub-skeleton parents (which would lose
+   * descendants), this method explicitly handles them:
+   *
+   *   1. Pre-reads all affected bodies by sectionFile.
+   *   2. Calls skeleton.collapseParentHeading() to restructure the tree.
+   *   3. Removes the target's sub-skeleton file and .sections/ dir.
+   *   4. Writes reparented descendant bodies at their new absolutePaths.
+   *   5. Merges the orphan body into the merge target.
+   *   6. Returns the result with correct entries for live-fragment reconciliation.
+   */
+  private async collapseParentAndAbsorbOrphanBody(
+    skeleton: DocumentSkeletonInternal,
+    headingPath: string[],
+    orphanBody: SectionBody,
+  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+    const deletedEntry = skeleton.requireContentEntryByHeadingPath(headingPath);
+
+    // Pre-read all bodies that will be relocated (keyed by sectionFile
+    // so we can find them after the skeleton restructure changes absolutePaths).
+    const subtreeEntries = skeleton.subtreeEntries(headingPath);
+    const bodiesBySectionFile = new Map<string, string>();
+    for (const entry of subtreeEntries) {
+      if (entry.isSubSkeleton) continue;
+      const content = await this.readBodyFromLayers(entry.absolutePath);
+      if (content !== null) {
+        bodiesBySectionFile.set(entry.sectionFile, content);
+      }
+    }
+
+    // Pre-read the merge target's body BEFORE the collapse. The merge
+    // target may transition from leaf to parent when promoted children are
+    // reparented under it, causing flushToOverlay to overwrite its body
+    // file with skeleton markers. Capturing the body now ensures it can
+    // be restored to the new body-holder location afterward.
+    const targetBH = subtreeEntries.find(e => e.level === 0 && e.heading === "");
+    let mergeTargetPreBody: string | null = null;
+    let preMergeTargetSF: string | null = null;
+    if (targetBH) {
+      const preTarget = skeleton.findPreviousBodyHolder(targetBH.sectionFile);
+      if (preTarget) {
+        mergeTargetPreBody = await this.readBodyFromLayers(preTarget.absolutePath) ?? "";
+        preMergeTargetSF = preTarget.sectionFile;
+      }
+    }
+
+    // Restructure the skeleton.
+    const collapse = await skeleton.collapseParentHeading(headingPath);
+
+    // Remove the target's sub-skeleton file and its .sections/ directory.
+    for (const removed of collapse.removed) {
+      if (removed.isSubSkeleton) {
+        await rm(`${removed.absolutePath}.sections`, { recursive: true, force: true });
+      }
+      await rm(removed.absolutePath, { force: true });
+    }
+
+    // Write body-writes declared by the skeleton (e.g. empty BFH body).
+    for (const write of collapse.bodyWrites) {
+      await this.writeOverlayBodyFile(
+        skeleton.docPath,
+        { absolutePath: write.absolutePath, isSubSkeleton: false } as FlatEntry,
+        write.content as SectionBody,
+      );
+    }
+
+    // Write reparented descendant bodies at their new absolutePaths.
+    const writtenEntries: FlatEntry[] = [];
+    const liveReloadEntries: FlatEntry[] = [];
+
+    for (const promoted of collapse.promotedEntries) {
+      const body = bodiesBySectionFile.get(promoted.sectionFile);
+      if (body !== undefined) {
+        await this.writeOverlayBodyFile(
+          skeleton.docPath,
+          promoted,
+          body as SectionBody,
+        );
+        writtenEntries.push(promoted);
+        liveReloadEntries.push(promoted);
+      }
+    }
+
+    // Merge orphan body into the merge target. Always use the pre-read
+    // snapshot when available — flushToOverlay may have created an empty
+    // body-holder file in the overlay that shadows the canonical version,
+    // or may have overwritten the old leaf file with skeleton markers
+    // (leaf-to-parent transition). Reading from disk after the collapse
+    // would return empty in either case.
+    const trimmedOrphan = stripLeadingNewlines(orphanBody);
+    const hasOrphanContent = (trimmedOrphan as string).trim().length > 0;
+
+    // The merge target body must be written whenever:
+    // (a) it was just created (needs initial content), or
+    // (b) orphan content needs to be appended, or
+    // (c) the merge target had pre-existing content that flushToOverlay
+    //     may have clobbered (pre-read is non-empty).
+    const hasPreReadBody = mergeTargetPreBody !== null && mergeTargetPreBody.trim().length > 0;
+
+    if (collapse.mergeTargetWasCreated || hasOrphanContent || hasPreReadBody) {
+      const existingMergeBody = bodyFromDisk(mergeTargetPreBody ?? "");
+      const finalBody = hasOrphanContent
+        ? appendToBody(existingMergeBody, trimmedOrphan)
+        : existingMergeBody;
+      await this.writeOverlayBodyFile(
+        skeleton.docPath,
+        collapse.mergeTarget,
+        finalBody,
+      );
+      liveReloadEntries.push(collapse.mergeTarget);
+      writtenEntries.push(collapse.mergeTarget);
+    }
+
+    return {
+      writtenEntries,
+      removedEntries: collapse.removed.filter((e) => !e.isSubSkeleton),
+      fragmentKeyRemaps: collapse.fragmentKeyRemaps,
+      liveReloadEntries,
+      structureChanges: [{
+        oldEntry: flatEntryFromContentEntry(deletedEntry),
+        newEntries: [],
+      }],
     };
   }
 
@@ -2242,10 +2380,10 @@ export class OverlayContentLayer {
       removedEntries: plan.removed.filter((e) => !e.isSubSkeleton),
       fragmentKeyRemaps: plan.fragmentKeyRemaps,
       liveReloadEntries,
-      structureChange: {
+      structureChanges: [{
         oldEntry: flatEntryFromContentEntry(targetContentEntry),
         newEntries: addedNonSub,
-      },
+      }],
     };
   }
 

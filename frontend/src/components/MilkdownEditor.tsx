@@ -41,7 +41,7 @@ import "@milkdown/crepe/theme/frame.css";
 import { normalizeMarkdown, resolveHeadingPathFromDoc } from "./milkdown-utils";
 import { proseMirrorNodeToMarkdown } from "@ks/milkdown-serializer";
 import { pmPosToMarkdownOffset } from "../services/drop-position";
-import type { SectionTransfer } from "../services/section-transfer";
+import { applyDragOverVerdict, type SectionTransfer, type DropVerdict } from "../services/section-transfer";
 import { EditorLifecycleController } from "../services/editor-lifecycle";
 
 // ─── Module-level drag source tracking ───────────────────
@@ -122,6 +122,10 @@ export interface MilkdownEditorProps {
   userColor?: string;
   /** Called when the cursor exits the editor boundary (ArrowUp at start, ArrowDown at end). */
   onCursorExit?: (direction: "up" | "down") => void;
+  /** Advisory pre-drop check for cross-section drags.
+   *  Called during dragover to gate whether this editor should accept a drop.
+   *  When absent, all drops are permitted (browser default for contentEditable). */
+  canDrop?: () => DropVerdict;
   /** Called when content is dropped from a different section's editor. */
   onCrossSectionDrop?: (transfer: SectionTransfer) => void;
   /** Called when the editor is fully initialized and has content (safe to display). */
@@ -168,6 +172,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     userName = "Anonymous",
     userColor,
     onCursorExit,
+    canDrop,
     onCrossSectionDrop,
     onReady,
     onUnready,
@@ -192,6 +197,8 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   onHeadingPathChangeRef.current = onHeadingPathChange;
   const onCursorExitRef = useRef(onCursorExit);
   onCursorExitRef.current = onCursorExit;
+  const canDropRef = useRef(canDrop);
+  canDropRef.current = canDrop;
   const onCrossSectionDropRef = useRef(onCrossSectionDrop);
   onCrossSectionDropRef.current = onCrossSectionDrop;
   const onReadyRef = useRef(onReady);
@@ -396,6 +403,18 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
           dragend() {
             dragSourceInfo = null;
             return false;
+          },
+          dragover(_view, event) {
+            // Only gate cross-section drags — same-section drags use ProseMirror defaults
+            if (!dragSourceInfo || dragSourceInfo.fragmentKey === fragmentKeyCapture) return false;
+
+            const canDropFn = canDropRef.current;
+            if (!canDropFn) return false;
+
+            const verdict = canDropFn();
+            const allowed = applyDragOverVerdict(event, verdict, true);
+            // When blocked, stop ProseMirror from processing further
+            return !allowed;
           },
         },
       },

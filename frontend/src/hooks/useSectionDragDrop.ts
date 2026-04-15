@@ -20,10 +20,11 @@ import { useEffect, useState, useCallback, type RefObject } from "react";
 import { dragSourceInfo } from "../components/MilkdownEditor";
 import { proseMirrorNodeToMarkdown } from "@ks/milkdown-serializer";
 import { domPosToMarkdownOffset } from "../services/drop-position";
-import type {
-  SectionTransferService,
-  SectionTransfer,
-  TransferResult,
+import {
+  applyDragOverVerdict,
+  type SectionTransferService,
+  type SectionTransfer,
+  type TransferResult,
 } from "../services/section-transfer";
 
 export interface UseSectionDragDropOptions {
@@ -97,9 +98,7 @@ export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionD
     if (!fk) return;
 
     const verdict = transferService.canDrop(fk);
-    if (verdict.allowed) {
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = dragSourceInfo ? "move" : "copy";
+    if (applyDragOverVerdict(e, verdict, !!dragSourceInfo)) {
       setDragOverSectionIndex(idx);
 
       // Position drop indicator

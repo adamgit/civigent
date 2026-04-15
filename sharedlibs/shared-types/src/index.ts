@@ -355,6 +355,13 @@ export interface WriterDirtyState {
   documents: DirtyDocument[];
 }
 
+export interface AllSessionStatusesResponse {
+  live_session_count: number;
+  outstanding_doc_count: number;
+  oldest_outstanding_change_at: string | null;
+  last_commit_at: string | null;
+}
+
 // ─── Document Types ────────────────────────────────────────────────
 
 export interface DocumentTreeEntry {

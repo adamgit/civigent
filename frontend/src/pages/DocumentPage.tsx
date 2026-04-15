@@ -661,6 +661,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
             transport={transport}
             crdtSynced={crdtSynced}
             crdtError={crdtError}
+            transferService={transferServiceRef.current}
             readyEditors={readyEditors}
             deletionPlaceholders={deletionPlaceholders}
             mouseDownPosRef={mouseDownPosRef}

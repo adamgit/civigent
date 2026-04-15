@@ -42,6 +42,34 @@ export interface DropVerdict {
   holder?: string;
 }
 
+/**
+ * Apply a DropVerdict to a dragover event.
+ * Shared by static-section drag (useSectionDragDrop) and
+ * editor-section drag (MilkdownEditor ProseMirror plugin)
+ * so their allow/block behaviour cannot drift apart.
+ *
+ * Returns true when the drop is allowed.
+ */
+export function applyDragOverVerdict(
+  event: { preventDefault(): void; dataTransfer: DataTransfer | null },
+  verdict: DropVerdict,
+  hasEditorSource: boolean,
+): boolean {
+  event.preventDefault();
+  if (verdict.allowed) {
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = hasEditorSource ? "move" : "copy";
+    }
+    return true;
+  }
+  // Blocked — show explicit no-drop cursor for presence-blocked,
+  // proposal-blocked, or otherwise unavailable targets.
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "none";
+  }
+  return false;
+}
+
 export interface TransferResult {
   success: boolean;
   error?: string;

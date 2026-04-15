@@ -1095,6 +1095,21 @@ export async function pauseSessionOverlayImport(docPath: string): Promise<void> 
   }
 }
 
+/**
+ * Await any in-flight session overlay import for the given docPath without
+ * canceling pending debounce timers. Used by commitDirtySections to serialize
+ * publish against blur flushes — publish must not overlap acceptLiveFragments
+ * or reach absorbChangedSections while a blur flush is in flight.
+ */
+export async function awaitPendingSessionImport(docPath: string): Promise<void> {
+  const session = sessions.get(docPath);
+  if (!session) return;
+  const inflight = sessionOverlayImportInFlight.get(session);
+  if (inflight) {
+    await inflight;
+  }
+}
+
 // ─── Idle timeout ────────────────────────────────────────────────
 
 let _onIdleTimeout: ((docPath: string) => void) | null = null;

@@ -82,6 +82,7 @@ export type {
   UpdateProposalRequest,
   WithdrawProposalResponse,
   AcquireLocksResponse,
+  AllSessionStatusesResponse,
   WriterDirtyState,
   WriterIdentity,
   WriterType,

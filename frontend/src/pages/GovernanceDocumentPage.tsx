@@ -544,6 +544,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       transport={transport}
                       crdtSynced={crdtSynced}
                       crdtError={crdtError}
+                      transferService={transferServiceRef.current}
                       proposalMode={proposalMode}
                       isReady={readyEditors.has(i)}
                       mouseDownPosRef={mouseDownPosRef}

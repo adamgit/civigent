@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useOutletContext, useParams } from "react-router-dom";
 import { apiClient } from "../services/api-client";
 import { DocsBrowserPage } from "../pages/DocsBrowserPage";
 import { DocumentPage } from "../pages/DocumentPage";
+import { FolderPage } from "../pages/FolderPage";
 import { GovernanceDocumentPage } from "../pages/GovernanceDocumentPage";
 import type { GovernanceMode } from "../types/shared.js";
 import { resolveDocsSubroute } from "./docsRouteUtils";
+import type { AppLayoutOutletContext } from "./AppLayout";
 
 export type DocViewMode = "standard" | "governance";
 
@@ -38,9 +40,29 @@ function ViewModeToggle({ viewMode, onChange }: { viewMode: DocViewMode; onChang
 
 export function DocsRouteResolver() {
   const params = useParams();
+  const { entries, treeLoading } = useOutletContext<AppLayoutOutletContext>();
   const resolved = useMemo(() => resolveDocsSubroute(params["*"]), [params]);
   const [viewMode, setViewMode] = useState<DocViewMode>("standard");
   const [governanceMode, setGovernanceMode] = useState<GovernanceMode>("available");
+  const resolvedEntryType = useMemo(() => {
+    if (!resolved.docPath) {
+      return null;
+    }
+    const stack = [...entries];
+    while (stack.length > 0) {
+      const node = stack.pop();
+      if (!node) {
+        continue;
+      }
+      if (node.path === resolved.docPath) {
+        return node.type;
+      }
+      if (node.type === "directory" && Array.isArray(node.children)) {
+        stack.push(...node.children);
+      }
+    }
+    return null;
+  }, [entries, resolved.docPath]);
 
   // Fetch governance_mode from admin config on mount
   useEffect(() => {
@@ -51,6 +73,18 @@ export function DocsRouteResolver() {
 
   if (!resolved.docPath) {
     return <DocsBrowserPage />;
+  }
+
+  if (resolvedEntryType === "directory") {
+    return <FolderPage folderPath={resolved.docPath} />;
+  }
+
+  if (treeLoading && resolvedEntryType === null) {
+    return (
+      <div className="flex h-full items-center justify-center text-xs text-text-muted">
+        Resolving path...
+      </div>
+    );
   }
 
   // When forced, always render governance page with no toggle

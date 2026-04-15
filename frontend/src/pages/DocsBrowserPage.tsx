@@ -192,6 +192,10 @@ export function DocsBrowserPage() {
                 storageKey="ks_docs_page_tree_expanded"
                 forceExpandAll={query.trim().length > 0}
                 onDocumentOpen={rememberRecentDoc}
+                onCreateDocumentInFolder={(folderPath) => {
+                  const trimmedFolder = folderPath === "/" ? "" : folderPath.replace(/\/+$/, "");
+                  setNewDocPath(trimmedFolder ? `${trimmedFolder}/` : "");
+                }}
               />
             </ContentPanel.Body>
             <ContentPanel.Summary>

@@ -13,7 +13,7 @@ import {
   shouldMountEditor,
 } from "../pages/document-page-utils";
 import { sectionHeadingKey } from "../types/shared.js";
-import type { SectionTransfer } from "../services/section-transfer";
+import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import { SummaryWhoChangedThisSection } from "./SummaryWhoChangedThisSection.js";
 
 export interface DocumentCanvasProps {
@@ -34,6 +34,7 @@ export interface DocumentCanvasProps {
   transport: CrdtTransport | null;
   crdtSynced: boolean;
   crdtError: string | null;
+  transferService: SectionTransferService | null;
   readyEditors: Set<number>;
   deletionPlaceholders: DeletionPlaceholder[];
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
@@ -63,6 +64,7 @@ export function DocumentCanvas({
   transport,
   crdtSynced,
   crdtError,
+  transferService,
   readyEditors,
   deletionPlaceholders,
   mouseDownPosRef,
@@ -113,6 +115,7 @@ export function DocumentCanvas({
                 transport={transport}
                 crdtSynced={crdtSynced}
                 crdtError={crdtError}
+                transferService={transferService}
                 proposalMode={proposalMode}
                 isReady={readyEditors.has(i)}
                 mouseDownPosRef={mouseDownPosRef}

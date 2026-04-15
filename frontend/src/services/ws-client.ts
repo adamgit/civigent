@@ -1,4 +1,5 @@
 import type { WsClientMessage, WsServerEvent } from "../types/shared.js";
+import { randomUuid } from "../utils/random-uuid";
 
 export type WsEventHandler = (event: WsServerEvent) => void;
 
@@ -17,10 +18,7 @@ interface CrossTabTransport {
 }
 
 function createTabId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `tab-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+  return randomUuid();
 }
 
 class SharedWorkerTransport implements CrossTabTransport {
