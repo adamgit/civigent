@@ -422,14 +422,19 @@ export class ContentLayer {
    * Read the full subtree rooted at headingPath: the section itself and all
    * descendants. Reads body content via readSection().
    *
-   * When headingPath is [], reads ALL sections (entire document).
-   * This is a document-level read, not a before-first-heading read.
-   * For before-first-heading specifically, use readSection(ref(docPath, [])).
+   * `headingPath` must be non-empty. For whole-document enumeration use
+   * `readAllSubtreeEntries(docPath)`. For before-first-heading use
+   * `readSection(ref(docPath, []))`.
    */
   async readSubtree(
     docPath: string,
     headingPath: string[],
   ): Promise<Array<{ headingPath: string[]; heading: string; level: number; bodyContent: string }>> {
+    if (headingPath.length === 0) {
+      throw new Error(
+        `ContentLayer.readSubtree(${docPath}, []) is not allowed — use readAllSubtreeEntries(docPath) for whole-document enumeration, or readSection(ref(docPath, [])) for before-first-heading.`,
+      );
+    }
     const skeleton = await this.readSkeleton(docPath);
     const entries = skeleton.subtreeEntries(headingPath);
     const result: Array<{ headingPath: string[]; heading: string; level: number; bodyContent: string }> = [];
@@ -1620,49 +1625,30 @@ export class OverlayContentLayer {
   }
 
   /**
-   * Whole-document upsert-from-markdown primitive (items 307, 354, 355).
+   * Whole-document upsert-from-markdown primitive.
    *
-   * Item 355 reduced this to a THIN storage wrapper. The semantic is now
-   * literally "clear/create doc to a live-empty state, then upsert the
-   * root section from arbitrary markdown" — i.e. the same `*FromMarkdown`
-   * upsert family used by the section-upsert core with the
-   * special target `headingPath=[]`.
+   * Clears or creates the document to a live-empty state, parses the
+   * markdown, and writes the result via the dedicated whole-document
+   * primitive `writeFreshDocumentFromParsedMarkdown`.
    *
    * The method must NOT:
-   *   - parse markdown (the inner upsert core call owns parse/classify)
    *   - load canonical skeletons
-   *   - call any document-level parsed-markdown replace helper
    *   - return caller-reactive structural metadata
    *
-   * Per items 307/309/313/354/355 the contract is intentionally narrow:
-   *   - Returns nothing — there is no caller-reactive structural metadata.
-   *     Callers that need a section-target list (e.g. for proposal metadata
-   *     updates) must read it back via `listHeadingPaths(...)` after the
-   *     write completes.
+   * Contract:
+   *   - Returns nothing. Callers that need a section-target list (e.g.
+   *     for proposal metadata updates) must read it back via
+   *     `listHeadingPaths(...)` after the write completes.
    *   - Owns ONLY storage orchestration: state validation, clear-or-create,
-   *     and delegation to the section-upsert primitive. Does NOT touch
-   *     proposal creation, proposal section metadata, ACL checks, git
-   *     commit/restore trailers, or HTTP/MCP response shaping.
+   *     parse, and delegation to `writeFreshDocumentFromParsedMarkdown`.
+   *     Does NOT touch proposal creation, proposal section metadata, ACL
+   *     checks, git commit/restore trailers, or HTTP/MCP response shaping.
    *
    * State policy:
    *   - "missing"   → `createDocument(...)` (produces a live-empty doc)
-   *   - "live"      → `clearDocumentToLiveEmpty(...)` (item 356 helper —
-   *                   removes all overlay skeleton/body state for the doc
-   *                   and leaves it in the same live-empty shape that
-   *                   `createDocument(...)` produces)
+   *   - "live"      → `clearDocumentToLiveEmpty(...)` (removes all overlay
+   *                   skeleton/body state and leaves it live-empty)
    *   - "tombstone" → throw `DocumentNotFoundError("pending deletion")`
-   *
-   * After the clear-or-create step the document is always in live-empty
-   * state, so the subsequent root upsert call
-   * call writes the entire payload as a fresh root upsert. This is exactly
-   * the path item 357 makes legal (it had previously been blocked by the
-   * `headingPath=[]` rejection in `rewriteSubtreeFromParsedMarkdown(...)`).
-   *
-   * Per items 309/311 this method replaces the previous (broken)
-   * `importMarkdownDocument(...)` whose name implied "bring in something
-   * new" but whose actual semantic was "replace whatever is at this path
-   * with the contents of this markdown payload". Item 354 renamed this
-   * from `replaceDocumentFromMarkdown(...)` to capture the new mental model.
    */
   async upsertDocumentFromMarkdown(
     docPath: string,
@@ -1681,8 +1667,8 @@ export class OverlayContentLayer {
       await this.clearDocumentToLiveEmpty(docPath);
     }
 
-    // Delegate to the parser-driven core at the unnamed root target.
-    await this.upsertSectionFromMarkdownCore(new SectionRef(docPath, []), markdown);
+    const parsedSections = getParser().parseDocumentMarkdown(markdown);
+    await this.writeFreshDocumentFromParsedMarkdown(docPath, parsedSections);
   }
 
   // ─── Structural mutations ─────────────────────────────────
@@ -2418,6 +2404,76 @@ export class OverlayContentLayer {
         newEntries: addedNonSub,
       }],
     };
+  }
+
+  /**
+   * Write parsed markdown into an empty (roots.length === 0, no .sections/ dir)
+   * overlay skeleton. This is the dedicated whole-document creation path — it
+   * does NOT handle non-empty starting state (use rewriteSubtreeFromParsedMarkdown
+   * for that).
+   */
+  private async writeFreshDocumentFromParsedMarkdown(
+    docPath: string,
+    parsedSections: ReadonlyArray<ParsedMarkdownRewriteSection>,
+  ): Promise<void> {
+    const skeleton = await this.getWritableSkeleton(docPath);
+    if (!skeleton.areSkeletonRootsEmpty) {
+      throw new Error(
+        `writeFreshDocumentFromParsedMarkdown(${docPath}): precondition violated — ` +
+        `skeleton is not empty. ` +
+        `This method only handles live-empty documents.`,
+      );
+    }
+    const overlaySkeletonPath = resolveSkeletonPath(docPath, this.overlayRoot);
+    const sectionsDirPath = `${overlaySkeletonPath}.sections`;
+    let sectionsDirExists = false;
+    try {
+      await stat(sectionsDirPath);
+      sectionsDirExists = true;
+    } catch {
+      // ENOENT — expected when live-empty
+    }
+    if (sectionsDirExists) {
+      throw new Error(
+        `writeFreshDocumentFromParsedMarkdown(${docPath}): precondition violated — ` +
+        `overlay .sections/ directory already exists at ${sectionsDirPath}. ` +
+        `This method only handles live-empty documents.`,
+      );
+    }
+
+    const { replacementRoots, bodyByResultingHeadingPath } = buildRewriteReplacementRoots(
+      [],
+      parsedSections,
+    );
+
+    const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
+      ctx.addBodyHoldersToParents(replacementRoots);
+      const roots = ctx.findSiblingList([]);
+      roots.splice(0, 0, ...replacementRoots);
+
+      const added: FlatEntry[] = [];
+      const parentSkeletonPath = ctx.resolveSkeletonPathFor([]);
+      for (const node of replacementRoots) {
+        added.push(...ctx.flattenNode(node, [], parentSkeletonPath));
+      }
+
+      const bodyWrites = buildBodyWritesForRewrite(docPath, added, bodyByResultingHeadingPath);
+
+      return {
+        removed: [],
+        added,
+        bodyWrites,
+        fragmentKeyRemaps: [],
+      } satisfies StructuralMutationPlan;
+    });
+
+    for (const write of plan.bodyWrites) {
+      await this.writeOverlayBodyFile(
+        docPath,
+        { absolutePath: write.absolutePath, isSubSkeleton: false } as FlatEntry,
+        write.content,
+      );
+    }
   }
 
   /**

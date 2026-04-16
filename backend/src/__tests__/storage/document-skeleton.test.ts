@@ -465,24 +465,21 @@ describe("DocumentSkeleton.fromNodes", () => {
 // ─── buildOverlaySkeleton regression tests ───────────────────────
 //
 // REMOVED — the `buildOverlaySkeleton(...)` method was deleted from
-// `DocumentSkeletonInternal` (item 109/145). The semantic guarantees this
-// describe block protected ("rename a heading mints a fresh file ID, no
-// position-based reuse" and "no cross-path ID theft when the same heading
-// text appears at different depths") still live in code as the
-// `private static reuseSectionFileIdsFromCanonical(...)` helper added by
-// item 147. Per item 307 the helper is now reachable from a public caller:
-// `OverlayContentLayer.upsertDocumentFromMarkdown(...)` invokes
-// `OverlayContentLayer.upsertDocumentFromMarkdown(...)` previously depended on
-// a document-level parsed-markdown replacement helper that preserved canonical
-// section-file IDs. That helper has now been deleted; whole-document markdown
-// upsert mints fresh structure through the ordinary root-target upsert path.
+// `DocumentSkeletonInternal` (item 109/145).
 //
-// Regression tests for those two semantic guarantees should be re-added
-// at the public-API level (exercising `upsertDocumentFromMarkdown(...)`
-// over a canonical doc, then asserting that section files of unchanged
-// headings were preserved). That expectation no longer matches the current
-// design, so these tests remain removed until a separately-justified ID-reuse
-// optimization exists again.
+// Whole-document writes now go through the dedicated
+// `writeFreshDocumentFromParsedMarkdown` primitive called by
+// `upsertDocumentFromMarkdown`. That path clears the doc to live-empty
+// and writes fresh structure; it does not reuse canonical section-file IDs.
+//
+// The BFH upsert path (`upsertSectionFromMarkdownCore` with headingPath=[])
+// remains the legitimate path for user-typed or agent-sent content that
+// lands in the before-first-heading cell and auto-splits into headed
+// sections — that is core app functionality, not the abuse this cleanup
+// targets.
+//
+// Regression tests for section-file-ID reuse should be re-added if an
+// ID-reuse optimization is implemented in the future.
 
 describe("DocumentSkeleton tombstone", () => {
   it("tombstoneDocumentExplicit writes a marker that shadows canonical reads", async () => {

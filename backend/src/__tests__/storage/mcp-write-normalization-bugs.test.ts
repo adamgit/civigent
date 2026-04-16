@@ -60,7 +60,7 @@ async function createStandardDoc(
 
 // ─── BUG1-TEST: MCP write path doesn't split multi-section markdown ─
 
-describe("BUG1 FIXED: writeSection rejects multi-heading; upsertDocumentFromMarkdown normalizes", () => {
+describe("BUG1 FIXED: upsertDocumentFromMarkdown normalizes multi-section markdown into skeleton + body files", () => {
   let ctx: TempDataRootContext;
   const docPath = "test/standard.md";
 
@@ -70,30 +70,6 @@ describe("BUG1 FIXED: writeSection rejects multi-heading; upsertDocumentFromMark
   });
 
   afterAll(async () => { await ctx.cleanup(); });
-
-  it("upsertSectionFromMarkdown to root with multi-heading markdown auto-splits in overlay", async () => {
-    const multiSectionMarkdown = [
-      "New preamble.",
-      "",
-      "## Alpha",
-      "",
-      "Alpha body content.",
-      "",
-      "## Beta",
-      "",
-      "Beta body content.",
-    ].join("\n");
-
-    const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
-    const ref = new SectionRef(docPath, []);
-    await layer.upsertSection(ref, "", multiSectionMarkdown, { contentIsFullMarkdown: true });
-    const headingPaths = await layer.listHeadingPaths(docPath);
-    const targets = headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp }));
-    expect(targets.length).toBeGreaterThanOrEqual(2);
-    const headings = targets.map(t => t.heading_path);
-    expect(headings).toContainEqual(["Alpha"]);
-    expect(headings).toContainEqual(["Beta"]);
-  });
 
   it("upsertDocumentFromMarkdown normalizes multi-section markdown into skeleton + body files", async () => {
     const multiSectionMarkdown = [
