@@ -1,5 +1,6 @@
 import type { WsClientMessage, WsServerEvent } from "../types/shared.js";
 import { randomUuid } from "../utils/random-uuid";
+import { recordWsDiag } from "./ws-diagnostics";
 
 export type WsEventHandler = (event: WsServerEvent) => void;
 
@@ -282,6 +283,12 @@ class BroadcastFallbackTransport implements CrossTabTransport {
       this.appliedFocusedDocPath = undefined;
       this.appliedFocusedSection = undefined;
       this.syncLeaderSessionState();
+      recordWsDiag({
+        source: "ws-lifecycle",
+        type: "socket_open",
+        summary: `leader=${this.tabId} protocol=${protocol}`,
+        payload: { tabId: this.tabId, transport: "broadcast-fallback" },
+      });
     });
 
     socket.addEventListener("message", (raw) => {
@@ -298,10 +305,16 @@ class BroadcastFallbackTransport implements CrossTabTransport {
       }
     });
 
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (event) => {
       if (this.ws === socket) {
         this.ws = null;
       }
+      recordWsDiag({
+        source: "ws-lifecycle",
+        type: "socket_close",
+        summary: `code=${event.code} reason=${event.reason || "(none)"}`,
+        payload: { tabId: this.tabId, code: event.code, reason: event.reason, wasClean: event.wasClean, transport: "broadcast-fallback" },
+      });
       if (!this.isLeader) {
         return;
       }
@@ -318,6 +331,12 @@ class BroadcastFallbackTransport implements CrossTabTransport {
       return;
     }
     const delay = this.reconnectDelayMs;
+    recordWsDiag({
+      source: "ws-lifecycle",
+      type: "reconnect_scheduled",
+      summary: `in ${delay}ms`,
+      payload: { tabId: this.tabId, delayMs: delay, transport: "broadcast-fallback" },
+    });
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       this.connectLeaderSocket();
@@ -441,13 +460,22 @@ class SessionWsManager {
       return;
     }
     this.started = true;
+    let transportKind: "shared-worker" | "broadcast-fallback";
     try {
       this.transport = new SharedWorkerTransport(this.tabId);
       this.transport.start((event) => this.handleIncomingEvent(event));
+      transportKind = "shared-worker";
     } catch {
       this.transport = new BroadcastFallbackTransport(this.tabId);
       this.transport.start((event) => this.handleIncomingEvent(event));
+      transportKind = "broadcast-fallback";
     }
+    recordWsDiag({
+      source: "ws-lifecycle",
+      type: "session_acquired",
+      summary: `transport=${transportKind} tabId=${this.tabId}`,
+      payload: { tabId: this.tabId, transport: transportKind },
+    });
     this.heartbeatTimer = window.setInterval(() => {
       this.pushTabState();
     }, 1500);
@@ -466,6 +494,12 @@ class SessionWsManager {
     }
     this.transport?.stop();
     this.transport = null;
+    recordWsDiag({
+      source: "ws-lifecycle",
+      type: "session_released",
+      summary: `tabId=${this.tabId}`,
+      payload: { tabId: this.tabId },
+    });
   }
 
   subscribe(docPath: string): void {
@@ -556,6 +590,16 @@ class SessionWsManager {
   }
 
   private handleIncomingEvent(event: WsServerEvent): void {
+    const eventRecord = event as unknown as Record<string, unknown>;
+    const type = typeof eventRecord.type === "string" ? eventRecord.type : "(untyped)";
+    const docPath = typeof eventRecord.doc_path === "string" ? eventRecord.doc_path : undefined;
+    recordWsDiag({
+      source: "ws-frame",
+      type,
+      summary: docPath ? `doc=${docPath}` : "",
+      docPath,
+      payload: event,
+    });
     for (const listener of this.listeners) {
       listener(event);
     }

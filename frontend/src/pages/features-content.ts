@@ -67,6 +67,8 @@ export const userFeatures = [
   "Per-document diagnostics modal shows document health, storage layers, and detects corruption",
   "Backend crashes now display a full-screen error page instead of silently breaking",
   "Admins can overwrite an entire document by pasting raw markdown, with the previous version recoverable from git history",
+  "Sessions silently refresh in the background so you stay signed in without being interrupted.",
+  "Browser tabs re-check authentication automatically when you switch back to them or refocus the window.",
 ];
 
 export const architectureFeatures = [

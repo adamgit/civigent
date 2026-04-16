@@ -6,6 +6,7 @@ import type { AgentCardViewModel } from "../components/agents/types.js";
 import { avatarHueFromId } from "../components/agents/utils.js";
 import { apiClient } from "../services/api-client";
 import type { AdminConfig, AgentAuthPolicy, GetAgentsFullSummaryResponse } from "../types/shared.js";
+import { defaultConnectionName } from "../utils/connection-name";
 import "./agents-page.css";
 
 function buildViewModels(response: GetAgentsFullSummaryResponse): AgentCardViewModel[] {
@@ -86,7 +87,7 @@ function CredRow({
 
 type InstructionTab = "claude-code" | "cursor" | "other";
 
-function ConnectionInstructions({
+export function ConnectionInstructions({
   agentId, secret, policy, mcpUrl,
 }: {
   agentId: string;
@@ -96,6 +97,9 @@ function ConnectionInstructions({
 }) {
   const [tab, setTab] = useState<InstructionTab>("claude-code");
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const defaultName = defaultConnectionName(mcpUrl);
+  const [connectionName, setConnectionName] = useState<string>(defaultName);
+  const effectiveConnectionName = connectionName.trim() || defaultName;
 
   const copyField = async (value: string, field: string) => {
     await navigator.clipboard.writeText(value);
@@ -113,13 +117,13 @@ function ConnectionInstructions({
   );
 
   const claudeCodeCmd = policy === "verify" && secret
-    ? `claude mcp add --transport http --client-id ${agentId} --client-secret my-agent ${mcpUrl}`
-    : `claude mcp add --transport http --client-id ${agentId} my-agent ${mcpUrl}`;
+    ? `claude mcp add --transport http --client-id ${agentId} --client-secret ${effectiveConnectionName} ${mcpUrl}`
+    : `claude mcp add --transport http --client-id ${agentId} ${effectiveConnectionName} ${mcpUrl}`;
 
   const cursorConfig = JSON.stringify(
     {
       mcpServers: {
-        "my-agent": {
+        [effectiveConnectionName]: {
           url: mcpUrl,
           auth: {
             CLIENT_ID: agentId,
@@ -134,6 +138,22 @@ function ConnectionInstructions({
 
   return (
     <div className="add-agent-dialog__instructions">
+      <div className="add-agent-dialog__connection-name">
+        <label className="add-agent-dialog__connection-name-label" htmlFor="add-agent-dialog-connection-name">
+          Connection name
+        </label>
+        <input
+          id="add-agent-dialog-connection-name"
+          type="text"
+          value={connectionName}
+          onChange={(e) => setConnectionName(e.target.value)}
+          className="add-agent-dialog__input"
+          placeholder={defaultName}
+        />
+        <p className="add-agent-dialog__connection-name-hint">
+          Used as the local name/alias for this MCP connection in your agent's config.
+        </p>
+      </div>
       <p className="add-agent-dialog__instructions-heading">Connection instructions</p>
       <div className="add-agent-dialog__tabs">
         {tabBtn("claude-code", "Claude Code")}
@@ -143,7 +163,7 @@ function ConnectionInstructions({
 
       {tab === "claude-code" && (
         <div>
-          <p className="add-agent-dialog__tab-hint">Run this in your terminal (replace <code>my-agent</code> with your preferred name):</p>
+          <p className="add-agent-dialog__tab-hint">Run this in your terminal. This name identifies the connection in your local config. Edit above to customize.</p>
           <div className="add-agent-dialog__code-block">
             <code>{claudeCodeCmd}</code>
             <button className="add-agent-dialog__copy-btn" onClick={() => copyField(claudeCodeCmd, "claude-cmd")}>

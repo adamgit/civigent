@@ -60,7 +60,7 @@ export function AgentKeysPage() {
   const [error, setError] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [adding, setAdding] = useState(false);
-  const [newSecret, setNewSecret] = useState<{ agentId: string; secret: string } | null>(null);
+  const [newSecret, setNewSecret] = useState<{ agentId: string; secret: string; kind: "created" | "rotated" } | null>(null);
   const [copied, setCopied] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [authPolicy, setAuthPolicy] = useState<AgentAuthPolicy | null>(null);
@@ -93,7 +93,7 @@ export function AgentKeysPage() {
     setError(null);
     try {
       const result = await apiClient.addAgentKey(name);
-      setNewSecret({ agentId: result.agent_id, secret: result.secret ?? "" });
+      setNewSecret({ agentId: result.agent_id, secret: result.secret ?? "", kind: "created" });
       setNewName("");
       setCopied(false);
       await reload();
@@ -113,6 +113,24 @@ export function AgentKeysPage() {
         next.delete(agentId);
         return next;
       });
+      await reload();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleRotate = async (agentId: string) => {
+    const ok = window.confirm(
+      `Rotate secret for agent "${agentId}"?\n\n` +
+      "The agent's currently-cached access token will keep working until expiry, " +
+      "but its next refresh will fail — the agent must be reconfigured with the new secret.",
+    );
+    if (!ok) return;
+    setError(null);
+    try {
+      const result = await apiClient.rotateAgentSecret(agentId);
+      setNewSecret({ agentId: result.agent_id, secret: result.secret, kind: "rotated" });
+      setCopied(false);
       await reload();
     } catch (err) {
       setError((err as Error).message);
@@ -174,7 +192,11 @@ export function AgentKeysPage() {
 
         {newSecret && (
           <div style={{ background: "#e8f5e9", border: "1px solid #4caf50", padding: "1rem", borderRadius: 6, marginBottom: "1rem" }}>
-            <strong>New agent created: {newSecret.agentId}</strong>
+            <strong>
+              {newSecret.kind === "rotated"
+                ? `Secret rotated for: ${newSecret.agentId}`
+                : `New agent created: ${newSecret.agentId}`}
+            </strong>
             <p style={{ margin: "0.5rem 0", color: "#333" }}>
               Copy the secret below. It will not be shown again.
             </p>
@@ -245,7 +267,13 @@ export function AgentKeysPage() {
                       {agent.agent_id}
                     </td>
                     <td style={{ padding: "0.3rem" }}>{agent.display_name}</td>
-                    <td style={{ padding: "0.3rem" }}>
+                    <td style={{ padding: "0.3rem", display: "flex", gap: "0.35rem", justifyContent: "flex-end" }}>
+                      <button
+                        onClick={() => handleRotate(agent.agent_id)}
+                        style={{ ...btnStyle, background: "#f59e0b", padding: "0.2rem 0.5rem", fontSize: "0.8rem" }}
+                      >
+                        Rotate secret
+                      </button>
                       <button
                         onClick={() => handleDelete(agent.agent_id)}
                         style={{ ...btnStyle, background: "#d32f2f", padding: "0.2rem 0.5rem", fontSize: "0.8rem" }}

@@ -276,6 +276,27 @@
   overflow: hidden;
 }
 
+.add-agent-dialog__connection-name {
+  padding: 0.5rem 0.75rem;
+  background: #ffffff;
+  border-bottom: 1px solid var(--color-footer-border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.add-agent-dialog__connection-name-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.add-agent-dialog__connection-name-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
 .add-agent-dialog__instructions-heading {
   margin: 0;
   padding: 0.5rem 0.75rem;

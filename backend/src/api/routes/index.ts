@@ -113,7 +113,7 @@ import { isOidcConfigured, getMCPPublicURL, getOidcDisplayName, getOidcPublicUrl
 import { generateOidcState, generateOidcNonce, storeOidcState, retrieveAndClearOidcState } from "../../auth/oidc-state.js";
 import { buildOidcRedirectUrl, redeemOidcCode } from "../../auth/oidc-provider.js";
 import type { AuthMethod } from "../../types/shared.js";
-import { readAgentKeysAndErrors, readAgentKeysSkipErrors, addAgentKey, removeAgentKey } from "../../auth/agent-keys.js";
+import { readAgentKeysAndErrors, readAgentKeysSkipErrors, addAgentKey, removeAgentKey, rotateAgentSecret, lookupAgentKey } from "../../auth/agent-keys.js";
 import { getSnapshotHealth, getSnapshotHistory, snapshotAllDocs } from "../../storage/snapshot.js";
 import {
   AdminConfigValidationError,
@@ -2823,6 +2823,23 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         return;
       }
       res.json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/admin/agents/:agentId/rotate-secret", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const { agentId } = req.params;
+      const newSecret = await rotateAgentSecret(agentId);
+      const entry = await lookupAgentKey(agentId);
+      res.json({
+        agent_id: agentId,
+        display_name: entry?.displayName ?? "",
+        secret: newSecret,
+      });
     } catch (error) {
       next(error);
     }

@@ -5,11 +5,25 @@ import { KnowledgeStoreWsClient } from "../services/ws-client";
 import { connectSystemEvents, type FatalReport } from "../services/system-events-client";
 import { DocumentsTreeNav } from "../components/DocumentsTreeNav";
 import { SystemFatalScreen } from "../components/SystemFatalScreen";
+import { WsDiagnosticsConsole } from "../components/WsDiagnosticsConsole";
 import { rememberRecentDoc } from "../services/recent-docs";
 import { CurrentUserProvider } from "../contexts/CurrentUserContext";
 import type { DocumentTreeEntry, AuthUser } from "../types/shared.js";
 import { stripLeadingSlashForRoute } from "./docsRouteUtils";
 import { DOC_BADGES_STORAGE_KEY, formatBuildDate, toCanonicalDocPath, readBadgeDocPaths, writeBadgeDocPaths, parseRouteDocPath, classifyWsEvent } from "./app-layout-utils";
+import { recordWsDiag } from "../services/ws-diagnostics";
+
+function flattenTreeDocPaths(entries: DocumentTreeEntry[]): string[] {
+  const out: string[] = [];
+  const walk = (nodes: DocumentTreeEntry[]) => {
+    for (const node of nodes) {
+      if (node.type === "file") out.push(node.path);
+      if (node.children?.length) walk(node.children);
+    }
+  };
+  walk(entries);
+  return out;
+}
 
 const TREE_ROW_FLASH_DURATION_MS = 2800;
 
@@ -58,6 +72,7 @@ export function AppLayout() {
   const [adminExpanded, setAdminExpanded] = useState(() => {
     try { return localStorage.getItem("ks_sidebar_admin_expanded") === "true"; } catch { return false; }
   });
+  const [wsDiagOpen, setWsDiagOpen] = useState(false);
   const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
   const focusedDocPath = useMemo(() => parseRouteDocPath(location.pathname), [location.pathname]);
   const focusedDocPathRef = useRef<string | null>(focusedDocPath);
@@ -82,6 +97,8 @@ export function AppLayout() {
     });
   }, []);
 
+  const previousTreePathsRef = useRef<string[]>([]);
+
   const loadTree = (options?: { background?: boolean }) => {
     if (options?.background) {
       setSyncingTree(true);
@@ -89,17 +106,44 @@ export function AppLayout() {
       setLoadingTree(true);
       setTreeError(null);
     }
+    const startedAt = performance.now();
+    recordWsDiag({
+      source: "tree-fetch",
+      type: "getDocumentsTree",
+      summary: options?.background ? "background refresh" : "initial/foreground load",
+      payload: { background: !!options?.background },
+    });
     return apiClient
       .getDocumentsTree()
       .then((response) => {
         setEntries(response.tree);
         setTreeError(null);
+        const nextPaths = flattenTreeDocPaths(response.tree);
+        const previousPaths = previousTreePathsRef.current;
+        const previousSet = new Set(previousPaths);
+        const nextSet = new Set(nextPaths);
+        const added = nextPaths.filter((p) => !previousSet.has(p));
+        const removed = previousPaths.filter((p) => !nextSet.has(p));
+        previousTreePathsRef.current = nextPaths;
+        const durationMs = Math.round(performance.now() - startedAt);
+        recordWsDiag({
+          source: "tree-fetch-result",
+          type: "getDocumentsTree",
+          summary: `total=${nextPaths.length} +${added.length} -${removed.length} in ${durationMs}ms`,
+          payload: { total: nextPaths.length, added, removed, durationMs },
+        });
       })
       .catch((err) => {
         if (err instanceof SystemStartingError) return;
         if (!options?.background) {
           setTreeError(err instanceof Error ? err.message : String(err));
         }
+        recordWsDiag({
+          source: "tree-fetch-result",
+          type: "getDocumentsTree",
+          summary: `error: ${err instanceof Error ? err.message : String(err)}`,
+          payload: { error: err instanceof Error ? err.message : String(err) },
+        });
       })
       .finally(() => {
         if (options?.background) {
@@ -279,6 +323,12 @@ export function AppLayout() {
 
     const handleMessage = (event: MessageEvent) => {
       const msg = event.data;
+      recordWsDiag({
+        source: "broadcast-auth",
+        type: typeof msg === "string" ? msg : "(non-string)",
+        summary: "ks_auth_sync message received",
+        payload: { msg },
+      });
       if (msg === "login" || msg === "session_refreshed") {
         revalidateSession();
         if (msg === "login" && location.pathname === "/login") {
@@ -352,23 +402,42 @@ export function AppLayout() {
   useEffect(() => {
     wsClient.connect();
     let refreshTimer: number | null = null;
-    const scheduleTreeRefresh = () => {
+    const scheduleTreeRefresh = (reason: string) => {
+      const coalesced = refreshTimer != null;
       if (refreshTimer != null) {
         window.clearTimeout(refreshTimer);
       }
+      recordWsDiag({
+        source: "tree-refresh-schedule",
+        type: "scheduled",
+        summary: coalesced ? `${reason} (coalesced)` : reason,
+        payload: { reason, coalesced, debounceMs: 180 },
+      });
       refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
         loadTree({ background: true }).catch(() => { /* non-fatal refresh */ });
       }, 180);
     };
     wsClient.onEvent((event) => {
       const tabActive = windowFocusedRef.current && documentVisibleRef.current;
       const result = classifyWsEvent(event, focusedDocPathRef.current, tabActive);
+      const eventRecord = event as unknown as Record<string, unknown>;
+      const eventType = typeof eventRecord.type === "string" ? eventRecord.type : "(untyped)";
+      const docPath = typeof eventRecord.doc_path === "string" ? eventRecord.doc_path : undefined;
+      const verdictKeys = Object.keys(result).filter((k) => (result as unknown as Record<string, unknown>)[k]);
+      recordWsDiag({
+        source: "ws-classification",
+        type: eventType,
+        summary: verdictKeys.length > 0 ? `-> ${verdictKeys.join(",")}` : "-> no-op",
+        docPath,
+        payload: { event, verdict: result, tabActive, focusedDocPath: focusedDocPathRef.current },
+      });
 
       if (result.flashDocPaths) {
         queueTreeRowFlashes(result.flashDocPaths, result.flashWriterType);
       }
       if (result.refreshTree) {
-        scheduleTreeRefresh();
+        scheduleTreeRefresh(`ws:${eventType}`);
       }
       if (result.addBadge) {
         const badge = result.addBadge;
@@ -431,10 +500,20 @@ export function AppLayout() {
       {/* Sidebar */}
       <aside className="w-[--spacing-sidebar-w] min-w-[--spacing-sidebar-w] bg-sidebar-bg border-r border-sidebar-border flex flex-col select-none">
         {/* Sidebar header */}
-        <div className="px-3.5 pt-3.5 pb-2.5">
+        <div className="px-3.5 pt-3.5 pb-2.5 flex items-center justify-between gap-2">
           <span className="text-xs font-semibold text-sidebar-heading uppercase tracking-wide">
             <a href="/">Civigent</a>
           </span>
+          <button
+            type="button"
+            onClick={() => setWsDiagOpen((v) => !v)}
+            aria-label={wsDiagOpen ? "Close WS Diagnostics Console" : "Open WS Diagnostics Console"}
+            title="WS Diagnostics Console"
+            aria-pressed={wsDiagOpen}
+            className="text-[10px] font-mono text-sidebar-heading/70 hover:text-sidebar-text-hover bg-transparent border border-sidebar-border rounded px-1.5 py-0.5 cursor-pointer leading-none"
+          >
+            ws&gt;_
+          </button>
         </div>
 
         {/* Sidebar tree */}
@@ -634,6 +713,7 @@ export function AppLayout() {
             Users are misusing the current flow, so we are disabling this entry point until
             there is a safer plan for publish behavior during active editing. */}
       </div>
+      <WsDiagnosticsConsole open={wsDiagOpen} onClose={() => setWsDiagOpen(false)} />
     </div>
   );
 }

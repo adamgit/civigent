@@ -463,6 +463,14 @@ export const apiClient = {
     });
   },
 
+  async rotateAgentSecret(agentId: string): Promise<{ agent_id: string; display_name: string; secret: string }> {
+    return requestJson(`/api/admin/agents/${encodeURIComponent(agentId)}/rotate-secret`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+  },
+
   async getSetupInfo(): Promise<{
     defaultServerName: string;
     internalPort: number;

@@ -244,6 +244,50 @@ export async function addAgentKey(agentId: string, displayName: string, withSecr
 }
 
 /**
+ * Generate a new secret for an existing agent, preserving displayName and file ordering.
+ * Returns the new plaintext secret.
+ */
+export async function rotateAgentSecret(agentId: string): Promise<string> {
+  const filePath = keysFilePath();
+  const content = await readFile(filePath, "utf8");
+  const lines = content.split("\n");
+
+  let targetIndex = -1;
+  let existingDisplayName: string | null = null;
+  let malformedAtAgentId = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    if (!trimmed.startsWith(agentId + ":")) continue;
+    const parsed = parseLine(trimmed);
+    if (parsed) {
+      targetIndex = i;
+      existingDisplayName = parsed.displayName;
+    } else {
+      malformedAtAgentId = true;
+    }
+    break;
+  }
+
+  if (malformedAtAgentId) {
+    throw new Error(
+      `Agent "${agentId}" exists but its entry in agents.keys is malformed: ` +
+      `expected format agent-id:scrypt:salt:hash:display-name`,
+    );
+  }
+  if (targetIndex < 0 || existingDisplayName === null) {
+    throw new Error(`Agent "${agentId}" not found in agents.keys`);
+  }
+
+  const plainSecret = `sk_${randomBytes(24).toString("hex")}`;
+  const newHash = await hashSecret(plainSecret);
+  lines[targetIndex] = `${agentId}:${newHash}:${existingDisplayName}`;
+  await writeFile(filePath, lines.join("\n"), "utf8");
+  return plainSecret;
+}
+
+/**
  * Remove an agent entry by ID.
  * Returns true if an entry was removed, false if not found.
  */
