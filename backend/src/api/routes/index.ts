@@ -73,6 +73,7 @@ import {
   applyAcceptResult,
   findHeadingPathForKey,
   collectTouchedFragmentKeysForNormalization,
+  awaitPendingSessionImport,
 } from "../../crdt/ydoc-lifecycle.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import type { PreemptiveCommitResult } from "../../storage/auto-commit.js";
@@ -106,7 +107,7 @@ import {
   addCustomRole,
   deleteCustomRole,
 } from "../../auth/acl.js";
-import { listAuthMethods, buildOidcIdentity, isBootstrapAvailable, redeemBootstrapCode } from "../../auth/service.js";
+import { listAuthMethods, buildOidcIdentity, isBootstrapAvailable, redeemBootstrapCode, exchangeRefreshToken } from "../../auth/service.js";
 import { issueTokenPair } from "../../auth/tokens.js";
 import { isOidcConfigured, getMCPPublicURL, getOidcDisplayName, getOidcPublicUrl } from "../../auth/oauth-config.js";
 import { generateOidcState, generateOidcNonce, storeOidcState, retrieveAndClearOidcState } from "../../auth/oidc-state.js";
@@ -563,7 +564,33 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     }
   });
 
-  // POST /auth/token/refresh removed — replaced by POST /oauth/token with grant_type=refresh_token
+  router.post("/auth/token/refresh", (req, res) => {
+    const rawCookie = req.headers.cookie;
+    let refreshToken: string | null = null;
+    if (typeof rawCookie === "string") {
+      for (const part of rawCookie.split(";")) {
+        const trimmed = part.trim();
+        if (trimmed.startsWith("ks_refresh_token=")) {
+          const raw = trimmed.slice("ks_refresh_token=".length);
+          try { refreshToken = decodeURIComponent(raw); } catch { refreshToken = raw; }
+          break;
+        }
+      }
+    }
+    if (!refreshToken) {
+      clearAuthCookies(req, res);
+      res.status(401).json({ authenticated: false });
+      return;
+    }
+    try {
+      const { access_token, refresh_token } = exchangeRefreshToken(refreshToken);
+      setAuthCookies(req, res, access_token, refresh_token);
+      res.json({ authenticated: true });
+    } catch {
+      clearAuthCookies(req, res);
+      res.status(401).json({ authenticated: false });
+    }
+  });
 
   router.post("/auth/logout", (req, res) => {
     clearAuthCookies(req, res);
@@ -784,6 +811,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const { getCommitWriterType } = await import("../../storage/git-repo.js");
       const targetWriterType = await getCommitWriterType(getDataRoot(), sha);
       const restoreWriter = targetWriterType ? { ...writer, type: targetWriterType as typeof writer.type } : writer;
+
+      // Serialize restore against any in-flight overlay import. Restore must
+      // not race a blur-triggered flush that is still writing session files.
+      await awaitPendingSessionImport(docPath);
 
       // Pre-commit any in-progress session before restore replaces canonical content.
       // Inline store boundary pattern (BNATIVE.8c).

@@ -33,11 +33,13 @@ import type {
 } from "../types/shared";
 import {
   WS_CLOSE_AUTH_REQUIRED,
+  WS_CLOSE_AUTH_FAILED,
   WS_CLOSE_DOCUMENT_RESTORED,
   WS_CLOSE_IDLE_TIMEOUT,
   WS_CLOSE_INVALID_URL,
   WS_CLOSE_YDOC_INIT_FAILED,
 } from "./crdt-close-codes";
+import { apiClient } from "./api-client";
 import { encodeDocPathForWs } from "../utils/path-encoding";
 import { randomUuid } from "../utils/random-uuid";
 
@@ -389,8 +391,17 @@ export class CrdtProvider {
         return;
       }
 
-      if (event.code === WS_CLOSE_AUTH_REQUIRED) {
-        this.setState("disconnected");
+      if (event.code === WS_CLOSE_AUTH_REQUIRED || event.code === WS_CLOSE_AUTH_FAILED) {
+        // Auth expired/invalid — attempt one browser silent refresh then reconnect
+        apiClient.refreshAuthSession().then((refreshed) => {
+          if (refreshed) {
+            this.reconnectAttempts = 0;
+            this.openWebSocket();
+          } else {
+            this.setState("disconnected");
+            this.events.onError?.("Authentication expired");
+          }
+        });
         return;
       }
       if (event.code === WS_CLOSE_IDLE_TIMEOUT) {

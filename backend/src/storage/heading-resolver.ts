@@ -3,6 +3,7 @@ import { getContentRoot } from "./data-root.js";
 import { resolveDocPathUnderContent, InvalidDocPathError } from "./path-utils.js";
 import type { DocStructureNode } from "../types/shared.js";
 import { ContentLayer, SectionNotFoundError } from "./content-layer.js";
+import { DocumentSkeleton } from "./document-skeleton.js";
 import { SectionRef } from "../domain/section-ref.js";
 
 export class HeadingNotFoundError extends Error {}
@@ -138,8 +139,11 @@ export interface ResolvedSection {
 
 /**
  * Resolve ALL section file paths for a document.
- * Delegates to ContentLayer.getSectionList which provides canonical
- * heading paths and absolute file paths.
+ * Uses DocumentSkeleton.forEachSection which provides authoritative
+ * absolute paths for all section types — direct sections, body-holder
+ * sections, BFH sections, and nested children. Non-recovery code must
+ * never reconstruct section file paths from sectionsDirectory + sectionFile
+ * when the skeleton already knows the true body path.
  *
  * @param rootDir - the content root directory (canonical or overlay)
  * @param docPath - the document path (e.g. "/my-doc.md")
@@ -149,24 +153,20 @@ export async function resolveAllSectionPaths(
   rootDir: string,
   docPath: string,
 ): Promise<Map<string, ResolvedSection>> {
-  const layer = new ContentLayer(rootDir);
-  let sections: Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>;
+  let skeleton: DocumentSkeleton;
   try {
-    sections = await layer.getSectionList(docPath);
+    skeleton = await DocumentSkeleton.fromDisk(docPath, rootDir, rootDir);
   } catch {
     return new Map(); // skeleton doesn't exist (e.g. overlay root with no changes)
   }
 
-  // getSectionList doesn't include absolutePath, so compute it from sectionsDir + sectionFile
-  const sectionsDir = layer.sectionsDirectory(docPath);
   const result = new Map<string, ResolvedSection>();
-  for (const s of sections) {
-    const absolutePath = path.join(sectionsDir, s.sectionFile);
-    const key = SectionRef.headingKey(s.headingPath);
+  for (const entry of skeleton.allContentEntries()) {
+    const key = SectionRef.headingKey(entry.headingPath);
     result.set(key, {
-      headingPath: [...s.headingPath],
-      absolutePath,
-      relativePath: path.relative(rootDir, absolutePath),
+      headingPath: [...entry.headingPath],
+      absolutePath: entry.absolutePath,
+      relativePath: path.relative(rootDir, entry.absolutePath),
     });
   }
   return result;

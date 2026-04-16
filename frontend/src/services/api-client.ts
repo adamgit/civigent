@@ -169,6 +169,10 @@ let singleUserBootstrapInFlight: Promise<boolean> | null = null;
 let unauthorizedHandler: (() => void) | null = null;
 let systemStartingHandler: (() => void) | null = null;
 
+function broadcastAuthEvent(event: "login" | "logout" | "session_refreshed"): void {
+  try { new BroadcastChannel("ks_auth_sync").postMessage(event); } catch { /* unsupported env */ }
+}
+
 export function setUnauthorizedHandler(handler: (() => void) | null): void {
   unauthorizedHandler = handler;
 }
@@ -317,8 +321,7 @@ interface AuthTokenResponse {
 }
 
 interface RefreshTokenResponse {
-  access_token: string;
-  refresh_token: string;
+  authenticated: boolean;
 }
 
 export interface AclSnapshot {
@@ -375,23 +378,32 @@ async function tryBootstrapSingleUserSession(): Promise<boolean> {
   return singleUserBootstrapInFlight;
 }
 
+let refreshInFlight: Promise<boolean> | null = null;
+
 async function tryRefreshAccessToken(): Promise<boolean> {
-  const response = await fetch("/api/auth/token/refresh", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: "{}",
-    credentials: "include",
-  });
-  if (!response.ok) {
-    return false;
-  }
-  const payload = (await response.json()) as RefreshTokenResponse;
-  if (!payload.access_token || !payload.refresh_token) {
-    return false;
-  }
-  return true;
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    try {
+      const response = await fetch("/api/auth/token/refresh", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+        credentials: "include",
+      });
+      if (!response.ok) return false;
+      const payload = (await response.json()) as RefreshTokenResponse;
+      if (payload.authenticated === true) {
+        broadcastAuthEvent("session_refreshed");
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+  return refreshInFlight;
 }
 
 export const apiClient = {
@@ -489,23 +501,13 @@ export const apiClient = {
     );
     if (response.identity?.id) {
       setWriterId(response.identity.id);
+      broadcastAuthEvent("login");
     }
     return response;
   },
 
-  async refreshAuthSession(): Promise<RefreshTokenResponse> {
-    const response = await requestJson<RefreshTokenResponse>(
-      "/api/auth/token/refresh",
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: "{}",
-      },
-      false,
-    );
-    return response;
+  async refreshAuthSession(): Promise<boolean> {
+    return tryRefreshAccessToken();
   },
 
   async logout(): Promise<void> {
@@ -521,6 +523,7 @@ export const apiClient = {
       false,
     );
     clearWriterId();
+    broadcastAuthEvent("logout");
   },
 
   async getActivity(limit = 20, days = 7): Promise<GetActivityResponse> {

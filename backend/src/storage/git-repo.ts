@@ -140,7 +140,8 @@ export async function gitLogRecent(
     if (lines.length === 0) continue;
     const parts = lines[0].split("\0");
     if (parts.length < 6) continue;
-    const rawWriterType = (parts[3] ?? "").split(",")[0]?.trim().toLowerCase() ?? "";
+    const rawWriterType = (parts[3] ?? "").trim().toLowerCase();
+    // Multi-valued trailers (comma-joined) are malformed — treat as "unknown"
     const writerType: AttributionWriterType =
       rawWriterType === "agent" || rawWriterType === "human" ? rawWriterType : "unknown";
     entries.push({

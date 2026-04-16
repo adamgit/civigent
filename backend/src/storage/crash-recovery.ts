@@ -24,13 +24,13 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import { readdir, readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { readdir, readFile, writeFile, mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { getDataRoot, getContentRoot, getContentGitPrefix, getProposalsGitPrefix, getProposalsCommittingRoot, getProposalsPendingRoot, getSessionSectionsContentRoot, getSessionFragmentsRoot } from "./data-root.js";
 import { gitExec, gitStatusPorcelain } from "./git-repo.js";
 import { rollbackCommittingToDraft } from "./proposal-repository.js";
 import { scanSessionFragmentDocPaths, scanSessionDocPaths } from "./session-scan.js";
-import { recoverDocument, reconcileAndCleanup, writeRecoveredToCanonical, buildCompoundSkeleton, type DocumentRecoveryResult } from "./recovery-layers.js";
+import { recoverDocument, reconcileAndCleanup, writeRecoveredToCanonical, buildCompoundSkeleton, deleteSessionFilesForDoc, type DocumentRecoveryResult } from "./recovery-layers.js";
 import { sectionFileToName } from "./document-skeleton.js";
 import { bodyFromRecoveryAssembly, type SectionBody } from "./section-formatting.js";
 
@@ -351,7 +351,37 @@ async function discoverSessionDocPaths(): Promise<string[]> {
   return [...all];
 }
 
+async function latestDocTouchWasExplicitRestore(docPath: string, ctx: RecoveryContext): Promise<boolean> {
+  const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  const canonicalSkeletonPath = path.join(getContentRoot(), ...normalized.split("/"));
+  try {
+    await ctx.fs(`readFile ${canonicalSkeletonPath}`, () => readFile(canonicalSkeletonPath, "utf8"));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw err;
+  }
+  const cp = getContentGitPrefix();
+  const output = await ctx.git(
+    [
+      "log",
+      "-1",
+      "--format=%H%x00%(trailers:key=Restore-Target,valueonly)",
+      "--",
+      `${cp}/${normalized}`,
+      `${cp}/${normalized}.sections/`,
+    ],
+    getDataRoot(),
+  );
+  const line = output.split("\n").find(Boolean);
+  if (!line) return false;
+  const [, restoreTargetRaw] = line.split("\0");
+  return (restoreTargetRaw?.trim()?.length ?? 0) > 0;
+}
+
 interface RecoverSessionFilesResult {
+  hadSessionState: boolean;
   sectionsCommitted: number;
   orphanScanFailures: Array<{ docPath: string; error: string }>;
   commitError?: string;
@@ -370,7 +400,7 @@ async function recoverSessionFiles(ctx: RecoveryContext): Promise<RecoverSession
   ctx.phase = "session-file-recovery";
   ctx.operation = "discoverSessionDocPaths";
   const docPaths = await discoverSessionDocPaths();
-  if (docPaths.length === 0) return { sectionsCommitted: 0, orphanScanFailures: [], failedDocuments: [] };
+  if (docPaths.length === 0) return { hadSessionState: false, sectionsCommitted: 0, orphanScanFailures: [], failedDocuments: [] };
 
   const orphanScanFailures: Array<{ docPath: string; error: string }> = [];
   const failedDocuments: Array<{ docPath: string; error: string }> = [];
@@ -381,6 +411,26 @@ async function recoverSessionFiles(ctx: RecoveryContext): Promise<RecoverSession
   for (const docPath of docPaths) {
     ctx.doc = docPath;
     try {
+      ctx.operation = `latestDocTouchWasExplicitRestore ${docPath}`;
+      if (await latestDocTouchWasExplicitRestore(docPath, ctx)) {
+        ctx.operation = `deleteSessionFilesForDoc ${docPath}`;
+        await deleteSessionFilesForDoc(docPath);
+        continue;
+      }
+      const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+      const overlaySkeletonPath = path.join(getSessionSectionsContentRoot(), ...normalized.split("/"));
+      try {
+        const overlayStat = await ctx.fs(`stat ${overlaySkeletonPath}`, () => stat(overlaySkeletonPath));
+        if (overlayStat.isDirectory()) {
+          orphanScanFailures.push({
+            docPath,
+            error: `Cleanup error: overlay skeleton path is a directory, not a file: ${overlaySkeletonPath}`,
+          });
+          continue;
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
       ctx.operation = `buildCompoundSkeleton ${docPath}`;
       const compound = await buildCompoundSkeleton(docPath);
       ctx.operation = `recoverDocument ${docPath}`;
@@ -426,7 +476,7 @@ async function recoverSessionFiles(ctx: RecoveryContext): Promise<RecoverSession
   }
 
   if (totalSections === 0) {
-    return { sectionsCommitted: 0, orphanScanFailures, failedDocuments };
+    return { hadSessionState: true, sectionsCommitted: 0, orphanScanFailures, failedDocuments };
   }
 
   // Git commit all recovered canonical changes
@@ -436,6 +486,31 @@ async function recoverSessionFiles(ctx: RecoveryContext): Promise<RecoverSession
     ctx.doc = "";
     const cp = getContentGitPrefix();
     await ctx.git(["add", "-A", cp + "/"], dataRoot);
+    ctx.operation = "gitStatusPorcelain";
+    const stagedContentEntries = (await gitStatusPorcelain(dataRoot))
+      .filter((entry) => entry.filePath.startsWith(cp + "/"));
+    if (stagedContentEntries.length === 0) {
+      for (const [docPath, { recovery }] of perDocResults) {
+        ctx.doc = docPath;
+        try {
+          ctx.operation = `reconcileAndCleanup ${docPath}`;
+          const reconciliation = await reconcileAndCleanup(docPath, recovery.consumedSessionFiles);
+          if (!reconciliation.safe) {
+            orphanScanFailures.push({
+              docPath,
+              error: `Cleanup refused: ${reconciliation.missedFiles.length} session files not consumed by recovery: ${reconciliation.missedFiles.join(", ")}`,
+            });
+          }
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          orphanScanFailures.push({
+            docPath,
+            error: `Cleanup error: ${errorMsg}`,
+          });
+        }
+      }
+      return { hadSessionState: true, sectionsCommitted: 0, orphanScanFailures, failedDocuments };
+    }
     await ctx.git([
       "-c", "user.name=Knowledge Store Recovery",
       "-c", "user.email=recovery@knowledge-store.local",
@@ -451,7 +526,7 @@ async function recoverSessionFiles(ctx: RecoveryContext): Promise<RecoverSession
       await ctx.git(["reset", "HEAD", "--", cp + "/"], dataRoot);
       await ctx.git(["checkout", "--", cp + "/"], dataRoot);
     } catch { /* rollback best-effort */ }
-    return { sectionsCommitted: 0, orphanScanFailures, commitError, failedDocuments };
+    return { hadSessionState: true, sectionsCommitted: 0, orphanScanFailures, commitError, failedDocuments };
   }
 
   // Per-document reconciled cleanup (only for successfully recovered docs)
@@ -475,7 +550,7 @@ async function recoverSessionFiles(ctx: RecoveryContext): Promise<RecoverSession
     }
   }
 
-  return { sectionsCommitted: totalSections, orphanScanFailures, commitError, failedDocuments };
+  return { hadSessionState: true, sectionsCommitted: totalSections, orphanScanFailures, commitError, failedDocuments };
 }
 
 export async function detectAndRecoverCrash(dataRoot = getDataRoot()): Promise<CrashRecoveryResult> {
@@ -499,11 +574,11 @@ export async function detectAndRecoverCrash(dataRoot = getDataRoot()): Promise<C
   const recoveredGit = await wrap(() => recoverDirtyWorkingTree(dataRoot, ctx));
 
   // Session recovery runs after git recovery (may need clean working tree)
-  const { sectionsCommitted, orphanScanFailures, commitError, failedDocuments } =
+  const { hadSessionState, sectionsCommitted, orphanScanFailures, commitError, failedDocuments } =
     await wrap(() => recoverSessionFiles(ctx));
 
   return {
-    recovered: recoveredCommitting || recoveredGit || sectionsCommitted > 0,
+    recovered: recoveredCommitting || recoveredGit || hadSessionState || sectionsCommitted > 0,
     sessionFilesRecovered: sectionsCommitted,
     orphanScanFailures,
     commitError,

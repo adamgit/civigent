@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { apiClient, SystemStartingError, setUnauthorizedHandler, setSystemStartingHandler, setWriterId } from "../services/api-client";
+import { apiClient, SystemStartingError, setUnauthorizedHandler, setSystemStartingHandler, setWriterId, clearWriterId } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
 import { connectSystemEvents, type FatalReport } from "../services/system-events-client";
 import { DocumentsTreeNav } from "../components/DocumentsTreeNav";
@@ -187,14 +187,7 @@ export function AppLayout() {
         setFatalReport(null);
         setTreeError(null);
         loadTree().catch(() => {});
-        apiClient.getSessionInfo()
-          .then((session) => {
-            if (session.authenticated && session.user?.id) {
-              setWriterId(session.user.id);
-              setCurrentUser(session.user);
-            }
-          })
-          .catch(() => {});
+        revalidateSession();
       } else if (state.state === "fatal" && state.fatal) {
         setFatalReport(state.fatal);
       } else {
@@ -204,20 +197,27 @@ export function AppLayout() {
     return disconnect;
   }, []);
 
-  // Initial data load — runs independently of SSE (which is dev-only).
-  // If the server is still starting, the 503 handler sets systemStarting=true
-  // and the recovery poll below takes over.
-  useEffect(() => {
-    loadTree().catch(() => {});
+  const revalidateSession = useCallback(() => {
     apiClient.getSessionInfo()
       .then((session) => {
         if (session.authenticated && session.user?.id) {
           setWriterId(session.user.id);
           setCurrentUser(session.user);
+        } else {
+          clearWriterId();
+          setCurrentUser(null);
         }
       })
       .catch(() => {});
   }, []);
+
+  // Initial data load — runs independently of SSE (which is dev-only).
+  // If the server is still starting, the 503 handler sets systemStarting=true
+  // and the recovery poll below takes over.
+  useEffect(() => {
+    loadTree().catch(() => {});
+    revalidateSession();
+  }, [revalidateSession]);
 
   // Recovery poll: when systemStarting is set (by 503 handler or SSE),
   // poll until the server responds with a non-503 status, then recover.
@@ -234,14 +234,7 @@ export function AppLayout() {
           setFatalReport(null);
           setTreeError(null);
           loadTree().catch(() => {});
-          apiClient.getSessionInfo()
-            .then((session) => {
-              if (session.authenticated && session.user?.id) {
-                setWriterId(session.user.id);
-                setCurrentUser(session.user);
-              }
-            })
-            .catch(() => {});
+          revalidateSession();
         }
       } catch {
         // Network error — keep polling
@@ -263,6 +256,45 @@ export function AppLayout() {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
+
+  // Session revalidation on visibility change and window focus
+  useEffect(() => {
+    const handleVisibilityRevalidate = () => {
+      if (document.visibilityState === "visible") revalidateSession();
+    };
+    const handleFocusRevalidate = () => revalidateSession();
+    document.addEventListener("visibilitychange", handleVisibilityRevalidate);
+    window.addEventListener("focus", handleFocusRevalidate);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityRevalidate);
+      window.removeEventListener("focus", handleFocusRevalidate);
+    };
+  }, [revalidateSession]);
+
+  // BroadcastChannel auth-sync for cross-tab coordination
+  useEffect(() => {
+    let channel: BroadcastChannel | null = null;
+    try { channel = new BroadcastChannel("ks_auth_sync"); } catch { /* unsupported env */ }
+    if (!channel) return;
+
+    const handleMessage = (event: MessageEvent) => {
+      const msg = event.data;
+      if (msg === "login" || msg === "session_refreshed") {
+        revalidateSession();
+        if (msg === "login" && location.pathname === "/login") {
+          navigate("/");
+        }
+      } else if (msg === "logout") {
+        clearWriterId();
+        setCurrentUser(null);
+      }
+    };
+    channel.addEventListener("message", handleMessage);
+    return () => {
+      channel!.removeEventListener("message", handleMessage);
+      channel!.close();
+    };
+  }, [revalidateSession, location.pathname, navigate]);
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {

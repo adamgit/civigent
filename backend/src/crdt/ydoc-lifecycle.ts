@@ -1348,6 +1348,10 @@ export async function invalidateSessionForRestore(
       clearTimeout(session.flushTimer);
       session.flushTimer = null;
     }
+    const inflight = sessionOverlayImportInFlight.get(session);
+    if (inflight) {
+      await inflight;
+    }
     if (session.idleTimeoutTimer) {
       clearTimeout(session.idleTimeoutTimer);
       session.idleTimeoutTimer = null;

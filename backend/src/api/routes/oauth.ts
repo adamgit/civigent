@@ -19,9 +19,10 @@ import {
   validateAnonClientId,
   mintAuthCode,
   validateAuthCode,
+  consumeAuthCode,
 } from "../../auth/oauth-tokens.js";
 import { lookupAgentBySecret, lookupAgentKey } from "../../auth/agent-keys.js";
-import { issueTokenPair } from "../../auth/tokens.js";
+import { issueTokenPair, ACCESS_TTL_SECONDS } from "../../auth/tokens.js";
 
 // ─── Registration rate limiter (process-level, no deps) ─────────
 
@@ -201,20 +202,21 @@ export function createOAuthRouter(): Router {
       const state = typeof req.query.state === "string" ? req.query.state : "";
       const responseType = typeof req.query.response_type === "string" ? req.query.response_type : "code";
 
-      // Validate required params
+      // Validate required params — JSON 400 (cannot trust redirect_uri until client_id validated)
       if (!clientId || !redirectUri || !codeChallenge) {
-        res.status(400).send("Missing required OAuth parameters (client_id, redirect_uri, code_challenge).");
-        return;
-      }
-      if (responseType !== "code") {
-        res.status(400).send("Only response_type=code is supported.");
+        res.status(400).json({ error: "invalid_request", error_description: "Missing required OAuth parameters (client_id, redirect_uri, code_challenge)." });
         return;
       }
 
-      // Validate client_id
+      // Validate client_id before trusting any other parameters
       const client = await resolveClientId(clientId);
       if (!client) {
-        res.status(400).send("Invalid or expired client_id.");
+        res.status(400).json({ error: "invalid_request", error_description: "Invalid or expired client_id." });
+        return;
+      }
+
+      if (responseType !== "code") {
+        res.status(400).json({ error: "unsupported_response_type", error_description: "Only response_type=code is supported." });
         return;
       }
 
@@ -244,13 +246,13 @@ export function createOAuthRouter(): Router {
       const state = typeof body.state === "string" ? body.state : "";
 
       if (!clientId || !redirectUri || !codeChallenge) {
-        res.status(400).send("Missing required parameters.");
+        res.status(400).json({ error: "invalid_request", error_description: "Missing required parameters (client_id, redirect_uri, code_challenge)." });
         return;
       }
 
       const client = await resolveClientId(clientId);
       if (!client) {
-        res.status(400).send("Invalid or expired client_id.");
+        res.status(400).json({ error: "invalid_request", error_description: "Invalid or expired client_id." });
         return;
       }
 
@@ -308,8 +310,10 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
   const codeVerifier = typeof body.code_verifier === "string" ? body.code_verifier : "";
   const clientId = typeof body.client_id === "string" ? body.client_id : "";
   const clientSecret = typeof body.client_secret === "string" ? body.client_secret : null;
+  const redirectUri = typeof body.redirect_uri === "string" ? body.redirect_uri : "";
 
   if (!code || !codeVerifier) {
+    console.warn("oauth token: missing code or code_verifier");
     res.status(400).json({ error: "invalid_request", error_description: "code and code_verifier are required." });
     return;
   }
@@ -317,13 +321,22 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
   // Validate auth code
   const authCode = validateAuthCode(code);
   if (!authCode) {
+    console.warn("oauth token: invalid auth code");
     res.status(400).json({ error: "invalid_grant", error_description: "Invalid or expired authorization code." });
     return;
   }
 
   // Verify client_id matches
   if (clientId && clientId !== authCode.client_id) {
+    console.warn("oauth token: client_id mismatch");
     res.status(400).json({ error: "invalid_grant", error_description: "client_id mismatch." });
+    return;
+  }
+
+  // Verify redirect_uri matches (required per OAuth 2.1 when redirect_uri was in the auth request)
+  if (redirectUri && redirectUri !== authCode.redirect_uri) {
+    console.warn("oauth token: redirect_uri mismatch");
+    res.status(400).json({ error: "invalid_grant", error_description: "redirect_uri mismatch." });
     return;
   }
 
@@ -333,6 +346,7 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
   );
 
   if (computedChallenge !== authCode.code_challenge) {
+    console.warn("oauth token: PKCE failed");
     res.status(400).json({ error: "invalid_grant", error_description: "PKCE verification failed." });
     return;
   }
@@ -343,7 +357,8 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
   // Try anonymous first
   const anon = validateAnonClientId(resolvedClientId);
   if (anon) {
-    // Anonymous client — no secret required
+    // Anonymous client — no secret required. All checks passed; consume the nonce.
+    consumeAuthCode(authCode);
     const tokens = issueTokenPair({
       id: anon.agent_id,
       type: "agent",
@@ -353,6 +368,7 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       token_type: "Bearer",
+      expires_in: ACCESS_TTL_SECONDS,
     });
     return;
   }
@@ -364,6 +380,7 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
     if (policy === "verify") {
       // verify: client_secret is mandatory
       if (!clientSecret) {
+        console.warn("oauth token: missing client_secret (verify policy)");
         res.status(401).json({
           error: "invalid_client",
           error_description: "client_secret is required (policy: verify).",
@@ -371,6 +388,7 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
         return;
       }
       if (preAuth.secretHash === "none") {
+        console.warn("oauth token: agent has no secret hash (verify policy)");
         res.status(401).json({
           error: "invalid_client",
           error_description: "Agent was registered without a secret. Re-register the agent with a secret to use verify policy.",
@@ -380,6 +398,7 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
       const { compareSecret } = await import("../../auth/agent-keys.js");
       const secretValid = await compareSecret(clientSecret, preAuth.secretHash);
       if (!secretValid) {
+        console.warn("oauth token: invalid client_secret");
         res.status(401).json({
           error: "invalid_client",
           error_description: "Invalid client_secret.",
@@ -387,7 +406,9 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
         return;
       }
     }
-    // open / register: client_id in agents.keys is sufficient — issue the token
+    // open / register: client_id in agents.keys is sufficient — issue the token.
+    // All checks passed; consume the nonce.
+    consumeAuthCode(authCode);
     const tokens = issueTokenPair({
       id: preAuth.agentId,
       type: "agent",
@@ -397,11 +418,13 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       token_type: "Bearer",
+      expires_in: ACCESS_TTL_SECONDS,
     });
     return;
   }
 
   // Unknown client_id
+  console.warn("oauth token: unknown client_id");
   res.status(400).json({ error: "invalid_client", error_description: "Unknown client_id." });
 }
 
@@ -410,6 +433,7 @@ async function handleRefreshGrant(req: Request, res: Response): Promise<void> {
   const refreshToken = typeof body.refresh_token === "string" ? body.refresh_token : "";
 
   if (!refreshToken) {
+    console.warn("oauth token: missing refresh_token");
     res.status(400).json({ error: "invalid_request", error_description: "refresh_token is required." });
     return;
   }
@@ -421,8 +445,10 @@ async function handleRefreshGrant(req: Request, res: Response): Promise<void> {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       token_type: "Bearer",
+      expires_in: ACCESS_TTL_SECONDS,
     });
   } catch (err) {
+    console.warn("oauth token: invalid refresh_token");
     res.status(401).json({
       error: "invalid_grant",
       error_description: (err as Error).message,

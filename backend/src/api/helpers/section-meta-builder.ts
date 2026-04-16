@@ -89,7 +89,13 @@ export async function buildSectionInvolvementMeta(
               type: commitInfo.writerType,
               seconds_ago: Math.max(0, (nowMs - commitInfo.timestampMs) / 1000),
             }
-          : undefined,
+          : {
+              id: "unknown",
+              name: "unknown",
+              timestampMs: 0,
+              type: "unknown" as AttributionWriterType,
+              seconds_ago: 0,
+            },
       });
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;

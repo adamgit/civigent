@@ -15,13 +15,31 @@ export function SummaryWhoChangedThisSection({ editorId, editorName, secondsAgo,
   const isVisible = hoveredSection === sectionIndex || activeSectionIndex === sectionIndex;
   const ageLabel = useAgeDisplay(secondsAgo);
 
-  if (!isVisible || !editorName) return null;
+  if (!isVisible) return null;
 
-  const isMe = editorId !== undefined && editorId === resolveWriterId();
-  const displayName = isMe ? "[me]" : editorName;
+  const hasAnyAttribution = editorId !== undefined || editorName !== undefined || writerType !== undefined;
+
   const isHuman = writerType === "human";
   const isAgent = writerType === "agent";
   const isUnknown = !isHuman && !isAgent;
+
+  // Degraded rendering contract:
+  // - missing writerType → visible UNKNOWN badge
+  // - missing display name but known writer id → stable fallback label from id
+  // - missing both name and id → visible attribution error state
+  let displayName: string;
+  if (editorId !== undefined && editorId === resolveWriterId()) {
+    displayName = "[me]";
+  } else if (editorName) {
+    displayName = editorName;
+  } else if (editorId) {
+    displayName = editorId;
+  } else if (hasAnyAttribution) {
+    displayName = "(unknown writer)";
+  } else {
+    displayName = "(no attribution)";
+  }
+
   const badgeLabel = isHuman ? "HUMAN" : isAgent ? "AI" : "UNKNOWN";
   const rawWriterType = writerType ?? "(missing)";
 

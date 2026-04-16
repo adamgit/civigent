@@ -121,7 +121,7 @@ export interface AuthCodePayload {
   jti: string;
 }
 
-// In-memory nonce dedup set — entries auto-expire after 60s
+// In-memory nonce dedup set — entries auto-expire after 300s (matching auth code TTL)
 const usedNonces = new Map<string, number>();
 
 function cleanExpiredNonces(): void {
@@ -150,15 +150,16 @@ export function mintAuthCode(
     redirect_uri: redirectUri,
     code_challenge: codeChallenge,
     code_challenge_method: codeChallengeMethod,
-    exp: Math.floor(Date.now() / 1000) + 60,
+    exp: Math.floor(Date.now() / 1000) + 300,
     jti: randomUUID(),
   };
   return mintToken(data as unknown as Record<string, unknown>, getAuthSecret());
 }
 
 /**
- * Validate and consume an authorization code.
+ * Validate an authorization code without consuming it.
  * Returns the payload if valid, null if invalid, expired, or already used.
+ * Call `consumeAuthCode` after all grant-level checks pass to mark the nonce as used.
  */
 export function validateAuthCode(code: string): AuthCodePayload | null {
   const data = verifyToken(code, getAuthSecret());
@@ -176,10 +177,17 @@ export function validateAuthCode(code: string): AuthCodePayload | null {
   const now = Math.floor(Date.now() / 1000);
   if (data.exp <= now) return null;
 
-  // Nonce dedup
+  // Nonce replay check (but do NOT consume yet)
   cleanExpiredNonces();
   if (usedNonces.has(data.jti)) return null;
-  usedNonces.set(data.jti, Date.now() + 60_000);
 
   return data as unknown as AuthCodePayload;
+}
+
+/**
+ * Mark an authorization code's nonce as consumed.
+ * Must be called only after ALL grant-level validation passes (PKCE, client_id, client_secret).
+ */
+export function consumeAuthCode(authCode: AuthCodePayload): void {
+  usedNonces.set(authCode.jti, Date.now() + 300_000);
 }

@@ -153,6 +153,47 @@ function resolveDocPaths(docPath: string, root: string): { skeletonPath: string;
   return { skeletonPath, sectionsDir };
 }
 
+function parentSkeletonPathForAbsolutePath(absolutePath: string): string {
+  const dir = path.dirname(absolutePath);
+  return dir.endsWith(".sections") ? dir.slice(0, -".sections".length) : dir;
+}
+
+function cloneNodesFromSkeleton(skeleton: DocumentSkeleton, topSkeletonPath: string): SkeletonNode[] {
+  const roots: SkeletonNode[] = [];
+  const nodesByAbsolutePath = new Map<string, SkeletonNode>();
+  skeleton.forEachNode((heading, level, sectionFile, _headingPath, absolutePath) => {
+    const node: SkeletonNode = {
+      heading,
+      level,
+      sectionFile,
+      children: [],
+    };
+    nodesByAbsolutePath.set(absolutePath, node);
+    const parentSkeletonPath = parentSkeletonPathForAbsolutePath(absolutePath);
+    if (parentSkeletonPath === topSkeletonPath) {
+      roots.push(node);
+      return;
+    }
+    const parentNode = nodesByAbsolutePath.get(parentSkeletonPath);
+    if (parentNode) {
+      parentNode.children.push(node);
+      return;
+    }
+    roots.push(node);
+  });
+  return roots;
+}
+
+function hasSubSkeletonNodes(skeleton: DocumentSkeleton): boolean {
+  let found = false;
+  skeleton.forEachNode((_heading, _level, _sectionFile, _headingPath, _absolutePath, isSubSkeleton) => {
+    if (isSubSkeleton) {
+      found = true;
+    }
+  });
+  return found;
+}
+
 /**
  * Build entries into a flat SkeletonNode[] (no nesting — recovery doesn't reconstruct
  * the heading tree, it preserves all sections in document order).
@@ -192,109 +233,164 @@ export async function buildCompoundSkeleton(docPath: string): Promise<CompoundSk
     assessSkeleton(canonicalPaths.skeletonPath, canonicalPaths.sectionsDir),
   ]);
 
-  // Choose the base skeleton: whichever covers more files on disk.
-  // Overlay is preferred when tie (more recent edits).
-  const overlayCovers = overlayAssessment.entries.length;
-  const canonicalCovers = canonicalAssessment.entries.length;
-  const useOverlayAsBase = overlayCovers >= canonicalCovers && overlayCovers > 0;
-
-  const base = useOverlayAsBase ? overlayAssessment : canonicalAssessment;
-  const other = useOverlayAsBase ? canonicalAssessment : overlayAssessment;
-
-  // Start with base entries
-  const mergedSectionFiles = new Set(base.entries.map((e) => e.sectionFile));
-  let mergedEntries: SkeletonEntry[] = [...base.entries];
-
-  // Merge entries from the other layer that reference files existing on disk but absent from base
-  const allFilesOnDisk = new Set([
-    ...overlayAssessment.filesOnDisk,
-    ...canonicalAssessment.filesOnDisk,
-  ]);
-
-  for (const entry of other.entries) {
-    if (!mergedSectionFiles.has(entry.sectionFile) && allFilesOnDisk.has(entry.sectionFile)) {
-      mergedEntries.push(entry);
-      mergedSectionFiles.add(entry.sectionFile);
+  let nodes: SkeletonNode[] = [];
+  const mergedSectionFiles = new Set<string>();
+  try {
+    const canonicalRecursive = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
+    if (hasSubSkeletonNodes(canonicalRecursive)) {
+      nodes = cloneNodesFromSkeleton(canonicalRecursive, canonicalPaths.skeletonPath);
+      canonicalRecursive.forEachNode((_heading, _level, sectionFile) => {
+        mergedSectionFiles.add(sectionFile);
+      });
     }
+  } catch {
+    // Fall back to the top-level recovery assembly below.
   }
 
-  // Discover orphan files: on disk in either layer but not in any skeleton entry
   const appendixSections: Array<{ sectionFile: string; recoveredSectionFile: string; source: string }> = [];
 
-  for (const file of overlayAssessment.filesOnDisk) {
-    if (!mergedSectionFiles.has(file)) {
-      appendixSections.push({ sectionFile: file, recoveredSectionFile: "", source: "overlay" });
-      mergedSectionFiles.add(file);
+  if (nodes.length === 0) {
+    // Choose the base skeleton: whichever covers more files on disk.
+    // Overlay is preferred when tie (more recent edits).
+    const overlayCovers = overlayAssessment.entries.length;
+    const canonicalCovers = canonicalAssessment.entries.length;
+    const useOverlayAsBase = overlayCovers >= canonicalCovers && overlayCovers > 0;
+
+    const base = useOverlayAsBase ? overlayAssessment : canonicalAssessment;
+    const other = useOverlayAsBase ? canonicalAssessment : overlayAssessment;
+
+    // Start with base entries
+    for (const entry of base.entries) {
+      mergedSectionFiles.add(entry.sectionFile);
     }
-  }
-  for (const file of canonicalAssessment.filesOnDisk) {
-    if (!mergedSectionFiles.has(file)) {
-      appendixSections.push({ sectionFile: file, recoveredSectionFile: "", source: "canonical" });
-      mergedSectionFiles.add(file);
-    }
-  }
+    let mergedEntries: SkeletonEntry[] = [...base.entries];
 
-  // Scan raw fragments directory for files not covered by either skeleton
-  const fragmentDir = path.resolve(fragmentsRoot, ...docPath.replace(/\\/g, "/").replace(/^\/+/, "").split("/"));
-  let fragmentFiles: string[] = [];
-  try {
-    const entries = await readdir(fragmentDir);
-    fragmentFiles = entries.filter((f) => f.endsWith(".md"));
-  } catch { // Intentional: recovery module contract — never throws (see module header)
-    // No fragment directory
-  }
+    // Merge entries from the other layer that reference files existing on disk but absent from base
+    const allFilesOnDisk = new Set([
+      ...overlayAssessment.filesOnDisk,
+      ...canonicalAssessment.filesOnDisk,
+    ]);
 
-  for (const file of fragmentFiles) {
-    if (!mergedSectionFiles.has(file)) {
-      appendixSections.push({ sectionFile: file, recoveredSectionFile: "", source: "fragment" });
-      mergedSectionFiles.add(file);
-    }
-  }
-
-  // Add appendix sections as flat entries (level 2, generic heading)
-  for (const orphan of appendixSections) {
-    const name = sectionFileToName(orphan.sectionFile);
-    const recoveredSectionFile = mintRecoveredSectionFile(name, mergedSectionFiles);
-    orphan.recoveredSectionFile = recoveredSectionFile;
-    mergedEntries.push({
-      heading: `Recovered: ${name}`,
-      level: 2,
-      sectionFile: recoveredSectionFile,
-    });
-  }
-
-  // Deduplicate before-first-heading entries (level=0, heading=""). Only the first is kept;
-  // subsequent duplicates are demoted to appendix sections so their content is still recovered.
-  let seenBfh = false;
-  const deduped: SkeletonEntry[] = [];
-  for (const entry of mergedEntries) {
-    if (entry.level === 0 && entry.heading === "") {
-      if (!seenBfh) {
-        deduped.push(entry);
-        seenBfh = true;
-      } else {
-        const name = sectionFileToName(entry.sectionFile);
-        const recoveredSectionFile = mintRecoveredSectionFile(name, mergedSectionFiles);
-        deduped.push({
-          heading: `Recovered: ${name}`,
-          level: 2,
-          sectionFile: recoveredSectionFile,
-        });
-        appendixSections.push({
-          sectionFile: entry.sectionFile,
-          recoveredSectionFile,
-          source: "dedup",
-        });
+    for (const entry of other.entries) {
+      if (!mergedSectionFiles.has(entry.sectionFile) && allFilesOnDisk.has(entry.sectionFile)) {
+        mergedEntries.push(entry);
+        mergedSectionFiles.add(entry.sectionFile);
       }
-    } else {
-      deduped.push(entry);
+    }
+
+    // Discover orphan files: on disk in either layer but not in any skeleton entry
+    for (const file of overlayAssessment.filesOnDisk) {
+      if (!mergedSectionFiles.has(file)) {
+        appendixSections.push({ sectionFile: file, recoveredSectionFile: "", source: "overlay" });
+        mergedSectionFiles.add(file);
+      }
+    }
+    for (const file of canonicalAssessment.filesOnDisk) {
+      if (!mergedSectionFiles.has(file)) {
+        appendixSections.push({ sectionFile: file, recoveredSectionFile: "", source: "canonical" });
+        mergedSectionFiles.add(file);
+      }
+    }
+
+    // Scan raw fragments directory for files not covered by either skeleton
+    const fragmentDir = path.resolve(fragmentsRoot, ...docPath.replace(/\\/g, "/").replace(/^\/+/, "").split("/"));
+    let fragmentFiles: string[] = [];
+    try {
+      const entries = await readdir(fragmentDir);
+      fragmentFiles = entries.filter((f) => f.endsWith(".md"));
+    } catch { // Intentional: recovery module contract — never throws (see module header)
+      // No fragment directory
+    }
+
+    for (const file of fragmentFiles) {
+      if (!mergedSectionFiles.has(file)) {
+        appendixSections.push({ sectionFile: file, recoveredSectionFile: "", source: "fragment" });
+        mergedSectionFiles.add(file);
+      }
+    }
+
+    // Add appendix sections as flat entries (level 2, generic heading)
+    for (const orphan of appendixSections) {
+      const name = sectionFileToName(orphan.sectionFile);
+      const recoveredSectionFile = mintRecoveredSectionFile(name, mergedSectionFiles);
+      orphan.recoveredSectionFile = recoveredSectionFile;
+      mergedEntries.push({
+        heading: `Recovered: ${name}`,
+        level: 2,
+        sectionFile: recoveredSectionFile,
+      });
+    }
+
+    // Deduplicate before-first-heading entries (level=0, heading=""). Only the first is kept;
+    // subsequent duplicates are demoted to appendix sections so their content is still recovered.
+    let seenBfh = false;
+    const deduped: SkeletonEntry[] = [];
+    for (const entry of mergedEntries) {
+      if (entry.level === 0 && entry.heading === "") {
+        if (!seenBfh) {
+          deduped.push(entry);
+          seenBfh = true;
+        } else {
+          const name = sectionFileToName(entry.sectionFile);
+          const recoveredSectionFile = mintRecoveredSectionFile(name, mergedSectionFiles);
+          deduped.push({
+            heading: `Recovered: ${name}`,
+            level: 2,
+            sectionFile: recoveredSectionFile,
+          });
+          appendixSections.push({
+            sectionFile: entry.sectionFile,
+            recoveredSectionFile,
+            source: "dedup",
+          });
+        }
+      } else {
+        deduped.push(entry);
+      }
+    }
+    mergedEntries = deduped;
+    nodes = entriesToNodes(mergedEntries);
+  } else {
+    for (const file of overlayAssessment.filesOnDisk) {
+      if (!mergedSectionFiles.has(file)) {
+        appendixSections.push({ sectionFile: file, recoveredSectionFile: "", source: "overlay" });
+        mergedSectionFiles.add(file);
+      }
+    }
+    for (const file of canonicalAssessment.filesOnDisk) {
+      if (!mergedSectionFiles.has(file)) {
+        appendixSections.push({ sectionFile: file, recoveredSectionFile: "", source: "canonical" });
+        mergedSectionFiles.add(file);
+      }
+    }
+
+    const fragmentDir = path.resolve(fragmentsRoot, ...docPath.replace(/\\/g, "/").replace(/^\/+/, "").split("/"));
+    let fragmentFiles: string[] = [];
+    try {
+      const entries = await readdir(fragmentDir);
+      fragmentFiles = entries.filter((f) => f.endsWith(".md"));
+    } catch { // Intentional: recovery module contract — never throws (see module header)
+      // No fragment directory
+    }
+
+    for (const file of fragmentFiles) {
+      if (!mergedSectionFiles.has(file)) {
+        appendixSections.push({ sectionFile: file, recoveredSectionFile: "", source: "fragment" });
+        mergedSectionFiles.add(file);
+      }
+    }
+
+    for (const orphan of appendixSections) {
+      const name = sectionFileToName(orphan.sectionFile);
+      orphan.recoveredSectionFile = mintRecoveredSectionFile(name, mergedSectionFiles);
+      nodes.push({
+        heading: `Recovered: ${name}`,
+        level: 2,
+        sectionFile: orphan.recoveredSectionFile,
+        children: [],
+      });
     }
   }
-  mergedEntries = deduped;
-
-  // mergedEntries may be empty — this is valid for live-empty documents.
-  // entriesToNodes([]) returns [] and fromNodes(docPath, [], root) creates a valid empty skeleton.
-  const nodes = entriesToNodes(mergedEntries);
   const skeleton = DocumentSkeletonInternal.fromNodes(docPath, nodes, contentRoot);
 
   return {
@@ -470,17 +566,21 @@ export async function recoverDocument(docPath: string): Promise<DocumentRecovery
 
   // Now assess content for each section (can't do async inside forEachSection)
   let idx = 0;
-  const sectionEntries: Array<{ headingPath: string[]; sectionFile: string }> = [];
-  compound.skeleton.forEachSection((_heading, _level, sectionFile, headingPath) => {
-    sectionEntries.push({ headingPath: [...headingPath], sectionFile });
+  const sectionEntries: Array<{ headingPath: string[]; sectionFile: string; absolutePath: string }> = [];
+  compound.skeleton.forEachSection((_heading, _level, sectionFile, headingPath, absolutePath) => {
+    sectionEntries.push({ headingPath: [...headingPath], sectionFile, absolutePath });
   });
 
-  for (const { headingPath, sectionFile } of sectionEntries) {
+  for (const { headingPath, sectionFile, absolutePath } of sectionEntries) {
     const appendixInfo = appendixByRecoveredSectionFile.get(sectionFile);
     const sourceSectionFile = appendixInfo?.sectionFile ?? sectionFile;
     const fragmentPath = path.join(fragmentDir, sourceSectionFile);
-    const overlayPath = path.join(overlayPaths.sectionsDir, sourceSectionFile);
-    const canonicalPath = path.join(canonicalPaths.sectionsDir, sourceSectionFile);
+    const overlayPath = appendixInfo
+      ? path.join(overlayPaths.sectionsDir, sourceSectionFile)
+      : path.join(overlayContentRoot, path.relative(contentRoot, absolutePath));
+    const canonicalPath = appendixInfo
+      ? path.join(canonicalPaths.sectionsDir, sourceSectionFile)
+      : absolutePath;
 
     const [fragment, overlay, canonical] = await Promise.all([
       assessSectionContent(fragmentPath, "fragment"),
@@ -597,6 +697,20 @@ export async function reconcileAndCleanup(
   return { safe: true, missedFiles: [] };
 }
 
+export async function deleteSessionFilesForDoc(docPath: string): Promise<void> {
+  const overlayContentRoot = getSessionSectionsContentRoot();
+  const fragmentsRoot = getSessionFragmentsRoot();
+  const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+
+  const overlaySkeleton = path.resolve(overlayContentRoot, ...normalized.split("/"));
+  const overlaySectionsDir = `${overlaySkeleton}.sections`;
+  const fragmentDir = path.resolve(fragmentsRoot, ...normalized.split("/"));
+
+  await rm(overlaySkeleton, { recursive: true, force: true });
+  await rm(overlaySectionsDir, { recursive: true, force: true });
+  await rm(fragmentDir, { recursive: true, force: true });
+}
+
 // ─── Write Recovered Content to Canonical ─────────────────────────
 
 /**
@@ -610,31 +724,29 @@ export async function writeRecoveredToCanonical(
   recovery: DocumentRecoveryResult,
   compoundSkeleton: DocumentSkeleton,
 ): Promise<void> {
-  const contentRoot = getContentRoot();
-  const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-  const skeletonPath = path.resolve(contentRoot, ...normalized.split("/"));
-  const sectionsDir = `${skeletonPath}.sections`;
-
-  await mkdir(sectionsDir, { recursive: true });
-
-  // Write skeleton file from the compound skeleton's entries
-  const entries: SkeletonEntry[] = [];
-  compoundSkeleton.forEachNode((heading, level, sectionFile) => {
+  const entriesBySkeletonPath = new Map<string, SkeletonEntry[]>();
+  compoundSkeleton.forEachNode((heading, level, sectionFile, _headingPath, absolutePath) => {
+    const parentSkeletonPath = parentSkeletonPathForAbsolutePath(absolutePath);
+    const entries = entriesBySkeletonPath.get(parentSkeletonPath) ?? [];
     entries.push({ heading, level, sectionFile });
+    entriesBySkeletonPath.set(parentSkeletonPath, entries);
   });
-  const skeletonContent = serializeSkeletonEntries(entries);
-  await writeFile(skeletonPath, skeletonContent, "utf8");
 
-  const persistedSectionFiles: string[] = [];
-  compoundSkeleton.forEachSection((_heading, _level, sectionFile) => {
-    persistedSectionFiles.push(sectionFile);
+  for (const [skeletonPath, entries] of entriesBySkeletonPath) {
+    await mkdir(path.dirname(skeletonPath), { recursive: true });
+    await writeFile(skeletonPath, serializeSkeletonEntries(entries), "utf8");
+  }
+
+  const persistedBodyPaths: string[] = [];
+  compoundSkeleton.forEachSection((_heading, _level, _sectionFile, _headingPath, absolutePath) => {
+    persistedBodyPaths.push(absolutePath);
   });
 
   // Write each section's body content
   for (let i = 0; i < recovery.sections.length; i++) {
-    const persistedSectionFile = persistedSectionFiles[i];
-    if (!persistedSectionFile) continue;
-    const bodyPath = path.join(sectionsDir, persistedSectionFile);
+    const bodyPath = persistedBodyPaths[i];
+    if (!bodyPath) continue;
+    await mkdir(path.dirname(bodyPath), { recursive: true });
     await writeFile(bodyPath, bodyToDisk(bodyFromRecoveryAssembly(recovery.sections[i].content)), "utf8");
   }
 }

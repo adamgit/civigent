@@ -741,7 +741,11 @@ async function importDirtyFragmentsToSessionOverlay(session: DocSession): Promis
   }
 }
 
-setSessionOverlayImportCallback(importDirtyFragmentsToSessionOverlay);
+export function installDefaultSessionOverlayImportCallback(): void {
+  setSessionOverlayImportCallback(importDirtyFragmentsToSessionOverlay);
+}
+
+installDefaultSessionOverlayImportCallback();
 
 setNormalizeBroadcast((docPath, info) => {
   broadcastToAll(docPath, encodeStructureWillChange(info));

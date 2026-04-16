@@ -65,6 +65,8 @@ describe("OAuth 2.1 flow", () => {
   const PRE_AUTH_AGENT_ID = "agent-preauth-test";
   const PRE_AUTH_DISPLAY_NAME = "PreAuth Test Bot";
   const PRE_AUTH_SECRET = "sk_test_secret_1234567890";
+  /** Shared anonymous client_id, registered once in beforeAll to avoid rate-limit exhaustion. */
+  let sharedAnonClientId: string;
 
   beforeAll(async () => {
     // Set KS_OIDC_PUBLIC_URL so getOidcPublicUrl() works in multi-user mode
@@ -81,6 +83,12 @@ describe("OAuth 2.1 flow", () => {
       `${PRE_AUTH_AGENT_ID}:${secretHash}:${PRE_AUTH_DISPLAY_NAME}\n`,
       "utf8",
     );
+
+    // Register a shared anonymous client for tests that don't need their own
+    const regRes = await request(ctx.app)
+      .post("/oauth/register")
+      .send({ client_name: "Shared Test Agent" });
+    sharedAnonClientId = regRes.body.client_id;
   });
 
   afterAll(async () => {
@@ -491,6 +499,183 @@ describe("OAuth 2.1 flow", () => {
         });
       expect(res.status).toBe(302);
       expect(res.headers.location).toMatch(/code=/);
+    });
+  });
+
+  // ── Deferred nonce consumption ─────────────────────────────
+
+  describe("deferred nonce consumption", () => {
+    it("a failed PKCE attempt does not burn the auth code, allowing a correct retry", async () => {
+      const clientId = sharedAnonClientId;
+
+      const codeVerifier = generateCodeVerifier();
+      const codeChallenge = generateCodeChallenge(codeVerifier);
+
+      const authCode = await getAuthCode(
+        ctx.app,
+        clientId,
+        "http://localhost:9999/callback",
+        codeChallenge,
+        "S256",
+      );
+
+      // First attempt: wrong code_verifier — should fail but NOT consume the nonce
+      const failRes = await request(ctx.app)
+        .post("/oauth/token")
+        .send({
+          grant_type: "authorization_code",
+          code: authCode,
+          code_verifier: "wrong-verifier-that-will-fail-pkce",
+          client_id: clientId,
+        });
+      expect(failRes.status).toBe(400);
+      expect(failRes.body.error).toBe("invalid_grant");
+
+      // Second attempt: correct code_verifier — should succeed
+      const successRes = await request(ctx.app)
+        .post("/oauth/token")
+        .send({
+          grant_type: "authorization_code",
+          code: authCode,
+          code_verifier: codeVerifier,
+          client_id: clientId,
+        });
+      expect(successRes.status).toBe(200);
+      expect(successRes.body).toHaveProperty("access_token");
+    });
+  });
+
+  // ── expires_in in token responses ─────────────────────────
+
+  describe("expires_in in token responses", () => {
+    it("authorization_code grant includes expires_in", async () => {
+      const clientId = sharedAnonClientId;
+
+      const codeVerifier = generateCodeVerifier();
+      const codeChallenge = generateCodeChallenge(codeVerifier);
+      const authCode = await getAuthCode(
+        ctx.app, clientId, "http://localhost:9999/callback", codeChallenge, "S256",
+      );
+
+      const tokenRes = await request(ctx.app)
+        .post("/oauth/token")
+        .send({
+          grant_type: "authorization_code",
+          code: authCode,
+          code_verifier: codeVerifier,
+          client_id: clientId,
+        });
+      expect(tokenRes.status).toBe(200);
+      expect(tokenRes.body.expires_in).toBe(1800);
+    });
+
+    it("refresh_token grant includes expires_in", async () => {
+      const clientId = sharedAnonClientId;
+
+      const codeVerifier = generateCodeVerifier();
+      const codeChallenge = generateCodeChallenge(codeVerifier);
+      const authCode = await getAuthCode(
+        ctx.app, clientId, "http://localhost:9999/callback", codeChallenge, "S256",
+      );
+
+      const tokenRes = await request(ctx.app)
+        .post("/oauth/token")
+        .send({
+          grant_type: "authorization_code",
+          code: authCode,
+          code_verifier: codeVerifier,
+          client_id: clientId,
+        });
+      const refreshToken = tokenRes.body.refresh_token;
+
+      const refreshRes = await request(ctx.app)
+        .post("/oauth/token")
+        .send({
+          grant_type: "refresh_token",
+          refresh_token: refreshToken,
+        });
+      expect(refreshRes.status).toBe(200);
+      expect(refreshRes.body.expires_in).toBe(1800);
+    });
+  });
+
+  // ── redirect_uri mismatch ─────────────────────────────────
+
+  describe("redirect_uri validation at token endpoint", () => {
+    it("rejects token exchange when redirect_uri does not match auth code", async () => {
+      const clientId = sharedAnonClientId;
+
+      const codeVerifier = generateCodeVerifier();
+      const codeChallenge = generateCodeChallenge(codeVerifier);
+      const authCode = await getAuthCode(
+        ctx.app, clientId, "http://localhost:9999/callback", codeChallenge, "S256",
+      );
+
+      const tokenRes = await request(ctx.app)
+        .post("/oauth/token")
+        .send({
+          grant_type: "authorization_code",
+          code: authCode,
+          code_verifier: codeVerifier,
+          client_id: clientId,
+          redirect_uri: "http://evil.example.com/callback",
+        });
+      expect(tokenRes.status).toBe(400);
+      expect(tokenRes.body.error).toBe("invalid_grant");
+      expect(tokenRes.body.error_description).toMatch(/redirect_uri/i);
+    });
+  });
+
+  // ── JSON error format from authorize endpoint ─────────────
+
+  describe("authorize endpoint returns JSON errors", () => {
+    it("GET /oauth/authorize missing params returns JSON error", async () => {
+      const res = await request(ctx.app).get("/oauth/authorize");
+      expect(res.status).toBe(400);
+      expect(res.body).toHaveProperty("error");
+      expect(res.body).toHaveProperty("error_description");
+      expect(res.headers["content-type"]).toMatch(/json/);
+    });
+
+    it("GET /oauth/authorize invalid client_id returns JSON error", async () => {
+      const res = await request(ctx.app)
+        .get("/oauth/authorize")
+        .query({
+          client_id: "nonexistent",
+          redirect_uri: "http://localhost:9999/callback",
+          code_challenge: "test",
+          response_type: "code",
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("invalid_request");
+      expect(res.headers["content-type"]).toMatch(/json/);
+    });
+  });
+
+  // ── Form-encoded token endpoint ───────────────────────────
+
+  describe("token endpoint with application/x-www-form-urlencoded", () => {
+    it("accepts form-encoded body for authorization_code grant", async () => {
+      const clientId = sharedAnonClientId;
+
+      const codeVerifier = generateCodeVerifier();
+      const codeChallenge = generateCodeChallenge(codeVerifier);
+      const authCode = await getAuthCode(
+        ctx.app, clientId, "http://localhost:9999/callback", codeChallenge, "S256",
+      );
+
+      const tokenRes = await request(ctx.app)
+        .post("/oauth/token")
+        .type("form")
+        .send({
+          grant_type: "authorization_code",
+          code: authCode,
+          code_verifier: codeVerifier,
+          client_id: clientId,
+        });
+      expect(tokenRes.status).toBe(200);
+      expect(tokenRes.body).toHaveProperty("access_token");
+      expect(tokenRes.body.token_type).toBe("Bearer");
     });
   });
 

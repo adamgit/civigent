@@ -86,9 +86,12 @@ export async function readDocSectionCommitInfo(
         const fields = payload.slice(tsSep + 1).split("\0");
         currentSha = fields[0] ?? "";
         currentAuthor = fields[1] ?? "";
-        const writerTrailer = (fields[3] ?? "").split(",")[0]?.trim() ?? "";
-        const writerTypeTrailer = (fields[4] ?? "").split(",")[0]?.trim().toLowerCase() ?? "";
-        currentWriterId = writerTrailer || "unknown";
+        const writerTrailer = (fields[3] ?? "").trim();
+        const writerTypeTrailer = (fields[4] ?? "").trim().toLowerCase();
+        // Multi-valued trailers (comma-joined by git separator=%x2c) are malformed —
+        // our commit code writes exactly one Writer and one Writer-Type per commit.
+        // Treat comma-containing values as integrity errors → "unknown".
+        currentWriterId = (writerTrailer && !writerTrailer.includes(",")) ? writerTrailer : "unknown";
         if (writerTypeTrailer === "agent" || writerTypeTrailer === "human") {
           currentWriterType = writerTypeTrailer;
         } else {

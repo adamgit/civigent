@@ -16,7 +16,7 @@ export interface AuthTokenClaims {
   jti: string;
 }
 
-const ACCESS_TTL_SECONDS = 1800;
+export const ACCESS_TTL_SECONDS = 1800;
 const REFRESH_TTL_SECONDS = 2592000;
 const BOOTSTRAP_TTL_SECONDS = 2592000;
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import { createTestServer, type TestServerContext } from "../helpers/test-server.js";
+import { issueTokenPair } from "../../auth/tokens.js";
 
 describe("Auth session and methods", () => {
   let ctx: TestServerContext;
@@ -25,6 +26,34 @@ describe("Auth session and methods", () => {
       expect(res.body.user).toHaveProperty("id");
       expect(res.body.user).toHaveProperty("type");
       expect(res.body.user).toHaveProperty("displayName");
+    });
+
+    it("returns authenticated: true with user info when a valid access-token cookie is provided", async () => {
+      const saved = process.env.KS_AUTH_MODE;
+      try {
+        // Cookie auth is only reached when not in single_user mode
+        process.env.KS_AUTH_MODE = "oidc";
+
+        const tokenPair = issueTokenPair({
+          id: "cookie-human",
+          type: "human",
+          displayName: "Cookie Human",
+        });
+
+        const res = await request(ctx.app)
+          .get("/api/auth/session")
+          .set("Cookie", [`ks_access_token=${encodeURIComponent(tokenPair.access_token)}`]);
+
+        expect(res.status).toBe(200);
+        expect(res.body.authenticated).toBe(true);
+        expect(res.body.user).toEqual({
+          id: "cookie-human",
+          type: "human",
+          displayName: "Cookie Human",
+        });
+      } finally {
+        process.env.KS_AUTH_MODE = saved;
+      }
     });
 
     it("returns authenticated: true in single_user mode even without a token", async () => {
