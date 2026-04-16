@@ -206,37 +206,40 @@ export function setCrdtEventHandler(handler: (event: WsServerEvent) => void): vo
 
 async function finalizeSessionEnd(state: CrdtSocketState, result: Awaited<ReturnType<typeof releaseDocSession>>): Promise<void> {
   if (!result.sessionEnded) return;
-  // Build contributors list: the disconnecting editor is primary; others from session.
-  const primaryWriter: WriterIdentity = {
-    id: state.writerId,
-    type: state.writerType,
-    displayName: state.writerDisplayName,
-  };
-  const contributors: WriterIdentity[] = [
-    primaryWriter,
-    ...result.contributors.filter((c) => c.id !== state.writerId),
-  ];
+  try {
+    // Build contributors list: the disconnecting editor is primary; others from session.
+    const primaryWriter: WriterIdentity = {
+      id: state.writerId,
+      type: state.writerType,
+      displayName: state.writerDisplayName,
+    };
+    const contributors: WriterIdentity[] = [
+      primaryWriter,
+      ...result.contributors.filter((c) => c.id !== state.writerId),
+    ];
 
-  // Inline canonical absorb — replaces legacy commitSessionFilesToCanonical.
-  const [pw, ...coWriters] = contributors;
-  let commitMsg = `human edit: ${pw.displayName}\n\nWriter: ${pw.id}\nWriter-Type: ${pw.type}`;
-  if (coWriters.length > 0) {
-    commitMsg += "\n" + coWriters
-      .map((w) => `Co-authored-by: ${w.displayName} <${w.email ?? `${w.id}@knowledge-store.local`}>`)
-      .join("\n");
-  }
-  const commitAuthor = { name: pw.displayName, email: pw.email ?? "human@knowledge-store.local" };
+    // Inline canonical absorb — replaces legacy commitSessionFilesToCanonical.
+    const [pw, ...coWriters] = contributors;
+    let commitMsg = `human edit: ${pw.displayName}\n\nWriter: ${pw.id}\nWriter-Type: ${pw.type}`;
+    if (coWriters.length > 0) {
+      commitMsg += "\n" + coWriters
+        .map((w) => `Co-authored-by: ${w.displayName} <${w.email ?? `${w.id}@knowledge-store.local`}>`)
+        .join("\n");
+    }
+    const commitAuthor = { name: pw.displayName, email: pw.email ?? "human@knowledge-store.local" };
 
-  const canonicalStore = new CanonicalStore(getContentRoot(), getDataRoot());
-  const absorbResult = await canonicalStore.absorbChangedSections(
-    getSessionSectionsContentRoot(),
-    commitMsg,
-    commitAuthor,
-    { docPaths: [state.docPath] },
-  );
+    const canonicalStore = new CanonicalStore(getContentRoot(), getDataRoot());
+    const absorbResult = await canonicalStore.absorbChangedSections(
+      getSessionSectionsContentRoot(),
+      commitMsg,
+      commitAuthor,
+      { docPaths: [state.docPath] },
+    );
 
-  if (absorbResult.changedSections.length > 0) {
-    // Session is over — clean up overlay files and raw fragments for this doc.
+    // Cleanup is gated on absorb success, NOT on changedSections count — a
+    // no-op session must still tear down its overlay so the next acquire sees
+    // a clean state. Absorb-throw paths skip this block via the outer try's
+    // re-throw.
     const { rm } = await import("node:fs/promises");
     const path = await import("node:path");
     const sessionsContentRoot = getSessionSectionsContentRoot();
@@ -248,42 +251,51 @@ async function finalizeSessionEnd(state: CrdtSocketState, result: Awaited<Return
     await recoveryBuffer.deleteAllFragments();
     await cleanupAuthorMetadata(state.docPath);
 
-    const committedSections = absorbResult.changedSections.map(({ docPath: dp, headingPath }) => ({
-      doc_path: dp,
-      heading_path: headingPath,
-    }));
+    if (absorbResult.changedSections.length > 0) {
+      const committedSections = absorbResult.changedSections.map(({ docPath: dp, headingPath }) => ({
+        doc_path: dp,
+        heading_path: headingPath,
+      }));
 
-    if (onWsEvent) {
-      onWsEvent({
-        type: "content:committed",
-        doc_path: state.docPath,
-        sections: committedSections,
-        commit_sha: absorbResult.commitSha,
-        writer_id: contributors[0].id,
-        writer_display_name: contributors[0].displayName,
-        writer_type: contributors[0].type,
-        contributor_ids: contributors.map((c) => c.id),
-        seconds_ago: 0,
-      });
+      if (onWsEvent) {
+        onWsEvent({
+          type: "content:committed",
+          doc_path: state.docPath,
+          sections: committedSections,
+          commit_sha: absorbResult.commitSha,
+          writer_id: contributors[0].id,
+          writer_display_name: contributors[0].displayName,
+          writer_type: contributors[0].type,
+          contributor_ids: contributors.map((c) => c.id),
+          seconds_ago: 0,
+        });
 
-      // Emit dirty:changed for all contributors so each frontend can clear its dirty state.
-      for (const contributor of contributors) {
-        for (const section of committedSections) {
-          onWsEvent({
-            type: "dirty:changed",
-            writer_id: contributor.id,
-            doc_path: section.doc_path,
-            heading_path: section.heading_path,
-            dirty: false,
-            base_head: null,
-            committed_head: absorbResult.commitSha,
-          });
+        // Emit dirty:changed for all contributors so each frontend can clear its dirty state.
+        for (const contributor of contributors) {
+          for (const section of committedSections) {
+            onWsEvent({
+              type: "dirty:changed",
+              writer_id: contributor.id,
+              doc_path: section.doc_path,
+              heading_path: section.heading_path,
+              dirty: false,
+              base_head: null,
+              committed_head: absorbResult.commitSha,
+            });
+          }
         }
       }
     }
-  }
 
-  closeObserversForDoc(state.docPath, 4021, "session_ended");
+    closeObserversForDoc(state.docPath, 4021, "session_ended");
+  } finally {
+    // Always release the finalization gate, even if absorb/cleanup/emit threw.
+    // A throw would otherwise permanently block future acquireDocSession for
+    // this docPath. The error re-propagates after finally runs.
+    if (result.completeFinalization) {
+      result.completeFinalization();
+    }
+  }
 }
 
 async function applyModeTransition(
@@ -838,7 +850,7 @@ export function createCrdtWsServer(): CrdtWsServer {
       });
     });
 
-    socket.on("close", () => {
+    socket.on("close", async () => {
       removeSocket(state.docPath, socket);
       socketState.delete(socket);
       removeParticipant(state.clientInstanceId);
@@ -846,8 +858,8 @@ export function createCrdtWsServer(): CrdtWsServer {
         if (state.socketRole === "observer") {
           removeObserverHolder(state.docPath, state.writerId, state.socketId);
         } else if (state.socketRole === "editor") {
-          releaseDocSession(state.docPath, state.writerId, state.socketId)
-            .then((result) => finalizeSessionEnd(state, result));
+          const releaseResult = await releaseDocSession(state.docPath, state.writerId, state.socketId);
+          await finalizeSessionEnd(state, releaseResult);
         }
       }
 

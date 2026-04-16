@@ -6,6 +6,7 @@ import {
   serializeWsDiag,
   type WsDiagEntry,
 } from "../services/ws-diagnostics";
+import { subscribeWorkerDiagnostics, unsubscribeWorkerDiagnostics } from "../services/ws-client";
 
 interface WsDiagnosticsConsoleProps {
   open: boolean;
@@ -34,6 +35,14 @@ export function WsDiagnosticsConsole({ open, onClose }: WsDiagnosticsConsoleProp
     });
     return unsubscribe;
   }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    subscribeWorkerDiagnostics();
+    return () => {
+      unsubscribeWorkerDiagnostics();
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;

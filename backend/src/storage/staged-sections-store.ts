@@ -176,8 +176,72 @@ export class StagedSectionsStore {
     const remaps: Array<{ oldKey: string; newKeys: string[] }> = [];
 
     const processKey = async (fragmentKey: string): Promise<void> => {
-      const entry = indexByKey.get(fragmentKey);
+      let entry = indexByKey.get(fragmentKey);
       if (!entry) {
+        // Empty-document BFH bootstrap: when the whole skeleton is empty
+        // and the scope names the synthetic BFH key, materialize it by
+        // upserting the root section. Strictly gated so no non-BFH key
+        // and no non-empty skeleton can take this path.
+        if (
+          fragmentKey === BEFORE_FIRST_HEADING_KEY
+          && indexByKey.size === 0
+          && orderedKeys.length === 0
+        ) {
+          const bootstrapMarkdown = liveStore.readFragmentString(fragmentKey);
+          const bootstrapRef = new SectionRef(this.docPath, []);
+          const bootstrapResult = await contentLayer.upsertSection(
+            bootstrapRef,
+            "",
+            bootstrapMarkdown,
+            { contentIsFullMarkdown: true },
+          );
+
+          accepted.add(fragmentKey);
+          for (const written of bootstrapResult.writtenEntries) {
+            const writtenKey = fragmentKeyFromSectionFile(
+              written.sectionFile,
+              written.headingPath.length === 0,
+            );
+            writtenKeySet.add(writtenKey);
+          }
+          for (const live of bootstrapResult.liveReloadEntries) {
+            const liveKey = fragmentKeyFromSectionFile(
+              live.sectionFile,
+              live.headingPath.length === 0,
+            );
+            liveReloadKeySet.add(liveKey);
+          }
+          for (const removed of bootstrapResult.removedEntries) {
+            const removedKey = fragmentKeyFromSectionFile(
+              removed.sectionFile,
+              removed.headingPath.length === 0,
+            );
+            removedKeySet.add(removedKey);
+            writtenKeySet.delete(removedKey);
+            liveReloadKeySet.delete(removedKey);
+            accepted.add(removedKey);
+          }
+          for (const sc of bootstrapResult.structureChanges) {
+            const oldKey = fragmentKeyFromSectionFile(
+              sc.oldEntry.sectionFile,
+              sc.oldEntry.headingPath.length === 0,
+            );
+            const newKeys = sc.newEntries.map((e) =>
+              fragmentKeyFromSectionFile(e.sectionFile, e.headingPath.length === 0),
+            );
+            remaps.push({ oldKey, newKeys });
+          }
+
+          await refreshSkeletonView();
+          entry = indexByKey.get(fragmentKey);
+          if (!entry) {
+            throw new Error(
+              `Empty-doc BFH bootstrap for "${this.docPath}" did not materialize the BFH section — skeleton index still missing "${fragmentKey}" after upsert.`,
+            );
+          }
+          return;
+        }
+
         // Skeleton no longer has this key (a prior upsert in this same
         // accept-call already absorbed/removed it). Silent skip matches
         // the legacy behaviour of `importDirtyFragmentsToSessionOverlay`.

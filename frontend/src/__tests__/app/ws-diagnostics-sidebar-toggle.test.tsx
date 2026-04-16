@@ -13,6 +13,8 @@ vi.mock("../../services/ws-client", () => ({
     focusDocument = vi.fn();
     blurDocument = vi.fn();
   },
+  subscribeWorkerDiagnostics: vi.fn(),
+  unsubscribeWorkerDiagnostics: vi.fn(),
 }));
 
 vi.mock("../../services/system-events-client", () => ({

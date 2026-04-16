@@ -5,14 +5,14 @@
  * Run in isolation:
  *   cd backend && npx vitest run src/perf/
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterEach } from "vitest";
 import request from "supertest";
 import path from "node:path";
 import { createApp } from "../app.js";
 import { setSystemReady } from "../startup-state.js";
 import { ensureGitRepoReady, getHeadSha } from "../storage/git-repo.js";
 import { ensureV3Directories, getDataRoot } from "../storage/data-root.js";
-import { acquireDocSession, releaseDocSession, lookupDocSession, setSessionOverlayImportCallback, flushDirtyToOverlay } from "../crdt/ydoc-lifecycle.js";
+import { acquireDocSession, releaseDocSession, lookupDocSession, setSessionOverlayImportCallback, flushDirtyToOverlay, __clearFinalizingDocsForTests } from "../crdt/ydoc-lifecycle.js";
 import type { WriterIdentity } from "../types/shared.js";
 
 const PERF_WRITER: WriterIdentity = { id: "perf-writer", type: "human", displayName: "Perf Writer", email: "perf@test.local" };
@@ -29,6 +29,13 @@ describe("API performance (dev-data)", () => {
     setSystemReady();
     app = createApp();
   }, 30_000);
+
+  afterEach(() => {
+    // Tests here call releaseDocSession directly (bypassing finalizeSessionEnd),
+    // leaving the finalization gate unresolved. Clear it between tests so the
+    // next acquire for the same docPath doesn't block on a stale gate.
+    __clearFinalizingDocsForTests();
+  });
 
   // ── Helpers ──────────────────────────────────────────────
 

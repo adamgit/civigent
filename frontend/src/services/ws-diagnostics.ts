@@ -22,7 +22,10 @@ export type WsDiagSource =
   | "broadcast-auth"
   | "tree-refresh-schedule"
   | "tree-fetch"
-  | "tree-fetch-result";
+  | "tree-fetch-result"
+  | "worker-incoming"
+  | "worker-outgoing"
+  | "worker-lifecycle";
 
 export interface WsDiagEntry {
   id: number;

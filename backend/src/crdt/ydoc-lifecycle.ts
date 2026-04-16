@@ -29,7 +29,7 @@ import {
   buildFragmentContent as buildFragmentContentFn,
   type FragmentContent,
 } from "../storage/section-formatting.js";
-import { fragmentKeyFromSectionFile } from "./ydoc-fragments.js";
+import { BEFORE_FIRST_HEADING_KEY, fragmentKeyFromSectionFile } from "./ydoc-fragments.js";
 
 export { SERVER_INJECTION_ORIGIN };
 
@@ -129,6 +129,68 @@ const sessions = new Map<string, DocSession>();
  */
 const sessionPromises = new Map<string, Promise<DocSession>>();
 
+/**
+ * Per-doc finalization gate. When a session is torn down in `releaseDocSession`,
+ * the caller performs post-release work (absorb + cleanup + event emission) in
+ * `finalizeSessionEnd`. During that window `sessions` and `sessionPromises`
+ * already show the doc as unreserved, so a new `acquireDocSession` could race
+ * the finalize's file-system work. An entry in this map signals "a finalize is
+ * in progress for this docPath" — `acquireDocSession` awaits it before building
+ * a new session.
+ *
+ * Invariant: for a given docPath, at most one of {live session in `sessions`,
+ * entry in `finalizingDocs`} may hold authority at a time.
+ *
+ * Not exported directly. Callers use `beginFinalization()` to install a gate
+ * and `awaitFinalization()` (used only by `acquireDocSession`) to wait it out.
+ */
+const finalizingDocs = new Map<string, Promise<void>>();
+
+/**
+ * Install a finalization gate for `docPath` and return a resolver.
+ *
+ * The returned "complete" callback resolves the promise AND deletes the map
+ * entry in the same synchronous tick. Callers MUST invoke it exactly once
+ * (via try/finally) after all post-release work settles. Forgetting to call it
+ * will permanently block future `acquireDocSession` for this docPath.
+ *
+ * Throws if a finalize is already in flight for this docPath — concurrent
+ * finalize for the same doc is an invariant break that must fail loudly.
+ */
+export function beginFinalization(docPath: string): () => void {
+  if (finalizingDocs.has(docPath)) {
+    throw new Error(
+      `beginFinalization: a finalize is already in flight for docPath="${docPath}". ` +
+      `Concurrent finalize for the same doc breaks the session-end exclusivity invariant.`,
+    );
+  }
+  let resolveFn: () => void;
+  const promise = new Promise<void>((resolve) => {
+    resolveFn = resolve;
+  });
+  finalizingDocs.set(docPath, promise);
+  return () => {
+    finalizingDocs.delete(docPath);
+    resolveFn();
+  };
+}
+
+/**
+ * Read-only accessor for the pending finalization promise for a docPath.
+ * Returns undefined when no finalize is in flight.
+ *
+ * Used by `acquireDocSession` to await finalize completion before building a
+ * new session for the same docPath. Not intended for other callers.
+ */
+export function awaitFinalization(docPath: string): Promise<void> | undefined {
+  return finalizingDocs.get(docPath);
+}
+
+/** Test-only: clear the finalize registry. Used by lifecycle test-reset helpers. */
+export function __clearFinalizingDocsForTests(): void {
+  finalizingDocs.clear();
+}
+
 const IDLE_TIMEOUT_MS = 60_000;
 const FLUSH_DEBOUNCE_MS = 4_000;
 
@@ -213,6 +275,15 @@ export async function acquireDocSession(
 ): Promise<DocSession> {
   const identity = writerIdentity;
 
+  // Session-end exclusivity: if a prior session is currently being finalized
+  // (absorb + overlay/fragment cleanup in progress), wait it out before
+  // constructing a new session for this docPath. See checklist "Session-end
+  // race" block for the full invariant.
+  const inflightFinalization = awaitFinalization(docPath);
+  if (inflightFinalization) {
+    await inflightFinalization;
+  }
+
   // Fast path: session already exists (resolved) or creation is in-flight.
   // Concurrent callers for the same docPath share the single in-flight promise,
   // eliminating the TOCTOU race that would spawn duplicate fromDisk() calls.
@@ -281,9 +352,30 @@ export async function acquireDocSession(
       fragmentKeyByHeadingPathKey.set(SectionRef.headingKey(hp), fragmentKey);
     });
 
+    // Empty-doc bootstrap: seed the synthetic BFH key into the session index
+    // BEFORE constructing LiveFragmentStringsStore so its orderedKeys match
+    // the index and subsequent Y.Doc population lands on a key the session
+    // already knows about. Matches the skeleton-backed path downstream: once
+    // the user's first edit materializes a BFH section on disk, the real
+    // skeleton walk will re-introduce the same key.
+    if (skeleton.areSkeletonRootsEmpty) {
+      orderedKeys.push(BEFORE_FIRST_HEADING_KEY);
+      headingPathByFragmentKey.set(BEFORE_FIRST_HEADING_KEY, []);
+      fragmentKeyByHeadingPathKey.set(SectionRef.headingKey([]), BEFORE_FIRST_HEADING_KEY);
+    }
+
     const liveStrings = new LiveFragmentStringsStore(ydoc, orderedKeys, docPath);
     const rawRecovery = new RawFragmentRecoveryBuffer(docPath);
     const stagedSections = new StagedSectionsStore(docPath);
+
+    if (skeleton.areSkeletonRootsEmpty) {
+      // Populate the Y.Doc with an empty BFH fragment using SERVER_INJECTION_ORIGIN
+      // so the afterTransaction guard does not mark it ahead-of-staged.
+      const bfhContent = buildFragmentContentFn(EMPTY_BODY, 0, "");
+      const bootstrapMap = new Map<string, FragmentContent>();
+      bootstrapMap.set(BEFORE_FIRST_HEADING_KEY, bfhContent);
+      liveStrings.replaceFragmentStrings(bootstrapMap, SERVER_INJECTION_ORIGIN);
+    }
 
     if (!skeleton.areSkeletonRootsEmpty) {
       // Read raw fragment files (sessions/fragments/) — crash-safe heading+body
@@ -413,6 +505,16 @@ export interface ReleaseResult {
   sessionEnded: boolean;
   /** Populated when sessionEnded === true: all writers who contributed to this session. */
   contributors: WriterIdentity[];
+  /**
+   * Finalization-gate resolver. Populated (non-null) iff `sessionEnded === true`.
+   *
+   * The caller MUST invoke this exactly once after all post-release work
+   * (absorb + cleanup + event emission) settles, via try/finally. Forgetting to
+   * call it will permanently block future `acquireDocSession` for this docPath.
+   *
+   * Null on the early-return branches (no session in map, non-last-editor release).
+   */
+  completeFinalization: (() => void) | null;
 }
 
 export async function releaseDocSession(
@@ -421,7 +523,7 @@ export async function releaseDocSession(
   socketId?: string,
 ): Promise<ReleaseResult> {
   const session = sessions.get(docPath);
-  if (!session) return { sessionEnded: false, contributors: [] };
+  if (!session) return { sessionEnded: false, contributors: [], completeFinalization: null };
 
   const holder = session.holders.get(writerId);
   if (holder) {
@@ -456,6 +558,10 @@ export async function releaseDocSession(
 
     // Capture contributors before session is destroyed.
     const contributors = Array.from(session.contributors.values());
+    // Declared outside the try so the return statement below can reference it.
+    // The finally block always installs the gate + clears registries before the
+    // function returns or throws.
+    let completeFinalization: (() => void) | null = null;
 
     try {
       // Session-end store boundary pattern: single accept with scoped dirty keys
@@ -474,22 +580,25 @@ export async function releaseDocSession(
         await applyAcceptResult(session, result);
       }
     } finally {
-      // Always clean up timers and destroy Y.Doc, even if normalization fails
+      // Install the finalization gate + clear registries synchronously in the
+      // same tick, before destroying the Y.Doc, so no concurrent
+      // `acquireDocSession` can observe "doc is unreserved AND no gate yet".
+      // Order is: install gate → clear registries → destroy ydoc.
       if (session.idleTimeoutTimer) {
         clearTimeout(session.idleTimeoutTimer);
       }
-
+      completeFinalization = beginFinalization(docPath);
+      sessions.delete(docPath);
+      sessionPromises.delete(docPath);
       // "committing" → "ended": teardown complete.
       session.state = "ended";
       session.ydoc.destroy();
-      sessions.delete(docPath);
-      sessionPromises.delete(docPath);
     }
 
-    return { sessionEnded: true, contributors };
+    return { sessionEnded: true, contributors, completeFinalization };
   }
 
-  return { sessionEnded: false, contributors: [] };
+  return { sessionEnded: false, contributors: [], completeFinalization: null };
 }
 
 // ─── Section Focus (editingPresence) ─────────────────────────────
@@ -1212,6 +1321,10 @@ export function destroyAllSessions(): void {
   }
   sessions.clear();
   sessionPromises.clear();
+  // Clear any leaked finalization gates from tests that released a session
+  // without running finalizeSessionEnd (which would normally resolve the gate
+  // via try/finally). Safety net only — normal runtime cycles self-clean.
+  finalizingDocs.clear();
 }
 
 /**

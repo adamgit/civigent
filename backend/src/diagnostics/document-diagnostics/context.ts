@@ -2,7 +2,8 @@ import path from "node:path";
 import { readdir } from "node:fs/promises";
 import { getContentRoot, getContentGitPrefix, getDataRoot, getSessionSectionsContentRoot, getSessionFragmentsRoot } from "../../storage/data-root.js";
 import { assessSkeleton, type SkeletonAssessment } from "../../storage/recovery-layers.js";
-import { resolveSkeletonPath, DocumentSkeleton, parseSkeletonToEntries } from "../../storage/document-skeleton.js";
+import { resolveSkeletonPath, parseSkeletonToEntries, type FlatEntry } from "../../storage/document-skeleton.js";
+import { ContentLayer } from "../../storage/content-layer.js";
 import { normalizeDocPath } from "../../storage/path-utils.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { gitExec } from "../../storage/git-repo.js";
@@ -146,14 +147,42 @@ export async function ensureRecursiveSkeleton(
   if (ctx.recursiveSkeleton) return ctx.recursiveSkeleton;
   if (ctx.recursiveSkeletonLoadError) throw ctx.recursiveSkeletonLoadError;
   try {
-    const skeleton = await DocumentSkeleton.fromDisk(ctx.docPath, ctx.contentRoot, ctx.contentRoot);
-    ctx.recursiveSkeleton = skeleton as RecursiveSkeletonView;
+    const entries = await new ContentLayer(ctx.contentRoot).listCanonicalEntries(ctx.docPath);
+    ctx.recursiveSkeleton = recursiveSkeletonViewFromFlatEntries(entries);
     return ctx.recursiveSkeleton;
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     ctx.recursiveSkeletonLoadError = error;
     throw error;
   }
+}
+
+function recursiveSkeletonViewFromFlatEntries(entries: FlatEntry[]): RecursiveSkeletonView {
+  return {
+    allStructuralEntries() {
+      return entries.map((e) => ({
+        sectionFile: e.sectionFile,
+        headingPath: [...e.headingPath],
+        absolutePath: e.absolutePath,
+        isSubSkeleton: e.isSubSkeleton,
+      }));
+    },
+    allContentEntries() {
+      return entries
+        .filter((e) => !e.isSubSkeleton)
+        .map((e) => ({ headingPath: [...e.headingPath], absolutePath: e.absolutePath }));
+    },
+    forEachSection(cb) {
+      for (const e of entries) {
+        if (!e.isSubSkeleton) cb(e.heading, e.level, e.sectionFile, e.headingPath, e.absolutePath);
+      }
+    },
+    forEachNode(cb) {
+      for (const e of entries) {
+        cb(e.heading, e.level, e.sectionFile, e.headingPath, e.absolutePath, e.isSubSkeleton);
+      }
+    },
+  };
 }
 
 export function collectDuplicateFragmentKeyDetails(

@@ -1,3 +1,5 @@
+import { WorkerDiagnostics } from "./ws-shared-worker-diagnostics";
+
 interface TabState {
   subscriptions: string[];
   focusedDocPath: string | null;
@@ -27,7 +29,23 @@ interface WsSendMessage {
   message: unknown;
 }
 
-type WorkerInboundMessage = RegisterMessage | UnregisterMessage | TabStateMessage | WsSendMessage;
+interface DiagnosticsSubscribeMessage {
+  type: "diagnostics:subscribe";
+  tabId: string;
+}
+
+interface DiagnosticsUnsubscribeMessage {
+  type: "diagnostics:unsubscribe";
+  tabId: string;
+}
+
+type WorkerInboundMessage =
+  | RegisterMessage
+  | UnregisterMessage
+  | TabStateMessage
+  | WsSendMessage
+  | DiagnosticsSubscribeMessage
+  | DiagnosticsUnsubscribeMessage;
 
 const workerScope = self as unknown as {
   location: Location;
@@ -36,6 +54,7 @@ const workerScope = self as unknown as {
 
 const tabPorts = new Map<string, MessagePort>();
 const tabStates = new Map<string, TabState>();
+const diagnostics = new WorkerDiagnostics();
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -48,6 +67,39 @@ function broadcastServerEvent(event: unknown): void {
   for (const port of tabPorts.values()) {
     port.postMessage({ type: "server_event", event });
   }
+}
+
+function describeOutgoing(obj: unknown): { type: string; docPath: string | undefined } {
+  if (!obj || typeof obj !== "object") {
+    return { type: "(untyped)", docPath: undefined };
+  }
+  const rec = obj as Record<string, unknown>;
+  if (typeof rec.type === "string") {
+    const docPath = typeof rec.doc_path === "string" ? rec.doc_path : undefined;
+    return { type: rec.type, docPath };
+  }
+  if (typeof rec.subscribe === "string") {
+    return { type: "subscribe", docPath: rec.subscribe };
+  }
+  if (typeof rec.unsubscribe === "string") {
+    return { type: "unsubscribe", docPath: rec.unsubscribe };
+  }
+  return { type: "(untyped)", docPath: undefined };
+}
+
+function sendWs(obj: unknown): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  ws.send(JSON.stringify(obj));
+  const { type, docPath } = describeOutgoing(obj);
+  diagnostics.capture({
+    source: "worker-outgoing",
+    type,
+    summary: docPath ? `doc=${docPath}` : "",
+    docPath,
+    payload: obj,
+  });
 }
 
 function desiredSessionState(): {
@@ -85,22 +137,50 @@ function ensureSocket(): void {
     appliedSubscriptions = new Set<string>();
     appliedFocusedDocPath = undefined;
     appliedFocusedSection = undefined;
+    diagnostics.capture({
+      source: "worker-lifecycle",
+      type: "open",
+      summary: `${protocol}://${workerScope.location.host}/ws`,
+      payload: { tabs: tabPorts.size },
+    });
     syncSocketState();
   });
 
   socket.addEventListener("message", (raw) => {
+    const rawData = String(raw.data);
     try {
-      const serverEvent = JSON.parse(String(raw.data));
+      const serverEvent = JSON.parse(rawData);
+      const eventRec = serverEvent as Record<string, unknown>;
+      const type = typeof eventRec.type === "string" ? eventRec.type : "(untyped)";
+      const docPath = typeof eventRec.doc_path === "string" ? eventRec.doc_path : undefined;
+      diagnostics.capture({
+        source: "worker-incoming",
+        type,
+        summary: docPath ? `doc=${docPath}` : "",
+        docPath,
+        payload: serverEvent,
+      });
       broadcastServerEvent(serverEvent);
     } catch {
-      // Ignore malformed transport payloads.
+      diagnostics.capture({
+        source: "worker-incoming",
+        type: "(malformed)",
+        summary: `len=${rawData.length}`,
+        payload: rawData,
+      });
     }
   });
 
-  socket.addEventListener("close", () => {
+  socket.addEventListener("close", (event) => {
     if (ws === socket) {
       ws = null;
     }
+    diagnostics.capture({
+      source: "worker-lifecycle",
+      type: "close",
+      summary: `code=${event.code} reason=${event.reason || "(none)"}`,
+      payload: { code: event.code, reason: event.reason, wasClean: event.wasClean },
+    });
     if (tabPorts.size === 0) {
       return;
     }
@@ -108,6 +188,11 @@ function ensureSocket(): void {
   });
 
   socket.addEventListener("error", () => {
+    diagnostics.capture({
+      source: "worker-lifecycle",
+      type: "error",
+      summary: "socket error",
+    });
     socket.close();
   });
 }
@@ -131,6 +216,12 @@ function scheduleReconnect(): void {
     return;
   }
   const delay = reconnectDelayMs;
+  diagnostics.capture({
+    source: "worker-lifecycle",
+    type: "reconnect_scheduled",
+    summary: `in ${delay}ms`,
+    payload: { delayMs: delay },
+  });
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     ensureSocket();
@@ -145,12 +236,12 @@ function syncSocketState(): void {
   const desired = desiredSessionState();
   for (const path of desired.subscriptions) {
     if (!appliedSubscriptions.has(path)) {
-      ws.send(JSON.stringify({ subscribe: path }));
+      sendWs({ subscribe: path });
     }
   }
   for (const path of appliedSubscriptions) {
     if (!desired.subscriptions.has(path)) {
-      ws.send(JSON.stringify({ unsubscribe: path }));
+      sendWs({ unsubscribe: path });
     }
   }
   appliedSubscriptions = desired.subscriptions;
@@ -163,35 +254,29 @@ function syncSocketState(): void {
     : null;
   if (appliedSectionKey !== desiredSectionKey) {
     if (desired.focusedSection) {
-      ws.send(
-        JSON.stringify({
-          type: "section_focus",
-          doc_path: desired.focusedSection.docPath,
-          heading_path: desired.focusedSection.headingPath,
-        }),
-      );
+      sendWs({
+        type: "section_focus",
+        doc_path: desired.focusedSection.docPath,
+        heading_path: desired.focusedSection.headingPath,
+      });
     } else if (appliedFocusedSection) {
-      ws.send(
-        JSON.stringify({
-          type: "section_blur",
-          doc_path: appliedFocusedSection.docPath,
-          heading_path: appliedFocusedSection.headingPath,
-        }),
-      );
+      sendWs({
+        type: "section_blur",
+        doc_path: appliedFocusedSection.docPath,
+        heading_path: appliedFocusedSection.headingPath,
+      });
     }
     appliedFocusedSection = desired.focusedSection;
   }
 
   if (!desired.focusedSection && appliedFocusedDocPath !== desired.focusedDocPath) {
     if (desired.focusedDocPath) {
-      ws.send(
-        JSON.stringify({
-          type: "document_focus",
-          doc_path: desired.focusedDocPath,
-        }),
-      );
+      sendWs({
+        type: "document_focus",
+        doc_path: desired.focusedDocPath,
+      });
     } else {
-      ws.send(JSON.stringify({ type: "document_blur" }));
+      sendWs({ type: "document_blur" });
     }
     appliedFocusedDocPath = desired.focusedDocPath;
   } else if (desired.focusedSection) {
@@ -204,6 +289,10 @@ function sweepStaleTabs(): void {
   let changed = false;
   for (const [tabId, state] of tabStates.entries()) {
     if (now - state.updatedAt > 7000) {
+      const port = tabPorts.get(tabId);
+      if (port) {
+        diagnostics.unsubscribe(port);
+      }
       tabStates.delete(tabId);
       tabPorts.delete(tabId);
       changed = true;
@@ -262,6 +351,10 @@ workerScope.onconnect = (connectEvent) => {
       return;
     }
     if (message.type === "unregister") {
+      const existingPort = tabPorts.get(message.tabId);
+      if (existingPort) {
+        diagnostics.unsubscribe(existingPort);
+      }
       tabPorts.delete(message.tabId);
       tabStates.delete(message.tabId);
       if (tabPorts.size === 0) {
@@ -272,9 +365,16 @@ workerScope.onconnect = (connectEvent) => {
       return;
     }
     if (message.type === "ws_send") {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(message.message));
-      }
+      sendWs(message.message);
+      return;
+    }
+    if (message.type === "diagnostics:subscribe") {
+      diagnostics.subscribe(port);
+      return;
+    }
+    if (message.type === "diagnostics:unsubscribe") {
+      diagnostics.unsubscribe(port);
+      return;
     }
   });
 };

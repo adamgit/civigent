@@ -1962,6 +1962,52 @@ async function readTreeRecursive(skeletonPath: string): Promise<SkeletonNode[]> 
 }
 
 /**
+ * Read the skeleton tree at EXACTLY one root, with no overlay/canonical
+ * fallback merging. Returns null when the skeleton file at `root` does not
+ * exist; otherwise returns a flat, document-order list of entries.
+ *
+ * Use this to observe one storage layer independently (e.g., diagnostics
+ * comparing canonical-only and overlay-only structures). Do NOT reach for
+ * `DocumentSkeleton.fromDisk(docPath, root, root)` for single-root reads —
+ * that trick uses the overlay-fallback-to-canonical factory in a mode it was
+ * not designed for and has been a historical source of bugs.
+ */
+export async function listSkeletonEntriesAtRoot(
+  docPath: string,
+  root: string,
+): Promise<FlatEntry[] | null> {
+  const skeletonPath = resolveSkeletonPath(docPath, root);
+  try {
+    await access(skeletonPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  const rootNodes = await readTreeRecursive(skeletonPath);
+  const out: FlatEntry[] = [];
+  const walk = (nodes: SkeletonNode[], parentPath: string[], parentSkeletonPath: string): void => {
+    const sectionsDir = `${parentSkeletonPath}.sections`;
+    for (const node of nodes) {
+      const isBfh = node.level === 0 && node.heading === "";
+      const headingPath = isBfh ? [...parentPath] : [...parentPath, node.heading];
+      const absolutePath = path.join(sectionsDir, node.sectionFile);
+      const isSubSkeleton = node.children.length > 0;
+      out.push({
+        heading: node.heading,
+        level: node.level,
+        sectionFile: node.sectionFile,
+        headingPath,
+        absolutePath,
+        isSubSkeleton,
+      });
+      if (isSubSkeleton) walk(node.children, headingPath, absolutePath);
+    }
+  };
+  walk(rootNodes, [], skeletonPath);
+  return out;
+}
+
+/**
  * Validate that a skeleton has at most one root entry (level=0, heading="")
  * at the top level. Duplicate roots represent an impossible state that causes
  * data loss on re-normalization. Throws immediately rather than letting the

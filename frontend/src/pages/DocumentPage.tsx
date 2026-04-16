@@ -30,6 +30,7 @@ import {
   formatRelativeAgeFromMs,
   getDocDisplayName,
   LOADING_REVEAL_DELAY_MS,
+  BEFORE_FIRST_HEADING_KEY,
 } from "./document-page-utils";
 import { useDocumentSessionController } from "../hooks/useDocumentSessionController";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
@@ -73,6 +74,10 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
   // ── Section data ─────────────────────────────────────────
   const [sections, setSections] = useState<DocumentSection[]>([]);
+  // View-model overlay: equals `sections` except for the empty-doc edit case
+  // where one synthetic BFH row is exposed so click-to-edit, focus restoration,
+  // editor registry, and DocumentCanvas all agree on a real item at index 0.
+  const [displaySections, setDisplaySections] = useState<DocumentSection[]>([]);
   const [sectionsLoading, setSectionsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -162,7 +167,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     stopObserver,
   } = useDocumentSessionController({
     decodedDocPath,
-    sections,
+    sections: displaySections,
     setSections,
     setError,
     setStatusMessage,
@@ -170,11 +175,44 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     onRestoreNotification: handleRestoreNotification,
   });
 
-  // Ref for sections (used by transferService and other stable callbacks)
+  // Ref for displayed sections (used by transferService and other stable callbacks)
   const sectionsRef = useRef<DocumentSection[]>([]);
   useEffect(() => {
-    sectionsRef.current = sections;
-  }, [sections]);
+    sectionsRef.current = displaySections;
+  }, [displaySections]);
+
+  // Keep `displaySections` in sync: normally mirrors `sections`; when the server
+  // doc is empty and the page is in editor mode with CRDT synced, expose a
+  // single synthetic BFH row so the editor can mount at index 0 before the
+  // real section materializes on disk via the staged-store bootstrap path.
+  const syntheticBfhSections = useMemo<DocumentSection[]>(() => [{
+    heading: "",
+    heading_path: [],
+    depth: 0,
+    content: "",
+    humanInvolvement_score: 0,
+    crdt_session_active: true,
+    section_length_warning: false,
+    word_count: 0,
+    fragment_key: BEFORE_FIRST_HEADING_KEY,
+    section_file: "",
+  }], []);
+  const isEditingMode = controllerState.requestedMode === "editor";
+  useEffect(() => {
+    let next: DocumentSection[];
+    if (sections.length > 0) {
+      next = sections;
+    } else if (isEditingMode) {
+      // Editor mode on an empty server doc: expose the synthetic BFH row so
+      // click-to-edit has something to focus. CRDT sync is not gated on —
+      // the editor mounts optimistically and local Y.Doc writes buffer until
+      // the transport reaches synced state.
+      next = syntheticBfhSections;
+    } else {
+      next = sections;
+    }
+    setDisplaySections((prev) => (prev === next ? prev : next));
+  }, [sections, isEditingMode, syntheticBfhSections]);
 
   // ── Injected sections state (proposal injection visual affordance) ─
   // Separate from recentlyChangedSections — different visual, different trigger.
@@ -245,9 +283,9 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   });
 
   // Derived
-  const isEditing = controllerState.requestedMode === "editor";
-  const focusedHeadingPath = focusedSectionIndex !== null && sections[focusedSectionIndex]
-    ? sections[focusedSectionIndex].heading_path
+  const isEditing = isEditingMode;
+  const focusedHeadingPath = focusedSectionIndex !== null && displaySections[focusedSectionIndex]
+    ? displaySections[focusedSectionIndex].heading_path
     : null;
 
   // ── Cross-section drag/drop service ──────────────────────
@@ -638,15 +676,23 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
               {/* Loading state */}
               {showLoading ? <DocumentLoadingSkeleton structureTree={structureTree} /> : null}
 
-              {!sectionsLoading && sections.length === 0 && !error ? (
-                <p className="text-sm text-text-muted">Document is empty.</p>
+              {!sectionsLoading && displaySections.length === 0 && !error ? (
+                <button
+                  type="button"
+                  className="text-sm text-text-muted italic hover:text-text-primary hover:underline cursor-text text-left block"
+                  onClick={(e) => {
+                    void startEditing(0, { x: e.clientX, y: e.clientY });
+                  }}
+                >
+                  Document is empty.
+                </button>
               ) : null}
             </div>
             <div className="w-[200px] min-w-[100px] shrink" />
           </div>
 
           <DocumentCanvas
-            sections={sections}
+            sections={displaySections}
             sectionsLoading={sectionsLoading}
             focusedSectionIndex={focusedSectionIndex}
             restructuringKeys={restructuringKeys}

@@ -18,6 +18,7 @@ import {
   generateSectionFilename,
   generateBeforeFirstHeadingFilename,
   headingsEqual,
+  listSkeletonEntriesAtRoot,
   type ContentEntry,
   type FlatEntry,
   type OverlayDocumentState,
@@ -268,6 +269,22 @@ export class ContentLayer {
       sections.push({ heading, level, sectionFile, headingPath: [...headingPath] });
     });
     return sections;
+  }
+
+  /**
+   * Return a flat document-order list of all skeleton entries under the
+   * canonical root — sub-skeleton parents included, flagged via `isSubSkeleton`.
+   * No overlay fallback is consulted. Returns `[]` when no canonical skeleton
+   * file exists for `docPath`.
+   *
+   * Observational reader for callers that need to compare layers
+   * independently (e.g., diagnostics). Goes through the sanctioned
+   * single-root helper `listSkeletonEntriesAtRoot` — not the overlay-aware
+   * `fromDisk` factory.
+   */
+  async listCanonicalEntries(docPath: string): Promise<FlatEntry[]> {
+    const entries = await listSkeletonEntriesAtRoot(docPath, this.contentRoot);
+    return entries ?? [];
   }
 
   /**
@@ -764,6 +781,22 @@ export class OverlayContentLayer {
   async getDocumentStructure(docPath: string): Promise<DocStructureNode[]> {
     const skeleton = await this.readSkeleton(docPath);
     return skeleton.structure;
+  }
+
+  /**
+   * Return a flat document-order list of all skeleton entries present under
+   * the overlay root ONLY — no canonical fallback. Returns `null` when the
+   * overlay skeleton file does not exist (i.e., this document has no overlay
+   * state at all — caller should treat that as distinct from "overlay exists
+   * but is empty").
+   *
+   * Observational reader for callers that need to compare overlay and
+   * canonical structures independently (e.g., diagnostics). Goes through the
+   * sanctioned single-root helper `listSkeletonEntriesAtRoot` — not the
+   * overlay-aware `fromDisk` factory.
+   */
+  async listOverlayOnlyEntries(docPath: string): Promise<FlatEntry[] | null> {
+    return listSkeletonEntriesAtRoot(docPath, this.overlayRoot);
   }
 
   /**

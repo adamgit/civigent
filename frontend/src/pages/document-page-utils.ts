@@ -143,3 +143,11 @@ export const LOADING_REVEAL_DELAY_MS = 500;
 
 /** How long the pastel highlight stays visible after content:committed. */
 export const HIGHLIGHT_DURATION_MS = 3000;
+
+/**
+ * Synthetic fragment key for the before-first-heading section — mirrors the
+ * backend constant in `backend/src/crdt/ydoc-fragments.ts`. The backend uses the
+ * same key for real BFH sections, so an editor bound to this key on a synthetic
+ * display row keeps its identity across the synthetic → real transition.
+ */
+export const BEFORE_FIRST_HEADING_KEY = "section::__beforeFirstHeading__";

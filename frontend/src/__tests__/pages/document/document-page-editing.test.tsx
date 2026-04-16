@@ -8,21 +8,31 @@ import { jsonResponse } from "../../helpers/fetch-mocks";
 const mockProviderConnect = vi.fn();
 const mockProviderDestroy = vi.fn();
 const mockProviderFocusSection = vi.fn();
+const mockProviderSendSessionOverlayImportRequest = vi.fn();
+const mockProviderSendSectionMutate = vi.fn();
+
+const BEFORE_FIRST_HEADING_KEY = "section::__beforeFirstHeading__";
 
 vi.mock("../../../services/crdt-provider", () => ({
   CrdtProvider: class {
+    _opts: Record<string, unknown>;
     constructor(_doc: unknown, _docPath: string, opts: Record<string, unknown>) {
-      // Store callbacks for test access
-      (this as any)._opts = opts;
+      this._opts = opts;
     }
     awareness = {
       getLocalState: () => ({ user: {} }),
       setLocalStateField: vi.fn(),
     };
-    connect = mockProviderConnect;
+    connect = () => {
+      mockProviderConnect();
+      (this._opts?.onStateChange as ((s: string) => void) | undefined)?.("connected");
+      (this._opts?.onSynced as (() => void) | undefined)?.();
+    };
     disconnect = vi.fn();
     destroy = mockProviderDestroy;
     focusSection = mockProviderFocusSection;
+    sendSessionOverlayImportRequest = mockProviderSendSessionOverlayImportRequest;
+    sendSectionMutate = mockProviderSendSectionMutate;
   },
 }));
 
@@ -43,10 +53,23 @@ vi.mock("../../../components/MilkdownEditor", async () => {
   const React = await import("react");
   return {
     MilkdownEditor: React.forwardRef(
-      (props: { fragmentKey?: string; onReady?: () => void }, _ref: unknown) => {
+      (props: {
+        fragmentKey?: string;
+        onReady?: () => void;
+        transport?: { sendSectionMutate?: (fragmentKey: string, markdown: string) => Promise<unknown> };
+      }, _ref: unknown) => {
         React.useEffect(() => { props.onReady?.(); }, []);
         return (
           <div data-testid="milkdown-editor" data-fragment-key={props.fragmentKey}>
+            <button
+              data-testid={`mutate-${props.fragmentKey ?? "unknown"}`}
+              onClick={() => void props.transport?.sendSectionMutate?.(
+                props.fragmentKey ?? "",
+                "First content in a new document.",
+              )}
+            >
+              Mutate
+            </button>
             Editor:{props.fragmentKey}
           </div>
         );
@@ -134,6 +157,9 @@ describe("DocumentPage editing", () => {
     mockProviderConnect.mockClear();
     mockProviderDestroy.mockClear();
     mockProviderFocusSection.mockClear();
+    mockProviderSendSessionOverlayImportRequest.mockClear();
+    mockProviderSendSectionMutate.mockClear();
+    mockProviderSendSectionMutate.mockResolvedValue({ success: true });
 
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
       const urlStr = String(url);
@@ -200,6 +226,65 @@ describe("DocumentPage editing", () => {
       // Focused is index 1, neighbors are 0 and 2 = 3 editors max
       expect(editors.length).toBeLessThanOrEqual(3);
       expect(editors.length).toBeGreaterThan(0);
+    });
+  });
+
+  it("clicking an empty document enters edit mode", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/sections")) {
+        return jsonResponse({ sections: [] });
+      }
+      if (urlStr.includes("/structure")) {
+        return jsonResponse({ structure: [] });
+      }
+      if (urlStr.includes("/changes-since")) {
+        return jsonResponse({ changed_sections: [] });
+      }
+      return jsonResponse({});
+    });
+
+    renderDocPage();
+
+    const emptyState = await screen.findByText("Document is empty.");
+    fireEvent.click(emptyState);
+
+    await waitFor(() => {
+      expect(mockProviderConnect).toHaveBeenCalled();
+      expect(screen.getByTestId("milkdown-editor")).toBeDefined();
+    });
+  });
+
+  it("a newly created document can dispatch its first BFH write", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/sections")) {
+        return jsonResponse({ sections: [] });
+      }
+      if (urlStr.includes("/structure")) {
+        return jsonResponse({ structure: [] });
+      }
+      if (urlStr.includes("/changes-since")) {
+        return jsonResponse({ changed_sections: [] });
+      }
+      return jsonResponse({});
+    });
+
+    renderDocPage();
+
+    fireEvent.click(await screen.findByText("Document is empty."));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("milkdown-editor")).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByTestId(`mutate-${BEFORE_FIRST_HEADING_KEY}`));
+
+    await waitFor(() => {
+      expect(mockProviderSendSectionMutate).toHaveBeenCalledWith(
+        BEFORE_FIRST_HEADING_KEY,
+        "First content in a new document.",
+      );
     });
   });
 });

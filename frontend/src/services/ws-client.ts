@@ -1,6 +1,6 @@
 import type { WsClientMessage, WsServerEvent } from "../types/shared.js";
 import { randomUuid } from "../utils/random-uuid";
-import { recordWsDiag } from "./ws-diagnostics";
+import { recordWsDiag, type WsDiagSource } from "./ws-diagnostics";
 
 export type WsEventHandler = (event: WsServerEvent) => void;
 
@@ -16,6 +16,26 @@ interface CrossTabTransport {
   stop(): void;
   updateTabState(state: TabState): void;
   sendClientMessage(message: WsClientMessage): void;
+  subscribeWorkerDiagnostics?(): void;
+  unsubscribeWorkerDiagnostics?(): void;
+}
+
+interface ForwardedDiagEntry {
+  source: WsDiagSource;
+  type: string;
+  summary: string;
+  docPath?: string;
+  payload?: unknown;
+}
+
+function recordForwardedDiagEntry(entry: ForwardedDiagEntry): void {
+  recordWsDiag({
+    source: entry.source,
+    type: entry.type,
+    summary: entry.summary,
+    docPath: entry.docPath,
+    payload: entry.payload,
+  });
 }
 
 function createTabId(): string {
@@ -26,6 +46,7 @@ class SharedWorkerTransport implements CrossTabTransport {
   private readonly tabId: string;
   private workerPort: MessagePort | null = null;
   private onEvent: WsEventHandler | null = null;
+  private diagnosticsSubscribed = false;
   private state: TabState = {
     subscriptions: [],
     focusedDocPath: null,
@@ -51,9 +72,25 @@ class SharedWorkerTransport implements CrossTabTransport {
     );
     worker.port.start();
     worker.port.addEventListener("message", (message) => {
-      const payload = message.data as { type?: string; event?: WsServerEvent };
+      const payload = message.data as {
+        type?: string;
+        event?: WsServerEvent;
+        entry?: ForwardedDiagEntry;
+        entries?: ForwardedDiagEntry[];
+      };
       if (payload.type === "server_event" && payload.event) {
         this.onEvent?.(payload.event);
+        return;
+      }
+      if (payload.type === "diagnostics_event" && payload.entry) {
+        recordForwardedDiagEntry(payload.entry);
+        return;
+      }
+      if (payload.type === "diagnostics_backlog" && Array.isArray(payload.entries)) {
+        for (const entry of payload.entries) {
+          recordForwardedDiagEntry(entry);
+        }
+        return;
       }
     });
     worker.port.postMessage({ type: "register", tabId: this.tabId });
@@ -64,6 +101,10 @@ class SharedWorkerTransport implements CrossTabTransport {
   stop(): void {
     if (!this.workerPort) {
       return;
+    }
+    if (this.diagnosticsSubscribed) {
+      this.workerPort.postMessage({ type: "diagnostics:unsubscribe", tabId: this.tabId });
+      this.diagnosticsSubscribed = false;
     }
     this.workerPort.postMessage({ type: "unregister", tabId: this.tabId });
     this.workerPort.close();
@@ -84,6 +125,22 @@ class SharedWorkerTransport implements CrossTabTransport {
       return;
     }
     this.workerPort.postMessage({ type: "ws_send", tabId: this.tabId, message });
+  }
+
+  subscribeWorkerDiagnostics(): void {
+    if (!this.workerPort || this.diagnosticsSubscribed) {
+      return;
+    }
+    this.diagnosticsSubscribed = true;
+    this.workerPort.postMessage({ type: "diagnostics:subscribe", tabId: this.tabId });
+  }
+
+  unsubscribeWorkerDiagnostics(): void {
+    if (!this.workerPort || !this.diagnosticsSubscribed) {
+      return;
+    }
+    this.diagnosticsSubscribed = false;
+    this.workerPort.postMessage({ type: "diagnostics:unsubscribe", tabId: this.tabId });
   }
 }
 
@@ -612,6 +669,14 @@ class SessionWsManager {
     this.transport.sendClientMessage(message);
   }
 
+  subscribeWorkerDiagnostics(): void {
+    this.transport?.subscribeWorkerDiagnostics?.();
+  }
+
+  unsubscribeWorkerDiagnostics(): void {
+    this.transport?.unsubscribeWorkerDiagnostics?.();
+  }
+
   resetForTests(): void {
     if (this.heartbeatTimer != null) {
       window.clearInterval(this.heartbeatTimer);
@@ -635,6 +700,14 @@ function getSessionWsManager(): SessionWsManager {
     sessionWsManager = new SessionWsManager();
   }
   return sessionWsManager;
+}
+
+export function subscribeWorkerDiagnostics(): void {
+  getSessionWsManager().subscribeWorkerDiagnostics();
+}
+
+export function unsubscribeWorkerDiagnostics(): void {
+  getSessionWsManager().unsubscribeWorkerDiagnostics();
 }
 
 /**

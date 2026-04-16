@@ -76,6 +76,21 @@ export class RawFragmentRecoveryBuffer {
     }
   }
 
+  async listPersistedFragments(): Promise<{ fragmentKey: string; fileName: string }[]> {
+    try {
+      const entries = await readdir(this.getFragmentDir());
+      return entries
+        .filter((e) => e.endsWith(".md"))
+        .map((fileName) => ({
+          fragmentKey: this.fragmentKeyForFilename(fileName),
+          fileName,
+        }));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw err;
+    }
+  }
+
   // ─── Snapshot (crash-safety write) ───────────────────────────────
 
   /**

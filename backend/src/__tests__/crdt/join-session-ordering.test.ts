@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import * as Y from "yjs";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
@@ -7,6 +7,7 @@ import {
   acquireDocSession,
   joinSession,
   releaseDocSession,
+  __clearFinalizingDocsForTests,
   type DocSession,
 } from "../../crdt/ydoc-lifecycle.js";
 import type { WsServerEvent, WriterIdentity } from "../../types/shared.js";
@@ -29,6 +30,13 @@ describe("joinSession message ordering", () => {
 
   afterAll(async () => {
     await ctx.cleanup();
+  });
+
+  afterEach(() => {
+    // Tests here call releaseDocSession directly (bypassing finalizeSessionEnd),
+    // leaving the finalization gate unresolved. Clear it between tests so the
+    // next acquire for the same docPath doesn't block on a stale gate.
+    __clearFinalizingDocsForTests();
   });
 
   async function acquireAndJoin(): Promise<{

@@ -83,6 +83,16 @@ export function useSectionFocus({
           ? { kind: "heading_path", heading_path: section.heading_path }
           : { kind: "before_first_heading" },
       }));
+    } else if (sectionIndex === 0 && sections.length === 0) {
+      // Empty-document bootstrap: the synthetic BFH row materializes into
+      // displaySections once editor mode + CRDT sync land. Pre-set BFH focus
+      // so the server routes presence correctly and pendingFocus fires when
+      // the editor mounts for the synthetic row at index 0.
+      provider.focusSection([]);
+      setControllerState((prev) => ({
+        ...prev,
+        editorFocusTarget: { kind: "before_first_heading" },
+      }));
     }
     setViewingSections(provider, sectionIndex);
   }, [ensureProvider, sections, setViewingSections, setControllerState]);

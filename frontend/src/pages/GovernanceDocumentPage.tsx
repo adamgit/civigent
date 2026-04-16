@@ -26,6 +26,7 @@ import {
   getDocDisplayName,
   shouldMountEditor,
   LOADING_REVEAL_DELAY_MS,
+  BEFORE_FIRST_HEADING_KEY,
 } from "./document-page-utils";
 import { useDocumentSessionController } from "../hooks/useDocumentSessionController";
 import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
@@ -56,6 +57,10 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
 
   // ── Section data ─────────────────────────────────────────
   const [sections, setSections] = useState<DocumentSection[]>([]);
+  // View-model overlay: mirrors `sections` except for the empty-doc edit case
+  // where one synthetic BFH row is exposed so click-to-edit, focus restoration,
+  // editor registry, and render loop all agree on a real item at index 0.
+  const [displaySections, setDisplaySections] = useState<DocumentSection[]>([]);
   const [sectionsLoading, setSectionsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
@@ -136,18 +141,47 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     stopObserver,
   } = useDocumentSessionController({
     decodedDocPath,
-    sections,
+    sections: displaySections,
     setSections,
     setError,
     setStatusMessage,
     loadSections,
   });
 
-  // Ref for sections (used by transferService and other stable callbacks)
+  // Ref for displayed sections (used by transferService and other stable callbacks)
   const sectionsRef = useRef<DocumentSection[]>([]);
   useEffect(() => {
-    sectionsRef.current = sections;
-  }, [sections]);
+    sectionsRef.current = displaySections;
+  }, [displaySections]);
+
+  // Keep `displaySections` in sync: normally mirrors `sections`; when the server
+  // doc is empty and the page is in editor mode, expose a single synthetic BFH
+  // row so the editor can mount at index 0 before the real section materializes
+  // on disk via the staged-store bootstrap path.
+  const syntheticBfhSections = useMemo<DocumentSection[]>(() => [{
+    heading: "",
+    heading_path: [],
+    depth: 0,
+    content: "",
+    humanInvolvement_score: 0,
+    crdt_session_active: true,
+    section_length_warning: false,
+    word_count: 0,
+    fragment_key: BEFORE_FIRST_HEADING_KEY,
+    section_file: "",
+  }], []);
+  const isEditingMode = controllerState.requestedMode === "editor";
+  useEffect(() => {
+    let next: DocumentSection[];
+    if (sections.length > 0) {
+      next = sections;
+    } else if (isEditingMode) {
+      next = syntheticBfhSections;
+    } else {
+      next = sections;
+    }
+    setDisplaySections((prev) => (prev === next ? prev : next));
+  }, [sections, isEditingMode, syntheticBfhSections]);
 
   // ── WebSocket hook ────────────────────────────────────────
   const {
@@ -174,9 +208,9 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   });
 
   // Derived
-  const isEditing = controllerState.requestedMode === "editor";
-  const focusedHeadingPath = focusedSectionIndex !== null && sections[focusedSectionIndex]
-    ? sections[focusedSectionIndex].heading_path
+  const isEditing = isEditingMode;
+  const focusedHeadingPath = focusedSectionIndex !== null && displaySections[focusedSectionIndex]
+    ? displaySections[focusedSectionIndex].heading_path
     : null;
 
   // ── Cross-section drag/drop service ──────────────────────
@@ -490,11 +524,19 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
             {showLoading ? <DocumentLoadingSkeleton structureTree={structureTree} /> : null}
 
             {/* Sections */}
-            {!sectionsLoading && sections.length === 0 && !error ? (
-              <p className="text-sm text-text-muted">Document is empty.</p>
+            {!sectionsLoading && displaySections.length === 0 && !error ? (
+              <button
+                type="button"
+                className="text-sm text-text-muted italic hover:text-text-primary hover:underline cursor-text text-left block"
+                onClick={(e) => {
+                  void startEditing(0, { x: e.clientX, y: e.clientY });
+                }}
+              >
+                Document is empty.
+              </button>
             ) : null}
 
-            {!sectionsLoading ? sections.map((section, i) => {
+            {!sectionsLoading ? displaySections.map((section, i) => {
               const sectionKey = sectionHeadingKey(section.heading_path);
               const fk = getSectionFragmentKey(section);
               const sectionLabel = headingPathToLabel(section.heading_path);
