@@ -334,6 +334,7 @@ workerScope.onconnect = (connectEvent) => {
         focusedSection: null,
         updatedAt: Date.now(),
       });
+      port.postMessage({ type: "register_ack", tabId: message.tabId });
       ensureSocket();
       syncSocketState();
       return;

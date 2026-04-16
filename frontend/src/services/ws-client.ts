@@ -12,13 +12,15 @@ interface TabState {
 }
 
 interface CrossTabTransport {
-  start(onEvent: WsEventHandler): void;
+  start(onEvent: WsEventHandler): Promise<void>;
   stop(): void;
   updateTabState(state: TabState): void;
   sendClientMessage(message: WsClientMessage): void;
   subscribeWorkerDiagnostics?(): void;
   unsubscribeWorkerDiagnostics?(): void;
 }
+
+const SHARED_WORKER_HANDSHAKE_TIMEOUT_MS = 3000;
 
 interface ForwardedDiagEntry {
   source: WsDiagSource;
@@ -58,44 +60,84 @@ class SharedWorkerTransport implements CrossTabTransport {
     this.tabId = tabId;
   }
 
-  start(onEvent: WsEventHandler): void {
+  start(onEvent: WsEventHandler): Promise<void> {
     const SharedWorkerCtor = (window as Window & {
       SharedWorker?: new (url: URL, options?: { type?: "classic" | "module"; name?: string }) => SharedWorker;
     }).SharedWorker;
     if (!SharedWorkerCtor) {
-      throw new Error("SharedWorker unavailable");
+      return Promise.reject(new Error("SharedWorker unavailable"));
     }
     this.onEvent = onEvent;
-    const worker = new SharedWorkerCtor(
-      new URL("../workers/ws-shared-worker.ts", import.meta.url),
-      { type: "module", name: "ks-shared-ws" },
-    );
-    worker.port.start();
-    worker.port.addEventListener("message", (message) => {
-      const payload = message.data as {
-        type?: string;
-        event?: WsServerEvent;
-        entry?: ForwardedDiagEntry;
-        entries?: ForwardedDiagEntry[];
-      };
-      if (payload.type === "server_event" && payload.event) {
-        this.onEvent?.(payload.event);
-        return;
-      }
-      if (payload.type === "diagnostics_event" && payload.entry) {
-        recordForwardedDiagEntry(payload.entry);
-        return;
-      }
-      if (payload.type === "diagnostics_backlog" && Array.isArray(payload.entries)) {
-        for (const entry of payload.entries) {
-          recordForwardedDiagEntry(entry);
+    let worker: SharedWorker;
+    try {
+      worker = new SharedWorkerCtor(
+        new URL("../workers/ws-shared-worker.ts", import.meta.url),
+        { type: "module", name: "ks-shared-ws" },
+      );
+    } catch (err) {
+      return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let timeoutHandle: number | null = null;
+      const settle = (outcome: "ok" | string) => {
+        if (settled) {
+          return;
         }
-        return;
-      }
+        settled = true;
+        if (timeoutHandle != null) {
+          window.clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
+        if (outcome === "ok") {
+          resolve();
+        } else {
+          reject(new Error(outcome));
+        }
+      };
+
+      worker.addEventListener("error", (evt) => {
+        const message = (evt as ErrorEvent).message || "SharedWorker error";
+        settle(`shared-worker error: ${message}`);
+      });
+      worker.port.addEventListener("messageerror", () => {
+        settle("shared-worker messageerror");
+      });
+      worker.port.addEventListener("message", (message) => {
+        const payload = message.data as {
+          type?: string;
+          event?: WsServerEvent;
+          entry?: ForwardedDiagEntry;
+          entries?: ForwardedDiagEntry[];
+        };
+        if (payload.type === "register_ack") {
+          settle("ok");
+          return;
+        }
+        if (payload.type === "server_event" && payload.event) {
+          this.onEvent?.(payload.event);
+          return;
+        }
+        if (payload.type === "diagnostics_event" && payload.entry) {
+          recordForwardedDiagEntry(payload.entry);
+          return;
+        }
+        if (payload.type === "diagnostics_backlog" && Array.isArray(payload.entries)) {
+          for (const entry of payload.entries) {
+            recordForwardedDiagEntry(entry);
+          }
+          return;
+        }
+      });
+      worker.port.start();
+      worker.port.postMessage({ type: "register", tabId: this.tabId });
+      worker.port.postMessage({ type: "tab_state", tabId: this.tabId, state: this.state });
+      this.workerPort = worker.port;
+      timeoutHandle = window.setTimeout(() => {
+        settle(`shared-worker register_ack timeout (${SHARED_WORKER_HANDSHAKE_TIMEOUT_MS}ms)`);
+      }, SHARED_WORKER_HANDSHAKE_TIMEOUT_MS);
     });
-    worker.port.postMessage({ type: "register", tabId: this.tabId });
-    worker.port.postMessage({ type: "tab_state", tabId: this.tabId, state: this.state });
-    this.workerPort = worker.port;
   }
 
   stop(): void {
@@ -196,7 +238,7 @@ class BroadcastFallbackTransport implements CrossTabTransport {
     this.tabId = tabId;
   }
 
-  start(onEvent: WsEventHandler): void {
+  async start(onEvent: WsEventHandler): Promise<void> {
     this.onEvent = onEvent;
     this.channel = new BroadcastChannel("ks-shared-ws-fallback-v1");
     this.channel.addEventListener("message", (event) => {
@@ -503,6 +545,7 @@ class SessionWsManager {
   private focusedDocPath: string | null = null;
   private focusedSection: { docPath: string; headingPath: string[] } | null = null;
   private heartbeatTimer: number | null = null;
+  private fallbackTransitioned = false;
 
   addListener(handler: WsEventHandler): () => void {
     this.listeners.add(handler);
@@ -517,26 +560,98 @@ class SessionWsManager {
       return;
     }
     this.started = true;
-    let transportKind: "shared-worker" | "broadcast-fallback";
-    try {
-      this.transport = new SharedWorkerTransport(this.tabId);
-      this.transport.start((event) => this.handleIncomingEvent(event));
-      transportKind = "shared-worker";
-    } catch {
-      this.transport = new BroadcastFallbackTransport(this.tabId);
-      this.transport.start((event) => this.handleIncomingEvent(event));
-      transportKind = "broadcast-fallback";
-    }
+    this.fallbackTransitioned = false;
+
     recordWsDiag({
       source: "ws-lifecycle",
-      type: "session_acquired",
-      summary: `transport=${transportKind} tabId=${this.tabId}`,
-      payload: { tabId: this.tabId, transport: transportKind },
+      type: "session_attempting",
+      summary: `transport=shared-worker tabId=${this.tabId}`,
+      payload: { tabId: this.tabId, transport: "shared-worker" },
     });
+
+    const attempted = new SharedWorkerTransport(this.tabId);
+    this.transport = attempted;
+    attempted
+      .start((event) => this.handleIncomingEvent(event))
+      .then(() => {
+        if (this.transport !== attempted || !this.started) {
+          return;
+        }
+        recordWsDiag({
+          source: "ws-lifecycle",
+          type: "session_acquired",
+          summary: `transport=shared-worker tabId=${this.tabId}`,
+          payload: { tabId: this.tabId, transport: "shared-worker" },
+        });
+        this.pushTabState();
+      })
+      .catch((err: unknown) => {
+        if (this.transport !== attempted || !this.started) {
+          return;
+        }
+        const reason = err instanceof Error ? err.message : String(err);
+        this.fallbackToBroadcastTransport(reason);
+      });
+
     this.heartbeatTimer = window.setInterval(() => {
       this.pushTabState();
     }, 1500);
     this.pushTabState();
+  }
+
+  private fallbackToBroadcastTransport(reason: string): void {
+    if (this.fallbackTransitioned || !this.started) {
+      return;
+    }
+    this.fallbackTransitioned = true;
+
+    recordWsDiag({
+      source: "ws-lifecycle",
+      type: "transport_failed",
+      summary: `transport=shared-worker reason=${reason}`,
+      payload: { tabId: this.tabId, transport: "shared-worker", reason },
+    });
+
+    const failed = this.transport;
+    this.transport = null;
+    failed?.stop();
+
+    recordWsDiag({
+      source: "ws-lifecycle",
+      type: "session_attempting",
+      summary: `transport=broadcast-fallback tabId=${this.tabId}`,
+      payload: { tabId: this.tabId, transport: "broadcast-fallback" },
+    });
+
+    const fallback = new BroadcastFallbackTransport(this.tabId);
+    this.transport = fallback;
+    fallback
+      .start((event) => this.handleIncomingEvent(event))
+      .then(() => {
+        if (this.transport !== fallback || !this.started) {
+          return;
+        }
+        recordWsDiag({
+          source: "ws-lifecycle",
+          type: "session_acquired",
+          summary: `transport=broadcast-fallback tabId=${this.tabId}`,
+          payload: { tabId: this.tabId, transport: "broadcast-fallback" },
+        });
+        this.pushTabState();
+      })
+      .catch((err: unknown) => {
+        const fallbackReason = err instanceof Error ? err.message : String(err);
+        recordWsDiag({
+          source: "ws-lifecycle",
+          type: "transport_failed",
+          summary: `transport=broadcast-fallback reason=${fallbackReason}`,
+          payload: {
+            tabId: this.tabId,
+            transport: "broadcast-fallback",
+            reason: fallbackReason,
+          },
+        });
+      });
   }
 
   release(): void {
@@ -686,6 +801,7 @@ class SessionWsManager {
     this.transport = null;
     this.started = false;
     this.referenceCount = 0;
+    this.fallbackTransitioned = false;
     this.listeners.clear();
     this.localSubscriptionRefCounts.clear();
     this.focusedDocPath = null;
