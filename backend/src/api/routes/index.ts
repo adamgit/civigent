@@ -1099,14 +1099,19 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         ...headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp })),
         ...headingPaths.map((hp) => ({ doc_path: newPath, heading_path: hp })),
       ]);
-      const { sections, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId);
+      const { sections, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
       if (!committedHead) {
+        const blocked = sections.filter((s) => s.blocked);
+        const blockedNames = blocked.map((s) =>
+          s.heading_path.length ? s.heading_path.join(" > ") : "(document root)"
+        );
         res.status(409).json({
           doc_path: docPath,
           proposal_id: proposalId,
           status: "draft",
           outcome: "blocked",
-          blocked_sections: sections.filter((s) => s.blocked),
+          blocked_sections: blocked,
+          message: `Proposal blocked: sections have recent human activity. Blocked sections: ${blockedNames.join(", ")}`,
         });
         return;
       }
@@ -1257,11 +1262,26 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     return raw.split(":").map((s) => decodeURIComponent(s.trim())).filter(Boolean);
   }
 
-  async function evaluateAndMaybeCommitTransientProposal(proposalId: string): Promise<{
+  async function evaluateAndMaybeCommitTransientProposal(
+    proposalId: string,
+    writerType: "human" | "agent" = "agent",
+  ): Promise<{
     evaluation: Awaited<ReturnType<typeof evaluateProposalHumanInvolvement>>["evaluation"];
     sections: Awaited<ReturnType<typeof evaluateProposalHumanInvolvement>>["sections"];
     committedHead?: string;
   }> {
+    if (writerType === "human") {
+      // Human-initiated structural mutations bypass the SectionGuard entirely.
+      // The guard exists to protect human work from agent overwrites — blocking
+      // humans from their own structural operations is a bug, not a feature.
+      const committedHead = await commitProposalToCanonical(proposalId, {});
+      return {
+        evaluation: { all_sections_accepted: true, aggregate_impact: 0, aggregate_threshold: 0, blocked_sections: [], passed_sections: [] },
+        sections: [],
+        committedHead,
+      };
+    }
+
     const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
     if (!evaluation.all_sections_accepted) {
       return { evaluation, sections };
@@ -1342,14 +1362,19 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       await overlayLayer.deleteSubtree(docPath, headingPath);
       await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: headingPath }]);
-      const { evaluation, sections, committedHead } = await evaluateAndMaybeCommitTransientProposal(proposalId);
+      const { evaluation, sections, committedHead } = await evaluateAndMaybeCommitTransientProposal(proposalId, writer.type);
       if (!committedHead) {
+        const blocked = sections.filter((s) => s.blocked);
+        const blockedNames = blocked.map((s) =>
+          s.heading_path.length ? s.heading_path.join(" > ") : "(document root)"
+        );
         res.status(409).json({
           doc_path: docPath,
           proposal_id: proposalId,
           status: "draft",
           outcome: "blocked",
-          blocked_sections: sections.filter((s) => s.blocked),
+          blocked_sections: blocked,
+          message: `Proposal blocked: sections have recent human activity. Blocked sections: ${blockedNames.join(", ")}`,
         });
         return;
       }
@@ -1419,14 +1444,19 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       await overlayLayer.moveSubtree(docPath, headingPath, new_parent_path, targetLevel);
       await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: headingPath }]);
-      const { evaluation, sections, committedHead } = await evaluateAndMaybeCommitTransientProposal(proposalId);
+      const { evaluation, sections, committedHead } = await evaluateAndMaybeCommitTransientProposal(proposalId, writer.type);
       if (!committedHead) {
+        const blocked = sections.filter((s) => s.blocked);
+        const blockedNames = blocked.map((s) =>
+          s.heading_path.length ? s.heading_path.join(" > ") : "(document root)"
+        );
         res.status(409).json({
           doc_path: docPath,
           proposal_id: proposalId,
           status: "draft",
           outcome: "blocked",
-          blocked_sections: sections.filter((s) => s.blocked),
+          blocked_sections: blocked,
+          message: `Proposal blocked: sections have recent human activity. Blocked sections: ${blockedNames.join(", ")}`,
         });
         return;
       }
@@ -1491,14 +1521,19 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       await overlayLayer.renameHeading(docPath, headingPath, new_heading);
       const newHeadingPath = [...headingPath.slice(0, -1), new_heading];
       await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: newHeadingPath }]);
-      const { evaluation, sections, committedHead } = await evaluateAndMaybeCommitTransientProposal(proposalId);
+      const { evaluation, sections, committedHead } = await evaluateAndMaybeCommitTransientProposal(proposalId, writer.type);
       if (!committedHead) {
+        const blocked = sections.filter((s) => s.blocked);
+        const blockedNames = blocked.map((s) =>
+          s.heading_path.length ? s.heading_path.join(" > ") : "(document root)"
+        );
         res.status(409).json({
           doc_path: docPath,
           proposal_id: proposalId,
           status: "draft",
           outcome: "blocked",
-          blocked_sections: sections.filter((s) => s.blocked),
+          blocked_sections: blocked,
+          message: `Proposal blocked: sections have recent human activity. Blocked sections: ${blockedNames.join(", ")}`,
         });
         return;
       }
@@ -3043,11 +3078,23 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 // Isolated in a separate function so that adding a new specific route
 // inside createApiRouter() can never accidentally end up after these.
 
-async function evaluateAndMaybeCommitDocumentProposal(proposalId: string): Promise<{
+async function evaluateAndMaybeCommitDocumentProposal(
+  proposalId: string,
+  writerType: "human" | "agent" = "agent",
+): Promise<{
   evaluation: Awaited<ReturnType<typeof evaluateProposalHumanInvolvement>>["evaluation"];
   sections: Awaited<ReturnType<typeof evaluateProposalHumanInvolvement>>["sections"];
   committedHead?: string;
 }> {
+  if (writerType === "human") {
+    const committedHead = await commitProposalToCanonical(proposalId, {});
+    return {
+      evaluation: { all_sections_accepted: true, aggregate_impact: 0, aggregate_threshold: 0, blocked_sections: [], passed_sections: [] },
+      sections: [],
+      committedHead,
+    };
+  }
+
   const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
   if (!evaluation.all_sections_accepted) {
     return { evaluation, sections };
@@ -3161,14 +3208,19 @@ function registerDocumentCatchAllRoutes(
       }
       await overlayLayer.createDocument(docPath);
       await updateProposalSections(proposalId, []);
-      const { sections, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId);
+      const { sections, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
       if (!committedHead) {
+        const blocked = sections.filter((s) => s.blocked);
+        const blockedNames = blocked.map((s) =>
+          s.heading_path.length ? s.heading_path.join(" > ") : "(document root)"
+        );
         res.status(409).json({
           doc_path: docPath,
           proposal_id: proposalId,
           status: "draft",
           outcome: "blocked",
-          blocked_sections: sections.filter((s) => s.blocked),
+          blocked_sections: blocked,
+          message: `Proposal blocked: sections have recent human activity. Blocked sections: ${blockedNames.join(", ")}`,
         });
         return;
       }
@@ -3256,44 +3308,54 @@ function registerDocumentCatchAllRoutes(
       const patchTargets = patchHeadingPaths.map(hp => ({ doc_path: docPath, heading_path: hp }));
       await updateProposalSections(patchProposalId, patchTargets);
 
-      const { evaluation, sections } = await evaluateProposalHumanInvolvement(patchProposalId);
+      let scores: SectionScoreSnapshot = {};
+      let commitSections: Array<{ doc_path: string; heading_path: string[] }> = patchTargets;
 
-      if (evaluation.all_sections_accepted) {
-        const scores: SectionScoreSnapshot = {};
+      if (writer.type === "human") {
+        // Human-initiated patch — bypass SectionGuard entirely
+      } else {
+        const { evaluation, sections } = await evaluateProposalHumanInvolvement(patchProposalId);
+        if (!evaluation.all_sections_accepted) {
+          const blockedNames = sections.filter((s) => s.blocked).map((s) =>
+            s.heading_path.length ? s.heading_path.join(" > ") : "(document root)"
+          );
+          res.status(409).json({
+            doc_path: docPath,
+            proposal_id: patchProposalId,
+            status: "draft",
+            outcome: "blocked",
+            blocked_sections: sections.filter((s) => s.blocked),
+            message: `Proposal blocked: sections have recent human activity. Blocked sections: ${blockedNames.join(", ")}`,
+          });
+          return;
+        }
         for (const s of sections) {
           scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
         }
+        commitSections = sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path }));
+      }
 
-        const committedHead = await commitProposalToCanonical(patchProposalId, scores);
+      const committedHead = await commitProposalToCanonical(patchProposalId, scores);
 
-        if (onWsEvent) {
-          onWsEvent({
-            type: "content:committed",
-            doc_path: docPath,
-            sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
-            commit_sha: committedHead,
-            writer_id: writer.id,
-            writer_display_name: writer.displayName,
-            writer_type: writer.type,
-            contributor_ids: [writer.id],
-            seconds_ago: 0,
-          });
-        }
-
-        res.status(200).json({
+      if (onWsEvent) {
+        onWsEvent({
+          type: "content:committed",
           doc_path: docPath,
-          committed_head: committedHead,
-          status: "committed",
-        });
-      } else {
-        res.status(409).json({
-          doc_path: docPath,
-          proposal_id: patchProposalId,
-          status: "draft",
-          outcome: "blocked",
-          blocked_sections: sections.filter((s) => s.blocked),
+          sections: commitSections,
+          commit_sha: committedHead,
+          writer_id: writer.id,
+          writer_display_name: writer.displayName,
+          writer_type: writer.type,
+          contributor_ids: [writer.id],
+          seconds_ago: 0,
         });
       }
+
+      res.status(200).json({
+        doc_path: docPath,
+        committed_head: committedHead,
+        status: "committed",
+      });
     } catch (error) {
       next(error);
     }
@@ -3343,14 +3405,19 @@ function registerDocumentCatchAllRoutes(
         proposalId,
         headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp })),
       );
-      const { sections, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId);
+      const { sections, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
       if (!committedHead) {
+        const blocked = sections.filter((s) => s.blocked);
+        const blockedNames = blocked.map((s) =>
+          s.heading_path.length ? s.heading_path.join(" > ") : "(document root)"
+        );
         res.status(409).json({
           doc_path: docPath,
           proposal_id: proposalId,
           status: "draft",
           outcome: "blocked",
-          blocked_sections: sections.filter((s) => s.blocked),
+          blocked_sections: blocked,
+          message: `Proposal blocked: sections have recent human activity. Blocked sections: ${blockedNames.join(", ")}`,
         });
         return;
       }
