@@ -12,6 +12,7 @@ import type { DocumentTreeEntry, AuthUser } from "../types/shared.js";
 import { stripLeadingSlashForRoute } from "./docsRouteUtils";
 import { DOC_BADGES_STORAGE_KEY, formatBuildDate, toCanonicalDocPath, readBadgeDocPaths, writeBadgeDocPaths, parseRouteDocPath, classifyWsEvent } from "./app-layout-utils";
 import { recordWsDiag } from "../services/ws-diagnostics";
+import { computeBrowserTabTitle } from "./browser-tab-title";
 
 function flattenTreeDocPaths(entries: DocumentTreeEntry[]): string[] {
   const out: string[] = [];
@@ -75,6 +76,9 @@ export function AppLayout() {
   const [wsDiagOpen, setWsDiagOpen] = useState(false);
   const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
   const focusedDocPath = useMemo(() => parseRouteDocPath(location.pathname), [location.pathname]);
+  useEffect(() => {
+    document.title = computeBrowserTabTitle(location.pathname, entries, loadingTree);
+  }, [location.pathname, entries, loadingTree]);
   const focusedDocPathRef = useRef<string | null>(focusedDocPath);
   const windowFocusedRef = useRef(windowFocused);
   const documentVisibleRef = useRef(documentVisible);
