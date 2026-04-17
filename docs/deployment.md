@@ -17,10 +17,12 @@ There are four ways to run Civigent. Each targets a different use case and expos
 
 ### Development / contributing
 
+Before native dev or tests from a git checkout, install dependencies in **`sharedlibs/milkdown-serializer`** first (required for backend imports), then **`backend`** and **`frontend`**. See the root **README** (“First-time dependency install”). Skipping the serializer install causes missing-module errors when the backend starts.
+
 | Method | Launch command | User connects to | Notes |
 |--------|---------------|-----------------|-------|
 | **Native dev** | `npm run dev` (runs `devtools/dev.sh`) | `http://localhost:5173` (frontend) | No Docker. Backend on port 3000 (configurable via `PORT`), frontend Vite dev server on 5173. Hot-reload on both. |
-| **DevContainer** | Open in VS Code / Cursor / etc | IDE specific but usually `http://localhost:5173`  | VS Code auto-detects and forwards ports. The actual external port is assigned by the IDE and may differ from the internal port. |
+| **DevContainer** | Open in VS Code / Cursor / etc | IDE specific but usually `http://localhost:5173`  | VS Code auto-detects and forwards ports. The actual external port is assigned by the IDE and may differ from the internal port. Run the same dependency installs inside the container once. |
 
 ### Key differences
 

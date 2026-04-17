@@ -6,7 +6,7 @@ How tests are organized, what infrastructure is available, and how to write new 
 
 ## Overview
 
-Civigent uses **Vitest** for both backend and frontend tests. Tests run per-package (not from the workspace root):
+Civigent uses **Vitest** for both backend and frontend tests. Tests run per-package (not from the workspace root). From a fresh clone, install dependencies in `sharedlibs/milkdown-serializer`, then `backend` and `frontend` (see the root README, “First-time dependency install”) before running tests.
 
 ```bash
 # Run backend tests

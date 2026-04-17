@@ -62,9 +62,21 @@ For contributors working on the Civigent source code.
 - Docker and Docker Compose
 - (Recommended) VS Code or Cursor with the Dev Containers extension
 
+### First-time dependency install (native checkout)
+
+After cloning, install JavaScript dependencies in **each** package below. Order matters for the shared serializer (the backend imports it via a path symlink; Node resolves modules from `sharedlibs/milkdown-serializer`, so its own `node_modules` must exist).
+
+```bash
+cd sharedlibs/milkdown-serializer && npm ci
+cd ../../backend && npm ci
+cd ../frontend && npm ci
+```
+
+(`npm install` works too if you do not need a reproducible lockfile-only install.)
+
 ### Option A: DevContainer (recommended)
 
-Open the repo in VS Code/Cursor and "Reopen in Container" when prompted. This gives you a full development environment with all dependencies pre-installed.
+Open the repo in VS Code/Cursor and "Reopen in Container" when prompted. You still need to run the **First-time dependency install** commands above inside the container once (the Dev Container image includes Node.js only).
 
 To build and run your local changes:
 
