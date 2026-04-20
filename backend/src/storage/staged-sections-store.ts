@@ -76,6 +76,16 @@ export class StagedSectionsStore {
 
   private readonly aheadOfCanonicalRefs = new Set<string>();
 
+  /**
+   * Promise-chain serializing `acceptLiveFragments` calls on this store.
+   * `acceptLiveFragments` is a multi-step async op (read skeleton, yield,
+   * upsert, yield, re-read skeleton, ...). Concurrent callers on the same
+   * instance would interleave skeleton/body writes and corrupt disk state.
+   * Each call chains behind the previous one so the next call runs against
+   * fresh disk state. The chain recovers from thrown errors via `.catch`.
+   */
+  private _acceptChain: Promise<unknown> = Promise.resolve();
+
   constructor(docPath: string) {
     this.docPath = docPath;
     this.stagingRoot = getSessionSectionsContentRoot();
@@ -112,7 +122,16 @@ export class StagedSectionsStore {
    * files, and does NOT broadcast. Those are the caller's responsibilities
    * (the raw snapshot runs before accept; `applyAcceptResult` runs after).
    */
-  async acceptLiveFragments(
+  acceptLiveFragments(
+    liveStore: LiveFragmentStringsStore,
+    scope: ReadonlySet<string> | "all",
+  ): Promise<AcceptResult> {
+    const next = this._acceptChain.then(() => this._acceptLiveFragmentsImpl(liveStore, scope));
+    this._acceptChain = next.catch(() => {});
+    return next;
+  }
+
+  private async _acceptLiveFragmentsImpl(
     liveStore: LiveFragmentStringsStore,
     scope: ReadonlySet<string> | "all",
   ): Promise<AcceptResult> {

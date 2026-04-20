@@ -38,7 +38,7 @@ import {
   updateSectionFocus,
   triggerDebouncedSessionOverlayImport,
   triggerImmediateSessionOverlayImport,
-  normalizeFragment,
+  requestNormalization,
   findKeyForHeadingPath,
   findHeadingPathForKey,
   type DocSession,
@@ -49,7 +49,7 @@ import { setPostCommitHook } from "../storage/commit-pipeline.js";
 import { documentSessionRegistry } from "../crdt/document-session-registry.js";
 import { getHeadSha } from "../storage/git-repo.js";
 import { getContentRoot, getDataRoot, getSessionSectionsContentRoot } from "../storage/data-root.js";
-import { CanonicalStore } from "../storage/canonical-store.js";
+import { CanonicalStore, type AbsorbResult } from "../storage/canonical-store.js";
 import { RawFragmentRecoveryBuffer } from "../storage/raw-fragment-recovery-buffer.js";
 import type { WsServerEvent, WriterIdentity } from "../types/shared.js";
 import type { ClientInstanceId, RemoteParticipant, ModeTransitionRequest, ModeTransitionResult } from "../types/shared.js";
@@ -204,30 +204,93 @@ export function setCrdtEventHandler(handler: (event: WsServerEvent) => void): vo
 
 // ─── Message handler ────────────────────────────────────────────
 
-async function finalizeSessionEnd(state: CrdtSocketState, result: Awaited<ReturnType<typeof releaseDocSession>>): Promise<void> {
+function buildSessionCommitInfo(
+  state: CrdtSocketState,
+  result: Awaited<ReturnType<typeof releaseDocSession>>,
+): { commitMsg: string; commitAuthor: { name: string; email: string }; contributors: WriterIdentity[] } {
+  const primaryWriter: WriterIdentity = {
+    id: state.writerId,
+    type: state.writerType,
+    displayName: state.writerDisplayName,
+  };
+  const contributors: WriterIdentity[] = [
+    primaryWriter,
+    ...result.contributors.filter((c) => c.id !== state.writerId),
+  ];
+  const [pw, ...coWriters] = contributors;
+  let commitMsg = `human edit: ${pw.displayName}\n\nWriter: ${pw.id}\nWriter-Type: ${pw.type}`;
+  if (coWriters.length > 0) {
+    commitMsg += "\n" + coWriters
+      .map((w) => `Co-authored-by: ${w.displayName} <${w.email ?? `${w.id}@knowledge-store.local`}>`)
+      .join("\n");
+  }
+  const commitAuthor = { name: pw.displayName, email: pw.email ?? "human@knowledge-store.local" };
+  return { commitMsg, commitAuthor, contributors };
+}
+
+// Cleanup is gated on absorb success, NOT on changedSections count — a no-op
+// session must still tear down its overlay so the next acquire sees a clean
+// state. Absorb-throw paths skip this via the caller's re-throw.
+async function removeSessionFiles(docPath: string): Promise<void> {
+  const { rm } = await import("node:fs/promises");
+  const path = await import("node:path");
+  const sessionsContentRoot = getSessionSectionsContentRoot();
+  const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  const skeletonPath = path.resolve(sessionsContentRoot, ...normalized.split("/"));
+  await rm(skeletonPath, { force: true });
+  await rm(`${skeletonPath}.sections`, { recursive: true, force: true });
+  const recoveryBuffer = new RawFragmentRecoveryBuffer(docPath);
+  await recoveryBuffer.deleteAllFragments();
+  await cleanupAuthorMetadata(docPath);
+}
+
+function emitCommitEvents(
+  docPath: string,
+  absorbResult: AbsorbResult,
+  contributors: WriterIdentity[],
+): void {
+  if (absorbResult.changedSections.length === 0) return;
+  if (!onWsEvent) return;
+  const committedSections = absorbResult.changedSections.map(({ docPath: dp, headingPath }) => ({
+    doc_path: dp,
+    heading_path: headingPath,
+  }));
+  onWsEvent({
+    type: "content:committed",
+    doc_path: docPath,
+    sections: committedSections,
+    commit_sha: absorbResult.commitSha,
+    writer_id: contributors[0].id,
+    writer_display_name: contributors[0].displayName,
+    writer_type: contributors[0].type,
+    contributor_ids: contributors.map((c) => c.id),
+    seconds_ago: 0,
+  });
+  // Emit dirty:changed for all contributors so each frontend can clear its dirty state.
+  for (const contributor of contributors) {
+    for (const section of committedSections) {
+      onWsEvent({
+        type: "dirty:changed",
+        writer_id: contributor.id,
+        doc_path: section.doc_path,
+        heading_path: section.heading_path,
+        dirty: false,
+        base_head: null,
+        committed_head: absorbResult.commitSha,
+      });
+    }
+  }
+}
+
+async function absorbStagedAndRemoveSessionFiles(
+  state: CrdtSocketState,
+  result: Awaited<ReturnType<typeof releaseDocSession>>,
+): Promise<void> {
   if (!result.sessionEnded) return;
   try {
-    // Build contributors list: the disconnecting editor is primary; others from session.
-    const primaryWriter: WriterIdentity = {
-      id: state.writerId,
-      type: state.writerType,
-      displayName: state.writerDisplayName,
-    };
-    const contributors: WriterIdentity[] = [
-      primaryWriter,
-      ...result.contributors.filter((c) => c.id !== state.writerId),
-    ];
+    const { commitMsg, commitAuthor, contributors } = buildSessionCommitInfo(state, result);
 
-    // Inline canonical absorb — replaces legacy commitSessionFilesToCanonical.
-    const [pw, ...coWriters] = contributors;
-    let commitMsg = `human edit: ${pw.displayName}\n\nWriter: ${pw.id}\nWriter-Type: ${pw.type}`;
-    if (coWriters.length > 0) {
-      commitMsg += "\n" + coWriters
-        .map((w) => `Co-authored-by: ${w.displayName} <${w.email ?? `${w.id}@knowledge-store.local`}>`)
-        .join("\n");
-    }
-    const commitAuthor = { name: pw.displayName, email: pw.email ?? "human@knowledge-store.local" };
-
+    // boundary 3: staged → canonical
     const canonicalStore = new CanonicalStore(getContentRoot(), getDataRoot());
     const absorbResult = await canonicalStore.absorbChangedSections(
       getSessionSectionsContentRoot(),
@@ -236,57 +299,9 @@ async function finalizeSessionEnd(state: CrdtSocketState, result: Awaited<Return
       { docPaths: [state.docPath] },
     );
 
-    // Cleanup is gated on absorb success, NOT on changedSections count — a
-    // no-op session must still tear down its overlay so the next acquire sees
-    // a clean state. Absorb-throw paths skip this block via the outer try's
-    // re-throw.
-    const { rm } = await import("node:fs/promises");
-    const path = await import("node:path");
-    const sessionsContentRoot = getSessionSectionsContentRoot();
-    const normalized = state.docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-    const skeletonPath = path.resolve(sessionsContentRoot, ...normalized.split("/"));
-    await rm(skeletonPath, { force: true });
-    await rm(`${skeletonPath}.sections`, { recursive: true, force: true });
-    const recoveryBuffer = new RawFragmentRecoveryBuffer(state.docPath);
-    await recoveryBuffer.deleteAllFragments();
-    await cleanupAuthorMetadata(state.docPath);
+    await removeSessionFiles(state.docPath);
 
-    if (absorbResult.changedSections.length > 0) {
-      const committedSections = absorbResult.changedSections.map(({ docPath: dp, headingPath }) => ({
-        doc_path: dp,
-        heading_path: headingPath,
-      }));
-
-      if (onWsEvent) {
-        onWsEvent({
-          type: "content:committed",
-          doc_path: state.docPath,
-          sections: committedSections,
-          commit_sha: absorbResult.commitSha,
-          writer_id: contributors[0].id,
-          writer_display_name: contributors[0].displayName,
-          writer_type: contributors[0].type,
-          contributor_ids: contributors.map((c) => c.id),
-          seconds_ago: 0,
-        });
-
-        // Emit dirty:changed for all contributors so each frontend can clear its dirty state.
-        for (const contributor of contributors) {
-          for (const section of committedSections) {
-            onWsEvent({
-              type: "dirty:changed",
-              writer_id: contributor.id,
-              doc_path: section.doc_path,
-              heading_path: section.heading_path,
-              dirty: false,
-              base_head: null,
-              committed_head: absorbResult.commitSha,
-            });
-          }
-        }
-      }
-    }
-
+    emitCommitEvents(state.docPath, absorbResult, contributors);
     closeObserversForDoc(state.docPath, 4021, "session_ended");
   } finally {
     // Always release the finalization gate, even if absorb/cleanup/emit threw.
@@ -323,7 +338,7 @@ async function applyModeTransition(
       removeObserverHolder(state.docPath, state.writerId, state.socketId);
     } else {
       const releaseResult = await releaseDocSession(state.docPath, state.writerId, state.socketId);
-      await finalizeSessionEnd(state, releaseResult);
+      await absorbStagedAndRemoveSessionFiles(state, releaseResult);
     }
     state.attachmentState = "detached";
     state.docSessionId = null;
@@ -611,11 +626,14 @@ async function handleMessage(
         displayName: state.writerDisplayName,
       };
 
-      // Focus-change normalization on the departed section
+      // Focus-change normalization on the departed section.
+      // Coalesces: multiple focus changes in the same tick merge into one
+      // `acceptLiveFragments` call. Fire-and-forget — structural broadcasts
+      // are handled inside the coalescer's drain via applyAcceptResult.
       if (oldFocus) {
         const oldFragmentKey = findKeyForHeadingPath(session!, oldFocus);
         if (oldFragmentKey) {
-          await normalizeFragment(session!.docPath, oldFragmentKey);
+          void requestNormalization(session!.docPath, oldFragmentKey);
         }
       }
 
@@ -859,7 +877,7 @@ export function createCrdtWsServer(): CrdtWsServer {
           removeObserverHolder(state.docPath, state.writerId, state.socketId);
         } else if (state.socketRole === "editor") {
           const releaseResult = await releaseDocSession(state.docPath, state.writerId, state.socketId);
-          await finalizeSessionEnd(state, releaseResult);
+          await absorbStagedAndRemoveSessionFiles(state, releaseResult);
         }
       }
 

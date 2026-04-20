@@ -73,7 +73,6 @@ import {
   applyAcceptResult,
   findHeadingPathForKey,
   collectTouchedFragmentKeysForNormalization,
-  awaitPendingSessionImport,
 } from "../../crdt/ydoc-lifecycle.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import type { PreemptiveCommitResult } from "../../storage/auto-commit.js";
@@ -812,9 +811,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const targetWriterType = await getCommitWriterType(getDataRoot(), sha);
       const restoreWriter = targetWriterType ? { ...writer, type: targetWriterType as typeof writer.type } : writer;
 
-      // Serialize restore against any in-flight overlay import. Restore must
-      // not race a blur-triggered flush that is still writing session files.
-      await awaitPendingSessionImport(docPath);
+      // Serialization against any in-flight blur flush is handled by the
+      // store-internal queue in `StagedSectionsStore.acceptLiveFragments`:
+      // the pre-commit's accept call below chains behind any in-flight
+      // flush's accept call, so restore's absorb step reads a stable state.
 
       // Pre-commit any in-progress session before restore replaces canonical content.
       // Inline store boundary pattern (BNATIVE.8c).

@@ -387,7 +387,12 @@ describe("lifecycle boundary crossings", () => {
     ws.close();
   });
 
-  it("B18.2a: publish should not overlap a blur-triggered acceptLiveFragments on the same session", async () => {
+  // B18.2a + B18.2b removed: the caller-side `awaitPendingSessionImport`
+  // gate they verified was deleted. Concurrency is now serialized by the
+  // store-internal queue in `StagedSectionsStore.acceptLiveFragments`
+  // (see `staged-sections-store-queue.test.ts`). The publish correctness
+  // property (dirty-scoped absorb) is covered by the other B18 tests.
+  it.skip("B18.2a: publish should not overlap a blur-triggered acceptLiveFragments on the same session", async () => {
     setSessionOverlayImportCallback(async (session) => {
       await flushDirtyToOverlay(session);
     });
@@ -495,7 +500,7 @@ describe("lifecycle boundary crossings", () => {
     ws.close();
   });
 
-  it("B18.2b: publish should not reach canonical absorb while a blur flush is still in flight", async () => {
+  it.skip("B18.2b: publish should not reach canonical absorb while a blur flush is still in flight", async () => {
     let releaseImport: (() => void) | null = null;
     let resolveImportStarted: (() => void) | null = null;
     let importFinished = false;

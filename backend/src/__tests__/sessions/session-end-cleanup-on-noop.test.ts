@@ -177,7 +177,7 @@ describe("session-end cleanup is independent of changedSections count", () => {
     expect(editorResult.kind).toBe("success");
     await syncPromise;
 
-    // NO edits — transition straight back to none, triggering finalizeSessionEnd.
+    // NO edits — transition straight back to none, triggering absorbStagedAndRemoveSessionFiles.
     const noneResult = await requestModeTransition(ws, {
       requestId: crypto.randomUUID(),
       clientInstanceId,
@@ -200,7 +200,7 @@ describe("session-end cleanup is independent of changedSections count", () => {
 
   it("does not run cleanup when absorb throws (crash-recovery safety)", async () => {
     // Spy on RawFragmentRecoveryBuffer.deleteAllFragments — it's called in the
-    // cleanup block of finalizeSessionEnd and should NOT run when absorb throws.
+    // cleanup block of absorbStagedAndRemoveSessionFiles and should NOT run when absorb throws.
     const deleteAllCalls: string[] = [];
     const originalDeleteAll = RawFragmentRecoveryBuffer.prototype.deleteAllFragments;
     RawFragmentRecoveryBuffer.prototype.deleteAllFragments = async function (this: { docPath: string }) {
@@ -236,7 +236,7 @@ describe("session-end cleanup is independent of changedSections count", () => {
 
       // The close handler's absorb-throw surfaces as an unhandled rejection —
       // that is the production behavior (cleanup-on-error is a node-level
-      // concern, not something finalizeSessionEnd catches). Consume it here so
+      // concern, not something absorbStagedAndRemoveSessionFiles catches). Consume it here so
       // it doesn't trip vitest's unhandled-error reporter.
       const onUnhandled = (reason: unknown) => {
         if (reason instanceof Error && reason.message.includes("test-forced absorb failure")) return;
@@ -244,7 +244,7 @@ describe("session-end cleanup is independent of changedSections count", () => {
       };
       process.on("unhandledRejection", onUnhandled);
       try {
-        // Close the socket; close handler runs finalizeSessionEnd; absorb throws.
+        // Close the socket; close handler runs absorbStagedAndRemoveSessionFiles; absorb throws.
         const closedPromise = new Promise<void>((resolve) => ws.on("close", () => resolve()));
         ws.close();
         await closedPromise;

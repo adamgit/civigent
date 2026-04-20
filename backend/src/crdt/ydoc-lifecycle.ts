@@ -132,7 +132,7 @@ const sessionPromises = new Map<string, Promise<DocSession>>();
 /**
  * Per-doc finalization gate. When a session is torn down in `releaseDocSession`,
  * the caller performs post-release work (absorb + cleanup + event emission) in
- * `finalizeSessionEnd`. During that window `sessions` and `sessionPromises`
+ * `absorbStagedAndRemoveSessionFiles`. During that window `sessions` and `sessionPromises`
  * already show the doc as unreserved, so a new `acquireDocSession` could race
  * the finalize's file-system work. An entry in this map signals "a finalize is
  * in progress for this docPath" — `acquireDocSession` awaits it before building
@@ -543,16 +543,11 @@ export async function releaseDocSession(
       session.flushTimer = null;
     }
 
-    // If an import is currently in-flight (state === "flushing"), wait for it to complete
-    // before taking exclusive "committing" ownership of the session.
-    if (session.state === "flushing") {
-      const inflight = sessionOverlayImportInFlight.get(session);
-      if (inflight) await inflight;
-      // After awaiting, state has transitioned back to "active" (in import finally block).
-    }
-
-    // Guard against double-commit (e.g., two concurrent close events for the last editor).
-    assertState(session, ["active"]);
+    // No flush-await needed: the store-internal queue in
+    // `StagedSectionsStore.acceptLiveFragments` already serializes against any
+    // in-flight flush. Our session-end accept call chains behind the flush's
+    // accept call automatically.
+    assertState(session, ["active", "flushing"]);
     // "active" → "committing": last editor disconnected, teardown begins.
     session.state = "committing";
 
@@ -1088,21 +1083,82 @@ export async function normalizeFragmentKeys(
   await applyAcceptResult(session, result);
 }
 
-/**
- * Normalize a single fragment by key. Called on focus change (left fragment).
- *
- * Uses the store boundary pattern: mark ahead-of-staged → raw snapshot →
- * accept into staging → apply accept result.
- */
-export async function normalizeFragment(docPath: string, fragmentKey: string): Promise<void> {
-  const session = sessions.get(docPath);
-  if (!session) return;
+// ─── Coalesced normalization ─────────────────────────────────────
 
-  session.liveFragments.noteAheadOfStaged(fragmentKey);
-  const scope = new Set([fragmentKey]);
-  await session.recoveryBuffer.snapshotFromLive(session.liveFragments, scope);
-  const result = await session.stagedSections.acceptLiveFragments(session.liveFragments, scope);
-  await applyAcceptResult(session, result);
+type CoalescerEntry = {
+  keys: Set<string>;
+  waiters: Array<{ resolve: () => void; reject: (err: unknown) => void }>;
+  scheduled: boolean;
+};
+
+const normalizationCoalescers = new Map<string, CoalescerEntry>();
+
+/**
+ * Coalesce high-frequency normalization requests for a docPath. Multiple
+ * `requestNormalization` calls in the same microtask batch into one
+ * `acceptLiveFragments` call whose scope is the union of all requested keys.
+ *
+ * Structural broadcasts remain correct because the drain feeds the combined
+ * result through `applyAcceptResult` exactly like the non-coalesced path.
+ */
+export function requestNormalization(docPath: string, fragmentKey: string): Promise<void> {
+  let entry = normalizationCoalescers.get(docPath);
+  if (!entry) {
+    entry = { keys: new Set(), waiters: [], scheduled: false };
+    normalizationCoalescers.set(docPath, entry);
+  }
+  entry.keys.add(fragmentKey);
+
+  const currentEntry = entry;
+  const waitPromise = new Promise<void>((resolve, reject) => {
+    currentEntry.waiters.push({ resolve, reject });
+  });
+
+  if (!currentEntry.scheduled) {
+    currentEntry.scheduled = true;
+    queueMicrotask(() => {
+      void drainNormalizationCoalescer(docPath);
+    });
+  }
+
+  return waitPromise;
+}
+
+async function drainNormalizationCoalescer(docPath: string): Promise<void> {
+  const entry = normalizationCoalescers.get(docPath);
+  if (!entry) return;
+  // Detach so a new batch can accumulate while this drain runs.
+  normalizationCoalescers.delete(docPath);
+
+  const keys = entry.keys;
+  const waiters = entry.waiters;
+
+  const session = sessions.get(docPath);
+  if (!session) {
+    for (const w of waiters) w.resolve();
+    return;
+  }
+
+  try {
+    const validKeys = new Set<string>();
+    for (const key of keys) {
+      if (session.headingPathByFragmentKey.has(key)) {
+        session.liveFragments.noteAheadOfStaged(key);
+        validKeys.add(key);
+      }
+    }
+    if (validKeys.size > 0) {
+      await session.recoveryBuffer.snapshotFromLive(session.liveFragments, validKeys);
+      const result = await session.stagedSections.acceptLiveFragments(
+        session.liveFragments,
+        validKeys,
+      );
+      await applyAcceptResult(session, result);
+    }
+    for (const w of waiters) w.resolve();
+  } catch (err) {
+    for (const w of waiters) w.reject(err);
+  }
 }
 
 // ─── Debounced flush ─────────────────────────────────────────────
@@ -1198,21 +1254,6 @@ export async function pauseSessionOverlayImport(docPath: string): Promise<void> 
     clearTimeout(session.flushTimer);
     session.flushTimer = null;
   }
-  const inflight = sessionOverlayImportInFlight.get(session);
-  if (inflight) {
-    await inflight;
-  }
-}
-
-/**
- * Await any in-flight session overlay import for the given docPath without
- * canceling pending debounce timers. Used by commitDirtySections to serialize
- * publish against blur flushes — publish must not overlap acceptLiveFragments
- * or reach absorbChangedSections while a blur flush is in flight.
- */
-export async function awaitPendingSessionImport(docPath: string): Promise<void> {
-  const session = sessions.get(docPath);
-  if (!session) return;
   const inflight = sessionOverlayImportInFlight.get(session);
   if (inflight) {
     await inflight;
@@ -1322,7 +1363,7 @@ export function destroyAllSessions(): void {
   sessions.clear();
   sessionPromises.clear();
   // Clear any leaked finalization gates from tests that released a session
-  // without running finalizeSessionEnd (which would normally resolve the gate
+  // without running absorbStagedAndRemoveSessionFiles (which would normally resolve the gate
   // via try/finally). Safety net only — normal runtime cycles self-clean.
   finalizingDocs.clear();
 }

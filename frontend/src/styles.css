@@ -460,6 +460,10 @@ a {
   margin-bottom: 12px;
   padding: 0;
 }
+.doc-prose > *:first-child,
+.milkdown .ProseMirror > *:first-child {
+  margin-top: 0;
+}
 .milkdown .ProseMirror code {
   font-family: var(--font-mono);
   font-size: 13px;

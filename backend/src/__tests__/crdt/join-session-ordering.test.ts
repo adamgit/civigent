@@ -33,7 +33,7 @@ describe("joinSession message ordering", () => {
   });
 
   afterEach(() => {
-    // Tests here call releaseDocSession directly (bypassing finalizeSessionEnd),
+    // Tests here call releaseDocSession directly (bypassing absorbStagedAndRemoveSessionFiles),
     // leaving the finalization gate unresolved. Clear it between tests so the
     // next acquire for the same docPath doesn't block on a stale gate.
     __clearFinalizingDocsForTests();
