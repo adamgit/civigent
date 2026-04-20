@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { apiClient } from "../services/api-client";
 import { getLastDocumentVisitAt, markDocumentVisitedNow } from "../services/document-visit-history";
 import { SectionTransferService, type SectionTransfer } from "../services/section-transfer";
@@ -29,6 +29,7 @@ import {
   getSectionFragmentKey,
   formatRelativeAgeFromMs,
   getDocDisplayName,
+  isDocumentEffectivelyEmpty,
   LOADING_REVEAL_DELAY_MS,
   BEFORE_FIRST_HEADING_KEY,
 } from "./document-page-utils";
@@ -485,6 +486,37 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   }, []);
 
   // ── Render ───────────────────────────────────────────────
+
+  // Document-not-found / error: show a non-document page instead of the white paper
+  if (!sectionsLoading && error) {
+    return (
+      <div className="flex flex-col h-full" style={{ background: "var(--color-page-bg)" }}>
+        <div className="px-4 pt-4">
+          <Link
+            to="/docs"
+            className="inline-flex items-center gap-1.5 text-sm text-text-muted hover:text-text-primary transition-colors"
+          >
+            <span className="text-[15px]">&#8592;</span> Back to documents
+          </Link>
+        </div>
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center max-w-md px-6">
+            <div className="text-5xl mb-5 opacity-30">&#128196;</div>
+            <h2 className="text-lg font-semibold text-text-primary mb-2">
+              Document not found
+            </h2>
+            <p className="text-sm text-text-muted leading-relaxed">
+              This document doesn&apos;t exist, may have been deleted, or you don&apos;t have access to it.
+            </p>
+            <p className="text-xs text-text-muted mt-4 opacity-60 break-all">
+              {decodedDocPath}
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <SectionHoverProvider activeSectionIndex={focusedSectionIndex}>
     <div className="flex flex-col h-full">
@@ -676,7 +708,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
               {/* Loading state */}
               {showLoading ? <DocumentLoadingSkeleton structureTree={structureTree} /> : null}
 
-              {!sectionsLoading && displaySections.length === 0 && !error ? (
+              {!sectionsLoading && isDocumentEffectivelyEmpty(displaySections) && !isEditing && !error ? (
                 <button
                   type="button"
                   className="text-sm text-text-muted italic hover:text-text-primary hover:underline cursor-text text-left block"

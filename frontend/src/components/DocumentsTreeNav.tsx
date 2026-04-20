@@ -5,6 +5,16 @@ import { apiClient } from "../services/api-client.js";
 
 import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 
+function findScrollParent(el: HTMLElement): HTMLElement | null {
+  let parent = el.parentElement;
+  while (parent) {
+    const overflow = getComputedStyle(parent).overflowY;
+    if (overflow === "auto" || overflow === "scroll") return parent;
+    parent = parent.parentElement;
+  }
+  return null;
+}
+
 function toCanonicalDocPath(path: string): string {
   const trimmed = path.trim();
   if (!trimmed) {
@@ -140,6 +150,25 @@ export function DocumentsTreeNav({
   const [blockedImport, setBlockedImport] = useState<BlockedImportInfo | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingFolderRef = useRef<string>("/");
+  const lastScrolledPathRef = useRef<string | null>(null);
+
+  const selectedScrollRef = useCallback(
+    (el: HTMLElement | null) => {
+      if (!el || !selectedDocPath) return;
+      if (lastScrolledPathRef.current === selectedDocPath) return;
+      lastScrolledPathRef.current = selectedDocPath;
+      requestAnimationFrame(() => {
+        const container = findScrollParent(el);
+        if (!container) return;
+        const cRect = container.getBoundingClientRect();
+        const eRect = el.getBoundingClientRect();
+        const margin = cRect.height * 0.1;
+        if (eRect.top >= cRect.top + margin && eRect.bottom <= cRect.bottom - margin) return;
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+    },
+    [selectedDocPath],
+  );
 
   const sortedEntries = useMemo(() => entries, [entries]);
   const badgeSet = useMemo(() => new Set(badgedDocPaths ?? []), [badgedDocPaths]);
@@ -309,6 +338,7 @@ export function DocumentsTreeNav({
             return (
               <div key={node.path}>
                 <div
+                  ref={isSelectedFolder ? selectedScrollRef : undefined}
                   role="button"
                   tabIndex={0}
                   className={`group flex items-center gap-[7px] w-full px-1.5 py-[5px] rounded-[5px] text-[13px] bg-transparent border-none font-[family-name:var(--font-ui)] text-left cursor-pointer transition-all ${
@@ -376,6 +406,7 @@ export function DocumentsTreeNav({
           return (
             <Link
               key={node.path}
+              ref={isSelected ? selectedScrollRef : undefined}
               to={`/docs/${stripLeadingSlashForRoute(node.path)}`}
               onClick={handleClick}
               data-testid={isSelected ? `tree-node-selected-${node.path}` : undefined}

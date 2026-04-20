@@ -27,6 +27,10 @@ This is the only divergence from standard Markdown and was a compromise we had t
 
 Headings nest naturally. A `##` under a `#` is a child section. On disk, this is represented as a folder hierarchy — but you never need to think about that. The app shows it as a single document.
 
+### Folders
+
+Folders are implicit: there is no "create folder" or "delete folder" operation. A folder exists exactly as long as it contains at least one document or subfolder. Creating a document at a new path automatically creates any parent folders; deleting or moving the last document out of a folder automatically removes it.
+
 ---
 
 ## Humans and agents

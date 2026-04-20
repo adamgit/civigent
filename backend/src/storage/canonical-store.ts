@@ -110,6 +110,11 @@ export class CanonicalStore {
       // Pass 2: Copy — recursively copy staging tree onto canonical
       await this.copyPass(stagingRoot, diag, opts?.docPaths);
 
+      // Pass 2.5: Prune empty content directories left behind by document
+      // deletions or moves. Must run after both deletion and copy passes so
+      // we see the final directory state before committing to git.
+      await this.pruneEmptyContentDirs(diag);
+
       // Pass 3: Git commit
       const cp = getContentGitPrefix();
       await gitExec(["add", "-A", cp + "/"], this.dataRoot);
@@ -396,6 +401,41 @@ export class CanonicalStore {
         const remaining = await readdir(subDir);
         if (remaining.length === 0) {
           await rm(subDir, { recursive: true, force: true });
+        }
+      } catch { /* already gone */ }
+    }
+  }
+
+  /**
+   * Bottom-up removal of empty content directories. After document deletions
+   * or moves, parent directories may be left empty. Folders in the Knowledge
+   * Store are implicit — they exist only because documents live inside them —
+   * so empty ones are pruned to keep the document tree clean.
+   * Skips .git and .sections/ directories (the latter are handled separately
+   * by pruneEmptySectionsDirs).
+   */
+  private async pruneEmptyContentDirs(diag: (msg: string) => void): Promise<void> {
+    await this.pruneEmptyDirsUnder(this.canonicalRoot, diag);
+  }
+
+  private async pruneEmptyDirsUnder(dir: string, diag: (msg: string) => void): Promise<void> {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true }) as Dirent[];
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name === ".git" || entry.name.endsWith(".sections")) continue;
+      const childDir = path.join(dir, entry.name);
+      await this.pruneEmptyDirsUnder(childDir, diag); // recurse children first
+      try {
+        const remaining = await readdir(childDir);
+        if (remaining.length === 0) {
+          await rm(childDir, { recursive: true, force: true });
+          const relPath = path.relative(this.canonicalRoot, childDir).replace(/\\/g, "/");
+          diag(`pruned empty content directory: ${relPath}/`);
         }
       } catch { /* already gone */ }
     }

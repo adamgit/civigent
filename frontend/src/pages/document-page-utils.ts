@@ -151,3 +151,18 @@ export const HIGHLIGHT_DURATION_MS = 3000;
  * display row keeps its identity across the synthetic → real transition.
  */
 export const BEFORE_FIRST_HEADING_KEY = "section::__beforeFirstHeading__";
+
+/**
+ * True when the document has no visible content: either no sections, or just a
+ * single before-first-heading (BFH) section with empty/whitespace-only content.
+ * After the last named section is deleted the server still returns a BFH row,
+ * so `sections.length === 0` alone misses that case.
+ */
+export function isDocumentEffectivelyEmpty(sections: DocumentSection[]): boolean {
+  if (sections.length === 0) return true;
+  if (sections.length === 1) {
+    const only = sections[0];
+    if (only.heading_path.length === 0 && only.content.trim() === "") return true;
+  }
+  return false;
+}

@@ -125,7 +125,7 @@ describe("DocumentPage load", () => {
 
     renderDocPage("nonexistent.md");
     await waitFor(() => {
-      expect(screen.getByText(/Error:/)).toBeDefined();
+      expect(screen.getByText("Document not found")).toBeDefined();
     });
   });
 
@@ -133,6 +133,46 @@ describe("DocumentPage load", () => {
     renderDocPage("ops/strategy.md");
     await waitFor(() => {
       expect(screen.getAllByText("ops/strategy.md").length).toBeGreaterThan(0);
+    });
+  });
+
+  it("renders 'Document is empty.' when the only section is a BFH with empty content", async () => {
+    // After the last named section is deleted, the server still returns a
+    // single BFH (heading_path=[], content="") section. The page should treat
+    // that as effectively empty and surface the click-to-edit affordance.
+    const emptyBfhResponse = {
+      sections: [
+        {
+          heading: "",
+          heading_path: [] as string[],
+          depth: 0,
+          content: "",
+          humanInvolvement_score: 0,
+          crdt_session_active: false,
+          section_length_warning: false,
+          word_count: 0,
+          fragment_key: "section::__beforeFirstHeading__",
+          section_file: "sec_root.md",
+        },
+      ],
+    };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/api/documents/") && urlStr.includes("/sections")) {
+        return jsonResponse(emptyBfhResponse);
+      }
+      if (urlStr.includes("/api/documents/") && urlStr.includes("/structure")) {
+        return jsonResponse({ structure: [] });
+      }
+      if (urlStr.includes("/api/documents/") && urlStr.includes("/changes-since")) {
+        return jsonResponse({ changed_sections: [] });
+      }
+      return jsonResponse({});
+    });
+
+    renderDocPage("ops/empty.md");
+    await waitFor(() => {
+      expect(screen.getByText("Document is empty.")).toBeDefined();
     });
   });
 });
