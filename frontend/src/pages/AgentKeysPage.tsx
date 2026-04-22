@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
 import type { AgentAuthPolicy } from "../types/shared";
+import { copyTextToClipboard } from "../utils/copy-text";
 
 interface AgentEntry {
   agent_id: string;
@@ -162,7 +163,8 @@ export function AgentKeysPage() {
 
   const copySecret = async () => {
     if (!newSecret) return;
-    await navigator.clipboard.writeText(newSecret.secret);
+    const didCopy = await copyTextToClipboard(newSecret.secret);
+    if (!didCopy) return;
     setCopied(true);
   };
 

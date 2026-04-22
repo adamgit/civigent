@@ -6,6 +6,7 @@ import type { AgentCardViewModel } from "../components/agents/types.js";
 import { avatarHueFromId } from "../components/agents/utils.js";
 import { apiClient } from "../services/api-client";
 import type { AdminConfig, AgentAuthPolicy, GetAgentsFullSummaryResponse } from "../types/shared.js";
+import { copyTextToClipboard } from "../utils/copy-text";
 import { defaultConnectionName } from "../utils/connection-name";
 import "./agents-page.css";
 
@@ -102,7 +103,8 @@ export function ConnectionInstructions({
   const effectiveConnectionName = connectionName.trim() || defaultName;
 
   const copyField = async (value: string, field: string) => {
-    await navigator.clipboard.writeText(value);
+    const didCopy = await copyTextToClipboard(value);
+    if (!didCopy) return;
     setCopiedField(field);
     setTimeout(() => setCopiedField(null), 2000);
   };
@@ -330,7 +332,7 @@ function AddAgentDialog({
                 <code className="add-agent-dialog__cred-value">{result.agentId}</code>
                 <button
                   className="add-agent-dialog__copy-btn"
-                  onClick={async () => { await navigator.clipboard.writeText(result.agentId); }}
+                  onClick={async () => { await copyTextToClipboard(result.agentId); }}
                 >
                   Copy
                 </button>
@@ -341,7 +343,7 @@ function AddAgentDialog({
                   <code className="add-agent-dialog__cred-value">{result.secret}</code>
                   <button
                     className="add-agent-dialog__copy-btn"
-                    onClick={async () => { await navigator.clipboard.writeText(result.secret!); }}
+                    onClick={async () => { await copyTextToClipboard(result.secret!); }}
                   >
                     Copy
                   </button>

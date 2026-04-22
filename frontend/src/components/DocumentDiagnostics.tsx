@@ -172,26 +172,40 @@ function renderLayerCell(layer: DiagLayerStatus, isWinner: boolean) {
 function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
   try {
     if (section.error && section.winner === "error") {
-      return (
-        <tr key={index} className="border-b border-gray-100">
-          <td className="px-2 py-1 text-[11px] font-mono">{section.headingKey || section.sectionFile}</td>
+      return [
+        <tr key={`${index}-section`} className="border-b border-gray-100 bg-gray-50">
+          <td colSpan={6} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
+            <div className="flex flex-wrap items-center gap-1">
+              <span>{section.headingKey || "(body holder)"}</span>
+              {section.isSubSkeleton ? (
+                <span className="inline-block px-1 py-0 rounded bg-purple-100 text-purple-700 text-[9px] font-semibold">sub-skeleton</span>
+              ) : null}
+            </div>
+            <div className="mt-0.5 text-gray-400 text-[10px]">{section.sectionFile}</div>
+          </td>
+        </tr>,
+        <tr key={`${index}-error`} className="border-b border-gray-100">
+          <td className="px-2 py-1 bg-gray-50" />
           <td colSpan={5} className="px-2 py-1 text-red-600 text-[11px]">
             {section.error}
           </td>
-        </tr>
-      );
+        </tr>,
+      ];
     }
-    return (
-      <tr key={index} className="border-b border-gray-100">
-        <td className="px-2 py-1 text-[11px] font-mono whitespace-nowrap">
-          <div>
-            {section.headingKey || "(body holder)"}
+    return [
+      <tr key={`${index}-section`} className="border-b border-gray-100 bg-gray-50">
+        <td colSpan={6} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
+          <div className="flex flex-wrap items-center gap-1">
+            <span>{section.headingKey || "(body holder)"}</span>
             {section.isSubSkeleton ? (
-              <span className="ml-1 inline-block px-1 py-0 rounded bg-purple-100 text-purple-700 text-[9px] font-semibold">sub-skeleton</span>
+              <span className="inline-block px-1 py-0 rounded bg-purple-100 text-purple-700 text-[9px] font-semibold">sub-skeleton</span>
             ) : null}
           </div>
-          <div className="text-gray-400 text-[10px]">{section.sectionFile}</div>
+          <div className="mt-0.5 text-gray-400 text-[10px]">{section.sectionFile}</div>
         </td>
+      </tr>,
+      <tr key={`${index}-layers`} className="border-b border-gray-100">
+        <td className="px-2 py-1 bg-gray-50" />
         {renderLayerCell(section.canonical, section.winner === "canonical")}
         {renderLayerCell(section.overlay, section.winner === "overlay")}
         {renderLayerCell(section.fragment, section.winner === "fragment")}
@@ -206,17 +220,22 @@ function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
             <div className="text-[9px] text-red-600 mt-0.5">never in git</div>
           ) : null}
         </td>
-      </tr>
-    );
+      </tr>,
+    ];
   } catch (e) {
-    return (
-      <tr key={index} className="border-b border-gray-100">
-        <td className="px-2 py-1 text-[11px] font-mono">{section.sectionFile}</td>
+    return [
+      <tr key={`${index}-section`} className="border-b border-gray-100 bg-gray-50">
+        <td colSpan={6} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
+          {section.sectionFile}
+        </td>
+      </tr>,
+      <tr key={`${index}-render-error`} className="border-b border-gray-100">
+        <td className="px-2 py-1 bg-gray-50" />
         <td colSpan={5} className="px-2 py-1 text-red-600 text-[11px]">
           Render error: {e instanceof Error ? e.message : String(e)}
         </td>
-      </tr>
-    );
+      </tr>,
+    ];
   }
 }
 
@@ -280,7 +299,7 @@ export default function DocumentDiagnostics({ docPath, onClose }: DocumentDiagno
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative bg-white rounded-lg shadow-xl max-w-[96vw] w-[1450px] h-[90vh] p-6 flex flex-col">
+      <div className="relative bg-white rounded-lg shadow-xl w-[calc(100vw-2rem)] max-w-none h-[90vh] p-6 flex flex-col">
         <button
           onClick={onClose}
           className="absolute top-3 right-3 text-gray-400 hover:text-gray-700 text-lg leading-none"

@@ -7,6 +7,7 @@ import {
   type WsDiagEntry,
 } from "../services/ws-diagnostics";
 import { subscribeWorkerDiagnostics, unsubscribeWorkerDiagnostics } from "../services/ws-client";
+import { copyTextToClipboard } from "../utils/copy-text";
 
 interface WsDiagnosticsConsoleProps {
   open: boolean;
@@ -72,14 +73,10 @@ export function WsDiagnosticsConsole({ open, onClose }: WsDiagnosticsConsoleProp
 
   const onCopyAll = useCallback(async () => {
     const text = serializeWsDiag();
-    try {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        setCopyFeedback("copied");
-      } else {
-        throw new Error("no clipboard");
-      }
-    } catch {
+    const didCopy = await copyTextToClipboard(text);
+    if (didCopy) {
+      setCopyFeedback("copied");
+    } else {
       setCopyFeedback("copy failed");
     }
     window.setTimeout(() => setCopyFeedback(null), 1500);

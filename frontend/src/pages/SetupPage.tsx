@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
 import type { AgentAuthPolicy } from "../types/shared.js";
+import { copyTextToClipboard } from "../utils/copy-text";
 import skillTemplate from "../agentskills/skill.md?raw";
 import cursorRuleTemplate from "../agentskills/cursor-rule.md?raw";
 
@@ -33,7 +34,8 @@ function CopyBlock({ label, content }: { label?: string; content: string }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(content);
+    const didCopy = await copyTextToClipboard(content);
+    if (!didCopy) return;
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
