@@ -9,7 +9,7 @@ import {
   addContributor,
   destroyAllSessions,
   findKeyForHeadingPath,
-  invalidateSessionForRestore,
+  invalidateSessionForReplacement,
   markFragmentDirty,
   setSessionOverlayImportCallback,
   triggerImmediateSessionOverlayImport,
@@ -139,7 +139,7 @@ describe("restore race regressions", () => {
     expect(response.status).toBe(200);
   });
 
-  it("invalidateSessionForRestore should not resolve until an in-flight overlay import finishes", async () => {
+  it("invalidateSessionForReplacement should not resolve until an in-flight overlay import finishes", async () => {
     const currentHead = await getHeadSha(ctx.rootDir);
     await createDirtySession(currentHead);
 
@@ -157,12 +157,7 @@ describe("restore race regressions", () => {
     triggerImmediateSessionOverlayImport(SAMPLE_DOC_PATH);
     await importStarted;
 
-    const invalidatePromise = invalidateSessionForRestore(
-      SAMPLE_DOC_PATH,
-      "abc1234",
-      "Test Admin",
-      null,
-    );
+    const invalidatePromise = invalidateSessionForReplacement(SAMPLE_DOC_PATH, null);
 
     const resolvedBeforeImportFinished = await Promise.race([
       invalidatePromise.then(() => true),

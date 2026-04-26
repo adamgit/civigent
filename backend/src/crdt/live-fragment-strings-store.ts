@@ -1,8 +1,9 @@
 /**
  * LiveFragmentStringsStore — backend boundary 1 (browser → live CRDT)
  *
- * Owns the live Y.Doc and an ordered list of opaque fragment keys. Knows
- * nothing about heading paths, section files, skeletons, or disk formats.
+ * Owns the live Y.Doc and an ordered list of opaque fragment keys. Runtime
+ * code also routes crash-recovery sidecar coordination through this store so
+ * settle ownership stays with the live boundary.
  *
  * Applies client Yjs updates, tracks which fragment keys have been modified
  * since the staged store last accepted them (aheadOfStaged), and exposes
@@ -15,19 +16,12 @@ import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
 import { yDocToProsemirrorJSON, prosemirrorJSONToYDoc } from "y-prosemirror";
 import { getBackendSchema } from "./ydoc-fragments.js";
 import { fragmentFromRemark, type FragmentContent } from "../storage/section-formatting.js";
+import type { SnapshotResult, RawFragmentRecoveryBuffer } from "../storage/raw-fragment-recovery-buffer.js";
+import type { AcceptResult, SettleResult } from "../storage/staged-sections-store.js";
 
 /** Unforgeable symbol stamped on server-authoritative Y.Doc mutations so the
  *  afterTransaction guard suppresses ahead-of-staged marking. */
 export const SERVER_INJECTION_ORIGIN = Symbol("server-injection");
-
-export interface StructuralChange {
-  /** New document-order fragment-key list after the mutation. */
-  orderedKeys: string[];
-  /** Content to write for new/changed fragment keys. */
-  contentByKey: ReadonlyMap<string, FragmentContent>;
-  /** Fragment keys to clear from the Y.Doc. */
-  removedKeys: ReadonlySet<string>;
-}
 
 export class LiveFragmentStringsStore {
   readonly ydoc: Y.Doc;
@@ -35,6 +29,8 @@ export class LiveFragmentStringsStore {
 
   private orderedKeys: string[];
   private readonly aheadOfStagedKeys = new Set<string>();
+  private readonly fragmentWriterIds = new Map<string, Set<string>>();
+  private recoveryBuffer: RawFragmentRecoveryBuffer | null = null;
 
   /** Fragment keys touched by the current transaction — populated by the
    *  afterTransaction listener, drained by `applyClientUpdate`. */
@@ -67,6 +63,10 @@ export class LiveFragmentStringsStore {
     });
   }
 
+  attachRecoveryBuffer(recoveryBuffer: RawFragmentRecoveryBuffer): void {
+    this.recoveryBuffer = recoveryBuffer;
+  }
+
   // ─── Fragment key access ──────────────────────────────────────────
 
   getFragmentKeys(): string[] {
@@ -75,6 +75,35 @@ export class LiveFragmentStringsStore {
 
   hasFragmentKey(fragmentKey: string): boolean {
     return this.orderedKeys.includes(fragmentKey);
+  }
+
+  getWriterIdsForFragment(fragmentKey: string): string[] {
+    return [...(this.fragmentWriterIds.get(fragmentKey) ?? new Set())].sort();
+  }
+
+  getWriterIdsForFragments(fragmentKeys: Iterable<string>): string[] {
+    const writerIds = new Set<string>();
+    for (const fragmentKey of fragmentKeys) {
+      for (const writerId of this.fragmentWriterIds.get(fragmentKey) ?? []) {
+        writerIds.add(writerId);
+      }
+    }
+    return [...writerIds].sort();
+  }
+
+  setFragmentWriterIds(fragmentKey: string, writerIds: Iterable<string>): void {
+    const normalized = new Set<string>();
+    for (const writerId of writerIds) {
+      const trimmed = writerId.trim();
+      if (trimmed.length > 0) {
+        normalized.add(trimmed);
+      }
+    }
+    if (normalized.size === 0) {
+      this.fragmentWriterIds.delete(fragmentKey);
+      return;
+    }
+    this.fragmentWriterIds.set(fragmentKey, normalized);
   }
 
   // ─── Content reads ────────────────────────────────────────────────
@@ -96,7 +125,7 @@ export class LiveFragmentStringsStore {
    * pass `SERVER_INJECTION_ORIGIN` to suppress ahead-of-staged tracking for
    * server-authoritative writes.
    */
-  replaceFragmentString(fragmentKey: string, content: FragmentContent, origin: unknown): void {
+  replaceFragmentString(fragmentKey: string, content: FragmentContent, origin: unknown = undefined): void {
     this.ydoc.transact(() => {
       const fragment = this.ydoc.getXmlFragment(fragmentKey);
       while (fragment.length > 0) fragment.delete(0, 1);
@@ -113,7 +142,7 @@ export class LiveFragmentStringsStore {
    * transaction (no partial-state visibility), then merges all populating
    * updates into a single `Y.applyUpdate` call.
    */
-  replaceFragmentStrings(map: Map<string, FragmentContent>, origin: unknown): void {
+  replaceFragmentStrings(map: Map<string, FragmentContent>, origin: unknown = undefined): void {
     this.replaceAndClearFragmentStrings(map, [], origin);
   }
 
@@ -128,7 +157,7 @@ export class LiveFragmentStringsStore {
   replaceAndClearFragmentStrings(
     writeMap: Map<string, FragmentContent>,
     clearKeys: Iterable<string>,
-    origin: unknown,
+    origin: unknown = undefined,
   ): void {
     const keysToClear = new Set<string>();
     for (const key of clearKeys) keysToClear.add(key);
@@ -163,10 +192,13 @@ export class LiveFragmentStringsStore {
    * source of truth for per-user dirty attribution — it MUST NOT infer scope
    * from focus or ambient state.
    */
-  applyClientUpdate(_writerId: string, update: Uint8Array, origin: unknown): ReadonlySet<string> {
+  applyClientUpdate(writerId: string, update: Uint8Array, origin: unknown): ReadonlySet<string> {
     this.touchedThisTransaction.clear();
     Y.applyUpdate(this.ydoc, update, origin);
     const touched = new Set(this.touchedThisTransaction);
+    for (const fragmentKey of touched) {
+      this.noteWriterForFragment(fragmentKey, writerId);
+    }
     this.touchedThisTransaction.clear();
     return touched;
   }
@@ -189,37 +221,100 @@ export class LiveFragmentStringsStore {
     for (const key of fragmentKeys) this.aheadOfStagedKeys.delete(key);
   }
 
-  // ─── Structural reconciliation ────────────────────────────────────
+  async snapshotToRecovery(scope: ReadonlySet<string> | "all"): Promise<SnapshotResult> {
+    return await this.requireRecoveryBuffer().snapshotFromLive(this, scope);
+  }
 
-  /**
-   * Apply a structural change returned by `StagedSectionsStore.acceptLiveFragments`.
-   * Clears removed fragments, writes new fragment content, and updates the
-   * ordered key list. All Y.Doc writes are stamped with `SERVER_INJECTION_ORIGIN`
-   * so the afterTransaction guard does not re-mark them ahead-of-staged.
-   *
-   * Does not know or care WHY the structure changed — interpretation happens
-   * inside the staged store.
-   */
-  applyStructuralChange(change: StructuralChange): void {
-    if (change.removedKeys.size > 0) {
-      this.ydoc.transact(() => {
-        for (const fragmentKey of change.removedKeys) {
-          const fragment = this.ydoc.getXmlFragment(fragmentKey);
-          while (fragment.length > 0) fragment.delete(0, 1);
-        }
-      }, SERVER_INJECTION_ORIGIN);
+  async listPersistedFragmentKeys(): Promise<string[]> {
+    return await this.requireRecoveryBuffer().listFragmentKeys();
+  }
+
+  async readPersistedFragment(fragmentKey: string): Promise<string | null> {
+    return await this.requireRecoveryBuffer().readFragment(fragmentKey);
+  }
+
+  async settleFragment(
+    stagedSections: {
+      acceptLiveFragments(
+        liveStore: LiveFragmentStringsStore,
+        scope: ReadonlySet<string> | "all",
+      ): Promise<AcceptResult>;
+    },
+    fragmentKey: string,
+  ): Promise<SettleResult> {
+    this.noteAheadOfStaged(fragmentKey);
+
+    const recoveryBuffer = this.requireRecoveryBuffer();
+    const begun = recoveryBuffer.tryBeginSettleWindow(fragmentKey);
+    if (!begun) {
+      return emptySettleResult(false);
     }
 
-    if (change.contentByKey.size > 0) {
-      const writeMap = new Map<string, FragmentContent>();
-      for (const [key, content] of change.contentByKey) writeMap.set(key, content);
-      this.replaceFragmentStrings(writeMap, SERVER_INJECTION_ORIGIN);
+    let settleResult: SettleResult = emptySettleResult(false);
+    try {
+      const result = await stagedSections.acceptLiveFragments(this, new Set([fragmentKey]));
+      this.applyAcceptedFragmentOwnership(fragmentKey, result);
+      settleResult = { ...result, staleOverlay: false };
+    } finally {
+      const { blockedWriteAttempted } = recoveryBuffer.endSettleWindow(fragmentKey);
+      settleResult = { ...settleResult, staleOverlay: blockedWriteAttempted };
     }
+    return settleResult;
+  }
 
-    this.orderedKeys = [...change.orderedKeys];
-    // Structural change definitionally means the share map grew/shrunk —
-    // invalidate the reverse map so the next client txn rebuilds it.
-    this.lastShareSize = -1;
+  async applyAbsorbedFragmentCleanup(
+    stagedSections: {
+      applyAbsorbedFragmentCleanup(fragmentKeys: Iterable<string>): void | Promise<void>;
+    },
+    fragmentKeys: Iterable<string>,
+  ): Promise<void> {
+    const cleanupKeys = [...new Set(fragmentKeys)];
+    await stagedSections.applyAbsorbedFragmentCleanup(cleanupKeys);
+    await this.requireRecoveryBuffer().deleteFragments(cleanupKeys);
+    for (const fragmentKey of cleanupKeys) {
+      this.fragmentWriterIds.delete(fragmentKey);
+    }
+  }
+
+  async resetSessionStores(
+    stagedSections: {
+      _resetForDocPath(): Promise<void>;
+    },
+  ): Promise<void> {
+    await stagedSections._resetForDocPath();
+    await this.requireRecoveryBuffer()._resetForDocPath();
+    this.fragmentWriterIds.clear();
+  }
+
+  private applyAcceptedFragmentOwnership(fragmentKey: string, result: AcceptResult): void {
+    const inheritedWriterIds = new Set<string>();
+    for (const writerId of this.fragmentWriterIds.get(fragmentKey) ?? []) {
+      inheritedWriterIds.add(writerId);
+    }
+    for (const deletedKey of result.deletedKeys) {
+      for (const writerId of this.fragmentWriterIds.get(deletedKey) ?? []) {
+        inheritedWriterIds.add(writerId);
+      }
+    }
+    if (inheritedWriterIds.size === 0) return;
+    for (const writtenKey of result.writtenKeys) {
+      const merged = new Set(this.fragmentWriterIds.get(writtenKey) ?? []);
+      for (const writerId of inheritedWriterIds) {
+        merged.add(writerId);
+      }
+      this.fragmentWriterIds.set(writtenKey, merged);
+    }
+  }
+
+  private noteWriterForFragment(fragmentKey: string, writerId: string): void {
+    const trimmed = writerId.trim();
+    if (trimmed.length === 0) return;
+    let writerIds = this.fragmentWriterIds.get(fragmentKey);
+    if (!writerIds) {
+      writerIds = new Set<string>();
+      this.fragmentWriterIds.set(fragmentKey, writerIds);
+    }
+    writerIds.add(trimmed);
   }
 
   private rebuildReverseMap(): void {
@@ -229,4 +324,20 @@ export class LiveFragmentStringsStore {
     }
     this.lastShareSize = this.ydoc.share.size;
   }
+
+  private requireRecoveryBuffer(): RawFragmentRecoveryBuffer {
+    if (!this.recoveryBuffer) {
+      throw new Error(`LiveFragmentStringsStore for "${this.docPath}" is missing its recovery buffer attachment.`);
+    }
+    return this.recoveryBuffer;
+  }
+}
+
+function emptySettleResult(staleOverlay: boolean): SettleResult {
+  return {
+    acceptedKeys: new Set(),
+    writtenKeys: [],
+    deletedKeys: [],
+    staleOverlay,
+  };
 }

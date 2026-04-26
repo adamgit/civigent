@@ -81,7 +81,11 @@ export function classifyWsEvent(
 ): WsEventClassification {
   const noop: WsEventClassification = { refreshTree: false, addBadge: null, showToast: null };
 
-  if (event.type === "dirty:changed") {
+  if (
+    event.type === "dirty:changed"
+    || event.type === "writer:dirty-state-changed"
+    || event.type === "session:status-changed"
+  ) {
     return noop;
   }
 

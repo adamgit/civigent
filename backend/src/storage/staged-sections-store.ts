@@ -17,49 +17,44 @@
  * only.
  */
 
-import { BEFORE_FIRST_HEADING_KEY, fragmentKeyFromSectionFile } from "../crdt/ydoc-fragments.js";
-import type { LiveFragmentStringsStore, StructuralChange } from "../crdt/live-fragment-strings-store.js";
+import { rm } from "node:fs/promises";
+import path from "node:path";
+import {
+  BEFORE_FIRST_HEADING_KEY,
+  fragmentKeyFromSectionFile,
+} from "../crdt/ydoc-fragments.js";
+import type { LiveFragmentStringsStore } from "../crdt/live-fragment-strings-store.js";
 import { getContentRoot, getSessionSectionsContentRoot } from "./data-root.js";
 import { parseDocumentMarkdown } from "./markdown-sections.js";
 import { OverlayContentLayer, type UpsertSectionFromMarkdownDetailedResult } from "./content-layer.js";
 import { DocumentSkeletonInternal, type FlatEntry } from "./document-skeleton.js";
 import { SectionRef } from "../domain/section-ref.js";
-import {
-  bodyAsFragment,
-  buildFragmentContent,
-  type FragmentContent,
-} from "./section-formatting.js";
+import { classifyFragmentDrift } from "./fragment-drift.js";
+import type { SectionRefReceipt } from "./canonical-store.js";
 
 /**
- * Return shape of `acceptLiveFragments`. Carries enough information for
- * `DocSession.applyAcceptResult` to (conditionally) reconcile the live
- * Y.Doc and rebuild its heading-path index without touching disk.
+ * Return shape of `acceptLiveFragments`. Describes only the overlay-side
+ * accept result; it is not a live Y.Doc rewrite contract.
  *
- * - `acceptedKeys`   — fragment keys whose live content was successfully
- *                      written to the staging area and cleared from
- *                      `liveStore.aheadOfStagedKeys`.
- * - `structuralChange` — non-null iff a split/merge/rename/relocation/BFH/
- *                      subtree-rewrite occurred. Consumer passes it to
- *                      `liveFragments.applyStructuralChange`.
- * - `remaps`         — `{ oldKey, newKeys[] }` entries for client broadcast
- *                      so editors can unmount/remount against new keys.
- * - `updatedIndex`   — full ordered `fragmentKey ↔ headingPath` mapping
- *                      after a structural mutation. Non-null iff
- *                      `structuralChange` is non-null.
+ * - `acceptedKeys`   — fragment keys whose caller-provided live content was
+ *                      successfully written to the staging area. These are the
+ *                      runtime fragment identities that remain ahead of
+ *                      canonical until a later absorb clears them.
  * - `writtenKeys`    — fragment keys whose overlay body content was
  *                      (re)written. Used by the transitional wrapper to
  *                      report `encodeSessionOverlayImported(writtenKeys, ...)`.
- * - `deletedKeys`    — fragment keys removed during this accept. Superset
- *                      of `structuralChange?.removedKeys` (empty when
- *                      structuralChange is null).
+ * - `deletedKeys`    — fragment keys removed during this accept.
  */
 export interface AcceptResult {
   acceptedKeys: ReadonlySet<string>;
-  structuralChange: StructuralChange | null;
-  remaps: Array<{ oldKey: string; newKeys: string[] }>;
-  updatedIndex: ReadonlyArray<{ fragmentKey: string; headingPath: string[] }> | null;
   writtenKeys: ReadonlyArray<string>;
   deletedKeys: ReadonlyArray<string>;
+  writtenSectionRefs?: ReadonlyArray<SectionRefReceipt>;
+  deletedSectionRefs?: ReadonlyArray<SectionRefReceipt>;
+}
+
+export interface SettleResult extends AcceptResult {
+  staleOverlay: boolean;
 }
 
 export class StagedSectionsStore {
@@ -70,7 +65,7 @@ export class StagedSectionsStore {
    * read staged content during a commit. This is the shared session-sections
    * content root (contains `<docPath>.md` + `<docPath>.sections/` layout for
    * every active session doc); callers scope absorb to this document via
-   * `opts.docPaths: [this.docPath]`.
+   * `opts.documentPathsToRewrite: [this.docPath]`.
    */
   readonly stagingRoot: string;
 
@@ -99,14 +94,9 @@ export class StagedSectionsStore {
    * 3. After any upsert that mutates the skeleton, re-reads the skeleton
    *    from disk so the next iteration's predecessor chain and heading-
    *    path lookups observe the updated structure.
-   * 4. Accumulates `writtenEntries`, `removedEntries`, `liveReloadEntries`,
-   *    and per-upsert `structureChanges` across all processed keys.
-   * 5. After all upserts: if any live-reloads or removals were recorded,
-   *    reads post-overlay body content for each live-reload key and packages
-   *    everything into a `StructuralChange` the caller can hand to
-   *    `liveFragments.applyStructuralChange(...)`.
-   * 6. Clears accepted keys from `liveStore.aheadOfStagedKeys` and records
-   *    them in `aheadOfCanonicalRefs`.
+   * 4. Accumulates overlay-written and overlay-deleted fragment keys across
+   *    all processed keys.
+   * 5. Records accepted keys in `aheadOfCanonicalRefs`.
    *
    * This method does NOT touch the live Y.Doc, does NOT write raw recovery
    * files, and does NOT broadcast. Those are the caller's responsibilities
@@ -124,9 +114,6 @@ export class StagedSectionsStore {
     if (resolvedScope.size === 0) {
       return {
         acceptedKeys: new Set(),
-        structuralChange: null,
-        remaps: [],
-        updatedIndex: null,
         writtenKeys: [],
         deletedKeys: [],
       };
@@ -172,8 +159,15 @@ export class StagedSectionsStore {
     const accepted = new Set<string>();
     const writtenKeySet = new Set<string>();
     const removedKeySet = new Set<string>();
-    const liveReloadKeySet = new Set<string>();
-    const remaps: Array<{ oldKey: string; newKeys: string[] }> = [];
+    const writtenSectionRefMap = new Map<string, SectionRefReceipt>();
+    const deletedSectionRefMap = new Map<string, SectionRefReceipt>();
+    const noteSectionRef = (
+      target: Map<string, SectionRefReceipt>,
+      headingPath: string[],
+    ): void => {
+      const headingKey = SectionRef.headingKey(headingPath);
+      target.set(headingKey, { docPath: this.docPath, headingPath: [...headingPath] });
+    };
 
     const processKey = async (fragmentKey: string): Promise<void> => {
       let entry = indexByKey.get(fragmentKey);
@@ -203,13 +197,15 @@ export class StagedSectionsStore {
               written.headingPath.length === 0,
             );
             writtenKeySet.add(writtenKey);
+            noteSectionRef(writtenSectionRefMap, written.headingPath);
           }
           for (const live of bootstrapResult.liveReloadEntries) {
             const liveKey = fragmentKeyFromSectionFile(
               live.sectionFile,
               live.headingPath.length === 0,
             );
-            liveReloadKeySet.add(liveKey);
+            writtenKeySet.add(liveKey);
+            noteSectionRef(writtenSectionRefMap, live.headingPath);
           }
           for (const removed of bootstrapResult.removedEntries) {
             const removedKey = fragmentKeyFromSectionFile(
@@ -218,18 +214,8 @@ export class StagedSectionsStore {
             );
             removedKeySet.add(removedKey);
             writtenKeySet.delete(removedKey);
-            liveReloadKeySet.delete(removedKey);
             accepted.add(removedKey);
-          }
-          for (const sc of bootstrapResult.structureChanges) {
-            const oldKey = fragmentKeyFromSectionFile(
-              sc.oldEntry.sectionFile,
-              sc.oldEntry.headingPath.length === 0,
-            );
-            const newKeys = sc.newEntries.map((e) =>
-              fragmentKeyFromSectionFile(e.sectionFile, e.headingPath.length === 0),
-            );
-            remaps.push({ oldKey, newKeys });
+            noteSectionRef(deletedSectionRefMap, removed.headingPath);
           }
 
           await refreshSkeletonView();
@@ -249,13 +235,19 @@ export class StagedSectionsStore {
       }
       const headingPath = entry.headingPath;
       const rawMarkdown = liveStore.readFragmentString(fragmentKey);
+      const drift = classifyFragmentDrift({
+        fragmentKey,
+        headingPath,
+        markdown: rawMarkdown,
+        isAheadOfStaged: aheadOfStaged.has(fragmentKey),
+      });
 
       // Orphan predecessor convergence (BUG2-followup-C). When the current
       // fragment is orphan-only (user deleted its heading in the CRDT),
       // recursively pre-normalize any orphan-only predecessor chain so the
       // disk-level merge in `deleteSectionAndAbsorbOrphanBody` never clobbers
       // a predecessor's pending heading deletion.
-      if (isOrphanOnly(headingPath, rawMarkdown)) {
+      if (drift.orphanOnly) {
         while (true) {
           const idx = orderedKeys.indexOf(fragmentKey);
           if (idx <= 0) break;
@@ -263,13 +255,22 @@ export class StagedSectionsStore {
           const predEntry = indexByKey.get(predKey);
           if (!predEntry) break;
           const predContent = liveStore.readFragmentString(predKey);
-          if (!isOrphanOnly(predEntry.headingPath, predContent)) break;
+          const predecessorDrift = classifyFragmentDrift({
+            fragmentKey: predKey,
+            headingPath: predEntry.headingPath,
+            markdown: predContent,
+            isAheadOfStaged: aheadOfStaged.has(predKey),
+          });
+          if (!predecessorDrift.orphanOnly) break;
           // Only treat predecessor as orphan-only if it was actually dirty
           // (user modified it). Unmodified body-holder fragments are
           // naturally body-only — their orphan-only shape does NOT indicate
           // heading deletion. Without this check, the loop would
           // incorrectly collapse every parent body-holder predecessor.
-          if (!aheadOfStaged.has(predKey)) break;
+          if (
+            predecessorDrift.state === "clean"
+            || predecessorDrift.state === "structural-dirty"
+          ) break;
           // Recursive call — processes the predecessor regardless of scope
           // membership. Each recursion absorbs predKey into its own merge
           // target and reloads the skeleton view so the next iteration
@@ -288,7 +289,7 @@ export class StagedSectionsStore {
 
       const ref = new SectionRef(this.docPath, refreshedEntry.headingPath);
       let result: UpsertSectionFromMarkdownDetailedResult;
-      if (isOrphanOnly(headingPath, rawMarkdown)) {
+      if (drift.orphanOnly) {
         result = await contentLayer.upsertSectionMergingToPrevious(ref, rawMarkdown);
       } else {
         const parsed = parseDocumentMarkdown(rawMarkdown);
@@ -314,8 +315,8 @@ export class StagedSectionsStore {
         // "removed" — keep writtenKeys aligned with the final state by
         // dropping the earlier write.
         writtenKeySet.delete(removedKey);
-        liveReloadKeySet.delete(removedKey);
         accepted.add(removedKey);
+        noteSectionRef(deletedSectionRefMap, removed.headingPath);
       }
       for (const written of result.writtenEntries) {
         const writtenKey = fragmentKeyFromSectionFile(
@@ -323,24 +324,15 @@ export class StagedSectionsStore {
           written.headingPath.length === 0,
         );
         writtenKeySet.add(writtenKey);
+        noteSectionRef(writtenSectionRefMap, written.headingPath);
       }
       for (const live of result.liveReloadEntries) {
         const liveKey = fragmentKeyFromSectionFile(
           live.sectionFile,
           live.headingPath.length === 0,
         );
-        liveReloadKeySet.add(liveKey);
-      }
-
-      for (const sc of result.structureChanges) {
-        const oldKey = fragmentKeyFromSectionFile(
-          sc.oldEntry.sectionFile,
-          sc.oldEntry.headingPath.length === 0,
-        );
-        const newKeys = sc.newEntries.map((e) =>
-          fragmentKeyFromSectionFile(e.sectionFile, e.headingPath.length === 0),
-        );
-        remaps.push({ oldKey, newKeys });
+        writtenKeySet.add(liveKey);
+        noteSectionRef(writtenSectionRefMap, live.headingPath);
       }
 
       // If this upsert mutated structure (or added/removed entries), reload
@@ -366,63 +358,25 @@ export class StagedSectionsStore {
       await processKey(key);
     }
 
-    // Decide whether a structural change is needed.
-    const hasStructural = liveReloadKeySet.size > 0 || removedKeySet.size > 0;
-
-    let structuralChange: StructuralChange | null = null;
-    let updatedIndex: Array<{ fragmentKey: string; headingPath: string[] }> | null = null;
-
-    if (hasStructural) {
-      const contentByKey = new Map<string, FragmentContent>();
-      for (const key of liveReloadKeySet) {
-        const entry = indexByKey.get(key);
-        if (!entry) {
-          // A live-reload key that the final skeleton no longer has means
-          // a subsequent upsert removed it. Drop it from contentByKey and
-          // make sure it's surfaced as removed instead.
-          removedKeySet.add(key);
-          continue;
-        }
-        const body = await contentLayer.readSection(new SectionRef(this.docPath, entry.headingPath));
-        const content = entry.headingPath.length === 0
-          ? bodyAsFragment(body)
-          : buildFragmentContent(body, entry.level, entry.heading);
-        contentByKey.set(key, content);
-      }
-      structuralChange = {
-        orderedKeys: [...orderedKeys],
-        contentByKey,
-        removedKeys: new Set(removedKeySet),
-      };
-      updatedIndex = orderedKeys.map((k) => {
-        const e = indexByKey.get(k)!;
-        return { fragmentKey: k, headingPath: [...e.headingPath] };
-      });
-    }
-
-    liveStore.clearAheadOfStaged(accepted);
     for (const key of accepted) {
       this.aheadOfCanonicalRefs.add(key);
     }
 
     return {
       acceptedKeys: accepted,
-      structuralChange,
-      remaps,
-      updatedIndex,
       writtenKeys: [...writtenKeySet],
       deletedKeys: [...removedKeySet],
+      writtenSectionRefs: [...writtenSectionRefMap.values()],
+      deletedSectionRefs: [...deletedSectionRefMap.values()],
     };
   }
 
   // ─── Boundary-3 tracking (staged → canonical) ────────────────────
 
   /**
-   * Mark a section ref (opaque string key — typically a fragment key or a
-   * heading-path key, depending on what the delegate passes in) as having
-   * staged content that has not yet been committed to canonical. Called by
-   * `acceptLiveFragments` for every accepted key, and also directly by
-   * proposal/import paths that stage content outside the live session.
+   * Mark a fragment-scoped runtime ref as having staged content that has not
+   * yet been committed to canonical. Ordinary session runtime uses fragment
+   * keys here; document-rooted cleanup is intentionally not modeled.
    */
   noteAheadOfCanonical(sectionRef: string): void {
     this.aheadOfCanonicalRefs.add(sectionRef);
@@ -454,67 +408,32 @@ export class StagedSectionsStore {
     }
   }
 
-  // ─── Structural cleanliness check (debounced-flush gating) ───────
+  /**
+   * Ordinary post-absorb cleanup is fragment-scoped. We clear only the
+   * absorbed runtime refs; document-rooted overlay teardown remains reserved
+   * for reset/teardown paths.
+   */
+  applyAbsorbedFragmentCleanup(fragmentKeys: Iterable<string>): void {
+    this.clearAheadOfCanonical(fragmentKeys);
+  }
 
   /**
-   * Cheap structural-shape check for the debounced flush path. Returns true
-   * when the fragment's live content parses to exactly the expected shape
-   * for its fragment key:
-   *
-   *   - BFH (`section::__beforeFirstHeading__`): zero top-level headings
-   *   - headed fragment: exactly one top-level heading, matching the
-   *     expected level (1–6)
-   *
-   * When the check returns true, `acceptLiveFragments` is guaranteed to
-   * take the body-only fast path — no split, merge, relocation, or BFH
-   * handling. Callers use this to skip overlay writes for structurally-
-   * dirty fragments, deferring normalization to an explicit trigger
-   * (focus change, publish, session end).
-   *
-   * IMPORTANT: this does not detect the orphan-only case (user deleted a
-   * section's heading, leaving body content only). Orphan detection
-   * requires knowing the fragment's expected heading path, which is owned
-   * by `DocSession` during the transition. Callers that care about
-   * orphan-only behavior (debounced flush) should additionally consult
-   * the session's own orphan check until the native `acceptLiveFragments`
-   * implementation subsumes both.
+   * Restore-only hard reset for this document's staged overlay files.
    */
-  isStructurallyClean(
-    liveStore: LiveFragmentStringsStore,
-    fragmentKey: string,
-  ): boolean {
-    const content = liveStore.readFragmentString(fragmentKey);
-    const parsed = parseDocumentMarkdown(content);
-
-    if (fragmentKey === BEFORE_FIRST_HEADING_KEY) {
-      // BFH: body-only, no headings. parseDocumentMarkdown represents a
-      // headingless body as a single level-0 empty-heading entry.
-      if (parsed.length === 0) return true;
-      if (parsed.length === 1 && parsed[0].level === 0 && parsed[0].heading === "") return true;
-      return false;
-    }
-
-    // Headed fragment: exactly one top-level heading entry. A fragment
-    // with > 1 top-level heading is a split-in-progress. A fragment with
-    // 0 headings is an orphan (heading deleted).
-    const topLevelHeadings = parsed.filter((sec) => !(sec.level === 0 && sec.heading === ""));
-    return topLevelHeadings.length === 1;
+  async _resetForDocPath(): Promise<void> {
+    await this.clearOverlayForDocPath();
+    this.clearAheadOfCanonical("all");
   }
+
+  private async clearOverlayForDocPath(): Promise<void> {
+    const normalized = normalizeDocPath(this.docPath);
+    const skeletonPath = path.resolve(this.stagingRoot, ...normalized.split("/"));
+    await rm(skeletonPath, { force: true });
+    await rm(`${skeletonPath}.sections`, { recursive: true, force: true });
+  }
+
 }
 
-/**
- * A fragment is "orphan-only" when its CRDT content parses to a single
- * level-0 orphan with non-empty body AND it is not the BFH (headingPath=[])
- * — i.e. the user deleted the section's heading, leaving only body content.
- * `acceptLiveFragments` detects this to (a) dispatch to the orphan-absorb
- * upsert path and (b) drive the predecessor-convergence chain.
- */
-function isOrphanOnly(headingPath: string[], content: string): boolean {
-  if (headingPath.length === 0) return false;
-  if (!content) return false;
-  const parsed = parseDocumentMarkdown(content);
-  if (parsed.length !== 1) return false;
-  const only = parsed[0];
-  if (only.level !== 0 || only.heading !== "") return false;
-  return (only.body as unknown as string).trim().length > 0;
+function normalizeDocPath(docPath: string): string {
+  return docPath.replace(/\\/g, "/").replace(/^\/+/, "");
 }

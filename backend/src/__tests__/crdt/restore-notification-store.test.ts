@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import {
-  getPendingRestoreNotification,
-  invalidateSessionForRestore,
-  setBroadcastRestoreInvalidation,
+  getPendingReplacementNotice,
+  invalidateSessionForReplacement,
+  setBroadcastSessionReplacementInvalidation,
 } from "../../crdt/ydoc-lifecycle.js";
 
-describe("getPendingRestoreNotification", () => {
+describe("getPendingReplacementNotice", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    // No-op broadcast so invalidateSessionForRestore doesn't try to close real sockets
-    setBroadcastRestoreInvalidation(() => {});
+    // No-op broadcast so invalidation doesn't try to close real sockets
+    setBroadcastSessionReplacementInvalidation(() => {});
   });
 
   afterEach(() => {
@@ -18,70 +18,50 @@ describe("getPendingRestoreNotification", () => {
 
   const DOC_PATH = "test/restore-notification.md";
 
-  it("returns null when no notification is pending", () => {
-    const result = getPendingRestoreNotification("nonexistent/doc.md", "writer-x");
+  it("returns null when no notice is pending", () => {
+    const result = getPendingReplacementNotice("nonexistent/doc.md");
     expect(result).toBeNull();
   });
 
-  it("returns correct payload for an affected writer", async () => {
-    await invalidateSessionForRestore(DOC_PATH, "sha-restored-123", "Alice", {
-      committedSha: "sha-precommit-456",
-      affectedWriters: [
-        { writerId: "writer-a", dirtyHeadingPaths: [["Overview"], ["Details", "Subsection"]] },
-      ],
+  it("returns the pending replacement notice", async () => {
+    await invalidateSessionForReplacement(DOC_PATH, {
+      message: "document was restored to an earlier version",
     });
 
-    const result = getPendingRestoreNotification(DOC_PATH, "writer-a");
+    const result = getPendingReplacementNotice(DOC_PATH);
     expect(result).not.toBeNull();
-    expect(result!.restored_sha).toBe("sha-restored-123");
-    expect(result!.restored_by_display_name).toBe("Alice");
-    expect(result!.pre_commit_sha).toBe("sha-precommit-456");
-    expect(result!.your_dirty_heading_paths).toEqual([["Overview"], ["Details", "Subsection"]]);
+    expect(result!.message).toBe("document was restored to an earlier version");
   });
 
-  it("returns payload with null per-writer fields for an unaffected writer", async () => {
-    await invalidateSessionForRestore(DOC_PATH, "sha-restored-789", "Bob", {
-      committedSha: "sha-precommit-abc",
-      affectedWriters: [
-        { writerId: "writer-a", dirtyHeadingPaths: [["Overview"]] },
-      ],
-    });
-
-    const result = getPendingRestoreNotification(DOC_PATH, "writer-b");
-    expect(result).not.toBeNull();
-    expect(result!.restored_sha).toBe("sha-restored-789");
-    expect(result!.restored_by_display_name).toBe("Bob");
-    expect(result!.pre_commit_sha).toBeNull();
-    expect(result!.your_dirty_heading_paths).toBeNull();
+  it("returns null when replacement had no notice", async () => {
+    await invalidateSessionForReplacement(DOC_PATH, null);
+    const result = getPendingReplacementNotice(DOC_PATH);
+    expect(result).toBeNull();
   });
 
   it("returns null after TTL expires", async () => {
-    await invalidateSessionForRestore(DOC_PATH, "sha-expired", "Charlie", null);
+    await invalidateSessionForReplacement(DOC_PATH, {
+      message: "document was restored to an earlier version",
+    });
 
     // Advance past the 5-minute TTL
     vi.advanceTimersByTime(5 * 60 * 1000 + 1);
 
-    const result = getPendingRestoreNotification(DOC_PATH, "writer-a");
+    const result = getPendingReplacementNotice(DOC_PATH);
     expect(result).toBeNull();
   });
 
-  it("does not consume the entry — multiple readers see the same notification", async () => {
-    await invalidateSessionForRestore(DOC_PATH, "sha-shared", "Dana", {
-      committedSha: "sha-pre-shared",
-      affectedWriters: [
-        { writerId: "writer-a", dirtyHeadingPaths: [["Section1"]] },
-        { writerId: "writer-b", dirtyHeadingPaths: [["Section2"]] },
-      ],
+  it("does not consume the entry — multiple readers see the same notice", async () => {
+    await invalidateSessionForReplacement(DOC_PATH, {
+      message: "admin overwrote this document",
     });
 
-    const resultA = getPendingRestoreNotification(DOC_PATH, "writer-a");
-    const resultB = getPendingRestoreNotification(DOC_PATH, "writer-b");
+    const resultA = getPendingReplacementNotice(DOC_PATH);
+    const resultB = getPendingReplacementNotice(DOC_PATH);
 
     expect(resultA).not.toBeNull();
     expect(resultB).not.toBeNull();
-    expect(resultA!.restored_sha).toBe("sha-shared");
-    expect(resultB!.restored_sha).toBe("sha-shared");
-    expect(resultA!.pre_commit_sha).toBe("sha-pre-shared");
-    expect(resultB!.pre_commit_sha).toBe("sha-pre-shared");
+    expect(resultA!.message).toBe("admin overwrote this document");
+    expect(resultB!.message).toBe("admin overwrote this document");
   });
 });

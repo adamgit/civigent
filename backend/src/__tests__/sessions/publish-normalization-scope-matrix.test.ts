@@ -5,7 +5,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
 import { getHeadSha, gitExec } from "../../storage/git-repo.js";
-import { commitDirtySections } from "../../storage/auto-commit.js";
+import { publishUnpublishedSections } from "../../storage/auto-commit.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import {
   destroyAllSessions,
@@ -168,7 +168,7 @@ describe("publish normalization scope matrix", () => {
       fragmentFromRemark("Timeline transient body-only content that should never be published."),
     );
 
-    const publishResult = await commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
+    const publishResult = await publishUnpublishedSections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
     expect(publishResult.committed).toBe(true);
 
     const canonical = new ContentLayer(ctx.contentDir);
@@ -198,7 +198,7 @@ describe("publish normalization scope matrix", () => {
       fragmentFromRemark("Timeline transient body-only content from untouched section."),
     );
 
-    const publishResult = await commitDirtySections(writer, THREE_SECTION_DOC_PATH, [["Overview"]]);
+    const publishResult = await publishUnpublishedSections(writer, THREE_SECTION_DOC_PATH, [["Overview"]]);
     expect(publishResult.committed).toBe(true);
 
     const canonical = new ContentLayer(ctx.contentDir);
@@ -248,7 +248,7 @@ describe("publish normalization scope matrix", () => {
       await appendEditToHeading(live, testCase.editedHeading, `Edited ${testCase.editedHeading} content.`);
       poisonHeadingAsBodyOnly(live, testCase.poisonedHeading, testCase.poisonedBody);
 
-      const result = await commitDirtySections(writer, THREE_SECTION_DOC_PATH, testCase.scope);
+      const result = await publishUnpublishedSections(writer, THREE_SECTION_DOC_PATH, testCase.scope);
       expect(result.committed).toBe(true);
 
       const canonical = new ContentLayer(ctx.contentDir);
@@ -269,7 +269,7 @@ describe("publish normalization scope matrix", () => {
     poisonHeadingAsBodyOnly(live, "Timeline", "Timeline poisoned body-only content.");
     poisonHeadingAsBodyOnly(live, "Risks", "Risks poisoned body-only content.");
 
-    const result = await commitDirtySections(writer, THREE_SECTION_DOC_PATH, [["Overview"]]);
+    const result = await publishUnpublishedSections(writer, THREE_SECTION_DOC_PATH, [["Overview"]]);
     expect(result.committed).toBe(true);
 
     const canonical = new ContentLayer(ctx.contentDir);
@@ -295,7 +295,7 @@ describe("publish normalization scope matrix", () => {
       "Timeline poisoned body-only content during multi-target publish.",
     );
 
-    const result = await commitDirtySections(writer, THREE_SECTION_DOC_PATH, [["Overview"], ["Risks"]]);
+    const result = await publishUnpublishedSections(writer, THREE_SECTION_DOC_PATH, [["Overview"], ["Risks"]]);
     expect(result.committed).toBe(true);
 
     const canonical = new ContentLayer(ctx.contentDir);
@@ -323,7 +323,7 @@ describe("publish normalization scope matrix", () => {
       ].join("\n")),
     );
 
-    const result = await commitDirtySections(writer, THREE_SECTION_DOC_PATH, [["Overview"]]);
+    const result = await publishUnpublishedSections(writer, THREE_SECTION_DOC_PATH, [["Overview"]]);
     expect(result.committed).toBe(true);
 
     const canonical = new ContentLayer(ctx.contentDir);
@@ -348,7 +348,7 @@ describe("publish normalization scope matrix", () => {
       "Second doc timeline poisoned body-only content that should never be published.",
     );
 
-    const result = await commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
+    const result = await publishUnpublishedSections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
     expect(result.committed).toBe(true);
 
     const canonical = new ContentLayer(ctx.contentDir);
@@ -371,7 +371,7 @@ describe("publish normalization scope matrix", () => {
       "Timeline poisoned body-only content during unscoped publish.",
     );
 
-    const result = await commitDirtySections(writer, THREE_SECTION_DOC_PATH);
+    const result = await publishUnpublishedSections(writer, THREE_SECTION_DOC_PATH);
     expect(result.committed).toBe(true);
 
     const canonical = new ContentLayer(ctx.contentDir);

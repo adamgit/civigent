@@ -7,7 +7,6 @@ import { assertDataRootExists, getContentRoot, getDataRoot, getImportRoot, ensur
 import { ensureGitRepoReady } from "./storage/git-repo.js";
 import { detectAndRecoverCrash } from "./storage/crash-recovery.js";
 import { importContentFromDirectoryIfNeeded } from "./storage/content-import.js";
-import { setAutoCommitEventHandler } from "./storage/auto-commit.js";
 import { validateOAuthConfig, getMCPPublicURL, getOidcPublicUrl, isMCPPublicURLFromHeadersEnabled } from "./auth/oauth-config.js";
 import { maybeGenerateBootstrapCode } from "./auth/service.js";
 import { isSystemReady, setSystemReady } from "./startup-state.js";
@@ -58,9 +57,8 @@ const PORT = Number(process.env.PORT ?? "3000");
 const crdtWs = createCrdtWsServer();
 const wsHub = createWsHub();
 
-// Wire up event handlers so CRDT and auto-commit events broadcast through the hub
+// Wire up CRDT events so they broadcast through the hub
 setCrdtEventHandler((event) => wsHub.broadcast(event));
-setAutoCommitEventHandler((event) => wsHub.broadcast(event));
 
 const app = createApp({
   onWsEvent: (event) => {

@@ -9,18 +9,17 @@
  *   0x00 SYNC_STEP_1     — State vector (bidirectional for initial sync)
  *   0x01 SYNC_STEP_2     — State diff (bidirectional for initial sync)
  *   0x02 YJS_UPDATE       — Incremental Y.js update (server → client only)
- *   0x08 STRUCTURE_WILL_CHANGE — Restructure notification (server → client)
  */
 
 import * as Y from "yjs";
 import type {
-  RestoreNotificationPayload,
+  DocumentReplacementNoticePayload,
   ClientInstanceId,
   ModeTransitionRequest,
   ModeTransitionResult,
 } from "../types/shared";
 import {
-  WS_CLOSE_DOCUMENT_RESTORED,
+  WS_CLOSE_DOCUMENT_REPLACED,
   WS_CLOSE_SESSION_ENDED,
   WS_CLOSE_INVALID_URL,
   WS_CLOSE_YDOC_INIT_FAILED,
@@ -33,8 +32,7 @@ import { randomUuid } from "../utils/random-uuid";
 const MSG_SYNC_STEP_1 = 0;
 const MSG_SYNC_STEP_2 = 1;
 const MSG_YJS_UPDATE = 2;
-const MSG_STRUCTURE_WILL_CHANGE = 8;
-const MSG_RESTORE_NOTIFICATION = 0x0B;
+const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0B;
 const MSG_MODE_TRANSITION_REQUEST = 0x0C;
 const MSG_MODE_TRANSITION_RESULT = 0x0D;
 
@@ -58,15 +56,13 @@ export interface ObserverCrdtProviderEvents {
   /** Fired (debounced ~100ms) when the Y.Doc is updated by an editor.
    *  Only fires after the initial sync has completed (synced === true). */
   onChange?: () => void;
-  /** Server is about to restructure fragments. */
-  onStructureWillChange?: (restructures: Array<{ oldKey: string; newKeys: string[] }>) => void;
   /** Editing session ended — observer should fall back to REST content. */
   onSessionEnded?: () => void;
-  /** Fired when the server closes this socket with code 4022 (document restored).
+  /** Fired when the server closes this socket with code 4022 (document replaced).
    *  The provider reconnects immediately (backoff reset). */
   onSessionReinit?: () => void;
-  /** Fired once, after onSynced on the post-restore reconnection, with the banner payload. */
-  onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
+  /** Fired once, after onSynced on the post-replacement reconnection, with the replacement notice. */
+  onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
   onModeTransitionResult?: (result: ModeTransitionResult) => void;
   /** Fired when a protocol-level error occurs (e.g. malformed JSON payload).
    *  The connection is terminated after this callback. */
@@ -93,7 +89,7 @@ export class ObserverCrdtProvider {
   private reconnectAttempts = 0;
   private destroyed = false;
   private changeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private pendingRestoreNotification: RestoreNotificationPayload | null = null;
+  private pendingDocumentReplacementNotice: DocumentReplacementNoticePayload | null = null;
   private readonly clientInstanceId: ClientInstanceId;
   private readonly docPath: string;
   private initialTransitionRequest: ModeTransitionRequest | null = null;
@@ -166,7 +162,7 @@ export class ObserverCrdtProvider {
     this.ws.onopen = () => {
       // Reset sync state and pending notification on every new connection.
       this._synced = false;
-      this.pendingRestoreNotification = null;
+      this.pendingDocumentReplacementNotice = null;
       this.reconnectAttempts = 0;
       this.setState("connected");
       this.sendModeTransitionRequest();
@@ -183,8 +179,8 @@ export class ObserverCrdtProvider {
     this.ws.onclose = (event: CloseEvent) => {
       this.ws = null;
 
-      if (event.code === WS_CLOSE_DOCUMENT_RESTORED) {
-        // Document restored — reconnect immediately (no exponential backoff).
+      if (event.code === WS_CLOSE_DOCUMENT_REPLACED) {
+        // Document replaced — reconnect immediately (no exponential backoff).
         this.reconnectAttempts = 0;
         this.events.onSessionReinit?.();
         this.openWebSocket();
@@ -233,10 +229,10 @@ export class ObserverCrdtProvider {
           this._synced = true;
           this.events.onSynced?.();
         }
-        if (this.pendingRestoreNotification) {
-          const n = this.pendingRestoreNotification;
-          this.pendingRestoreNotification = null;
-          this.events.onRestoreNotification?.(n);
+        if (this.pendingDocumentReplacementNotice) {
+          const n = this.pendingDocumentReplacementNotice;
+          this.pendingDocumentReplacementNotice = null;
+          this.events.onDocumentReplacementNotice?.(n);
         }
         this.scheduleOnChange();
         break;
@@ -246,24 +242,12 @@ export class ObserverCrdtProvider {
         this.scheduleOnChange();
         break;
       }
-      case MSG_STRUCTURE_WILL_CHANGE: {
-        const json = new TextDecoder().decode(payload);
-        let restructures: Array<{ oldKey: string; newKeys: string[] }>;
-        try {
-          restructures = JSON.parse(json) as Array<{ oldKey: string; newKeys: string[] }>;
-        } catch (err) {
-          this.closeWithProtocolError(`Malformed MSG_STRUCTURE_WILL_CHANGE payload: ${err instanceof Error ? err.message : String(err)}`);
-          return;
-        }
-        this.events.onStructureWillChange?.(restructures);
-        break;
-      }
-      case MSG_RESTORE_NOTIFICATION: {
+      case MSG_DOCUMENT_REPLACEMENT_NOTICE: {
         const json = new TextDecoder().decode(payload);
         try {
-          this.pendingRestoreNotification = JSON.parse(json) as RestoreNotificationPayload;
+          this.pendingDocumentReplacementNotice = JSON.parse(json) as DocumentReplacementNoticePayload;
         } catch (err) {
-          this.closeWithProtocolError(`Malformed MSG_RESTORE_NOTIFICATION payload: ${err instanceof Error ? err.message : String(err)}`);
+          this.closeWithProtocolError(`Malformed MSG_DOCUMENT_REPLACEMENT_NOTICE payload: ${err instanceof Error ? err.message : String(err)}`);
           return;
         }
         break;

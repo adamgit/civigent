@@ -11,13 +11,13 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import * as Y from "yjs";
 import { CrdtProvider } from "../../services/crdt-provider";
-import type { RestoreNotificationPayload } from "../../types/shared";
+import type { DocumentReplacementNoticePayload } from "../../types/shared";
 
 // Protocol constants (must match crdt-provider.ts)
 const MSG_SYNC_STEP_2 = 0x01;
 const MSG_SESSION_OVERLAY_IMPORTED = 4;
 const MSG_STRUCTURE_WILL_CHANGE = 8;
-const MSG_RESTORE_NOTIFICATION = 0x0b;
+const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0b;
 
 // ─── StubWebSocket ──────────────────────────────────────────────
 // Minimal WebSocket stub so CrdtProvider's `new WebSocket(url)` works.
@@ -132,10 +132,10 @@ function encodeStructureWillChange(
   return buf;
 }
 
-function encodeRestoreNotification(payload: RestoreNotificationPayload): Uint8Array {
+function encodeDocumentReplacementNotice(payload: DocumentReplacementNoticePayload): Uint8Array {
   const json = new TextEncoder().encode(JSON.stringify(payload));
   const msg = new Uint8Array(1 + json.length);
-  msg[0] = MSG_RESTORE_NOTIFICATION;
+  msg[0] = MSG_DOCUMENT_REPLACEMENT_NOTICE;
   msg.set(json, 1);
   return msg;
 }
@@ -237,60 +237,46 @@ describe("A12: Frontend Wire Protocol Invariants", () => {
 
   // ── A12.3 ─────────────────────────────────────────────────────────
 
-  it("A12.3: RESTORE_NOTIFICATION message is sent after restore with correct payload", () => {
-    const receivedPayloads: RestoreNotificationPayload[] = [];
+  it("A12.3: DOCUMENT_REPLACEMENT_NOTICE message is sent after reconnect with correct payload", () => {
+    const receivedPayloads: DocumentReplacementNoticePayload[] = [];
     const doc = new Y.Doc();
     const provider = new CrdtProvider(doc, "/test/doc.md", {
       onSynced: () => {},
-      onRestoreNotification: (payload) => {
+      onDocumentReplacementNotice: (payload) => {
         receivedPayloads.push(payload);
       },
     });
 
     const ws = connectProvider(provider);
 
-    const restorePayload: RestoreNotificationPayload = {
-      restored_sha: "abc1234",
-      restored_by_display_name: "Admin User",
-      pre_commit_sha: "def5678",
-      your_dirty_heading_paths: [["Overview"], ["Timeline"]],
+    const restorePayload: DocumentReplacementNoticePayload = {
+      message: "document was restored to an earlier version",
     };
 
-    // RESTORE_NOTIFICATION is buffered until SYNC_STEP_2 arrives
-    ws.receiveServerMessage(encodeRestoreNotification(restorePayload));
+    // DOCUMENT_REPLACEMENT_NOTICE is buffered until SYNC_STEP_2 arrives
+    ws.receiveServerMessage(encodeDocumentReplacementNotice(restorePayload));
     expect(receivedPayloads).toHaveLength(0); // Not delivered yet
 
-    // Deliver SYNC_STEP_2 — triggers pending notification delivery
+    // Deliver SYNC_STEP_2 — triggers pending notice delivery
     const sourceDoc = new Y.Doc();
     ws.receiveServerMessage(buildSyncStep2FromDoc(sourceDoc));
 
     expect(receivedPayloads).toHaveLength(1);
-    expect(receivedPayloads[0].restored_sha).toBe("abc1234");
-    expect(receivedPayloads[0].restored_by_display_name).toBe("Admin User");
-    expect(receivedPayloads[0].pre_commit_sha).toBe("def5678");
-    expect(receivedPayloads[0].your_dirty_heading_paths).toEqual([
-      ["Overview"],
-      ["Timeline"],
-    ]);
+    expect(receivedPayloads[0].message).toBe("document was restored to an earlier version");
 
-    // Verify null-able fields work correctly
-    const nullPayload: RestoreNotificationPayload = {
-      restored_sha: "fff9999",
-      restored_by_display_name: "Another Admin",
-      pre_commit_sha: null,
-      your_dirty_heading_paths: null,
+    const secondPayload: DocumentReplacementNoticePayload = {
+      message: "admin overwrote this document",
     };
 
     // Need a fresh connection for the second test since synced is already true
-    // and pendingRestoreNotification was consumed. Simulate by sending another
-    // restore notification — on an already-synced provider, SYNC_STEP_2 won't
-    // re-trigger onSynced, but it will consume pendingRestoreNotification.
-    ws.receiveServerMessage(encodeRestoreNotification(nullPayload));
+    // and pendingDocumentReplacementNotice was consumed. Simulate by sending another
+    // notice — on an already-synced provider, SYNC_STEP_2 won't re-trigger
+    // onSynced, but it will consume pendingDocumentReplacementNotice.
+    ws.receiveServerMessage(encodeDocumentReplacementNotice(secondPayload));
     ws.receiveServerMessage(buildSyncStep2FromDoc(sourceDoc));
 
     expect(receivedPayloads).toHaveLength(2);
-    expect(receivedPayloads[1].pre_commit_sha).toBeNull();
-    expect(receivedPayloads[1].your_dirty_heading_paths).toBeNull();
+    expect(receivedPayloads[1].message).toBe("admin overwrote this document");
 
     provider.destroy();
   });

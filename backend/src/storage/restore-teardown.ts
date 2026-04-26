@@ -18,8 +18,6 @@
  * starts mid-teardown never observes a live Y.Doc with missing backing files.
  */
 
-import { rm } from "node:fs/promises";
-import path from "node:path";
 import type { LiveFragmentStringsStore } from "../crdt/live-fragment-strings-store.js";
 import type { StagedSectionsStore } from "./staged-sections-store.js";
 import type { RawFragmentRecoveryBuffer } from "./raw-fragment-recovery-buffer.js";
@@ -34,19 +32,9 @@ import type { RawFragmentRecoveryBuffer } from "./raw-fragment-recovery-buffer.j
 export async function teardownSessionStores(
   liveFragments: LiveFragmentStringsStore,
   stagedSections: StagedSectionsStore,
-  recoveryBuffer: RawFragmentRecoveryBuffer,
+  _recoveryBuffer: RawFragmentRecoveryBuffer,
 ): Promise<void> {
-  // StagedSectionsStore.stagingRoot is currently the SHARED
-  // sessions/sections/content/ root — wiping it whole would nuke every
-  // document's staging. Scope the rm to this store's docPath, matching
-  // the skeleton + .sections layout the absorb pipeline produces.
-  const normalized = stagedSections.docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-  const skeletonPath = path.resolve(stagedSections.stagingRoot, ...normalized.split("/"));
-  const sectionsDir = `${skeletonPath}.sections`;
-  await rm(skeletonPath, { force: true });
-  await rm(sectionsDir, { recursive: true, force: true });
-
-  await recoveryBuffer.deleteAllFragments();
+  await liveFragments.resetSessionStores(stagedSections);
 
   liveFragments.ydoc.destroy();
 }

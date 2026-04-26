@@ -116,10 +116,10 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     setReadyEditors,
     deletionPlaceholders,
     setDeletionPlaceholders,
-    restructuringKeys,
-    setRestructuringKeys,
     proposalMode,
     activeProposalId,
+    activeProposalStatus,
+    canEditProposalScope,
     controllerState,
     crdtProviderRef,
     controllerStateRef,
@@ -134,6 +134,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     enterProposalMode,
     exitProposalMode,
     stopEditing,
+    toggleProposalSection,
     handleProposalSectionChange,
     handleCursorExit,
     setEditorRef,
@@ -200,7 +201,6 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     focusedSectionIndexRef,
     mountedEditorFragmentKeysRef,
     pendingStructureRefocusRef,
-    setRestructuringKeys,
     storeRef,
     setDeletionPlaceholders,
     setStructureTree,
@@ -561,6 +561,13 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                 type="button"
                 className="text-sm text-text-muted italic hover:text-text-primary hover:underline cursor-text text-left block"
                 onClick={(e) => {
+                  if (proposalMode) {
+                    if (canEditProposalScope && displaySections[0]) {
+                      void toggleProposalSection(displaySections[0]);
+                      return;
+                    }
+                    return;
+                  }
                   void startEditing(0, { x: e.clientX, y: e.clientY });
                 }}
               >
@@ -570,6 +577,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
 
             {!sectionsLoading ? displaySections.map((section, i) => {
               const sectionKey = sectionHeadingKey(section.heading_path);
+              const isInProposal = !!(proposalMode && proposalSectionsRef.current.has(`${decodedDocPath}::${sectionKey}`));
               const fk = getSectionFragmentKey(section);
               const sectionLabel = headingPathToLabel(section.heading_path);
 
@@ -606,9 +614,13 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       index={i}
                       fragmentKey={fk}
                       isFocused={focusedSectionIndex === i}
-                      hasEditor={shouldMountEditor(i, focusedSectionIndex)}
-                      isRestructuring={restructuringKeys.has(fk)}
-                      isInProposal={!!(proposalMode && proposalSectionsRef.current.has(`${decodedDocPath}::${sectionKey}`))}
+                      hasEditor={
+                        proposalMode
+                          ? (activeProposalStatus === "inprogress" && isInProposal && shouldMountEditor(i, focusedSectionIndex))
+                          : shouldMountEditor(i, focusedSectionIndex)
+                      }
+                      isInProposal={isInProposal}
+                      proposalConflictReason={null}
                       isLockedByOtherHuman={!!section.blocked}
                       highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
                       injectedByWriter={null}
@@ -620,6 +632,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       crdtError={crdtError}
                       transferService={transferServiceRef.current}
                       proposalMode={proposalMode}
+                      canEditProposalContent={activeProposalStatus === "inprogress"}
                       isReady={readyEditors.has(i)}
                       mouseDownPosRef={mouseDownPosRef}
                       onStartEditing={startEditing}
@@ -628,6 +641,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       onEditorReady={handleEditorReady}
                       onEditorUnready={handleEditorUnready}
                       onProposalSectionChange={proposalMode ? handleProposalSectionChange : undefined}
+                      onToggleProposalSection={proposalMode && canEditProposalScope ? () => toggleProposalSection(section) : undefined}
                       onCursorExit={handleCursorExit}
                       onCrossSectionDrop={handleCrossSectionDrop}
                     />

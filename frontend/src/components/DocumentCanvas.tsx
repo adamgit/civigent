@@ -20,11 +20,11 @@ export interface DocumentCanvasProps {
   sections: DocumentSection[];
   sectionsLoading: boolean;
   focusedSectionIndex: number | null;
-  restructuringKeys: Set<string>;
   proposalMode: boolean;
-  proposalSectionsRef: React.MutableRefObject<
-    Map<string, { doc_path: string; heading_path: string[]; content: string }>
-  >;
+  canEditProposalScope: boolean;
+  canEditProposalContent: boolean;
+  selectedProposalSectionKeys: Set<string>;
+  proposalSectionConflicts: Map<string, string>;
   decodedDocPath: string | null;
   recentlyChangedByLabel: Map<string, unknown>;
   injectedByLabel: Map<string, string>;
@@ -44,6 +44,7 @@ export interface DocumentCanvasProps {
   onEditorReady: (index: number) => void;
   onEditorUnready: (index: number) => void;
   onProposalSectionChange?: (index: number, markdown: string) => void;
+  onToggleProposalSection?: (section: DocumentSection) => void | Promise<void>;
   onCursorExit: (index: number, direction: "up" | "down") => void;
   onCrossSectionDrop: (section: DocumentSection, transfer: SectionTransfer) => void;
 }
@@ -52,9 +53,11 @@ export function DocumentCanvas({
   sections,
   sectionsLoading,
   focusedSectionIndex,
-  restructuringKeys,
   proposalMode,
-  proposalSectionsRef,
+  canEditProposalScope,
+  canEditProposalContent,
+  selectedProposalSectionKeys,
+  proposalSectionConflicts,
   decodedDocPath,
   recentlyChangedByLabel,
   injectedByLabel,
@@ -74,6 +77,7 @@ export function DocumentCanvas({
   onEditorReady,
   onEditorUnready,
   onProposalSectionChange,
+  onToggleProposalSection,
   onCursorExit,
   onCrossSectionDrop,
 }: DocumentCanvasProps) {
@@ -81,6 +85,8 @@ export function DocumentCanvas({
     <>
       {!sectionsLoading ? sections.map((section, i) => {
         const sectionKey = sectionHeadingKey(section.heading_path);
+        const proposalKey = decodedDocPath ? `${decodedDocPath}::${sectionKey}` : null;
+        const isInProposal = !!(proposalMode && proposalKey && selectedProposalSectionKeys.has(proposalKey));
         const fk = getSectionFragmentKey(section);
         const sectionLabel = headingPathToLabel(section.heading_path);
         return (
@@ -103,9 +109,13 @@ export function DocumentCanvas({
                 index={i}
                 fragmentKey={fk}
                 isFocused={focusedSectionIndex === i}
-                hasEditor={shouldMountEditor(i, focusedSectionIndex)}
-                isRestructuring={restructuringKeys.has(fk)}
-                isInProposal={!!(proposalMode && proposalSectionsRef.current.has(`${decodedDocPath}::${sectionKey}`))}
+                hasEditor={
+                  proposalMode
+                    ? (canEditProposalContent && isInProposal && shouldMountEditor(i, focusedSectionIndex))
+                    : shouldMountEditor(i, focusedSectionIndex)
+                }
+                isInProposal={isInProposal}
+                proposalConflictReason={proposalKey ? (proposalSectionConflicts.get(proposalKey) ?? null) : null}
                 isLockedByOtherHuman={!!section.blocked}
                 highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
                 injectedByWriter={injectedByLabel.get(sectionLabel) ?? null}
@@ -117,6 +127,7 @@ export function DocumentCanvas({
                 crdtError={crdtError}
                 transferService={transferService}
                 proposalMode={proposalMode}
+                canEditProposalContent={canEditProposalContent}
                 isReady={readyEditors.has(i)}
                 mouseDownPosRef={mouseDownPosRef}
                 onStartEditing={onStartEditing}
@@ -125,6 +136,11 @@ export function DocumentCanvas({
                 onEditorReady={onEditorReady}
                 onEditorUnready={onEditorUnready}
                 onProposalSectionChange={proposalMode ? onProposalSectionChange : undefined}
+                onToggleProposalSection={
+                  proposalMode && canEditProposalScope && onToggleProposalSection
+                    ? () => onToggleProposalSection(section)
+                    : undefined
+                }
                 onCursorExit={onCursorExit}
                 onCrossSectionDrop={onCrossSectionDrop}
               />

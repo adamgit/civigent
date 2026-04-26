@@ -1,15 +1,10 @@
 import path from "node:path";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import type { AllSessionStatusesResponse } from "../types/shared.js";
 import { getAllSessions } from "../crdt/ydoc-lifecycle.js";
-import { getDataRoot, getSessionAuthorsRoot } from "./data-root.js";
+import { getDataRoot, getSessionFragmentsRoot, getSessionSectionsContentRoot } from "./data-root.js";
 import { getLatestCommitTimestampIso } from "./git-repo.js";
-
-function parseTimestampMs(value: string | undefined): number | null {
-  if (!value) return null;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : null;
-}
+import { scanSessionFragmentDocPaths, scanSessionDocPaths } from "./session-scan.js";
 
 function updateOldest(oldestMs: number | null, candidateMs: number | null): number | null {
   if (candidateMs == null) return oldestMs;
@@ -39,33 +34,14 @@ export async function readAllSessionStatuses(): Promise<AllSessionStatusesRespon
     }
   }
 
-  try {
-    const authorFiles = await readdir(getSessionAuthorsRoot());
-    for (const fileName of authorFiles) {
-      if (!fileName.endsWith(".json")) continue;
-      try {
-        const raw = await readFile(path.join(getSessionAuthorsRoot(), fileName), "utf8");
-        const parsed = JSON.parse(raw) as {
-          dirtySections?: Array<{ docPath?: string; firstChangedAt?: string }>;
-        };
-        for (const section of parsed.dirtySections ?? []) {
-          if (typeof section.docPath === "string" && section.docPath.length > 0) {
-            outstandingDocs.add(section.docPath);
-          }
-          oldestOutstandingMs = updateOldest(
-            oldestOutstandingMs,
-            parseTimestampMs(section.firstChangedAt),
-          );
-        }
-      } catch {
-        // Ignore malformed or concurrently deleted author files; this endpoint is informational.
-      }
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-  }
+  const [persistedOverlayDocs, persistedFragmentDocs, oldestPersistedMs] = await Promise.all([
+    scanSessionDocPaths(),
+    scanSessionFragmentDocPaths(),
+    collectOldestPersistedSessionMtimeMs(),
+  ]);
+  for (const docPath of persistedOverlayDocs) outstandingDocs.add(docPath);
+  for (const docPath of persistedFragmentDocs) outstandingDocs.add(docPath);
+  oldestOutstandingMs = updateOldest(oldestOutstandingMs, oldestPersistedMs);
 
   const lastCommitAt = await getLatestCommitTimestampIso(getDataRoot());
 
@@ -76,4 +52,41 @@ export async function readAllSessionStatuses(): Promise<AllSessionStatusesRespon
       oldestOutstandingMs == null ? null : new Date(oldestOutstandingMs).toISOString(),
     last_commit_at: lastCommitAt,
   };
+}
+
+async function collectOldestPersistedSessionMtimeMs(): Promise<number | null> {
+  const roots = [
+    getSessionSectionsContentRoot(),
+    getSessionFragmentsRoot(),
+  ];
+  let oldest: number | null = null;
+  for (const root of roots) {
+    oldest = updateOldest(oldest, await walkOldestSessionFileMtimeMs(root));
+  }
+  return oldest;
+}
+
+async function walkOldestSessionFileMtimeMs(dir: string): Promise<number | null> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+
+  let oldest: number | null = null;
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      oldest = updateOldest(oldest, await walkOldestSessionFileMtimeMs(fullPath));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    if (!entry.name.endsWith(".md") && !entry.name.endsWith(".writers.json")) continue;
+    oldest = updateOldest(oldest, (await stat(fullPath)).mtimeMs);
+  }
+  return oldest;
 }

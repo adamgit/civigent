@@ -292,11 +292,18 @@ export interface ProposalHumanInvolvementEvaluation {
   passed_sections: EvaluatedSection[];
 }
 
+export type EvaluatedSectionBlockedReason =
+  | "active_live_edit"
+  | "uncommitted_live_edits"
+  | "human_proposal_lock"
+  | "aggregate_impact";
+
 export interface EvaluatedSection {
   doc_path: string;
   heading_path: string[];
   humanInvolvement_score: number;
   blocked: boolean;
+  blocked_reason?: EvaluatedSectionBlockedReason;
 
   justification?: string;
 }
@@ -335,24 +342,6 @@ export interface GetHeatmapResponse {
   humanInvolvement_midpoint_seconds: number;
   humanInvolvement_steepness: number;
   sections: HeatmapEntry[];
-}
-
-// ─── Mirror (Dirty State) ──────────────────────────────────────────
-
-export interface DirtySection {
-  heading_path: string[];
-  base_head: string;
-  change_magnitude: number;
-}
-
-export interface DirtyDocument {
-  doc_path: string;
-  dirty_sections: DirtySection[];
-}
-
-export interface WriterDirtyState {
-  writer_id: string;
-  documents: DirtyDocument[];
 }
 
 export interface AllSessionStatusesResponse {
@@ -520,18 +509,6 @@ export interface ListProposalsResponse {
   proposals: AnyProposal[];
 }
 
-// ─── Publish ───────────────────────────────────────────────────────
-
-export interface PublishRequest {
-  doc_path?: string;
-  heading_paths?: string[][];
-}
-
-export interface PublishResponse {
-  committed_head: string;
-  sections_published: SectionTargetRef[];
-}
-
 // ─── Activity ──────────────────────────────────────────────────────
 
 export interface ActivityItem {
@@ -644,6 +621,17 @@ export interface DirtyChangedEvent {
   committed_head?: string;
 }
 
+export interface WriterDirtyStateChangedEvent {
+  type: "writer:dirty-state-changed";
+  writer_id: string;
+  doc_path: string;
+}
+
+export interface SessionStatusChangedEvent {
+  type: "session:status-changed";
+  doc_path: string;
+}
+
 export interface AgentReadingEvent {
   type: "agent:reading";
   actor_id: string;
@@ -697,6 +685,16 @@ export interface ProposalDraftEvent {
   intent: string;
 }
 
+export interface ProposalInProgressEvent {
+  type: "proposal:inprogress";
+  proposal_id: string;
+  doc_path: string;
+  heading_paths: string[][];
+  writer_id: string;
+  writer_display_name: string;
+  intent: string;
+}
+
 export interface ProposalWithdrawnEvent {
   type: "proposal:withdrawn";
   proposal_id: string;
@@ -723,6 +721,8 @@ export interface ProposalInjectedIntoSessionEvent {
 export type WsServerEvent =
   | ContentCommittedEvent
   | DirtyChangedEvent
+  | WriterDirtyStateChangedEvent
+  | SessionStatusChangedEvent
   | AgentReadingEvent
   | PresenceEditingEvent
   | PresenceDoneEvent
@@ -730,6 +730,7 @@ export type WsServerEvent =
   | SessionOverlayImportedEvent
   | DocRenamedEvent
   | ProposalDraftEvent
+  | ProposalInProgressEvent
   | ProposalWithdrawnEvent
   | CatalogChangedEvent
   | ProposalInjectedIntoSessionEvent;
@@ -819,14 +820,9 @@ export interface BlameResponse {
   lines: BlameLineAttribution[];
 }
 
-// ─── Restore Notification ─────────────────────────────────────────
+// ─── Document Replacement Notice ─────────────────────────────────
 
-export interface RestoreNotificationPayload {
-  /** 7-char short SHA of the restore commit. */
-  restored_sha: string;
-  restored_by_display_name: string;
-  /** SHA of the pre-emptive commit made before restore; null if the client had no dirty state. */
-  pre_commit_sha: string | null;
-  /** Heading paths this writer had dirty; null if not an affected writer. */
-  your_dirty_heading_paths: string[][] | null;
+export interface DocumentReplacementNoticePayload {
+  /** Simple reconnect notice shown after restore or overwrite replaced the document. */
+  message: string;
 }

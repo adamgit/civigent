@@ -7,6 +7,7 @@ import { authFor } from "../helpers/auth.js";
 describe("PUT /api/proposals/:id — modify proposal", () => {
   let ctx: TestServerContext;
   let pendingProposalId: string;
+  let inProgressProposalId: string;
   let committedProposalId: string;
   let prevAuthMode: string | undefined;
 
@@ -34,6 +35,30 @@ describe("PUT /api/proposals/:id — modify proposal", () => {
     expect(pendingRes.body.status).toBe("draft");
     pendingProposalId = pendingRes.body.proposal_id;
 
+    // Create a human proposal and transition to inprogress (locks acquired)
+    const inProgressRes = await request(ctx.app)
+      .post("/api/proposals")
+      .set("Authorization", ctx.humanToken)
+      .send({
+        intent: "Human inprogress proposal for modify tests",
+        sections: [
+          {
+            doc_path: SAMPLE_DOC_PATH,
+            heading_path: ["Timeline"],
+            content: "Inprogress initial content.\n",
+          },
+        ],
+      });
+    expect(inProgressRes.body.status).toBe("draft");
+    inProgressProposalId = inProgressRes.body.proposal_id;
+
+    const acquireLocksRes = await request(ctx.app)
+      .post(`/api/proposals/${inProgressProposalId}/acquire-locks`)
+      .set("Authorization", ctx.humanToken)
+      .send({});
+    expect(acquireLocksRes.status).toBe(200);
+    expect(acquireLocksRes.body.acquired).toBe(true);
+
     // Create an agent proposal and commit it explicitly
     const committedRes = await request(ctx.app)
       .post("/api/proposals")
@@ -43,8 +68,8 @@ describe("PUT /api/proposals/:id — modify proposal", () => {
         sections: [
           {
             doc_path: SAMPLE_DOC_PATH,
-            heading_path: ["Timeline"],
-            content: "Committed timeline.\n",
+            heading_path: [],
+            content: "Committed preamble.\n",
           },
         ],
       });
@@ -100,6 +125,23 @@ describe("PUT /api/proposals/:id — modify proposal", () => {
     expect(Array.isArray(res.body.proposal.sections)).toBe(true);
   });
 
+  it("returns 409 when trying to change selected sections after proposal is inprogress", async () => {
+    const res = await request(ctx.app)
+      .put(`/api/proposals/${inProgressProposalId}`)
+      .set("Authorization", ctx.humanToken)
+      .send({
+        sections: [
+          {
+            doc_path: SAMPLE_DOC_PATH,
+            heading_path: ["Overview"],
+            content: "Attempt to drift lock scope.\n",
+          },
+        ],
+      });
+
+    expect(res.status).toBe(409);
+  });
+
   it("returns 409 if proposal is already committed", async () => {
     const res = await request(ctx.app)
       .put(`/api/proposals/${committedProposalId}`)
@@ -108,7 +150,7 @@ describe("PUT /api/proposals/:id — modify proposal", () => {
         sections: [
           {
             doc_path: SAMPLE_DOC_PATH,
-            heading_path: ["Timeline"],
+            heading_path: [],
             content: "Cannot modify committed.\n",
           },
         ],

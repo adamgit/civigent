@@ -3,7 +3,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
 import { getHeadSha } from "../../storage/git-repo.js";
-import { commitDirtySections, setAutoCommitEventHandler } from "../../storage/auto-commit.js";
+import { publishUnpublishedSections } from "../../storage/auto-commit.js";
 import {
   acquireDocSession,
   destroyAllSessions,
@@ -14,7 +14,7 @@ import {
 } from "../../crdt/ydoc-lifecycle.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
-import type { WriterIdentity, WsServerEvent } from "../../types/shared.js";
+import type { WriterIdentity } from "../../types/shared.js";
 
 const writerA: WriterIdentity = {
   id: "writer-a",
@@ -64,26 +64,22 @@ function keysFromSectionTargets(
   return new Set(sections.map((section) => toHeadingKey(section.heading_path)));
 }
 
-function keysFromContentCommittedEvents(events: WsServerEvent[]): Set<string> {
-  const keys = new Set<string>();
-  for (const event of events) {
-    if (event.type !== "content:committed") continue;
-    for (const section of event.sections) {
-      keys.add(toHeadingKey(section.heading_path));
-    }
-  }
-  return keys;
+function keysFromDocCommits(
+  docCommits: Array<{ sectionsPublished: Array<{ doc_path: string; heading_path: string[] }> }>,
+): Set<string> {
+  return new Set(
+    docCommits.flatMap((docCommit) =>
+      docCommit.sectionsPublished.map((section) => toHeadingKey(section.heading_path))),
+  );
 }
 
-function keysFromDirtyClearedEvents(events: WsServerEvent[], writerId: string): Set<string> {
-  const keys = new Set<string>();
-  for (const event of events) {
-    if (event.type !== "dirty:changed") continue;
-    if (event.writer_id !== writerId) continue;
-    if (event.dirty !== false) continue;
-    keys.add(toHeadingKey(event.heading_path));
-  }
-  return keys;
+function keysFromClearedHeadingPaths(
+  docCommits: Array<{ publisherClearedHeadingPaths: string[][] }>,
+): Set<string> {
+  return new Set(
+    docCommits.flatMap((docCommit) =>
+      docCommit.publisherClearedHeadingPaths.map((headingPath) => toHeadingKey(headingPath))),
+  );
 }
 
 async function openLiveSession(
@@ -112,11 +108,9 @@ describe("publish event contract, cross-reload invariants, and multi-writer scop
     setSessionOverlayImportCallback(async (session) => {
       await flushDirtyToOverlay(session);
     });
-    setAutoCommitEventHandler(() => {});
   });
 
   afterEach(async () => {
-    setAutoCommitEventHandler(() => {});
     destroyAllSessions();
     await ctx.cleanup();
   });
@@ -132,17 +126,14 @@ describe("publish event contract, cross-reload invariants, and multi-writer scop
     const canonical = new ContentLayer(ctx.contentDir);
     const beforeSections = await canonical.readAllSections(SAMPLE_DOC_PATH);
 
-    const events: WsServerEvent[] = [];
-    setAutoCommitEventHandler((event) => events.push(event));
-
-    const result = await commitDirtySections(writerA, SAMPLE_DOC_PATH, [["Overview"]]);
+    const result = await publishUnpublishedSections(writerA, SAMPLE_DOC_PATH, [["Overview"]]);
     expect(result.committed).toBe(true);
 
     const afterSections = await canonical.readAllSections(SAMPLE_DOC_PATH);
     const actualChangedKeys = changedSectionKeys(beforeSections, afterSections);
     const publishedKeys = keysFromSectionTargets(result.sectionsPublished);
-    const committedEventKeys = keysFromContentCommittedEvents(events);
-    const dirtyClearedKeys = keysFromDirtyClearedEvents(events, writerA.id);
+    const committedEventKeys = keysFromDocCommits(result.docCommits);
+    const dirtyClearedKeys = keysFromClearedHeadingPaths(result.docCommits);
 
     expect(publishedKeys).toEqual(actualChangedKeys);
     expect(committedEventKeys).toEqual(actualChangedKeys);
@@ -165,7 +156,7 @@ describe("publish event contract, cross-reload invariants, and multi-writer scop
       fragmentFromRemark("Timeline malformed body-only content that should never persist."),
     );
 
-    const publishResult = await commitDirtySections(writerA, SAMPLE_DOC_PATH, [["Overview"]]);
+    const publishResult = await publishUnpublishedSections(writerA, SAMPLE_DOC_PATH, [["Overview"]]);
     expect(publishResult.committed).toBe(true);
 
     // Simulate teardown + reconnect.
@@ -218,10 +209,7 @@ describe("publish event contract, cross-reload invariants, and multi-writer scop
     markFragmentDirty(SAMPLE_DOC_PATH, writerB.id, timelineKey);
     expect(live.perUserDirty.get(writerB.id)?.has(timelineKey)).toBe(true);
 
-    const events: WsServerEvent[] = [];
-    setAutoCommitEventHandler((event) => events.push(event));
-
-    const publishResult = await commitDirtySections(writerA, SAMPLE_DOC_PATH, [["Overview"]]);
+    const publishResult = await publishUnpublishedSections(writerA, SAMPLE_DOC_PATH, [["Overview"]]);
     expect(publishResult.committed).toBe(true);
 
     const canonical = new ContentLayer(ctx.contentDir);
@@ -232,7 +220,7 @@ describe("publish event contract, cross-reload invariants, and multi-writer scop
 
     // Writer B's unrelated dirty state should not be cleared by Writer A's scoped publish.
     expect(live.perUserDirty.get(writerB.id)?.has(timelineKey)).toBe(true);
-    const writerBDirtyClearedKeys = keysFromDirtyClearedEvents(events, writerB.id);
+    const writerBDirtyClearedKeys = keysFromClearedHeadingPaths(publishResult.docCommits);
     expect(writerBDirtyClearedKeys.has("Timeline")).toBe(false);
   });
 });

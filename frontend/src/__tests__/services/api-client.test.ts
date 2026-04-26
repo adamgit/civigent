@@ -112,20 +112,6 @@ describe("api-client", () => {
     expect(fetchMock.calls.some((c) => String(c.input) === "/api/heatmap")).toBe(true);
   });
 
-  it("publish calls POST /api/publish", async () => {
-    fetchMock = installFetchMock(async (input) => {
-      if (String(input).includes("/api/auth/session")) {
-        return jsonResponse({ authenticated: true, user: { id: "u" }, login_providers: [] });
-      }
-      return jsonResponse({ ok: true });
-    });
-    await apiClient.publish({ doc_path: "ops/strategy.md" });
-    const publishCall = fetchMock.calls.find(
-      (c) => String(c.input) === "/api/publish" && c.init?.method === "POST",
-    );
-    expect(publishCall).toBeDefined();
-  });
-
   // ─── credentials: "include" ───────────────────────────────
 
   it('sets credentials: "include" on all fetch calls', async () => {

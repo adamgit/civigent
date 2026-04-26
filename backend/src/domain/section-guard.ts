@@ -60,15 +60,16 @@ export class SectionGuard {
     ref: SectionRef,
     commitInfoMap: Map<string, SectionCommitInfo>,
   ): Promise<SectionVerdict> {
-    const present = await SectionPresence.check(ref);
+    const presenceConflict = await SectionPresence.explain(ref);
 
     // Hard block: live session, dirty files, or human proposal — short-circuit to score=1.0
-    if (present) {
+    if (presenceConflict) {
       return {
         doc_path: ref.docPath,
         heading_path: ref.headingPath,
         humanInvolvement_score: 1.0,
         blocked: true,
+        blocked_reason: presenceConflict,
       };
     }
 
@@ -147,7 +148,10 @@ export class SectionGuard {
     }
 
     // Pre-build human proposal lock index (single scan)
-    const humanProposalLockIndex = await SectionPresence.prefetchHumanProposalLocks(excludeProposalId);
+    const humanProposalLockIndex = await SectionPresence.prefetchHumanProposalLocks(
+      excludeProposalId,
+      "inprogress-only",
+    );
 
     // Evaluate each section
     const evaluatedSections: EvaluatedSection[] = [];
@@ -176,6 +180,7 @@ export class SectionGuard {
       const sorted = [...passedSections].sort((a, b) => b.humanInvolvement_score - a.humanInvolvement_score);
       if (sorted.length > 0) {
         sorted[0].blocked = true;
+        sorted[0].blocked_reason = "aggregate_impact";
       }
     }
 
@@ -201,19 +206,20 @@ export class SectionGuard {
     humanProposalLockIndex: HumanProposalLockIndex,
   ): SectionVerdict {
     const ref = new SectionRef(section.doc_path, section.heading_path);
-    const present = SectionPresence.checkWithCache(
+    const presenceConflict = SectionPresence.explainWithCache(
       ref,
       dirtyFileSet,
       humanProposalLockIndex,
     );
 
     // Hard block: live session, dirty files, or human proposal — short-circuit to score=1.0
-    if (present) {
+    if (presenceConflict) {
       return {
         doc_path: section.doc_path,
         heading_path: section.heading_path,
         humanInvolvement_score: 1.0,
         blocked: true,
+        blocked_reason: presenceConflict,
         justification: section.justification,
       };
     }

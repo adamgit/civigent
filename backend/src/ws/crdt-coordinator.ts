@@ -21,36 +21,23 @@ import {
   releaseDocSession,
   joinSession,
   updateActivity,
-  setSessionOverlayImportCallback,
-  setNormalizeBroadcast,
-  setYjsUpdateBroadcast,
-  setPostCommitNotify,
-  injectAfterCommit,
   setIdleTimeoutHandler,
   addObserverHolder,
   removeObserverHolder,
   countEditorSockets,
-  getPendingRestoreNotification,
-  setBroadcastRestoreInvalidation,
+  getPendingReplacementNotice,
+  setBroadcastSessionReplacementInvalidation,
   markFragmentDirty,
   addContributor,
   updateEditPulse,
   updateSectionFocus,
-  triggerDebouncedSessionOverlayImport,
-  triggerImmediateSessionOverlayImport,
-  normalizeFragment,
-  findKeyForHeadingPath,
-  findHeadingPathForKey,
+  triggerDebouncedRawFragmentSnapshot,
   type DocSession,
-  cleanupAuthorMetadata,
 } from "../crdt/ydoc-lifecycle.js";
 import { fragmentFromRemark } from "../storage/section-formatting.js";
-import { setPostCommitHook } from "../storage/commit-pipeline.js";
 import { documentSessionRegistry } from "../crdt/document-session-registry.js";
 import { getHeadSha } from "../storage/git-repo.js";
-import { getContentRoot, getDataRoot, getSessionSectionsContentRoot } from "../storage/data-root.js";
-import { CanonicalStore } from "../storage/canonical-store.js";
-import { RawFragmentRecoveryBuffer } from "../storage/raw-fragment-recovery-buffer.js";
+import { getDataRoot } from "../storage/data-root.js";
 import type { WsServerEvent, WriterIdentity } from "../types/shared.js";
 import type { ClientInstanceId, RemoteParticipant, ModeTransitionRequest, ModeTransitionResult } from "../types/shared.js";
 import {
@@ -62,26 +49,21 @@ import {
   MSG_ACTIVITY_PULSE,
   MSG_SECTION_MUTATE,
   MSG_MODE_TRANSITION_REQUEST,
-  MSG_SESSION_OVERLAY_IMPORT_REQUEST,
   encodeSyncStep2,
   encodeUpdate,
-  encodeSessionOverlayImportStarted,
-  encodeSessionOverlayImported,
-  encodeStructureWillChange,
   encodeMutateResult,
-  encodeRestoreNotification,
+  encodeDocumentReplacementNotice,
   encodeModeTransitionResult,
   encodeUpdateReceived,
   decodeMessage,
   parseCrdtUrl,
-  WS_CLOSE_DOCUMENT_RESTORED,
+  WS_CLOSE_DOCUMENT_REPLACED,
   WS_CLOSE_SUPERSEDED,
   WS_CLOSE_SESSION_ENDED,
   WS_CLOSE_IDLE_TIMEOUT,
   WS_CLOSE_INVALID_URL,
   WS_CLOSE_AUTH_FAILED,
   WS_CLOSE_AUTHORIZATION_FAILED,
-  WS_CLOSE_REASON_MAX_LENGTH,
 } from "./crdt-protocol.js";
 import {
   CrdtSocketState,
@@ -125,20 +107,21 @@ function removeParticipant(clientInstanceId: ClientInstanceId): void {
 }
 
 /**
- * Guard-and-join helper: delivers any pending restore notification BEFORE joining
+ * Guard-and-join helper: delivers any pending replacement notice BEFORE joining
  * the session, then joins.
  *
- * Ordering rationale: the client's onRestoreNotification handler fires when
- * MSG_SYNC_STEP_2 is received with a pending notification already buffered. So
- * MSG_RESTORE_NOTIFICATION must arrive on the wire before MSG_SYNC_STEP_2 (which
- * joinSession sends). Reversing this order silently breaks the restore banner.
+ * Ordering rationale: the client's onDocumentReplacementNotice handler fires when
+ * MSG_SYNC_STEP_2 is received with a pending notice already buffered. So
+ * MSG_DOCUMENT_REPLACEMENT_NOTICE must arrive on the wire before MSG_SYNC_STEP_2
+ * (which joinSession sends). Reversing this order silently breaks the reconnect
+ * notice.
  *
  * Exported for unit tests (`backend/src/__tests__/ws/join-and-notify-ordering.test.ts`).
  */
 export function joinAndNotify(session: DocSession, socket: WebSocket, st: CrdtSocketState): void {
   if (st.joined) return;
-  const notification = getPendingRestoreNotification(st.docPath, st.writerId);
-  if (notification) sendToSocket(socket, encodeRestoreNotification(notification));
+  const notification = getPendingReplacementNotice(st.docPath);
+  if (notification) sendToSocket(socket, encodeDocumentReplacementNotice(notification));
   joinSession(session, (msg) => socket.send(msg), (event) => { if (onWsEvent) onWsEvent(event); });
   st.joined = true;
 }
@@ -162,14 +145,14 @@ function removeSocket(docPath: string, socket: WebSocket): void {
 }
 
 /**
- * Close all connected CRDT sockets for a document with code 4022 (document restored).
+ * Close all connected CRDT sockets for a document with code 4022 (document replaced).
  * Clients treat 4022 as an immediate reconnect trigger (no exponential backoff).
  * This is the only place in the codebase that sends close code 4022.
  */
-export function broadcastRestoreInvalidation(docPath: string): void {
+export function broadcastSessionReplacementInvalidation(docPath: string): void {
   for (const socket of docSockets.get(docPath) ?? []) {
     if (socket.readyState === WebSocket.OPEN) {
-      socket.close(WS_CLOSE_DOCUMENT_RESTORED, "document restored");
+      socket.close(WS_CLOSE_DOCUMENT_REPLACED, "document replaced");
     }
   }
 }
@@ -204,100 +187,6 @@ export function setCrdtEventHandler(handler: (event: WsServerEvent) => void): vo
 
 // ─── Message handler ────────────────────────────────────────────
 
-async function finalizeSessionEnd(state: CrdtSocketState, result: Awaited<ReturnType<typeof releaseDocSession>>): Promise<void> {
-  if (!result.sessionEnded) return;
-  try {
-    // Build contributors list: the disconnecting editor is primary; others from session.
-    const primaryWriter: WriterIdentity = {
-      id: state.writerId,
-      type: state.writerType,
-      displayName: state.writerDisplayName,
-    };
-    const contributors: WriterIdentity[] = [
-      primaryWriter,
-      ...result.contributors.filter((c) => c.id !== state.writerId),
-    ];
-
-    // Inline canonical absorb — replaces legacy commitSessionFilesToCanonical.
-    const [pw, ...coWriters] = contributors;
-    let commitMsg = `human edit: ${pw.displayName}\n\nWriter: ${pw.id}\nWriter-Type: ${pw.type}`;
-    if (coWriters.length > 0) {
-      commitMsg += "\n" + coWriters
-        .map((w) => `Co-authored-by: ${w.displayName} <${w.email ?? `${w.id}@knowledge-store.local`}>`)
-        .join("\n");
-    }
-    const commitAuthor = { name: pw.displayName, email: pw.email ?? "human@knowledge-store.local" };
-
-    const canonicalStore = new CanonicalStore(getContentRoot(), getDataRoot());
-    const absorbResult = await canonicalStore.absorbChangedSections(
-      getSessionSectionsContentRoot(),
-      commitMsg,
-      commitAuthor,
-      { docPaths: [state.docPath] },
-    );
-
-    // Cleanup is gated on absorb success, NOT on changedSections count — a
-    // no-op session must still tear down its overlay so the next acquire sees
-    // a clean state. Absorb-throw paths skip this block via the outer try's
-    // re-throw.
-    const { rm } = await import("node:fs/promises");
-    const path = await import("node:path");
-    const sessionsContentRoot = getSessionSectionsContentRoot();
-    const normalized = state.docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-    const skeletonPath = path.resolve(sessionsContentRoot, ...normalized.split("/"));
-    await rm(skeletonPath, { force: true });
-    await rm(`${skeletonPath}.sections`, { recursive: true, force: true });
-    const recoveryBuffer = new RawFragmentRecoveryBuffer(state.docPath);
-    await recoveryBuffer.deleteAllFragments();
-    await cleanupAuthorMetadata(state.docPath);
-
-    if (absorbResult.changedSections.length > 0) {
-      const committedSections = absorbResult.changedSections.map(({ docPath: dp, headingPath }) => ({
-        doc_path: dp,
-        heading_path: headingPath,
-      }));
-
-      if (onWsEvent) {
-        onWsEvent({
-          type: "content:committed",
-          doc_path: state.docPath,
-          sections: committedSections,
-          commit_sha: absorbResult.commitSha,
-          writer_id: contributors[0].id,
-          writer_display_name: contributors[0].displayName,
-          writer_type: contributors[0].type,
-          contributor_ids: contributors.map((c) => c.id),
-          seconds_ago: 0,
-        });
-
-        // Emit dirty:changed for all contributors so each frontend can clear its dirty state.
-        for (const contributor of contributors) {
-          for (const section of committedSections) {
-            onWsEvent({
-              type: "dirty:changed",
-              writer_id: contributor.id,
-              doc_path: section.doc_path,
-              heading_path: section.heading_path,
-              dirty: false,
-              base_head: null,
-              committed_head: absorbResult.commitSha,
-            });
-          }
-        }
-      }
-    }
-
-    closeObserversForDoc(state.docPath, 4021, "session_ended");
-  } finally {
-    // Always release the finalization gate, even if absorb/cleanup/emit threw.
-    // A throw would otherwise permanently block future acquireDocSession for
-    // this docPath. The error re-propagates after finally runs.
-    if (result.completeFinalization) {
-      result.completeFinalization();
-    }
-  }
-}
-
 async function applyModeTransition(
   socket: WebSocket,
   state: CrdtSocketState,
@@ -322,8 +211,7 @@ async function applyModeTransition(
     if (state.socketRole === "observer") {
       removeObserverHolder(state.docPath, state.writerId, state.socketId);
     } else {
-      const releaseResult = await releaseDocSession(state.docPath, state.writerId, state.socketId);
-      await finalizeSessionEnd(state, releaseResult);
+      await releaseDocSession(state.docPath, state.writerId, state.socketId);
     }
     state.attachmentState = "detached";
     state.docSessionId = null;
@@ -501,8 +389,7 @@ async function handleMessage(
       msgType === MSG_YJS_UPDATE ||
       msgType === MSG_SECTION_FOCUS ||
       msgType === MSG_ACTIVITY_PULSE ||
-      msgType === MSG_SECTION_MUTATE ||
-      msgType === MSG_SESSION_OVERLAY_IMPORT_REQUEST
+      msgType === MSG_SECTION_MUTATE
     ) {
       throw new Error(
         `Observer socket sent write message (type 0x${msgType.toString(16)}) for ${state.docPath} — ` +
@@ -566,23 +453,23 @@ async function handleMessage(
         sendToSocket(socket, encodeUpdateReceived([...touchedKeys]));
       }
 
-      // Mark each touched key dirty and emit dirty:changed events
+      // Mark each touched key dirty and emit coarse invalidation events.
       for (const fragmentKey of touchedKeys) {
-        const isNewlyDirty = markFragmentDirty(session!.docPath, state.writerId, fragmentKey);
-        if (isNewlyDirty && onWsEvent) {
-          const headingPath = findHeadingPathForKey(session!, fragmentKey) ?? [];
-          onWsEvent({
-            type: "dirty:changed",
-            writer_id: state.writerId,
-            doc_path: state.docPath,
-            heading_path: headingPath,
-            dirty: true,
-            base_head: session!.baseHead,
-          });
-        }
+        markFragmentDirty(session!.docPath, state.writerId, fragmentKey);
+      }
+      if (touchedKeys.size > 0 && onWsEvent) {
+        onWsEvent({
+          type: "writer:dirty-state-changed",
+          writer_id: state.writerId,
+          doc_path: state.docPath,
+        });
+        onWsEvent({
+          type: "session:status-changed",
+          doc_path: state.docPath,
+        });
       }
 
-      triggerDebouncedSessionOverlayImport(session!.docPath);
+      triggerDebouncedRawFragmentSnapshot(session!.docPath);
       broadcastToOthers(state.docPath, socket, encodeUpdate(payload));
       break;
     }
@@ -610,14 +497,6 @@ async function handleMessage(
         type: state.writerType,
         displayName: state.writerDisplayName,
       };
-
-      // Focus-change normalization on the departed section
-      if (oldFocus) {
-        const oldFragmentKey = findKeyForHeadingPath(session!, oldFocus);
-        if (oldFragmentKey) {
-          await normalizeFragment(session!.docPath, oldFragmentKey);
-        }
-      }
 
       if (onWsEvent) {
         if (oldFocus) {
@@ -650,10 +529,6 @@ async function handleMessage(
       });
       break;
     }
-    case MSG_SESSION_OVERLAY_IMPORT_REQUEST: {
-      triggerImmediateSessionOverlayImport(session!.docPath);
-      break;
-    }
     case MSG_SECTION_MUTATE: {
       const json = new TextDecoder().decode(payload);
       let parsed: { fragmentKey: string; markdown: string };
@@ -664,8 +539,7 @@ async function handleMessage(
         break;
       }
 
-      const headingPath = findHeadingPathForKey(session!, parsed.fragmentKey);
-      if (!headingPath) {
+      if (!session!.liveFragments.hasFragmentKey(parsed.fragmentKey)) {
         sendToSocket(socket, encodeMutateResult(false, `Fragment key not found: ${parsed.fragmentKey}`));
         break;
       }
@@ -675,7 +549,7 @@ async function handleMessage(
       markFragmentDirty(session!.docPath, state.writerId, parsed.fragmentKey);
 
       const update = Y.encodeStateAsUpdate(session!.ydoc, svBefore);
-      triggerDebouncedSessionOverlayImport(session!.docPath);
+      triggerDebouncedRawFragmentSnapshot(session!.docPath);
 
       if (update.length > 0) {
         broadcastToOthers(state.docPath, socket, encodeUpdate(update));
@@ -683,12 +557,13 @@ async function handleMessage(
 
       if (onWsEvent) {
         onWsEvent({
-          type: "dirty:changed",
+          type: "writer:dirty-state-changed",
           writer_id: state.writerId,
           doc_path: state.docPath,
-          heading_path: headingPath,
-          dirty: true,
-          base_head: session!.baseHead,
+        });
+        onWsEvent({
+          type: "session:status-changed",
+          doc_path: state.docPath,
         });
       }
 
@@ -698,97 +573,9 @@ async function handleMessage(
   }
 }
 
-// ─── Session-overlay import callback ────────────────────────────
-//
-// BNATIVE.5: Reads `aheadOfStagedKeys` as the single source of "what
-// needs flushing". For each key: raw recovery snapshot (always), then
-// structural cleanliness gate — structurally clean keys get accepted
-// to the staging overlay, structurally dirty keys are deferred to
-// focus-change / publish / session-end.
+// ─── Session replacement invalidation callback wiring ────────────
 
-async function importDirtyFragmentsToSessionOverlay(session: DocSession): Promise<void> {
-  const aheadKeys = session.liveFragments.getAheadOfStagedKeys();
-  if (aheadKeys.size === 0) return;
-
-  broadcastToAll(session.docPath, encodeSessionOverlayImportStarted());
-
-  // 1. Raw recovery snapshot for ALL ahead-of-staged keys (crash safety).
-  const scope = new Set(aheadKeys);
-  await session.recoveryBuffer.snapshotFromLive(session.liveFragments, scope);
-
-  // 2. Two-tier gate: only structurally clean keys proceed to overlay write.
-  const cleanKeys = new Set<string>();
-  for (const key of scope) {
-    if (session.stagedSections.isStructurallyClean(session.liveFragments, key)) {
-      cleanKeys.add(key);
-    }
-    // Structurally dirty keys remain in aheadOfStagedKeys (deferred).
-  }
-
-  let writtenKeys: string[] = [];
-  let deletedKeys: string[] = [];
-
-  if (cleanKeys.size > 0) {
-    // 3. Accept clean keys into staging overlay.
-    //    acceptLiveFragments internally clears aheadOfStaged for accepted keys.
-    const acceptResult = await session.stagedSections.acceptLiveFragments(
-      session.liveFragments,
-      cleanKeys,
-    );
-
-    // Body-only accepts (structuralChange === null) need no Y.Doc mutation
-    // or broadcast — the overlay write is the only side-effect, and
-    // acceptLiveFragments already did it. applyAcceptResult is a no-op for
-    // body-only results, so we skip it entirely in the debounced flush path.
-
-    writtenKeys = [...acceptResult.writtenKeys];
-    deletedKeys = [...acceptResult.deletedKeys];
-  }
-
-  if (writtenKeys.length > 0 || deletedKeys.length > 0) {
-    broadcastToAll(session.docPath, encodeSessionOverlayImported(writtenKeys, deletedKeys));
-    if (onWsEvent) {
-      onWsEvent({ type: "session:overlay-imported", doc_path: session.docPath });
-    }
-  }
-}
-
-export function installDefaultSessionOverlayImportCallback(): void {
-  setSessionOverlayImportCallback(importDirtyFragmentsToSessionOverlay);
-}
-
-installDefaultSessionOverlayImportCallback();
-
-setNormalizeBroadcast((docPath, info) => {
-  broadcastToAll(docPath, encodeStructureWillChange(info));
-  if (onWsEvent) {
-    onWsEvent({ type: "doc:structure-changed", doc_path: docPath });
-  }
-});
-
-setPostCommitHook(async (docPath, headingPaths, meta) => {
-  await injectAfterCommit(docPath, headingPaths, meta);
-});
-
-setYjsUpdateBroadcast((docPath, update) => {
-  broadcastToAll(docPath, encodeUpdate(update));
-});
-
-setPostCommitNotify((docPath, proposalId, writerDisplayName, headingPaths) => {
-  if (onWsEvent) {
-    onWsEvent({
-      type: "proposal:injected_into_session",
-      doc_path: docPath,
-      proposal_id: proposalId,
-      writer_display_name: writerDisplayName,
-      heading_paths: headingPaths,
-    });
-  }
-});
-
-// ─── Restore invalidation callback wiring ────────────────────────
-
-setBroadcastRestoreInvalidation((docPath) => broadcastRestoreInvalidation(docPath));
+setBroadcastSessionReplacementInvalidation((docPath) => broadcastSessionReplacementInvalidation(docPath));
 
 // ─── Idle timeout ────────────────────────────────────────────────
 
@@ -806,20 +593,6 @@ setIdleTimeoutHandler((docPath: string) => {
     }
   }
 });
-
-// ─── Observer close helper ───────────────────────────────────────
-
-function closeObserversForDoc(docPath: string, code: number, reason: string): void {
-  const sockets = docSockets.get(docPath);
-  if (!sockets) return;
-  for (const client of [...sockets]) {
-    if (client.readyState !== WebSocket.OPEN) continue;
-    const st = socketState.get(client);
-    if (st?.socketRole === "observer") {
-      client.close(code, reason.slice(0, WS_CLOSE_REASON_MAX_LENGTH));
-    }
-  }
-}
 
 // ─── Public API ─────────────────────────────────────────────────
 
@@ -858,8 +631,7 @@ export function createCrdtWsServer(): CrdtWsServer {
         if (state.socketRole === "observer") {
           removeObserverHolder(state.docPath, state.writerId, state.socketId);
         } else if (state.socketRole === "editor") {
-          const releaseResult = await releaseDocSession(state.docPath, state.writerId, state.socketId);
-          await finalizeSessionEnd(state, releaseResult);
+          await releaseDocSession(state.docPath, state.writerId, state.socketId);
         }
       }
 

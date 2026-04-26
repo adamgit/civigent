@@ -5,7 +5,7 @@ import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpe
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
 
 import { getHeadSha } from "../../storage/git-repo.js";
-import { commitDirtySections } from "../../storage/auto-commit.js";
+import { publishUnpublishedSections } from "../../storage/auto-commit.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { destroyAllSessions, setSessionOverlayImportCallback, markFragmentDirty, flushDirtyToOverlay } from "../../crdt/ydoc-lifecycle.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
@@ -87,7 +87,7 @@ describe("publish normalization collateral deletion regression", () => {
       "Timeline body-only content from transient state.",
     );
 
-    const publishResult = await commitDirtySections(writer, SAMPLE_DOC_PATH);
+    const publishResult = await publishUnpublishedSections(writer, SAMPLE_DOC_PATH);
     expect(publishResult.committed).toBe(true);
 
     const canonical = new ContentLayer(ctx.contentDir);

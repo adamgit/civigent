@@ -47,7 +47,7 @@ export async function buildSectionInvolvementMeta(
     SectionPresence.prefetchDirtyFiles(docPath),
     readDocSectionCommitInfo(docPath),
     resolveAllSectionPaths(getContentRoot(), docPath),
-    SectionPresence.prefetchHumanProposalLocks(),
+    SectionPresence.prefetchHumanProposalLocks(undefined, "inprogress-only"),
   ]);
 
   // Build heading-keyed commit map by joining git info with resolved paths

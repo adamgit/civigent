@@ -28,17 +28,14 @@ import type {
   ClientInstanceId,
   ModeTransitionRequest,
   ModeTransitionResult,
-  RestoreNotificationPayload,
+  DocumentReplacementNoticePayload,
 } from "../types/shared";
 import { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 import {
   CrdtTransport,
   type CrdtTransportOptions,
 } from "../services/crdt-transport";
-import type {
-  SessionOverlayImportedPayload,
-  StructureWillChangePayload,
-} from "../services/crdt-provider";
+import type { SessionOverlayImportedPayload } from "../services/crdt-provider";
 
 export interface UseDocumentSessionOptions {
   /** Stable document path (canonical form, e.g. "/ops/strategy.md"). Passing
@@ -49,10 +46,9 @@ export interface UseDocumentSessionOptions {
   /** Hoisted wire-event callbacks. All optional. The store captures
    *  connection/sync/persistence state on its own — these are for callers
    *  that need to react to server-initiated lifecycle transitions. */
-  onStructureWillChange?: (restructures: StructureWillChangePayload[]) => void;
   onIdleTimeout?: () => void;
   onSessionReinit?: () => void;
-  onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
+  onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
   onModeTransitionResult?: (result: ModeTransitionResult) => void;
   onSessionOverlayImported?: (payload: SessionOverlayImportedPayload) => void;
 }
@@ -74,10 +70,9 @@ export function useDocumentSession(
     docPath,
     clientInstanceId,
     initialTransitionRequest,
-    onStructureWillChange,
     onIdleTimeout,
     onSessionReinit,
-    onRestoreNotification,
+    onDocumentReplacementNotice,
     onModeTransitionResult,
     onSessionOverlayImported,
   } = opts;
@@ -86,18 +81,16 @@ export function useDocumentSession(
   // does not tear down the transport. The transport is bound to the
   // *current* ref value through the thin indirection below.
   const callbacksRef = useRef({
-    onStructureWillChange,
     onIdleTimeout,
     onSessionReinit,
-    onRestoreNotification,
+    onDocumentReplacementNotice,
     onModeTransitionResult,
     onSessionOverlayImported,
   });
   callbacksRef.current = {
-    onStructureWillChange,
     onIdleTimeout,
     onSessionReinit,
-    onRestoreNotification,
+    onDocumentReplacementNotice,
     onModeTransitionResult,
     onSessionOverlayImported,
   };
@@ -111,10 +104,9 @@ export function useDocumentSession(
     const transportOpts: CrdtTransportOptions = {
       clientInstanceId,
       initialTransitionRequest,
-      onStructureWillChange: (r) => callbacksRef.current.onStructureWillChange?.(r),
       onIdleTimeout: () => callbacksRef.current.onIdleTimeout?.(),
       onSessionReinit: () => callbacksRef.current.onSessionReinit?.(),
-      onRestoreNotification: (p) => callbacksRef.current.onRestoreNotification?.(p),
+      onDocumentReplacementNotice: (p) => callbacksRef.current.onDocumentReplacementNotice?.(p),
       onModeTransitionResult: (r) => callbacksRef.current.onModeTransitionResult?.(r),
       onSessionOverlayImported: (p) =>
         callbacksRef.current.onSessionOverlayImported?.(p),

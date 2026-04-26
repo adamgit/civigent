@@ -21,7 +21,7 @@ import type { Awareness } from "y-protocols/awareness";
 import {
   sectionHeadingKey,
   type DocStructureNode,
-  type RestoreNotificationPayload,
+  type DocumentReplacementNoticePayload,
 } from "../types/shared.js";
 import {
   type DocumentSection,
@@ -93,9 +93,12 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const [loadDurationMs, setLoadDurationMs] = useState<number | null>(null);
   const loadStartedAtRef = useRef<number | null>(null);
 
-  // ── Restore banner state ─────────────────────────────────
-  const [restoreBanner, setRestoreBanner] = useState<RestoreNotificationPayload | null>(null);
-  const handleRestoreNotification = useCallback((payload: RestoreNotificationPayload) => setRestoreBanner(payload), []);
+  // ── Replacement notice state ─────────────────────────────
+  const [replacementNotice, setReplacementNotice] = useState<DocumentReplacementNoticePayload | null>(null);
+  const handleDocumentReplacementNotice = useCallback(
+    (payload: DocumentReplacementNoticePayload) => setReplacementNotice(payload),
+    [],
+  );
 
   // ── Metadata state ───────────────────────────────────────
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -141,10 +144,13 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     setReadyEditors,
     deletionPlaceholders,
     setDeletionPlaceholders,
-    restructuringKeys,
-    setRestructuringKeys,
     proposalMode,
     activeProposalId,
+    activeProposalStatus,
+    proposalIntent,
+    canEditProposalScope,
+    selectedProposalSectionKeys,
+    proposalSectionConflicts,
     controllerState,
     crdtProviderRef,
     controllerStateRef,
@@ -153,13 +159,15 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     pendingFocusRef,
     pendingStructureRefocusRef,
     focusedSectionIndexRef,
-    proposalSectionsRef,
-    proposalSaveTimerRef,
     mouseDownPosRef,
     stopEditing,
     startEditing,
     enterProposalMode,
     exitProposalMode,
+    syncProposalFromServer,
+    updateProposalIntent,
+    toggleProposalSection,
+    removeProposalSection,
     handleProposalSectionChange,
     handleCursorExit,
     setEditorRef,
@@ -173,7 +181,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     setError,
     setStatusMessage,
     loadSections,
-    onRestoreNotification: handleRestoreNotification,
+    onDocumentReplacementNotice: handleDocumentReplacementNotice,
   });
 
   // Ref for displayed sections (used by transferService and other stable callbacks)
@@ -266,6 +274,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     presenceIndicators,
     presenceIndicatorsRef,
     pendingProposalIndicatorsRef,
+    proposalConflictInvalidationSeq,
   } = useDocumentWebSocket({
     decodedDocPath,
     sectionsRef,
@@ -274,7 +283,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     focusedSectionIndexRef,
     mountedEditorFragmentKeysRef,
     pendingStructureRefocusRef,
-    setRestructuringKeys,
     storeRef,
     setDeletionPlaceholders,
     setStructureTree,
@@ -534,24 +542,11 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         isEditing={isEditing}
       />
 
-      {/* Restore banner — shown after a document restore while the user was connected */}
-      {restoreBanner && (
-        <div className="restore-banner">
-          <span>
-            Document restored to <code>{restoreBanner.restored_sha}</code> by{" "}
-            {restoreBanner.restored_by_display_name}.
-            {restoreBanner.pre_commit_sha && restoreBanner.your_dirty_heading_paths && (
-              <> Your edits to{" "}
-                <em>
-                  {restoreBanner.your_dirty_heading_paths
-                    .map((p) => p[p.length - 1])
-                    .join(", ")}
-                </em>
-                {" "}were committed as <code>{restoreBanner.pre_commit_sha}</code>.
-              </>
-            )}
-          </span>
-          <button onClick={() => setRestoreBanner(null)}>×</button>
+      {/* Replacement notice — shown after a reconnect following restore/overwrite */}
+      {replacementNotice && (
+        <div className="replacement-notice-banner">
+          <span>{replacementNotice.message}</span>
+          <button onClick={() => setReplacementNotice(null)}>×</button>
         </div>
       )}
 
@@ -713,6 +708,14 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
                   type="button"
                   className="text-sm text-text-muted italic hover:text-text-primary hover:underline cursor-text text-left block"
                   onClick={(e) => {
+                    if (proposalMode) {
+                      if (canEditProposalScope && displaySections[0]) {
+                        void toggleProposalSection(displaySections[0]);
+                        return;
+                      }
+                      handleFocusSection(0, [], { x: e.clientX, y: e.clientY });
+                      return;
+                    }
                     void startEditing(0, { x: e.clientX, y: e.clientY });
                   }}
                 >
@@ -727,9 +730,11 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
             sections={displaySections}
             sectionsLoading={sectionsLoading}
             focusedSectionIndex={focusedSectionIndex}
-            restructuringKeys={restructuringKeys}
             proposalMode={proposalMode}
-            proposalSectionsRef={proposalSectionsRef}
+            canEditProposalScope={canEditProposalScope}
+            canEditProposalContent={activeProposalStatus === "inprogress"}
+            selectedProposalSectionKeys={selectedProposalSectionKeys}
+            proposalSectionConflicts={proposalSectionConflicts}
             decodedDocPath={decodedDocPath}
             recentlyChangedByLabel={recentlyChangedByLabel}
             injectedByLabel={injectedByLabel}
@@ -749,6 +754,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
             onEditorReady={handleEditorReady}
             onEditorUnready={handleEditorUnready}
             onProposalSectionChange={handleProposalSectionChange}
+            onToggleProposalSection={toggleProposalSection}
             onCursorExit={handleCursorExit}
             onCrossSectionDrop={handleCrossSectionDrop}
           />
@@ -776,6 +782,14 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         proposalMode={proposalMode}
         onEnterProposalMode={enterProposalMode}
         onExitProposalMode={exitProposalMode}
+        onProposalLoaded={syncProposalFromServer}
+        onRemoveProposalSection={removeProposalSection}
+        proposalConflictInvalidationSeq={proposalConflictInvalidationSeq}
+        proposalSectionConflicts={proposalSectionConflicts}
+        activeProposalStatus={activeProposalStatus}
+        proposalIntent={proposalIntent}
+        canEditIntent={activeProposalStatus === "draft"}
+        onProposalIntentChange={updateProposalIntent}
       />
     </div>
     </SectionHoverProvider>

@@ -63,11 +63,6 @@ export function getSessionFragmentsRoot(): string {
   return path.join(getDataRoot(), "sessions", "fragments");
 }
 
-/** Per-user attribution/Mirror layer: which sections each user has dirtied */
-export function getSessionAuthorsRoot(): string {
-  return path.join(getDataRoot(), "sessions", "authors");
-}
-
 /** The content subdirectory of the session sections overlay root. */
 export function getSessionSectionsContentRoot(): string {
   return path.join(getSessionSectionsRoot(), "content");
@@ -134,7 +129,6 @@ export async function ensureV3Directories(): Promise<void> {
     getProposalsWithdrawnRoot(),
     getSessionSectionsRoot(),
     getSessionFragmentsRoot(),
-    getSessionAuthorsRoot(),
     getAuthRoot(),
     getSnapshotRoot(),
     getMonitoringRoot(),

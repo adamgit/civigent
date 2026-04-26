@@ -11,7 +11,6 @@
  *   0x05 (SECTION_FOCUS)    + heading path segments separated by \x00
  *   0x06 (SESSION_OVERLAY_IMPORT_STARTED) + empty (notification only)
  *   0x07 (ACTIVITY_PULSE)   + empty (client → server: human is actively editing)
- *   0x08 (STRUCTURE_WILL_CHANGE) + JSON old→new key mapping (server → client)
  *   0x09 (SECTION_MUTATE)      + JSON { fragmentKey, markdown } (client → server)
  *   0x0A (MUTATE_RESULT)       + JSON { success, error? } (server → client)
  *
@@ -25,7 +24,7 @@ import {
   applyAwarenessUpdate,
 } from "y-protocols/awareness";
 import type {
-  RestoreNotificationPayload,
+  DocumentReplacementNoticePayload,
   ClientInstanceId,
   EditorFocusTarget,
   ModeTransitionRequest,
@@ -34,7 +33,7 @@ import type {
 import {
   WS_CLOSE_AUTH_REQUIRED,
   WS_CLOSE_AUTH_FAILED,
-  WS_CLOSE_DOCUMENT_RESTORED,
+  WS_CLOSE_DOCUMENT_REPLACED,
   WS_CLOSE_IDLE_TIMEOUT,
   WS_CLOSE_INVALID_URL,
   WS_CLOSE_YDOC_INIT_FAILED,
@@ -53,17 +52,12 @@ const MSG_SESSION_OVERLAY_IMPORTED = 4;
 const MSG_SECTION_FOCUS = 5;
 const MSG_SESSION_OVERLAY_IMPORT_STARTED = 6;
 const MSG_ACTIVITY_PULSE = 7;
-const MSG_STRUCTURE_WILL_CHANGE = 8;
 const MSG_SECTION_MUTATE = 9;
 const MSG_MUTATE_RESULT = 10;
-const MSG_RESTORE_NOTIFICATION = 0x0B;
+const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0B;
 const MSG_MODE_TRANSITION_REQUEST = 0x0C;
 const MSG_MODE_TRANSITION_RESULT = 0x0D;
-const MSG_SESSION_OVERLAY_IMPORT_REQUEST = 0x0E;
 const MSG_UPDATE_RECEIVED = 0x0F;
-
-/** Debounce interval for ACTIVITY_PULSE messages (ms). */
-const PULSE_DEBOUNCE_MS = 2500;
 
 // ─── Connection states ─────────────────────────────────────────────
 
@@ -79,11 +73,6 @@ export interface SessionOverlayImportedPayload {
   deletedKeys: string[];
 }
 
-export interface StructureWillChangePayload {
-  oldKey: string;
-  newKeys: string[];
-}
-
 export interface CrdtProviderEvents {
   onStateChange?: (state: CrdtConnectionState) => void;
   onSynced?: () => void;
@@ -91,16 +80,14 @@ export interface CrdtProviderEvents {
   onIdleTimeout?: () => void;
   /** Server confirmed import into session overlay. Payload lists written/deleted keys. */
   onSessionOverlayImported?: (payload: SessionOverlayImportedPayload) => void;
-  /** Server is about to restructure fragments — old keys will be cleared, new keys populated. */
-  onStructureWillChange?: (restructures: StructureWillChangePayload[]) => void;
   /** Fired when a local Y.Doc update is sent to the server (user keystroke).
    *  Receives the set of fragment keys (shared type names) that were modified. */
   onLocalUpdate?: (modifiedFragmentKeys: string[]) => void;
-  /** Fired when the server closes this socket with code 4022 (document restored).
+  /** Fired when the server closes this socket with code 4022 (document replaced).
    *  The provider reconnects immediately (backoff reset). */
   onSessionReinit?: () => void;
-  /** Fired once, after onSynced on the post-restore reconnection, with the banner payload. */
-  onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
+  /** Fired once, after onSynced on the post-replacement reconnection, with the replacement notice. */
+  onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
   /** Server-authoritative result for this tab's requested CRDT mode transition. */
   onModeTransitionResult?: (result: ModeTransitionResult) => void;
   /** Server confirmed it received and applied a MSG_YJS_UPDATE.
@@ -128,8 +115,6 @@ export class CrdtProvider {
   private updateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
   private awarenessUpdateHandler: ((changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => void) | null = null;
   private pulseTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastPulseSentAt = 0;
-  private lastPulsedSection: string | null = null;
   private lastTouchedFragments = new Set<string>();
   private reverseMap = new Map<object, string>();
   private lastShareSize = 0;
@@ -143,7 +128,7 @@ export class CrdtProvider {
     reject: (err: Error) => void;
   }> = [];
   private mutateInFlight = false;
-  private pendingRestoreNotification: RestoreNotificationPayload | null = null;
+  private pendingDocumentReplacementNotice: DocumentReplacementNoticePayload | null = null;
   private readonly clientInstanceId: ClientInstanceId;
   private readonly docPath: string;
   private pendingEditorFocusTarget: EditorFocusTarget | null = null;
@@ -284,33 +269,14 @@ export class CrdtProvider {
     const payload = new TextEncoder().encode(headingPath.join("\x00"));
     this.sendRaw(MSG_SECTION_FOCUS, payload);
 
-    // Reset pulse debounce so the first edit in this new section fires immediately.
-    const sectionKey = headingPath.join("\x00");
-    if (sectionKey !== this.lastPulsedSection) {
-      this.lastPulseSentAt = 0;
-      this.lastPulsedSection = sectionKey;
-    }
   }
 
   /**
    * Signal that the human is actively editing (keystroke, paste, delete).
-   * Debounced to ~2.5 seconds — multiple rapid calls collapse into one message.
-   * The first pulse after focusing a new section fires immediately (no debounce)
-   * so the idle timeout starts promptly.
+   * Quiescence policy evaluation lives on the server.
    */
   sendActivityPulse(): void {
-    const now = Date.now();
-    if (now - this.lastPulseSentAt < PULSE_DEBOUNCE_MS) return;
-    this.lastPulseSentAt = now;
     this.sendRaw(MSG_ACTIVITY_PULSE, new Uint8Array(0));
-  }
-
-  /**
-   * Request an immediate server-side import of dirty fragments into session overlay.
-   * Used on editor blur so content is persisted before a potential page refresh.
-   */
-  sendSessionOverlayImportRequest(): void {
-    this.sendRaw(MSG_SESSION_OVERLAY_IMPORT_REQUEST, new Uint8Array(0));
   }
 
   /**
@@ -351,7 +317,7 @@ export class CrdtProvider {
     this.ws.onopen = () => {
       // Reset sync state and pending notification on every new connection.
       this.synced = false;
-      this.pendingRestoreNotification = null;
+      this.pendingDocumentReplacementNotice = null;
       this.reconnectAttempts = 0;
       this.setState("connected");
       this.sendModeTransitionRequest();
@@ -383,8 +349,8 @@ export class CrdtProvider {
       // will not send MSG_MUTATE_RESULT for it. This prevents callers from hanging.
       this.rejectPendingMutates(new Error(`WebSocket closed (code ${event.code})`));
 
-      if (event.code === WS_CLOSE_DOCUMENT_RESTORED) {
-        // Document restored — reconnect immediately (no exponential backoff).
+      if (event.code === WS_CLOSE_DOCUMENT_REPLACED) {
+        // Document replaced — reconnect immediately (no exponential backoff).
         this.reconnectAttempts = 0;
         this.events.onSessionReinit?.();
         this.openWebSocket();
@@ -450,10 +416,10 @@ export class CrdtProvider {
           this.synced = true;
           this.events.onSynced?.();
         }
-        if (this.pendingRestoreNotification) {
-          const n = this.pendingRestoreNotification;
-          this.pendingRestoreNotification = null;
-          this.events.onRestoreNotification?.(n);
+        if (this.pendingDocumentReplacementNotice) {
+          const n = this.pendingDocumentReplacementNotice;
+          this.pendingDocumentReplacementNotice = null;
+          this.events.onDocumentReplacementNotice?.(n);
         }
         break;
       }
@@ -474,19 +440,6 @@ export class CrdtProvider {
         const writtenKeys = modifiedPart ? modifiedPart.split("\n").filter(Boolean) : [];
         const deletedKeys = deletedPart ? deletedPart.split("\n").filter(Boolean) : [];
         this.events.onSessionOverlayImported?.({ writtenKeys, deletedKeys });
-        break;
-      }
-      case MSG_STRUCTURE_WILL_CHANGE: {
-        // Payload: JSON array of { oldKey: string, newKeys: string[] }
-        const json = new TextDecoder().decode(payload);
-        let restructures: StructureWillChangePayload[];
-        try {
-          restructures = JSON.parse(json) as StructureWillChangePayload[];
-        } catch (err) {
-          this.closeWithProtocolError(`Malformed MSG_STRUCTURE_WILL_CHANGE payload: ${err instanceof Error ? err.message : String(err)}`);
-          return;
-        }
-        this.events.onStructureWillChange?.(restructures);
         break;
       }
       case MSG_MUTATE_RESULT: {
@@ -513,12 +466,12 @@ export class CrdtProvider {
         this.drainMutateQueue();
         break;
       }
-      case MSG_RESTORE_NOTIFICATION: {
+      case MSG_DOCUMENT_REPLACEMENT_NOTICE: {
         const json = new TextDecoder().decode(payload);
         try {
-          this.pendingRestoreNotification = JSON.parse(json) as RestoreNotificationPayload;
+          this.pendingDocumentReplacementNotice = JSON.parse(json) as DocumentReplacementNoticePayload;
         } catch (err) {
-          this.closeWithProtocolError(`Malformed MSG_RESTORE_NOTIFICATION payload: ${err instanceof Error ? err.message : String(err)}`);
+          this.closeWithProtocolError(`Malformed MSG_DOCUMENT_REPLACEMENT_NOTICE payload: ${err instanceof Error ? err.message : String(err)}`);
           return;
         }
         break;

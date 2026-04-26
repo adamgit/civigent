@@ -19,24 +19,24 @@ import type {
   GetHeatmapResponse,
   HeatmapEntry,
   ListProposalsResponse,
-  PublishRequest,
-  PublishResponse,
   SessionInfoResponse,
   ReadDocStructureResponse,
   ReadProposalResponse,
   ReadSectionResponse,
-  WriterDirtyState,
   WsServerEvent,
   SectionMeta,
   HumanInvolvementPresetName,
   SectionScoreSnapshot,
+  EvaluatedSection,
+  ProposalHumanInvolvementEvaluation,
   ProposalDTO,
   ProposalStatus,
+  WriterIdentity,
 } from "../../types/shared.js";
 import { HUMAN_INVOLVEMENT_PRESETS } from "../../types/shared.js";
 import path from "node:path";
 import { access, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { assertDataRootExists, getContentRoot, getContentGitPrefix, getDataRoot, getSessionSectionsContentRoot, getSessionAuthorsRoot } from "../../storage/data-root.js";
+import { assertDataRootExists, getContentRoot, getContentGitPrefix, getDataRoot, getSessionSectionsContentRoot } from "../../storage/data-root.js";
 import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
 
@@ -66,17 +66,13 @@ import {
   commitProposalToCanonical,
 } from "../../storage/commit-pipeline.js";
 import {
-  getSessionsForWriter,
   lookupDocSession,
   countEditorSockets,
-  invalidateSessionForRestore,
-  applyAcceptResult,
-  findHeadingPathForKey,
+  invalidateSessionForReplacement,
   collectTouchedFragmentKeysForNormalization,
-  awaitPendingSessionImport,
+  settleFragmentKeysFromLive,
 } from "../../crdt/ydoc-lifecycle.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
-import type { PreemptiveCommitResult } from "../../storage/auto-commit.js";
 import { SectionGuard } from "../../domain/section-guard.js";
 import { readDocSectionCommitInfo, type SectionCommitInfo } from "../../storage/section-activity.js";
 import { SectionPresence } from "../../domain/section-presence.js";
@@ -120,7 +116,6 @@ import {
   getAdminConfig,
   updateAdminConfig,
 } from "../../admin-config.js";
-import { commitDirtySections } from "../../storage/auto-commit.js";
 import { readAllSessionStatuses } from "../../storage/session-statuses.js";
 import { SECTIONS_DIR_SUFFIX } from "../../storage/document-skeleton.js";
 import { SectionRef } from "../../domain/section-ref.js";
@@ -260,6 +255,29 @@ function requireAuthenticatedWriter(req: Request, res: Response): AuthenticatedW
   return writer;
 }
 
+type LiveDocSession = NonNullable<ReturnType<typeof lookupDocSession>>;
+
+function resolveFragmentContributorIdentities(
+  session: LiveDocSession,
+  fragmentKeys: Iterable<string>,
+): WriterIdentity[] {
+  const writerIds = session.liveFragments.getWriterIdsForFragments(fragmentKeys);
+  const identities: WriterIdentity[] = [];
+  for (const writerId of writerIds) {
+    identities.push(
+      session.holders.get(writerId)?.identity
+      ?? session.contributors.get(writerId)
+      ?? {
+        id: writerId,
+        type: "human",
+        displayName: writerId,
+        email: `${writerId}@knowledge-store.local`,
+      },
+    );
+  }
+  return identities;
+}
+
 /**
  * Check per-document read permission. Returns the writer (or null for public docs).
  * Sends 401 if unauthenticated and doc requires auth, 403 if authenticated but
@@ -337,6 +355,76 @@ async function filterTreeToPublic(entries: import("../../types/shared.js").Docum
 
 export interface CreateApiRouterOptions {
   onWsEvent?: (event: WsServerEvent) => void;
+}
+
+function emitProposalInjectedEvents(
+  emit: ((event: WsServerEvent) => void) | undefined,
+  proposalId: string,
+  writerDisplayName: string,
+  sections: Array<{ doc_path: string; heading_path: string[] }>,
+): void {
+  if (!emit) return;
+
+  const headingPathsByDoc = new Map<string, string[][]>();
+  for (const section of sections) {
+    if (!headingPathsByDoc.has(section.doc_path)) {
+      headingPathsByDoc.set(section.doc_path, []);
+    }
+    headingPathsByDoc.get(section.doc_path)!.push(section.heading_path);
+  }
+
+  for (const [docPath, headingPaths] of headingPathsByDoc) {
+    emit({
+      type: "proposal:injected_into_session",
+      doc_path: docPath,
+      proposal_id: proposalId,
+      writer_display_name: writerDisplayName,
+      heading_paths: headingPaths,
+    });
+  }
+}
+
+async function evaluateHumanProposalLockAvailability(
+  proposalId: string,
+  sections: Array<{ doc_path: string; heading_path: string[]; justification?: string }>,
+): Promise<{ evaluation: ProposalHumanInvolvementEvaluation; sections: EvaluatedSection[] }> {
+  const docPaths = [...new Set(sections.map((section) => section.doc_path))];
+  const dirtyFileSets = new Map<string, Set<string>>();
+  for (const docPath of docPaths) {
+    dirtyFileSets.set(docPath, await SectionPresence.prefetchDirtyFiles(docPath));
+  }
+  const inProgressLocks = await SectionPresence.prefetchHumanProposalLocks(
+    proposalId,
+    "inprogress-only",
+  );
+
+  const evaluatedSections: EvaluatedSection[] = sections.map((section) => {
+    const ref = new SectionRef(section.doc_path, section.heading_path);
+    const presenceConflict = SectionPresence.explainWithCache(
+      ref,
+      dirtyFileSets.get(section.doc_path) ?? new Set<string>(),
+      inProgressLocks,
+    );
+    return {
+      doc_path: section.doc_path,
+      heading_path: section.heading_path,
+      humanInvolvement_score: presenceConflict ? 1 : 0,
+      blocked: !!presenceConflict,
+      blocked_reason: presenceConflict ?? undefined,
+      justification: section.justification,
+    };
+  });
+
+  return {
+    evaluation: {
+      all_sections_accepted: evaluatedSections.every((section) => !section.blocked),
+      aggregate_impact: 0,
+      aggregate_threshold: 0,
+      blocked_sections: evaluatedSections.filter((section) => section.blocked),
+      passed_sections: evaluatedSections.filter((section) => !section.blocked),
+    },
+    sections: evaluatedSections,
+  };
 }
 
 // ─── Router ─────────────────────────────────────────────
@@ -662,27 +750,18 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       );
 
       // ── Batch pre-fetch: all I/O happens here, loop below is pure compute ──
-      const liveSession = lookupDocSession(docPath);
       const sectionsOverlayRoot = getSessionSectionsContentRoot();
       const sectionsOverlay = new OverlayContentLayer(sectionsOverlayRoot, getContentRoot());
       const bulkContent = prependHeadings(sectionList, await sectionsOverlay.readAllSections(docPath));
 
-      // Overlay live content from Y.Doc where available
-      if (liveSession) {
-        for (const fragmentKey of liveSession.orderedFragmentKeys) {
-          const content = liveSession.liveFragments.readFragmentString(fragmentKey);
-          const hp = liveSession.headingPathByFragmentKey.get(fragmentKey);
-          if (content && hp) {
-            bulkContent.set(SectionRef.headingKey([...hp]), content);
-          }
-        }
-      }
-
       // 2. Involvement metadata via shared helper
       const involvementMeta = await buildSectionInvolvementMeta(docPath, headingPaths, bulkContent);
 
-      // 3. Human proposal lock index (draft+inprogress block other users)
-      const humanProposalLocks = await SectionPresence.prefetchHumanProposalLocks();
+      // 3. Human proposal lock index (lock-held proposals only)
+      const humanProposalLocks = await SectionPresence.prefetchHumanProposalLocks(
+        undefined,
+        "inprogress-only",
+      );
 
       // Build sections response
       const sections: GetDocumentSectionsResponse["sections"] = [];
@@ -812,39 +891,18 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const targetWriterType = await getCommitWriterType(getDataRoot(), sha);
       const restoreWriter = targetWriterType ? { ...writer, type: targetWriterType as typeof writer.type } : writer;
 
-      // Serialize restore against any in-flight overlay import. Restore must
-      // not race a blur-triggered flush that is still writing session files.
-      await awaitPendingSessionImport(docPath);
-
       // Pre-commit any in-progress session before restore replaces canonical content.
       // Inline store boundary pattern (BNATIVE.8c).
-      let preCommitResult: PreemptiveCommitResult | null = null;
       const preCommitSession = lookupDocSession(docPath);
       const dirtySnapshot = preCommitSession ? collectTouchedFragmentKeysForNormalization(preCommitSession) : new Set<string>();
       if (preCommitSession && dirtySnapshot.size > 0) {
-        // Capture affectedWriters BEFORE normalization remaps fragment keys.
-        const affectedWriters: Array<{ writerId: string; dirtyHeadingPaths: string[][] }> = [];
-        for (const [writerId, dirtySet] of preCommitSession.perUserDirty) {
-          if (dirtySet.size === 0) continue;
-          const dirtyHeadingPaths: string[][] = [];
-          for (const fragmentKey of dirtySet) {
-            const headingPath = findHeadingPathForKey(preCommitSession, fragmentKey);
-            if (headingPath) dirtyHeadingPaths.push([...headingPath]);
-          }
-          affectedWriters.push({ writerId, dirtyHeadingPaths });
-        }
-
-        // Store boundary: snapshot → accept → apply → commit.
-        for (const key of dirtySnapshot) {
-          preCommitSession.liveFragments.noteAheadOfStaged(key);
-        }
-        await preCommitSession.recoveryBuffer.snapshotFromLive(preCommitSession.liveFragments, dirtySnapshot);
-        const acceptResult = await preCommitSession.stagedSections.acceptLiveFragments(preCommitSession.liveFragments, dirtySnapshot);
-        await applyAcceptResult(preCommitSession, acceptResult);
+        const restoreContributors = resolveFragmentContributorIdentities(preCommitSession, dirtySnapshot);
+        await settleFragmentKeysFromLive(preCommitSession, dirtySnapshot);
 
         // Inline canonical absorb — replaces legacy commitSessionFilesToCanonical.
-        const restoreContributors = Array.from(preCommitSession.contributors.values());
-        const [rpw, ...rCoWriters] = restoreContributors;
+        const [rpw, ...rCoWriters] = restoreContributors.length > 0
+          ? restoreContributors
+          : [writer];
         let rCommitMsg = `human edit: ${rpw.displayName}\n\nWriter: ${rpw.id}\nWriter-Type: ${rpw.type}`;
         if (rCoWriters.length > 0) {
           rCommitMsg += "\n" + rCoWriters
@@ -859,30 +917,29 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           getSessionSectionsContentRoot(),
           rCommitMsg,
           rAuthor,
-          { docPaths: [docPath] },
+          { documentPathsToRewrite: [docPath] },
         );
         if (absorbResult.changedSections.length === 0) {
           throw new Error(
             `Pre-commit for restore of "${docPath}" produced no changes`,
           );
         }
-        preCommitResult = { committedSha: absorbResult.commitSha, affectedWriters };
       }
 
       const { createRestoreProposal } = await import("../../storage/restore-service.js");
       const { proposal } = await createRestoreProposal(docPath, sha, restoreWriter);
 
-      // Human explicitly requested this restore — commit directly, skip CRDT injection
-      // (restore changes the entire skeleton; injectAfterCommit would corrupt the Y.Doc).
-      const committedSha = await commitProposalToCanonical(proposal.id, {}, undefined, { skipCrdtInjection: true, restoreTargetSha: sha });
-
-      // Invalidate live session and notify connected clients.
-      await invalidateSessionForRestore(
-        docPath,
-        committedSha.slice(0, 7),
-        writer.displayName,
-        preCommitResult,
+      const committedSha = await commitProposalToCanonical(
+        proposal.id,
+        {},
+        undefined,
+        { restoreTargetSha: sha },
       );
+
+      // Invalidate live session and notify reconnecting clients that restore replaced the document.
+      await invalidateSessionForReplacement(docPath, {
+        message: "document was restored to an earlier version",
+      });
       res.json({ committed_sha: committedSha });
     } catch (error) {
       const { RestoreValidationError } = await import("../../storage/restore-service.js");
@@ -919,31 +976,16 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       // Pre-commit any in-progress session before overwrite replaces canonical content.
       // Inline store boundary pattern (BNATIVE.8c).
-      let preCommitResult: PreemptiveCommitResult | null = null;
       const preCommitSession = lookupDocSession(docPath);
       const dirtySnapshotOw = preCommitSession ? collectTouchedFragmentKeysForNormalization(preCommitSession) : new Set<string>();
       if (preCommitSession && dirtySnapshotOw.size > 0) {
-        const affectedWriters: Array<{ writerId: string; dirtyHeadingPaths: string[][] }> = [];
-        for (const [writerId, dirtySet] of preCommitSession.perUserDirty) {
-          if (dirtySet.size === 0) continue;
-          const dirtyHeadingPaths: string[][] = [];
-          for (const fragmentKey of dirtySet) {
-            const headingPath = findHeadingPathForKey(preCommitSession, fragmentKey);
-            if (headingPath) dirtyHeadingPaths.push([...headingPath]);
-          }
-          affectedWriters.push({ writerId, dirtyHeadingPaths });
-        }
-
-        for (const key of dirtySnapshotOw) {
-          preCommitSession.liveFragments.noteAheadOfStaged(key);
-        }
-        await preCommitSession.recoveryBuffer.snapshotFromLive(preCommitSession.liveFragments, dirtySnapshotOw);
-        const acceptResult = await preCommitSession.stagedSections.acceptLiveFragments(preCommitSession.liveFragments, dirtySnapshotOw);
-        await applyAcceptResult(preCommitSession, acceptResult);
+        const owContributors = resolveFragmentContributorIdentities(preCommitSession, dirtySnapshotOw);
+        await settleFragmentKeysFromLive(preCommitSession, dirtySnapshotOw);
 
         // Inline canonical absorb — replaces legacy commitSessionFilesToCanonical.
-        const owContributors = Array.from(preCommitSession.contributors.values());
-        const [opw, ...oCoWriters] = owContributors;
+        const [opw, ...oCoWriters] = owContributors.length > 0
+          ? owContributors
+          : [admin];
         let oCommitMsg = `human edit: ${opw.displayName}\n\nWriter: ${opw.id}\nWriter-Type: ${opw.type}`;
         if (oCoWriters.length > 0) {
           oCommitMsg += "\n" + oCoWriters
@@ -958,14 +1000,13 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           getSessionSectionsContentRoot(),
           oCommitMsg,
           oAuthor,
-          { docPaths: [docPath] },
+          { documentPathsToRewrite: [docPath] },
         );
         if (owAbsorbResult.changedSections.length === 0) {
           throw new Error(
             `Pre-commit for overwrite of "${docPath}" produced no changes`,
           );
         }
-        preCommitResult = { committedSha: owAbsorbResult.commitSha, affectedWriters };
       }
 
       const { id: proposalId, contentRoot: proposalContentRoot } = await createTransientProposal(
@@ -984,14 +1025,16 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
       await updateProposalSections(proposalId, sectionTargets);
 
-      const committedSha = await commitProposalToCanonical(proposalId, {}, undefined, { skipCrdtInjection: true });
-
-      await invalidateSessionForRestore(
-        docPath,
-        committedSha.slice(0, 7),
-        admin.displayName,
-        preCommitResult,
+      const committedSha = await commitProposalToCanonical(
+        proposalId,
+        {},
+        undefined,
+        {},
       );
+
+      await invalidateSessionForReplacement(docPath, {
+        message: "admin overwrote this document",
+      });
 
       res.json({ committed_sha: committedSha });
     } catch (error) {
@@ -1572,7 +1615,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const sections: HeatmapEntry[] = [];
 
       // Enumerate all documents and their sections
-      const humanProposalLockIndex = await SectionPresence.prefetchHumanProposalLocks();
+      const humanProposalLockIndex = await SectionPresence.prefetchHumanProposalLocks(
+        undefined,
+        "inprogress-only",
+      );
       const tree = await readDocumentsTree("");
       for (const entry of flattenTree(tree)) {
         if (entry.type !== "file") continue;
@@ -1643,11 +1689,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       if (!writer) return;
 
       const body = req.body as CreateProposalRequest;
-
-      if (!body.intent) {
-        sendApiError(res, 400, "intent is required.");
-        return;
-      }
+      const intent = typeof body.intent === "string" ? body.intent : "";
 
       // Check write permission for all target documents
       const targetDocPaths = new Set(
@@ -1661,9 +1703,13 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         }
       }
 
-      // Human reservations can start with empty sections.
+      // Human proposals can start with empty sections.
       // Agent proposals may also have zero sections for document-level operations (create/delete).
       if (writer.type === "agent") {
+        if (intent.trim().length === 0) {
+          sendApiError(res, 400, "intent is required.");
+          return;
+        }
         if (!Array.isArray(body.sections)) {
           sendApiError(res, 400, "sections[] is required for agent proposals.");
           return;
@@ -1700,42 +1746,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         content: s.content,
       }));
 
-      // Human reservation contention checks
-      if (writer.type === "human") {
-        // Block overlapping human reservation sections
-        const pendingProposals = await listProposals("draft");
-        for (const pending of pendingProposals) {
-          if (pending.writer.type !== "human") continue;
-          for (const existingSection of pending.sections) {
-            for (const requestedSection of sections) {
-              if (
-                existingSection.doc_path === requestedSection.doc_path &&
-                SectionRef.headingPathsEqual(existingSection.heading_path, requestedSection.heading_path)
-              ) {
-                res.status(409).json({
-                  error: `Section ${requestedSection.heading_path.join(" > ")} is already reserved by writer ${pending.writer.displayName} (proposal ${pending.id}).`,
-                });
-                return;
-              }
-            }
-          }
-        }
-
-        // Block reservation on sections with active CRDT sessions
-        for (const section of sections) {
-          if (SectionPresence.checkLiveSessionOnly(new SectionRef(section.doc_path, section.heading_path))) {
-            res.status(409).json({
-              error: `Section ${section.heading_path.join(" > ")} has an active editing session.`,
-            });
-            return;
-          }
-        }
-      }
-
       // Create proposal
       const { id: proposalId, contentRoot: propContentRoot } = await createProposal(
         { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
-        body.intent,
+        intent,
         sections,
       );
 
@@ -1777,7 +1791,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
             heading_paths: sections.map((s) => s.heading_path),
             writer_id: writer.id,
             writer_display_name: writer.displayName,
-            intent: body.intent,
+            intent,
           });
         }
 
@@ -1796,7 +1810,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           heading_paths: evalSections.map((s) => s.heading_path),
           writer_id: writer.id,
           writer_display_name: writer.displayName,
-          intent: body.intent,
+          intent,
         });
       }
 
@@ -1866,12 +1880,16 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         content: sectionContent.get(SectionRef.fromTarget(s).globalKey) ?? null,
       }));
 
-      // Enrich pending/committing proposals with live human-involvement evaluation
+      // Enrich mutable proposals with live status:
+      // - human proposals: lock-acquisition availability only
+      // - agent proposals: full human-involvement evaluation
       let dto: ProposalDTO;
       if (proposal.status === "committed" || proposal.status === "withdrawn") {
         dto = { ...proposal, sections: sectionsWithContent };
       } else {
-        const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposal.id);
+        const { evaluation, sections } = proposal.writer.type === "human"
+          ? await evaluateHumanProposalLockAvailability(proposal.id, proposal.sections)
+          : await evaluateProposalHumanInvolvement(proposal.id);
         // Merge content into the re-evaluated sections too
         const enrichedSections = sections.map(s => ({
           ...s,
@@ -1891,7 +1909,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     }
   });
 
-  // PUT /api/proposals/:id — Modify blocked proposal sections
+  // PUT /api/proposals/:id — Modify proposal sections
   router.put("/proposals/:id", async (req, res, next) => {
     try {
       const writer = requireAuthenticatedWriter(req, res);
@@ -1913,44 +1931,25 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         return;
       }
 
-      // Human reservation: check newly-added sections for contention
-      if (proposal.writer.type === "human") {
-        const existingSectionKeys = new Set(
-          proposal.sections.map((s) => new SectionRef(s.doc_path, s.heading_path).globalKey),
+      // Lock-boundary invariant: once a human proposal is inprogress, callers may
+      // update section content but cannot change the selected section scope.
+      if (proposal.status === "inprogress" && proposal.writer.type === "human") {
+        const lockedSections = proposal.locked_sections ?? proposal.sections;
+        const currentKeys = new Set(
+          lockedSections.map((s) => new SectionRef(s.doc_path, s.heading_path).globalKey),
         );
-        const newSections = body.sections.filter(
-          (s) => !existingSectionKeys.has(new SectionRef(s.doc_path, s.heading_path).globalKey),
+        const requestedKeys = new Set(
+          body.sections.map((s) => new SectionRef(s.doc_path, s.heading_path).globalKey),
         );
-
-        if (newSections.length > 0) {
-          // Check overlapping human_reservations
-          const pendingProposals = await listProposals("draft");
-          for (const pending of pendingProposals) {
-            if (pending.writer.type !== "human" || pending.id === proposal.id) continue;
-            for (const existingSection of pending.sections) {
-              for (const newSection of newSections) {
-                if (
-                  existingSection.doc_path === newSection.doc_path &&
-                  SectionRef.headingPathsEqual(existingSection.heading_path, newSection.heading_path)
-                ) {
-                  res.status(409).json({
-                    error: `Section ${newSection.heading_path.join(" > ")} is already reserved by writer ${pending.writer.displayName} (proposal ${pending.id}).`,
-                  });
-                  return;
-                }
-              }
-            }
-          }
-
-          // Check active CRDT sessions on new sections
-          for (const section of newSections) {
-            if (SectionPresence.checkLiveSessionOnly(new SectionRef(section.doc_path, section.heading_path))) {
-              res.status(409).json({
-                error: `Section ${section.heading_path.join(" > ")} has an active editing session.`,
-              });
-              return;
-            }
-          }
+        const scopeChanged = currentKeys.size !== requestedKeys.size
+          || [...requestedKeys].some((key) => !currentKeys.has(key));
+        if (scopeChanged) {
+          sendApiError(
+            res,
+            409,
+            "Cannot change selected sections while proposal is inprogress. Exit lock-held state and re-acquire locks for a new scope.",
+          );
+          return;
         }
       }
 
@@ -2042,6 +2041,14 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         sendApiError(res, 409, `Cannot acquire locks: proposal is in ${proposal.status} state, expected draft.`);
         return;
       }
+      if (proposal.intent.trim().length === 0) {
+        sendApiError(
+          res,
+          409,
+          "Cannot acquire locks: intent is required before entering inprogress.",
+        );
+        return;
+      }
 
       const result = await transitionToInProgress(req.params.id);
 
@@ -2054,6 +2061,28 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         };
         res.json(response);
         return;
+      }
+
+      const acquiredProposal = result.proposal;
+      if (onWsEvent && acquiredProposal && acquiredProposal.sections.length > 0) {
+        const headingPathsByDoc = new Map<string, string[][]>();
+        for (const section of acquiredProposal.sections) {
+          if (!headingPathsByDoc.has(section.doc_path)) {
+            headingPathsByDoc.set(section.doc_path, []);
+          }
+          headingPathsByDoc.get(section.doc_path)!.push(section.heading_path);
+        }
+        for (const [docPath, headingPaths] of headingPathsByDoc) {
+          onWsEvent({
+            type: "proposal:inprogress",
+            proposal_id: acquiredProposal.id,
+            doc_path: docPath,
+            heading_paths: headingPaths,
+            writer_id: acquiredProposal.writer.id,
+            writer_display_name: acquiredProposal.writer.displayName,
+            intent: acquiredProposal.intent,
+          });
+        }
       }
 
       const response: AcquireLocksResponse = {
@@ -2091,6 +2120,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         sendApiError(res, 409, `Cannot commit proposal in ${proposal.status} state.`);
         return;
       }
+      if (proposal.writer.type === "human" && proposal.intent.trim().length === 0) {
+        sendApiError(res, 409, "Cannot commit proposal with empty intent.");
+        return;
+      }
 
       // Check write permission for all target documents
       const commitDocPaths = new Set(proposal.sections.map((s) => s.doc_path));
@@ -2112,6 +2145,12 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         const committedHead = await commitProposalToCanonical(proposal.id, scores);
 
         if (onWsEvent) {
+          emitProposalInjectedEvents(
+            onWsEvent,
+            proposal.id,
+            writer.displayName,
+            proposal.sections,
+          );
           onWsEvent({
             type: "content:committed",
             doc_path: proposal.sections[0]?.doc_path ?? "",
@@ -2155,6 +2194,12 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         const committedHead = await commitProposalToCanonical(proposal.id, scores);
 
         if (onWsEvent) {
+          emitProposalInjectedEvents(
+            onWsEvent,
+            proposal.id,
+            writer.displayName,
+            sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+          );
           onWsEvent({
             type: "content:committed",
             doc_path: sections[0]?.doc_path ?? "",
@@ -2243,126 +2288,11 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     }
   });
 
-  // ─── Dirty State / Mirror ─────────────────────────────
-
-  // GET /api/writers/:id/dirty — Writer dirty state
-  router.get("/writers/:id/dirty", async (req, res, next) => {
-    try {
-      const writer = requireAuthenticatedWriter(req, res);
-      if (!writer) return;
-
-      const writerId = req.params.id;
-      const writerSessions = getSessionsForWriter(writerId);
-      const docMap = new Map<string, Array<{ heading_path: string[]; base_head: string; change_magnitude: number }>>();
-
-      for (const session of writerSessions) {
-        const dirtyFragments = session.perUserDirty.get(writerId);
-        if (!dirtyFragments || dirtyFragments.size === 0) continue;
-
-        if (!docMap.has(session.docPath)) {
-          docMap.set(session.docPath, []);
-        }
-
-        for (const fragmentKey of dirtyFragments) {
-          // Fragment keys are file-ID-based (e.g. "section::sec_abc123def").
-          // Use the skeleton to resolve back to the canonical heading path.
-          const prefix = "section::";
-          let headingPath: string[] = [];
-          if (fragmentKey.startsWith(prefix)) {
-            const resolvedHeadingPath = findHeadingPathForKey(session, fragmentKey);
-            if (resolvedHeadingPath == null) {
-              // Fragment references a section no longer in the live mapping
-              continue;
-            }
-            headingPath = resolvedHeadingPath;
-          }
-          docMap.get(session.docPath)!.push({
-            heading_path: headingPath,
-            base_head: session.baseHead,
-            change_magnitude: 0,
-          });
-        }
-      }
-
-      // Fall back to disk if no in-memory sessions found for this writer.
-      // sessions/authors/{writerId}.json persists dirty state across restarts.
-      if (writerSessions.length === 0) {
-        const authorFile = path.join(getSessionAuthorsRoot(), `${writerId}.json`);
-        try {
-          const raw = await readFile(authorFile, "utf8");
-          const data = JSON.parse(raw) as { writerId: string; dirtySections: Array<{ docPath: string; headingPath: string[] }> };
-          for (const entry of data.dirtySections) {
-            if (!docMap.has(entry.docPath)) {
-              docMap.set(entry.docPath, []);
-            }
-            docMap.get(entry.docPath)!.push({
-              heading_path: entry.headingPath,
-              base_head: "",
-              change_magnitude: 0,
-            });
-          }
-        } catch {
-          // No author file on disk — writer has no dirty state
-        }
-      }
-
-      const response: WriterDirtyState = {
-        writer_id: writerId,
-        documents: [...docMap.entries()].map(([doc_path, dirty_sections]) => ({
-          doc_path,
-          dirty_sections,
-        })),
-      };
-      res.json(response);
-    } catch (error) {
-      next(error);
-    }
-  });
-
   router.get("/session-statuses/all", async (req, res, next) => {
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
       const response: AllSessionStatusesResponse = await readAllSessionStatuses();
-      res.json(response);
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  // POST /api/publish — Manual publish
-  router.post("/publish", async (req, res, next) => {
-    try {
-      const writer = requireAuthenticatedWriter(req, res);
-      if (!writer) return;
-      if (writer.type !== "human") {
-        sendApiError(res, 403, "Only humans can publish.");
-        return;
-      }
-
-      const body = req.body as PublishRequest;
-      if (body?.doc_path) {
-        const allowed = await checkDocPermission(writer, body.doc_path, "write");
-        if (!allowed) {
-          sendApiError(res, 403, `You do not have permission to write to document "${body.doc_path}".`);
-          return;
-        }
-      }
-      const result = await commitDirtySections(
-        { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
-        body?.doc_path,
-        body?.heading_paths,
-      );
-
-      if (!result.committed) {
-        sendApiError(res, 404, "No dirty sections to publish.");
-        return;
-      }
-
-      const response: PublishResponse = {
-        committed_head: result.commitSha!,
-        sections_published: result.sectionsPublished,
-      };
       res.json(response);
     } catch (error) {
       next(error);

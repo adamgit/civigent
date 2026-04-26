@@ -24,20 +24,19 @@ import {
   InvalidProposalStateError,
 } from "./proposal-repository.js";
 import { isSnapshotGenerationEnabled, scheduleSnapshotRegeneration } from "./snapshot.js";
-import { CanonicalStore } from "./canonical-store.js";
-
-// ─── Post-commit hook ────────────────────────────────────────────
-
-export interface PostCommitMeta { proposalId: string; writerDisplayName: string; }
-type PostCommitHook = (docPath: string, headingPaths: string[][], meta: PostCommitMeta) => Promise<void>;
-let _postCommitHook: PostCommitHook | null = null;
-export function setPostCommitHook(cb: PostCommitHook): void { _postCommitHook = cb; }
+import { CanonicalStore, type AbsorbResult } from "./canonical-store.js";
 
 // ─────────────────────────────────────────────────────────────────
 
 export interface EvaluationResult {
   evaluation: ProposalHumanInvolvementEvaluation;
   sections: EvaluatedSection[];
+}
+
+export interface CommitProposalToCanonicalOptions {
+  restoreTargetSha?: string;
+  commitMessageOverride?: string;
+  authorOverride?: { name: string; email: string };
 }
 
 /**
@@ -63,12 +62,12 @@ export async function evaluateProposalHumanInvolvement(
  * Write a proposal's section content to canonical files and create a git commit.
  * Reads the proposal from disk to guarantee fresh data — no stale-object bugs.
  */
-export async function commitProposalToCanonical(
+export async function commitProposalToCanonicalDetailed(
   proposalId: ProposalId,
   scores: SectionScoreSnapshot,
   diagnostics?: string[],
-  options: { skipCrdtInjection?: boolean; restoreTargetSha?: string } = {},
-): Promise<string> {
+  options: CommitProposalToCanonicalOptions = {},
+): Promise<AbsorbResult> {
   const proposal = await readProposal(proposalId);
   const dataRoot = getDataRoot();
   const overlayRoot = proposalContentRoot(proposal.id, "committing");
@@ -92,38 +91,29 @@ export async function commitProposalToCanonical(
     if (options.restoreTargetSha) {
       trailers.push(`Restore-Target: ${options.restoreTargetSha}`);
     }
-    const commitMessage = `agent proposal: ${proposal.intent}\n\nSections:\n${sectionList}\n\n${trailers.join("\n")}`;
-    const author = {
+    const commitMessage = options.commitMessageOverride
+      ?? `agent proposal: ${proposal.intent}\n\nSections:\n${sectionList}\n\n${trailers.join("\n")}`;
+    const author = options.authorOverride ?? {
       name: proposal.writer.displayName,
       email: `${proposal.writer.id}@knowledge-store.local`,
     };
 
-    const { commitSha: headSha } = await store.absorbChangedSections(overlayRoot, commitMessage, author, { diagnostics });
-
+    const absorbResult = await store.absorbChangedSections(overlayRoot, commitMessage, author, {
+      diagnostics,
+      absorbedSectionRefs: proposal.sections.map((section) => ({
+        docPath: section.doc_path,
+        headingPath: [...section.heading_path],
+      })),
+    });
     // Transition to committed
-    await transitionToCommitted(proposal.id, headSha, scores);
-
-    // Fire post-commit hook for each affected document (CRDT injection).
-    // Errors propagate — the commit is already durable in git and FSM;
-    // a 500 from the route handler is correct behaviour for injection failure.
-    if (_postCommitHook && !options.skipCrdtInjection) {
-      const byDoc = new Map<string, string[][]>();
-      for (const s of proposal.sections) {
-        if (!byDoc.has(s.doc_path)) byDoc.set(s.doc_path, []);
-        byDoc.get(s.doc_path)!.push(s.heading_path);
-      }
-      const meta: PostCommitMeta = { proposalId: proposal.id, writerDisplayName: proposal.writer.displayName };
-      for (const [docPath, headingPaths] of byDoc) {
-        await _postCommitHook(docPath, headingPaths, meta);
-      }
-    }
+    await transitionToCommitted(proposal.id, absorbResult.commitSha, scores);
 
     if (isSnapshotGenerationEnabled()) {
       const docPaths = new Set(proposal.sections.map((s) => s.doc_path));
       scheduleSnapshotRegeneration(Array.from(docPaths));
     }
 
-    return headSha;
+    return absorbResult;
   } catch (error) {
     // absorb() already rolled back canonical. Roll back FSM state if proposal reached committing/.
     try {
@@ -134,6 +124,21 @@ export async function commitProposalToCanonical(
     }
     throw error;
   }
+}
+
+export async function commitProposalToCanonical(
+  proposalId: ProposalId,
+  scores: SectionScoreSnapshot,
+  diagnostics?: string[],
+  options: CommitProposalToCanonicalOptions = {},
+): Promise<string> {
+  const absorbResult = await commitProposalToCanonicalDetailed(
+    proposalId,
+    scores,
+    diagnostics,
+    options,
+  );
+  return absorbResult.commitSha;
 }
 
 /**

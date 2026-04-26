@@ -13,10 +13,9 @@
  *   0x05 SECTION_FOCUS         — Client → Server heading path (segments separated by \x00)
  *   0x06 SESSION_OVERLAY_IMPORT_STARTED — Server → Client: import beginning
  *   0x07 ACTIVITY_PULSE        — Client → Server: human is actively editing (debounced ~2-3s)
- *   0x08 STRUCTURE_WILL_CHANGE — Server → Client: about to restructure fragments (old→new key mapping)
  *   0x09 SECTION_MUTATE        — Client → Server: replace fragment content (JSON { fragmentKey, markdown })
  *   0x0A MUTATE_RESULT         — Server → Client: response to SECTION_MUTATE (JSON { success, error? })
- *   0x0B RESTORE_NOTIFICATION  — Server → Client: document restored (JSON RestoreNotificationPayload)
+ *   0x0B DOCUMENT_REPLACEMENT_NOTICE — Server → Client: reconnect notice after restore/overwrite (JSON DocumentReplacementNoticePayload)
  *   0x0C MODE_TRANSITION_REQUEST — Client → Server: request mode transition (JSON ModeTransitionRequest)
  *   0x0D MODE_TRANSITION_RESULT  — Server → Client: transition ack/reject (JSON ModeTransitionResult)
  *   0x0F UPDATE_RECEIVED        — Server → Client: receipt ACK for MSG_YJS_UPDATE (newline-separated fragment keys)
@@ -29,13 +28,13 @@
  *   4014 — ydoc_init_failed
  *   4020 — idle_timeout
  *   4021 — session_ended: last editor disconnected; observers fall back to REST and reconnect
- *   4022 — document_restored: restore invalidated session; all clients reconnect immediately (no backoff)
+ *   4022 — document_replaced: restore/overwrite invalidated session; all clients reconnect immediately (no backoff)
  *   4023 — superseded_by_new_tab: same user opened a new editor tab for this document
  */
 
 import * as Y from "yjs";
 import type {
-  RestoreNotificationPayload,
+  DocumentReplacementNoticePayload,
   ModeTransitionRequest,
   ModeTransitionResult,
 } from "../types/shared.js";
@@ -50,10 +49,9 @@ export const MSG_SESSION_OVERLAY_IMPORTED = 4;
 export const MSG_SECTION_FOCUS = 5;
 export const MSG_SESSION_OVERLAY_IMPORT_STARTED = 6;
 export const MSG_ACTIVITY_PULSE = 7;
-export const MSG_STRUCTURE_WILL_CHANGE = 8;
 export const MSG_SECTION_MUTATE = 9;
 export const MSG_MUTATE_RESULT = 10;
-export const MSG_RESTORE_NOTIFICATION = 0x0B;
+export const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0B;
 export const MSG_MODE_TRANSITION_REQUEST = 0x0C;
 export const MSG_MODE_TRANSITION_RESULT = 0x0D;
 export const MSG_SESSION_OVERLAY_IMPORT_REQUEST = 0x0E;
@@ -68,7 +66,7 @@ export const WS_CLOSE_AUTHORIZATION_FAILED = 4013;
 export const WS_CLOSE_YDOC_INIT_FAILED = 4014;
 export const WS_CLOSE_IDLE_TIMEOUT = 4020;
 export const WS_CLOSE_SESSION_ENDED = 4021;
-export const WS_CLOSE_DOCUMENT_RESTORED = 4022;
+export const WS_CLOSE_DOCUMENT_REPLACED = 4022;
 export const WS_CLOSE_SUPERSEDED = 4023;
 export const WS_CLOSE_REASON_MAX_LENGTH = 123;
 
@@ -109,17 +107,6 @@ export function encodeSessionOverlayImported(writtenKeys: string[], deletedKeys:
   return buf;
 }
 
-export function encodeStructureWillChange(
-  restructures: Array<{ oldKey: string; newKeys: string[] }>,
-): Uint8Array {
-  const json = JSON.stringify(restructures);
-  const payload = new TextEncoder().encode(json);
-  const buf = new Uint8Array(1 + payload.length);
-  buf[0] = MSG_STRUCTURE_WILL_CHANGE;
-  buf.set(payload, 1);
-  return buf;
-}
-
 export function encodeMutateResult(success: boolean, error?: string): Uint8Array {
   const json = JSON.stringify(error ? { success, error } : { success });
   const payload = new TextEncoder().encode(json);
@@ -129,10 +116,10 @@ export function encodeMutateResult(success: boolean, error?: string): Uint8Array
   return buf;
 }
 
-export function encodeRestoreNotification(payload: RestoreNotificationPayload): Uint8Array {
+export function encodeDocumentReplacementNotice(payload: DocumentReplacementNoticePayload): Uint8Array {
   const json = new TextEncoder().encode(JSON.stringify(payload));
   const msg = new Uint8Array(1 + json.length);
-  msg[0] = MSG_RESTORE_NOTIFICATION;
+  msg[0] = MSG_DOCUMENT_REPLACEMENT_NOTICE;
   msg.set(json, 1);
   return msg;
 }

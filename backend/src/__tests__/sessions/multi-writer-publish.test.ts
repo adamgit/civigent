@@ -10,10 +10,10 @@ import {
   flushDirtyToOverlay,
 } from "../../crdt/ydoc-lifecycle.js";
 
-import { commitDirtySections, setAutoCommitEventHandler } from "../../storage/auto-commit.js";
+import { publishUnpublishedSections } from "../../storage/auto-commit.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
 import { getHeadSha } from "../../storage/git-repo.js";
-import type { WriterIdentity, WsServerEvent } from "../../types/shared.js";
+import type { WriterIdentity } from "../../types/shared.js";
 
 describe("multi-writer publish does not touch co-editors' dirty state (Bug D)", () => {
   let ctx: TempDataRootContext;
@@ -43,8 +43,8 @@ describe("multi-writer publish does not touch co-editors' dirty state (Bug D)", 
 
     // Find the fragment key for "Overview" section
     let overviewKey: string | null = null;
-    for (const [key, hp] of session.headingPathByFragmentKey) {
-      if (hp[hp.length - 1] === "Overview") {
+    for (const [key, headingPaths] of session.headingPathByFragmentKey) {
+      if (headingPaths.some((headingPath) => headingPath[headingPath.length - 1] === "Overview")) {
         overviewKey = key;
         break;
       }
@@ -74,12 +74,8 @@ describe("multi-writer publish does not touch co-editors' dirty state (Bug D)", 
     expect(session.perUserDirty.get(writerA.id)?.has(overviewKey!)).toBe(true);
     expect(session.perUserDirty.get(writerB.id)?.has(overviewKey!)).toBe(true);
 
-    // Collect emitted events
-    const events: WsServerEvent[] = [];
-    setAutoCommitEventHandler((event) => events.push(event));
-
     // Writer A publishes
-    const result = await commitDirtySections(writerA, SAMPLE_DOC_PATH);
+    const result = await publishUnpublishedSections(writerA, SAMPLE_DOC_PATH);
     expect(result.committed).toBe(true);
 
     // Writer A's dirty state for the published section is cleared.
@@ -90,14 +86,6 @@ describe("multi-writer publish does not touch co-editors' dirty state (Bug D)", 
     // remains "dirty until B publishes their own state" — A's publish does not
     // implicitly speak for B.
     expect(session.perUserDirty.get(writerB.id)?.has(overviewKey!)).toBe(true);
-
-    // Bug D: dirty:changed events must NOT be emitted for writer B as a side
-    // effect of writer A's publish.
-    const writerBDirtyEvents = events.filter(
-      (e) => e.type === "dirty:changed" && (e as any).writer_id === writerB.id,
-    );
-    expect(writerBDirtyEvents.length).toBe(0);
-
     // Clean up
     await releaseDocSession(SAMPLE_DOC_PATH, writerA.id);
     await releaseDocSession(SAMPLE_DOC_PATH, writerB.id);

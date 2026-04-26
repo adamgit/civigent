@@ -33,6 +33,7 @@ import { scanSessionFragmentDocPaths, scanSessionDocPaths } from "./session-scan
 import { recoverDocument, reconcileAndCleanup, writeRecoveredToCanonical, buildCompoundSkeleton, deleteSessionFilesForDoc, type DocumentRecoveryResult } from "./recovery-layers.js";
 import { sectionFileToName } from "./document-skeleton.js";
 import { bodyFromRecoveryAssembly, type SectionBody } from "./section-formatting.js";
+import { RawFragmentRecoveryBuffer } from "./raw-fragment-recovery-buffer.js";
 
 // ─── Recovery I/O Context ────────────────────────────────────────────────────
 
@@ -481,6 +482,13 @@ async function recoverSessionFiles(ctx: RecoveryContext): Promise<RecoverSession
 
   // Git commit all recovered canonical changes
   const dataRoot = getDataRoot();
+  const recoveredWriterIds = new Set<string>();
+  for (const docPath of perDocResults.keys()) {
+    const recoveryBuffer = new RawFragmentRecoveryBuffer(docPath);
+    for (const writerId of await recoveryBuffer.collectPersistedWriterIds()) {
+      recoveredWriterIds.add(writerId);
+    }
+  }
   let commitError: string | undefined;
   try {
     ctx.doc = "";
@@ -511,11 +519,26 @@ async function recoverSessionFiles(ctx: RecoveryContext): Promise<RecoverSession
       }
       return { hadSessionState: true, sectionsCommitted: 0, orphanScanFailures, failedDocuments };
     }
+    const recoveredWriterIdList = [...recoveredWriterIds].sort();
+    const [primaryRecoveredWriterId, ...coRecoveredWriterIds] = recoveredWriterIdList;
+    let commitMessage = `crash recovery: recovered ${totalSections} sections from ${perDocResults.size} documents`;
+    let authorName = "Knowledge Store Recovery";
+    let authorEmail = "recovery@knowledge-store.local";
+    if (primaryRecoveredWriterId) {
+      authorName = primaryRecoveredWriterId;
+      authorEmail = `${primaryRecoveredWriterId}@knowledge-store.local`;
+      commitMessage += `\n\nWriter: ${primaryRecoveredWriterId}\nWriter-Type: human`;
+      if (coRecoveredWriterIds.length > 0) {
+        commitMessage += "\n" + coRecoveredWriterIds
+          .map((writerId) => `Co-authored-by: ${writerId} <${writerId}@knowledge-store.local>`)
+          .join("\n");
+      }
+    }
     await ctx.git([
-      "-c", "user.name=Knowledge Store Recovery",
-      "-c", "user.email=recovery@knowledge-store.local",
+      "-c", `user.name=${authorName}`,
+      "-c", `user.email=${authorEmail}`,
       "commit",
-      "-m", `crash recovery: recovered ${totalSections} sections from ${perDocResults.size} documents`,
+      "-m", commitMessage,
       "--allow-empty",
     ], dataRoot);
   } catch (err) {

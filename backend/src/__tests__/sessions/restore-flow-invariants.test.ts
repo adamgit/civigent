@@ -16,13 +16,12 @@ import {
   destroyAllSessions,
   setSessionOverlayImportCallback,
   lookupDocSession,
-  invalidateSessionForRestore,
-  setBroadcastRestoreInvalidation,
+  invalidateSessionForReplacement,
+  setBroadcastSessionReplacementInvalidation,
   addContributor,
   markFragmentDirty,
   applyAcceptResult,
   findKeyForHeadingPath,
-  findHeadingPathForKey,
   collectTouchedFragmentKeysForNormalization,
   flushDirtyToOverlay,
 } from "../../crdt/ydoc-lifecycle.js";
@@ -87,15 +86,10 @@ async function preemptiveImportNormalizeAndCommit(
   }
   if (!hasDirty) return null;
 
-  const affectedWriters: Array<{ writerId: string; dirtyHeadingPaths: string[][] }> = [];
+  const affectedWriters: Array<{ writerId: string }> = [];
   for (const [writerId, dirtySet] of session.perUserDirty) {
     if (dirtySet.size === 0) continue;
-    const dirtyHeadingPaths: string[][] = [];
-    for (const fragmentKey of dirtySet) {
-      const headingPath = findHeadingPathForKey(session, fragmentKey);
-      if (headingPath) dirtyHeadingPaths.push([...headingPath]);
-    }
-    affectedWriters.push({ writerId, dirtyHeadingPaths });
+    affectedWriters.push({ writerId });
   }
 
   const dirtySnapshot = collectTouchedFragmentKeysForNormalization(session);
@@ -132,7 +126,7 @@ describe("A10: Restore Flow Invariants", () => {
   });
 
   afterEach(async () => {
-    setBroadcastRestoreInvalidation(null as any);
+    setBroadcastSessionReplacementInvalidation(null as any);
     destroyAllSessions();
     await ctx.cleanup();
   });
@@ -172,7 +166,7 @@ describe("A10: Restore Flow Invariants", () => {
 
   // ── A10.2 ─────────────────────────────────────────────────────────
 
-  it("A10.2: restore pre-commit captures affectedWriters from perUserDirty BEFORE normalization", async () => {
+  it("A10.2: restore pre-commit captures affected writers from perUserDirty BEFORE normalization", async () => {
     const live = await documentSessionRegistry.getOrCreate({
       docPath: SAMPLE_DOC_PATH,
       baseHead,
@@ -210,17 +204,12 @@ describe("A10: Restore Flow Invariants", () => {
     expect(writerIds).toContain(writerA.id);
     expect(writerIds).toContain(writerB.id);
 
-    // Writer A should have Overview heading path
-    const writerAEntry = preCommitResult!.affectedWriters.find((w) => w.writerId === writerA.id);
-    expect(writerAEntry).toBeDefined();
-    const writerAHeadings = writerAEntry!.dirtyHeadingPaths.map((hp) => hp.join(">>"));
-    expect(writerAHeadings).toContain("Overview");
-
-    // Writer B should have Timeline heading path
-    const writerBEntry = preCommitResult!.affectedWriters.find((w) => w.writerId === writerB.id);
-    expect(writerBEntry).toBeDefined();
-    const writerBHeadings = writerBEntry!.dirtyHeadingPaths.map((hp) => hp.join(">>"));
-    expect(writerBHeadings).toContain("Timeline");
+    expect(preCommitResult!.affectedWriters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ writerId: writerA.id }),
+        expect.objectContaining({ writerId: writerB.id }),
+      ]),
+    );
   });
 
   // ── A10.3 ─────────────────────────────────────────────────────────
@@ -241,15 +230,10 @@ describe("A10: Restore Flow Invariants", () => {
     addContributor(SAMPLE_DOC_PATH, writerA.id, writerA);
 
     // Pre-commit (creates overlay files, then commits and cleans up)
-    const preCommitResult = await preemptiveImportNormalizeAndCommit(SAMPLE_DOC_PATH);
+    await preemptiveImportNormalizeAndCommit(SAMPLE_DOC_PATH);
 
     // Invalidate session
-    await invalidateSessionForRestore(
-      SAMPLE_DOC_PATH,
-      "abc1234",
-      "Test Admin",
-      preCommitResult,
-    );
+    await invalidateSessionForReplacement(SAMPLE_DOC_PATH, null);
 
     // Session should be destroyed
     expect(lookupDocSession(SAMPLE_DOC_PATH)).toBeUndefined();
@@ -277,8 +261,8 @@ describe("A10: Restore Flow Invariants", () => {
     addContributor(SAMPLE_DOC_PATH, writerA.id, writerA);
 
     // Pre-commit + invalidate
-    const preCommitResult = await preemptiveImportNormalizeAndCommit(SAMPLE_DOC_PATH);
-    await invalidateSessionForRestore(SAMPLE_DOC_PATH, "abc1234", "Test Admin", preCommitResult);
+    await preemptiveImportNormalizeAndCommit(SAMPLE_DOC_PATH);
+    await invalidateSessionForReplacement(SAMPLE_DOC_PATH, null);
 
     // Get the current head (after pre-commit)
     const postRestoreHead = await getHeadSha(ctx.rootDir);
@@ -303,7 +287,7 @@ describe("A10: Restore Flow Invariants", () => {
 
   it("A10.5: restore broadcasts invalidation to connected clients", async () => {
     const broadcasts: string[] = [];
-    setBroadcastRestoreInvalidation((docPath) => {
+    setBroadcastSessionReplacementInvalidation((docPath) => {
       broadcasts.push(docPath);
     });
 
@@ -314,7 +298,7 @@ describe("A10: Restore Flow Invariants", () => {
     });
 
     // Invalidate (no pre-commit needed for this test)
-    await invalidateSessionForRestore(SAMPLE_DOC_PATH, "abc1234", "Test Admin", null);
+    await invalidateSessionForReplacement(SAMPLE_DOC_PATH, null);
 
     // Broadcast should have been called with the doc path
     expect(broadcasts.length).toBe(1);

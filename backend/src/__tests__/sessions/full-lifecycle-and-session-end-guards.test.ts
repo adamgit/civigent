@@ -19,7 +19,7 @@ import {
   MSG_YJS_UPDATE,
   MSG_SESSION_OVERLAY_IMPORT_REQUEST,
 } from "../../ws/crdt-protocol.js";
-import { commitDirtySections } from "../../storage/auto-commit.js";
+import { publishUnpublishedSections } from "../../storage/auto-commit.js";
 import type { WriterIdentity, ModeTransitionResult, ModeTransitionRequest } from "../../types/shared.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
@@ -284,7 +284,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
     );
     expect(mutate.success).toBe(true);
 
-    const publishResult = await commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
+    const publishResult = await publishUnpublishedSections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
     expect(publishResult.committed).toBe(true);
 
     const noneResult = await requestModeTransition(ws, {
@@ -393,7 +393,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
     );
     expect(mutate.success).toBe(true);
 
-    const publishResult = await commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
+    const publishResult = await publishUnpublishedSections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
     expect(publishResult.committed).toBe(true);
     await requestModeTransition(ws, {
       requestId: crypto.randomUUID(),
@@ -470,7 +470,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
     ws.send(encodeMessage(MSG_SESSION_OVERLAY_IMPORT_REQUEST, new Uint8Array(0)));
     await waitForMessage(ws, (msg) => msg[0] === MSG_SESSION_OVERLAY_IMPORTED);
 
-    const publishResult = await commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
+    const publishResult = await publishUnpublishedSections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
     expect(publishResult.committed).toBe(true);
 
     await requestModeTransition(ws, {
@@ -573,7 +573,7 @@ describe("full lifecycle + session-end normalization guardrails", () => {
       `${overview!.content}\n\nCommit boundary line.`,
     );
     expect(mutate.success).toBe(true);
-    const publish = await commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
+    const publish = await publishUnpublishedSections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
     expect(publish.committed).toBe(true);
 
     const afterPublishSections = await fetchSections(app, writerToken);

@@ -15,7 +15,6 @@ export interface DocumentSessionControllerDeps {
   enterEdit: (params: SectionFocusParams) => Promise<void>;
   focusSection: (params: SectionFocusParams) => void;
   moveFocus: (direction: "up" | "down") => void;
-  importToSessionOverlayNow: () => void;
   registerEditor: (fragmentKey: string, handle: MilkdownEditorHandle | null) => void;
   markEditorReady: (fragmentKey: string) => void;
   markEditorUnready: (fragmentKey: string) => void;
@@ -49,10 +48,6 @@ export class DocumentSessionController {
 
   moveFocus(direction: "up" | "down"): void {
     this.deps.moveFocus(direction);
-  }
-
-  importToSessionOverlayNow(): void {
-    this.deps.importToSessionOverlayNow();
   }
 
   registerEditor(fragmentKey: string, handle: MilkdownEditorHandle | null): void {

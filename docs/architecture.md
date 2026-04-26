@@ -100,7 +100,7 @@ We have one format that mirrors Layer1 and one that mirrors Layer3. This enables
 | **Raw fragments** | `sessions/fragments/` | Crash-safety layer. One file per dirty Y.XmlFragment. Verbatim markdown (may contain embedded headings during structural edits). | ~1-2 seconds |
 | **Canonical-ready** | `sessions/sections/content/` | Structurally valid session content. Mirrors canonical structure. Used by REST APIs and commit pipeline. | Written on flush when clean, or after normalization. |
 
-**Author metadata** (`sessions/authors/{writerId}.json`): Tracks which user dirtied which sections. Used by the Mirror panel and auth-log attribution. Per-user, not per-session.
+**Fragment attribution metadata** (`sessions/fragments/<docPath>/*.writers.json`): Tracks which writer IDs dirtied each raw fragment. This is the durable attribution source for recovery-time audit-log commits.
 
 The overlay-first pattern: when reading content, the system checks `sessions/sections/content/` first, then falls back to `content/`. This ensures page reloads show unpublished changes.
 
@@ -163,7 +163,7 @@ Every new connection starts with `requestedMode: "none"` and `attachmentState: "
 | 0x08 | STRUCTURE_WILL_CHANGE | Server→Client | Structural normalization notification |
 | 0x09 | SECTION_MUTATE | Editor→Server | Replace fragment content (agent publish path) |
 | 0x0A | MUTATE_RESULT | Server→Client | Response to SECTION_MUTATE |
-| 0x0B | RESTORE_NOTIFICATION | Server→Client | Document restored (after close code 4022) |
+| 0x0B | DOCUMENT_REPLACEMENT_NOTICE | Server→Client | Reconnect notice delivered after restore/overwrite |
 | 0x0C | MODE_TRANSITION_REQUEST | Client→Server | Request mode transition |
 | 0x0D | MODE_TRANSITION_RESULT | Server→Client | Mode transition ack/reject |
 
@@ -174,7 +174,7 @@ Every new connection starts with `requestedMode: "none"` and `attachmentState: "
 | 4010–4019 | Hard rejection (bad auth, bad URL) | Do not reconnect |
 | 4020 | Idle timeout | Reconnect (user navigated away) |
 | 4021 | Session ended (last editor left) | Reconnect and wait for next session |
-| 4022 | Document restored | Reconnect immediately (no backoff) |
+| 4022 | Document replaced | Reconnect immediately (no backoff) |
 | 4023 | Superseded by new tab | Close the old tab's editor socket |
 
 ### Layer 5: Browser editors
@@ -292,7 +292,7 @@ Triggered by user typing/editing, or by timer, disconnect, or shutdown. This is 
 1. Write raw fragments to `sessions/fragments/` (always — crash safety)
 2. If structurally clean (no embedded headings), also write canonical-ready to `sessions/sections/content/` ... otherwise the write to `sessions` is done by the later Normalization stage (see below)
 3. Send SESSION_FLUSHED to connected clients (triggers green dots)
-4. Update author metadata in `sessions/authors/`
+4. Persist per-fragment `writerIds[]` alongside the raw fragment files
 
 ### Structural normalization (event-driven)
 
@@ -319,7 +319,7 @@ Runs when human indicates a set of related edits have been performed, or (as fal
 3. Write changed sections to canonical `content/`
 4. Make git commit (with writer attribution)
 5. Delete committed files from both `sessions/sections/` and `sessions/fragments/`
-6. Update author metadata — remove committed sections
+6. Delete committed fragment content and committed fragment attribution sidecars
 
 ### Proposal commit (agent or human)
 
@@ -499,7 +499,7 @@ In production, `server.ts` runs directly — no supervisor, no SSE endpoint, no 
 3. **All durable state visible on disk** — `ls` shows complete system state; no hidden database
 4. **REST endpoints return canonical-ready only** — never read raw fragments (may contain un-normalized content)
 5. **Human-involvement is a 0-1 float** — single threshold (0.5), never cached, computed on every evaluation
-6. **Dirty ownership contract**: Content dirtiness is shared (`sessions/sections/`); attribution dirtiness is per-user (`sessions/authors/`)
+6. **Dirty ownership contract**: canonical-ready content lives in `sessions/sections/`; fragment-owned writer attribution lives with the raw fragment files in `sessions/fragments/`
 
 ---
 

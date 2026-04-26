@@ -41,16 +41,29 @@ import { parseSkeletonToEntries, TOMBSTONE_SUFFIX } from "./document-skeleton.js
 import type { SectionBody } from "./section-formatting.js";
 import { gitExec, getHeadSha } from "./git-repo.js";
 
+export interface SectionRefReceipt {
+  docPath: string;
+  headingPath: string[];
+}
+
 /**
  * Return shape of `absorbChangedSections`. `commitSha` is the SHA of the
  * new commit (or the prior HEAD if `--allow-empty` produced no delta).
+ * `rewrittenDocumentPaths` is the normalized set of rooted document paths the
+ * storage engine had to materialize/rewrite for this absorb, even when some or
+ * all absorbed sections were body-identical to canonical.
+ * `absorbedSectionRefs` is the semantic section-scoped cleanup closure for
+ * ordinary runtime callers. It may include sections whose body content ended up
+ * identical to canonical after absorb.
  * `changedSections` is the set of heading paths whose body content differs
  * between the pre-absorb and post-absorb canonical state — sections that
  * were staged but body-identical to canonical are intentionally excluded.
  */
 export interface AbsorbResult {
   commitSha: string;
-  changedSections: Array<{ docPath: string; headingPath: string[] }>;
+  rewrittenDocumentPaths: string[];
+  absorbedSectionRefs: SectionRefReceipt[];
+  changedSections: SectionRefReceipt[];
 }
 
 export class CanonicalStore {
@@ -67,7 +80,8 @@ export class CanonicalStore {
   /**
    * Copy a staging content root into canonical and commit to git atomically.
    *
-   * Pass 0 — Pre-snapshot: determine affected doc paths (either from opts.docPaths
+   * Pass 0 — Pre-snapshot: determine affected rooted document paths (either from
+   *   opts.documentPathsToRewrite
    *   or by scanning the staging tree), snapshot the canonical body content for each
    *   so we can diff against the post-commit state.
    * Pass 1 — Deletion: walk staging for skeleton files, compute orphaned canonical
@@ -82,33 +96,46 @@ export class CanonicalStore {
    * checkout/clean) and rethrows. Callers are responsible for rolling back any
    * non-canonical state (e.g. proposal FSM transitions).
    *
-   * opts.docPaths: if set, only files belonging to those document paths are processed.
-   *                When omitted, the affected set is derived by walking the staging
-   *                tree for top-level .md files (outside any .sections/ directory).
+   * opts.documentPathsToRewrite: if set, only files belonging to those rooted
+   *   document trees are processed. When omitted, the affected set is derived
+   *   by walking the staging tree for top-level .md files (outside any
+   *   .sections/ directory).
+   * opts.absorbedSectionRefs: semantic section-scoped cleanup closure for
+   *   ordinary runtime callers. When omitted, the absorb still succeeds, but
+   *   callers only receive diff-based `changedSections`.
    */
   async absorbChangedSections(
     stagingRoot: string,
     commitMessage: string,
     author: { name: string; email: string },
-    opts?: { diagnostics?: string[]; docPaths?: string[] },
+    opts?: {
+      diagnostics?: string[];
+      documentPathsToRewrite?: string[];
+      absorbedSectionRefs?: SectionRefReceipt[];
+      /** Transitional alias for older callers. */
+      docPaths?: string[];
+    },
   ): Promise<AbsorbResult> {
     const diag = (msg: string) => { if (opts?.diagnostics) opts.diagnostics!.push(msg); };
 
     try {
-      // Pass 0: Determine affected doc paths and snapshot canonical BEFORE
+      // Pass 0: Determine affected storage-root doc paths and snapshot canonical BEFORE
       // any mutation, so we can compute the actual changed-section set after
-      // the git commit lands. Callers that already know the scope pass
-      // opts.docPaths; otherwise we walk the staging tree.
-      const affectedDocPaths = opts?.docPaths
-        ? opts.docPaths.map(normalizeDocPath)
+      // the git commit lands. Callers that already know the rooted storage
+      // closure pass opts.documentPathsToRewrite; otherwise we walk the staging tree.
+      const documentPathsToRewrite = opts?.documentPathsToRewrite ?? opts?.docPaths;
+      const affectedDocPaths = documentPathsToRewrite
+        ? documentPathsToRewrite.map(normalizeDocPath)
         : await this.discoverDocPathsInStaging(stagingRoot);
-      const beforeContent = await this.snapshotDocPaths(affectedDocPaths);
+      const rewrittenDocumentPaths = [...new Set(affectedDocPaths)];
+      const beforeContent = await this.snapshotDocPaths(rewrittenDocumentPaths);
+      const absorbedSectionRefs = dedupeSectionRefReceipts(opts?.absorbedSectionRefs ?? []);
 
       // Pass 1: Deletion — find orphaned canonical body files and tombstoned documents
-      await this.deletionPass(stagingRoot, diag, opts?.docPaths);
+      await this.deletionPass(stagingRoot, diag, documentPathsToRewrite);
 
       // Pass 2: Copy — recursively copy staging tree onto canonical
-      await this.copyPass(stagingRoot, diag, opts?.docPaths);
+      await this.copyPass(stagingRoot, diag, documentPathsToRewrite);
 
       // Pass 2.5: Prune empty content directories left behind by document
       // deletions or moves. Must run after both deletion and copy passes so
@@ -136,10 +163,15 @@ export class CanonicalStore {
       // actual changed-section set. Sections present unchanged in both
       // snapshots are intentionally NOT reported (excluding them matches
       // the old session-store.ts behavior — see Bug C in its history).
-      const afterContent = await this.snapshotDocPaths(affectedDocPaths);
+      const afterContent = await this.snapshotDocPaths(rewrittenDocumentPaths);
       const changedSections = diffSnapshots(beforeContent, afterContent);
 
-      return { commitSha, changedSections };
+      return {
+        commitSha,
+        rewrittenDocumentPaths,
+        absorbedSectionRefs,
+        changedSections,
+      };
     } catch (err) {
       // Best-effort rollback of canonical to last committed state
       const cp = getContentGitPrefix();
@@ -473,6 +505,22 @@ export class CanonicalStore {
     }
     diag(`copy pass: ${copied} file(s) copied from staging to canonical`);
   }
+}
+
+function dedupeSectionRefReceipts(sectionRefs: SectionRefReceipt[]): SectionRefReceipt[] {
+  const seen = new Set<string>();
+  const deduped: SectionRefReceipt[] = [];
+  for (const ref of sectionRefs) {
+    const normalizedDocPath = normalizeDocPath(ref.docPath);
+    const key = `${normalizedDocPath}\0${ref.headingPath.join(">>")}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push({
+      docPath: normalizedDocPath,
+      headingPath: [...ref.headingPath],
+    });
+  }
+  return deduped;
 }
 
 function normalizeDocPath(docPath: string): string {

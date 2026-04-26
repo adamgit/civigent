@@ -7,7 +7,7 @@
 
 import path from "node:path";
 import { readFile, readdir } from "node:fs/promises";
-import { getContentRoot, getSessionSectionsContentRoot, getSessionAuthorsRoot } from "./data-root.js";
+import { getContentRoot, getSessionSectionsContentRoot } from "./data-root.js";
 import { RawFragmentRecoveryBuffer } from "./raw-fragment-recovery-buffer.js";
 import { sectionFileFromFragmentKey } from "../crdt/ydoc-fragments.js";
 import { scanSessionFragmentDocPaths, scanSessionDocPaths } from "./session-scan.js";
@@ -31,20 +31,13 @@ export interface DocOverlayInfo {
   issues: string[];
 }
 
-export interface AuthorInfo {
-  filename: string;
-  dirtySections: Array<{ docPath: string; headingPath: string[]; firstChangedAt: string }>;
-}
-
 export interface SessionState {
   fragments: Record<string, FragmentFileInfo[]>;
   docs: Record<string, DocOverlayInfo>;
-  authors: Record<string, AuthorInfo>;
   summary: {
     totalFragmentFiles: number;
     totalOverlayDocs: number;
     totalOverlaySections: number;
-    totalAuthors: number;
     orphanedSections: number;
     corruptOverlayDocs: number;
     missingOverlaySkeletonDocs: number;
@@ -181,43 +174,13 @@ export async function getSessionState(): Promise<SessionState> {
     totalOverlayDocs++;
   }
 
-  // ── Authors ──
-  const authorsRoot = getSessionAuthorsRoot();
-  const authors: Record<string, AuthorInfo> = {};
-  let totalAuthors = 0;
-  try {
-    const authorFiles = await readdir(authorsRoot);
-    for (const af of authorFiles) {
-      if (!af.endsWith(".json")) continue;
-      const raw = await readFile(path.join(authorsRoot, af), "utf8");
-      const parsed = JSON.parse(raw);
-      const dirtySections: Array<{ docPath: string; headingPath: string[]; firstChangedAt: string }> = [];
-      if (Array.isArray(parsed.dirtySections)) {
-        for (const ds of parsed.dirtySections) {
-          dirtySections.push({
-            docPath: ds.docPath ?? "",
-            headingPath: Array.isArray(ds.headingPath) ? ds.headingPath : [],
-            firstChangedAt: ds.firstChangedAt ?? "",
-          });
-        }
-      }
-      const writerId = af.replace(/\.json$/, "");
-      authors[writerId] = { filename: af, dirtySections };
-      totalAuthors++;
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
-
   return {
     fragments,
     docs,
-    authors,
     summary: {
       totalFragmentFiles,
       totalOverlayDocs,
       totalOverlaySections,
-      totalAuthors,
       orphanedSections,
       corruptOverlayDocs,
       missingOverlaySkeletonDocs,

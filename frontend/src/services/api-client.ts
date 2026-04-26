@@ -20,8 +20,6 @@ import type {
   AuthMethod,
   ProposalId,
   ProposalStatus,
-  PublishRequest,
-  PublishResponse,
   ReadDocStructureResponse,
   ReadProposalResponse,
   ReadSectionResponse,
@@ -30,7 +28,6 @@ import type {
   AcquireLocksResponse,
   AllSessionStatusesResponse,
   WithdrawProposalResponse,
-  WriterDirtyState,
 } from "../types/shared.js";
 
 export type ImportResponse = CreateProposalResponse;
@@ -652,6 +649,11 @@ export const apiClient = {
     return requestJson<ListProposalsResponse>(`/api/proposals${query}`);
   },
 
+  async listMyProposals(status?: ProposalStatus): Promise<ListProposalsResponse> {
+    const query = status ? `?status=${encodeURIComponent(status)}` : "";
+    return requestJson<ListProposalsResponse>(`/api/my-proposals${query}`);
+  },
+
   async getProposal(id: ProposalId): Promise<ReadProposalResponse> {
     return requestJson<ReadProposalResponse>(`/api/proposals/${encodeURIComponent(id)}`);
   },
@@ -668,12 +670,6 @@ export const apiClient = {
 
   async getHeatmap(): Promise<GetHeatmapResponse> {
     return requestJson<GetHeatmapResponse>("/api/heatmap");
-  },
-
-  // --- Writer dirty state ---
-
-  async getWriterDirtyState(writerId: string): Promise<WriterDirtyState> {
-    return requestJson<WriterDirtyState>(`/api/writers/${encodeURIComponent(writerId)}/dirty`);
   },
 
   async getAllSessionStatuses(): Promise<AllSessionStatusesResponse> {
@@ -735,7 +731,7 @@ export const apiClient = {
     });
   },
 
-  // --- Publish ---
+  // --- Import helpers ---
 
   async importFiles(
     targetFolder: string,
@@ -792,14 +788,6 @@ export const apiClient = {
   async deleteImport(id: string): Promise<void> {
     await requestJson<void>(`/api/imports/${encodeURIComponent(id)}`, {
       method: "DELETE",
-    });
-  },
-
-  async publish(body?: PublishRequest): Promise<PublishResponse> {
-    return requestJson<PublishResponse>("/api/publish", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body ?? {}),
     });
   },
 

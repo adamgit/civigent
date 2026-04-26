@@ -15,7 +15,7 @@ import {
 import type { WriterIdentity, ModeTransitionRequest, ModeTransitionResult } from "../../types/shared.js";
 import { destroyAllSessions } from "../../crdt/ydoc-lifecycle.js";
 import { CanonicalStore } from "../../storage/canonical-store.js";
-import { getSessionSectionsContentRoot, getSessionAuthorsRoot } from "../../storage/data-root.js";
+import { getSessionSectionsContentRoot } from "../../storage/data-root.js";
 import { RawFragmentRecoveryBuffer } from "../../storage/raw-fragment-recovery-buffer.js";
 import { access } from "node:fs/promises";
 import path from "node:path";
@@ -151,12 +151,11 @@ describe("session-end cleanup is independent of changedSections count", () => {
     await ctx.cleanup();
   });
 
-  it("removes overlay + fragments + author-metadata after a no-edit editor session", async () => {
+  it("removes overlay + fragments after a no-edit editor session", async () => {
     const overlayRoot = getSessionSectionsContentRoot();
     const normalized = SAMPLE_DOC_PATH.replace(/\\/g, "/").replace(/^\/+/, "");
     const skeletonPath = path.resolve(overlayRoot, ...normalized.split("/"));
     const sectionsDir = `${skeletonPath}.sections`;
-    const authorMetaPath = path.resolve(getSessionAuthorsRoot(), `${normalized}.authors.json`);
 
     const clientInstanceId = "client-cleanup-noop";
     const ws = new WebSocket(
@@ -194,8 +193,6 @@ describe("session-end cleanup is independent of changedSections count", () => {
     const recoveryBuffer = new RawFragmentRecoveryBuffer(SAMPLE_DOC_PATH);
     const fragments = await recoveryBuffer.listPersistedFragments();
     expect(fragments).toEqual([]);
-
-    expect(await exists(authorMetaPath)).toBe(false);
   });
 
   it("does not run cleanup when absorb throws (crash-recovery safety)", async () => {

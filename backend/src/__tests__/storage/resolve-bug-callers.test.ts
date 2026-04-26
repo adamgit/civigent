@@ -274,7 +274,7 @@ describe("Auto-commit dirty fragment key derivation — sub-skeleton context", (
       NESTED_DOC_PATH, ctx.contentDir, ctx.contentDir,
     );
 
-    // Collect ALL fragment keys via forEachSection (what commitDirtySections uses)
+    // Collect ALL fragment keys via forEachSection (what publishUnpublishedSections uses)
     // Note: forEachSection visits BOTH the sub-skeleton entry AND its root child,
     // which share the same headingPath (["Details"]). The root child (level=0, heading="")
     // gets isBeforeFirstHeading=true → BEFORE_FIRST_HEADING_KEY, overwriting the sub-skeleton's key.

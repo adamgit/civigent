@@ -57,7 +57,7 @@ export function SessionStatusPill() {
     const wsClient = new KnowledgeStoreWsClient();
     wsClient.connect();
     wsClient.onEvent((event) => {
-      if (event.type === "dirty:changed" || event.type === "content:committed") {
+      if (event.type === "session:status-changed" || event.type === "content:committed") {
         refreshStatus();
       }
     });

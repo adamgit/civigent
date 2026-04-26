@@ -800,9 +800,9 @@ a {
   color: var(--color-text-secondary);
 }
 
-/* ─── Restore banner ─────────────────────────────────────────────── */
+/* ─── Replacement notice ─────────────────────────────────────────── */
 
-.restore-banner {
+.replacement-notice-banner {
   position: sticky;
   top: 0;
   z-index: 50;
@@ -814,11 +814,7 @@ a {
   border-bottom: 1px solid #f59e0b;
   font-size: 13px;
 }
-.restore-banner code {
-  font-family: monospace;
-  font-size: 12px;
-}
-.restore-banner button {
+.replacement-notice-banner button {
   margin-left: 12px;
   background: none;
   border: none;

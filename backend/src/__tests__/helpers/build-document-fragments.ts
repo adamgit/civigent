@@ -81,6 +81,7 @@ export async function buildDocumentFragmentsForTest(docPath: string): Promise<Te
   const liveStrings = new LiveFragmentStringsStore(ydoc, orderedKeys, docPath);
   const rawRecovery = new RawFragmentRecoveryBuffer(docPath);
   const stagedSections = new StagedSectionsStore(docPath);
+  liveStrings.attachRecoveryBuffer(rawRecovery);
 
   const session: TestDocSession = {
     ydoc,

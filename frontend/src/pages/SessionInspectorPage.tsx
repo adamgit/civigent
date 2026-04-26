@@ -1,8 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
-import { relativeTime } from "../utils/relativeTime";
-
 interface FragmentFileInfo {
   filename: string;
   sizeBytes: number;
@@ -18,20 +16,13 @@ interface OverlayDocInfo {
   issues: string[];
 }
 
-interface AuthorInfo {
-  filename: string;
-  dirtySections: Array<{ docPath: string; headingPath: string[]; firstChangedAt: string }>;
-}
-
 interface SessionStateResponse {
   fragments: Record<string, FragmentFileInfo[]>;
   docs: Record<string, OverlayDocInfo>;
-  authors: Record<string, AuthorInfo>;
   summary: {
     totalFragmentFiles: number;
     totalOverlayDocs: number;
     totalOverlaySections: number;
-    totalAuthors: number;
     orphanedSections: number;
     corruptOverlayDocs: number;
     missingOverlaySkeletonDocs: number;
@@ -55,7 +46,6 @@ export function SessionInspectorPage() {
   const [autoPoll, setAutoPoll] = useState(false);
   const [expandedFragments, setExpandedFragments] = useState(true);
   const [expandedDocs, setExpandedDocs] = useState(true);
-  const [expandedAuthors, setExpandedAuthors] = useState(true);
 
   const fetchData = useCallback(async () => {
     try {
@@ -86,8 +76,7 @@ export function SessionInspectorPage() {
   const isEmpty =
     summary &&
     summary.totalFragmentFiles === 0 &&
-    summary.totalOverlayDocs === 0 &&
-    summary.totalAuthors === 0;
+    summary.totalOverlayDocs === 0;
 
   return (
     <div className="flex flex-col h-full">
@@ -125,7 +114,7 @@ export function SessionInspectorPage() {
                 <span>No active session files — all clean</span>
               ) : (
                 <span>
-                  {summary!.totalFragmentFiles} fragment files · {summary!.totalOverlayDocs} overlay docs · {summary!.totalAuthors} authors
+                  {summary!.totalFragmentFiles} fragment files · {summary!.totalOverlayDocs} overlay docs
                   {summary!.corruptOverlayDocs > 0 && (
                     <span className="text-red-600 ml-1">
                       · ⚠ {summary!.corruptOverlayDocs} corrupt docs
@@ -265,44 +254,6 @@ export function SessionInspectorPage() {
               )}
             </div>
 
-            {/* Author Metadata */}
-            <div className="mb-4 border border-[#eae7e2] rounded-lg overflow-hidden">
-              <button
-                onClick={() => setExpandedAuthors(!expandedAuthors)}
-                className="w-full text-left px-4 py-2.5 text-xs font-semibold text-text-primary bg-[#faf8f5] border-b border-[#eae7e2] hover:bg-[#f5f2ed] transition-colors"
-              >
-                {expandedAuthors ? "▾" : "▸"} Author Metadata (sessions/authors/)
-              </button>
-              {expandedAuthors && (
-                <div className="p-3">
-                  {Object.keys(data.authors).length === 0 ? (
-                    <p className="text-xs text-text-muted">(empty)</p>
-                  ) : (
-                    Object.entries(data.authors).map(([writerId, info]) => (
-                      <div key={writerId} className="mb-3">
-                        <div className="text-xs font-semibold text-text-secondary mb-1">
-                          {writerId}
-                        </div>
-                        {info.dirtySections.length === 0 ? (
-                          <p className="text-[11px] text-text-muted ml-4">(no dirty sections)</p>
-                        ) : (
-                          info.dirtySections.map((ds, i) => (
-                            <div key={i} className="ml-4 text-[11px] text-text-muted flex items-center gap-2 mb-0.5">
-                              <span style={{ fontFamily: "var(--font-mono)" }}>{ds.docPath}</span>
-                              <span>→</span>
-                              <span>{ds.headingPath.join(" › ")}</span>
-                              {ds.firstChangedAt && (
-                                <span className="text-[10px] text-text-muted">{relativeTime(ds.firstChangedAt)}</span>
-                              )}
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    ))
-                  )}
-                </div>
-              )}
-            </div>
           </>
         )}
       </div>

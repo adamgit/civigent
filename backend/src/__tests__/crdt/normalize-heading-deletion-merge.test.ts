@@ -14,7 +14,7 @@ import { fragmentFromRemark } from "../../storage/section-formatting.js";
  * document-fragments.ts:775 calls populateFragment instead of setFragmentContent. Y.applyUpdate
  * MERGES (does not replace) -- so the merged target ends up with duplicated content.
  *
- * These tests do NOT exercise commitDirtySections or any publish path. They drive the
+ * These tests do NOT exercise publishUnpublishedSections or any publish path. They drive the
  * fragment store directly so that the bug surface is unambiguous: open from disk, mutate
  * one fragment, normalize, assemble, count occurrences.
  *

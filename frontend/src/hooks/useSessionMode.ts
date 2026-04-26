@@ -6,13 +6,13 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CrdtProvider, type CrdtConnectionState, type StructureWillChangePayload } from "../services/crdt-provider";
+import { CrdtProvider, type CrdtConnectionState } from "../services/crdt-provider";
 import { CrdtTransport } from "../services/crdt-transport";
 import { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 import { ObserverCrdtProvider } from "../services/observer-crdt-provider";
 import { fragmentToMarkdown } from "../services/fragment-to-markdown";
 import {
-  type RestoreNotificationPayload,
+  type DocumentReplacementNoticePayload,
   type DocumentSessionControllerState,
   type ModeTransitionRequest,
   type ModeTransitionResult,
@@ -35,9 +35,8 @@ export interface UseSessionModeParams {
   setError: (e: string | null) => void;
   setStatusMessage: (s: string | null) => void;
   loadSections: (docPath: string) => Promise<DocumentSection[]>;
-  onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
+  onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
   setDeletionPlaceholders: React.Dispatch<React.SetStateAction<DeletionPlaceholder[]>>;
-  setRestructuringKeys: React.Dispatch<React.SetStateAction<Set<string>>>;
   onStopEditing?: () => void;
 }
 
@@ -70,9 +69,8 @@ export function useSessionMode({
   setError,
   setStatusMessage,
   loadSections,
-  onRestoreNotification,
+  onDocumentReplacementNotice,
   setDeletionPlaceholders,
-  setRestructuringKeys,
   onStopEditing,
 }: UseSessionModeParams): UseSessionModeReturn {
   const clientInstanceIdRef = useRef<string>(randomUuid());
@@ -175,14 +173,11 @@ export function useSessionMode({
       onSessionEnded: () => {
         if (docPath) loadSections(docPath);
       },
-      onStructureWillChange: () => {
-        if (docPath) loadSections(docPath);
-      },
       onSessionReinit: () => {
         stopEditingRef.current?.();
       },
-      onRestoreNotification: (payload) => {
-        onRestoreNotification?.(payload);
+      onDocumentReplacementNotice: (payload) => {
+        onDocumentReplacementNotice?.(payload);
       },
       onModeTransitionResult: (result) => {
         opts?.onModeTransitionResult?.(result);
@@ -193,7 +188,7 @@ export function useSessionMode({
     });
     observerRef.current = observer;
     observer.connect();
-  }, [setSections, loadSections, onRestoreNotification]);
+  }, [setSections, loadSections, onDocumentReplacementNotice]);
 
   // Observer replica safety: recreate when attached session identity changes
   useEffect(() => {
@@ -263,7 +258,6 @@ export function useSessionMode({
     }
     setCrdtError(null);
     setDeletionPlaceholders([]);
-    setRestructuringKeys(new Set());
     onStopEditingRef.current?.();
     setControllerState((prev) => ({
       ...prev,
@@ -294,7 +288,7 @@ export function useSessionMode({
         onModeTransitionResult: applyModeTransitionResult,
       });
     }
-  }, [decodedDocPath, startObserver, applyModeTransitionResult, setDeletionPlaceholders, setRestructuringKeys]);
+  }, [decodedDocPath, startObserver, applyModeTransitionResult, setDeletionPlaceholders]);
 
   useEffect(() => { stopEditingRef.current = stopEditing; }, [stopEditing]);
 
@@ -340,18 +334,11 @@ export function useSessionMode({
             );
           }
         },
-        onStructureWillChange: (restructures: StructureWillChangePayload[]) => {
-          const keys = new Set<string>();
-          for (const r of restructures) {
-            keys.add(r.oldKey);
-          }
-          setRestructuringKeys(keys);
-        },
         onSessionReinit: () => {
           stopEditing();
         },
-        onRestoreNotification: (payload) => {
-          onRestoreNotification?.(payload);
+        onDocumentReplacementNotice: (payload) => {
+          onDocumentReplacementNotice?.(payload);
         },
         onModeTransitionResult: applyModeTransitionResult,
         onIdleTimeout: () => {
@@ -380,7 +367,7 @@ export function useSessionMode({
       setCrdtError(err instanceof Error ? err.message : String(err));
       return null;
     }
-  }, [decodedDocPath, stopEditing, stopObserver, loadSections, setError, setStatusMessage, onRestoreNotification, applyModeTransitionResult, setDeletionPlaceholders, setRestructuringKeys]);
+  }, [decodedDocPath, stopEditing, stopObserver, loadSections, setError, setStatusMessage, onDocumentReplacementNotice, applyModeTransitionResult, setDeletionPlaceholders]);
 
   // ── Request mode ───────────────────────────────────────
   const requestMode = useCallback(async (mode: RequestedMode, focusTarget?: EditorFocusTarget | null): Promise<void> => {

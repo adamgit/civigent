@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import * as Y from "yjs";
 import { ObserverCrdtProvider } from "../../services/observer-crdt-provider";
-import type { RestoreNotificationPayload } from "../../types/shared";
-import { WS_CLOSE_DOCUMENT_RESTORED } from "../../services/crdt-close-codes";
+import type { DocumentReplacementNoticePayload } from "../../types/shared";
+import { WS_CLOSE_DOCUMENT_REPLACED } from "../../services/crdt-close-codes";
 
 const MSG_SYNC_STEP_1 = 0x00;
 const MSG_SYNC_STEP_2 = 0x01;
-const MSG_RESTORE_NOTIFICATION = 0x0b;
+const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0b;
 
 class StubWebSocket extends EventTarget {
   static readonly CONNECTING = 0;
@@ -86,10 +86,10 @@ afterAll(() => {
   globalThis.WebSocket = originalWebSocket;
 });
 
-function buildRestoreNotification(payload: RestoreNotificationPayload): Uint8Array {
+function buildDocumentReplacementNotice(payload: DocumentReplacementNoticePayload): Uint8Array {
   const json = new TextEncoder().encode(JSON.stringify(payload));
   const msg = new Uint8Array(1 + json.length);
-  msg[0] = MSG_RESTORE_NOTIFICATION;
+  msg[0] = MSG_DOCUMENT_REPLACEMENT_NOTICE;
   msg.set(json, 1);
   return msg;
 }
@@ -102,58 +102,55 @@ function buildSyncStep2FromDoc(sourceDoc: Y.Doc): Uint8Array {
   return msg;
 }
 
-const VALID_RESTORE_PAYLOAD: RestoreNotificationPayload = {
-  restored_sha: "sha-test",
-  restored_by_display_name: "Admin",
-  pre_commit_sha: null,
-  your_dirty_heading_paths: null,
+const VALID_NOTICE_PAYLOAD: DocumentReplacementNoticePayload = {
+  message: "document was restored to an earlier version",
 };
 
-describe("ObserverCrdtProvider restore notification handling", () => {
-  it("notification-before-sync ordering: onRestoreNotification fires on SYNC_STEP_2 receipt", () => {
+describe("ObserverCrdtProvider document replacement notice handling", () => {
+  it("notice-before-sync ordering: onDocumentReplacementNotice fires on SYNC_STEP_2 receipt", () => {
     const onRestore = vi.fn();
     const onSynced = vi.fn();
-    const provider = new ObserverCrdtProvider("/test/doc.md", { onSynced, onRestoreNotification: onRestore });
+    const provider = new ObserverCrdtProvider("/test/doc.md", { onSynced, onDocumentReplacementNotice: onRestore });
 
     provider.connect();
     const ws = StubWebSocket.lastInstance!;
     ws.open();
 
-    ws.receiveServerMessage(buildRestoreNotification(VALID_RESTORE_PAYLOAD));
+    ws.receiveServerMessage(buildDocumentReplacementNotice(VALID_NOTICE_PAYLOAD));
     const sourceDoc = new Y.Doc();
     sourceDoc.getMap("test").set("k", "v");
     ws.receiveServerMessage(buildSyncStep2FromDoc(sourceDoc));
 
     expect(onSynced).toHaveBeenCalledTimes(1);
     expect(onRestore).toHaveBeenCalledTimes(1);
-    expect(onRestore).toHaveBeenCalledWith(VALID_RESTORE_PAYLOAD);
+    expect(onRestore).toHaveBeenCalledWith(VALID_NOTICE_PAYLOAD);
 
     provider.destroy();
   });
 
-  it("onSynced fires before onRestoreNotification when both trigger on same SYNC_STEP_2", () => {
+  it("onSynced fires before onDocumentReplacementNotice when both trigger on same SYNC_STEP_2", () => {
     const log: string[] = [];
     const provider = new ObserverCrdtProvider("/test/doc.md", {
       onSynced: () => log.push("synced"),
-      onRestoreNotification: () => log.push("restored"),
+      onDocumentReplacementNotice: () => log.push("noticed"),
     });
 
     provider.connect();
     const ws = StubWebSocket.lastInstance!;
     ws.open();
 
-    ws.receiveServerMessage(buildRestoreNotification(VALID_RESTORE_PAYLOAD));
+    ws.receiveServerMessage(buildDocumentReplacementNotice(VALID_NOTICE_PAYLOAD));
     const sourceDoc = new Y.Doc();
     ws.receiveServerMessage(buildSyncStep2FromDoc(sourceDoc));
 
-    expect(log).toEqual(["synced", "restored"]);
+    expect(log).toEqual(["synced", "noticed"]);
     provider.destroy();
   });
 
-  it("normal sync without notification: onSynced fires, onRestoreNotification does NOT fire", () => {
+  it("normal sync without notice: onSynced fires, onDocumentReplacementNotice does NOT fire", () => {
     const onRestore = vi.fn();
     const onSynced = vi.fn();
-    const provider = new ObserverCrdtProvider("/test/doc.md", { onSynced, onRestoreNotification: onRestore });
+    const provider = new ObserverCrdtProvider("/test/doc.md", { onSynced, onDocumentReplacementNotice: onRestore });
 
     provider.connect();
     const ws = StubWebSocket.lastInstance!;
@@ -167,18 +164,18 @@ describe("ObserverCrdtProvider restore notification handling", () => {
     provider.destroy();
   });
 
-  it("pendingRestoreNotification is reset on reconnect (close code 4022)", () => {
+  it("pendingDocumentReplacementNotice is reset on reconnect (close code 4022)", () => {
     const onRestore = vi.fn();
-    const provider = new ObserverCrdtProvider("/test/doc.md", { onRestoreNotification: onRestore });
+    const provider = new ObserverCrdtProvider("/test/doc.md", { onDocumentReplacementNotice: onRestore });
 
     provider.connect();
     const ws1 = StubWebSocket.lastInstance!;
     ws1.open();
 
-    ws1.receiveServerMessage(buildRestoreNotification(VALID_RESTORE_PAYLOAD));
+    ws1.receiveServerMessage(buildDocumentReplacementNotice(VALID_NOTICE_PAYLOAD));
 
     if (ws1.onclose) {
-      ws1.onclose(new CloseEvent("close", { code: WS_CLOSE_DOCUMENT_RESTORED }));
+      ws1.onclose(new CloseEvent("close", { code: WS_CLOSE_DOCUMENT_REPLACED }));
     }
 
     const ws2 = StubWebSocket.lastInstance!;

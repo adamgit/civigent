@@ -296,15 +296,6 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 - Ref handle: focus("start") places cursor at start
 - Ref handle: focus("end") places cursor at end
 
-### `mirror-panel.test.tsx`
-- Shows "Synced" pill when no dirty docs
-- Expands to show dirty doc list when dirty docs exist
-- Each dirty doc shows section heading paths
-- "Publish Now" button calls apiClient.publish(docPath)
-- "Publish All" button calls apiClient.publish({})
-- dirty:changed WebSocket event updates dirty state
-- Polls apiClient.getWriterDirtyState every 5 seconds
-
 ### `section-navigator.test.tsx`
 - Renders heading tree from structure prop
 - Click heading calls onSelectSection with correct path
@@ -461,7 +452,6 @@ frontend/src/__tests__/
   components/
     documents-tree-nav.test.tsx
     milkdown-editor.test.tsx
-    mirror-panel.test.tsx
     section-navigator.test.tsx
   services/
     api-client.test.ts

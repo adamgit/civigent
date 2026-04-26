@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
-import { commitDirtySections } from "../../storage/auto-commit.js";
+import { publishUnpublishedSections } from "../../storage/auto-commit.js";
 
-describe("Auto-commit — commitDirtySections", () => {
+describe("manual publish", () => {
   let ctx: TempDataRootContext;
 
   beforeAll(async () => {
@@ -16,7 +16,7 @@ describe("Auto-commit — commitDirtySections", () => {
   });
 
   it("returns not committed when no dirty sections exist", async () => {
-    const result = await commitDirtySections(
+    const result = await publishUnpublishedSections(
       { id: "human-test", type: "human", displayName: "Test", email: "test@test.local" },
     );
     expect(result.committed).toBe(false);

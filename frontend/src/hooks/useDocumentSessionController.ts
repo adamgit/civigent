@@ -7,7 +7,7 @@ import {
   getSectionFragmentKey,
   type DocumentSection,
 } from "../pages/document-page-utils";
-import { sectionHeadingKey, type ContentCommittedEvent, type DocumentSessionControllerState, type EditorFocusTarget, type RequestedMode, type RestoreNotificationPayload } from "../types/shared.js";
+import { sectionHeadingKey, type ContentCommittedEvent, type DocumentReplacementNoticePayload, type DocumentSessionControllerState, type EditorFocusTarget, type ProposalDTO, type RequestedMode } from "../types/shared.js";
 import type { CrdtConnectionState, CrdtProvider } from "../services/crdt-provider";
 import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 import type { CrdtTransport } from "../services/crdt-transport";
@@ -27,7 +27,7 @@ export interface UseDocumentSessionControllerParams {
   setError: (e: string | null) => void;
   setStatusMessage: (s: string | null) => void;
   loadSections: (docPath: string) => Promise<DocumentSection[]>;
-  onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
+  onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
 }
 
 export interface UseDocumentSessionControllerReturn {
@@ -45,10 +45,13 @@ export interface UseDocumentSessionControllerReturn {
   setReadyEditors: React.Dispatch<React.SetStateAction<Set<number>>>;
   deletionPlaceholders: DeletionPlaceholder[];
   setDeletionPlaceholders: React.Dispatch<React.SetStateAction<DeletionPlaceholder[]>>;
-  restructuringKeys: Set<string>;
-  setRestructuringKeys: React.Dispatch<React.SetStateAction<Set<string>>>;
   proposalMode: boolean;
   activeProposalId: string | null;
+  activeProposalStatus: ProposalDTO["status"] | null;
+  proposalIntent: string;
+  canEditProposalScope: boolean;
+  selectedProposalSectionKeys: Set<string>;
+  proposalSectionConflicts: Map<string, string>;
   controllerState: DocumentSessionControllerState;
 
   crdtProviderRef: React.MutableRefObject<CrdtProvider | null>;
@@ -66,8 +69,12 @@ export interface UseDocumentSessionControllerReturn {
   stopEditing: () => void;
   startEditing: (sectionIndex: number, clickCoords?: { x: number; y: number }) => Promise<void>;
   enterProposalMode: (proposalId: string) => Promise<void>;
-  exitProposalMode: () => void;
+  exitProposalMode: () => Promise<void>;
   saveProposalSections: () => void;
+  syncProposalFromServer: (proposal: ProposalDTO | null) => void;
+  updateProposalIntent: (nextIntent: string) => void;
+  toggleProposalSection: (section: DocumentSection) => Promise<void>;
+  removeProposalSection: (docPath: string, headingPath: string[]) => Promise<void>;
   handleProposalSectionChange: (sectionIndex: number, markdown: string) => void;
   handleCursorExit: (sectionIndex: number, direction: "up" | "down") => void;
   setEditorRef: (index: number, handle: MilkdownEditorHandle | null) => void;
@@ -97,9 +104,8 @@ export function useDocumentSessionController(
     setError: params.setError,
     setStatusMessage: params.setStatusMessage,
     loadSections: params.loadSections,
-    onRestoreNotification: params.onRestoreNotification,
+    onDocumentReplacementNotice: params.onDocumentReplacementNotice,
     setDeletionPlaceholders: persistence.setDeletionPlaceholders,
-    setRestructuringKeys: persistence.setRestructuringKeys,
     onStopEditing: () => {
       focus.setFocusedSectionIndex(null);
       registry.editorRefs.current.clear();
@@ -138,6 +144,7 @@ export function useDocumentSessionController(
     loadSections: params.loadSections,
     crdtProviderRef: session.crdtProviderRef,
     setFocusedSectionIndex: focus.setFocusedSectionIndex,
+    requestMode: session.requestMode,
   });
 
   useEffect(() => {
@@ -163,10 +170,13 @@ export function useDocumentSessionController(
     setReadyEditors: registry.setReadyEditors,
     deletionPlaceholders: persistence.deletionPlaceholders,
     setDeletionPlaceholders: persistence.setDeletionPlaceholders,
-    restructuringKeys: persistence.restructuringKeys,
-    setRestructuringKeys: persistence.setRestructuringKeys,
     proposalMode: proposal.proposalMode,
     activeProposalId: proposal.activeProposalId,
+    activeProposalStatus: proposal.activeProposalStatus,
+    proposalIntent: proposal.proposalIntent,
+    canEditProposalScope: proposal.canEditProposalScope,
+    selectedProposalSectionKeys: proposal.selectedProposalSectionKeys,
+    proposalSectionConflicts: proposal.proposalSectionConflicts,
     controllerState: session.controllerState,
     crdtProviderRef: session.crdtProviderRef,
     controllerStateRef: session.controllerStateRef,
@@ -184,6 +194,10 @@ export function useDocumentSessionController(
     enterProposalMode: proposal.enterProposalMode,
     exitProposalMode: proposal.exitProposalMode,
     saveProposalSections: proposal.saveProposalSections,
+    syncProposalFromServer: proposal.syncProposalFromServer,
+    updateProposalIntent: proposal.updateProposalIntent,
+    toggleProposalSection: proposal.toggleProposalSection,
+    removeProposalSection: proposal.removeProposalSection,
     handleProposalSectionChange: proposal.handleProposalSectionChange,
     handleCursorExit: focus.handleCursorExit,
     setEditorRef: registry.setEditorRef,
@@ -215,9 +229,6 @@ export function useDocumentSessionController(
       const focused = runtime.focusedSectionIndexRef.current;
       if (focused == null) return;
       runtime.handleCursorExit(focused, direction);
-    },
-    importToSessionOverlayNow: () => {
-      runtime.crdtProviderRef.current?.sendSessionOverlayImportRequest();
     },
     registerEditor: (fragmentKey, handle) => {
       const idx = findSectionIndexByFragmentKey(params.sections, fragmentKey);

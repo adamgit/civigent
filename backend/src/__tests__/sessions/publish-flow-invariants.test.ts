@@ -1,7 +1,7 @@
 /**
  * Group A5: Publish Flow (End-to-End) Invariant Tests
  *
- * Pre-refactor invariant tests for commitDirtySections (the "Publish Now" path).
+ * Pre-refactor invariant tests for publishUnpublishedSections (the "Publish Now" path).
  * These must pass both before and after the store architecture refactor.
  */
 
@@ -11,7 +11,7 @@ import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
 
 import { getHeadSha } from "../../storage/git-repo.js";
-import { commitDirtySections, setAutoCommitEventHandler } from "../../storage/auto-commit.js";
+import { publishUnpublishedSections } from "../../storage/auto-commit.js";
 import {
   destroyAllSessions,
   markFragmentDirty,
@@ -20,8 +20,9 @@ import {
   findKeyForHeadingPath,
 } from "../../crdt/ydoc-lifecycle.js";
 import { ContentLayer } from "../../storage/content-layer.js";
+import { CanonicalStore } from "../../storage/canonical-store.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
-import type { WriterIdentity, WsServerEvent } from "../../types/shared.js";
+import type { WriterIdentity } from "../../types/shared.js";
 
 const writerA: WriterIdentity = {
   id: "pub-writer-a",
@@ -57,11 +58,9 @@ describe("A5: Publish Flow Invariants", () => {
     setSessionOverlayImportCallback(async (session) => {
       await flushDirtyToOverlay(session);
     });
-    setAutoCommitEventHandler(() => {});
   });
 
   afterEach(async () => {
-    setAutoCommitEventHandler(() => {});
     destroyAllSessions();
     await ctx.cleanup();
   });
@@ -106,7 +105,7 @@ describe("A5: Publish Flow Invariants", () => {
     const beforeSections = await canonical.readAllSections(SAMPLE_DOC_PATH);
 
     // Writer A publishes (scoped to Overview)
-    const result = await commitDirtySections(writerA, SAMPLE_DOC_PATH, [["Overview"]]);
+    const result = await publishUnpublishedSections(writerA, SAMPLE_DOC_PATH, [["Overview"]]);
     expect(result.committed).toBe(true);
 
     // Canonical should have writer A's edit
@@ -137,7 +136,7 @@ describe("A5: Publish Flow Invariants", () => {
     markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
 
     // Publish — should normalize (split) before committing
-    const result = await commitDirtySections(writerA, SAMPLE_DOC_PATH);
+    const result = await publishUnpublishedSections(writerA, SAMPLE_DOC_PATH);
     expect(result.committed).toBe(true);
 
     // After publish, canonical should contain both headings properly split
@@ -168,7 +167,7 @@ describe("A5: Publish Flow Invariants", () => {
     expect(live.perUserDirty.get(writerA.id)?.has(overviewKey)).toBe(true);
 
     // Publish
-    const result = await commitDirtySections(writerA, SAMPLE_DOC_PATH);
+    const result = await publishUnpublishedSections(writerA, SAMPLE_DOC_PATH);
     expect(result.committed).toBe(true);
 
     // After publish, writer A's dirty state for this key should be cleared
@@ -177,7 +176,7 @@ describe("A5: Publish Flow Invariants", () => {
 
   // ── A5.4 ──────────────────────────────────────────────────────────
 
-  it("A5.4: publish emits content:committed event with the sections that actually changed", async () => {
+  it("A5.4: publish returns per-doc commit details with the sections that actually changed", async () => {
     const live = await documentSessionRegistry.getOrCreate({
       docPath: SAMPLE_DOC_PATH,
       baseHead,
@@ -191,22 +190,16 @@ describe("A5: Publish Flow Invariants", () => {
     live.liveFragments.noteAheadOfStaged(overviewKey);
     markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
 
-    const events: WsServerEvent[] = [];
-    setAutoCommitEventHandler((event) => events.push(event));
-
-    const result = await commitDirtySections(writerA, SAMPLE_DOC_PATH);
+    const result = await publishUnpublishedSections(writerA, SAMPLE_DOC_PATH);
     expect(result.committed).toBe(true);
 
-    // Should have emitted content:committed
-    const commitEvents = events.filter((e) => e.type === "content:committed");
-    expect(commitEvents.length).toBe(1);
-
-    const commitEvent = commitEvents[0];
-    expect(commitEvent.doc_path).toBe(SAMPLE_DOC_PATH);
-    expect(commitEvent.sections.length).toBeGreaterThan(0);
+    expect(result.docCommits).toHaveLength(1);
+    const docCommit = result.docCommits[0];
+    expect(docCommit.docPath).toBe(SAMPLE_DOC_PATH);
+    expect(docCommit.sectionsPublished.length).toBeGreaterThan(0);
 
     // The committed sections should include Overview
-    const committedHeadings = commitEvent.sections.map(
+    const committedHeadings = docCommit.sectionsPublished.map(
       (s: { heading_path: string[] }) => s.heading_path,
     );
     const hasOverview = committedHeadings.some(
@@ -223,7 +216,7 @@ describe("A5: Publish Flow Invariants", () => {
 
   // ── A5.5 ──────────────────────────────────────────────────────────
 
-  it("A5.5: publish emits dirty:changed events for cleared sections", async () => {
+  it("A5.5: publish returns the cleared heading paths for the publishing writer", async () => {
     const live = await documentSessionRegistry.getOrCreate({
       docPath: SAMPLE_DOC_PATH,
       baseHead,
@@ -237,24 +230,18 @@ describe("A5: Publish Flow Invariants", () => {
     live.liveFragments.noteAheadOfStaged(overviewKey);
     markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
 
-    const events: WsServerEvent[] = [];
-    setAutoCommitEventHandler((event) => events.push(event));
-
-    const result = await commitDirtySections(writerA, SAMPLE_DOC_PATH);
+    const result = await publishUnpublishedSections(writerA, SAMPLE_DOC_PATH);
     expect(result.committed).toBe(true);
 
-    // Should have emitted dirty:changed for the publishing writer
-    const dirtyEvents = events.filter(
-      (e) => e.type === "dirty:changed" && e.writer_id === writerA.id && e.dirty === false,
-    );
-    expect(dirtyEvents.length).toBeGreaterThan(0);
+    expect(result.docCommits).toHaveLength(1);
+    const clearedHeadingPaths = result.docCommits[0].publisherClearedHeadingPaths;
+    expect(clearedHeadingPaths.length).toBeGreaterThan(0);
 
-    // The dirty:changed event should reference Overview's heading path
-    const overviewDirtyEvent = dirtyEvents.find(
-      (e) => e.heading_path.length === 1 && e.heading_path[0] === "Overview",
+    // The cleared-heading-path set should reference Overview's heading path
+    const overviewDirtyEvent = clearedHeadingPaths.find(
+      (headingPath) => headingPath.length === 1 && headingPath[0] === "Overview",
     );
     expect(overviewDirtyEvent).toBeDefined();
-    expect(overviewDirtyEvent!.committed_head).toBeTruthy();
   });
 
   // ── A5.6 ──────────────────────────────────────────────────────────
@@ -273,7 +260,7 @@ describe("A5: Publish Flow Invariants", () => {
     live.liveFragments.noteAheadOfStaged(overviewKey);
     markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
 
-    const result = await commitDirtySections(writerA, SAMPLE_DOC_PATH);
+    const result = await publishUnpublishedSections(writerA, SAMPLE_DOC_PATH);
     expect(result.committed).toBe(true);
     expect(result.commitSha).toBeTruthy();
 
@@ -286,5 +273,123 @@ describe("A5: Publish Flow Invariants", () => {
     // Verify the git HEAD advanced
     const newHead = await getHeadSha(ctx.rootDir);
     expect(newHead).toBe(result.commitSha);
+  });
+
+  // ── A5.7 ──────────────────────────────────────────────────────────
+
+  it("A5.7: stale losing settle passes must not contribute fragment cleanup", async () => {
+    const live = await documentSessionRegistry.getOrCreate({
+      docPath: SAMPLE_DOC_PATH,
+      baseHead,
+      initialEditor: { writerId: writerA.id, identity: writerA, socketId: "sock-a57" },
+    });
+
+    const overviewKey = findHeadingKey(live, "Overview");
+    const timelineKey = findHeadingKey(live, "Timeline");
+
+    const overviewBefore = live.liveFragments.readFragmentString(overviewKey);
+    live.liveFragments.replaceFragmentString(
+      overviewKey,
+      fragmentFromRemark(`${overviewBefore}\n\nA5.7 publish content.`),
+    );
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
+
+    const timelineRawBefore = live.liveFragments.readFragmentString(timelineKey);
+    await live.recoveryBuffer.writeFragment(timelineKey, timelineRawBefore);
+    expect(await live.liveFragments.readPersistedFragment(timelineKey)).toEqual(timelineRawBefore);
+
+    const originalSettle = live.liveFragments.settleFragment.bind(live.liveFragments);
+    let settleCalls = 0;
+    live.liveFragments.settleFragment = async (...args) => {
+      settleCalls += 1;
+      if (settleCalls === 1) {
+        return {
+          acceptedKeys: new Set<string>(),
+          structuralChange: null,
+          remaps: [],
+          updatedIndex: null,
+          writtenKeys: [overviewKey],
+          deletedKeys: [timelineKey],
+          staleOverlay: true,
+        };
+      }
+      return {
+        acceptedKeys: new Set<string>([overviewKey]),
+        structuralChange: null,
+        remaps: [],
+        updatedIndex: null,
+        writtenKeys: [overviewKey],
+        deletedKeys: [],
+        staleOverlay: false,
+      };
+    };
+
+    try {
+      const result = await publishUnpublishedSections(writerA, SAMPLE_DOC_PATH, [["Overview"]]);
+      expect(result.committed).toBe(true);
+      expect(settleCalls).toBe(2);
+
+      // Losing stale passes must NOT leak deletedKeys into final cleanup.
+      const timelineRawAfter = await live.liveFragments.readPersistedFragment(timelineKey);
+      expect(timelineRawAfter).toEqual(timelineRawBefore);
+    } finally {
+      live.liveFragments.settleFragment = originalSettle;
+    }
+  });
+
+  // ── A5.8 ──────────────────────────────────────────────────────────
+
+  it("A5.8: edits arriving during the publish commit window must remain dirty and durably buffered", async () => {
+    const live = await documentSessionRegistry.getOrCreate({
+      docPath: SAMPLE_DOC_PATH,
+      baseHead,
+      initialEditor: { writerId: writerA.id, identity: writerA, socketId: "sock-a58" },
+    });
+
+    const overviewKey = findHeadingKey(live, "Overview");
+    const before = live.liveFragments.readFragmentString(overviewKey);
+    live.liveFragments.replaceFragmentString(
+      overviewKey,
+      fragmentFromRemark(`${before}\n\nA5.8 publish baseline edit.`),
+    );
+    live.liveFragments.noteAheadOfStaged(overviewKey);
+    markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
+
+    const lateMarker = `A5.8 late edit ${Date.now()}`;
+    const originalAbsorb = CanonicalStore.prototype.absorbChangedSections;
+    let injectedLateEdit = false;
+    CanonicalStore.prototype.absorbChangedSections = async function (...args) {
+      if (!injectedLateEdit) {
+        injectedLateEdit = true;
+        const latest = live.liveFragments.readFragmentString(overviewKey);
+        live.liveFragments.replaceFragmentString(
+          overviewKey,
+          fragmentFromRemark(`${latest}\n\n${lateMarker}`),
+        );
+        live.liveFragments.noteAheadOfStaged(overviewKey);
+        markFragmentDirty(SAMPLE_DOC_PATH, writerA.id, overviewKey);
+        await live.liveFragments.snapshotToRecovery(new Set([overviewKey]));
+      }
+      return await originalAbsorb.apply(this, args);
+    };
+
+    try {
+      const result = await publishUnpublishedSections(writerA, SAMPLE_DOC_PATH, [["Overview"]]);
+      expect(result.committed).toBe(true);
+
+      const canonical = new ContentLayer(ctx.contentDir);
+      const afterSections = await canonical.readAllSections(SAMPLE_DOC_PATH);
+      expect(String(afterSections.get("Overview") ?? "")).not.toContain(lateMarker);
+
+      // A post-snapshot live edit must remain unpublished but still dirty.
+      expect(live.perUserDirty.get(writerA.id)?.has(overviewKey)).toBe(true);
+
+      // And it must still be crash-durable in the raw fragment sidecar.
+      const persistedRaw = await live.liveFragments.readPersistedFragment(overviewKey);
+      expect(String(persistedRaw ?? "")).toContain(lateMarker);
+    } finally {
+      CanonicalStore.prototype.absorbChangedSections = originalAbsorb;
+    }
   });
 });

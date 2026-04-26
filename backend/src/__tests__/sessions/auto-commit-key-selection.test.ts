@@ -4,7 +4,7 @@ import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
 
 import { getHeadSha } from "../../storage/git-repo.js";
-import { commitDirtySections } from "../../storage/auto-commit.js";
+import { publishUnpublishedSections } from "../../storage/auto-commit.js";
 import { destroyAllSessions, setSessionOverlayImportCallback, markFragmentDirty, flushDirtyToOverlay, findKeyForHeadingPath } from "../../crdt/ydoc-lifecycle.js";
 import { fragmentFromRemark } from "../../storage/section-formatting.js";
 import type { WriterIdentity } from "../../types/shared.js";
@@ -79,8 +79,7 @@ describe("auto-commit scoped normalization key selection", () => {
     await appendEdit(live, "Overview", "Overview edit for single-target scope.");
     await appendEdit(live, "Timeline", "Timeline edit that should not be normalized in overview scope.");
 
-    // Spy on stagedSections.acceptLiveFragments to capture the normalization scope.
-    // normalizeFragmentKeys now calls stores directly instead of fragments.normalizeStructure.
+    // Spy on stagedSections.acceptLiveFragments to capture the publish normalization scope.
     const normalizedKeys: string[] = [];
     const stagedAny = live.stagedSections as any;
     const originalAccept = stagedAny.acceptLiveFragments.bind(live.stagedSections);
@@ -90,7 +89,7 @@ describe("auto-commit scoped normalization key selection", () => {
     };
 
     try {
-      const result = await commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
+      const result = await publishUnpublishedSections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
       expect(result.committed).toBe(true);
     } finally {
       stagedAny.acceptLiveFragments = originalAccept;
@@ -114,7 +113,7 @@ describe("auto-commit scoped normalization key selection", () => {
     };
 
     try {
-      const result = await commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"], ["Timeline"]]);
+      const result = await publishUnpublishedSections(writer, SAMPLE_DOC_PATH, [["Overview"], ["Timeline"]]);
       expect(result.committed).toBe(true);
     } finally {
       stagedAny.acceptLiveFragments = originalAccept;
@@ -142,7 +141,7 @@ describe("auto-commit scoped normalization key selection", () => {
     };
 
     try {
-      const result = await commitDirtySections(writer, SAMPLE_DOC_PATH);
+      const result = await publishUnpublishedSections(writer, SAMPLE_DOC_PATH);
       expect(result.committed).toBe(true);
     } finally {
       stagedAny.acceptLiveFragments = originalAccept;

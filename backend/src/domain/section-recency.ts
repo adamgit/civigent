@@ -13,7 +13,7 @@
  */
 
 import { SectionRef } from "./section-ref.js";
-import { lookupDocSession, getSectionEditPulse, findKeyForHeadingPath } from "../crdt/ydoc-lifecycle.js";
+import { getSectionEditPulse } from "../crdt/ydoc-lifecycle.js";
 import type { SectionCommitInfo } from "../storage/section-activity.js";
 
 export class SectionRecency {
@@ -38,24 +38,12 @@ export class SectionRecency {
       return Math.max(0, (now - sectionPulse) / 1000);
     }
 
-    // 1. In-memory fragment activity (Y.Doc update timestamp)
-    const session = lookupDocSession(ref.docPath);
-    if (session) {
-      const fk = findKeyForHeadingPath(session, ref.headingPath);
-      if (fk) {
-        const fragmentTime = session.fragmentLastActivity?.get(fk);
-        if (fragmentTime != null) {
-          return Math.max(0, (now - fragmentTime) / 1000);
-        }
-      }
-    }
-
-    // 2. Dirty session files on disk — treat as very recent
+    // 1. Dirty session files on disk — treat as very recent
     if (dirtyFileSet.has(ref.key)) {
       return 0;
     }
 
-    // 3. Git commit history (only human commits count)
+    // 2. Git commit history (only human commits count)
     const commitInfo = commitByHeading.get(ref.key);
     if (commitInfo && commitInfo.writerType !== "agent") {
       return Math.max(0, (now - commitInfo.timestampMs) / 1000);

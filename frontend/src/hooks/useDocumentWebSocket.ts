@@ -12,8 +12,11 @@ import {
   type PresenceDoneEvent,
   type PresenceEditingEvent,
   type ProposalDraftEvent,
+  type ProposalInProgressEvent,
   type ProposalInjectedIntoSessionEvent,
   type ProposalWithdrawnEvent,
+  type SessionStatusChangedEvent,
+  type WriterDirtyStateChangedEvent,
 } from "../types/shared.js";
 import {
   type DeletionPlaceholder,
@@ -42,7 +45,6 @@ export interface UseDocumentWebSocketParams {
    *  sections from the REST refresh on content:committed without positional index coupling. */
   mountedEditorFragmentKeysRef: React.MutableRefObject<Set<string>>;
   pendingStructureRefocusRef: React.MutableRefObject<string[] | null>;
-  setRestructuringKeys: React.Dispatch<React.SetStateAction<Set<string>>>;
   storeRef: React.MutableRefObject<BrowserFragmentReplicaStore | null>;
   setDeletionPlaceholders: React.Dispatch<React.SetStateAction<DeletionPlaceholder[]>>;
   setStructureTree: React.Dispatch<React.SetStateAction<DocStructureNode[] | null>>;
@@ -63,6 +65,7 @@ export interface UseDocumentWebSocketReturn {
   presenceIndicatorsRef: React.MutableRefObject<PresenceIndicator[]>;
   pendingProposalIndicators: PendingProposalIndicator[];
   pendingProposalIndicatorsRef: React.MutableRefObject<PendingProposalIndicator[]>;
+  proposalConflictInvalidationSeq: number;
   presenceBySectionKey: Map<string, PresenceIndicator[]>;
   proposalsBySectionKey: Map<string, PendingProposalIndicator[]>;
 }
@@ -79,7 +82,6 @@ export function useDocumentWebSocket({
   focusedSectionIndexRef,
   mountedEditorFragmentKeysRef,
   pendingStructureRefocusRef,
-  setRestructuringKeys,
   storeRef,
   setDeletionPlaceholders,
   setStructureTree,
@@ -102,6 +104,7 @@ export function useDocumentWebSocket({
   // ── v3: Pending proposal indicators ─────────────────────
   const [pendingProposalIndicators, setPendingProposalIndicators] = useState<PendingProposalIndicator[]>([]);
   const pendingProposalIndicatorsRef = useRef<PendingProposalIndicator[]>([]);
+  const [proposalConflictInvalidationSeq, setProposalConflictInvalidationSeq] = useState(0);
 
   const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
 
@@ -124,6 +127,7 @@ export function useDocumentWebSocket({
       if (event.type === "content:committed") {
         const committed = event as ContentCommittedEvent;
         if (normalizeDocPath(committed.doc_path) !== normalizeDocPath(decodedDocPath)) return;
+        setProposalConflictInvalidationSeq((prev) => prev + 1);
 
         const changedSectionLabels = committed.sections.map((s) =>
           headingPathToLabel(s.heading_path),
@@ -220,6 +224,7 @@ export function useDocumentWebSocket({
       if (event.type === "presence:editing") {
         const presence = event as PresenceEditingEvent;
         if (normalizeDocPath(presence.doc_path) !== normalizeDocPath(decodedDocPath)) return;
+        setProposalConflictInvalidationSeq((prev) => prev + 1);
 
         const sectionKey = sectionHeadingKey(presence.heading_path);
         const key = `${presence.writer_id}:${sectionKey}`;
@@ -241,6 +246,7 @@ export function useDocumentWebSocket({
       if (event.type === "presence:done") {
         const done = event as PresenceDoneEvent;
         if (normalizeDocPath(done.doc_path) !== normalizeDocPath(decodedDocPath)) return;
+        setProposalConflictInvalidationSeq((prev) => prev + 1);
 
         const sectionKey = sectionHeadingKey(done.heading_path);
         const key = `${done.writer_id}:${sectionKey}`;
@@ -262,9 +268,6 @@ export function useDocumentWebSocket({
       if (event.type === "doc:structure-changed") {
         const e = event as DocStructureChangedEvent;
         if (normalizeDocPath(e.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-
-        // Clear restructuring suppression — the sections refresh will mount new editors.
-        setRestructuringKeys(new Set());
 
         // Capture current focus heading path for restoration after sections reload.
         // The CrdtProvider stays alive — the Y.Doc and connection are still valid.
@@ -319,6 +322,7 @@ export function useDocumentWebSocket({
       if (event.type === "proposal:draft") {
         const created = event as ProposalDraftEvent;
         if (normalizeDocPath(created.doc_path) !== normalizeDocPath(decodedDocPath)) return;
+        setProposalConflictInvalidationSeq((prev) => prev + 1);
 
         setPendingProposalIndicators((prev) => {
           const next = [...prev];
@@ -342,9 +346,33 @@ export function useDocumentWebSocket({
       // ── proposal:withdrawn ──
       if (event.type === "proposal:withdrawn") {
         const withdrawn = event as ProposalWithdrawnEvent;
+        if (normalizeDocPath(withdrawn.doc_path) !== normalizeDocPath(decodedDocPath)) return;
+        setProposalConflictInvalidationSeq((prev) => prev + 1);
         setPendingProposalIndicators((prev) =>
           prev.filter((ind) => ind.proposalId !== withdrawn.proposal_id),
         );
+        return;
+      }
+
+      // ── proposal:inprogress ──
+      if (event.type === "proposal:inprogress") {
+        const inprogress = event as ProposalInProgressEvent;
+        if (normalizeDocPath(inprogress.doc_path) !== normalizeDocPath(decodedDocPath)) return;
+        setProposalConflictInvalidationSeq((prev) => prev + 1);
+        return;
+      }
+
+      // Coarse invalidation events for dirty/session conflict transitions.
+      if (event.type === "writer:dirty-state-changed") {
+        const dirtyChanged = event as WriterDirtyStateChangedEvent;
+        if (normalizeDocPath(dirtyChanged.doc_path) !== normalizeDocPath(decodedDocPath)) return;
+        setProposalConflictInvalidationSeq((prev) => prev + 1);
+        return;
+      }
+      if (event.type === "session:status-changed") {
+        const statusChanged = event as SessionStatusChangedEvent;
+        if (normalizeDocPath(statusChanged.doc_path) !== normalizeDocPath(decodedDocPath)) return;
+        setProposalConflictInvalidationSeq((prev) => prev + 1);
         return;
       }
 
@@ -432,6 +460,7 @@ export function useDocumentWebSocket({
     presenceIndicatorsRef,
     pendingProposalIndicators,
     pendingProposalIndicatorsRef,
+    proposalConflictInvalidationSeq,
     presenceBySectionKey,
     proposalsBySectionKey,
   };

@@ -6,8 +6,8 @@ import { getHeadSha } from "../../storage/git-repo.js";
 import {
   acquireDocSession,
   releaseDocSession,
-  invalidateSessionForRestore,
-  setBroadcastRestoreInvalidation,
+  invalidateSessionForReplacement,
+  setBroadcastSessionReplacementInvalidation,
   type DocSession,
 } from "../../crdt/ydoc-lifecycle.js";
 import { joinAndNotify } from "../../ws/crdt-coordinator.js";
@@ -16,7 +16,7 @@ import type { WriterIdentity } from "../../types/shared.js";
 
 const MSG_SYNC_STEP_1 = 0x00;
 const MSG_SYNC_STEP_2 = 0x01;
-const MSG_RESTORE_NOTIFICATION = 0x0b;
+const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0b;
 
 const WRITER_A: WriterIdentity = { id: "writer-a", type: "human", displayName: "Writer A" };
 
@@ -72,21 +72,19 @@ describe("joinAndNotify message ordering", () => {
     await createSampleDocument(ctx.rootDir, DOC_DOUBLE_CALL);
     await createSampleDocument(ctx.rootDir, DOC_JSON_PAYLOAD);
     baseHead = await getHeadSha(ctx.rootDir);
-    setBroadcastRestoreInvalidation(() => {});
+    setBroadcastSessionReplacementInvalidation(() => {});
   });
 
   afterAll(async () => {
     await ctx.cleanup();
   });
 
-  it("when restore notification is pending, MSG_RESTORE_NOTIFICATION (0x0B) is sent BEFORE SYNC_STEP_2 (0x01)", async () => {
-    // Pre-populate a pending restore notification for this docPath/writerId
-    await invalidateSessionForRestore(DOC_RESTORE_ORDER, "sha-restored", "Admin", {
-      committedSha: "sha-precommit",
-      affectedWriters: [{ writerId: WRITER_A.id, dirtyHeadingPaths: [["Overview"]] }],
+  it("when a replacement notice is pending, MSG_DOCUMENT_REPLACEMENT_NOTICE (0x0B) is sent BEFORE SYNC_STEP_2 (0x01)", async () => {
+    await invalidateSessionForReplacement(DOC_RESTORE_ORDER, {
+      message: "document was restored to an earlier version",
     });
 
-    // invalidateSessionForRestore destroys any existing session — acquire fresh
+    // invalidation destroys any existing session — acquire fresh
     const session: DocSession = await acquireDocSession(DOC_RESTORE_ORDER, WRITER_A.id, baseHead, WRITER_A, "sock-test");
     const { socket, sent } = createMockSocket();
     const st = createSocketState(DOC_RESTORE_ORDER, WRITER_A.id);
@@ -94,7 +92,7 @@ describe("joinAndNotify message ordering", () => {
     try {
       joinAndNotify(session, socket, st);
 
-      const restoreIdx = sent.findIndex((m) => m[0] === MSG_RESTORE_NOTIFICATION);
+      const restoreIdx = sent.findIndex((m) => m[0] === MSG_DOCUMENT_REPLACEMENT_NOTICE);
       const syncStep2Idx = sent.findIndex((m) => m[0] === MSG_SYNC_STEP_2);
 
       expect(restoreIdx).toBeGreaterThanOrEqual(0);
@@ -106,7 +104,7 @@ describe("joinAndNotify message ordering", () => {
     }
   });
 
-  it("when no restore notification is pending, only SYNC_STEP_2 and SYNC_STEP_1 are sent", async () => {
+  it("when no replacement notice is pending, only SYNC_STEP_2 and SYNC_STEP_1 are sent", async () => {
     const session = await acquireDocSession(DOC_NO_NOTIFY, WRITER_A.id, baseHead, WRITER_A, "sock-test");
     const { socket, sent } = createMockSocket();
     const st = createSocketState(DOC_NO_NOTIFY, WRITER_A.id);
@@ -117,7 +115,7 @@ describe("joinAndNotify message ordering", () => {
       expect(sent.length).toBe(2);
       expect(sent[0][0]).toBe(MSG_SYNC_STEP_2);
       expect(sent[1][0]).toBe(MSG_SYNC_STEP_1);
-      expect(sent.find((m) => m[0] === MSG_RESTORE_NOTIFICATION)).toBeUndefined();
+      expect(sent.find((m) => m[0] === MSG_DOCUMENT_REPLACEMENT_NOTICE)).toBeUndefined();
     } finally {
       await releaseDocSession(DOC_NO_NOTIFY, WRITER_A.id, "sock-test");
     }
@@ -141,10 +139,9 @@ describe("joinAndNotify message ordering", () => {
     }
   });
 
-  it("MSG_RESTORE_NOTIFICATION payload is valid JSON with expected fields", async () => {
-    await invalidateSessionForRestore(DOC_JSON_PAYLOAD, "sha-restored-2", "Admin2", {
-      committedSha: "sha-precommit-2",
-      affectedWriters: [{ writerId: WRITER_A.id, dirtyHeadingPaths: [["Section"]] }],
+  it("MSG_DOCUMENT_REPLACEMENT_NOTICE payload is valid JSON with expected fields", async () => {
+    await invalidateSessionForReplacement(DOC_JSON_PAYLOAD, {
+      message: "admin overwrote this document",
     });
     const session = await acquireDocSession(DOC_JSON_PAYLOAD, WRITER_A.id, baseHead, WRITER_A, "sock-test");
     const { socket, sent } = createMockSocket();
@@ -153,17 +150,13 @@ describe("joinAndNotify message ordering", () => {
     try {
       joinAndNotify(session, socket, st);
 
-      const restoreMsg = sent.find((m) => m[0] === MSG_RESTORE_NOTIFICATION);
+      const restoreMsg = sent.find((m) => m[0] === MSG_DOCUMENT_REPLACEMENT_NOTICE);
       expect(restoreMsg).toBeDefined();
 
       const payload = restoreMsg!.slice(1);
       const json = JSON.parse(new TextDecoder().decode(payload));
-      expect(json).toHaveProperty("restored_sha");
-      expect(json).toHaveProperty("restored_by_display_name");
-      expect(json).toHaveProperty("pre_commit_sha");
-      expect(json).toHaveProperty("your_dirty_heading_paths");
-      expect(json.restored_sha).toBe("sha-restored-2");
-      expect(json.restored_by_display_name).toBe("Admin2");
+      expect(json).toHaveProperty("message");
+      expect(json.message).toBe("admin overwrote this document");
     } finally {
       await releaseDocSession(DOC_JSON_PAYLOAD, WRITER_A.id, "sock-test");
     }

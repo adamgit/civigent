@@ -33,7 +33,7 @@ import {
   MSG_YJS_UPDATE,
   MSG_SESSION_OVERLAY_IMPORT_REQUEST,
 } from "../../ws/crdt-protocol.js";
-import { commitDirtySections, setAutoCommitEventHandler } from "../../storage/auto-commit.js";
+import { publishUnpublishedSections } from "../../storage/auto-commit.js";
 import type { WriterIdentity, ModeTransitionResult, ModeTransitionRequest, WsServerEvent } from "../../types/shared.js";
 import { documentSessionRegistry } from "../../crdt/document-session-registry.js";
 import {
@@ -199,7 +199,6 @@ describe("lifecycle boundary crossings", () => {
     wsEvents = [];
     const captureEvent = (event: WsServerEvent) => wsEvents.push(event);
     setCrdtEventHandler(captureEvent);
-    setAutoCommitEventHandler(captureEvent);
     app = createApp({
       onWsEvent: captureEvent,
     });
@@ -238,7 +237,6 @@ describe("lifecycle boundary crossings", () => {
 
   afterEach(async () => {
     setCrdtEventHandler(() => {});
-    setAutoCommitEventHandler(() => {});
     destroyAllSessions();
     for (const s of openSockets) {
       if (s.readyState === WebSocket.OPEN) s.close();
@@ -307,7 +305,7 @@ describe("lifecycle boundary crossings", () => {
     // Publish to verify content was preserved through normalization.
     // The mutate via MSG_SECTION_MUTATE already triggers an import, so we can
     // publish directly without an explicit import request.
-    const publishResult = await commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
+    const publishResult = await publishUnpublishedSections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
     expect(publishResult.committed).toBe(true);
 
     const sectionsAfter = await fetchSections(app, writerToken);
@@ -323,7 +321,7 @@ describe("lifecycle boundary crossings", () => {
 
   // ── B18.2 ── Publish flow ────────────────────────────────────
 
-  it("B18.2: publish flow emits content:committed and dirty:changed events", async () => {
+  it("B18.2: publish endpoint emits content:committed and dirty:changed events", async () => {
     const clientInstanceId = "client-publish-flow";
     const ws = new WebSocket(
       `ws://localhost:${port}/ws/crdt${SAMPLE_DOC_PATH}?clientInstanceId=${clientInstanceId}`,
@@ -358,10 +356,13 @@ describe("lifecycle boundary crossings", () => {
     // Clear events so we can capture publish-specific ones.
     wsEvents.length = 0;
 
-    // Publish the change.
-    const publishResult = await commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
-    expect(publishResult.committed).toBe(true);
-    expect(typeof publishResult.commitSha).toBe("string");
+    // Publish the change through the API boundary.
+    const publishResponse = await request(app)
+      .post("/api/publish")
+      .set("Authorization", `Bearer ${writerToken}`)
+      .send({ doc_path: SAMPLE_DOC_PATH, heading_paths: [["Overview"]] });
+    expect(publishResponse.status).toBe(200);
+    expect(typeof publishResponse.body.committed_head).toBe("string");
 
     // Verify content:committed event was emitted.
     const committedEvent = wsEvents.find((e) => e.type === "content:committed");
@@ -475,7 +476,7 @@ describe("lifecycle boundary crossings", () => {
       ws.send(encodeMessage(MSG_SESSION_OVERLAY_IMPORT_REQUEST, new Uint8Array(0)));
       await firstAcceptStarted;
 
-      const publishPromise = commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
+      const publishPromise = publishUnpublishedSections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
       const sawConcurrentAccept = await Promise.race([
         secondAcceptStarted.then(() => true),
         new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 75)),
@@ -570,7 +571,7 @@ describe("lifecycle boundary crossings", () => {
       ws.send(encodeMessage(MSG_SESSION_OVERLAY_IMPORT_REQUEST, new Uint8Array(0)));
       await importStarted;
 
-      const publishPromise = commitDirtySections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
+      const publishPromise = publishUnpublishedSections(writer, SAMPLE_DOC_PATH, [["Overview"]]);
       const absorbWhileImportBlocked = await Promise.race([
         absorbStarted.then(() => true),
         new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 75)),

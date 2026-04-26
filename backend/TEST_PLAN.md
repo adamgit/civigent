@@ -404,17 +404,7 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 
 ---
 
-## 15. Writer Dirty State / Mirror (`mirror/`)
-
-### `writer-dirty-state.test.ts`
-- GET /api/writers/:id/dirty returns dirty sections grouped by document
-- Each dirty section includes heading_path and base_head
-- Returns empty documents array when writer has no dirty sections
-- Requires authentication
-
----
-
-## 16. Publish (`publish/`)
+## 15. Publish (`publish/`)
 
 ### `publish.test.ts`
 - POST /api/publish commits dirty sections for authenticated human
@@ -529,8 +519,6 @@ backend/src/__tests__/
   admin/
     admin-config.test.ts
     admin-snapshot-health.test.ts
-  mirror/
-    writer-dirty-state.test.ts
   publish/
     publish.test.ts
   recovery/

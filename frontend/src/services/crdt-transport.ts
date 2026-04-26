@@ -34,13 +34,12 @@ import type {
   EditorFocusTarget,
   ModeTransitionRequest,
   ModeTransitionResult,
-  RestoreNotificationPayload,
+  DocumentReplacementNoticePayload,
 } from "../types/shared";
 import {
   CrdtProvider,
   type CrdtConnectionState,
   type SessionOverlayImportedPayload,
-  type StructureWillChangePayload,
 } from "./crdt-provider";
 import type { BrowserFragmentReplicaStore } from "./browser-fragment-replica-store";
 
@@ -60,16 +59,12 @@ export interface CrdtTransportOptions {
    *  `markSectionsEdited` is already called first; this passthrough is
    *  for React state consumers that need the same signal. */
   onLocalUpdate?: (modifiedFragmentKeys: string[]) => void;
-  /** Fired when a server-driven structural restructure is announced.
-   *  Kept as a caller callback rather than routed to the store because
-   *  the store does not currently model restructures. */
-  onStructureWillChange?: (restructures: StructureWillChangePayload[]) => void;
   /** Called when the server closes with WS_CLOSE_IDLE_TIMEOUT. */
   onIdleTimeout?: () => void;
-  /** Called when the server initiates a post-restore reconnection. */
+  /** Called when the server initiates a document-replacement reconnection. */
   onSessionReinit?: () => void;
-  /** Delivered once after onSynced on the post-restore reconnect. */
-  onRestoreNotification?: (payload: RestoreNotificationPayload) => void;
+  /** Delivered once after onSynced on the post-replacement reconnect. */
+  onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
   /** Server-authoritative result for this tab's requested CRDT mode transition. */
   onModeTransitionResult?: (result: ModeTransitionResult) => void;
   /** Server ACK: it received and applied a MSG_YJS_UPDATE (data is in server RAM). */
@@ -116,9 +111,6 @@ export class CrdtTransport {
           this.store?.forceCleanSections(payload.deletedKeys);
           this.opts.onSessionOverlayImported?.(payload);
         },
-        onStructureWillChange: (restructures) => {
-          this.opts.onStructureWillChange?.(restructures);
-        },
         onLocalUpdate: (modifiedFragmentKeys) => {
           if (modifiedFragmentKeys.length > 0) {
             this.store?.markSectionsEdited(modifiedFragmentKeys);
@@ -128,8 +120,8 @@ export class CrdtTransport {
         onSessionReinit: () => {
           this.opts.onSessionReinit?.();
         },
-        onRestoreNotification: (payload) => {
-          this.opts.onRestoreNotification?.(payload);
+        onDocumentReplacementNotice: (payload) => {
+          this.opts.onDocumentReplacementNotice?.(payload);
         },
         onModeTransitionResult: (result) => {
           this.opts.onModeTransitionResult?.(result);
@@ -172,10 +164,6 @@ export class CrdtTransport {
 
   sendActivityPulse(): void {
     this.provider.sendActivityPulse();
-  }
-
-  sendSessionOverlayImportRequest(): void {
-    this.provider.sendSessionOverlayImportRequest();
   }
 
   sendSectionMutate(

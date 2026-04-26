@@ -8,7 +8,7 @@
  * Consolidates the three-step active-edit detection:
  *   1. Live session: CRDT session with focus on this section (MSG_SECTION_FOCUS)
  *   2. Dirty files: Session overlay has uncommitted content for this section
- *   3. Human proposal: A pending human_reservation proposal locks this section
+ *   3. Human proposal: Another human proposal in `inprogress` currently holds a lock
  *
  * Supports two modes:
  *   - Async (single section): full I/O checks, no pre-fetching needed
@@ -32,6 +32,7 @@ export interface HumanProposalLockInfo {
 }
 
 export type HumanProposalLockIndex = Map<string, HumanProposalLockInfo>;
+export type PresenceConflictSource = "active_live_edit" | "uncommitted_live_edits" | "human_proposal_lock";
 
 // ─── SectionPresence ────────────────────────────────────────────
 
@@ -44,15 +45,23 @@ export class SectionPresence {
    * Performs disk I/O for dirty file check and proposal lookup.
    */
   static async check(ref: SectionRef): Promise<boolean> {
+    return (await SectionPresence.explain(ref)) !== null;
+  }
+
+  /**
+   * Async detail: why this section is currently conflicted, if at all.
+   */
+  static async explain(ref: SectionRef): Promise<PresenceConflictSource | null> {
     // Step 1: Live session focus (hard block)
-    if (SectionPresence.checkLiveSession(ref)) return true;
+    if (SectionPresence.checkLiveSession(ref)) return "active_live_edit";
 
     // Step 2: Dirty session files on disk
-    if (await SectionPresence.checkDirtyFile(ref)) return true;
+    if (await SectionPresence.checkDirtyFile(ref)) return "uncommitted_live_edits";
 
     // Step 3: Human proposal lock
     const lock = await SectionPresence.checkHumanProposalLock(ref);
-    return lock !== null;
+    if (lock) return "human_proposal_lock";
+    return null;
   }
 
   // ─── Sync (batch, uses pre-fetched caches) ──────────────────
@@ -66,10 +75,22 @@ export class SectionPresence {
     dirtyFileSet: Set<string>,
     humanProposalLockIndex?: HumanProposalLockIndex,
   ): boolean {
-    if (SectionPresence.checkLiveSession(ref)) return true;
-    if (dirtyFileSet.has(ref.key)) return true;
-    if (humanProposalLockIndex?.has(ref.globalKey)) return true;
-    return false;
+    return SectionPresence.explainWithCache(ref, dirtyFileSet, humanProposalLockIndex) !== null;
+  }
+
+  /**
+   * Sync detail: why this section is currently conflicted, if at all.
+   * Uses pre-built caches and performs zero I/O.
+   */
+  static explainWithCache(
+    ref: SectionRef,
+    dirtyFileSet: Set<string>,
+    humanProposalLockIndex?: HumanProposalLockIndex,
+  ): PresenceConflictSource | null {
+    if (SectionPresence.checkLiveSession(ref)) return "active_live_edit";
+    if (dirtyFileSet.has(ref.key)) return "uncommitted_live_edits";
+    if (humanProposalLockIndex?.has(ref.globalKey)) return "human_proposal_lock";
+    return null;
   }
 
   /**
@@ -108,17 +129,15 @@ export class SectionPresence {
    * Returns Map keyed by SectionRef.globalKey.
    *
    * Context-aware blocking:
-   *   - "all" (default): blocks on both draft and inprogress human proposals.
-   *     Use for agent commit checks and human base-edit checks.
-   *   - "inprogress-only": blocks only on inprogress (lock-held) proposals.
-   *     Use for lock-acquisition checks (drafts don't block other lock attempts).
+   *   - "inprogress-only" (default): blocks only on lock-held human proposals.
+   *   - "all": legacy broader view that includes draft/inprogress/committing.
    */
   static async prefetchHumanProposalLocks(
     excludeProposalId?: string,
-    blockLevel: "all" | "inprogress-only" = "all",
+    blockLevel: "all" | "inprogress-only" = "inprogress-only",
   ): Promise<HumanProposalLockIndex> {
     const index: HumanProposalLockIndex = new Map();
-    // "all" scans draft+inprogress+committing; "inprogress-only" scans just inprogress
+    // "all" scans draft+inprogress+committing; "inprogress-only" scans only lock-held proposals
     const proposals = blockLevel === "all"
       ? await listProposals("draft")
       : await listProposals("inprogress");
@@ -174,14 +193,13 @@ export class SectionPresence {
   }
 
   /**
-   * Check if a human proposal locks this section.
-   * Scans draft+inprogress by default (same as "all" context).
+   * Check if a human proposal lock currently blocks this section.
+   * This uses lock-held proposals only (inprogress).
    */
   private static async checkHumanProposalLock(
     ref: SectionRef,
   ): Promise<HumanProposalLockInfo | null> {
-    // Single-section check always uses "all" context (draft+inprogress block)
-    const proposals = await listProposals("draft");
+    const proposals = await listProposals("inprogress");
     for (const proposal of proposals) {
       if (proposal.writer.type !== "human") continue;
       for (const section of proposal.sections) {
