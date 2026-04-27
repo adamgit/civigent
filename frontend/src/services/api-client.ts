@@ -583,9 +583,20 @@ export const apiClient = {
     return requestJson<ReadDocStructureResponse>(`/api/documents/${encoded}/structure`);
   },
 
-  async getDocumentSections(docPath: string): Promise<GetDocumentSectionsResponse> {
+  async getDocumentSections(
+    docPath: string,
+    options?: { proposalId?: string },
+  ): Promise<GetDocumentSectionsResponse> {
     const encoded = encodeDocPath(docPath);
-    return requestJson<GetDocumentSectionsResponse>(`/api/documents/${encoded}/sections`);
+    const params = new URLSearchParams();
+    if (options?.proposalId) {
+      params.set("proposal_id", options.proposalId);
+    }
+    const query = params.toString();
+    const url = query.length > 0
+      ? `/api/documents/${encoded}/sections?${query}`
+      : `/api/documents/${encoded}/sections`;
+    return requestJson<GetDocumentSectionsResponse>(url);
   },
 
   async getChangesSince(docPath: string, afterHead?: string): Promise<ChangesSinceResponse> {
@@ -649,9 +660,17 @@ export const apiClient = {
     return requestJson<ListProposalsResponse>(`/api/proposals${query}`);
   },
 
+  async listDraftProposals(): Promise<ListProposalsResponse> {
+    return requestJson<ListProposalsResponse>("/api/proposals?status=draft");
+  },
+
   async listMyProposals(status?: ProposalStatus): Promise<ListProposalsResponse> {
     const query = status ? `?status=${encodeURIComponent(status)}` : "";
     return requestJson<ListProposalsResponse>(`/api/my-proposals${query}`);
+  },
+
+  async listMyDraftProposals(): Promise<ListProposalsResponse> {
+    return requestJson<ListProposalsResponse>("/api/my-proposals?status=draft");
   },
 
   async getProposal(id: ProposalId): Promise<ReadProposalResponse> {

@@ -22,7 +22,10 @@ import { lookupDocSession, countEditorSockets } from "../crdt/ydoc-lifecycle.js"
 import { getSessionSectionsContentRoot } from "../storage/data-root.js";
 import { resolveHeadingPathUnderRoot } from "../storage/heading-resolver.js";
 import { resolveAllSectionPaths } from "../storage/heading-resolver.js";
-import { listProposals } from "../storage/proposal-repository.js";
+import {
+  listActiveProposals,
+  listInProgressProposals,
+} from "../storage/proposal-repository.js";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -139,8 +142,8 @@ export class SectionPresence {
     const index: HumanProposalLockIndex = new Map();
     // "all" scans draft+inprogress+committing; "inprogress-only" scans only lock-held proposals
     const proposals = blockLevel === "all"
-      ? await listProposals("draft")
-      : await listProposals("inprogress");
+      ? await listActiveProposals()
+      : await listInProgressProposals();
     for (const proposal of proposals) {
       if (proposal.writer.type !== "human") continue;
       if (excludeProposalId && proposal.id === excludeProposalId) continue;
@@ -199,7 +202,7 @@ export class SectionPresence {
   private static async checkHumanProposalLock(
     ref: SectionRef,
   ): Promise<HumanProposalLockInfo | null> {
-    const proposals = await listProposals("inprogress");
+    const proposals = await listInProgressProposals();
     for (const proposal of proposals) {
       if (proposal.writer.type !== "human") continue;
       for (const section of proposal.sections) {

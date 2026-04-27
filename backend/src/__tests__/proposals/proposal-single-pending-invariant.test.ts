@@ -3,7 +3,7 @@ import request from "supertest";
 import { createTestServer, type TestServerContext } from "../helpers/test-server.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { authFor } from "../helpers/auth.js";
-import { listProposals } from "../../storage/proposal-repository.js";
+import { listDraftProposals } from "../../storage/proposal-repository.js";
 
 describe("Proposal single-pending invariant", () => {
   let ctx: TestServerContext;
@@ -145,7 +145,7 @@ describe("Proposal single-pending invariant", () => {
     expect(second.body.proposal_id).not.toBe(first.body.proposal_id);
 
     // Both drafts should appear in the draft listing for this writer
-    const drafts = await listProposals("draft");
+    const drafts = await listDraftProposals();
     const writerDrafts = drafts.filter((p) => p.writer.id === "multi-draft-agent");
     const writerDraftIds = writerDrafts.map((p) => p.id).sort();
     expect(writerDraftIds).toEqual([first.body.proposal_id, second.body.proposal_id].sort());

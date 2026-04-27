@@ -40,7 +40,21 @@ export function isProposalMutable(proposal: AnyProposal): boolean {
   return false;
 }
 
-const ALL_STATUSES: ProposalStatus[] = ["draft", "pending", "inprogress", "committing", "committed", "withdrawn"];
+export const PROPOSAL_STATUSES = [
+  "draft",
+  "pending",
+  "inprogress",
+  "committing",
+  "committed",
+  "withdrawn",
+] as const satisfies readonly ProposalStatus[];
+
+const ALL_STATUSES: ProposalStatus[] = [...PROPOSAL_STATUSES];
+
+export function isProposalStatus(value: unknown): value is ProposalStatus {
+  if (typeof value !== "string") return false;
+  return (PROPOSAL_STATUSES as readonly string[]).includes(value);
+}
 
 function statusDir(status: ProposalStatus): string {
   switch (status) {
@@ -204,12 +218,7 @@ export async function readProposalWithContent(id: ProposalId): Promise<{ proposa
   return { proposal, sectionContent: batchResult };
 }
 
-export async function listProposals(status?: ProposalStatus): Promise<AnyProposal[]> {
-  // Spec: active (non-terminal) proposals grouped under "draft" filter for listing purposes.
-  // This includes "inprogress" (human lock-held) and "committing" (commit in flight).
-  const statuses = status
-    ? (status === "draft" ? ["draft", "inprogress", "committing"] as ProposalStatus[] : [status])
-    : ALL_STATUSES;
+async function listProposalsByStatuses(statuses: readonly ProposalStatus[]): Promise<AnyProposal[]> {
   const proposals: AnyProposal[] = [];
 
   for (const currentStatus of statuses) {
@@ -239,14 +248,46 @@ export async function listProposals(status?: ProposalStatus): Promise<AnyProposa
   return proposals;
 }
 
+export async function listAllProposals(): Promise<AnyProposal[]> {
+  return listProposalsByStatuses(ALL_STATUSES);
+}
+
+export async function listActiveProposals(): Promise<AnyProposal[]> {
+  return listProposalsByStatuses(["draft", "inprogress", "committing"]);
+}
+
+export async function listDraftProposals(): Promise<AnyProposal[]> {
+  return listProposalsByStatuses(["draft"]);
+}
+
+export async function listPendingProposals(): Promise<AnyProposal[]> {
+  return listProposalsByStatuses(["pending"]);
+}
+
+export async function listInProgressProposals(): Promise<AnyProposal[]> {
+  return listProposalsByStatuses(["inprogress"]);
+}
+
+export async function listCommittingProposals(): Promise<AnyProposal[]> {
+  return listProposalsByStatuses(["committing"]);
+}
+
+export async function listCommittedProposals(): Promise<AnyProposal[]> {
+  return listProposalsByStatuses(["committed"]);
+}
+
+export async function listWithdrawnProposals(): Promise<AnyProposal[]> {
+  return listProposalsByStatuses(["withdrawn"]);
+}
+
 export async function findDraftProposalByWriter(writerId: string): Promise<AnyProposal | null> {
-  const pending = await listProposals("draft");
-  return pending.find((p) => p.writer.id === writerId) ?? null;
+  const drafts = await listDraftProposals();
+  return drafts.find((p) => p.writer.id === writerId) ?? null;
 }
 
 export async function countDraftsByWriter(writerId: string): Promise<number> {
-  const pending = await listProposals("draft");
-  return pending.filter((p) => p.writer.id === writerId).length;
+  const drafts = await listDraftProposals();
+  return drafts.filter((p) => p.writer.id === writerId).length;
 }
 
 export interface UpdateProposalResult {
@@ -305,6 +346,11 @@ export async function transitionToInProgress(id: ProposalId): Promise<LockAcquis
   if (proposal.writer.type !== "human") {
     throw new InvalidProposalStateError(
       `Cannot transition proposal ${id} to inprogress: only human proposals may acquire locks.`,
+    );
+  }
+  if (proposal.sections.length === 0) {
+    throw new InvalidProposalStateError(
+      `Cannot transition proposal ${id} to inprogress: select at least one section.`,
     );
   }
 
@@ -370,7 +416,7 @@ async function prefetchInProgressLocks(
   excludeProposalId: string,
 ): Promise<Map<string, { writerId: string; writerDisplayName: string }>> {
   const index = new Map<string, { writerId: string; writerDisplayName: string }>();
-  const inProgressProposals = await listProposals("inprogress");
+  const inProgressProposals = await listInProgressProposals();
   for (const proposal of inProgressProposals) {
     if (proposal.writer.type !== "human") continue;
     if (proposal.id === excludeProposalId) continue;

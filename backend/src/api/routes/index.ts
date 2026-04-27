@@ -27,8 +27,6 @@ import type {
   SectionMeta,
   HumanInvolvementPresetName,
   SectionScoreSnapshot,
-  EvaluatedSection,
-  ProposalHumanInvolvementEvaluation,
   ProposalDTO,
   ProposalStatus,
   WriterIdentity,
@@ -50,11 +48,19 @@ import {
   createTransientProposal,
   readProposal,
   readProposalWithContent,
-  listProposals,
+  listAllProposals,
+  listDraftProposals,
+  listPendingProposals,
+  listInProgressProposals,
+  listCommittingProposals,
+  listCommittedProposals,
+  listWithdrawnProposals,
   findDraftProposalByWriter,
+  proposalContentRoot,
   updateProposalSections,
   transitionToWithdrawn,
   transitionToInProgress,
+  isProposalStatus,
   isProposalMutable,
   ProposalNotFoundError,
   InvalidProposalStateError,
@@ -74,6 +80,7 @@ import {
 } from "../../crdt/ydoc-lifecycle.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { SectionGuard } from "../../domain/section-guard.js";
+import { evaluateHumanProposalLockAvailability } from "../../domain/human-proposal-lock-availability.js";
 import { readDocSectionCommitInfo, type SectionCommitInfo } from "../../storage/section-activity.js";
 import { SectionPresence } from "../../domain/section-presence.js";
 import {
@@ -357,14 +364,9 @@ export interface CreateApiRouterOptions {
   onWsEvent?: (event: WsServerEvent) => void;
 }
 
-function emitProposalInjectedEvents(
-  emit: ((event: WsServerEvent) => void) | undefined,
-  proposalId: string,
-  writerDisplayName: string,
+function groupSectionsByDocPath(
   sections: Array<{ doc_path: string; heading_path: string[] }>,
-): void {
-  if (!emit) return;
-
+): Map<string, string[][]> {
   const headingPathsByDoc = new Map<string, string[][]>();
   for (const section of sections) {
     if (!headingPathsByDoc.has(section.doc_path)) {
@@ -372,8 +374,75 @@ function emitProposalInjectedEvents(
     }
     headingPathsByDoc.get(section.doc_path)!.push(section.heading_path);
   }
+  return headingPathsByDoc;
+}
 
-  for (const [docPath, headingPaths] of headingPathsByDoc) {
+function emitProposalDraftEventsByDoc(
+  emit: ((event: WsServerEvent) => void) | undefined,
+  proposalId: string,
+  writer: Pick<WriterIdentity, "id" | "displayName">,
+  intent: string,
+  sections: Array<{ doc_path: string; heading_path: string[] }>,
+): void {
+  if (!emit || sections.length === 0) return;
+  for (const [docPath, headingPaths] of groupSectionsByDocPath(sections)) {
+    emit({
+      type: "proposal:draft",
+      proposal_id: proposalId,
+      doc_path: docPath,
+      heading_paths: headingPaths,
+      writer_id: writer.id,
+      writer_display_name: writer.displayName,
+      intent,
+    });
+  }
+}
+
+function emitProposalInProgressEventsByDoc(
+  emit: ((event: WsServerEvent) => void) | undefined,
+  proposalId: string,
+  writer: Pick<WriterIdentity, "id" | "displayName">,
+  intent: string,
+  sections: Array<{ doc_path: string; heading_path: string[] }>,
+): void {
+  if (!emit || sections.length === 0) return;
+  for (const [docPath, headingPaths] of groupSectionsByDocPath(sections)) {
+    emit({
+      type: "proposal:inprogress",
+      proposal_id: proposalId,
+      doc_path: docPath,
+      heading_paths: headingPaths,
+      writer_id: writer.id,
+      writer_display_name: writer.displayName,
+      intent,
+    });
+  }
+}
+
+function emitProposalWithdrawnEventsByDoc(
+  emit: ((event: WsServerEvent) => void) | undefined,
+  proposalId: string,
+  sections: Array<{ doc_path: string; heading_path: string[] }>,
+): void {
+  if (!emit || sections.length === 0) return;
+  for (const [docPath, headingPaths] of groupSectionsByDocPath(sections)) {
+    emit({
+      type: "proposal:withdrawn",
+      proposal_id: proposalId,
+      doc_path: docPath,
+      heading_paths: headingPaths,
+    });
+  }
+}
+
+function emitProposalInjectedEvents(
+  emit: ((event: WsServerEvent) => void) | undefined,
+  proposalId: string,
+  writerDisplayName: string,
+  sections: Array<{ doc_path: string; heading_path: string[] }>,
+): void {
+  if (!emit) return;
+  for (const [docPath, headingPaths] of groupSectionsByDocPath(sections)) {
     emit({
       type: "proposal:injected_into_session",
       doc_path: docPath,
@@ -384,47 +453,46 @@ function emitProposalInjectedEvents(
   }
 }
 
-async function evaluateHumanProposalLockAvailability(
-  proposalId: string,
-  sections: Array<{ doc_path: string; heading_path: string[]; justification?: string }>,
-): Promise<{ evaluation: ProposalHumanInvolvementEvaluation; sections: EvaluatedSection[] }> {
-  const docPaths = [...new Set(sections.map((section) => section.doc_path))];
-  const dirtyFileSets = new Map<string, Set<string>>();
-  for (const docPath of docPaths) {
-    dirtyFileSets.set(docPath, await SectionPresence.prefetchDirtyFiles(docPath));
+function emitContentCommittedEventsByDoc(
+  emit: ((event: WsServerEvent) => void) | undefined,
+  writer: Pick<WriterIdentity, "id" | "type" | "displayName">,
+  contributorIds: string[],
+  commitSha: string,
+  sections: Array<{ doc_path: string; heading_path: string[] }>,
+): void {
+  if (!emit || sections.length === 0) return;
+  for (const [docPath, headingPaths] of groupSectionsByDocPath(sections)) {
+    emit({
+      type: "content:committed",
+      doc_path: docPath,
+      sections: headingPaths.map((headingPath) => ({ doc_path: docPath, heading_path: headingPath })),
+      commit_sha: commitSha,
+      writer_id: writer.id,
+      writer_display_name: writer.displayName,
+      writer_type: writer.type,
+      contributor_ids: contributorIds,
+      seconds_ago: 0,
+    });
   }
-  const inProgressLocks = await SectionPresence.prefetchHumanProposalLocks(
-    proposalId,
-    "inprogress-only",
-  );
+}
 
-  const evaluatedSections: EvaluatedSection[] = sections.map((section) => {
-    const ref = new SectionRef(section.doc_path, section.heading_path);
-    const presenceConflict = SectionPresence.explainWithCache(
-      ref,
-      dirtyFileSets.get(section.doc_path) ?? new Set<string>(),
-      inProgressLocks,
-    );
-    return {
-      doc_path: section.doc_path,
-      heading_path: section.heading_path,
-      humanInvolvement_score: presenceConflict ? 1 : 0,
-      blocked: !!presenceConflict,
-      blocked_reason: presenceConflict ?? undefined,
-      justification: section.justification,
-    };
-  });
-
-  return {
-    evaluation: {
-      all_sections_accepted: evaluatedSections.every((section) => !section.blocked),
-      aggregate_impact: 0,
-      aggregate_threshold: 0,
-      blocked_sections: evaluatedSections.filter((section) => section.blocked),
-      passed_sections: evaluatedSections.filter((section) => !section.blocked),
-    },
-    sections: evaluatedSections,
-  };
+async function listProposalsForStatusFilter(status?: ProposalStatus) {
+  if (!status) return listAllProposals();
+  switch (status) {
+    case "draft":
+      return listDraftProposals();
+    case "pending":
+      return listPendingProposals();
+    case "inprogress":
+      return listInProgressProposals();
+    case "committing":
+      return listCommittingProposals();
+    case "committed":
+      return listCommittedProposals();
+    case "withdrawn":
+      return listWithdrawnProposals();
+  }
+  return listAllProposals();
 }
 
 // ─── Router ─────────────────────────────────────────────
@@ -740,7 +808,27 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const docPath = req.params.docPath;
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
-      const overlay = new OverlayContentLayer(getSessionSectionsContentRoot(), getContentRoot());
+
+      const proposalIdQuery = req.query.proposal_id;
+      if (Array.isArray(proposalIdQuery)) {
+        sendApiError(res, 400, "proposal_id must be a single string value.");
+        return;
+      }
+      const proposalId = typeof proposalIdQuery === "string" ? proposalIdQuery.trim() : "";
+
+      let sectionsOverlayRoot = getSessionSectionsContentRoot();
+      if (proposalId.length > 0) {
+        const writer = requireAuthenticatedWriter(req, res);
+        if (!writer) return;
+        const proposal = await readProposal(proposalId);
+        if (proposal.writer.id !== writer.id) {
+          sendApiError(res, 403, "You can only read sections using your own proposal_id.");
+          return;
+        }
+        sectionsOverlayRoot = proposalContentRoot(proposal.id, proposal.status);
+      }
+
+      const overlay = new OverlayContentLayer(sectionsOverlayRoot, getContentRoot());
       const sectionList = await overlay.getSectionList(docPath);
 
       // Build headingPaths and sectionFileByKey from the section list
@@ -750,18 +838,31 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       );
 
       // ── Batch pre-fetch: all I/O happens here, loop below is pure compute ──
-      const sectionsOverlayRoot = getSessionSectionsContentRoot();
       const sectionsOverlay = new OverlayContentLayer(sectionsOverlayRoot, getContentRoot());
       const bulkContent = prependHeadings(sectionList, await sectionsOverlay.readAllSections(docPath));
 
       // 2. Involvement metadata via shared helper
       const involvementMeta = await buildSectionInvolvementMeta(docPath, headingPaths, bulkContent);
 
-      // 3. Human proposal lock index (lock-held proposals only)
-      const humanProposalLocks = await SectionPresence.prefetchHumanProposalLocks(
-        undefined,
-        "inprogress-only",
-      );
+      const blockedHeadingKeys = new Set<string>();
+      if (proposalId.length > 0) {
+        const { sections: availabilitySections } = await evaluateHumanProposalLockAvailability(
+          proposalId,
+          headingPaths.map((heading_path) => ({ doc_path: docPath, heading_path })),
+        );
+        for (const section of availabilitySections) {
+          if (!section.blocked) continue;
+          blockedHeadingKeys.add(SectionRef.headingKey(section.heading_path));
+        }
+      } else {
+        const humanProposalLocks = await SectionPresence.prefetchHumanProposalLocks();
+        for (const headingPath of headingPaths) {
+          const globalKey = new SectionRef(docPath, headingPath).globalKey;
+          if (humanProposalLocks.has(globalKey)) {
+            blockedHeadingKeys.add(SectionRef.headingKey(headingPath));
+          }
+        }
+      }
 
       // Build sections response
       const sections: GetDocumentSectionsResponse["sections"] = [];
@@ -771,8 +872,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         const meta = involvementMeta.get(headingKey);
         if (!meta) continue;
 
-        const globalKey = new SectionRef(docPath, headingPath).globalKey;
-        const blocked = humanProposalLocks.has(globalKey);
+        const blocked = blockedHeadingKeys.has(headingKey);
 
         sections.push({
           heading: headingPath[headingPath.length - 1] ?? "",
@@ -799,6 +899,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       res.json(response);
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      if (error instanceof ProposalNotFoundError) {
         sendApiError(res, 404, error);
         return;
       }
@@ -1782,18 +1886,13 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
           },
           sections: [],
         };
-        // Broadcast proposal:created for human reservations
-        if (onWsEvent && sections.length > 0) {
-          onWsEvent({
-            type: "proposal:draft",
-            proposal_id: proposalId,
-            doc_path: sections[0].doc_path,
-            heading_paths: sections.map((s) => s.heading_path),
-            writer_id: writer.id,
-            writer_display_name: writer.displayName,
-            intent,
-          });
-        }
+        emitProposalDraftEventsByDoc(
+          onWsEvent,
+          proposalId,
+          writer,
+          intent,
+          sections,
+        );
 
         res.status(201).json(response);
         return;
@@ -1802,17 +1901,13 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       // Agent proposals: evaluate human involvement (informational — must commit explicitly)
       const { evaluation, sections: evalSections } = await evaluateProposalHumanInvolvement(proposalId);
 
-      if (onWsEvent && evalSections.length > 0) {
-        onWsEvent({
-          type: "proposal:draft",
-          proposal_id: proposalId,
-          doc_path: evalSections[0].doc_path,
-          heading_paths: evalSections.map((s) => s.heading_path),
-          writer_id: writer.id,
-          writer_display_name: writer.displayName,
-          intent,
-        });
-      }
+      emitProposalDraftEventsByDoc(
+        onWsEvent,
+        proposalId,
+        writer,
+        intent,
+        evalSections,
+      );
 
       const response: CreateProposalResponse = {
         proposal_id: proposalId,
@@ -1830,15 +1925,14 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   // GET /api/proposals — List proposals
   router.get("/proposals", async (req, res, next) => {
     try {
-      const statusFilter = req.query.status as string | undefined;
-      const validStatuses = ["draft", "committing", "committed", "withdrawn"];
-
-      if (statusFilter && !validStatuses.includes(statusFilter)) {
-        sendApiError(res, 400, `Invalid status filter. Must be one of: ${validStatuses.join(", ")}`);
+      const statusFilterRaw = req.query.status;
+      if (statusFilterRaw !== undefined && !isProposalStatus(statusFilterRaw)) {
+        sendApiError(res, 400, "Invalid status filter.");
         return;
       }
+      const statusFilter = isProposalStatus(statusFilterRaw) ? statusFilterRaw : undefined;
 
-      const proposals = await listProposals(statusFilter as ProposalStatus | undefined);
+      const proposals = await listProposalsForStatusFilter(statusFilter);
       const response: ListProposalsResponse = { proposals };
       res.json(response);
     } catch (error) {
@@ -1852,15 +1946,14 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
 
-      const statusFilter = req.query.status as string | undefined;
-      const validStatuses = ["draft", "committing", "committed", "withdrawn"];
-
-      if (statusFilter && !validStatuses.includes(statusFilter)) {
-        sendApiError(res, 400, `Invalid status filter. Must be one of: ${validStatuses.join(", ")}`);
+      const statusFilterRaw = req.query.status;
+      if (statusFilterRaw !== undefined && !isProposalStatus(statusFilterRaw)) {
+        sendApiError(res, 400, "Invalid status filter.");
         return;
       }
+      const statusFilter = isProposalStatus(statusFilterRaw) ? statusFilterRaw : undefined;
 
-      const allProposals = await listProposals(statusFilter as ProposalStatus | undefined);
+      const allProposals = await listProposalsForStatusFilter(statusFilter);
       const myProposals = allProposals.filter((p) => p.writer.id === writer.id);
       const response: ListProposalsResponse = { proposals: myProposals };
       res.json(response);
@@ -1978,17 +2071,25 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         }
       }
 
-      // Broadcast proposal:draft with updated sections
-      if (onWsEvent && updated.sections.length > 0) {
-        onWsEvent({
-          type: "proposal:draft",
-          proposal_id: updated.id,
-          doc_path: updated.sections[0].doc_path,
-          heading_paths: updated.sections.map((s: { heading_path: string[] }) => s.heading_path),
-          writer_id: writer.id,
-          writer_display_name: writer.displayName,
-          intent: updated.intent,
-        });
+      const previousSections = proposal.sections;
+      const updatedSections = updated.sections;
+      const previousDocPaths = new Set(previousSections.map((section) => section.doc_path));
+      const updatedDocPaths = new Set(updatedSections.map((section) => section.doc_path));
+      const removedDocPaths = new Set(
+        [...previousDocPaths].filter((docPath) => !updatedDocPaths.has(docPath)),
+      );
+      const removedSections = removedDocPaths.size === 0
+        ? []
+        : previousSections.filter((section) => removedDocPaths.has(section.doc_path));
+
+      // If the proposal no longer targets some docs, clear stale doc-local indicators there.
+      emitProposalWithdrawnEventsByDoc(onWsEvent, updated.id, removedSections);
+
+      // Broadcast updated proposal state with status-correct event semantics.
+      if (updated.status === "inprogress") {
+        emitProposalInProgressEventsByDoc(onWsEvent, updated.id, writer, updated.intent, updatedSections);
+      } else {
+        emitProposalDraftEventsByDoc(onWsEvent, updated.id, writer, updated.intent, updatedSections);
       }
 
       // Human reservations skip involvement re-evaluation
@@ -2049,6 +2150,14 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
         );
         return;
       }
+      if (proposal.sections.length === 0) {
+        sendApiError(
+          res,
+          409,
+          "Cannot acquire locks: select at least one section before entering inprogress.",
+        );
+        return;
+      }
 
       const result = await transitionToInProgress(req.params.id);
 
@@ -2064,25 +2173,14 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       }
 
       const acquiredProposal = result.proposal;
-      if (onWsEvent && acquiredProposal && acquiredProposal.sections.length > 0) {
-        const headingPathsByDoc = new Map<string, string[][]>();
-        for (const section of acquiredProposal.sections) {
-          if (!headingPathsByDoc.has(section.doc_path)) {
-            headingPathsByDoc.set(section.doc_path, []);
-          }
-          headingPathsByDoc.get(section.doc_path)!.push(section.heading_path);
-        }
-        for (const [docPath, headingPaths] of headingPathsByDoc) {
-          onWsEvent({
-            type: "proposal:inprogress",
-            proposal_id: acquiredProposal.id,
-            doc_path: docPath,
-            heading_paths: headingPaths,
-            writer_id: acquiredProposal.writer.id,
-            writer_display_name: acquiredProposal.writer.displayName,
-            intent: acquiredProposal.intent,
-          });
-        }
+      if (acquiredProposal) {
+        emitProposalInProgressEventsByDoc(
+          onWsEvent,
+          acquiredProposal.id,
+          acquiredProposal.writer,
+          acquiredProposal.intent,
+          acquiredProposal.sections,
+        );
       }
 
       const response: AcquireLocksResponse = {
@@ -2094,6 +2192,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
     } catch (error) {
       if (error instanceof ProposalNotFoundError) {
         sendApiError(res, 404, error.message);
+        return;
+      }
+      if (error instanceof InvalidProposalStateError) {
+        sendApiError(res, 409, error.message);
         return;
       }
       next(error);
@@ -2151,17 +2253,13 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
             writer.displayName,
             proposal.sections,
           );
-          onWsEvent({
-            type: "content:committed",
-            doc_path: proposal.sections[0]?.doc_path ?? "",
-            sections: proposal.sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
-            commit_sha: committedHead,
-            writer_id: writer.id,
-            writer_display_name: writer.displayName,
-            writer_type: writer.type,
-            contributor_ids: [writer.id],
-            seconds_ago: 0,
-          });
+          emitContentCommittedEventsByDoc(
+            onWsEvent,
+            writer,
+            [writer.id],
+            committedHead,
+            proposal.sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+          );
         }
 
         const response: CommitProposalResponse = {
@@ -2200,17 +2298,13 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
             writer.displayName,
             sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
           );
-          onWsEvent({
-            type: "content:committed",
-            doc_path: sections[0]?.doc_path ?? "",
-            sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
-            commit_sha: committedHead,
-            writer_id: writer.id,
-            writer_display_name: writer.displayName,
-            writer_type: writer.type,
-            contributor_ids: [writer.id],
-            seconds_ago: 0,
-          });
+          emitContentCommittedEventsByDoc(
+            onWsEvent,
+            writer,
+            [writer.id],
+            committedHead,
+            sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+          );
         }
 
         const response: CommitProposalResponse = {
@@ -2260,15 +2354,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const reason = req.body?.reason as string | undefined;
       const withdrawn = await transitionToWithdrawn(proposal.id, reason);
 
-      // Broadcast proposal:withdrawn
-      if (onWsEvent && proposal.sections.length > 0) {
-        onWsEvent({
-          type: "proposal:withdrawn",
-          proposal_id: proposal.id,
-          doc_path: proposal.sections[0].doc_path,
-          heading_paths: proposal.sections.map((s: { heading_path: string[] }) => s.heading_path),
-        });
-      }
+      emitProposalWithdrawnEventsByDoc(onWsEvent, proposal.id, proposal.sections);
 
       const response: WithdrawProposalResponse = {
         proposal_id: withdrawn.id,
@@ -2817,15 +2903,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       const { agentEventLog } = await import("../../mcp/agent-event-log.js");
       const registeredAgents = (await readAgentKeysSkipErrors()).map(e => ({ id: e.agentId, displayName: e.displayName }));
 
-      // Collect all proposals with their status
-      const allStatuses = ["draft", "committed", "withdrawn"] as const;
-      const allProposals: Array<any> = [];
-      for (const status of allStatuses) {
-        const proposals = await listProposals(status);
-        for (const p of proposals) {
-          allProposals.push({ ...p, status });
-        }
-      }
+      // Collect all proposals with their persisted status.
+      const allProposals = await listAllProposals();
 
       const agents = agentEventLog.buildFullSummary(registeredAgents, allProposals);
       const config = getAdminConfig();

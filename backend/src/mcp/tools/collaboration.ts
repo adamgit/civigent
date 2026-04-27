@@ -24,7 +24,10 @@ import {
   createProposal,
   readProposal,
   readProposalWithContent,
-  listProposals,
+  listAllProposals,
+  listDraftProposals,
+  listCommittedProposals,
+  listWithdrawnProposals,
   findDraftProposalByWriter,
   updateProposalSections,
   transitionToWithdrawn,
@@ -39,7 +42,7 @@ import {
 import { SectionRef } from "../../domain/section-ref.js";
 import { INVOLVEMENT_THRESHOLD } from "../../domain/humanInvolvement.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
-import type { SectionScoreSnapshot, ProposalStatus } from "../../types/shared.js";
+import type { SectionScoreSnapshot } from "../../types/shared.js";
 import { checkDocPermission } from "../../auth/acl.js";
 import { emitCatalogMutationEvents, summarizeProposalCatalogMutations } from "../catalog-events.js";
 import {
@@ -507,7 +510,13 @@ const listProposalsHandler: ToolHandler = async (args) => {
     return makeToolErrorResult(`Invalid status filter. Must be one of: ${validStatuses.join(", ")}`);
   }
 
-  const proposals = await listProposals(status as ProposalStatus | undefined);
+  const proposals = status === "draft"
+    ? await listDraftProposals()
+    : status === "committed"
+    ? await listCommittedProposals()
+    : status === "withdrawn"
+    ? await listWithdrawnProposals()
+    : await listAllProposals();
   return jsonToolResult({ proposals });
 };
 
@@ -521,7 +530,13 @@ const myProposalsHandler: ToolHandler = async (args, ctx) => {
     return makeToolErrorResult(`Invalid status filter. Must be one of: ${validStatuses.join(", ")}`);
   }
 
-  const all = await listProposals(status as ProposalStatus | undefined);
+  const all = status === "draft"
+    ? await listDraftProposals()
+    : status === "committed"
+    ? await listCommittedProposals()
+    : status === "withdrawn"
+    ? await listWithdrawnProposals()
+    : await listAllProposals();
   const mine = all.filter(p => p.writer.id === ctx.writer.id);
   return jsonToolResult({ proposals: mine });
 };

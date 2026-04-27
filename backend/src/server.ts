@@ -12,6 +12,8 @@ import { maybeGenerateBootstrapCode } from "./auth/service.js";
 import { isSystemReady, setSystemReady } from "./startup-state.js";
 import { isDevSupervised } from "./runtime/system-state.js";
 import type { FatalReport, WorkerIpcMessage } from "./runtime/system-state.js";
+import type { WsServerEvent } from "./types/shared.js";
+import { buildProposalSectionAvailabilityEventsForDoc } from "./ws/proposal-section-availability.js";
 
 const ANSI_BOLD_YELLOW = "\x1b[1;33m";
 const ANSI_RESET = "\x1b[0m";
@@ -57,13 +59,48 @@ const PORT = Number(process.env.PORT ?? "3000");
 const crdtWs = createCrdtWsServer();
 const wsHub = createWsHub();
 
+const PROPOSAL_AVAILABILITY_TRIGGER_TYPES = new Set<WsServerEvent["type"]>([
+  "content:committed",
+  "presence:editing",
+  "presence:done",
+  "proposal:draft",
+  "proposal:inprogress",
+  "proposal:withdrawn",
+  "writer:dirty-state-changed",
+  "session:status-changed",
+]);
+
+function eventDocPath(event: WsServerEvent): string | null {
+  if ("doc_path" in event && typeof event.doc_path === "string") {
+    return event.doc_path;
+  }
+  return null;
+}
+
+async function emitDerivedProposalSectionAvailability(event: WsServerEvent): Promise<void> {
+  if (!PROPOSAL_AVAILABILITY_TRIGGER_TYPES.has(event.type)) return;
+  const docPath = eventDocPath(event);
+  if (!docPath) return;
+  try {
+    const derivedEvents = await buildProposalSectionAvailabilityEventsForDoc(docPath);
+    for (const derivedEvent of derivedEvents) {
+      wsHub.broadcast(derivedEvent);
+    }
+  } catch {
+    // Derived availability updates are best-effort and must never break primary WS delivery.
+  }
+}
+
+function handleWsEvent(event: WsServerEvent): void {
+  wsHub.broadcast(event);
+  void emitDerivedProposalSectionAvailability(event);
+}
+
 // Wire up CRDT events so they broadcast through the hub
-setCrdtEventHandler((event) => wsHub.broadcast(event));
+setCrdtEventHandler((event) => handleWsEvent(event));
 
 const app = createApp({
-  onWsEvent: (event) => {
-    wsHub.broadcast(event);
-  },
+  onWsEvent: (event) => handleWsEvent(event),
 });
 const server = createServer(app);
 

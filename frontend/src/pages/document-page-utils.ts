@@ -2,6 +2,7 @@ import type {
   DocStructureNode,
   GetDocumentSectionsResponse,
 } from "../types/shared.js";
+import { sectionGlobalKey } from "../types/shared.js";
 import { relativeTime } from "../utils/relativeTime";
 
 // ─── Helper types ────────────────────────────────────────────────
@@ -72,6 +73,32 @@ export function headingPathToLabel(path: string[]): string {
 /** Read the opaque backend-owned fragment key for a section. */
 export function getSectionFragmentKey(section: DocumentSection): string {
   return section.fragment_key;
+}
+
+export function mergeSectionsWithProposalOverlay(
+  sections: DocumentSection[],
+  decodedDocPath: string | null,
+  selectedProposalSectionKeys: Set<string>,
+  proposalSections: Map<string, { doc_path: string; heading_path: string[]; content: string }>,
+): DocumentSection[] {
+  if (!decodedDocPath) return sections;
+  if (selectedProposalSectionKeys.size === 0) return sections;
+
+  let changed = false;
+  const merged = sections.map((section) => {
+    const key = sectionGlobalKey(decodedDocPath, section.heading_path);
+    if (!selectedProposalSectionKeys.has(key)) return section;
+    const overlay = proposalSections.get(key);
+    if (!overlay) return section;
+    if (overlay.content === section.content) return section;
+    changed = true;
+    return {
+      ...section,
+      content: overlay.content,
+    };
+  });
+
+  return changed ? merged : sections;
 }
 
 export function formatRelativeAgeFromMs(changedAtMs: number): string {

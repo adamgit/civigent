@@ -30,6 +30,7 @@ export interface DocumentSectionRendererProps {
   transferService: SectionTransferService | null;
   proposalMode: boolean;
   canEditProposalContent: boolean;
+  proposalScopeMutationInFlight: boolean;
   isReady: boolean;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
   onStartEditing: (index: number, coords: { x: number; y: number }) => void;
@@ -103,6 +104,7 @@ export function DocumentSectionRenderer({
   transferService,
   proposalMode,
   canEditProposalContent,
+  proposalScopeMutationInFlight,
   isReady,
   mouseDownPosRef,
   onStartEditing,
@@ -145,6 +147,7 @@ export function DocumentSectionRenderer({
         if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
         if (proposalMode) {
           if (!canEditProposalContent) {
+            if (proposalScopeMutationInFlight) return;
             if (!isInProposal && onToggleProposalSection) {
               playFlyToProposalPanelAnimation(e.clientX, e.clientY);
               void onToggleProposalSection();
@@ -176,6 +179,7 @@ export function DocumentSectionRenderer({
                 ? "bg-blue-50 text-blue-700 border-blue-300"
                 : "bg-white text-slate-700 border-slate-300"
             }`}
+            disabled={proposalScopeMutationInFlight}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();

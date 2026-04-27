@@ -30,6 +30,7 @@ import {
   formatRelativeAgeFromMs,
   getDocDisplayName,
   isDocumentEffectivelyEmpty,
+  mergeSectionsWithProposalOverlay,
   LOADING_REVEAL_DELAY_MS,
   BEFORE_FIRST_HEADING_KEY,
 } from "./document-page-utils";
@@ -145,12 +146,20 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     deletionPlaceholders,
     setDeletionPlaceholders,
     proposalMode,
-    activeProposalId,
+    activeProposal,
     activeProposalStatus,
     proposalIntent,
     canEditProposalScope,
+    creatingProposal,
+    acquiringLocks,
+    publishingProposal,
+    cancellingProposal,
+    proposalScopeMutationInFlight,
+    panelError,
     selectedProposalSectionKeys,
     proposalSectionConflicts,
+    proposalOverlayVersion,
+    proposalSectionsRef,
     controllerState,
     crdtProviderRef,
     controllerStateRef,
@@ -162,9 +171,11 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     mouseDownPosRef,
     stopEditing,
     startEditing,
-    enterProposalMode,
-    exitProposalMode,
-    syncProposalFromServer,
+    startManualPublish,
+    acquireProposalLocks,
+    commitActiveProposal,
+    cancelActiveProposal,
+    applyProposalSectionAvailabilityEvent,
     updateProposalIntent,
     toggleProposalSection,
     removeProposalSection,
@@ -186,9 +197,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
   // Ref for displayed sections (used by transferService and other stable callbacks)
   const sectionsRef = useRef<DocumentSection[]>([]);
-  useEffect(() => {
-    sectionsRef.current = displaySections;
-  }, [displaySections]);
 
   // Keep `displaySections` in sync: normally mirrors `sections`; when the server
   // doc is empty and the page is in editor mode with CRDT synced, expose a
@@ -222,6 +230,29 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     }
     setDisplaySections((prev) => (prev === next ? prev : next));
   }, [sections, isEditingMode, syntheticBfhSections]);
+
+  const renderSections = useMemo(() => {
+    if (!(proposalMode && activeProposalStatus === "inprogress")) {
+      return displaySections;
+    }
+    return mergeSectionsWithProposalOverlay(
+      displaySections,
+      decodedDocPath,
+      selectedProposalSectionKeys,
+      proposalSectionsRef.current,
+    );
+  }, [
+    proposalMode,
+    activeProposalStatus,
+    displaySections,
+    decodedDocPath,
+    selectedProposalSectionKeys,
+    proposalOverlayVersion,
+  ]);
+
+  useEffect(() => {
+    sectionsRef.current = renderSections;
+  }, [renderSections]);
 
   // ── Injected sections state (proposal injection visual affordance) ─
   // Separate from recentlyChangedSections — different visual, different trigger.
@@ -274,7 +305,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     presenceIndicators,
     presenceIndicatorsRef,
     pendingProposalIndicatorsRef,
-    proposalConflictInvalidationSeq,
   } = useDocumentWebSocket({
     decodedDocPath,
     sectionsRef,
@@ -289,12 +319,13 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     loadSections,
     setError,
     onSectionsInjectedByProposal,
+    onProposalSectionAvailability: applyProposalSectionAvailabilityEvent,
   });
 
   // Derived
   const isEditing = isEditingMode;
-  const focusedHeadingPath = focusedSectionIndex !== null && displaySections[focusedSectionIndex]
-    ? displaySections[focusedSectionIndex].heading_path
+  const focusedHeadingPath = focusedSectionIndex !== null && renderSections[focusedSectionIndex]
+    ? renderSections[focusedSectionIndex].heading_path
     : null;
 
   // ── Cross-section drag/drop service ──────────────────────
@@ -703,14 +734,14 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
               {/* Loading state */}
               {showLoading ? <DocumentLoadingSkeleton structureTree={structureTree} /> : null}
 
-              {!sectionsLoading && isDocumentEffectivelyEmpty(displaySections) && !isEditing && !error ? (
+              {!sectionsLoading && isDocumentEffectivelyEmpty(renderSections) && !isEditing && !error ? (
                 <button
                   type="button"
                   className="text-sm text-text-muted italic hover:text-text-primary hover:underline cursor-text text-left block"
                   onClick={(e) => {
                     if (proposalMode) {
-                      if (canEditProposalScope && displaySections[0]) {
-                        void toggleProposalSection(displaySections[0]);
+                      if (canEditProposalScope && renderSections[0]) {
+                        void toggleProposalSection(renderSections[0]);
                         return;
                       }
                       handleFocusSection(0, [], { x: e.clientX, y: e.clientY });
@@ -727,12 +758,13 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
           </div>
 
           <DocumentCanvas
-            sections={displaySections}
+            sections={renderSections}
             sectionsLoading={sectionsLoading}
             focusedSectionIndex={focusedSectionIndex}
             proposalMode={proposalMode}
             canEditProposalScope={canEditProposalScope}
             canEditProposalContent={activeProposalStatus === "inprogress"}
+            proposalScopeMutationInFlight={proposalScopeMutationInFlight}
             selectedProposalSectionKeys={selectedProposalSectionKeys}
             proposalSectionConflicts={proposalSectionConflicts}
             decodedDocPath={decodedDocPath}
@@ -778,15 +810,20 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
       {/* Proposal floating panel */}
       <ProposalPanel
-        activeProposalId={activeProposalId}
         proposalMode={proposalMode}
-        onEnterProposalMode={enterProposalMode}
-        onExitProposalMode={exitProposalMode}
-        onProposalLoaded={syncProposalFromServer}
+        activeProposal={activeProposal}
+        creatingProposal={creatingProposal}
+        acquiringLocks={acquiringLocks}
+        publishingProposal={publishingProposal}
+        cancellingProposal={cancellingProposal}
+        proposalScopeMutationInFlight={proposalScopeMutationInFlight}
+        panelError={panelError}
+        onStartManualPublish={startManualPublish}
+        onAcquireLocks={acquireProposalLocks}
+        onPublish={commitActiveProposal}
+        onCancel={cancelActiveProposal}
         onRemoveProposalSection={removeProposalSection}
-        proposalConflictInvalidationSeq={proposalConflictInvalidationSeq}
         proposalSectionConflicts={proposalSectionConflicts}
-        activeProposalStatus={activeProposalStatus}
         proposalIntent={proposalIntent}
         canEditIntent={activeProposalStatus === "draft"}
         onProposalIntentChange={updateProposalIntent}

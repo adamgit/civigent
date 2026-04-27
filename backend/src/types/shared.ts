@@ -46,6 +46,8 @@ export type {
   LoginProvider,
   PresenceDoneEvent,
   PresenceEditingEvent,
+  ProposalSectionAvailabilityEntry,
+  ProposalSectionAvailabilityEvent,
   ProposalFileBase,
   CommittedProposalFile,
   InProgressProposalFile,

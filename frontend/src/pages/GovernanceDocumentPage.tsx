@@ -25,6 +25,7 @@ import {
   formatRelativeAgeFromMs,
   getDocDisplayName,
   isDocumentEffectivelyEmpty,
+  mergeSectionsWithProposalOverlay,
   shouldMountEditor,
   LOADING_REVEAL_DELAY_MS,
   BEFORE_FIRST_HEADING_KEY,
@@ -117,9 +118,19 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     deletionPlaceholders,
     setDeletionPlaceholders,
     proposalMode,
-    activeProposalId,
+    activeProposal,
     activeProposalStatus,
+    proposalIntent,
     canEditProposalScope,
+    creatingProposal,
+    acquiringLocks,
+    publishingProposal,
+    cancellingProposal,
+    proposalScopeMutationInFlight,
+    panelError,
+    selectedProposalSectionKeys,
+    proposalSectionConflicts,
+    proposalOverlayVersion,
     controllerState,
     crdtProviderRef,
     controllerStateRef,
@@ -131,9 +142,14 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     proposalSectionsRef,
     mouseDownPosRef,
     startEditing,
-    enterProposalMode,
-    exitProposalMode,
+    startManualPublish,
+    acquireProposalLocks,
+    commitActiveProposal,
+    cancelActiveProposal,
+    applyProposalSectionAvailabilityEvent,
+    updateProposalIntent,
     stopEditing,
+    removeProposalSection,
     toggleProposalSection,
     handleProposalSectionChange,
     handleCursorExit,
@@ -152,9 +168,6 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
 
   // Ref for displayed sections (used by transferService and other stable callbacks)
   const sectionsRef = useRef<DocumentSection[]>([]);
-  useEffect(() => {
-    sectionsRef.current = displaySections;
-  }, [displaySections]);
 
   // Keep `displaySections` in sync: normally mirrors `sections`; when the server
   // doc is empty and the page is in editor mode, expose a single synthetic BFH
@@ -185,6 +198,29 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     setDisplaySections((prev) => (prev === next ? prev : next));
   }, [sections, isEditingMode, syntheticBfhSections]);
 
+  const renderSections = useMemo(() => {
+    if (!(proposalMode && activeProposalStatus === "inprogress")) {
+      return displaySections;
+    }
+    return mergeSectionsWithProposalOverlay(
+      displaySections,
+      decodedDocPath,
+      selectedProposalSectionKeys,
+      proposalSectionsRef.current,
+    );
+  }, [
+    proposalMode,
+    activeProposalStatus,
+    displaySections,
+    decodedDocPath,
+    selectedProposalSectionKeys,
+    proposalOverlayVersion,
+  ]);
+
+  useEffect(() => {
+    sectionsRef.current = renderSections;
+  }, [renderSections]);
+
   // ── WebSocket hook ────────────────────────────────────────
   const {
     recentlyChangedSections,
@@ -206,12 +242,13 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     setStructureTree,
     loadSections,
     setError,
+    onProposalSectionAvailability: applyProposalSectionAvailabilityEvent,
   });
 
   // Derived
   const isEditing = isEditingMode;
-  const focusedHeadingPath = focusedSectionIndex !== null && displaySections[focusedSectionIndex]
-    ? displaySections[focusedSectionIndex].heading_path
+  const focusedHeadingPath = focusedSectionIndex !== null && renderSections[focusedSectionIndex]
+    ? renderSections[focusedSectionIndex].heading_path
     : null;
 
   // ── Cross-section drag/drop service ──────────────────────
@@ -556,14 +593,14 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
             {showLoading ? <DocumentLoadingSkeleton structureTree={structureTree} /> : null}
 
             {/* Sections */}
-            {!sectionsLoading && isDocumentEffectivelyEmpty(displaySections) && !isEditing && !error ? (
+            {!sectionsLoading && isDocumentEffectivelyEmpty(renderSections) && !isEditing && !error ? (
               <button
                 type="button"
                 className="text-sm text-text-muted italic hover:text-text-primary hover:underline cursor-text text-left block"
                 onClick={(e) => {
                   if (proposalMode) {
-                    if (canEditProposalScope && displaySections[0]) {
-                      void toggleProposalSection(displaySections[0]);
+                    if (canEditProposalScope && renderSections[0]) {
+                      void toggleProposalSection(renderSections[0]);
                       return;
                     }
                     return;
@@ -575,9 +612,12 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
               </button>
             ) : null}
 
-            {!sectionsLoading ? displaySections.map((section, i) => {
+            {!sectionsLoading ? renderSections.map((section, i) => {
               const sectionKey = sectionHeadingKey(section.heading_path);
-              const isInProposal = !!(proposalMode && proposalSectionsRef.current.has(`${decodedDocPath}::${sectionKey}`));
+              const proposalKey = decodedDocPath ? `${decodedDocPath}::${sectionKey}` : null;
+              const isInProposal = !!(proposalMode && proposalKey && selectedProposalSectionKeys.has(proposalKey));
+              const proposalConflictReason = proposalKey ? (proposalSectionConflicts.get(proposalKey) ?? null) : null;
+              const lockedInProposalMode = proposalMode && isInProposal && proposalConflictReason !== null;
               const fk = getSectionFragmentKey(section);
               const sectionLabel = headingPathToLabel(section.heading_path);
 
@@ -620,8 +660,8 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                           : shouldMountEditor(i, focusedSectionIndex)
                       }
                       isInProposal={isInProposal}
-                      proposalConflictReason={null}
-                      isLockedByOtherHuman={!!section.blocked}
+                      proposalConflictReason={proposalConflictReason}
+                      isLockedByOtherHuman={proposalMode ? lockedInProposalMode : !!section.blocked}
                       highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
                       injectedByWriter={null}
                       hasRemotePresence={presenceIndicatorsRef.current.some((p) => p.sectionKey === sectionKey)}
@@ -633,6 +673,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       transferService={transferServiceRef.current}
                       proposalMode={proposalMode}
                       canEditProposalContent={activeProposalStatus === "inprogress"}
+                      proposalScopeMutationInFlight={proposalScopeMutationInFlight}
                       isReady={readyEditors.has(i)}
                       mouseDownPosRef={mouseDownPosRef}
                       onStartEditing={startEditing}
@@ -641,7 +682,11 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       onEditorReady={handleEditorReady}
                       onEditorUnready={handleEditorUnready}
                       onProposalSectionChange={proposalMode ? handleProposalSectionChange : undefined}
-                      onToggleProposalSection={proposalMode && canEditProposalScope ? () => toggleProposalSection(section) : undefined}
+                      onToggleProposalSection={
+                        proposalMode && canEditProposalScope && !proposalScopeMutationInFlight
+                          ? () => toggleProposalSection(section)
+                          : undefined
+                      }
                       onCursorExit={handleCursorExit}
                       onCrossSectionDrop={handleCrossSectionDrop}
                     />
@@ -679,10 +724,23 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
 
       {/* Proposal floating panel */}
       <ProposalPanel
-        activeProposalId={activeProposalId}
         proposalMode={proposalMode}
-        onEnterProposalMode={enterProposalMode}
-        onExitProposalMode={exitProposalMode}
+        activeProposal={activeProposal}
+        creatingProposal={creatingProposal}
+        acquiringLocks={acquiringLocks}
+        publishingProposal={publishingProposal}
+        cancellingProposal={cancellingProposal}
+        proposalScopeMutationInFlight={proposalScopeMutationInFlight}
+        panelError={panelError}
+        onStartManualPublish={startManualPublish}
+        onAcquireLocks={acquireProposalLocks}
+        onPublish={commitActiveProposal}
+        onCancel={cancelActiveProposal}
+        onRemoveProposalSection={removeProposalSection}
+        proposalSectionConflicts={proposalSectionConflicts}
+        proposalIntent={proposalIntent}
+        canEditIntent={activeProposalStatus === "draft"}
+        onProposalIntentChange={updateProposalIntent}
       />
     </div>
     </SectionHoverProvider>

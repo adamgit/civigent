@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import {
   createProposal,
   readProposal,
-  listProposals,
+  listAllProposals,
+  listDraftProposals,
   findDraftProposalByWriter,
   transitionToWithdrawn,
   ProposalNotFoundError,
@@ -53,13 +54,12 @@ describe("proposal-store", () => {
     expect(read.writer.id).toBe("agent-bot");
   });
 
-  it("listProposals returns all proposals, filter by status works", async () => {
-    const all = await listProposals();
+  it("list helpers return expected proposals", async () => {
+    const all = await listAllProposals();
     expect(all.length).toBeGreaterThanOrEqual(2);
 
-    const pending = await listProposals(
-"draft");
-    expect(pending.every((p) => p.status === "draft")).toBe(true);
+    const drafts = await listDraftProposals();
+    expect(drafts.every((p) => p.status === "draft")).toBe(true);
   });
 
   it("findDraftProposalByWriter finds correct proposal", async () => {

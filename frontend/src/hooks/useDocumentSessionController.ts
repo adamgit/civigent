@@ -8,6 +8,7 @@ import {
   type DocumentSection,
 } from "../pages/document-page-utils";
 import { sectionHeadingKey, type ContentCommittedEvent, type DocumentReplacementNoticePayload, type DocumentSessionControllerState, type EditorFocusTarget, type ProposalDTO, type RequestedMode } from "../types/shared.js";
+import type { ProposalSectionAvailabilityEvent } from "../types/shared.js";
 import type { CrdtConnectionState, CrdtProvider } from "../services/crdt-provider";
 import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 import type { CrdtTransport } from "../services/crdt-transport";
@@ -47,11 +48,19 @@ export interface UseDocumentSessionControllerReturn {
   setDeletionPlaceholders: React.Dispatch<React.SetStateAction<DeletionPlaceholder[]>>;
   proposalMode: boolean;
   activeProposalId: string | null;
+  activeProposal: ProposalDTO | null;
   activeProposalStatus: ProposalDTO["status"] | null;
   proposalIntent: string;
   canEditProposalScope: boolean;
+  creatingProposal: boolean;
+  acquiringLocks: boolean;
+  publishingProposal: boolean;
+  cancellingProposal: boolean;
+  proposalScopeMutationInFlight: boolean;
+  panelError: string | null;
   selectedProposalSectionKeys: Set<string>;
   proposalSectionConflicts: Map<string, string>;
+  proposalOverlayVersion: number;
   controllerState: DocumentSessionControllerState;
 
   crdtProviderRef: React.MutableRefObject<CrdtProvider | null>;
@@ -68,10 +77,13 @@ export interface UseDocumentSessionControllerReturn {
   ensureProvider: () => Promise<CrdtProvider | null>;
   stopEditing: () => void;
   startEditing: (sectionIndex: number, clickCoords?: { x: number; y: number }) => Promise<void>;
+  startManualPublish: () => Promise<void>;
   enterProposalMode: (proposalId: string) => Promise<void>;
   exitProposalMode: () => Promise<void>;
-  saveProposalSections: () => void;
-  syncProposalFromServer: (proposal: ProposalDTO | null) => void;
+  acquireProposalLocks: () => Promise<void>;
+  commitActiveProposal: () => Promise<void>;
+  cancelActiveProposal: () => Promise<void>;
+  applyProposalSectionAvailabilityEvent: (event: ProposalSectionAvailabilityEvent) => void;
   updateProposalIntent: (nextIntent: string) => void;
   toggleProposalSection: (section: DocumentSection) => Promise<void>;
   removeProposalSection: (docPath: string, headingPath: string[]) => Promise<void>;
@@ -172,11 +184,19 @@ export function useDocumentSessionController(
     setDeletionPlaceholders: persistence.setDeletionPlaceholders,
     proposalMode: proposal.proposalMode,
     activeProposalId: proposal.activeProposalId,
+    activeProposal: proposal.activeProposal,
     activeProposalStatus: proposal.activeProposalStatus,
     proposalIntent: proposal.proposalIntent,
     canEditProposalScope: proposal.canEditProposalScope,
+    creatingProposal: proposal.creatingProposal,
+    acquiringLocks: proposal.acquiringLocks,
+    publishingProposal: proposal.publishingProposal,
+    cancellingProposal: proposal.cancellingProposal,
+    proposalScopeMutationInFlight: proposal.proposalScopeMutationInFlight,
+    panelError: proposal.panelError,
     selectedProposalSectionKeys: proposal.selectedProposalSectionKeys,
     proposalSectionConflicts: proposal.proposalSectionConflicts,
+    proposalOverlayVersion: proposal.proposalOverlayVersion,
     controllerState: session.controllerState,
     crdtProviderRef: session.crdtProviderRef,
     controllerStateRef: session.controllerStateRef,
@@ -191,10 +211,13 @@ export function useDocumentSessionController(
     ensureProvider: session.ensureProvider,
     stopEditing: session.stopEditing,
     startEditing: focus.startEditing,
+    startManualPublish: proposal.startManualPublish,
     enterProposalMode: proposal.enterProposalMode,
     exitProposalMode: proposal.exitProposalMode,
-    saveProposalSections: proposal.saveProposalSections,
-    syncProposalFromServer: proposal.syncProposalFromServer,
+    acquireProposalLocks: proposal.acquireProposalLocks,
+    commitActiveProposal: proposal.commitActiveProposal,
+    cancelActiveProposal: proposal.cancelActiveProposal,
+    applyProposalSectionAvailabilityEvent: proposal.applyProposalSectionAvailabilityEvent,
     updateProposalIntent: proposal.updateProposalIntent,
     toggleProposalSection: proposal.toggleProposalSection,
     removeProposalSection: proposal.removeProposalSection,

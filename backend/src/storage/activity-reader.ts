@@ -7,7 +7,7 @@
 import { getContentRoot, getDataRoot } from "./data-root.js";
 import { resolveDocPathUnderContent } from "./path-utils.js";
 import { getCommitsBetween, getHeadSha } from "./git-repo.js";
-import { listProposals } from "./proposal-repository.js";
+import { listCommittedProposals } from "./proposal-repository.js";
 import type {
   ActivityItem,
   ChangesSinceResponse,
@@ -44,8 +44,7 @@ function isUnknownShaError(error: unknown): boolean {
 }
 
 async function readCommittedProposals(): Promise<CommittedProposalDomain[]> {
-  const proposals = await listProposals("committed");
-  // listProposals("committed") only returns committed proposals; narrow the type.
+  const proposals = await listCommittedProposals();
   const committed = proposals.filter(
     (p): p is CommittedProposalDomain => p.status === "committed",
   );

@@ -23,6 +23,7 @@ export interface DocumentCanvasProps {
   proposalMode: boolean;
   canEditProposalScope: boolean;
   canEditProposalContent: boolean;
+  proposalScopeMutationInFlight: boolean;
   selectedProposalSectionKeys: Set<string>;
   proposalSectionConflicts: Map<string, string>;
   decodedDocPath: string | null;
@@ -56,6 +57,7 @@ export function DocumentCanvas({
   proposalMode,
   canEditProposalScope,
   canEditProposalContent,
+  proposalScopeMutationInFlight,
   selectedProposalSectionKeys,
   proposalSectionConflicts,
   decodedDocPath,
@@ -87,6 +89,8 @@ export function DocumentCanvas({
         const sectionKey = sectionHeadingKey(section.heading_path);
         const proposalKey = decodedDocPath ? `${decodedDocPath}::${sectionKey}` : null;
         const isInProposal = !!(proposalMode && proposalKey && selectedProposalSectionKeys.has(proposalKey));
+        const proposalConflictReason = proposalKey ? (proposalSectionConflicts.get(proposalKey) ?? null) : null;
+        const lockedInProposalMode = proposalMode && isInProposal && proposalConflictReason !== null;
         const fk = getSectionFragmentKey(section);
         const sectionLabel = headingPathToLabel(section.heading_path);
         return (
@@ -115,8 +119,8 @@ export function DocumentCanvas({
                     : shouldMountEditor(i, focusedSectionIndex)
                 }
                 isInProposal={isInProposal}
-                proposalConflictReason={proposalKey ? (proposalSectionConflicts.get(proposalKey) ?? null) : null}
-                isLockedByOtherHuman={!!section.blocked}
+                proposalConflictReason={proposalConflictReason}
+                isLockedByOtherHuman={proposalMode ? lockedInProposalMode : !!section.blocked}
                 highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
                 injectedByWriter={injectedByLabel.get(sectionLabel) ?? null}
                 hasRemotePresence={presenceIndicators.some((p) => p.sectionKey === sectionKey)}
@@ -128,6 +132,7 @@ export function DocumentCanvas({
                 transferService={transferService}
                 proposalMode={proposalMode}
                 canEditProposalContent={canEditProposalContent}
+                proposalScopeMutationInFlight={proposalScopeMutationInFlight}
                 isReady={readyEditors.has(i)}
                 mouseDownPosRef={mouseDownPosRef}
                 onStartEditing={onStartEditing}
@@ -137,7 +142,7 @@ export function DocumentCanvas({
                 onEditorUnready={onEditorUnready}
                 onProposalSectionChange={proposalMode ? onProposalSectionChange : undefined}
                 onToggleProposalSection={
-                  proposalMode && canEditProposalScope && onToggleProposalSection
+                  proposalMode && canEditProposalScope && !proposalScopeMutationInFlight && onToggleProposalSection
                     ? () => onToggleProposalSection(section)
                     : undefined
                 }

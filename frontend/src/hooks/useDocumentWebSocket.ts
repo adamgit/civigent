@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiClient, resolveWriterId } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
@@ -14,9 +14,8 @@ import {
   type ProposalDraftEvent,
   type ProposalInProgressEvent,
   type ProposalInjectedIntoSessionEvent,
+  type ProposalSectionAvailabilityEvent,
   type ProposalWithdrawnEvent,
-  type SessionStatusChangedEvent,
-  type WriterDirtyStateChangedEvent,
 } from "../types/shared.js";
 import {
   type DeletionPlaceholder,
@@ -51,6 +50,7 @@ export interface UseDocumentWebSocketParams {
   loadSections: (docPath: string) => Promise<DocumentSection[]>;
   setError: (e: string | null) => void;
   onSectionsInjectedByProposal?: (headingPaths: string[][], writerDisplayName: string) => void;
+  onProposalSectionAvailability?: (event: ProposalSectionAvailabilityEvent) => void;
 }
 
 // ─── Hook return type ─────────────────────────────────────────────
@@ -65,7 +65,6 @@ export interface UseDocumentWebSocketReturn {
   presenceIndicatorsRef: React.MutableRefObject<PresenceIndicator[]>;
   pendingProposalIndicators: PendingProposalIndicator[];
   pendingProposalIndicatorsRef: React.MutableRefObject<PendingProposalIndicator[]>;
-  proposalConflictInvalidationSeq: number;
   presenceBySectionKey: Map<string, PresenceIndicator[]>;
   proposalsBySectionKey: Map<string, PendingProposalIndicator[]>;
 }
@@ -88,6 +87,7 @@ export function useDocumentWebSocket({
   loadSections,
   setError,
   onSectionsInjectedByProposal,
+  onProposalSectionAvailability,
 }: UseDocumentWebSocketParams): UseDocumentWebSocketReturn {
   const navigate = useNavigate();
 
@@ -104,9 +104,31 @@ export function useDocumentWebSocket({
   // ── v3: Pending proposal indicators ─────────────────────
   const [pendingProposalIndicators, setPendingProposalIndicators] = useState<PendingProposalIndicator[]>([]);
   const pendingProposalIndicatorsRef = useRef<PendingProposalIndicator[]>([]);
-  const [proposalConflictInvalidationSeq, setProposalConflictInvalidationSeq] = useState(0);
 
   const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
+
+  const clearProposalIndicators = useCallback((proposalId: string) => {
+    setPendingProposalIndicators((prev) =>
+      prev.filter((indicator) => indicator.proposalId !== proposalId),
+    );
+  }, []);
+
+  const replaceDraftProposalIndicators = useCallback((draftEvent: ProposalDraftEvent) => {
+    const sectionKeys = new Set(draftEvent.heading_paths.map((headingPath) => sectionHeadingKey(headingPath)));
+    setPendingProposalIndicators((prev) => {
+      const retained = prev.filter((indicator) => indicator.proposalId !== draftEvent.proposal_id);
+      const next = [...retained];
+      for (const sectionKey of sectionKeys) {
+        next.push({
+          proposalId: draftEvent.proposal_id,
+          sectionKey,
+          writerDisplayName: draftEvent.writer_display_name,
+          intent: draftEvent.intent,
+        });
+      }
+      return next;
+    });
+  }, []);
 
   // ── Ref sync for presence (used by WS handler) ────────────
   useEffect(() => {
@@ -127,7 +149,6 @@ export function useDocumentWebSocket({
       if (event.type === "content:committed") {
         const committed = event as ContentCommittedEvent;
         if (normalizeDocPath(committed.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-        setProposalConflictInvalidationSeq((prev) => prev + 1);
 
         const changedSectionLabels = committed.sections.map((s) =>
           headingPathToLabel(s.heading_path),
@@ -224,7 +245,6 @@ export function useDocumentWebSocket({
       if (event.type === "presence:editing") {
         const presence = event as PresenceEditingEvent;
         if (normalizeDocPath(presence.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-        setProposalConflictInvalidationSeq((prev) => prev + 1);
 
         const sectionKey = sectionHeadingKey(presence.heading_path);
         const key = `${presence.writer_id}:${sectionKey}`;
@@ -246,7 +266,6 @@ export function useDocumentWebSocket({
       if (event.type === "presence:done") {
         const done = event as PresenceDoneEvent;
         if (normalizeDocPath(done.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-        setProposalConflictInvalidationSeq((prev) => prev + 1);
 
         const sectionKey = sectionHeadingKey(done.heading_path);
         const key = `${done.writer_id}:${sectionKey}`;
@@ -322,24 +341,7 @@ export function useDocumentWebSocket({
       if (event.type === "proposal:draft") {
         const created = event as ProposalDraftEvent;
         if (normalizeDocPath(created.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-        setProposalConflictInvalidationSeq((prev) => prev + 1);
-
-        setPendingProposalIndicators((prev) => {
-          const next = [...prev];
-          for (const hp of created.heading_paths) {
-            const sectionKey = sectionHeadingKey(hp);
-            const key = `${created.proposal_id}:${sectionKey}`;
-            if (!next.some((ind) => ind.proposalId === created.proposal_id && ind.sectionKey === sectionKey)) {
-              next.push({
-                proposalId: created.proposal_id,
-                sectionKey,
-                writerDisplayName: created.writer_display_name,
-                intent: created.intent,
-              });
-            }
-          }
-          return next;
-        });
+        replaceDraftProposalIndicators(created);
         return;
       }
 
@@ -347,10 +349,7 @@ export function useDocumentWebSocket({
       if (event.type === "proposal:withdrawn") {
         const withdrawn = event as ProposalWithdrawnEvent;
         if (normalizeDocPath(withdrawn.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-        setProposalConflictInvalidationSeq((prev) => prev + 1);
-        setPendingProposalIndicators((prev) =>
-          prev.filter((ind) => ind.proposalId !== withdrawn.proposal_id),
-        );
+        clearProposalIndicators(withdrawn.proposal_id);
         return;
       }
 
@@ -358,21 +357,20 @@ export function useDocumentWebSocket({
       if (event.type === "proposal:inprogress") {
         const inprogress = event as ProposalInProgressEvent;
         if (normalizeDocPath(inprogress.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-        setProposalConflictInvalidationSeq((prev) => prev + 1);
+        clearProposalIndicators(inprogress.proposal_id);
         return;
       }
 
-      // Coarse invalidation events for dirty/session conflict transitions.
-      if (event.type === "writer:dirty-state-changed") {
-        const dirtyChanged = event as WriterDirtyStateChangedEvent;
-        if (normalizeDocPath(dirtyChanged.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-        setProposalConflictInvalidationSeq((prev) => prev + 1);
-        return;
-      }
-      if (event.type === "session:status-changed") {
-        const statusChanged = event as SessionStatusChangedEvent;
-        if (normalizeDocPath(statusChanged.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-        setProposalConflictInvalidationSeq((prev) => prev + 1);
+      if (event.type === "proposal:section-availability") {
+        const availability = event as ProposalSectionAvailabilityEvent;
+        if (
+          !availability.sections.some((section) =>
+            normalizeDocPath(section.doc_path) === normalizeDocPath(decodedDocPath)
+          )
+        ) {
+          return;
+        }
+        onProposalSectionAvailability?.(availability);
         return;
       }
 
@@ -390,7 +388,16 @@ export function useDocumentWebSocket({
       wsClient.unsubscribe(decodedDocPath);
       wsClient.disconnect();
     };
-  }, [decodedDocPath, wsClient, loadSections, navigate]);
+  }, [
+    clearProposalIndicators,
+    decodedDocPath,
+    loadSections,
+    navigate,
+    onProposalSectionAvailability,
+    replaceDraftProposalIndicators,
+    setError,
+    wsClient,
+  ]);
 
   // ── Highlight map: recently changed sections within HIGHLIGHT_DURATION_MS ──
   const recentlyChangedByLabel = useMemo(() => {
@@ -460,7 +467,6 @@ export function useDocumentWebSocket({
     presenceIndicatorsRef,
     pendingProposalIndicators,
     pendingProposalIndicatorsRef,
-    proposalConflictInvalidationSeq,
     presenceBySectionKey,
     proposalsBySectionKey,
   };

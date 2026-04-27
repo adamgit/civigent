@@ -702,6 +702,22 @@ export interface ProposalWithdrawnEvent {
   heading_paths: string[][];
 }
 
+export interface ProposalSectionAvailabilityEntry {
+  doc_path: string;
+  heading_path: string[];
+  available: boolean;
+  blocked_reason?: EvaluatedSectionBlockedReason;
+  holder_writer_id?: string;
+  holder_writer_display_name?: string;
+}
+
+export interface ProposalSectionAvailabilityEvent {
+  type: "proposal:section-availability";
+  proposal_id: string;
+  proposal_status: ProposalStatus;
+  sections: ProposalSectionAvailabilityEntry[];
+}
+
 export interface CatalogChangedEvent {
   type: "catalog:changed";
   added_doc_paths?: string[];
@@ -732,6 +748,7 @@ export type WsServerEvent =
   | ProposalDraftEvent
   | ProposalInProgressEvent
   | ProposalWithdrawnEvent
+  | ProposalSectionAvailabilityEvent
   | CatalogChangedEvent
   | ProposalInjectedIntoSessionEvent;
 

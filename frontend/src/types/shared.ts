@@ -32,6 +32,8 @@ export type {
   ProposalDraftEvent,
   ProposalInProgressEvent,
   ProposalInjectedIntoSessionEvent,
+  ProposalSectionAvailabilityEntry,
+  ProposalSectionAvailabilityEvent,
   ProposalWithdrawnEvent,
   DocStructureNode,
   DocumentTreeEntry,
