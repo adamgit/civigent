@@ -218,13 +218,16 @@ export class StagedSectionsStore {
             noteSectionRef(deletedSectionRefMap, removed.headingPath);
           }
 
+          // Two sub-cases, both already fully described by the upsert's
+          // writtenEntries/removedEntries that the loops above accumulated:
+          //   A) live BFH had BFH-only body → BFH section materialized on
+          //      disk (skeleton now has BFH entry).
+          //   B) live BFH began with `# X\n...` (user typed headings into
+          //      an empty doc) → upsert split into headed sections, wrote
+          //      no BFH entry, and emitted the BFH removal as its structure
+          //      change so removedKeySet has BFH and writtenKeySet has the
+          //      headed keys.
           await refreshSkeletonView();
-          entry = indexByKey.get(fragmentKey);
-          if (!entry) {
-            throw new Error(
-              `Empty-doc BFH bootstrap for "${this.docPath}" did not materialize the BFH section — skeleton index still missing "${fragmentKey}" after upsert.`,
-            );
-          }
           return;
         }
 

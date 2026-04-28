@@ -397,6 +397,10 @@ a {
 .milkdown .ProseMirror > *:not(.milkdown-table-block) {
   max-width: 588px;
 }
+.doc-prose > *:first-child,
+.milkdown .ProseMirror > *:first-child {
+  margin-top: 0;
+}
 
 .milkdown .ProseMirror h1 {
   font-family: var(--font-body);

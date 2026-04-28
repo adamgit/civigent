@@ -1046,15 +1046,6 @@ export async function pauseSessionOverlayImport(docPath: string): Promise<void> 
   }
 }
 
-export async function awaitPendingSessionImport(docPath: string): Promise<void> {
-  const session = sessions.get(docPath);
-  if (!session) return;
-  const inflight = rawSnapshotInFlight.get(session);
-  if (inflight) {
-    await inflight;
-  }
-}
-
 // ─── Idle timeout ────────────────────────────────────────────────
 
 let _onIdleTimeout: ((docPath: string) => void) | null = null;

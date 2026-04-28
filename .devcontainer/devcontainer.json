@@ -1,5 +1,13 @@
 {
     "name": "Node.js + TypeScript",
     "image": "mcr.microsoft.com/devcontainers/javascript-node:24-bookworm",
-    "remoteUser": "node"
+    "remoteUser": "node",
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "remote.autoForwardPortsSource": "process"
+            }
+        }
+    },
+    "runArgs": ["--add-host=host.docker.internal:host-gateway"]
 }
