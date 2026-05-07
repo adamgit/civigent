@@ -1,6 +1,7 @@
 import React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { Link } from "react-router-dom";
 import { MilkdownEditor, type MilkdownEditorHandle } from "./MilkdownEditor";
 import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 import type { CrdtTransport } from "../services/crdt-transport";
@@ -9,6 +10,7 @@ import { headingPathToLabel } from "../pages/document-page-utils";
 import { resolveWriterId } from "../services/api-client";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import { useSectionHover } from "../contexts/sectionHoverUtils";
+import { rewriteMarkdownDocHref } from "../app/docsRouteUtils";
 
 export interface DocumentSectionRendererProps {
   section: DocumentSection;
@@ -118,6 +120,24 @@ export function DocumentSectionRenderer({
   onCrossSectionDrop,
 }: DocumentSectionRendererProps) {
   const { setHoveredSection } = useSectionHover();
+  const markdownComponents = {
+    a({ node: _node, href, children, ...props }: React.ComponentProps<"a"> & { node?: unknown }) {
+      const resolvedHref = typeof href === "string" ? rewriteMarkdownDocHref(href) : null;
+      if (resolvedHref) {
+        return (
+          <Link {...props} to={resolvedHref}>
+            {children}
+          </Link>
+        );
+      }
+      return (
+        <a {...props} href={href}>
+          {children}
+        </a>
+      );
+    },
+  };
+
   return (
     <div
       key={fk}
@@ -218,7 +238,9 @@ export function DocumentSectionRenderer({
             {/* ReactMarkdown underlayer — shown until editor is ready, then unmounted */}
             {!isReady && (
               <div className="doc-prose">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
+                <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+                  {section.content}
+                </ReactMarkdown>
               </div>
             )}
             {/* MilkdownEditor overlay — absolute until ready, then back in flow */}
@@ -260,7 +282,9 @@ export function DocumentSectionRenderer({
         )
       ) : (
         <div className="doc-prose">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
+          <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+            {section.content}
+          </ReactMarkdown>
         </div>
       )}
     </div>

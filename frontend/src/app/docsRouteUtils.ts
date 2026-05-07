@@ -1,3 +1,5 @@
+import { encodeDocPath } from "../utils/path-encoding";
+
 export type DocsRouteMode = "view";
 
 export interface ResolvedDocsRoute {
@@ -33,4 +35,32 @@ export function resolveDocsSubroute(routeSplat: string | undefined): ResolvedDoc
  */
 export function stripLeadingSlashForRoute(docPath: string): string {
   return docPath.replace(/^\/+/, "");
+}
+
+/**
+ * Translate a markdown href that points at a root-absolute wiki doc path into
+ * the app's `/docs/...` browser route. Non-doc hrefs are left alone by
+ * returning null so callers can preserve normal link behavior.
+ */
+export function rewriteMarkdownDocHref(href: string): string | null {
+  if (!href.startsWith("/")) {
+    return null;
+  }
+
+  const suffixStart = href.search(/[?#]/);
+  const rawPath = suffixStart >= 0 ? href.slice(0, suffixStart) : href;
+  const suffix = suffixStart >= 0 ? href.slice(suffixStart) : "";
+
+  let decodedPath = rawPath;
+  try {
+    decodedPath = decodeURIComponent(rawPath);
+  } catch {
+    // Preserve the original text if the href contains malformed escapes.
+  }
+
+  if (!/\.md$/i.test(decodedPath)) {
+    return null;
+  }
+
+  return `/docs/${stripLeadingSlashForRoute(encodeDocPath(decodedPath))}${suffix}`;
 }

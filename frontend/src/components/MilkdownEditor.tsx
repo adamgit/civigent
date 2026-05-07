@@ -29,6 +29,7 @@ import {
   useState,
   type Ref,
 } from "react";
+import { useNavigate } from "react-router-dom";
 import { Crepe, CrepeFeature } from "@milkdown/crepe";
 import { editorViewCtx } from "@milkdown/core";
 import { $prose } from "@milkdown/utils";
@@ -43,6 +44,7 @@ import { proseMirrorNodeToMarkdown } from "@ks/milkdown-serializer";
 import { pmPosToMarkdownOffset } from "../services/drop-position";
 import { applyDragOverVerdict, type SectionTransfer, type DropVerdict } from "../services/section-transfer";
 import { EditorLifecycleController } from "../services/editor-lifecycle";
+import { rewriteMarkdownDocHref } from "../app/docsRouteUtils";
 
 // ─── Module-level drag source tracking ───────────────────
 // Only one drag can be active at a time, so a module-level
@@ -160,6 +162,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   props: MilkdownEditorProps,
   ref: Ref<MilkdownEditorHandle>,
 ) {
+  const navigate = useNavigate();
   const {
     markdown,
     onChange,
@@ -206,6 +209,36 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   const onUnreadyRef = useRef(onUnready);
   onUnreadyRef.current = onUnready;
   const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    const handleDocLinkClick = (event: MouseEvent) => {
+      if (event.defaultPrevented) return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+
+      const anchor = target.closest("a[href]");
+      if (!(anchor instanceof HTMLAnchorElement)) return;
+
+      const rawHref = anchor.getAttribute("href");
+      if (!rawHref) return;
+
+      const resolvedHref = rewriteMarkdownDocHref(rawHref);
+      if (!resolvedHref) return;
+
+      const insideEditor = !!(containerRef.current && containerRef.current.contains(anchor));
+      const insideLinkTooltip = !!anchor.closest(".milkdown-link-preview");
+      if (!insideEditor && !insideLinkTooltip) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      navigate(resolvedHref);
+    };
+
+    document.addEventListener("click", handleDocLinkClick, true);
+    return () => {
+      document.removeEventListener("click", handleDocLinkClick, true);
+    };
+  }, [navigate]);
 
   // ── Focus helper (safe to call only after create() resolves) ──
 

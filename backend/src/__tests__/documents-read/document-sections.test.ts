@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import { createTestServer } from "../helpers/test-server.js";
@@ -8,6 +10,60 @@ import {
   SAMPLE_SECTIONS,
 } from "../helpers/sample-content.js";
 import type { TestServerContext } from "../helpers/test-server.js";
+import { gitExec } from "../../storage/git-repo.js";
+
+const NESTED_DOC_PATH = "/nested/body-holder-api.md";
+
+async function createNestedDocument(dataRoot: string): Promise<void> {
+  const contentRoot = join(dataRoot, "content");
+  const skeletonPath = join(contentRoot, NESTED_DOC_PATH.replace(/^\/+/, ""));
+  const sectionsDir = `${skeletonPath}.sections`;
+
+  await mkdir(sectionsDir, { recursive: true });
+
+  const topSkeleton = [
+    "{{section: _root.md}}",
+    "",
+    "## Introduction",
+    "{{section: intro.md}}",
+    "",
+    "## Details",
+    "{{section: details.md}}",
+    "",
+  ].join("\n");
+  await writeFile(skeletonPath, topSkeleton, "utf8");
+  await writeFile(join(sectionsDir, "_root.md"), "Root body.\n", "utf8");
+  await writeFile(join(sectionsDir, "intro.md"), "Introduction body.\n", "utf8");
+
+  const detailsSubSkeleton = [
+    "{{section: _details_root.md}}",
+    "",
+    "### Sub-Detail A",
+    "{{section: sub_a.md}}",
+    "",
+    "### Sub-Detail B",
+    "{{section: sub_b.md}}",
+    "",
+  ].join("\n");
+  const detailsSectionsDir = join(sectionsDir, "details.md.sections");
+  await mkdir(detailsSectionsDir, { recursive: true });
+  await writeFile(join(sectionsDir, "details.md"), detailsSubSkeleton, "utf8");
+  await writeFile(join(detailsSectionsDir, "_details_root.md"), "Details body.\n", "utf8");
+  await writeFile(join(detailsSectionsDir, "sub_a.md"), "Sub-detail A body.\n", "utf8");
+  await writeFile(join(detailsSectionsDir, "sub_b.md"), "Sub-detail B body.\n", "utf8");
+
+  await gitExec(["add", "content/"], dataRoot);
+  await gitExec(
+    [
+      "-c", "user.name=Test",
+      "-c", "user.email=test@test.local",
+      "commit",
+      "-m", "add nested body-holder api fixture",
+      "--allow-empty",
+    ],
+    dataRoot,
+  );
+}
 
 describe("GET /api/documents/:doc_path/sections", () => {
   let ctx: TestServerContext;
@@ -15,6 +71,7 @@ describe("GET /api/documents/:doc_path/sections", () => {
   beforeAll(async () => {
     ctx = await createTestServer();
     await createSampleDocument(ctx.dataCtx.rootDir);
+    await createNestedDocument(ctx.dataCtx.rootDir);
   });
 
   afterAll(async () => {
@@ -155,5 +212,69 @@ describe("GET /api/documents/:doc_path/sections", () => {
 
     // Non-existent docs return 404 (no skeleton on disk)
     expect(res.status).toBe(404);
+  });
+
+  it("returns headed content for a parent section whose body lives in a body-holder child", async () => {
+    const res = await request(ctx.app)
+      .get(`/api/documents/${NESTED_DOC_PATH}/sections`)
+      .set("Authorization", ctx.humanToken);
+
+    expect(res.status).toBe(200);
+    const details = res.body.sections.find(
+      (section: any) =>
+        Array.isArray(section.heading_path)
+        && section.heading_path.length === 1
+        && section.heading_path[0] === "Details",
+    );
+    const subDetailA = res.body.sections.find(
+      (section: any) =>
+        Array.isArray(section.heading_path)
+        && section.heading_path.length === 2
+        && section.heading_path[0] === "Details"
+        && section.heading_path[1] === "Sub-Detail A",
+    );
+
+    expect(details).toBeDefined();
+    expect(details.heading).toBe("Details");
+    expect(details.content).toContain("## Details");
+    expect(details.content).toContain("Details body.");
+    expect(details.content).not.toContain("### Sub-Detail A");
+    expect(subDetailA).toBeDefined();
+  });
+
+  it("proposal-mode GET preserves headed canonical fallback for an untouched body-holder-backed parent", async () => {
+    const createRes = await request(ctx.app)
+      .post("/api/proposals")
+      .set("Authorization", ctx.humanToken)
+      .send({
+        intent: "Unrelated nested doc proposal",
+        sections: [
+          {
+            doc_path: NESTED_DOC_PATH,
+            heading_path: ["Introduction"],
+            content: "## Introduction\n\nUpdated introduction via proposal.",
+          },
+        ],
+      });
+    expect(createRes.status).toBe(201);
+    const proposalId = createRes.body.proposal_id as string;
+
+    const res = await request(ctx.app)
+      .get(`/api/documents/${NESTED_DOC_PATH}/sections`)
+      .query({ proposal_id: proposalId })
+      .set("Authorization", ctx.humanToken);
+
+    expect(res.status).toBe(200);
+    const details = res.body.sections.find(
+      (section: any) =>
+        Array.isArray(section.heading_path)
+        && section.heading_path.length === 1
+        && section.heading_path[0] === "Details",
+    );
+
+    expect(details).toBeDefined();
+    expect(details.heading).toBe("Details");
+    expect(details.content).toContain("## Details");
+    expect(details.content).toContain("Details body.");
   });
 });

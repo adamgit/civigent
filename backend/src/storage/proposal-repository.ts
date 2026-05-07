@@ -129,6 +129,19 @@ function toProposal(file: AnyProposalFile, status: ProposalStatus): AnyProposal 
   return { ...file, status } as AnyProposal;
 }
 
+function proposalCreatedAtTimestamp(proposal: AnyProposal): number {
+  const timestamp = Date.parse(proposal.created_at);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function compareProposalsNewestFirst(a: AnyProposal, b: AnyProposal): number {
+  const timestampDelta = proposalCreatedAtTimestamp(b) - proposalCreatedAtTimestamp(a);
+  if (timestampDelta !== 0) {
+    return timestampDelta;
+  }
+  return a.id.localeCompare(b.id);
+}
+
 export interface CreateProposalResult {
   id: ProposalId;
   contentRoot: string;
@@ -245,6 +258,7 @@ async function listProposalsByStatuses(statuses: readonly ProposalStatus[]): Pro
     }
   }
 
+  proposals.sort(compareProposalsNewestFirst);
   return proposals;
 }
 
