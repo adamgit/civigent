@@ -124,7 +124,7 @@ describe("US-1: multi-document proposal with justification bypass", () => {
     expect(blockedData.evaluation.blocked_sections.length).toBeGreaterThanOrEqual(1);
 
     // ── Step 2: cancel the blocked proposal ──
-    const cancelRes = await callMcpTool("cancel_proposal", {
+    const cancelRes = await callMcpTool("withdraw_proposal", {
       proposal_id: blockedData.proposal_id,
     });
     const cancelData = JSON.parse(cancelRes.result.content[0].text);
@@ -158,23 +158,23 @@ describe("US-1: multi-document proposal with justification bypass", () => {
       expect(section.humanInvolvement_score).toBeLessThan(0.5);
     }
 
-    // ── Step 4: commit_proposal → committed ──
-    const commitRes = await callMcpTool("commit_proposal", {
+    // ── Step 4: publish_proposal → committed ──
+    const commitRes = await callMcpTool("publish_proposal", {
       proposal_id: acceptedData.proposal_id,
     });
     const commitData = JSON.parse(commitRes.result.content[0].text);
     expect(commitData.status).toBe("committed");
     expect(commitData.committed_head).toBeTruthy();
 
-    // ── Step 5: read_section on both docs → canonical content updated ──
-    const readOverview = await callMcpTool("read_section", {
+    // ── Step 5: read_live_section on both docs → live content updated ──
+    const readOverview = await callMcpTool("read_live_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Overview"],
     });
     const overviewData = JSON.parse(readOverview.result.content[0].text);
     expect(overviewData.content).toContain("Agent-updated overview");
 
-    const readPrinciples = await callMcpTool("read_section", {
+    const readPrinciples = await callMcpTool("read_live_section", {
       doc_path: SAMPLE_DOC_PATH_2,
       heading_path: ["Principles"],
     });

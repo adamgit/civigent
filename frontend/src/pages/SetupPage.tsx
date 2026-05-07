@@ -15,9 +15,9 @@ interface SetupInfo {
   mcpUrl: string;
 }
 
-/** mcp__<name>__<tool>  —  longest tool is read_doc_structure (18 chars) */
+/** mcp__<name>__<tool>  —  longest tool is write_proposal_section (22 chars) */
 const MCP_PREFIX_OVERHEAD = 5 + 2; // "mcp__" + "__"
-const LONGEST_TOOL_NAME = 18; // read_doc_structure
+const LONGEST_TOOL_NAME = 22; // write_proposal_section
 const CURSOR_COMBINED_LIMIT = 60;
 const MAX_SERVER_NAME = CURSOR_COMBINED_LIMIT - MCP_PREFIX_OVERHEAD - LONGEST_TOOL_NAME; // 35
 
@@ -26,7 +26,7 @@ function validateServerName(name: string): string | null {
   if (!/^[a-zA-Z0-9][-a-zA-Z0-9]*$/.test(name))
     return "Must start with a letter or digit and contain only letters, digits, and hyphens";
   if (name.length > MAX_SERVER_NAME)
-    return `Name too long for Cursor (max ${MAX_SERVER_NAME} chars). Cursor requires the combined server + tool name to be under ${CURSOR_COMBINED_LIMIT} characters, and our longest tool name (read_doc_structure) uses ${LONGEST_TOOL_NAME}.`;
+    return `Name too long for Cursor (max ${MAX_SERVER_NAME} chars). Cursor requires the combined server + tool name to be under ${CURSOR_COMBINED_LIMIT} characters, and our longest tool name (write_proposal_section) uses ${LONGEST_TOOL_NAME}.`;
   return null;
 }
 

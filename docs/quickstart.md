@@ -34,6 +34,14 @@ Create a sub-folder to hold your Civigent data:
 * e.g. Windows ```bash md my-wiki```
 * e.g. Mac/Linux ```bash mkdir my-wiki```
 
+Before first start, manually create the two host folders that `compose.yaml` bind-mounts into the container:
+
+```bash
+mkdir -p wiki-data snapshots
+```
+
+On plain Docker/Linux bind mounts, both `wiki-data/` and `snapshots/` must already exist and must be writable by the container process. If the Snapshots page shows a permission error or you see `EACCES`, fix the host-folder ownership/permissions before retrying.
+
 
 ## Step 2: Configure your personal account
 
@@ -133,6 +141,8 @@ Each agent gets its own identity. You'll see its name in the edit history, propo
 Snapshots are enabled by default in quickstart. Civigent writes complete assembled `.md` files to the host folder `./snapshots/`.
 
 The `snapshots/` folder is a read-only derived cache for external tools. Do not edit it, and do not include it in backups.
+
+Because quickstart uses host bind mounts, you must manually create both `wiki-data/` and `snapshots/` on the host before first start, and both folders must be writable by the container process.
 
 To disable snapshots entirely, edit `.env`:
 

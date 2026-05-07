@@ -254,7 +254,7 @@ export function AgentSimulatorPage() {
   // Proposal state
   const [proposalId, setProposalId] = useState<string | null>(null);
   const [proposalOutcome, setProposalOutcome] = useState<string | null>(null); // "accepted" | "blocked" | null
-  const [proposalStatus, setProposalStatus] = useState<string | null>(null); // "committed" | "pending" | null
+  const [proposalStatus, setProposalStatus] = useState<string | null>(null); // "committed" | "draft" | null
 
   // Step inputs
   const [intent, setIntent] = useState("Agent test edit");
@@ -285,7 +285,7 @@ export function AgentSimulatorPage() {
   const [cancelReason, setCancelReason] = useState("Testing cancellation");
 
   // Existing draft proposals
-  const [pendingProposals, setPendingProposals] = useState<AnyProposal[]>([]);
+  const [draftProposals, setDraftProposals] = useState<AnyProposal[]>([]);
   const [withdrawingId, setWithdrawingId] = useState<string | null>(null);
 
   // Document tree for picker
@@ -319,24 +319,24 @@ export function AgentSimulatorPage() {
 
   // ── Fetch draft proposals ─────────────────────────────────────────────
 
-  const fetchPendingProposals = useCallback(async () => {
+  const fetchDraftProposals = useCallback(async () => {
     const resp = await agentFetch<{ proposals?: AnyProposal[] }>(
       "/api/proposals?status=draft",
       agent?.token ?? "",
     );
     if (resp.ok && Array.isArray(resp.body.proposals)) {
-      setPendingProposals(resp.body.proposals);
+      setDraftProposals(resp.body.proposals);
     }
   }, [agent?.token]);
 
   // Auto-fetch draft proposals when agent is registered
   useEffect(() => {
     if (agent) {
-      void fetchPendingProposals();
+      void fetchDraftProposals();
     } else {
-      setPendingProposals([]);
+      setDraftProposals([]);
     }
-  }, [agent, fetchPendingProposals]);
+  }, [agent, fetchDraftProposals]);
 
   const handleWithdraw = async (id: string) => {
     if (!agent) return;
@@ -346,7 +346,7 @@ export function AgentSimulatorPage() {
       agent.token,
       { method: "POST", body: JSON.stringify({ reason: "Withdrawn via Agent Simulator" }) },
     );
-    await fetchPendingProposals();
+    await fetchDraftProposals();
     setWithdrawingId(null);
   };
 
@@ -383,7 +383,7 @@ export function AgentSimulatorPage() {
     setProposeResponse(null);
     setUpdateResponse(null);
     setCommitResponse(null);
-    setPendingProposals([]);
+    setDraftProposals([]);
   };
 
   const handleNewProposal = () => {
@@ -465,7 +465,7 @@ export function AgentSimulatorPage() {
         setIncludedSections(new Set(merged.map((_, i) => i)));
       }
 
-      void fetchPendingProposals();
+      void fetchDraftProposals();
     }
     setProposing(false);
   };
@@ -535,7 +535,7 @@ export function AgentSimulatorPage() {
     setCommitResponse(resp);
     if (resp.ok) {
       setProposalStatus("committed");
-      void fetchPendingProposals();
+      void fetchDraftProposals();
     }
     setCommitting(false);
   };
@@ -551,7 +551,7 @@ export function AgentSimulatorPage() {
     setCommitResponse(resp);
     if (resp.ok) {
       setProposalStatus("cancelled");
-      void fetchPendingProposals();
+      void fetchDraftProposals();
     }
     setCommitting(false);
   };
@@ -559,7 +559,7 @@ export function AgentSimulatorPage() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   const isAutoCommitted = proposalStatus === "committed" && proposalOutcome === "accepted" && !commitResponse;
-  const isBlocked = proposalOutcome === "blocked" && proposalStatus === "pending";
+  const isBlocked = proposalOutcome === "blocked" && proposalStatus === "draft";
   const isTerminal = proposalStatus === "committed" || proposalStatus === "cancelled";
 
   return (
@@ -612,17 +612,17 @@ export function AgentSimulatorPage() {
         <ResponseBlock response={registerResponse} label="Register" />
       </div>
 
-      {/* ── Pending Proposals ────────────────────────────────────────── */}
-      {agent && pendingProposals.length > 0 && (
+      {/* ── Draft Proposals ──────────────────────────────────────────── */}
+      {agent && draftProposals.length > 0 && (
         <div className="mb-6 border border-yellow-300 rounded-lg p-4 bg-yellow-50/30">
           <h2 className="text-sm font-semibold text-yellow-800 mb-2">
-            Pending Proposals ({pendingProposals.length})
+            Draft Proposals ({draftProposals.length})
           </h2>
           <p className="text-[11px] text-yellow-700 mb-3">
-            These proposals are currently pending. Proposals owned by this agent can be withdrawn.
+            These proposals are currently drafts. Proposals owned by this agent can be withdrawn.
           </p>
           <div className="space-y-2">
-            {pendingProposals.map((p) => {
+            {draftProposals.map((p) => {
               const isOwn = p.writer.id === agent.id;
               const sections = p.sections.map((s) =>
                 `${s.doc_path} > ${s.heading_path.join(" > ")}`
@@ -654,7 +654,7 @@ export function AgentSimulatorPage() {
           </div>
           <button
             type="button"
-            onClick={() => void fetchPendingProposals()}
+            onClick={() => void fetchDraftProposals()}
             className="text-xs mt-2 px-2 py-1 bg-transparent border border-yellow-400 text-yellow-800 rounded cursor-pointer"
           >
             Refresh
@@ -667,7 +667,7 @@ export function AgentSimulatorPage() {
         <div className="mb-6 border border-blue-300 bg-blue-50/30 rounded-lg p-4">
           <h2 className="text-sm font-semibold mb-2">Step 1: Create Proposal</h2>
           <p className="text-[11px] text-gray-500 mb-3">
-            Submit a proposal with content. It starts as pending — use commit_proposal to commit it.
+            Submit a proposal with content. It starts as a draft. Use `publish_proposal` to publish it.
           </p>
           <div className="space-y-2">
             <label className="flex flex-col gap-1 text-xs">
@@ -766,13 +766,13 @@ export function AgentSimulatorPage() {
         </div>
       )}
 
-      {/* ── Blocked / Pending — Update or Commit ─────────────────────── */}
+      {/* ── Blocked / Draft — Update or Commit ───────────────────────── */}
       {proposalId && isBlocked && (
         <>
           <div className="mb-6 border border-yellow-300 rounded-lg p-4 bg-yellow-50/30">
             <h2 className="text-sm font-semibold text-yellow-800 mb-1">Proposal blocked</h2>
             <p className="text-xs text-yellow-700 mb-2">
-              Some sections were blocked by human-involvement thresholds. Proposal <code>{proposalId}</code> is pending review.
+              Some sections were blocked by human-involvement thresholds. Proposal <code>{proposalId}</code> is still in draft.
             </p>
             <ResponseBlock response={proposeResponse} label="Propose" />
           </div>

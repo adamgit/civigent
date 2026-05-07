@@ -1,5 +1,5 @@
 /**
- * Integration test — the full create_proposal + commit_proposal MCP pipeline
+ * Integration test — the full create_proposal + publish_proposal MCP pipeline
  * must emit exactly one `catalog:changed` WS event whose `added_doc_paths`
  * includes the brand-new doc path. Exercised on each agent-capable MCP mount.
  *
@@ -13,7 +13,7 @@
  *   - /mcp/tier3          — the explicit tier-3 mount
  *   - /mcp (auto-detect)  — with Claude user-agent so it routes to tier-3
  *
- * /mcp/tier1 and /mcp/tier2 do not expose create_proposal / commit_proposal,
+ * /mcp/tier1 and /mcp/tier2 do not expose create_proposal / publish_proposal,
  * so they are out of scope for this integration.
  */
 
@@ -86,7 +86,7 @@ const MOUNTS: Array<{ label: string; opts: McpCallOptions }> = [
   { label: "/mcp (auto-detect, claude UA)", opts: { mount: "/mcp", userAgent: "claude-code/1.0" } },
 ];
 
-describe("MCP create_proposal+commit_proposal emits catalog:changed for new doc", () => {
+describe("MCP create_proposal+publish_proposal emits catalog:changed for new doc", () => {
   for (const { label, opts } of MOUNTS) {
     describe(label, () => {
       let ctx: TestServerContext;
@@ -125,7 +125,7 @@ describe("MCP create_proposal+commit_proposal emits catalog:changed for new doc"
           ctx,
           opts,
           createRes.sessionId,
-          "commit_proposal",
+          "publish_proposal",
           { proposal_id: createData.proposal_id },
         );
         expect(commitRes.body.error, JSON.stringify(commitRes.body)).toBeUndefined();

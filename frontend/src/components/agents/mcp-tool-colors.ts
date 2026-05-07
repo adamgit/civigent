@@ -1,6 +1,4 @@
 export const ALL_MCP_TOOLS: string[] = [
-  "cancel_proposal",
-  "commit_proposal",
   "create_proposal",
   "create_section",
   "delete_document",
@@ -17,13 +15,16 @@ export const ALL_MCP_TOOLS: string[] = [
   "read_doc",
   "read_doc_structure",
   "read_file",
+  "read_live_section",
   "read_proposal",
-  "read_section",
+  "read_proposal_section",
   "rename_section",
   "search_text",
+  "publish_proposal",
+  "withdraw_proposal",
   "write_file",
   "write_files",
-  "write_section",
+  "write_proposal_section",
 ];
 
 export function toolColor(toolName: string): string {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
-import type { GetAdminSnapshotHistoryResponse, SnapshotRunRecord } from "../types/shared.js";
+import type { GetAdminSnapshotHealthResponse, GetAdminSnapshotHistoryResponse, SnapshotRunRecord } from "../types/shared.js";
 
 function formatTs(ts: number): string {
   return new Date(ts).toLocaleString();
@@ -65,6 +65,7 @@ function HistoryRow({ entry }: { entry: SnapshotRunRecord }) {
 
 export function SnapshotsPage() {
   const [data, setData] = useState<GetAdminSnapshotHistoryResponse | null>(null);
+  const [health, setHealth] = useState<GetAdminSnapshotHealthResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [snapshotting, setSnapshotting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,7 +74,12 @@ export function SnapshotsPage() {
     setLoading(true);
     setError(null);
     try {
-      setData(await apiClient.getAdminSnapshotHistory());
+      const [history, snapshotHealth] = await Promise.all([
+        apiClient.getAdminSnapshotHistory(),
+        apiClient.getAdminSnapshotHealth(),
+      ]);
+      setData(history);
+      setHealth(snapshotHealth);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -116,7 +122,7 @@ export function SnapshotsPage() {
           <button
             type="button"
             onClick={() => void handleSnapshotNow()}
-            disabled={snapshotting || loading}
+            disabled={snapshotting || loading || (data?.snapshot_enabled === true && health?.snapshot_root_writable === false)}
             className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
           >
             {snapshotting ? "Snapshotting…" : "Snapshot Now"}
@@ -134,6 +140,16 @@ export function SnapshotsPage() {
           </div>
         )}
 
+        {data?.snapshot_enabled && health && !health.snapshot_root_writable && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded text-[12px]">
+            <div className="font-semibold mb-1">Snapshot destination is not writable.</div>
+            <div className="font-mono whitespace-pre-wrap">{health.snapshot_root_error ?? `Cannot write to ${health.snapshot_root}`}</div>
+            <div className="mt-2">
+              Create the host `snapshots/` folder first and grant write permission to the container user before running snapshots.
+            </div>
+          </div>
+        )}
+
         {loading && !data && (
           <p className="text-xs text-text-muted">Loading...</p>
         )}
@@ -148,6 +164,18 @@ export function SnapshotsPage() {
               </div>
               <KVRow label="Content files (.md)">{data.current_content_file_count}</KVRow>
               <KVRow label="Snapshot files (.md)">{data.current_snapshot_file_count}</KVRow>
+              {health && (
+                <>
+                  <KVRow label="Snapshot root"><span className="font-mono">{health.snapshot_root}</span></KVRow>
+                  <KVRow label="Snapshot destination">
+                    {health.snapshot_root_writable ? (
+                      <span className="text-green-700 font-medium">writable</span>
+                    ) : (
+                      <span className="text-red-700 font-medium">not writable</span>
+                    )}
+                  </KVRow>
+                </>
+              )}
               <KVRow label="Commits since last snapshot">
                 {data.commits_since_last_snapshot === null ? (
                   <em className="text-text-muted">unknown — no snapshot this session</em>

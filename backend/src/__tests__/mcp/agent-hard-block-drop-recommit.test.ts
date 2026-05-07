@@ -4,11 +4,11 @@
  * Flow:
  * 1. create_proposal with Overview + Timeline → Timeline hard-blocked (score=1.0),
  *    Overview passes
- * 2. commit_proposal → stays draft/blocked
- * 3. cancel_proposal
+ * 2. publish_proposal → stays draft/blocked
+ * 3. withdraw_proposal
  * 4. create_proposal with only Overview → accepted
- * 5. commit_proposal → committed
- * 6. read_section: Overview = new content, Timeline = original
+ * 5. publish_proposal → committed
+ * 6. read_live_section: Overview = new content, Timeline = original
  * 7. Remove dirty file, create_proposal with replace for Timeline → accepted
  */
 
@@ -141,16 +141,16 @@ describe("US-4: hard-block, drop blocked section, recommit", () => {
     );
     expect(passedOverview).toBeDefined();
 
-    // ── Step 2: commit_proposal → stays draft/blocked ──
-    const commitBlocked = await callMcpTool("commit_proposal", {
+    // ── Step 2: publish_proposal → stays draft/blocked ──
+    const commitBlocked = await callMcpTool("publish_proposal", {
       proposal_id: data1.proposal_id,
     });
     const commitBlockedData = JSON.parse(commitBlocked.result.content[0].text);
     expect(commitBlockedData.status).toBe("draft");
     expect(commitBlockedData.outcome).toBe("blocked");
 
-    // ── Step 3: cancel_proposal ──
-    const cancelRes = await callMcpTool("cancel_proposal", {
+    // ── Step 3: withdraw_proposal ──
+    const cancelRes = await callMcpTool("withdraw_proposal", {
       proposal_id: data1.proposal_id,
     });
     expect(JSON.parse(cancelRes.result.content[0].text).status).toBe("withdrawn");
@@ -170,15 +170,15 @@ describe("US-4: hard-block, drop blocked section, recommit", () => {
     const data4 = JSON.parse(res4.result.content[0].text);
     expect(data4.outcome).toBe("accepted");
 
-    // ── Step 5: commit_proposal → committed ──
-    const commitRes = await callMcpTool("commit_proposal", {
+    // ── Step 5: publish_proposal → committed ──
+    const commitRes = await callMcpTool("publish_proposal", {
       proposal_id: data4.proposal_id,
     });
     const commitData = JSON.parse(commitRes.result.content[0].text);
     expect(commitData.status).toBe("committed");
 
-    // ── Step 6: read_section — Overview updated, Timeline unchanged ──
-    const readOverview = await callMcpTool("read_section", {
+    // ── Step 6: read_live_section — Overview updated, Timeline unchanged ──
+    const readOverview = await callMcpTool("read_live_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Overview"],
     });
@@ -186,7 +186,7 @@ describe("US-4: hard-block, drop blocked section, recommit", () => {
       "Agent-updated overview for US4",
     );
 
-    const readTimeline = await callMcpTool("read_section", {
+    const readTimeline = await callMcpTool("read_live_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Timeline"],
     });

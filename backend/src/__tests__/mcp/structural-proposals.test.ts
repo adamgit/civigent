@@ -3,7 +3,7 @@
  *
  * Validates that create_section, delete_section, move_section, rename_section
  * all require proposal_id, write changes to the proposal overlay (not canonical),
- * and that commit_proposal correctly promotes overlay → canonical.
+ * and that publish_proposal correctly promotes proposal changes into the live wiki.
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
@@ -254,7 +254,7 @@ describe("structural tools via proposals", () => {
     it("rejects on non-pending proposal", async () => {
       // Create and commit a proposal
       const proposalId = await createProposal("Committed proposal");
-      await callMcpTool("write_section", {
+      await callMcpTool("write_proposal_section", {
         proposal_id: proposalId,
         doc_path: SAMPLE_DOC_PATH,
         heading_path: ["Overview"],

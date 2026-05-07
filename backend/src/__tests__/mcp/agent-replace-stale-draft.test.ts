@@ -12,8 +12,8 @@
  * 3. my_proposals status=draft → 2 entries (P1 and P2)
  * 4. create_proposal with replace=true, 2 sections → withdraws ONE existing draft, creates P3
  * 5. verify exactly one of P1/P2 is withdrawn
- * 6. commit_proposal P3 → committed
- * 7. read_section both headings → new content
+ * 6. publish_proposal P3 → committed
+ * 7. read_live_section both headings → new content
  * 8. create_proposal with replace=true (still has surviving draft) → succeeds
  */
 
@@ -169,19 +169,19 @@ describe("US-5: replace stale draft with replace=true", () => {
     expect(withdrawnCount).toBe(1);
     expect(draftCount).toBe(1);
 
-    // ── Step 6: commit_proposal P3 → committed ──
-    const commitRes = await callMcpTool("commit_proposal", { proposal_id: P3 });
+    // ── Step 6: publish_proposal P3 → committed ──
+    const commitRes = await callMcpTool("publish_proposal", { proposal_id: P3 });
     const commitData = JSON.parse(commitRes.result.content[0].text);
     expect(commitData.status).toBe("committed");
 
-    // ── Step 7: read_section both headings → new content from P3 ──
-    const readOverview = await callMcpTool("read_section", {
+    // ── Step 7: read_live_section both headings → new content from P3 ──
+    const readOverview = await callMcpTool("read_live_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Overview"],
     });
     expect(JSON.parse(readOverview.result.content[0].text).content).toContain("P3 overview");
 
-    const readTimeline = await callMcpTool("read_section", {
+    const readTimeline = await callMcpTool("read_live_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Timeline"],
     });

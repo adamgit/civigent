@@ -107,6 +107,8 @@ Snapshots are enabled via `KS_SNAPSHOT_ENABLED=true` (default: `true`). They are
 
 Use `KS_SNAPSHOT_ROOT` to control where snapshots are written inside the runtime environment. By default, snapshots live in a sibling `snapshots/` directory next to `KS_DATA_ROOT`, not inside the data root itself.
 
+If you expose snapshots via a host bind mount, manually create the host snapshots folder first and ensure it is writable by the container process. The Snapshots admin page reports when the configured snapshot root is not writable.
+
 For deployment guidance, see [Snapshots](deployment.md#snapshots-optional) in the Deployment Guide.
 
 ---

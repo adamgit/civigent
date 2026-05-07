@@ -4,6 +4,7 @@ services:
     ports:
       - "${PORT:-8080}:3000"
     volumes:
+      # Host folders must exist before first start and be writable by the container process.
       - ./wiki-data:/app/data
       - ./snapshots:${KS_SNAPSHOT_ROOT:-/app/snapshots}
       - ${IMPORT_CONTENT_FROM:-/dev/null}:/import:ro

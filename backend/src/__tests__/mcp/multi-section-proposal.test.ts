@@ -1,5 +1,5 @@
 /**
- * Tests for agent create_proposal and write_section with multi-heading content.
+ * Tests for agent create_proposal and write_proposal_section with multi-heading content.
  *
  * Validates that OverlayContentLayer.writeSection auto-splits multi-heading
  * content into separate sections, and that the proposal metadata is updated
@@ -111,42 +111,43 @@ describe("multi-heading auto-split in proposals", () => {
 
     // Per items 246/258: proposal section metadata is keyed to the originally-requested
     // target headings only — auto-split successors are deliberately NOT reflected in the
-    // proposal's `sections` payload. The actual split is verified below via read_section
-    // and read_doc_structure against canonical after commit.
+    // proposal's `sections` payload. The actual split is verified below via
+    // read_proposal_section before publish and read_live_section after publish.
     const sectionHeadings = data.sections.map((s: any) => s.heading_path);
     expect(sectionHeadings).toContainEqual(["Overview"]);
 
-    // Each sub-section should be readable via read_section
-    const overviewRes = await callMcpTool("read_section", {
+    // The edited section should be readable from the draft proposal before publish.
+    const overviewRes = await callMcpTool("read_proposal_section", {
+      proposal_id: data.proposal_id,
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Overview"],
     });
-    // After commit, canonical will have the new content; before commit, read_section
-    // reads canonical (not overlay). So we commit first, then verify.
+    const overviewDraftData = JSON.parse(overviewRes.result.content[0].text);
+    expect(overviewDraftData.content).toContain("Rewritten overview.");
 
-    // Commit the proposal
-    const commitRes = await callMcpTool("commit_proposal", {
+    // Publish the proposal
+    const commitRes = await callMcpTool("publish_proposal", {
       proposal_id: data.proposal_id,
     });
     const commitData = JSON.parse(commitRes.result.content[0].text);
     expect(commitData.committed_head).toBeDefined();
 
-    // Now verify each section is readable from canonical
-    const readOverview = await callMcpTool("read_section", {
+    // Now verify each section is readable from the live wiki
+    const readOverview = await callMcpTool("read_live_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Overview"],
     });
     const overviewData = JSON.parse(readOverview.result.content[0].text);
     expect(overviewData.content).toContain("Rewritten overview.");
 
-    const readDetails = await callMcpTool("read_section", {
+    const readDetails = await callMcpTool("read_live_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Details"],
     });
     const detailsData = JSON.parse(readDetails.result.content[0].text);
     expect(detailsData.content).toContain("New details section.");
 
-    const readSummary = await callMcpTool("read_section", {
+    const readSummary = await callMcpTool("read_live_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Summary"],
     });
@@ -165,10 +166,10 @@ describe("multi-heading auto-split in proposals", () => {
     expect(headings).toContain("Timeline"); // original section still present
   });
 
-  it("write_section with multi-heading content auto-splits", async () => {
+  it("write_proposal_section with multi-heading content auto-splits", async () => {
     // First create a proposal with a simple section
     const createRes = await callMcpTool("create_proposal", {
-      intent: "write_section auto-split test",
+      intent: "write_proposal_section auto-split test",
       sections: [
         {
           doc_path: SAMPLE_DOC_PATH,
@@ -181,7 +182,7 @@ describe("multi-heading auto-split in proposals", () => {
     const createData = JSON.parse(createRes.result.content[0].text);
     const proposalId = createData.proposal_id;
 
-    // Now use write_section with multi-heading content
+    // Now use write_proposal_section with multi-heading content
     const multiContent = [
       "## Timeline",
       "",
@@ -192,7 +193,7 @@ describe("multi-heading auto-split in proposals", () => {
       "Key milestones here.",
     ].join("\n");
 
-    const writeRes = await callMcpTool("write_section", {
+    const writeRes = await callMcpTool("write_proposal_section", {
       proposal_id: proposalId,
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Timeline"],
@@ -204,19 +205,19 @@ describe("multi-heading auto-split in proposals", () => {
 
     // Per items 246/258: proposal section metadata is keyed to the originally-requested
     // target headings only — auto-split successors are deliberately NOT reflected in the
-    // proposal's `sections` payload. The actual split is verified below via read_section
-    // against canonical after commit.
+    // proposal's `sections` payload. The actual split is verified below via
+    // read_live_section after publish.
     const sectionHeadings = writeData.sections.map((s: any) => s.heading_path);
     expect(sectionHeadings).toContainEqual(["Timeline"]);
 
     // Commit and verify
-    const commitRes = await callMcpTool("commit_proposal", {
+    const commitRes = await callMcpTool("publish_proposal", {
       proposal_id: proposalId,
     });
     const commitData = JSON.parse(commitRes.result.content[0].text);
     expect(commitData.committed_head).toBeDefined();
 
-    const readMilestones = await callMcpTool("read_section", {
+    const readMilestones = await callMcpTool("read_live_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Milestones"],
     });

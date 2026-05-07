@@ -1,5 +1,6 @@
 import path from "node:path";
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { getContentRoot, getDataRoot, getSnapshotRoot } from "./data-root.js";
 import { normalizeDocPath } from "./path-utils.js";
 import { DocumentNotFoundError } from "./content-layer.js";
@@ -20,6 +21,28 @@ export class SnapshotGenerationDisabledError extends Error {
     super("Snapshot generation is disabled. Set KS_SNAPSHOT_ENABLED=true before running a snapshot.");
     this.name = "SnapshotGenerationDisabledError";
   }
+}
+
+export class SnapshotRootNotWritableError extends Error {
+  public readonly snapshotRoot: string;
+  public readonly detail?: string;
+
+  constructor(snapshotRoot: string, detail?: string) {
+    super(
+      `Snapshot root is not writable: ${snapshotRoot}. ` +
+      "When using a host bind mount, create the host snapshots folder first and grant write permission to the container user." +
+      (detail ? ` Original error: ${detail}` : ""),
+    );
+    this.name = "SnapshotRootNotWritableError";
+    this.snapshotRoot = snapshotRoot;
+    this.detail = detail;
+  }
+}
+
+interface SnapshotRootStatus {
+  root: string;
+  writable: boolean;
+  error?: string;
 }
 
 async function readdirRecursive(dir: string): Promise<string[]> {
@@ -76,6 +99,38 @@ export function isSnapshotGenerationEnabled(): boolean {
   return getAdminConfig().snapshot_enabled;
 }
 
+function formatSnapshotError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
+async function getSnapshotRootStatus(): Promise<SnapshotRootStatus> {
+  const snapshotRoot = getSnapshotRoot();
+  try {
+    await access(snapshotRoot, fsConstants.W_OK);
+    const probePath = path.join(snapshotRoot, `.civigent-write-check-${process.pid}-${Date.now()}.tmp`);
+    await writeFile(probePath, "ok", "utf8");
+    await rm(probePath, { force: true });
+    return { root: snapshotRoot, writable: true };
+  } catch (error) {
+    return {
+      root: snapshotRoot,
+      writable: false,
+      error: formatSnapshotError(error),
+    };
+  }
+}
+
+async function assertSnapshotRootWritable(): Promise<string> {
+  const status = await getSnapshotRootStatus();
+  if (!status.writable) {
+    throw new SnapshotRootNotWritableError(status.root, status.error);
+  }
+  return status.root;
+}
+
 interface SnapshotDocFailure {
   docPath: string;
   error: string;
@@ -85,12 +140,34 @@ interface RegenerateResult {
   failures: SnapshotDocFailure[];
 }
 
+async function recordSnapshotRun(batchDocCount: number, failures: SnapshotDocFailure[], topLevelError?: unknown): Promise<void> {
+  lastSnapshotGenerationAt = Date.now();
+  const [contentFileCount, snapshotFileCount] = await Promise.all([
+    countMdFiles(getContentRoot()),
+    countMdFiles(getSnapshotRoot()),
+  ]);
+  const topLevelErrorMessage = topLevelError == null ? undefined : formatSnapshotError(topLevelError);
+  const failureText = failures.length > 0
+    ? failures.map((f) => `${f.docPath}: ${f.error}`).join("\n---\n")
+    : undefined;
+  const errorText = [topLevelErrorMessage, failureText].filter(Boolean).join("\n---\n") || undefined;
+  pushHistory({
+    type: "snapshot",
+    timestamp: lastSnapshotGenerationAt,
+    batch_doc_count: batchDocCount,
+    failed_doc_count: failures.length > 0 ? failures.length : (topLevelErrorMessage ? batchDocCount : 0),
+    content_file_count: contentFileCount,
+    snapshot_file_count: snapshotFileCount,
+    error: errorText,
+  });
+}
+
 export async function regenerateSnapshotsForDocs(docPaths: string[]): Promise<RegenerateResult> {
   if (!isSnapshotGenerationEnabled()) {
     throw new SnapshotGenerationDisabledError();
   }
 
-  const snapshotRoot = getSnapshotRoot();
+  const snapshotRoot = await assertSnapshotRootWritable();
   const uniqueDocPaths = new Set<string>();
   for (const docPath of docPaths) {
     const normalized = normalizeDocPath(docPath);
@@ -137,21 +214,17 @@ export function scheduleSnapshotRegeneration(docPaths: string[]): void {
   snapshotWorkQueue = snapshotWorkQueue
     .catch(() => { /* absorb previous batch error to keep queue alive */ })
     .then(async () => {
-      const contentFileCount = await countMdFiles(getContentRoot());
-      const { failures } = await regenerateSnapshotsForDocs(normalizedDocPaths);
-      lastSnapshotGenerationAt = Date.now();
-      const snapshotFileCount = await countMdFiles(getSnapshotRoot());
-      pushHistory({
-        type: "snapshot",
-        timestamp: lastSnapshotGenerationAt,
-        batch_doc_count: normalizedDocPaths.length,
-        failed_doc_count: failures.length,
-        content_file_count: contentFileCount,
-        snapshot_file_count: snapshotFileCount,
-        error: failures.length > 0
-          ? failures.map((f) => `${f.docPath}: ${f.error}`).join("\n---\n")
-          : undefined,
-      });
+      let failures: SnapshotDocFailure[] = [];
+      let topLevelError: unknown;
+      try {
+        ({ failures } = await regenerateSnapshotsForDocs(normalizedDocPaths));
+      } catch (error) {
+        topLevelError = error;
+      }
+      await recordSnapshotRun(normalizedDocPaths.length, failures, topLevelError);
+      if (topLevelError != null) {
+        throw topLevelError;
+      }
     });
 }
 
@@ -165,23 +238,17 @@ export async function snapshotAllDocs(): Promise<void> {
   }
 
   const docPaths = await listAllDocPaths();
-  const { failures } = await regenerateSnapshotsForDocs(docPaths);
-  lastSnapshotGenerationAt = Date.now();
-  const [contentFileCount, snapshotFileCount] = await Promise.all([
-    countMdFiles(getContentRoot()),
-    countMdFiles(getSnapshotRoot()),
-  ]);
-  pushHistory({
-    type: "snapshot",
-    timestamp: lastSnapshotGenerationAt,
-    batch_doc_count: docPaths.length,
-    failed_doc_count: failures.length,
-    content_file_count: contentFileCount,
-    snapshot_file_count: snapshotFileCount,
-    error: failures.length > 0
-      ? failures.map((f) => `${f.docPath}: ${f.error}`).join("\n---\n")
-      : undefined,
-  });
+  let failures: SnapshotDocFailure[] = [];
+  let topLevelError: unknown;
+  try {
+    ({ failures } = await regenerateSnapshotsForDocs(docPaths));
+  } catch (error) {
+    topLevelError = error;
+  }
+  await recordSnapshotRun(docPaths.length, failures, topLevelError);
+  if (topLevelError != null) {
+    throw topLevelError;
+  }
 }
 
 export async function getSnapshotHistory(): Promise<GetAdminSnapshotHistoryResponse> {
@@ -207,11 +274,11 @@ export async function getSnapshotHealth(): Promise<GetAdminSnapshotHealthRespons
   const enabled = isSnapshotGenerationEnabled();
   let snapshotsExist = false;
   let snapshotStale = false;
+  const snapshotRootStatus = await getSnapshotRootStatus();
 
   if (enabled) {
-    const snapshotRoot = getSnapshotRoot();
     try {
-      const entries = await readdir(snapshotRoot);
+      const entries = await readdir(snapshotRootStatus.root);
       snapshotsExist = entries.length > 0;
     } catch {
       snapshotsExist = false;
@@ -229,5 +296,8 @@ export async function getSnapshotHealth(): Promise<GetAdminSnapshotHealthRespons
     snapshot_enabled: enabled,
     snapshots_exist: snapshotsExist,
     snapshot_stale: snapshotStale,
+    snapshot_root: snapshotRootStatus.root,
+    snapshot_root_writable: snapshotRootStatus.writable,
+    snapshot_root_error: snapshotRootStatus.error,
   };
 }

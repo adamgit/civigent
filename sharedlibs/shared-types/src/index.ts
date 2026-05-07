@@ -532,6 +532,9 @@ export interface GetAdminSnapshotHealthResponse {
   snapshot_enabled: boolean;
   snapshots_exist: boolean;
   snapshot_stale: boolean;
+  snapshot_root: string;
+  snapshot_root_writable: boolean;
+  snapshot_root_error?: string;
 }
 
 export interface ServerStartRecord {

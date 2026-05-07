@@ -44,7 +44,7 @@ async function main() {
   log(PREFIX, "Reading Budget section...");
   let budgetContent;
   try {
-    const budget = await mcp.callTool("read_section", {
+    const budget = await mcp.callTool("read_live_section", {
       doc_path: DOC_PATH,
       heading_path: ["Budget"],
     });

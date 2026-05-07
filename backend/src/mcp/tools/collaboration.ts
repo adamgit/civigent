@@ -2,9 +2,9 @@
  * Tier 3 MCP tools — collaboration surface with explicit proposals.
  *
  * Tools: list_documents, list_sections, search_text,
- *        read_doc, read_doc_structure, read_section,
- *        create_proposal, commit_proposal, cancel_proposal,
- *        list_proposals, read_proposal, write_section
+ *        read_doc, read_doc_structure, read_live_section, read_proposal_section,
+ *        create_proposal, publish_proposal, withdraw_proposal,
+ *        list_proposals, read_proposal, write_proposal_section
  */
 
 import type { ToolRegistry, ToolHandler } from "../tool-registry.js";
@@ -24,6 +24,7 @@ import {
   createProposal,
   readProposal,
   readProposalWithContent,
+  proposalContentRoot,
   listAllProposals,
   listDraftProposals,
   listCommittedProposals,
@@ -43,6 +44,7 @@ import { SectionRef } from "../../domain/section-ref.js";
 import { INVOLVEMENT_THRESHOLD } from "../../domain/humanInvolvement.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
 import type { SectionScoreSnapshot } from "../../types/shared.js";
+import { buildFragmentContent, bodyAsFragment } from "../../storage/section-formatting.js";
 import { checkDocPermission } from "../../auth/acl.js";
 import { emitCatalogMutationEvents, summarizeProposalCatalogMutations } from "../catalog-events.js";
 import {
@@ -222,9 +224,9 @@ const readDocStructureHandler: ToolHandler = async (args, ctx) => {
   }
 };
 
-// ─── read_section ────────────────────────────────────────
+// ─── read_live_section ───────────────────────────────────
 
-const readSectionHandler: ToolHandler = async (args, ctx) => {
+const readLiveSectionHandler: ToolHandler = async (args, ctx) => {
   const docPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
 
@@ -350,10 +352,10 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
     await overlayLayer.upsertSection(ref, heading, s.content);
   }
 
-  // Evaluate immediately (informational — agent must call commit_proposal explicitly)
+  // Evaluate immediately (informational — agent must call publish_proposal explicitly)
   const { evaluation, sections: evaluatedSections } = await evaluateProposalHumanInvolvement(mcpProposalId);
 
-  // Broadcast proposal:created so frontends show the pending indicator
+  // Broadcast proposal:draft so frontends can show the active draft indicator
   if (ctx.emitEvent && evaluatedSections.length > 0) {
     ctx.emitEvent({
       type: "proposal:draft",
@@ -380,9 +382,9 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
   });
 };
 
-// ─── commit_proposal ─────────────────────────────────────
+// ─── publish_proposal ────────────────────────────────────
 
-const commitProposalHandler: ToolHandler = async (args, ctx) => {
+const publishProposalHandler: ToolHandler = async (args, ctx) => {
   const proposalId = args.proposal_id as string | undefined;
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
 
@@ -390,10 +392,10 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
     const proposal = await readProposal(proposalId);
 
     if (proposal.writer.id !== ctx.writer.id) {
-      return makeToolErrorResult("You can only commit your own proposals.");
+      return makeToolErrorResult("You can only publish your own proposals.");
     }
     if (proposal.status !== "draft") {
-      return makeToolErrorResult(`Cannot commit proposal in ${proposal.status} state.`);
+      return makeToolErrorResult(`Cannot publish proposal in ${proposal.status} state.`);
     }
 
     // Check write permission for all target documents
@@ -469,9 +471,9 @@ const commitProposalHandler: ToolHandler = async (args, ctx) => {
   }
 };
 
-// ─── cancel_proposal ─────────────────────────────────────
+// ─── withdraw_proposal ───────────────────────────────────
 
-const cancelProposalHandler: ToolHandler = async (args, ctx) => {
+const withdrawProposalHandler: ToolHandler = async (args, ctx) => {
   const proposalId = args.proposal_id as string | undefined;
   const reason = args.reason as string | undefined;
 
@@ -480,7 +482,7 @@ const cancelProposalHandler: ToolHandler = async (args, ctx) => {
   try {
     const proposal = await readProposal(proposalId);
     if (proposal.writer.id !== ctx.writer.id) {
-      return makeToolErrorResult("You can only cancel your own proposals.");
+      return makeToolErrorResult("You can only withdraw your own proposals.");
     }
 
     await transitionToWithdrawn(proposalId, reason);
@@ -575,9 +577,63 @@ const readProposalHandler: ToolHandler = async (args) => {
   }
 };
 
-// ─── write_section ───────────────────────────────────────
+// ─── read_proposal_section ───────────────────────────────
 
-const writeSectionHandler: ToolHandler = async (args, ctx) => {
+const readProposalSectionHandler: ToolHandler = async (args) => {
+  const proposalId = args.proposal_id as string | undefined;
+  const docPath = args.doc_path as string | undefined;
+  const headingPath = args.heading_path as string[] | undefined;
+
+  if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
+  if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
+  if (!Array.isArray(headingPath)) return makeToolErrorResult("Missing required parameter: heading_path (array of strings)");
+
+  try {
+    const proposal = await readProposal(proposalId);
+    const liveRoot = getContentRoot();
+    const proposalRoot = proposalContentRoot(proposal.id, proposal.status);
+    const layer = new OverlayContentLayer(proposalRoot, liveRoot);
+    const ref = new SectionRef(docPath, headingPath);
+    const body = await layer.readSection(ref);
+
+    let content;
+    if (headingPath.length === 0) {
+      content = bodyAsFragment(body);
+    } else {
+      const section = (await layer.getSectionList(docPath)).find((entry) =>
+        entry.headingPath.length === headingPath.length
+        && entry.headingPath.every((segment, index) => segment === headingPath[index]),
+      );
+      if (!section) {
+        return makeToolErrorResult(`Section not found: ${headingPath.join(" > ")} in proposal ${proposalId}`);
+      }
+      content = buildFragmentContent(body, section.level, section.heading);
+    }
+
+    return jsonToolResult({
+      proposal_id: proposalId,
+      status: proposal.status,
+      doc_path: docPath,
+      heading_path: headingPath,
+      content,
+    });
+  } catch (error) {
+    if (error instanceof ProposalNotFoundError) {
+      return makeToolErrorResult(`Proposal not found: ${proposalId}`);
+    }
+    if (error instanceof SectionNotFoundError || error instanceof HeadingNotFoundError) {
+      return makeToolErrorResult(`Section not found: ${headingPath.join(" > ")} in ${docPath}`);
+    }
+    if (error instanceof InvalidDocPathError) {
+      return makeToolErrorResult(`Invalid document path: ${docPath}`);
+    }
+    throw error;
+  }
+};
+
+// ─── write_proposal_section ──────────────────────────────
+
+const writeProposalSectionHandler: ToolHandler = async (args, ctx) => {
   const proposalId = args.proposal_id as string | undefined;
   const docPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
@@ -682,11 +738,11 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   registry.register(
     {
       name: "list_documents",
-      description: "List readable documents under a canonical root path with lightweight section counts.",
+      description: "List readable documents under a live scope path with lightweight section counts.",
       inputSchema: {
         type: "object",
         properties: {
-          root: { type: "string", description: 'Canonical absolute scope path (default "/"). Supports folder or single document paths.' },
+          root: { type: "string", description: 'Live absolute scope path (default "/"). Supports folder or single document paths.' },
         },
       },
     },
@@ -696,11 +752,11 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   registry.register(
     {
       name: "list_sections",
-      description: "List readable sections under a canonical scope without returning body text.",
+      description: "List readable sections under a live scope without returning body text.",
       inputSchema: {
         type: "object",
         properties: {
-          path: { type: "string", description: 'Canonical absolute scope path (default "/"). Supports folder or single document paths.' },
+          path: { type: "string", description: 'Live absolute scope path (default "/"). Supports folder or single document paths.' },
         },
       },
     },
@@ -710,13 +766,13 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   registry.register(
     {
       name: "search_text",
-      description: "Run lexical search across canonical readable section bodies using literal or regular-expression syntax.",
+      description: "Run lexical search across live readable section bodies using literal or regular-expression syntax.",
       inputSchema: {
         type: "object",
         properties: {
           pattern: { type: "string", description: "Search pattern." },
           syntax: { type: "string", enum: ["literal", "regexp"], description: "Search syntax mode." },
-          root: { type: "string", description: 'Canonical absolute scope path (default "/"). Supports folder or single document paths.' },
+          root: { type: "string", description: 'Live absolute scope path (default "/"). Supports folder or single document paths.' },
           case_sensitive: { type: "boolean", description: "Whether matching is case-sensitive (default false)." },
           max_results: { type: "number", description: "Global max number of matches to return (default 20)." },
           context_bytes: { type: "number", description: "Approximate byte context around each match (default 100)." },
@@ -730,7 +786,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   registry.register(
     {
       name: "read_doc",
-      description: "Read the full assembled markdown content of a document, including its heading structure.",
+      description: "Read the full live markdown content of a document, including its heading structure.",
       inputSchema: {
         type: "object",
         properties: {
@@ -759,8 +815,8 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
 
   registry.register(
     {
-      name: "read_section",
-      description: "Read the content of a specific section within a document. More efficient than reading the full document when you only need one section.",
+      name: "read_live_section",
+      description: "Read the current live content of a specific section. This does not include proposal-only edits.",
       inputSchema: {
         type: "object",
         properties: {
@@ -774,13 +830,13 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
         required: ["doc_path", "heading_path"],
       },
     },
-    readSectionHandler,
+    readLiveSectionHandler,
   );
 
   registry.register(
     {
       name: "create_proposal",
-      description: "Create a new proposal with intent and section changes. The proposal starts in pending status. Use commit_proposal to commit it.",
+      description: "Create a new proposal with intent and section changes. The proposal starts in draft status. Use publish_proposal to publish it.",
       inputSchema: {
         type: "object",
         properties: {
@@ -799,7 +855,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
             },
             description: "Sections to create or overwrite",
           },
-          replace: { type: "boolean", description: "Auto-withdraw existing pending proposal if one exists" },
+          replace: { type: "boolean", description: "Auto-withdraw an existing draft proposal if one exists" },
         },
         required: ["intent", "sections"],
       },
@@ -809,12 +865,12 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
 
   registry.register(
     {
-      name: "write_section",
-      description: "Replace the content at the specified heading path within an existing pending proposal. Creates the section (and any missing ancestors) if it does not yet exist.",
+      name: "write_proposal_section",
+      description: "Replace the content at the specified heading path within an existing draft proposal. Creates the section and any missing ancestors if needed.",
       inputSchema: {
         type: "object",
         properties: {
-          proposal_id: { type: "string", description: "ID of the pending proposal" },
+          proposal_id: { type: "string", description: "ID of the draft proposal" },
           doc_path: { type: "string", description: "Document path (must end with .md)" },
           heading_path: { type: "array", items: { type: "string" }, description: "Section heading path" },
           content: { type: "string", description: "Section content (markdown). Describes the section as the user wants it to read after the call." },
@@ -823,13 +879,13 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
         required: ["proposal_id", "doc_path", "heading_path", "content"],
       },
     },
-    writeSectionHandler,
+    writeProposalSectionHandler,
   );
 
   registry.register(
     {
-      name: "commit_proposal",
-      description: "Attempt to commit a pending proposal. Re-evaluates human-involvement for all sections. If all pass, the proposal is committed to canonical. If any are blocked, the proposal remains pending.",
+      name: "publish_proposal",
+      description: "Attempt to publish a draft proposal to the live wiki. If any sections are blocked, the proposal remains draft.",
       inputSchema: {
         type: "object",
         properties: {
@@ -838,13 +894,13 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
         required: ["proposal_id"],
       },
     },
-    commitProposalHandler,
+    publishProposalHandler,
   );
 
   registry.register(
     {
-      name: "cancel_proposal",
-      description: "Withdraw/cancel a pending proposal. The proposal moves to withdrawn state and cannot be modified further.",
+      name: "withdraw_proposal",
+      description: "Withdraw/cancel a draft proposal. The proposal moves to withdrawn state and cannot be modified further.",
       inputSchema: {
         type: "object",
         properties: {
@@ -854,7 +910,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
         required: ["proposal_id"],
       },
     },
-    cancelProposalHandler,
+    withdrawProposalHandler,
   );
 
   registry.register(
@@ -864,7 +920,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
       inputSchema: {
         type: "object",
         properties: {
-          status: { type: "string", description: "Filter by status: pending, committed, or withdrawn" },
+          status: { type: "string", description: "Filter by status: draft, committed, or withdrawn" },
         },
       },
     },
@@ -878,7 +934,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
       inputSchema: {
         type: "object",
         properties: {
-          status: { type: "string", description: "Filter by status: pending, committed, or withdrawn" },
+          status: { type: "string", description: "Filter by status: draft, committed, or withdrawn" },
         },
       },
     },
@@ -888,7 +944,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   registry.register(
     {
       name: "read_proposal",
-      description: "Read the details of a specific proposal, including its sections and human-involvement evaluation.",
+      description: "Read the details of a specific proposal, including its sections, content, and human-involvement evaluation.",
       inputSchema: {
         type: "object",
         properties: {
@@ -898,5 +954,26 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
       },
     },
     readProposalHandler,
+  );
+
+  registry.register(
+    {
+      name: "read_proposal_section",
+      description: "Read a specific section as it appears inside a proposal.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          proposal_id: { type: "string", description: "Proposal ID" },
+          doc_path: { type: "string", description: "Document path" },
+          heading_path: {
+            type: "array",
+            items: { type: "string" },
+            description: "Heading path as array of heading names, e.g. ['Getting Started', 'Installation']",
+          },
+        },
+        required: ["proposal_id", "doc_path", "heading_path"],
+      },
+    },
+    readProposalSectionHandler,
   );
 }

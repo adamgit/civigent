@@ -139,9 +139,12 @@ KS_AUTH_SECRET=<your-generated-secret>
 
 ```bash
 cp .env.example .env
+mkdir -p wiki-data snapshots
 # Edit .env with your settings, then:
 docker compose up
 ```
+
+With plain Docker bind mounts, `wiki-data/` and `snapshots/` must both exist on the host first and must be writable by the container process.
 
 ### Scenario C: Enterprise with network-gated agents
 
@@ -306,6 +309,8 @@ KS_SNAPSHOT_ENABLED=true
 ```
 
 In quickstart deployments, `compose.yaml` writes snapshots to `./snapshots/` on the host by default, using `KS_SNAPSHOT_ROOT` inside the container.
+
+When using host bind mounts, manually create `wiki-data/` and `snapshots/` before first start and ensure both host folders are writable by the container process. If snapshot runs fail with `EACCES`, fix the host-folder permissions and retry.
 
 If you need a different in-container snapshot path, set `KS_SNAPSHOT_ROOT` and update the snapshots bind mount in `compose.yaml` to match.
 
