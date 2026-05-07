@@ -505,36 +505,36 @@ In production, `server.ts` runs directly — no supervisor, no SSE endpoint, no 
 
 ## Data directory structure
 
-All persistent state lives under a single data directory (mounted as `/app/data` in Docker):
+Canonical persistent state lives under a single data directory (mounted as `/app/data` in Docker). Snapshots are a separate derived cache that lives outside the data root by default:
 
 ```
-data/
-├── snapshots/            ← Pure markdown files, read-only, enabling any standard 3rd party tool to read the data
-├── content/              ← Published content (canonical), markdown stored in a custom format
-│   ├── .git/             ← Private audit-log of all changes to /content/
-│   ├── document-name.md  ← Skeleton file (privately stored and maintained, you should never need to edit or view this raw)
-│   └── document-name.md.sections/ (part of the custom internal markdown format)
-│       ├── sec_abc123.md           ← Section content file
-│       └── sec_abc123.md.sections/ ← Sub-sections (for nested headings)
-│
-├── sessions/             ← In-flight editing state (ephemeral, survives restarts)
-│   ├── fragments/        ← Raw Y.Doc fragments (crash-safety layer, ~2s freshness)
-│   ├── docs/             ← Canonical-ready session content (structurally valid)
-│   │   └── content/      ← Mirrors canonical structure with dirty section overlays
-│   └── authors/          ← Per-user attribution metadata (which user dirtied which sections)
-│
-├── proposals/            ← Agent and human proposals (filesystem = state machine)
-│   ├── pending/          ← Active proposals (mutable)
-│   ├── committing/       ← Being committed right now (transient, milliseconds)
-│   ├── committed/        ← Successfully committed (terminal, audit trail)
-│   └── withdrawn/        ← Cancelled proposals (terminal, audit trail)
-│
-│
-└── auth/                 ← Authentication and authorization state
-    ├── defaults.json     ← System-wide default permission levels (read/write)
-    ├── roles.json        ← User-to-role mappings (e.g. admin)
-    ├── acl.json          ← Per-document permission overrides (sparse)
-    └── agents.keys       ← Pre-authenticated agent credentials (optional)
+app/
+├── snapshots/           ← Pure markdown files, read-only, derived cache for external tools
+└── data/
+    ├── content/              ← Published content (canonical), markdown stored in a custom format
+    │   ├── .git/             ← Private audit-log of all changes to /content/
+    │   ├── document-name.md  ← Skeleton file (privately stored and maintained, you should never need to edit or view this raw)
+    │   └── document-name.md.sections/ (part of the custom internal markdown format)
+    │       ├── sec_abc123.md           ← Section content file
+    │       └── sec_abc123.md.sections/ ← Sub-sections (for nested headings)
+    │
+    ├── sessions/             ← In-flight editing state (ephemeral, survives restarts)
+    │   ├── fragments/        ← Raw Y.Doc fragments (crash-safety layer, ~2s freshness)
+    │   ├── docs/             ← Canonical-ready session content (structurally valid)
+    │   │   └── content/      ← Mirrors canonical structure with dirty section overlays
+    │   └── authors/          ← Per-user attribution metadata (which user dirtied which sections)
+    │
+    ├── proposals/            ← Agent and human proposals (filesystem = state machine)
+    │   ├── pending/          ← Active proposals (mutable)
+    │   ├── committing/       ← Being committed right now (transient, milliseconds)
+    │   ├── committed/        ← Successfully committed (terminal, audit trail)
+    │   └── withdrawn/        ← Cancelled proposals (terminal, audit trail)
+    │
+    └── auth/                 ← Authentication and authorization state
+        ├── defaults.json     ← System-wide default permission levels (read/write)
+        ├── roles.json        ← User-to-role mappings (e.g. admin)
+        ├── acl.json          ← Per-document permission overrides (sparse)
+        └── agents.keys       ← Pre-authenticated agent credentials (optional)
 ```
 
 ### Backing up

@@ -117,7 +117,7 @@ import { generateOidcState, generateOidcNonce, storeOidcState, retrieveAndClearO
 import { buildOidcRedirectUrl, redeemOidcCode } from "../../auth/oidc-provider.js";
 import type { AuthMethod } from "../../types/shared.js";
 import { readAgentKeysAndErrors, readAgentKeysSkipErrors, addAgentKey, removeAgentKey, rotateAgentSecret, lookupAgentKey } from "../../auth/agent-keys.js";
-import { getSnapshotHealth, getSnapshotHistory, snapshotAllDocs } from "../../storage/snapshot.js";
+import { getSnapshotHealth, getSnapshotHistory, snapshotAllDocs, SnapshotGenerationDisabledError } from "../../storage/snapshot.js";
 import {
   AdminConfigValidationError,
   getAdminConfig,
@@ -2754,6 +2754,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
       await snapshotAllDocs();
       res.json({ ok: true });
     } catch (error) {
+      if (error instanceof SnapshotGenerationDisabledError) {
+        sendApiError(res, 409, error);
+        return;
+      }
       next(error);
     }
   });

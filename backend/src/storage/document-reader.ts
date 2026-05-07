@@ -1,33 +1,16 @@
-import { readFile } from "node:fs/promises";
-import { getContentRoot, getSnapshotRoot } from "./data-root.js";
-import { resolveDocPathUnderContent, InvalidDocPathError } from "./path-utils.js";
+import { getContentRoot } from "./data-root.js";
+import { resolveDocPathUnderContent } from "./path-utils.js";
 import { ContentLayer } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { buildFragmentContent, bodyAsFragment, type SectionBody, type FragmentContent } from "./section-formatting.js";
-import { readEnvVar } from "../env.js";
 
 // Re-export error classes from ContentLayer (callers import from here)
 export { DocumentNotFoundError, DocumentAssemblyError } from "./content-layer.js";
-
-function snapshotReadsEnabled(): boolean {
-  const raw = readEnvVar("KS_SNAPSHOT_ENABLED", "true").toLowerCase();
-  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
-}
 
 export async function readAssembledDocument(rawDocPath: string): Promise<string> {
   const contentRoot = getContentRoot();
   // Validate the doc path (throws InvalidDocPathError if bad)
   resolveDocPathUnderContent(contentRoot, rawDocPath);
-  if (snapshotReadsEnabled()) {
-    try {
-      const snapshotPath = resolveDocPathUnderContent(getSnapshotRoot(), rawDocPath);
-      return await readFile(snapshotPath, "utf8");
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-      // Fall back to canonical assembly when snapshot is missing.
-    }
-  }
-  // Delegate assembly to ContentLayer
   const layer = new ContentLayer(contentRoot);
   return layer.readAssembledDocument(rawDocPath);
 }

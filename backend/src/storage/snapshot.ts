@@ -15,6 +15,13 @@ const SERVER_STARTED_AT = Date.now();
 const MAX_HISTORY_ENTRIES = 200;
 const snapshotHistory: SnapshotRunRecord[] = [];
 
+export class SnapshotGenerationDisabledError extends Error {
+  constructor() {
+    super("Snapshot generation is disabled. Set KS_SNAPSHOT_ENABLED=true before running a snapshot.");
+    this.name = "SnapshotGenerationDisabledError";
+  }
+}
+
 async function readdirRecursive(dir: string): Promise<string[]> {
   try {
     return await (readdir as (p: string, opts: object) => Promise<string[]>)(dir, { recursive: true });
@@ -80,7 +87,7 @@ interface RegenerateResult {
 
 export async function regenerateSnapshotsForDocs(docPaths: string[]): Promise<RegenerateResult> {
   if (!isSnapshotGenerationEnabled()) {
-    return { failures: [] };
+    throw new SnapshotGenerationDisabledError();
   }
 
   const snapshotRoot = getSnapshotRoot();
@@ -153,6 +160,10 @@ export async function flushSnapshotWorkQueue(): Promise<void> {
 }
 
 export async function snapshotAllDocs(): Promise<void> {
+  if (!isSnapshotGenerationEnabled()) {
+    throw new SnapshotGenerationDisabledError();
+  }
+
   const docPaths = await listAllDocPaths();
   const { failures } = await regenerateSnapshotsForDocs(docPaths);
   lastSnapshotGenerationAt = Date.now();

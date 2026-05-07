@@ -105,7 +105,9 @@ Snapshots are pre-assembled markdown documents written to disk. They're useful f
 
 Snapshots are enabled via `KS_SNAPSHOT_ENABLED=true` (default: `true`). They are regenerated when content changes and are a derived cache — never part of the source of truth.
 
-For instructions on exposing snapshots to the host filesystem, see [Snapshots](deployment.md#snapshots-optional) in the Deployment Guide.
+Use `KS_SNAPSHOT_ROOT` to control where snapshots are written inside the runtime environment. By default, snapshots live in a sibling `snapshots/` directory next to `KS_DATA_ROOT`, not inside the data root itself.
+
+For deployment guidance, see [Snapshots](deployment.md#snapshots-optional) in the Deployment Guide.
 
 ---
 
@@ -132,7 +134,7 @@ For instructions on exposing snapshots to the host filesystem, see [Snapshots](d
 | `KS_AGENT_AUTH_POLICY` | Agent auth policy: `open` (anonymous allowed), `register` (pre-registered client_id required), `verify` (pre-registered + client_secret required) | `open` (localhost) / `register` (public hostname) |
 | `KS_AGENT_ANON_SALT` | Salt for signing anonymous agent tokens (change to revoke all) | (auto-generated) |
 | `KS_DATA_ROOT` | Override the root data directory | (built-in default) |
-| `KS_SNAPSHOT_ROOT` | Override the snapshots directory | `<data_root>/snapshots` |
+| `KS_SNAPSHOT_ROOT` | Override the snapshots directory | sibling `snapshots/` directory next to `KS_DATA_ROOT` |
 | `KS_SNAPSHOT_ENABLED` | Enable assembled document snapshots | `true` |
 | `KS_GOVERNANCE_MODE` | Governance feature mode (`available` or `forced`) | `available` |
 | `KS_INVOLVEMENT_PRESET` | Human involvement preset (`yolo`, `aggressive`, `eager`, `conservative`) | `eager` |

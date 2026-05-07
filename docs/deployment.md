@@ -135,7 +135,7 @@ KS_OIDC_PUBLIC_URL=https://wiki.company.com
 KS_AUTH_SECRET=<your-generated-secret>
 ```
 
-**Getting started:** Copy the `quickstart/` folder from the release, then edit the `.env` file to add the settings above. The provided `compose.yaml` and `.env.example` already contain all the Docker configuration — you only need to set your environment variables.
+**Getting started:** Copy the `quickstart/` folder from the release, then edit the `.env` file to add the settings above. The provided `compose.yaml` and `.env.example` contain the base Docker configuration, including a host-visible `./snapshots/` cache outside `wiki-data/`.
 
 ```bash
 cp .env.example .env
@@ -305,13 +305,9 @@ Snapshots are pre-assembled versions of documents — useful for external tools 
 KS_SNAPSHOT_ENABLED=true
 ```
 
-To expose snapshots on the host filesystem, use the provided `compose.snapshot.yaml` overlay:
+In quickstart deployments, `compose.yaml` writes snapshots to `./snapshots/` on the host by default, using `KS_SNAPSHOT_ROOT` inside the container.
 
-```bash
-docker compose -f compose.yaml -f compose.snapshot.yaml up
-```
-
-You can set `SNAPSHOT_DIR` in your `.env` to control where snapshots appear on the host.
+If you need a different in-container snapshot path, set `KS_SNAPSHOT_ROOT` and update the snapshots bind mount in `compose.yaml` to match.
 
 Snapshots are a **derived cache** — they can be regenerated from /content at any time. Don't include them in backups.
 

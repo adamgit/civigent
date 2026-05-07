@@ -8,13 +8,13 @@ services:
       - ./backend:/app
       - /app/node_modules
       - ./dev-data:/app/data
-      - snapshot-dev:/app/snapshot
+      - ./snapshots:/snapshots
     ports:
       - "3000:3000"
     environment:
       - NODE_ENV=development
       - KS_SNAPSHOT_ENABLED=true
-      - KS_SNAPSHOT_ROOT=/app/snapshot
+      - KS_SNAPSHOT_ROOT=/snapshots
       - KS_EXTERNAL_PORT=${FRONTEND_PORT:-5173}
       - KS_EXTERNAL_HOSTNAME=${KS_EXTERNAL_HOSTNAME:-localhost}
       - KS_GOVERNANCE_MODE=${KS_GOVERNANCE_MODE:-}
@@ -46,6 +46,3 @@ services:
     environment:
       - NODE_ENV=development
       - VITE_BACKEND_TARGET=http://backend:3000
-
-volumes:
-  snapshot-dev:

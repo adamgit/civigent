@@ -5,11 +5,13 @@ services:
       - "${PORT:-8080}:3000"
     volumes:
       - ./wiki-data:/app/data
+      - ./snapshots:${KS_SNAPSHOT_ROOT:-/app/snapshots}
       - ${IMPORT_CONTENT_FROM:-/dev/null}:/import:ro
     environment:
       KS_EXTERNAL_PORT: ${PORT:-8080}
       KS_EXTERNAL_HOSTNAME: ${KS_EXTERNAL_HOSTNAME:-localhost}
-      KS_SNAPSHOT_ENABLED: ${KS_SNAPSHOT_ENABLED:-false}
+      KS_SNAPSHOT_ENABLED: ${KS_SNAPSHOT_ENABLED:-true}
+      KS_SNAPSHOT_ROOT: ${KS_SNAPSHOT_ROOT:-/app/snapshots}
       KS_GOVERNANCE_MODE: ${KS_GOVERNANCE_MODE:-}
       KS_INVOLVEMENT_PRESET: ${KS_INVOLVEMENT_PRESET:-}
       KS_AUTH_MODE: ${KS_AUTH_MODE:-}

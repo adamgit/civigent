@@ -101,7 +101,7 @@ export function getAuthRoot(): string {
 // ─── Snapshots ─────────────────────────────────────────────────────
 
 export function getSnapshotRoot(): string {
-  return path.resolve(readEnvVar("KS_SNAPSHOT_ROOT", path.join(getDataRoot(), "snapshots")));
+  return path.resolve(readEnvVar("KS_SNAPSHOT_ROOT", path.join(getDataRoot(), "..", "snapshots")));
 }
 
 // ─── Import ────────────────────────────────────────────────────────

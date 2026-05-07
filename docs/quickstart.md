@@ -22,7 +22,7 @@ Get Civigent running on your machine in under 1 minute. No programming experienc
 
 ## Step 1: Get the quickstart files
 
-You need two small files: `compose.yaml` and `.env.example`. Both are in the `quickstart/` folder of this repository.
+You need two small files: `compose.yaml` and `.env.example`. These files are in the `quickstart/` folder of this repository.
 
 Download these files to wherever you want to run Civigent:
 
@@ -91,7 +91,7 @@ Go to **http://localhost:8080** (or whatever port you chose) in your browser. Yo
 
 **Update:** Run `docker compose pull` then `docker compose up` to get the latest version.
 
-**Back up your data:** Copy the `wiki-data/` folder. It contains everything — your content, edit history, and proposals.
+**Back up your data:** Copy the `wiki-data/` folder. It contains everything durable — your content, edit history, and proposals. The separate `snapshots/` folder is a derived cache and should not be backed up.
 
 ---
 
@@ -128,15 +128,19 @@ Each agent gets its own identity. You'll see its name in the edit history, propo
 
 ---
 
-## Host-visible snapshot folder
+## Snapshots
 
-To browse rendered documents from your host (e.g. mount in Obsidian), edit `.env`:
+Snapshots are enabled by default in quickstart. Civigent writes complete assembled `.md` files to the host folder `./snapshots/`.
+
+The `snapshots/` folder is a read-only derived cache for external tools. Do not edit it, and do not include it in backups.
+
+To disable snapshots entirely, edit `.env`:
 
 ```env
-SNAPSHOT_DIR=./snapshot
+KS_SNAPSHOT_ENABLED=false
 ```
 
-Restart with `docker compose down && docker compose up`. The `snapshot/` folder contains complete `.md` files assembled from the knowledge store. It is a read-only cache — do not edit these files.
+If you need a different in-container snapshot path, set `KS_SNAPSHOT_ROOT` and update the snapshots bind mount in `compose.yaml` to match.
 
 ---
 
@@ -146,6 +150,7 @@ Restart with `docker compose down && docker compose up`. The `snapshot/` folder 
 my-wiki/
 ├── compose.yaml
 ├── .env
+├── snapshots/              ← assembled markdown cache (derived, do not back up)
 └── wiki-data/              ← your knowledge store (back this up)
     ├── content/            ← documents (skeletons + sections)
     ├── proposals/          ← work audit trail (auto-managed)

@@ -17,28 +17,25 @@ This works when both instances share the same host (e.g. multiple Docker Compose
 
 **1. Take a snapshot on the source instance**
 
-Go to the source instance's **Snapshots** page (Admin → Snapshots). Verify a recent snapshot exists, or click **Snapshot now** to create one. Snapshots are saved to the data volume at `snapshots/` — visible as a timestamped `.tar.gz` file.
+Go to the source instance's **Snapshots** page (Admin → Snapshots). Verify a recent snapshot exists, or click **Snapshot now** to create one. Snapshots are assembled `.md` files under the configured snapshot root. In quickstart, the default host folder is `./snapshots`.
 
 **2. Create a new import on the target instance**
 
 Go to the target instance's **Imports** page. Click **New import**. The page will display the staging folder path for that import (something like `/app/data/import-staging/<uuid>/`). Note this path — you will copy files into it.
 
-**3. Copy files from the source snapshot into the staging folder**
+**3. Copy files from the source snapshot folder into the staging folder**
 
-On the server, extract the documents you want from the source snapshot into the target's staging folder. For example, to copy everything:
+On the server, copy the documents you want from the source snapshot folder into the target's staging folder. For example, to copy everything:
 
 ```bash
-# Extract snapshot contents to a temp directory
-tar -xzf /path/to/source/data/snapshots/<snapshot>.tar.gz -C /tmp/snapshot-extract/
-
 # Copy markdown files into the target's staging folder
-cp -r /tmp/snapshot-extract/content/. /path/to/target/data/import-staging/<uuid>/
+cp -r /path/to/source/snapshots/. /path/to/target/data/import-staging/<uuid>/
 ```
 
 You can also copy only a subfolder if you don't want to import everything:
 
 ```bash
-cp -r /tmp/snapshot-extract/content/my-subfolder/ /path/to/target/data/import-staging/<uuid>/
+cp -r /path/to/source/snapshots/my-subfolder/ /path/to/target/data/import-staging/<uuid>/
 ```
 
 > **Tip:** The exact data paths depend on your Docker volume mounts. If both stacks use named volumes, use `docker run --rm -v source_data:/src -v target_data:/dst alpine cp -r /src/snapshots/. /dst/import-staging/<uuid>/` to copy between volumes without knowing host paths.
