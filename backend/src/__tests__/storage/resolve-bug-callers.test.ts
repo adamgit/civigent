@@ -12,6 +12,7 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { DocumentSkeleton, type FlatEntry } from "../../storage/document-skeleton.js";
+import { isBodyHolderShape } from "../../storage/section-shape.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { gitExec } from "../../storage/git-repo.js";
@@ -283,7 +284,7 @@ describe("Auto-commit dirty fragment key derivation — sub-skeleton context", (
       sectionFile: string; fragmentKey: string; isSubSkeleton: boolean;
     }> = [];
     skeleton.forEachNode((heading, level, sectionFile, headingPath, _absolutePath, isSubSkeleton) => {
-      const isBfh = level === 0 && heading === "";
+      const isBfh = isBodyHolderShape({ heading, level });
       const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBfh);
       forEachEntries.push({
         hpKey: headingPath.join(">>"),

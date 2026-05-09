@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { access, readFile } from "node:fs/promises";
 import { DocumentSkeleton } from "../../storage/document-skeleton.js";
+import { isNestedBodyHolder } from "../../storage/section-shape.js";
 import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
@@ -103,7 +104,7 @@ describe("body holder materialization on leaf-to-sub-skeleton transition", () =>
     const reloaded = await DocumentSkeleton.fromDisk(docPath, ctx.contentDir, ctx.contentDir);
     let bodyHolderPath: string | null = null;
     reloaded.forEachSection((heading, level, _sectionFile, headingPath, absolutePath) => {
-      if (heading === "" && level === 0 && headingPath.length === 1 && headingPath[0] === "Parent") {
+      if (isNestedBodyHolder({ heading, level, headingPath }) && headingPath[0] === "Parent") {
         bodyHolderPath = absolutePath;
       }
     });

@@ -22,6 +22,7 @@ import {
 } from "./document-skeleton.js";
 import { getContentRoot, getSessionSectionsContentRoot, getSessionFragmentsRoot } from "./data-root.js";
 import { bodyFromRecoveryAssembly, bodyToDisk } from "./section-formatting.js";
+import { isBodyHolderShape } from "./section-shape.js";
 
 // ─── Skeleton Assessment ──────────────────────────────────────────
 
@@ -326,7 +327,7 @@ export async function buildCompoundSkeleton(docPath: string): Promise<CompoundSk
     let seenBfh = false;
     const deduped: SkeletonEntry[] = [];
     for (const entry of mergedEntries) {
-      if (entry.level === 0 && entry.heading === "") {
+      if (isBodyHolderShape(entry)) {
         if (!seenBfh) {
           deduped.push(entry);
           seenBfh = true;

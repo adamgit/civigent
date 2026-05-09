@@ -40,6 +40,7 @@ import { access, readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import type { DocStructureNode } from "../types/shared.js";
 import { normalizeDocPath } from "./path-utils.js";
 import { staleHeadingPath } from "./skeleton-errors.js";
+import { isBodyHolderShape } from "./section-shape.js";
 
 // ─── Skeleton file format helpers ────────────────────────────────
 // These are the canonical parsers/serializers for skeleton file content.
@@ -101,8 +102,8 @@ export function parseSkeletonToEntries(skeleton: string): SkeletonEntry[] {
 export function serializeSkeletonEntries(entries: SkeletonEntry[]): string {
   const lines: string[] = [];
   for (const entry of entries) {
-    if (entry.level === 0 && entry.heading === "") {
-      // Before-first-heading section: no heading line, just the section directive
+    if (isBodyHolderShape(entry)) {
+      // Body-holder shape (BFH at root, or sub-skeleton body holder): no heading line, just the section directive
       lines.push(`{{section: ${entry.sectionFile}}}`);
     } else {
       lines.push("");
@@ -317,15 +318,25 @@ export class DocumentSkeleton {
 
   protected _overlayTombstoned: boolean = false;
   protected readonly overlayRoot: string;
+  /**
+   * Canonical content root. Used by `writeTree()` to detect when a body-holder
+   * placeholder would be synthesized in the overlay over a non-empty canonical
+   * body file — in that case, the placeholder is skipped because
+   * `OverlayContentLayer.readBodyFromLayers()` already falls back to canonical.
+   * Defaults to `overlayRoot` for single-root callers (recovery, in-memory).
+   */
+  protected readonly canonicalRoot: string;
 
   protected constructor(
     docPath: string,
     roots: SkeletonNode[],
     overlayRoot: string,
+    canonicalRoot: string = overlayRoot,
   ) {
     this.docPath = docPath;
     this.roots = roots;
     this.overlayRoot = overlayRoot;
+    this.canonicalRoot = canonicalRoot;
   }
 
   /**
@@ -394,6 +405,71 @@ export class DocumentSkeleton {
     });
   }
 
+  /**
+   * Iterate user-visible content sections in document order.
+   *
+   * Like `forEachSection()`, but for a body-holder child of a sub-skeleton parent
+   * (`parentPath.length > 0`, `heading=""`, `level=0`) the callback receives the
+   * parent's visible heading and level instead of the body-holder's anonymous
+   * `("", 0)` shape. `sectionFile` and `absolutePath` still point at the
+   * body-holder's own body file. The document-level BFH (`parentPath.length === 0`)
+   * is emitted unchanged. Sub-skeleton parents themselves are skipped — their
+   * content lives in the body-holder child that was just folded onto them.
+   *
+   * Use this for user-visible read paths (assembled documents, section lists,
+   * heading-path discovery). Internal structural code keeps using
+   * `forEachNode`/`forEachSection` to see the literal skeleton shape.
+   */
+  forEachVisibleSection(
+    cb: (
+      heading: string,
+      level: number,
+      sectionFile: string,
+      headingPath: string[],
+      absolutePath: string,
+    ) => void,
+  ): void {
+    this.walkVisibleSections(this.roots, [], this.skeletonPath, undefined, undefined, cb);
+  }
+
+  protected walkVisibleSections(
+    nodes: SkeletonNode[],
+    hp: string[],
+    parentSkeletonPath: string,
+    parentVisibleHeading: string | undefined,
+    parentVisibleLevel: number | undefined,
+    cb: (
+      heading: string,
+      level: number,
+      sectionFile: string,
+      headingPath: string[],
+      absolutePath: string,
+    ) => void,
+  ): void {
+    const sectionsDir = `${parentSkeletonPath}.sections`;
+    for (const node of nodes) {
+      const isBfh = isBodyHolderShape(node);
+      const isSubSkeleton = node.children.length > 0;
+      if (!isBfh) hp.push(node.heading);
+      const absPath = path.join(sectionsDir, node.sectionFile);
+
+      if (isSubSkeleton) {
+        // Sub-skeleton parent: skip emit; recurse with this node as the
+        // visible parent so a nested body-holder child can fold onto it.
+        this.walkVisibleSections(node.children, hp, absPath, node.heading, node.level, cb);
+      } else if (isBfh && parentVisibleHeading !== undefined && parentVisibleLevel !== undefined) {
+        // Nested body-holder: emit with parent's visible heading/level,
+        // but keep sectionFile/absolutePath pointed at the body-holder's body file.
+        cb(parentVisibleHeading, parentVisibleLevel, node.sectionFile, hp, absPath);
+      } else {
+        // Normal section, or root-level BFH (no sub-skeleton parent above).
+        cb(node.heading, node.level, node.sectionFile, hp, absPath);
+      }
+
+      if (!isBfh) hp.pop();
+    }
+  }
+
   protected walkNodes(
     nodes: SkeletonNode[],
     hp: string[],
@@ -409,7 +485,7 @@ export class DocumentSkeleton {
   ): void {
     const sectionsDir = `${parentSkeletonPath}.sections`;
     for (const node of nodes) {
-      const isBfh = node.level === 0 && node.heading === "";
+      const isBfh = isBodyHolderShape(node);
       if (!isBfh) hp.push(node.heading);
       const absPath = path.join(sectionsDir, node.sectionFile);
       const isSubSkeleton = node.children.length > 0;
@@ -439,7 +515,7 @@ export class DocumentSkeleton {
     parentPath: string[],
     parentSkeletonPath: string,
   ): StructuralNodeEntry {
-    const isBfh = node.level === 0 && node.heading === "";
+    const isBfh = isBodyHolderShape(node);
     const headingPath = isBfh ? [...parentPath] : [...parentPath, node.heading];
     const absolutePath = path.join(`${parentSkeletonPath}.sections`, node.sectionFile);
     return {
@@ -484,12 +560,12 @@ export class DocumentSkeleton {
    * Returns null if the skeleton is empty (tombstone) or has no before-first-heading section.
    */
   protected findBeforeFirstHeadingContentEntry(): ContentEntry | null {
-    const rootNode = this.roots.find(n => n.level === 0 && n.heading === "");
+    const rootNode = this.roots.find(n => isBodyHolderShape(n));
     if (!rootNode) {
       return null;
     }
     const structuralNode = this.makeStructuralNodeEntry(rootNode, [], this.skeletonPath);
-    const bodyHolder = rootNode.children.find(c => c.level === 0 && c.heading === "");
+    const bodyHolder = rootNode.children.find(c => isBodyHolderShape(c));
     return this.makeContentEntry(structuralNode, bodyHolder?.sectionFile);
   }
 
@@ -498,7 +574,7 @@ export class DocumentSkeleton {
    * Returns null if the skeleton is empty (tombstone) or has no BFH node.
    */
   protected findBeforeFirstHeadingStructuralNode(): StructuralNodeEntry | null {
-    const rootNode = this.roots.find(n => n.level === 0 && n.heading === "");
+    const rootNode = this.roots.find(n => isBodyHolderShape(n));
     return rootNode ? this.makeStructuralNodeEntry(rootNode, [], this.skeletonPath) : null;
   }
 
@@ -562,7 +638,7 @@ export class DocumentSkeleton {
   ): FlatEntry | null {
     const sectionsDir = `${parentSkeletonPath}.sections`;
     for (const node of nodes) {
-      const isBfh = node.level === 0 && node.heading === "";
+      const isBfh = isBodyHolderShape(node);
       const hp = isBfh ? parentPath : [...parentPath, node.heading];
       const absPath = path.join(sectionsDir, node.sectionFile);
       if (node.sectionFile === targetFile) {
@@ -598,7 +674,7 @@ export class DocumentSkeleton {
       const node = nodes.find(n => headingsEqual(n.heading, target));
       if (!node) return null;
       if (i === headingPath.length - 1) {
-        const bodyHolder = node.children.find(c => c.level === 0 && c.heading === "");
+        const bodyHolder = node.children.find(c => isBodyHolderShape(c));
         return this.makeContentEntry(structuralNode, bodyHolder?.sectionFile);
       }
       nodes = node.children;
@@ -782,7 +858,7 @@ export class DocumentSkeleton {
   ): Promise<DocumentSkeleton> {
     const { nodes, overlayExisted, overlayTombstoned } = await buildSkeletonTree(docPath, overlayRoot, canonicalRoot);
     validateNoDuplicateRoots(nodes, docPath);
-    const skeleton = new DocumentSkeleton(docPath, nodes, overlayRoot);
+    const skeleton = new DocumentSkeleton(docPath, nodes, overlayRoot, canonicalRoot);
     skeleton._loadedFromOverlay = overlayExisted && !overlayTombstoned;
     skeleton._overlaySkeletonFileExisted = overlayExisted;
     skeleton._overlayTombstoned = overlayTombstoned;
@@ -834,7 +910,7 @@ export class DocumentSkeleton {
     const result: FlatEntry[] = [];
     const sectionsDir = `${parentSkeletonPath}.sections`;
     for (const node of nodes) {
-      const isBfh = node.level === 0 && node.heading === "";
+      const isBfh = isBodyHolderShape(node);
       const hp = isBfh ? [...parentPath] : [...parentPath, node.heading];
       const absPath = path.join(sectionsDir, node.sectionFile);
       result.push({
@@ -858,7 +934,7 @@ export class DocumentSkeleton {
     parentSkeletonPath: string,
   ): FlatEntry[] {
     const sectionsDir = `${parentSkeletonPath}.sections`;
-    const isBfh = node.level === 0 && node.heading === "";
+    const isBfh = isBodyHolderShape(node);
     const hp = isBfh ? [...parentPath] : [...parentPath, node.heading];
     const absPath = path.join(sectionsDir, node.sectionFile);
     const result: FlatEntry[] = [{
@@ -886,6 +962,15 @@ export class DocumentSkeleton {
    * insertSectionUnder write the body file themselves, in which case
    * the existence check makes this a no-op.
    *
+   * Overlay-shadowing rule: when the overlay differs from the canonical root
+   * AND the canonical layer already has a body file at the same relative path,
+   * skip the empty-placeholder synthesis. `OverlayContentLayer.readBodyFromLayers()`
+   * already falls back to canonical, so the structural "body file must exist
+   * somewhere" invariant is satisfied without the overlay placeholder. Writing
+   * an empty overlay file there would shadow the non-empty canonical body for
+   * untouched nested parents — the bug this guard fixes. Truly new structures
+   * (no canonical body file yet) still get the placeholder.
+   *
    * This intentionally crosses the "skeleton writes skeleton files,
    * body writes happen through ContentLayer" boundary for this one case —
    * it's the single place where the skeleton layer creates a structural
@@ -907,13 +992,25 @@ export class DocumentSkeleton {
     // Ensure body holder files exist inside sub-skeletons
     if (isSubSkeleton) {
       for (const node of nodes) {
-        if (node.level === 0 && node.heading === "") {
+        if (isBodyHolderShape(node)) {
           const bodyFilePath = path.join(sectionsDir, node.sectionFile);
-          const exists = await access(bodyFilePath).then(() => true, () => false);
-          if (!exists) {
-            await mkdir(sectionsDir, { recursive: true });
-            await writeFile(bodyFilePath, "", "utf8");
+          const overlayExists = await access(bodyFilePath).then(() => true, () => false);
+          if (overlayExists) continue;
+
+          // Dual-root layouts (overlay ≠ canonical): if canonical already
+          // has the body file, do NOT synthesize an empty overlay placeholder
+          // — that would shadow non-empty canonical content for untouched
+          // nested parents. Single-root layouts (overlay === canonical)
+          // collapse to the legacy behavior automatically.
+          if (this.overlayRoot !== this.canonicalRoot) {
+            const relFromOverlay = path.relative(this.overlayRoot, bodyFilePath);
+            const canonicalBodyPath = path.join(this.canonicalRoot, relFromOverlay);
+            const canonicalExists = await access(canonicalBodyPath).then(() => true, () => false);
+            if (canonicalExists) continue;
           }
+
+          await mkdir(sectionsDir, { recursive: true });
+          await writeFile(bodyFilePath, "", "utf8");
         }
       }
     }
@@ -1274,7 +1371,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     // body-holder child, not the parent file itself. Use the body-holder's
     // sectionFile for the document-order walk so findPreviousBodyHolder
     // can locate it.
-    const bodyHolderNode = targetNode.children.find(c => c.level === 0 && c.heading === "");
+    const bodyHolderNode = targetNode.children.find(c => isBodyHolderShape(c));
     if (!bodyHolderNode) {
       throw new Error(
         `Skeleton integrity error in ${this.docPath}: sub-skeleton parent ` +
@@ -1288,7 +1385,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     let resolvedMergeTarget: FlatEntry | null = mergeTargetSnapshot;
     let mergeTargetWasCreated = false;
 
-    const promotedNodes = targetNode.children.filter(c => !(c.level === 0 && c.heading === ""));
+    const promotedNodes = targetNode.children.filter(c => !isBodyHolderShape(c));
 
     // Capture body-holder flat entry before mutation (old absolutePath).
     const targetSkeletonPath = this.resolveSkeletonPathFor(parentPath);
@@ -1357,7 +1454,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
         absolutePath: targetAbsPath,
         isSubSkeleton: true,
       });
-      const bhChild = removedNode.children.find(c => c.level === 0 && c.heading === "");
+      const bhChild = removedNode.children.find(c => isBodyHolderShape(c));
       if (bhChild) {
         removed.push({
           headingPath: [...parentPath, removedNode.heading],
@@ -1433,7 +1530,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
           );
           if (mtNode && mtNode.children.length > 0) {
             const bhChild = mtNode.children.find(
-              c => c.level === 0 && c.heading === "",
+              c => isBodyHolderShape(c),
             );
             if (bhChild && resolvedMergeTarget!.sectionFile !== bhChild.sectionFile) {
               const oldSF = resolvedMergeTarget!.sectionFile;
@@ -1751,6 +1848,12 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * to bypass the transaction primitive, which was the root cause of
    * coordination bugs (skeleton persisted before body writes finished,
    * fragment remaps performed against the wrong-version skeleton, etc).
+   *
+   * Overlay shadowing rule: structural body-holder placeholders are written
+   * by `writeTree()` only when no canonical body file exists at the same
+   * relative path. Intentional "clear body" semantics travel through
+   * `OverlayContentLayer` writes, not through this method. Don't add a
+   * read-time empty-file fallback to compensate — see `writeTree()` doc.
    */
   protected async flushToOverlay(): Promise<void> {
     await rm(resolveTombstonePath(this.docPath, this.overlayRoot), { force: true });
@@ -1856,7 +1959,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
   ): Promise<DocumentSkeletonInternal> {
     const { nodes, overlayExisted, overlayTombstoned } = await buildSkeletonTree(docPath, overlayRoot, canonicalRoot);
     validateNoDuplicateRoots(nodes, docPath);
-    const skeleton = new DocumentSkeletonInternal(docPath, nodes, overlayRoot);
+    const skeleton = new DocumentSkeletonInternal(docPath, nodes, overlayRoot, canonicalRoot);
     skeleton._loadedFromOverlay = overlayExisted && !overlayTombstoned;
     skeleton._overlaySkeletonFileExisted = overlayExisted;
     skeleton._overlayTombstoned = overlayTombstoned;
@@ -1876,6 +1979,11 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * the previous combined behavior performed a hidden write inside a method
    * called "fromDisk", which violated the principle of least surprise and
    * masked the materialization in stack traces.
+   *
+   * Overlay shadowing rule: this delegates to `flushToOverlay()`, so the
+   * structural-placeholder suppression in `writeTree()` applies here too —
+   * a materialization will not shadow non-empty canonical body files for
+   * untouched nested parents.
    */
   async materializeOverlayIfMissing(): Promise<void> {
     if (this._overlaySkeletonFileExisted) return;
@@ -1988,7 +2096,7 @@ export async function listSkeletonEntriesAtRoot(
   const walk = (nodes: SkeletonNode[], parentPath: string[], parentSkeletonPath: string): void => {
     const sectionsDir = `${parentSkeletonPath}.sections`;
     for (const node of nodes) {
-      const isBfh = node.level === 0 && node.heading === "";
+      const isBfh = isBodyHolderShape(node);
       const headingPath = isBfh ? [...parentPath] : [...parentPath, node.heading];
       const absolutePath = path.join(sectionsDir, node.sectionFile);
       const isSubSkeleton = node.children.length > 0;
@@ -2014,7 +2122,7 @@ export async function listSkeletonEntriesAtRoot(
  * corruption cascade.
  */
 function validateNoDuplicateRoots(nodes: SkeletonNode[], docPath: string): void {
-  const rootCount = nodes.filter(n => n.level === 0 && n.heading === "").length;
+  const rootCount = nodes.filter(n => isBodyHolderShape(n)).length;
   if (rootCount > 1) {
     throw new Error(
       `Skeleton integrity error: ${rootCount} duplicate root entries (level=0, heading="") ` +
@@ -2034,7 +2142,7 @@ function addBodyHoldersToParents(nodes: SkeletonNode[]): void {
   for (const node of nodes) {
     if (node.children.length > 0) {
       // Check if a body holder child already exists
-      const hasBodyHolder = node.children.some(c => c.level === 0 && c.heading === "");
+      const hasBodyHolder = node.children.some(c => isBodyHolderShape(c));
       if (!hasBodyHolder) {
         const rootFile = generateSectionBodyFilename();
         node.children.unshift({

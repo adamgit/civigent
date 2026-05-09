@@ -1,5 +1,6 @@
 import { BEFORE_FIRST_HEADING_KEY } from "../crdt/ydoc-fragments.js";
 import { parseDocumentMarkdown } from "./markdown-sections.js";
+import { parsedSectionIsHeadless } from "./section-shape.js";
 
 export type FragmentDriftState =
   | "clean"
@@ -47,11 +48,11 @@ function isStructurallyDirty(
 ): boolean {
   if (fragmentKey === BEFORE_FIRST_HEADING_KEY) {
     if (parsed.length === 0) return false;
-    if (parsed.length === 1 && parsed[0].level === 0 && parsed[0].heading === "") return false;
+    if (parsed.length === 1 && parsedSectionIsHeadless(parsed[0])) return false;
     return true;
   }
 
-  const topLevelHeadings = parsed.filter((sec) => !(sec.level === 0 && sec.heading === ""));
+  const topLevelHeadings = parsed.filter((sec) => !parsedSectionIsHeadless(sec));
   return topLevelHeadings.length !== 1;
 }
 

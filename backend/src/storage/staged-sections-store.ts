@@ -30,6 +30,7 @@ import { OverlayContentLayer, type UpsertSectionFromMarkdownDetailedResult } fro
 import { DocumentSkeletonInternal, type FlatEntry } from "./document-skeleton.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { classifyFragmentDrift } from "./fragment-drift.js";
+import { parsedSectionIsHeadless } from "./section-shape.js";
 import type { SectionRefReceipt } from "./canonical-store.js";
 
 /**
@@ -296,7 +297,7 @@ export class StagedSectionsStore {
         result = await contentLayer.upsertSectionMergingToPrevious(ref, rawMarkdown);
       } else {
         const parsed = parseDocumentMarkdown(rawMarkdown);
-        const firstHeaded = parsed.find((sec) => !(sec.level === 0 && sec.heading === ""));
+        const firstHeaded = parsed.find((sec) => !parsedSectionIsHeadless(sec));
         const heading = headingPath.length === 0
           ? ""
           : (firstHeaded?.heading ?? headingPath[headingPath.length - 1] ?? "");

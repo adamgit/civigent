@@ -10,6 +10,7 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
 import { DocumentSkeleton, serializeSkeletonEntries, type FlatEntry } from "../../storage/document-skeleton.js";
+import { isBodyHolderShape } from "../../storage/section-shape.js";
 import { parseDocumentMarkdown } from "../../storage/markdown-sections.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { gitExec } from "../../storage/git-repo.js";
@@ -113,7 +114,7 @@ describe("BUG1 FIXED: upsertDocumentFromMarkdown normalizes multi-section markdo
     expect(headings).not.toContain("Timeline");
 
     // Root body should only contain preamble, not embedded headings
-    const rootEntry = flat.find(e => e.level === 0 && e.heading === "");
+    const rootEntry = flat.find(e => isBodyHolderShape(e));
     const rootBody = await readFile(rootEntry!.absolutePath, "utf8");
     expect(rootBody.trim()).toBe("New preamble.");
     expect(rootBody).not.toContain("## Alpha");

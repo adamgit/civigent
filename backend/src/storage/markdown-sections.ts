@@ -23,6 +23,7 @@ import {
 import { ContentLayer } from "./content-layer.js";
 import type { SectionBody, FragmentContent } from "./section-formatting.js";
 import { bodyFromParser, bodyFromDisk, bodyToDisk, fragmentFromParser } from "./section-formatting.js";
+import { isBodyHolderShape } from "./section-shape.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -149,7 +150,7 @@ export async function applyDocumentMarkdownToDraft(
     if (isBeforeFirstHeading) {
       for (let ci = 0; ci < canonicalFlat.length; ci++) {
         if (consumed.has(ci)) continue;
-        if (canonicalFlat[ci].level === 0 && canonicalFlat[ci].heading === "") {
+        if (isBodyHolderShape(canonicalFlat[ci])) {
           matchedEntry = canonicalFlat[ci];
           consumed.add(ci);
           break;

@@ -37,6 +37,7 @@ import type { DocStructureNode } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
 import { bodyFromDisk, bodyFromParser, stripHeadingFromFragment, buildFragmentContent, assembleFragments, bodyAsFragment, stripLeadingNewlines, appendToBody, fragmentFromExternalContent, type SectionBody, type FragmentContent } from "./section-formatting.js";
+import { isBodyHolderShape, isDocumentBeforeFirstHeading, parsedSectionIsHeadless } from "./section-shape.js";
 import type { ParsedSection } from "./markdown-sections.js";
 
 /**
@@ -265,7 +266,7 @@ export class ContentLayer {
   async getSectionList(docPath: string): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>> {
     const skeleton = await this.readSkeleton(docPath);
     const sections: Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }> = [];
-    skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+    skeleton.forEachVisibleSection((heading, level, sectionFile, headingPath) => {
       sections.push({ heading, level, sectionFile, headingPath: [...headingPath] });
     });
     return sections;
@@ -294,7 +295,10 @@ export class ContentLayer {
   async getSectionDiscoveryList(docPath: string): Promise<SectionDiscoveryEntry[]> {
     const skeleton = await this.readSkeleton(docPath);
     const baseEntries: Array<{ heading: string; headingPath: string[]; absolutePath: string }> = [];
-    skeleton.forEachSection((heading, _level, _sectionFile, headingPath, absolutePath) => {
+    // forEachVisibleSection folds parent heading metadata onto nested body-holders
+    // while keeping absolutePath pointed at the body-holder's body file — so
+    // bodySizeBytes is still measured against the actual body file on disk.
+    skeleton.forEachVisibleSection((heading, _level, _sectionFile, headingPath, absolutePath) => {
       baseEntries.push({
         heading,
         headingPath: [...headingPath],
@@ -597,10 +601,13 @@ export class ContentLayer {
   async readAssembledDocument(docPath: string): Promise<string> {
     const skeleton = await this.readSkeleton(docPath);
 
-    // Collect body sections via visitor (sync), then read files (async)
-    const bodyEntries: Array<{ heading: string; level: number; sectionFile: string; absolutePath: string }> = [];
-    skeleton.forEachSection((heading, level, sectionFile, _hp, absolutePath) => {
-      bodyEntries.push({ heading, level, sectionFile, absolutePath });
+    // Collect body sections via the visible-section visitor (sync), then read files (async).
+    // forEachVisibleSection folds nested body-holder children onto their sub-skeleton
+    // parent's visible heading/level, so this loop renders `## Heading` + body for those
+    // entries instead of treating them as anonymous BFH-style content.
+    const bodyEntries: Array<{ heading: string; level: number; sectionFile: string; absolutePath: string; headingPath: string[] }> = [];
+    skeleton.forEachVisibleSection((heading, level, sectionFile, headingPath, absolutePath) => {
+      bodyEntries.push({ heading, level, sectionFile, absolutePath, headingPath: [...headingPath] });
     });
 
     if (bodyEntries.length === 0) {
@@ -623,9 +630,8 @@ export class ContentLayer {
 
       if (content === undefined) continue;
 
-      const isBeforeFirstHeading = entry.level === 0 && entry.heading === "";
-      if (isBeforeFirstHeading) {
-        // BFH: body IS fragment content (strip leading newlines defensively)
+      if (isDocumentBeforeFirstHeading(entry)) {
+        // Document-level BFH: body IS fragment content (strip leading newlines defensively).
         const trimmed = stripLeadingNewlines(content);
         if (trimmed) parts.push(bodyAsFragment(trimmed));
       } else {
@@ -1071,12 +1077,19 @@ export class OverlayContentLayer {
   ): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>> {
     const skeleton = await this.readSkeleton(docPath);
     const sections: Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }> = [];
-    skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+    skeleton.forEachVisibleSection((heading, level, sectionFile, headingPath) => {
       sections.push({ heading, level, sectionFile, headingPath: [...headingPath] });
     });
     return sections;
   }
 
+  /**
+   * Read every section body for a document using overlay-first then canonical
+   * fallback (via `readBodyFromLayers`). Empty overlay files are returned as
+   * empty bodies — see `readBodyFromLayers` for the overlay shadowing rule
+   * (intentional vs structural-placeholder distinction is enforced at the
+   * write site in `DocumentSkeletonInternal.writeTree`, not here).
+   */
   async readAllSections(docPath: string): Promise<Map<string, SectionBody>> {
     const skeleton = await this.readSkeleton(docPath);
     const result = new Map<string, SectionBody>();
@@ -1132,7 +1145,7 @@ export class OverlayContentLayer {
     }
 
     const parsed = getParser().parseDocumentMarkdown(content);
-    const firstHeaded = parsed.find((sec) => !(sec.level === 0 && sec.heading === ""));
+    const firstHeaded = parsed.find((sec) => !parsedSectionIsHeadless(sec));
 
     // ── Case A: payload already starts with the target heading ────────
     //
@@ -1265,7 +1278,7 @@ export class OverlayContentLayer {
     // no-op rather than churning the BFH section file id.
     if (ref.headingPath.length === 0) {
       if (opts?.requireMergeToPrevious) {
-        const hasHeadedSection = parsedSections.some((sec) => !(sec.level === 0 && sec.heading === ""));
+        const hasHeadedSection = parsedSections.some((sec) => !parsedSectionIsHeadless(sec));
         if (hasHeadedSection) {
           throw new Error(
             `Illegal arguments: upsertSectionMergingToPrevious cannot target BFH with headed markdown content.`,
@@ -1696,6 +1709,19 @@ export class OverlayContentLayer {
 
   // ─── Private helpers ──────────────────────────────────────
 
+  /**
+   * Read body content with overlay-first then canonical fallback.
+   *
+   * Overlay shadowing rule (paired with `DocumentSkeletonInternal.writeTree()`):
+   * an overlay file with empty content is treated as INTENTIONAL — that's how
+   * a user-cleared body is represented. Structural body-holder placeholders
+   * MUST NOT be synthesized in the overlay when canonical already has the body
+   * file; that suppression happens at the WRITE site (`writeTree`), not here.
+   * This reader therefore does not (and must not) attempt to second-guess
+   * empty overlay files at read time — the only sanctioned writer of empty
+   * overlay bodies is `OverlayContentLayer.upsertSection(...)`-style intent,
+   * never raw structural-placeholder synthesis.
+   */
   private async readBodyFromLayers(overlayPath: string): Promise<string | null> {
     try {
       return await readFile(overlayPath, "utf8");
@@ -1839,7 +1865,7 @@ export class OverlayContentLayer {
     // reparented under it, causing flushToOverlay to overwrite its body
     // file with skeleton markers. Capturing the body now ensures it can
     // be restored to the new body-holder location afterward.
-    const targetBH = subtreeEntries.find(e => e.level === 0 && e.heading === "");
+    const targetBH = subtreeEntries.find(e => isBodyHolderShape(e));
     let mergeTargetPreBody: string | null = null;
     let preMergeTargetSF: string | null = null;
     if (targetBH) {
@@ -1960,7 +1986,7 @@ export class OverlayContentLayer {
     const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
       // BFH deletion: locate the level-0 root node (heading="") and remove it.
       if (headingPath.length === 0) {
-        const bfhIdx = ctx.roots.findIndex((n) => n.level === 0 && n.heading === "");
+        const bfhIdx = ctx.roots.findIndex((n) => isBodyHolderShape(n));
         if (bfhIdx < 0) {
           throw staleHeadingPath(docPath, headingPath, "no before-first-heading section to delete");
         }

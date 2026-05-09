@@ -111,12 +111,16 @@ export function stripLeadingNewlines(body: SectionBody): SectionBody {
 
 // ─── Conversion / combining functions ───────────────────────────────
 
+import { isBodyHolderShape } from "./section-shape.js";
+
 /**
  * Build a full fragment (heading + body) from a body and heading info.
- * BFH sections (level=0, heading="") return the body as-is.
+ * Body-holder-shape inputs (level=0, heading="") return the body as-is —
+ * the heading line is suppressed because the caller is asking for an
+ * anonymous content fragment.
  */
 export function buildFragmentContent(body: SectionBody, level: number, heading: string): FragmentContent {
-  if (level === 0 && heading === "") return bodyAsFragment(body);
+  if (isBodyHolderShape({ level, heading })) return bodyAsFragment(body);
   const headingLine = `${"#".repeat(level)} ${heading}`;
   const bodyStr = body as string;
   return (bodyStr.trim() ? `${headingLine}\n\n${bodyStr}` : headingLine) as FragmentContent;

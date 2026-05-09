@@ -6,6 +6,7 @@ import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.j
 import { RawFragmentRecoveryBuffer } from "../../storage/raw-fragment-recovery-buffer.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import type { FlatEntry } from "../../storage/document-skeleton.js";
+import { isBodyHolderShape } from "../../storage/section-shape.js";
 import type { DocumentDiagnosticsContext } from "./context.js";
 import type { DiagLayerStatus } from "./types.js";
 
@@ -54,7 +55,7 @@ function absentLayer(): DiagLayerStatus {
 }
 
 function entryIsBfh(entry: FlatEntry): boolean {
-  return entry.level === 0 && entry.heading === "";
+  return isBodyHolderShape(entry);
 }
 
 function fragmentKeyForEntry(entry: FlatEntry): string {

@@ -6,6 +6,7 @@ import { getContentGitPrefix } from "./data-root.js";
 import { parseSkeletonToEntries } from "./document-skeleton.js";
 import type { AttributionWriterType } from "../types/shared.js";
 import { bodyFromGit, bodyToDisk, buildFragmentContent, assembleFragments, bodyAsFragment, type FragmentContent } from "./section-formatting.js";
+import { isBodyHolderShape } from "./section-shape.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -274,12 +275,21 @@ async function gitShowFileOrNull(
 /**
  * Recursively assemble sections from a skeleton file at a historical git commit.
  * Returns assembled markdown parts and records any missing section files.
+ *
+ * Mirrors `DocumentSkeleton.forEachVisibleSection()` /
+ * `ContentLayer.readAssembledDocument()`: nested body-holder children inside a
+ * sub-skeleton parent are folded onto the parent's visible heading/level so
+ * historical/restore/snapshot reads emit `## Heading` + body before descendants
+ * instead of dropping the parent heading entirely. The document-level BFH
+ * (`parentVisibleHeading === undefined`) keeps rendering as anonymous content.
  */
 async function assembleSkeletonFromGit(
   dataRoot: string,
   sha: string,
   skeletonGitPath: string,
   missingSections: string[],
+  parentVisibleHeading?: string,
+  parentVisibleLevel?: number,
 ): Promise<FragmentContent[]> {
   const skeletonContent = await gitShowFileOrNull(dataRoot, sha, skeletonGitPath);
   if (skeletonContent === null) {
@@ -300,16 +310,26 @@ async function assembleSkeletonFromGit(
       continue;
     }
 
-    // If the body file is itself a skeleton (contains {{section:}} markers), recurse
+    const isBeforeFirstHeading = isBodyHolderShape(entry);
+
+    // If the body file is itself a skeleton (contains {{section:}} markers),
+    // recurse with this entry as the visible parent so the nested body-holder
+    // can fold onto its `## Heading` + body.
     if (bodyContent.includes("{{section:")) {
-      const subParts = await assembleSkeletonFromGit(dataRoot, sha, bodyGitPath, missingSections);
+      const subParts = await assembleSkeletonFromGit(
+        dataRoot, sha, bodyGitPath, missingSections,
+        entry.heading, entry.level,
+      );
       parts.push(...subParts);
       continue;
     }
 
-    const isBeforeFirstHeading = entry.level === 0 && entry.heading === "";
     const body = bodyFromGit(bodyContent);
-    if (isBeforeFirstHeading) {
+    if (isBeforeFirstHeading && parentVisibleHeading !== undefined && parentVisibleLevel !== undefined) {
+      // Nested body-holder: render parent's visible heading + this body file.
+      parts.push(buildFragmentContent(body, parentVisibleLevel, parentVisibleHeading));
+    } else if (isBeforeFirstHeading) {
+      // Document-level BFH: anonymous content, no heading line.
       if (body) parts.push(bodyAsFragment(body));
     } else {
       parts.push(buildFragmentContent(body, entry.level, entry.heading));

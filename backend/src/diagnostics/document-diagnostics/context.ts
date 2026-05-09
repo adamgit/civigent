@@ -8,6 +8,7 @@ import { normalizeDocPath } from "../../storage/path-utils.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { gitExec } from "../../storage/git-repo.js";
 import { SectionRef } from "../../domain/section-ref.js";
+import { isBodyHolderShape, isDocumentBeforeFirstHeading } from "../../storage/section-shape.js";
 import type {
   DiagHealthCheck,
   DiagRestoreProvenance,
@@ -193,7 +194,7 @@ export function collectDuplicateFragmentKeyDetails(
   skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
     const fragmentKey = fragmentKeyFromSectionFile(
       sectionFile,
-      level === 0 && heading === "" && headingPath.length === 0,
+      isDocumentBeforeFirstHeading({ heading, level, headingPath }),
     );
     const existing = seen.get(fragmentKey);
     if (!existing) {
@@ -281,7 +282,7 @@ export async function loadHistoricalRecursiveView(
     const entries = parseSkeletonToEntries(raw);
     if (isTopLevel) topLevelEntries = entries.length;
     for (const entry of entries) {
-      const isBfh = entry.level === 0 && entry.heading === "";
+      const isBfh = isBodyHolderShape(entry);
       const headingPath = isBfh ? [...parentHeadingPath] : [...parentHeadingPath, entry.heading];
       contentHeadingKeys.add(SectionRef.headingKey(headingPath));
       const childGitPath = `${gitPath}.sections/${entry.sectionFile}`;

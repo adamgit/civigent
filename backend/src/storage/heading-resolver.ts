@@ -5,6 +5,7 @@ import type { DocStructureNode } from "../types/shared.js";
 import { ContentLayer, SectionNotFoundError } from "./content-layer.js";
 import { DocumentSkeleton } from "./document-skeleton.js";
 import { SectionRef } from "../domain/section-ref.js";
+import { isBodyHolderShape } from "./section-shape.js";
 
 export class HeadingNotFoundError extends Error {}
 
@@ -86,15 +87,38 @@ export interface FlatSection {
   level: number;
 }
 
+/**
+ * Visible heading-path flatteners.
+ *
+ * Both `flattenStructureWithLevels` and `flattenStructureToHeadingPaths` produce
+ * the user-visible list of heading paths for a document. They emit the document-
+ * level BFH entry (parentPath empty, body-holder shape) because that's how
+ * pre-heading content surfaces in the API. They DROP sub-skeleton body-holder
+ * children — body-holder-shape nodes whose `parentPath.length > 0` — because the
+ * structural parent's heading already produced the visible entry for that path,
+ * and emitting the body-holder would duplicate it.
+ *
+ * Every production caller is a visible/read surface (agent:reading broadcasts,
+ * GET document detail, MCP read tools). If a future caller needs the literal
+ * structural shape including nested body-holders, add a separate
+ * `*Structural` variant rather than reverting these.
+ */
+
+function isNestedBodyHolderInStructure(node: DocStructureNode, parentPath: string[]): boolean {
+  return isBodyHolderShape(node) && parentPath.length > 0;
+}
+
 export function flattenStructureWithLevels(
   nodes: DocStructureNode[],
   parentPath: string[] = [],
 ): FlatSection[] {
   const result: FlatSection[] = [];
   for (const node of nodes) {
-    const isBeforeFirstHeading = node.level === 0 && node.heading === "";
+    const isBeforeFirstHeading = isBodyHolderShape(node);
     const currentPath = isBeforeFirstHeading ? [...parentPath] : [...parentPath, node.heading];
-    result.push({ headingPath: currentPath, heading: node.heading, level: node.level });
+    if (!isNestedBodyHolderInStructure(node, parentPath)) {
+      result.push({ headingPath: currentPath, heading: node.heading, level: node.level });
+    }
     if (node.children?.length) {
       result.push(...flattenStructureWithLevels(node.children, currentPath));
     }
@@ -108,9 +132,11 @@ export function flattenStructureToHeadingPaths(
 ): string[][] {
   const result: string[][] = [];
   for (const node of nodes) {
-    const isBeforeFirstHeading = node.level === 0 && node.heading === "";
+    const isBeforeFirstHeading = isBodyHolderShape(node);
     const currentPath = isBeforeFirstHeading ? [...parentPath] : [...parentPath, node.heading];
-    result.push(currentPath);
+    if (!isNestedBodyHolderInStructure(node, parentPath)) {
+      result.push(currentPath);
+    }
     if (node.children?.length) {
       result.push(...flattenStructureToHeadingPaths(node.children, currentPath));
     }

@@ -3,6 +3,7 @@ import { resolveDocPathUnderContent } from "./path-utils.js";
 import { ContentLayer } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { buildFragmentContent, bodyAsFragment, type SectionBody, type FragmentContent } from "./section-formatting.js";
+import { isDocumentBeforeFirstHeading } from "./section-shape.js";
 
 // Re-export error classes from ContentLayer (callers import from here)
 export { DocumentNotFoundError, DocumentAssemblyError } from "./content-layer.js";
@@ -32,8 +33,7 @@ export function prependHeadings(
     result.set(key, bodyAsFragment(body));
   }
   for (const { heading, level, headingPath } of sections) {
-    const isBeforeFirstHeading = level === 0 && heading === "";
-    if (isBeforeFirstHeading) continue;
+    if (isDocumentBeforeFirstHeading({ heading, level, headingPath })) continue;
     const key = SectionRef.headingKey(headingPath);
     const body = bodyMap.get(key);
     if (body == null) continue;
