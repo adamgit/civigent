@@ -27,6 +27,7 @@ export function HomePage() {
   const [newDocPath, setNewDocPath] = useState("");
   const [creatingDoc, setCreatingDoc] = useState(false);
   const [newDocError, setNewDocError] = useState<string | null>(null);
+  const [showHowItWorks, setShowHowItWorks] = useState(false);
 
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -141,18 +142,80 @@ export function HomePage() {
             <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 1 }}>For agents</div>
             <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-accent)" }}>Connect an agent &rarr;</div>
           </Link>
-          <Link
-            to="/proposals"
-            style={{
-              background: "var(--color-sidebar-bg)",
-              borderRadius: 8,
-              padding: "10px 14px",
-              textDecoration: "none",
-            }}
+          <div
+            style={{ position: "relative" }}
+            onMouseEnter={() => setShowHowItWorks(true)}
+            onMouseLeave={() => setShowHowItWorks(false)}
+            onFocus={() => setShowHowItWorks(true)}
+            onBlur={() => setShowHowItWorks(false)}
           >
-            <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 1 }}>Extended edits</div>
-            <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-accent)" }}>Proposals &rarr;</div>
-          </Link>
+            <Link
+              to="/features"
+              style={{
+                display: "block",
+                background: "var(--color-sidebar-bg)",
+                borderRadius: 8,
+                padding: "10px 14px",
+                textDecoration: "none",
+              }}
+            >
+              <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 1 }}>How it works</div>
+              <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-accent)" }}>Features &rarr;</div>
+            </Link>
+            {showHowItWorks && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "100%",
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  paddingTop: 8,
+                  zIndex: 10,
+                  width: 480,
+                  maxWidth: "90vw",
+                }}
+                role="tooltip"
+              >
+                <div
+                  style={{
+                    background: "var(--color-page-bg)",
+                    border: "1px solid var(--color-footer-border)",
+                    borderRadius: 12,
+                    padding: 12,
+                    boxShadow: "0 6px 20px rgba(0,0,0,0.10)",
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ padding: "12px 14px", border: "1px solid var(--color-footer-border)", borderRadius: 8 }}>
+                    <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>Live collaboration</p>
+                    <p style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.45 }}>
+                      See other editors' cursors in real time. The section you're editing is locked to prevent conflicts.
+                    </p>
+                  </div>
+                  <div style={{ padding: "12px 14px", border: "1px solid var(--color-footer-border)", borderRadius: 8 }}>
+                    <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>Agent-safe by default</p>
+                    <p style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.45 }}>
+                      AI agents propose changes that are evaluated before merging. Recently human-edited sections are automatically protected.
+                    </p>
+                  </div>
+                  <div style={{ padding: "12px 14px", border: "1px solid var(--color-footer-border)", borderRadius: 8 }}>
+                    <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>Proposals for deep work</p>
+                    <p style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.45 }}>
+                      Reserve sections across documents for extended editing. Others see read-only content until you publish or cancel.
+                    </p>
+                  </div>
+                  <div style={{ padding: "12px 14px", border: "1px solid var(--color-footer-border)", borderRadius: 8 }}>
+                    <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>Nothing is lost</p>
+                    <p style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.45 }}>
+                      Every change is versioned and auto-saved. Close the tab, go idle, even survive a server restart &mdash; your work is safe.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
           <Link
             to="/history"
             style={{
@@ -216,44 +279,6 @@ export function HomePage() {
             Opens formatted search results inside the app.
           </p>
         </form>
-
-        {/* How it works */}
-        <div style={{ marginBottom: "2rem" }}>
-          <p style={{ fontSize: 12, fontWeight: 500, color: "var(--color-text-muted)", letterSpacing: "0.04em", marginBottom: 10 }}>
-            How it works
-          </p>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <div style={{ padding: "12px 14px", border: "1px solid var(--color-footer-border)", borderRadius: 8 }}>
-              <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>Live collaboration</p>
-              <p style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.45 }}>
-                See other editors' cursors in real time. The section you're editing is locked to prevent conflicts.
-              </p>
-            </div>
-            <div style={{ padding: "12px 14px", border: "1px solid var(--color-footer-border)", borderRadius: 8 }}>
-              <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>Agent-safe by default</p>
-              <p style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.45 }}>
-                AI agents propose changes that are evaluated before merging. Recently human-edited sections are automatically protected.
-              </p>
-            </div>
-            <div style={{ padding: "12px 14px", border: "1px solid var(--color-footer-border)", borderRadius: 8 }}>
-              <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>Proposals for deep work</p>
-              <p style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.45 }}>
-                Reserve sections across documents for extended editing. Others see read-only content until you publish or cancel.
-              </p>
-            </div>
-            <div style={{ padding: "12px 14px", border: "1px solid var(--color-footer-border)", borderRadius: 8 }}>
-              <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>Nothing is lost</p>
-              <p style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.45 }}>
-                Every change is versioned and auto-saved. Close the tab, go idle, even survive a server restart &mdash; your work is safe.
-              </p>
-            </div>
-          </div>
-          <div style={{ textAlign: "right", marginTop: 8 }}>
-            <Link to="/features" style={{ fontSize: 13, fontWeight: 500, color: "var(--color-accent)", textDecoration: "none" }}>
-              &hellip; more features &rarr;
-            </Link>
-          </div>
-        </div>
 
         {/* Divider */}
         <hr style={{ border: "none", borderTop: "1px solid var(--color-footer-border)", margin: "0 0 1.5rem" }} />
