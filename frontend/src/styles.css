@@ -378,7 +378,7 @@ a {
   margin: 24px 0;
 }
 .doc-prose > *:not(table) {
-  max-width: 588px;
+  /* Removed: this seems to have no benefit, and reduces quality of reading: max-width: 588px; */
 }
 
 /* ===== MILKDOWN / CREPE TYPOGRAPHY OVERRIDES ===== */
@@ -395,7 +395,7 @@ a {
   padding: 0;
 }
 .milkdown .ProseMirror > *:not(.milkdown-table-block) {
-  max-width: 588px;
+  /* Removed: this seems to have no benefit, and reduces quality of reading: max-width: 588px; */
 }
 .doc-prose > *:first-child,
 .milkdown .ProseMirror > *:first-child {
