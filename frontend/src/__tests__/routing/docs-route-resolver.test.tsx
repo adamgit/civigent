@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Outlet, Route, Routes } from "react-router-dom";
 import { DocsRouteResolver } from "../../app/DocsRouteResolver";
 import { resolveDocsSubroute } from "../../app/docsRouteUtils";
+import type { AppLayoutOutletContext } from "../../app/AppLayout";
+import { sampleDocTree } from "../helpers/sample-data";
 
 // Mock page components to render identifiable content
 vi.mock("../../pages/DocsBrowserPage", () => ({
@@ -55,6 +57,34 @@ describe("resolveDocsSubroute (pure function)", () => {
 });
 
 describe("DocsRouteResolver component", () => {
+  function createOutletContext(overrides?: Partial<AppLayoutOutletContext>): AppLayoutOutletContext {
+    return {
+      entries: sampleDocTree,
+      treeLoading: false,
+      treeSyncing: false,
+      treeError: null,
+      createDoc: vi.fn().mockResolvedValue(undefined),
+      refreshTree: vi.fn().mockResolvedValue(undefined),
+      ...overrides,
+    };
+  }
+
+  function renderResolver(path: string, routePath: string, context?: Partial<AppLayoutOutletContext>) {
+    const ctx = createOutletContext(context);
+    function ContextProvider() {
+      return <Outlet context={ctx} />;
+    }
+    return render(
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route element={<ContextProvider />}>
+            <Route path={routePath} element={<DocsRouteResolver />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+  }
+
   beforeEach(() => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({}), { status: 200 }),
@@ -67,37 +97,19 @@ describe("DocsRouteResolver component", () => {
   });
 
   it("renders DocsBrowserPage when no splat path", () => {
-    render(
-      <MemoryRouter initialEntries={["/docs"]}>
-        <Routes>
-          <Route path="/docs" element={<DocsRouteResolver />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    renderResolver("/docs", "/docs");
     expect(screen.getByTestId("docs-browser-page")).toBeDefined();
   });
 
   it("renders DocumentPage with decoded docPath for splat path", () => {
-    render(
-      <MemoryRouter initialEntries={["/docs/ops/strategy.md"]}>
-        <Routes>
-          <Route path="/docs/*" element={<DocsRouteResolver />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    renderResolver("/docs/ops/strategy.md", "/docs/*");
     const el = screen.getByTestId("document-page");
     expect(el).toBeDefined();
     expect(el.getAttribute("data-doc-path")).toBe("/ops/strategy.md");
   });
 
   it("properly decodes encoded path segments in the URL", () => {
-    render(
-      <MemoryRouter initialEntries={["/docs/my%20docs/file%20name.md"]}>
-        <Routes>
-          <Route path="/docs/*" element={<DocsRouteResolver />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    renderResolver("/docs/my%20docs/file%20name.md", "/docs/*");
     const el = screen.getByTestId("document-page");
     expect(el.getAttribute("data-doc-path")).toBe("/my docs/file name.md");
   });

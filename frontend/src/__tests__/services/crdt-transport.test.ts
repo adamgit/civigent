@@ -3,8 +3,8 @@
  *
  * Covers:
  *   B17.1 — Transport calls store mutation methods on receiving WebSocket messages
- *   B17.3 — SESSION_OVERLAY_IMPORTED -> store.markSectionsSaved(...)
- *   B17.4 — STRUCTURE_WILL_CHANGE -> appropriate store restructuring mutation
+ *   B17.3 — SESSION_OVERLAY_IMPORTED -> store.forceCleanSections(...)
+ *   B17.4 — removed STRUCTURE_WILL_CHANGE messages are not routed to store state
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
@@ -241,41 +241,13 @@ describe("CrdtTransport", () => {
     });
   });
 
-  // ─── B17.4 ── STRUCTURE_WILL_CHANGE → store restructuring ──────
+  // ─── B17.4 ── removed STRUCTURE_WILL_CHANGE is ignored ──────
 
-  describe("B17.4 — STRUCTURE_WILL_CHANGE → appropriate store restructuring mutation", () => {
-    it("fires the opts.onStructureWillChange callback with parsed restructures", () => {
-      const callback = vi.fn();
-      // Create a transport with the onStructureWillChange option.
-      const transport2 = new CrdtTransport("/test/doc2.md", {
-        onStructureWillChange: callback,
-      });
-      const store2 = new BrowserFragmentReplicaStore(transport2.doc, transport2.awareness);
-      transport2.attachStore(store2);
-      transport2.connect();
-
-      const ws = StubWebSocket.lastInstance!;
-      ws.open();
-      ws.receiveServerMessage(buildSyncStep2());
-
-      const restructures = [
-        { oldKey: "section::alpha", newKeys: ["section::alpha-1", "section::alpha-2"] },
-      ];
-
-      ws.receiveServerMessage(buildStructureWillChangeMessage(restructures));
-
-      expect(callback).toHaveBeenCalledTimes(1);
-      expect(callback).toHaveBeenCalledWith(restructures);
-
-      transport2.destroy();
-    });
-
-    it("store persistence state is NOT mutated by STRUCTURE_WILL_CHANGE (store does not model restructures)", () => {
+  describe("B17.4 — removed STRUCTURE_WILL_CHANGE is not routed through transport", () => {
+    it("store persistence state is NOT mutated by STRUCTURE_WILL_CHANGE", () => {
       const ws = connectAndSync();
 
       store.markSectionsEdited(["section::alpha"]);
-      const snapBefore = store.getSnapshot();
-      const persistenceBefore = store.getSectionPersistence();
 
       ws.receiveServerMessage(
         buildStructureWillChangeMessage([
@@ -283,7 +255,7 @@ describe("CrdtTransport", () => {
         ]),
       );
 
-      // Store should be unaffected — STRUCTURE_WILL_CHANGE is passthrough only.
+      // Structural normalization now arrives as ordinary Yjs updates.
       const persistenceAfter = store.getSectionPersistence();
       expect(persistenceAfter.get("section::alpha")).toBe("dirty");
       // The "new" key should NOT appear in the map (transport doesn't route this to store).

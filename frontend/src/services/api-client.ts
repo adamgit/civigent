@@ -156,6 +156,24 @@ export interface DocDiagnosticsResponse {
   restore_provenance: DiagRestoreProvenance;
 }
 
+export interface SearchTextMatch {
+  doc_path: string;
+  heading_path: string[];
+  match_context: string;
+  match_offset_bytes: number;
+}
+
+export interface SearchTextResponse {
+  matches: SearchTextMatch[];
+  timings: {
+    total_ms: number;
+    scope_and_acl_ms: number;
+    ripgrep_ms: number;
+    match_mapping_ms: number;
+    context_read_ms: number;
+  };
+}
+
 interface GetDocumentsTreeOptions {
   path?: string;
   recursive?: boolean;
@@ -578,6 +596,14 @@ export const apiClient = {
     return requestJson<GetDocumentsTreeResponse>(url);
   },
 
+  async probeSystemReady(): Promise<boolean> {
+    const response = await fetch("/api/documents/tree", {
+      headers: { "X-Requested-With": "fetch" },
+      credentials: "include",
+    });
+    return response.status !== 503;
+  },
+
   async getDocumentStructure(docPath: string): Promise<ReadDocStructureResponse> {
     const encoded = encodeDocPath(docPath);
     return requestJson<ReadDocStructureResponse>(`/api/documents/${encoded}/structure`);
@@ -610,6 +636,27 @@ export const apiClient = {
     params.set("doc_path", docPath);
     params.set("heading_path", headingPath.join("/"));
     return requestJson<ReadSectionResponse>(`/api/sections?${params.toString()}`);
+  },
+
+  async searchText(options: {
+    pattern: string;
+    syntax: "literal" | "regexp";
+    root: string;
+    caseSensitive: boolean;
+    maxResults: string;
+    contextBytes: string;
+    signal?: AbortSignal;
+  }): Promise<SearchTextResponse> {
+    const params = new URLSearchParams();
+    params.set("pattern", options.pattern);
+    params.set("syntax", options.syntax);
+    params.set("root", options.root);
+    params.set("case_sensitive", String(options.caseSensitive));
+    params.set("max_results", options.maxResults);
+    params.set("context_bytes", options.contextBytes);
+    return requestJson<SearchTextResponse>(`/api/search?${params.toString()}`, {
+      signal: options.signal,
+    });
   },
 
   // --- Proposals (v3) ---

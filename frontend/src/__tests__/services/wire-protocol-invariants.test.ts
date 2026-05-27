@@ -1,11 +1,9 @@
 /**
  * Group A12: Frontend Wire Protocol Invariant Tests
  *
- * Pre-refactor invariant tests for the binary message decoding in CrdtProvider.
+ * Invariant tests for the binary message decoding in CrdtProvider.
  * These verify that encoded server messages are correctly decoded and dispatched
  * to the appropriate event callbacks with the expected payload shape.
- *
- * These must pass both before and after the store architecture refactor.
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
@@ -16,7 +14,7 @@ import type { DocumentReplacementNoticePayload } from "../../types/shared";
 // Protocol constants (must match crdt-provider.ts)
 const MSG_SYNC_STEP_2 = 0x01;
 const MSG_SESSION_OVERLAY_IMPORTED = 4;
-const MSG_STRUCTURE_WILL_CHANGE = 8;
+const MSG_REMOVED_STRUCTURE_WILL_CHANGE = 8;
 const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0b;
 
 // ─── StubWebSocket ──────────────────────────────────────────────
@@ -121,13 +119,12 @@ function encodeSessionOverlayImported(
   return buf;
 }
 
-function encodeStructureWillChange(
-  restructures: Array<{ oldKey: string; newKeys: string[] }>,
-): Uint8Array {
-  const json = JSON.stringify(restructures);
-  const payload = new TextEncoder().encode(json);
+function encodeRemovedStructureWillChange(): Uint8Array {
+  const payload = new TextEncoder().encode(JSON.stringify([
+    { oldKey: "frag:overview.md", newKeys: ["frag:overview.md", "frag:goals.md"] },
+  ]));
   const buf = new Uint8Array(1 + payload.length);
-  buf[0] = MSG_STRUCTURE_WILL_CHANGE;
+  buf[0] = MSG_REMOVED_STRUCTURE_WILL_CHANGE;
   buf.set(payload, 1);
   return buf;
 }
@@ -197,40 +194,19 @@ describe("A12: Frontend Wire Protocol Invariants", () => {
 
   // ── A12.2 ─────────────────────────────────────────────────────────
 
-  it("A12.2: STRUCTURE_WILL_CHANGE message contains correct oldKey → newKeys remaps", () => {
-    const receivedPayloads: Array<Array<{ oldKey: string; newKeys: string[] }>> = [];
+  it("A12.2: removed STRUCTURE_WILL_CHANGE messages do not dispatch frontend callbacks", () => {
+    const errors: string[] = [];
     const doc = new Y.Doc();
     const provider = new CrdtProvider(doc, "/test/doc.md", {
-      onStructureWillChange: (restructures) => {
-        receivedPayloads.push(restructures);
-      },
+      onError: (reason) => errors.push(reason),
     });
 
     const ws = connectProvider(provider);
 
-    // Test 1: Single split — one fragment becomes two
-    ws.receiveServerMessage(
-      encodeStructureWillChange([
-        { oldKey: "frag:overview.md", newKeys: ["frag:overview.md", "frag:goals.md"] },
-      ]),
-    );
-    expect(receivedPayloads).toHaveLength(1);
-    expect(receivedPayloads[0]).toHaveLength(1);
-    expect(receivedPayloads[0][0].oldKey).toBe("frag:overview.md");
-    expect(receivedPayloads[0][0].newKeys).toEqual(["frag:overview.md", "frag:goals.md"]);
+    ws.receiveServerMessage(encodeRemovedStructureWillChange());
 
-    // Test 2: Multiple restructures in a single message (e.g. multi-section normalize)
-    ws.receiveServerMessage(
-      encodeStructureWillChange([
-        { oldKey: "frag:chapter1.md", newKeys: ["frag:chapter1.md", "frag:chapter1a.md"] },
-        { oldKey: "frag:chapter2.md", newKeys: ["frag:chapter2-renamed.md"] },
-      ]),
-    );
-    expect(receivedPayloads).toHaveLength(2);
-    expect(receivedPayloads[1]).toHaveLength(2);
-    expect(receivedPayloads[1][0].oldKey).toBe("frag:chapter1.md");
-    expect(receivedPayloads[1][1].oldKey).toBe("frag:chapter2.md");
-    expect(receivedPayloads[1][1].newKeys).toEqual(["frag:chapter2-renamed.md"]);
+    expect(errors).toEqual([]);
+    expect(provider.state).toBe("connected");
 
     provider.destroy();
   });

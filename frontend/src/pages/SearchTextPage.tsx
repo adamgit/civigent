@@ -1,24 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
-
-interface SearchTextMatch {
-  doc_path: string;
-  heading_path: string[];
-  match_context: string;
-  match_offset_bytes: number;
-}
-
-interface SearchTextResponse {
-  matches: SearchTextMatch[];
-  timings: {
-    total_ms: number;
-    scope_and_acl_ms: number;
-    ripgrep_ms: number;
-    match_mapping_ms: number;
-    context_read_ms: number;
-  };
-}
+import { apiClient, type SearchTextResponse } from "../services/api-client";
 
 function headingPathLabel(headingPath: string[]): string {
   if (headingPath.length === 0) return "(before first heading)";
@@ -179,17 +162,6 @@ export function SearchTextPage() {
   const contextBytes = searchParams.get("context_bytes") ?? "100";
   const isCaseSensitive = caseSensitive === "true";
 
-  const apiQuery = useMemo(() => {
-    const params = new URLSearchParams();
-    if (pattern) params.set("pattern", pattern);
-    params.set("syntax", syntax);
-    params.set("root", root);
-    params.set("case_sensitive", caseSensitive);
-    params.set("max_results", maxResults);
-    params.set("context_bytes", contextBytes);
-    return params.toString();
-  }, [pattern, syntax, root, caseSensitive, maxResults, contextBytes]);
-
   useEffect(() => {
     if (!pattern.trim()) {
       setResponse(null);
@@ -202,27 +174,15 @@ export function SearchTextPage() {
     setLoading(true);
     setError(null);
 
-    fetch(`/api/search?${apiQuery}`, { signal: controller.signal })
-      .then(async (res) => {
-        const text = await res.text();
-        let parsed: unknown = null;
-        if (text.length > 0) {
-          try {
-            parsed = JSON.parse(text);
-          } catch {
-            parsed = null;
-          }
-        }
-
-        if (!res.ok) {
-          const message =
-            parsed && typeof parsed === "object" && parsed !== null && "message" in parsed && typeof parsed.message === "string"
-              ? parsed.message
-              : `${res.status} ${res.statusText}`;
-          throw new Error(message);
-        }
-
-        return (parsed ?? { matches: [] }) as SearchTextResponse;
+    apiClient
+      .searchText({
+        pattern,
+        syntax,
+        root,
+        caseSensitive: isCaseSensitive,
+        maxResults,
+        contextBytes,
+        signal: controller.signal,
       })
       .then((data) => {
         setResponse(data);
@@ -236,7 +196,7 @@ export function SearchTextPage() {
       });
 
     return () => controller.abort();
-  }, [apiQuery, pattern]);
+  }, [contextBytes, isCaseSensitive, maxResults, pattern, root, syntax]);
 
   const prettyPayload = error
     ? { error: { message: error } }

@@ -273,11 +273,8 @@ export function AppLayout() {
     if (!systemStarting) return;
     const timer = setInterval(async () => {
       try {
-        const res = await fetch("/api/documents/tree", {
-          headers: { "X-Requested-With": "fetch" },
-          credentials: "include",
-        });
-        if (res.status !== 503) {
+        const ready = await apiClient.probeSystemReady();
+        if (ready) {
           setSystemStarting(false);
           setFatalReport(null);
           setTreeError(null);

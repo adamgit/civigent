@@ -53,8 +53,16 @@ vi.mock("../../pages/LoginPage", () => ({
 // Mock AppLayout to just render Outlet (skip sidebar, WS, etc.)
 vi.mock("../../app/AppLayout", () => {
   const { Outlet } = require("react-router-dom");
+  const outletContext = {
+    entries: [],
+    treeLoading: false,
+    treeSyncing: false,
+    treeError: null,
+    createDoc: async () => {},
+    refreshTree: async () => {},
+  };
   return {
-    AppLayout: () => <Outlet />,
+    AppLayout: () => <Outlet context={outletContext} />,
   };
 });
 
