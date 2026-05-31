@@ -6,11 +6,7 @@ import { runTopLevelNoUnreferencedFilesCheck } from "./checks/top-level-no-unref
 import { runTopLevelNoStaleSectionsDirsCheck } from "./checks/top-level-no-stale-sections-dirs.js";
 import { runTopLevelAllSectionsReadableCheck } from "./checks/top-level-all-sections-readable.js";
 import { runTopLevelAllSectionsParseableCheck } from "./checks/top-level-all-sections-parseable.js";
-import { runOverlaySkeletonExistsCheck } from "./checks/overlay-skeleton-exists.js";
 import { runLiveCrdtSessionCheck } from "./checks/live-crdt-session.js";
-import { runOverlaySkeletonOrphanedCheck } from "./checks/overlay-skeleton-orphaned.js";
-import { runOverlayCanonicalSkeletonMatchCheck } from "./checks/overlay-canonical-skeleton-match.js";
-import { runOverlayReadPathCheck } from "./checks/overlay-read-path.js";
 import { runRecursiveStructureLoadCheck } from "./checks/recursive-structure-load.js";
 import { runRecursiveNoUnreferencedFilesCheck } from "./checks/recursive-no-unreferenced-files.js";
 import { runRecursiveAllSectionsReadableCheck } from "./checks/recursive-all-sections-readable.js";
@@ -29,11 +25,10 @@ export async function buildDocumentDiagnostics(docPath: string): Promise<DocDiag
   await runTopLevelAllSectionsReadableCheck(ctx);
   await runTopLevelAllSectionsParseableCheck(ctx);
 
-  const overlaySkeletonExists = await runOverlaySkeletonExistsCheck(ctx);
-  const hasLiveCrdtSession = await runLiveCrdtSessionCheck(ctx);
-  await runOverlaySkeletonOrphanedCheck(ctx, overlaySkeletonExists, hasLiveCrdtSession);
-  await runOverlayCanonicalSkeletonMatchCheck(ctx, overlaySkeletonExists);
-  await runOverlayReadPathCheck(ctx);
+  // Live CRDT session presence is still a meaningful diagnostic; session-overlay
+  // disk checks (exists / orphaned / read-path / overlay-vs-canonical match) are
+  // removed — `sessions/` is no longer a durable surface (Area D/spec 05).
+  await runLiveCrdtSessionCheck(ctx);
 
   await runRecursiveStructureLoadCheck(ctx);
   await runRecursiveNoUnreferencedFilesCheck(ctx);

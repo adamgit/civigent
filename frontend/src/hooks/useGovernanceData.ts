@@ -2,12 +2,18 @@ import { useMemo } from "react";
 import type { DocumentSection } from "../pages/document-page-utils";
 import type {
   GovernanceSectionControl,
+  HumanInvolvementSectionDetails,
   AgentTier,
   GateRule,
 } from "../components/GovernanceLeftGutter";
 import type { SectionAuditGroup } from "../components/GovernanceRightGutter";
 
-// ─── Tier thresholds (configurable per-org in the future) ────────
+// ─── Human-involvement-policy-specific tiering ───────────────────
+//
+// These helpers are NOT part of the generic governance path. They are only
+// invoked when a section's agent-write-policy summary carries the
+// human-involvement compatibility policy's `humanInvolvement.score` detail
+// (spec 12: common code must never assume a score/threshold/tier/gate exists).
 
 interface TierThresholds {
   blockedAbove: number;
@@ -47,6 +53,33 @@ const TIER_TRANSITION_NOTES: Record<AgentTier, string> = {
   auto: "",
 };
 
+/**
+ * Derive the human-involvement-policy detail block from the 0..1 score the
+ * section summary surfaces. Returns `undefined` for the generic path (no score).
+ */
+function deriveHumanInvolvementDetails(
+  rawScore: number | undefined,
+): HumanInvolvementSectionDetails | undefined {
+  if (typeof rawScore !== "number") return undefined;
+  const involvementScore = Math.round(rawScore * 100);
+  const agentTier = computeAgentTier(involvementScore);
+  return {
+    involvementScore,
+    agentTier,
+    gates: GATES_BY_TIER[agentTier],
+    tierTransitionNote: TIER_TRANSITION_NOTES[agentTier] || undefined,
+  };
+}
+
+// ─── Backend-authored prose (Area O / MW-11) ─────────────────────
+//
+// The section-level summary now carries a backend-authored prose `message`
+// (`SectionAgentWritePolicySummary.message`). Clients render it verbatim rather
+// than synthesizing a line from `canWrite`. We keep a policy-agnostic fallback
+// only for the degenerate case of a section with no policy summary at all.
+
+const FALLBACK_POLICY_MESSAGE = "Agents can currently write to this section.";
+
 // ─── Relative time helper ─────────────────────────────────────────
 
 function formatRelativeTime(timestampMs: number): string {
@@ -71,9 +104,12 @@ export function useGovernanceData(
   return useMemo(() => {
     const leftGutterSections: GovernanceSectionControl[] = sections.map(
       (section, i) => {
-        const rawScore = section.humanInvolvement_score ?? 0;
-        const involvementScore = Math.round(rawScore * 100);
-        const tier = computeAgentTier(involvementScore);
+        const policy = section.agentWritePolicy;
+        const canWrite = policy?.canWrite ?? true;
+        const message = policy?.message ?? FALLBACK_POLICY_MESSAGE;
+        const humanInvolvement = deriveHumanInvolvementDetails(
+          policy?.humanInvolvement?.score,
+        );
         const heading = section.heading_path.length > 0
           ? section.heading_path[section.heading_path.length - 1]
           : "";
@@ -92,11 +128,10 @@ export function useGovernanceData(
         return {
           sectionIndex: i,
           heading,
-          involvementScore,
-          agentTier: tier,
+          canWrite,
+          message,
           lastEditorNote,
-          gates: GATES_BY_TIER[tier],
-          tierTransitionNote: TIER_TRANSITION_NOTES[tier] || undefined,
+          humanInvolvement,
         };
       },
     );

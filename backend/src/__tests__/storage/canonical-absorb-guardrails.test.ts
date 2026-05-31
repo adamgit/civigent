@@ -11,10 +11,17 @@ import {
   SAMPLE_SECTIONS_2,
 } from "../helpers/sample-content.js";
 import { CanonicalStore } from "../../storage/canonical-store.js";
-import { getContentRoot, getDataRoot, getSessionSectionsContentRoot } from "../../storage/data-root.js";
+import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { parseSkeletonToEntries, serializeSkeletonEntries } from "../../storage/document-skeleton.js";
 import type { WriterIdentity } from "../../types/shared.js";
+
+// Plain (non-session) scratch overlay root under the temp data root. The former
+// `getSessionSectionsContentRoot()` was removed with MW-7; this test only ever
+// used it as a generic temp staging dir for the absorb engine.
+function scratchOverlayContentRoot(): string {
+  return join(getDataRoot(), "scratch-overlay", "content");
+}
 
 const writer: WriterIdentity = {
   id: "guardrail-writer",
@@ -49,7 +56,7 @@ async function stageOverlayDocFromCanonical(contentDir: string, docPath: string)
   const canonicalSkeletonPath = join(contentDir, diskRelative);
   const canonicalSectionsDir = `${canonicalSkeletonPath}.sections`;
 
-  const overlayRoot = getSessionSectionsContentRoot();
+  const overlayRoot = scratchOverlayContentRoot();
   const overlaySkeletonPath = join(overlayRoot, diskRelative);
   const overlaySectionsDir = `${overlaySkeletonPath}.sections`;
 
@@ -65,7 +72,7 @@ async function commitToCanonical(writers: WriterIdentity[], docPath: string) {
   const [primary] = writers;
   const commitMsg = `human edit: ${primary.displayName}\n\nWriter: ${primary.id}`;
   const author = { name: primary.displayName, email: primary.email ?? "human@knowledge-store.local" };
-  return store.absorbChangedSections(getSessionSectionsContentRoot(), commitMsg, author, { docPaths: [docPath] });
+  return store.absorbChangedSections(scratchOverlayContentRoot(), commitMsg, author, { docPaths: [docPath] });
 }
 
 describe("canonical absorb guardrails and docPaths isolation", () => {

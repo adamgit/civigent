@@ -1,7 +1,7 @@
 import path from "node:path";
 import { readdir } from "node:fs/promises";
-import { getContentRoot, getContentGitPrefix, getDataRoot, getSessionSectionsContentRoot, getSessionFragmentsRoot } from "../../storage/data-root.js";
-import { assessSkeleton, type SkeletonAssessment } from "../../storage/recovery-layers.js";
+import { getContentRoot, getContentGitPrefix, getDataRoot } from "../../storage/data-root.js";
+import { assessSkeleton, type SkeletonAssessment } from "../../storage/skeleton-assessment.js";
 import { resolveSkeletonPath, parseSkeletonToEntries, type FlatEntry } from "../../storage/document-skeleton.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { normalizeDocPath } from "../../storage/path-utils.js";
@@ -62,15 +62,10 @@ export interface DocumentDiagnosticsContext {
   docPath: string;
   dataRoot: string;
   contentRoot: string;
-  overlayContentRoot: string;
-  fragmentsRoot: string;
   contentGitPrefix: string;
   normalizedDocPath: string;
   canonicalSkeletonPath: string;
   canonicalSectionsDir: string;
-  overlaySkeletonPath: string;
-  overlaySectionsDir: string;
-  fragmentDir: string;
   checks: DiagHealthCheck[];
   sections: DiagSectionLayerInfo[];
   summary: DiagSummary;
@@ -84,30 +79,20 @@ export interface DocumentDiagnosticsContext {
 export function createDocumentDiagnosticsContext(docPath: string): DocumentDiagnosticsContext {
   const dataRoot = getDataRoot();
   const contentRoot = getContentRoot();
-  const overlayContentRoot = getSessionSectionsContentRoot();
-  const fragmentsRoot = getSessionFragmentsRoot();
   const contentGitPrefix = getContentGitPrefix();
   const normalizedDocPath = normalizeDocPath(docPath);
   const canonicalSkeletonPath = resolveSkeletonPath(docPath, contentRoot);
   const canonicalSectionsDir = `${canonicalSkeletonPath}.sections`;
-  const overlaySkeletonPath = resolveSkeletonPath(docPath, overlayContentRoot);
-  const overlaySectionsDir = `${overlaySkeletonPath}.sections`;
-  const fragmentDir = path.resolve(fragmentsRoot, ...normalizedDocPath.split("/"));
   const checks: DiagHealthCheck[] = [];
 
   return {
     docPath,
     dataRoot,
     contentRoot,
-    overlayContentRoot,
-    fragmentsRoot,
     contentGitPrefix,
     normalizedDocPath,
     canonicalSkeletonPath,
     canonicalSectionsDir,
-    overlaySkeletonPath,
-    overlaySectionsDir,
-    fragmentDir,
     checks,
     sections: [],
     summary: {

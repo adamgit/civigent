@@ -2,12 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { jsonResponse } from "../../helpers/fetch-mocks";
-import type { AnyProposal } from "../../../types/shared";
+import type { DraftProposalDTO, CommittedProposalDomain } from "../../../types/shared";
 import { ProposalDetailPage } from "../../../pages/ProposalDetailPage";
 
-const pendingProposal: AnyProposal = {
+const pendingProposal: DraftProposalDTO = {
   id: "prop-1",
-  kind: "agent_write",
   writer: { id: "agent-1", type: "agent", displayName: "Agent Alpha" },
   intent: "Improve overview clarity",
   status: "draft",
@@ -15,47 +14,45 @@ const pendingProposal: AnyProposal = {
     {
       doc_path: "ops/strategy.md",
       heading_path: ["Overview"],
-      content: "Updated overview.\n",
-      humanInvolvement_score: 0.35,
-      blocked: false,
     },
     {
       doc_path: "ops/strategy.md",
       heading_path: ["Goals"],
-      content: "Updated goals.\n",
-      humanInvolvement_score: 0.65,
-      blocked: true,
     },
   ],
   created_at: "2026-01-01T00:00:00.000Z",
-  humanInvolvement_evaluation: {
-    all_sections_accepted: false,
-    aggregate_impact: 0.5,
-    aggregate_threshold: 0.8,
-    blocked_sections: [
+  agentWritePolicy: {
+    canWrite: false,
+    message: "One or more sections are blocked under the human-involvement policy.",
+    details: { aggregateImpact: 0.5, aggregateThreshold: 0.8 },
+    targets: [
       {
-        doc_path: "ops/strategy.md",
-        heading_path: ["Goals"],
-        humanInvolvement_score: 0.65,
-        blocked: true,
+        target: { doc_path: "ops/strategy.md", heading_path: ["Overview"] },
+        canWrite: true,
+        message: "Agents may write to this section.",
+        details: { score: 0.35, blockedReason: null, justification: null },
       },
-    ],
-    passed_sections: [
       {
-        doc_path: "ops/strategy.md",
-        heading_path: ["Overview"],
-        humanInvolvement_score: 0.35,
-        blocked: false,
+        target: { doc_path: "ops/strategy.md", heading_path: ["Goals"] },
+        canWrite: false,
+        message: "Recent human activity makes this section off-limits to agents.",
+        details: { score: 0.65, blockedReason: "aggregate_impact", justification: null },
       },
     ],
   },
 };
 
-const committedProposal: AnyProposal = {
-  ...pendingProposal,
+const committedProposal: CommittedProposalDomain = {
   id: "prop-2",
+  writer: { id: "agent-1", type: "agent", displayName: "Agent Alpha" },
+  intent: "Improve overview clarity",
   status: "committed",
+  sections: [
+    { doc_path: "ops/strategy.md", heading_path: ["Overview"] },
+  ],
+  created_at: "2026-01-01T00:00:00.000Z",
   committed_head: "abc123def",
+  humanInvolvement_at_commit: {},
 };
 
 function renderDetail(proposalId: string) {
@@ -123,7 +120,7 @@ describe("ProposalDetailPage display", () => {
     });
   });
 
-  it("sections show human-involvement score", async () => {
+  it("sections show the human-involvement score when the policy provides it", async () => {
     renderDetail("prop-1");
     await waitFor(() => {
       expect(screen.getByText("0.35")).toBeDefined();
@@ -131,19 +128,29 @@ describe("ProposalDetailPage display", () => {
     });
   });
 
-  it("blocked sections are marked as blocked", async () => {
+  it("renders the backend prose explanation, not a reason code", async () => {
+    renderDetail("prop-1");
+    await waitFor(() => {
+      expect(screen.getByText("Recent human activity makes this section off-limits to agents.")).toBeDefined();
+    });
+    // The internal blockedReason enum must never be surfaced.
+    expect(screen.queryByText(/aggregate_impact/)).toBeNull();
+  });
+
+  it("blocked sections are marked Blocked from canWrite", async () => {
     renderDetail("prop-1");
     await waitFor(() => {
       expect(screen.getByText("Blocked")).toBeDefined();
+      expect(screen.getAllByText("Allowed").length).toBeGreaterThan(0);
     });
   });
 
-  it("shows human-involvement evaluation summary", async () => {
+  it("shows the agent-write-policy summary", async () => {
     renderDetail("prop-1");
     await waitFor(() => {
-      expect(screen.getByText(/Human Involvement Evaluation/)).toBeDefined();
+      expect(screen.getByText(/Agent Write Policy/)).toBeDefined();
       expect(screen.getByText(/Blocked sections: 1/)).toBeDefined();
-      expect(screen.getByText(/Passed sections: 1/)).toBeDefined();
+      expect(screen.getByText(/Allowed sections: 1/)).toBeDefined();
     });
   });
 

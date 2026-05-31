@@ -4,7 +4,6 @@ import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-r
 import type { CrdtTransport } from "../services/crdt-transport";
 import type { MilkdownEditorHandle } from "./MilkdownEditor";
 import type {
-  DeletionPlaceholder,
   DocumentSection,
 } from "../pages/document-page-utils";
 import {
@@ -15,6 +14,7 @@ import {
 import { sectionHeadingKey } from "../types/shared.js";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import { SummaryWhoChangedThisSection } from "./SummaryWhoChangedThisSection.js";
+import { useSectionEditabilityMap, usePublishPaused } from "../hooks/useFragmentStoreHooks";
 
 export interface DocumentCanvasProps {
   sections: DocumentSection[];
@@ -29,7 +29,6 @@ export interface DocumentCanvasProps {
   decodedDocPath: string | null;
   recentlyChangedByLabel: Map<string, unknown>;
   injectedByLabel: Map<string, string>;
-  presenceIndicators: Array<{ sectionKey: string }>;
   dragOverSectionIndex: number | null;
   store: BrowserFragmentReplicaStore | null;
   transport: CrdtTransport | null;
@@ -37,7 +36,6 @@ export interface DocumentCanvasProps {
   crdtError: string | null;
   transferService: SectionTransferService | null;
   readyEditors: Set<number>;
-  deletionPlaceholders: DeletionPlaceholder[];
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
   onStartEditing: (index: number, coords: { x: number; y: number }) => void | Promise<void>;
   onFocusSection: (index: number, headingPath: string[], coords: { x: number; y: number }) => void;
@@ -63,7 +61,6 @@ export function DocumentCanvas({
   decodedDocPath,
   recentlyChangedByLabel,
   injectedByLabel,
-  presenceIndicators,
   dragOverSectionIndex,
   store,
   transport,
@@ -71,7 +68,6 @@ export function DocumentCanvas({
   crdtError,
   transferService,
   readyEditors,
-  deletionPlaceholders,
   mouseDownPosRef,
   onStartEditing,
   onFocusSection,
@@ -83,6 +79,14 @@ export function DocumentCanvas({
   onCursorExit,
   onCrossSectionDrop,
 }: DocumentCanvasProps) {
+  // Three independent signals drive editor availability (spec 05 §"Section
+  // block-state events" + §"DocSession publish pause messages"):
+  //   1. proposal FSM lock conflict (proposalConflictReason / locked)
+  //   2. CRDT block-state (blocked → read-only, gone → unmounted)
+  //   3. publication pause (freeze all editors)
+  // Agent write-policy `canWrite` is NEVER used as a human lock (Area O/Q).
+  const editabilityMap = useSectionEditabilityMap(store);
+  const publishPaused = usePublishPaused(store);
   return (
     <>
       {!sectionsLoading ? sections.map((section, i) => {
@@ -93,6 +97,15 @@ export function DocumentCanvas({
         const lockedInProposalMode = proposalMode && isInProposal && proposalConflictReason !== null;
         const fk = getSectionFragmentKey(section);
         const sectionLabel = headingPathToLabel(section.heading_path);
+        // CRDT server-driven block-state for this fragment.
+        const editability = editabilityMap.get(fk) ?? "editable";
+        const crdtBlocked = editability === "blocked";
+        const crdtGone = editability === "gone";
+        // A `gone` section is unmounted/removed from the canvas entirely.
+        if (crdtGone) return null;
+        const mountAllowed = proposalMode
+          ? (canEditProposalContent && isInProposal && shouldMountEditor(i, focusedSectionIndex))
+          : (!crdtBlocked && shouldMountEditor(i, focusedSectionIndex));
         return (
           <div key={fk} className="flex items-stretch">
             {/* Left gutter — who changed this section */}
@@ -113,17 +126,15 @@ export function DocumentCanvas({
                 index={i}
                 fragmentKey={fk}
                 isFocused={focusedSectionIndex === i}
-                hasEditor={
-                  proposalMode
-                    ? (canEditProposalContent && isInProposal && shouldMountEditor(i, focusedSectionIndex))
-                    : shouldMountEditor(i, focusedSectionIndex)
-                }
+                hasEditor={mountAllowed}
                 isInProposal={isInProposal}
                 proposalConflictReason={proposalConflictReason}
-                isLockedByOtherHuman={proposalMode ? lockedInProposalMode : !!section.blocked}
+                isLockedByOtherHuman={proposalMode ? lockedInProposalMode : false}
+                crdtBlocked={crdtBlocked}
+                publishPaused={publishPaused}
                 highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
                 injectedByWriter={injectedByLabel.get(sectionLabel) ?? null}
-                hasRemotePresence={presenceIndicators.some((p) => p.sectionKey === sectionKey)}
+                hasRemotePresence={false}
                 dragOverSectionIndex={dragOverSectionIndex}
                 store={store}
                 transport={transport}
@@ -156,23 +167,6 @@ export function DocumentCanvas({
           </div>
         );
       }) : null}
-
-      {/* Deletion placeholders */}
-      {deletionPlaceholders.map((placeholder) => (
-        <div key={`deleting:${placeholder.fragmentKey}`} className="flex">
-          <div className="w-[200px] min-w-[100px] shrink" />
-          <div className="flex-1 min-w-[700px] bg-canvas-bg border-x border-[rgba(0,0,0,0.06)] px-14">
-            <div className="relative m-[-16px] p-[4px_16px] rounded-md border-l-[2.5px] border-l-amber-300 bg-amber-50/30">
-              <div className="flex items-center gap-1.5 py-1">
-                <span className="w-[5px] h-[5px] rounded-full bg-amber-400" />
-                <span className="text-[10px] text-amber-700 line-through">{placeholder.formerHeading || "(before first heading)"}</span>
-                <span className="text-[9px] text-amber-500 ml-1">Deletion pending...</span>
-              </div>
-            </div>
-          </div>
-          <div className="w-[200px] min-w-[100px] shrink" />
-        </div>
-      ))}
     </>
   );
 }

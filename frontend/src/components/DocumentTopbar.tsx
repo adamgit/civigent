@@ -1,8 +1,6 @@
-import { useState } from "react";
 import { Link } from "react-router-dom";
 import type { CrdtConnectionState } from "../services/crdt-provider";
-import { type SectionSaveInfo, type SectionSaveState, SAVE_STATE_META } from "../services/section-save-state";
-import { SessionStatusPill } from "./SessionStatusPill";
+import { resolveTransportStatus, TRANSPORT_STATUS_META } from "../services/section-save-state";
 
 interface DocumentTopbarProps {
   docPath: string | null;
@@ -13,8 +11,8 @@ interface DocumentTopbarProps {
   showOverwrite?: boolean;
   onToggleOverwrite?: () => void;
   crdtState: CrdtConnectionState;
-  aggregateSaveState: SectionSaveState;
-  sectionSaveInfos: SectionSaveInfo[];
+  /** True while a DocSession publication pause is freezing editors. */
+  publishPaused: boolean;
   isEditing: boolean;
 }
 
@@ -27,29 +25,16 @@ export function DocumentTopbar({
   showOverwrite,
   onToggleOverwrite,
   crdtState,
-  aggregateSaveState,
-  sectionSaveInfos,
+  publishPaused,
   isEditing,
 }: DocumentTopbarProps) {
-  const [popupOpen, setPopupOpen] = useState(false);
-
-  const meta = SAVE_STATE_META[aggregateSaveState];
-  const hasSections = sectionSaveInfos.length > 0;
-
-  const indicatorLabel =
-    crdtState === "error" ? "Sync error"
-    : crdtState === "reconnecting" ? "Reconnecting\u2026"
-    : crdtState === "connecting" ? "Syncing\u2026"
-    : hasSections ? meta.label
-    : isEditing ? "Up to date"
-    : "";
-
-  const dotClass =
-    crdtState === "error" ? "bg-red-500"
-    : crdtState === "reconnecting" ? "bg-red-500 animate-[pulse-dot_1.5s_ease-in-out_infinite]"
-    : crdtState === "connecting" ? "bg-amber-400 animate-[pulse-dot_1.5s_ease-in-out_infinite]"
-    : hasSections ? meta.dotClass
-    : "bg-green-500";
+  // The legacy per-section save-status popup (SAVE_STATE_META + receipt
+  // lifecycle) is removed (spec 05 §"Section-Level Persistence Status
+  // Indicators"). The topbar now shows a single coarse transport/publish
+  // status derived from the live connection state and the publication-pause
+  // flag — nothing per-section.
+  const status = resolveTransportStatus(crdtState, publishPaused, isEditing);
+  const meta = TRANSPORT_STATUS_META[status];
 
   return (
     <header className="h-[--spacing-topbar-h] min-h-[--spacing-topbar-h] bg-topbar-bg border-b border-topbar-border flex items-center px-4 gap-2.5">
@@ -62,8 +47,6 @@ export function DocumentTopbar({
       <span className="font-[family-name:var(--font-ui)] text-sm font-medium text-text-primary flex-1 truncate">
         {docPath ?? "No document selected"}
       </span>
-
-      <SessionStatusPill />
 
       {/* Version history toggle */}
       <button
@@ -94,52 +77,13 @@ export function DocumentTopbar({
         </button>
       )}
 
-      {/* Aggregated persistence indicator with per-section popup */}
-      <div className="relative">
-        <button
-          type="button"
-          className="flex items-center gap-[5px] cursor-pointer hover:opacity-80"
-          onClick={() => hasSections && setPopupOpen((v) => !v)}
-          title={hasSections ? "Click to see per-section save status" : undefined}
-        >
-          <div className={`w-[7px] h-[7px] rounded-full ${dotClass}`} />
-          <span className="text-[11px] text-text-muted">
-            {indicatorLabel}
-          </span>
-        </button>
-
-        {/* Per-section popup (Bug 4) */}
-        {popupOpen && hasSections && (
-          <>
-            <div
-              className="fixed inset-0 z-40"
-              onClick={() => setPopupOpen(false)}
-            />
-            <div className="absolute right-0 top-full mt-1 z-50 bg-white border border-[#e0ddd8] rounded-md shadow-lg min-w-[260px] max-w-[360px] py-1.5">
-              <div className="px-3 py-1 text-[10px] font-semibold text-text-muted uppercase tracking-wider border-b border-[#f0ede8] mb-1">
-                Section Save Status
-              </div>
-              {sectionSaveInfos.map((info) => {
-                const sm = SAVE_STATE_META[info.state];
-                return (
-                  <div
-                    key={info.fragmentKey}
-                    className="flex items-center gap-2 px-3 py-1 hover:bg-[#faf8f5]"
-                  >
-                    <div className={`w-[6px] h-[6px] rounded-full shrink-0 ${sm.dotClass}`} />
-                    <span className="text-[11px] text-text-primary truncate flex-1">
-                      {info.sectionLabel}
-                    </span>
-                    <span className={`text-[10px] font-medium shrink-0 ${sm.color}`}>
-                      {sm.label}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </>
-        )}
-      </div>
+      {/* Coarse transport/publish status indicator (no per-section popup) */}
+      {meta.label ? (
+        <div className="flex items-center gap-[5px]">
+          <div className={`w-[7px] h-[7px] rounded-full ${meta.dotClass}`} />
+          <span className="text-[11px] text-text-muted">{meta.label}</span>
+        </div>
+      ) : null}
     </header>
   );
 }

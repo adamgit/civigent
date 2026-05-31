@@ -10,7 +10,6 @@ vi.mock("../../services/ws-client", () => ({
     connect = vi.fn();
     disconnect = vi.fn();
     onEvent = vi.fn();
-    sessionDeparture = vi.fn();
     focusDocument = vi.fn();
     blurDocument = vi.fn();
   },

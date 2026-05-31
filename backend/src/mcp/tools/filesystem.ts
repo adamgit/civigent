@@ -6,12 +6,13 @@
  */
 
 import type { ToolRegistry, ToolHandler } from "../tool-registry.js";
-import { jsonToolResult, textToolResult } from "../tool-registry.js";
+import { jsonToolResult, textToolResult, jsonBlockedToolResult } from "../tool-registry.js";
 import { makeToolErrorResult } from "../protocol.js";
 import { readAssembledDocument, DocumentNotFoundError } from "../../storage/document-reader.js";
 import { readDocumentsTree } from "../../storage/documents-tree.js";
 import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
-import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
+import { ProposalEditor } from "../../storage/proposal-editor.js";
+import { writeDocumentsToProposalAndBuildManifest } from "../../storage/import-service.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { readDocumentStructure, flattenStructureToHeadingPaths } from "../../storage/heading-resolver.js";
 import {
@@ -19,15 +20,16 @@ import {
   findDraftProposalByWriter,
   transitionToWithdrawn,
 } from "../../storage/proposal-repository.js";
-import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import { resolveDocPathUnderContent, InvalidDocPathError } from "../../storage/path-utils.js";
 import { access } from "node:fs/promises";
 import {
-  evaluateProposalHumanInvolvement,
+  evaluateAgentWritePolicy,
   commitProposalToCanonical,
+  commitProposalToCanonicalDetailed,
 } from "../../storage/commit-pipeline.js";
-import { SectionRef } from "../../domain/section-ref.js";
-import type { SectionScoreSnapshot } from "../../types/shared.js";
+import { applyCommittedCanonicalToLiveSession } from "../../ws/crdt-ws-coordinator.js";
+import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
+import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
 import { checkDocPermission } from "../../auth/acl.js";
 import { canonicalDocumentExists, emitCatalogMutationEvents } from "../catalog-events.js";
 
@@ -163,54 +165,48 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
     return makeToolErrorResult(`Source document not found: ${source}`);
   }
 
-  // Load source heading paths for proposal metadata.
-  // A live-empty doc (zero sections) is valid — don't conflate zero headings with "not found".
-  const canonicalLayer = new ContentLayer(canonicalContentRoot);
-  const headingPaths = await canonicalLayer.listHeadingPaths(source);
-
   // Auto-withdraw any existing pending proposal
   const existing = await findDraftProposalByWriter(writer.id);
   if (existing) {
     await transitionToWithdrawn(existing.id, "auto-withdrawn by move");
   }
 
-  // Create proposal covering both source (delete) and destination (write) sections
+  const intent = ctx.session.pendingIntent ?? `Move ${source} → ${destination}`;
+  ctx.session.pendingIntent = undefined;
+
+  const { id: moveProposalId } = await createTransientProposal(
+    { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
+    intent,
+  );
+
+  // Rename the document inside the proposal: copies the effective source
+  // document to the destination path and tombstones the source. Snapshot the
+  // effective source heading paths first for proposal metadata.
+  const moveEditor = ProposalEditor.open(moveProposalId, "pending");
+  const headingPaths = await moveEditor.listHeadingPaths(source);
+  await moveEditor.renameDocument(source, destination);
+
+  // Update proposal sections to cover both source (delete) and destination
+  // (write) sections so evaluation checks contention on both.
   const proposalSections = [
     ...headingPaths.map((hp) => ({ doc_path: source, heading_path: hp })),
     ...headingPaths.map((hp) => ({ doc_path: destination, heading_path: hp })),
   ];
+  const { updateProposalSections: updateMoveProposalSections } = await import("../../storage/proposal-repository.js");
+  await updateMoveProposalSections(moveProposalId, proposalSections);
 
-  const intent = ctx.session.pendingIntent ?? `Move ${source} → ${destination}`;
-  ctx.session.pendingIntent = undefined;
+  // Agent write policy gate
+  const policyResult = await evaluateAgentWritePolicy(moveProposalId);
 
-  const { id: moveProposalId, contentRoot } = await createTransientProposal(
-    { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
-    intent,
-    proposalSections,
-  );
-
-  // Write tombstone at source path in the proposal overlay
-  const moveOverlayLayer = new OverlayContentLayer(contentRoot, canonicalContentRoot);
-  await moveOverlayLayer.tombstoneDocumentExplicit(source);
-
-  // Stage destination by copying canonical skeleton/body files into overlay.
-  await moveOverlayLayer.copyCanonicalDocumentToOverlay(source, destination);
-
-  // Evaluate human involvement
-  const { evaluation, sections } = await evaluateProposalHumanInvolvement(moveProposalId);
-
-  if (evaluation.all_sections_accepted) {
-    const scores: import("../../types/shared.js").SectionScoreSnapshot = {};
-    for (const s of sections) {
-      scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
-    }
-    const committedHead = await commitProposalToCanonical(moveProposalId, scores);
+  if (policyResult.canWrite) {
+    const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
+    const committedHead = await commitProposalToCanonical(moveProposalId, committedMetadata);
 
     if (ctx.emitEvent) {
       ctx.emitEvent({
         type: "content:committed",
         doc_path: destination,
-        sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+        sections: proposalSections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
         commit_sha: committedHead,
         writer_id: writer.id,
         writer_display_name: writer.displayName,
@@ -240,21 +236,11 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
       status: "committed",
     });
   } else {
-    const blockedSections = sections
-      .filter((s) => s.blocked)
-      .map((s) => ({
-        doc_path: s.doc_path,
-        heading_path: s.heading_path,
-        humanInvolvement_score: s.humanInvolvement_score,
-      }));
-
-    return jsonToolResult({
+    return jsonBlockedToolResult(policyResult.message, {
       success: false,
       proposal_id: moveProposalId,
       status: "draft",
-      outcome: "blocked",
-      blocked_sections: blockedSections,
-      message: "Some sections are contested by human editors. The move proposal has been saved as pending.",
+      agent_write_policy: agentWritePolicyToolBody(policyResult),
     });
   }
 };
@@ -290,14 +276,7 @@ async function writeDocumentViaProposal(
   const intent = ctx.session.pendingIntent ?? `Write ${files.map((f) => f.path).join(", ")}`;
   ctx.session.pendingIntent = undefined;
 
-  // Pre-parse all files to build proposal sections from actual heading structure
-  // (not hardcoded to root). This normalizes multi-section markdown.
-  const canonicalContentRoot = getContentRoot();
-  const allSectionTargets: Array<{
-    doc_path: string;
-    heading_path: string[];
-  }> = [];
-
+  // Pre-check which docs are new so catalog:changed reports created paths.
   for (const file of files) {
     if (!(await canonicalDocumentExists(file.path))) {
       createdDocPaths.push(file.path);
@@ -311,45 +290,51 @@ async function writeDocumentViaProposal(
   }
 
   // Create proposal (sections updated after write)
-  const { id: writeProposalId, contentRoot } = await createTransientProposal(
+  const { id: writeProposalId } = await createTransientProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     intent,
   );
 
-  // Write each file through upsertDocumentFromMarkdown (clear/create to
-  // live-empty, then root-target upsert), then read back the resulting
-  // heading paths via listHeadingPaths to build proposal section metadata.
-  // The storage primitive returns nothing — proposal metadata derivation
-  // lives here at the MCP-tool layer.
-  const fContentLayer = new OverlayContentLayer(contentRoot, canonicalContentRoot);
-  for (const file of files) {
-    await fContentLayer.upsertDocumentFromMarkdown(file.path, file.content);
-    const headingPaths = await fContentLayer.listHeadingPaths(file.path);
-    for (const hp of headingPaths) {
-      allSectionTargets.push({ doc_path: file.path, heading_path: hp });
-    }
-  }
+  // Write each whole-document payload through the shared ProposalEditor recipe
+  // (clear/create to live-empty, then root-target upsert), reading back the
+  // normalized heading paths to build proposal section metadata.
+  const allSectionTargets = await writeDocumentsToProposalAndBuildManifest(
+    writeProposalId,
+    "pending",
+    files.map((f) => ({ docPath: f.path, content: f.content })),
+  );
 
   // Update proposal sections to match the actual normalized structure
   const { updateProposalSections } = await import("../../storage/proposal-repository.js");
   await updateProposalSections(writeProposalId, allSectionTargets);
 
-  const { evaluation, sections } = await evaluateProposalHumanInvolvement(writeProposalId);
+  const policyResult = await evaluateAgentWritePolicy(writeProposalId);
 
-  if (evaluation.all_sections_accepted) {
-    const scores: SectionScoreSnapshot = {};
-    for (const s of sections) {
-      scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
+  if (policyResult.canWrite) {
+    const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
+
+    const absorbResult = await commitProposalToCanonicalDetailed(writeProposalId, committedMetadata);
+    const committedHead = absorbResult.commitSha;
+
+    // MW-3: push the committed canonical change into any open live DocSession
+    // for the affected docs (canonical→live; the coordinator skips a self-commit).
+    {
+      const byDoc = new Map<string, string[][]>();
+      for (const ref of absorbResult.changedSections) {
+        if (!byDoc.has(ref.docPath)) byDoc.set(ref.docPath, []);
+        byDoc.get(ref.docPath)!.push([...ref.headingPath]);
+      }
+      for (const [docPath, headingPaths] of byDoc) {
+        await applyCommittedCanonicalToLiveSession(docPath, headingPaths, writeProposalId);
+      }
     }
-
-    const committedHead = await commitProposalToCanonical(writeProposalId, scores);
 
     // Broadcast content:committed
     if (ctx.emitEvent) {
       ctx.emitEvent({
         type: "content:committed",
-        doc_path: sections[0]?.doc_path ?? files[0]?.path ?? "",
-        sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+        doc_path: allSectionTargets[0]?.doc_path ?? files[0]?.path ?? "",
+        sections: allSectionTargets.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
         commit_sha: committedHead,
         writer_id: writer.id,
         writer_display_name: writer.displayName,
@@ -376,22 +361,13 @@ async function writeDocumentViaProposal(
       status: "committed",
     });
   } else {
-    // Blocked — return details about which sections are blocked and why
-    const blockedSections = sections
-      .filter((s) => s.blocked)
-      .map((s) => ({
-        doc_path: s.doc_path,
-        heading_path: s.heading_path,
-        humanInvolvement_score: s.humanInvolvement_score,
-      }));
-
-    return jsonToolResult({
+    // Blocked — hoist the policy's prose explanation to a top-level message
+    // (Area M: top-level prose + per-target prose, no codes/enums).
+    return jsonBlockedToolResult(policyResult.message, {
       success: false,
       proposal_id: writeProposalId,
       status: "draft",
-      outcome: "blocked",
-      blocked_sections: blockedSections,
-      message: "Some sections are contested by human editors. The proposal has been saved as pending. You can modify it via the proposal API or wait for the contention to resolve.",
+      agent_write_policy: agentWritePolicyToolBody(policyResult),
     });
   }
 }
@@ -424,11 +400,11 @@ async function deleteDocumentViaProposal(
     return makeToolErrorResult(`Document not found: ${docPath}`);
   }
 
-  // Check for active CRDT sessions
-  const docSession = lookupDocSession(docPath);
-  if (docSession) {
-    return makeToolErrorResult("Cannot delete document with active editing session.");
-  }
+  // NOTE: no DocSession topology precondition here — MCP filesystem writes
+  // stage proposal content only. Topology safety (an active live editing
+  // session on this document) is enforced at the publish/commit boundary by
+  // the DocSession actor's publish-or-abort / invalidation policy (Areas B/C/F),
+  // not by blocking the staged proposal write.
 
   // Auto-withdraw any existing pending proposal by this writer
   const existing = await findDraftProposalByWriter(writer.id);
@@ -437,14 +413,14 @@ async function deleteDocumentViaProposal(
   }
 
   // Create proposal (sections updated after tombstone reads canonical headings)
-  const { id: delProposalId, contentRoot } = await createTransientProposal(
+  const { id: delProposalId } = await createTransientProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     `Delete document: ${docPath}`,
   );
 
-  // Read canonical headings and write a tombstone marker to the proposal overlay
-  const delOverlayLayer = new OverlayContentLayer(contentRoot, canonicalContentRoot);
-  const headingPaths = await delOverlayLayer.tombstoneDocument(docPath);
+  // Read canonical headings and write a tombstone marker via the editor.
+  const delEditor = ProposalEditor.open(delProposalId, "pending");
+  const headingPaths = await delEditor.deleteDocument(docPath);
 
   // Update proposal sections to match the canonical structure
   const proposalSections = headingPaths.map((hp) => ({
@@ -454,21 +430,18 @@ async function deleteDocumentViaProposal(
   const { updateProposalSections: updateDelProposalSections } = await import("../../storage/proposal-repository.js");
   await updateDelProposalSections(delProposalId, proposalSections);
 
-  // Evaluate human involvement
-  const { evaluation, sections } = await evaluateProposalHumanInvolvement(delProposalId);
+  // Agent write policy gate
+  const policyResult = await evaluateAgentWritePolicy(delProposalId);
 
-  if (evaluation.all_sections_accepted) {
-    const scores: import("../../types/shared.js").SectionScoreSnapshot = {};
-    for (const s of sections) {
-      scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
-    }
-    const committedHead = await commitProposalToCanonical(delProposalId, scores);
+  if (policyResult.canWrite) {
+    const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
+    const committedHead = await commitProposalToCanonical(delProposalId, committedMetadata);
 
     if (ctx.emitEvent) {
       ctx.emitEvent({
         type: "content:committed",
         doc_path: docPath,
-        sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+        sections: proposalSections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
         commit_sha: committedHead,
         writer_id: writer.id,
         writer_display_name: writer.displayName,
@@ -497,21 +470,11 @@ async function deleteDocumentViaProposal(
       status: "committed",
     });
   } else {
-    const blockedSections = sections
-      .filter((s) => s.blocked)
-      .map((s) => ({
-        doc_path: s.doc_path,
-        heading_path: s.heading_path,
-        humanInvolvement_score: s.humanInvolvement_score,
-      }));
-
-    return jsonToolResult({
+    return jsonBlockedToolResult(policyResult.message, {
       success: false,
       proposal_id: delProposalId,
       status: "draft",
-      outcome: "blocked",
-      blocked_sections: blockedSections,
-      message: "Some sections are contested by human editors. The delete proposal has been saved as pending.",
+      agent_write_policy: agentWritePolicyToolBody(policyResult),
     });
   }
 }
@@ -537,7 +500,7 @@ export function registerFilesystemTools(registry: ToolRegistry): void {
   registry.register(
     {
       name: "write_file",
-      description: "Write content to a document. The write goes through the proposal system — it may be accepted immediately or blocked if a human is actively editing contested sections.",
+      description: "Write content to a document. The write goes through the proposal system — it may be accepted immediately, or blocked when the active agent write policy declines (e.g. recent human involvement) or another proposal holds an exclusive lock on a target section. A blocked result includes a prose message and per-target explanations describing what clears the block.",
       inputSchema: {
         type: "object",
         properties: {

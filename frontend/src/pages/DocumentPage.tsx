@@ -36,7 +36,7 @@ import {
 } from "./document-page-utils";
 import { useDocumentSessionController } from "../hooks/useDocumentSessionController";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
-import { type SectionSaveInfo, resolveSaveState, worstSaveState } from "../services/section-save-state";
+import { usePublishPaused } from "../hooks/useFragmentStoreHooks";
 
 // ─── viewingPresence: small component to call the hook per-section ──
 
@@ -143,8 +143,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     editingLoading,
     readyEditors,
     setReadyEditors,
-    deletionPlaceholders,
-    setDeletionPlaceholders,
     proposalMode,
     activeProposal,
     activeProposalStatus,
@@ -207,7 +205,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     heading_path: [],
     depth: 0,
     content: "",
-    humanInvolvement_score: 0,
+    agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
     crdt_session_active: true,
     section_length_warning: false,
     word_count: 0,
@@ -302,8 +300,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     setRecentlyChangedSections,
     recentlyChangedByLabel,
     agentReadingIndicators,
-    presenceIndicators,
-    presenceIndicatorsRef,
     pendingProposalIndicatorsRef,
   } = useDocumentWebSocket({
     decodedDocPath,
@@ -314,7 +310,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     mountedEditorFragmentKeysRef,
     pendingStructureRefocusRef,
     storeRef,
-    setDeletionPlaceholders,
     setStructureTree,
     loadSections,
     setError,
@@ -337,16 +332,23 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
       getSections: () => sectionsRef.current.map(s => ({
         heading_path: s.heading_path,
         fragment_key: getSectionFragmentKey(s),
-        blocked: !!s.blocked,
-      })),
-      getPresenceIndicators: () => presenceIndicatorsRef.current.map(p => ({
-        sectionKey: p.sectionKey,
-        writerDisplayName: p.writerDisplayName,
+        // Proposal FSM lock conflict (read-API `locked?`). CRDT block-state is
+        // read from the store editability map by the transfer service, not here.
+        locked: !!s.locked,
+        blockState: storeRef.current?.getSectionEditabilityForKey(getSectionFragmentKey(s)) === "blocked",
       })),
       getProposalIndicators: () => pendingProposalIndicatorsRef.current.map(p => ({
         sectionKey: p.sectionKey,
         writerDisplayName: p.writerDisplayName,
       })),
+      // WS-6: resolve the live editor view for a fragment key (fragment key →
+      // section index → mounted editor handle) so the move can capture/restore
+      // the moved section's caret across the backend re-seed.
+      getEditorViewForFragment: (fragmentKey) => {
+        const idx = sectionsRef.current.findIndex((s) => getSectionFragmentKey(s) === fragmentKey);
+        if (idx < 0) return null;
+        return editorRefs.current.get(idx)?.getView() ?? null;
+      },
     });
   }
   if (!activeCrdtProvider) transferServiceRef.current = null;
@@ -439,7 +441,11 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     return () => { cancelled = true; };
   }, [decodedDocPath, lastVisitSeed, setRecentlyChangedSections]);
 
-  // ── Handle idle timeout: CRDT disconnects while editing → silently return to read view ──
+  // ── Transport failure while editing → silently return to read view ──
+  // The idle-timeout (4020) teardown is removed (no idle timer in this
+  // architecture). A genuine transport failure still drops the editor back to
+  // a canonical read view; restore (4022) / admin-rebuild (4024) reconnect
+  // inside the provider and never reach "disconnected" here.
   useEffect(() => {
     if (
       crdtState === "disconnected"
@@ -456,44 +462,16 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   // ── Derived ──────────────────────────────────────────────
   const docTitle = decodedDocPath ? getDocDisplayName(decodedDocPath) : "Untitled";
 
-  // Subscribe to persistence state from the store via useSyncExternalStore
-  const emptyMap = useMemo(() => new Map() as ReadonlyMap<string, import("../services/browser-fragment-replica-store").SectionPersistenceState>, []);
-  const subscribeStore = useMemo(() => store?.subscribe ?? ((_cb: () => void) => () => {}), [store]);
-  const sectionPersistence = useSyncExternalStore(
-    subscribeStore,
-    () => store?.getSectionPersistence() ?? emptyMap,
-  );
-
-  // Per-section save states resolved through the user-facing state machine
-  const now = Date.now();
-  const sectionSaveInfos: SectionSaveInfo[] = useMemo(() => {
-    const infos: SectionSaveInfo[] = [];
-    for (const section of sections) {
-      const fk = getSectionFragmentKey(section);
-      const ps = sectionPersistence.get(fk);
-      if (ps === undefined) continue; // clean — not in the map
-      const state = resolveSaveState(ps, crdtState, store?.getDirtySince(fk), now);
-      infos.push({
-        fragmentKey: fk,
-        sectionLabel: headingPathToLabel(section.heading_path),
-        state,
-      });
-    }
-    return infos;
-  }, [sectionPersistence, sections, crdtState, store, now]);
-
-  const aggregateSaveState = useMemo(
-    () => worstSaveState(sectionSaveInfos.map((s) => s.state)),
-    [sectionSaveInfos],
-  );
+  // Document-level publication-pause flag — drives the topbar status and the
+  // editing banner. (The per-section receipt save-state machine is removed.)
+  const publishPaused = usePublishPaused(store);
 
   // ── B3: Stable section callbacks (extracted from sections.map) ───
-  const handleFocusSection = useCallback((idx: number, headingPath: string[], coords: { x: number; y: number }) => {
+  const handleFocusSection = useCallback((idx: number, _headingPath: string[], coords: { x: number; y: number }) => {
     setFocusedSectionIndex(idx);
     pendingFocusRef.current = { index: idx, position: "start", coords };
     const provider = crdtProviderRef.current;
     if (provider) {
-      provider.focusSection(headingPath);
       setViewingSections(provider, idx);
     }
   }, [setFocusedSectionIndex, setViewingSections]);
@@ -568,8 +546,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         showOverwrite={showOverwrite}
         onToggleOverwrite={() => setShowOverwrite((v) => !v)}
         crdtState={crdtState}
-        aggregateSaveState={aggregateSaveState}
-        sectionSaveInfos={sectionSaveInfos}
+        publishPaused={publishPaused}
         isEditing={isEditing}
       />
 
@@ -770,7 +747,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
             decodedDocPath={decodedDocPath}
             recentlyChangedByLabel={recentlyChangedByLabel}
             injectedByLabel={injectedByLabel}
-            presenceIndicators={presenceIndicators}
             dragOverSectionIndex={dragOverSectionIndex}
             store={store}
             transport={transport}
@@ -778,7 +754,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
             crdtError={crdtError}
             transferService={transferServiceRef.current}
             readyEditors={readyEditors}
-            deletionPlaceholders={deletionPlaceholders}
             mouseDownPosRef={mouseDownPosRef}
             onStartEditing={startEditing}
             onFocusSection={handleFocusSection}

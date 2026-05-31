@@ -46,7 +46,7 @@ export function bodyFromParser(raw: string): SectionBody {
   return raw.replace(/\n+$/, "") as SectionBody;
 }
 
-/** Recovery assembly (recovery-layers.ts) output → SectionBody. */
+/** Recovery/diagnostic assembly output → SectionBody. */
 export function bodyFromRecoveryAssembly(raw: string): SectionBody {
   return raw.replace(/\n+$/, "") as SectionBody;
 }

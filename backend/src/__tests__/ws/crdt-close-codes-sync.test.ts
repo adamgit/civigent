@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import * as backend from "../../ws/crdt-protocol.js";
+import * as backend from "../../ws/crdt-ws-frames.js";
 import * as frontend from "../../../../frontend/src/services/crdt-close-codes.js";
 
 describe("WS_CLOSE_* constants sync between backend and frontend", () => {

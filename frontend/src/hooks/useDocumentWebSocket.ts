@@ -7,22 +7,17 @@ import {
   type AgentReadingEvent,
   type ContentCommittedEvent,
   type DocRenamedEvent,
-  type DocStructureChangedEvent,
   type DocStructureNode,
-  type PresenceDoneEvent,
-  type PresenceEditingEvent,
   type ProposalDraftEvent,
   type ProposalInProgressEvent,
-  type ProposalInjectedIntoSessionEvent,
   type ProposalSectionAvailabilityEvent,
   type ProposalWithdrawnEvent,
+  type SectionBlockStateEvent,
 } from "../types/shared.js";
 import {
-  type DeletionPlaceholder,
   type DocumentSection,
   type RecentlyChangedSectionEntry,
   type AgentReadingIndicator,
-  type PresenceIndicator,
   type PendingProposalIndicator,
   normalizeDocPath,
   headingPathToLabel,
@@ -45,7 +40,6 @@ export interface UseDocumentWebSocketParams {
   mountedEditorFragmentKeysRef: React.MutableRefObject<Set<string>>;
   pendingStructureRefocusRef: React.MutableRefObject<string[] | null>;
   storeRef: React.MutableRefObject<BrowserFragmentReplicaStore | null>;
-  setDeletionPlaceholders: React.Dispatch<React.SetStateAction<DeletionPlaceholder[]>>;
   setStructureTree: React.Dispatch<React.SetStateAction<DocStructureNode[] | null>>;
   loadSections: (docPath: string) => Promise<DocumentSection[]>;
   setError: (e: string | null) => void;
@@ -61,11 +55,8 @@ export interface UseDocumentWebSocketReturn {
   setRecentlyChangedSections: React.Dispatch<React.SetStateAction<RecentlyChangedSectionEntry[]>>;
   recentlyChangedByLabel: Map<string, RecentlyChangedSectionEntry>;
   agentReadingIndicators: AgentReadingIndicator[];
-  presenceIndicators: PresenceIndicator[];
-  presenceIndicatorsRef: React.MutableRefObject<PresenceIndicator[]>;
   pendingProposalIndicators: PendingProposalIndicator[];
   pendingProposalIndicatorsRef: React.MutableRefObject<PendingProposalIndicator[]>;
-  presenceBySectionKey: Map<string, PresenceIndicator[]>;
   proposalsBySectionKey: Map<string, PendingProposalIndicator[]>;
 }
 
@@ -82,7 +73,6 @@ export function useDocumentWebSocket({
   mountedEditorFragmentKeysRef,
   pendingStructureRefocusRef,
   storeRef,
-  setDeletionPlaceholders,
   setStructureTree,
   loadSections,
   setError,
@@ -96,10 +86,6 @@ export function useDocumentWebSocket({
 
   // ── v3: Agent reading indicators ─────────────────────────
   const [agentReadingIndicators, setAgentReadingIndicators] = useState<AgentReadingIndicator[]>([]);
-
-  // ── v3: Presence indicators ──────────────────────────────
-  const [presenceIndicators, setPresenceIndicators] = useState<PresenceIndicator[]>([]);
-  const presenceIndicatorsRef = useRef<PresenceIndicator[]>([]);
 
   // ── v3: Pending proposal indicators ─────────────────────
   const [pendingProposalIndicators, setPendingProposalIndicators] = useState<PendingProposalIndicator[]>([]);
@@ -130,11 +116,6 @@ export function useDocumentWebSocket({
     });
   }, []);
 
-  // ── Ref sync for presence (used by WS handler) ────────────
-  useEffect(() => {
-    presenceIndicatorsRef.current = presenceIndicators;
-  }, [presenceIndicators]);
-
   useEffect(() => {
     pendingProposalIndicatorsRef.current = pendingProposalIndicators;
   }, [pendingProposalIndicators]);
@@ -164,19 +145,10 @@ export function useDocumentWebSocket({
           return Array.from(next.values());
         });
 
-        // Committed sections → clean in the persistence store (only flushed→clean)
-        const myWriterId = resolveWriterId();
-        const isMyCommit = committed.writer_id === myWriterId ||
-          (committed.contributor_ids?.includes(myWriterId) ?? false);
-        if (isMyCommit && storeRef.current) {
-          const committedFragmentKeys: string[] = [];
-          for (const s of committed.sections) {
-            const hpKey = sectionHeadingKey(s.heading_path);
-            const match = sectionsRef.current.find((sec) => sectionHeadingKey(sec.heading_path) === hpKey);
-            if (match) committedFragmentKeys.push(getSectionFragmentKey(match));
-          }
-          storeRef.current.markSectionsClean(committedFragmentKeys);
-        }
+        // The receipt-driven `markSectionsClean` lifecycle is removed (spec 05
+        // §"Content Flush"). `content:committed` is now only a canonical-refresh
+        // hint (spec 06 §"Refresh Strategy"); the selective REST refresh below
+        // reseeds non-CRDT-bound previews.
 
         // Clear draft proposal indicators for committed sections
         const committedSectionKeys = new Set(
@@ -241,36 +213,25 @@ export function useDocumentWebSocket({
         return;
       }
 
-      // ── presence:editing (v3) ──
-      if (event.type === "presence:editing") {
-        const presence = event as PresenceEditingEvent;
-        if (normalizeDocPath(presence.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-
-        const sectionKey = sectionHeadingKey(presence.heading_path);
-        const key = `${presence.writer_id}:${sectionKey}`;
-
-        setPresenceIndicators((prev) => {
-          const next = new Map(prev.map((ind) => [ind.key, ind]));
-          next.set(key, {
-            key,
-            sectionKey,
-            writerDisplayName: presence.writer_display_name,
-            writerType: presence.writer_type,
-          });
-          return Array.from(next.values());
-        });
-        return;
-      }
-
-      // ── presence:done (v3) ──
-      if (event.type === "presence:done") {
-        const done = event as PresenceDoneEvent;
-        if (normalizeDocPath(done.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-
-        const sectionKey = sectionHeadingKey(done.heading_path);
-        const key = `${done.writer_id}:${sectionKey}`;
-
-        setPresenceIndicators((prev) => prev.filter((ind) => ind.key !== key));
+      // ── section:blocked | section:unblocked | section:gone ──
+      // Per-section CRDT block-state (spec 05 §"Section block-state events").
+      // These ride the JSON application WebSocket and keep the browser mount Set
+      // in lockstep with server reality. Routed into the replica store, which
+      // owns the per-section editability map. (Provider does NOT handle these —
+      // exactly one path; see crdt-provider.ts header.)
+      if (
+        event.type === "section:blocked" ||
+        event.type === "section:unblocked" ||
+        event.type === "section:gone"
+      ) {
+        const blockState = event as SectionBlockStateEvent;
+        if (normalizeDocPath(blockState.doc_path) !== normalizeDocPath(decodedDocPath)) return;
+        const store = storeRef.current;
+        if (store) {
+          if (blockState.type === "section:blocked") store.setSectionBlocked(blockState.fragment_key);
+          else if (blockState.type === "section:unblocked") store.setSectionUnblocked(blockState.fragment_key);
+          else store.setSectionGone(blockState.fragment_key);
+        }
         return;
       }
 
@@ -283,59 +244,9 @@ export function useDocumentWebSocket({
         return;
       }
 
-      // ── doc:structure-changed ──
-      if (event.type === "doc:structure-changed") {
-        const e = event as DocStructureChangedEvent;
-        if (normalizeDocPath(e.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-
-        // Capture current focus heading path for restoration after sections reload.
-        // The CrdtProvider stays alive — the Y.Doc and connection are still valid.
-        // React will unmount editors whose fragment keys disappeared and mount new
-        // ones for the new fragment keys. New editors bind to fragments the server
-        // already populated in the same Y.Doc.
-        const fi = focusedSectionIndexRef.current;
-        const secs = sectionsRef.current;
-        if (fi !== null && secs[fi]) {
-          pendingStructureRefocusRef.current = secs[fi].heading_path;
-        }
-
-        // Snapshot old section keys before reload so we can detect removals.
-        const oldKeys = new Set(secs.map((s) => getSectionFragmentKey(s)));
-
-        // Refresh section list and structure tree, then detect removed sections.
-        // Use the returned sections directly — sectionsRef.current is not yet updated
-        // at .then() time because React batches setSections into the next render cycle.
-        loadSections(decodedDocPath).then((newSections) => {
-          // If editing ended (e.g. idle timeout closed CRDT socket), don't create
-          // placeholders — the session is over and SESSION_FLUSHED will never arrive
-          // on the dead socket to clear them.
-          if (mountedEditorFragmentKeysRef.current.size === 0) return;
-
-          const newKeys = new Set(newSections.map((s) => getSectionFragmentKey(s)));
-          const removedKeys = [...oldKeys].filter((k) => !newKeys.has(k));
-          if (removedKeys.length > 0) {
-            setDeletionPlaceholders((prev) => {
-              const next = [...prev];
-              for (const rk of removedKeys) {
-                if (next.some((p) => p.fragmentKey === rk)) continue;
-                // Find the old section's heading from the snapshot
-                const oldSec = secs.find((s) => getSectionFragmentKey(s) === rk);
-                next.push({
-                  fragmentKey: rk,
-                  formerHeading: oldSec ? (oldSec.heading_path[oldSec.heading_path.length - 1] ?? "") : "",
-                  insertAfterIndex: -1,
-                });
-              }
-              return next;
-            });
-            storeRef.current?.markSectionsDeleting(removedKeys);
-          }
-        });
-        apiClient.getDocumentStructure(decodedDocPath).then((resp) => {
-          setStructureTree(resp.structure);
-        }).catch(() => { /* non-fatal background fetch */ });
-        return;
-      }
+      // (doc:structure-changed handling removed — spec 05 §4 > Removed message
+      // types. Structural changes now arrive as ordinary YJS_UPDATE deltas on
+      // the CRDT socket; canonical previews refresh on `content:committed`.)
 
       // ── proposal:created ──
       if (event.type === "proposal:draft") {
@@ -374,15 +285,11 @@ export function useDocumentWebSocket({
         return;
       }
 
-      // ── proposal:injected_into_session ──
-      if (event.type === "proposal:injected_into_session") {
-        const injected = event as ProposalInjectedIntoSessionEvent;
-        if (normalizeDocPath(injected.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-        if (onSectionsInjectedByProposal) {
-          onSectionsInjectedByProposal(injected.heading_paths, injected.writer_display_name);
-        }
-        return;
-      }
+      // NOTE (Area P): the `proposal:injected_into_session` branch was removed.
+      // `ProposalInjectedIntoSessionEvent` is gone from `WsServerEvent` (sessions/
+      // overlay durability deleted, plan §D), so the event can never fire. The
+      // `onSectionsInjectedByProposal` option is retained for now; Area N owns
+      // any replacement injection/refresh signal wiring.
     });
     return () => {
       wsClient.unsubscribe(decodedDocPath);
@@ -435,17 +342,6 @@ export function useDocumentWebSocket({
     return () => window.clearInterval(timer);
   }, [agentReadingIndicators.length]);
 
-  // Build a lookup of presence indicators by section key
-  const presenceBySectionKey = useMemo(() => {
-    const map = new Map<string, PresenceIndicator[]>();
-    for (const indicator of presenceIndicators) {
-      const existing = map.get(indicator.sectionKey) ?? [];
-      existing.push(indicator);
-      map.set(indicator.sectionKey, existing);
-    }
-    return map;
-  }, [presenceIndicators]);
-
   // Build a lookup of draft proposal indicators by section key
   const proposalsBySectionKey = useMemo(() => {
     const map = new Map<string, PendingProposalIndicator[]>();
@@ -463,11 +359,8 @@ export function useDocumentWebSocket({
     setRecentlyChangedSections,
     recentlyChangedByLabel,
     agentReadingIndicators,
-    presenceIndicators,
-    presenceIndicatorsRef,
     pendingProposalIndicators,
     pendingProposalIndicatorsRef,
-    presenceBySectionKey,
     proposalsBySectionKey,
   };
 }

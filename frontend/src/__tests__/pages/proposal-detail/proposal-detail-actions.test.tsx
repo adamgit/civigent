@@ -2,12 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { jsonResponse } from "../../helpers/fetch-mocks";
-import type { AnyProposal } from "../../../types/shared";
+import type { DraftProposalDTO, CommittedProposalDomain } from "../../../types/shared";
 import { ProposalDetailPage } from "../../../pages/ProposalDetailPage";
 
-const pendingProposal: AnyProposal = {
+const pendingProposal: DraftProposalDTO = {
   id: "prop-1",
-  kind: "agent_write",
   writer: { id: "agent-1", type: "agent", displayName: "Agent Alpha" },
   intent: "Improve overview",
   status: "draft",
@@ -15,19 +14,22 @@ const pendingProposal: AnyProposal = {
     {
       doc_path: "ops/strategy.md",
       heading_path: ["Overview"],
-      content: "Updated.\n",
-      humanInvolvement_score: 0.2,
-      blocked: false,
     },
   ],
   created_at: "2026-01-01T00:00:00.000Z",
 };
 
-const committedProposal: AnyProposal = {
-  ...pendingProposal,
+const committedProposal: CommittedProposalDomain = {
   id: "prop-committed",
+  writer: { id: "agent-1", type: "agent", displayName: "Agent Alpha" },
+  intent: "Improve overview",
   status: "committed",
+  sections: [
+    { doc_path: "ops/strategy.md", heading_path: ["Overview"] },
+  ],
+  created_at: "2026-01-01T00:00:00.000Z",
   committed_head: "abc123",
+  humanInvolvement_at_commit: {},
 };
 
 let fetchMock: ReturnType<typeof vi.fn>;

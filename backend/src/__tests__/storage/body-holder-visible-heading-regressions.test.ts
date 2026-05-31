@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
+import { ContentLayer, ProposalShadowContentLayer } from "../../storage/content-layer.js";
 import { readAssembledDocument } from "../../storage/document-reader.js";
 import { flattenStructureToHeadingPaths, readDocumentStructure } from "../../storage/heading-resolver.js";
 import { SectionRef } from "../../domain/section-ref.js";
@@ -127,7 +127,7 @@ describe("body-holder visible heading regressions", () => {
       "Body-holder fallback regression",
       [{ doc_path: `/${DOC_PATH}`, heading_path: ["Introduction"] }],
     );
-    const overlay = new OverlayContentLayer(contentRoot, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(contentRoot, ctx.contentDir);
 
     await overlay.upsertSection(
       new SectionRef(`/${DOC_PATH}`, ["Introduction"]),

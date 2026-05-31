@@ -1,25 +1,31 @@
 /**
  * useSectionFocus — focus index, pending/deferred focus, structure refocus.
  *
- * Extracted from useDocumentCrdt. Receives useSessionMode outputs as params.
+ * Receives useSessionMode outputs as params.
+ *
+ * Area N: the `MSG_SECTION_FOCUS` wire send is removed (spec 05 §4 > Removed
+ * message types), so `provider.focusSection()` and the `editorFocusTarget`
+ * mirror side-effects that only existed to feed that wire message are gone. The
+ * local focus-index / neighbor `handleCursorExit` (ArrowUp/ArrowDown) and the
+ * `setViewingSections` awareness write are kept (spec §"Cross-Section Cursor
+ * Movement"). Focus / start-edit into a `"blocked"` or `"gone"` section, or
+ * while a publication pause is active, is refused (read from the store).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  sectionHeadingKey,
-  type DocumentSessionControllerState,
-} from "../types/shared.js";
+import { sectionHeadingKey } from "../types/shared.js";
 import { type MilkdownEditorHandle } from "../components/MilkdownEditor";
 import { type DocumentSection, getSectionFragmentKey } from "../pages/document-page-utils";
 import type { CrdtProvider } from "../services/crdt-provider";
+import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 
 export interface UseSectionFocusParams {
   sections: DocumentSection[];
   crdtProviderRef: React.MutableRefObject<CrdtProvider | null>;
+  storeRef: React.MutableRefObject<BrowserFragmentReplicaStore | null>;
   readyEditors: Set<number>;
   editorRefs: React.MutableRefObject<Map<number, MilkdownEditorHandle>>;
   ensureProvider: () => Promise<CrdtProvider | null>;
-  setControllerState: React.Dispatch<React.SetStateAction<DocumentSessionControllerState>>;
 }
 
 export interface UseSectionFocusReturn {
@@ -37,10 +43,10 @@ export interface UseSectionFocusReturn {
 export function useSectionFocus({
   sections,
   crdtProviderRef,
+  storeRef,
   readyEditors,
   editorRefs,
   ensureProvider,
-  setControllerState,
 }: UseSectionFocusParams): UseSectionFocusReturn {
   const [focusedSectionIndex, setFocusedSectionIndex] = useState<number | null>(null);
   const pendingFocusRef = useRef<{ index: number; position: "start" | "end"; coords?: { x: number; y: number } } | null>(null);
@@ -53,6 +59,15 @@ export function useSectionFocus({
     if (focusedSectionIndex === null) pendingFocusRef.current = null;
     focusedSectionIndexRef.current = focusedSectionIndex;
   }, [focusedSectionIndex]);
+
+  /** Refuse focus into a blocked/gone section or while a publication pause is active. */
+  const canFocusSection = useCallback((section: DocumentSection | undefined): boolean => {
+    const store = storeRef.current;
+    if (store?.getPublishPaused()) return false;
+    if (!section) return true; // empty-doc bootstrap (synthetic BFH)
+    const editability = store?.getSectionEditabilityForKey(getSectionFragmentKey(section)) ?? "editable";
+    return editability === "editable";
+  }, [storeRef]);
 
   // viewingPresence: set Awareness viewingSections on focus change
   const setViewingSections = useCallback((provider: CrdtProvider, sectionIndex: number) => {
@@ -68,39 +83,24 @@ export function useSectionFocus({
 
   // Click-to-edit a section
   const startEditing = useCallback(async (sectionIndex: number, clickCoords?: { x: number; y: number }) => {
+    const section = sections[sectionIndex];
+    if (!canFocusSection(section)) return;
+
     const provider = await ensureProvider();
     if (!provider) return;
 
     setFocusedSectionIndex(sectionIndex);
     pendingFocusRef.current = { index: sectionIndex, position: "start", coords: clickCoords };
-
-    const section = sections[sectionIndex];
-    if (section) {
-      provider.focusSection(section.heading_path);
-      setControllerState((prev) => ({
-        ...prev,
-        editorFocusTarget: section.heading_path.length > 0
-          ? { kind: "heading_path", heading_path: section.heading_path }
-          : { kind: "before_first_heading" },
-      }));
-    } else if (sectionIndex === 0 && sections.length === 0) {
-      // Empty-document bootstrap: the synthetic BFH row materializes into
-      // displaySections once editor mode + CRDT sync land. Pre-set BFH focus
-      // so the server routes presence correctly and pendingFocus fires when
-      // the editor mounts for the synthetic row at index 0.
-      provider.focusSection([]);
-      setControllerState((prev) => ({
-        ...prev,
-        editorFocusTarget: { kind: "before_first_heading" },
-      }));
-    }
     setViewingSections(provider, sectionIndex);
-  }, [ensureProvider, sections, setViewingSections, setControllerState]);
+  }, [ensureProvider, sections, setViewingSections, canFocusSection]);
 
   // Cross-section cursor navigation
   const handleCursorExit = useCallback((sectionIndex: number, direction: "up" | "down") => {
     const targetIndex = direction === "up" ? sectionIndex - 1 : sectionIndex + 1;
     if (targetIndex < 0 || targetIndex >= sections.length) return;
+
+    const targetSection = sections[targetIndex];
+    if (!canFocusSection(targetSection)) return;
 
     setFocusedSectionIndex(targetIndex);
     pendingFocusRef.current = {
@@ -109,20 +109,10 @@ export function useSectionFocus({
     };
 
     const provider = crdtProviderRef.current;
-    const targetSection = sections[targetIndex];
-    if (provider && targetSection) {
-      provider.focusSection(targetSection.heading_path);
-      setControllerState((prev) => ({
-        ...prev,
-        editorFocusTarget: targetSection.heading_path.length > 0
-          ? { kind: "heading_path", heading_path: targetSection.heading_path }
-          : { kind: "before_first_heading" },
-      }));
-    }
     if (provider) {
       setViewingSections(provider, targetIndex);
     }
-  }, [sections, setViewingSections, crdtProviderRef, setControllerState]);
+  }, [sections, setViewingSections, crdtProviderRef, canFocusSection]);
 
   // Focus editor after it is ready AND visible
   useEffect(() => {
@@ -145,7 +135,7 @@ export function useSectionFocus({
     return () => cancelAnimationFrame(raf);
   }, [focusedSectionIndex, readyEditors, editorRefs]);
 
-  // Restore focus after doc_structure:changed re-fetches sections
+  // Restore focus after a sections refresh re-fetches sections
   useEffect(() => {
     const refocusPath = pendingStructureRefocusRef.current;
     if (!refocusPath || !crdtProviderRef.current) return;
@@ -155,14 +145,13 @@ export function useSectionFocus({
       (s) => sectionHeadingKey(s.heading_path) === sectionHeadingKey(refocusPath),
     );
 
-    if (exactIdx >= 0) {
+    if (exactIdx >= 0 && canFocusSection(sections[exactIdx])) {
       setFocusedSectionIndex(exactIdx);
       pendingFocusRef.current = { index: exactIdx, position: "end" };
-      crdtProviderRef.current.focusSection(sections[exactIdx].heading_path);
     } else {
       setFocusedSectionIndex(null);
     }
-  }, [sections, crdtProviderRef]);
+  }, [sections, crdtProviderRef, canFocusSection]);
 
   return {
     focusedSectionIndex,

@@ -9,7 +9,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  OverlayContentLayer,
+  ProposalShadowContentLayer,
   DocumentNotFoundError,
 } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
@@ -37,22 +37,22 @@ describe("Document state matrix", () => {
     const docPath = "/matrix/missing.md";
 
     it("getDocumentState returns 'missing'", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       expect(await layer.getDocumentState(docPath)).toBe("missing");
     });
 
     it("getSectionList throws DocumentNotFoundError", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       await expect(layer.getSectionList(docPath)).rejects.toThrow(DocumentNotFoundError);
     });
 
     it("readAllSections throws DocumentNotFoundError", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       await expect(layer.readAllSections(docPath)).rejects.toThrow(DocumentNotFoundError);
     });
 
     it("upsertSectionFromMarkdown auto-creates the document → live", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       const freshDoc = "/matrix/missing-autocreate.md";
       await layer.upsertSection(
         new SectionRef(freshDoc, ["Auto"]),
@@ -63,14 +63,14 @@ describe("Document state matrix", () => {
     });
 
     it("createDocument succeeds → live-empty", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       const freshDoc = "/matrix/missing-create.md";
       await layer.createDocument(freshDoc);
       expect(await layer.getDocumentState(freshDoc)).toBe("live");
     });
 
     it("tombstoneDocument on missing doc creates tombstone with no heading paths", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       // tombstoneDocument reads canonical skeleton — missing doc has no sections
       const paths = await layer.tombstoneDocument(docPath);
       expect(paths).toHaveLength(0);
@@ -85,30 +85,30 @@ describe("Document state matrix", () => {
     const docPath = "/matrix/live-empty.md";
 
     beforeAll(async () => {
-      const layer = new OverlayContentLayer(canonicalDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(canonicalDir, canonicalDir);
       await layer.createDocument(docPath);
     });
 
     it("getDocumentState returns 'live'", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       expect(await layer.getDocumentState(docPath)).toBe("live");
     });
 
     it("getSectionList returns []", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       const sections = await layer.getSectionList(docPath);
       expect(sections).toHaveLength(0);
     });
 
     it("readAllSections returns empty map", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       const sections = await layer.readAllSections(docPath);
       expect(sections.size).toBe(0);
     });
 
     it("upsertSectionFromMarkdown creates section → live-non-empty", async () => {
       const writableDoc = "/matrix/live-empty-write.md";
-      const layer = new OverlayContentLayer(canonicalDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(canonicalDir, canonicalDir);
       await layer.createDocument(writableDoc);
       await layer.upsertSection(new SectionRef(writableDoc, []), "", "bfh content");
       const sections = await layer.getSectionList(writableDoc);
@@ -116,7 +116,7 @@ describe("Document state matrix", () => {
     });
 
     it("createDocument throws 'already exists'", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       await expect(layer.createDocument(docPath)).rejects.toThrow(/already exists/);
     });
   });
@@ -127,7 +127,7 @@ describe("Document state matrix", () => {
     const docPath = "/matrix/live-nonempty.md";
 
     beforeAll(async () => {
-      const layer = new OverlayContentLayer(canonicalDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(canonicalDir, canonicalDir);
       await layer.createDocument(docPath);
       await layer.upsertSection(
         new SectionRef(docPath, ["Heading"]),
@@ -137,24 +137,24 @@ describe("Document state matrix", () => {
     });
 
     it("getDocumentState returns 'live'", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       expect(await layer.getDocumentState(docPath)).toBe("live");
     });
 
     it("getSectionList returns non-empty array", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       const sections = await layer.getSectionList(docPath);
       expect(sections.length).toBeGreaterThan(0);
     });
 
     it("readAllSections returns non-empty map", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       const sections = await layer.readAllSections(docPath);
       expect(sections.size).toBeGreaterThan(0);
     });
 
     it("upsertSectionFromMarkdown updates section", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       await layer.upsertSection(
         new SectionRef(docPath, ["Heading"]),
         "Heading",
@@ -165,13 +165,13 @@ describe("Document state matrix", () => {
     });
 
     it("createDocument throws 'already exists'", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       await expect(layer.createDocument(docPath)).rejects.toThrow(/already exists/);
     });
 
     it("tombstoneDocument succeeds → tombstoned", async () => {
       const tombDoc = "/matrix/live-to-tombstone.md";
-      const canonical = new OverlayContentLayer(canonicalDir, canonicalDir);
+      const canonical = new ProposalShadowContentLayer(canonicalDir, canonicalDir);
       await canonical.createDocument(tombDoc);
       await canonical.upsertSection(
         new SectionRef(tombDoc, ["Sec"]),
@@ -179,7 +179,7 @@ describe("Document state matrix", () => {
         "content",
       );
 
-      const overlay = new OverlayContentLayer(overlayDir, canonicalDir);
+      const overlay = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       const paths = await overlay.tombstoneDocument(tombDoc);
       expect(paths.length).toBeGreaterThanOrEqual(1);
       expect(await overlay.getDocumentState(tombDoc)).toBe("tombstone");
@@ -193,7 +193,7 @@ describe("Document state matrix", () => {
 
     beforeAll(async () => {
       // Create in canonical, then tombstone in overlay
-      const canonical = new OverlayContentLayer(canonicalDir, canonicalDir);
+      const canonical = new ProposalShadowContentLayer(canonicalDir, canonicalDir);
       await canonical.createDocument(docPath);
       await canonical.upsertSection(
         new SectionRef(docPath, ["A"]),
@@ -201,34 +201,34 @@ describe("Document state matrix", () => {
         "content a",
       );
 
-      const overlay = new OverlayContentLayer(overlayDir, canonicalDir);
+      const overlay = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       await overlay.tombstoneDocument(docPath);
     });
 
     it("getDocumentState returns 'tombstone'", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       expect(await layer.getDocumentState(docPath)).toBe("tombstone");
     });
 
     it("getSectionList throws DocumentNotFoundError", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       await expect(layer.getSectionList(docPath)).rejects.toThrow(DocumentNotFoundError);
     });
 
     it("readAllSections throws DocumentNotFoundError", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       await expect(layer.readAllSections(docPath)).rejects.toThrow(DocumentNotFoundError);
     });
 
     it("upsertSectionFromMarkdown throws 'pending deletion'", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       await expect(
         layer.upsertSection(new SectionRef(docPath, ["A"]), "A", "new"),
       ).rejects.toThrow(/pending deletion/);
     });
 
     it("createDocument throws 'pending deletion'", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       await expect(layer.createDocument(docPath)).rejects.toThrow(/pending deletion/);
     });
   });
@@ -246,12 +246,12 @@ describe("Document state matrix", () => {
     });
 
     it("getDocumentState returns 'live' (skeleton file exists)", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       expect(await layer.getDocumentState(docPath)).toBe("live");
     });
 
     it("createDocument throws 'already exists'", async () => {
-      const layer = new OverlayContentLayer(overlayDir, canonicalDir);
+      const layer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
       await expect(layer.createDocument(docPath)).rejects.toThrow(/already exists/);
     });
   });
@@ -270,7 +270,7 @@ describe("Document state edge cases", () => {
 
   it("live-empty → add BFH → delete BFH → still live-empty", async () => {
     const docPath = "/edge/bfh-roundtrip.md";
-    const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const layer = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
 
     await layer.createDocument(docPath);
     expect(await layer.getDocumentState(docPath)).toBe("live");
@@ -288,7 +288,7 @@ describe("Document state edge cases", () => {
 
   it("live-empty → add section → delete section → back to live-empty", async () => {
     const docPath = "/edge/section-roundtrip.md";
-    const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const layer = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
 
     await layer.createDocument(docPath);
     expect(await layer.getSectionList(docPath)).toHaveLength(0);
@@ -313,7 +313,7 @@ describe("Document state edge cases", () => {
     await mkdir(overlayDir, { recursive: true });
 
     // Create canonical doc with content
-    const canonical = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const canonical = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await canonical.createDocument(docPath);
     await canonical.upsertSection(
       new SectionRef(docPath, ["X"]),
@@ -322,7 +322,7 @@ describe("Document state edge cases", () => {
     );
 
     // Tombstone in overlay
-    const overlay = new OverlayContentLayer(overlayDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(overlayDir, ctx.contentDir);
     await overlay.tombstoneDocument(docPath);
 
     // Canonical skeleton still exists, but tombstone wins
@@ -335,7 +335,7 @@ describe("Document state edge cases", () => {
     await mkdir(overlayDir2, { recursive: true });
 
     // Create canonical doc with sections
-    const canonical = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const canonical = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await canonical.createDocument(docPath);
     await canonical.upsertSection(
       new SectionRef(docPath, ["Sec"]),
@@ -352,7 +352,7 @@ describe("Document state edge cases", () => {
     await writeFile(overlaySkeletonPath, "", "utf8");
 
     // Overlay should show live with zero sections (overlay empty skeleton wins)
-    const overlay = new OverlayContentLayer(overlayDir2, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(overlayDir2, ctx.contentDir);
     expect(await overlay.getDocumentState(docPath)).toBe("live");
     const sections = await overlay.getSectionList(docPath);
     expect(sections).toHaveLength(0);

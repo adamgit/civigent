@@ -56,9 +56,6 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 - content:committed event refreshes document tree (debounced 180ms)
 - content:committed from agent shows toast notification
 - Agent toast includes writer name and document path
-- dirty:changed event updates dirty section tracking
-- beforeunload warning fires when dirty sections exist
-- beforeunload warning does not fire when no dirty sections
 
 ### `app-layout-badges.test.tsx`
 - Agent commit on a doc the user has visited sets badge on that doc
@@ -123,11 +120,13 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 - Arrow down at last position moves focus to next section
 - Leaving edit mode destroys CrdtProvider
 
-### `document-page-persistence.test.tsx`
-- Local Y.Doc update marks focused section as dirty
-- SESSION_FLUSHED message transitions listed sections to flushed state
-- content:committed event transitions sections to clean state
-- New edits after flush transition section back to dirty
+### `document-page-block-state.test.tsx`
+- section:blocked transitions a mounted editor for that section to read-only and stops further mount attempts
+- section:unblocked returns the section to editable; the frontend may auto-mount per policy
+- section:gone (rename/delete) unmounts the section and removes it from the mount Set
+- doc_publish_pause_start freezes all mounted (and any newly-mounted) editors; the client sends doc_publish_ready only after it stops creating Y.js transactions
+- doc_publish_pause_end unfreezes editors
+- content:committed (canonical advance) refreshes affected sections
 
 ### `document-page-presence.test.tsx`
 - presence:editing event shows other user's name on affected section
@@ -137,7 +136,7 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 
 ### `document-page-realtime.test.tsx`
 - content:committed from another writer reloads sections (when not editing)
-- doc:structure-changed event reloads document structure
+- Structural changes arrive as the YJS_UPDATE delta from the normalization Y.transact (no separate doc:structure-changed signal)
 - Recently changed sections highlighted after getChangesSince
 
 ### `document-page-proposal-mode.test.tsx`
@@ -345,16 +344,16 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 - YJS_UPDATE messages applied to Y.Doc
 - Local Y.Doc changes sent as YJS_UPDATE to server
 - AWARENESS messages relayed bidirectionally
-- SESSION_OVERLAY_IMPORT_STARTED (0x06) triggers onSessionOverlayImportStarted callback
-- SESSION_OVERLAY_IMPORTED (0x04) triggers onSessionOverlayImported with parsed keys
-- SECTION_FOCUS (0x05) sent when focusSection called
+- DOC_PUBLISH_PAUSE_START (0x10) triggers the publish-pause (freeze) callback
+- The client sends DOC_PUBLISH_READY (0x11) only after it has stopped creating Y.js transactions
+- DOC_PUBLISH_PAUSE_END (0x12) triggers the unfreeze callback
+- CrdtProvider is constructed per-document — (doc, docPath, events), no headingPath param
 - destroy cleans up WebSocket and Y.Doc observers
-- Connection state transitions trigger onStateChange
-- Idle timeout triggers onIdleTimeout callback
+- Connection state transitions trigger onStateChange (transport/sync state; no idle timeout)
 
 ### `crdt-roundtrip.test.ts`
 Verifies that the markdown → ProseMirror JSON → Y.Doc → ProseMirror JSON → markdown round-trip is lossless, ensuring no spurious Y.Doc updates are generated during initial sync (bug2 investigation).
-Uses `@ks/milkdown-serializer` (markdownToJSON, jsonToMarkdown, getSchemaSpec) and `y-prosemirror` (prosemirrorJSONToYDoc, yDocToProsemirrorJSON) — the same pipeline as the backend's FragmentStore.fromDisk.
+Uses `@ks/milkdown-serializer` (markdownToJSON, jsonToMarkdown, getSchemaSpec) and `y-prosemirror` (prosemirrorJSONToYDoc, yDocToProsemirrorJSON) — the same markdown↔fragment pipeline the backend uses when seeding/materializing Y.Doc fragments (the thin Y.Doc fragment adapter).
 - Simple root-only content: "root" round-trips without change
 - Heading + body: "## s1\n\nb1" round-trips without change
 - Full document split into fragments: "root\n\n## s1\nb1" — root fragment ("root") and s1 fragment ("## s1\n\nb1") each round-trip without change
@@ -388,7 +387,7 @@ Uses `@ks/milkdown-serializer` (markdownToJSON, jsonToMarkdown, getSchemaSpec) a
 - ObserverCrdtProvider connects to /ws/crdt-observe/<docPath>
 - Applies incoming MSG_YJS_UPDATE to local Y.Doc
 - Fires onChange callback (debounced) after Y.Doc update
-- Never sends MSG_YJS_UPDATE, MSG_SECTION_FOCUS, MSG_ACTIVITY_PULSE
+- Receive-only: never sends MSG_YJS_UPDATE (no writes from the observer channel)
 - destroy() closes WebSocket and removes Y.Doc listeners
 - Reconnects on unexpected close (same backoff as CrdtProvider)
 - On close code 4021 (session_ended): fires onSessionEnded, then reconnects
@@ -425,7 +424,7 @@ frontend/src/__tests__/
       document-page-load.test.tsx
       document-page-sections.test.tsx
       document-page-editing.test.tsx
-      document-page-persistence.test.tsx
+      document-page-block-state.test.tsx
       document-page-presence.test.tsx
       document-page-realtime.test.tsx
       document-page-proposal-mode.test.tsx
@@ -487,9 +486,9 @@ Mock KnowledgeStoreWsClient that:
 
 ### `mock-crdt-provider.ts`
 Mock CrdtProvider that:
-- Exposes event callbacks (onSessionOverlayImportStarted, onSessionOverlayImported, etc.)
-- Tracks focusSection calls
-- Simulates connection state changes
+- Exposes the publish-pause callbacks (pause start / ready / pause end)
+- Simulates section block-state events (section:blocked / section:unblocked / section:gone)
+- Simulates transport/sync connection state changes
 
 ### `sample-data.ts`
 Fixture builders for:

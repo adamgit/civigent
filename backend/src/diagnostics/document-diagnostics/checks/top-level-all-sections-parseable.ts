@@ -1,5 +1,5 @@
 import path from "node:path";
-import { assessSectionContent } from "../../../storage/recovery-layers.js";
+import { assessSectionContent } from "../../../storage/skeleton-assessment.js";
 import { ensureTopLevelSkeletonAssessment, type DocumentDiagnosticsContext } from "../context.js";
 
 export async function runTopLevelAllSectionsParseableCheck(ctx: DocumentDiagnosticsContext): Promise<void> {

@@ -121,7 +121,10 @@ describe("US-1: multi-document proposal with justification bypass", () => {
 
     const blockedData = JSON.parse(blocked.result.content[0].text);
     expect(blockedData.outcome).toBe("blocked");
-    expect(blockedData.evaluation.blocked_sections.length).toBeGreaterThanOrEqual(1);
+    expect(blockedData.agent_write_policy.can_write).toBe(false);
+    expect(
+      blockedData.agent_write_policy.targets.filter((t: any) => !t.can_write).length,
+    ).toBeGreaterThanOrEqual(1);
 
     // ── Step 2: cancel the blocked proposal ──
     const cancelRes = await callMcpTool("withdraw_proposal", {
@@ -151,12 +154,12 @@ describe("US-1: multi-document proposal with justification bypass", () => {
 
     const acceptedData = JSON.parse(accepted.result.content[0].text);
     expect(acceptedData.outcome).toBe("accepted");
-    expect(acceptedData.evaluation.passed_sections.length).toBe(2);
-
-    // Verify scores are reduced by 0.1 due to justification
-    for (const section of acceptedData.evaluation.passed_sections) {
-      expect(section.humanInvolvement_score).toBeLessThan(0.5);
-    }
+    expect(acceptedData.agent_write_policy.can_write).toBe(true);
+    // With justifications the involvement score drops below threshold so every
+    // target can write. (Raw per-target scores are policy detail and are not
+    // surfaced in the MCP body — Area M owns the response wording.)
+    expect(acceptedData.agent_write_policy.targets).toHaveLength(2);
+    expect(acceptedData.agent_write_policy.targets.every((t: any) => t.can_write)).toBe(true);
 
     // ── Step 4: publish_proposal → committed ──
     const commitRes = await callMcpTool("publish_proposal", {
@@ -166,15 +169,15 @@ describe("US-1: multi-document proposal with justification bypass", () => {
     expect(commitData.status).toBe("committed");
     expect(commitData.committed_head).toBeTruthy();
 
-    // ── Step 5: read_live_section on both docs → live content updated ──
-    const readOverview = await callMcpTool("read_live_section", {
+    // ── Step 5: read_published_section on both docs → live content updated ──
+    const readOverview = await callMcpTool("read_published_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Overview"],
     });
     const overviewData = JSON.parse(readOverview.result.content[0].text);
     expect(overviewData.content).toContain("Agent-updated overview");
 
-    const readPrinciples = await callMcpTool("read_live_section", {
+    const readPrinciples = await callMcpTool("read_published_section", {
       doc_path: SAMPLE_DOC_PATH_2,
       heading_path: ["Principles"],
     });

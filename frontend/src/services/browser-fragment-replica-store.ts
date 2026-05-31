@@ -5,7 +5,16 @@
  *   - the Y.Doc and Awareness instances (imperative binding targets for
  *     Milkdown and y-protocols — exposed as readonly fields)
  *   - connection state, synced flag, error string
- *   - per-fragment persistence state (clean / dirty / received / deleting)
+ *   - a document-level publication-pause flag (DocSession publish pause)
+ *   - a per-section editability map (`"editable" | "blocked" | "gone"`)
+ *     driven by the server `section:blocked|unblocked|gone` events
+ *
+ * The legacy per-fragment persistence lifecycle (clean / dirty / received /
+ * deleting) and the receipt/overlay machinery are removed — spec
+ * 05-ydoc-lifecycle §"Content Flush" (removed) and §"Section-Level Persistence
+ * Status Indicators" (the document-level SaveStatus machine is removed). The
+ * per-section block-state is now the load-bearing editability authority
+ * (§"Section block-state events").
  *
  * Integrates with React via `useSyncExternalStore(subscribe, getSnapshot)`.
  * Snapshot getters return referentially stable values: the same object
@@ -35,15 +44,16 @@ export type CrdtConnectionState =
   | "error";
 
 /**
- * Per-section persistence lifecycle:
- *   clean → dirty → received → clean
+ * Per-section editability state, kept in lockstep with server reality via the
+ * `section:blocked|unblocked|gone` events:
  *
- * "dirty"    — local edit, NOT yet confirmed received by server
- * "received" — server ACKd receipt (data in server RAM)
- * "clean"    — committed to canonical (absent from map)
- * "deleting" — terminal holding state for sections removed from Y.Doc
+ *   "editable" — default; the section may be mounted and edited.
+ *   "blocked"  — a proposal lock owns the section; mounted editors go read-only
+ *                and the frontend stops attempting to mount it.
+ *   "gone"     — the section's canonical identifier no longer resolves
+ *                (rename/delete); it is unmounted and removed from the mount Set.
  */
-export type SectionPersistenceState = "clean" | "dirty" | "received" | "deleting";
+export type SectionEditability = "editable" | "blocked" | "gone";
 
 type Listener = () => void;
 
@@ -56,7 +66,8 @@ export interface ReplicaSnapshot {
   readonly connectionState: CrdtConnectionState;
   readonly synced: boolean;
   readonly error: string | null;
-  readonly sectionPersistence: ReadonlyMap<string, SectionPersistenceState>;
+  readonly publishPaused: boolean;
+  readonly sectionEditability: ReadonlyMap<string, SectionEditability>;
   readonly version: number;
 }
 
@@ -70,17 +81,17 @@ export class BrowserFragmentReplicaStore {
   private _connectionState: CrdtConnectionState = "disconnected";
   private _synced = false;
   private _error: string | null = null;
-  private _sectionPersistence: Map<string, SectionPersistenceState> = new Map();
-  private _dirtySince: Map<string, number> = new Map();
+  private _publishPaused = false;
+  private _sectionEditability: Map<string, SectionEditability> = new Map();
   private _version = 0;
 
   private _snapshot: ReplicaSnapshot;
-  private _sectionPersistenceView: ReadonlyMap<string, SectionPersistenceState>;
+  private _sectionEditabilityView: ReadonlyMap<string, SectionEditability>;
 
   constructor(doc: Y.Doc, awareness: Awareness) {
     this.doc = doc;
     this.awareness = awareness;
-    this._sectionPersistenceView = this._sectionPersistence;
+    this._sectionEditabilityView = this._sectionEditability;
     this._snapshot = this.buildSnapshot();
   }
 
@@ -104,29 +115,24 @@ export class BrowserFragmentReplicaStore {
 
   getError = (): string | null => this._error;
 
+  getPublishPaused = (): boolean => this._publishPaused;
+
   /**
-   * Returns the full section persistence map as a readonly view. The
-   * reference is stable — it is replaced only when the underlying map
-   * is actually mutated, which is what keeps useSyncExternalStore
-   * selectors from firing spurious re-renders.
+   * Returns the full section-editability map as a readonly view. The
+   * reference is stable — it is replaced only when the underlying map is
+   * actually mutated, which keeps useSyncExternalStore selectors from
+   * firing spurious re-renders.
    */
-  getSectionPersistence = (): ReadonlyMap<string, SectionPersistenceState> =>
-    this._sectionPersistenceView;
+  getSectionEditability = (): ReadonlyMap<string, SectionEditability> =>
+    this._sectionEditabilityView;
 
   /**
    * Direct per-key lookup for render paths that only care about a single
-   * section. Much cheaper than subscribing to the whole map when rendering
-   * dozens of sections.
+   * section. Defaults to `"editable"` for any key the server has not
+   * blocked / removed.
    */
-  getSectionPersistenceForKey = (fragmentKey: string): SectionPersistenceState =>
-    this._sectionPersistence.get(fragmentKey) ?? "clean";
-
-  /**
-   * Returns the timestamp (ms) when a fragment first entered the "dirty" state.
-   * Undefined if the fragment is not currently dirty.
-   */
-  getDirtySince = (fragmentKey: string): number | undefined =>
-    this._dirtySince.get(fragmentKey);
+  getSectionEditabilityForKey = (fragmentKey: string): SectionEditability =>
+    this._sectionEditability.get(fragmentKey) ?? "editable";
 
   // ─── Mutations ─────────────────────────────────────────────────
   //
@@ -154,90 +160,42 @@ export class BrowserFragmentReplicaStore {
   }
 
   /**
-   * Move sections into the `"dirty"` state — called when a local Y.Doc
-   * update is produced. Sections currently in `"received"` are dropped
-   * back to `"dirty"` because the user edited them again.
+   * Document-level publication-pause flag. Set true on
+   * `doc_publish_pause_start`, false on `doc_publish_pause_end`. While true,
+   * every mounted (and newly-mounted) editor for this document is frozen.
    */
-  markSectionsEdited(fragmentKeys: Iterable<string>): void {
-    if (this.destroyed) return;
-    let changed = false;
-    const now = Date.now();
-    for (const key of fragmentKeys) {
-      if (this._sectionPersistence.get(key) !== "dirty") {
-        this._sectionPersistence.set(key, "dirty");
-        if (!this._dirtySince.has(key)) this._dirtySince.set(key, now);
-        changed = true;
-      }
-    }
-    if (changed) this.bumpSectionMap();
+  setPublishPaused(next: boolean): void {
+    if (this.destroyed || this._publishPaused === next) return;
+    this._publishPaused = next;
+    this.bump();
   }
 
-  /**
-   * Mark sections as `"received"` — server ACKd receipt of a MSG_YJS_UPDATE.
-   * Data is now in server RAM (not yet on disk). Only transitions `"dirty"`
-   * → `"received"`. Keys already in a later state are left alone.
-   */
-  markSectionsReceived(fragmentKeys: Iterable<string>): void {
-    if (this.destroyed) return;
-    let changed = false;
-    for (const key of fragmentKeys) {
-      if (this._sectionPersistence.get(key) === "dirty") {
-        this._sectionPersistence.set(key, "received");
-        changed = true;
-      }
-    }
-    if (changed) this.bumpSectionMap();
+  /** Server `section:blocked` — a proposal lock now owns the section. */
+  setSectionBlocked(fragmentKey: string): void {
+    this.setSectionEditability(fragmentKey, "blocked");
   }
 
-  /**
-   * Drop sections back to `"clean"` — called when `content:committed`
-   * arrives for these sections (they are now durable in canonical, so
-   * the lifecycle wraps around). Only cleans sections in `"received"`
-   * state. Sections that are `"dirty"` have new edits the commit
-   * didn't include — those must NOT be cleared.
-   */
-  markSectionsClean(fragmentKeys: Iterable<string>): void {
-    if (this.destroyed) return;
-    let changed = false;
-    for (const key of fragmentKeys) {
-      const current = this._sectionPersistence.get(key);
-      if (current === "received") {
-        this._sectionPersistence.delete(key);
-        this._dirtySince.delete(key);
-        changed = true;
-      }
-    }
-    if (changed) this.bumpSectionMap();
+  /** Server `section:unblocked` — the section returns to editable. */
+  setSectionUnblocked(fragmentKey: string): void {
+    this.setSectionEditability(fragmentKey, "editable");
   }
 
-  /**
-   * Unconditionally remove sections from the persistence map regardless
-   * of current state. Used for `deletedKeys` reported by the server
-   * (sections that no longer exist in the document structure).
-   */
-  forceCleanSections(fragmentKeys: Iterable<string>): void {
-    if (this.destroyed) return;
-    let changed = false;
-    for (const key of fragmentKeys) {
-      if (this._sectionPersistence.has(key)) {
-        this._sectionPersistence.delete(key);
-        this._dirtySince.delete(key);
-        changed = true;
-      }
-    }
-    if (changed) this.bumpSectionMap();
+  /** Server `section:gone` — the section's canonical identifier no longer resolves. */
+  setSectionGone(fragmentKey: string): void {
+    this.setSectionEditability(fragmentKey, "gone");
   }
 
-  markSectionsDeleting(fragmentKeys: Iterable<string>): void {
+  private setSectionEditability(fragmentKey: string, next: SectionEditability): void {
     if (this.destroyed) return;
-    let changed = false;
-    for (const key of fragmentKeys) {
-      if (this._sectionPersistence.get(key) !== "deleting") {
-        this._sectionPersistence.set(key, "deleting");
-        changed = true;
-      }
+    const current = this._sectionEditability.get(fragmentKey) ?? "editable";
+    if (current === next) return;
+    if (next === "editable") {
+      // The default — drop the key so the map stays sparse.
+      this._sectionEditability.delete(fragmentKey);
+    } else {
+      this._sectionEditability.set(fragmentKey, next);
     }
-    if (changed) this.bumpSectionMap();
+    this.bumpSectionMap();
   }
 
   // ─── Teardown ──────────────────────────────────────────────────
@@ -259,10 +217,10 @@ export class BrowserFragmentReplicaStore {
 
   private bumpSectionMap(): void {
     // Replace the readonly view with a fresh reference so selector
-    // `snapshot.sectionPersistence === prev.sectionPersistence` tracks
+    // `snapshot.sectionEditability === prev.sectionEditability` tracks
     // actual mutation. The internal map is reused in place for cost
     // reasons — external code only ever sees the readonly view.
-    this._sectionPersistenceView = new Map(this._sectionPersistence);
+    this._sectionEditabilityView = new Map(this._sectionEditability);
     this.bump();
   }
 
@@ -277,7 +235,8 @@ export class BrowserFragmentReplicaStore {
       connectionState: this._connectionState,
       synced: this._synced,
       error: this._error,
-      sectionPersistence: this._sectionPersistenceView,
+      publishPaused: this._publishPaused,
+      sectionEditability: this._sectionEditabilityView,
       version: this._version,
     };
   }

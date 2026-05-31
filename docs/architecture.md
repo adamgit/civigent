@@ -16,21 +16,25 @@ Civigent is built on three core principles:
 
 ---
 
-## Five-layer data architecture
+## Layered data architecture
 
-Data flows through five layers from disk to the browser editor:
+Data flows from disk to the browser editor through the canonical store, the proposal subsystem, the in-memory Y.Doc, the WebSocket transport, and the browser editors. There is no separate session-overlay disk tier: in-flight live editing is durably represented by the relevant `inprogress` proposal content tree (spec `05-ydoc-lifecycle.md` › Disk Persistence Layout), and live↔canonical materialization is owned by `CRDTProposalGenerator`.
 
 ```
-Layer 1: Canonical Store / Audit log (disk + git)
-    ↑ commit / ↓ read
-Layer 2: Session Overlays (disk)
-    ↑ flush / ↓ reconstruct
-Layer 3: Y.Doc (in-memory CRDT)
+Layer 1: Canonical Store / Audit log (disk + git, content/)
+    ↑ proposal absorb (commit) / ↓ read
+Layer 2: Proposal subsystem (disk, proposals/{status}/{id}/content/)
+         - one CRDT-owned `inprogress` proposal per live DocSession is the
+           durable in-flight live-edit state
+    ↑ materialize live edits / ↓ reconstruct Y.Doc (inprogress else canonical)
+Layer 3: Y.Doc (in-memory CRDT) — one Y.Doc/document, one Y.XmlFragment/section
     ↑↓ sync
-Layer 4: WebSocket Transport
-    ↑↓ binary messages
-Layer 5: Browser Editors (Milkdown)
+Layer 4: WebSocket Transport (per-document /ws/crdt/{docPath})
+    ↑↓ binary frames (Yjs sync/update + publish-pause)
+Layer 5: Browser Editors (Milkdown, per-section)
 ```
+
+The live editing pipeline is: live CRDT edits materialize into the DocSession's single `inprogress` proposal; `PublishTriggerPolicy` decides when to publish; the DocSession actor runs a publish pause and drives `inprogress -> committing -> committed`, advancing canonical through the existing proposal subsystem. On restart, the Y.Doc is reconstructed from the current `inprogress` proposal when present, else from canonical.
 
 ### Critical abstraction classes
 
@@ -42,11 +46,19 @@ Owns the heading tree structure of a document: which sections exist, how they ne
 
 #### ContentLayer
 
-Owns reading and writing section body content against a content root directory. Resolves `(docPath, headingPath)` to a file path via DocumentSkeleton, enforces the body-only invariant (strips heading lines), and supports overlay-first-then-canonical chaining for proposal/session reads. All durable section content I/O outside of CRDT sessions goes through this class.
+The low-level section-body content engine. Resolves `(docPath, headingPath)` to a file path via DocumentSkeleton and enforces the body-only invariant (strips heading lines). `ProposalShadowContentLayer` (a skeleton-aware layer that shadows a base content root) is the engine behind proposal content trees and the arbitrary-markdown upsert paths. Proposal-scoped reads/writes are exposed through the `ProposalReader` / `ProposalEditor` facades over `ProposalShadowContentLayer`; canonical reads go through the section/document readers.
 
-#### FragmentStore
+#### YDocLifecycleManager / DocSession
 
-Owns the Y.Doc ↔ disk boundary for a single document's CRDT editing session. Pairs a Y.Doc (in-memory CRDT fragments) with a DocumentSkeleton, and is the sole owner of the dual-write pattern: raw fragments for crash safety, canonical-ready body files for REST/commit readiness. Handles structural normalization (splitting, renaming, merging sections) when users edit headings inline. Writes body files directly (not via ContentLayer) because it already owns the resolved skeleton and has already stripped headings — re-resolving per write would be redundant I/O on a hot path.
+`YDocLifecycleManager` (module-level functions + the `sessions` map in `crdt/ydoc-lifecycle.ts`) owns Y.Doc lifecycle: a Y.Doc is alive whenever ≥1 transport is connected; retain-vs-discard otherwise is its perf/caching policy. Each live document has one `DocSession` actor: an ordered command lane (`enqueue`) through which every Y.Doc / proposal-boundary op runs, plus the `CRDTProposalGenerator` and `DocSessionPublishPause` for that document. The DocSession holds no parallel durable session state — live in-flight state is the `inprogress` proposal.
+
+#### CRDTProposalGenerator
+
+The single boundary component owning live↔canonical materialization (`crdt/crdt-proposal-generator.ts`). It lazily creates the DocSession's one current `inprogress` proposal on the first materialized CRDT edit, materializes subsequent live edits into it (through `ProposalEditor`), runs identity-preserving structural normalization inside a single `Y.transact`, and applies committed canonical deltas back into the live Y.Doc using the same primitive. `PublishTriggerPolicy` (same module) decides when the current proposal should attempt publication.
+
+#### ProposalReader / ProposalEditor
+
+The proposal-scoped content facades (`storage/proposal-reader.ts`, `storage/proposal-editor.ts`) over `ProposalShadowContentLayer`. `ProposalEditor.writeSection(...)` / `createSection` / `moveSection` / etc. are how both agent proposals and CRDTProposalGenerator-authored `inprogress` proposals mutate their content trees. `DocumentSkeleton` remains the section-identity authority underneath.
 
 ### Layer 1: Canonical store / Audit log
 
@@ -83,47 +95,39 @@ When a section gains sub-headings, its file becomes a sub-skeleton and a **root 
 
 `DocumentSkeleton` is the single in-memory model that reads this recursive structure and provides tree, flat, and resolve views. It is the **canonical source of section identity** — all heading paths, file paths, and tree structure derive from it.
 
-**Empty-skeleton tombstone convention:** A skeleton file with zero entries signals document deletion in any overlay context (proposals, sessions). When `promoteOverlay()` encounters an empty skeleton, it deletes all canonical files for that document (skeleton, `.sections/` directory, section body files) rather than writing an empty file. Document rename is decomposed as: tombstone at old path + full copy at new path — reusing overlay-first read semantics with no new read logic. This ensures ALL document mutations (content edits, section structural changes, document deletion, document renaming) are expressible as skeleton + section file state in an overlay directory. No operation requires metadata, sentinels, or out-of-band state.
+**Empty-skeleton tombstone convention:** A skeleton file with zero entries signals document deletion in a proposal content tree. When a proposal absorb encounters an empty skeleton, it deletes all canonical files for that document (skeleton, `.sections/` directory, section body files) rather than writing an empty file. Document rename is decomposed as: tombstone at old path + full copy at new path — reusing the shadow-content-layer read semantics with no new read logic. This ensures ALL document mutations (content edits, section structural changes, document deletion, document renaming) are expressible as skeleton + section file state in a proposal content tree. No operation requires metadata, sentinels, or out-of-band state.
 
-### Layer 2: Session overlays
+### Layer 2: Proposal subsystem (durable in-flight state)
 
-Ephemeral files representing in-flight edits that haven't been collated into semantic bundles, haven't been added to the audit-log yet.
+In-flight live edits are not stored in a parallel session-overlay tier — that tier is removed. Instead, live CRDT activity is materialized into the DocSession's single CRDT-owned `inprogress` proposal content tree under `proposals/inprogress/{id}/content/`. This makes the proposal subsystem the one durable representation of both staged agent work and in-flight human live edits, eliminating the dual-format / overlay-first / flush machinery.
 
-Layer2 is the intersection between CRDT (human-centric, live collaborative editing in-browser) and our on-disk backend/audit log (data-centric, clean, simple pure data).
+- **One `inprogress` proposal per live DocSession.** Created lazily by the DocSession actor on the first materialized CRDT edit; subsequent live edits materialize into the same proposal. It clears only after a successful publish.
+- **Materialization, not flush.** `CRDTProposalGenerator` writes live edits into the proposal content tree via `ProposalEditor` and performs identity-preserving structural normalization (split/merge/rename) inside a single `Y.transact`. There is no `sessions/fragments/` raw tier, no `sessions/sections/` canonical-ready mirror, no overlay-first read path, and no `.writers.json` sidecar — writer attribution for the audit log is carried by the proposal/commit metadata.
+- **Reconstruction.** On mount after a restart, the Y.Doc is rebuilt from the current `inprogress` proposal content tree when present, otherwise from canonical (see Crash recovery).
 
-**Two parallel formats:**
-
-We have one format that mirrors Layer1 and one that mirrors Layer3. This enables Layer2 to be the gateway/translation between the two layers cleanly. Note that the transformation is **not** purely data-format: it often requires executing structural changes to documents, splitting/merging, moving sections, renaming docs, etc -- so Layer2 is non-trivial.
-
-| Format | Location | Purpose | Freshness |
-|--------|----------|---------|-----------|
-| **Raw fragments** | `sessions/fragments/` | Crash-safety layer. One file per dirty Y.XmlFragment. Verbatim markdown (may contain embedded headings during structural edits). | ~1-2 seconds |
-| **Canonical-ready** | `sessions/sections/content/` | Structurally valid session content. Mirrors canonical structure. Used by REST APIs and commit pipeline. | Written on flush when clean, or after normalization. |
-
-**Fragment attribution metadata** (`sessions/fragments/<docPath>/*.writers.json`): Tracks which writer IDs dirtied each raw fragment. This is the durable attribution source for recovery-time audit-log commits.
-
-The overlay-first pattern: when reading content, the system checks `sessions/sections/content/` first, then falls back to `content/`. This ensures page reloads show unpublished changes.
+Canonical reads (REST `GET /api/documents/:docPath/sections` etc.) resolve canonical content only through `DocumentSkeleton`; non-CRDT consumers see new content when proposal commits advance canonical.
 
 ### Layer 3: Y.Doc (in-memory CRDT)
 
 One `Y.Doc` per document, containing one `Y.XmlFragment` per section.
 
-**Fragment naming:** this is an internal detail.
+**Fragment naming:** `"section::" + sectionFileStem` (BFH uses `"section::__beforeFirstHeading__"`); owned by `crdt/ydoc-fragments.ts`. An internal detail clients never see.
 
-**Lifecycle:**
-- Created when the first editor connects to a document
-- Destroyed when the last editor disconnects (after flush + normalize + commit)
-- Survives commits (the Y.Doc stays alive, `baseHead` is updated)
-- Reconstructed from disk on reconnect (prefers raw fragments, falls back to overlay+canonical)
+**Lifecycle (owned by `YDocLifecycleManager`):**
+- Created when the first section is edited / first transport connects
+- Alive whenever ≥1 transport is connected; last-transport-disconnect triggers the manager's retain-vs-discard policy (no idle timeout, no session-end-as-commit)
+- Survives commits
+- Reconstructed on mount from the current `inprogress` proposal content tree, else from canonical (the `inprogress` proposal carries in-flight state across disconnect)
 
-**DocSession tracks:**
-- `holders`: Map of writerId → `HolderEntry { editorSocketIds: Set<string>, observerSocketIds: Set<string> }` — per-user socket-id sets, not a role flag
-- `contributors`: Map of writerId → WriterIdentity — accumulated over session lifetime
-- `presenceManager`: PresenceManager — explicit focus state per writer
-- `perUserDirty`: Which user dirtied which fragments (for Mirror panel)
-- `fragmentFirstActivity` / `fragmentLastActivity`: Activity timestamps per fragment
-- `baseHead`: Git HEAD SHA when session was created
-- `state`: `"acquiring" | "active" | "flushing" | "committing" | "ended"` — explicit state machine
+**DocSession (one actor per live document) holds:**
+- `enqueue`: the ordered command lane — every Y.Doc / proposal-boundary op runs through it
+- `generator`: the `CRDTProposalGenerator` owning live↔canonical materialization and the one current `inprogress` proposal
+- `publishPause`: the per-DocSession `DocSessionPublishPause` FSM (never global)
+- `liveFragments`: the thin Y.Doc fragment adapter (`LiveFragmentStringsStore`) for live fragment string reads/writes
+- `holders`: Map of writerId → `HolderEntry { editorSocketIds, observerSocketIds }`
+- `contributors`: Map of writerId → WriterIdentity — accumulated for the git co-author list at commit
+- `perUserDirty` / `fragmentFirstActivity` / `fragmentLastActivity`: per-section live-activity attribution used for status reads (not a durable session store)
+- `baseHead`: Git HEAD when the session was created; `docSessionId`: explicit Y.Doc-lifetime identity boundary
 
 ### Layer 4: WebSocket transport
 
@@ -148,34 +152,36 @@ Every new connection starts with `requestedMode: "none"` and `attachmentState: "
 | `ModeTransitionResult` | Backend → frontend ack/reject (discriminated union `success \| rejected`) |
 | `DocumentSessionControllerState` | Frontend-only single source of truth for this tab's CRDT state |
 
-**Binary message types:**
+**Binary message types** (the binary CRDT *editor channel* frame codec, `ws/crdt-ws-frames.ts`). The legacy session-overlay / focus / pulse / mutate / receipt / idle-timeout opcodes are removed; the DocSession publish-pause control messages ride this same ordered editor channel as Yjs updates.
 
 | Code | Name | Direction | Purpose |
 |------|------|-----------|---------|
 | 0x00 | SYNC_STEP_1 | Bidirectional | Y.js sync initiation |
 | 0x01 | SYNC_STEP_2 | Server→Client | Y.js sync response (editors may also send) |
-| 0x02 | YJS_UPDATE | Bidirectional | Y.js incremental update (editor→server and server→all) |
+| 0x02 | YJS_UPDATE | Bidirectional | Y.js incremental update (editor→server and server→all). Structural normalization is delivered as a normal YJS_UPDATE delta. |
 | 0x03 | AWARENESS | Bidirectional | Presence/cursor data |
-| 0x04 | SESSION_FLUSHED | Server→Client | Confirms which fragments were saved |
-| 0x05 | SECTION_FOCUS | Editor→Server | Reports which section the user is editing |
-| 0x06 | SESSION_FLUSH_STARTED | Server→Client | Signals flush I/O in progress |
-| 0x07 | ACTIVITY_PULSE | Editor→Server | Keep-alive for active editing (~2-3s debounced) |
-| 0x08 | STRUCTURE_WILL_CHANGE | Server→Client | Structural normalization notification |
-| 0x09 | SECTION_MUTATE | Editor→Server | Replace fragment content (agent publish path) |
-| 0x0A | MUTATE_RESULT | Server→Client | Response to SECTION_MUTATE |
 | 0x0B | DOCUMENT_REPLACEMENT_NOTICE | Server→Client | Reconnect notice delivered after restore/overwrite |
 | 0x0C | MODE_TRANSITION_REQUEST | Client→Server | Request mode transition |
 | 0x0D | MODE_TRANSITION_RESULT | Server→Client | Mode transition ack/reject |
+| 0x10 | DOC_PUBLISH_PAUSE_START | Server→Client | DocSession publish pause begun; freeze editors |
+| 0x11 | DOC_PUBLISH_READY | Client→Server | Editors frozen / no more Yjs txns (ordered ack) |
+| 0x12 | DOC_PUBLISH_PAUSE_END | Server→Client | Publish attempt ended (commit or abort); editors may unfreeze |
 
-**Application-level close codes:**
+Opcode `0x08` (legacy `STRUCTURE_WILL_CHANGE`) is permanently reserved-removed and must never be redefined — the design does not expose live fragment-key remaps as a client contract.
+
+**Section block-state events are NOT binary frames.** `section:blocked` / `section:unblocked` / `section:gone` travel on the JSON application WebSocket as server events (they keep the frontend's per-section editability — `editable | blocked | gone` — aligned with server reality). They derive from proposal lock-acquisition events and canonical structural changes (rename/delete commits).
+
+**Application-level close codes** (`ws/crdt-ws-frames.ts`):
 
 | Code | Meaning | Client behaviour |
 |------|---------|-----------------|
-| 4010–4019 | Hard rejection (bad auth, bad URL) | Do not reconnect |
-| 4020 | Idle timeout | Reconnect (user navigated away) |
+| 4010–4019 | Hard rejection (bad auth, bad URL, ydoc init failed) | Do not reconnect |
 | 4021 | Session ended (last editor left) | Reconnect and wait for next session |
-| 4022 | Document replaced | Reconnect immediately (no backoff) |
+| 4022 | Document replaced (restore/overwrite invalidation) | Reconnect immediately (no backoff) |
 | 4023 | Superseded by new tab | Close the old tab's editor socket |
+| 4024 | Admin force-rebuild invalidation | Reconnect immediately and reseed from canonical |
+
+There is no `4020 idle_timeout` — there is no idle timer in this architecture.
 
 ### Layer 5: Browser editors
 
@@ -230,11 +236,11 @@ Agent/Human creates proposal
 
 ### editingPresence (server-authoritative)
 
-"A user has an active CRDT session with sectionFocus on this section, or dirty session files exist."
+"Real, live human work covers this section." A section is hard-contested when it is covered by live human CRDT work carried by `CRDTProposalGenerator` / its `inprogress` proposal, or when a human proposal lock already owns the section.
 
-- Drives agent blocking and human-involvement scoring
-- Implemented via `MSG_SECTION_FOCUS` + `SectionPresence.check()`
-- Never derived from Y.js Awareness
+- Drives agent gating (via `agent-write-policy` + proposal-FSM locks) and human-involvement scoring
+- Derived from the DocSession's `inprogress`-proposal state and proposal lock ownership — not from browser focus, dirty session files, `MSG_SECTION_FOCUS`, or the deleted `SectionPresence`/`section-guard`/`section-recency` heuristics
+- Never derived from Y.js Awareness (browser focus/hover/Awareness are intentionally out of scope for gating)
 
 ### viewingPresence (client-informational)
 
@@ -245,13 +251,13 @@ Agent/Human creates proposal
 - Never used for agent gating or involvement scoring
 - Signal source can change (editor focus, IntersectionObserver, mouse hover) without affecting backend correctness
 
-### dirtyTracking (save status)
+### unpublishedState (save status)
 
-"This section has unsaved changes."
+"This section has live edits not yet published to canonical."
 
-- Drives the blue/amber/green persistence dots
-- Derived from Y.Doc `afterTransaction` fragment attribution
-- Decoupled from both presence signals — a section can be dirty without being focused, and focused without being dirty
+- If surfaced in the UI at all, it derives from the existence of the DocSession's `inprogress` proposal (and which sections it covers), not from a flush/dirty-file lifecycle or `SESSION_FLUSHED` events
+- The old document-level `SaveStatus` state machine and blue/amber/green flush-driven dots are removed; rich persistence-status UX is intentionally left to the frontend (transport-failure banners, publish-pause state, or nothing)
+- Coarse invalidation events (e.g. proposal-commit notifications, publish-pause start/end) tell the frontend when to refetch authoritative state rather than streaming per-section dirty deltas
 
 ---
 
@@ -263,11 +269,15 @@ The core conflict-prevention mechanism. Protects human-authored content from age
 
 Every overwrite is contested in principle — someone authored the current content. But agent-authored content overwritten by another agent is not protected (agents are cheap to rewrite). The system only protects human work, and it does so as a **spectrum** rather than a lock/unlock binary. This enables nuanced decisions: an agent can overwrite a section a human touched 3 hours ago but not one touched 30 seconds ago.
 
-### Decision policy: accept or block
+### Decision policy: a selected agent write-policy
 
-- Score < 0.5 for all sections → **accepted**, auto-committed to canonical
-- Score >= 0.5 for any section → **blocked**, proposal stays in pending state
-- Pending human proposal on the section → **hard-blocked** (score = 1.0, regardless of decay)
+Agent gating is expressed through the `agent-write-policy` layer (spec `12-proposal-fsm-locking.md`), which exposes a generic `canWrite` result per proposal and per target. Human-involvement scoring is one concrete compatibility policy behind that interface; its details (a per-section score, an aggregate threshold) live inside that policy's typed detail shape, not as a hardcoded app-wide contract. The current compatibility policy behaves as:
+
+- `canWrite` for all targets (score below threshold) → the proposal may commit (subject to proposal-FSM locks)
+- any target not `canWrite` (score at/above threshold) → the proposal stays draft/pending; the response explains, per target, which sections are unavailable
+- a section under live human work or a human proposal lock → hard-blocked (the proposal-FSM lock / live-work hard block, independent of decay)
+
+Proposal-FSM locks (transition-time exclusion) and the agent write-policy are kept as separate concepts; CRDT section block/gone/publish-pause state is separate again.
 
 ### Justification bonus
 
@@ -279,70 +289,49 @@ Human-involvement scores are **not shown to regular human users** on the editing
 
 ### Delivery mechanism
 
-Scores are included in REST API responses (computed at request time) and polled for the heatmap view. They are not pushed via WebSocket — the decay is continuous, so pushing would mean either high-frequency updates or accepting staleness. Existing WS events (`presence:editing`, `presence:done`, `content:committed`) serve as hints for when to refresh.
+Scores are included in REST API responses (computed at request time) and polled for the heatmap view. They are not pushed via WebSocket — the decay is continuous, so pushing would mean either high-frequency updates or accepting staleness. Coarse WS events (e.g. `content:committed`, the proposal-commit notification, and section block-state events) serve as hints for when to refresh.
 
 ---
 
-## Content flush and commit pipeline
+## Live-edit publish pipeline
 
-### Content flush (frequent, almost realtime)
+Canonical advances through the existing proposal subsystem. There is no separate flush path, no `sessions/`-cleanup phase, and no session-end / Y.Doc-destroyed commit trigger.
 
-Triggered by user typing/editing, or by timer, disconnect, or shutdown. This is the main autosave.
+### Live materialization (continuous)
 
-1. Write raw fragments to `sessions/fragments/` (always — crash safety)
-2. If structurally clean (no embedded headings), also write canonical-ready to `sessions/sections/content/` ... otherwise the write to `sessions` is done by the later Normalization stage (see below)
-3. Send SESSION_FLUSHED to connected clients (triggers green dots)
-4. Persist per-fragment `writerIds[]` alongside the raw fragment files
+Live CRDT edits are materialized by `CRDTProposalGenerator` into the DocSession's one current `inprogress` proposal content tree (created lazily on the first edit). This is the durable in-flight state; there is no raw-fragment / canonical-ready dual write and no `SESSION_FLUSHED` event.
 
-### Structural normalization (event-driven)
+### Structural normalization (event-driven, owned by CRDTProposalGenerator)
 
-Required because: humans can insert new sections into existing sections while editing; we need to detect that, process it, alter the stored data. While a human is typing the new section name we would waste performance continually re-doing the structural changes - so we instead delay structural normalization until we're confident the human has finished, giving them fast typing performance and preserving the system integrity.
+Resolving embedded headings, heading deletions, and heading-level changes within a section is owned by `CRDTProposalGenerator`. The trigger is per-section CRDT-activity quiescence detected by its observation surface — **not** a 60s timer, focus change, or session-end. The mutation runs inside a single identity-preserving `Y.transact` (splits keep the original fragment as one half; merges extend the survivor; cross-section moves use capture-and-recover on the cursor). The atomicity guarantees peers/observers see only pre- or post-state; the resulting `YJS_UPDATE` delta is the broadcast — there is no `STRUCTURE_WILL_CHANGE` warning protocol.
 
-Detects embedded headings in fragments and splits them into proper sub-sections.
+### Publish (PublishTriggerPolicy → DocSession publish pause → commit)
 
-**Triggered by:**
-- Focus change - they've finished editing/renaming sections (user leaves a section with embedded headings)
-- Idle timeout (60s without cursor movement)
-- Disconnect (all fragments with embedded headings)
-- Manual publish
+1. `PublishTriggerPolicy` decides the current `inprogress` proposal should attempt publication.
+2. The DocSession actor starts a publish pause: sends `doc_publish_pause_start` to active editor sockets, waits for an ordered `doc_publish_ready` ack from every required socket (the ack, riding the same ordered channel as prior Yjs updates, proves those updates already reached the actor).
+3. It performs final materialization from the live Y.Doc into the current proposal content tree and commits `inprogress -> committing -> committed` through the proposal subsystem; canonical advances and the audit-log entry is written. The current-proposal reference clears only after success.
+4. `doc_publish_pause_end` unfreezes editors. On abort or commit failure, the same proposal remains `inprogress` and editing resumes — no successor / copy-on-write rollover.
 
-**Never runs mid-edit** — fires only after the user has in some sense 'finished' or 'moved away'.
-
-**Important:** `normalizeStructure()` mutates the Y.Doc in memory — it does not write to disk directly. Disk writes happen on the next content flush.
-
-### Auth-log commmits / semantic chunking
-
-Runs when human indicates a set of related edits have been performed, or (as fallback) on various heuristic catch-alls: e.g. after session destruction, manual publish, shutdown, or crash recovery.
-
-1. Read dirty sections from `sessions/sections/content/`
-2. Compare against canonical
-3. Write changed sections to canonical `content/`
-4. Make git commit (with writer attribution)
-5. Delete committed files from both `sessions/sections/` and `sessions/fragments/`
-6. Delete committed fragment content and committed fragment attribution sidecars
+`PublishNow` is just an immediate `PublishTriggerPolicy` fire on the current `inprogress`, not a separate flush+commit path.
 
 ### Proposal commit (agent or human)
 
-1. Evaluate human-involvement per section (skipped for human proposals)
-2. Move proposal file from `proposals/pending/` to `proposals/committing/` — the file move IS the lock
-3. Write sections to canonical
-4. Git commit with proposal metadata
-5. Move proposal file to `proposals/committed/` (terminal state)
+1. Two gates for agent proposals: proposal-FSM locks (no overlapping exclusive claim blocks the commit transition) and agent write-policy (`canWrite: true`). Human proposals skip agent write-policy (governed by RBAC + the FSM-lock lifecycle).
+2. `pending -> committing` (the directory move IS the exclusive claim) → write sections to canonical → git commit with proposal metadata → `committing -> committed` (terminal).
+3. On a successful commit, `CRDTProposalGenerator` applies the canonical delta back into any live Y.Doc using the same `Y.transact`-based primitive.
 
 ---
 
 ## Crash recovery
 
-On server start:
+On server start, recovery is narrowed to proposal-FSM cleanup + git integrity (see [Crash Recovery & Data Safety](crash-recovery.md)):
 
-1. Scan `sessions/fragments/` (source of truth — always fresh within ~2s)
-2. Normalize all fragments (resolve embedded headings)
-3. Write results to `sessions/sections/content/`
-4. Compare against canonical
-5. Commit under "crash recovery" identity
-6. Clean up all session files
+1. Discard `pending` proposals as transient debris.
+2. Finish interrupted `committing` proposals forward — finalize the `committing -> committed` rename when `committed_head` already landed, else re-run `publishCommittingProposalToCanonical` from `proposals/committing/{id}/content`. Never roll back.
+3. Leave `inprogress` proposals untouched (durable live state).
+4. A dirty working tree is acceptable only as the by-product of completing a `committing` proposal; any other dirty tracked state fails startup with a maintainer report.
 
-**Data loss window:** ~2 seconds (the time between automatic flush cycles).
+When a document is next mounted, its Y.Doc is reconstructed from the current `inprogress` proposal content tree when present, otherwise from canonical. There is no `sessions/fragments/` scan and no flush-cycle data-loss window.
 
 ---
 
@@ -430,7 +419,7 @@ Key claims: `sub` (identity), `type` ("human" | "agent"), `display_name`, `token
 ### Page load
 
 1. Fetch document structure and section metadata via REST
-2. REST responses overlay dirty session content on canonical (so reloads show unpublished changes)
+2. REST responses return canonical content only (resolved through `DocumentSkeleton`); there is no session-overlay read path. Live unpublished edits are seen by entering edit mode (Y.Doc sync) or via the read-only observer channel, not by overlaying session files onto canonical REST reads.
 
 ### Edit mode
 
@@ -469,7 +458,7 @@ Tab 3 ──port──┘
 
 **Subscription aggregation:** Each tab reports its subscriptions (which documents it cares about) and focus state (which section the user is editing). The worker aggregates all tabs' subscriptions into a single set and tracks the most recently focused document across all tabs, sending only diffs to the server.
 
-**Server event broadcasting:** When the server sends an event (e.g. `presence:editing`, `dirty:changed`, `content:committed`), the worker relays it to all tabs simultaneously. Every tab receives the same real-time updates, which is why features like the Mirror panel stay consistent across tabs without special cross-tab logic.
+**Server event broadcasting:** When the server sends a JSON app-WS event (e.g. `content:committed`, the proposal-commit notification, `agent:reading`, or section block-state events), the worker relays it to all tabs simultaneously. Every tab receives the same real-time updates, which is why features like the Mirror panel stay consistent across tabs without special cross-tab logic. (The removed `dirty:changed`/`presence:*` session events are no longer part of this stream.)
 
 **Tab lifecycle:** Tabs register on connect and are swept after 7 seconds of inactivity. When the last tab closes, the WebSocket is closed. When a new tab opens, the WebSocket reconnects on demand.
 
@@ -495,11 +484,11 @@ In production, `server.ts` runs directly — no supervisor, no SSE endpoint, no 
 ## Invariants for implementers
 
 1. **DocumentSkeleton is canonical source of identity** — never independently derive paths from level numbers
-2. **CRDT is transport, not storage** — Y.Doc only exists while holders are connected
+2. **CRDT is transport, not parallel storage** — the live Y.Doc exists while holders are connected; durable in-flight state is the `inprogress` proposal content tree, not a session sidecar
 3. **All durable state visible on disk** — `ls` shows complete system state; no hidden database
-4. **REST endpoints return canonical-ready only** — never read raw fragments (may contain un-normalized content)
-5. **Human-involvement is a 0-1 float** — single threshold (0.5), never cached, computed on every evaluation
-6. **Dirty ownership contract**: canonical-ready content lives in `sessions/sections/`; fragment-owned writer attribution lives with the raw fragment files in `sessions/fragments/`
+4. **REST endpoints return canonical only** — they resolve canonical content through `DocumentSkeleton`; there is no session-overlay or raw-fragment read path
+5. **One `inprogress` proposal per live DocSession** — live edits materialize into it; canonical advances only through proposal commits; reconstruction is from `inprogress` else canonical
+6. **Agent gating is policy, not hardcoded** — agent writes pass one selected agent write-policy (`canWrite`) plus proposal-FSM locks; do not hardcode score thresholds or `inprogress`-as-only-blocking-status at call sites
 
 ---
 
@@ -518,14 +507,9 @@ app/
     │       ├── sec_abc123.md           ← Section content file
     │       └── sec_abc123.md.sections/ ← Sub-sections (for nested headings)
     │
-    ├── sessions/             ← In-flight editing state (ephemeral, survives restarts)
-    │   ├── fragments/        ← Raw Y.Doc fragments (crash-safety layer, ~2s freshness)
-    │   ├── docs/             ← Canonical-ready session content (structurally valid)
-    │   │   └── content/      ← Mirrors canonical structure with dirty section overlays
-    │   └── authors/          ← Per-user attribution metadata (which user dirtied which sections)
-    │
     ├── proposals/            ← Agent and human proposals (filesystem = state machine)
-    │   ├── pending/          ← Active proposals (mutable)
+    │   ├── pending/          ← Draft proposals (mutable)
+    │   ├── inprogress/       ← Durable in-flight live-edit state (one CRDT-owned proposal per live DocSession) + human-explicit-acquire proposals
     │   ├── committing/       ← Being committed right now (transient, milliseconds)
     │   ├── committed/        ← Successfully committed (terminal, audit trail)
     │   └── withdrawn/        ← Cancelled proposals (terminal, audit trail)
@@ -540,8 +524,7 @@ app/
 ### Backing up
 
 - **`content/`** — all published content and full git history. The most critical directory.
-- **`sessions/`** — in-flight editing state. Contains all unpublished edits (up to minutes of human work).
-- **`proposals/`** — the audit trail of all proposals (committed and withdrawn). Back this up for audit compliance.
+- **`proposals/`** — the audit trail of all proposals (committed and withdrawn) AND the durable in-flight live-edit state (`inprogress/`). Contains all unpublished edits (up to minutes of human work); back this up for both data safety and audit compliance.
 - **`auth/`** — agent credentials and RBAC files. Small but important.
 
 ---

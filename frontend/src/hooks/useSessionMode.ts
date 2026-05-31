@@ -21,7 +21,6 @@ import {
 } from "../types/shared.js";
 import {
   type DocumentSection,
-  type DeletionPlaceholder,
   getSectionFragmentKey,
 } from "../pages/document-page-utils";
 import { randomUuid } from "../utils/random-uuid";
@@ -36,7 +35,6 @@ export interface UseSessionModeParams {
   setStatusMessage: (s: string | null) => void;
   loadSections: (docPath: string) => Promise<DocumentSection[]>;
   onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
-  setDeletionPlaceholders: React.Dispatch<React.SetStateAction<DeletionPlaceholder[]>>;
   onStopEditing?: () => void;
 }
 
@@ -70,7 +68,6 @@ export function useSessionMode({
   setStatusMessage,
   loadSections,
   onDocumentReplacementNotice,
-  setDeletionPlaceholders,
   onStopEditing,
 }: UseSessionModeParams): UseSessionModeReturn {
   const clientInstanceIdRef = useRef<string>(randomUuid());
@@ -257,7 +254,6 @@ export function useSessionMode({
       setCrdtState("disconnected");
     }
     setCrdtError(null);
-    setDeletionPlaceholders([]);
     onStopEditingRef.current?.();
     setControllerState((prev) => ({
       ...prev,
@@ -288,7 +284,7 @@ export function useSessionMode({
         onModeTransitionResult: applyModeTransitionResult,
       });
     }
-  }, [decodedDocPath, startObserver, applyModeTransitionResult, setDeletionPlaceholders]);
+  }, [decodedDocPath, startObserver, applyModeTransitionResult]);
 
   useEffect(() => { stopEditingRef.current = stopEditing; }, [stopEditing]);
 
@@ -327,26 +323,24 @@ export function useSessionMode({
           setEditingLoading(false);
         },
         onError: (reason: string) => setCrdtError(`CRDT sync error: ${reason}`),
-        onSessionOverlayImported: ({ deletedKeys }) => {
-          if (deletedKeys.length > 0) {
-            setDeletionPlaceholders((prev) =>
-              prev.filter((p) => !deletedKeys.includes(p.fragmentKey)),
-            );
+        onSessionReinit: () => {
+          // 4022 document-replaced (restore): the provider reconnects
+          // immediately. Reseed canonical so previews reflect restored content.
+          if (decodedDocPath) {
+            loadSections(decodedDocPath);
           }
         },
-        onSessionReinit: () => {
-          stopEditing();
+        onForceRebuild: () => {
+          // 4024 admin force-rebuild: treated like 4022 — the provider
+          // reconnects immediately; reseed canonical content.
+          if (decodedDocPath) {
+            loadSections(decodedDocPath);
+          }
         },
         onDocumentReplacementNotice: (payload) => {
           onDocumentReplacementNotice?.(payload);
         },
         onModeTransitionResult: applyModeTransitionResult,
-        onIdleTimeout: () => {
-          stopEditing();
-          if (decodedDocPath) {
-            loadSections(decodedDocPath);
-          }
-        },
       });
       const nextStore = new BrowserFragmentReplicaStore(
         nextTransport.doc,
@@ -367,7 +361,7 @@ export function useSessionMode({
       setCrdtError(err instanceof Error ? err.message : String(err));
       return null;
     }
-  }, [decodedDocPath, stopEditing, stopObserver, loadSections, setError, setStatusMessage, onDocumentReplacementNotice, applyModeTransitionResult, setDeletionPlaceholders]);
+  }, [decodedDocPath, stopEditing, stopObserver, loadSections, setError, setStatusMessage, onDocumentReplacementNotice, applyModeTransitionResult]);
 
   // ── Request mode ───────────────────────────────────────
   const requestMode = useCallback(async (mode: RequestedMode, focusTarget?: EditorFocusTarget | null): Promise<void> => {

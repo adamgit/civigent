@@ -88,21 +88,6 @@ describe("KnowledgeStoreWsClient", () => {
     expect(() => client.blurDocument("docs/readme.md")).not.toThrow();
   });
 
-  it("focusSection does not throw before connect", () => {
-    const client = new KnowledgeStoreWsClient();
-    expect(() => client.focusSection("docs/readme.md", ["Introduction"])).not.toThrow();
-  });
-
-  it("blurSection does not throw before connect", () => {
-    const client = new KnowledgeStoreWsClient();
-    expect(() => client.blurSection("docs/readme.md", ["Introduction"])).not.toThrow();
-  });
-
-  it("sessionDeparture does not throw before connect", () => {
-    const client = new KnowledgeStoreWsClient();
-    expect(() => client.sessionDeparture("docs/readme.md")).not.toThrow();
-  });
-
   it("onEvent accepts a handler without throwing", () => {
     const client = new KnowledgeStoreWsClient();
     const handler = vi.fn();
@@ -116,9 +101,6 @@ describe("KnowledgeStoreWsClient", () => {
     expect(() => client.unsubscribe("docs/a.md")).not.toThrow();
     expect(() => client.focusDocument("docs/a.md")).not.toThrow();
     expect(() => client.blurDocument("docs/a.md")).not.toThrow();
-    expect(() => client.focusSection("docs/a.md", ["H1"])).not.toThrow();
-    expect(() => client.blurSection("docs/a.md", ["H1"])).not.toThrow();
-    expect(() => client.sessionDeparture("docs/a.md")).not.toThrow();
     client.disconnect();
   });
 

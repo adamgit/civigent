@@ -31,9 +31,13 @@ describe("applyDragOverVerdict", () => {
     expect(event.dataTransfer!.dropEffect).toBe("copy");
   });
 
-  it("returns false and sets dropEffect=none for presence-blocked drops", () => {
+  it("returns false and sets dropEffect=none for lock-conflict drops", () => {
     const event = makeMockEvent();
-    const verdict: DropVerdict = { allowed: false, reason: "live_session", holder: "Alice" };
+    const verdict: DropVerdict = {
+      allowed: false,
+      kind: "locked",
+      message: "This section is locked by an in-progress proposal.",
+    };
 
     const result = applyDragOverVerdict(event, verdict, true);
 
@@ -42,9 +46,13 @@ describe("applyDragOverVerdict", () => {
     expect(event.dataTransfer!.dropEffect).toBe("none");
   });
 
-  it("returns false and sets dropEffect=none for proposal-blocked drops", () => {
+  it("returns false and sets dropEffect=none for block-state drops", () => {
     const event = makeMockEvent();
-    const verdict: DropVerdict = { allowed: false, reason: "human_proposal", holder: "Bob" };
+    const verdict: DropVerdict = {
+      allowed: false,
+      kind: "blocked",
+      message: "This section is temporarily unavailable for editing.",
+    };
 
     const result = applyDragOverVerdict(event, verdict, true);
 
@@ -53,9 +61,13 @@ describe("applyDragOverVerdict", () => {
     expect(event.dataTransfer!.dropEffect).toBe("none");
   });
 
-  it("returns false and sets dropEffect=none for generically blocked drops", () => {
+  it("returns false and sets dropEffect=none for unavailable-transport drops", () => {
     const event = makeMockEvent();
-    const verdict: DropVerdict = { allowed: false, reason: "blocked" };
+    const verdict: DropVerdict = {
+      allowed: false,
+      kind: "unavailable",
+      message: "This document isn't ready for editing right now.",
+    };
 
     const result = applyDragOverVerdict(event, verdict, false);
 
@@ -87,9 +99,9 @@ describe("applyDragOverVerdict", () => {
  */
 describe("editor-target / static-target dragover parity", () => {
   const BLOCKED_VERDICTS: DropVerdict[] = [
-    { allowed: false, reason: "live_session", holder: "Alice" },
-    { allowed: false, reason: "human_proposal", holder: "Bob" },
-    { allowed: false, reason: "blocked" },
+    { allowed: false, kind: "unavailable", message: "Not ready for editing." },
+    { allowed: false, kind: "locked", message: "Locked by an in-progress proposal." },
+    { allowed: false, kind: "blocked", message: "Temporarily unavailable." },
   ];
 
   it("allowed drop: both paths call preventDefault and agree on dropEffect", () => {
@@ -110,7 +122,7 @@ describe("editor-target / static-target dragover parity", () => {
   });
 
   for (const verdict of BLOCKED_VERDICTS) {
-    it(`blocked (${verdict.reason}): both paths call preventDefault and set dropEffect=none`, () => {
+    it(`blocked (${verdict.kind}): both paths call preventDefault and set dropEffect=none`, () => {
       const editorEvent = makeMockEvent();
       const editorResult = applyDragOverVerdict(editorEvent, verdict, true);
 

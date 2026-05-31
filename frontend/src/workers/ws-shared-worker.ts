@@ -61,7 +61,6 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectDelayMs = 1000;
 let appliedSubscriptions = new Set<string>();
 let appliedFocusedDocPath: string | null | undefined = undefined;
-let appliedFocusedSection: { docPath: string; headingPath: string[] } | null | undefined = undefined;
 
 function broadcastServerEvent(event: unknown): void {
   for (const port of tabPorts.values()) {
@@ -136,7 +135,6 @@ function ensureSocket(): void {
     reconnectDelayMs = 1000;
     appliedSubscriptions = new Set<string>();
     appliedFocusedDocPath = undefined;
-    appliedFocusedSection = undefined;
     diagnostics.capture({
       source: "worker-lifecycle",
       type: "open",
@@ -208,7 +206,6 @@ function closeSocket(): void {
   }
   appliedSubscriptions = new Set<string>();
   appliedFocusedDocPath = undefined;
-  appliedFocusedSection = undefined;
 }
 
 function scheduleReconnect(): void {
@@ -246,30 +243,9 @@ function syncSocketState(): void {
   }
   appliedSubscriptions = desired.subscriptions;
 
-  const appliedSectionKey = appliedFocusedSection
-    ? `${appliedFocusedSection.docPath}\u001f${appliedFocusedSection.headingPath.join("\u001f")}`
-    : null;
-  const desiredSectionKey = desired.focusedSection
-    ? `${desired.focusedSection.docPath}\u001f${desired.focusedSection.headingPath.join("\u001f")}`
-    : null;
-  if (appliedSectionKey !== desiredSectionKey) {
-    if (desired.focusedSection) {
-      sendWs({
-        type: "section_focus",
-        doc_path: desired.focusedSection.docPath,
-        heading_path: desired.focusedSection.headingPath,
-      });
-    } else if (appliedFocusedSection) {
-      sendWs({
-        type: "section_blur",
-        doc_path: appliedFocusedSection.docPath,
-        heading_path: appliedFocusedSection.headingPath,
-      });
-    }
-    appliedFocusedSection = desired.focusedSection;
-  }
-
-  if (!desired.focusedSection && appliedFocusedDocPath !== desired.focusedDocPath) {
+  // Document-level focus/blur is the only retained focus signal (MW-13): the
+  // hub never consumed section_focus/section_blur (spec 06 §6).
+  if (appliedFocusedDocPath !== desired.focusedDocPath) {
     if (desired.focusedDocPath) {
       sendWs({
         type: "document_focus",
@@ -278,8 +254,6 @@ function syncSocketState(): void {
     } else {
       sendWs({ type: "document_blur" });
     }
-    appliedFocusedDocPath = desired.focusedDocPath;
-  } else if (desired.focusedSection) {
     appliedFocusedDocPath = desired.focusedDocPath;
   }
 }

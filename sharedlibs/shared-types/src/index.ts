@@ -58,7 +58,13 @@ export type AttachmentState = "detached" | "waiting_for_session" | "attached_to_
 /** Explicit identity of one live backend DocSession. */
 export type DocSessionId = string;
 
-/** Explicit focus target for the one section currently edited by this tab. */
+/**
+ * Explicit focus target for the one section currently edited by this tab.
+ * Part of the LIVE, server-authoritative CRDT mode-transition surface
+ * (`RemoteParticipant` / `ModeTransitionRequest` / `DocumentSessionControllerState`),
+ * which the CRDT coordinator patches per participant. Kept (MW-13); this is NOT
+ * the removed JSON focus/pulse client-message surface.
+ */
 export type EditorFocusTarget = SectionTarget;
 
 /** Server-authoritative runtime state for one connected CRDT participant/tab. */
@@ -123,6 +129,17 @@ export interface SectionTargetRef {
   heading_path: string[];
 }
 
+/**
+ * ProposalTargetRef — identity of a thing a proposal targets, used by proposal
+ * FSM lock shapes and agent-write-policy result shapes (spec 12 §Data Shapes).
+ *
+ * Aliased to {@link SectionTargetRef} for now (a `{ doc_path, heading_path }`
+ * pair). TODO(Area Q open question): revisit if proposals must target
+ * tombstones / whole documents wider than a single section ref, in which case
+ * this should become a distinct discriminated type rather than an alias.
+ */
+export type ProposalTargetRef = SectionTargetRef;
+
 // ─── Section Key Functions ─────────────────────────────────────────
 // Single source of truth for key separator format. Zero dependencies.
 
@@ -138,7 +155,11 @@ export function sectionGlobalKey(docPath: string, headingPath: string[]): string
 
 // ─── Section Score Snapshot ────────────────────────────────────────
 
-/** Keyed by section key → score at the time of evaluation/commit. */
+/**
+ * Keyed by section key → score at the time of commit. Retained ONLY as the
+ * human-involvement-policy committed-metadata representation (aligns with
+ * `CommittedProposalFile.humanInvolvement_at_commit`); not a generic app type.
+ */
 export type SectionScoreSnapshot = Record<string, number>;
 
 // ─── Human-Involvement Presets ───────────────────────────────────
@@ -211,13 +232,35 @@ export interface ProposalFileBase {
   intent: string;
   sections: ProposalSection[];
   created_at: string;
+  /**
+   * Owning DocSession identity for CRDT-materialized live-edit proposals
+   * (Area B). Present only on proposals created lazily by a DocSession's
+   * live-edit materialization; absent for human draft→inprogress and agent
+   * proposals. Used to enforce one-active-`inprogress`-proposal-per-DocSession
+   * (Invariant 7) and to look the proposal up by session identity. NOTE: the
+   * derived `status` is still never stored.
+   */
+  docSessionId?: DocSessionId;
 }
 
 /** Committed proposal meta.json — adds terminal commit fields (both required). */
 export interface CommittedProposalFile extends ProposalFileBase {
   committed_head: string;
+  /**
+   * Policy-specific committed metadata for the human-involvement compatibility
+   * policy. Preserved as-is (spec 12 §Data Shapes `HumanInvolvementCommittedProposalMetadata`);
+   * do NOT generalise into a generic `commitRecord`. See {@link HumanInvolvementCommittedProposalMetadata}.
+   */
   humanInvolvement_at_commit: Record<string, number>;
 }
+
+/**
+ * Spec-12-aligned naming alias for the human-involvement compatibility policy's
+ * committed metadata. Identical shape to `CommittedProposalFile.humanInvolvement_at_commit`.
+ * A posture/delegation committed-metadata type is intentionally NOT added yet
+ * (spec defers a generic audit format).
+ */
+export type HumanInvolvementCommittedProposalMetadata = Record<string, number>;
 
 /** In-progress proposal meta.json — adds lock metadata from draft→inprogress transition. */
 export interface InProgressProposalFile extends ProposalFileBase {
@@ -260,16 +303,22 @@ export type AnyProposal = DraftProposal | InProgressProposal | CommittedProposal
 
 // ── DTO layer (enriched for API responses) ────────────────────────
 
-/** Draft proposal DTO — adds required human-involvement evaluation computed at read time. */
+/**
+ * Draft proposal DTO — adds agent-write-policy + proposal-lock evaluation
+ * computed at read time. `sections` reverts to plain {@link ProposalSection}[]
+ * (per-section policy summaries are surfaced via the write-policy targets, not
+ * baked into the section type). Lock conflicts are surfaced separately from
+ * `agentWritePolicy` per spec 12 §Event/API Surfaces.
+ */
 export interface DraftProposalDTO extends DraftProposal {
-  humanInvolvement_evaluation: ProposalHumanInvolvementEvaluation;
-  sections: EvaluatedSection[];
+  agentWritePolicy?: HumanInvolvementPolicyResult;
+  lockEvaluation?: ProposalLockResult;
 }
 
-/** In-progress proposal DTO — adds evaluation computed at read time. */
+/** In-progress proposal DTO — adds agent-write-policy + proposal-lock evaluation computed at read time. */
 export interface InProgressProposalDTO extends InProgressProposal {
-  humanInvolvement_evaluation: ProposalHumanInvolvementEvaluation;
-  sections: EvaluatedSection[];
+  agentWritePolicy?: HumanInvolvementPolicyResult;
+  lockEvaluation?: ProposalLockResult;
 }
 
 /** Union of all proposal DTO variants for API responses. */
@@ -284,28 +333,126 @@ export interface ProposalSection {
   justification?: string;
 }
 
-export interface ProposalHumanInvolvementEvaluation {
-  all_sections_accepted: boolean;
-  aggregate_impact: number;
-  aggregate_threshold: number;
-  blocked_sections: EvaluatedSection[];
-  passed_sections: EvaluatedSection[];
+// ─── Agent Write Policy (spec 12 §Data Shapes) ─────────────────────
+//
+// The agent-write-policy result is the app/frontend-readable contract that
+// replaces the old generic `humanInvolvement_evaluation` / `EvaluatedSection`
+// vocabulary. The core carries only `canWrite` (machine-branchable) plus a
+// mandatory prose `message` (Area M: never return a bare reason code as the
+// explanation) and a typed `details` payload that varies per concrete policy.
+//
+// Common app code MUST branch on `canWrite` only. It must NOT assume `details`
+// contains a score, reason enum, posture, delay, delegation, or threshold —
+// those live inside concrete per-policy detail types below.
+
+/** One per-target entry of an agent-write-policy result. */
+export interface AgentWritePolicyTarget<TTargetDetails> {
+  target: ProposalTargetRef;
+  canWrite: boolean;
+  /** Prose explanation for this target's decision (Area M). */
+  message: string;
+  details: TTargetDetails;
 }
 
-export type EvaluatedSectionBlockedReason =
-  | "active_live_edit"
-  | "uncommitted_live_edits"
-  | "human_proposal_lock"
-  | "aggregate_impact";
+/** Generic agent-write-policy result. `TPolicyDetails`/`TTargetDetails` are typed by the active policy. */
+export interface AgentWritePolicyResult<TPolicyDetails, TTargetDetails> {
+  canWrite: boolean;
+  /** Prose explanation for the overall decision (Area M). */
+  message: string;
+  targets: AgentWritePolicyTarget<TTargetDetails>[];
+  details: TPolicyDetails;
+}
 
-export interface EvaluatedSection {
-  doc_path: string;
-  heading_path: string[];
-  humanInvolvement_score: number;
-  blocked: boolean;
-  blocked_reason?: EvaluatedSectionBlockedReason;
+/**
+ * Human-involvement-compatibility policy detail reason (spec 12 §Data Shapes).
+ *
+ * Reframed from the old `EvaluatedSectionBlockedReason` soft-block union: the
+ * dirty-session / live-focus reasons (`active_live_edit`,
+ * `uncommitted_live_edits`) are dropped because all edits now flow through
+ * proposals (Area F). This is a human-involvement-policy DETAIL enum, not a
+ * generic app code — never surface it as the human-facing explanation (Area M).
+ */
+export type HumanInvolvementBlockedReason = "human_proposal_lock" | "aggregate_impact";
 
-  justification?: string;
+/** Policy-level details for the human-involvement compatibility policy. */
+export interface HumanInvolvementPolicyDetails {
+  aggregateImpact: number;
+  aggregateThreshold: number;
+}
+
+/** Per-target details for the human-involvement compatibility policy. */
+export interface HumanInvolvementTargetDetails {
+  score: number;
+  blockedReason: HumanInvolvementBlockedReason | null;
+  justification: string | null;
+}
+
+/** Convenience alias: an agent-write-policy result for the human-involvement compatibility policy. */
+export type HumanInvolvementPolicyResult = AgentWritePolicyResult<
+  HumanInvolvementPolicyDetails,
+  HumanInvolvementTargetDetails
+>;
+
+// ─── Posture / Delegation Policy (spec 12, forward-compat) ─────────
+// Defined concretely and separately from the human-involvement details — no
+// shared vocabulary across policies.
+
+export type DocumentPosture = "open" | "guarded" | "human_only";
+
+/** Policy-level details for the posture/delegation policy (no shared fields). */
+export type PostureDelegationPolicyDetails = Record<string, never>;
+
+/** Per-target details for the posture/delegation policy. */
+export interface PostureDelegationTargetDetails {
+  posture: DocumentPosture;
+  delegatedByUserId: string | null;
+}
+
+// ─── Proposal FSM Lock Results (spec 12 §Data Shapes) ──────────────
+// Kept under lock/conflict naming, deliberately separate from agent write
+// policy. Definitions only; the FSM transition behaviour is Area F.
+
+export interface ProposalLockCheck {
+  proposalId: ProposalId;
+  targets: ProposalTargetRef[];
+}
+
+export interface ProposalLockConflict {
+  target: ProposalTargetRef;
+  blockingProposalId: ProposalId;
+  blockingProposalStatus: ProposalStatus;
+  blockingWriter: WriterIdentity;
+  /** Required action-oriented prose explanation for this conflict (Area M owns wording). */
+  message: string;
+}
+
+export interface ProposalLockResult {
+  acquired: boolean;
+  conflicts: ProposalLockConflict[];
+  /** Required top-level prose explanation; empty/success-phrased when acquired (Area M owns wording). */
+  message: string;
+}
+
+// ─── Section-level Agent-Write-Policy Summary (spec 12 §Event/API) ──
+//
+// Replaces the hardcoded `humanInvolvement_score: number` generic field on the
+// read-API section shapes. The generic part is `canWrite`; a human-involvement
+// compatibility policy may still render a `score` inside its own `humanInvolvement`
+// details. The builder behaviour is Area L.
+
+export interface SectionAgentWritePolicySummary {
+  /** Whether agents can currently write to this section under the active policy. */
+  canWrite: boolean;
+  /**
+   * Backend-authored prose explanation of the current write-policy state for
+   * this section. The single source of truth for the human-readable line shown
+   * in the governance gutter / heatmap — clients render this verbatim rather
+   * than synthesizing it from `canWrite` (spec 12 §"render the policy's prose
+   * messages — never bare reason codes or enums").
+   */
+  message: string;
+  /** Human-involvement compatibility policy details (present when that policy is active). */
+  humanInvolvement?: { score: number };
 }
 
 // ─── Section State / Activity ──────────────────────────────────────
@@ -321,7 +468,7 @@ export interface SectionState {
   crdt_holder_count: number;
   diverged: boolean;
   base_head: string | null;
-  humanInvolvement_score: number;
+  agentWritePolicy: SectionAgentWritePolicySummary;
 }
 
 // ─── Heatmap ───────────────────────────────────────────────────────
@@ -329,7 +476,7 @@ export interface SectionState {
 export interface HeatmapEntry {
   doc_path: string;
   heading_path: string[];
-  humanInvolvement_score: number;
+  agentWritePolicy: SectionAgentWritePolicySummary;
   crdt_session_active: boolean;
   last_human_commit_sha: string | null;
 
@@ -368,7 +515,7 @@ export interface DocStructureNode {
 
 export interface SectionMeta {
   heading_path: string[];
-  humanInvolvement_score: number;
+  agentWritePolicy: SectionAgentWritePolicySummary;
   crdt_session_active: boolean;
   section_length_warning: boolean;
   word_count: number;
@@ -388,7 +535,7 @@ export interface GetDocumentSectionsResponse {
     heading_path: string[];
     depth: number;
     content: string;
-    humanInvolvement_score: number;
+    agentWritePolicy: SectionAgentWritePolicySummary;
     crdt_session_active: boolean;
     section_length_warning: boolean;
     word_count: number;
@@ -397,8 +544,8 @@ export interface GetDocumentSectionsResponse {
     /** Section filename (e.g. "sec_abc123def.md"). Useful for UI metadata. */
     section_file: string;
     last_editor?: { id: string; name: string; timestampMs: number; type: AttributionWriterType; seconds_ago: number };
-    /** True when a human proposal (draft or inprogress) locks this section. */
-    blocked?: boolean;
+    /** True when a proposal FSM lock currently locks this section (lock/conflict naming, spec 12 §Event/API). */
+    locked?: boolean;
   }>;
 }
 
@@ -447,9 +594,10 @@ export interface CreateProposalRequest {
 export interface CreateProposalResponse {
   proposal_id: ProposalId;
   status: ProposalStatus;
+  /** Machine-readable branching field only — NOT the human-facing explanation (Area M). */
   outcome: ProposalOutcome;
-  evaluation: ProposalHumanInvolvementEvaluation;
-  sections: EvaluatedSection[];
+  agentWritePolicy: HumanInvolvementPolicyResult;
+  lockEvaluation?: ProposalLockResult;
 }
 
 export interface UpdateProposalRequest {
@@ -467,16 +615,16 @@ export interface CommitProposalAccepted {
   status: "committed";
   outcome: "accepted";
   committed_head: string;
-  evaluation: ProposalHumanInvolvementEvaluation;
-  sections: EvaluatedSection[];
+  agentWritePolicy: HumanInvolvementPolicyResult;
 }
 
 export interface CommitProposalBlocked {
   proposal_id: ProposalId;
   status: "draft";
   outcome: "blocked";
-  evaluation: ProposalHumanInvolvementEvaluation;
-  sections: EvaluatedSection[];
+  /** Required prose explanation for the block (Area M). */
+  message: string;
+  agentWritePolicy: HumanInvolvementPolicyResult;
 }
 
 export type CommitProposalResponse = CommitProposalAccepted | CommitProposalBlocked;
@@ -495,8 +643,10 @@ export interface AcquireLocksSuccess {
 export interface AcquireLocksFailure {
   proposal_id: ProposalId;
   acquired: false;
-  reason: string;
-  section?: SectionTargetRef;
+  /** Required prose explanation for the lock-acquisition failure (Area M). */
+  message: string;
+  /** Structured FSM lock conflicts that blocked acquisition (spec 12 §Data Shapes). */
+  conflicts: ProposalLockConflict[];
 }
 
 export type AcquireLocksResponse = AcquireLocksSuccess | AcquireLocksFailure;
@@ -666,11 +816,6 @@ export interface DocStructureChangedEvent {
   doc_path: string;
 }
 
-export interface SessionOverlayImportedEvent {
-  type: "session:overlay-imported";
-  doc_path: string;
-}
-
 export interface DocRenamedEvent {
   type: "doc:renamed";
   old_path: string;
@@ -709,7 +854,15 @@ export interface ProposalSectionAvailabilityEntry {
   doc_path: string;
   heading_path: string[];
   available: boolean;
-  blocked_reason?: EvaluatedSectionBlockedReason;
+  /**
+   * Required action-oriented prose explanation when `available` is false (Area M:
+   * never a bare enum code). Describes which proposal/writer holds the section and
+   * what clears it. Omitted when the section is available.
+   */
+  message?: string;
+  /** Structured FSM-lock conflict fields for branching/styling only (spec 12 §Event/API). */
+  blocking_proposal_id?: string;
+  blocking_proposal_status?: ProposalStatus;
   holder_writer_id?: string;
   holder_writer_display_name?: string;
 }
@@ -729,12 +882,20 @@ export interface CatalogChangedEvent {
   writer_display_name?: string;
 }
 
-export interface ProposalInjectedIntoSessionEvent {
-  type: "proposal:injected_into_session";
+/**
+ * Per-section CRDT block-state events (spec 05-ydoc-lifecycle §"Section
+ * block-state events"). These ride the JSON application WebSocket and keep the
+ * browser's mount Set in lockstep with server reality:
+ *   section:blocked   — a proposal lock now owns the section → read-only
+ *   section:unblocked — the section returns to editable
+ *   section:gone      — the section's canonical identifier no longer resolves
+ * `fragment_key` is the opaque backend-owned CRDT fragment identity.
+ */
+export interface SectionBlockStateEvent {
+  type: "section:blocked" | "section:unblocked" | "section:gone";
   doc_path: string;
-  proposal_id: string;
-  writer_display_name: string;
-  heading_paths: string[][];
+  fragment_key: string;
+  heading_path?: string[];
 }
 
 export type WsServerEvent =
@@ -746,16 +907,25 @@ export type WsServerEvent =
   | PresenceEditingEvent
   | PresenceDoneEvent
   | DocStructureChangedEvent
-  | SessionOverlayImportedEvent
   | DocRenamedEvent
   | ProposalDraftEvent
   | ProposalInProgressEvent
   | ProposalWithdrawnEvent
   | ProposalSectionAvailabilityEvent
-  | CatalogChangedEvent
-  | ProposalInjectedIntoSessionEvent;
+  | SectionBlockStateEvent
+  | CatalogChangedEvent;
 
 // ─── WebSocket Client Messages ─────────────────────────────────────
+//
+// The JSON application WebSocket only carries subscription intent. The former
+// focus/pulse client-message surface (`focus_section`/`blur_section`/
+// `session_departure`) had NO server consumer — the hub parser ignored them
+// entirely (spec 06 §6) — so it was removed end-to-end (MW-13).
+//
+// NOTE: this is distinct from the LIVE CRDT mode-transition focus surface
+// (`EditorFocusTarget` / `RemoteParticipant.editorFocusTarget` /
+// `ModeTransitionRequest.editorFocusTarget` above), which IS server-authoritative
+// (the CRDT coordinator patches `editorFocusTarget`) and is deliberately kept.
 
 export interface WsSubscribeMessage {
   action: "subscribe";
@@ -767,29 +937,9 @@ export interface WsUnsubscribeMessage {
   doc_path: string;
 }
 
-export interface WsFocusSectionMessage {
-  action: "focus_section";
-  doc_path: string;
-  heading_path: string[];
-}
-
-export interface WsBlurSectionMessage {
-  action: "blur_section";
-  doc_path: string;
-  heading_path: string[];
-}
-
-export interface WsSessionDepartureMessage {
-  action: "session_departure";
-  doc_path: string;
-}
-
 export type WsClientMessage =
   | WsSubscribeMessage
-  | WsUnsubscribeMessage
-  | WsFocusSectionMessage
-  | WsBlurSectionMessage
-  | WsSessionDepartureMessage;
+  | WsUnsubscribeMessage;
 
 // ─── Agent Activity View ─────────────────────────────────────────
 

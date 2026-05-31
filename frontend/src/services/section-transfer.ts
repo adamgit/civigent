@@ -7,12 +7,30 @@
  * Adapters (React hook + ProseMirror plugin) build SectionTransfer
  * descriptors and call execute(). The service handles the rest.
  *
- * All Y.Doc mutations go through the backend via MSG_SECTION_MUTATE.
- * The frontend never writes to Y.Doc fragments directly.
+ * Gating (canDrop): a drop is refused when the editor/transport is unavailable
+ * (publication-pause / disconnected) or when the target section is unavailable
+ * for human editing — a proposal FSM lock conflict or a CRDT block-state. Human
+ * cross-section transfers are NOT gated on agent-write-policy (`canWrite`); that
+ * is an agent-only signal (plan §P / §N "do not use agent write-policy state as
+ * a human edit/read-only lock"). Denial text is a prose `message`, never a code.
+ *
+ * Mutation path (Area N/H, MW-10): the legacy client-routed whole-section
+ * rewrite (`MSG_SECTION_MUTATE`) is removed (spec 05 §4 > Removed message types).
+ * Cross-section structural moves are owned by the backend's identity-preserving
+ * Y.transact primitive driven by CRDTProposalGenerator (spec 05 §"Structural
+ * Normalization") — Y.js has no `moveTo` between top-level types. `execute()`
+ * now issues a `section_move` request to the backend (a binary CRDT frame routed
+ * through the DocSession actor lane) and resolves once the server applies the
+ * reorder and fans out the new Y.Doc state. `canDrop` still gates affordances on
+ * transport availability + FSM-lock + CRDT block-state.
  */
 
 import type { CrdtProvider } from "./crdt-provider.js";
-import { fragmentToMarkdown } from "./fragment-to-markdown.js";
+import {
+  captureCaretOffsets,
+  restoreCaretOffsets,
+  type CaretEditorView,
+} from "./caret-recovery.js";
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -36,10 +54,23 @@ export interface SectionTransfer {
   insertionOffset?: number;
 }
 
+/**
+ * Machine-readable styling hint for a blocked drop. NEVER surfaced to the user
+ * as the explanation (plan §M: the frontend renders backend/application prose,
+ * it does not map codes to classifications). Use it only for cursor/affordance
+ * styling; render `message` for any text shown to the user.
+ */
+export type DropBlockKind = "unavailable" | "locked" | "blocked";
+
 export interface DropVerdict {
   allowed: boolean;
-  reason?: "live_session" | "human_proposal" | "blocked";
-  holder?: string;
+  /**
+   * Prose explanation shown to the user when `allowed` is false (plan §M).
+   * Undefined when allowed.
+   */
+  message?: string;
+  /** Optional styling-only hint; never used as the displayed explanation. */
+  kind?: DropBlockKind;
 }
 
 /**
@@ -62,8 +93,8 @@ export function applyDragOverVerdict(
     }
     return true;
   }
-  // Blocked — show explicit no-drop cursor for presence-blocked,
-  // proposal-blocked, or otherwise unavailable targets.
+  // Blocked — show explicit no-drop cursor. The reason text lives on
+  // `verdict.message`; `verdict.kind` (if present) is styling-only.
   if (event.dataTransfer) {
     event.dataTransfer.dropEffect = "none";
   }
@@ -77,27 +108,43 @@ export interface TransferResult {
   targetModified: boolean;
 }
 
-export interface PresenceInfo {
-  sectionKey: string;
-  writerDisplayName: string;
-}
-
-export interface ProposalInfo {
-  sectionKey: string;
-  writerDisplayName: string;
-}
-
 export interface SectionInfo {
   heading_path: string[];
   fragment_key: string;
-  blocked?: boolean;
+  /**
+   * True when a proposal FSM lock currently locks this section (lock/conflict
+   * naming, spec 12 §Event/API). Mirrors the read-API `locked?` flag. Drops onto
+   * a locked section are refused. This is NOT agent-write-policy.
+   */
+  locked?: boolean;
+  /**
+   * True when the section's live CRDT fragment is in a block-state (editor
+   * unavailable). Drops onto a blocked section are refused.
+   */
+  blockState?: boolean;
 }
 
 export interface SectionTransferDeps {
   crdtProvider: CrdtProvider;
   getSections: () => SectionInfo[];
-  getPresenceIndicators: () => PresenceInfo[];
-  getProposalIndicators: () => ProposalInfo[];
+  /**
+   * @deprecated Presence-driven drop gating was removed (spec 06 §7 — no
+   * presence-driven hints). `canDrop` now gates on FSM-lock + CRDT block-state
+   * via `getSections()`. These optional callbacks are tolerated only so the
+   * still-present Area N callers (DocumentPage / GovernanceDocumentPage) keep
+   * compiling; they are NOT consulted. Area N removes them in its rework.
+   */
+  getPresenceIndicators?: () => Array<{ sectionKey: string; writerDisplayName: string }>;
+  /** @deprecated See {@link SectionTransferDeps.getPresenceIndicators}. */
+  getProposalIndicators?: () => Array<{ sectionKey: string; writerDisplayName: string }>;
+  /**
+   * WS-6: resolve the live ProseMirror editor view for a fragment key, so the
+   * moved section's caret can be captured before the backend re-seeds the live
+   * fragments and restored (by content offset) after the server-applied update
+   * lands. Optional — when absent, the move proceeds without caret recovery
+   * (still 100% data-correct).
+   */
+  getEditorViewForFragment?: (fragmentKey: string) => CaretEditorView | null;
 }
 
 // ─── Service ─────────────────────────────────────────────
@@ -116,44 +163,53 @@ export class SectionTransferService {
    * Synchronous — reads frontend-held state only (advisory).
    */
   canDrop(targetFragmentKey: string): DropVerdict {
-    // 0. Check CRDT session liveness
+    // 0. Editor/transport availability (publication-pause / disconnected).
     if (this.deps.crdtProvider.state !== "connected") {
-      return { allowed: false, reason: "blocked" };
+      return {
+        allowed: false,
+        kind: "unavailable",
+        message: "This document isn't ready for editing right now — try again in a moment.",
+      };
     }
 
     const sections = this.deps.getSections();
     const targetSection = sections.find(s => s.fragment_key === targetFragmentKey);
 
-    // 1. Check presence — is another writer focused on this section?
-    const sectionKey = this._sectionKeyForFragment(targetFragmentKey);
-    if (sectionKey) {
-      const presence = this.deps.getPresenceIndicators();
-      const liveHolder = presence.find(p => p.sectionKey === sectionKey);
-      if (liveHolder) {
-        return { allowed: false, reason: "live_session", holder: liveHolder.writerDisplayName };
-      }
+    // 1. Proposal FSM lock conflict — another proposal currently holds this
+    //    section. Lock/conflict semantics, NOT agent-write-policy.
+    if (targetSection?.locked) {
+      return {
+        allowed: false,
+        kind: "locked",
+        message: "This section is locked by an in-progress proposal and can't be edited until that proposal resolves.",
+      };
     }
 
-    // 2. Check proposals — is there a pending human proposal on this section?
-    if (sectionKey) {
-      const proposals = this.deps.getProposalIndicators();
-      const proposalHolder = proposals.find(p => p.sectionKey === sectionKey);
-      if (proposalHolder) {
-        return { allowed: false, reason: "human_proposal", holder: proposalHolder.writerDisplayName };
-      }
-    }
-
-    // 3. Check blocked flag
-    if (targetSection?.blocked) {
-      return { allowed: false, reason: "blocked" };
+    // 2. CRDT block-state — the live fragment is unavailable for editing.
+    if (targetSection?.blockState) {
+      return {
+        allowed: false,
+        kind: "blocked",
+        message: "This section is temporarily unavailable for editing.",
+      };
     }
 
     return { allowed: true };
   }
 
   /**
-   * Execute a cross-section transfer via backend MSG_SECTION_MUTATE.
-   * Pipeline: recheck → validate → write target → delete source → return.
+   * Execute a cross-section move.
+   *
+   * The move is backend-owned (MW-10): there is no surviving client RPC that
+   * rewrites a section's Y.XmlFragment while preserving CRDT identity, and Y.js
+   * has no `moveTo` between top-level types. `execute()` issues a `section_move`
+   * request through the CRDT provider; the backend reorders the section inside
+   * the DocSession actor's Y.transact and fans out the new Y.Doc state. The
+   * promise resolves once that server-applied reorder reaches this client.
+   *
+   * Caret recovery for the moved section is best-effort/deferred ("100% correct
+   * data" is the accepted bar): the backend re-seeds the moved fragments, so
+   * local caret position in the moved section may reset.
    */
   async execute(transfer: SectionTransfer): Promise<TransferResult> {
     if (this._executing) {
@@ -169,109 +225,59 @@ export class SectionTransferService {
         return { success: false, error: "CRDT session disconnected — drop cancelled", sourceModified: false, targetModified: false };
       }
 
-      // Step 1: Recheck preconditions
+      // Recheck preconditions. Surface the verdict's prose message
+      // (plan §M — never interpolate a reason code into user-facing text).
       const verdict = this.canDrop(transfer.targetFragmentKey);
       if (!verdict.allowed) {
         return {
           success: false,
-          error: `Drop blocked: ${verdict.reason}${verdict.holder ? ` (${verdict.holder})` : ""}`,
+          error: verdict.message ?? "Drop is not allowed here.",
           sourceModified: false,
           targetModified: false,
         };
       }
 
-      if (this._aborted) return this._abortResult();
-
-      // Check source fragment key validity (move intent — can't complete move without source)
-      if (transfer.deleteFromSource && transfer.sourceFragmentKey) {
-        const sections = this.deps.getSections();
-        const sourceExists = sections.some(s => s.fragment_key === transfer.sourceFragmentKey);
-        if (!sourceExists) {
-          return { success: false, error: "Source section was restructured during drag — drop cancelled", sourceModified: false, targetModified: false };
-        }
+      if (this._aborted) {
+        return { success: false, error: "Transfer aborted", sourceModified: false, targetModified: false };
       }
 
-      // Step 2: Validate content
-      const markdown = transfer.content.markdown?.trim() || transfer.content.plainText?.trim();
-      if (!markdown) {
-        return { success: false, error: "No parseable content in transfer", sourceModified: false, targetModified: false };
+      // WS-6: capture the caret in the moved section BEFORE the backend re-seeds
+      // its live fragment (the re-seed re-mints structs, so a RelativePosition
+      // can't survive — we recover by content offset on the stable fragment key).
+      const sourceView = this.deps.getEditorViewForFragment?.(transfer.sourceFragmentKey) ?? null;
+      const capturedCaret = captureCaretOffsets(sourceView);
+
+      // Issue the backend-owned move. A drop ONTO a target section positions the
+      // dragged section immediately before that target (insert-at-target-slot).
+      try {
+        await this.deps.crdtProvider.sendSectionMove({
+          sourceHeadingPath: transfer.sourceHeadingPath,
+          targetHeadingPath: transfer.targetHeadingPath,
+          position: "before",
+        });
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : "Section move failed.",
+          sourceModified: false,
+          targetModified: false,
+        };
       }
 
-      if (this._aborted) return this._abortResult();
-
-      // Step 3: Read target section's current markdown
-      const targetMarkdown = this._readSectionMarkdown(transfer.targetFragmentKey);
-      if (targetMarkdown === null) {
-        return { success: false, error: "Target section not yet synced — drop cancelled", sourceModified: false, targetModified: false };
+      // WS-6: restore the caret once the server-applied re-seed has propagated to
+      // the editor (defer one macrotask so the ySyncPlugin has rebuilt the view).
+      // The moved section keeps its fragment key (the reorder preserves the
+      // section-file id), so we look it up again and restore by offset.
+      if (capturedCaret) {
+        setTimeout(() => {
+          const view = this.deps.getEditorViewForFragment?.(transfer.sourceFragmentKey) ?? null;
+          restoreCaretOffsets(view, capturedCaret);
+        }, 0);
       }
 
-      // Step 4: Insert dropped content at the specified offset (default: end)
-      const offset = transfer.insertionOffset ?? targetMarkdown.length;
-      const before = targetMarkdown.slice(0, offset);
-      const after = targetMarkdown.slice(offset);
-      const separator = before.length > 0 && !before.endsWith("\n\n") ? "\n\n" : "";
-      const endSeparator = after.length > 0 && !after.startsWith("\n") ? "\n\n" : "";
-      const newTargetMarkdown = before + separator + markdown + endSeparator + after;
-
-      // Step 5: Send new target markdown to backend
-      const targetResult = await this.deps.crdtProvider.sendSectionMutate(
-        transfer.targetFragmentKey,
-        newTargetMarkdown,
-      );
-      if (!targetResult.success) {
-        return { success: false, error: targetResult.error ?? "Target mutation failed", sourceModified: false, targetModified: false };
-      }
-
-      if (this._aborted) return { success: true, error: "Aborted after target write", sourceModified: false, targetModified: true };
-
-      // Step 6: Delete from source (if requested)
-      let sourceModified = false;
-      if (transfer.deleteFromSource && transfer.sourceFragmentKey) {
-        const sourceMarkdown = this._readSectionMarkdown(transfer.sourceFragmentKey);
-        if (sourceMarkdown === null) {
-          return {
-            success: true,
-            error: "Source section not yet synced — content may be duplicated in source section",
-            sourceModified: false,
-            targetModified: true,
-          };
-        }
-        const capturedIdx = sourceMarkdown.indexOf(markdown);
-        if (capturedIdx < 0) {
-          return {
-            success: true,
-            error: "Source was modified during drag — content may be duplicated in source section",
-            sourceModified: false,
-            targetModified: true,
-          };
-        }
-        const newSourceMarkdown = sourceMarkdown.slice(0, capturedIdx) + sourceMarkdown.slice(capturedIdx + markdown.length);
-        const sourceResult = await this.deps.crdtProvider.sendSectionMutate(
-          transfer.sourceFragmentKey,
-          newSourceMarkdown.trim(),
-        );
-        if (!sourceResult.success) {
-          return {
-            success: true,
-            error: `Source deletion failed: ${sourceResult.error} — content may be duplicated`,
-            sourceModified: false,
-            targetModified: true,
-          };
-        }
-        sourceModified = true;
-      }
-
-      return { success: true, sourceModified, targetModified: true };
-    } catch (err) {
-      // sendSectionMutate rejects if the provider is disconnected or destroyed.
-      // Convert to a TransferResult so this async function always resolves (not rejects).
-      // Callers use `void execute(...)` so a rejected promise would be unhandled.
-      return {
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-        sourceModified: false,
-        targetModified: false,
-      };
+      // The backend reorder moved the section atomically; no separate source
+      // deletion is needed (the move is structural, not copy+delete).
+      return { success: true, sourceModified: true, targetModified: true };
     } finally {
       this._executing = false;
     }
@@ -283,23 +289,5 @@ export class SectionTransferService {
    */
   abort(): void {
     this._aborted = true;
-  }
-
-  // ─── Private helpers ───────────────────────────────────
-
-  /** Read current section markdown from the local Y.Doc. Returns null if not yet synced. */
-  private _readSectionMarkdown(fragmentKey: string): string | null {
-    return fragmentToMarkdown(this.deps.crdtProvider.doc, fragmentKey);
-  }
-
-  private _sectionKeyForFragment(fragmentKey: string): string | null {
-    const sections = this.deps.getSections();
-    const section = sections.find(s => s.fragment_key === fragmentKey);
-    if (!section) return null;
-    return section.heading_path.join(">>");
-  }
-
-  private _abortResult(): TransferResult {
-    return { success: false, error: "Transfer aborted", sourceModified: false, targetModified: false };
   }
 }

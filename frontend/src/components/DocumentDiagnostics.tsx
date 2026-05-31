@@ -134,10 +134,10 @@ function renderChecks(checks: DiagHealthCheck[]) {
   }
 }
 
+// Session-overlay and raw-fragment durable layers were removed (plan §D); the
+// surviving layers are Canonical and live CRDT.
 const WINNER_COLORS: Record<string, string> = {
   canonical: "bg-blue-100 text-blue-800",
-  overlay: "bg-yellow-100 text-yellow-800",
-  fragment: "bg-purple-100 text-purple-800",
   crdt: "bg-green-100 text-green-800",
   none: "bg-gray-100 text-gray-500",
   error: "bg-red-100 text-red-800",
@@ -174,7 +174,7 @@ function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
     if (section.error && section.winner === "error") {
       return [
         <tr key={`${index}-section`} className="border-b border-gray-100 bg-gray-50">
-          <td colSpan={6} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
+          <td colSpan={4} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
             <div className="flex flex-wrap items-center gap-1">
               <span>{section.headingKey || "(body holder)"}</span>
               {section.isSubSkeleton ? (
@@ -186,7 +186,7 @@ function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
         </tr>,
         <tr key={`${index}-error`} className="border-b border-gray-100">
           <td className="px-2 py-1 bg-gray-50" />
-          <td colSpan={5} className="px-2 py-1 text-red-600 text-[11px]">
+          <td colSpan={3} className="px-2 py-1 text-red-600 text-[11px]">
             {section.error}
           </td>
         </tr>,
@@ -194,7 +194,7 @@ function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
     }
     return [
       <tr key={`${index}-section`} className="border-b border-gray-100 bg-gray-50">
-        <td colSpan={6} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
+        <td colSpan={4} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
           <div className="flex flex-wrap items-center gap-1">
             <span>{section.headingKey || "(body holder)"}</span>
             {section.isSubSkeleton ? (
@@ -207,8 +207,6 @@ function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
       <tr key={`${index}-layers`} className="border-b border-gray-100">
         <td className="px-2 py-1 bg-gray-50" />
         {renderLayerCell(section.canonical, section.winner === "canonical")}
-        {renderLayerCell(section.overlay, section.winner === "overlay")}
-        {renderLayerCell(section.fragment, section.winner === "fragment")}
         {renderLayerCell(section.crdt, section.winner === "crdt")}
         <td className="px-2 py-1 text-[11px]">
           <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${WINNER_COLORS[section.winner] ?? "bg-gray-100 text-gray-600"}`}>
@@ -225,13 +223,13 @@ function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
   } catch (e) {
     return [
       <tr key={`${index}-section`} className="border-b border-gray-100 bg-gray-50">
-        <td colSpan={6} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
+        <td colSpan={4} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
           {section.sectionFile}
         </td>
       </tr>,
       <tr key={`${index}-render-error`} className="border-b border-gray-100">
         <td className="px-2 py-1 bg-gray-50" />
-        <td colSpan={5} className="px-2 py-1 text-red-600 text-[11px]">
+        <td colSpan={3} className="px-2 py-1 text-red-600 text-[11px]">
           Render error: {e instanceof Error ? e.message : String(e)}
         </td>
       </tr>,
@@ -250,8 +248,6 @@ function renderSectionTable(sections: DiagSectionLayerInfo[]) {
               <tr className="bg-gray-50 sticky top-0">
                 <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-gray-600">Section</th>
                 <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-gray-600">Canonical</th>
-                <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-gray-600">Session Overlay</th>
-                <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-gray-600">Fragment (disk)</th>
                 <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-gray-600">CRDT (live)</th>
                 <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-gray-600">Winner</th>
               </tr>
@@ -260,7 +256,7 @@ function renderSectionTable(sections: DiagSectionLayerInfo[]) {
               {sections.map((section, i) => renderSectionRow(section, i))}
               {sections.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-2 py-4 text-center text-gray-400 text-sm">
+                  <td colSpan={4} className="px-2 py-4 text-center text-gray-400 text-sm">
                     No sections found
                   </td>
                 </tr>

@@ -58,6 +58,18 @@ export interface SectionRefReceipt {
  * `changedSections` is the set of heading paths whose body content differs
  * between the pre-absorb and post-absorb canonical state — sections that
  * were staged but body-identical to canonical are intentionally excluded.
+ *
+ * INVARIANT (Area C — do NOT relax). `AbsorbResult` is a committed-canonical
+ * RECEIPT only. It must NEVER grow into a live Y.Doc structural-delta contract:
+ * no Y.Doc rewrite instructions, no client/section remap payloads, no
+ * session/DocSession mappings. `absorbChangedSections` is proposal-agnostic,
+ * session-free, and Yjs-free; the committed canonical delta reaches any active
+ * live Y.Doc through the shared `Y.transact`-based canonical-to-live primitive
+ * owned by the CRDTProposalGenerator (Area B/H), NOT through this result
+ * (spec 05 › Proposal Publication; spec 11 › Publish; assumptions.md: absorb is
+ * not a live-session mapping carrier). `rewrittenDocumentPaths` /
+ * `absorbedSectionRefs` / `changedSections` exist solely for commit-result
+ * reporting, notifications, cleanup closures, and recovery diagnostics.
  */
 export interface AbsorbResult {
   commitSha: string;

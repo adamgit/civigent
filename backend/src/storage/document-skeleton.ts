@@ -17,8 +17,8 @@
  *
  * DocumentSkeleton — public, readonly. All query methods, no mutation.
  * DocumentSkeletonInternal — restricted. Adds mutation, persistence, and
- *   structural write methods. Only used by OverlayContentLayer internals,
- *   recovery-layers.ts, and callers that need to modify skeleton structure.
+ *   structural write methods. Only used by ProposalShadowContentLayer internals
+ *   and callers that need to modify skeleton structure.
  *
  * ## What it owns on disk
  *
@@ -322,7 +322,7 @@ export class DocumentSkeleton {
    * Canonical content root. Used by `writeTree()` to detect when a body-holder
    * placeholder would be synthesized in the overlay over a non-empty canonical
    * body file — in that case, the placeholder is skipped because
-   * `OverlayContentLayer.readBodyFromLayers()` already falls back to canonical.
+   * `ProposalShadowContentLayer.readBodyFromLayers()` already falls back to canonical.
    * Defaults to `overlayRoot` for single-root callers (recovery, in-memory).
    */
   protected readonly canonicalRoot: string;
@@ -964,7 +964,7 @@ export class DocumentSkeleton {
    *
    * Overlay-shadowing rule: when the overlay differs from the canonical root
    * AND the canonical layer already has a body file at the same relative path,
-   * skip the empty-placeholder synthesis. `OverlayContentLayer.readBodyFromLayers()`
+   * skip the empty-placeholder synthesis. `ProposalShadowContentLayer.readBodyFromLayers()`
    * already falls back to canonical, so the structural "body file must exist
    * somewhere" invariant is satisfied without the overlay placeholder. Writing
    * an empty overlay file there would shadow the non-empty canonical body for
@@ -1029,9 +1029,8 @@ export class DocumentSkeleton {
 
 /**
  * Internal variant of DocumentSkeleton — adds structural mutation methods
- * and persistence. Restricted to OverlayContentLayer internals,
- * recovery-layers.ts crash recovery, and callers that need to modify
- * skeleton structure.
+ * and persistence. Restricted to ProposalShadowContentLayer internals
+ * and callers that need to modify skeleton structure.
  */
 export class DocumentSkeletonInternal extends DocumentSkeleton {
 
@@ -1048,7 +1047,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
   // BFH/root-position mechanics. Their replacements live behind explicit
   // ContentLayer / StagedSectionsStore operations. Compile errors at the old call
   // sites are EXPECTED — the callers will be reworked in a follow-up pass
-  // through the OverlayContentLayer / store migration items in this checklist.
+  // through the ProposalShadowContentLayer / store migration items in this checklist.
 
   // --- Document-order navigation helpers ----------------------------
 
@@ -1217,7 +1216,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
       throw new Error(
         `deleteHeadingPreservingBody([]) is illegal in ${this.docPath} — ` +
         `the before-first-heading section cannot be removed via heading deletion. ` +
-        `Use OverlayContentLayer.tombstoneDocumentExplicit() to remove the entire document, ` +
+        `Use ProposalShadowContentLayer.tombstoneDocumentExplicit() to remove the entire document, ` +
         `or clear the BFH body content directly via LiveFragmentStringsStore.`,
       );
     }
@@ -1230,7 +1229,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
       throw new Error(
         `deleteHeadingPreservingBody cannot delete sub-skeleton parents in ${this.docPath}: ` +
         `the entry at [${headingPath.join(" > ")}] owns child sections. ` +
-        `Use OverlayContentLayer.deleteSubtree() to remove the whole subtree instead.`,
+        `Use ProposalShadowContentLayer.deleteSubtree() to remove the whole subtree instead.`,
       );
     }
 
@@ -1277,7 +1276,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
       removed.push(...removedEntries);
 
       // (3) The deleted heading's fragment key disappears with no replacement.
-      // Convention matches the explicit OverlayContentLayer operations:
+      // Convention matches the explicit ProposalShadowContentLayer operations:
       // emit raw section file ids in the remap; the caller is responsible
       // for translating to fragment-key encoding.
       fragmentKeyRemaps.push({ from: targetEntry.sectionFile, to: null });
@@ -1326,7 +1325,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    *        node (the merge target is a preceding sibling).
    *   5. Ensures body holders exist for any newly-parented nodes.
    *
-   * Returns a CollapseParentResult that the caller (OverlayContentLayer)
+   * Returns a CollapseParentResult that the caller (ProposalShadowContentLayer)
    * uses to drive body reads, writes, file deletion, and fragment
    * reconciliation.
    *
@@ -1661,7 +1660,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    *   2. Partitions parsed sections into "at the original level" and
    *      "deeper than the original level". The first at-level section
    *      becomes the parent of all deeper sections (matching how
-   *      `OverlayContentLayer.rewriteSubtreeFromParsedMarkdown` shapes its
+   *      `ProposalShadowContentLayer.rewriteSubtreeFromParsedMarkdown` shapes its
    *      output, since both routes describe the same structural intent).
    *   3. Replaces the original node in its parent sibling list with the
    *      new at-level nodes (sub-skeleton body holders are added by
@@ -1844,7 +1843,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * hierarchy. External callers should mutate skeletons via
    * `applyStructuralMutationTransaction(...)` (which persists exactly once
    * after the mutation closure runs) or via the explicit operations on
-   * `OverlayContentLayer`. The previous public visibility allowed callers
+   * `ProposalShadowContentLayer`. The previous public visibility allowed callers
    * to bypass the transaction primitive, which was the root cause of
    * coordination bugs (skeleton persisted before body writes finished,
    * fragment remaps performed against the wrong-version skeleton, etc).
@@ -1852,7 +1851,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * Overlay shadowing rule: structural body-holder placeholders are written
    * by `writeTree()` only when no canonical body file exists at the same
    * relative path. Intentional "clear body" semantics travel through
-   * `OverlayContentLayer` writes, not through this method. Don't add a
+   * `ProposalShadowContentLayer` writes, not through this method. Don't add a
    * read-time empty-file fallback to compensate — see `writeTree()` doc.
    */
   protected async flushToOverlay(): Promise<void> {
@@ -1897,7 +1896,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * operation if needed. No hidden extra writes — exactly one structural
    * file is written (the empty overlay skeleton file), nothing else.
    *
-   * This method exists so that `OverlayContentLayer.createDocument(...)`
+   * This method exists so that `ProposalShadowContentLayer.createDocument(...)`
    * has ONE sanctioned skeleton-layer call to make for new-doc creation
    * instead of having to know the inMemoryEmpty(...) → flushToOverlay()
    * choreography. After item 161, flushToOverlay is `protected` and is
@@ -1911,7 +1910,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    *
    * Caller responsibilities NOT covered by this method:
    *   - State policy (reject "live", reject "tombstone", only act on
-   *     "missing") — those decisions stay in OverlayContentLayer.
+   *     "missing") — those decisions stay in ProposalShadowContentLayer.
    */
   static async persistNewEmptyToOverlay(
     docPath: string,

@@ -58,9 +58,6 @@ function titleForNonDocsRoute(pathname: string): string {
   if (pathname === "/admin/agent-mcp-logs") {
     return `${PREFIX}Agent MCP Logs`;
   }
-  if (pathname === "/session-inspector") {
-    return `${PREFIX}Session Inspector`;
-  }
   if (pathname === "/history") {
     return `${PREFIX}Git History`;
   }

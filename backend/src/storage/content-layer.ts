@@ -3,7 +3,8 @@
  * from a content root directory.
  *
  * Constructed from a single contentRoot path and used for canonical-only
- * reads/writes. Overlay+canonical behavior lives in OverlayContentLayer.
+ * reads/writes. Proposal-shadow (overlay+canonical) behavior lives in
+ * ProposalShadowContentLayer.
  */
 
 import { readFile, writeFile, mkdir, copyFile, readdir, rm, stat } from "node:fs/promises";
@@ -32,7 +33,7 @@ import { staleHeadingPath } from "./skeleton-errors.js";
 // method to a thin wrapper over the section upsert core, so this
 // module no longer needs the import. The parser is invoked deeper in the
 // upsert path via `getParser()` (markdown-parser.js) and through the
-// `OverlayContentLayer.rewriteSubtreeFromParsedMarkdown(...)` machinery.
+// `ProposalShadowContentLayer.rewriteSubtreeFromParsedMarkdown(...)` machinery.
 import type { DocStructureNode } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
@@ -56,7 +57,7 @@ import type { ParsedSection } from "./markdown-sections.js";
  * unavoidable because extractMarkdown cannot produce markdown without
  * jsonToMarkdown (it's the serialization step, not an optional normalization),
  * and we cannot skip normalization here because all other write paths do not
- * normalize. The arbitrary-markdown upsert paths (`OverlayContentLayer.upsertSection(...)`
+ * normalize. The arbitrary-markdown upsert paths (`ProposalShadowContentLayer.upsertSection(...)`
  * and the `upsertDocumentFromMarkdown(...)` wrapper that delegates to the core) parse
  * via the CommonMark parser for structural splitting but do not run the
  * milkdown serializer round-trip, so normalization here is genuinely
@@ -129,6 +130,19 @@ function headingPathKey(headingPath: readonly string[]): string {
 function buildRewriteReplacementRoots(
   targetParentPath: readonly string[],
   parsedSections: ReadonlyArray<ParsedMarkdownRewriteSection>,
+  /**
+   * WS-0 (split/merge survivor identity). Existing body-bearing content entries
+   * of the subtree being rewritten, keyed by resulting heading-path key
+   * (`headingPathKey([...targetParentPath, ...parsedHeadingPath])`) → their
+   * existing `sectionFile`. A resulting section whose heading path ALREADY
+   * existed reuses its existing `sectionFile` (so its `section::<id>` live
+   * fragment key is preserved across the split), and only GENUINELY-NEW heading
+   * paths mint a fresh id. When a surviving leaf becomes a sub-skeleton parent
+   * (a child split out beneath it), its body moves to a body-holder child — so
+   * the reused id is carried onto that pre-seeded body-holder, NOT the parent
+   * structural node, because the live body fragment lives in the body-holder.
+   */
+  existingContentByResultingPath: ReadonlyMap<string, string> = new Map(),
 ): {
   replacementRoots: RewriteTreeNode[];
   bodyByResultingHeadingPath: Map<string, string>;
@@ -136,6 +150,10 @@ function buildRewriteReplacementRoots(
   const replacementRoots: RewriteTreeNode[] = [];
   const bodyByResultingHeadingPath = new Map<string, string>();
   const nodesByParsedHeadingPath = new Map<string, RewriteTreeNode>();
+  // Track each node's resulting heading-path key so we can decide id reuse
+  // after the whole tree is built (a node's leaf-vs-parent shape is only known
+  // once all its children have been attached).
+  const resultingKeyByNode = new Map<RewriteTreeNode, string>();
 
   for (const section of parsedSections) {
     const parsedHeadingPath = [...section.headingPath];
@@ -146,18 +164,23 @@ function buildRewriteReplacementRoots(
       );
     }
 
+    const resultingHeadingPath = [...targetParentPath, ...parsedHeadingPath];
+    const resultingKey = headingPathKey(resultingHeadingPath);
+
     const node: RewriteTreeNode = {
       heading: parsedHeadingPath.length === 0 ? "" : section.heading,
       level: section.level,
+      // Provisional id; reconciled to the existing id below once leaf/parent
+      // shape is known. BFH always mints a fresh BFH-family id.
       sectionFile: parsedHeadingPath.length === 0
         ? generateBeforeFirstHeadingFilename()
         : generateSectionFilename(section.heading),
       children: [],
     };
     nodesByParsedHeadingPath.set(parsedKey, node);
+    resultingKeyByNode.set(node, resultingKey);
 
-    const resultingHeadingPath = [...targetParentPath, ...parsedHeadingPath];
-    bodyByResultingHeadingPath.set(headingPathKey(resultingHeadingPath), section.body);
+    bodyByResultingHeadingPath.set(resultingKey, section.body);
 
     if (parsedHeadingPath.length <= 1) {
       replacementRoots.push(node);
@@ -173,6 +196,28 @@ function buildRewriteReplacementRoots(
       );
     }
     parent.children.push(node);
+  }
+
+  // WS-0: reconcile each node's id to the existing subtree where the heading
+  // path is preserved. Done after the tree is fully built so we know whether a
+  // surviving heading is a leaf (reuse on the node) or has gained children
+  // (reuse on a pre-seeded body-holder, which is where the live body fragment
+  // now lives).
+  for (const [node, resultingKey] of resultingKeyByNode) {
+    const existingFile = existingContentByResultingPath.get(resultingKey);
+    if (existingFile === undefined) continue; // genuinely-new heading path → keep minted id
+    if (node.children.length === 0) {
+      // Survivor stays a leaf: keep its body fragment by reusing the id directly.
+      node.sectionFile = existingFile;
+    } else if (!node.children.some((c) => isBodyHolderShape(c))) {
+      // Survivor became a sub-skeleton parent: its body moves to a body-holder.
+      // Pre-seed that body-holder with the reused id so the live body fragment
+      // key is preserved; the parent structural node keeps its minted id (no
+      // live fragment points at a sub-skeleton parent). Pre-seeding here means
+      // the later addBodyHoldersToParents pass sees a body-holder already present
+      // and will not mint a competing one.
+      node.children.unshift({ heading: "", level: 0, sectionFile: existingFile, children: [] });
+    }
   }
 
   return { replacementRoots, bodyByResultingHeadingPath };
@@ -505,7 +550,7 @@ export class ContentLayer {
    *
    * NOT the ordinary caller-facing API for user-authored markdown.
    * The new caller-facing surface is
-   * `OverlayContentLayer.upsertSection(...)` (item 225); this
+   * `ProposalShadowContentLayer.upsertSection(...)` (item 225); this
    * canonical `writeSection(...)` is the strict small primitive that
    * `upsertSection(...)` (and other internal callers) compose
    * over when they have ALREADY classified content as body-only.
@@ -526,7 +571,7 @@ export class ContentLayer {
    *
    * Callers that have arbitrary user-authored markdown and don't know
    * whether it contains embedded headings MUST use
-   * `OverlayContentLayer.upsertSection(...)` instead.
+   * `ProposalShadowContentLayer.upsertSection(...)` instead.
    */
   async writeSection(
     ref: SectionRef,
@@ -542,7 +587,7 @@ export class ContentLayer {
       throw new MultiSectionContentError(
         `Multi-section content passed to writeSection() for (${ref.docPath}, ` +
         `[${ref.headingPath.join(" > ")}]) — embedded heading(s) detected. ` +
-        `Use OverlayContentLayer.upsertSection(...) for arbitrary ` +
+        `Use ProposalShadowContentLayer.upsertSection(...) for arbitrary ` +
         `user markdown that may contain embedded headings; this strict primitive ` +
         `accepts body-only payloads only.`,
       );
@@ -643,10 +688,17 @@ export class ContentLayer {
   }
 }
 
-// ─── OverlayContentLayer ────────────────────────────────────────
+// ─── ProposalShadowContentLayer ─────────────────────────────────
 
 /**
- * OverlayContentLayer — skeleton-aware content layer with required canonical fallback.
+ * ProposalShadowContentLayer — skeleton-aware content layer that shadows a
+ * proposal content tree over the canonical content tree (overlay-first then
+ * canonical fallback).
+ *
+ * @internal This is a private implementation detail of the proposal facades
+ * (`ProposalReader` / `ProposalEditor`). Route handlers, MCP tools, CRDT
+ * publication, and frontend proposal services MUST NOT import or instantiate
+ * it directly — go through `ProposalReader` / `ProposalEditor` instead.
  *
  * Owns skeleton loading (overlay-first-then-canonical), structural mutation,
  * and content writes. Callers never see or touch DocumentSkeletonInternal.
@@ -657,7 +709,7 @@ export class ContentLayer {
  * (or `persistNewEmptyToOverlay(...)` for create flows). Same-call local
  * variables are allowed; cross-call memoization is not.
  */
-export class OverlayContentLayer {
+export class ProposalShadowContentLayer {
   readonly overlayRoot: string;
   readonly canonicalRoot: string;
 
@@ -880,7 +932,7 @@ export class OverlayContentLayer {
    * (used by callers to build proposal metadata, e.g. "these are the
    * sections that will go away when this tombstone commits"). Tombstone
    * writing is delegated to `tombstoneDocumentExplicit(...)`, which is the
-   * single sanctioned mutating tombstone path on `OverlayContentLayer` —
+   * single sanctioned mutating tombstone path on `ProposalShadowContentLayer` —
    * the deleted readonly `DocumentSkeleton.createTombstone(...)` static is
    * gone. Per item 191 there is no class-level skeleton cache; nothing
    * to invalidate.
@@ -1123,11 +1175,40 @@ export class OverlayContentLayer {
         `Illegal arguments: targeting the headingless root section but provided a heading.`,
       );
     }
-    if (!targetingBfh && !headingProvided) {
-      throw new Error(
-        `Illegal arguments: targeting a headed section but missing the section heading.`,
-      );
-    }
+    // A non-BFH target with an empty heading is the NESTED BODY-HOLDER write
+    // shape (`{ headingPath:[...non-empty], heading:"", level:0 }`), produced by
+    // the live-document snapshot (`forEachSection`) for a sub-skeleton parent's
+    // body-holder child. `upsertSection` resolves the parent's real heading
+    // before dispatching, so the empty heading is legal here — the caller is
+    // asking to update that section's own body, not to create a headless node.
+    // It is only rejected when the section can't be resolved (handled in
+    // `upsertSection`), never via this argument-shape guard.
+  }
+
+  /**
+   * Resolve a NESTED BODY-HOLDER write target (`heading === ""`,
+   * `headingPath.length > 0`) to the existing section's real heading + level.
+   *
+   * This shape is emitted by `DocumentSkeleton.forEachSection` (and therefore the
+   * live-document snapshot in `ydoc-lifecycle.ts`) for the body-holder child of a
+   * sub-skeleton parent: the entry carries the PARENT's heading path but the
+   * body-holder's anonymous `("", 0)` shape. A body-only update to that section
+   * must preserve the parent heading, level, and all descendant sections, so we
+   * recover the parent identity from the live skeleton and let the body-only
+   * convenience path (Case C → item-378 children-preservation) do the write.
+   *
+   * Returns `null` when the target section does not yet exist in the live
+   * skeleton — there is no parent identity to recover, so the empty heading is a
+   * genuine caller error and the validator's rejection stands.
+   */
+  private async resolveNestedBodyHolderHeading(
+    ref: SectionRef,
+  ): Promise<{ heading: string; level: number } | null> {
+    if ((await this.getDocumentState(ref.docPath)) !== "live") return null;
+    const skeleton = await this.readSkeleton(ref.docPath);
+    const existing = skeleton.findStructuralNodeByHeadingPath(ref.headingPath);
+    if (!existing) return null;
+    return { heading: existing.heading, level: existing.level };
   }
 
   async upsertSection(
@@ -1142,6 +1223,31 @@ export class OverlayContentLayer {
     // BFH-vs-document-rewrite dispatch.
     if (ref.headingPath.length === 0) {
       return await this.upsertSectionFromMarkdownCore(ref, content);
+    }
+
+    // ── Nested body-holder body-only write ────────────────────────────
+    //
+    // A non-BFH target with an empty heading is the body-holder snapshot shape
+    // for a sub-skeleton parent (see `resolveNestedBodyHolderHeading`). Recover
+    // the parent's real heading + level from the live skeleton and route the
+    // body through the body-only convenience path (Case C), which lands on the
+    // item-378 children-preservation branch — updating only the parent's own
+    // body and leaving every descendant section intact. Without this, the
+    // snapshot re-materialize of a post-split body-holder would either throw
+    // (empty heading) or clobber descendants. When the section can't be
+    // resolved the empty heading is a real caller error — re-run the guard so
+    // it throws the original "missing the section heading" message.
+    if (heading.trim().length === 0) {
+      const resolved = await this.resolveNestedBodyHolderHeading(ref);
+      if (resolved === null) {
+        throw new Error(
+          `Illegal arguments: targeting a headed section but missing the section heading.`,
+        );
+      }
+      const markdown = content
+        ? `${"#".repeat(resolved.level)} ${resolved.heading}\n\n${content}`
+        : `${"#".repeat(resolved.level)} ${resolved.heading}`;
+      return await this.upsertSectionFromMarkdownCore(ref, markdown);
     }
 
     const parsed = getParser().parseDocumentMarkdown(content);
@@ -1693,7 +1799,7 @@ export class OverlayContentLayer {
   // leaf→sub-skeleton transition path that item 432 fixed once-and-for-all
   // inside `materializeAncestorHeadings(...)`. All callers that previously
   // wanted "create a structural target then write a body" now go through
-  // `OverlayContentLayer.upsertSection(...)`.
+  // `ProposalShadowContentLayer.upsertSection(...)`.
 
   // ─── Read methods (delegated to readonly paths) ───────────
 
@@ -1719,7 +1825,7 @@ export class OverlayContentLayer {
    * file; that suppression happens at the WRITE site (`writeTree`), not here.
    * This reader therefore does not (and must not) attempt to second-guess
    * empty overlay files at read time — the only sanctioned writer of empty
-   * overlay bodies is `OverlayContentLayer.upsertSection(...)`-style intent,
+   * overlay bodies is `ProposalShadowContentLayer.upsertSection(...)`-style intent,
    * never raw structural-placeholder synthesis.
    */
   private async readBodyFromLayers(overlayPath: string): Promise<string | null> {
@@ -2084,7 +2190,12 @@ export class OverlayContentLayer {
       const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
       const removed = ctx.flattenNode(oldNode, parentPath, parentSkeletonPath);
 
-      const newSectionFile = generateSectionFilename(newHeading);
+      // WS-0/WS-2 (rename keeps identity): a relabeled section is the SAME
+      // section — REUSE its section-file id so its `section::<id>` live fragment
+      // key stays valid (the live heading-edit applier edits the heading node in
+      // place; re-keying would force a clobber and lose the body's struct
+      // identity / cursors). Only the heading text/level changes.
+      const newSectionFile = oldNode.sectionFile;
       const newNode: SkeletonNode = {
         heading: newHeading,
         level: oldNode.level,
@@ -2104,11 +2215,14 @@ export class OverlayContentLayer {
         removed,
         added,
         bodyWrites,
-        fragmentKeyRemaps: [{ from: oldNode.sectionFile, to: newSectionFile }],
+        // Id reused → no re-key. (from === to would be a no-op remap; omit it.)
+        fragmentKeyRemaps: [],
       } satisfies StructuralMutationPlan;
     });
 
     // Perform the body writes and deletions declared in the plan.
+    // NOTE: the renamed section reuses its file id, so `removed` and the new
+    // body write target the SAME absolutePath — order matters (rm THEN write).
     for (const entry of plan.removed) {
       await rm(entry.absolutePath, { force: true });
     }
@@ -2157,6 +2271,208 @@ export class OverlayContentLayer {
     const newHeadingPath = [...parentPath, newHeading];
     const newEntry = skeleton.requireContentEntryByHeadingPath(newHeadingPath);
     return { oldEntry, newEntry };
+  }
+
+  /**
+   * Delete ONLY a heading (the one heading line), KEEPING its descendants
+   * (WS-2 parent-heading deletion / merge). Semantics (the obvious markdown
+   * behavior): the heading node is removed, its OWN direct body merges into the
+   * preceding section, and every child subtree RE-PARENTS up into the deleted
+   * node's slot — keeping each child's section-file id UNCHANGED so its
+   * `section::<id>` live fragment key (and any cursor inside it) survives, even
+   * though the child's body file relocates on disk to the new parent directory.
+   * This is distinct from `deleteSubtree` (which deletes the children) and from
+   * `moveSubtree` (which RE-KEYS the moved nodes — breaking the live identity).
+   *
+   * TODO(WS-2 parent-collapse): NOT YET IMPLEMENTED. This stub currently delegates
+   * to `deleteSubtree`, which WIPES the children and loses the body — the failing
+   * tests in `__tests__/crdt/parent-heading-deletion.test.ts` pin the intended
+   * behavior at all three layers (feature / markdown-tree / skeleton-file+ids).
+   * Replace the body below with an id-preserving re-parent inside
+   * `applyStructuralMutationTransaction`: locate the target node in its parent's
+   * sibling list, splice its non-body-holder children INTO that slot (keeping the
+   * child node objects → ids preserved), merge the target's body-holder body into
+   * the predecessor section, and drop the now-childless target node. Emit the
+   * relocated children as removed-at-old-path + added-at-new-path with the SAME
+   * sectionFile so the flush moves the files without a re-key.
+   */
+  async removeHeadingPreservingChildren(docPath: string, headingPath: string[]): Promise<void> {
+    if (headingPath.length === 0) {
+      throw new Error(`Cannot delete the before-first-heading section's heading in ${docPath}.`);
+    }
+    const skeleton = await this.getWritableSkeleton(docPath);
+    const targetNode = skeleton.findStructuralNodeByHeadingPath(headingPath);
+    if (!targetNode) throw staleHeadingPath(docPath, headingPath, "cannot delete heading");
+
+    const parentPath = headingPath.slice(0, -1);
+    const targetHeading = headingPath[headingPath.length - 1];
+
+    // Resolve the doc-order predecessor among same-parent siblings (the section
+    // the deleted heading's body folds into, and the new parent for its children).
+    const siblingPaths = (await this.getSectionList(docPath))
+      .filter(
+        (s) =>
+          s.headingPath.length === parentPath.length + 1 &&
+          parentPath.every((seg, i) => headingsEqual(seg, s.headingPath[i])),
+      )
+      .map((s) => s.headingPath);
+    const targetSiblingIdx = siblingPaths.findIndex((p) => headingsEqual(p[p.length - 1], targetHeading));
+    if (targetSiblingIdx <= 0) {
+      // No preceding sibling to absorb the body / re-parent under. (Deleting the
+      // first section's heading is the BFH-merge case handled elsewhere.)
+      throw new Error(
+        `removeHeadingPreservingChildren: "${headingPath.join(" > ")}" has no preceding sibling in ${docPath}.`,
+      );
+    }
+    const predecessorPath = siblingPaths[targetSiblingIdx - 1];
+
+    // Read all descendant bodies (keyed by section-file id) + the predecessor body
+    // BEFORE mutating — the re-parent preserves ids, so we re-write each child's
+    // body at its NEW path under the same id.
+    const bodyById = new Map<string, string>();
+    let targetOwnBody = "" as SectionBody;
+    for (const entry of skeleton.subtreeEntries(headingPath)) {
+      const body = bodyFromDisk((await this.readBodyFromLayers(entry.absolutePath)) ?? "");
+      bodyById.set(entry.sectionFile, body);
+      if (headingPathKey(entry.headingPath) === headingPathKey(headingPath)) {
+        // The target's OWN direct body (its body-holder, or itself if a leaf).
+        targetOwnBody = body;
+      }
+    }
+    const predecessorEntry = skeleton.findContentEntryByHeadingPath(predecessorPath);
+    const predecessorOldBody = predecessorEntry
+      ? bodyFromDisk((await this.readBodyFromLayers(predecessorEntry.absolutePath)) ?? "")
+      : ("" as SectionBody);
+    const predecessorOldAbsolutePath = predecessorEntry?.absolutePath ?? null;
+    const mergedPredecessorBody = appendToBody(predecessorOldBody, targetOwnBody);
+
+    const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
+      const siblings = ctx.findSiblingList(parentPath);
+      const idx = siblings.findIndex((n) => headingsEqual(n.heading, targetHeading));
+      if (idx <= 0) throw staleHeadingPath(docPath, headingPath, "cannot delete heading");
+      const target = siblings[idx];
+      const predecessor = siblings[idx - 1];
+      const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
+
+      // Capture the target's ORIGINAL subtree for cleanup (old child file paths +
+      // the target's own sub-skeleton/body-holder) before we move anything.
+      const removed = ctx.flattenNode(target, parentPath, parentSkeletonPath);
+      // Also retire the predecessor's OLD leaf body file when it becomes a parent
+      // (its id is reused for a body-holder at a NEW path; the old leaf is stale).
+      const extraRemoved: FlatEntry[] = [];
+
+      const realChildren = target.children.filter((c) => !isBodyHolderShape(c));
+
+      if (realChildren.length > 0) {
+        // The predecessor gains children → it must become a sub-skeleton parent.
+        const predHasBodyHolder = predecessor.children.some((c) => isBodyHolderShape(c));
+        if (predecessor.children.length === 0) {
+          // Leaf → parent: reuse the predecessor's id as its body-holder (so its
+          // live fragment key survives) and mint a fresh sub-skeleton id.
+          const predOldId = predecessor.sectionFile;
+          if (predecessorOldAbsolutePath) {
+            extraRemoved.push({
+              headingPath: [...predecessorPath],
+              heading: predecessor.heading,
+              level: predecessor.level,
+              sectionFile: predOldId,
+              absolutePath: predecessorOldAbsolutePath,
+              isSubSkeleton: false,
+            });
+          }
+          predecessor.sectionFile = generateSectionFilename(predecessor.heading);
+          predecessor.children.push({ heading: "", level: 0, sectionFile: predOldId, children: [] });
+        } else if (!predHasBodyHolder) {
+          // Already a parent but no body-holder — give it one (fresh id is fine;
+          // its body lived inline previously only if it was a leaf, handled above).
+          ctx.addBodyHoldersToParents([predecessor]);
+        }
+        // Re-parent the moved children (the node OBJECTS — ids preserved).
+        predecessor.children.push(...realChildren);
+      }
+
+      // Remove the target node.
+      siblings.splice(idx, 1);
+
+      // The predecessor's NEW subtree gives the moved children their new paths.
+      const added = ctx.flattenNode(predecessor, parentPath, parentSkeletonPath);
+
+      // Body writes: predecessor body-holder ← merged body; each moved child (by
+      // id) ← its preserved body at the new path.
+      const predContent = added.find(
+        (e) => !e.isSubSkeleton && headingPathKey(e.headingPath) === headingPathKey(predecessorPath),
+      );
+      const bodyWrites: StructuralMutationPlan["bodyWrites"] = [];
+      if (predContent) bodyWrites.push({ absolutePath: predContent.absolutePath, content: mergedPredecessorBody as string });
+      for (const entry of added) {
+        if (entry.isSubSkeleton) continue;
+        if (predContent && entry.absolutePath === predContent.absolutePath) continue;
+        const preserved = bodyById.get(entry.sectionFile);
+        if (preserved !== undefined) bodyWrites.push({ absolutePath: entry.absolutePath, content: preserved });
+      }
+
+      return {
+        removed: [...removed, ...extraRemoved],
+        added,
+        bodyWrites,
+        // Children keep their ids (no re-key); the target's own body merged into
+        // the predecessor (its body-holder/leaf file is removed, not remapped).
+        fragmentKeyRemaps: [],
+      } satisfies StructuralMutationPlan;
+    });
+
+    for (const entry of plan.removed) {
+      if (entry.isSubSkeleton) await rm(`${entry.absolutePath}.sections`, { recursive: true, force: true });
+      await rm(entry.absolutePath, { force: true });
+    }
+    for (const write of plan.bodyWrites) {
+      await this.writeOverlayBodyFile(
+        docPath,
+        { absolutePath: write.absolutePath, isSubSkeleton: false } as FlatEntry,
+        write.content,
+      );
+    }
+  }
+
+  /**
+   * Id-preserving in-place retitle/re-level of a section (WS-2 rename /
+   * level-change reflection). Sets the heading text AND level on the existing
+   * skeleton node WITHOUT minting a new section-file id (so the section's
+   * `section::<id>` live fragment key stays valid and the live heading-edit
+   * applier's identity preservation holds end-to-end), then writes `body` into
+   * the section's content entry (leaf or body-holder). Works for both leaf and
+   * sub-skeleton-parent targets. Returns the resulting content entry.
+   */
+  async retitleSectionInPlace(
+    docPath: string,
+    headingPath: string[],
+    newHeading: string,
+    newLevel: number,
+    body: SectionBody,
+  ): Promise<ContentEntry> {
+    if (headingPath.length === 0) {
+      throw new Error(`Cannot retitle the before-first-heading section in ${docPath} — it has no heading.`);
+    }
+    const skeleton = await this.getWritableSkeleton(docPath);
+    skeleton.requireContentEntryByHeadingPath(headingPath); // assert exists
+    const parentPath = headingPath.slice(0, -1);
+    const target = headingPath[headingPath.length - 1];
+    await skeleton.applyStructuralMutationTransaction((ctx) => {
+      const siblings = ctx.findSiblingList(parentPath);
+      const idx = siblings.findIndex((n) => headingsEqual(n.heading, target));
+      if (idx < 0) throw staleHeadingPath(docPath, headingPath, "cannot retitle");
+      siblings[idx].heading = newHeading;
+      siblings[idx].level = newLevel;
+      return { removed: [], added: [], bodyWrites: [], fragmentKeyRemaps: [] } satisfies StructuralMutationPlan;
+    });
+    const newHeadingPath = [...parentPath, newHeading];
+    const newEntry = skeleton.requireContentEntryByHeadingPath(newHeadingPath);
+    await this.writeOverlayBodyFile(
+      docPath,
+      { absolutePath: newEntry.absolutePath, isSubSkeleton: false } as FlatEntry,
+      body as string,
+    );
+    return newEntry;
   }
 
   /**
@@ -2264,6 +2580,70 @@ export class OverlayContentLayer {
   }
 
   /**
+   * Reposition `headingPath` relative to a same-parent sibling `targetHeading`
+   * (the leaf heading of `targetHeadingPath`), placing it immediately before or
+   * after that sibling. This is the cross-section drag/drop reorder primitive
+   * (MW-10): a pure positional splice within one parent's sibling list — the
+   * section keeps its level, sectionFile id, body, and descendants, so there is
+   * NO fragment-key remap and NO body rewrite (data is preserved exactly).
+   *
+   * Reparenting (a move to a DIFFERENT parent or level) is `moveSubtree`'s job;
+   * this method only reorders siblings and throws when source and target do not
+   * share a parent. The skeleton is persisted via the structural-mutation
+   * transaction (which flushes the reordered skeleton to the overlay).
+   */
+  async reorderSiblingSection(
+    docPath: string,
+    headingPath: string[],
+    targetHeadingPath: string[],
+    position: "before" | "after",
+  ): Promise<void> {
+    if (headingPath.length === 0) {
+      throw new Error(`Cannot reorder the before-first-heading section in ${docPath}.`);
+    }
+    if (targetHeadingPath.length === 0) {
+      throw new Error(`Cannot reorder relative to the before-first-heading section in ${docPath}.`);
+    }
+    const parentPath = headingPath.slice(0, -1);
+    const targetParentPath = targetHeadingPath.slice(0, -1);
+    if (parentPath.length !== targetParentPath.length || !parentPath.every((p, i) => p === targetParentPath[i])) {
+      throw new Error(
+        `reorderSiblingSection in ${docPath}: source [${headingPath.join(" > ")}] and target ` +
+        `[${targetHeadingPath.join(" > ")}] are not siblings (different parent). ` +
+        `Use moveSubtree for reparenting.`,
+      );
+    }
+
+    const skeleton = await this.getWritableSkeleton(docPath);
+    await skeleton.applyStructuralMutationTransaction((ctx) => {
+      const siblings = ctx.findSiblingList(parentPath);
+      const sourceLeaf = headingPath[headingPath.length - 1];
+      const targetLeaf = targetHeadingPath[targetHeadingPath.length - 1];
+      const sourceIdx = siblings.findIndex((n) => headingsEqual(n.heading, sourceLeaf));
+      if (sourceIdx < 0) {
+        throw staleHeadingPath(docPath, headingPath, "cannot reorder (source)");
+      }
+      const targetIdx = siblings.findIndex((n) => headingsEqual(n.heading, targetLeaf));
+      if (targetIdx < 0) {
+        throw staleHeadingPath(docPath, targetHeadingPath, "cannot reorder (target)");
+      }
+      if (sourceIdx === targetIdx) {
+        // No-op reorder relative to self.
+        return { removed: [], added: [], bodyWrites: [], fragmentKeyRemaps: [] } satisfies StructuralMutationPlan;
+      }
+
+      const [movedNode] = siblings.splice(sourceIdx, 1);
+      // Recompute the target index after removal — the splice may have shifted it.
+      const newTargetIdx = siblings.findIndex((n) => headingsEqual(n.heading, targetLeaf));
+      const insertAt = position === "before" ? newTargetIdx : newTargetIdx + 1;
+      siblings.splice(insertAt, 0, movedNode);
+
+      // Pure positional reorder: nothing removed/added/rewritten, no key remap.
+      return { removed: [], added: [], bodyWrites: [], fragmentKeyRemaps: [] } satisfies StructuralMutationPlan;
+    });
+  }
+
+  /**
    * Rewrite the subtree at `headingPath` from a pre-parsed markdown section
    * list, preserving the targeted slot in its parent.
    *
@@ -2305,9 +2685,25 @@ export class OverlayContentLayer {
     }
 
     const parentPath = headingPath.slice(0, -1);
+    // WS-0: gather the existing body-bearing entries of the subtree being
+    // rewritten so split/merge survivors reuse their existing section-file id
+    // (preserving their `section::<id>` live fragment key) instead of minting a
+    // fresh one. `subtreeEntries` returns content entries (body-holders + leaves,
+    // sub-skeleton parents filtered out) with absolute heading paths — exactly
+    // the resulting-path keys `buildRewriteReplacementRoots` matches against.
+    const existingContentByResultingPath = new Map<string, string>();
+    // `subtreeEntries([])` is illegal (the before-first-heading / whole-document
+    // root has no single subtree); only a real (non-root) heading path has an
+    // existing subtree whose ids can be reused.
+    if (headingPath.length > 0) {
+      for (const existing of skeleton.subtreeEntries(headingPath)) {
+        existingContentByResultingPath.set(headingPathKey(existing.headingPath), existing.sectionFile);
+      }
+    }
     const { replacementRoots, bodyByResultingHeadingPath } = buildRewriteReplacementRoots(
       parentPath,
       parsedSections,
+      existingContentByResultingPath,
     );
 
     // ── Item 369: leadingOrphanBody pre-mutation snapshot ─────────────
@@ -2384,11 +2780,25 @@ export class OverlayContentLayer {
         }
       }
 
+      // WS-0: emit a fragment-key remap ONLY when the target's section-file id
+      // did NOT survive the rewrite. With survivor id-reuse the old id is
+      // preserved (on the surviving leaf, or carried onto a pre-seeded
+      // body-holder when the leaf became a parent), so there is no re-key and no
+      // remap — the live fragment keeps its identity. Only when the old id truly
+      // disappears (e.g. the heading was renamed, or the whole subtree replaced)
+      // do we remap it onto the first resulting content entry.
+      const survivingFiles = new Set(added.filter((e) => !e.isSubSkeleton).map((e) => e.sectionFile));
+      const oldIdSurvived = survivingFiles.has(oldNode.sectionFile);
+      const firstContentFile = added.find((e) => !e.isSubSkeleton)?.sectionFile ?? null;
+      const fragmentKeyRemaps = oldIdSurvived
+        ? []
+        : [{ from: oldNode.sectionFile, to: firstContentFile }];
+
       return {
         removed,
         added,
         bodyWrites,
-        fragmentKeyRemaps: [{ from: oldNode.sectionFile, to: replacementRoots[0]?.sectionFile ?? null }],
+        fragmentKeyRemaps,
       } satisfies StructuralMutationPlan;
     });
 
@@ -2550,9 +2960,29 @@ export class OverlayContentLayer {
         newlyAdded.push(...ctx.flattenNode(bfhNode, [], resolveSkeletonPath(docPath, this.overlayRoot)));
       }
 
+      // ── Build the WHOLE missing ancestor chain in-memory first ────────────
+      //
+      // Each newly-created intermediate segment is pushed into its (already
+      // existing or just-created) parent's children. We deliberately DO NOT
+      // flatten nodes one-at-a-time here: a node flattened at creation time
+      // still has `children: []`, so it would be recorded as a leaf
+      // (`isSubSkeleton: false`) and later emit an empty body write that
+      // overwrites the sub-skeleton file `writeTree` produces for it — the
+      // root cause of the multi-new-segment skeleton-integrity failure.
+      // Instead we build the entire chain, materialize body holders for every
+      // new parent, and flatten ONCE at the end (mirroring appendRootSections).
+      //
+      // `topNewParentPath` is the shallowest path whose node was created in
+      // this transaction (or the shallowest pre-existing leaf-turned-parent).
+      // Flattening from there captures the full nested subtree with correct
+      // `isSubSkeleton` flags. `newNodePaths` records which content sections
+      // are genuinely new so we only emit empty body writes for those.
+      let topNewParentPath: string[] | null = null;
+      const newSegmentPaths: string[][] = [];
       for (let i = 1; i <= headingPath.length; i++) {
         const ancestorPath = headingPath.slice(0, i);
         if (skeleton.has(ancestorPath)) continue;
+        if (topNewParentPath === null) topNewParentPath = ancestorPath;
         const parentPath = ancestorPath.slice(0, -1);
         const parentSiblings = ctx.findSiblingList(parentPath);
         const level = parentPath.length === 0
@@ -2566,15 +2996,18 @@ export class OverlayContentLayer {
           children: [],
         };
         parentSiblings.push(node);
-        newlyAdded.push(
-          ...ctx.flattenNode(node, parentPath, ctx.resolveSkeletonPathFor(parentPath)),
-        );
+        newSegmentPaths.push([...ancestorPath]);
       }
 
-      // Body-holder materialization for the captured leaf parent. After the
-      // loop above the parent has gained its first real child but no body
-      // holder yet — addBodyHoldersToParents prepends a level-0/heading=""
-      // child whose file will hold the parent's pre-migration body content.
+      // Body-holder materialization for the captured pre-existing leaf parent.
+      // A leaf that gains its first child must migrate its body into a freshly
+      // prepended body holder, else writeTree clobbers the body file with
+      // sub-skeleton markers. Capture that body holder so its body write
+      // carries the pre-migration content rather than empty string. This must
+      // happen before the general addBodyHoldersToParents pass below; that pass
+      // is idempotent (it skips parents that already have a body holder), so
+      // the leaf parent's body holder is added exactly once.
+      let migratedBhHeadingPath: string[] | null = null;
       if (leafParentPath !== null && leafParentBody !== null) {
         const grandparentPath = leafParentPath.slice(0, -1);
         const grandparentSiblings = ctx.findSiblingList(grandparentPath);
@@ -2596,22 +3029,64 @@ export class OverlayContentLayer {
         }
         const parentSkeletonPath = ctx.resolveSkeletonPathFor(leafParentPath);
         bhAbsolutePathForMigration = path.join(`${parentSkeletonPath}.sections`, bh.sectionFile);
-        const bhEntry: FlatEntry = {
-          headingPath: [...leafParentPath],
-          heading: "",
-          level: 0,
-          sectionFile: bh.sectionFile,
-          absolutePath: bhAbsolutePathForMigration,
-          isSubSkeleton: false,
-        };
-        newlyAdded.push(bhEntry);
+        migratedBhHeadingPath = [...leafParentPath];
+        // The leaf parent is an ancestor of (or shallower than) any new
+        // segment, and it now owns a freshly prepended body holder that must
+        // be flattened. Anchor the single flatten at the leaf parent whenever
+        // it is shallower than the shallowest new segment so the migrated body
+        // holder is included.
+        if (topNewParentPath === null || leafParentPath.length < topNewParentPath.length) {
+          topNewParentPath = [...leafParentPath];
+        }
       }
 
+      // Materialize body holders for every brand-new intermediate parent in
+      // the freshly built chain. Without this, an intermediate segment (e.g.
+      // "Getting Started" / "Installation" in [GS, Inst, Linux]) becomes a
+      // sub-skeleton parent with NO content-addressable body file and the
+      // skeleton fails to resolve descendants on reload. addBodyHoldersToParents
+      // is idempotent, so the already-handled leaf parent above is untouched.
+      for (const segPath of newSegmentPaths) {
+        const node = ctx.findSiblingList(segPath.slice(0, -1))
+          .find((n) => headingsEqual(n.heading, segPath[segPath.length - 1]));
+        if (node) ctx.addBodyHoldersToParents([node]);
+      }
+
+      // Flatten the complete subtree ONCE so isSubSkeleton flags and the
+      // materialized body-holder entries are all captured correctly.
+      if (topNewParentPath !== null) {
+        const topParentPath = topNewParentPath.slice(0, -1);
+        const topNode = ctx.findSiblingList(topParentPath)
+          .find((n) => headingsEqual(n.heading, topNewParentPath![topNewParentPath!.length - 1]));
+        if (!topNode) {
+          throw new Error(
+            `Skeleton integrity error in ${docPath}: top new ancestor ` +
+            `[${topNewParentPath.join(" > ")}] vanished during materializeAncestorHeadings`,
+          );
+        }
+        newlyAdded.push(
+          ...ctx.flattenNode(topNode, topParentPath, ctx.resolveSkeletonPathFor(topParentPath)),
+        );
+      }
+
+      // Body writes: only for genuine body-file entries (leaf sections and
+      // body holders), never for sub-skeleton parents (writeTree owns their
+      // skeleton files). The migrated leaf-parent body holder carries the
+      // captured pre-migration body; everything else starts empty.
+      const migratedBhKey = migratedBhHeadingPath !== null
+        ? migratedBhHeadingPath.join(" ")
+        : null;
       const bodyWrites: StructuralMutationPlan["bodyWrites"] = [];
+      const seenBodyPaths = new Set<string>();
       for (const e of newlyAdded) {
         if (e.isSubSkeleton) continue;
+        if (seenBodyPaths.has(e.absolutePath)) continue;
+        seenBodyPaths.add(e.absolutePath);
         const isMigratedBh =
-          leafParentPath !== null && e.absolutePath === bhAbsolutePathForMigration;
+          migratedBhKey !== null
+          && e.level === 0
+          && e.heading === ""
+          && e.headingPath.join(" ") === migratedBhKey;
         bodyWrites.push({
           absolutePath: e.absolutePath,
           content: isMigratedBh ? (leafParentBody as unknown as string) : "",

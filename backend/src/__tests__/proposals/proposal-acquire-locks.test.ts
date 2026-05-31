@@ -112,9 +112,18 @@ describe("POST /api/proposals/:id/acquire-locks — lock acquisition", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.acquired).toBe(false);
-    expect(res.body.reason).toBeDefined();
-    expect(res.body.section).toBeDefined();
-    expect(res.body.section.doc_path).toBe(SAMPLE_DOC_PATH);
-    expect(res.body.section.heading_path).toEqual(["Overview"]);
+    // New ProposalLockResult shape: top-level prose + structured conflicts[].
+    expect(typeof res.body.message).toBe("string");
+    expect(res.body.message.length).toBeGreaterThan(0);
+    expect(Array.isArray(res.body.conflicts)).toBe(true);
+    expect(res.body.conflicts.length).toBe(1);
+    const conflict = res.body.conflicts[0];
+    expect(conflict.target.doc_path).toBe(SAMPLE_DOC_PATH);
+    expect(conflict.target.heading_path).toEqual(["Overview"]);
+    expect(conflict.blockingProposalId).toBe(draftProposalId);
+    expect(conflict.blockingProposalStatus).toBe("inprogress");
+    expect(conflict.blockingWriter).toBeDefined();
+    expect(typeof conflict.message).toBe("string");
+    expect(conflict.message.length).toBeGreaterThan(0);
   });
 });

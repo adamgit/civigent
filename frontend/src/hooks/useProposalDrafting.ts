@@ -8,8 +8,8 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { apiClient } from "../services/api-client";
 import {
   type ProposalSectionAvailabilityEvent,
+  type ProposalSectionAvailabilityEntry,
   sectionGlobalKey,
-  type EvaluatedSectionBlockedReason,
   type ProposalDTO,
   type RequestedMode,
 } from "../types/shared.js";
@@ -65,29 +65,22 @@ function headingPathEquals(a: string[], b: string[]): boolean {
   return true;
 }
 
-function mapBlockedReasonToMessage(reason: EvaluatedSectionBlockedReason | undefined): string {
-  switch (reason) {
-    case "active_live_edit":
-      return "live edits in progress";
-    case "uncommitted_live_edits":
-      return "uncommitted live edits exist";
-    case "human_proposal_lock":
-      return "another human proposal lock is active";
-    case "aggregate_impact":
-      return "human-involvement threshold not satisfied";
-    default:
-      return "section is currently unacquirable";
+/**
+ * Derive a conflict line for an unavailable section from the availability event.
+ *
+ * Area M: the availability event now carries server-authored prose `message`
+ * (FSM lock conflict text). Render it verbatim and never derive text from a
+ * code/enum. Fall back to the holder name or a generic line only when the server
+ * omitted prose.
+ */
+function availabilityEntryMessage(entry: ProposalSectionAvailabilityEntry): string {
+  if (entry.message) {
+    return entry.message;
   }
-}
-
-function availabilityEntryMessage(entry: {
-  blocked_reason?: EvaluatedSectionBlockedReason;
-  holder_writer_display_name?: string;
-}): string {
-  if (entry.blocked_reason === "human_proposal_lock" && entry.holder_writer_display_name) {
-    return `locked by ${entry.holder_writer_display_name}`;
+  if (entry.holder_writer_display_name) {
+    return `Locked by ${entry.holder_writer_display_name}`;
   }
-  return mapBlockedReasonToMessage(entry.blocked_reason);
+  return "Section is currently unavailable for editing.";
 }
 
 export function useProposalDrafting({
@@ -147,8 +140,6 @@ export function useProposalDrafting({
     for (const section of proposal.sections as Array<{
       doc_path: string;
       heading_path: string[];
-      blocked?: boolean;
-      blocked_reason?: EvaluatedSectionBlockedReason;
       content?: string | null;
     }>) {
       const key = sectionGlobalKey(section.doc_path, section.heading_path);
@@ -162,9 +153,23 @@ export function useProposalDrafting({
         heading_path: [...section.heading_path],
         content,
       });
-      if (section.blocked) {
-        nextConflicts.set(key, mapBlockedReasonToMessage(section.blocked_reason));
-      }
+    }
+
+    // Conflicts now come from the proposal DTO's FSM lock evaluation +
+    // agent-write-policy targets (plain proposal sections no longer carry a
+    // per-section blocked flag). Render the backend prose verbatim (Area M).
+    const dto = proposal as {
+      lockEvaluation?: { conflicts?: Array<{ target: { doc_path: string; heading_path: string[] }; message: string }> };
+      agentWritePolicy?: { targets?: Array<{ target: { doc_path: string; heading_path: string[] }; canWrite: boolean; message: string }> };
+    };
+    for (const conflict of dto.lockEvaluation?.conflicts ?? []) {
+      const key = sectionGlobalKey(conflict.target.doc_path, conflict.target.heading_path);
+      nextConflicts.set(key, conflict.message);
+    }
+    for (const target of dto.agentWritePolicy?.targets ?? []) {
+      if (target.canWrite) continue;
+      const key = sectionGlobalKey(target.target.doc_path, target.target.heading_path);
+      if (!nextConflicts.has(key)) nextConflicts.set(key, target.message);
     }
 
     proposalSectionsRef.current = nextDraftSections;
@@ -393,8 +398,8 @@ export function useProposalDrafting({
     try {
       const result = await apiClient.acquireLocks(proposalId);
       if (!result.acquired) {
-        const suffix = result.section ? ` (${result.section.heading_path.join(" > ")})` : "";
-        setPanelError(`Lock failed${suffix}: ${result.reason}`);
+        // Area M: render backend prose; never map a code/enum.
+        setPanelError(result.message);
         return;
       }
       await refreshActiveProposal(proposalId);

@@ -6,10 +6,9 @@
  * proposal system — no direct skeleton creation, no direct git commits.
  */
 
-import { OverlayContentLayer } from "./content-layer.js";
-import { getContentRoot } from "./data-root.js";
+import { ProposalEditor } from "./proposal-editor.js";
 import { createTransientProposal, updateProposalSections } from "./proposal-repository.js";
-import type { ProposalId, WriterIdentity } from "../types/shared.js";
+import type { ProposalId, ProposalSection, ProposalStatus, WriterIdentity } from "../types/shared.js";
 
 export class ImportValidationError extends Error {
   constructor(message: string) {
@@ -21,6 +20,32 @@ export class ImportValidationError extends Error {
 export interface ImportFile {
   docPath: string;
   content: string;
+}
+
+/**
+ * Shared recipe: write each whole-document markdown payload into a proposal
+ * through `ProposalEditor`, then read back the normalized heading paths to
+ * build a flat section manifest. The single dedup target for import, MCP
+ * filesystem writes, and REST overwrite/patch.
+ *
+ * Owns ONLY the storage write + manifest derivation — proposal creation,
+ * validation, ACL checks, and response shaping stay with the caller.
+ */
+export async function writeDocumentsToProposalAndBuildManifest(
+  proposalId: ProposalId,
+  status: ProposalStatus,
+  files: ImportFile[],
+): Promise<ProposalSection[]> {
+  const editor = ProposalEditor.open(proposalId, status);
+  const sectionTargets: ProposalSection[] = [];
+  for (const file of files) {
+    await editor.writeDocumentFromMarkdown(file.docPath, file.content);
+    const headingPaths = await editor.listHeadingPaths(file.docPath);
+    for (const hp of headingPaths) {
+      sectionTargets.push({ doc_path: file.docPath, heading_path: hp });
+    }
+  }
+  return sectionTargets;
 }
 
 export interface ImportFilesToProposalResult {
@@ -42,8 +67,6 @@ export async function importFilesToProposal(
   writer: WriterIdentity,
   description: string,
 ): Promise<ImportFilesToProposalResult> {
-  const contentRoot = getContentRoot();
-
   const { id: proposalId, contentRoot: propContentRoot } = await createTransientProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     description,
@@ -64,17 +87,14 @@ export async function importFilesToProposal(
     }
   }
 
-  // Write each file through upsertDocumentFromMarkdown, then read back the
-  // normalized heading paths to build proposal section metadata.
-  const fContentLayer = new OverlayContentLayer(propContentRoot, contentRoot);
-  const allSectionTargets: Array<{ doc_path: string; heading_path: string[] }> = [];
-  for (const file of files) {
-    await fContentLayer.upsertDocumentFromMarkdown(file.docPath, file.content);
-    const headingPaths = await fContentLayer.listHeadingPaths(file.docPath);
-    for (const hp of headingPaths) {
-      allSectionTargets.push({ doc_path: file.docPath, heading_path: hp });
-    }
-  }
+  // Write each file through the shared ProposalEditor recipe, then read back
+  // the normalized heading paths to build proposal section metadata.
+  // Transient proposals live in "pending".
+  const allSectionTargets = await writeDocumentsToProposalAndBuildManifest(
+    proposalId,
+    "pending",
+    files,
+  );
 
   // Update proposal sections to match actual normalized structure
   await updateProposalSections(proposalId, allSectionTargets);

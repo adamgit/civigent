@@ -38,7 +38,7 @@ import { GovernanceLeftGutter } from "../components/GovernanceLeftGutter";
 import { GovernanceRightGutter } from "../components/GovernanceRightGutter";
 import { AttributionOverlay } from "../components/AttributionOverlay";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
-import { type SectionSaveInfo, resolveSaveState, worstSaveState } from "../services/section-save-state";
+import { usePublishPaused, useSectionEditabilityMap } from "../hooks/useFragmentStoreHooks";
 import "../governance-gutters.css";
 
 // ─── Component ───────────────────────────────────────────────────
@@ -115,8 +115,6 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     editingLoading,
     readyEditors,
     setReadyEditors,
-    deletionPlaceholders,
-    setDeletionPlaceholders,
     proposalMode,
     activeProposal,
     activeProposalStatus,
@@ -178,7 +176,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     heading_path: [],
     depth: 0,
     content: "",
-    humanInvolvement_score: 0,
+    agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
     crdt_session_active: true,
     section_length_warning: false,
     word_count: 0,
@@ -227,7 +225,6 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     setRecentlyChangedSections,
     recentlyChangedByLabel,
     agentReadingIndicators,
-    presenceIndicatorsRef,
     pendingProposalIndicatorsRef,
   } = useDocumentWebSocket({
     decodedDocPath,
@@ -238,7 +235,6 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     mountedEditorFragmentKeysRef,
     pendingStructureRefocusRef,
     storeRef,
-    setDeletionPlaceholders,
     setStructureTree,
     loadSections,
     setError,
@@ -260,11 +256,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
       getSections: () => sectionsRef.current.map(s => ({
         heading_path: s.heading_path,
         fragment_key: getSectionFragmentKey(s),
-        blocked: !!s.blocked,
-      })),
-      getPresenceIndicators: () => presenceIndicatorsRef.current.map(p => ({
-        sectionKey: p.sectionKey,
-        writerDisplayName: p.writerDisplayName,
+        locked: !!s.locked,
       })),
       getProposalIndicators: () => pendingProposalIndicatorsRef.current.map(p => ({
         sectionKey: p.sectionKey,
@@ -379,35 +371,12 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   // ── Derived ──────────────────────────────────────────────
   const docTitle = decodedDocPath ? getDocDisplayName(decodedDocPath) : "Untitled";
 
-  // Subscribe to persistence state from the store via useSyncExternalStore
-  const emptyMap = useMemo(() => new Map() as ReadonlyMap<string, import("../services/browser-fragment-replica-store").SectionPersistenceState>, []);
-  const subscribeStore = useMemo(() => store?.subscribe ?? ((_cb: () => void) => () => {}), [store]);
-  const sectionPersistence = useSyncExternalStore(
-    subscribeStore,
-    () => store?.getSectionPersistence() ?? emptyMap,
-  );
-
-  const now = Date.now();
-  const sectionSaveInfos: SectionSaveInfo[] = useMemo(() => {
-    const infos: SectionSaveInfo[] = [];
-    for (const section of sections) {
-      const fk = getSectionFragmentKey(section);
-      const ps = sectionPersistence.get(fk);
-      if (ps === undefined) continue;
-      const state = resolveSaveState(ps, crdtState, store?.getDirtySince(fk), now);
-      infos.push({
-        fragmentKey: fk,
-        sectionLabel: headingPathToLabel(section.heading_path),
-        state,
-      });
-    }
-    return infos;
-  }, [sectionPersistence, sections, crdtState, store, now]);
-
-  const aggregateSaveState = useMemo(
-    () => worstSaveState(sectionSaveInfos.map((s) => s.state)),
-    [sectionSaveInfos],
-  );
+  // Document-level publication-pause flag — drives the topbar status and the
+  // editing banner. The per-section receipt save-state machine is removed
+  // (spec 05 §"Content Flush" / §"Section-Level Persistence Status Indicators").
+  const publishPaused = usePublishPaused(store);
+  // Per-section CRDT block-state (spec 05 §"Section block-state events").
+  const editabilityMap = useSectionEditabilityMap(store);
 
   // ── Governance data (left + right gutters) ─────────────────
   const { leftGutterSections, rightGutterGroups } = useGovernanceData(sections);
@@ -420,15 +389,14 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   const blameMap = useBlameData(decodedDocPath ?? "", sectionFiles, showAttribution && !sectionsLoading, contentFingerprint);
 
   // ── B3: Stable section callbacks (extracted from sections.map) ───
-  const handleFocusSection = useCallback((idx: number, headingPath: string[], coords: { x: number; y: number }) => {
+  const handleFocusSection = useCallback((idx: number, _headingPath: string[], coords: { x: number; y: number }) => {
     setFocusedSectionIndex(idx);
     pendingFocusRef.current = { index: idx, position: "start", coords };
     const provider = crdtProviderRef.current;
     if (provider) {
-      provider.focusSection(headingPath);
       setViewingSections(provider, idx);
     }
-  }, [setFocusedSectionIndex, setViewingSections]);
+  }, [setFocusedSectionIndex, setViewingSections, crdtProviderRef, pendingFocusRef]);
 
   const handleEditorReady = useCallback((idx: number) => {
     setReadyEditors(prev => {
@@ -500,8 +468,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
         showOverwrite={showOverwrite}
         onToggleOverwrite={() => setShowOverwrite((v) => !v)}
         crdtState={crdtState}
-        aggregateSaveState={aggregateSaveState}
-        sectionSaveInfos={sectionSaveInfos}
+        publishPaused={publishPaused}
         isEditing={isEditing}
       />
 
@@ -620,6 +587,12 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
               const lockedInProposalMode = proposalMode && isInProposal && proposalConflictReason !== null;
               const fk = getSectionFragmentKey(section);
               const sectionLabel = headingPathToLabel(section.heading_path);
+              const editability = editabilityMap.get(fk) ?? "editable";
+              const crdtBlocked = editability === "blocked";
+              const crdtGone = editability === "gone";
+
+              // gone → unmounted/removed from the canvas entirely.
+              if (crdtGone) return null;
 
               const blameEntry = showAttribution ? blameMap.get(section.section_file) : undefined;
               const attributionReady = showAttribution && blameEntry && !blameEntry.loading;
@@ -657,14 +630,16 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       hasEditor={
                         proposalMode
                           ? (activeProposalStatus === "inprogress" && isInProposal && shouldMountEditor(i, focusedSectionIndex))
-                          : shouldMountEditor(i, focusedSectionIndex)
+                          : (!crdtBlocked && shouldMountEditor(i, focusedSectionIndex))
                       }
                       isInProposal={isInProposal}
                       proposalConflictReason={proposalConflictReason}
-                      isLockedByOtherHuman={proposalMode ? lockedInProposalMode : !!section.blocked}
+                      isLockedByOtherHuman={proposalMode ? lockedInProposalMode : !!section.locked}
+                      crdtBlocked={crdtBlocked}
+                      publishPaused={publishPaused}
                       highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
                       injectedByWriter={null}
-                      hasRemotePresence={presenceIndicatorsRef.current.some((p) => p.sectionKey === sectionKey)}
+                      hasRemotePresence={false}
                       dragOverSectionIndex={dragOverSectionIndex}
                       store={store}
                       transport={transport}
@@ -694,20 +669,6 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                 </div>
               );
             }) : null}
-
-            {/* Deletion placeholders */}
-            {deletionPlaceholders.map((placeholder) => (
-              <div
-                key={`deleting:${placeholder.fragmentKey}`}
-                className="relative m-[-16px] p-[4px_16px] rounded-md border-l-[2.5px] border-l-amber-300 bg-amber-50/30"
-              >
-                <div className="flex items-center gap-1.5 py-1">
-                  <span className="w-[5px] h-[5px] rounded-full bg-amber-400" />
-                  <span className="text-[10px] text-amber-700 line-through">{placeholder.formerHeading || "(before first heading)"}</span>
-                  <span className="text-[9px] text-amber-500 ml-1">Deletion pending{"\u2026"}</span>
-                </div>
-              </div>
-            ))}
           </div>
 
           {/* Right gutter — audit trail */}

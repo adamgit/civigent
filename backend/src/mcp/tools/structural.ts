@@ -20,7 +20,6 @@ import { makeToolErrorResult } from "../protocol.js";
 import { getContentRoot } from "../../storage/data-root.js";
 import { DocumentNotFoundError } from "../../storage/document-reader.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
-import { lookupDocSession, countEditorSockets } from "../../crdt/ydoc-lifecycle.js";
 import {
   readProposal,
   updateProposalSections,
@@ -28,11 +27,11 @@ import {
   ProposalNotFoundError,
   InvalidProposalStateError,
 } from "../../storage/proposal-repository.js";
-import { evaluateProposalHumanInvolvement } from "../../storage/commit-pipeline.js";
+import { evaluateAgentWritePolicy } from "../../storage/commit-pipeline.js";
+import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
 import type { McpToolCallResult } from "../protocol.js";
 import type { AnyProposal, ProposalSection } from "../../types/shared.js";
-import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
-import { SectionRef } from "../../domain/section-ref.js";
+import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { checkDocPermission } from "../../auth/acl.js";
 
 // ─── Proposal validation helper ──────────────────────────
@@ -40,7 +39,7 @@ import { checkDocPermission } from "../../auth/acl.js";
 async function loadAndValidateProposal(
   proposalId: string,
   writerId: string,
-): Promise<{ proposal: AnyProposal; contentRoot: string } | McpToolCallResult> {
+): Promise<{ proposal: AnyProposal; editor: ProposalEditor } | McpToolCallResult> {
   try {
     const proposal = await readProposal(proposalId);
     if (proposal.writer.id !== writerId) {
@@ -49,10 +48,9 @@ async function loadAndValidateProposal(
     if (!isProposalMutable(proposal)) {
       return makeToolErrorResult(`Cannot modify proposal in ${proposal.status} state.`);
     }
-    // Derive content root from proposal
-    const { proposalContentRoot } = await import("../../storage/proposal-repository.js");
-    const contentRoot = proposalContentRoot(proposalId, proposal.status);
-    return { proposal, contentRoot };
+    // Open a proposal-scoped editor facade for this proposal's content tree.
+    const editor = ProposalEditor.open(proposalId, proposal.status);
+    return { proposal, editor };
   } catch (error) {
     if (error instanceof ProposalNotFoundError) {
       return makeToolErrorResult(`Proposal not found: ${proposalId}`);
@@ -68,25 +66,12 @@ function isError(result: unknown): result is McpToolCallResult {
   return result !== null && typeof result === "object" && "content" in (result as Record<string, unknown>);
 }
 
-// ─── Session contention guard ────────────────────────────
-
-function checkDocSessionGuard(docPath: string): McpToolCallResult | null {
-  const session = lookupDocSession(docPath);
-  if (!session) return null;
-  if (countEditorSockets(session) > 0) {
-    return makeToolErrorResult(
-      `Cannot modify document structure: active editing session exists on "${docPath}".`,
-    );
-  }
-  for (const dirtySet of session.perUserDirty.values()) {
-    if (dirtySet.size > 0) {
-      return makeToolErrorResult(
-        `Cannot modify document structure: uncommitted edits exist on "${docPath}". Wait for auto-commit to flush.`,
-      );
-    }
-  }
-  return null;
-}
+// NOTE: MCP structural tools stage proposal DRAFT content only — they never
+// mutate an active Y.Doc or canonical topology. The former per-tool DocSession
+// contention guard (lookupDocSession/countEditorSockets/per-user dirty tracking)
+// has been removed: structural tools may stage draft changes while a DocSession exists,
+// and topology safety is enforced at the publish/commit boundary by the
+// DocSession actor's publish-or-abort / invalidation policy (Areas B/C/F).
 
 // ─── create_section (proposal-based) ─────────────────────
 
@@ -117,16 +102,13 @@ const createSectionHandler: ToolHandler = async (args, ctx) => {
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
-  const { proposal, contentRoot: proposalContentRoot } = validated;
+  const { proposal, editor } = validated;
 
   try {
-    const overlayLayer = new OverlayContentLayer(proposalContentRoot, getContentRoot());
-
-    // Auto-create headings and write content atomically through OverlayContentLayer
+    // Auto-create headings and write content atomically through ProposalEditor.
     {
-      const ref = new SectionRef(docPath, headingPath);
       const heading = headingPath.length === 0 ? "" : headingPath[headingPath.length - 1]!;
-      await overlayLayer.upsertSection(ref, heading, content);
+      await editor.createSection(docPath, headingPath, heading, content);
     }
 
     // Update proposal sections metadata
@@ -152,15 +134,14 @@ const createSectionHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
+    const policyResult = await evaluateAgentWritePolicy(proposalId);
 
     return jsonToolResult({
       proposal_id: proposalId,
       doc_path: docPath,
       heading_path: headingPath,
       created: true,
-      evaluation,
-      sections,
+      agent_write_policy: agentWritePolicyToolBody(policyResult),
     });
   } catch (error) {
     if (error instanceof Error && error.message.includes("not found")) {
@@ -198,11 +179,10 @@ const deleteSectionHandler: ToolHandler = async (args, ctx) => {
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
-  const { proposal, contentRoot: proposalContentRoot } = validated;
+  const { proposal, editor } = validated;
 
   try {
-    const overlayLayer = new OverlayContentLayer(proposalContentRoot, getContentRoot());
-    await overlayLayer.deleteSubtree(docPath, headingPath);
+    await editor.deleteSection(docPath, headingPath);
 
     // Update proposal sections metadata
     const existingSections = proposal.sections.filter(
@@ -226,15 +206,14 @@ const deleteSectionHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
+    const policyResult = await evaluateAgentWritePolicy(proposalId);
 
     return jsonToolResult({
       proposal_id: proposalId,
       doc_path: docPath,
       heading_path: headingPath,
       deleted: true,
-      evaluation,
-      sections,
+      agent_write_policy: agentWritePolicyToolBody(policyResult),
     });
   } catch (error) {
     if (error instanceof Error && error.message.includes("not found")) {
@@ -276,18 +255,22 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
-  const { proposal, contentRoot: proposalContentRoot } = validated;
+  const { proposal, editor } = validated;
 
   try {
-    const overlayLayer = new OverlayContentLayer(proposalContentRoot, getContentRoot());
-
-    // Determine target level from overlay+canonical skeleton
-    const { level: currentLevel } = await overlayLayer.resolveSectionPathWithLevel(docPath, headingPath);
+    // Determine target level from the effective proposal section list.
+    const currentSection = (await editor.getSectionList(docPath)).find((entry) =>
+      entry.headingPath.length === headingPath.length
+      && entry.headingPath.every((segment, index) => segment === headingPath[index]),
+    );
+    if (!currentSection) {
+      return makeToolErrorResult(`Section not found: ${headingPath.join(" > ")} in ${docPath}`);
+    }
     const targetLevel = newParentPath.length === 0
-      ? currentLevel
+      ? currentSection.level
       : newParentPath.length + 1;
 
-    await overlayLayer.moveSubtree(docPath, headingPath, newParentPath, targetLevel);
+    await editor.moveSection(docPath, headingPath, newParentPath, targetLevel);
 
     // Update proposal sections metadata
     const existingSections = proposal.sections.filter(
@@ -311,7 +294,7 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
+    const policyResult = await evaluateAgentWritePolicy(proposalId);
 
     return jsonToolResult({
       proposal_id: proposalId,
@@ -319,8 +302,7 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
       heading_path: headingPath,
       new_parent_path: newParentPath,
       moved: true,
-      evaluation,
-      sections,
+      agent_write_policy: agentWritePolicyToolBody(policyResult),
     });
   } catch (error) {
     if (error instanceof Error && error.message.includes("not found")) {
@@ -360,11 +342,10 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
-  const { proposal, contentRoot: proposalContentRoot } = validated;
+  const { proposal, editor } = validated;
 
   try {
-    const overlayLayer = new OverlayContentLayer(proposalContentRoot, getContentRoot());
-    await overlayLayer.renameHeading(docPath, headingPath, newHeading);
+    await editor.renameSection(docPath, headingPath, newHeading);
     const newHeadingPath = [...headingPath.slice(0, -1), newHeading];
 
     // Update proposal sections metadata with new heading path
@@ -389,7 +370,7 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
+    const policyResult = await evaluateAgentWritePolicy(proposalId);
 
     return jsonToolResult({
       proposal_id: proposalId,
@@ -397,8 +378,7 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
       old_heading_path: headingPath,
       new_heading_path: newHeadingPath,
       renamed: true,
-      evaluation,
-      sections,
+      agent_write_policy: agentWritePolicyToolBody(policyResult),
     });
   } catch (error) {
     if (error instanceof Error && error.message.includes("not found")) {
@@ -431,17 +411,11 @@ const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
-  const { proposal, contentRoot: proposalContentRoot } = validated;
-
-  // Block if active CRDT session exists
-  const sessionBlock = checkDocSessionGuard(docPath);
-  if (sessionBlock) return sessionBlock;
+  const { proposal, editor } = validated;
 
   try {
-    const overlayLayer = new OverlayContentLayer(proposalContentRoot, getContentRoot());
-
-    // Read canonical headings and write tombstone in one step
-    const headingPaths = await overlayLayer.tombstoneDocument(docPath);
+    // Read canonical headings and write tombstone in one step via the editor.
+    const headingPaths = await editor.deleteDocument(docPath);
 
     // Add all document sections to proposal's sections[] metadata
     const existingSections = proposal.sections.filter(
@@ -465,14 +439,13 @@ const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
+    const policyResult = await evaluateAgentWritePolicy(proposalId);
 
     return jsonToolResult({
       proposal_id: proposalId,
       doc_path: docPath,
       deleted: true,
-      evaluation,
-      sections,
+      agent_write_policy: agentWritePolicyToolBody(policyResult),
     });
   } catch (error) {
     if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
@@ -513,34 +486,24 @@ const renameDocumentHandler: ToolHandler = async (args, ctx) => {
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
-  const { proposal, contentRoot: proposalContentRoot } = validated;
-
-  // Block if active CRDT session exists
-  const sessionBlock = checkDocSessionGuard(docPath);
-  if (sessionBlock) return sessionBlock;
+  const { proposal, editor } = validated;
 
   try {
-    const canonicalRoot = getContentRoot();
-    const overlayLayer = new OverlayContentLayer(proposalContentRoot, canonicalRoot);
-
-    // Snapshot heading paths from the canonical source BEFORE the rename
-    // so we can populate proposal section metadata for both old (tombstoned)
-    // and new (created) entries. The dedicated `renameDocument(...)`
-    // primitive returns void per item 287; per item 303, proposal metadata
+    // Snapshot effective heading paths of the source document BEFORE the
+    // rename so we can populate proposal section metadata for both old
+    // (tombstoned) and new (created) entries. Per item 303, proposal metadata
     // updates remain caller-side rather than being absorbed into the storage
     // primitive.
-    const headingPaths = await new ContentLayer(canonicalRoot).listHeadingPaths(docPath);
+    const headingPaths = await editor.listHeadingPaths(docPath);
 
-    // Dedicated rename primitive (items 287/297) — replaces the previous
-    // open-coded tombstoneDocument + createDocument + readAllSubtreeEntries
-    // + looped writeSection pattern. The new primitive preserves structure
-    // and body state directly via document-level file copy + tombstone,
-    // never reinterpreting the source as a sequence of user section upserts.
-    await overlayLayer.renameDocument(docPath, newPath);
+    // Dedicated rename primitive (items 287/297) — preserves structure and
+    // body state directly via document-level copy + tombstone, never
+    // reinterpreting the source as a sequence of user section upserts.
+    await editor.renameDocument(docPath, newPath);
 
     // Update proposal sections metadata — add entries for both old-path
     // (being deleted by tombstone) and new-path (created by copy) sections
-    // so evaluateProposalHumanInvolvement checks contention on both.
+    // so the agent write policy evaluates both.
     const existingSections = proposal.sections.filter(
       (s) => s.doc_path !== docPath && s.doc_path !== newPath,
     );
@@ -563,15 +526,14 @@ const renameDocumentHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
+    const policyResult = await evaluateAgentWritePolicy(proposalId);
 
     return jsonToolResult({
       proposal_id: proposalId,
       old_path: docPath,
       new_path: newPath,
       renamed: true,
-      evaluation,
-      sections,
+      agent_write_policy: agentWritePolicyToolBody(policyResult),
     });
   } catch (error) {
     if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {

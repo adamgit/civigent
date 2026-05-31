@@ -20,7 +20,13 @@ export interface DocumentSectionRendererProps {
   hasEditor: boolean;
   isInProposal: boolean;
   proposalConflictReason: string | null;
+  /** Proposal FSM lock conflict (another proposal owns this section). NOT
+   *  CRDT block-state and NOT agent write-policy. */
   isLockedByOtherHuman: boolean;
+  /** CRDT server-driven block-state: section:blocked → read-only. */
+  crdtBlocked: boolean;
+  /** DocSession publication pause active → editor frozen. */
+  publishPaused: boolean;
   highlightLabel: string | null;
   injectedByWriter: string | null;
   hasRemotePresence: boolean;
@@ -95,6 +101,8 @@ export function DocumentSectionRenderer({
   isInProposal,
   proposalConflictReason,
   isLockedByOtherHuman,
+  crdtBlocked,
+  publishPaused,
   highlightLabel,
   injectedByWriter,
   hasRemotePresence,
@@ -120,6 +128,10 @@ export function DocumentSectionRenderer({
   onCrossSectionDrop,
 }: DocumentSectionRendererProps) {
   const { setHoveredSection } = useSectionHover();
+  // Unavailable-for-human-edit: a proposal FSM lock conflict OR a CRDT
+  // block-state. (Publication pause does not remove the section, it only
+  // freezes the live editor — handled via the `readOnly` prop below.)
+  const unavailableForEdit = isLockedByOtherHuman || crdtBlocked;
   const markdownComponents = {
     a({ node: _node, href, children, ...props }: React.ComponentProps<"a"> & { node?: unknown }) {
       const resolvedHref = typeof href === "string" ? rewriteMarkdownDocHref(href) : null;
@@ -145,7 +157,7 @@ export function DocumentSectionRenderer({
       data-fragment-key={fk}
       data-heading-path={JSON.stringify(section.heading_path)}
       className={`relative mx-[-16px] px-[16px] rounded-md border-l-[2.5px] transition-all group ${
-        isLockedByOtherHuman
+        unavailableForEdit
           ? `bg-amber-50/50 border-l-amber-400 opacity-75`
           : isInProposal
           ? `bg-blue-50/30 border-l-blue-500`
@@ -160,7 +172,7 @@ export function DocumentSectionRenderer({
       onMouseEnter={() => setHoveredSection(i)}
       onMouseLeave={() => setHoveredSection(null)}
       onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
-      onClick={isLockedByOtherHuman ? undefined : hasEditor ? undefined : (e) => {
+      onClick={unavailableForEdit || publishPaused ? undefined : hasEditor ? undefined : (e) => {
         if (e.shiftKey || e.button !== 0 || e.defaultPrevented) return;
         if (window.getSelection()?.isCollapsed === false) return;
         const down = mouseDownPosRef.current;
@@ -266,7 +278,7 @@ export function DocumentSectionRenderer({
                 crdtSynced={crdtSynced}
                 fragmentKey={fk}
                 userName={resolveWriterId()}
-                readOnly={!isFocused || isLockedByOtherHuman || (proposalMode && !canEditProposalContent)}
+                readOnly={!isFocused || unavailableForEdit || publishPaused || (proposalMode && !canEditProposalContent)}
                 expectsCrdt={!proposalMode}
                 onChange={proposalMode && canEditProposalContent && onProposalSectionChange
                   ? (md) => onProposalSectionChange(i, md)

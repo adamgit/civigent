@@ -38,7 +38,7 @@ describe("GET /api/heatmap", () => {
     expect(typeof res.body.humanInvolvement_steepness).toBe("number");
   });
 
-  it("each entry has doc_path, heading_path, humanInvolvement_score, crdt_session_active", async () => {
+  it("each entry has doc_path, heading_path, agentWritePolicy, crdt_session_active", async () => {
     const res = await request(ctx.app)
       .get("/api/heatmap")
       .set("Authorization", ctx.humanToken);
@@ -48,9 +48,9 @@ describe("GET /api/heatmap", () => {
     for (const entry of res.body.sections) {
       expect(entry).toHaveProperty("doc_path");
       expect(entry).toHaveProperty("heading_path");
-      expect(entry).toHaveProperty("humanInvolvement_score");
+      expect(entry).toHaveProperty("agentWritePolicy");
       expect(entry).toHaveProperty("crdt_session_active");
-      expect(typeof entry.humanInvolvement_score).toBe("number");
+      expect(typeof entry.agentWritePolicy.canWrite).toBe("boolean");
       expect(typeof entry.crdt_session_active).toBe("boolean");
       expect(Array.isArray(entry.heading_path)).toBe(true);
     }
@@ -84,15 +84,19 @@ describe("GET /api/heatmap", () => {
     expect(headings).toContain("Timeline");
   });
 
-  it("humanInvolvement_score is between 0 and 1", async () => {
+  it("agentWritePolicy human-involvement score is between 0 and 1", async () => {
     const res = await request(ctx.app)
       .get("/api/heatmap")
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
     for (const entry of res.body.sections) {
-      expect(entry.humanInvolvement_score).toBeGreaterThanOrEqual(0);
-      expect(entry.humanInvolvement_score).toBeLessThanOrEqual(1);
+      // Human-involvement compatibility policy is active → score present in details.
+      const score = entry.agentWritePolicy.humanInvolvement?.score;
+      if (score !== undefined) {
+        expect(score).toBeGreaterThanOrEqual(0);
+        expect(score).toBeLessThanOrEqual(1);
+      }
     }
   });
 

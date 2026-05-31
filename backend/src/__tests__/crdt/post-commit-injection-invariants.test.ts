@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { commitProposalToCanonical } from "../../storage/commit-pipeline.js";
-import { setCrdtEventHandler } from "../../ws/crdt-coordinator.js";
+import { setCrdtEventHandler } from "../../ws/crdt-ws-coordinator.js";
 
 vi.mock("../../storage/proposal-repository.js", async (importOriginal) => {
   const real = await importOriginal<typeof import("../../storage/proposal-repository.js")>();
@@ -9,7 +9,7 @@ vi.mock("../../storage/proposal-repository.js", async (importOriginal) => {
     readProposal: vi.fn(),
     transitionToCommitting: vi.fn().mockResolvedValue(undefined),
     transitionToCommitted: vi.fn().mockResolvedValue(undefined),
-    rollbackCommittingToDraft: vi.fn().mockResolvedValue(undefined),
+    rollbackCommittingProposal: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -66,6 +66,10 @@ describe("Post-commit notify invariants", () => {
 
     await commitProposalToCanonical("test-prop-001", {});
 
+    // The commit pipeline neither emits WS events nor reinjects into live Y.Docs.
+    // Canonical→live propagation is the CRDTProposalGenerator's Y.transact
+    // primitive (Area B/H), driven off the committed canonical state — NOT a
+    // pipeline reinjection path and NOT a field on AbsorbResult.
     expect(events).toHaveLength(0);
   });
 

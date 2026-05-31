@@ -7,27 +7,6 @@ import { relativeTime } from "../utils/relativeTime";
 
 // ─── Helper types ────────────────────────────────────────────────
 
-/**
- * Per-section persistence state. Each section has exactly one of these states.
- *
- * Transitions:
- *   clean ──[local Y.Doc update on focused section]──► dirty
- *   dirty ──[MSG_UPDATE_RECEIVED]──► received
- *   received ──[content:committed includes this section]──► clean
- *
- * "deleting" is a terminal holding state for sections removed from the Y.Doc.
- *
- * @deprecated Prefer the canonical definition in browser-fragment-replica-store.ts
- */
-export type SectionPersistenceState = "clean" | "dirty" | "received" | "deleting";
-
-export interface DeletionPlaceholder {
-  fragmentKey: string;
-  formerHeading: string;
-  /** Index in section list where this placeholder should appear. */
-  insertAfterIndex: number;
-}
-
 export type DocumentSection = GetDocumentSectionsResponse["sections"][number];
 
 export interface RecentlyChangedSectionEntry {
@@ -42,13 +21,6 @@ export interface AgentReadingIndicator {
   actorDisplayName: string;
   labels: string[];
   expiresAt: number;
-}
-
-export interface PresenceIndicator {
-  key: string;
-  sectionKey: string;
-  writerDisplayName: string;
-  writerType: string;
 }
 
 export interface PendingProposalIndicator {

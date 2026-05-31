@@ -113,8 +113,10 @@ function ImportDetailView({
   // ── Result view after commit ──
   if (commitResult) {
     const isCommitted = commitResult.status === "committed" && commitResult.outcome === "accepted";
-    const blockedCount = commitResult.evaluation?.blocked_sections?.length ?? 0;
-    const docPaths = [...new Set(commitResult.sections?.map((s) => s.doc_path) ?? [])];
+    const policyTargets = commitResult.agentWritePolicy?.targets ?? [];
+    const blockedCount = policyTargets.filter((t) => !t.canWrite).length;
+    const sectionCount = policyTargets.length;
+    const docPaths = [...new Set(policyTargets.map((t) => t.target.doc_path))];
 
     return (
       <div className="p-4 space-y-3 border-t border-border-subtle">
@@ -131,11 +133,12 @@ function ImportDetailView({
             {(commitResult as unknown as { committed_head?: string }).committed_head && (
               <div>Commit: <code>{(commitResult as unknown as { committed_head?: string }).committed_head!.slice(0, 10)}</code></div>
             )}
-            <div>Sections: {commitResult.sections?.length ?? 0}</div>
+            <div>Sections: {sectionCount}</div>
             {docPaths.length > 0 && <div>Documents: {docPaths.join(", ")}</div>}
             {blockedCount > 0 && (
               <div className="text-error">
-                {blockedCount} section(s) blocked by human-involvement thresholds
+                {/* Area M: backend prose is the explanation, not a code. */}
+                {blockedCount} section(s) blocked. {commitResult.agentWritePolicy?.message}
               </div>
             )}
           </div>

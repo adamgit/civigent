@@ -141,3 +141,28 @@ export function jsonToolResult(data: unknown): McpToolCallResult {
 export function textToolResult(text: string): McpToolCallResult {
   return makeToolResult(text);
 }
+
+/**
+ * Area M — shared shaper for blocked/deferred MCP tool results.
+ *
+ * Enforces the response contract for every agent-facing blocked outcome:
+ *   - a REQUIRED top-level prose `message` (verbose + action-oriented),
+ *   - `outcome: "blocked"` as a machine branch flag ONLY (never the explanation),
+ *   - optional structured detail bodies (e.g. `agent_write_policy`,
+ *     `lock_conflicts`) whose own prose `message`s explain each target.
+ *
+ * Callers must pass already-authored prose (sourced from the domain
+ * `AgentWritePolicyResult.message` / `ProposalLockConflict.message`); this helper
+ * never derives text from a code/enum/threshold and forbids bare reason-code
+ * fields (`block_reason`, `blocked_reason`) in the merged detail body.
+ */
+export function jsonBlockedToolResult(
+  message: string,
+  detail: Record<string, unknown>,
+): McpToolCallResult {
+  return jsonToolResult({
+    outcome: "blocked",
+    message,
+    ...detail,
+  });
+}

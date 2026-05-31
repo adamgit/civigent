@@ -7,13 +7,10 @@
  * automatically because the restore goes through the normal proposal pipeline.
  */
 
-import { writeFile, mkdir } from "node:fs/promises";
-import path from "node:path";
 import type { WriterIdentity, AnyProposal, ProposalSection } from "../types/shared.js";
-import { getContentRoot, getDataRoot, getContentGitPrefix } from "./data-root.js";
-import { gitShowFile, extractHistoricalTree } from "./git-repo.js";
-import { ContentLayer, DocumentNotFoundError, DocumentAssemblyError } from "./content-layer.js";
-import { resolveSkeletonPath } from "./document-skeleton.js";
+import { CanonicalReader } from "./canonical-reader.js";
+import { DocumentNotFoundError, DocumentAssemblyError } from "./content-layer.js";
+import { ProposalEditor } from "./proposal-editor.js";
 import { createTransientProposal, updateProposalSections, readProposal } from "./proposal-repository.js";
 import { SectionRef } from "../domain/section-ref.js";
 
@@ -37,10 +34,6 @@ export async function createRestoreProposal(
   targetSha: string,
   writer: WriterIdentity,
 ): Promise<RestoreResult> {
-  const dataRoot = getDataRoot();
-  const canonicalRoot = getContentRoot();
-  const gitPrefix = getContentGitPrefix();
-
   // Create proposal with empty placeholder sections — updated after writing
   const { id: restoreProposalId, contentRoot } = await createTransientProposal(
     writer,
@@ -48,26 +41,14 @@ export async function createRestoreProposal(
     [],
   );
 
-  // Compute git-relative paths for skeleton and sections directory
-  const normalizedDocPath = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-  const skeletonGitPath = `${gitPrefix}/${normalizedDocPath}`;
-  const sectionsDirGitPrefix = `${gitPrefix}/${normalizedDocPath}.sections/`;
-
-  // Copy skeleton file byte-for-byte from git
-  const skeletonContent = await gitShowFile(dataRoot, targetSha, skeletonGitPath);
-  const overlaySkeletonPath = resolveSkeletonPath(docPath, contentRoot);
-  await mkdir(path.dirname(overlaySkeletonPath), { recursive: true });
-  await writeFile(overlaySkeletonPath, skeletonContent, "utf8");
-
-  // Copy all section body files byte-for-byte from git
-  const overlaySectionsDir = overlaySkeletonPath + ".sections";
-  await extractHistoricalTree(dataRoot, targetSha, sectionsDirGitPrefix, overlaySectionsDir);
-
-  // Validate that all body files referenced by the restored skeleton exist.
-  // If any are missing, the historical commit is corrupt and restore is a dead end.
-  const overlayLayer = new ContentLayer(contentRoot);
+  // Replay the document's historical state into the proposal content tree
+  // through the editor facade — byte-for-byte, no normalization. The editor
+  // validates assembly and surfaces DocumentAssemblyError when the historical
+  // commit is missing referenced body files.
+  const editor = ProposalEditor.open(restoreProposalId, "pending");
+  let restoredHeadingPaths: string[][];
   try {
-    await overlayLayer.readAllSections(docPath);
+    ({ restoredHeadingPaths } = await editor.replayDocumentFromGitCommit(docPath, targetSha));
   } catch (err) {
     if (err instanceof DocumentAssemblyError) {
       throw new RestoreValidationError(
@@ -79,8 +60,6 @@ export async function createRestoreProposal(
     throw err;
   }
 
-  // Read the restored skeleton to get heading paths for proposal sections
-  const restoredHeadingPaths = await overlayLayer.listHeadingPaths(docPath);
   const restoredTargets: ProposalSection[] = restoredHeadingPaths.map(hp => ({
     doc_path: docPath,
     heading_path: hp,
@@ -89,10 +68,10 @@ export async function createRestoreProposal(
   // Compute sections present in canonical but absent from the restored version.
   // These are being deleted by the restore — they must appear in the proposal manifest
   // so that conflict detection, lock checks, and human-involvement scoring evaluate them.
-  const canonicalLayer = new ContentLayer(canonicalRoot);
+  const canonicalReader = CanonicalReader.open();
   const deletedSections: ProposalSection[] = [];
   try {
-    const canonicalSections = await canonicalLayer.getSectionList(docPath);
+    const canonicalSections = await canonicalReader.getSectionList(docPath);
     const restoredKeys = new Set(restoredHeadingPaths.map(hp => SectionRef.headingKey(hp)));
     for (const entry of canonicalSections) {
       if (!restoredKeys.has(SectionRef.headingKey(entry.headingPath))) {

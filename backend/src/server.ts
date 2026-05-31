@@ -6,7 +6,7 @@ import { createCrdtWsServer, setCrdtEventHandler } from "./ws/crdt-sync.js";
 import { assertDataRootExists, getContentRoot, getDataRoot, getImportRoot, ensureV3Directories } from "./storage/data-root.js";
 import { ensureGitRepoReady } from "./storage/git-repo.js";
 import { detectAndRecoverCrash } from "./storage/crash-recovery.js";
-import { importContentFromDirectoryIfNeeded } from "./storage/content-import.js";
+import { bootstrapContentSeedFromDirectoryIfNeeded } from "./storage/bootstrap-content-seed.js";
 import { validateOAuthConfig, getMCPPublicURL, getOidcPublicUrl, isMCPPublicURLFromHeadersEnabled } from "./auth/oauth-config.js";
 import { maybeGenerateBootstrapCode } from "./auth/service.js";
 import { isSystemReady, setSystemReady } from "./startup-state.js";
@@ -66,8 +66,6 @@ const PROPOSAL_AVAILABILITY_TRIGGER_TYPES = new Set<WsServerEvent["type"]>([
   "proposal:draft",
   "proposal:inprogress",
   "proposal:withdrawn",
-  "writer:dirty-state-changed",
-  "session:status-changed",
 ]);
 
 function eventDocPath(event: WsServerEvent): string | null {
@@ -130,9 +128,12 @@ server.on("upgrade", (request, socket, head) => {
 // Validate OAuth config before anything else — fail fast on misconfiguration
 validateOAuthConfig();
 
-// Graceful shutdown: crash recovery at startup handles the case where the
-// server dies with dirty sessions (BNATIVE.8b). Raw fragment sidecars +
-// session overlay files survive on disk and are recovered by detectAndRecoverCrash.
+// Startup crash recovery (detectAndRecoverCrash) is narrowed to proposal-FSM
+// cleanup + git integrity: discard transient `pending` proposals, finish-forward
+// interrupted `committing` proposals (finalize an already-landed commit or rerun
+// proposal-to-canonical — never roll back), and fail loudly on any other dirty
+// tracked tree. There is no session-file recovery: live state is re-sourced from
+// the `inprogress` proposal content tree, not from `sessions/` on disk.
 
 ipcSend({ type: "starting" });
 
@@ -168,7 +169,7 @@ await ensureV3Directories();
 await ensureGitRepoReady(getDataRoot());
 await detectAndRecoverCrash(getDataRoot());
 
-await importContentFromDirectoryIfNeeded(getImportRoot(), getContentRoot());
+await bootstrapContentSeedFromDirectoryIfNeeded(getImportRoot(), getContentRoot());
 
 // System is ready — crash recovery and import complete
 setSystemReady();

@@ -1,12 +1,18 @@
 /**
  * GovernanceLeftGutter — per-section control & agent policy column.
  *
- * Renders alongside the document body in governance mode. Each section
- * gets a single "Agent permissions" block showing:
- *   - Human involvement score (0-100%, bar)
- *   - Last-human-editor note
- *   - Agent permission tier (blocked / gated / auto)
- *   - Deterministic gate checklist
+ * Renders alongside the document body in governance mode. Each section answers
+ * one generic, policy-agnostic question: "can agents currently write here?" —
+ * driven by `canWrite` plus a backend-provided prose `message` as the primary
+ * explanation (spec 12 §Event/API Surfaces; Area M: render prose, never map a
+ * code/enum to a classification).
+ *
+ * Policy-specific visuals (the human-involvement score bar, agent-permission
+ * tier, gate checklist, transition note, "restrict agents" override) render ONLY
+ * when the selected policy supplies them via the optional `humanInvolvement`
+ * details sub-object. Common code must never assume a score, tier, threshold, or
+ * gate exists. A future posture/delegation policy would instead render its own
+ * typed details.
  *
  * "Dumb" component — receives all data via props, no internal fetching.
  * Styles in governance-gutters.css (all prefixed gov-).
@@ -14,7 +20,12 @@
 
 import { useSectionHover } from "../contexts/sectionHoverUtils";
 
-// ─── Types ───────────────────────────────────────────────────────
+// ─── Human-involvement-policy-specific helper types ──────────────
+//
+// `AgentTier` / `GateRule` are NOT generic governance vocabulary; they exist
+// only for the human-involvement compatibility policy and live under the
+// optional `humanInvolvement` details sub-object. Do NOT introduce a shared
+// policy-decision enum (spec 12: discriminate via typed details, not a union).
 
 export type AgentTier = "blocked" | "gated" | "auto";
 
@@ -23,27 +34,47 @@ export interface GateRule {
   active: boolean;
 }
 
-export interface GovernanceSectionControl {
-  sectionIndex: number;
-  heading: string;
+/**
+ * Optional, human-involvement-policy-specific details for one section. Present
+ * only when the human-involvement compatibility policy is the selected policy.
+ */
+export interface HumanInvolvementSectionDetails {
   involvementScore: number;
   agentTier: AgentTier;
-  lastEditorNote: string;
   gates: GateRule[];
   tierTransitionNote?: string;
 }
 
+// ─── Generic governance section control ──────────────────────────
+
+export interface GovernanceSectionControl {
+  sectionIndex: number;
+  heading: string;
+  /** Generic decision: may agents currently write here under the active policy? */
+  canWrite: boolean;
+  /** Backend-provided prose explanation — the primary, policy-agnostic message. */
+  message: string;
+  /** Policy-independent: last human/agent editor note. */
+  lastEditorNote: string;
+  /** Present only when the human-involvement compatibility policy is selected. */
+  humanInvolvement?: HumanInvolvementSectionDetails;
+}
+
 export interface GovernanceLeftGutterProps {
   sections: GovernanceSectionControl[];
+  /**
+   * Human-involvement-policy override affordance. Only rendered when a section
+   * carries `humanInvolvement` details and is in the `auto` tier.
+   */
   onRestrictAgents?: (sectionIndex: number) => void;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
 const TIER_CONFIG: Record<AgentTier, { cssClass: string; icon: string; label: string }> = {
-  blocked: { cssClass: "gov-agent-tier-blocked", icon: "\u2716", label: "Agents blocked \u2014 human involvement high" },
-  gated:   { cssClass: "gov-agent-tier-gated",   icon: "\u25C6", label: "Gated writes \u2014 deterministic checks" },
-  auto:    { cssClass: "gov-agent-tier-auto",     icon: "\u2713", label: "Auto \u2014 low-risk reads & writes" },
+  blocked: { cssClass: "gov-agent-tier-blocked", icon: "✖", label: "Agents blocked — human involvement high" },
+  gated:   { cssClass: "gov-agent-tier-gated",   icon: "◆", label: "Gated writes — deterministic checks" },
+  auto:    { cssClass: "gov-agent-tier-auto",     icon: "✓", label: "Auto — low-risk reads & writes" },
 };
 
 // ─── Sub-components ──────────────────────────────────────────────
@@ -72,30 +103,29 @@ function InvolvementBar({ score }: { score: number }) {
   );
 }
 
-function AgentPermissionsBlock({
-  tier, gates, tierTransitionNote, lastEditorNote, involvementScore, sectionIndex, onRestrictAgents,
+/**
+ * Human-involvement-policy-specific block: score bar + tier + gate checklist +
+ * transition note + the `auto`-tier restrict-agents override. Rendered only when
+ * `humanInvolvement` details are present.
+ */
+function HumanInvolvementDetailsBlock({
+  details, sectionIndex, onRestrictAgents,
 }: {
-  tier: AgentTier;
-  gates: GateRule[];
-  tierTransitionNote?: string;
-  lastEditorNote: string;
-  involvementScore: number;
+  details: HumanInvolvementSectionDetails;
   sectionIndex: number;
   onRestrictAgents?: (sectionIndex: number) => void;
 }) {
-  const cfg = TIER_CONFIG[tier];
+  const cfg = TIER_CONFIG[details.agentTier];
   return (
-    <div className="gov-agent-permissions-block">
-      <div className="gov-meta-label">Agent permissions</div>
-      <InvolvementBar score={involvementScore} />
-      {lastEditorNote ? <div className="gov-decay-note">{lastEditorNote}</div> : null}
+    <>
+      <InvolvementBar score={details.involvementScore} />
       <div className={`gov-agent-tier ${cfg.cssClass}`}>
         <span className="gov-agent-tier-icon">{cfg.icon}</span>
         <span>{cfg.label}</span>
       </div>
-      {gates.length > 0 && (
+      {details.gates.length > 0 && (
         <ul className="gov-gate-list">
-          {gates.map((gate, i) => (
+          {details.gates.map((gate, i) => (
             <li key={i} className="gov-gate-item">
               <span className={`gov-gate-dot ${gate.active ? "gov-gate-dot-active" : ""}`} />
               <span>{gate.label}</span>
@@ -103,12 +133,47 @@ function AgentPermissionsBlock({
           ))}
         </ul>
       )}
-      {tierTransitionNote && <div className="gov-decay-note">{tierTransitionNote}</div>}
-      {tier === "auto" && onRestrictAgents && (
+      {details.tierTransitionNote && <div className="gov-decay-note">{details.tierTransitionNote}</div>}
+      {details.agentTier === "auto" && onRestrictAgents && (
         <button className="gov-override-btn" onClick={() => onRestrictAgents(sectionIndex)}>
           Override: restrict agents
         </button>
       )}
+    </>
+  );
+}
+
+function AgentPermissionsBlock({
+  canWrite, message, lastEditorNote, humanInvolvement, sectionIndex, onRestrictAgents,
+}: {
+  canWrite: boolean;
+  message: string;
+  lastEditorNote: string;
+  humanInvolvement?: HumanInvolvementSectionDetails;
+  sectionIndex: number;
+  onRestrictAgents?: (sectionIndex: number) => void;
+}) {
+  return (
+    <div className="gov-agent-permissions-block">
+      <div className="gov-meta-label">Agent permissions</div>
+      {/* Generic, policy-agnostic decision: allowed / blocked badge. */}
+      <div
+        className={`gov-agent-write-badge ${canWrite ? "gov-agent-write-allowed" : "gov-agent-write-blocked"}`}
+        data-can-write={canWrite ? "true" : "false"}
+      >
+        <span className="gov-agent-write-icon">{canWrite ? "✓" : "✖"}</span>
+        <span>{canWrite ? "Agents can write" : "Agents blocked"}</span>
+      </div>
+      {/* Backend prose is the primary explanation (Area M: never map a code). */}
+      {message ? <div className="gov-agent-write-message">{message}</div> : null}
+      {lastEditorNote ? <div className="gov-decay-note">{lastEditorNote}</div> : null}
+      {humanInvolvement ? (
+        <HumanInvolvementDetailsBlock
+          details={humanInvolvement}
+          sectionIndex={sectionIndex}
+          onRestrictAgents={onRestrictAgents}
+        />
+      ) : null}
     </div>
   );
 }
@@ -138,14 +203,13 @@ export function GovernanceLeftGutter({ sections, onRestrictAgents }: GovernanceL
         >
           <div className="gov-section-number">
             &sect; {section.sectionIndex + 1}
-            {section.heading ? ` \u2014 ${section.heading}` : ""}
+            {section.heading ? ` — ${section.heading}` : ""}
           </div>
           <AgentPermissionsBlock
-            tier={section.agentTier}
-            gates={section.gates}
-            tierTransitionNote={section.tierTransitionNote}
+            canWrite={section.canWrite}
+            message={section.message}
             lastEditorNote={section.lastEditorNote}
-            involvementScore={section.involvementScore}
+            humanInvolvement={section.humanInvolvement}
             sectionIndex={section.sectionIndex}
             onRestrictAgents={onRestrictAgents}
           />

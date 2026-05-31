@@ -8,7 +8,7 @@
  *   1. Create a draft proposal whose sections target a brand-new doc path that
  *      does not exist in canonical content.
  *   2. Write the section content to the proposal's draft overlay root via
- *      OverlayContentLayer.upsertSection — the same call the real
+ *      ProposalShadowContentLayer.upsertSection — the same call the real
  *      create_proposal MCP handler makes.
  *   3. Call summarizeProposalCatalogMutations(proposal) directly.
  *   4. Assert createdDocPaths contains the new doc path and catalogChanged is
@@ -27,7 +27,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { OverlayContentLayer } from "../../storage/content-layer.js";
+import { ProposalShadowContentLayer } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import {
   createProposal,
@@ -56,7 +56,7 @@ describe("summarizeProposalCatalogMutations — new doc detection", () => {
       [{ doc_path: newDocPath, heading_path: ["Summary"] }],
     );
 
-    const overlay = new OverlayContentLayer(contentRoot, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(contentRoot, ctx.contentDir);
     const ref = new SectionRef(newDocPath, ["Summary"]);
     await overlay.upsertSection(ref, "Summary", "Agent-authored body.");
 
@@ -78,7 +78,7 @@ describe("summarizeProposalCatalogMutations — new doc detection", () => {
       [],
     );
 
-    const overlay = new OverlayContentLayer(contentRoot, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(contentRoot, ctx.contentDir);
     const ref = new SectionRef(newDocPath, ["Intro"]);
     await overlay.upsertSection(ref, "Intro", "Body.");
 

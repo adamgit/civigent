@@ -11,8 +11,6 @@ export interface DiagSectionLayerInfo {
   sectionFile: string;
   isSubSkeleton: boolean;
   canonical: DiagLayerStatus;
-  overlay: DiagLayerStatus;
-  fragment: DiagLayerStatus;
   crdt: DiagLayerStatus;
   winner: string;
   gitHistoryExists?: boolean | null;

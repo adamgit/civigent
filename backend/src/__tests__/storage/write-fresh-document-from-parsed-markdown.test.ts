@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { OverlayContentLayer } from "../../storage/content-layer.js";
+import { ProposalShadowContentLayer } from "../../storage/content-layer.js";
 import { DocumentSkeleton, type FlatEntry } from "../../storage/document-skeleton.js";
 import { parseDocumentMarkdown } from "../../storage/markdown-sections.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
@@ -27,18 +27,18 @@ describe("writeFreshDocumentFromParsedMarkdown", () => {
     await ctx.cleanup();
   });
 
-  async function callPrivate(layer: OverlayContentLayer, docPath: string, markdown: string): Promise<void> {
+  async function callPrivate(layer: ProposalShadowContentLayer, docPath: string, markdown: string): Promise<void> {
     const parsed = parseDocumentMarkdown(markdown);
     await (layer as unknown as Record<string, (...args: unknown[]) => Promise<void>>)
       .writeFreshDocumentFromParsedMarkdown(docPath, parsed);
   }
 
-  async function createEmptyDoc(layer: OverlayContentLayer, docPath: string): Promise<void> {
+  async function createEmptyDoc(layer: ProposalShadowContentLayer, docPath: string): Promise<void> {
     await layer.createDocument(docPath);
   }
 
   it("BFH-only parsed → BFH-only skeleton with one root and one body file", async () => {
-    const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const layer = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await createEmptyDoc(layer, DOC);
     await callPrivate(layer, DOC, "Hello world.\n");
 
@@ -52,7 +52,7 @@ describe("writeFreshDocumentFromParsedMarkdown", () => {
   });
 
   it("multi-headed parsed → skeleton mirrors heading structure (root + N siblings)", async () => {
-    const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const layer = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await createEmptyDoc(layer, DOC);
     const markdown = [
       "Preamble.",
@@ -78,7 +78,7 @@ describe("writeFreshDocumentFromParsedMarkdown", () => {
   });
 
   it("nested headings → sub-skeleton created via body-holder helper", async () => {
-    const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const layer = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await createEmptyDoc(layer, DOC);
     const markdown = [
       "## A",
@@ -102,7 +102,7 @@ describe("writeFreshDocumentFromParsedMarkdown", () => {
   });
 
   it("precondition: doc with roots → throws with descriptive message", async () => {
-    const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const layer = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await createEmptyDoc(layer, DOC);
     await callPrivate(layer, DOC, "# Existing\n\nSome content.\n");
 
@@ -111,7 +111,7 @@ describe("writeFreshDocumentFromParsedMarkdown", () => {
   });
 
   it("precondition: overlay .sections/ dir exists → throws with descriptive message", async () => {
-    const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const layer = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await createEmptyDoc(layer, DOC);
     const skeletonPath = join(ctx.contentDir, DOC);
     await mkdir(`${skeletonPath}.sections`, { recursive: true });

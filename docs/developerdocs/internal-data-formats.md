@@ -63,8 +63,8 @@ We define two canonical in-memory forms, enforced by branded types, and explicit
 | Form | Trailing newline | Type | Definition |
 |------|-----------------|------|------------|
 | **SectionBody** | None | `string & { __brand: "SectionBody" }` | Body-only section content. No heading prefix. All business logic, comparisons, API responses, body-file I/O, and `prependHeading` input use this form. |
-| **FragmentContent** | None | `string & { __brand: "FragmentContent" }` | Full fragment content: heading+body for headed sections, body-only for BFH. All Y.Doc fragment operations, raw fragment file I/O, and `populateFragment` input use this form. |
-| **On-disk** | Exactly one `\n` for non-empty; empty string for empty | `string` | POSIX convention. Every `.md` body file and raw fragment file on the filesystem follows this. |
+| **FragmentContent** | None | `string & { __brand: "FragmentContent" }` | Full fragment content: heading+body for headed sections, body-only for BFH. This is the in-memory form used for all Y.Doc per-section fragment operations — converting a section body into the markdown a `Y.XmlFragment` holds, and converting fragment markdown back to a body. There is no parallel fragment sidecar on disk; live in-flight edits are durably represented by the relevant `inprogress` proposal content tree (see `05-ydoc-lifecycle.md` "Disk Persistence Layout"), and proposal/canonical bodies are stored in the SectionBody on-disk form below. |
+| **On-disk** | Exactly one `\n` for non-empty; empty string for empty | `string` | POSIX convention. Every `.md` section body file on the filesystem (canonical `content/` and proposal content trees) follows this. |
 
 The branded types are defined in `section-formatting.ts`. The `as` constructor functions are **module-private** — no other file can mint `SectionBody` or `FragmentContent` except through the boundary and conversion functions listed below. Casts are forbidden at callsites. This means a junior engineer cannot bypass the boundary system without writing code that will immediately fail code review.
 
@@ -83,23 +83,29 @@ bodyFromGit(raw: string): SectionBody              — normalise git stdout to i
 bodyFromRemark(raw: string): SectionBody           — normalise remark-stringify output (body context)
 bodyFromParser(raw: string): SectionBody           — normalise parser-stripped output
 bodyFromRecoveryAssembly(raw: string): SectionBody — normalise recovery section assembly output
-bodyFromOrphanFragment(raw: string): { body: SectionBody; originalHeading?: string }
-                                                   — extract body from orphaned raw fragment,
-                                                     preserving heading as inline annotation
+bodyFromOrphanFragment(raw: string): SectionBody
+                                                   — extract body from an orphaned in-memory
+                                                     fragment string (heading+body that no
+                                                     longer matches a skeleton entry),
+                                                     preserving the heading as an inline
+                                                     annotation in the recovered body
 ```
 
 #### FragmentContent boundaries
 
 ```
 fragmentFromRemark(raw: string): FragmentContent   — normalise remark-stringify output (fragment context)
-fragmentFromDisk(raw: string): FragmentContent      — strip trailing \n from raw fragment file
-fragmentToDisk(content: FragmentContent): string    — append trailing \n for raw fragment file
 fragmentFromParser(raw: string): FragmentContent    — normalise parser-stripped fullContent
+fragmentFromExternalContent(raw: string): FragmentContent
+                                                   — normalise arbitrary externally-supplied
+                                                     markdown into in-memory FragmentContent
+bodyAsFragment(body: SectionBody): FragmentContent  — rebrand a body as fragment content (BFH / body-only)
+fragmentAsBody(fragment: FragmentContent): SectionBody — rebrand fragment content as a body
 ```
 
 #### Disk <-> Memory detail
 
-Used when reading/writing `.md` body files via `readFile`/`writeFile` in content-layer, fragment-store, markdown-sections, recovery-layers. `fragmentFromDisk`/`fragmentToDisk` are used for raw fragment files in `sessions/fragments/`.
+`bodyFromDisk`/`bodyToDisk` are used when reading/writing `.md` section body files via `readFile`/`writeFile` in `content-layer.ts`, `markdown-sections.ts`, and the proposal/canonical readers. These body files live in canonical `content/` and in proposal content trees; there is no raw-fragment file tier on disk. `fragmentFromDisk`/`fragmentToDisk` remain as branded newline helpers but have no live disk boundary — fragment content is an in-memory Y.Doc form only — and exist mainly so the on-disk newline convention has a single point of change (see "Future convention changes").
 
 #### Git <-> Memory detail
 
@@ -119,7 +125,7 @@ The inverse (memory -> git) is not a direct operation — we write to disk (`bod
 
 In **body context** (e.g. if remark were used to produce body-only output): `bodyFromRemark` strips the trailing newline to produce `SectionBody`.
 
-In **fragment context** (`extractMarkdown` in fragment-store, which serialises Y.Doc fragments containing heading+body): `fragmentFromRemark` strips the trailing newline to produce `FragmentContent`.
+In **fragment context** (the live Y.Doc fragment adapter in `crdt/live-fragment-strings-store.ts`, which serialises a per-section `Y.XmlFragment` containing heading+body via `yDocToProsemirrorJSON` + `jsonToMarkdown`): `fragmentFromRemark` strips the trailing newline to produce `FragmentContent`.
 
 The inverse (memory -> remark) is `markdownToJSON`, which is tolerant of any trailing whitespace — no transform needed at input.
 
@@ -137,13 +143,13 @@ The parser strips trailing newlines at the boundary crossing. These functions ar
 
 #### Orphan fragment recovery detail
 
-Raw fragment files in `sessions/fragments/` contain `FragmentContent` (heading+body). When these files are orphaned (not matched by any skeleton entry), the heading must be stripped to produce `SectionBody` for the `OrphanedBody` interface. `bodyFromOrphanFragment` handles this:
+An orphaned fragment is an in-memory `FragmentContent` string (heading+body) that no longer matches any skeleton entry — for example a fragment whose heading was changed or whose section was removed underneath it. There is no raw-fragment file tier; this is a transform over in-memory fragment strings, not session-sidecar file I/O. `bodyFromOrphanFragment(raw: string): SectionBody` recovers a usable body:
 
-1. Detects ATX heading on first line (`/^(#{1,6})\s+(.+)$/`)
-2. If found: strips heading line + blank separator, prepends `(inferred section title: '<heading text>')\n\n` to remaining body
-3. Returns `{ body: SectionBody, originalHeading: string | undefined }`
+1. Detects an ATX heading on the first line (`/^(#{1,6})\s+(.+)$/`).
+2. If found: strips the heading line + blank separator and prepends an `(inferred section title: '<heading text>')\n\n` annotation to the remaining body.
+3. Returns the annotated `SectionBody`.
 
-The inline annotation preserves heading information in the body content so it is visible to the user in the recovery section. The `originalHeading` field is used for display headings in `buildRecoverySectionMarkdown`.
+The inline annotation preserves the heading information in the body so it remains visible to the user after recovery. `bodyFromRecoveryAssembly` and `mergeOrphanIntoFragment` are the companion in-memory helpers used when assembling recovered content back into a fragment or section body; they are retained mechanics over in-memory forms, not disk readers/writers.
 
 ### Conversion functions between SectionBody and FragmentContent
 
@@ -154,13 +160,15 @@ buildFragmentContent(body: SectionBody, level: number, heading: string): Fragmen
     — Prepend heading line to body. BFH case (level=0, heading="") rebrands
       the SectionBody as FragmentContent without prepending.
 
-stripHeadingFromFragment(content: FragmentContent, level: number): SectionBody
+stripHeadingFromFragment(markdown: FragmentContent, level: number): SectionBody
     Remove ATX heading line and blank separator. Input is already in-memory
-      form (no trailing \n to strip). Replaces FragmentStore.stripHeadingFromContent.
+      form (no trailing \n to strip). This is the body-extraction step of the
+      Y.Doc fragment adapter — used when materializing a live `Y.XmlFragment`
+      back into a section body (`crdt/ydoc-lifecycle.ts`, `content-layer.ts`).
 
-mergeOrphanIntoFragment(existing: FragmentContent, orphan: SectionBody): FragmentContent
-    — Append orphan body to existing fragment content with \n\n separator.
-      If existing is empty, wraps orphan as FragmentContent.
+mergeOrphanIntoFragment(orphanBody: SectionBody, level: number, heading: string): FragmentContent
+    — Build fragment content from a recovered orphan body and a target
+      heading/level, used during in-memory recovery assembly.
 ```
 
 ### Combining functions for SectionBody
@@ -185,14 +193,12 @@ How boundary and conversion functions compose for common operations:
 | Write section body to disk | memory -> disk | `writeFile(..., bodyToDisk(body))` |
 | Read section from git for assembly | git -> memory | `bodyFromGit(gitShowFile(...))` |
 | Restore git content to disk | git -> memory -> disk | `writeFile(..., bodyToDisk(bodyFromGit(content)))` |
-| CRDT flush: extract body from fragment | remark -> fragment -> body | `stripHeadingFromFragment(fragmentFromRemark(jsonToMarkdown(...)), level)` |
-| CRDT flush: write body to session overlay | body -> disk | `writeFile(..., bodyToDisk(body))` |
-| CRDT load from disk | disk -> memory -> remark | `markdownToJSON(bodyFromDisk(readFile(...)))` |
-| Fragment from disk body + heading | disk -> body -> fragment | `buildFragmentContent(bodyFromDisk(readFile(...)), level, heading)` |
-| Read raw fragment from disk | disk -> fragment | `fragmentFromDisk(readFile(...))` |
-| Write raw fragment to disk | fragment -> disk | `writeFile(..., fragmentToDisk(content))` |
+| CRDT materialize: extract body from live fragment | Y.Doc -> remark -> fragment -> body | `stripHeadingFromFragment(fragmentFromRemark(jsonToMarkdown(yDocToProsemirrorJSON(...))), level)` |
+| CRDT materialize: persist body into the `inprogress` proposal | body -> proposal content tree | `ProposalEditor.writeSection(...)` (writes body via `bodyToDisk` into the proposal content tree; canonical advances only on commit) |
+| Seed a live fragment from canonical/proposal body | disk -> memory -> remark | `markdownToJSON(bodyFromDisk(readFile(...)))` |
+| Fragment from a section body + heading | body -> fragment | `buildFragmentContent(body, level, heading)` |
 | Normalise-on-write (writeBodyFile) | memory -> remark -> disk | `writeFile(..., jsonToMarkdown(markdownToJSON(content)))` — remark output is already disk-format |
-| Orphan recovery from raw fragment | disk -> orphan body | `bodyFromOrphanFragment(readFile(...))` |
+| Orphan recovery from an in-memory fragment | fragment -> orphan body | `bodyFromOrphanFragment(fragment)` |
 
 ### Assembly format (not a boundary)
 
@@ -210,9 +216,9 @@ Because `prependHeading` receives `SectionBody` (typed, guaranteed clean), it do
 
 | Desired change | What to modify |
 |----------------|---------------|
-| No trailing `\n` on disk | `bodyToDisk`/`fragmentToDisk` return content directly, `bodyFromDisk`/`fragmentFromDisk` become identity. One-time migration to strip existing files. |
+| No trailing `\n` on disk | `bodyToDisk` returns content directly, `bodyFromDisk` becomes identity. One-time migration to strip existing files. (`fragmentToDisk`/`fragmentFromDisk` are vestigial newline helpers with no live disk boundary; adjust only if a fragment disk tier is ever reintroduced.) |
 | Trailing `\n` in memory too | All `bodyFrom*`/`fragmentFrom*` become identity. Parser stops stripping. Branded types still enforce the body-vs-fragment distinction. |
-| CRLF on disk (e.g. Windows deployment) | `bodyToDisk`/`fragmentToDisk` append `\r\n`, `bodyFromDisk`/`fragmentFromDisk` strip `\r\n`. Other boundaries unchanged. |
+| CRLF on disk (e.g. Windows deployment) | `bodyToDisk` appends `\r\n`, `bodyFromDisk` strips `\r\n`. Other boundaries unchanged. |
 | Data repo gets autocrlf enabled | `bodyFromGit` handles `\r` stripping. Other boundaries unchanged. |
 | Swap remark for different serialiser | `bodyFromRemark`/`fragmentFromRemark` adjust to new output format. Other boundaries unchanged. |
 

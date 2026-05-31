@@ -135,6 +135,38 @@ describe("GET /api/documents/:doc_path/sections", () => {
     expect(overview?.content).toContain("Proposal-specific overview content.");
   });
 
+  it("returns CANONICAL content (not proposal-overlay) on the default GET while a proposal exists (MW-7)", async () => {
+    // Canonical-only read contract: the default section-list GET (no proposal_id)
+    // must NOT surface in-flight proposal/live-overlay content. Even with an open
+    // proposal editing "Overview", the default read returns canonical bytes.
+    const createRes = await request(ctx.app)
+      .post("/api/proposals")
+      .set("Authorization", ctx.humanToken)
+      .send({
+        intent: "Open proposal that must not leak into default reads",
+        sections: [
+          {
+            doc_path: SAMPLE_DOC_PATH,
+            heading_path: ["Overview"],
+            content: "OVERLAY-ONLY content that must not appear in canonical-only reads.",
+          },
+        ],
+      });
+    expect(createRes.status).toBe(201);
+
+    const res = await request(ctx.app)
+      .get(`/api/documents/${SAMPLE_DOC_PATH}/sections`)
+      .set("Authorization", ctx.humanToken);
+
+    expect(res.status).toBe(200);
+    const overview = sectionByHeadingPath(res.body.sections, ["Overview"]);
+    // Canonical content is returned…
+    expect(overview?.content).toContain(SAMPLE_SECTIONS.overview);
+    // …and the proposal-overlay content is NOT leaked into the default read.
+    // (If the read reverted to a session/proposal overlay this assertion fails.)
+    expect(overview?.content).not.toContain("OVERLAY-ONLY content that must not appear");
+  });
+
   it("falls back to canonical content for untouched sections with proposal_id", async () => {
     const createRes = await request(ctx.app)
       .post("/api/proposals")
@@ -191,7 +223,7 @@ describe("GET /api/documents/:doc_path/sections", () => {
     expect(res.status).toBe(403);
   });
 
-  it("each section has heading_path, content, humanInvolvement_score, word_count", async () => {
+  it("each section has heading_path, content, agentWritePolicy, word_count", async () => {
     const res = await request(ctx.app)
       .get(`/api/documents/${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
@@ -200,8 +232,10 @@ describe("GET /api/documents/:doc_path/sections", () => {
     for (const section of res.body.sections) {
       expect(section).toHaveProperty("heading_path");
       expect(section).toHaveProperty("content");
-      expect(section).toHaveProperty("humanInvolvement_score");
       expect(section).toHaveProperty("word_count");
+      // humanInvolvement_score retired → section-level agentWritePolicy summary
+      expect(section).toHaveProperty("agentWritePolicy");
+      expect(typeof section.agentWritePolicy.canWrite).toBe("boolean");
     }
   });
 

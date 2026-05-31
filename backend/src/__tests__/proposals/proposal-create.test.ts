@@ -41,8 +41,9 @@ describe("POST /api/proposals — create proposal", () => {
     expect(res.body.status).toBe("draft");
     expect(res.body.outcome).toBe("accepted");
     expect(res.body.committed_head).toBeUndefined();
-    expect(res.body.evaluation).toBeDefined();
-    expect(res.body.sections).toBeDefined();
+    // evaluation/sections retired → agentWritePolicy result on the response
+    expect(res.body.agentWritePolicy).toBeDefined();
+    expect(typeof res.body.agentWritePolicy.canWrite).toBe("boolean");
   });
 
   it("returns 400 if intent missing", async () => {

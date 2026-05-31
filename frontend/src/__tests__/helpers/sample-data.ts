@@ -45,10 +45,11 @@ export const sampleActivity = [
 export const sampleHeatmapEntry = {
   doc_path: "ops/strategy.md",
   heading_path: ["Overview"],
-  humanInvolvement_score: 0.3,
+  agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section.", humanInvolvement: { score: 0.3 } },
   crdt_session_active: false,
   last_human_commit_sha: null,
-  block_reason: null,
+  last_commit_author: null,
+  last_commit_timestamp: null,
 };
 
 export const sampleSections = [
@@ -57,7 +58,7 @@ export const sampleSections = [
     heading_path: [] as string[],
     depth: 0,
     content: "Document preamble.\n",
-    humanInvolvement_score: 0,
+    agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
     crdt_session_active: false,
     section_length_warning: false,
     word_count: 2,
@@ -69,7 +70,7 @@ export const sampleSections = [
     heading_path: ["Overview"],
     depth: 1,
     content: "# Overview\nThe overview.\n",
-    humanInvolvement_score: 0,
+    agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
     crdt_session_active: false,
     section_length_warning: false,
     word_count: 2,

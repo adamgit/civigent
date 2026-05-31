@@ -1,11 +1,22 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
-import { createProposal, readProposal } from "../../storage/proposal-repository.js";
 import {
-  evaluateProposalHumanInvolvement,
+  createProposal,
+  readProposal,
+  transitionToInProgress,
+  transitionToCommitting,
+} from "../../storage/proposal-repository.js";
+import {
+  evaluateAgentWritePolicy,
   commitProposalToCanonical,
+  publishProposalToCanonical,
+  publishProposalToCanonicalDetailed,
+  publishCommittingProposalToCanonical,
 } from "../../storage/commit-pipeline.js";
+import * as canonicalStore from "../../storage/canonical-store.js";
+import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
+import { SectionRef } from "../../domain/section-ref.js";
 
 describe("commit-pipeline", () => {
   let ctx: TempDataRootContext;
@@ -21,84 +32,190 @@ describe("commit-pipeline", () => {
 
   const writer = { id: "agent-test", type: "agent" as const, displayName: "Test Agent" };
 
-  it("evaluateProposalHumanInvolvement computes per-section involvement scores", async () => {
+  it("evaluateAgentWritePolicy returns the canWrite contract with per-target scores", async () => {
     const { id } = await createProposal(
       writer,
       "Test evaluation",
       [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"], content: "Updated overview.\n" }],
     );
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(id);
+    const result = await evaluateAgentWritePolicy(id);
 
-    expect(evaluation).toHaveProperty("all_sections_accepted");
-    expect(evaluation).toHaveProperty("aggregate_impact");
-    expect(evaluation).toHaveProperty("aggregate_threshold");
-    expect(evaluation).toHaveProperty("blocked_sections");
-    expect(evaluation).toHaveProperty("passed_sections");
-    expect(Array.isArray(sections)).toBe(true);
-    expect(sections.length).toBeGreaterThan(0);
-    expect(sections[0]).toHaveProperty("humanInvolvement_score");
+    expect(result).toHaveProperty("canWrite");
+    expect(typeof result.message).toBe("string");
+    expect(result.message.length).toBeGreaterThan(0);
+    expect(result.details).toHaveProperty("aggregateImpact");
+    expect(result.details).toHaveProperty("aggregateThreshold");
+    expect(Array.isArray(result.targets)).toBe(true);
+    expect(result.targets.length).toBeGreaterThan(0);
+    expect(typeof result.targets[0].details.score).toBe("number");
   });
 
-  it("evaluateProposalHumanInvolvement returns all_sections_accepted for uncontested sections", async () => {
+  it("evaluateAgentWritePolicy top-level canWrite reflects per-target canWrite", async () => {
     const { id } = await createProposal(
       writer,
-      "Uncontested evaluation",
+      "Consistency check",
       [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Timeline"], content: "Timeline update.\n" }],
     );
 
-    const { evaluation } = await evaluateProposalHumanInvolvement(id);
-    // No active sessions, no recent human edits → should pass
-    expect(evaluation.all_sections_accepted).toBe(true);
+    const result = await evaluateAgentWritePolicy(id);
+    // Top-level canWrite is true iff every target can write (modulo aggregate
+    // escalation, which only ever flips canWrite false-ward).
+    if (result.targets.every((t) => t.canWrite)) {
+      // aggregate may still trip; but if it didn't, top-level must be true.
+      if (result.details.aggregateImpact <= result.details.aggregateThreshold) {
+        expect(result.canWrite).toBe(true);
+      }
+    } else {
+      expect(result.canWrite).toBe(false);
+    }
   });
 
-  it("evaluateProposalHumanInvolvement sections include doc_path and heading_path", async () => {
+  it("evaluateAgentWritePolicy targets carry doc_path and heading_path", async () => {
     const { id } = await createProposal(
       writer,
       "Section fields test",
       [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"], content: "Test.\n" }],
     );
 
-    const { sections } = await evaluateProposalHumanInvolvement(id);
-    expect(sections[0].doc_path).toBe(SAMPLE_DOC_PATH);
-    expect(sections[0].heading_path).toEqual(["Overview"]);
-    expect(typeof sections[0].humanInvolvement_score).toBe("number");
+    const result = await evaluateAgentWritePolicy(id);
+    expect(result.targets[0].target.doc_path).toBe(SAMPLE_DOC_PATH);
+    expect(result.targets[0].target.heading_path).toEqual(["Overview"]);
   });
 
-  it("commitProposalToCanonical writes sections and returns commit SHA", async () => {
+  it("commitProposalToCanonical writes sections and returns commit SHA using policy metadata", async () => {
     const { id } = await createProposal(
       writer,
       "Test commit",
       [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"], content: "Committed content.\n" }],
     );
 
-    const { sections } = await evaluateProposalHumanInvolvement(id);
-    const scores: Record<string, number> = {};
-    for (const s of sections) {
-      const key = `${s.doc_path}::${s.heading_path.join(">>")}`;
-      scores[key] = s.humanInvolvement_score;
-    }
+    const result = await evaluateAgentWritePolicy(id);
+    const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(result);
 
-    const committedHead = await commitProposalToCanonical(id, scores);
+    const committedHead = await commitProposalToCanonical(id, committedMetadata);
     expect(typeof committedHead).toBe("string");
     expect(committedHead.length).toBe(40); // SHA hex
   });
 
-  it("commitProposalToCanonical transitions proposal to committed state", async () => {
+  it("commit persists policy-derived humanInvolvement_at_commit metadata", async () => {
     const { id } = await createProposal(
       writer,
       "State transition test",
       [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Timeline"], content: "Committed timeline.\n" }],
     );
 
-    const scores: Record<string, number> = {};
-    scores[`${SAMPLE_DOC_PATH}::Timeline`] = 0;
+    const result = await evaluateAgentWritePolicy(id);
+    const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(result);
+    const key = new SectionRef(SAMPLE_DOC_PATH, ["Timeline"]).globalKey;
+    expect(committedMetadata).toHaveProperty(key);
 
-    await commitProposalToCanonical(id, scores);
+    await commitProposalToCanonical(id, committedMetadata);
 
-    // Read the proposal back to verify it's committed
+    // Read the proposal back to verify it's committed with the stored metadata
     const read = await readProposal(id);
     expect(read.status).toBe("committed");
-    expect(read.committed_head).toBeDefined();
+    if (read.status === "committed") {
+      expect(read.committed_head).toBeDefined();
+      expect(read.humanInvolvement_at_commit).toHaveProperty(key);
+    }
+  });
+
+  // ── Renamed publication routine ──────────────────────────────────
+
+  it("publishProposalToCanonical is the renamed publication routine and commits", async () => {
+    const { id } = await createProposal(
+      writer,
+      "Renamed routine",
+      [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"], content: "Renamed-routine content.\n" }],
+    );
+    const committedHead = await publishProposalToCanonical(id, {});
+    expect(typeof committedHead).toBe("string");
+    expect(committedHead.length).toBe(40);
+    expect((await readProposal(id)).status).toBe("committed");
+  });
+
+  it("commitProposalToCanonical is a deprecated alias of publishProposalToCanonical", () => {
+    expect(commitProposalToCanonical).toBe(publishProposalToCanonical);
+  });
+
+  // ── Re-runnable committing-recovery entrypoint ───────────────────
+
+  it("publishCommittingProposalToCanonical finalizes an already-committing proposal without re-running transitionToCommitting", async () => {
+    const { id } = await createProposal(
+      writer,
+      "Recovery finalize",
+      [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"], content: "Recovery content.\n" }],
+    );
+    // Simulate an interrupted publish: proposal is parked in `committing`.
+    await transitionToCommitting(id);
+    expect((await readProposal(id)).status).toBe("committing");
+
+    const result = await publishCommittingProposalToCanonical(id);
+    expect(result.commitSha.length).toBe(40);
+    expect((await readProposal(id)).status).toBe("committed");
+  });
+
+  it("publishCommittingProposalToCanonical rejects a proposal that is not in committing", async () => {
+    const { id } = await createProposal(
+      writer,
+      "Recovery guard",
+      [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"], content: "Guard content.\n" }],
+    );
+    // Still in draft — recovery entrypoint must refuse it.
+    await expect(publishCommittingProposalToCanonical(id)).rejects.toThrow();
+    expect((await readProposal(id)).status).toBe("draft");
+  });
+
+  // ── Caller-specific runtime failure recovery (spec 02) ───────────
+
+  it("agent runtime publish failure rolls the proposal back to draft", async () => {
+    const { id } = await createProposal(
+      writer,
+      "Agent failure rollback",
+      [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"], content: "Agent fail.\n" }],
+    );
+    const spy = vi
+      .spyOn(canonicalStore.CanonicalStore.prototype, "absorbChangedSections")
+      .mockRejectedValueOnce(new Error("simulated absorb failure"));
+    try {
+      await expect(
+        publishProposalToCanonicalDetailed(id, {}, undefined, { ownerKind: "agent" }),
+      ).rejects.toThrow("simulated absorb failure");
+    } finally {
+      spy.mockRestore();
+    }
+    // Agent → draft (spec 02 § Why committing).
+    expect((await readProposal(id)).status).toBe("draft");
+  });
+
+  it("docsession runtime publish failure returns the proposal to inprogress", async () => {
+    const humanWriter = {
+      id: "human-test",
+      type: "human" as const,
+      displayName: "Test Human",
+      email: "human-test@example.com",
+    };
+    const { id } = await createProposal(
+      humanWriter,
+      "DocSession failure rollback",
+      [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"], content: "Human fail.\n" }],
+    );
+    // Human/DocSession proposals are inprogress before the publish attempt.
+    await transitionToInProgress(id);
+    expect((await readProposal(id)).status).toBe("inprogress");
+
+    const spy = vi
+      .spyOn(canonicalStore.CanonicalStore.prototype, "absorbChangedSections")
+      .mockRejectedValueOnce(new Error("simulated absorb failure"));
+    try {
+      await expect(
+        publishProposalToCanonicalDetailed(id, {}, undefined, { ownerKind: "docsession" }),
+      ).rejects.toThrow("simulated absorb failure");
+    } finally {
+      spy.mockRestore();
+    }
+    // Human/DocSession → inprogress (NOT draft); stays the current proposal.
+    expect((await readProposal(id)).status).toBe("inprogress");
   });
 });

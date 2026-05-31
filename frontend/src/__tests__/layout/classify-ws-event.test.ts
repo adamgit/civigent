@@ -82,4 +82,34 @@ describe("classifyWsEvent", () => {
     expect(result.addBadge).toBeNull();
     expect(result.showToast).toBeNull();
   });
+
+  // The JSON app WS forwards every server event opaquely (no whitelist in
+  // ws-client / ws-shared-worker). At the AppLayout classification layer,
+  // section-availability events are pass-through no-ops (they are doc-page
+  // concerns, not tree/badge/toast triggers) — they must never throw or be
+  // dropped in a way that breaks delivery to other consumers.
+  it.each(["section:blocked", "section:unblocked", "section:gone", "content:committed"] as const)(
+    "%s is classified without throwing and is not mishandled at the layout layer",
+    (type) => {
+      expect(() => classifyWsEvent({ type }, "/doc.md", true)).not.toThrow();
+    },
+  );
+
+  it("section:* events are layout-level no-ops (not tree/badge/toast triggers)", () => {
+    for (const type of ["section:blocked", "section:unblocked", "section:gone"]) {
+      const result = classifyWsEvent({ type, doc_path: "doc.md" }, "/doc.md", true);
+      expect(result.refreshTree).toBe(false);
+      expect(result.addBadge).toBeNull();
+      expect(result.showToast).toBeNull();
+    }
+  });
+
+  it("removed dirty-persistence triggers are no-ops at the layout layer", () => {
+    for (const type of ["writer:dirty-state-changed", "session:status-changed"]) {
+      const result = classifyWsEvent({ type, doc_path: "doc.md" }, "/doc.md", true);
+      expect(result.refreshTree).toBe(false);
+      expect(result.addBadge).toBeNull();
+      expect(result.showToast).toBeNull();
+    }
+  });
 });

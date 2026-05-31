@@ -1,36 +1,12 @@
 import { configDefaults, defineConfig } from "vitest/config";
 
-const removedLegacyArchitectureSuites = [
-  // Iteration 3.5 routes live CRDT edits through proposal content trees.
-  // The legacy sessions/ sidecar, flush, finalization, session-end commit,
-  // post-commit injection, and acceptLiveFragments structural-contract suites
-  // assert removed architecture rather than current intended behavior.
-  "src/__tests__/sessions/**/*.test.ts",
-  "src/__tests__/recovery/**/*.test.ts",
-  "src/__tests__/crdt/acquire-empty-doc-session.test.ts",
-  "src/__tests__/crdt/apply-accept-result.test.ts",
-  "src/__tests__/crdt/begin-finalization.test.ts",
-  "src/__tests__/crdt/flush-single-normalization-path.test.ts",
-  "src/__tests__/crdt/heading-deletion-merge-target.test.ts",
-  "src/__tests__/crdt/heading-deletion-parent-collapse.test.ts",
-  "src/__tests__/crdt/heading-deletion-parser-edge-matrix.test.ts",
-  "src/__tests__/crdt/heading-path-index-ownership.test.ts",
-  "src/__tests__/crdt/normalization-boundary-matrix.test.ts",
-  "src/__tests__/crdt/normalization-invariants.test.ts",
-  "src/__tests__/crdt/normalize-heading-deletion-merge.test.ts",
-  "src/__tests__/crdt/origin-suppression-dirty-tracking.test.ts",
-  "src/__tests__/crdt/post-commit-injection-invariants.test.ts",
-  "src/__tests__/crdt/predecessor-convergence-chain.test.ts",
-  "src/__tests__/crdt/sub-skeleton-duplicate-bug.test.ts",
-  "src/__tests__/crdt/targeted-normalization-sequential-matrix.test.ts",
-  "src/__tests__/diagnostics/collect-section-layers.test.ts",
-  "src/__tests__/storage/accept-live-fragments-*.test.ts",
-  "src/__tests__/storage/child-section-commit-crash.test.ts",
-  "src/__tests__/storage/list-persisted-fragments.test.ts",
-  "src/__tests__/storage/multi-key-accept-atomicity.test.ts",
-  "src/__tests__/storage/raw-fragment-recovery-buffer.test.ts",
-  "src/__tests__/storage/restore-teardown.test.ts",
-];
+// The legacy sessions/ sidecar, flush, finalization, session-end commit,
+// post-commit injection, acceptLiveFragments, and session-file crash-recovery
+// suites asserted removed architecture and have been physically deleted (Areas
+// B/C/D/E). The crash-recovery suite under src/__tests__/recovery/ now runs
+// against the narrowed proposal-FSM + git-integrity contract (Area E) — no
+// blanket exclusion remains.
+const removedLegacyArchitectureSuites: string[] = [];
 
 export default defineConfig({
   test: {

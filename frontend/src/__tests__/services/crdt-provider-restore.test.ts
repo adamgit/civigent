@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vites
 import * as Y from "yjs";
 import { CrdtProvider } from "../../services/crdt-provider";
 import type { DocumentReplacementNoticePayload } from "../../types/shared";
-import { WS_CLOSE_DOCUMENT_REPLACED } from "../../services/crdt-close-codes";
+import { WS_CLOSE_DOCUMENT_REPLACED, WS_CLOSE_ADMIN_REBUILD } from "../../services/crdt-close-codes";
 
 // Protocol message types (must match crdt-provider.ts)
 const MSG_SYNC_STEP_1 = 0x00;
@@ -225,6 +225,44 @@ describe("CrdtProvider document replacement notice handling", () => {
     ws2.receiveServerMessage(buildSyncStep2FromDoc(sourceDoc));
 
     expect(onRestore).not.toHaveBeenCalled();
+    provider.destroy();
+  });
+
+  it("admin force-rebuild (4024) fires onForceRebuild and reconnects immediately, like 4022", () => {
+    const onForceRebuild = vi.fn();
+    const onSessionReinit = vi.fn();
+    const doc = new Y.Doc();
+    const provider = new CrdtProvider(doc, "/test/doc.md", { onForceRebuild, onSessionReinit });
+
+    provider.connect();
+    const ws1 = StubWebSocket.lastInstance!;
+    ws1.open();
+
+    // Server sends the admin force-rebuild close code.
+    ws1.onclose?.(new CloseEvent("close", { code: WS_CLOSE_ADMIN_REBUILD }));
+
+    // Behaves like 4022: a new WebSocket is opened immediately (no backoff),
+    // and onForceRebuild fires (not the restore-specific onSessionReinit).
+    const ws2 = StubWebSocket.lastInstance!;
+    expect(ws2).not.toBe(ws1);
+    expect(onForceRebuild).toHaveBeenCalledTimes(1);
+    expect(onSessionReinit).not.toHaveBeenCalled();
+    provider.destroy();
+  });
+
+  it("restore (4022) fires onSessionReinit and reconnects immediately", () => {
+    const onSessionReinit = vi.fn();
+    const doc = new Y.Doc();
+    const provider = new CrdtProvider(doc, "/test/doc.md", { onSessionReinit });
+
+    provider.connect();
+    const ws1 = StubWebSocket.lastInstance!;
+    ws1.open();
+    ws1.onclose?.(new CloseEvent("close", { code: WS_CLOSE_DOCUMENT_REPLACED }));
+
+    const ws2 = StubWebSocket.lastInstance!;
+    expect(ws2).not.toBe(ws1);
+    expect(onSessionReinit).toHaveBeenCalledTimes(1);
     provider.destroy();
   });
 

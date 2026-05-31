@@ -192,18 +192,23 @@ describe("CRDT provider auth-expiry handling", () => {
     provider.destroy();
   });
 
-  it("does NOT attempt refresh for non-auth close codes (e.g. idle timeout 4020)", async () => {
-    const onIdleTimeout = vi.fn();
-    const provider = createProvider({ onIdleTimeout });
+  it("admin force-rebuild (4024) fires onForceRebuild and reconnects immediately (no auth refresh)", async () => {
+    // Idle-timeout (4020) is removed from this architecture; the admin
+    // force-rebuild close code (4024) is the disruptive lifecycle event. It
+    // behaves like 4022: reconnect immediately, no auth refresh.
+    const onForceRebuild = vi.fn();
+    const provider = createProvider({ onForceRebuild });
     const ws = connectProvider(provider);
+    const instanceCountBefore = StubWebSocket.instances.length;
 
-    ws.triggerClose(4020, "Idle timeout");
+    ws.triggerClose(4024, "Admin rebuild");
 
-    // Give async handlers time to fire
     await new Promise((r) => setTimeout(r, 50));
 
     expect(mockRefreshAuthSession).not.toHaveBeenCalled();
-    expect(onIdleTimeout).toHaveBeenCalledTimes(1);
+    expect(onForceRebuild).toHaveBeenCalledTimes(1);
+    // Reconnected immediately (a new WebSocket was opened).
+    expect(StubWebSocket.instances.length).toBe(instanceCountBefore + 1);
 
     provider.destroy();
   });

@@ -59,14 +59,14 @@ export function DocumentHistory({ docPath, onRestored }: DocumentHistoryProps) {
     setRestoring(sha);
     setRestoreResult(null);
     try {
+      // Restore publishes-or-aborts the live DocSession, then commits the target
+      // version to canonical, returning the new commit SHA (api-client
+      // DocRestoreResponse). There is no "blocked/proposal created" branch.
       const res = await apiClient.restoreDoc(docPath, sha);
       if (res.committed_sha) {
         setRestoreResult(`Restored to ${sha.slice(0, 8)}. New commit: ${res.committed_sha.slice(0, 8)}`);
         setConfirmSha(null);
         onRestored?.();
-      } else if (res.proposal_id) {
-        setRestoreResult(`Restore blocked. Proposal ${res.proposal_id} created for manual review.`);
-        setConfirmSha(null);
       }
     } catch (err) {
       setRestoreResult(`Restore failed: ${err instanceof Error ? err.message : String(err)}`);

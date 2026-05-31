@@ -86,8 +86,12 @@ function ResponseBlock({ response, label }: { response: AgentResponse | null; la
 interface EvalSectionShape {
   doc_path: string;
   heading_path: string[];
+  /** Generic agent-write-policy decision — machine branch/styling only (Area M). */
+  canWrite: boolean;
+  /** Server-authored prose explanation rendered verbatim (Area M: never a code). */
+  message: string;
+  /** Human-involvement-policy detail only; -1 means unknown/not-yet-evaluated. */
   humanInvolvement_score: number;
-  blocked: boolean;
   content: string;
   justification?: string;
 }
@@ -135,8 +139,9 @@ function AddSectionForm({
     onAdd({
       doc_path: addDocPath,
       heading_path: headingPath,
+      canWrite: true, // optimistic until re-evaluated by the server
+      message: "Not yet evaluated.",
       humanInvolvement_score: -1, // unknown until re-evaluated
-      blocked: false,
       content: addContent,
       ...(addJustification.trim() ? { justification: addJustification.trim() } : {}),
     });
@@ -427,8 +432,18 @@ export function AgentSimulatorPage() {
       status?: string;
       outcome?: string;
       committed_head?: string;
-      evaluation?: unknown;
-      sections?: unknown[];
+      // Agent-write-policy result (spec 12): generic `canWrite` + prose `message`
+      // per target; `details.score` is human-involvement-policy detail only.
+      agentWritePolicy?: {
+        canWrite: boolean;
+        message: string;
+        targets: Array<{
+          target: { doc_path: string; heading_path: string[] };
+          canWrite: boolean;
+          message: string;
+          details?: { score?: number };
+        }>;
+      };
     }>(
       "/api/proposals",
       agent.token,
@@ -444,20 +459,21 @@ export function AgentSimulatorPage() {
       setProposalOutcome(resp.body.outcome ?? null);
       setEditContent(newContent);
 
-      // Store evaluated sections for section-level management
-      const respSections = (resp.body.sections ?? []) as Array<{
-        doc_path: string;
-        heading_path: string[];
-        humanInvolvement_score: number;
-        blocked: boolean;
-        justification?: string;
-      }>;
-      if (respSections.length > 0) {
-        const merged = respSections.map((es) => ({
-          ...es,
+      // Store evaluated sections for section-level management. Source from the
+      // agent-write-policy result (Area M): `canWrite` drives branching/styling,
+      // the per-target prose `message` is rendered verbatim, and the score is a
+      // human-involvement-policy detail (absent for other policies).
+      const respTargets = resp.body.agentWritePolicy?.targets ?? [];
+      if (respTargets.length > 0) {
+        const merged: EvalSectionShape[] = respTargets.map((t) => ({
+          doc_path: t.target.doc_path,
+          heading_path: t.target.heading_path,
+          canWrite: t.canWrite,
+          message: t.message,
+          humanInvolvement_score: typeof t.details?.score === "number" ? t.details.score : -1,
           content: sections.find(
-            (s) => s.doc_path === es.doc_path &&
-              JSON.stringify(s.heading_path) === JSON.stringify(es.heading_path)
+            (s) => s.doc_path === t.target.doc_path &&
+              JSON.stringify(s.heading_path) === JSON.stringify(t.target.heading_path)
           )?.content ?? newContent,
         }));
         setEvalSections(merged);
@@ -791,7 +807,7 @@ export function AgentSimulatorPage() {
                   return (
                     <div
                       key={`${es.doc_path}-${es.heading_path.join("/")}`}
-                      className={`border rounded p-2 ${es.blocked ? "border-red-300 bg-red-50/40" : es.humanInvolvement_score < 0 ? "border-blue-300 bg-blue-50/40" : "border-green-300 bg-green-50/40"} ${!included ? "opacity-40" : ""}`}
+                      className={`border rounded p-2 ${!es.canWrite ? "border-red-300 bg-red-50/40" : es.humanInvolvement_score < 0 ? "border-blue-300 bg-blue-50/40" : "border-green-300 bg-green-50/40"} ${!included ? "opacity-40" : ""}`}
                     >
                       <div className="flex items-start gap-2">
                         <input
@@ -809,8 +825,8 @@ export function AgentSimulatorPage() {
                         />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 text-xs mb-1">
-                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${es.blocked ? "bg-red-200 text-red-800" : es.humanInvolvement_score < 0 ? "bg-blue-200 text-blue-800" : "bg-green-200 text-green-800"}`}>
-                              {es.blocked ? "BLOCKED" : es.humanInvolvement_score < 0 ? "NEW" : "PASSED"}
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${!es.canWrite ? "bg-red-200 text-red-800" : es.humanInvolvement_score < 0 ? "bg-blue-200 text-blue-800" : "bg-green-200 text-green-800"}`}>
+                              {!es.canWrite ? "BLOCKED" : es.humanInvolvement_score < 0 ? "NEW" : "PASSED"}
                             </span>
                             {es.humanInvolvement_score >= 0 && (
                               <span className="text-gray-500">score: {es.humanInvolvement_score.toFixed(2)}</span>
@@ -819,6 +835,10 @@ export function AgentSimulatorPage() {
                           <div className="text-xs text-gray-700 font-mono truncate mb-1">
                             {es.doc_path} &gt; {es.heading_path.join(" > ")}
                           </div>
+                          {/* Render the server-authored prose explanation verbatim (Area M). */}
+                          {!es.canWrite && es.message && (
+                            <div className="text-[11px] text-red-700 mb-1">{es.message}</div>
+                          )}
                           {included && (
                             <>
                               <textarea

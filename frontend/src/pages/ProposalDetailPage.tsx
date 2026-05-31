@@ -2,7 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
-import type { AnyProposal, ProposalDTO, EvaluatedSection } from "../types/shared.js";
+import type {
+  ProposalDTO,
+  HumanInvolvementPolicyResult,
+  HumanInvolvementTargetDetails,
+} from "../types/shared.js";
 import { headingPathToLabel } from "./document-page-utils";
 import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 
@@ -118,7 +122,7 @@ function ProposalFileViewer({ proposal }: { proposal: ProposalDTO }) {
             </div>
             <div style={{ background: "#f7f5f1", borderRadius: "5px", padding: "4px 0" }}>
               <FieldCheck label="status" present={false} expectedWhen="never stored in file" />
-              <FieldCheck label="humanInvolvement_evaluation" present={false} expectedWhen="never stored — computed at read time" />
+              <FieldCheck label="agentWritePolicy" present={false} expectedWhen="never stored — computed at read time" />
               <FieldCheck label="committed_head" present={proposal.status === "committed" && "committed_head" in proposal} expectedWhen="written at commit time only" />
               <FieldCheck label="humanInvolvement_at_commit" present={proposal.status === "committed" && "humanInvolvement_at_commit" in proposal} expectedWhen="written at commit time only" />
               <FieldCheck label="withdrawal_reason" present={proposal.status === "withdrawn" && "withdrawal_reason" in proposal} expectedWhen="written at withdrawal only" />
@@ -146,9 +150,18 @@ export function ProposalDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
-  const evaluation = proposal && (proposal.status === "draft" || proposal.status === "committing")
-    ? (proposal as import("../types/shared.js").DraftProposalDTO).humanInvolvement_evaluation
+  const agentWritePolicy: HumanInvolvementPolicyResult | undefined =
+    proposal && (proposal.status === "draft" || proposal.status === "committing")
+      ? (proposal as import("../types/shared.js").DraftProposalDTO).agentWritePolicy
+      : undefined;
+  const lockEvaluation = proposal && (proposal.status === "draft" || proposal.status === "committing")
+    ? (proposal as import("../types/shared.js").DraftProposalDTO).lockEvaluation
     : undefined;
+  // Human-involvement compatibility policy is "selected" iff any target surfaces
+  // a numeric score detail; only then do score columns/cells render.
+  const hasHumanInvolvementScores = !!agentWritePolicy?.targets.some(
+    (t) => typeof t.details?.score === "number",
+  );
 
   const loadProposal = useCallback(async () => {
     if (!id) {
@@ -192,10 +205,8 @@ export function ProposalDetailPage() {
     try {
       const resp = await apiClient.acquireLocks(proposal.id);
       if (!resp.acquired) {
-        const sectionLabel = resp.section
-          ? ` (${resp.section.heading_path.join(" > ")})`
-          : "";
-        setError(`Lock failed${sectionLabel}: ${resp.reason}`);
+        // Area M: render backend prose; never map a code/enum.
+        setError(resp.message);
       }
       await loadProposal();
     } catch (err) {
@@ -245,34 +256,43 @@ export function ProposalDetailPage() {
                 <tr>
                   <th style={{ textAlign: "left", padding: "0.3rem" }}>Document</th>
                   <th style={{ textAlign: "left", padding: "0.3rem" }}>Section</th>
-                  <th style={{ textAlign: "center", padding: "0.3rem" }}>Human Involvement</th>
-                  <th style={{ textAlign: "left", padding: "0.3rem" }}>Status</th>
+                  {hasHumanInvolvementScores ? (
+                    <th style={{ textAlign: "center", padding: "0.3rem" }}>Human Involvement</th>
+                  ) : null}
+                  <th style={{ textAlign: "left", padding: "0.3rem" }}>Agent writes</th>
+                  <th style={{ textAlign: "left", padding: "0.3rem" }}>Explanation</th>
                 </tr>
               </thead>
               <tbody>
                 {proposal.sections.map((section, idx) => {
-                  const evalSection = evaluation?.blocked_sections.find(
-                    (s) => s.doc_path === section.doc_path && JSON.stringify(s.heading_path) === JSON.stringify(section.heading_path)
-                  ) ?? evaluation?.passed_sections.find(
-                    (s) => s.doc_path === section.doc_path && JSON.stringify(s.heading_path) === JSON.stringify(section.heading_path)
+                  const target = agentWritePolicy?.targets.find(
+                    (t) => t.target.doc_path === section.doc_path
+                      && JSON.stringify(t.target.heading_path) === JSON.stringify(section.heading_path)
                   );
-                  const score = evalSection?.humanInvolvement_score ?? 0;
-                  const blocked = evalSection?.blocked ?? false;
+                  const details: HumanInvolvementTargetDetails | undefined = target?.details;
+                  const score = details?.score;
+                  // canWrite drives styling/branching; prose `message` is the explanation (Area M).
+                  const canWrite = target ? target.canWrite : true;
                   return (
                     <tr key={`${section.doc_path}-${section.heading_path.join("/")}-${idx}`}>
                       <td style={{ padding: "0.3rem" }}>
                         <Link to={`/docs/${stripLeadingSlashForRoute(section.doc_path)}`}>{section.doc_path}</Link>
                       </td>
                       <td style={{ padding: "0.3rem" }}>{headingPathToLabel(section.heading_path)}</td>
-                      <td style={{ padding: "0.3rem", textAlign: "center", color: involvementColor(score) }}>
-                        {score.toFixed(2)}
-                      </td>
+                      {hasHumanInvolvementScores ? (
+                        <td style={{ padding: "0.3rem", textAlign: "center", color: typeof score === "number" ? involvementColor(score) : undefined }}>
+                          {typeof score === "number" ? score.toFixed(2) : "—"}
+                        </td>
+                      ) : null}
                       <td style={{ padding: "0.3rem" }}>
-                        {blocked ? (
-                          <span style={{ color: "#1e40af" }}>Blocked</span>
+                        {canWrite ? (
+                          <span style={{ color: "#3a9a5c" }}>Allowed</span>
                         ) : (
-                          <span style={{ color: "#94a3b8" }}>Passed</span>
+                          <span style={{ color: "#b91c1c" }}>Blocked</span>
                         )}
+                      </td>
+                      <td style={{ padding: "0.3rem", color: "#5c564c" }}>
+                        {target?.message ?? "—"}
                       </td>
                     </tr>
                   );
@@ -281,14 +301,34 @@ export function ProposalDetailPage() {
             </table>
           )}
 
-          {evaluation ? (
+          {agentWritePolicy ? (
             <>
-              <h2>Human Involvement Evaluation</h2>
+              <h2>Agent Write Policy</h2>
+              {/* Backend prose is the primary explanation (Area M). */}
+              <p>{agentWritePolicy.message}</p>
               <ul>
-                <li>All sections accepted: {evaluation.all_sections_accepted ? "yes" : "no"}</li>
-                <li>Aggregate impact: {evaluation.aggregate_impact.toFixed(2)} / {evaluation.aggregate_threshold.toFixed(2)}</li>
-                <li>Blocked sections: {evaluation.blocked_sections.length}</li>
-                <li>Passed sections: {evaluation.passed_sections.length}</li>
+                <li>Agents can write: {agentWritePolicy.canWrite ? "yes" : "no"}</li>
+                {hasHumanInvolvementScores ? (
+                  <li>
+                    Aggregate impact: {agentWritePolicy.details.aggregateImpact.toFixed(2)} / {agentWritePolicy.details.aggregateThreshold.toFixed(2)}
+                  </li>
+                ) : null}
+                <li>Blocked sections: {agentWritePolicy.targets.filter((t) => !t.canWrite).length}</li>
+                <li>Allowed sections: {agentWritePolicy.targets.filter((t) => t.canWrite).length}</li>
+              </ul>
+            </>
+          ) : null}
+
+          {lockEvaluation && lockEvaluation.conflicts.length > 0 ? (
+            <>
+              <h2>Lock Conflicts</h2>
+              <p>{lockEvaluation.message}</p>
+              <ul>
+                {lockEvaluation.conflicts.map((conflict, i) => (
+                  <li key={`${conflict.target.doc_path}-${conflict.target.heading_path.join("/")}-${i}`}>
+                    {headingPathToLabel(conflict.target.heading_path)}: {conflict.message}
+                  </li>
+                ))}
               </ul>
             </>
           ) : null}

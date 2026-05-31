@@ -4,7 +4,12 @@ import type { DocumentSection } from "../pages/document-page-utils";
 
 /**
  * REST-backed resource model for document-level operations.
- * Session transport state intentionally stays outside this model.
+ *
+ * Reads are canonical-only: `loadSections()`/`reloadSections()` call
+ * `apiClient.getDocumentSections(docPath)` with no proposal/overlay argument,
+ * matching spec 04 §5 ("GET .../sections reads canonical document state only";
+ * proposal content is read via proposal APIs). Live CRDT/transport state is
+ * owned by the editor/transport layer and intentionally stays outside this model.
  */
 export class DocumentResourceModel {
   private lastDocPath: string | null = null;

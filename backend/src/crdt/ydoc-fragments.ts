@@ -4,9 +4,10 @@
  * Fragment key = "section::" + sectionFileId (filename stem, e.g. "sec_abc123def").
  * Before-first-heading section uses the synthetic constant "section::__beforeFirstHeading__".
  *
- * Content operations live in LiveFragmentStringsStore (read/write) and
- * StagedSectionsStore (structural normalization).
- * This module provides key derivation, schema, and session-level helpers.
+ * Content operations live in LiveFragmentStringsStore (the thin Y.Doc fragment
+ * adapter: read/write). Structural normalization is owned by
+ * CRDTProposalGenerator (the legacy StagedSectionsStore is removed).
+ * This module provides fragment-key derivation and the backend ProseMirror schema.
  */
 
 import { getSchemaSpec } from "@ks/milkdown-serializer";
@@ -48,6 +49,3 @@ export function getBackendSchema(): Schema {
   }
   return _backendSchema;
 }
-
-// ─── Session-level helpers ───────────────────────────────────────
-

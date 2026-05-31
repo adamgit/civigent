@@ -62,14 +62,12 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 - GET /api/documents/:docPath/sections returns all sections with content
 - Each section includes heading_path, content, humanInvolvement_score, word_count
 - section_length_warning is true when word_count exceeds threshold
-- Sections overlay from active Y.Doc session when present
-- Sections overlay from sessions/sections/ when Y.Doc absent but dirty files exist
-- Returns canonical content when no session or dirty files exist
+- Sections read canonical content only (resolved through DocumentSkeleton); there is no session/overlay/live-state read path
 
 ### `document-structure.test.ts`
 - GET /api/documents/:docPath/structure returns heading tree
 - Structure reflects skeleton files, including nested sub-skeletons
-- Structure overlays from sessions/sections/ when dirty skeleton exists
+- Structure resolves canonical skeleton only (no session overlay)
 
 ### `document-changes-since.test.ts`
 - GET /api/documents/:docPath/changes-since?after_head=SHA returns changed sections
@@ -166,29 +164,37 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 
 ### `heatmap.test.ts`
 - GET /api/heatmap returns all sections across all documents with human-involvement scores
-- Each entry includes doc_path, heading_path, humanInvolvement_score, crdt_session_active
-- Sections with active CRDT sessions show crdt_session_active=true
+- Each entry includes doc_path, heading_path, humanInvolvement_score, and live-work state
+- Sections carried by a DocSession `inprogress` proposal (live human CRDT work) are reported as actively edited
 - Response includes current admin preset name
 
 ---
 
-## 8. Human-Involvement Evaluation (`domain/`)
+## 8. Agent Write Policy & Proposal FSM Locks (`domain/`)
 
-### `section-human-involvement.test.ts`
-- Section with active CRDT session and sectionFocus returns high human-involvement score
-- Section with dirty session files (no active Y.Doc) returns elevated human-involvement
-- Section with recent human git commit returns elevated human-involvement (recency decay)
-- Section with only agent commits returns low/zero human-involvement
-- Section with no history returns zero human-involvement
-- Justification on proposal section reduces effective human-involvement score
+Section gating is now split into two concepts (spec 12-proposal-fsm-locking):
+proposal FSM locks (transition-time exclusion) and the agent write-policy
+(whether agents may write a section). The legacy dirty-session / live-focus /
+recency-decay heuristics are removed; live human work is represented by the
+DocSession's `inprogress` proposal, not by session focus or dirty files.
+
+### `agent-write-policy.test.ts`
+- AgentWritePolicy returns canWrite=true/false per proposal and per target; common callers branch on canWrite only
+- A section covered by a human `inprogress` proposal (live CRDT work) returns canWrite=false for agents
+- A section with only agent commits / no contention returns canWrite=true
+- The human-involvement compatibility policy still surfaces a score inside its own typed details (not as the generic field)
+- Humans are never blocked by agent write-policy (governed by RBAC + FSM locks)
+
+### `proposal-fsm-locks.test.ts`
+- BLOCKING_LOCK_STATUSES is policy ("inprogress" + "committing"), not hardcoded at call sites
+- A `draft -> inprogress` transition is all-or-nothing: any conflicting exclusive claim keeps it draft and returns structured conflicts
+- A `committing` proposal's targets are themselves an exclusive claim that blocks other transitions
+- ProposalFsmLockIndex.build batches claim lookup and supports self-exclusion by proposal id
+- Conflicts report blockingProposalId / blockingProposalStatus / blockingWriter (structured, not first-failure)
 
 ### `human-involvement-presets.test.ts`
 - Each named preset (permissive, balanced, protective, lockdown) produces expected threshold behavior
 - Admin config change to preset affects subsequent evaluations
-
-### `human-involvement-dirty-files.test.ts`
-- getDirtySessionFileSet correctly identifies dirty files in sessions/sections/
-- Dirty files for a section mark it as actively edited for human-involvement purposes
 
 ---
 
@@ -205,7 +211,7 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 
 ### `heading-resolver.test.ts`
 - resolveAllSectionPaths maps heading paths to absolute file paths
-- Overlay root is checked before canonical root
+- Paths resolve against the canonical content root (no overlay root)
 - flattenStructureToHeadingPaths extracts ordered heading paths from structure tree
 
 ### `document-reader.test.ts`
@@ -242,7 +248,7 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 - commitProposalToCanonical moves proposal file to committed/ directory
 - committed proposal includes committed_head SHA and humanInvolvement_at_commit snapshot
 
-### `section-activity.test.ts`
+### `section-commit-history.test.ts`
 - readDocSectionCommitInfo returns per-section git commit metadata
 - Recent commits have recency data usable for human-involvement scoring
 
@@ -252,99 +258,58 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 
 ---
 
-## 9b. Simplified Commit Architecture (`sessions/`)
+## 9b. Proposal-backed Publish Pipeline (`crdt/`)
 
-### `commit-triggers.test.ts`
-- Last holder disconnect triggers flush + commit (Y.Doc destroyed, session files committed)
-- Idle timeout (60s without ACTIVITY_PULSE) closes all WebSocket connections for the document
-- Manual publish via POST /api/publish commits dirty sections without disconnecting
-- Shutdown path (flushAndDestroyAll) flushes and commits all active sessions
-- No periodic timer — there is no background flush interval
+Canonical advances through the existing proposal subsystem; there is no
+flush/destroy/idle-timeout commit path. Live CRDT activity materializes into the
+DocSession's single `inprogress` proposal, and PublishTriggerPolicy drives the
+DocSession publish pause then `inprogress -> committing -> committed` -> canonical
+(spec 05 "Proposal Publication", spec 09 §14).
+
+### `publish-pipeline.test.ts`
+- PublishTriggerPolicy firing drives the DocSession actor through the publish pause: pause_start -> ordered ready acks -> final materialization -> commit
+- Successful publish transitions inprogress -> committing -> committed and advances canonical; the current-proposal reference clears only after success
+- A failed/aborted publish keeps the same proposal as the DocSession's current inprogress and resumes editing after pause_end (no successor / copy-on-write rollover)
+- Manual PublishNow fires PublishTriggerPolicy on the current inprogress rather than running a separate flush+commit path
+- Reconstruction after restart: Y.Doc rebuilt from the current inprogress proposal when present, otherwise from canonical
+- No idle timer and no last-holder-disconnect commit trigger
 
 ### `human-proposals.test.ts`
 - POST /api/proposals from a human writer creates pending proposal with empty sections
 - Human writer proposals skip human-involvement evaluation (accepted immediately)
 - PUT /api/proposals/:id for human writer proposals updates section content
 - POST /api/proposals/:id/commit for human writer proposals always commits (no human-involvement check)
-- Sections in a pending human writer proposal are blocked for both agents and other humans
-- isSectionActivelyEdited returns block_reason "human_proposal" for locked sections
+- A human `draft -> inprogress` proposal acquires proposal FSM locks on its targets, blocking other exclusive transitions for both agents and other humans
 - POST /api/proposals/:id/cancel for human writer proposals discards edits
 
 ---
 
-## 9c. Dual-Format Session Persistence (`crdt/`)
+## 9c. Structural Normalization (`crdt/`)
 
-### `fragment-store-flush.test.ts`
-- flush() writes raw fragment files to sessions/fragments/ for every dirty key
-- flush() writes canonical-ready to sessions/sections/ only when structurally clean
-- flush() skips canonical-ready write when fragment contains embedded headings
-- flush() clears dirtyKeys after successful flush
-- flush() returns writtenKeys listing all flushed fragment keys
-- Empty dirtyKeys → flush() returns immediately with empty result
+Structural normalization is owned by CRDTProposalGenerator and runs inside a
+single identity-preserving `Y.transact`, triggered by per-section CRDT-activity
+quiescence (not a session-wide timer, focus, or session-end). It mutates the live
+Y.Doc and the `inprogress` proposal content tree; there is no raw-fragment /
+canonical-ready disk pair (spec 05 "Structural Normalization").
 
-### `fragment-store-normalize.test.ts`
-- normalizeStructure() is a no-op for root body edit (no headings in root fragment)
-- normalizeStructure() is a no-op for simple body edit (heading/level unchanged)
-- normalizeStructure() splits root when headings typed in root section
-- normalizeStructure() renames heading when text changes but level stays
-- normalizeStructure() handles heading level change (updates skeleton nesting)
-- normalizeStructure() splits non-root section when additional headings typed
-- normalizeStructure() handles heading deletion (orphaned content merged to parent)
-- normalizeStructure() calls broadcastStructureChange callback on structural changes
-- normalizeStructure() writes updated raw fragments + canonical-ready files
-
-### `debounced-flush.test.ts`
-- triggerDebouncedSessionOverlayImport resets 1s timer on each call (import fires after last edit)
-- Debounced import fires the registered session-overlay import callback
-- Last holder disconnect cancels pending debounce and imports immediately
-- Shutdown cancels pending debounce and imports immediately
-
-### `raw-fragment-io.test.ts`
-- writeRawFragment creates file in sessions/fragments/{docPath}/{sectionFile}
-- readRawFragment returns content of raw fragment file
-- readRawFragment returns null for missing files
-- deleteRawFragment removes the file
-- deleteAllRawFragments removes all files for a docPath
-- listRawFragments returns all fragment files for a docPath
-- scanSessionFragmentDocPaths returns all docPaths with raw fragments
-
-### `crash-recovery-fragments.test.ts`
-- Crash recovery reads raw fragments from sessions/fragments/ before sessions/sections/
-- Raw fragments with embedded headings are normalized during recovery
-- Normalized content produces canonical-ready files in sessions/sections/
-- Recovery commits differences under "crash-recovery" identity
-- All session files (docs, fragments, authors) cleaned up after recovery
-
-### `fragment-store-from-disk.test.ts`
-- fromDisk prefers raw fragments when sessions/fragments/ has files
-- fromDisk falls back to overlay (sessions/sections/) when no raw fragments exist
-- fromDisk strips heading from raw fragment to get body-only for Y.Doc
-- fromDisk normalizes fragments with embedded headings after loading
-
----
-
-## 10. Storage — Sessions (`sessions/`)
-
-### `session-store.test.ts`
-- readAllSectionsWithOverlay returns canonical content with session overlay
-- Overlay sections replace canonical content for matching heading paths
-- Missing overlay sections fall back to canonical
-
-### `auto-commit.test.ts`
-- commitDirtySections reads from sessions/sections/ and writes to canonical
-- Committed section files are deleted from sessions/sections/
-- Git commit is created with correct attribution
-- commitAllDirtySessions iterates all active sessions
+### `crdt-structural-normalization.test.ts`
+- No-op for a root body edit (no headings in root fragment) and for a simple body edit (heading/level unchanged)
+- Splits a section when additional headings are typed; identity is preserved (split keeps the original fragment as one half)
+- Renames a heading when text changes but level stays
+- Handles heading-level changes (updates skeleton nesting)
+- Handles heading deletion (orphaned content merged into the survivor; merge extends the survivor)
+- Atomicity: peers/observers see only pre- or post-state; the YJS_UPDATE delta is the broadcast (no STRUCTURE_WILL_CHANGE / doc:structure-changed signal)
+- Pre-flight clock check on affected fragments aborts and retries on concurrent Y.Doc movement
 
 ---
 
 ## 11. CRDT / Y.Doc (`crdt/`)
 
 ### `ydoc-lifecycle.test.ts`
-- Creating a DocSession initializes Y.Doc with fragments from canonical
-- DocSession with session overlay reconstructs from overlay + canonical
-- Adding a holder increments holders set
-- Removing last holder triggers session-overlay import and Y.Doc destruction
+- Creating a DocSession initializes the Y.Doc with per-section fragments from canonical
+- A DocSession with a current inprogress proposal reconstructs the Y.Doc from that proposal content tree (else from canonical)
+- Adding a holder increments the holders set
+- Removing the last holder defers to YDocLifecycleManager's retain-vs-discard policy; the inprogress proposal carries in-flight state across disconnect (no overlay import, no idle teardown)
 - lookupDocSession returns session by docPath
 - getAllSessions returns all active sessions
 - getSessionsForWriter returns sessions where writer is a holder
@@ -373,22 +338,21 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 ### `ws-hub-events.test.ts`
 - content:committed event contains doc_path, sections, commit_sha, source, writer info
 - agent:reading event contains actor_id, actor_display_name, doc_path, heading_paths
-- session:overlay-imported event contains doc_path
-- dirty:changed event contains writer_id, doc_path, dirty flag
-- presence events (presence:editing, presence:done) contain writer and section info
+- section block-state events (section:blocked, section:unblocked, section:gone) carry doc_path + section identity and keep frontend editability aligned with server reality
 
 ---
 
 ## 13. WebSocket — CRDT Sync (`ws/`)
 
 ### `crdt-sync.test.ts`
-- Client connects to /ws/crdt/:docPath and receives sync step 2 with full doc state
+- Client connects to /ws/crdt/:docPath (per-document, no heading_path param) and receives sync step 2 with the full doc state
 - Client sends YJS_UPDATE and other clients receive it
-- SECTION_FOCUS message updates server sectionFocus map
-- SESSION_OVERLAY_IMPORT_STARTED (0x06) is sent before session-overlay import I/O
-- SESSION_OVERLAY_IMPORTED (0x04) carries written/deleted fragment key lists
+- DOC_PUBLISH_PAUSE_START (0x10) is sent to active editor sockets when a publish attempt begins
+- DOC_PUBLISH_READY (0x11) ack from each active editor socket is required before publish proceeds (ordered on the editor channel)
+- DOC_PUBLISH_PAUSE_END (0x12) is sent when the publish attempt ends (commit or abort); editors unfreeze only after it
 - AWARENESS messages are relayed between clients
 - Disconnect removes holder from DocSession
+- Legacy SECTION_FOCUS / ACTIVITY_PULSE / SESSION_OVERLAY / STRUCTURE_WILL_CHANGE (0x08) opcodes are gone; opcode 0x08 is permanently reserved-removed
 
 ---
 
@@ -419,8 +383,10 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 ## 17. Crash Recovery (`recovery/`)
 
 ### `crash-recovery.test.ts`
-- detectAndRecoverCrash handles proposals stuck in committing/ state
-- Proposals in committing/ are rolled back to pending/ on startup
+- Interrupted `committing` proposals are finished forward, NEVER rolled back: if meta.json already carries committed_head, finalize the committing -> committed rename; otherwise rerun publishCommittingProposalToCanonical from proposals/committing/{id}/content
+- `pending` proposals are deleted as transient debris on startup
+- `inprogress` proposals are treated as durable live state and preserved
+- The dirty working tree is used only to complete an interrupted committing proposal, else startup fails with a maintainer report (never a silent rollback)
 
 ---
 
@@ -439,12 +405,11 @@ STATUS: PARTIALLY IMPLEMENTED, UNDER REVIEW
 ### `crdt-observer-sync.test.ts`
 - Observer WS to /ws/crdt-observe/<docPath> connects successfully
 - Observer receives initial Y.Doc state when editing session exists
-- Observer receives MSG_YJS_UPDATE when editor makes changes
-- Observer receives MSG_STRUCTURE_WILL_CHANGE on normalization
-- Observer receives MSG_SESSION_OVERLAY_IMPORTED on session-overlay import
-- Observer connection does NOT prevent session idle timeout
-- Observer connection does NOT trigger presence:editing events
-- Observer disconnect does NOT trigger commitSessionFilesToCanonical
+- Observer receives MSG_YJS_UPDATE when editor makes changes (including the normalization Y.transact delta)
+- Observer connection has no effect on Y.Doc retention policy or commit cadence
+- Observer connection does NOT trigger any session/presence side-effects
+- Observer disconnect does NOT trigger any canonical commit
+- When the last editor disconnects, observer sockets are closed with code 4021 (session_ended) and fall back to REST
 - Observer that connects before any editor receives sync when editor joins
 - Observer that sends MSG_YJS_UPDATE is ignored (no Y.Doc mutation)
 - Multiple observers + one editor: all observers see editor's changes
@@ -484,9 +449,9 @@ backend/src/__tests__/
   heatmap/
     heatmap.test.ts
   domain/
-    section-human-involvement.test.ts
+    agent-write-policy.test.ts
+    proposal-fsm-locks.test.ts
     human-involvement-presets.test.ts
-    human-involvement-dirty-files.test.ts
   storage/
     document-skeleton.test.ts
     heading-resolver.test.ts
@@ -496,22 +461,15 @@ backend/src/__tests__/
     git-repo.test.ts
     proposal-store.test.ts
     commit-pipeline.test.ts
-    section-activity.test.ts
+    section-commit-history.test.ts
     activity-reader.test.ts
-  sessions/
-    session-store.test.ts
-    auto-commit.test.ts
-    commit-triggers.test.ts
+  proposals-publish/
+    publish-pipeline.test.ts
     human-proposals.test.ts
-    debounced-flush.test.ts
-    raw-fragment-io.test.ts
-    crash-recovery-fragments.test.ts
   crdt/
     ydoc-lifecycle.test.ts
     ydoc-fragments.test.ts
-    fragment-store-flush.test.ts
-    fragment-store-normalize.test.ts
-    fragment-store-from-disk.test.ts
+    crdt-structural-normalization.test.ts
   ws/
     ws-hub.test.ts
     ws-hub-events.test.ts

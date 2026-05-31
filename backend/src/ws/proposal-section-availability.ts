@@ -2,19 +2,29 @@ import type {
   ProposalSectionAvailabilityEntry,
   ProposalSectionAvailabilityEvent,
 } from "../types/shared.js";
-import { evaluateHumanProposalLockAvailability } from "../domain/human-proposal-lock-availability.js";
 import {
   listDraftProposals,
   listInProgressProposals,
   readProposal,
 } from "../storage/proposal-repository.js";
-import { SectionPresence } from "../domain/section-presence.js";
+import { checkProposalLocks } from "../domain/proposal-fsm-locks.js";
 import { SectionRef } from "../domain/section-ref.js";
 
 function isHumanEditableProposalStatus(status: string): status is "draft" | "inprogress" {
   return status === "draft" || status === "inprogress";
 }
 
+/**
+ * Build the proposal-lock-contention availability event for one human proposal,
+ * scoped to a single document.
+ *
+ * Describes ONLY proposal FSM lock conflicts: per-section `available`, prose
+ * `message`, and blocking proposal/writer metadata. It does NOT describe CRDT
+ * editability, `section:blocked`/`section:gone`, publication pause, or agent
+ * write-policy scoring (spec 12 §Event/API Surfaces). Lock detection routes
+ * through `checkProposalLocks` (the only contention primitive); no dirty-session
+ * or live-focus inputs are consulted.
+ */
 export async function buildProposalSectionAvailabilityEvent(
   proposalId: string,
   docPath: string,
@@ -23,34 +33,44 @@ export async function buildProposalSectionAvailabilityEvent(
   if (proposal.writer.type !== "human") return null;
   if (!isHumanEditableProposalStatus(proposal.status)) return null;
 
-  const { sections } = await evaluateHumanProposalLockAvailability(proposal.id, proposal.sections);
-  const scopedSections = sections.filter((section) => section.doc_path === docPath);
+  const scopedSections = proposal.sections.filter((section) => section.doc_path === docPath);
   if (scopedSections.length === 0) return null;
 
-  const needsLockHolderLookup = scopedSections.some(
-    (section) => section.blocked && section.blocked_reason === "human_proposal_lock",
-  );
-  const lockIndex = needsLockHolderLookup
-    ? await SectionPresence.prefetchHumanProposalLocks(proposal.id, "inprogress-only")
-    : null;
-
-  const payloadSections: ProposalSectionAvailabilityEntry[] = scopedSections.map((section) => {
-    const payload: ProposalSectionAvailabilityEntry = {
+  const lockResult = await checkProposalLocks({
+    proposalId: proposal.id,
+    targets: scopedSections.map((section) => ({
       doc_path: section.doc_path,
       heading_path: section.heading_path,
-      available: !section.blocked,
-      ...(section.blocked ? { blocked_reason: section.blocked_reason } : {}),
-    };
+    })),
+  });
 
-    if (section.blocked_reason === "human_proposal_lock" && lockIndex) {
-      const globalKey = new SectionRef(section.doc_path, section.heading_path).globalKey;
-      const holder = lockIndex.get(globalKey);
-      if (holder) {
-        payload.holder_writer_id = holder.writerId;
-        payload.holder_writer_display_name = holder.writerDisplayName;
-      }
+  const conflictByGlobalKey = new Map(
+    lockResult.conflicts.map((conflict) => [
+      SectionRef.fromTarget(conflict.target).globalKey,
+      conflict,
+    ]),
+  );
+
+  const payloadSections: ProposalSectionAvailabilityEntry[] = scopedSections.map((section) => {
+    const globalKey = new SectionRef(section.doc_path, section.heading_path).globalKey;
+    const conflict = conflictByGlobalKey.get(globalKey);
+    if (!conflict) {
+      return {
+        doc_path: section.doc_path,
+        heading_path: section.heading_path,
+        available: true,
+      };
     }
-    return payload;
+    return {
+      doc_path: section.doc_path,
+      heading_path: section.heading_path,
+      available: false,
+      message: conflict.message,
+      blocking_proposal_id: conflict.blockingProposalId,
+      blocking_proposal_status: conflict.blockingProposalStatus,
+      holder_writer_id: conflict.blockingWriter.id,
+      holder_writer_display_name: conflict.blockingWriter.displayName,
+    };
   });
 
   return {

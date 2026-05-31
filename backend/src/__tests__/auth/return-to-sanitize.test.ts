@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeReturnTo } from "../../api/routes/index.js";
+import { sanitizeReturnTo } from "../../api/routes/auth.js";
 
 describe("sanitizeReturnTo — open redirect prevention", () => {
   it("preserves normal paths", () => {

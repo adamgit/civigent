@@ -2,18 +2,19 @@
  * Tier 3 MCP tools — collaboration surface with explicit proposals.
  *
  * Tools: list_documents, list_sections, search_text,
- *        read_doc, read_doc_structure, read_live_section, read_proposal_section,
+ *        read_doc, read_doc_structure, read_published_section, read_proposal_section,
  *        create_proposal, publish_proposal, withdraw_proposal,
  *        list_proposals, read_proposal, write_proposal_section
  */
 
 import type { ToolRegistry, ToolHandler } from "../tool-registry.js";
-import { jsonToolResult } from "../tool-registry.js";
+import { jsonToolResult, jsonBlockedToolResult } from "../tool-registry.js";
 import { makeToolErrorResult } from "../protocol.js";
 import { readAssembledDocument, DocumentNotFoundError } from "../../storage/document-reader.js";
 import { readSectionWithHeading, SectionNotFoundError } from "../../storage/section-reader.js";
 import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
-import { OverlayContentLayer } from "../../storage/content-layer.js";
+import { ProposalReader } from "../../storage/proposal-reader.js";
+import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import {
   readDocumentStructure,
@@ -24,7 +25,6 @@ import {
   createProposal,
   readProposal,
   readProposalWithContent,
-  proposalContentRoot,
   listAllProposals,
   listDraftProposals,
   listCommittedProposals,
@@ -33,17 +33,20 @@ import {
   updateProposalSections,
   transitionToWithdrawn,
   isProposalMutable,
+  isCrdtOwnedProposal,
   ProposalNotFoundError,
   InvalidProposalStateError,
 } from "../../storage/proposal-repository.js";
+import type { ProposalStatus } from "../../types/shared.js";
 import {
-  evaluateProposalHumanInvolvement,
+  evaluateAgentWritePolicy,
   commitProposalToCanonical,
 } from "../../storage/commit-pipeline.js";
+import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
+import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
 import { SectionRef } from "../../domain/section-ref.js";
-import { INVOLVEMENT_THRESHOLD } from "../../domain/humanInvolvement.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
-import type { SectionScoreSnapshot } from "../../types/shared.js";
+import type { HumanInvolvementPolicyResult } from "../../types/shared.js";
 import { buildFragmentContent, bodyAsFragment } from "../../storage/section-formatting.js";
 import { checkDocPermission } from "../../auth/acl.js";
 import { emitCatalogMutationEvents, summarizeProposalCatalogMutations } from "../catalog-events.js";
@@ -57,27 +60,8 @@ import {
   SearchTextExecutionError,
 } from "../../storage/discovery.js";
 
-/**
- * Derive a human-readable block_reason from an evaluation result for MCP responses.
- * Helps agents understand which threshold caused the block.
- */
-function deriveBlockReason(evaluation: {
-  all_sections_accepted: boolean;
-  aggregate_impact: number;
-  aggregate_threshold: number;
-  blocked_sections: Array<{ humanInvolvement_score: number }>;
-}): string | undefined {
-  if (evaluation.all_sections_accepted) return undefined;
-  const hasPerSectionBlock = evaluation.blocked_sections.some(
-    (s) => s.humanInvolvement_score >= INVOLVEMENT_THRESHOLD,
-  );
-  if (hasPerSectionBlock && evaluation.aggregate_impact > evaluation.aggregate_threshold) {
-    return "per_section_threshold_and_aggregate_threshold";
-  }
-  if (hasPerSectionBlock) return "per_section_threshold";
-  if (evaluation.aggregate_impact > evaluation.aggregate_threshold) return "aggregate_threshold";
-  return "blocked";
-}
+// Agent-write-policy MCP response shaping lives in `agent-write-policy-body.ts`
+// (shared with structural.ts / filesystem.ts) as `agentWritePolicyToolBody`.
 
 // ─── discovery/search ────────────────────────────────────
 
@@ -224,9 +208,9 @@ const readDocStructureHandler: ToolHandler = async (args, ctx) => {
   }
 };
 
-// ─── read_live_section ───────────────────────────────────
+// ─── read_published_section ──────────────────────────────
 
-const readLiveSectionHandler: ToolHandler = async (args, ctx) => {
+const readPublishedSectionHandler: ToolHandler = async (args, ctx) => {
   const docPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
 
@@ -322,7 +306,7 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
     }
   }
 
-  const { id: mcpProposalId, contentRoot } = await createProposal(
+  const { id: mcpProposalId } = await createProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     intent,
     sections.map((s) => ({
@@ -332,9 +316,9 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
     })),
   );
 
-  // Write section content through OverlayContentLayer — skeleton resolution,
+  // Write section content through ProposalEditor — skeleton resolution,
   // ancestor auto-creation, and parser-driven subtree rewrite are handled
-  // internally by upsertSection(...). Per items 246/258, the previous
+  // internally by writeSection(...). Per items 246/258, the previous
   // splitTargets reaction (which captured `writeSection`'s return value
   // and post-hoc updated the proposal's section metadata when content
   // was auto-split) has been deleted. The proposal's section metadata
@@ -344,41 +328,42 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
   // the canonical proposal anchor and any newly-materialized child
   // headings are derivable from a subsequent document read rather than
   // from a side-channel return value.
-  const overlayLayer = new OverlayContentLayer(contentRoot, getContentRoot());
+  const editor = ProposalEditor.open(mcpProposalId, "draft");
 
   for (const s of sections) {
     const ref = SectionRef.fromTarget(s);
     const heading = ref.headingPath.length === 0 ? "" : ref.headingPath[ref.headingPath.length - 1]!;
-    await overlayLayer.upsertSection(ref, heading, s.content);
+    await editor.writeSection(ref.docPath, ref.headingPath, heading, s.content);
   }
 
   // Evaluate immediately (informational — agent must call publish_proposal explicitly)
-  const { evaluation, sections: evaluatedSections } = await evaluateProposalHumanInvolvement(mcpProposalId);
+  const policyResult = await evaluateAgentWritePolicy(mcpProposalId);
 
   // Broadcast proposal:draft so frontends can show the active draft indicator
-  if (ctx.emitEvent && evaluatedSections.length > 0) {
+  if (ctx.emitEvent && policyResult.targets.length > 0) {
     ctx.emitEvent({
       type: "proposal:draft",
       proposal_id: mcpProposalId,
-      doc_path: evaluatedSections[0].doc_path,
-      heading_paths: evaluatedSections.map((s) => s.heading_path),
+      doc_path: policyResult.targets[0].target.doc_path,
+      heading_paths: policyResult.targets.map((t) => t.target.heading_path),
       writer_id: writer.id,
       writer_display_name: writer.displayName,
       intent,
     });
   }
 
-  const outcome = evaluation.all_sections_accepted ? "accepted" : "blocked";
+  if (!policyResult.canWrite) {
+    return jsonBlockedToolResult(policyResult.message, {
+      proposal_id: mcpProposalId,
+      status: "draft",
+      agent_write_policy: agentWritePolicyToolBody(policyResult),
+    });
+  }
   return jsonToolResult({
     proposal_id: mcpProposalId,
     status: "draft",
-    outcome,
-    ...(outcome === "blocked" ? {
-      block_reason: deriveBlockReason(evaluation),
-      per_section_threshold: INVOLVEMENT_THRESHOLD,
-    } : {}),
-    evaluation,
-    sections: evaluatedSections,
+    outcome: "accepted",
+    agent_write_policy: agentWritePolicyToolBody(policyResult),
   });
 };
 
@@ -405,16 +390,14 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
       if (!wpOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${dp}".`);
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
+    const policyResult = await evaluateAgentWritePolicy(proposalId);
 
-    if (evaluation.all_sections_accepted) {
+    if (policyResult.canWrite) {
       const catalogMutations = await summarizeProposalCatalogMutations(proposal);
-      const scores: SectionScoreSnapshot = {};
-      for (const s of sections) {
-        scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
-      }
+      const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
+      const sections = proposal.sections;
 
-      const committedHead = await commitProposalToCanonical(proposalId, scores);
+      const committedHead = await commitProposalToCanonical(proposalId, committedMetadata);
 
       if (ctx.writer.type === "agent") {
         const { agentEventLog } = await import("../agent-event-log.js");
@@ -441,8 +424,7 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
         status: "committed",
         outcome: "accepted",
         committed_head: committedHead,
-        evaluation,
-        sections,
+        agent_write_policy: agentWritePolicyToolBody(policyResult),
       });
     } else {
       if (ctx.writer.type === "agent") {
@@ -450,14 +432,10 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
         agentEventLog.append(ctx.writer, { kind: "proposal_blocked", proposalId });
       }
 
-      return jsonToolResult({
+      return jsonBlockedToolResult(policyResult.message, {
         proposal_id: proposalId,
         status: "draft",
-        outcome: "blocked",
-        block_reason: deriveBlockReason(evaluation),
-        per_section_threshold: INVOLVEMENT_THRESHOLD,
-        evaluation,
-        sections,
+        agent_write_policy: agentWritePolicyToolBody(policyResult),
       });
     }
   } catch (error) {
@@ -512,13 +490,17 @@ const listProposalsHandler: ToolHandler = async (args) => {
     return makeToolErrorResult(`Invalid status filter. Must be one of: ${validStatuses.join(", ")}`);
   }
 
-  const proposals = status === "draft"
+  const all = status === "draft"
     ? await listDraftProposals()
     : status === "committed"
     ? await listCommittedProposals()
     : status === "withdrawn"
     ? await listWithdrawnProposals()
     : await listAllProposals();
+  // Hide CRDT-owned (DocSession live-edit) proposals from the agent surface:
+  // they are system artefacts, not agent-authored proposals, and must not be a
+  // live-state side channel (spec 10 "One active proposal per DocSession").
+  const proposals = all.filter((p) => !isCrdtOwnedProposal(p));
   return jsonToolResult({ proposals });
 };
 
@@ -539,7 +521,9 @@ const myProposalsHandler: ToolHandler = async (args, ctx) => {
     : status === "withdrawn"
     ? await listWithdrawnProposals()
     : await listAllProposals();
-  const mine = all.filter(p => p.writer.id === ctx.writer.id);
+  // Filter to this writer's own proposals AND hide CRDT-owned (DocSession
+  // live-edit) proposals — those are system artefacts, never agent-authored.
+  const mine = all.filter((p) => p.writer.id === ctx.writer.id && !isCrdtOwnedProposal(p));
   return jsonToolResult({ proposals: mine });
 };
 
@@ -550,13 +534,28 @@ const readProposalHandler: ToolHandler = async (args) => {
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
 
   try {
+    // Refuse CRDT-owned (DocSession live-edit) proposals: they are system
+    // artefacts mutated internally by the DocSession actor, not an agent-
+    // readable proposal surface. Reading one here would turn read_proposal into
+    // a live-state side channel (spec 10 "One active proposal per DocSession").
+    // Resolve metadata first (cheap) to make the ownership decision without
+    // materializing the live-edit content.
+    const meta = await readProposal(proposalId);
+    if (isCrdtOwnedProposal(meta)) {
+      return makeToolErrorResult(
+        `Proposal ${proposalId} is owned by a live editing session and is not readable through the agent proposal surface. `
+          + `Its content reflects in-flight collaborative edits that are managed by the live document session, not an authored proposal. `
+          + `To see what is currently published, read the document directly with read_doc, read_doc_structure, or read_published_section. `
+          + `To track or author your own proposals, use my_proposals, list_proposals, or create_proposal.`,
+      );
+    }
+
     const { proposal, sectionContent } = await readProposalWithContent(proposalId);
 
-    // Re-evaluate human-involvement for pending/committing proposals
-    let evaluation: import("../../types/shared.js").ProposalHumanInvolvementEvaluation | undefined;
+    // Re-evaluate agent write policy for draft/committing proposals
+    let agentWritePolicy: HumanInvolvementPolicyResult | undefined;
     if (proposal.status === "draft" || proposal.status === "committing") {
-      const result = await evaluateProposalHumanInvolvement(proposalId);
-      evaluation = result.evaluation;
+      agentWritePolicy = await evaluateAgentWritePolicy(proposalId);
     }
 
     // Return content as a separate map, not on section objects
@@ -566,7 +565,10 @@ const readProposalHandler: ToolHandler = async (args) => {
     }
 
     return jsonToolResult({
-      proposal: { ...proposal, ...(evaluation ? { humanInvolvement_evaluation: evaluation } : {}) },
+      proposal: {
+        ...proposal,
+        ...(agentWritePolicy ? { agent_write_policy: agentWritePolicyToolBody(agentWritePolicy) } : {}),
+      },
       section_content: contentMap,
     });
   } catch (error) {
@@ -590,17 +592,14 @@ const readProposalSectionHandler: ToolHandler = async (args) => {
 
   try {
     const proposal = await readProposal(proposalId);
-    const liveRoot = getContentRoot();
-    const proposalRoot = proposalContentRoot(proposal.id, proposal.status);
-    const layer = new OverlayContentLayer(proposalRoot, liveRoot);
-    const ref = new SectionRef(docPath, headingPath);
-    const body = await layer.readSection(ref);
+    const reader = ProposalReader.open(proposal.id, proposal.status);
+    const body = await reader.readSection(docPath, headingPath);
 
     let content;
     if (headingPath.length === 0) {
       content = bodyAsFragment(body);
     } else {
-      const section = (await layer.getSectionList(docPath)).find((entry) =>
+      const section = (await reader.getSectionList(docPath)).find((entry) =>
         entry.headingPath.length === headingPath.length
         && entry.headingPath.every((segment, index) => segment === headingPath[index]),
       );
@@ -677,12 +676,12 @@ const writeProposalSectionHandler: ToolHandler = async (args, ctx) => {
       { doc_path: docPath, heading_path: headingPath, justification },
     ];
 
-    const { proposal: updated, contentRoot: updContentRoot } = await updateProposalSections(
+    const { proposal: updated } = await updateProposalSections(
       proposalId,
       updatedSections,
     );
 
-    // Write section content through OverlayContentLayer. Per items
+    // Write section content through ProposalEditor. Per items
     // 246/260, the previous splitTargets reaction (which captured
     // `writeSection`'s return value and post-hoc updated proposal
     // section metadata when auto-split occurred) has been deleted. The
@@ -690,11 +689,10 @@ const writeProposalSectionHandler: ToolHandler = async (args, ctx) => {
     // requested target heading; any internal subtree rewrite triggered
     // by embedded headings in the user payload no longer leaks back
     // through a side-channel return value.
-    const overlayLayer = new OverlayContentLayer(updContentRoot, getContentRoot());
+    const editor = ProposalEditor.open(proposalId, updated.status as ProposalStatus);
     {
-      const ref = new SectionRef(docPath, headingPath);
       const heading = headingPath.length === 0 ? "" : headingPath[headingPath.length - 1]!;
-      await overlayLayer.upsertSection(ref, heading, content);
+      await editor.writeSection(docPath, headingPath, heading, content);
     }
 
     // Broadcast proposal:draft with the updated proposal we already
@@ -713,13 +711,12 @@ const writeProposalSectionHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    const { evaluation, sections } = await evaluateProposalHumanInvolvement(proposalId);
+    const policyResult = await evaluateAgentWritePolicy(proposalId);
 
     return jsonToolResult({
       proposal_id: proposalId,
       status: "draft",
-      evaluation,
-      sections,
+      agent_write_policy: agentWritePolicyToolBody(policyResult),
     });
   } catch (error) {
     if (error instanceof ProposalNotFoundError) {
@@ -815,8 +812,8 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
 
   registry.register(
     {
-      name: "read_live_section",
-      description: "Read the current live content of a specific section. This does not include proposal-only edits.",
+      name: "read_published_section",
+      description: "Read the published/live (canonical) content of a specific section. This reads the published system and will NOT show proposal-only edits. To read a section as it appears inside a proposal (draft/committed/withdrawn), use read_proposal_section instead.",
       inputSchema: {
         type: "object",
         properties: {
@@ -830,7 +827,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
         required: ["doc_path", "heading_path"],
       },
     },
-    readLiveSectionHandler,
+    readPublishedSectionHandler,
   );
 
   registry.register(

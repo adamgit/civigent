@@ -2,13 +2,13 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { access, readFile } from "node:fs/promises";
 import { DocumentSkeleton } from "../../storage/document-skeleton.js";
 import { isNestedBodyHolder } from "../../storage/section-shape.js";
-import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
+import { ContentLayer, ProposalShadowContentLayer } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 
 /**
  * Body-holder regression tests. Migrated under Bug E1 (item 430) to the
- * caller-facing `OverlayContentLayer.upsertSection(...)` operation, which
+ * caller-facing `ProposalShadowContentLayer.upsertSection(...)` operation, which
  * routes structural-target creation through `materializeAncestorHeadings` —
  * the single production code path used by every public write entry point.
  * The previous private `createSection(...)` helper was deleted entirely
@@ -32,7 +32,7 @@ describe("body holder materialization on leaf-to-sub-skeleton transition", () =>
 
   it("readAllSections succeeds after inserting child under a leaf", async () => {
     const docPath = "read-all-test.md";
-    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await overlay.createDocument(docPath);
 
     // Create Parent leaf with body content
@@ -52,7 +52,7 @@ describe("body holder materialization on leaf-to-sub-skeleton transition", () =>
 
   it("skeleton/disk consistency after insert-under-leaf", async () => {
     const docPath = "disk-consistency-test.md";
-    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await overlay.createDocument(docPath);
 
     // Create leaf "A" with body content
@@ -79,7 +79,7 @@ describe("body holder materialization on leaf-to-sub-skeleton transition", () =>
 
   it("parent body content preserved when leaf becomes sub-skeleton", async () => {
     const docPath = "preserve-content-test.md";
-    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await overlay.createDocument(docPath);
 
     // Create leaf "Parent" with body content

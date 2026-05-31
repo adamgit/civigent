@@ -3,7 +3,7 @@
  *
  * Why this test exists
  * --------------------
- * `OverlayContentLayer.upsertSection(ref, heading, content)` (without
+ * `ProposalShadowContentLayer.upsertSection(ref, heading, content)` (without
  * `contentIsFullMarkdown`) is the body-only convenience entry point used by
  * every MCP/API write caller (proposal create / update via collaboration.ts,
  * structural.ts, and api/routes/index.ts). Those callers hand the wrapper raw
@@ -45,7 +45,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
-import { OverlayContentLayer } from "../../storage/content-layer.js";
+import { ProposalShadowContentLayer } from "../../storage/content-layer.js";
 import { DocumentSkeleton } from "../../storage/document-skeleton.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { gitExec } from "../../storage/git-repo.js";
@@ -123,7 +123,7 @@ describe("upsertSection body-only must preserve section identity", () => {
   });
 
   it("preserves sectionFile and structure when rewriting an h2 leaf body", async () => {
-    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
 
     const before = await DocumentSkeleton.fromDisk(DOC_PATH, ctx.contentDir, ctx.contentDir);
     const beforeEntry = before.requireContentEntryByHeadingPath(["Overview"]);
@@ -153,7 +153,7 @@ describe("upsertSection body-only must preserve section identity", () => {
   });
 
   it("preserves sectionFile and structure when rewriting an h3 leaf body", async () => {
-    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
 
     const before = await DocumentSkeleton.fromDisk(DOC_PATH, ctx.contentDir, ctx.contentDir);
     const beforeEntry = before.requireContentEntryByHeadingPath(["Subsection"]);
@@ -183,7 +183,7 @@ describe("upsertSection body-only must preserve section identity", () => {
   });
 
   it("preserves sectionFile and structure when rewriting an h4 leaf body", async () => {
-    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
 
     const before = await DocumentSkeleton.fromDisk(DOC_PATH, ctx.contentDir, ctx.contentDir);
     const beforeEntry = before.requireContentEntryByHeadingPath(["Deep"]);

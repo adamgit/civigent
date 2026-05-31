@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
-import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
+import { ContentLayer, ProposalShadowContentLayer } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
 
 describe("section upsert runtime result contract", () => {
@@ -17,7 +17,7 @@ describe("section upsert runtime result contract", () => {
   });
 
   it("plain body write reports no structure change and no live reload requirement", async () => {
-    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
 
     const result = await overlay.upsertSection(
       new SectionRef(SAMPLE_DOC_PATH, ["Overview"]),
@@ -34,7 +34,7 @@ describe("section upsert runtime result contract", () => {
   });
 
   it("heading deletion reports deleted target separately from merge-target reload", async () => {
-    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
 
     const result = await overlay.upsertSectionMergingToPrevious(
       new SectionRef(SAMPLE_DOC_PATH, ["Overview"]),
@@ -51,7 +51,7 @@ describe("section upsert runtime result contract", () => {
   });
 
   it("section split reports all successor entries as both written and live reload targets", async () => {
-    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
 
     const result = await overlay.upsertSection(
       new SectionRef(SAMPLE_DOC_PATH, ["Overview"]),

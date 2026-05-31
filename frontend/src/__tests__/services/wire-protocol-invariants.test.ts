@@ -11,11 +11,13 @@ import * as Y from "yjs";
 import { CrdtProvider } from "../../services/crdt-provider";
 import type { DocumentReplacementNoticePayload } from "../../types/shared";
 
-// Protocol constants (must match crdt-provider.ts)
+// Protocol constants (must match crdt-provider.ts / crdt-ws-frames.ts)
 const MSG_SYNC_STEP_2 = 0x01;
-const MSG_SESSION_OVERLAY_IMPORTED = 4;
-const MSG_REMOVED_STRUCTURE_WILL_CHANGE = 8;
+const MSG_REMOVED_STRUCTURE_WILL_CHANGE = 8; // permanently reserved-removed
 const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0b;
+const MSG_DOC_PUBLISH_PAUSE_START = 0x10;
+const MSG_DOC_PUBLISH_READY = 0x11;
+const MSG_DOC_PUBLISH_PAUSE_END = 0x12;
 
 // ─── StubWebSocket ──────────────────────────────────────────────
 // Minimal WebSocket stub so CrdtProvider's `new WebSocket(url)` works.
@@ -102,22 +104,7 @@ afterAll(() => {
   globalThis.WebSocket = originalWebSocket;
 });
 
-// ─── Encode helpers (mirroring backend crdt-protocol.ts) ─────────
-
-function encodeSessionOverlayImported(
-  writtenKeys: string[],
-  deletedKeys: string[],
-): Uint8Array {
-  let text = writtenKeys.join("\n");
-  if (deletedKeys.length > 0) {
-    text += "\x00" + deletedKeys.join("\n");
-  }
-  const payload = new TextEncoder().encode(text);
-  const buf = new Uint8Array(1 + payload.length);
-  buf[0] = MSG_SESSION_OVERLAY_IMPORTED;
-  buf.set(payload, 1);
-  return buf;
-}
+// ─── Encode helpers (mirroring backend crdt-ws-frames.ts) ─────────
 
 function encodeRemovedStructureWillChange(): Uint8Array {
   const payload = new TextEncoder().encode(JSON.stringify([
@@ -156,38 +143,31 @@ function connectProvider(provider: CrdtProvider): StubWebSocket {
 describe("A12: Frontend Wire Protocol Invariants", () => {
   // ── A12.1 ─────────────────────────────────────────────────────────
 
-  it("A12.1: SESSION_OVERLAY_IMPORTED message contains correct writtenKeys and deletedKeys", () => {
-    const receivedPayloads: Array<{ writtenKeys: string[]; deletedKeys: string[] }> = [];
+  it("A12.1: DOC_PUBLISH_PAUSE_START/END dispatch the pause callbacks and ack ready once", () => {
+    const events: string[] = [];
     const doc = new Y.Doc();
     const provider = new CrdtProvider(doc, "/test/doc.md", {
-      onSessionOverlayImported: (payload) => {
-        receivedPayloads.push(payload);
-      },
+      onPublishPauseStart: () => events.push("start"),
+      onPublishPauseEnd: () => events.push("end"),
     });
 
     const ws = connectProvider(provider);
+    ws.sentMessages.length = 0;
 
-    // Test 1: Written keys only, no deletions
-    ws.receiveServerMessage(
-      encodeSessionOverlayImported(["frag:overview.md", "frag:timeline.md"], []),
-    );
-    expect(receivedPayloads).toHaveLength(1);
-    expect(receivedPayloads[0].writtenKeys).toEqual(["frag:overview.md", "frag:timeline.md"]);
-    expect(receivedPayloads[0].deletedKeys).toEqual([]);
+    ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_START]));
+    expect(events).toEqual(["start"]);
+    // With no editor barrier the client is trivially quiescent → ready sent once.
+    const ready = ws.sentMessages.filter((m) => m[0] === MSG_DOC_PUBLISH_READY);
+    expect(ready.length).toBe(1);
+    expect(provider.isPublishPaused).toBe(true);
 
-    // Test 2: Both written and deleted keys
-    ws.receiveServerMessage(
-      encodeSessionOverlayImported(["frag:overview.md"], ["frag:old-section.md"]),
-    );
-    expect(receivedPayloads).toHaveLength(2);
-    expect(receivedPayloads[1].writtenKeys).toEqual(["frag:overview.md"]);
-    expect(receivedPayloads[1].deletedKeys).toEqual(["frag:old-section.md"]);
+    ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_END]));
+    expect(events).toEqual(["start", "end"]);
+    expect(provider.isPublishPaused).toBe(false);
 
-    // Test 3: Deleted keys only (empty written list)
-    ws.receiveServerMessage(encodeSessionOverlayImported([], ["frag:removed.md"]));
-    expect(receivedPayloads).toHaveLength(3);
-    expect(receivedPayloads[2].writtenKeys).toEqual([]);
-    expect(receivedPayloads[2].deletedKeys).toEqual(["frag:removed.md"]);
+    // A pause_end without a prior pause_start is a no-op guard.
+    ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_END]));
+    expect(events).toEqual(["start", "end"]);
 
     provider.destroy();
   });

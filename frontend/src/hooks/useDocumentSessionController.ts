@@ -3,7 +3,6 @@ import type React from "react";
 import { DocumentSessionController } from "../controllers/document-session-controller";
 import {
   shouldMountEditor,
-  type DeletionPlaceholder,
   getSectionFragmentKey,
   type DocumentSection,
 } from "../pages/document-page-utils";
@@ -18,7 +17,6 @@ import {
 } from "./useSessionMode";
 import { useSectionFocus } from "./useSectionFocus";
 import { useEditorRegistry } from "./useEditorRegistry";
-import { usePersistenceState } from "./usePersistenceState";
 import { useProposalDrafting } from "./useProposalDrafting";
 
 export interface UseDocumentSessionControllerParams {
@@ -44,8 +42,6 @@ export interface UseDocumentSessionControllerReturn {
   editingLoading: boolean;
   readyEditors: Set<number>;
   setReadyEditors: React.Dispatch<React.SetStateAction<Set<number>>>;
-  deletionPlaceholders: DeletionPlaceholder[];
-  setDeletionPlaceholders: React.Dispatch<React.SetStateAction<DeletionPlaceholder[]>>;
   proposalMode: boolean;
   activeProposalId: string | null;
   activeProposal: ProposalDTO | null;
@@ -90,6 +86,7 @@ export interface UseDocumentSessionControllerReturn {
   handleProposalSectionChange: (sectionIndex: number, markdown: string) => void;
   handleCursorExit: (sectionIndex: number, direction: "up" | "down") => void;
   setEditorRef: (index: number, handle: MilkdownEditorHandle | null) => void;
+  mountEligible: (index: number) => boolean;
   setViewingSections: (provider: CrdtProvider, sectionIndex: number) => void;
   requestMode: (mode: RequestedMode, focusTarget?: EditorFocusTarget | null) => Promise<void>;
   stopObserver: () => void;
@@ -107,8 +104,6 @@ function findSectionIndexByFragmentKey(
 export function useDocumentSessionController(
   params: UseDocumentSessionControllerParams,
 ): UseDocumentSessionControllerReturn {
-  const persistence = usePersistenceState();
-
   const session = useSessionMode({
     decodedDocPath: params.decodedDocPath,
     sections: params.sections,
@@ -117,7 +112,6 @@ export function useDocumentSessionController(
     setStatusMessage: params.setStatusMessage,
     loadSections: params.loadSections,
     onDocumentReplacementNotice: params.onDocumentReplacementNotice,
-    setDeletionPlaceholders: persistence.setDeletionPlaceholders,
     onStopEditing: () => {
       focus.setFocusedSectionIndex(null);
       registry.editorRefs.current.clear();
@@ -127,15 +121,19 @@ export function useDocumentSessionController(
   const storeRef = useRef<BrowserFragmentReplicaStore | null>(null);
   useEffect(() => { storeRef.current = session.store; }, [session.store]);
 
-  const registry = useEditorRegistry({ sections: params.sections });
+  const registry = useEditorRegistry({
+    sections: params.sections,
+    store: session.store,
+    crdtProvider: session.crdtProvider,
+  });
 
   const focus = useSectionFocus({
     sections: params.sections,
     crdtProviderRef: session.crdtProviderRef,
+    storeRef,
     readyEditors: registry.readyEditors,
     editorRefs: registry.editorRefs,
     ensureProvider: session.ensureProvider,
-    setControllerState: session.setControllerState,
   });
 
   useEffect(() => {
@@ -180,8 +178,6 @@ export function useDocumentSessionController(
     editingLoading: session.editingLoading,
     readyEditors: registry.readyEditors,
     setReadyEditors: registry.setReadyEditors,
-    deletionPlaceholders: persistence.deletionPlaceholders,
-    setDeletionPlaceholders: persistence.setDeletionPlaceholders,
     proposalMode: proposal.proposalMode,
     activeProposalId: proposal.activeProposalId,
     activeProposal: proposal.activeProposal,
@@ -224,6 +220,7 @@ export function useDocumentSessionController(
     handleProposalSectionChange: proposal.handleProposalSectionChange,
     handleCursorExit: focus.handleCursorExit,
     setEditorRef: registry.setEditorRef,
+    mountEligible: registry.mountEligible,
     setViewingSections: focus.setViewingSections,
     requestMode: session.requestMode,
     stopObserver: session.stopObserver,
@@ -239,12 +236,14 @@ export function useDocumentSessionController(
     enterEdit: async ({ index, coords }) => {
       await runtime.startEditing(index, coords);
     },
-    focusSection: ({ index, headingPath, coords }) => {
+    focusSection: ({ index, coords }) => {
+      // Refuse focus into a blocked/gone section or during a publication pause.
+      if (!runtime.mountEligible(index)) return;
+      if (runtime.storeRef.current?.getPublishPaused()) return;
       runtime.setFocusedSectionIndex(index);
       runtime.pendingFocusRef.current = { index, position: "start", coords };
       const provider = runtime.crdtProviderRef.current;
       if (provider) {
-        provider.focusSection(headingPath);
         runtime.setViewingSections(provider, index);
       }
     },
@@ -284,17 +283,10 @@ export function useDocumentSessionController(
     handleStructureChanged: (sections) => {
       params.setSections(sections);
     },
-    handleCommittedSections: (event: ContentCommittedEvent) => {
-      const committedHeadingKeys = new Set(event.sections.map((s) => sectionHeadingKey(s.heading_path)));
-      const store = runtime.storeRef.current;
-      if (!store) return;
-      const fragmentKeys: string[] = [];
-      for (const section of params.sections) {
-        if (committedHeadingKeys.has(sectionHeadingKey(section.heading_path))) {
-          fragmentKeys.push(getSectionFragmentKey(section));
-        }
-      }
-      store.markSectionsClean(fragmentKeys);
+    handleCommittedSections: (_event: ContentCommittedEvent) => {
+      // The receipt-driven `markSectionsClean` lifecycle is removed (spec 05
+      // §"Content Flush"). Canonical refresh on `content:committed` is handled by
+      // useDocumentWebSocket; there is no per-section persistence map to clean.
     },
   }), [
     params.sections,
@@ -308,6 +300,8 @@ export function useDocumentSessionController(
     runtime.focusedSectionIndexRef,
     runtime.handleCursorExit,
     runtime.setEditorRef,
+    runtime.mountEligible,
+    runtime.storeRef,
     runtime.requestMode,
   ]);
 

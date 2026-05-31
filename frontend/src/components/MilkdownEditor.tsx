@@ -112,7 +112,9 @@ export interface MilkdownEditorProps {
   readOnly?: boolean;
   /** Fragment replica store for collaborative editing. When set, editor binds to store.doc. */
   store?: BrowserFragmentReplicaStore | null;
-  /** CRDT transport for wire-side calls (overlay import requests, etc.). */
+  /** CRDT transport handle (retained for callers that pass it through; the
+   *  editor binds directly to `store.doc` via y-prosemirror and issues no wire
+   *  calls — the legacy overlay-import coupling is removed). */
   transport?: CrdtTransport | null;
   /** Whether the CRDT transport has completed initial sync (Y.Doc has content). */
   crdtSynced?: boolean;

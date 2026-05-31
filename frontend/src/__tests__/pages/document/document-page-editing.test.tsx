@@ -7,9 +7,7 @@ import { jsonResponse } from "../../helpers/fetch-mocks";
 
 const mockProviderConnect = vi.fn();
 const mockProviderDestroy = vi.fn();
-const mockProviderFocusSection = vi.fn();
-const mockProviderSendSessionOverlayImportRequest = vi.fn();
-const mockProviderSendSectionMutate = vi.fn();
+const mockSetPublishPauseBarrier = vi.fn();
 
 const BEFORE_FIRST_HEADING_KEY = "section::__beforeFirstHeading__";
 
@@ -19,6 +17,7 @@ vi.mock("../../../services/crdt-provider", () => ({
     constructor(_doc: unknown, _docPath: string, opts: Record<string, unknown>) {
       this._opts = opts;
     }
+    state = "connected";
     awareness = {
       getLocalState: () => ({ user: {} }),
       setLocalStateField: vi.fn(),
@@ -30,9 +29,8 @@ vi.mock("../../../services/crdt-provider", () => ({
     };
     disconnect = vi.fn();
     destroy = mockProviderDestroy;
-    focusSection = mockProviderFocusSection;
-    sendSessionOverlayImportRequest = mockProviderSendSessionOverlayImportRequest;
-    sendSectionMutate = mockProviderSendSectionMutate;
+    setPublishPauseBarrier = mockSetPublishPauseBarrier;
+    get isPublishPaused() { return false; }
   },
 }));
 
@@ -45,7 +43,6 @@ vi.mock("../../../services/ws-client", () => ({
     unsubscribe = vi.fn();
     focusDocument = vi.fn();
     blurDocument = vi.fn();
-    sessionDeparture = vi.fn();
   },
 }));
 
@@ -56,20 +53,10 @@ vi.mock("../../../components/MilkdownEditor", async () => {
       (props: {
         fragmentKey?: string;
         onReady?: () => void;
-        transport?: { sendSectionMutate?: (fragmentKey: string, markdown: string) => Promise<unknown> };
       }, _ref: unknown) => {
         React.useEffect(() => { props.onReady?.(); }, []);
         return (
           <div data-testid="milkdown-editor" data-fragment-key={props.fragmentKey}>
-            <button
-              data-testid={`mutate-${props.fragmentKey ?? "unknown"}`}
-              onClick={() => void props.transport?.sendSectionMutate?.(
-                props.fragmentKey ?? "",
-                "First content in a new document.",
-              )}
-            >
-              Mutate
-            </button>
             Editor:{props.fragmentKey}
           </div>
         );
@@ -156,10 +143,7 @@ describe("DocumentPage editing", () => {
   beforeEach(() => {
     mockProviderConnect.mockClear();
     mockProviderDestroy.mockClear();
-    mockProviderFocusSection.mockClear();
-    mockProviderSendSessionOverlayImportRequest.mockClear();
-    mockProviderSendSectionMutate.mockClear();
-    mockProviderSendSectionMutate.mockResolvedValue({ success: true });
+    mockSetPublishPauseBarrier.mockClear();
 
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
       const urlStr = String(url);
@@ -255,7 +239,11 @@ describe("DocumentPage editing", () => {
     });
   });
 
-  it("a newly created document can dispatch its first BFH write", async () => {
+  it("a newly created (empty) document mounts the synthetic BFH editor on edit", async () => {
+    // The legacy server-routed `sendSectionMutate` first-write RPC is removed
+    // (spec 05 §4 > Removed message types). The first edit now flows as an
+    // ordinary local Y.Doc write through the mounted editor. Here we assert the
+    // synthetic before-first-heading editor mounts when entering edit mode.
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
       const urlStr = String(url);
       if (urlStr.includes("/sections")) {
@@ -275,16 +263,8 @@ describe("DocumentPage editing", () => {
     fireEvent.click(await screen.findByText("Document is empty."));
 
     await waitFor(() => {
-      expect(screen.getByTestId("milkdown-editor")).toBeDefined();
-    });
-
-    fireEvent.click(screen.getByTestId(`mutate-${BEFORE_FIRST_HEADING_KEY}`));
-
-    await waitFor(() => {
-      expect(mockProviderSendSectionMutate).toHaveBeenCalledWith(
-        BEFORE_FIRST_HEADING_KEY,
-        "First content in a new document.",
-      );
+      const editor = screen.getByTestId("milkdown-editor");
+      expect(editor.getAttribute("data-fragment-key")).toBe(BEFORE_FIRST_HEADING_KEY);
     });
   });
 });

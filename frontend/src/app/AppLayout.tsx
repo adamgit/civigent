@@ -83,7 +83,6 @@ export function AppLayout() {
   const windowFocusedRef = useRef(windowFocused);
   const documentVisibleRef = useRef(documentVisible);
   const nextToastIdRef = useRef(1);
-  const previousFocusedDocPathRef = useRef<string | null>(null);
 
   const queueTreeRowFlashes = useCallback((docPaths: string[] | undefined, writerType?: string) => {
     if (!Array.isArray(docPaths) || docPaths.length === 0) {
@@ -472,15 +471,6 @@ export function AppLayout() {
     [treeRowFlashes],
   );
 
-  // Send sessionDeparture when navigating away from a document
-  useEffect(() => {
-    const previous = previousFocusedDocPathRef.current;
-    if (previous && previous !== focusedDocPath) {
-      wsClient.sessionDeparture(previous);
-    }
-    previousFocusedDocPathRef.current = focusedDocPath;
-  }, [focusedDocPath, wsClient]);
-
   // Focus/blur document tracking
   useEffect(() => {
     const shouldFocusDocument = windowFocused && documentVisible && focusedDocPath;
@@ -623,9 +613,6 @@ export function AppLayout() {
               <div className="flex flex-col gap-px pl-4">
                 <Link to="/proposals" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
                   <span className="text-xs w-4 text-center opacity-50">&#128203;</span> Proposals
-                </Link>
-                <Link to="/session-inspector" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-                  <span className="text-xs w-4 text-center opacity-50">&#128269;</span> Sessions
                 </Link>
                 <Link to="/coordination" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
                   <span className="text-xs w-4 text-center opacity-50">&#128301;</span> Coordination

@@ -4,6 +4,14 @@ import { headingPathToLabel } from "../../pages/document-page-utils";
 import { stripLeadingSlashForRoute } from "../../app/docsRouteUtils";
 import { relativeTime } from "../../utils/relativeTime";
 
+// ─── Human-involvement-policy-specific visuals ───────────────────
+//
+// The score color ramp / label are NOT generic governance vocabulary. They are
+// driven off the human-involvement compatibility policy's per-section `score`
+// detail and render only when that detail is present (spec 12: heatmap/debug
+// views MAY render policy-specific visuals, but the generic contract is
+// `canWrite` only).
+
 function involvementColor(score: number): string {
   if (score >= 0.8) return "var(--color-humanInvolvement-dot-blocked, #1e40af)";
   if (score >= 0.5) return "var(--color-humanInvolvement-dot-high, #2563eb)";
@@ -53,11 +61,17 @@ export function HeatmapTab({ heatmap, agentReadings, proposals, loading, error }
     }
   }
 
+  // The human-involvement compatibility policy is "selected" iff at least one
+  // section surfaces its score detail. Only then do score/preset visuals show.
+  const humanInvolvementSelected = heatmap
+    ? heatmap.sections.some((entry) => entry.agentWritePolicy.humanInvolvement !== undefined)
+    : false;
+
   const now = Date.now();
 
   return (
     <div>
-      {heatmap && (
+      {heatmap && humanInvolvementSelected && (
         <div className="text-xs text-text-muted mb-3">
           Preset: <strong>{heatmap.preset}</strong> · Midpoint: {heatmap.humanInvolvement_midpoint_seconds}s · Steepness: {heatmap.humanInvolvement_steepness} ·{" "}
           <Link to="/admin" className="text-accent hover:underline">Admin</Link>
@@ -77,17 +91,22 @@ export function HeatmapTab({ heatmap, agentReadings, proposals, loading, error }
               <thead>
                 <tr className="text-text-muted">
                   <th className="text-left p-1.5">Section</th>
-                  <th className="text-center p-1.5">Human Involvement</th>
+                  <th className="text-left p-1.5">Agent writes</th>
+                  {humanInvolvementSelected && <th className="text-center p-1.5">Human Involvement</th>}
                   <th className="text-center p-1.5">CRDT</th>
                   <th className="text-center p-1.5">Agents</th>
                   <th className="text-left p-1.5">Last commit</th>
-                  <th className="text-left p-1.5">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {entries.map((entry, idx) => {
                   const sectionKey = sectionGlobalKey(entry.doc_path, entry.heading_path);
-                  const borderColor = entry.humanInvolvement_score >= 0.5 ? "var(--color-status-red)" : undefined;
+                  const policy = entry.agentWritePolicy;
+                  const score = policy.humanInvolvement?.score;
+                  // Red left-border is a human-involvement-policy visual only.
+                  const borderColor = typeof score === "number" && score >= 0.5
+                    ? "var(--color-status-red)"
+                    : undefined;
                   // Find agents reading this section
                   const readingAgents: Array<{ id: string; name: string; hasProposal: boolean }> = [];
                   for (const [, agent] of agentReadings) {
@@ -112,9 +131,21 @@ export function HeatmapTab({ heatmap, agentReadings, proposals, loading, error }
                       className="border-b border-footer-border hover:bg-section-hover"
                     >
                       <td className="p-1.5">{headingPathToLabel(entry.heading_path)}</td>
-                      <td className="p-1.5 text-center font-bold" style={{ color: involvementColor(entry.humanInvolvement_score) }}>
-                        {entry.humanInvolvement_score.toFixed(2)}
+                      <td className="p-1.5" title={policy.message}>
+                        {policy.canWrite ? (
+                          <span style={{ color: "var(--color-status-green, #3a9a5c)" }}>Allowed</span>
+                        ) : (
+                          <span style={{ color: "var(--color-status-red, #b91c1c)" }}>Blocked</span>
+                        )}
                       </td>
+                      {humanInvolvementSelected && (
+                        <td
+                          className="p-1.5 text-center font-bold"
+                          style={{ color: typeof score === "number" ? involvementColor(score) : undefined }}
+                        >
+                          {typeof score === "number" ? `${score.toFixed(2)} (${involvementLabel(score)})` : "—"}
+                        </td>
+                      )}
                       <td className="p-1.5 text-center">{entry.crdt_session_active ? "Yes" : "—"}</td>
                       <td className="p-1.5 text-center">
                         <div className="flex items-center justify-center gap-0.5">
@@ -138,9 +169,6 @@ export function HeatmapTab({ heatmap, agentReadings, proposals, loading, error }
                         {entry.last_commit_author && entry.last_commit_timestamp
                           ? `${entry.last_commit_author}, ${relativeTime(entry.last_commit_timestamp)}`
                           : "—"}
-                      </td>
-                      <td className="p-1.5">
-                        {involvementLabel(entry.humanInvolvement_score)}
                       </td>
                     </tr>
                   );

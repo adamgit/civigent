@@ -3,28 +3,30 @@
  *
  * All hooks are thin wrappers around `useSyncExternalStore` that read one
  * specific slice of the store's state. Selecting a small slice per
- * component keeps React re-renders targeted — a change to the connection
- * state only triggers re-renders in components that subscribed via
- * `useConnectionState`, not every component that touches the store.
+ * component keeps React re-renders targeted.
  *
  * Referential stability is the store's responsibility: it only replaces
  * snapshot fields when the underlying data actually changed, so
- * `useSyncExternalStore` will return the same reference for stable
- * subscribers across renders.
+ * `useSyncExternalStore` returns the same reference for stable subscribers
+ * across renders.
  *
  * Null-tolerant: every hook accepts `store: BrowserFragmentReplicaStore | null`
- * so the caller can subscribe unconditionally even before
- * `useDocumentSession` has finished constructing the store.
+ * so the caller can subscribe unconditionally even before `useDocumentSession`
+ * has finished constructing the store.
+ *
+ * The legacy persistence (dirty/received) subscriptions are removed — the
+ * receipt lifecycle no longer exists (spec 05 §"Content Flush"). In their
+ * place: publication-pause and per-section editability subscriptions.
  */
 
 import { useCallback, useSyncExternalStore } from "react";
 import type {
   BrowserFragmentReplicaStore,
   CrdtConnectionState,
-  SectionPersistenceState,
+  SectionEditability,
 } from "../services/browser-fragment-replica-store";
 
-const EMPTY_SECTION_MAP: ReadonlyMap<string, SectionPersistenceState> = new Map();
+const EMPTY_EDITABILITY_MAP: ReadonlyMap<string, SectionEditability> = new Map();
 
 function subscribeNoop(): () => void {
   return () => {};
@@ -59,41 +61,52 @@ export function useError(
 }
 
 /**
- * Subscribe to the full section-persistence map. Prefer
- * `useSectionPersistenceForKey` when rendering many sections — this hook
- * re-renders on every map mutation, regardless of which key changed.
+ * Subscribe to the document-level publication-pause flag. True while a
+ * DocSession publish attempt is freezing editors.
  */
-export function useSectionPersistence(
+export function usePublishPaused(
   store: BrowserFragmentReplicaStore | null,
-): ReadonlyMap<string, SectionPersistenceState> {
+): boolean {
   return useSyncExternalStore(
     store ? store.subscribe : subscribeNoop,
-    () => (store ? store.getSectionPersistence() : EMPTY_SECTION_MAP),
-    () => EMPTY_SECTION_MAP,
+    () => (store ? store.getPublishPaused() : false),
+    () => false,
   );
 }
 
 /**
- * Subscribe to the persistence state of a single fragment key. Components
- * using this only re-render when the specific key's state transitions
- * (other map mutations that leave this key untouched are filtered).
- *
- * Filtering happens inside the snapshot getter — `useSyncExternalStore`
- * bails out of re-rendering when the returned value is referentially
- * equal. Since `SectionPersistenceState` is a string union, equality is
- * cheap and stable.
+ * Subscribe to the full per-section editability map. Prefer
+ * `useSectionEditability` when rendering many sections — this hook re-renders
+ * on every map mutation regardless of which key changed.
  */
-export function useSectionPersistenceForKey(
+export function useSectionEditabilityMap(
+  store: BrowserFragmentReplicaStore | null,
+): ReadonlyMap<string, SectionEditability> {
+  return useSyncExternalStore(
+    store ? store.subscribe : subscribeNoop,
+    () => (store ? store.getSectionEditability() : EMPTY_EDITABILITY_MAP),
+    () => EMPTY_EDITABILITY_MAP,
+  );
+}
+
+/**
+ * Subscribe to the editability of a single fragment key. Components using this
+ * only re-render when the specific key's state transitions — `SectionEditability`
+ * is a string union so equality is cheap and stable, and `useSyncExternalStore`
+ * bails out of re-rendering when the returned value is referentially equal.
+ * Defaults to `"editable"` for unknown keys.
+ */
+export function useSectionEditability(
   store: BrowserFragmentReplicaStore | null,
   fragmentKey: string,
-): SectionPersistenceState {
+): SectionEditability {
   const getSnapshot = useCallback(
-    () => (store ? store.getSectionPersistenceForKey(fragmentKey) : "clean"),
+    () => (store ? store.getSectionEditabilityForKey(fragmentKey) : "editable"),
     [store, fragmentKey],
   );
   return useSyncExternalStore(
     store ? store.subscribe : subscribeNoop,
     getSnapshot,
-    () => "clean",
+    () => "editable",
   );
 }

@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import type { DocumentTreeEntry, EvaluatedSection } from "../types/shared.js";
+import type {
+  DocumentTreeEntry,
+  AgentWritePolicyTarget,
+  HumanInvolvementTargetDetails,
+} from "../types/shared.js";
 import { apiClient } from "../services/api-client.js";
 
 import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
@@ -115,7 +119,7 @@ function getDisplayName(path: string): string {
 
 interface BlockedImportInfo {
   proposalId: string;
-  blockedSections: EvaluatedSection[];
+  blockedSections: AgentWritePolicyTarget<HumanInvolvementTargetDetails>[];
 }
 
 interface DocumentsTreeNavProps {
@@ -494,16 +498,17 @@ export function DocumentsTreeNav({
               created but cannot be committed yet.
             </p>
             <div className="max-h-48 overflow-y-auto mb-4 border rounded p-2">
-              {blockedImport.blockedSections.map((section, i) => (
+              {blockedImport.blockedSections.map((target, i) => (
                 <div key={i} className="text-xs py-1 border-b last:border-b-0">
-                  <div className="font-medium">{section.doc_path}</div>
+                  <div className="font-medium">{target.target.doc_path}</div>
                   <div className="text-gray-500">
-                    {section.heading_path.join(" > ")}
+                    {target.target.heading_path.join(" > ")}
                     {" — "}
-                    {`Reserved (human involvement: ${(section.humanInvolvement_score * 100).toFixed(0)}%)`}
+                    {/* Area M: render backend prose, not a code/score. */}
+                    {target.message}
                   </div>
-                  {section.justification ? (
-                    <div className="text-gray-400 italic">{section.justification}</div>
+                  {target.details.justification ? (
+                    <div className="text-gray-400 italic">{target.details.justification}</div>
                   ) : null}
                 </div>
               ))}

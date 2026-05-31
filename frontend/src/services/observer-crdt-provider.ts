@@ -2,10 +2,10 @@
  * ObserverCrdtProvider — Read-only Y.Doc sync via /ws/crdt/<docPath>.
  *
  * Lightweight variant of CrdtProvider for non-editing viewers.
- * Receives Y.Doc updates but never sends YJS_UPDATE, SECTION_FOCUS,
- * or ACTIVITY_PULSE. No Awareness, no dirty tracking.
+ * Receives Y.Doc updates but never sends YJS_UPDATE. No Awareness, no dirty
+ * tracking. (Legacy SECTION_FOCUS / ACTIVITY_PULSE frames are removed.)
  *
- * Binary protocol (subset of crdt-sync.ts):
+ * Binary protocol (subset of backend/src/ws/crdt-ws-frames.ts):
  *   0x00 SYNC_STEP_1     — State vector (bidirectional for initial sync)
  *   0x01 SYNC_STEP_2     — State diff (bidirectional for initial sync)
  *   0x02 YJS_UPDATE       — Incremental Y.js update (server → client only)
@@ -20,6 +20,7 @@ import type {
 } from "../types/shared";
 import {
   WS_CLOSE_DOCUMENT_REPLACED,
+  WS_CLOSE_ADMIN_REBUILD,
   WS_CLOSE_SESSION_ENDED,
   WS_CLOSE_INVALID_URL,
   WS_CLOSE_YDOC_INIT_FAILED,
@@ -27,7 +28,7 @@ import {
 import { encodeDocPathForWs } from "../utils/path-encoding";
 import { randomUuid } from "../utils/random-uuid";
 
-// ─── Protocol constants (must match backend/src/ws/crdt-sync.ts) ───
+// ─── Protocol constants (must match backend/src/ws/crdt-ws-frames.ts) ───
 
 const MSG_SYNC_STEP_1 = 0;
 const MSG_SYNC_STEP_2 = 1;
@@ -179,8 +180,10 @@ export class ObserverCrdtProvider {
     this.ws.onclose = (event: CloseEvent) => {
       this.ws = null;
 
-      if (event.code === WS_CLOSE_DOCUMENT_REPLACED) {
-        // Document replaced — reconnect immediately (no exponential backoff).
+      if (event.code === WS_CLOSE_DOCUMENT_REPLACED || event.code === WS_CLOSE_ADMIN_REBUILD) {
+        // Document replaced (restore 4022) or admin force-rebuild (4024) — both
+        // reconnect immediately (no exponential backoff) and reseed. Observers
+        // are not editor sockets, so there is no publish-ready responsibility.
         this.reconnectAttempts = 0;
         this.events.onSessionReinit?.();
         this.openWebSocket();

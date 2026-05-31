@@ -1,20 +1,30 @@
 /**
  * v4 Custom Yjs WebSocket provider — per-document connection.
  *
- * The server at /ws/crdt/<docPath> uses a binary protocol:
+ * The server at /ws/crdt/<docPath> uses a binary protocol (must match
+ * backend/src/ws/crdt-ws-frames.ts):
  *
- *   0x00 (SYNC_STEP_1)     + Y.encodeStateVector()
- *   0x01 (SYNC_STEP_2)     + Y.encodeStateAsUpdate(doc, stateVector)
- *   0x02 (YJS_UPDATE)       + incremental update bytes
- *   0x03 (AWARENESS)        + encoded awareness update (opaque relay)
- *   0x04 (SESSION_OVERLAY_IMPORTED)  + empty (notification only)
- *   0x05 (SECTION_FOCUS)    + heading path segments separated by \x00
- *   0x06 (SESSION_OVERLAY_IMPORT_STARTED) + empty (notification only)
- *   0x07 (ACTIVITY_PULSE)   + empty (client → server: human is actively editing)
- *   0x09 (SECTION_MUTATE)      + JSON { fragmentKey, markdown } (client → server)
- *   0x0A (MUTATE_RESULT)       + JSON { success, error? } (server → client)
+ *   0x00 (SYNC_STEP_1)               + Y.encodeStateVector()
+ *   0x01 (SYNC_STEP_2)               + Y.encodeStateAsUpdate(doc, stateVector)
+ *   0x02 (YJS_UPDATE)                + incremental update bytes
+ *   0x03 (AWARENESS)                 + encoded awareness update (opaque relay)
+ *   0x0B (DOCUMENT_REPLACEMENT_NOTICE) + JSON (server → client reconnect notice)
+ *   0x0C (MODE_TRANSITION_REQUEST)   + JSON (client → server)
+ *   0x0D (MODE_TRANSITION_RESULT)    + JSON (server → client)
+ *   0x10 (DOC_PUBLISH_PAUSE_START)   + empty (server → client: freeze editors)
+ *   0x11 (DOC_PUBLISH_READY)         + empty (client → server: ordered ready ack)
+ *   0x12 (DOC_PUBLISH_PAUSE_END)     + empty (server → client: editors may unfreeze)
  *
- * One connection per document. Section focus communicated via focusSection().
+ * One connection per document.
+ *
+ * The legacy session-overlay / focus / pulse / mutate / receipt / idle-timeout
+ * protocol items (0x04-0x07, 0x09, 0x0A, 0x0F) are removed (spec 05 §4 >
+ * Removed message types). The DocSession publish-pause control messages ride
+ * this same ordered editor channel as Yjs updates; processing a
+ * `doc_publish_ready` ack proves earlier Yjs updates from this socket have
+ * already reached the DocSession actor. Section block-state events
+ * (`section:blocked|unblocked|gone`) travel on the JSON application WebSocket,
+ * NOT here (see useDocumentWebSocket.ts).
  */
 
 import * as Y from "yjs";
@@ -26,7 +36,6 @@ import {
 import type {
   DocumentReplacementNoticePayload,
   ClientInstanceId,
-  EditorFocusTarget,
   ModeTransitionRequest,
   ModeTransitionResult,
 } from "../types/shared";
@@ -34,7 +43,7 @@ import {
   WS_CLOSE_AUTH_REQUIRED,
   WS_CLOSE_AUTH_FAILED,
   WS_CLOSE_DOCUMENT_REPLACED,
-  WS_CLOSE_IDLE_TIMEOUT,
+  WS_CLOSE_ADMIN_REBUILD,
   WS_CLOSE_INVALID_URL,
   WS_CLOSE_YDOC_INIT_FAILED,
 } from "./crdt-close-codes";
@@ -42,22 +51,19 @@ import { apiClient } from "./api-client";
 import { encodeDocPathForWs } from "../utils/path-encoding";
 import { randomUuid } from "../utils/random-uuid";
 
-// ─── Protocol constants (must match backend/src/ws/crdt-sync.ts) ───
+// ─── Protocol constants (must match backend/src/ws/crdt-ws-frames.ts) ───
 
 const MSG_SYNC_STEP_1 = 0;
 const MSG_SYNC_STEP_2 = 1;
 const MSG_YJS_UPDATE = 2;
 const MSG_AWARENESS = 3;
-const MSG_SESSION_OVERLAY_IMPORTED = 4;
-const MSG_SECTION_FOCUS = 5;
-const MSG_SESSION_OVERLAY_IMPORT_STARTED = 6;
-const MSG_ACTIVITY_PULSE = 7;
-const MSG_SECTION_MUTATE = 9;
-const MSG_MUTATE_RESULT = 10;
 const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0B;
 const MSG_MODE_TRANSITION_REQUEST = 0x0C;
 const MSG_MODE_TRANSITION_RESULT = 0x0D;
-const MSG_UPDATE_RECEIVED = 0x0F;
+const MSG_DOC_PUBLISH_PAUSE_START = 0x10;
+const MSG_DOC_PUBLISH_READY = 0x11;
+const MSG_DOC_PUBLISH_PAUSE_END = 0x12;
+const MSG_SECTION_MOVE_REQUEST = 0x13;
 
 // ─── Connection states ─────────────────────────────────────────────
 
@@ -68,31 +74,43 @@ export type CrdtConnectionState =
   | "reconnecting"
   | "error";
 
-export interface SessionOverlayImportedPayload {
-  writtenKeys: string[];
-  deletedKeys: string[];
+/**
+ * Callback the editor registry sets so the provider can drive the publish
+ * pause quiescence barrier. The provider calls `freeze()` on
+ * `doc_publish_pause_start`, then awaits the returned promise (which resolves
+ * once every mounted + future-mounted editor has stopped producing Yjs
+ * transactions) before sending `doc_publish_ready`. `unfreeze()` is called on
+ * `doc_publish_pause_end`.
+ */
+export interface PublishPauseBarrier {
+  /** Freeze all mounted + future-mounted editors. Resolves once the client has
+   *  stopped producing local Yjs transactions for the whole document. */
+  freeze: () => Promise<void>;
+  /** Unfreeze editors — called only on doc_publish_pause_end. */
+  unfreeze: () => void;
 }
 
 export interface CrdtProviderEvents {
   onStateChange?: (state: CrdtConnectionState) => void;
   onSynced?: () => void;
   onError?: (reason: string) => void;
-  onIdleTimeout?: () => void;
-  /** Server confirmed import into session overlay. Payload lists written/deleted keys. */
-  onSessionOverlayImported?: (payload: SessionOverlayImportedPayload) => void;
   /** Fired when a local Y.Doc update is sent to the server (user keystroke).
    *  Receives the set of fragment keys (shared type names) that were modified. */
   onLocalUpdate?: (modifiedFragmentKeys: string[]) => void;
   /** Fired when the server closes this socket with code 4022 (document replaced).
    *  The provider reconnects immediately (backoff reset). */
   onSessionReinit?: () => void;
+  /** Fired when the server closes this socket with the admin force-rebuild code
+   *  (4024). Behaves like 4022: reconnect immediately, reseed canonical. */
+  onForceRebuild?: () => void;
   /** Fired once, after onSynced on the post-replacement reconnection, with the replacement notice. */
   onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
   /** Server-authoritative result for this tab's requested CRDT mode transition. */
   onModeTransitionResult?: (result: ModeTransitionResult) => void;
-  /** Server confirmed it received and applied a MSG_YJS_UPDATE.
-   *  Payload is the list of fragment keys the server touched. */
-  onUpdateReceived?: (fragmentKeys: string[]) => void;
+  /** Server began a DocSession publish attempt — freeze all editors. */
+  onPublishPauseStart?: () => void;
+  /** Server ended the publish attempt (commit or abort) — editors may unfreeze. */
+  onPublishPauseEnd?: () => void;
 }
 
 // ─── Provider ──────────────────────────────────────────────────────
@@ -111,28 +129,21 @@ export class CrdtProvider {
   private reconnectAttempts = 0;
   private destroyed = false;
   private synced = false;
-  private pendingFocus: string[] | null = null;
   private updateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
   private awarenessUpdateHandler: ((changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => void) | null = null;
-  private pulseTimer: ReturnType<typeof setTimeout> | null = null;
   private lastTouchedFragments = new Set<string>();
   private reverseMap = new Map<object, string>();
   private lastShareSize = 0;
   private afterTxnHandler: ((txn: Y.Transaction) => void) | null = null;
-  // Serialized mutate queue: one request in-flight at a time.
-  // Using a queue prevents single-slot loss when concurrent callers race on pendingMutateResolve.
-  private mutateQueue: Array<{
-    fragmentKey: string;
-    markdown: string;
-    resolve: (result: { success: boolean; error?: string }) => void;
-    reject: (err: Error) => void;
-  }> = [];
-  private mutateInFlight = false;
   private pendingDocumentReplacementNotice: DocumentReplacementNoticePayload | null = null;
   private readonly clientInstanceId: ClientInstanceId;
   private readonly docPath: string;
-  private pendingEditorFocusTarget: EditorFocusTarget | null = null;
   private initialTransitionRequest: ModeTransitionRequest | null = null;
+
+  // Publish-pause quiescence barrier state. The provider is the single owner.
+  private publishPaused = false;
+  private publishReadySent = false;
+  private barrier: PublishPauseBarrier | null = null;
 
   constructor(
     doc: Y.Doc,
@@ -148,8 +159,6 @@ export class CrdtProvider {
     this.initialTransitionRequest = opts?.initialTransitionRequest ?? null;
 
     // Build WebSocket URL — per-document, no heading_path param.
-    // docPath is canonical (leading slash, e.g. "/ops/strategy.md") so we
-    // encode each segment and rejoin, skipping the empty first segment from split("/").
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const encodedPath = encodeDocPathForWs(docPath);
     this.url = `${protocol}//${window.location.host}/ws/crdt/${encodedPath}?clientInstanceId=${encodeURIComponent(this.clientInstanceId)}`;
@@ -177,8 +186,6 @@ export class CrdtProvider {
     this.updateHandler = (update: Uint8Array, origin: unknown) => {
       if (origin === this) return;
       this.sendUpdate(update);
-      // Every local Y.Doc update is an intentional edit — send activity pulse.
-      this.sendActivityPulse();
       const touched = [...this.lastTouchedFragments];
       this.lastTouchedFragments.clear();
       this.events.onLocalUpdate?.(touched);
@@ -218,7 +225,6 @@ export class CrdtProvider {
       this.ws.close();
       this.ws = null;
     }
-    this.rejectPendingMutates(new Error("WebSocket disconnected"));
     this.setState("disconnected");
   }
 
@@ -226,16 +232,7 @@ export class CrdtProvider {
   destroy(): void {
     this.destroyed = true;
     this.disconnect();
-    // Reject all pending mutate promises so callers don't hang.
-    for (const entry of this.mutateQueue) {
-      entry.reject(new Error("CrdtProvider destroyed"));
-    }
-    this.mutateQueue = [];
-    this.mutateInFlight = false;
-    if (this.pulseTimer) {
-      clearTimeout(this.pulseTimer);
-      this.pulseTimer = null;
-    }
+    this.barrier = null;
     if (this.afterTxnHandler) {
       this.doc.off("afterTransaction", this.afterTxnHandler);
       this.afterTxnHandler = null;
@@ -254,44 +251,64 @@ export class CrdtProvider {
     this.awareness.destroy();
   }
 
-  /**
-   * Send a SECTION_FOCUS message to the server.
-   * Called when the user clicks into or arrow-keys into a section editor.
-   */
-  focusSection(headingPath: string[]): void {
-    // Store as pending so it can be sent once the WebSocket is open.
-    // This handles the race where focusSection() is called right after
-    // connect() but before the WebSocket handshake completes.
-    this.pendingFocus = headingPath;
-    this.pendingEditorFocusTarget = headingPath.length > 0
-      ? { kind: "heading_path", heading_path: headingPath }
-      : { kind: "before_first_heading" };
-    const payload = new TextEncoder().encode(headingPath.join("\x00"));
-    this.sendRaw(MSG_SECTION_FOCUS, payload);
+  // ─── Publish-pause quiescence barrier ──────────────────────────
 
+  /**
+   * Register the editor-freeze barrier. The editor registry calls this once it
+   * is mounted so the provider can freeze editors during a publish pause and
+   * confirm quiescence before sending `doc_publish_ready`. Idempotent.
+   */
+  setPublishPauseBarrier(barrier: PublishPauseBarrier | null): void {
+    this.barrier = barrier;
   }
 
-  /**
-   * Signal that the human is actively editing (keystroke, paste, delete).
-   * Quiescence policy evaluation lives on the server.
-   */
-  sendActivityPulse(): void {
-    this.sendRaw(MSG_ACTIVITY_PULSE, new Uint8Array(0));
+  /** True while a DocSession publish pause is active for this document. */
+  get isPublishPaused(): boolean {
+    return this.publishPaused;
   }
 
+  // ─── Cross-section move (MW-10) ────────────────────────────────
+
   /**
-   * Send a section mutate request to the backend.
-   * The backend replaces the fragment content and broadcasts the Y.Doc update.
-   * Returns a promise that resolves when the server sends MSG_MUTATE_RESULT.
+   * Request a backend-owned cross-section move: reposition `sourceHeadingPath`
+   * before/after the sibling `targetHeadingPath`. Y.js has no `moveTo` between
+   * top-level types, so the structural reorder is owned by the backend (spec 05
+   * §Structural Normalization), driven through the DocSession actor. The backend
+   * applies the reorder and fans out the resulting Y.Doc state.
    *
-   * Requests are serialized: only one is in-flight at a time. Concurrent callers
-   * are queued and dispatched in FIFO order once the previous result arrives.
-   * All pending promises are rejected if the provider is disconnected or destroyed.
+   * Resolves when the server-applied reorder arrives as a remote Y.Doc update
+   * (the fan-out), or rejects on `timeoutMs` / disconnect. The backend sends no
+   * dedicated result frame; the applied Y.Doc update is the acknowledgement.
    */
-  sendSectionMutate(fragmentKey: string, markdown: string): Promise<{ success: boolean; error?: string }> {
-    return new Promise((resolve, reject) => {
-      this.mutateQueue.push({ fragmentKey, markdown, resolve, reject });
-      this.drainMutateQueue();
+  sendSectionMove(
+    req: { sourceHeadingPath: string[]; targetHeadingPath: string[]; position: "before" | "after" },
+    timeoutMs = 5000,
+  ): Promise<void> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error("CRDT session disconnected — move cancelled"));
+    }
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const onUpdate = (_update: Uint8Array, origin: unknown) => {
+        // The server fan-out arrives as a remote update (origin === this, set by
+        // applyUpdate in handleMessage). A local edit would have origin !== this.
+        if (origin !== this) return;
+        finish();
+      };
+      const finish = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.doc.off("update", onUpdate);
+        if (err) reject(err); else resolve();
+      };
+      const timer = setTimeout(
+        () => finish(new Error("Section move timed out — the server did not apply it.")),
+        timeoutMs,
+      );
+      this.doc.on("update", onUpdate);
+      const json = new TextEncoder().encode(JSON.stringify(req));
+      this.sendRaw(MSG_SECTION_MOVE_REQUEST, json);
     });
   }
 
@@ -328,13 +345,6 @@ export class CrdtProvider {
         this.doc.clientID,
       ]);
       this.sendRaw(MSG_AWARENESS, encoded);
-
-      // Send any section focus that was requested before the WS was open.
-      if (this.pendingFocus) {
-        const payload = new TextEncoder().encode(this.pendingFocus.join("\x00"));
-        this.sendRaw(MSG_SECTION_FOCUS, payload);
-        this.pendingFocus = null;
-      }
     };
 
     this.ws.onmessage = (event: MessageEvent) => {
@@ -345,14 +355,20 @@ export class CrdtProvider {
     this.ws.onclose = (event: CloseEvent) => {
       this.ws = null;
       this.synced = false;
-      // Reject any in-flight mutate request — the socket is closed so the server
-      // will not send MSG_MUTATE_RESULT for it. This prevents callers from hanging.
-      this.rejectPendingMutates(new Error(`WebSocket closed (code ${event.code})`));
 
       if (event.code === WS_CLOSE_DOCUMENT_REPLACED) {
-        // Document replaced — reconnect immediately (no exponential backoff).
+        // Document replaced (restore) — reconnect immediately (no backoff).
         this.reconnectAttempts = 0;
         this.events.onSessionReinit?.();
+        this.openWebSocket();
+        return;
+      }
+
+      if (event.code === WS_CLOSE_ADMIN_REBUILD) {
+        // Admin force-rebuild — behaves like 4022: reconnect immediately,
+        // reseed canonical. (Spec 05 §4 > Close codes.)
+        this.reconnectAttempts = 0;
+        this.events.onForceRebuild?.();
         this.openWebSocket();
         return;
       }
@@ -370,11 +386,7 @@ export class CrdtProvider {
         });
         return;
       }
-      if (event.code === WS_CLOSE_IDLE_TIMEOUT) {
-        this.setState("disconnected");
-        this.events.onIdleTimeout?.();
-        return;
-      }
+      // (4020 idle_timeout removed — there is no idle timer in this architecture.)
       if (event.code >= WS_CLOSE_INVALID_URL && event.code <= WS_CLOSE_YDOC_INIT_FAILED) {
         this.setState("error");
         this.events.onError?.(event.reason || "Server rejected connection");
@@ -431,41 +443,6 @@ export class CrdtProvider {
         applyAwarenessUpdate(this.awareness, payload, "remote");
         break;
       }
-      case MSG_SESSION_OVERLAY_IMPORTED: {
-        // Payload: newline-separated written keys, \x00 separator, newline-separated deleted keys.
-        const text = new TextDecoder().decode(payload);
-        const nullIdx = text.indexOf("\x00");
-        const modifiedPart = nullIdx >= 0 ? text.slice(0, nullIdx) : text;
-        const deletedPart = nullIdx >= 0 ? text.slice(nullIdx + 1) : "";
-        const writtenKeys = modifiedPart ? modifiedPart.split("\n").filter(Boolean) : [];
-        const deletedKeys = deletedPart ? deletedPart.split("\n").filter(Boolean) : [];
-        this.events.onSessionOverlayImported?.({ writtenKeys, deletedKeys });
-        break;
-      }
-      case MSG_MUTATE_RESULT: {
-        const json = new TextDecoder().decode(payload);
-        let result: { success: boolean; error?: string };
-        try {
-          result = JSON.parse(json) as { success: boolean; error?: string };
-        } catch (err) {
-          // Parse failed — reject the in-flight entry so callers don't hang.
-          const head = this.mutateQueue.shift();
-          this.mutateInFlight = false;
-          if (head) {
-            head.reject(new Error(`Malformed MSG_MUTATE_RESULT payload: ${err instanceof Error ? err.message : String(err)}`));
-          }
-          this.drainMutateQueue();
-          break;
-        }
-        const head = this.mutateQueue.shift();
-        this.mutateInFlight = false;
-        if (head) {
-          head.resolve(result);
-        }
-        // Send next queued request, if any.
-        this.drainMutateQueue();
-        break;
-      }
       case MSG_DOCUMENT_REPLACEMENT_NOTICE: {
         const json = new TextDecoder().decode(payload);
         try {
@@ -488,18 +465,58 @@ export class CrdtProvider {
         this.events.onModeTransitionResult?.(result);
         break;
       }
-      case MSG_UPDATE_RECEIVED: {
-        const text = new TextDecoder().decode(payload);
-        const fragmentKeys = text ? text.split("\n").filter(Boolean) : [];
-        if (fragmentKeys.length > 0) {
-          this.events.onUpdateReceived?.(fragmentKeys);
-        }
+      case MSG_DOC_PUBLISH_PAUSE_START: {
+        this.handlePublishPauseStart();
+        break;
+      }
+      case MSG_DOC_PUBLISH_PAUSE_END: {
+        this.handlePublishPauseEnd();
         break;
       }
       default:
         // Unknown message type — ignore.
         break;
     }
+  }
+
+  /**
+   * doc_publish_pause_start: freeze editors and, once local Yjs transaction
+   * production has quiesced for all mounted + future-mounted editors, send
+   * `doc_publish_ready` exactly once. The provider is the single owner of
+   * this barrier (no premature ready). Editors stay frozen until pause_end.
+   */
+  private handlePublishPauseStart(): void {
+    if (this.publishPaused) return; // already paused — ignore duplicate start
+    this.publishPaused = true;
+    this.publishReadySent = false;
+    this.events.onPublishPauseStart?.();
+
+    const send = () => {
+      // Guard against late resolution after a pause_end / disconnect.
+      if (!this.publishPaused || this.publishReadySent || this.destroyed) return;
+      this.publishReadySent = true;
+      this.sendRaw(MSG_DOC_PUBLISH_READY, new Uint8Array(0));
+    };
+
+    if (this.barrier) {
+      this.barrier.freeze().then(send, send);
+    } else {
+      // No editor barrier registered — nothing local is producing transactions,
+      // so the client is trivially quiescent.
+      send();
+    }
+  }
+
+  /**
+   * doc_publish_pause_end: unfreeze editors. Guarded so a pause_end without a
+   * prior pause_start is a no-op (spec 05 §4 > DocSession publish pause).
+   */
+  private handlePublishPauseEnd(): void {
+    if (!this.publishPaused) return; // no active pause — no-op guard
+    this.publishPaused = false;
+    this.publishReadySent = false;
+    this.barrier?.unfreeze();
+    this.events.onPublishPauseEnd?.();
   }
 
   private sendSyncStep1(): void {
@@ -525,7 +542,7 @@ export class CrdtProvider {
       clientInstanceId: this.clientInstanceId,
       docPath: this.docPath,
       requestedMode: "editor",
-      editorFocusTarget: this.pendingEditorFocusTarget,
+      editorFocusTarget: null,
     };
     this.initialTransitionRequest = null;
     const payload = new TextEncoder().encode(JSON.stringify(request));
@@ -540,29 +557,6 @@ export class CrdtProvider {
       this.ws.onclose = null;
       this.ws.close();
       this.ws = null;
-    }
-    this.rejectPendingMutates(new Error(msg));
-  }
-
-  private drainMutateQueue(): void {
-    if (this.mutateInFlight || this.mutateQueue.length === 0) return;
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      // Socket not open — reject everything rather than hanging in-flight indefinitely.
-      this.rejectPendingMutates(new Error("WebSocket not open"));
-      return;
-    }
-    const next = this.mutateQueue[0];
-    this.mutateInFlight = true;
-    const json = JSON.stringify({ fragmentKey: next.fragmentKey, markdown: next.markdown });
-    const payload = new TextEncoder().encode(json);
-    this.sendRaw(MSG_SECTION_MUTATE, payload);
-  }
-
-  private rejectPendingMutates(err: Error): void {
-    const entries = this.mutateQueue.splice(0);
-    this.mutateInFlight = false;
-    for (const entry of entries) {
-      entry.reject(err);
     }
   }
 

@@ -1,7 +1,6 @@
 import path from "node:path";
 import crypto from "node:crypto";
 import { readFile, writeFile, readdir, rename, mkdir } from "node:fs/promises";
-import { ContentLayer } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
 import {
   getProposalsDraftRoot,
@@ -15,13 +14,15 @@ import type {
   AnyProposal,
   AnyProposalFile,
   CommittedProposalFile,
+  DocSessionId,
   InProgressProposal,
   InProgressProposalFile,
   ProposalFileBase,
   ProposalId,
+  ProposalLockResult,
   ProposalSection,
   ProposalStatus,
-  SectionScoreSnapshot,
+  HumanInvolvementCommittedProposalMetadata,
   WithdrawnProposalFile,
   WriterIdentity,
 } from "../types/shared.js";
@@ -38,6 +39,21 @@ export function isProposalMutable(proposal: AnyProposal): boolean {
   if (proposal.status === "draft") return true;
   if (proposal.status === "inprogress" && proposal.writer.type === "human") return true;
   return false;
+}
+
+/**
+ * Returns true if the proposal is CRDT-owned — i.e. a live-edit proposal
+ * lazily materialized by a DocSession actor (Area B/F), keyed on its owning
+ * `docSessionId`. These are SYSTEM artefacts mutated internally by the
+ * DocSession actor (spec 10 "One active proposal per DocSession"), NOT
+ * agent-authored proposals. The `docSessionId` discriminator is required: a
+ * human `draft→inprogress` lock proposal also has status `inprogress` but
+ * carries no `docSessionId`, and is a real authored proposal that must remain
+ * visible. Agent-facing MCP listings/reads must hide CRDT-owned proposals so
+ * they are not a live-state side channel.
+ */
+export function isCrdtOwnedProposal(proposal: AnyProposal): boolean {
+  return proposal.docSessionId !== undefined;
 }
 
 export const PROPOSAL_STATUSES = [
@@ -215,23 +231,39 @@ export async function readProposal(id: ProposalId): Promise<AnyProposal> {
 }
 
 /**
- * Read a proposal and its section content from the ContentLayer.
- * Returns the proposal metadata and a separate content map (keyed by "doc_path::heading>path").
- * Content lives on disk, never on the section objects.
+ * Read a proposal and its section content through the proposal facade.
+ * Returns the proposal metadata and a separate content map (keyed by the
+ * SectionRef global key "doc_path::heading>path"). Content lives on disk,
+ * never on the section objects.
+ *
+ * Routed through `ProposalReader` (effective proposal-content read path)
+ * rather than reaching into the content store directly. The dynamic import
+ * breaks the proposal-reader -> proposal-repository -> proposal-reader cycle.
+ * Sections whose effective bodies are missing are silently omitted, matching
+ * the previous `readSectionBatch` behavior.
  */
 export async function readProposalWithContent(id: ProposalId): Promise<{ proposal: AnyProposal; sectionContent: Map<string, string> }> {
   const proposal = await readProposal(id);
-  const contentRoot = proposalContentRoot(id, proposal.status);
-  const layer = new ContentLayer(contentRoot);
+  const { ProposalReader } = await import("./proposal-reader.js");
+  const { SectionNotFoundError, DocumentNotFoundError } = await import("./content-layer.js");
+  const reader = ProposalReader.open(id, proposal.status);
 
-  const batchResult = await layer.readSectionBatch(
-    proposal.sections.map(s => SectionRef.fromTarget(s)),
-  );
+  const sectionContent = new Map<string, string>();
+  for (const section of proposal.sections) {
+    const ref = SectionRef.fromTarget(section);
+    try {
+      const body = await reader.readSection(ref.docPath, ref.headingPath);
+      sectionContent.set(ref.globalKey, body);
+    } catch (err) {
+      if (err instanceof SectionNotFoundError || err instanceof DocumentNotFoundError) continue;
+      throw err;
+    }
+  }
 
-  return { proposal, sectionContent: batchResult };
+  return { proposal, sectionContent };
 }
 
-async function listProposalsByStatuses(statuses: readonly ProposalStatus[]): Promise<AnyProposal[]> {
+export async function listProposalsByStatuses(statuses: readonly ProposalStatus[]): Promise<AnyProposal[]> {
   const proposals: AnyProposal[] = [];
 
   for (const currentStatus of statuses) {
@@ -332,21 +364,28 @@ export async function updateProposalSections(
 
 // ─── Lock acquisition (draft → inprogress) ────────────────────────
 
-export interface LockAcquisitionResult {
-  acquired: boolean;
+/**
+ * Result of a human `draft -> inprogress` lock-acquisition transition.
+ *
+ * Aligned with {@link ProposalLockResult}: `acquired` + full `conflicts[]`
+ * (each with blocking proposal id/status/writer + prose `message`) + top-level
+ * prose `message`. On success, `proposal` carries the now-`inprogress` proposal.
+ * The legacy bare `{ reason, section }` shape is gone.
+ */
+export interface LockAcquisitionResult extends ProposalLockResult {
   proposal?: InProgressProposal;
-  reason?: string;
-  section?: ProposalSection;
 }
 
 /**
  * Attempt to transition a human draft proposal to inprogress by acquiring
- * section locks. Fails atomically if ANY targeted section has:
- *   1. Active CRDT edit authority (someone editing in real-time)
- *   2. Dirty session overlap (unsaved edits pending commit)
- *   3. Another human inprogress proposal holding it
+ * exclusive section locks via the proposal FSM lock subsystem.
  *
- * Only human proposals may acquire locks. Agent proposals never enter inprogress.
+ * Exclusion is enforced ONLY against other proposals' exclusive claims
+ * (`inprogress` + `committing`) — there is no dirty-file / live-focus check.
+ * All-or-nothing: if ANY targeted section conflicts, the proposal remains
+ * `draft` and the full {@link ProposalLockResult} (all conflicts + prose) is
+ * returned. Only human proposals may acquire locks; agent proposals never
+ * enter inprogress.
  */
 export async function transitionToInProgress(id: ProposalId): Promise<LockAcquisitionResult> {
   const proposal = await readProposal(id);
@@ -368,39 +407,21 @@ export async function transitionToInProgress(id: ProposalId): Promise<LockAcquis
     );
   }
 
-  // Dynamic import to avoid circular dependency (section-presence → proposal-repository)
-  const { SectionPresence } = await import("../domain/section-presence.js");
+  // Dynamic import to avoid circular dependency
+  // (proposal-fsm-locks → proposal-fsm-lock-index → proposal-repository).
+  const { checkProposalLocks } = await import("../domain/proposal-fsm-locks.js");
 
-  // Pre-fetch dirty file sets grouped by doc path
-  const docPaths = [...new Set(proposal.sections.map(s => s.doc_path))];
-  const dirtyFileSets = new Map<string, Set<string>>();
-  for (const docPath of docPaths) {
-    dirtyFileSets.set(docPath, await SectionPresence.prefetchDirtyFiles(docPath));
-  }
+  const lockResult = await checkProposalLocks({
+    proposalId: id,
+    targets: proposal.sections.map((section) => ({
+      doc_path: section.doc_path,
+      heading_path: section.heading_path,
+    })),
+  });
 
-  // Pre-fetch inprogress human proposal locks (excluding this proposal)
-  const inProgressLocks = await prefetchInProgressLocks(id);
-
-  // Atomic check: all sections must be free
-  for (const section of proposal.sections) {
-    const ref = SectionRef.fromTarget(section);
-
-    // Check 1: Active CRDT editing session
-    if (SectionPresence.checkLiveSessionOnly(ref)) {
-      return { acquired: false, reason: "Section is being actively edited", section };
-    }
-
-    // Check 2: Dirty session files
-    const dirtySet = dirtyFileSets.get(section.doc_path) ?? new Set();
-    if (dirtySet.has(ref.key)) {
-      return { acquired: false, reason: "Section has unsaved edits pending commit", section };
-    }
-
-    // Check 3: Another human inprogress proposal
-    const lock = inProgressLocks.get(ref.globalKey);
-    if (lock) {
-      return { acquired: false, reason: `Section is locked by ${lock.writerDisplayName}`, section };
-    }
+  if (!lockResult.acquired) {
+    // All-or-nothing: remain draft, return the full conflict result.
+    return { ...lockResult };
   }
 
   // All checks passed — write enriched meta.json then atomic rename
@@ -419,30 +440,7 @@ export async function transitionToInProgress(id: ProposalId): Promise<LockAcquis
   await mkdir(statusDir("inprogress"), { recursive: true });
   await rename(fromDir, toDir);
 
-  return { acquired: true, proposal: { ...file, status: "inprogress" } };
-}
-
-/**
- * Scan inprogress proposals to build a lock index.
- * Used by lock acquisition to check for conflicts with other held locks.
- */
-async function prefetchInProgressLocks(
-  excludeProposalId: string,
-): Promise<Map<string, { writerId: string; writerDisplayName: string }>> {
-  const index = new Map<string, { writerId: string; writerDisplayName: string }>();
-  const inProgressProposals = await listInProgressProposals();
-  for (const proposal of inProgressProposals) {
-    if (proposal.writer.type !== "human") continue;
-    if (proposal.id === excludeProposalId) continue;
-    for (const section of proposal.sections) {
-      const key = SectionRef.fromTarget(section).globalKey;
-      index.set(key, {
-        writerId: proposal.writer.id,
-        writerDisplayName: proposal.writer.displayName,
-      });
-    }
-  }
-  return index;
+  return { ...lockResult, proposal: { ...file, status: "inprogress" } };
 }
 
 // ─── Standard state transitions ────────────────────────────────────
@@ -476,7 +474,7 @@ export async function transitionToCommitting(id: ProposalId): Promise<AnyProposa
 export async function transitionToCommitted(
   id: ProposalId,
   committedHead: string,
-  scoresAtCommit: SectionScoreSnapshot,
+  committedMetadata: HumanInvolvementCommittedProposalMetadata,
 ): Promise<AnyProposal> {
   const proposal = await readProposal(id);
   if (proposal.status !== "committing") {
@@ -489,10 +487,52 @@ export async function transitionToCommitted(
   // If crash happens before rename: proposal stays in "committing" with enriched meta (harmless).
   // If crash happens after rename: proposal is in "committed" with correct meta.
   const { status: _s, ...rest } = proposal;
-  const file: CommittedProposalFile = { ...rest, committed_head: committedHead, humanInvolvement_at_commit: scoresAtCommit };
+  const file: CommittedProposalFile = { ...rest, committed_head: committedHead, humanInvolvement_at_commit: committedMetadata };
   await writeJsonFile(proposalPath("committing", id), file);
 
   // Atomic directory rename
+  const fromDir = proposalDir("committing", id);
+  const toDir = proposalDir("committed", id);
+  await mkdir(statusDir("committed"), { recursive: true });
+  await rename(fromDir, toDir);
+
+  return toProposal(file, "committed");
+}
+
+/**
+ * Startup-recovery-only: finalize a `committing` proposal whose `meta.json`
+ * already carries an enriched `committed_head` (the crash-before-rename case
+ * noted on {@link transitionToCommitted}: the enriched meta is written BEFORE
+ * the atomic dir rename, so a crash between the two leaves a `committing`
+ * proposal whose canonical commit has ALREADY landed).
+ *
+ * Reads the committing `meta.json`; if it carries a non-empty `committed_head`,
+ * performs the atomic `committing` -> `committed` directory rename without
+ * re-deriving scores or re-running canonical absorb (the delta already landed).
+ * Returns the promoted proposal, or `null` if `committed_head` is absent (the
+ * commit had not landed — caller must rerun publication instead).
+ *
+ * Status-by-directory FSM preserved; nothing about `meta.json` is rewritten
+ * (the enriched fields are already on disk); `status` is never stored.
+ * MUST NOT be used outside crash recovery.
+ */
+export async function finalizeCommittingProposal(id: ProposalId): Promise<AnyProposal | null> {
+  const filePath = proposalPath("committing", id);
+  let file: AnyProposalFile;
+  try {
+    file = await readJsonFile(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new ProposalNotFoundError(`Committing proposal not found: ${id}`);
+    }
+    throw error;
+  }
+
+  const committedHead = (file as Partial<CommittedProposalFile>).committed_head;
+  if (typeof committedHead !== "string" || committedHead.length === 0) {
+    return null;
+  }
+
   const fromDir = proposalDir("committing", id);
   const toDir = proposalDir("committed", id);
   await mkdir(statusDir("committed"), { recursive: true });
@@ -530,6 +570,16 @@ export async function transitionToWithdrawn(
   return toProposal(file, "withdrawn");
 }
 
+/**
+ * Roll a `committing` proposal back to `draft` after a RUNTIME publish failure
+ * for an agent-owned proposal (spec 02 › "Why `committing` as a transient guard
+ * state": agent → `draft`, human/DocSession → `inprogress`).
+ *
+ * MUST NOT be called from startup crash recovery — recovery finalizes
+ * (`finalizeCommittingProposal`) or reruns publication
+ * (`publishCommittingProposalToCanonical`) and never rolls a `committing`
+ * proposal back to `draft`/`inprogress`.
+ */
 export async function rollbackCommittingToDraft(id: ProposalId): Promise<AnyProposal> {
   const proposal = await readProposal(id);
   if (proposal.status !== "committing") {
@@ -545,4 +595,225 @@ export async function rollbackCommittingToDraft(id: ProposalId): Promise<AnyProp
   await rename(fromDir, toDir);
 
   return { ...proposal, status: "draft" };
+}
+
+/**
+ * Return a `committing` proposal to `inprogress` after a runtime publish failure.
+ *
+ * Per spec 02 "Why `committing` as a transient guard state", a human / DocSession
+ * proposal that fails to publish keeps its locks and returns to `inprogress`
+ * (the DocSession remains its current proposal) rather than dropping to `draft`.
+ * The `committing` directory carried no extra runtime metadata beyond the
+ * inprogress lock fields, so this is a pure directory rename.
+ */
+export async function rollbackCommittingToInProgress(id: ProposalId): Promise<InProgressProposal> {
+  const { status, filePath } = await locateProposal(id);
+  if (status !== "committing") {
+    throw new InvalidProposalStateError(
+      `Cannot rollback proposal ${id}: status is ${status}, expected committing.`,
+    );
+  }
+  // The committing meta.json was carried unchanged from inprogress and still
+  // holds the lock fields; restore the inprogress projection from disk.
+  const file = (await readJsonFile(filePath)) as InProgressProposalFile;
+
+  const fromDir = proposalDir("committing", id);
+  const toDir = proposalDir("inprogress", id);
+  await mkdir(statusDir("inprogress"), { recursive: true });
+  await rename(fromDir, toDir);
+
+  return { ...file, status: "inprogress" };
+}
+
+/**
+ * Caller context for runtime `committing`-failure rollback (spec 02 transient
+ * guard state). Agent proposals roll back to `draft`; human/DocSession proposals
+ * return to `inprogress`. Startup recovery (finalize-if-landed / rerun-absorb)
+ * is Area E's driver and does NOT use this — it never rolls back.
+ */
+export type CommittingRollbackOwnerKind = "agent" | "docsession";
+
+/**
+ * Dispatch a runtime `committing`-failure rollback to the correct target based
+ * on caller context. The publish path (commit-pipeline / CRDTProposalGenerator,
+ * Areas C/B) threads `ownerKind`; Area F only owns the repository transitions.
+ */
+export async function rollbackCommittingProposal(
+  id: ProposalId,
+  ownerKind: CommittingRollbackOwnerKind,
+): Promise<AnyProposal> {
+  return ownerKind === "agent"
+    ? rollbackCommittingToDraft(id)
+    : rollbackCommittingToInProgress(id);
+}
+
+// ─── CRDT-owned lifecycle helpers (live-edit materialization) ──────────
+//
+// These support Area B's CRDTProposalGenerator: a DocSession lazily creates and
+// owns exactly one `inprogress` proposal as live edits materialize. They are
+// DELIBERATELY distinct from — and NOT gated by — the human `draft -> inprogress`
+// lock acquisition above (Invariant 3): a DocSession-owned `inprogress` proposal
+// is created directly, keyed on the passed-in DocSession identity (Area B owns
+// the DocSession identity/actor lane; Area F keys on the id string).
+//
+// One-active-`inprogress`-proposal-per-DocSession is enforced at create time
+// (Invariant 7).
+
+/**
+ * Find the single CRDT-owned `inprogress` proposal for a DocSession, if one
+ * has been materialized. Returns null before the session's first live edit.
+ */
+export async function findInProgressProposalForDocSession(
+  docSessionId: DocSessionId,
+): Promise<InProgressProposal | null> {
+  const inProgress = await listInProgressProposals();
+  const match = inProgress.find(
+    (proposal) => proposal.docSessionId === docSessionId,
+  );
+  return (match as InProgressProposal | undefined) ?? null;
+}
+
+/**
+ * Find the CRDT-owned `inprogress` proposal targeting a given doc path, if any.
+ * Convenience lookup for the live-edit boundary; a DocSession owns one document.
+ */
+export async function findInProgressProposalForDoc(
+  docPath: string,
+): Promise<InProgressProposal | null> {
+  const matches = await listInProgressProposalsForDoc(docPath);
+  return matches[0] ?? null;
+}
+
+/**
+ * All CRDT-owned `inprogress` proposals targeting a given doc path. The
+ * one-active-proposal-per-DocSession invariant means this should never return
+ * more than one entry; callers (e.g. DocSession reconstruction) use the length
+ * to detect — and refuse rather than silently pick from — a corrupt
+ * multiple-proposal state.
+ */
+export async function listInProgressProposalsForDoc(
+  docPath: string,
+): Promise<InProgressProposal[]> {
+  const inProgress = await listInProgressProposals();
+  return inProgress.filter(
+    (proposal) =>
+      proposal.docSessionId !== undefined
+      && proposal.sections.some((section) => section.doc_path === docPath),
+  ) as InProgressProposal[];
+}
+
+/**
+ * Lazily create (or return the existing) single CRDT-owned `inprogress` proposal
+ * for a DocSession. Writes meta.json + content/ directly under
+ * proposals/inprogress (bypassing the human draft→inprogress lock path).
+ *
+ * Enforces one active proposal per DocSession (Invariant 7): if the session
+ * already owns an `inprogress` proposal, that one is returned unchanged.
+ */
+export async function getOrCreateInProgressProposalForDocSession(input: {
+  docSessionId: DocSessionId;
+  docPath: string;
+  writer: WriterIdentity;
+  intent?: string;
+  sections?: ProposalSection[];
+}): Promise<CreateProposalResult & { proposal: InProgressProposal }> {
+  const existing = await findInProgressProposalForDocSession(input.docSessionId);
+  if (existing) {
+    return {
+      id: existing.id,
+      contentRoot: proposalContentRoot(existing.id, "inprogress"),
+      proposal: existing,
+    };
+  }
+
+  const id = generateProposalId();
+  const now = new Date().toISOString();
+  const sections = input.sections ?? [];
+  const file: InProgressProposalFile = {
+    id,
+    writer: input.writer,
+    intent: input.intent ?? "",
+    sections,
+    created_at: now,
+    docSessionId: input.docSessionId,
+    locked_sections: sections,
+    locked_at: now,
+  };
+
+  const contentRoot = proposalContentRoot(id, "inprogress");
+  await mkdir(contentRoot, { recursive: true });
+  await writeJsonFile(proposalPath("inprogress", id), file);
+
+  return { id, contentRoot, proposal: { ...file, status: "inprogress" } };
+}
+
+/**
+ * Update the section manifest (and lock-section mirror) of a CRDT-owned
+ * `inprogress` proposal as its live content tree grows. Distinct from
+ * {@link updateProposalSections}: it keeps `locked_sections` in sync with
+ * `sections` for a DocSession-owned `inprogress` proposal.
+ */
+export async function updateCurrentProposalSections(
+  id: ProposalId,
+  sections: ProposalSection[],
+  intent?: string,
+): Promise<InProgressProposal> {
+  const { status, filePath } = await locateProposal(id);
+  if (status !== "inprogress") {
+    throw new InvalidProposalStateError(
+      `Cannot update current-proposal sections for ${id}: status is ${status}, expected inprogress.`,
+    );
+  }
+  const file = (await readJsonFile(filePath)) as InProgressProposalFile;
+  file.sections = sections;
+  file.locked_sections = sections;
+  if (intent !== undefined) file.intent = intent;
+  await writeJsonFile(filePath, file);
+  return { ...file, status: "inprogress" };
+}
+
+/**
+ * MONOTONICALLY grow a CRDT-owned `inprogress` proposal's section manifest as the
+ * live document is edited (C4): UNION `addSections` into the existing `sections`
+ * and DROP `removeSections` (a structural merge folds a section away), then dedup
+ * by section global key. This keeps the live proposal's lock claim covering only
+ * what has actually been edited this session — NOT the whole document — restoring
+ * the section-by-section contention model (a one-section edit must not lock every
+ * section against agents). `locked_sections` is kept identical to `sections` (the
+ * `sections` field is the authoritative lock-claim set; see assumptions.md C4).
+ */
+export async function unionCurrentProposalSections(
+  id: ProposalId,
+  addSections: ProposalSection[],
+  removeSections: ProposalSection[] = [],
+): Promise<InProgressProposal> {
+  const { status, filePath } = await locateProposal(id);
+  if (status !== "inprogress") {
+    throw new InvalidProposalStateError(
+      `Cannot union current-proposal sections for ${id}: status is ${status}, expected inprogress.`,
+    );
+  }
+  const file = (await readJsonFile(filePath)) as InProgressProposalFile;
+
+  // Add wins over remove: a section that is both written and removed in the same
+  // delta (e.g. a split whose parent is restructured but survives) stays claimed.
+  const addKeys = new Set(addSections.map((s) => SectionRef.fromTarget(s).globalKey));
+  const removeKeys = new Set(
+    removeSections
+      .map((s) => SectionRef.fromTarget(s).globalKey)
+      .filter((k) => !addKeys.has(k)),
+  );
+  const merged: ProposalSection[] = [];
+  const seen = new Set<string>();
+  for (const section of [...file.sections, ...addSections]) {
+    const key = SectionRef.fromTarget(section).globalKey;
+    if (removeKeys.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(section);
+  }
+
+  file.sections = merged;
+  file.locked_sections = merged;
+  await writeJsonFile(filePath, file);
+  return { ...file, status: "inprogress" };
 }

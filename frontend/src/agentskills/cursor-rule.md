@@ -15,14 +15,14 @@ The system operates at **section-level granularity**. Sections are identified by
 
 ### Examples
 
-Read a top-level section called "Overview":
+Read a top-level section called "Overview" from the published/live wiki:
 ```
-read_live_section(doc_path: "/my-doc.md", heading_path: ["Overview"])
+read_published_section(doc_path: "/my-doc.md", heading_path: ["Overview"])
 ```
 
-Read a nested section "Weapons" inside "Ship Building":
+Read a nested section "Weapons" inside "Ship Building" from the published/live wiki:
 ```
-read_live_section(doc_path: "/my-doc.md", heading_path: ["Ship Building", "Weapons"])
+read_published_section(doc_path: "/my-doc.md", heading_path: ["Ship Building", "Weapons"])
 ```
 
 Read a section from a proposal:
@@ -36,17 +36,17 @@ read_proposal_section(proposal_id: "<proposal-id>", doc_path: "/my-doc.md", head
 2. **Inspect section inventory:** `list_sections` returns section headings and `body_size_bytes` without body text.
 3. **Search before reading:** `search_text` supports `syntax: "literal" | "regexp"` for exact phrases and patterns.
 4. **Understand structure:** `read_doc_structure` shows a document's section tree (headings and nesting).
-5. **Read live content:** `read_live_section` reads a specific section by `doc_path` and `heading_path` (JSON array of strings). Use `read_doc` for an entire document.
+5. **Read published content:** `read_published_section` reads a specific section by `doc_path` and `heading_path` (JSON array of strings) from the published/live (canonical) system. It will NOT show proposal-only edits. Use `read_doc` for an entire document.
 6. **Read proposal content:** `read_proposal_section` reads a specific section from a proposal. `read_proposal` reads the whole proposal and its section content.
 
 ## Making Changes (Proposal Workflow)
 
-**All changes require a proposal.** A proposal groups one or more section writes into an atomic unit that is evaluated against human-involvement scores before committing.
+**All changes require a proposal.** A proposal groups one or more section writes into an atomic unit. At publish time the proposal must pass two gates: the proposal-lock check (no other proposal holds an exclusive claim on your target sections) and the agent write-policy check (agents are permitted to write the targeted sections right now).
 
 ### Quick write (2 calls):
 
 1. `create_proposal` — provide `intent` (string) and `sections` (array of `{doc_path, heading_path, content, justification?}`). Content is written immediately into the proposal.
-2. `publish_proposal` — evaluates human-involvement and either publishes (returns `committed_head`) or returns `blocked` with a list of contested sections and their scores.
+2. `publish_proposal` — runs the publish gates and either publishes (returns `committed_head`) or reports that the proposal cannot be published yet, with a per-target indication of which sections are unavailable and a human-readable explanation of why.
 
 ### Incremental write (3+ calls):
 
@@ -57,9 +57,9 @@ read_proposal_section(proposal_id: "<proposal-id>", doc_path: "/my-doc.md", head
 
 Use `withdraw_proposal` to withdraw a proposal you no longer need.
 
-### When `publish_proposal` is blocked
+### When `publish_proposal` cannot publish
 
-Some sections may have high human-involvement scores (a human is actively editing). The proposal stays draft. You can wait for the contention to resolve, modify the proposal via `write_proposal_section`, or withdraw it.
+A publish can be held back when a target section is claimed by another proposal holding an exclusive lock (for example a human working through their own proposal on that section), or when the agent write-policy in force does not permit agents to write a targeted section right now. The proposal stays draft and the response explains, per target, which sections are unavailable. Respond by waiting and retrying once the contention clears, narrowing the proposal via `write_proposal_section` so it no longer touches the unavailable sections, or withdrawing it.
 
 ## Checking Proposals
 
@@ -76,7 +76,7 @@ These modify the document tree itself (headings, not body content). **All requir
 
 ## Important Behaviours
 
-- **Always read before writing** — use `read_live_section` or `read_doc_structure` first.
-- **Verify proposal content with proposal reads** — after writing to a proposal, use `read_proposal_section` or `read_proposal`. Do not use `read_live_section` for draft verification.
-- **Human-involvement guards** — some sections may be blocked because a human is editing them. This is expected, not an error. Wait and retry later.
+- **Always read before writing** — use `read_published_section` or `read_doc_structure` first.
+- **Verify proposal content with proposal reads** — after writing to a proposal, use `read_proposal_section` or `read_proposal`. Do not use `read_published_section` for draft verification; it reads the published/live system and will not show your proposal-only edits.
+- **Publish gates** — a target section may be unavailable because another proposal holds an exclusive lock on it, or because agent write-policy does not currently permit agents to write it. This is expected, not an error. Wait and retry later, narrow your scope, or withdraw.
 - **Clear intent** — write descriptive intent in `create_proposal` so reviewers understand your purpose.

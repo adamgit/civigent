@@ -26,7 +26,6 @@ vi.mock("../../../services/ws-client", () => ({
     unsubscribe = vi.fn();
     focusDocument = vi.fn();
     blurDocument = vi.fn();
-    sessionDeparture = vi.fn();
   },
 }));
 

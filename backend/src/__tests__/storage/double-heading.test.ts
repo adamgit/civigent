@@ -3,10 +3,11 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { createProposal } from "../../storage/proposal-repository.js";
 import {
-  evaluateProposalHumanInvolvement,
+  evaluateAgentWritePolicy,
   commitProposalToCanonical,
 } from "../../storage/commit-pipeline.js";
-import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
+import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
+import { ContentLayer, ProposalShadowContentLayer } from "../../storage/content-layer.js";
 import { getContentRoot } from "../../storage/data-root.js";
 import { SectionRef } from "../../domain/section-ref.js";
 
@@ -37,7 +38,7 @@ describe("double-heading bug fix", () => {
       [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] }],
     );
 
-    const pContentLayer = new OverlayContentLayer(contentRoot, getContentRoot());
+    const pContentLayer = new ProposalShadowContentLayer(contentRoot, getContentRoot());
     await pContentLayer.upsertSection(
       new SectionRef(SAMPLE_DOC_PATH, ["Overview"]),
       "Overview",
@@ -45,13 +46,8 @@ describe("double-heading bug fix", () => {
       { contentIsFullMarkdown: true },
     );
 
-    const { sections } = await evaluateProposalHumanInvolvement(id);
-    const scores: Record<string, number> = {};
-    for (const s of sections) {
-      const key = `${s.doc_path}::${s.heading_path.join(">>")}`;
-      scores[key] = s.humanInvolvement_score;
-    }
-    await commitProposalToCanonical(id, scores);
+    const result = await evaluateAgentWritePolicy(id);
+    await commitProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
 
     const readLayer = new ContentLayer(getContentRoot());
     const assembled = await readLayer.readAssembledDocument(SAMPLE_DOC_PATH);
@@ -70,7 +66,7 @@ describe("double-heading bug fix", () => {
       [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Timeline"] }],
     );
 
-    const pContentLayer = new OverlayContentLayer(contentRoot, getContentRoot());
+    const pContentLayer = new ProposalShadowContentLayer(contentRoot, getContentRoot());
     await pContentLayer.upsertSection(
       new SectionRef(SAMPLE_DOC_PATH, ["Timeline"]),
       "Timeline",
@@ -78,13 +74,8 @@ describe("double-heading bug fix", () => {
       { contentIsFullMarkdown: true },
     );
 
-    const { sections } = await evaluateProposalHumanInvolvement(id);
-    const scores: Record<string, number> = {};
-    for (const s of sections) {
-      const key = `${s.doc_path}::${s.heading_path.join(">>")}`;
-      scores[key] = s.humanInvolvement_score;
-    }
-    await commitProposalToCanonical(id, scores);
+    const result = await evaluateAgentWritePolicy(id);
+    await commitProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
 
     const canonical = new ContentLayer(getContentRoot());
     const assembled = await canonical.readAssembledDocument(SAMPLE_DOC_PATH);

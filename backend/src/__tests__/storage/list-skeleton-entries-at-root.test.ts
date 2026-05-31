@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { listSkeletonEntriesAtRoot, resolveSkeletonPath } from "../../storage/document-skeleton.js";
-import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
+import { ContentLayer, ProposalShadowContentLayer } from "../../storage/content-layer.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 
 const DOC_PATH = "folder/sample.md";
@@ -138,7 +138,7 @@ describe("ContentLayer.listCanonicalEntries", () => {
   });
 });
 
-describe("OverlayContentLayer.listOverlayOnlyEntries", () => {
+describe("ProposalShadowContentLayer.listOverlayOnlyEntries", () => {
   let ctx: TempDataRootContext;
   let canonicalRoot: string;
   let overlayRoot: string;
@@ -160,7 +160,7 @@ describe("OverlayContentLayer.listOverlayOnlyEntries", () => {
     await writeFile(join(sectionsDir, "sec_a.md"), "body a", "utf8");
     await writeSkeleton(canonicalRoot, DOC_PATH, ["## Alpha", "{{section: sec_a.md}}"].join("\n"));
 
-    const layer = new OverlayContentLayer(overlayRoot, canonicalRoot);
+    const layer = new ProposalShadowContentLayer(overlayRoot, canonicalRoot);
     const entries = await layer.listOverlayOnlyEntries(DOC_PATH);
     expect(entries).toBeNull();
   });
@@ -174,7 +174,7 @@ describe("OverlayContentLayer.listOverlayOnlyEntries", () => {
     await writeFile(join(overlaySectionsDir, "sec_new.md"), "new", "utf8");
     await writeSkeleton(overlayRoot, DOC_PATH, ["## New", "{{section: sec_new.md}}"].join("\n"));
 
-    const layer = new OverlayContentLayer(overlayRoot, canonicalRoot);
+    const layer = new ProposalShadowContentLayer(overlayRoot, canonicalRoot);
     const entries = await layer.listOverlayOnlyEntries(DOC_PATH);
     expect(entries).not.toBeNull();
     expect(entries).toHaveLength(1);
@@ -184,7 +184,7 @@ describe("OverlayContentLayer.listOverlayOnlyEntries", () => {
 
   it("returns [] when overlay skeleton exists but is empty (distinguished from null)", async () => {
     await writeSkeleton(overlayRoot, DOC_PATH, "");
-    const layer = new OverlayContentLayer(overlayRoot, canonicalRoot);
+    const layer = new ProposalShadowContentLayer(overlayRoot, canonicalRoot);
     const entries = await layer.listOverlayOnlyEntries(DOC_PATH);
     expect(entries).toEqual([]);
   });

@@ -8,7 +8,6 @@
 import type React from "react";
 import { Link } from "react-router-dom";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
-import { SessionStatusPill } from "./SessionStatusPill";
 
 interface SharedPageHeaderProps {
   title: React.ReactNode;
@@ -45,9 +44,7 @@ export function SharedPageHeader({ title, backTo }: SharedPageHeaderProps) {
         {title}
       </h1>
 
-      <div className="ml-auto">
-        <SessionStatusPill />
-      </div>
+      <div className="ml-auto" />
 
       {currentUser ? (
         <div className="flex items-center gap-2.5">

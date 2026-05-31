@@ -10,7 +10,7 @@ import {
   setBroadcastSessionReplacementInvalidation,
   type DocSession,
 } from "../../crdt/ydoc-lifecycle.js";
-import { joinAndNotify } from "../../ws/crdt-coordinator.js";
+import { joinAndNotify } from "../../ws/crdt-ws-coordinator.js";
 import type { CrdtSocketState } from "../../ws/crdt-transport.js";
 import type { WriterIdentity } from "../../types/shared.js";
 

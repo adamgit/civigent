@@ -47,26 +47,13 @@ export function getProposalsWithdrawnRoot(): string {
   return path.join(getDataRoot(), "proposals", "withdrawn");
 }
 
-// ─── Sessions (v3: human CRDT editing sessions on disk) ────────────
-
-export function getSessionsRoot(): string {
-  return path.join(getDataRoot(), "sessions");
-}
-
-/** Crash-safety layer: dirty section content + skeletons (mirrors content/ structure) */
-export function getSessionSectionsRoot(): string {
-  return path.join(getDataRoot(), "sessions", "sections");
-}
-
-/** Raw fragment files: verbatim markdown from Y.XmlFragment (heading + body) */
-export function getSessionFragmentsRoot(): string {
-  return path.join(getDataRoot(), "sessions", "fragments");
-}
-
-/** The content subdirectory of the session sections overlay root. */
-export function getSessionSectionsContentRoot(): string {
-  return path.join(getSessionSectionsRoot(), "content");
-}
+// ─── Sessions ───────────────────────────────────────────────────────
+//
+// `sessions/` is NOT a durable storage surface (Area D / spec 05 "Session
+// Persistence"): it is never created on startup and crash recovery never reads
+// or writes it. The former legacy session-overlay content-root helpers (the
+// legacy session-overlay read path) were removed with MW-7, when document and
+// section GETs became canonical-only.
 
 /** Root directory for import staging areas (one subdir per import ID). */
 export function getImportStagingRoot(): string {
@@ -127,8 +114,6 @@ export async function ensureV3Directories(): Promise<void> {
     getProposalsCommittingRoot(),
     getProposalsCommittedRoot(),
     getProposalsWithdrawnRoot(),
-    getSessionSectionsRoot(),
-    getSessionFragmentsRoot(),
     getAuthRoot(),
     getSnapshotRoot(),
     getMonitoringRoot(),

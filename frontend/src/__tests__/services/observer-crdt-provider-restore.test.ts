@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vites
 import * as Y from "yjs";
 import { ObserverCrdtProvider } from "../../services/observer-crdt-provider";
 import type { DocumentReplacementNoticePayload } from "../../types/shared";
-import { WS_CLOSE_DOCUMENT_REPLACED } from "../../services/crdt-close-codes";
+import { WS_CLOSE_DOCUMENT_REPLACED, WS_CLOSE_ADMIN_REBUILD } from "../../services/crdt-close-codes";
 
 const MSG_SYNC_STEP_1 = 0x00;
 const MSG_SYNC_STEP_2 = 0x01;
@@ -186,6 +186,22 @@ describe("ObserverCrdtProvider document replacement notice handling", () => {
     ws2.receiveServerMessage(buildSyncStep2FromDoc(sourceDoc));
 
     expect(onRestore).not.toHaveBeenCalled();
+    provider.destroy();
+  });
+
+  it("admin force-rebuild (4024) reconnects the observer immediately, like 4022", () => {
+    const onSessionReinit = vi.fn();
+    const provider = new ObserverCrdtProvider("/test/doc.md", { onSessionReinit });
+
+    provider.connect();
+    const ws1 = StubWebSocket.lastInstance!;
+    ws1.open();
+
+    ws1.onclose?.(new CloseEvent("close", { code: WS_CLOSE_ADMIN_REBUILD }));
+
+    const ws2 = StubWebSocket.lastInstance!;
+    expect(ws2).not.toBe(ws1);
+    expect(onSessionReinit).toHaveBeenCalledTimes(1);
     provider.destroy();
   });
 

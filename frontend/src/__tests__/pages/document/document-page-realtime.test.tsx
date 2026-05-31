@@ -20,7 +20,6 @@ vi.mock("../../../services/ws-client", () => ({
     unsubscribe = vi.fn();
     focusDocument = vi.fn();
     blurDocument = vi.fn();
-    sessionDeparture = vi.fn();
   },
 }));
 
@@ -150,7 +149,10 @@ describe("DocumentPage realtime", () => {
     });
   });
 
-  it("doc:structure-changed event reloads document structure", async () => {
+  it("removed doc:structure-changed event no longer triggers a structure refetch", async () => {
+    // Spec 05 §4 > Removed message types: `doc:structure-changed` is gone.
+    // Structural changes now arrive as ordinary YJS_UPDATE deltas on the CRDT
+    // socket, so a stray legacy event must NOT cause an extra structure fetch.
     let structureFetchCount = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
       const urlStr = String(url);
@@ -162,7 +164,7 @@ describe("DocumentPage realtime", () => {
               heading_path: [],
               depth: 0,
               content: "Root.\n",
-              humanInvolvement_score: 0,
+              agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
               crdt_session_active: false,
               section_length_warning: false,
               word_count: 1,
@@ -195,8 +197,8 @@ describe("DocumentPage realtime", () => {
       } as WsServerEvent);
     });
 
-    await waitFor(() => {
-      expect(structureFetchCount).toBeGreaterThan(initialStructureCount);
-    });
+    // Give any (incorrect) async refetch a chance to run, then assert no change.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(structureFetchCount).toBe(initialStructureCount);
   });
 });

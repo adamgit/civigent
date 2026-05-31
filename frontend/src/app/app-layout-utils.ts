@@ -81,11 +81,12 @@ export function classifyWsEvent(
 ): WsEventClassification {
   const noop: WsEventClassification = { refreshTree: false, addBadge: null, showToast: null };
 
-  if (
-    event.type === "dirty:changed"
-    || event.type === "writer:dirty-state-changed"
-    || event.type === "session:status-changed"
-  ) {
+  // `dirty:changed` is still emitted on the JSON app WS but is not an
+  // AppLayout-level trigger (tree refresh / badges / toasts). The
+  // `writer:dirty-state-changed` / `session:status-changed` dirty-persistence
+  // triggers were removed (plan §F), so they no longer need a branch — unknown
+  // event types fall through to the trailing `noop` below regardless.
+  if (event.type === "dirty:changed") {
     return noop;
   }
 

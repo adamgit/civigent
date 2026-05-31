@@ -26,7 +26,6 @@ import type {
   SessionInfoResponse,
   UpdateProposalRequest,
   AcquireLocksResponse,
-  AllSessionStatusesResponse,
   WithdrawProposalResponse,
 } from "../types/shared.js";
 
@@ -90,15 +89,13 @@ export interface DocHistoryPreviewResponse {
   missingSections?: string[];
 }
 
+// Restore now publishes-or-aborts the live DocSession, then commits the target
+// version to canonical (spec 04 §5 / plan §C/§F). It is not gated by an FSM lock
+// conflict or an agent-write-policy result, so there are no per-section
+// `blocked_sections` in the response — the backend returns the committed SHA
+// only (backend restore handler: `res.json({ committed_sha })`).
 export interface DocRestoreResponse {
   committed_sha?: string;
-  proposal_id?: string;
-  blocked_sections?: Array<{
-    doc_path: string;
-    heading_path: string[];
-    humanInvolvement_score: number;
-    blocked: boolean;
-  }>;
 }
 
 export interface DiagLayerStatus {
@@ -108,16 +105,21 @@ export interface DiagLayerStatus {
   error: string | null;
 }
 
+/**
+ * Winner of the per-section layer comparison. The session-overlay and
+ * raw-fragment durable layers were removed (plan §D), so the surviving layers
+ * are canonical and live CRDT; the backend winner is now one of these.
+ */
+export type DiagSectionWinner = "canonical" | "crdt" | "none" | "error";
+
 export interface DiagSectionLayerInfo {
   headingKey: string;
   headingPath: string[];
   sectionFile: string;
   isSubSkeleton: boolean;
   canonical: DiagLayerStatus;
-  overlay: DiagLayerStatus;
-  fragment: DiagLayerStatus;
   crdt: DiagLayerStatus;
-  winner: string;
+  winner: DiagSectionWinner;
   gitHistoryExists?: boolean | null;
   error?: string;
 }
@@ -609,6 +611,13 @@ export const apiClient = {
     return requestJson<ReadDocStructureResponse>(`/api/documents/${encoded}/structure`);
   },
 
+  // NOTE (MW-7 / spec 04 §5): default document/section loads are CANONICAL-ONLY.
+  // `DocumentResourceModel.loadSections()` calls this with NO options, so normal
+  // loads never request an overlay. `options.proposalId` is RETAINED solely for
+  // the explicit proposal-preview path (`useProposalDrafting`): it appends
+  // `?proposal_id=` and the backend section route honours it by reading that
+  // proposal's content via `ProposalReader` (writer-ownership-verified). It is
+  // NOT the session/live overlay that MW-7 removed.
   async getDocumentSections(
     docPath: string,
     options?: { proposalId?: string },
@@ -738,15 +747,13 @@ export const apiClient = {
     return requestJson<GetHeatmapResponse>("/api/heatmap");
   },
 
-  async getAllSessionStatuses(): Promise<AllSessionStatusesResponse> {
-    return requestJson<AllSessionStatusesResponse>("/api/session-statuses/all");
-  },
-
-  // --- Session state ---
-
-  async getSessionState(): Promise<any> {
-    return requestJson<any>("/api/admin/session-state");
-  },
+  // NOTE (Area P / Areas D/E): `getAllSessionStatuses()` (GET
+  // /api/session-statuses/all) and `getSessionState()` (GET
+  // /api/admin/session-state) were removed — their backend routes
+  // (`session-statuses.ts` / `session-inspector.ts`) were deleted along with the
+  // `sessions/` overlay + raw-fragment durability authority. Live durability now
+  // lives in the `inprogress` proposal / DocSession; any future ops summary needs
+  // a new backing query.
 
   // --- Git history ---
 

@@ -1,24 +1,26 @@
 /**
- * US-4: Agent proposal with one section hard-blocked by a dirty session file.
+ * US-4: Agent proposal with one section hard-blocked, drop it, commit the
+ * remainder, then recommit the dropped section once the block clears.
  *
- * Flow:
- * 1. create_proposal with Overview + Timeline → Timeline hard-blocked (score=1.0),
- *    Overview passes
- * 2. publish_proposal → stays draft/blocked
- * 3. withdraw_proposal
- * 4. create_proposal with only Overview → accepted
- * 5. publish_proposal → committed
- * 6. read_live_section: Overview = new content, Timeline = original
- * 7. Remove dirty file, create_proposal with replace for Timeline → accepted
+ * MW-12 migration: the original scenario provoked the block via a deleted
+ * dirty-session-file overlay (`sessions/sections/content`) and asserted the
+ * removed `evaluation.blocked_sections`/`passed_sections` + `humanInvolvement_score`
+ * response shape. Both are gone. This rewrite provokes a GENUINE block through
+ * the new `AgentWritePolicy` (human-involvement compatibility policy): a very
+ * recent HUMAN commit to the Timeline section drives its recency score over the
+ * 0.5 threshold so that target is declined, while Overview (no recent human
+ * activity) passes. It asserts the prose-`message` blocked-response contract
+ * (top-level + per-target prose, no bare reason-code/enum/threshold fields), then
+ * drops Timeline, commits Overview, and finally — after a backdated human commit
+ * clears Timeline's recency — recommits Timeline successfully.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
-import { mkdir, writeFile, copyFile, rm } from "node:fs/promises";
-import { join } from "node:path";
 import { createTestServer, type TestServerContext } from "../helpers/test-server.js";
 import {
   createSampleDocument,
+  createHumanCommit,
   SAMPLE_DOC_PATH,
   SAMPLE_SECTIONS,
 } from "../helpers/sample-content.js";
@@ -29,6 +31,19 @@ let mcpSessionId = "";
 
 const AGENT_ID = "us4-contentpilot";
 const agentToken = authFor(AGENT_ID, "agent");
+
+// Retired bare codes / thresholds / enums-as-explanation that must NOT appear in
+// any blocked response body (the contract MW-11/Area M established).
+const FORBIDDEN_CODE_FIELDS = [
+  "block_reason",
+  "blocked_reason",
+  "per_section_threshold",
+  "aggregate_threshold",
+  "aggregate_impact",
+  "humanInvolvement_score",
+  "blocked_sections",
+  "passed_sections",
+];
 
 async function callMcpTool(
   toolName: string,
@@ -79,26 +94,21 @@ async function initMcpSession(): Promise<void> {
 }
 
 describe("US-4: hard-block, drop blocked section, recommit", () => {
-  let sessionSectionsContentRoot: string;
-  const diskRelative = SAMPLE_DOC_PATH.replace(/^\//, "");
-
   beforeAll(async () => {
     ctx = await createTestServer();
     await createSampleDocument(ctx.dataCtx.rootDir);
 
-    // Set up dirty session file for Timeline to hard-block it
-    sessionSectionsContentRoot = join(ctx.dataCtx.rootDir, "sessions", "sections", "content");
-    const overlaySkeletonDir = join(sessionSectionsContentRoot, join(diskRelative, "..").replace(/\\/g, "/"));
-    const overlaySectionsDir = join(sessionSectionsContentRoot, `${diskRelative}.sections`);
-    await mkdir(overlaySkeletonDir, { recursive: true });
-    await mkdir(overlaySectionsDir, { recursive: true });
-
-    // Copy skeleton so heading resolution works in the overlay
-    const canonicalSkeleton = join(ctx.dataCtx.rootDir, "content", diskRelative);
-    await copyFile(canonicalSkeleton, join(sessionSectionsContentRoot, diskRelative));
-
-    // Write a dirty session file for Timeline
-    await writeFile(join(overlaySectionsDir, "timeline.md"), "dirty timeline content from session");
+    // Provoke a genuine per-target hard block through the new AgentWritePolicy:
+    // a fresh HUMAN commit to ONLY the Timeline section drives its recency score
+    // over threshold. Overview is left with its old commit → it still passes, so
+    // the proposal blocks on Timeline alone (not via aggregate escalation).
+    await createHumanCommit(
+      ctx.dataCtx.rootDir,
+      SAMPLE_DOC_PATH,
+      "timeline.md",
+      `${SAMPLE_SECTIONS.timeline}\nHuman just refined the timeline.\n`,
+      0.01, // ~36s ago → score ≈ 1.0
+    );
 
     await initMcpSession();
   });
@@ -107,8 +117,8 @@ describe("US-4: hard-block, drop blocked section, recommit", () => {
     await ctx.cleanup();
   });
 
-  it("hard-blocks dirty section, drops it, commits remainder, then recommits after cleanup", async () => {
-    // ── Step 1: create_proposal with Overview + Timeline → Timeline hard-blocked ──
+  it("hard-blocks the recently-human-edited section, drops it, commits remainder, then recommits after the block clears", async () => {
+    // ── Step 1: create_proposal Overview + Timeline → Timeline declined ──
     const res1 = await callMcpTool("create_proposal", {
       intent: "Update overview and timeline",
       sections: [
@@ -125,29 +135,44 @@ describe("US-4: hard-block, drop blocked section, recommit", () => {
       ],
     });
 
-    const data1 = JSON.parse(res1.result.content[0].text);
+    const rawText1: string = res1.result.content[0].text;
+    const data1 = JSON.parse(rawText1);
     expect(data1.outcome).toBe("blocked");
 
-    // Timeline should be in blocked_sections with score=1.0 (dirty file = hard block)
-    const blockedTimeline = data1.evaluation.blocked_sections.find(
-      (s: any) => s.heading_path[0] === "Timeline",
-    );
-    expect(blockedTimeline).toBeDefined();
-    expect(blockedTimeline.humanInvolvement_score).toBe(1.0);
+    // Prose contract: required top-level prose `message`, no bare codes.
+    expect(typeof data1.message).toBe("string");
+    expect(data1.message.length).toBeGreaterThan(20);
+    for (const field of FORBIDDEN_CODE_FIELDS) {
+      expect(rawText1).not.toContain(`"${field}"`);
+    }
 
-    // Overview should be in passed_sections
-    const passedOverview = data1.evaluation.passed_sections.find(
-      (s: any) => s.heading_path[0] === "Overview",
-    );
-    expect(passedOverview).toBeDefined();
+    // Per-target prose: Timeline declined with prose, Overview allowed.
+    const targets1 = data1.agent_write_policy.targets as Array<{
+      heading_path: string[];
+      can_write: boolean;
+      message: string;
+    }>;
+    const timeline1 = targets1.find((t) => t.heading_path[0] === "Timeline");
+    const overview1 = targets1.find((t) => t.heading_path[0] === "Overview");
+    expect(timeline1).toBeDefined();
+    expect(timeline1!.can_write).toBe(false);
+    expect(timeline1!.message.length).toBeGreaterThan(20);
+    expect(overview1).toBeDefined();
+    expect(overview1!.can_write).toBe(true);
 
-    // ── Step 2: publish_proposal → stays draft/blocked ──
+    // ── Step 2: publish_proposal → stays draft/blocked, same prose contract ──
     const commitBlocked = await callMcpTool("publish_proposal", {
       proposal_id: data1.proposal_id,
     });
-    const commitBlockedData = JSON.parse(commitBlocked.result.content[0].text);
+    const rawBlocked: string = commitBlocked.result.content[0].text;
+    const commitBlockedData = JSON.parse(rawBlocked);
     expect(commitBlockedData.status).toBe("draft");
     expect(commitBlockedData.outcome).toBe("blocked");
+    expect(typeof commitBlockedData.message).toBe("string");
+    expect(commitBlockedData.message.length).toBeGreaterThan(20);
+    for (const field of FORBIDDEN_CODE_FIELDS) {
+      expect(rawBlocked).not.toContain(`"${field}"`);
+    }
 
     // ── Step 3: withdraw_proposal ──
     const cancelRes = await callMcpTool("withdraw_proposal", {
@@ -177,8 +202,8 @@ describe("US-4: hard-block, drop blocked section, recommit", () => {
     const commitData = JSON.parse(commitRes.result.content[0].text);
     expect(commitData.status).toBe("committed");
 
-    // ── Step 6: read_live_section — Overview updated, Timeline unchanged ──
-    const readOverview = await callMcpTool("read_live_section", {
+    // ── Step 6: read_published_section — Overview updated, Timeline unchanged ──
+    const readOverview = await callMcpTool("read_published_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Overview"],
     });
@@ -186,7 +211,7 @@ describe("US-4: hard-block, drop blocked section, recommit", () => {
       "Agent-updated overview for US4",
     );
 
-    const readTimeline = await callMcpTool("read_live_section", {
+    const readTimeline = await callMcpTool("read_published_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Timeline"],
     });
@@ -194,15 +219,20 @@ describe("US-4: hard-block, drop blocked section, recommit", () => {
       SAMPLE_SECTIONS.timeline.trim(),
     );
 
-    // ── Step 7: Remove dirty file, create_proposal for Timeline → accepted ──
-    const overlaySectionsDir = join(sessionSectionsContentRoot, `${diskRelative}.sections`);
-    await rm(join(overlaySectionsDir, "timeline.md"), { force: true });
-    // Also remove the overlay skeleton so the dirty file check returns clean
-    await rm(join(sessionSectionsContentRoot, diskRelative), { force: true });
+    // ── Step 7: clear the Timeline block, then recommit Timeline → accepted ──
+    // A backdated human commit to Timeline becomes the newest commit touching the
+    // file but reports an old author timestamp, so its recency score collapses
+    // and the agent write policy stops declining it.
+    await createHumanCommit(
+      ctx.dataCtx.rootDir,
+      SAMPLE_DOC_PATH,
+      "timeline.md",
+      `${SAMPLE_SECTIONS.timeline}\nHuman finished long ago.\n`,
+      24 * 365, // ~1 year ago → score ≈ 0
+    );
 
     const res7 = await callMcpTool("create_proposal", {
       intent: "Now update timeline after human is done",
-      replace: true,
       sections: [
         {
           doc_path: SAMPLE_DOC_PATH,
@@ -214,5 +244,9 @@ describe("US-4: hard-block, drop blocked section, recommit", () => {
 
     const data7 = JSON.parse(res7.result.content[0].text);
     expect(data7.outcome).toBe("accepted");
+    const publish7 = await callMcpTool("publish_proposal", {
+      proposal_id: data7.proposal_id,
+    });
+    expect(JSON.parse(publish7.result.content[0].text).status).toBe("committed");
   });
 });

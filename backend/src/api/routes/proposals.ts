@@ -1,0 +1,334 @@
+import { type Router } from "express";
+import type {
+  CreateProposalRequest,
+  CreateProposalResponse,
+  CommitProposalResponse,
+  WithdrawProposalResponse,
+  AcquireLocksResponse,
+  UpdateProposalRequest,
+  ListProposalsResponse,
+  ReadProposalResponse,
+  ProposalStatus,
+  WsServerEvent,
+} from "../../types/shared.js";
+import {
+  sendApiError,
+  requireAuthenticatedWriter,
+  checkWritePermission,
+} from "./middleware.js";
+import {
+  isProposalStatus,
+  listProposalsForStatusFilter,
+  listMyProposals,
+  readProposalDto,
+  validateCreateProposal,
+  createProposalUseCase,
+  modifyProposalUseCase,
+  acquireLocksUseCase,
+  commitProposalUseCase,
+  cancelProposalUseCase,
+  ProposalNotFoundError,
+  InvalidProposalStateError,
+} from "../application/proposals.js";
+import {
+  emitProposalDraftEventsByDoc,
+  emitProposalInProgressEventsByDoc,
+  emitProposalWithdrawnEventsByDoc,
+  emitContentCommittedEventsByDoc,
+  emitSectionBlockState,
+  groupSectionsByDocPath,
+} from "../application/events.js";
+
+export function registerProposalRoutes(
+  router: Router,
+  onWsEvent: ((event: WsServerEvent) => void) | undefined,
+): void {
+  // POST /api/proposals — Submit proposal
+  router.post("/proposals", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      const body = req.body as CreateProposalRequest;
+
+      // Check write permission for all target documents
+      const targetDocPaths = new Set((body.sections ?? []).map((s) => s.doc_path).filter(Boolean));
+      for (const docPath of targetDocPaths) {
+        const allowed = await checkWritePermission(writer, docPath);
+        if (!allowed) {
+          sendApiError(res, 403, `You do not have permission to write to document "${docPath}".`);
+          return;
+        }
+      }
+
+      const validation = validateCreateProposal(writer.type, body);
+      if (!validation.ok) {
+        sendApiError(res, validation.status, validation.message);
+        return;
+      }
+
+      const replaceFlag = req.query.replace === "true";
+      const outcome = await createProposalUseCase(writer, body, replaceFlag);
+
+      emitProposalDraftEventsByDoc(onWsEvent, outcome.proposalId, writer, outcome.intent, outcome.draftSections);
+
+      const response: CreateProposalResponse = {
+        proposal_id: outcome.proposalId,
+        status: "draft",
+        outcome: outcome.outcome,
+        agentWritePolicy: outcome.agentWritePolicy,
+      };
+      res.status(201).json(response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // GET /api/proposals — List proposals
+  router.get("/proposals", async (req, res, next) => {
+    try {
+      const statusFilterRaw = req.query.status;
+      if (statusFilterRaw !== undefined && !isProposalStatus(statusFilterRaw)) {
+        sendApiError(res, 400, "Invalid status filter.");
+        return;
+      }
+      const statusFilter = isProposalStatus(statusFilterRaw) ? (statusFilterRaw as ProposalStatus) : undefined;
+      const proposals = await listProposalsForStatusFilter(statusFilter);
+      const response: ListProposalsResponse = { proposals };
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // GET /api/my-proposals — List proposals for the authenticated writer only
+  router.get("/my-proposals", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      const statusFilterRaw = req.query.status;
+      if (statusFilterRaw !== undefined && !isProposalStatus(statusFilterRaw)) {
+        sendApiError(res, 400, "Invalid status filter.");
+        return;
+      }
+      const statusFilter = isProposalStatus(statusFilterRaw) ? (statusFilterRaw as ProposalStatus) : undefined;
+      const myProposals = await listMyProposals(writer.id, statusFilter);
+      const response: ListProposalsResponse = { proposals: myProposals };
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // GET /api/proposals/:id — Read proposal
+  router.get("/proposals/:id", async (req, res, next) => {
+    try {
+      const dto = await readProposalDto(req.params.id);
+      const response: ReadProposalResponse = { proposal: dto };
+      res.json(response);
+    } catch (error) {
+      if (error instanceof ProposalNotFoundError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // PUT /api/proposals/:id — Modify proposal sections
+  router.put("/proposals/:id", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      const body = req.body as UpdateProposalRequest;
+      const result = await modifyProposalUseCase(req.params.id, writer, body);
+      if (!result.ok) {
+        sendApiError(res, result.status, result.message);
+        return;
+      }
+
+      // If the proposal no longer targets some docs, clear stale doc-local indicators there.
+      emitProposalWithdrawnEventsByDoc(onWsEvent, result.updated.id, result.removedSections);
+
+      if (result.eventStatus === "inprogress") {
+        emitProposalInProgressEventsByDoc(onWsEvent, result.updated.id, writer, result.intent, result.eventSections);
+      } else {
+        emitProposalDraftEventsByDoc(onWsEvent, result.updated.id, writer, result.intent, result.eventSections);
+      }
+
+      if (result.isHuman) {
+        res.json({ proposal: result.updated, sections: [] });
+        return;
+      }
+      res.json({ proposal: result.updated });
+    } catch (error) {
+      if (error instanceof ProposalNotFoundError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      if (error instanceof InvalidProposalStateError) {
+        sendApiError(res, 409, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // POST /api/proposals/:id/acquire-locks — Transition draft → inprogress
+  router.post("/proposals/:id/acquire-locks", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      const result = await acquireLocksUseCase(req.params.id, writer.id);
+      if (result.kind === "error") {
+        sendApiError(res, result.status, result.message);
+        return;
+      }
+      if (result.kind === "not_acquired") {
+        const response: AcquireLocksResponse = {
+          proposal_id: result.proposalId,
+          acquired: false,
+          message: result.message,
+          conflicts: result.conflicts,
+        };
+        res.json(response);
+        return;
+      }
+
+      const acquiredProposal = result.acquiredProposal;
+      if (acquiredProposal) {
+        emitProposalInProgressEventsByDoc(
+          onWsEvent,
+          acquiredProposal.id,
+          acquiredProposal.writer,
+          acquiredProposal.intent,
+          acquiredProposal.sections,
+        );
+        // MW-5: a competing proposal just acquired an exclusive FSM lock
+        // (draft → inprogress). Every section it now owns is read-only for any
+        // live editor — emit `section:blocked` keyed by fragment_key/heading_path.
+        for (const [docPath, headingPaths] of groupSectionsByDocPath(
+          acquiredProposal.sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+        )) {
+          await emitSectionBlockState(onWsEvent, docPath, headingPaths, "section:blocked");
+        }
+      }
+
+      const response: AcquireLocksResponse = {
+        proposal_id: result.proposalId,
+        acquired: true,
+        status: "inprogress",
+      };
+      res.json(response);
+    } catch (error) {
+      if (error instanceof ProposalNotFoundError) {
+        sendApiError(res, 404, error.message);
+        return;
+      }
+      if (error instanceof InvalidProposalStateError) {
+        sendApiError(res, 409, error.message);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // POST /api/proposals/:id/commit — Commit a proposal
+  router.post("/proposals/:id/commit", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      const result = await commitProposalUseCase(
+        req.params.id,
+        writer,
+        (docPath) => checkWritePermission(writer, docPath),
+      );
+
+      if (result.kind === "error") {
+        sendApiError(res, result.status, result.message);
+        return;
+      }
+      if (result.kind === "blocked") {
+        const response: CommitProposalResponse = {
+          proposal_id: result.proposalId,
+          status: "draft",
+          outcome: "blocked",
+          message: result.agentWritePolicy.message,
+          agentWritePolicy: result.agentWritePolicy,
+        };
+        res.json(response);
+        return;
+      }
+
+      emitContentCommittedEventsByDoc(onWsEvent, writer, [writer.id], result.committedHead, result.sections);
+
+      // MW-5: committing releases the proposal's exclusive FSM lock. The sections
+      // it held are now committed-and-free → emit `section:unblocked`.
+      for (const [docPath, headingPaths] of groupSectionsByDocPath(result.sections)) {
+        await emitSectionBlockState(onWsEvent, docPath, headingPaths, "section:unblocked");
+      }
+
+      const response: CommitProposalResponse = {
+        proposal_id: result.proposalId,
+        status: "committed",
+        outcome: "accepted",
+        committed_head: result.committedHead,
+        agentWritePolicy: result.agentWritePolicy,
+      };
+      res.json(response);
+    } catch (error) {
+      if (error instanceof ProposalNotFoundError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      if (error instanceof InvalidProposalStateError) {
+        sendApiError(res, 409, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // POST /api/proposals/:id/cancel — Withdraw a proposal
+  router.post("/proposals/:id/cancel", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      const reason = req.body?.reason as string | undefined;
+      const result = await cancelProposalUseCase(req.params.id, writer.id, reason);
+      if (result.kind === "error") {
+        sendApiError(res, result.status, result.message);
+        return;
+      }
+
+      emitProposalWithdrawnEventsByDoc(onWsEvent, result.proposalId, result.sections);
+
+      // MW-5: withdrawing releases the proposal's exclusive FSM lock (if it held
+      // one). Any sections it locked return to editable → emit `section:unblocked`.
+      for (const [docPath, headingPaths] of groupSectionsByDocPath(result.sections)) {
+        await emitSectionBlockState(onWsEvent, docPath, headingPaths, "section:unblocked");
+      }
+
+      const response: WithdrawProposalResponse = {
+        proposal_id: result.proposalId,
+        status: "withdrawn",
+      };
+      res.json(response);
+    } catch (error) {
+      if (error instanceof ProposalNotFoundError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      if (error instanceof InvalidProposalStateError) {
+        sendApiError(res, 409, error);
+        return;
+      }
+      next(error);
+    }
+  });
+}

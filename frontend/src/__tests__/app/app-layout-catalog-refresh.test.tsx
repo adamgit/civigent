@@ -30,7 +30,6 @@ vi.mock("../../services/ws-client", () => ({
   KnowledgeStoreWsClient: class {
     connect = vi.fn();
     disconnect = vi.fn();
-    sessionDeparture = vi.fn();
     focusDocument = vi.fn();
     blurDocument = vi.fn();
     focusSection = vi.fn();

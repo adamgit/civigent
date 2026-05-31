@@ -7,9 +7,9 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { importFilesToProposal } from "../../storage/import-service.js";
-import { evaluateProposalHumanInvolvement, commitProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { evaluateAgentWritePolicy, commitProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { readAssembledDocument } from "../../storage/document-reader.js";
-import { SectionRef } from "../../domain/section-ref.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { getContentRoot } from "../../storage/data-root.js";
 import { stat } from "node:fs/promises";
@@ -56,12 +56,8 @@ describe("import → commit → read round-trip", () => {
     );
 
     // Read fresh proposal and commit
-    const { sections } = await evaluateProposalHumanInvolvement(id);
-    const scores: Record<string, number> = {};
-    for (const s of sections) {
-      scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
-    }
-    await commitProposalToCanonical(id, scores);
+    const result = await evaluateAgentWritePolicy(id);
+    await commitProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
 
     // Read from canonical
     const assembled = await readAssembledDocument(docPath);
@@ -96,12 +92,8 @@ describe("import → commit → read round-trip", () => {
       "Test nested import",
     );
 
-    const { sections } = await evaluateProposalHumanInvolvement(id);
-    const scores: Record<string, number> = {};
-    for (const s of sections) {
-      scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
-    }
-    await commitProposalToCanonical(id, scores);
+    const result = await evaluateAgentWritePolicy(id);
+    await commitProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
 
     // Verify skeleton + body files exist on disk
     const contentRoot = getContentRoot();
@@ -146,12 +138,8 @@ describe("import → commit → read round-trip", () => {
       "Test readable import",
     );
 
-    const { sections } = await evaluateProposalHumanInvolvement(id);
-    const scores: Record<string, number> = {};
-    for (const s of sections) {
-      scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
-    }
-    await commitProposalToCanonical(id, scores);
+    const result = await evaluateAgentWritePolicy(id);
+    await commitProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
 
     // Read assembled — should not throw and should contain all content
     const assembled = await readAssembledDocument(docPath);
@@ -183,12 +171,8 @@ describe("import → commit → read round-trip", () => {
       "Test code block import",
     );
 
-    const { sections } = await evaluateProposalHumanInvolvement(id);
-    const scores: Record<string, number> = {};
-    for (const s of sections) {
-      scores[SectionRef.fromTarget(s).globalKey] = s.humanInvolvement_score;
-    }
-    await commitProposalToCanonical(id, scores);
+    const result = await evaluateAgentWritePolicy(id);
+    await commitProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
 
     const assembled = await readAssembledDocument(docPath);
     // The code block should be preserved intact

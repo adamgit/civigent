@@ -6,12 +6,19 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument } from "../helpers/sample-content.js";
 import { importFilesToProposal } from "../../storage/import-service.js";
 import { commitProposalToCanonical } from "../../storage/commit-pipeline.js";
-import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
-import { getContentRoot, getSessionSectionsContentRoot } from "../../storage/data-root.js";
+import { ContentLayer, ProposalShadowContentLayer } from "../../storage/content-layer.js";
+import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
 import { readAssembledDocument } from "../../storage/document-reader.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { readdir, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
+
+// Plain (non-session) scratch overlay root under the temp data root. The former
+// `getSessionSectionsContentRoot()` was removed with MW-7; this test uses an
+// empty overlay only so ProposalShadowContentLayer falls back to canonical.
+function scratchOverlayContentRoot(): string {
+  return join(getDataRoot(), "scratch-overlay", "content");
+}
 
 describe("deeply nested import repro", () => {
   let ctx: TempDataRootContext;
@@ -20,7 +27,7 @@ describe("deeply nested import repro", () => {
   beforeAll(async () => {
     ctx = await createTempDataRoot();
     await createSampleDocument(ctx.rootDir);
-    await mkdir(getSessionSectionsContentRoot(), { recursive: true });
+    await mkdir(scratchOverlayContentRoot(), { recursive: true });
   });
 
   afterAll(async () => {
@@ -71,8 +78,8 @@ describe("deeply nested import repro", () => {
     }
     await commitProposalToCanonical(id, scores);
 
-    const sessionSectionsContentRoot = getSessionSectionsContentRoot();
-    const overlay = new OverlayContentLayer(sessionSectionsContentRoot, getContentRoot());
+    const sessionSectionsContentRoot = scratchOverlayContentRoot();
+    const overlay = new ProposalShadowContentLayer(sessionSectionsContentRoot, getContentRoot());
 
     const allContent = await overlay.readAllSections(docPath);
     expect(allContent.size).toBeGreaterThanOrEqual(5);
@@ -112,8 +119,8 @@ describe("deeply nested import repro", () => {
     await commitProposalToCanonical(id, scores);
 
     const contentRoot = getContentRoot();
-    const sessionSectionsContentRoot = getSessionSectionsContentRoot();
-    const overlay = new OverlayContentLayer(sessionSectionsContentRoot, contentRoot);
+    const sessionSectionsContentRoot = scratchOverlayContentRoot();
+    const overlay = new ProposalShadowContentLayer(sessionSectionsContentRoot, contentRoot);
 
     for (const file of files) {
       const allContent = await overlay.readAllSections(file.docPath);

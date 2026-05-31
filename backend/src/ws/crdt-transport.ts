@@ -3,7 +3,7 @@
  *
  * Owns the per-socket state map and auth checking.
  * No Y.js. No session lookups. No business logic. No per-doc socket tracking.
- * Per-doc socket tracking (docSockets) lives in crdt-coordinator.ts.
+ * Per-doc socket tracking (docSockets) lives in crdt-ws-coordinator.ts.
  */
 
 import type { IncomingMessage } from "node:http";
@@ -18,7 +18,7 @@ import type {
   RequestedMode,
   WriterType,
 } from "../types/shared.js";
-import { WS_CLOSE_AUTH_FAILED, WS_CLOSE_REASON_MAX_LENGTH } from "./crdt-protocol.js";
+import { WS_CLOSE_AUTH_FAILED, WS_CLOSE_REASON_MAX_LENGTH } from "./crdt-ws-frames.js";
 
 // ─── Per-socket state ───────────────────────────────────────────
 

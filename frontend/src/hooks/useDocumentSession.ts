@@ -35,7 +35,6 @@ import {
   CrdtTransport,
   type CrdtTransportOptions,
 } from "../services/crdt-transport";
-import type { SessionOverlayImportedPayload } from "../services/crdt-provider";
 
 export interface UseDocumentSessionOptions {
   /** Stable document path (canonical form, e.g. "/ops/strategy.md"). Passing
@@ -44,13 +43,12 @@ export interface UseDocumentSessionOptions {
   clientInstanceId?: ClientInstanceId;
   initialTransitionRequest?: ModeTransitionRequest;
   /** Hoisted wire-event callbacks. All optional. The store captures
-   *  connection/sync/persistence state on its own — these are for callers
+   *  connection/sync/publication-pause state on its own — these are for callers
    *  that need to react to server-initiated lifecycle transitions. */
-  onIdleTimeout?: () => void;
   onSessionReinit?: () => void;
+  onForceRebuild?: () => void;
   onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
   onModeTransitionResult?: (result: ModeTransitionResult) => void;
-  onSessionOverlayImported?: (payload: SessionOverlayImportedPayload) => void;
 }
 
 export interface DocumentSession {
@@ -70,29 +68,26 @@ export function useDocumentSession(
     docPath,
     clientInstanceId,
     initialTransitionRequest,
-    onIdleTimeout,
     onSessionReinit,
+    onForceRebuild,
     onDocumentReplacementNotice,
     onModeTransitionResult,
-    onSessionOverlayImported,
   } = opts;
 
   // Callbacks captured via ref so changing their identity across re-renders
   // does not tear down the transport. The transport is bound to the
   // *current* ref value through the thin indirection below.
   const callbacksRef = useRef({
-    onIdleTimeout,
     onSessionReinit,
+    onForceRebuild,
     onDocumentReplacementNotice,
     onModeTransitionResult,
-    onSessionOverlayImported,
   });
   callbacksRef.current = {
-    onIdleTimeout,
     onSessionReinit,
+    onForceRebuild,
     onDocumentReplacementNotice,
     onModeTransitionResult,
-    onSessionOverlayImported,
   };
 
   const sessionRef = useRef<DocumentSession | null>(null);
@@ -104,12 +99,10 @@ export function useDocumentSession(
     const transportOpts: CrdtTransportOptions = {
       clientInstanceId,
       initialTransitionRequest,
-      onIdleTimeout: () => callbacksRef.current.onIdleTimeout?.(),
       onSessionReinit: () => callbacksRef.current.onSessionReinit?.(),
+      onForceRebuild: () => callbacksRef.current.onForceRebuild?.(),
       onDocumentReplacementNotice: (p) => callbacksRef.current.onDocumentReplacementNotice?.(p),
       onModeTransitionResult: (r) => callbacksRef.current.onModeTransitionResult?.(r),
-      onSessionOverlayImported: (p) =>
-        callbacksRef.current.onSessionOverlayImported?.(p),
     };
 
     const transport = new CrdtTransport(docPath, transportOpts);

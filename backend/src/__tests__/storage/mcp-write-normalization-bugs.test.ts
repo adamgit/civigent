@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ContentLayer, OverlayContentLayer } from "../../storage/content-layer.js";
+import { ContentLayer, ProposalShadowContentLayer } from "../../storage/content-layer.js";
 import { DocumentSkeleton, serializeSkeletonEntries, type FlatEntry } from "../../storage/document-skeleton.js";
 import { isBodyHolderShape } from "../../storage/section-shape.js";
 import { parseDocumentMarkdown } from "../../storage/markdown-sections.js";
@@ -89,7 +89,7 @@ describe("BUG1 FIXED: upsertDocumentFromMarkdown normalizes multi-section markdo
       "Gamma body content.",
     ].join("\n");
 
-    const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const layer = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     // Per items 307/354 the new primitive returns void; section targets are
     // derived by reading back via listHeadingPaths.
     await layer.upsertDocumentFromMarkdown(docPath, multiSectionMarkdown);
@@ -135,7 +135,7 @@ describe("BUG1b FIXED: Overlay upsertSectionFromMarkdown normalizes multi-headin
   afterAll(async () => { await ctx.cleanup(); });
 
   it("upsertSectionFromMarkdown with multi-heading body auto-splits in overlay", async () => {
-    const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const layer = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     const ref = new SectionRef(docPath, ["Overview"]);
 
     const multiHeadingContent = "## A\nText A.\n\n## B\nText B.\n";
@@ -150,7 +150,7 @@ describe("BUG1b FIXED: Overlay upsertSectionFromMarkdown normalizes multi-headin
   });
 
   it("upsertSectionFromMarkdown with single headed section still works", async () => {
-    const layer = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const layer = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     const ref = new SectionRef(docPath, ["Overview"]);
 
     // Single-section headed markdown should preserve the targeted section.

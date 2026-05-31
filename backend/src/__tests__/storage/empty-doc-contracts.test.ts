@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { OverlayContentLayer } from "../../storage/content-layer.js";
+import { ProposalShadowContentLayer } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 
@@ -15,7 +15,7 @@ describe("Empty document contracts", () => {
   });
 
   it("live-empty doc: getDocumentState returns 'live', getSectionList returns []", async () => {
-    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await overlay.createDocument("/test/empty.md");
     expect(await overlay.getDocumentState("/test/empty.md")).toBe("live");
     const sections = await overlay.getSectionList("/test/empty.md");
@@ -23,7 +23,7 @@ describe("Empty document contracts", () => {
   });
 
   it("doc with only before-first-heading section is valid", async () => {
-    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await overlay.createDocument("/test/bfh-only.md");
     await overlay.upsertSection(new SectionRef("/test/bfh-only.md", []), "", "preamble content");
     expect(await overlay.getDocumentState("/test/bfh-only.md")).toBe("live");
@@ -37,7 +37,7 @@ describe("Empty document contracts", () => {
 
   it("doc remains live after before-first-heading section is removed", async () => {
     const docPath = "/test/bfh-remove.md";
-    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await overlay.createDocument(docPath);
     await overlay.upsertSection(new SectionRef(docPath, []), "", "temp");
     // Verify it exists
@@ -58,7 +58,7 @@ describe("Empty document contracts", () => {
     await mkdir(overlayDir, { recursive: true });
 
     // First, create a doc in canonical via a same-root layer (simulates committed state)
-    const canonical = new OverlayContentLayer(canonicalDir, canonicalDir);
+    const canonical = new ProposalShadowContentLayer(canonicalDir, canonicalDir);
     await canonical.createDocument("/test/to-tombstone.md");
     await canonical.upsertSection(
       new SectionRef("/test/to-tombstone.md", ["Temp"]),
@@ -67,7 +67,7 @@ describe("Empty document contracts", () => {
     );
 
     // Now use an overlay layer: create a live-empty doc, tombstone the existing one
-    const overlay = new OverlayContentLayer(overlayDir, canonicalDir);
+    const overlay = new ProposalShadowContentLayer(overlayDir, canonicalDir);
     await overlay.createDocument("/test/live-empty.md");
     await overlay.tombstoneDocument("/test/to-tombstone.md");
 
@@ -79,7 +79,7 @@ describe("Empty document contracts", () => {
 
   it("upsertSectionFromMarkdown(['Overview']) on empty doc creates only that section (no synthetic bfh)", async () => {
     const docPath = "/test/no-synth-bfh.md";
-    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await overlay.createDocument(docPath);
     await overlay.upsertSection(
       new SectionRef(docPath, ["Overview"]),

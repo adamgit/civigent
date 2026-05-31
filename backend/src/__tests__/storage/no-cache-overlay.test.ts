@@ -1,5 +1,5 @@
 /**
- * Regression tests for the OverlayContentLayer no-cache model (item 213).
+ * Regression tests for the ProposalShadowContentLayer no-cache model (item 213).
  *
  * After item 191 the class no longer holds long-lived writable
  * `DocumentSkeletonInternal` instances across calls. Every method that
@@ -23,14 +23,14 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import {
-  OverlayContentLayer,
+  ProposalShadowContentLayer,
   DocumentNotFoundError,
 } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { resolveTombstonePath } from "../../storage/document-skeleton.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 
-describe("OverlayContentLayer no-cache model (item 213)", () => {
+describe("ProposalShadowContentLayer no-cache model (item 213)", () => {
   let ctx: TempDataRootContext;
   let overlayDir: string;
   let canonicalDir: string;
@@ -51,7 +51,7 @@ describe("OverlayContentLayer no-cache model (item 213)", () => {
   it("createDocument creates a live-empty doc and survives across fresh layer instances", async () => {
     const docPath = "/no-cache/empty.md";
 
-    const writer = new OverlayContentLayer(overlayDir, canonicalDir);
+    const writer = new ProposalShadowContentLayer(overlayDir, canonicalDir);
     await writer.createDocument(docPath);
 
     // Same instance reflects "live"
@@ -60,7 +60,7 @@ describe("OverlayContentLayer no-cache model (item 213)", () => {
     // A second instance against the same overlay/canonical roots also
     // reflects "live" — no class-level cache means no in-process state
     // is required for the answer to be correct.
-    const reader = new OverlayContentLayer(overlayDir, canonicalDir);
+    const reader = new ProposalShadowContentLayer(overlayDir, canonicalDir);
     expect(await reader.getDocumentState(docPath)).toBe("live");
     expect(await reader.getSectionList(docPath)).toHaveLength(0);
   });
@@ -71,7 +71,7 @@ describe("OverlayContentLayer no-cache model (item 213)", () => {
     const docPath = "/no-cache/tombstone-after-load.md";
 
     // Stage a canonical doc
-    const canonical = new OverlayContentLayer(canonicalDir, canonicalDir);
+    const canonical = new ProposalShadowContentLayer(canonicalDir, canonicalDir);
     await canonical.createDocument(docPath);
     await canonical.upsertSection(
       new SectionRef(docPath, ["A"]),
@@ -82,7 +82,7 @@ describe("OverlayContentLayer no-cache model (item 213)", () => {
     // Open an overlay-aware layer and perform a read before the external
     // tombstone lands. The same instance must still reflect the new disk
     // state afterwards.
-    const overlay = new OverlayContentLayer(overlayDir, canonicalDir);
+    const overlay = new ProposalShadowContentLayer(overlayDir, canonicalDir);
     await overlay.getSectionList(docPath);
 
     // Externally write a tombstone to the overlay (simulating another
@@ -103,7 +103,7 @@ describe("OverlayContentLayer no-cache model (item 213)", () => {
     const originalBody = "important canonical content that must survive a rename";
 
     // Stage entirely in canonical, NEVER touch overlay
-    const canonical = new OverlayContentLayer(canonicalDir, canonicalDir);
+    const canonical = new ProposalShadowContentLayer(canonicalDir, canonicalDir);
     await canonical.createDocument(docPath);
     await canonical.upsertSection(
       new SectionRef(docPath, ["OldName"]),
@@ -112,7 +112,7 @@ describe("OverlayContentLayer no-cache model (item 213)", () => {
     );
 
     // Sanity: overlay-aware reader sees the canonical body
-    const overlay = new OverlayContentLayer(overlayDir, canonicalDir);
+    const overlay = new ProposalShadowContentLayer(overlayDir, canonicalDir);
     expect(await overlay.readSection(new SectionRef(docPath, ["OldName"]))).toBe(originalBody);
 
     // Rename the section through the overlay layer. The overlay has no
@@ -134,7 +134,7 @@ describe("OverlayContentLayer no-cache model (item 213)", () => {
     const bBody = "body of section B";
 
     // Stage a two-section doc entirely in canonical
-    const canonical = new OverlayContentLayer(canonicalDir, canonicalDir);
+    const canonical = new ProposalShadowContentLayer(canonicalDir, canonicalDir);
     await canonical.createDocument(docPath);
     await canonical.upsertSection(
       new SectionRef(docPath, ["NewParent"]),
@@ -156,7 +156,7 @@ describe("OverlayContentLayer no-cache model (item 213)", () => {
     // overlay has no body file for A yet — under the pre-fix bug, the
     // raw overlay-path readFile in moveSubtree would have returned "" and
     // the move would silently empty A's body at the destination.
-    const overlay = new OverlayContentLayer(overlayDir, canonicalDir);
+    const overlay = new ProposalShadowContentLayer(overlayDir, canonicalDir);
     await overlay.moveSubtree(docPath, ["A"], ["NewParent"], 2);
 
     // After the move A's body must be preserved at the new location.
@@ -178,7 +178,7 @@ describe("OverlayContentLayer no-cache model (item 213)", () => {
     const docPath = "/no-cache/tombstone-without-cache.md";
 
     // Stage a canonical doc
-    const canonical = new OverlayContentLayer(canonicalDir, canonicalDir);
+    const canonical = new ProposalShadowContentLayer(canonicalDir, canonicalDir);
     await canonical.createDocument(docPath);
     await canonical.upsertSection(
       new SectionRef(docPath, ["X"]),
@@ -187,7 +187,7 @@ describe("OverlayContentLayer no-cache model (item 213)", () => {
     );
 
     // Perform a read through the overlay layer before tombstoning the doc.
-    const overlay = new OverlayContentLayer(overlayDir, canonicalDir);
+    const overlay = new ProposalShadowContentLayer(overlayDir, canonicalDir);
     await overlay.getSectionList(docPath);
 
     // Tombstone the doc through the same instance
@@ -196,7 +196,7 @@ describe("OverlayContentLayer no-cache model (item 213)", () => {
     // The same instance must report "tombstone" with no manual cache
     // invalidation step. A separate fresh instance must agree.
     expect(await overlay.getDocumentState(docPath)).toBe("tombstone");
-    const reader = new OverlayContentLayer(overlayDir, canonicalDir);
+    const reader = new ProposalShadowContentLayer(overlayDir, canonicalDir);
     expect(await reader.getDocumentState(docPath)).toBe("tombstone");
 
     // A follow-up mutating call on the same instance must observe tombstone state.

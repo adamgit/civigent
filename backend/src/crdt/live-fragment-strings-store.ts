@@ -1,14 +1,25 @@
 /**
- * LiveFragmentStringsStore — backend boundary 1 (browser → live CRDT)
+ * LiveFragmentStringsStore — the thin Y.Doc fragment adapter.
  *
- * Owns the live Y.Doc and an ordered list of opaque fragment keys. Runtime
- * code also routes crash-recovery sidecar coordination through this store so
- * settle ownership stays with the live boundary.
+ * Owns the live Y.Doc and an ordered list of opaque fragment keys, and is the
+ * single place that reads/writes per-section Y.XmlFragment content as markdown.
+ * It does NOT own durability (the `inprogress` proposal content tree is the
+ * durable in-flight state — spec 05 §Session Persistence), and it does NOT own
+ * settle/accept/staged-store coordination, ahead-of-staged tracking, raw-fragment
+ * recovery, or any `SERVER_INJECTION_ORIGIN` reinjection semantics — all of which
+ * belonged to the removed `sessions/` mirror.
  *
- * Applies client Yjs updates, tracks which fragment keys have been modified
- * since the staged store last accepted them (aheadOfStaged), and exposes
- * content read/replace primitives used by the boundary-2 acceptance path
- * and by server injection.
+ * Responsibilities that remain:
+ *   - markdown roundtrip: `readFragmentString` / `replaceFragmentString(s)` /
+ *     `replaceAndClearFragmentStrings`
+ *   - `applyClientUpdate`: apply an inbound client Yjs update and report the
+ *     exact set of touched fragment keys (the DocSession actor uses this set as
+ *     the single source of truth for per-section activity attribution)
+ *   - fragment-key validation (`hasFragmentKey` / `getFragmentKeys`)
+ *   - writer attribution (`fragmentWriterIds`) for co-author lists
+ *
+ * Pure markdown/fragment helpers (heading/body composition, fragment-key
+ * derivation) live in `../storage/section-formatting.ts` and `./ydoc-fragments.ts`.
  */
 
 import * as Y from "yjs";
@@ -16,21 +27,13 @@ import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
 import { yDocToProsemirrorJSON, prosemirrorJSONToYDoc } from "y-prosemirror";
 import { getBackendSchema } from "./ydoc-fragments.js";
 import { fragmentFromRemark, type FragmentContent } from "../storage/section-formatting.js";
-import type { SnapshotResult, RawFragmentRecoveryBuffer } from "../storage/raw-fragment-recovery-buffer.js";
-import type { AcceptResult, SettleResult } from "../storage/staged-sections-store.js";
-
-/** Unforgeable symbol stamped on server-authoritative Y.Doc mutations so the
- *  afterTransaction guard suppresses ahead-of-staged marking. */
-export const SERVER_INJECTION_ORIGIN = Symbol("server-injection");
 
 export class LiveFragmentStringsStore {
   readonly ydoc: Y.Doc;
   readonly docPath: string;
 
   private orderedKeys: string[];
-  private readonly aheadOfStagedKeys = new Set<string>();
   private readonly fragmentWriterIds = new Map<string, Set<string>>();
-  private recoveryBuffer: RawFragmentRecoveryBuffer | null = null;
 
   /** Fragment keys touched by the current transaction — populated by the
    *  afterTransaction listener, drained by `applyClientUpdate`. */
@@ -47,7 +50,6 @@ export class LiveFragmentStringsStore {
     this.docPath = docPath;
 
     this.ydoc.on("afterTransaction", (txn: Y.Transaction) => {
-      if (txn.origin === SERVER_INJECTION_ORIGIN) return;
       if (this.ydoc.share.size !== this.lastShareSize) this.rebuildReverseMap();
       for (const [type] of txn.changed) {
         let current: unknown = type;
@@ -57,14 +59,9 @@ export class LiveFragmentStringsStore {
         const name = this.reverseMap.get(current as object);
         if (name) {
           this.touchedThisTransaction.add(name);
-          this.aheadOfStagedKeys.add(name);
         }
       }
     });
-  }
-
-  attachRecoveryBuffer(recoveryBuffer: RawFragmentRecoveryBuffer): void {
-    this.recoveryBuffer = recoveryBuffer;
   }
 
   // ─── Fragment key access ──────────────────────────────────────────
@@ -75,6 +72,29 @@ export class LiveFragmentStringsStore {
 
   hasFragmentKey(fragmentKey: string): boolean {
     return this.orderedKeys.includes(fragmentKey);
+  }
+
+  /** Register a fragment key as known to the adapter (e.g. after a structural
+   *  materialization introduced a new section). Idempotent. */
+  registerFragmentKey(fragmentKey: string): void {
+    if (!this.orderedKeys.includes(fragmentKey)) {
+      this.orderedKeys.push(fragmentKey);
+    }
+  }
+
+  /**
+   * Forget a fragment key the adapter no longer tracks (e.g. structural
+   * reconciliation merged/removed the section it represented). Drops the key
+   * from the ordered key list and its writer-attribution set so subsequent
+   * `getFragmentKeys()` callers (quiescence normalization, co-author lists) no
+   * longer see the dead section. Idempotent. The underlying Y.XmlFragment is
+   * left empty in `ydoc.share` (Y.js has no top-level type deletion); callers
+   * that need it cleared must do so in the same transaction (see
+   * `replaceAndClearFragmentStrings`). */
+  unregisterFragmentKey(fragmentKey: string): void {
+    const idx = this.orderedKeys.indexOf(fragmentKey);
+    if (idx !== -1) this.orderedKeys.splice(idx, 1);
+    this.fragmentWriterIds.delete(fragmentKey);
   }
 
   getWriterIdsForFragment(fragmentKey: string): string[] {
@@ -118,14 +138,53 @@ export class LiveFragmentStringsStore {
     return fragmentFromRemark(jsonToMarkdown(pmJson as Record<string, unknown>));
   }
 
+  /**
+   * Capture the current full Y.Doc state as a binary update (C3-perf). This is a
+   * single O(structs) binary serialization — far cheaper than a markdown
+   * roundtrip per fragment — and lets a caller defer the (expensive) per-fragment
+   * markdown reconstruction to the rare subset it actually needs (e.g. only the
+   * fragments a competing proposal blocked, which must be reverted to their
+   * pre-edit content).
+   */
+  captureState(): Uint8Array {
+    return Y.encodeStateAsUpdate(this.ydoc);
+  }
+
+  /**
+   * Reconstruct the markdown content of specific fragment keys from a previously
+   * `captureState()`-ed snapshot (C3-perf). Builds ONE throwaway Y.Doc from the
+   * snapshot and reads only the requested keys, so the per-fragment markdown
+   * roundtrip is paid only for those keys (not the whole document).
+   */
+  snapshotFragmentContentFromState(
+    state: Uint8Array,
+    fragmentKeys: Iterable<string>,
+  ): Map<string, FragmentContent> {
+    const result = new Map<string, FragmentContent>();
+    const keys = [...fragmentKeys];
+    if (keys.length === 0) return result;
+    const tmp = new Y.Doc();
+    Y.applyUpdate(tmp, state);
+    try {
+      for (const fragmentKey of keys) {
+        const pmJson = yDocToProsemirrorJSON(tmp, fragmentKey);
+        result.set(fragmentKey, fragmentFromRemark(jsonToMarkdown(pmJson as Record<string, unknown>)));
+      }
+    } finally {
+      tmp.destroy();
+    }
+    return result;
+  }
+
   // ─── Content writes ───────────────────────────────────────────────
 
   /**
-   * Replace a single fragment's content. `origin` is an explicit parameter —
-   * pass `SERVER_INJECTION_ORIGIN` to suppress ahead-of-staged tracking for
-   * server-authoritative writes.
+   * Replace a single fragment's content. `origin` is forwarded to the Y.Doc
+   * transaction so callers (e.g. the DocSession actor's structural mutations)
+   * can tag server-authored writes for their own observers.
    */
   replaceFragmentString(fragmentKey: string, content: FragmentContent, origin: unknown = undefined): void {
+    this.registerFragmentKey(fragmentKey);
     this.ydoc.transact(() => {
       const fragment = this.ydoc.getXmlFragment(fragmentKey);
       while (fragment.length > 0) fragment.delete(0, 1);
@@ -152,7 +211,7 @@ export class LiveFragmentStringsStore {
    *
    * Used by the structural-reconciliation path where some fragments must be
    * wiped (because the skeleton entry was removed) while others receive new
-   * content from the fresh overlay state.
+   * content.
    */
   replaceAndClearFragmentStrings(
     writeMap: Map<string, FragmentContent>,
@@ -161,7 +220,10 @@ export class LiveFragmentStringsStore {
   ): void {
     const keysToClear = new Set<string>();
     for (const key of clearKeys) keysToClear.add(key);
-    for (const key of writeMap.keys()) keysToClear.add(key);
+    for (const key of writeMap.keys()) {
+      keysToClear.add(key);
+      this.registerFragmentKey(key);
+    }
     if (keysToClear.size === 0) return;
 
     this.ydoc.transact(() => {
@@ -183,14 +245,14 @@ export class LiveFragmentStringsStore {
     }
   }
 
-  // ─── Boundary-1: client update application ────────────────────────
+  // ─── Client update application ─────────────────────────────────────
 
   /**
-   * Apply a Yjs binary update received from a client. Marks touched fragment
-   * keys ahead-of-staged and returns the exact set of keys the update
-   * affected. The caller (DocSession) uses this return value as the single
-   * source of truth for per-user dirty attribution — it MUST NOT infer scope
-   * from focus or ambient state.
+   * Apply a Yjs binary update received from a client. Returns the exact set of
+   * fragment keys the update affected and records the writer for each touched
+   * key (for co-author attribution). The caller (DocSession actor) uses this
+   * return value as the single source of truth for per-section activity — it
+   * MUST NOT infer scope from focus or ambient state.
    */
   applyClientUpdate(writerId: string, update: Uint8Array, origin: unknown): ReadonlySet<string> {
     this.touchedThisTransaction.clear();
@@ -201,109 +263,6 @@ export class LiveFragmentStringsStore {
     }
     this.touchedThisTransaction.clear();
     return touched;
-  }
-
-  // ─── Boundary-2 tracking (ahead-of-staged) ────────────────────────
-
-  noteAheadOfStaged(fragmentKey: string): void {
-    this.aheadOfStagedKeys.add(fragmentKey);
-  }
-
-  isAheadOfStaged(fragmentKey: string): boolean {
-    return this.aheadOfStagedKeys.has(fragmentKey);
-  }
-
-  getAheadOfStagedKeys(): ReadonlySet<string> {
-    return this.aheadOfStagedKeys;
-  }
-
-  clearAheadOfStaged(fragmentKeys: Iterable<string>): void {
-    for (const key of fragmentKeys) this.aheadOfStagedKeys.delete(key);
-  }
-
-  async snapshotToRecovery(scope: ReadonlySet<string> | "all"): Promise<SnapshotResult> {
-    return await this.requireRecoveryBuffer().snapshotFromLive(this, scope);
-  }
-
-  async listPersistedFragmentKeys(): Promise<string[]> {
-    return await this.requireRecoveryBuffer().listFragmentKeys();
-  }
-
-  async readPersistedFragment(fragmentKey: string): Promise<string | null> {
-    return await this.requireRecoveryBuffer().readFragment(fragmentKey);
-  }
-
-  async settleFragment(
-    stagedSections: {
-      acceptLiveFragments(
-        liveStore: LiveFragmentStringsStore,
-        scope: ReadonlySet<string> | "all",
-      ): Promise<AcceptResult>;
-    },
-    fragmentKey: string,
-  ): Promise<SettleResult> {
-    this.noteAheadOfStaged(fragmentKey);
-
-    const recoveryBuffer = this.requireRecoveryBuffer();
-    const begun = recoveryBuffer.tryBeginSettleWindow(fragmentKey);
-    if (!begun) {
-      return emptySettleResult(false);
-    }
-
-    let settleResult: SettleResult = emptySettleResult(false);
-    try {
-      const result = await stagedSections.acceptLiveFragments(this, new Set([fragmentKey]));
-      this.applyAcceptedFragmentOwnership(fragmentKey, result);
-      settleResult = { ...result, staleOverlay: false };
-    } finally {
-      const { blockedWriteAttempted } = recoveryBuffer.endSettleWindow(fragmentKey);
-      settleResult = { ...settleResult, staleOverlay: blockedWriteAttempted };
-    }
-    return settleResult;
-  }
-
-  async applyAbsorbedFragmentCleanup(
-    stagedSections: {
-      applyAbsorbedFragmentCleanup(fragmentKeys: Iterable<string>): void | Promise<void>;
-    },
-    fragmentKeys: Iterable<string>,
-  ): Promise<void> {
-    const cleanupKeys = [...new Set(fragmentKeys)];
-    await stagedSections.applyAbsorbedFragmentCleanup(cleanupKeys);
-    await this.requireRecoveryBuffer().deleteFragments(cleanupKeys);
-    for (const fragmentKey of cleanupKeys) {
-      this.fragmentWriterIds.delete(fragmentKey);
-    }
-  }
-
-  async resetSessionStores(
-    stagedSections: {
-      _resetForDocPath(): Promise<void>;
-    },
-  ): Promise<void> {
-    await stagedSections._resetForDocPath();
-    await this.requireRecoveryBuffer()._resetForDocPath();
-    this.fragmentWriterIds.clear();
-  }
-
-  private applyAcceptedFragmentOwnership(fragmentKey: string, result: AcceptResult): void {
-    const inheritedWriterIds = new Set<string>();
-    for (const writerId of this.fragmentWriterIds.get(fragmentKey) ?? []) {
-      inheritedWriterIds.add(writerId);
-    }
-    for (const deletedKey of result.deletedKeys) {
-      for (const writerId of this.fragmentWriterIds.get(deletedKey) ?? []) {
-        inheritedWriterIds.add(writerId);
-      }
-    }
-    if (inheritedWriterIds.size === 0) return;
-    for (const writtenKey of result.writtenKeys) {
-      const merged = new Set(this.fragmentWriterIds.get(writtenKey) ?? []);
-      for (const writerId of inheritedWriterIds) {
-        merged.add(writerId);
-      }
-      this.fragmentWriterIds.set(writtenKey, merged);
-    }
   }
 
   private noteWriterForFragment(fragmentKey: string, writerId: string): void {
@@ -324,20 +283,4 @@ export class LiveFragmentStringsStore {
     }
     this.lastShareSize = this.ydoc.share.size;
   }
-
-  private requireRecoveryBuffer(): RawFragmentRecoveryBuffer {
-    if (!this.recoveryBuffer) {
-      throw new Error(`LiveFragmentStringsStore for "${this.docPath}" is missing its recovery buffer attachment.`);
-    }
-    return this.recoveryBuffer;
-  }
-}
-
-function emptySettleResult(staleOverlay: boolean): SettleResult {
-  return {
-    acceptedKeys: new Set(),
-    writtenKeys: [],
-    deletedKeys: [],
-    staleOverlay,
-  };
 }

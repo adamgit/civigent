@@ -197,16 +197,3 @@ export async function resolveAllSectionPaths(
   }
   return result;
 }
-
-/**
- * Read document structure, checking an overlay root first (e.g. sessions/sections/content/).
- * Uses OverlayContentLayer for overlay+canonical skeleton loading.
- */
-export async function readDocumentStructureWithOverlay(
-  docPath: string,
-  overlayRoot: string,
-): Promise<DocStructureNode[]> {
-  const { OverlayContentLayer } = await import("./content-layer.js");
-  const layer = new OverlayContentLayer(overlayRoot, getContentRoot());
-  return layer.getDocumentStructure(docPath);
-}

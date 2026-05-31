@@ -13,7 +13,6 @@ import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpe
 import { CanonicalStore } from "../../storage/canonical-store.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { getHeadSha } from "../../storage/git-repo.js";
-import { getSessionSectionsContentRoot } from "../../storage/data-root.js";
 import { parseSkeletonToEntries, serializeSkeletonEntries } from "../../storage/document-skeleton.js";
 
 const AUTHOR = { name: "Absorb Test", email: "absorb@test.local" };
@@ -210,5 +209,44 @@ describe("A8: Canonical Store (absorb) Invariants", () => {
     const canonical = new ContentLayer(ctx.contentDir);
     const sections = await canonical.readAllSections(SAMPLE_DOC_PATH);
     expect(String(sections.get("Overview") ?? "")).toContain(uniqueMarker);
+  });
+
+  // ── A8.5 ──────────────────────────────────────────────────────────
+
+  it("A8.5: AbsorbResult is a session-free receipt, NOT a live Y.Doc delta contract", async () => {
+    // Area C invariant: absorb() returns commit-result receipts only. It must
+    // not grow Y.Doc rewrite instructions, client/section remap payloads, or any
+    // session/DocSession mapping — the committed delta reaches live Y.Docs via
+    // the CRDTProposalGenerator Y.transact primitive, not via this result.
+    const stagingRoot = await createStagingRoot(SAMPLE_DOC_PATH, {
+      "overview.md": `A8.5 receipt-only ${Date.now()}`,
+    });
+
+    const store = new CanonicalStore(ctx.contentDir, ctx.rootDir);
+    const result = await store.absorbChangedSections(
+      stagingRoot,
+      "test: absorb A8.5 receipt shape",
+      AUTHOR,
+      {
+        absorbedSectionRefs: [{ docPath: SAMPLE_DOC_PATH, headingPath: ["Overview"] }],
+      },
+    );
+
+    // The result shape is exactly the four receipt fields — no Y.Doc delta,
+    // no client remap, no session/DocSession identity.
+    expect(Object.keys(result).sort()).toEqual(
+      ["absorbedSectionRefs", "changedSections", "commitSha", "rewrittenDocumentPaths"],
+    );
+    expect(result).not.toHaveProperty("ydocDelta");
+    expect(result).not.toHaveProperty("yDocDelta");
+    expect(result).not.toHaveProperty("clientRemap");
+    expect(result).not.toHaveProperty("sessionId");
+    expect(result).not.toHaveProperty("docSessionId");
+
+    // Section receipts carry only docPath + headingPath (no fragment keys, no
+    // session-overlay mappings).
+    for (const ref of [...result.absorbedSectionRefs, ...result.changedSections]) {
+      expect(Object.keys(ref).sort()).toEqual(["docPath", "headingPath"]);
+    }
   });
 });

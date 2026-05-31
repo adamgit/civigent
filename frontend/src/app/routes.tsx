@@ -11,7 +11,6 @@ import { PermissionsPage } from "../pages/PermissionsPage";
 import { AgentSimulatorPage } from "../pages/AgentSimulatorPage";
 import { CoordinationPage } from "../pages/CoordinationPage";
 import { LoginPage } from "../pages/LoginPage";
-import { SessionInspectorPage } from "../pages/SessionInspectorPage";
 import { GitHistoryPage } from "../pages/GitHistoryPage";
 import { SetupPage } from "../pages/SetupPage";
 import { FeaturesPage } from "../pages/FeaturesPage";
@@ -39,7 +38,6 @@ export const routeConfig: RouteObject[] = [
       { path: "admin/permissions", element: <PermissionsPage /> },
       { path: "admin/snapshots", element: <SnapshotsPage /> },
       { path: "admin/agent-mcp-logs", element: <AgentMcpLogsPage /> },
-      { path: "session-inspector", element: <SessionInspectorPage /> },
       { path: "history", element: <GitHistoryPage /> },
       { path: "agent-simulator", element: <AgentSimulatorPage /> },
       { path: "coordination", element: <CoordinationPage /> },

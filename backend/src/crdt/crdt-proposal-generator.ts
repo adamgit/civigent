@@ -1,0 +1,664 @@
+/**
+ * CRDTProposalGenerator — the boundary component owning live↔canonical traffic
+ * for one live `DocSession` / document Y.Doc (spec 01-data-primitives §3 Named
+ * components "CRDTProposalGenerator"; spec 10 §One active proposal per
+ * DocSession; spec 05 §Proposal Publication, §Structural Normalization).
+ *
+ * One instance per active `DocSession`. It is instantiated and torn down by the
+ * DocSession actor / YDocLifecycleManager. It does NOT subscribe to the Y.Doc
+ * directly here — the DocSession actor feeds it ordered commands (first-edit /
+ * subsequent-edit materialization, per-section quiescence, publish-trigger
+ * evaluation, publish) so that all Y.Doc/proposal-boundary work is serialized
+ * through the actor's single command lane (spec 10 §DocSession actor ownership).
+ *
+ * State ownership: the latent-proposal model. The generator keeps NO parallel
+ * durable snapshot. The current `inprogress` proposal content tree carries the
+ * in-flight live CRDT activity; on restart/remount the Y.Doc is reconstructable
+ * from it. Durability flows through `ProposalEditor` over `DocumentSkeleton`,
+ * never `sessions/` and never a raw-fragment sidecar (spec 05 §Session
+ * Persistence).
+ *
+ * Y.transact discipline (both directions): every structural mutation of the
+ * Y.Doc — live→canonical normalization and canonical→live deltas — runs inside
+ * a single `Y.transact(...)` so peers/observers see pre- or post-state, never an
+ * intermediate. The expensive compute happens outside the transaction against a
+ * snapshot; only the precomputed delta application runs inside, with a pre-flight
+ * clock check (optimistic concurrency: abort + retry on Y.Doc movement). There
+ * is exactly ONE primitive used in both directions; there is no `reinjection`
+ * path.
+ */
+
+import * as Y from "yjs";
+import type { WriterIdentity, DocSessionId, ProposalId } from "../types/shared.js";
+import type {
+  ProposalSection,
+  InProgressProposal,
+  HumanInvolvementCommittedProposalMetadata,
+} from "../types/shared.js";
+import { ProposalEditor } from "../storage/proposal-editor.js";
+import {
+  getOrCreateInProgressProposalForDocSession,
+  findInProgressProposalForDocSession,
+  updateCurrentProposalSections,
+  unionCurrentProposalSections,
+  rollbackCommittingProposal,
+} from "../storage/proposal-repository.js";
+import { commitProposalToCanonicalDetailed } from "../storage/commit-pipeline.js";
+import type { AbsorbResult } from "../storage/canonical-store.js";
+import type { UpsertSectionFromMarkdownDetailedResult } from "../storage/content-layer.js";
+import type { FlatEntry } from "../storage/document-skeleton.js";
+import { SectionRef } from "../domain/section-ref.js";
+
+/**
+ * One materialized section of the live document, as observed from the live Y.Doc
+ * at materialization time. The DocSession actor produces these from the live
+ * fragment store (Y.Doc → fragment string roundtrip); the generator does not
+ * reach into the Y.Doc fragment layout itself.
+ */
+export interface LiveSectionSnapshot {
+  /** Heading path of this section (empty for the before-first-heading root). */
+  headingPath: string[];
+  /** Leaf heading text (empty string for the before-first-heading root). */
+  heading: string;
+  /** Heading level (0 for the before-first-heading root). */
+  level: number;
+  /** Effective body markdown for the section (no embedded heading line). */
+  body: string;
+  /**
+   * The live Y.Doc fragment key backing this section. Lets the generator scope a
+   * per-edit materialization to ONLY the touched fragments (C4) without
+   * re-resolving the layout.
+   */
+  fragmentKey: string;
+}
+
+/**
+ * Per-edit materialization scope (C4). When present, the materialization write
+ * loop + manifest narrow to ONLY the touched live fragments (plus whatever
+ * ancestors the engine must auto-create), instead of the whole document — so the
+ * live `inprogress` proposal's lock claim grows section-by-section as edited,
+ * rather than locking every section against agents on the first keystroke. Absent
+ * = whole-document materialization (finalize/publish, cross-section move).
+ */
+export interface MaterializeScope {
+  touchedFragmentKeys: string[];
+}
+
+/**
+ * The authoritative structural delta of a materialization, aggregated from each
+ * `ProposalEditor.writeSection`'s `UpsertSectionFromMarkdownDetailedResult` (C4).
+ * It is the SINGLE source of truth for which sections were written/removed and
+ * how live fragment identity remapped — consumed by the manifest sync (and, for
+ * the live Y.Doc reconcile, by the actor) instead of re-deriving via layout
+ * set-diff.
+ */
+export interface MaterializeDelta {
+  writtenEntries: FlatEntry[];
+  removedEntries: FlatEntry[];
+  fragmentKeyRemaps: Array<{ from: string; to: string | null }>;
+  structureChanges: Array<{ oldEntry: FlatEntry; newEntries: FlatEntry[] }>;
+  liveReloadEntries: FlatEntry[];
+}
+
+/**
+ * The live-document view the generator materializes from. Supplied by the
+ * DocSession actor so the generator stays decoupled from the Y.Doc fragment
+ * adapter. `snapshotSections` must reflect the *current, settled* live tree.
+ */
+export interface LiveDocumentSource {
+  /** Ordered current sections of the live document, root-to-leaf in doc order. */
+  snapshotSections(): Promise<LiveSectionSnapshot[]> | LiveSectionSnapshot[];
+  /** Writer ids that have contributed live edits, for co-author attribution. */
+  contributingWriterIds?(): Iterable<string>;
+}
+
+export interface CRDTProposalGeneratorOptions {
+  docPath: string;
+  docSessionId: DocSessionId;
+  /** Identity recorded as the proposal writer (the DocSession owner). */
+  writer: WriterIdentity;
+  /** The live-document materialization source owned by the DocSession actor. */
+  source: LiveDocumentSource;
+  /**
+   * Committed-metadata builder for the proposal commit. Defaults to a minimal
+   * DocSession metadata stub; the actor may supply richer authorship/HI data.
+   */
+  buildCommittedMetadata?: (proposal: InProgressProposal) => HumanInvolvementCommittedProposalMetadata;
+  /** Override the default publish-trigger policy (e.g. demand-gated tuning). */
+  publishTriggerPolicy?: PublishTriggerPolicy;
+  /**
+   * Adopt an existing `inprogress` proposal at construction time (spec 10 §One
+   * active proposal per DocSession; C1 recovery path). When a DocSession is
+   * reconstructed for a document that already has a durable `inprogress`
+   * proposal, the actor passes that proposal's id here so the generator's first
+   * materialization resolves to the SAME proposal instead of forking a second
+   * one via `ensureCurrentProposal`.
+   */
+  initialProposalId?: ProposalId;
+}
+
+/**
+ * Inputs the DocSession actor provides for a publish-trigger decision. These are
+ * the actor-observed session boundaries from spec 10 §Default publish-trigger
+ * policy — the policy itself is pure (no timers, no Y.Doc access).
+ */
+export interface PublishTriggerSignals {
+  /**
+   * Rule 1: a forced canonical operation (restore, admin rebuild, shutdown)
+   * requires the live document to be preserved into canonical before
+   * proceeding. Publish-or-abort.
+   */
+  forcedCanonicalOperation: boolean;
+  /** Rule 2: the last editor socket for the DocSession has disconnected. */
+  lastEditorLeft: boolean;
+  /** There is at least one materialized edit (a current `inprogress` proposal). */
+  hasCurrentProposal: boolean;
+  /**
+   * Rule 3 prerequisites (settled dirty frontier). ALL must hold:
+   *  - the actor has processed every inbound Yjs update already received
+   *  - no paste/drop/undo-redo burst/IME composition/programmatic command or
+   *    structural normalization is in progress
+   *  - no section topology change from the current proposal is still being
+   *    normalized or followed by adjacent structural edits
+   *  - users have moved out of the changed section-set (or are only viewing)
+   *  - collaborators are not actively mutating the changed/adjacent section-set
+   */
+  allInboundUpdatesProcessed: boolean;
+  noBurstOrCompositionInProgress: boolean;
+  noTopologyChangeInFlight: boolean;
+  usersLeftChangedSections: boolean;
+  noCollaboratorMutatingChangedSet: boolean;
+}
+
+/** The publish-trigger decision and the rule that fired (for audit/telemetry). */
+export interface PublishTriggerDecision {
+  shouldPublish: boolean;
+  rule: "forced-canonical-op" | "last-editor-left" | "settled-dirty-frontier" | "none";
+}
+
+/**
+ * Default rule-ordered publish-trigger policy (spec 10 §Default publish-trigger
+ * policy). Deterministic, based on observed session boundaries, NOT a freshness
+ * timer. Absorbs the idle/quiescence baseline that previously lived in
+ * `session-quiescence-policy.ts`: a section is "quiet" when no CRDT activity has
+ * touched it for the configured threshold, and that quietness is one of the
+ * inputs the actor folds into `noBurstOrCompositionInProgress` /
+ * `usersLeftChangedSections`.
+ *
+ * There is deliberately no maximum-age / freshness cap. A proposal is never
+ * published merely because time passed.
+ */
+export class PublishTriggerPolicy {
+  /**
+   * The per-section CRDT-activity quiescence threshold (spec 05 §Structural
+   * Normalization "1–3 seconds"). A tuning parameter owned by this policy.
+   */
+  readonly quiescenceThresholdMs: number;
+
+  constructor(opts: { quiescenceThresholdMs?: number } = {}) {
+    this.quiescenceThresholdMs = opts.quiescenceThresholdMs ?? 2_000;
+  }
+
+  /** True when a fragment has had no CRDT activity for the quiescence threshold. */
+  isFragmentQuiescent(lastActivityMs: number, nowMs = Date.now()): boolean {
+    return nowMs - lastActivityMs >= this.quiescenceThresholdMs;
+  }
+
+  /**
+   * Evaluate the rule-ordered policy. The first applicable rule fires.
+   *
+   * Rule 1 (forced canonical op) fires even with no current proposal: a forced
+   * operation must establish the publish pause and publish-or-abort regardless,
+   * so the caller can preserve / abort. Rules 2 and 3 require a current proposal
+   * (there is nothing to publish otherwise).
+   *
+   * The settled-dirty-frontier rule is intentionally conservative: it requires
+   * the actor to have PROVEN that earlier socket updates have reached it
+   * (`allInboundUpdatesProcessed`). The operational proof — freezing editors and
+   * collecting ordered `doc_publish_ready` acks — is the publish pause itself;
+   * this rule only decides whether it is safe to START that pause.
+   */
+  evaluate(signals: PublishTriggerSignals): PublishTriggerDecision {
+    if (signals.forcedCanonicalOperation) {
+      return { shouldPublish: true, rule: "forced-canonical-op" };
+    }
+    if (!signals.hasCurrentProposal) {
+      return { shouldPublish: false, rule: "none" };
+    }
+    if (signals.lastEditorLeft) {
+      return { shouldPublish: true, rule: "last-editor-left" };
+    }
+    const settled =
+      signals.allInboundUpdatesProcessed
+      && signals.noBurstOrCompositionInProgress
+      && signals.noTopologyChangeInFlight
+      && signals.usersLeftChangedSections
+      && signals.noCollaboratorMutatingChangedSet;
+    if (settled) {
+      return { shouldPublish: true, rule: "settled-dirty-frontier" };
+    }
+    return { shouldPublish: false, rule: "none" };
+  }
+}
+
+/** Result of a publish attempt driven through the DocSession publish pause. */
+export interface PublishResult {
+  status: "committed" | "failed-returned-to-inprogress" | "noop-no-proposal";
+  proposalId?: ProposalId;
+  commitSha?: string;
+  absorbResult?: AbsorbResult;
+  error?: unknown;
+}
+
+export class CRDTProposalGenerator {
+  readonly docPath: string;
+  readonly docSessionId: DocSessionId;
+  private readonly writer: WriterIdentity;
+  private readonly source: LiveDocumentSource;
+  private readonly buildCommittedMetadata?: (proposal: InProgressProposal) => HumanInvolvementCommittedProposalMetadata;
+  /** Publish-trigger policy owned by this generator (spec 10). */
+  readonly publishTriggerPolicy: PublishTriggerPolicy;
+
+  /**
+   * The DocSession actor's current-proposal reference. `null` until the first
+   * materialized edit lazily creates the single `inprogress` proposal, and
+   * cleared again only by a successful publish (spec 10 §One active proposal).
+   */
+  private currentProposalId: ProposalId | null = null;
+
+  constructor(opts: CRDTProposalGeneratorOptions) {
+    this.docPath = opts.docPath;
+    this.docSessionId = opts.docSessionId;
+    this.writer = opts.writer;
+    this.source = opts.source;
+    this.buildCommittedMetadata = opts.buildCommittedMetadata;
+    this.publishTriggerPolicy = opts.publishTriggerPolicy ?? new PublishTriggerPolicy();
+    this.currentProposalId = opts.initialProposalId ?? null;
+  }
+
+  /**
+   * Evaluate the rule-ordered publish-trigger policy against actor-observed
+   * session signals (spec 10 §Default publish-trigger policy). `hasCurrentProposal`
+   * is supplied from this generator's own state so callers cannot disagree with it.
+   */
+  evaluatePublishTrigger(
+    signals: Omit<PublishTriggerSignals, "hasCurrentProposal">,
+  ): PublishTriggerDecision {
+    return this.publishTriggerPolicy.evaluate({
+      ...signals,
+      hasCurrentProposal: this.hasCurrentProposal(),
+    });
+  }
+
+  /**
+   * The current `inprogress` proposal id, or null before the first edit / after
+   * a successful publish. No side-effects (spec 10: zero-edit session has no
+   * proposal).
+   */
+  getCurrentProposalId(): ProposalId | null {
+    return this.currentProposalId;
+  }
+
+  /** True once a proposal has been lazily created and not yet published. */
+  hasCurrentProposal(): boolean {
+    return this.currentProposalId !== null;
+  }
+
+  // ─── Lazy first-edit + subsequent-edit materialization ────────────
+
+  /**
+   * Materialize the current live document into the DocSession's single
+   * `inprogress` proposal content tree.
+   *
+   * On the FIRST materialized edit (no current proposal), this lazily creates
+   * the one `inprogress` proposal for the DocSession via the repository helper,
+   * caches its id, and materializes the edit into it. Subsequent calls
+   * materialize into the SAME proposal until a successful publish clears the
+   * reference (spec 10 §One active proposal per DocSession; spec 01 First-edit
+   * and materialization path).
+   *
+   * Returns the proposal id the edit was materialized into.
+   */
+  async materializeEdit(scope?: MaterializeScope): Promise<ProposalId> {
+    const proposalId = await this.ensureCurrentProposal();
+    await this.materializeIntoProposal(proposalId, scope);
+    return proposalId;
+  }
+
+  /**
+   * As {@link materializeEdit} but ALSO returns the aggregated engine structural
+   * delta (C4), so the DocSession actor can drive the live Y.Doc reconcile from
+   * the authoritative remaps/structureChanges rather than re-deriving them.
+   */
+  async materializeEditDetailed(
+    scope?: MaterializeScope,
+  ): Promise<{ proposalId: ProposalId; delta: MaterializeDelta }> {
+    const proposalId = await this.ensureCurrentProposal();
+    const delta = await this.materializeIntoProposal(proposalId, scope);
+    return { proposalId, delta };
+  }
+
+  /**
+   * Ensure the DocSession owns its single `inprogress` proposal, creating it
+   * lazily if needed. Idempotent and one-active-proposal-safe: a second call
+   * (or a concurrent DocSession lookup) returns the same proposal because the
+   * repository helper keys on DocSession identity and enforces the invariant.
+   */
+  async ensureCurrentProposal(): Promise<ProposalId> {
+    if (this.currentProposalId !== null) return this.currentProposalId;
+
+    const created = await getOrCreateInProgressProposalForDocSession({
+      docSessionId: this.docSessionId,
+      docPath: this.docPath,
+      writer: this.writer,
+    });
+    this.currentProposalId = created.id;
+    return created.id;
+  }
+
+  /**
+   * Write the live document into the proposal content tree through
+   * `ProposalEditor` over `DocumentSkeleton`, then update the proposal's section
+   * manifest. When `scope` is present (per-edit path, C4) ONLY the touched
+   * fragments are written and the manifest grows MONOTONICALLY by the engine's
+   * written/removed entries; when absent (finalize/publish) the WHOLE document is
+   * materialized and the manifest is replaced with the full section set. Returns
+   * the aggregated engine structural delta.
+   */
+  private async materializeIntoProposal(
+    proposalId: ProposalId,
+    scope?: MaterializeScope,
+  ): Promise<MaterializeDelta> {
+    const sections = await this.source.snapshotSections();
+    const editor = ProposalEditor.open(proposalId, "inprogress");
+
+    // Narrow the WRITE LOOP to the touched fragments for the per-edit path; the
+    // snapshot itself stays whole-document (reads are cheap, identity is needed).
+    const toWrite = scope
+      ? sections.filter((s) => scope.touchedFragmentKeys.includes(s.fragmentKey))
+      : sections;
+
+    const delta: MaterializeDelta = {
+      writtenEntries: [],
+      removedEntries: [],
+      fragmentKeyRemaps: [],
+      structureChanges: [],
+      liveReloadEntries: [],
+    };
+
+    // Materialize each (in-scope) live section into the proposal content tree.
+    // ProposalEditor atomically auto-creates the document, missing leaf heading,
+    // and ancestors. Aggregate the authoritative engine delta across the loop.
+    for (const section of toWrite) {
+      const result = await editor.writeSection(
+        this.docPath,
+        section.headingPath,
+        section.heading,
+        section.body,
+      );
+      this.accumulateDelta(delta, result);
+    }
+
+    if (scope) {
+      await this.growProposalManifest(proposalId, delta);
+    } else {
+      await this.replaceProposalManifest(proposalId, sections);
+    }
+    return delta;
+  }
+
+  /** Union one engine write result into the running aggregate delta. */
+  private accumulateDelta(delta: MaterializeDelta, result: UpsertSectionFromMarkdownDetailedResult): void {
+    delta.writtenEntries.push(...result.writtenEntries);
+    delta.removedEntries.push(...result.removedEntries);
+    delta.fragmentKeyRemaps.push(...result.fragmentKeyRemaps);
+    delta.structureChanges.push(...result.structureChanges);
+    delta.liveReloadEntries.push(...result.liveReloadEntries);
+  }
+
+  /**
+   * Per-edit manifest growth (C4): UNION the heading paths the engine actually
+   * WROTE (body-bearing entries only) into the proposal's existing section claim,
+   * and DROP the heading paths it REMOVED (a structural merge folds a section
+   * away). This keeps the live proposal locking only the edited section-set.
+   */
+  private async growProposalManifest(proposalId: ProposalId, delta: MaterializeDelta): Promise<void> {
+    const add = this.dedupSections(
+      delta.writtenEntries
+        .filter((e) => !e.isSubSkeleton)
+        .map((e) => ({ doc_path: this.docPath, heading_path: [...e.headingPath] })),
+    );
+    const remove = this.dedupSections(
+      delta.removedEntries.map((e) => ({ doc_path: this.docPath, heading_path: [...e.headingPath] })),
+    );
+    await unionCurrentProposalSections(proposalId, add, remove);
+  }
+
+  /** Whole-document manifest (finalize/publish): replace with the full section set. */
+  private async replaceProposalManifest(proposalId: ProposalId, sections: LiveSectionSnapshot[]): Promise<void> {
+    const manifest = this.dedupSections(
+      sections.map((section) => ({ doc_path: this.docPath, heading_path: [...section.headingPath] })),
+    );
+    await updateCurrentProposalSections(proposalId, manifest);
+  }
+
+  private dedupSections(sections: ProposalSection[]): ProposalSection[] {
+    const seen = new Set<string>();
+    const out: ProposalSection[] = [];
+    for (const section of sections) {
+      const key = SectionRef.headingKey(section.heading_path);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(section);
+    }
+    return out;
+  }
+
+  // ─── Structural normalization (per-section quiescence) ─────────────
+
+  /**
+   * Normalize the live Y.Doc structure for a quiesced section: resolve embedded
+   * headings, heading deletions, and heading-level changes (spec 05 §Structural
+   * Normalization (driven by CRDTProposalGenerator)).
+   *
+   * The trigger is per-section CRDT-activity quiescence detected by the actor's
+   * observation surface — NOT a 60s timer, NOT MSG_SECTION_FOCUS, NOT
+   * session-end. The mutation runs inside the shared `Y.transact` primitive with
+   * compute-outside / apply-inside discipline and a pre-flight clock check.
+   *
+   * `computeDelta` runs OUTSIDE the transaction against a fresh snapshot and
+   * returns the precomputed structural delta to apply, or null when the section
+   * is already normalized (no-op). `applyDelta` runs INSIDE the transaction.
+   */
+  async normalizeQuiescedSection<TDelta>(
+    ydoc: Y.Doc,
+    affectedFragmentKeys: readonly string[],
+    computeDelta: () => Promise<TDelta | null> | TDelta | null,
+    applyDelta: (delta: TDelta) => void,
+  ): Promise<{ applied: boolean }> {
+    return this.runIdentityPreservingTransaction(
+      ydoc,
+      affectedFragmentKeys,
+      computeDelta,
+      applyDelta,
+    );
+  }
+
+  /**
+   * Bootstrap an empty document's live Y.Doc with a synthetic before-first-heading
+   * fragment so the first edit has a section to land in (salvaged empty-doc BFH
+   * bootstrap, formerly in the session-acquire path). Caller supplies the seed
+   * applier; this only enforces the Y.transact discipline.
+   */
+  bootstrapEmptyDocument(ydoc: Y.Doc, seed: () => void): void {
+    ydoc.transact(seed);
+  }
+
+  // ─── Shared Y.transact primitive (both directions) ────────────────
+
+  /**
+   * The single Y.transact-based mutation primitive used by BOTH directions —
+   * live→canonical structural normalization and canonical→live committed deltas
+   * (spec 01 "One primitive, both directions"; spec 05 §Structural
+   * Normalization). Expensive compute runs outside the transaction; only the
+   * precomputed delta application runs inside, guarded by a pre-flight clock
+   * check that aborts+retries if the Y.Doc moved between snapshot and apply.
+   *
+   * @param ydoc the live Y.Doc
+   * @param affectedFragmentKeys fragment keys the delta touches (for the
+   *   pre-flight clock check)
+   * @param computeDelta precompute against a snapshot, OUTSIDE the transaction
+   * @param applyDelta apply the precomputed delta, INSIDE the transaction
+   * @param maxRetries optimistic-concurrency retry budget
+   */
+  private async runIdentityPreservingTransaction<TDelta>(
+    ydoc: Y.Doc,
+    affectedFragmentKeys: readonly string[],
+    computeDelta: () => Promise<TDelta | null> | TDelta | null,
+    applyDelta: (delta: TDelta) => void,
+    maxRetries = 3,
+  ): Promise<{ applied: boolean }> {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // Snapshot the affected fragments' state vector BEFORE computing the delta.
+      const preStateVector = this.fragmentClock(ydoc, affectedFragmentKeys);
+
+      const delta = await computeDelta();
+      if (delta === null) return { applied: false };
+
+      let applied = false;
+      ydoc.transact(() => {
+        // Pre-flight clock check: if any affected fragment moved between snapshot
+        // and transaction open, abort this attempt and retry with a fresh snapshot.
+        const nowVector = this.fragmentClock(ydoc, affectedFragmentKeys);
+        if (nowVector !== preStateVector) {
+          return; // leaves `applied` false → outer loop retries
+        }
+        applyDelta(delta);
+        applied = true;
+      });
+
+      if (applied) return { applied: true };
+    }
+    // Exhausted retries — the section kept moving; leave it for the next
+    // quiescence trigger rather than forcing a non-atomic write.
+    return { applied: false };
+  }
+
+  /**
+   * Compute a cheap fingerprint of the affected fragments' Yjs clocks, used as
+   * the optimistic-concurrency pre-flight check. Any client edit to an affected
+   * fragment advances its clock, so a mismatch means the Y.Doc moved.
+   */
+  private fragmentClock(ydoc: Y.Doc, affectedFragmentKeys: readonly string[]): string {
+    const sv = Y.encodeStateVector(ydoc);
+    // The full state vector is sufficient: any update to any fragment advances
+    // it. We keep it scoped-by-key in the signature so a future, finer-grained
+    // implementation can narrow the check without changing callers.
+    void affectedFragmentKeys;
+    return Buffer.from(sv).toString("base64");
+  }
+
+  // ─── Final materialization + commit (publish) ─────────────────────
+
+  /**
+   * Perform final materialization of the live Y.Doc into the current proposal
+   * and commit it to canonical (spec 05 §Proposal Publication; spec 10
+   * §DocSession publish pause steps 8–12). This MUST be called by the DocSession
+   * actor only after the publish pause is established and every required editor
+   * socket has acknowledged readiness — the generator does not own the pause
+   * FSM (that is the DocSession actor's responsibility).
+   *
+   * On success the current-proposal reference is cleared so the next edit
+   * lazily creates the next `inprogress` proposal. On failure the proposal is
+   * returned to `inprogress` (kept as the DocSession current proposal) and the
+   * reference is retained so editing resumes into the same proposal (spec 10
+   * §Publish failure handling).
+   */
+  async finalizeAndPublish(): Promise<PublishResult> {
+    if (this.currentProposalId === null) {
+      return { status: "noop-no-proposal" };
+    }
+    const proposalId = this.currentProposalId;
+
+    // Final materialization from the live Y.Doc into the current proposal.
+    try {
+      await this.materializeIntoProposal(proposalId);
+    } catch (error) {
+      // Abort before `committing` — keep the existing inprogress proposal as the
+      // current proposal and resume editing (spec 10 §Publish failure handling).
+      return { status: "failed-returned-to-inprogress", proposalId, error };
+    }
+
+    const proposal = await findInProgressProposalForDocSession(this.docSessionId);
+    if (!proposal) {
+      // The proposal vanished from under us (e.g. concurrent admin op). Treat as
+      // a no-op publish rather than committing stale state.
+      this.currentProposalId = null;
+      return { status: "noop-no-proposal" };
+    }
+
+    const committedMetadata: HumanInvolvementCommittedProposalMetadata =
+      this.buildCommittedMetadata ? this.buildCommittedMetadata(proposal) : {};
+
+    try {
+      const absorbResult = await commitProposalToCanonicalDetailed(
+        proposalId,
+        committedMetadata,
+        undefined,
+        // DocSession caller context: a runtime publish failure returns the
+        // proposal to `inprogress` (kept as the DocSession current proposal),
+        // NOT `draft` (spec 02 › Why `committing`). The pipeline owns this
+        // rollback via `ownerKind`; the catch below is a defensive fallback.
+        { ownerKind: "docsession" },
+      );
+      // Successful commit clears the current-proposal reference; the next edit
+      // lazily creates the next inprogress proposal.
+      this.currentProposalId = null;
+      return {
+        status: "committed",
+        proposalId,
+        commitSha: absorbResult.commitSha,
+        absorbResult,
+      };
+    } catch (error) {
+      // Runtime commit failure: the pipeline already rolled the proposal back to
+      // `inprogress` via `ownerKind: "docsession"`. This is a defensive fallback
+      // for the case the pipeline failed BEFORE its own rollback ran (e.g.
+      // `transitionToCommitting` itself threw after a partial rename); it is a
+      // best-effort no-op when the proposal is already back at `inprogress`.
+      try {
+        await rollbackCommittingProposal(proposalId, "docsession");
+      } catch {
+        // Already rolled back (proposal not in `committing`) — expected.
+      }
+      // Keep currentProposalId pointing at the same proposal.
+      return { status: "failed-returned-to-inprogress", proposalId, error };
+    }
+  }
+
+  /**
+   * Apply a committed canonical delta back into the live Y.Doc through the
+   * shared Y.transact primitive (spec 01 "One primitive, both directions"; spec
+   * 05 §Proposal Publication: agent/human deltas still apply back into any
+   * active live Y.Doc). This is the generator's responsibility, explicitly NOT a
+   * `canonical-store` responsibility (Area C boundary): `canonical-store` only
+   * produces the `AbsorbResult`; translating it into a live Y.Doc delta lives
+   * here.
+   *
+   * `computeDelta` builds the precomputed delta from the committed canonical
+   * state OUTSIDE the transaction; `applyDelta` applies it INSIDE.
+   */
+  async applyCanonicalDeltaToLive<TDelta>(
+    ydoc: Y.Doc,
+    affectedFragmentKeys: readonly string[],
+    computeDelta: () => Promise<TDelta | null> | TDelta | null,
+    applyDelta: (delta: TDelta) => void,
+  ): Promise<{ applied: boolean }> {
+    return this.runIdentityPreservingTransaction(
+      ydoc,
+      affectedFragmentKeys,
+      computeDelta,
+      applyDelta,
+    );
+  }
+}

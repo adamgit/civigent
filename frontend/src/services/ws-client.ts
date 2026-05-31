@@ -226,7 +226,6 @@ class BroadcastFallbackTransport implements CrossTabTransport {
   private reconnectTimer: number | null = null;
   private appliedSubscriptions = new Set<string>();
   private appliedFocusedDocPath: string | null | undefined = undefined;
-  private appliedFocusedSection: { docPath: string; headingPath: string[] } | null | undefined = undefined;
   private state: TabState = {
     subscriptions: [],
     focusedDocPath: null,
@@ -365,7 +364,6 @@ class BroadcastFallbackTransport implements CrossTabTransport {
     }
     this.appliedSubscriptions = new Set<string>();
     this.appliedFocusedDocPath = undefined;
-    this.appliedFocusedSection = undefined;
   }
 
   private connectLeaderSocket(): void {
@@ -380,7 +378,6 @@ class BroadcastFallbackTransport implements CrossTabTransport {
       this.reconnectDelayMs = 1000;
       this.appliedSubscriptions = new Set<string>();
       this.appliedFocusedDocPath = undefined;
-      this.appliedFocusedSection = undefined;
       this.syncLeaderSessionState();
       recordWsDiag({
         source: "ws-lifecycle",
@@ -489,35 +486,10 @@ class BroadcastFallbackTransport implements CrossTabTransport {
     }
     this.appliedSubscriptions = desired.subscriptions;
 
-    const appliedSectionKey = this.appliedFocusedSection
-      ? `${this.appliedFocusedSection.docPath}\u001f${this.appliedFocusedSection.headingPath.join("\u001f")}`
-      : null;
-    const desiredSectionKey = desired.focusedSection
-      ? `${desired.focusedSection.docPath}\u001f${desired.focusedSection.headingPath.join("\u001f")}`
-      : null;
-
-    if (appliedSectionKey !== desiredSectionKey) {
-      if (desired.focusedSection) {
-        this.ws.send(
-          JSON.stringify({
-            type: "section_focus",
-            doc_path: desired.focusedSection.docPath,
-            heading_path: desired.focusedSection.headingPath,
-          }),
-        );
-      } else if (this.appliedFocusedSection) {
-        this.ws.send(
-          JSON.stringify({
-            type: "section_blur",
-            doc_path: this.appliedFocusedSection.docPath,
-            heading_path: this.appliedFocusedSection.headingPath,
-          }),
-        );
-      }
-      this.appliedFocusedSection = desired.focusedSection;
-    }
-
-    if (!desired.focusedSection && this.appliedFocusedDocPath !== desired.focusedDocPath) {
+    // Document-level focus/blur is the only retained focus signal on the JSON
+    // application socket. The former section_focus/section_blur frames were
+    // removed (MW-13): the hub never consumed them (spec 06 §6).
+    if (this.appliedFocusedDocPath !== desired.focusedDocPath) {
       if (desired.focusedDocPath) {
         this.ws.send(
           JSON.stringify({
@@ -528,8 +500,6 @@ class BroadcastFallbackTransport implements CrossTabTransport {
       } else {
         this.ws.send(JSON.stringify({ type: "document_blur" }));
       }
-      this.appliedFocusedDocPath = desired.focusedDocPath;
-    } else if (desired.focusedSection) {
       this.appliedFocusedDocPath = desired.focusedDocPath;
     }
   }
@@ -708,40 +678,8 @@ class SessionWsManager {
     this.pushTabState();
   }
 
-  focusSection(docPath: string, headingPath: string[]): void {
-    const normalizedDoc = docPath.trim();
-    const normalizedHeading = headingPath.map((segment) => segment.trim()).filter(Boolean);
-    if (!normalizedDoc || normalizedHeading.length === 0) {
-      return;
-    }
-    this.focusedDocPath = normalizedDoc;
-    this.focusedSection = {
-      docPath: normalizedDoc,
-      headingPath: normalizedHeading,
-    };
-    this.pushTabState();
-  }
-
   blurDocument(docPath?: string): void {
     if (docPath && this.focusedDocPath && this.focusedDocPath !== docPath) {
-      return;
-    }
-    this.focusedDocPath = null;
-    this.focusedSection = null;
-    this.pushTabState();
-  }
-
-  blurSection(docPath: string, headingPath: string[]): void {
-    const normalizedDoc = docPath.trim();
-    const normalizedHeading = headingPath.map((segment) => segment.trim()).filter(Boolean);
-    if (!normalizedDoc || normalizedHeading.length === 0) {
-      return;
-    }
-    if (
-      !this.focusedSection
-      || this.focusedSection.docPath !== normalizedDoc
-      || JSON.stringify(this.focusedSection.headingPath) !== JSON.stringify(normalizedHeading)
-    ) {
       return;
     }
     this.focusedDocPath = null;
@@ -867,21 +805,6 @@ export class KnowledgeStoreWsClient {
 
   blurDocument(docPath?: string): void {
     this.manager.blurDocument(docPath);
-  }
-
-  focusSection(docPath: string, headingPath: string[]): void {
-    this.manager.focusSection(docPath, headingPath);
-  }
-
-  blurSection(docPath: string, headingPath: string[]): void {
-    this.manager.blurSection(docPath, headingPath);
-  }
-
-  sessionDeparture(docPath: string): void {
-    this.manager.sendClientMessage({
-      action: "session_departure",
-      doc_path: docPath,
-    });
   }
 
   disconnect(): void {

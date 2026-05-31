@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DocumentSkeleton, DocumentSkeletonInternal, type FlatEntry } from "../../storage/document-skeleton.js";
-import { OverlayContentLayer } from "../../storage/content-layer.js";
+import { ProposalShadowContentLayer } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
@@ -63,10 +63,10 @@ describe("DocumentSkeleton", () => {
   });
 
   it("inMemoryEmpty creates valid skeleton with zero sections", async () => {
-    // Use the OverlayContentLayer.createDocument(...) explicit operation rather
+    // Use the ProposalShadowContentLayer.createDocument(...) explicit operation rather
     // than the deleted skeleton.persistInternal() primitive — this is the
     // sanctioned path for materializing a live-empty doc in the overlay.
-    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await overlay.createDocument("new-doc.md");
     const skeleton = await DocumentSkeleton.fromDisk("new-doc.md", ctx.contentDir, ctx.contentDir);
     expect(skeleton.docPath).toBe("new-doc.md");
@@ -79,7 +79,7 @@ describe("DocumentSkeleton", () => {
     // Use the public markdown-upsert path rather than any DSInternal
     // structural primitive — caller-facing mutation belongs on the storage
     // layer, not on DocumentSkeletonInternal.
-    const overlay = new OverlayContentLayer(ctx.contentDir, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await overlay.createDocument("persist-test.md");
     await overlay.upsertSection(
       new SectionRef("persist-test.md", ["Persisted"]),
@@ -488,12 +488,12 @@ describe("DocumentSkeleton tombstone", () => {
       // Write a real document in canonical
       await createSampleDocument(ctx.rootDir);
 
-      // Create a tombstone in the overlay via the explicit OverlayContentLayer
+      // Create a tombstone in the overlay via the explicit ProposalShadowContentLayer
       // operation. `DocumentSkeleton.createTombstone(...)` was deleted in
       // item 93/133 — readonly DS no longer hosts tombstone writes; the
       // mutating concern lives on the mutating abstraction.
       const overlayDir = join(ctx.rootDir, "overlay", "content");
-      const overlay = new OverlayContentLayer(overlayDir, ctx.contentDir);
+      const overlay = new ProposalShadowContentLayer(overlayDir, ctx.contentDir);
       await overlay.tombstoneDocumentExplicit(SAMPLE_DOC_PATH);
 
       // Re-read: overlay has the persisted tombstone marker, so fromDisk should

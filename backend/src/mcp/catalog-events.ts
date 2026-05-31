@@ -1,9 +1,8 @@
 import path from "node:path";
 import { access, readdir } from "node:fs/promises";
-import { OverlayContentLayer } from "../storage/content-layer.js";
 import { getContentRoot } from "../storage/data-root.js";
 import { resolveDocPathUnderContent, InvalidDocPathError } from "../storage/path-utils.js";
-import { proposalContentRoot } from "../storage/proposal-repository.js";
+import { ProposalReader } from "../storage/proposal-reader.js";
 import type { AnyProposal, WriterType, WsServerEvent } from "../types/shared.js";
 
 const SECTIONS_DIR_SUFFIX = ".sections";
@@ -37,10 +36,8 @@ export async function canonicalDocumentExists(docPath: string): Promise<boolean>
 export async function summarizeProposalCatalogMutations(
   proposal: Pick<AnyProposal, "id" | "status" | "sections">,
 ): Promise<CatalogMutationSummary> {
-  const canonicalRoot = getContentRoot();
-  const overlayRoot = proposalContentRoot(proposal.id, proposal.status);
-  const overlayLayer = new OverlayContentLayer(overlayRoot, canonicalRoot);
-  const overlayDocPaths = await listOverlayDocPaths(overlayRoot);
+  const reader = ProposalReader.open(proposal.id, proposal.status);
+  const overlayDocPaths = await listOverlayDocPaths(reader.proposalContentRoot);
   const docPaths = Array.from(new Set([
     ...proposal.sections
       .map((section) => section.doc_path)
@@ -54,7 +51,7 @@ export async function summarizeProposalCatalogMutations(
   for (const docPath of docPaths) {
     const [existsInCanonical, overlayState] = await Promise.all([
       canonicalDocumentExists(docPath),
-      overlayLayer.getDocumentState(docPath),
+      reader.getDocumentState(docPath),
     ]);
 
     if (!existsInCanonical && overlayState === "live") {

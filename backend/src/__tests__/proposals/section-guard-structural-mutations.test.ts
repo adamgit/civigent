@@ -1,13 +1,22 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import { createTestServer, type TestServerContext } from "../helpers/test-server.js";
-import {
-  createSampleDocument,
-  createHumanCommit,
-  SAMPLE_DOC_PATH,
-} from "../helpers/sample-content.js";
+import { createHumanCommit } from "../helpers/sample-content.js";
 
-describe("SectionGuard: structural mutations respect writer type", () => {
+/**
+ * Retargeted from the legacy SectionGuard structural-mutation suite.
+ *
+ * Area F owns the FSM-lock contention primitive only. The case "human creates,
+ * edits, then deletes a document — succeeds" is FSM-lock-relevant: human
+ * structural mutations are not gated by another writer's recency/scoring, only
+ * by exclusive proposal locks (of which there are none here).
+ *
+ * The legacy second case — "agent blocked from deleting a doc with recent human
+ * activity" — is agent-write-policy scoring (recency/aggregate-impact), NOT an
+ * FSM lock. That assertion moves with Area G (agent-write-policy) and is
+ * intentionally NOT reproduced here.
+ */
+describe("structural mutations: human lifecycle is not lock-gated", () => {
   let ctx: TestServerContext;
 
   beforeAll(async () => {
@@ -38,7 +47,8 @@ describe("SectionGuard: structural mutations respect writer type", () => {
       0.01,
     );
 
-    // 3. Human deletes the document — should succeed, not be blocked by SectionGuard
+    // 3. Human deletes the document — not gated by FSM locks (no competing
+    //    proposal holds these sections), so it succeeds.
     const deleteRes = await request(ctx.app)
       .delete("/api/documents/guard-test/human-lifecycle.md")
       .set("Authorization", ctx.humanToken);
@@ -46,31 +56,5 @@ describe("SectionGuard: structural mutations respect writer type", () => {
     expect(deleteRes.status).toBe(200);
     expect(deleteRes.body.deleted).toBe(true);
     expect(deleteRes.body.committed_head).toBeDefined();
-  });
-
-  it("agent attempts to delete a doc with recent human activity — blocked by SectionGuard", async () => {
-    // 1. Create a document (via human, but that's fine — it's the git history that matters)
-    await createSampleDocument(ctx.dataCtx.rootDir, "/guard-test/agent-blocked.md");
-
-    // 2. Simulate a very recent human edit (0.01 hours ago)
-    await createHumanCommit(
-      ctx.dataCtx.rootDir,
-      "/guard-test/agent-blocked.md",
-      "overview.md",
-      "Human-edited overview.\n",
-      0.01,
-    );
-
-    // 3. Agent attempts to delete — should be blocked
-    const deleteRes = await request(ctx.app)
-      .delete("/api/documents/guard-test/agent-blocked.md")
-      .set("Authorization", ctx.agentToken);
-
-    expect(deleteRes.status).toBe(409);
-    expect(deleteRes.body.outcome).toBe("blocked");
-    expect(deleteRes.body.message).toBeDefined();
-    expect(deleteRes.body.message).toMatch(/Proposal blocked/);
-    expect(deleteRes.body.blocked_sections).toBeDefined();
-    expect(deleteRes.body.blocked_sections.length).toBeGreaterThan(0);
   });
 });

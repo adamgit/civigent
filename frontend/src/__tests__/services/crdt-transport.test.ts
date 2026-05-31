@@ -2,9 +2,13 @@
  * Unit tests for CrdtTransport wiring onto BrowserFragmentReplicaStore.
  *
  * Covers:
- *   B17.1 — Transport calls store mutation methods on receiving WebSocket messages
- *   B17.3 — SESSION_OVERLAY_IMPORTED -> store.forceCleanSections(...)
- *   B17.4 — removed STRUCTURE_WILL_CHANGE messages are not routed to store state
+ *   - Transport routes connection/sync/error onto store mutation methods
+ *   - DocSession publish-pause frames route to store.setPublishPaused(...)
+ *   - one-way dependency: store never references the transport/provider
+ *
+ * The legacy SESSION_OVERLAY_IMPORTED / STRUCTURE_WILL_CHANGE / receipt
+ * plumbing is removed (spec 05 §4 > Removed message types). Section block-state
+ * (`section:*`) rides the JSON application WebSocket, not this binary channel.
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
@@ -13,14 +17,13 @@ import { Awareness } from "y-protocols/awareness";
 import { CrdtTransport } from "../../services/crdt-transport.js";
 import { BrowserFragmentReplicaStore } from "../../services/browser-fragment-replica-store.js";
 
-// Protocol message types (must match crdt-provider.ts)
-const MSG_SYNC_STEP_1 = 0x00;
+// Protocol message types (must match crdt-provider.ts / crdt-ws-frames.ts)
 const MSG_SYNC_STEP_2 = 0x01;
-const MSG_SESSION_OVERLAY_IMPORTED = 4;
-const MSG_STRUCTURE_WILL_CHANGE = 8;
+const MSG_DOC_PUBLISH_PAUSE_START = 0x10;
+const MSG_DOC_PUBLISH_READY = 0x11;
+const MSG_DOC_PUBLISH_PAUSE_END = 0x12;
 
 // ─── StubWebSocket ──────────────────────────────────────────────
-// Same pattern as crdt-provider-restore.test.ts — replaces globalThis.WebSocket.
 
 class StubWebSocket extends EventTarget {
   static readonly CONNECTING = 0;
@@ -95,29 +98,8 @@ function buildSyncStep2(doc?: Y.Doc): Uint8Array {
   return msg;
 }
 
-function buildOverlayImportedMessage(writtenKeys: string[], deletedKeys: string[]): Uint8Array {
-  const text = writtenKeys.join("\n") + "\x00" + deletedKeys.join("\n");
-  const encoded = new TextEncoder().encode(text);
-  const msg = new Uint8Array(1 + encoded.length);
-  msg[0] = MSG_SESSION_OVERLAY_IMPORTED;
-  msg.set(encoded, 1);
-  return msg;
-}
-
-function buildStructureWillChangeMessage(
-  restructures: Array<{ oldKey: string; newKeys: string[] }>,
-): Uint8Array {
-  const json = JSON.stringify(restructures);
-  const encoded = new TextEncoder().encode(json);
-  const msg = new Uint8Array(1 + encoded.length);
-  msg[0] = MSG_STRUCTURE_WILL_CHANGE;
-  msg.set(encoded, 1);
-  return msg;
-}
-
 beforeEach(() => {
   StubWebSocket.lastInstance = null;
-  // Stub crypto.randomUUID if not available (test environments).
   if (!globalThis.crypto?.randomUUID) {
     (globalThis as any).crypto = {
       ...(globalThis.crypto ?? {}),
@@ -143,7 +125,6 @@ describe("CrdtTransport", () => {
     transport.connect();
     const ws = StubWebSocket.lastInstance!;
     ws.open();
-    // Complete sync: send SYNC_STEP_2 so the provider enters synced state.
     ws.receiveServerMessage(buildSyncStep2());
     return ws;
   }
@@ -158,108 +139,82 @@ describe("CrdtTransport", () => {
     transport.destroy();
   });
 
-  // ─── B17.1 ── Transport calls store mutation methods on WS messages ─
-
-  describe("B17.1 — Transport calls store mutation methods on receiving WebSocket messages", () => {
+  describe("connection state routing", () => {
     it("onStateChange routes to store.setConnectionState", () => {
       transport.connect();
-      // After connect(), the provider calls setState("connecting") which fires onStateChange.
       expect(store.getConnectionState()).toBe("connecting");
-
       const ws = StubWebSocket.lastInstance!;
       ws.open();
-      // onopen → setState("connected")
       expect(store.getConnectionState()).toBe("connected");
     });
 
     it("onSynced routes to store.setSynced(true)", () => {
       expect(store.getSynced()).toBe(false);
-
-      const ws = connectAndSync();
-
+      connectAndSync();
       expect(store.getSynced()).toBe(true);
     });
 
     it("onError routes to store.setError", () => {
       transport.connect();
       const ws = StubWebSocket.lastInstance!;
-      // Simulate close with non-recoverable error code.
       ws.readyState = StubWebSocket.CLOSED;
-      if (ws.onclose) {
-        ws.onclose(new CloseEvent("close", { code: 4010, reason: "Invalid URL" }));
-      }
-
+      ws.onclose?.(new CloseEvent("close", { code: 4010, reason: "Invalid URL" }));
       expect(store.getError()).toBe("Invalid URL");
     });
 
-    it("one-way dependency: store never calls back into transport", () => {
-      // The store has no reference to the transport — verify by checking
-      // that the store constructor signature is (doc, awareness) only.
+    it("one-way dependency: store never references transport/provider", () => {
       const testDoc = new Y.Doc();
       const testAwareness = new Awareness(testDoc);
       const isolatedStore = new BrowserFragmentReplicaStore(testDoc, testAwareness);
-
-      // No transport-related methods on the store.
       expect((isolatedStore as any).transport).toBeUndefined();
       expect((isolatedStore as any).provider).toBeUndefined();
-
       testAwareness.destroy();
       testDoc.destroy();
     });
   });
 
-  // ─── B17.3 ── SESSION_OVERLAY_IMPORTED → forceCleanSections ────
-
-  describe("B17.3 — SESSION_OVERLAY_IMPORTED → store.forceCleanSections(deletedKeys)", () => {
-    it("deleted keys are force-cleaned (removed from persistence map)", () => {
+  describe("DocSession publish-pause routing", () => {
+    it("doc_publish_pause_start sets store.publishPaused = true", () => {
       const ws = connectAndSync();
-
-      store.markSectionsEdited(["section::gamma"]);
-      expect(store.getSectionPersistenceForKey("section::gamma")).toBe("dirty");
-
-      ws.receiveServerMessage(
-        buildOverlayImportedMessage([], ["section::gamma"]),
-      );
-
-      expect(store.getSectionPersistenceForKey("section::gamma")).toBe("clean");
-      expect(store.getSectionPersistence().has("section::gamma")).toBe(false);
+      expect(store.getPublishPaused()).toBe(false);
+      ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_START]));
+      expect(store.getPublishPaused()).toBe(true);
     });
 
-    it("written keys in the payload do not mutate store state", () => {
+    it("doc_publish_pause_end clears store.publishPaused", () => {
       const ws = connectAndSync();
-
-      store.markSectionsEdited(["section::alpha"]);
-      store.markSectionsReceived(["section::alpha"]);
-      expect(store.getSectionPersistenceForKey("section::alpha")).toBe("received");
-
-      ws.receiveServerMessage(
-        buildOverlayImportedMessage(["section::alpha"], []),
-      );
-
-      // writtenKeys are no longer routed to any store mutation
-      expect(store.getSectionPersistenceForKey("section::alpha")).toBe("received");
+      ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_START]));
+      expect(store.getPublishPaused()).toBe(true);
+      ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_END]));
+      expect(store.getPublishPaused()).toBe(false);
     });
-  });
 
-  // ─── B17.4 ── removed STRUCTURE_WILL_CHANGE is ignored ──────
+    it("invokes the onPublishPauseStart/End passthroughs", () => {
+      const onStart = vi.fn();
+      const onEnd = vi.fn();
+      const t2 = new CrdtTransport("/test/doc2.md", {
+        onPublishPauseStart: onStart,
+        onPublishPauseEnd: onEnd,
+      });
+      const s2 = new BrowserFragmentReplicaStore(t2.doc, t2.awareness);
+      t2.attachStore(s2);
+      t2.connect();
+      const ws = StubWebSocket.lastInstance!;
+      ws.open();
+      ws.receiveServerMessage(buildSyncStep2());
+      ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_START]));
+      ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_END]));
+      expect(onStart).toHaveBeenCalledTimes(1);
+      expect(onEnd).toHaveBeenCalledTimes(1);
+      t2.destroy();
+    });
 
-  describe("B17.4 — removed STRUCTURE_WILL_CHANGE is not routed through transport", () => {
-    it("store persistence state is NOT mutated by STRUCTURE_WILL_CHANGE", () => {
+    it("sends doc_publish_ready exactly once after pause_start (no editor barrier)", () => {
       const ws = connectAndSync();
-
-      store.markSectionsEdited(["section::alpha"]);
-
-      ws.receiveServerMessage(
-        buildStructureWillChangeMessage([
-          { oldKey: "section::alpha", newKeys: ["section::alpha-new"] },
-        ]),
-      );
-
-      // Structural normalization now arrives as ordinary Yjs updates.
-      const persistenceAfter = store.getSectionPersistence();
-      expect(persistenceAfter.get("section::alpha")).toBe("dirty");
-      // The "new" key should NOT appear in the map (transport doesn't route this to store).
-      expect(persistenceAfter.has("section::alpha-new")).toBe(false);
+      ws.sentMessages.length = 0;
+      ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_START]));
+      const readyFrames = ws.sentMessages.filter((m) => m[0] === MSG_DOC_PUBLISH_READY);
+      expect(readyFrames.length).toBe(1);
     });
   });
 });
