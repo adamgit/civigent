@@ -7,26 +7,27 @@
  * ProposalShadowContentLayer.
  */
 
-import { readFile, writeFile, mkdir, copyFile, readdir, rm, stat } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   DocumentSkeleton,
   DocumentSkeletonInternal,
-  readOverlayDocumentState,
   resolveSkeletonPath,
-  resolveTombstonePath,
   skeletonFileExists,
+  tombstoneFileExists,
+  writeTombstoneMarker,
   generateSectionFilename,
   generateBeforeFirstHeadingFilename,
   headingsEqual,
   listSkeletonEntriesAtRoot,
   type ContentEntry,
   type FlatEntry,
-  type OverlayDocumentState,
+  type ProposalDocumentState,
   type SkeletonNode,
   type StructuralMutationPlan,
 } from "./document-skeleton.js";
 import { normalizeDocPath } from "./path-utils.js";
+import { pathExists } from "./fs-primitives.js";
 import { staleHeadingPath } from "./skeleton-errors.js";
 // ParsedDocument was previously imported here for the document-replacement
 // engine in the old `replaceDocumentFromMarkdown(...)`. Item 355 reduced that
@@ -37,7 +38,7 @@ import { staleHeadingPath } from "./skeleton-errors.js";
 import type { DocStructureNode } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
-import { bodyFromDisk, bodyFromParser, stripHeadingFromFragment, buildFragmentContent, assembleFragments, bodyAsFragment, stripLeadingNewlines, appendToBody, fragmentFromExternalContent, type SectionBody, type FragmentContent } from "./section-formatting.js";
+import { bodyFromDisk, bodyFromParser, stripHeadingFromFragment, buildFragmentContent, assembleFragments, fragmentFromBodyHolder, stripLeadingNewlines, appendToBody, fragmentFromExternalContent, type SectionBody, type FragmentContent, type SectionBodyWithPotentialSubsections } from "./section-formatting.js";
 import { isBodyHolderShape, isDocumentBeforeFirstHeading, parsedSectionIsHeadless } from "./section-shape.js";
 import type { ParsedSection } from "./markdown-sections.js";
 
@@ -92,26 +93,6 @@ function flatEntryFromContentEntry(entry: ContentEntry): FlatEntry {
   };
 }
 
-async function copyDirectoryRecursive(srcDir: string, destDir: string): Promise<void> {
-  let entries;
-  try {
-    entries = await readdir(srcDir, { withFileTypes: true });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return; // No sections dir is valid
-    throw err;
-  }
-  await mkdir(destDir, { recursive: true });
-  for (const entry of entries) {
-    const srcPath = path.join(srcDir, entry.name);
-    const destPath = path.join(destDir, entry.name);
-    if (entry.isDirectory()) {
-      await copyDirectoryRecursive(srcPath, destPath);
-    } else {
-      await copyFile(srcPath, destPath);
-    }
-  }
-}
-
 type ParsedMarkdownRewriteSection = Readonly<{
   heading: string;
   level: number;
@@ -127,6 +108,16 @@ function headingPathKey(headingPath: readonly string[]): string {
   return SectionRef.headingKey([...headingPath]);
 }
 
+/**
+ * `targetParentPath: []` is reached ONLY from (a) a real top-level section
+ * rewrite (`rewriteSubtreeFromParsedMarkdown` with `headingPath.length === 1`,
+ * so `parentPath === []`), or (b) the explicit document-level whole-document
+ * writes (`replaceWholeDocumentFromParsedMarkdown` /
+ * `writeFreshDocumentFromParsedMarkdown`). It is NEVER reached from a
+ * before-first-heading section write (`headingPath: []`): those are body-only
+ * and routed through `writeSectionBodyVerbatim(...)`, so parsed BFH body
+ * headings can never be promoted into root replacement nodes here.
+ */
 function buildRewriteReplacementRoots(
   targetParentPath: readonly string[],
   parsedSections: ReadonlyArray<ParsedMarkdownRewriteSection>,
@@ -381,7 +372,7 @@ export class ContentLayer {
     if (!(await skeletonFileExists(docPath, this.contentRoot))) {
       throw new DocumentNotFoundError(`No skeleton found for document: ${docPath}`);
     }
-    return DocumentSkeleton.fromDisk(docPath, this.contentRoot, this.contentRoot);
+    return DocumentSkeleton.fromSingleRoot(docPath, this.contentRoot);
   }
 
   /**
@@ -472,7 +463,7 @@ export class ContentLayer {
    * descendants. Reads body content via readSection().
    *
    * `headingPath` must be non-empty. For whole-document enumeration use
-   * `readAllSubtreeEntries(docPath)`. For before-first-heading use
+   * `getSectionList(docPath)` + `readSection(...)`. For before-first-heading use
    * `readSection(ref(docPath, []))`.
    */
   async readSubtree(
@@ -481,28 +472,11 @@ export class ContentLayer {
   ): Promise<Array<{ headingPath: string[]; heading: string; level: number; bodyContent: string }>> {
     if (headingPath.length === 0) {
       throw new Error(
-        `ContentLayer.readSubtree(${docPath}, []) is not allowed — use readAllSubtreeEntries(docPath) for whole-document enumeration, or readSection(ref(docPath, [])) for before-first-heading.`,
+        `ContentLayer.readSubtree(${docPath}, []) is not allowed — use getSectionList(docPath) + readSection(...) for whole-document enumeration, or readSection(ref(docPath, [])) for before-first-heading.`,
       );
     }
     const skeleton = await this.readSkeleton(docPath);
     const entries = skeleton.subtreeEntries(headingPath);
-    const result: Array<{ headingPath: string[]; heading: string; level: number; bodyContent: string }> = [];
-    for (const entry of entries) {
-      const bodyContent = await this.readSection(new SectionRef(docPath, entry.headingPath));
-      result.push({ headingPath: entry.headingPath, heading: entry.heading, level: entry.level, bodyContent });
-    }
-    return result;
-  }
-
-  /**
-   * Read all sections in the document (whole-document enumeration).
-   * Use this instead of readSubtree(docPath, []).
-   */
-  async readAllSubtreeEntries(
-    docPath: string,
-  ): Promise<Array<{ headingPath: string[]; heading: string; level: number; bodyContent: string }>> {
-    const skeleton = await this.readSkeleton(docPath);
-    const entries = skeleton.allContentEntries();
     const result: Array<{ headingPath: string[]; heading: string; level: number; bodyContent: string }> = [];
     for (const entry of entries) {
       const bodyContent = await this.readSection(new SectionRef(docPath, entry.headingPath));
@@ -678,7 +652,7 @@ export class ContentLayer {
       if (isDocumentBeforeFirstHeading(entry)) {
         // Document-level BFH: body IS fragment content (strip leading newlines defensively).
         const trimmed = stripLeadingNewlines(content);
-        if (trimmed) parts.push(bodyAsFragment(trimmed));
+        if (trimmed) parts.push(fragmentFromBodyHolder(trimmed));
       } else {
         parts.push(buildFragmentContent(content, entry.level, entry.heading));
       }
@@ -706,7 +680,7 @@ export class ContentLayer {
  * Per item 191: this class holds NO long-lived writable
  * `DocumentSkeletonInternal` instances. Every method that needs a writable
  * skeleton fresh-loads it via `DocumentSkeletonInternal.mutableFromDisk(...)`
- * (or `persistNewEmptyToOverlay(...)` for create flows). Same-call local
+ * (or `createEmptySkeletonInRoot(...)` for create flows). Same-call local
  * variables are allowed; cross-call memoization is not.
  */
 export class ProposalShadowContentLayer {
@@ -726,20 +700,25 @@ export class ProposalShadowContentLayer {
   }
 
   /**
-   * Resolve the effective document state across overlay + canonical roots.
-   * "tombstone" means the overlay explicitly shadows the doc as pending deletion.
+   * Resolve the effective document state for this proposal content tree:
+   * proposal tombstone wins, then a proposal skeleton, then a canonical
+   * skeleton fallback, else missing.
    *
-   * Document state is determined by skeleton/tombstone files only.
-   * The presence or absence of a before-first-heading section has no effect
-   * on document existence. A document with zero sections is valid and "live".
+   * Document state is determined by skeleton/tombstone files only. The presence
+   * or absence of a before-first-heading section has no effect on document
+   * existence — a document with zero sections is valid and "live".
    *
-   * Per item 193: this method is a pure overlay-aware disk-state resolver.
-   * It always calls `readOverlayDocumentState(...)` against the on-disk
-   * overlay/canonical markers and returns that result directly. There is
-   * no cache, no fast path, and no in-process memoization to second-guess.
+   * This is a pure disk-state resolver composed from the single-root storage
+   * primitives (`tombstoneFileExists` / `skeletonFileExists`). There is no
+   * cache, no fast path, and no in-process memoization to second-guess.
    */
-  async getDocumentState(docPath: string): Promise<OverlayDocumentState> {
-    return readOverlayDocumentState(docPath, this.overlayRoot, this.canonicalRoot);
+  async getDocumentState(docPath: string): Promise<ProposalDocumentState> {
+    if (this.overlayRoot !== this.canonicalRoot && (await tombstoneFileExists(docPath, this.overlayRoot))) {
+      return "tombstone";
+    }
+    if (await skeletonFileExists(docPath, this.overlayRoot)) return "live";
+    if (await skeletonFileExists(docPath, this.canonicalRoot)) return "live";
+    return "missing";
   }
 
   /**
@@ -756,7 +735,7 @@ export class ProposalShadowContentLayer {
    *   - "tombstone" → throw "pending deletion" (resurrection NOT supported)
    *
    * Persistence is delegated to the single blessed factory
-   * `DocumentSkeletonInternal.persistNewEmptyToOverlay(...)` (item 166).
+   * `DocumentSkeletonInternal.createEmptySkeletonInRoot(...)`.
    * Per item 197 the returned writable skeleton is intentionally NOT
    * stored on this instance — there is no class-level cache. Subsequent
    * methods that need a writable skeleton fresh-load via
@@ -768,68 +747,75 @@ export class ProposalShadowContentLayer {
       throw new Error(`Cannot create document "${docPath}" — it already exists.`);
     }
     if (state === "tombstone") {
-      throw new Error(`Cannot create document "${docPath}" — it is pending deletion in this overlay.`);
+      throw new Error(`Cannot create document "${docPath}" — it is pending deletion in this proposal.`);
     }
-    await DocumentSkeletonInternal.persistNewEmptyToOverlay(
+    await DocumentSkeletonInternal.createEmptySkeletonInRoot(
       docPath,
       this.overlayRoot,
     );
   }
 
-  /**
-   * Reset an existing live overlay document to the same persisted live-empty
-   * shape produced by `createDocument(...)`.
-   *
-   * Safety ordering matters: write the empty skeleton FIRST so stale section
-   * files cannot masquerade as current structure, then remove the old
-   * `.sections/` tree.
-   */
-  private async clearDocumentToLiveEmpty(docPath: string): Promise<void> {
-    const state = await this.getDocumentState(docPath);
-    if (state === "tombstone") {
-      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this overlay.`);
-    }
-    if (state === "missing") {
-      throw new DocumentNotFoundError(`Document "${docPath}" does not exist.`);
-    }
-
-    const overlaySkeletonPath = resolveSkeletonPath(docPath, this.overlayRoot);
-    await DocumentSkeletonInternal.persistNewEmptyToOverlay(docPath, this.overlayRoot);
-    await rm(`${overlaySkeletonPath}.sections`, { recursive: true, force: true });
-  }
 
   /**
    * Pure fresh-load helper for an existing writable skeleton. Creates nothing,
    * memoizes nothing. Throws DocumentNotFoundError if the document does not
    * exist or is pending deletion.
    *
-   * Per items 176/199: every call resolves overlay-aware document state from
-   * disk and then loads via `DocumentSkeletonInternal.mutableFromDisk(...)`
-   * (item 107) — a pure read with no implicit write side-effects. There is
-   * no cross-call cache. Hidden overlay materialization is NOT performed:
-   * the only sanctioned path for materializing a missing document is
-   * `createDocument(...)`, which goes through
-   * `DocumentSkeletonInternal.persistNewEmptyToOverlay(...)` (item 166).
+   * Every call resolves effective document state from disk and then loads a
+   * single-root mutable skeleton via `loadWritableSkeleton(...)` — a pure read
+   * with no implicit write side-effects. There is no cross-call cache. Hidden
+   * materialization is NOT performed: the only sanctioned path for materializing
+   * a missing document is `createDocument(...)`.
    */
   private async getWritableSkeleton(docPath: string): Promise<DocumentSkeletonInternal> {
     const state = await this.getDocumentState(docPath);
     if (state === "tombstone") {
-      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this overlay.`);
+      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this proposal.`);
     }
     if (state === "missing") {
       throw new DocumentNotFoundError(`Document "${docPath}" does not exist.`);
     }
-    return DocumentSkeletonInternal.mutableFromDisk(
+    return this.loadWritableSkeleton(docPath);
+  }
+
+  /**
+   * Compose a single-root mutable skeleton for the proposal write path. DS is
+   * single-root; the proposal subsystem owns the canonical fallback: the structure
+   * is read from the proposal root when a proposal skeleton exists, else from
+   * canonical (first-edit inherited structure); the instance is bound to the
+   * proposal root (writes land there); and a `shadowBodyExists` policy is injected
+   * so `writeTree` suppresses placeholders that would shadow non-empty canonical
+   * bodies. Pure load — no writes.
+   */
+  private async loadWritableSkeleton(docPath: string): Promise<DocumentSkeletonInternal> {
+    const structureRoot = (await skeletonFileExists(docPath, this.overlayRoot))
+      ? this.overlayRoot
+      : this.canonicalRoot;
+    const nodes = await DocumentSkeletonInternal.loadNodesFromRoot(docPath, structureRoot);
+    return DocumentSkeletonInternal.fromNodes(
       docPath,
+      nodes,
       this.overlayRoot,
-      this.canonicalRoot,
+      (bodyFilePath) => this.canonicalBodyExists(bodyFilePath),
     );
+  }
+
+  /**
+   * Shadow-body policy for `writeTree` placeholder suppression: true when a body
+   * file already exists in canonical at the same relative path as the given
+   * proposal-root body path. Single-layer (`overlayRoot === canonicalRoot`) → no
+   * shadow, always false.
+   */
+  private async canonicalBodyExists(proposalBodyFilePath: string): Promise<boolean> {
+    if (this.overlayRoot === this.canonicalRoot) return false;
+    const rel = path.relative(this.overlayRoot, proposalBodyFilePath);
+    return pathExists(path.join(this.canonicalRoot, rel));
   }
 
   private async readSkeleton(docPath: string): Promise<DocumentSkeleton> {
     const state = await this.getDocumentState(docPath);
     if (state === "tombstone") {
-      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this overlay.`);
+      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this proposal.`);
     }
     if (state === "missing") {
       throw new DocumentNotFoundError(`Document "${docPath}" does not exist.`);
@@ -839,7 +825,7 @@ export class ProposalShadowContentLayer {
 
   /**
    * Return the document's structural tree as DocStructureNode[].
-   * Uses overlay+canonical skeleton loading.
+   * Uses proposal-then-canonical skeleton loading.
    */
   async getDocumentStructure(docPath: string): Promise<DocStructureNode[]> {
     const skeleton = await this.readSkeleton(docPath);
@@ -847,24 +833,8 @@ export class ProposalShadowContentLayer {
   }
 
   /**
-   * Return a flat document-order list of all skeleton entries present under
-   * the overlay root ONLY — no canonical fallback. Returns `null` when the
-   * overlay skeleton file does not exist (i.e., this document has no overlay
-   * state at all — caller should treat that as distinct from "overlay exists
-   * but is empty").
-   *
-   * Observational reader for callers that need to compare overlay and
-   * canonical structures independently (e.g., diagnostics). Goes through the
-   * sanctioned single-root helper `listSkeletonEntriesAtRoot` — not the
-   * overlay-aware `fromDisk` factory.
-   */
-  async listOverlayOnlyEntries(docPath: string): Promise<FlatEntry[] | null> {
-    return listSkeletonEntriesAtRoot(docPath, this.overlayRoot);
-  }
-
-  /**
    * Resolve a section file ID to its entry.
-   * Uses overlay+canonical skeleton loading.
+   * Uses proposal-then-canonical skeleton loading.
    */
   async resolveSectionFileId(docPath: string, sectionFileId: string): Promise<{ absolutePath: string; headingPath: string[]; level: number; heading: string }> {
     const skeleton = await this.readSkeleton(docPath);
@@ -878,7 +848,7 @@ export class ProposalShadowContentLayer {
 
   /**
    * Resolve a heading path to the absolute file path for its section body file.
-   * Uses overlay+canonical skeleton loading.
+   * Uses proposal-then-canonical skeleton loading.
    */
   async resolveSectionPath(docPath: string, headingPath: string[]): Promise<string> {
     const skeleton = await this.readSkeleton(docPath);
@@ -891,7 +861,7 @@ export class ProposalShadowContentLayer {
 
   /**
    * Resolve a heading path to its absolute file path and heading level.
-   * Uses overlay+canonical skeleton loading.
+   * Uses proposal-then-canonical skeleton loading.
    */
   async resolveSectionPathWithLevel(docPath: string, headingPath: string[]): Promise<{ absolutePath: string; level: number }> {
     const skeleton = await this.readSkeleton(docPath);
@@ -938,7 +908,7 @@ export class ProposalShadowContentLayer {
    * to invalidate.
    */
   async tombstoneDocument(docPath: string): Promise<string[][]> {
-    const skeleton = await DocumentSkeleton.fromDisk(docPath, this.canonicalRoot, this.canonicalRoot);
+    const skeleton = await DocumentSkeleton.fromSingleRoot(docPath, this.canonicalRoot);
     const paths: string[][] = [];
     skeleton.forEachSection((_h, _l, _sf, headingPath) => {
       paths.push([...headingPath]);
@@ -948,179 +918,101 @@ export class ProposalShadowContentLayer {
   }
 
   /**
-   * Copy a canonical document skeleton + section files into overlay at a new path.
-   * Used by proposal-backed move/rename flows that stage the destination document.
+   * Proposal-owned semantic document rename (todolist items 54–61). Mutates ONLY
+   * this proposal's content tree — never canonical, never a live Y.Doc.
    *
-   * Per item 180: this method makes an EXPLICIT policy decision about
-   * destination state instead of force-clearing whatever is already there.
-   * The previous implementation unconditionally `rm`'d any tombstone at the
-   * destination and overwrote any existing skeleton, which silently masked
-   * conflicts: if the destination was already live in the overlay (a
-   * concurrent staged write) or tombstoned (a pending deletion), the copy
-   * would clobber it without warning.
+   * Strict source state (item 55): a tombstoned or missing source rejects; a
+   * proposal skeleton wins over canonical fallback; a canonical skeleton fallback
+   * is a valid live source.
    *
-   * Policy:
-   *   - destination "missing"   → proceed with the copy
-   *   - destination "live"      → throw (refuse to overwrite an existing
-   *                               overlay document — caller must resolve
-   *                               the conflict explicitly)
-   *   - destination "tombstone" → throw (refuse to silently clear a
-   *                               pending-deletion marker — caller must
-   *                               decide whether to abort the move or
-   *                               explicitly drop the tombstone first)
+   * Strict destination state (item 56): the new path must be absent in BOTH the
+   * proposal and canonical — a proposal-live, canonical-live, or tombstoned
+   * destination all reject (`getDocumentState` resolves tombstone→proposal→
+   * canonical, so only `"missing"` means absent-in-both).
    *
-   * This routes the rename/copy flow through the same overlay-aware state
-   * resolver used by `createDocument(...)` and `getWritableSkeleton(...)`,
-   * so storage semantics no longer drift between methods.
-   */
-  async copyCanonicalDocumentToOverlay(sourceDocPath: string, destinationDocPath: string): Promise<void> {
-    const destinationState = await this.getDocumentState(destinationDocPath);
-    if (destinationState === "live") {
-      throw new Error(
-        `Cannot copy "${sourceDocPath}" → "${destinationDocPath}": destination is already live in the overlay. ` +
-        `Resolve the conflict explicitly (delete or rename the existing destination) before retrying.`,
-      );
-    }
-    if (destinationState === "tombstone") {
-      throw new Error(
-        `Cannot copy "${sourceDocPath}" → "${destinationDocPath}": destination has a pending-deletion tombstone in the overlay. ` +
-        `Resolve the conflict explicitly (drop the tombstone or abort the move) before retrying.`,
-      );
-    }
-
-    const canonicalSrcSkeletonPath = resolveDocSkeletonPath(this.canonicalRoot, sourceDocPath);
-    const overlayDestSkeletonPath = resolveDocSkeletonPath(this.overlayRoot, destinationDocPath);
-
-    await mkdir(path.dirname(overlayDestSkeletonPath), { recursive: true });
-    await copyFile(canonicalSrcSkeletonPath, overlayDestSkeletonPath);
-    await copyDirectoryRecursive(
-      `${canonicalSrcSkeletonPath}.sections`,
-      `${overlayDestSkeletonPath}.sections`,
-    );
-  }
-
-  /**
-   * Reusable document-level copy primitive (item 295). Copy the EFFECTIVE
-   * source document state into the overlay at a new destination path.
+   * Mechanics (items 57–59): write the destination from the EFFECTIVE source
+   * skeleton, preserving source section-file IDs — the skeleton files are copied
+   * verbatim (no markdown parse, no remint, not delete-then-recreate). Bodies are
+   * copied by walking ONLY the skeleton-declared files (sub-skeleton structure
+   * files AND section bodies), resolving each from the proposal first then the
+   * canonical OLD path, and failing loudly if any declared file is missing. The
+   * source `.sections/` tree is NOT copied recursively, so undeclared files never
+   * appear under the destination.
    *
-   * "Effective source" means overlay-first-then-canonical resolution: the
-   * source skeleton file is taken from the overlay if present, otherwise
-   * from canonical, and section bodies are merged so that overlay-edited
-   * sections take precedence over canonical originals.
-   *
-   * Implementation strategy: file-level copy via the same primitives used
-   * by `copyCanonicalDocumentToOverlay(...)`, plus an overlay-overlay step
-   * that lets overlay files clobber the canonical copies that were laid
-   * down first. This preserves structure/body state directly without
-   * reinterpreting the source as a sequence of user section upserts (per
-   * the explicit prohibition in item 293).
-   *
-   * Destination state policy is the same as `copyCanonicalDocumentToOverlay`:
-   *   - "missing"   → proceed
-   *   - "live"      → throw (refuse to silently overwrite)
-   *   - "tombstone" → throw (refuse to silently clear a pending-deletion)
-   *
-   * Source state policy:
-   *   - "missing"   → throw `DocumentNotFoundError`
-   *   - "live"      → proceed
-   *   - "tombstone" → throw `DocumentNotFoundError`
-   */
-  private async copyDocumentToOverlayAtPath(
-    sourceDocPath: string,
-    destinationDocPath: string,
-  ): Promise<void> {
-    // Validate source state via the overlay-aware resolver — a tombstoned
-    // or missing source must NOT be silently treated as a live-empty doc.
-    const sourceState = await this.getDocumentState(sourceDocPath);
-    if (sourceState === "tombstone") {
-      throw new DocumentNotFoundError(
-        `Cannot copy "${sourceDocPath}": pending deletion in this overlay.`,
-      );
-    }
-    if (sourceState === "missing") {
-      throw new DocumentNotFoundError(
-        `Cannot copy "${sourceDocPath}": document does not exist.`,
-      );
-    }
-
-    // Validate destination state — same policy as copyCanonicalDocumentToOverlay.
-    const destinationState = await this.getDocumentState(destinationDocPath);
-    if (destinationState === "live") {
-      throw new Error(
-        `Cannot copy "${sourceDocPath}" → "${destinationDocPath}": destination is already live in the overlay. ` +
-          `Resolve the conflict explicitly (delete or rename the existing destination) before retrying.`,
-      );
-    }
-    if (destinationState === "tombstone") {
-      throw new Error(
-        `Cannot copy "${sourceDocPath}" → "${destinationDocPath}": destination has a pending-deletion tombstone in the overlay. ` +
-          `Resolve the conflict explicitly (drop the tombstone or abort the move) before retrying.`,
-      );
-    }
-
-    const canonicalSrcSkeletonPath = resolveDocSkeletonPath(this.canonicalRoot, sourceDocPath);
-    const overlaySrcSkeletonPath = resolveDocSkeletonPath(this.overlayRoot, sourceDocPath);
-    const overlayDestSkeletonPath = resolveDocSkeletonPath(this.overlayRoot, destinationDocPath);
-
-    await mkdir(path.dirname(overlayDestSkeletonPath), { recursive: true });
-
-    // Copy effective skeleton file: overlay if present, canonical otherwise.
-    let skeletonCopied = false;
-    try {
-      await copyFile(overlaySrcSkeletonPath, overlayDestSkeletonPath);
-      skeletonCopied = true;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    }
-    if (!skeletonCopied) {
-      await copyFile(canonicalSrcSkeletonPath, overlayDestSkeletonPath);
-    }
-
-    // Copy section bodies from BOTH layers in canonical-then-overlay order
-    // so that overlay edits clobber canonical originals when both exist.
-    // copyDirectoryRecursive treats a missing source directory as a no-op
-    // (returns silently on ENOENT), so this is safe even when one layer
-    // has no .sections directory.
-    await copyDirectoryRecursive(
-      `${canonicalSrcSkeletonPath}.sections`,
-      `${overlayDestSkeletonPath}.sections`,
-    );
-    await copyDirectoryRecursive(
-      `${overlaySrcSkeletonPath}.sections`,
-      `${overlayDestSkeletonPath}.sections`,
-    );
-  }
-
-  /**
-   * Dedicated rename/copy semantic API (items 287/297). Rename the
-   * effective source document to a new destination path inside this
-   * overlay. Owns the full storage/orchestration sequence: validate
-   * source/destination state, copy the effective source document to the
-   * destination via `copyDocumentToOverlayAtPath(...)`, then tombstone
-   * the source via `tombstoneDocumentExplicit(...)`.
-   *
-   * This is the explicit replacement for the open-coded
-   * `tombstoneDocument(...)` + `createDocument(...)` +
-   * `readAllSubtreeEntries(...)` + looped `writeSection(...)` pattern
-   * that previously lived in `mcp/tools/structural.ts` `rename_document`
-   * and the HTTP rename route. Per item 293, that pattern was the wrong
-   * abstraction: rename/copy is "preserve an existing effective document
-   * at a new path", NOT "user markdown write repeated N times".
-   *
-   * Per item 303, proposal/git/history orchestration (proposal section
-   * metadata updates, ACL checks, response shaping, WS event emission)
-   * stays in caller code — this method only owns the reusable overlay
-   * mutation primitive.
-   *
-   * Internal split (item 291): `copyDocumentToOverlayAtPath(...)` and
-   * `tombstoneDocumentExplicit(...)` are the internal step methods. The
-   * public caller-facing primitive is this single semantic operation.
+   * Atomicity (item 60): the old path is tombstoned as part of this same rename
+   * mutation. Manifest derivation (old + new document targets + affected sections)
+   * is owned by `mutateProposalContent`'s `rename_document` case.
    */
   async renameDocument(
     sourceDocPath: string,
     destinationDocPath: string,
   ): Promise<void> {
-    await this.copyDocumentToOverlayAtPath(sourceDocPath, destinationDocPath);
+    // item 55: strict source state.
+    const sourceState = await this.getDocumentState(sourceDocPath);
+    if (sourceState === "tombstone") {
+      throw new DocumentNotFoundError(`Cannot rename "${sourceDocPath}": pending deletion in this proposal.`);
+    }
+    if (sourceState === "missing") {
+      throw new DocumentNotFoundError(`Cannot rename "${sourceDocPath}": document does not exist.`);
+    }
+
+    // item 56: strict destination state — must be absent in proposal AND canonical.
+    const destinationState = await this.getDocumentState(destinationDocPath);
+    if (destinationState !== "missing") {
+      throw new Error(
+        `Cannot rename "${sourceDocPath}" → "${destinationDocPath}": destination already exists (${destinationState}). ` +
+        `The new path must be absent in both the proposal and canonical before a rename.`,
+      );
+    }
+
+    // Effective source skeleton (proposal-first, canonical fallback): structure +
+    // section-file IDs, with no markdown parse. Read-only — the rename only walks
+    // it (`forEachNode`), so the effective-load read suffices.
+    const sourceSkeleton = await DocumentSkeleton.fromDisk(
+      sourceDocPath,
+      this.overlayRoot,
+      this.canonicalRoot,
+    );
+
+    const overlaySrcSkeletonPath = resolveDocSkeletonPath(this.overlayRoot, sourceDocPath);
+    const overlayDestSkeletonPath = resolveDocSkeletonPath(this.overlayRoot, destinationDocPath);
+    const srcSectionsDir = `${overlaySrcSkeletonPath}.sections`;
+    const destSectionsDir = `${overlayDestSkeletonPath}.sections`;
+
+    // item 57: write the destination top skeleton file from the effective source
+    // skeleton FILE verbatim (IDs preserved, no parse/remint).
+    const topSkeleton = await this.readEffectiveSectionBody(overlaySrcSkeletonPath);
+    if (topSkeleton === null) {
+      throw new DocumentAssemblyError(
+        `Rename source "${sourceDocPath}" is live but its skeleton file is missing in both layers.`,
+      );
+    }
+    await mkdir(path.dirname(overlayDestSkeletonPath), { recursive: true });
+    await writeFile(overlayDestSkeletonPath, topSkeleton, "utf8");
+
+    // item 58/59: copy ONLY skeleton-declared files (sub-skeleton structure files
+    // AND section bodies) under `.sections/`, resolving each from the proposal
+    // first then the canonical old path, failing loudly on any missing declared
+    // file. No recursive `.sections` copy → no undeclared/orphan files at dest.
+    const declaredPaths: string[] = [];
+    sourceSkeleton.forEachNode((_h, _l, _sf, _hp, absolutePath) => {
+      declaredPaths.push(absolutePath);
+    });
+    for (const sourceAbsolutePath of declaredPaths) {
+      const content = await this.readEffectiveSectionBody(sourceAbsolutePath);
+      if (content === null) {
+        throw new DocumentAssemblyError(
+          `Rename "${sourceDocPath}" → "${destinationDocPath}": declared file ` +
+          `"${path.relative(srcSectionsDir, sourceAbsolutePath)}" has no content in any layer ` +
+          `(skeleton and section files are out of sync).`,
+        );
+      }
+      const destPath = path.join(destSectionsDir, path.relative(srcSectionsDir, sourceAbsolutePath));
+      await mkdir(path.dirname(destPath), { recursive: true });
+      await writeFile(destPath, content, "utf8");
+    }
+
+    // item 60: tombstone the old path as part of the same rename mutation.
     await this.tombstoneDocumentExplicit(sourceDocPath);
   }
 
@@ -1137,8 +1029,8 @@ export class ProposalShadowContentLayer {
 
   /**
    * Read every section body for a document using overlay-first then canonical
-   * fallback (via `readBodyFromLayers`). Empty overlay files are returned as
-   * empty bodies — see `readBodyFromLayers` for the overlay shadowing rule
+   * fallback (via `readEffectiveSectionBody`). Empty overlay files are returned as
+   * empty bodies — see `readEffectiveSectionBody` for the overlay shadowing rule
    * (intentional vs structural-placeholder distinction is enforced at the
    * write site in `DocumentSkeletonInternal.writeTree`, not here).
    */
@@ -1151,13 +1043,7 @@ export class ProposalShadowContentLayer {
       readTasks.push(
         (async () => {
           const key = SectionRef.headingKey(headingPath);
-          const content = await this.readBodyFromLayers(absolutePath);
-          if (content === null) {
-            throw new DocumentAssemblyError(
-              `Section "${key}" in document "${docPath}" is referenced by the skeleton but has no body file in any layer. ` +
-              `This indicates data corruption — the skeleton and section files are out of sync.`,
-            );
-          }
+          const content = await this.requireEffectiveSectionBody(absolutePath, docPath, key);
           result.set(key, bodyFromDisk(content));
         })(),
       );
@@ -1214,15 +1100,23 @@ export class ProposalShadowContentLayer {
   async upsertSection(
     ref: SectionRef,
     heading: string,
-    content: string,
+    content: SectionBodyWithPotentialSubsections,
     opts?: { contentIsFullMarkdown?: boolean },
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
     this.validateUpsertHeadingArgument(ref, heading);
 
-    // Root target: defer wholly to the core, which has its own
-    // BFH-vs-document-rewrite dispatch.
+    // ── BFH target (`headingPath: []`) — body-only write ──────────────
+    //
+    // `[]` selects the before-first-heading section's BODY and nothing
+    // else. It is NOT a whole-document identity selector: the payload is
+    // stored verbatim as the BFH body, so any markdown heading syntax it
+    // contains stays literal text rather than being parsed into headed
+    // sections (which would silently rewrite or destroy the document's real
+    // structure). Whole-document structural writes have their own
+    // document-level APIs (`upsertDocumentFromMarkdown(...)`), which never
+    // travel through a section write.
     if (ref.headingPath.length === 0) {
-      return await this.upsertSectionFromMarkdownCore(ref, content);
+      return await this.writeSectionBodyVerbatim(ref, content as unknown as SectionBody);
     }
 
     // ── Nested body-holder body-only write ────────────────────────────
@@ -1305,6 +1199,185 @@ export class ProposalShadowContentLayer {
   }
 
   /**
+   * Store a section body VERBATIM for an existing section identity — the
+   * topology-neutral write-through used by CRDT per-edit materialization and by
+   * the `headingPath: []` (BFH) section-write contract.
+   *
+   * Contract:
+   *   - The payload is NEVER parsed and NO topology is created. Embedded
+   *     markdown heading syntax (e.g. "## Looks Like Heading", "### Sub") stays
+   *     literal body text — it produces no headed sections, renames, or
+   *     reorders. Structural promotion of a settled embedded heading is a
+   *     separate, quiescence-time operation, never a per-keystroke side effect.
+   *   - The target section's `sectionFile` id is PRESERVED (the body file is
+   *     overwritten in place), so the `section::<id>` live fragment key / cursor
+   *     identity survives the write.
+   *   - BFH is not special: `[]` is just the before-first-heading identity and
+   *     follows the same body write-through path as every other section.
+   *
+   * State policy mirrors `upsertSectionFromMarkdownCore`:
+   *   - "tombstone" → throw (pending deletion).
+   *   - "missing"   → auto-create the document, then write.
+   *   - "live"      → write in place.
+   *
+   * Missing structure (the document's first edit, or a `[]` BFH slot that does
+   * not exist yet) is materialized via `materializeAncestorHeadings(...)` — a
+   * structural create with NO parsing — before the body is written. A
+   * byte-identical body short-circuits to an empty-change result so a clean
+   * re-write does not churn ids.
+   */
+  async writeSectionBodyVerbatim(
+    ref: SectionRef,
+    body: SectionBody,
+  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+    const state = await this.getDocumentState(ref.docPath);
+    if (state === "tombstone") {
+      throw new DocumentNotFoundError(`Document "${ref.docPath}" is pending deletion in this proposal.`);
+    }
+    if (state === "missing") {
+      await this.createDocument(ref.docPath);
+    }
+
+    let skeleton = await this.getWritableSkeleton(ref.docPath);
+    if (!skeleton.has(ref.headingPath)) {
+      await this.materializeAncestorHeadings(ref.docPath, ref.headingPath);
+      skeleton = await this.getWritableSkeleton(ref.docPath);
+    }
+    const entry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
+
+    // Trailing-newline canonicalization only (the body is otherwise stored
+    // exactly as authored); `bodyFromDisk` is the sanctioned boundary that
+    // applies the same trim `writeOverlayBodyFile` will on the way to disk.
+    const newBody = bodyFromDisk(body as unknown as string);
+    const currentBody = bodyFromDisk(
+      (await this.readEffectiveSectionBody(entry.absolutePath)) ?? "",
+    );
+    if ((currentBody as string) === (newBody as string)) {
+      return {
+        writtenEntries: [],
+        removedEntries: [],
+        fragmentKeyRemaps: [],
+        liveReloadEntries: [],
+        structureChanges: [],
+      };
+    }
+
+    await this.writeOverlayBodyFile(ref.docPath, entry, newBody);
+    return {
+      writtenEntries: [flatEntryFromContentEntry(entry)],
+      removedEntries: [],
+      fragmentKeyRemaps: [],
+      liveReloadEntries: [flatEntryFromContentEntry(entry)],
+      structureChanges: [],
+    };
+  }
+
+  /**
+   * Quiescence-time reflection of a before-first-heading (BFH) split into the
+   * proposal: a settled `## Heading` typed into the BFH body is promoted into a
+   * real top-level section. The BFH body keeps only the pre-heading orphan; the
+   * promoted heading section(s) are inserted at the FRONT of the document
+   * (immediately after the BFH, before the first existing headed root), so all
+   * existing sections and their `sectionFile` ids are preserved.
+   *
+   * This is the root-split counterpart of the parser-driven
+   * `writeSection(headedPath, ..., {contentIsFullMarkdown})` reflection used for
+   * section-splits. It exists because a `[]` write is body-only and cannot
+   * itself promote structure. Idempotent: re-running with the same already-split
+   * proposal layout is a no-op once the BFH body and roots already match.
+   */
+  async splitBeforeFirstHeadingPromotingHeadings(
+    docPath: string,
+    bfhFragmentMarkdown: string,
+  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+    const parsed = getParser().parseDocumentMarkdown(bfhFragmentMarkdown);
+    const hasOrphan = parsed.length > 0 && parsed[0].level === 0 && parsed[0].heading === "";
+    const orphanBody = (hasOrphan ? (parsed[0].body as unknown as string) : "") as unknown as SectionBody;
+    const headed = hasOrphan ? parsed.slice(1) : parsed;
+
+    // No heading to promote → plain BFH body update (verbatim).
+    if (headed.length === 0) {
+      return await this.writeSectionBodyVerbatim(new SectionRef(docPath, []), orphanBody);
+    }
+
+    const state = await this.getDocumentState(docPath);
+    if (state === "tombstone") {
+      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this proposal.`);
+    }
+    if (state === "missing") {
+      await this.createDocument(docPath);
+    }
+    let skeleton = await this.getWritableSkeleton(docPath);
+    if (!skeleton.has([])) {
+      await this.materializeAncestorHeadings(docPath, []);
+      skeleton = await this.getWritableSkeleton(docPath);
+    }
+    const bfhEntry = skeleton.requireContentEntryByHeadingPath([]);
+
+    // Idempotency (item 23): if the first promoted heading already exists as a
+    // top-level section, this split was already reflected by a prior attempt
+    // whose live apply aborted on the pre-flight clock check. Re-inserting would
+    // duplicate the section / churn ids — return an empty-change no-op so the
+    // retry only re-drives the live reshape from the (already-split) layout.
+    if (skeleton.findStructuralNodeByHeadingPath([headed[0].heading])) {
+      return {
+        writtenEntries: [],
+        removedEntries: [],
+        fragmentKeyRemaps: [],
+        liveReloadEntries: [],
+        structureChanges: [],
+      };
+    }
+
+    const { replacementRoots, bodyByResultingHeadingPath } = buildRewriteReplacementRoots(
+      [],
+      headed,
+      new Map(),
+    );
+
+    const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
+      const bfhIdx = ctx.roots.findIndex((n) => isBodyHolderShape(n));
+      if (bfhIdx < 0) {
+        throw new Error(
+          `Skeleton integrity error in ${docPath}: BFH expected at front of roots for split reflection.`,
+        );
+      }
+      ctx.addBodyHoldersToParents(replacementRoots);
+      ctx.roots.splice(bfhIdx + 1, 0, ...replacementRoots);
+
+      const added: FlatEntry[] = [];
+      for (const node of replacementRoots) {
+        added.push(...ctx.flattenNode(node, [], ctx.resolveSkeletonPathFor([])));
+      }
+      const bodyWrites = buildBodyWritesForRewrite(docPath, added, bodyByResultingHeadingPath);
+      // Trim the survivor: the BFH keeps only the pre-heading orphan body.
+      bodyWrites.push({ absolutePath: bfhEntry.absolutePath, content: orphanBody as unknown as string });
+      return { removed: [], added, bodyWrites, fragmentKeyRemaps: [] } satisfies StructuralMutationPlan;
+    });
+
+    for (const write of plan.bodyWrites) {
+      await this.writeOverlayBodyFile(
+        docPath,
+        { absolutePath: write.absolutePath, isSubSkeleton: false } as FlatEntry,
+        write.content,
+      );
+    }
+
+    const addedNonSub = plan.added.filter((e) => !e.isSubSkeleton);
+    const writtenEntries = [...addedNonSub, flatEntryFromContentEntry(bfhEntry)];
+    return {
+      writtenEntries,
+      removedEntries: [],
+      fragmentKeyRemaps: [],
+      liveReloadEntries: writtenEntries,
+      structureChanges: [{
+        oldEntry: flatEntryFromContentEntry(bfhEntry),
+        newEntries: writtenEntries,
+      }],
+    };
+  }
+
+  /**
    * Resolve the heading level for a body-only `upsertSection` target. The
    * level synthesis can never use raw heading-path depth — depth and level
    * only coincide for a strict h1/h2/h3 staircase, and a depth-based marker
@@ -1350,9 +1423,24 @@ export class ProposalShadowContentLayer {
     markdown: string,
     opts?: { requireMergeToPrevious?: boolean },
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+    // `[]` is NOT a legal core target. A before-first-heading write is a
+    // body-only write handled by `writeSectionBodyVerbatim(...)`, and a
+    // whole-document structural write is a document-level operation
+    // (`upsertDocumentFromMarkdown(...)`). The parser-driven core only ever
+    // rewrites the subtree at a real (non-empty) heading path; routing `[]`
+    // here would parse BFH body text into headed sections and silently
+    // rewrite the entire document.
+    if (ref.headingPath.length === 0) {
+      throw new Error(
+        `upsertSectionFromMarkdownCore called with headingPath=[] in ${ref.docPath}. ` +
+        `A '[]' section write targets the before-first-heading body only — route it ` +
+        `through writeSectionBodyVerbatim(...); whole-document writes use ` +
+        `upsertDocumentFromMarkdown(...).`,
+      );
+    }
     const state = await this.getDocumentState(ref.docPath);
     if (state === "tombstone") {
-      throw new DocumentNotFoundError(`Document "${ref.docPath}" is pending deletion in this overlay.`);
+      throw new DocumentNotFoundError(`Document "${ref.docPath}" is pending deletion in this proposal.`);
     }
     if (state === "missing") {
       await this.createDocument(ref.docPath);
@@ -1374,100 +1462,7 @@ export class ProposalShadowContentLayer {
     // (item 369 — orphan-aware) and `deleteSectionAndAbsorbOrphanBody(...)`.
     const parsedSections = getParser().parseDocumentMarkdown(markdown);
 
-    // Root target: defer to the root-safe rewrite primitive directly. The
-    // BFH and headed root sections (if any) are described entirely by
-    // parsedSections — there is no orphan to split here because the parser
-    // already represents leading content as a level-0 root section.
-    //
-    // Identity short-circuit (item 371) applies to root upserts too: a
-    // clean BFH-only re-normalization on a BFH-only document must be a
-    // no-op rather than churning the BFH section file id.
-    if (ref.headingPath.length === 0) {
-      if (opts?.requireMergeToPrevious) {
-        const hasHeadedSection = parsedSections.some((sec) => !parsedSectionIsHeadless(sec));
-        if (hasHeadedSection) {
-          throw new Error(
-            `Illegal arguments: upsertSectionMergingToPrevious cannot target BFH with headed markdown content.`,
-          );
-        }
-      }
-      if (await this.isIdentityUpsert(skeleton, [], parsedSections)) {
-        return {
-          writtenEntries: [],
-          removedEntries: [],
-          fragmentKeyRemaps: [],
-          liveReloadEntries: [],
-          structureChanges: [],
-        };
-      }
-
-      // ── BUG2-followup-A — BFH-only payload body-update branch ──────────
-      //
-      // The semantic ambiguity: `headingPath=[]` is overloaded. For
-      // `upsertDocumentFromMarkdown(...)` it means "rewrite the whole
-      // document". But for a single-fragment normalize of the BFH key, it
-      // means "this fragment carries only the BFH section's body". The
-      // dispatch can't tell the cases apart from the parsed payload alone,
-      // but it CAN tell them apart by checking whether the parsed payload
-      // is BFH-only AND the live skeleton already has headed sections.
-      //
-      // Without this branch, normalizing a BFH fragment routes through
-      // `rewriteSubtreeFromParsedMarkdown([])` which rewrites the whole
-      // document with one BFH-only section, destroying every headed
-      // section. See `targeted-normalization-sequential-matrix.test.ts >
-      // sequential normalization should be idempotent on second pass`.
-      const isBfhOnlyPayload =
-        parsedSections.length === 1
-        && parsedSections[0].level === 0
-        && parsedSections[0].heading === "";
-      if (
-        isBfhOnlyPayload
-        && skeleton.allContentEntries().some((e) => e.headingPath.length > 0)
-      ) {
-        const bfhEntry = skeleton.findContentEntryByHeadingPath([]);
-        if (bfhEntry) {
-          // Body identity check: if the BFH body already matches the
-          // payload byte-for-byte, return the same empty-change shape that
-          // `isIdentityUpsert` would have produced. This makes second-pass
-          // normalize a true no-op for clean BFH-only fragments.
-          const currentBody = bodyFromDisk(
-            (await this.readBodyFromLayers(bfhEntry.absolutePath)) ?? "",
-          );
-          if ((currentBody as string) === (parsedSections[0].body as unknown as string)) {
-            return {
-              writtenEntries: [],
-              removedEntries: [],
-              fragmentKeyRemaps: [],
-              liveReloadEntries: [],
-              structureChanges: [],
-            };
-          }
-          await this.writeOverlayBodyFile(
-            ref.docPath,
-            bfhEntry,
-            parsedSections[0].body as unknown as string,
-          );
-          return {
-            writtenEntries: [flatEntryFromContentEntry(bfhEntry)],
-            removedEntries: [],
-            fragmentKeyRemaps: [],
-            liveReloadEntries: [flatEntryFromContentEntry(bfhEntry)],
-            structureChanges: [],
-          };
-        }
-        // No BFH entry exists yet — fall through to the rewrite path so
-        // BFH auto-creation still works for the legitimate "upsert root
-        // markdown into a doc that doesn't have a BFH yet" case.
-      }
-
-      return await this.rewriteSubtreeFromParsedMarkdown(
-        ref.docPath,
-        [],
-        parsedSections,
-      );
-    }
-
-    // Non-root target: split off the leading level-0 orphan, if any. The
+    // Split off the leading level-0 orphan, if any. The
     // orphan is content the user authored ABOVE their first heading; it
     // gets absorbed into the previous body-holder via the leadingOrphanBody
     // option on the rewrite primitive (item 369).
@@ -1636,7 +1631,7 @@ export class ProposalShadowContentLayer {
           const prevHolder = skeleton.findPreviousBodyHolder(entry.sectionFile);
           if (prevHolder) {
             const existing = bodyFromDisk(
-              (await this.readBodyFromLayers(prevHolder.absolutePath)) ?? "",
+              await this.requireEffectiveSectionBody(prevHolder.absolutePath, ref.docPath, prevHolder.sectionFile),
             );
             const merged = appendToBody(existing, leadingOrphanBody);
             await this.writeOverlayBodyFile(
@@ -1696,6 +1691,14 @@ export class ProposalShadowContentLayer {
    * return an empty-change result instead of churning the subtree's
    * section file IDs through the rewrite path.
    *
+   * `headingPath` MUST be a real (non-empty) heading path. `[]` is never an
+   * identity-upsert target: a `[]` section write is a before-first-heading
+   * body-only write (`writeSectionBodyVerbatim(...)`, which runs its own
+   * byte-identity short-circuit against the BFH body alone), and a
+   * whole-document identity check belongs to the document-level operations.
+   * Comparing `[]` against `allContentEntries()` here would resurrect the
+   * "`[]` is a whole-document selector" overload this invariant removes.
+   *
    * Algorithm:
    *   1. Walk skeleton.subtreeEntries(headingPath) — the inclusive
    *      content subtree, excluding sub-skeleton structural nodes.
@@ -1719,16 +1722,20 @@ export class ProposalShadowContentLayer {
     headingPath: string[],
     parsedSections: ReadonlyArray<ParsedSection>,
   ): Promise<boolean> {
+    if (headingPath.length === 0) {
+      throw new Error(
+        `isIdentityUpsert called with headingPath=[] in ${skeleton.docPath}. ` +
+        `BFH identity is checked against the BFH body alone in ` +
+        `writeSectionBodyVerbatim(...); '[]' is never a whole-document ` +
+        `identity selector here.`,
+      );
+    }
     if (parsedSections.length === 0) return false;
 
-    // For root target use allContentEntries (subtreeEntries throws on []);
-    // for any other target use the inclusive subtree.
-    const liveEntries = headingPath.length === 0
-      ? skeleton.allContentEntries()
-      : skeleton.subtreeEntries(headingPath);
+    const liveEntries = skeleton.subtreeEntries(headingPath);
     if (liveEntries.length !== parsedSections.length) return false;
 
-    const parentPrefix = headingPath.length === 0 ? [] : headingPath.slice(0, -1);
+    const parentPrefix = headingPath.slice(0, -1);
     for (const parsed of parsedSections) {
       const absoluteHeadingPath = [...parentPrefix, ...parsed.headingPath];
       const liveEntry = skeleton.findContentEntryByHeadingPath(absoluteHeadingPath);
@@ -1736,7 +1743,7 @@ export class ProposalShadowContentLayer {
       if (liveEntry.heading !== parsed.heading) return false;
       if (liveEntry.level !== parsed.level) return false;
       const liveBody = bodyFromDisk(
-        (await this.readBodyFromLayers(liveEntry.absolutePath)) ?? "",
+        (await this.readEffectiveSectionBody(liveEntry.absolutePath)) ?? "",
       );
       if ((liveBody as string) !== (parsed.body as unknown as string)) return false;
     }
@@ -1744,30 +1751,133 @@ export class ProposalShadowContentLayer {
   }
 
   /**
-   * Whole-document upsert-from-markdown primitive.
+   * Full-markdown creation of a document whose effective proposal state is
+   * `missing` (todolist items 62–65). Composes EXISTING primitives only:
+   * `createDocument(...)` produces a live-empty proposal document (and enforces
+   * the missing-state precondition by rejecting `live`/`tombstone`), then
+   * `writeFreshDocumentFromParsedMarkdown(...)` writes the parsed structure into
+   * that empty document. The result is a self-contained proposal document tree
+   * with no dependency on canonical body fallback. Manifest derivation is the
+   * caller's `listHeadingPaths(...)` readback.
+   */
+  async createDocumentFromMarkdown(docPath: string, markdown: string): Promise<void> {
+    await this.createDocument(docPath);
+    const parsedSections = getParser().parseDocumentMarkdown(markdown);
+    await this.writeFreshDocumentFromParsedMarkdown(docPath, parsedSections);
+  }
+
+  /**
+   * Full-markdown overwrite of a document whose effective proposal state is
+   * `live` (todolist items 67–75). The explicit replacement for the deleted
+   * clear-then-fresh two-step — NOT a Y.Doc operation (writes only the proposal
+   * content tree). Live-session handling for destructive overwrites stays at the
+   * application layer (item 73); this primitive is session-agnostic.
    *
-   * Clears or creates the document to a live-empty state, parses the
-   * markdown, and writes the result via the dedicated whole-document
-   * primitive `writeFreshDocumentFromParsedMarkdown`.
+   * Implemented as a SINGLE atomic proposal content-tree mutation from a
+   * (possibly non-empty) starting state via `replaceWholeDocumentFromParsedMarkdown`:
+   * the markdown is parsed and the whole-document plan is built BEFORE any disk
+   * write, so a parse/plan failure throws with the prior proposal state fully
+   * intact. There is NO transient live-empty state — the skeleton is rewritten
+   * directly old→new inside one `applyStructuralMutationTransaction`. Section IDs
+   * are freshly minted (item 70).
+   */
+  async replaceDocumentFromMarkdown(docPath: string, markdown: string): Promise<void> {
+    const state = await this.getDocumentState(docPath);
+    if (state !== "live") {
+      throw new DocumentNotFoundError(
+        state === "tombstone"
+          ? `Document "${docPath}" is pending deletion in this proposal.`
+          : `Document "${docPath}" does not exist.`,
+      );
+    }
+    // Parse + build the replacement plan first; only then touch disk.
+    const parsedSections = getParser().parseDocumentMarkdown(markdown);
+    await this.replaceWholeDocumentFromParsedMarkdown(docPath, parsedSections);
+  }
+
+  /**
+   * Atomic whole-document rewrite from a non-empty starting state (todolist item
+   * 68). Removes ALL existing roots and adds the parsed replacement structure in
+   * ONE `applyStructuralMutationTransaction` (the skeleton is persisted once),
+   * then removes the proposal-tree section files no longer declared and writes
+   * the new section bodies. No transient live-empty state is persisted.
    *
-   * The method must NOT:
-   *   - load canonical skeletons
-   *   - return caller-reactive structural metadata
+   * This is the non-empty counterpart of `writeFreshDocumentFromParsedMarkdown`;
+   * the two share the same rewrite helpers (`buildRewriteReplacementRoots` /
+   * `buildBodyWritesForRewrite`). `fragmentKeyRemaps` is intentionally empty: this
+   * is a storage primitive, not a live reconciliation — the application layer
+   * invalidates any live session separately (item 73).
+   */
+  private async replaceWholeDocumentFromParsedMarkdown(
+    docPath: string,
+    parsedSections: ReadonlyArray<ParsedMarkdownRewriteSection>,
+  ): Promise<void> {
+    const skeleton = await this.getWritableSkeleton(docPath);
+
+    // Fresh-minted section-file IDs (no id-reuse map): whole-document overwrite
+    // has no Y.Doc identity requirement (item 70).
+    const { replacementRoots, bodyByResultingHeadingPath } = buildRewriteReplacementRoots(
+      [],
+      parsedSections,
+    );
+
+    const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
+      const roots = ctx.findSiblingList([]);
+      const parentSkeletonPath = ctx.resolveSkeletonPathFor([]);
+
+      // Remove EVERY existing root (sub-skeleton parents + bodies).
+      const removed: FlatEntry[] = [];
+      for (const node of roots) {
+        removed.push(...ctx.flattenNode(node, [], parentSkeletonPath));
+      }
+
+      // Replace the entire root list with the new structure.
+      ctx.addBodyHoldersToParents(replacementRoots);
+      roots.splice(0, roots.length, ...replacementRoots);
+
+      const added: FlatEntry[] = [];
+      for (const node of replacementRoots) {
+        added.push(...ctx.flattenNode(node, [], parentSkeletonPath));
+      }
+
+      const bodyWrites = buildBodyWritesForRewrite(docPath, added, bodyByResultingHeadingPath);
+
+      return {
+        removed,
+        added,
+        bodyWrites,
+        fragmentKeyRemaps: [],
+      } satisfies StructuralMutationPlan;
+    });
+
+    // Remove proposal-tree section files no longer declared (item 68). With fresh
+    // IDs the new files never collide with the removed ones.
+    for (const entry of plan.removed) {
+      if (entry.isSubSkeleton) {
+        await rm(`${entry.absolutePath}.sections`, { recursive: true, force: true });
+      }
+      await rm(entry.absolutePath, { force: true });
+    }
+    // Write the new section bodies through the guarded proposal body writer.
+    for (const write of plan.bodyWrites) {
+      await this.writeOverlayBodyFile(
+        docPath,
+        { absolutePath: write.absolutePath, isSubSkeleton: false } as FlatEntry,
+        write.content,
+      );
+    }
+  }
+
+  /**
+   * Whole-document write-from-markdown dispatch (todolist item 71). Routes on the
+   * effective proposal document state:
+   *   - "missing"   → `createDocumentFromMarkdown(...)`
+   *   - "live"      → `replaceDocumentFromMarkdown(...)`
+   *   - "tombstone" → reject with `DocumentNotFoundError`
    *
-   * Contract:
-   *   - Returns nothing. Callers that need a section-target list (e.g.
-   *     for proposal metadata updates) must read it back via
-   *     `listHeadingPaths(...)` after the write completes.
-   *   - Owns ONLY storage orchestration: state validation, clear-or-create,
-   *     parse, and delegation to `writeFreshDocumentFromParsedMarkdown`.
-   *     Does NOT touch proposal creation, proposal section metadata, ACL
-   *     checks, git commit/restore trailers, or HTTP/MCP response shaping.
-   *
-   * State policy:
-   *   - "missing"   → `createDocument(...)` (produces a live-empty doc)
-   *   - "live"      → `clearDocumentToLiveEmpty(...)` (removes all overlay
-   *                   skeleton/body state and leaves it live-empty)
-   *   - "tombstone" → throw `DocumentNotFoundError("pending deletion")`
+   * Owns ONLY storage orchestration — no proposal creation, section metadata,
+   * ACL, git trailers, or response shaping. Returns nothing; callers read back a
+   * section-target list via `listHeadingPaths(...)`.
    */
   async upsertDocumentFromMarkdown(
     docPath: string,
@@ -1775,19 +1885,13 @@ export class ProposalShadowContentLayer {
   ): Promise<void> {
     const state = await this.getDocumentState(docPath);
     if (state === "tombstone") {
-      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this overlay.`);
+      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this proposal.`);
     }
     if (state === "missing") {
-      await this.createDocument(docPath);
+      await this.createDocumentFromMarkdown(docPath, markdown);
     } else {
-      // state === "live": clear the overlay copy to a live-empty shape so
-      // the subsequent root upsert starts from a known-empty state. This
-      // is the one non-trivial part of overwrite semantics — see item 356.
-      await this.clearDocumentToLiveEmpty(docPath);
+      await this.replaceDocumentFromMarkdown(docPath, markdown);
     }
-
-    const parsedSections = getParser().parseDocumentMarkdown(markdown);
-    await this.writeFreshDocumentFromParsedMarkdown(docPath, parsedSections);
   }
 
   // ─── Structural mutations ─────────────────────────────────
@@ -1806,7 +1910,7 @@ export class ProposalShadowContentLayer {
   async readSection(ref: SectionRef): Promise<SectionBody> {
     const skeleton = await this.readSkeleton(ref.docPath);
     const entry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
-    const content = await this.readBodyFromLayers(entry.absolutePath);
+    const content = await this.readEffectiveSectionBody(entry.absolutePath);
     if (content === null) {
       throw new SectionNotFoundError(`Section not found in any layer for "${ref.docPath}" [${ref.headingPath.join(" > ")}]`);
     }
@@ -1816,27 +1920,29 @@ export class ProposalShadowContentLayer {
   // ─── Private helpers ──────────────────────────────────────
 
   /**
-   * Read body content with overlay-first then canonical fallback.
+   * Proposal-bound effective section-body reader. Given a resolved entry's
+   * proposal body-file path, resolve the section's effective body:
+   *   - a STAGED proposal body wins (the file exists under the proposal root) —
+   *     and a staged EMPTY body is real content (that is how a user-cleared body
+   *     is represented; it is never second-guessed at read time);
+   *   - canonical body content is inherited ONLY when the proposal has no staged
+   *     body for that section (the proposal file is absent);
+   *   - `null` means absent in both layers.
    *
-   * Overlay shadowing rule (paired with `DocumentSkeletonInternal.writeTree()`):
-   * an overlay file with empty content is treated as INTENTIONAL — that's how
-   * a user-cleared body is represented. Structural body-holder placeholders
-   * MUST NOT be synthesized in the overlay when canonical already has the body
-   * file; that suppression happens at the WRITE site (`writeTree`), not here.
-   * This reader therefore does not (and must not) attempt to second-guess
-   * empty overlay files at read time — the only sanctioned writer of empty
-   * overlay bodies is `ProposalShadowContentLayer.upsertSection(...)`-style intent,
-   * never raw structural-placeholder synthesis.
+   * Proposal tombstone/delete ("absent") is enforced upstream: callers resolve
+   * entries against the effective (tombstone-first) state before reading, so a
+   * tombstoned document never reaches this reader. Body-holder placeholders are
+   * suppressed at the WRITE site (`writeTree`), not here.
    */
-  private async readBodyFromLayers(overlayPath: string): Promise<string | null> {
+  private async readEffectiveSectionBody(proposalBodyPath: string): Promise<string | null> {
     try {
-      return await readFile(overlayPath, "utf8");
+      return await readFile(proposalBodyPath, "utf8");
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
     const canonicalPath = path.join(
       this.canonicalRoot,
-      path.relative(this.overlayRoot, overlayPath),
+      path.relative(this.overlayRoot, proposalBodyPath),
     );
     try {
       return await readFile(canonicalPath, "utf8");
@@ -1847,38 +1953,71 @@ export class ProposalShadowContentLayer {
   }
 
   /**
-   * Write-path invariant gate:
-   * a real overlay body write must never occur before the overlay skeleton
-   * exists for that document.
-   *
-   * This intentionally does NOT run on read paths.
+   * Carry-forward body read: the section's body is about to be preserved into
+   * another section (merge / absorb-orphan / collapse-parent). A missing body
+   * file in BOTH layers is data corruption, so this throws rather than silently
+   * substituting "" and losing the carried-forward content. Follows the
+   * codebase's `require*` get-or-throw naming. Comparison / no-op reads that
+   * legitimately tolerate an absent body keep `readEffectiveSectionBody(...) ?? ""`.
    */
-  private async ensureOverlaySkeletonForWrite(docPath: string): Promise<void> {
+  private async requireEffectiveSectionBody(
+    proposalBodyPath: string,
+    docPath: string,
+    sectionLabel: string,
+  ): Promise<string> {
+    const content = await this.readEffectiveSectionBody(proposalBodyPath);
+    if (content === null) {
+      throw new DocumentAssemblyError(
+        `Section "${sectionLabel}" in document "${docPath}" is referenced by the skeleton but has no body file in any layer. ` +
+        `This indicates data corruption — the skeleton and section files are out of sync.`,
+      );
+    }
+    return content;
+  }
+
+  /**
+   * Write-path invariant gate + first-edit canonical initialization: a real
+   * proposal body write must never occur before the proposal skeleton exists for
+   * that document. When the first proposal-local edit targets a document inherited
+   * from canonical (no proposal skeleton yet, but live via canonical fallback),
+   * this initializes the proposal skeleton from canonical so the body write has a
+   * proposal-owned skeleton to attach to.
+   *
+   * This is the proposal write implementation's own operation — it runs only on
+   * write paths, never on reads.
+   */
+  private async ensureProposalSkeletonForWrite(docPath: string): Promise<void> {
     if (this.overlayRoot === this.canonicalRoot) return;
     if (await skeletonFileExists(docPath, this.overlayRoot)) return;
 
     const state = await this.getDocumentState(docPath);
     if (state === "tombstone") {
-      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this overlay.`);
+      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this proposal.`);
     }
     if (state === "missing") {
       throw new DocumentNotFoundError(`Document "${docPath}" does not exist.`);
     }
 
-    const skeleton = await DocumentSkeletonInternal.mutableFromDisk(
-      docPath,
-      this.overlayRoot,
-      this.canonicalRoot,
-    );
-    await skeleton.materializeOverlayIfMissing();
+    // First proposal-local edit on an inherited canonical document: materialize
+    // the inherited structure into the proposal root (canonical body fallback is
+    // preserved by the injected placeholder-suppression policy).
+    const skeleton = await this.loadWritableSkeleton(docPath);
+    await skeleton.materializeInheritedSkeletonFromCanonical();
   }
 
+  /**
+   * Proposal-native body-write guard: a section body may only be written for an
+   * `entry` already resolved from the current proposal mutation context, and only
+   * after the proposal skeleton for the document exists (the guard above runs
+   * first, initializing it from canonical on the first inherited edit). There is
+   * no path to write a body for an unresolved/arbitrary heading.
+   */
   private async writeOverlayBodyFile(
     docPath: string,
     entry: ContentEntry | FlatEntry,
     content: string,
   ): Promise<void> {
-    await this.ensureOverlaySkeletonForWrite(docPath);
+    await this.ensureProposalSkeletonForWrite(docPath);
     await writeBodyFile(entry, content);
   }
 
@@ -1906,7 +2045,7 @@ export class ProposalShadowContentLayer {
     const orphanBody = stripLeadingNewlines(body);
     if ((orphanBody as string).trim()) {
       const existingMergeBody = bodyFromDisk(
-        (await this.readBodyFromLayers(deletion.mergeTarget.absolutePath)) ?? "",
+        await this.requireEffectiveSectionBody(deletion.mergeTarget.absolutePath, skeleton.docPath, deletion.mergeTarget.sectionFile),
       );
       await this.writeOverlayBodyFile(
         skeleton.docPath,
@@ -1960,7 +2099,7 @@ export class ProposalShadowContentLayer {
     const bodiesBySectionFile = new Map<string, string>();
     for (const entry of subtreeEntries) {
       if (entry.isSubSkeleton) continue;
-      const content = await this.readBodyFromLayers(entry.absolutePath);
+      const content = await this.readEffectiveSectionBody(entry.absolutePath);
       if (content !== null) {
         bodiesBySectionFile.set(entry.sectionFile, content);
       }
@@ -1968,7 +2107,7 @@ export class ProposalShadowContentLayer {
 
     // Pre-read the merge target's body BEFORE the collapse. The merge
     // target may transition from leaf to parent when promoted children are
-    // reparented under it, causing flushToOverlay to overwrite its body
+    // reparented under it, causing persistSkeletonTree to overwrite its body
     // file with skeleton markers. Capturing the body now ensures it can
     // be restored to the new body-holder location afterward.
     const targetBH = subtreeEntries.find(e => isBodyHolderShape(e));
@@ -1977,7 +2116,7 @@ export class ProposalShadowContentLayer {
     if (targetBH) {
       const preTarget = skeleton.findPreviousBodyHolder(targetBH.sectionFile);
       if (preTarget) {
-        mergeTargetPreBody = await this.readBodyFromLayers(preTarget.absolutePath) ?? "";
+        mergeTargetPreBody = await this.requireEffectiveSectionBody(preTarget.absolutePath, skeleton.docPath, preTarget.sectionFile);
         preMergeTargetSF = preTarget.sectionFile;
       }
     }
@@ -2020,7 +2159,7 @@ export class ProposalShadowContentLayer {
     }
 
     // Merge orphan body into the merge target. Always use the pre-read
-    // snapshot when available — flushToOverlay may have created an empty
+    // snapshot when available — persistSkeletonTree may have created an empty
     // body-holder file in the overlay that shadows the canonical version,
     // or may have overwritten the old leaf file with skeleton markers
     // (leaf-to-parent transition). Reading from disk after the collapse
@@ -2031,7 +2170,7 @@ export class ProposalShadowContentLayer {
     // The merge target body must be written whenever:
     // (a) it was just created (needs initial content), or
     // (b) orphan content needs to be appended, or
-    // (c) the merge target had pre-existing content that flushToOverlay
+    // (c) the merge target had pre-existing content that persistSkeletonTree
     //     may have clobbered (pre-read is non-empty).
     const hasPreReadBody = mergeTargetPreBody !== null && mergeTargetPreBody.trim().length > 0;
 
@@ -2175,7 +2314,7 @@ export class ProposalShadowContentLayer {
     // dropped body content for canonical-only sections (the overlay file
     // simply does not exist yet), causing rename to silently empty the
     // section.
-    const oldBody = (await this.readBodyFromLayers(oldEntry.absolutePath)) ?? "";
+    const oldBody = (await this.readEffectiveSectionBody(oldEntry.absolutePath)) ?? "";
 
     const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
       const parentPath = headingPath.slice(0, -1);
@@ -2284,19 +2423,20 @@ export class ProposalShadowContentLayer {
    * This is distinct from `deleteSubtree` (which deletes the children) and from
    * `moveSubtree` (which RE-KEYS the moved nodes — breaking the live identity).
    *
-   * TODO(WS-2 parent-collapse): NOT YET IMPLEMENTED. This stub currently delegates
-   * to `deleteSubtree`, which WIPES the children and loses the body — the failing
-   * tests in `__tests__/crdt/parent-heading-deletion.test.ts` pin the intended
-   * behavior at all three layers (feature / markdown-tree / skeleton-file+ids).
-   * Replace the body below with an id-preserving re-parent inside
-   * `applyStructuralMutationTransaction`: locate the target node in its parent's
-   * sibling list, splice its non-body-holder children INTO that slot (keeping the
-   * child node objects → ids preserved), merge the target's body-holder body into
-   * the predecessor section, and drop the now-childless target node. Emit the
-   * relocated children as removed-at-old-path + added-at-new-path with the SAME
-   * sectionFile so the flush moves the files without a re-key.
+   * The id-preserving re-parent runs inside `applyStructuralMutationTransaction`:
+   * locate the target node in its parent's sibling list, splice its non-body-holder
+   * children INTO the predecessor (keeping the child node objects → ids preserved),
+   * merge the target's body-holder body into the predecessor section, and drop the
+   * now-childless target node. Returns the engine's `{ removed, added }` flat
+   * entries (relocated children appear as removed-at-old-path + added-at-new-path
+   * with the SAME sectionFile) so a caller (e.g. the quiescence merge reflection)
+   * can remap its section-claim manifest from the OLD to the NEW descendant paths
+   * without re-deriving the whole proposal.
    */
-  async removeHeadingPreservingChildren(docPath: string, headingPath: string[]): Promise<void> {
+  async removeHeadingPreservingChildren(
+    docPath: string,
+    headingPath: string[],
+  ): Promise<{ removed: FlatEntry[]; added: FlatEntry[] }> {
     if (headingPath.length === 0) {
       throw new Error(`Cannot delete the before-first-heading section's heading in ${docPath}.`);
     }
@@ -2332,7 +2472,7 @@ export class ProposalShadowContentLayer {
     const bodyById = new Map<string, string>();
     let targetOwnBody = "" as SectionBody;
     for (const entry of skeleton.subtreeEntries(headingPath)) {
-      const body = bodyFromDisk((await this.readBodyFromLayers(entry.absolutePath)) ?? "");
+      const body = bodyFromDisk((await this.readEffectiveSectionBody(entry.absolutePath)) ?? "");
       bodyById.set(entry.sectionFile, body);
       if (headingPathKey(entry.headingPath) === headingPathKey(headingPath)) {
         // The target's OWN direct body (its body-holder, or itself if a leaf).
@@ -2341,7 +2481,7 @@ export class ProposalShadowContentLayer {
     }
     const predecessorEntry = skeleton.findContentEntryByHeadingPath(predecessorPath);
     const predecessorOldBody = predecessorEntry
-      ? bodyFromDisk((await this.readBodyFromLayers(predecessorEntry.absolutePath)) ?? "")
+      ? bodyFromDisk((await this.readEffectiveSectionBody(predecessorEntry.absolutePath)) ?? "")
       : ("" as SectionBody);
     const predecessorOldAbsolutePath = predecessorEntry?.absolutePath ?? null;
     const mergedPredecessorBody = appendToBody(predecessorOldBody, targetOwnBody);
@@ -2432,6 +2572,7 @@ export class ProposalShadowContentLayer {
         write.content,
       );
     }
+    return { removed: plan.removed, added: plan.added };
   }
 
   /**
@@ -2506,7 +2647,7 @@ export class ProposalShadowContentLayer {
     for (const entry of preEntries) {
       if (entry.isSubSkeleton) continue;
       const relKey = entry.headingPath.slice(headingPath.length - 1).join("\u0000");
-      preBodies.set(relKey, (await this.readBodyFromLayers(entry.absolutePath)) ?? "");
+      preBodies.set(relKey, (await this.readEffectiveSectionBody(entry.absolutePath)) ?? "");
     }
 
     const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
@@ -2648,9 +2789,18 @@ export class ProposalShadowContentLayer {
    * list, preserving the targeted slot in its parent.
    *
    * The parsed section list is interpreted structurally via its parsed
-   * `headingPath` relationships, not by ad hoc level bucketing. `headingPath=[]`
-   * is legal here and means "rewrite the unnamed root/BFH target" just like
-   * any other section target.
+   * `headingPath` relationships, not by ad hoc level bucketing.
+   *
+   * `headingPath=[]` is ILLEGAL here. `[]` is never a subtree-rewrite target:
+   * a before-first-heading write is body-only
+   * (`writeSectionBodyVerbatim(...)`), and a whole-document structural
+   * rewrite is a document-level operation
+   * (`replaceWholeDocumentFromParsedMarkdown(...)` /
+   * `writeFreshDocumentFromParsedMarkdown(...)`, reached via
+   * `upsertDocumentFromMarkdown(...)`). Passing `[]` here would parse BFH body
+   * text into root replacement nodes and silently rewrite the whole document.
+   * A real top-level section (`headingPath.length === 1`, hence
+   * `parentPath === []`) is the shallowest legal target.
    *
    * Item 369 — `options.leadingOrphanBody`:
    * When the user-supplied markdown contained content BEFORE the target
@@ -2674,6 +2824,14 @@ export class ProposalShadowContentLayer {
     parsedSections: ReadonlyArray<ParsedMarkdownRewriteSection>,
     options?: { leadingOrphanBody?: SectionBody },
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+    if (headingPath.length === 0) {
+      throw new Error(
+        `rewriteSubtreeFromParsedMarkdown called with headingPath=[] in ${docPath}. ` +
+        `'[]' is not a subtree target — a before-first-heading write is body-only ` +
+        `(writeSectionBodyVerbatim(...)) and a whole-document rewrite is a ` +
+        `document-level operation (upsertDocumentFromMarkdown(...)).`,
+      );
+    }
     const skeleton = await this.getWritableSkeleton(docPath);
     const targetNode = skeleton.findStructuralNodeByHeadingPath(headingPath);
     if (!targetNode) {
@@ -2691,14 +2849,11 @@ export class ProposalShadowContentLayer {
     // fresh one. `subtreeEntries` returns content entries (body-holders + leaves,
     // sub-skeleton parents filtered out) with absolute heading paths — exactly
     // the resulting-path keys `buildRewriteReplacementRoots` matches against.
+    // `headingPath` is guaranteed non-empty by the guard above, so
+    // `subtreeEntries(headingPath)` (illegal on `[]`) is always safe here.
     const existingContentByResultingPath = new Map<string, string>();
-    // `subtreeEntries([])` is illegal (the before-first-heading / whole-document
-    // root has no single subtree); only a real (non-root) heading path has an
-    // existing subtree whose ids can be reused.
-    if (headingPath.length > 0) {
-      for (const existing of skeleton.subtreeEntries(headingPath)) {
-        existingContentByResultingPath.set(headingPathKey(existing.headingPath), existing.sectionFile);
-      }
+    for (const existing of skeleton.subtreeEntries(headingPath)) {
+      existingContentByResultingPath.set(headingPathKey(existing.headingPath), existing.sectionFile);
     }
     const { replacementRoots, bodyByResultingHeadingPath } = buildRewriteReplacementRoots(
       parentPath,
@@ -2727,7 +2882,7 @@ export class ProposalShadowContentLayer {
       preMutationMergeTarget = skeleton.findPreviousBodyHolder(targetNode.sectionFile);
       if (preMutationMergeTarget) {
         existingMergeBody = bodyFromDisk(
-          (await this.readBodyFromLayers(preMutationMergeTarget.absolutePath)) ?? "",
+          (await this.readEffectiveSectionBody(preMutationMergeTarget.absolutePath)) ?? "",
         );
       }
     }
@@ -2946,7 +3101,7 @@ export class ProposalShadowContentLayer {
     }
     if (leafParentPath !== null) {
       const entry = skeleton.requireContentEntryByHeadingPath(leafParentPath);
-      leafParentBody = bodyFromDisk((await this.readBodyFromLayers(entry.absolutePath)) ?? "");
+      leafParentBody = bodyFromDisk((await this.readEffectiveSectionBody(entry.absolutePath)) ?? "");
     }
 
     const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
@@ -3124,15 +3279,11 @@ export class ProposalShadowContentLayer {
    * skeleton cache to invalidate.
    */
   async tombstoneDocumentExplicit(docPath: string): Promise<void> {
+    // Proposal deletion MEANING: remove the proposal skeleton + its sections tree,
+    // then drop the single-root tombstone marker via the DS storage primitive.
     const overlaySkeletonPath = resolveSkeletonPath(docPath, this.overlayRoot);
-    const tombstonePath = resolveTombstonePath(docPath, this.overlayRoot);
-    await mkdir(path.dirname(tombstonePath), { recursive: true });
     await rm(overlaySkeletonPath, { force: true });
     await rm(`${overlaySkeletonPath}.sections`, { recursive: true, force: true });
-    await writeFile(
-      tombstonePath,
-      `This file marks file ${normalizeDocPath(docPath)} to be deleted when this proposal is committed\n`,
-      "utf8",
-    );
+    await writeTombstoneMarker(docPath, this.overlayRoot);
   }
 }

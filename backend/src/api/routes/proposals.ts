@@ -1,35 +1,54 @@
 import { type Router } from "express";
-import type {
+import {
   CreateProposalRequest,
+  UpdateProposalManifestRequest,
+  ReplaceProposalSectionsRequest,
+  WriteProposalDocumentSectionsRequest,
+} from "../../types/shared.js";
+import type {
   CreateProposalResponse,
   CommitProposalResponse,
   WithdrawProposalResponse,
   AcquireLocksResponse,
-  UpdateProposalRequest,
   ListProposalsResponse,
   ReadProposalResponse,
-  ProposalStatus,
+  GetDocumentSectionsResponse,
+  GetProposalSectionsResponse,
   WsServerEvent,
 } from "../../types/shared.js";
 import {
   sendApiError,
   requireAuthenticatedWriter,
+  requireDocReadPermission,
   checkWritePermission,
 } from "./middleware.js";
 import {
   isProposalStatus,
   listProposalsForStatusFilter,
   listMyProposals,
+  listDegradedProposalsUseCase,
   readProposalDto,
   validateCreateProposal,
   createProposalUseCase,
   modifyProposalUseCase,
+  replaceProposalSectionsUseCase,
+  writeProposalDocumentSectionsUseCase,
   acquireLocksUseCase,
   commitProposalUseCase,
   cancelProposalUseCase,
   ProposalNotFoundError,
   InvalidProposalStateError,
 } from "../application/proposals.js";
+import {
+  readProposalSectionList,
+  readProposalAllSections,
+  verifyProposalForRead,
+  broadcastAgentReading,
+  SectionsReadForbiddenError,
+  DocumentNotFoundError,
+  InvalidDocPathError,
+  DocumentAssemblyError,
+} from "../application/sections.js";
 import {
   emitProposalDraftEventsByDoc,
   emitProposalInProgressEventsByDoc,
@@ -49,7 +68,12 @@ export function registerProposalRoutes(
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
 
-      const body = req.body as CreateProposalRequest;
+      const parsed = CreateProposalRequest.parse(req.body);
+      if (!parsed.ok) {
+        sendApiError(res, 400, parsed.message);
+        return;
+      }
+      const body = parsed.value;
 
       // Check write permission for all target documents
       const targetDocPaths = new Set((body.sections ?? []).map((s) => s.doc_path).filter(Boolean));
@@ -92,7 +116,7 @@ export function registerProposalRoutes(
         sendApiError(res, 400, "Invalid status filter.");
         return;
       }
-      const statusFilter = isProposalStatus(statusFilterRaw) ? (statusFilterRaw as ProposalStatus) : undefined;
+      const statusFilter = isProposalStatus(statusFilterRaw) ? statusFilterRaw : undefined;
       const proposals = await listProposalsForStatusFilter(statusFilter);
       const response: ListProposalsResponse = { proposals };
       res.json(response);
@@ -112,9 +136,22 @@ export function registerProposalRoutes(
         sendApiError(res, 400, "Invalid status filter.");
         return;
       }
-      const statusFilter = isProposalStatus(statusFilterRaw) ? (statusFilterRaw as ProposalStatus) : undefined;
+      const statusFilter = isProposalStatus(statusFilterRaw) ? statusFilterRaw : undefined;
       const myProposals = await listMyProposals(writer.id, statusFilter);
       const response: ListProposalsResponse = { proposals: myProposals };
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // GET /api/proposals/degraded — List degraded (quarantined) proposals only.
+  // Registered BEFORE /proposals/:id so the literal path is not captured by the
+  // :id param route. Scans only the degradable statuses (never full history).
+  router.get("/proposals/degraded", async (_req, res, next) => {
+    try {
+      const proposals = await listDegradedProposalsUseCase();
+      const response: ListProposalsResponse = { proposals };
       res.json(response);
     } catch (error) {
       next(error);
@@ -136,13 +173,20 @@ export function registerProposalRoutes(
     }
   });
 
-  // PUT /api/proposals/:id — Modify proposal sections
+  // PUT /api/proposals/:id — Update the proposal MANIFEST (intent + target scope)
+  // ONLY. Staged section content is written through PUT /api/proposals/:id/sections
+  // (bulk) and PUT /api/proposals/:id/documents/:docPath/sections (per-document).
   router.put("/proposals/:id", async (req, res, next) => {
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
 
-      const body = req.body as UpdateProposalRequest;
+      const parsed = UpdateProposalManifestRequest.parse(req.body);
+      if (!parsed.ok) {
+        sendApiError(res, 400, parsed.message);
+        return;
+      }
+      const body = parsed.value;
       const result = await modifyProposalUseCase(req.params.id, writer, body);
       if (!result.ok) {
         sendApiError(res, result.status, result.message);
@@ -163,6 +207,152 @@ export function registerProposalRoutes(
         return;
       }
       res.json({ proposal: result.updated });
+    } catch (error) {
+      if (error instanceof ProposalNotFoundError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      if (error instanceof InvalidProposalStateError) {
+        sendApiError(res, 409, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // GET /api/proposals/:id/sections — bulk read of the effective proposal-scoped
+  // section list + content for every document the proposal targets.
+  router.get("/proposals/:id/sections", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      try {
+        await verifyProposalForRead(req.params.id, writer.id);
+      } catch (error) {
+        if (error instanceof SectionsReadForbiddenError) {
+          sendApiError(res, 403, error.message);
+          return;
+        }
+        throw error;
+      }
+
+      const { documents } = await readProposalAllSections(req.params.id);
+      const response: GetProposalSectionsResponse = { proposal_id: req.params.id, documents };
+      res.json(response);
+    } catch (error) {
+      if (error instanceof ProposalNotFoundError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      if (error instanceof DocumentAssemblyError) {
+        sendApiError(res, 500, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // GET /api/proposals/:id/documents/:docPath/sections — effective proposal-scoped
+  // section list + content for a single document (proposal-content-first with
+  // canonical fallback).
+  router.get("/proposals/:id/documents/:docPath(*)/sections", async (req, res, next) => {
+    try {
+      const docPath = req.params.docPath;
+      const access = await requireDocReadPermission(req, res, docPath);
+      if (!access) return;
+
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      try {
+        await verifyProposalForRead(req.params.id, writer.id);
+      } catch (error) {
+        if (error instanceof SectionsReadForbiddenError) {
+          sendApiError(res, 403, error.message);
+          return;
+        }
+        throw error;
+      }
+
+      const { response, headingPaths } = await readProposalSectionList(req.params.id, docPath);
+      broadcastAgentReading(req, docPath, headingPaths, onWsEvent);
+
+      const out: GetDocumentSectionsResponse = response;
+      res.json(out);
+    } catch (error) {
+      if (error instanceof ProposalNotFoundError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      if (error instanceof DocumentAssemblyError) {
+        sendApiError(res, 500, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // PUT /api/proposals/:id/sections — bulk staged-content replace across docs.
+  router.put("/proposals/:id/sections", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      const parsed = ReplaceProposalSectionsRequest.parse(req.body);
+      if (!parsed.ok) {
+        sendApiError(res, 400, parsed.message);
+        return;
+      }
+      const result = await replaceProposalSectionsUseCase(req.params.id, writer, parsed.value);
+      if (!result.ok) {
+        sendApiError(res, result.status, result.message);
+        return;
+      }
+      res.json({ proposal: result.proposal });
+    } catch (error) {
+      if (error instanceof ProposalNotFoundError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      if (error instanceof InvalidProposalStateError) {
+        sendApiError(res, 409, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // PUT /api/proposals/:id/documents/:docPath/sections — per-document staged write.
+  router.put("/proposals/:id/documents/:docPath(*)/sections", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      const parsed = WriteProposalDocumentSectionsRequest.parse(req.body);
+      if (!parsed.ok) {
+        sendApiError(res, 400, parsed.message);
+        return;
+      }
+      const result = await writeProposalDocumentSectionsUseCase(
+        req.params.id,
+        writer,
+        req.params.docPath,
+        parsed.value,
+      );
+      if (!result.ok) {
+        sendApiError(res, result.status, result.message);
+        return;
+      }
+      res.json({ proposal: result.proposal });
     } catch (error) {
       if (error instanceof ProposalNotFoundError) {
         sendApiError(res, 404, error);

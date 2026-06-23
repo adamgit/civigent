@@ -14,7 +14,7 @@ import { readAssembledDocument, DocumentNotFoundError } from "../../storage/docu
 import { readSectionWithHeading, SectionNotFoundError } from "../../storage/section-reader.js";
 import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
-import { ProposalEditor } from "../../storage/proposal-editor.js";
+import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import {
   readDocumentStructure,
@@ -30,14 +30,12 @@ import {
   listCommittedProposals,
   listWithdrawnProposals,
   findDraftProposalByWriter,
-  updateProposalSections,
   transitionToWithdrawn,
   isProposalMutable,
   isCrdtOwnedProposal,
   ProposalNotFoundError,
   InvalidProposalStateError,
 } from "../../storage/proposal-repository.js";
-import type { ProposalStatus } from "../../types/shared.js";
 import {
   evaluateAgentWritePolicy,
   commitProposalToCanonical,
@@ -47,7 +45,7 @@ import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
 import type { HumanInvolvementPolicyResult } from "../../types/shared.js";
-import { buildFragmentContent, bodyAsFragment } from "../../storage/section-formatting.js";
+import { buildFragmentContent, fragmentFromBodyHolder, sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
 import { checkDocPermission } from "../../auth/acl.js";
 import { emitCatalogMutationEvents, summarizeProposalCatalogMutations } from "../catalog-events.js";
 import {
@@ -68,8 +66,9 @@ import {
 const listDocumentsHandler: ToolHandler = async (args, ctx) => {
   const root = args.root as string | undefined;
   try {
-    const documents = await listReadableDocuments(ctx.writer, root);
-    return jsonToolResult({ documents });
+    const { rows, failures } = await listReadableDocuments(ctx.writer, root);
+    // Surface per-row read failures explicitly (claim-review 04) — never drop them.
+    return jsonToolResult({ documents: rows, ...(failures.length > 0 ? { failures } : {}) });
   } catch (error) {
     if (error instanceof DiscoveryValidationError) {
       return makeToolErrorResult(error.message);
@@ -84,8 +83,9 @@ const listDocumentsHandler: ToolHandler = async (args, ctx) => {
 const listSectionsHandler: ToolHandler = async (args, ctx) => {
   const pathScope = args.path as string | undefined;
   try {
-    const sections = await listReadableSections(ctx.writer, pathScope);
-    return jsonToolResult({ sections });
+    const { rows, failures } = await listReadableSections(ctx.writer, pathScope);
+    // Surface per-row read failures explicitly (claim-review 04) — never drop them.
+    return jsonToolResult({ sections: rows, ...(failures.length > 0 ? { failures } : {}) });
   } catch (error) {
     if (error instanceof DiscoveryValidationError) {
       return makeToolErrorResult(error.message);
@@ -316,24 +316,23 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
     })),
   );
 
-  // Write section content through ProposalEditor — skeleton resolution,
-  // ancestor auto-creation, and parser-driven subtree rewrite are handled
-  // internally by writeSection(...). Per items 246/258, the previous
-  // splitTargets reaction (which captured `writeSection`'s return value
-  // and post-hoc updated the proposal's section metadata when content
-  // was auto-split) has been deleted. The proposal's section metadata
-  // remains keyed to the originally-requested target headings; if a
-  // caller's payload contained embedded headings that triggered an
-  // internal subtree rewrite, the originating target heading is still
-  // the canonical proposal anchor and any newly-materialized child
-  // headings are derivable from a subsequent document read rather than
-  // from a side-channel return value.
-  const editor = ProposalEditor.open(mcpProposalId, "draft");
-
+  // Write section content AND derive the manifest from the REAL parser-expanded
+  // write result through the single manifest-owning boundary (Claim 3): when a
+  // payload contains embedded headings that expand into real sections, the
+  // manifest records all of them, not just the originally-requested target.
   for (const s of sections) {
-    const ref = SectionRef.fromTarget(s);
-    const heading = ref.headingPath.length === 0 ? "" : ref.headingPath[ref.headingPath.length - 1]!;
-    await editor.writeSection(ref.docPath, ref.headingPath, heading, s.content);
+    // Pass the RAW declared doc_path/heading_path (matching the form `createProposal`
+    // stored) so manifest derivation dedups against the declared section and
+    // preserves its justification (the agent-write-policy bypass, spec 12).
+    const heading = s.heading_path.length === 0 ? "" : s.heading_path[s.heading_path.length - 1]!;
+    await mutateProposalContent(mcpProposalId, {
+      kind: "write_section",
+      docPath: s.doc_path,
+      headingPath: s.heading_path,
+      heading,
+      content: sectionWriteInputFromExternal(s.content),
+      justification: s.justification,
+    });
   }
 
   // Evaluate immediately (informational — agent must call publish_proposal explicitly)
@@ -345,7 +344,10 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
       type: "proposal:draft",
       proposal_id: mcpProposalId,
       doc_path: policyResult.targets[0].target.doc_path,
-      heading_paths: policyResult.targets.map((t) => t.target.heading_path),
+      heading_paths: policyResult.targets
+        .map((t) => t.target)
+        .filter((tt) => tt.kind === "section")
+        .map((tt) => (tt as { heading_path: string[] }).heading_path),
       writer_id: writer.id,
       writer_display_name: writer.displayName,
       intent,
@@ -597,7 +599,7 @@ const readProposalSectionHandler: ToolHandler = async (args) => {
 
     let content;
     if (headingPath.length === 0) {
-      content = bodyAsFragment(body);
+      content = fragmentFromBodyHolder(body);
     } else {
       const section = (await reader.getSectionList(docPath)).find((entry) =>
         entry.headingPath.length === headingPath.length
@@ -666,38 +668,21 @@ const writeProposalSectionHandler: ToolHandler = async (args, ctx) => {
       return makeToolErrorResult(`Cannot modify proposal in ${proposal.status} state.`);
     }
 
-    // Update the proposal with the new/modified section
-    const existingSections = proposal.sections.filter(
-      (s) => !(s.doc_path === docPath && JSON.stringify(s.heading_path) === JSON.stringify(headingPath)),
-    );
+    // Write section content AND derive the manifest from the REAL parser-expanded
+    // write result through the single manifest-owning boundary (Claim 3). This
+    // restores post-split section expansion into the manifest: when the payload
+    // contains embedded headings that expand into real sections, the manifest now
+    // records all of them rather than only the originally-requested target.
+    const heading = headingPath.length === 0 ? "" : headingPath[headingPath.length - 1]!;
+    const { proposal: updated } = await mutateProposalContent(proposalId, {
+      kind: "write_section",
+      docPath,
+      headingPath,
+      heading,
+      content: sectionWriteInputFromExternal(content),
+      justification,
+    });
 
-    const updatedSections = [
-      ...existingSections,
-      { doc_path: docPath, heading_path: headingPath, justification },
-    ];
-
-    const { proposal: updated } = await updateProposalSections(
-      proposalId,
-      updatedSections,
-    );
-
-    // Write section content through ProposalEditor. Per items
-    // 246/260, the previous splitTargets reaction (which captured
-    // `writeSection`'s return value and post-hoc updated proposal
-    // section metadata when auto-split occurred) has been deleted. The
-    // proposal's section metadata stays keyed to the originally-
-    // requested target heading; any internal subtree rewrite triggered
-    // by embedded headings in the user payload no longer leaks back
-    // through a side-channel return value.
-    const editor = ProposalEditor.open(proposalId, updated.status as ProposalStatus);
-    {
-      const heading = headingPath.length === 0 ? "" : headingPath[headingPath.length - 1]!;
-      await editor.writeSection(docPath, headingPath, heading, content);
-    }
-
-    // Broadcast proposal:draft with the updated proposal we already
-    // have in hand (no re-read needed — the previous re-read existed
-    // only to catch post-split section expansion, which is gone).
     const broadcastProposal = updated;
     if (ctx.emitEvent && broadcastProposal.sections.length > 0) {
       ctx.emitEvent({

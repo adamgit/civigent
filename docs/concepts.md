@@ -197,21 +197,19 @@ The system is designed so that a server crash never leaves a document in an unus
 
 ### How your edits are saved
 
-When you edit a document, your changes are held in a live editing session and periodically flushed to disk. At certain points (you close the tab, the idle timeout fires, you click "Publish Now", or the server shuts down), your changes are committed to the permanent audit log.
+When you edit a document, your changes flow continuously into a durable `inprogress` proposal — the same proposal machinery used everywhere else — so your in-flight work is always held as a structured, skeleton-resolved representation rather than a loose disk sidecar. At certain points (you close the tab, the idle timeout fires, you click "Publish Now", or the server shuts down), that work is committed to the permanent audit log.
 
-If the server crashes between flushes, the editing session data on disk is used to recover your work on the next startup.
+Because the `inprogress` proposal is durable, there is no separate session tier to flush and no per-flush data-loss window: your most recent edits are already represented in a form that survives a restart.
 
 ### What happens after a crash
 
-On restart, the system rebuilds each affected document in layers:
+On restart, the system does two things:
 
-1. **Restore to last committed version.** The document is loaded from the audit log (its last fully committed state). This always works — the document is immediately readable and editable.
+1. **Finish forward any interrupted publish.** If a publish was in flight when the crash hit (a `committing` proposal), it is finalized so canonical lands exactly the work that was being published. Recovery never rolls a publish backwards.
 
-2. **Apply saved session content.** For each section, if there is saved session data (your recent edits that weren't yet committed), it is applied on top of the committed version. Most of the time, this succeeds transparently and your edits are preserved.
+2. **Reconstruct the live document.** When a document is next opened, it is rebuilt from its `inprogress` proposal content tree when one exists (your freshest in-flight edits), otherwise from the last committed canonical state.
 
-3. **Surface anything that couldn't be applied.** In rare cases, the session data's structure is damaged and some content can't be cleanly matched to the document's sections. When this happens, the system appends a "Recovered edits" section to the bottom of the document containing the unmatched content. You can review it, move anything useful into the right place, and delete the recovery section when you're done.
-
-There are no popups, no merge-conflict dialogs, no special recovery modes. The document is always functional. Any recovered content appears as normal document content that you handle through normal editing.
+There are no popups, no merge-conflict dialogs, and no machine-generated "Recovered edits" section to clean up — because there is no parallel session tier whose structure can diverge from the document. The document is always functional, and you simply resume editing.
 
 ### Restoring from the audit log
 

@@ -1,31 +1,30 @@
 import { type Router } from "express";
+import { LiveMoveSectionRequest } from "../../types/shared.js";
 import type { GetDocumentSectionsResponse, WsServerEvent } from "../../types/shared.js";
 import {
   sendApiError,
-  requireAuthenticatedWriter,
   requireDocReadPermission,
   requireDocWritePermission,
   agentWritePolicyRouteBody,
 } from "./middleware.js";
 import {
   readSingleSection,
-  readSectionList,
-  verifyProposalForRead,
+  readCanonicalSectionList,
   deleteSectionUseCase,
   moveSectionUseCase,
   renameSectionUseCase,
+  liveMoveSectionUseCase,
   hasActiveSession,
   broadcastAgentReading,
-  SectionsReadForbiddenError,
   SectionNotFoundForMoveError,
   SectionNotFoundError,
   HeadingNotFoundError,
   InvalidDocPathError,
   DocumentNotFoundError,
   DocumentAssemblyError,
-  ProposalNotFoundError,
 } from "../application/sections.js";
 import { emitDocStructureChanged, resolveSectionFragmentKey } from "../application/events.js";
+import { QueryParamError, optionalStringParam } from "../helpers/query-params.js";
 
 // Helper: parse heading path from URL param (colon-separated)
 function parseHeadingPathParam(raw: string): string[] {
@@ -39,8 +38,8 @@ export function registerSectionRoutes(
   // GET /sections — read a single section by query params
   router.get("/sections", async (req, res, next) => {
     try {
-      const docPath = req.query.doc_path as string;
-      const headingPathRaw = req.query.heading_path as string;
+      const docPath = optionalStringParam(req.query.doc_path, "doc_path");
+      const headingPathRaw = optionalStringParam(req.query.heading_path, "heading_path");
 
       if (!docPath || !headingPathRaw) {
         sendApiError(res, 400, "doc_path and heading_path query params are required.");
@@ -53,6 +52,10 @@ export function registerSectionRoutes(
       broadcastAgentReading(req, docPath, [headingPath], onWsEvent);
       res.json(response);
     } catch (error) {
+      if (error instanceof QueryParamError) {
+        sendApiError(res, 400, error);
+        return;
+      }
       if (error instanceof SectionNotFoundError || error instanceof HeadingNotFoundError) {
         sendApiError(res, 404, error);
         return;
@@ -65,45 +68,23 @@ export function registerSectionRoutes(
     }
   });
 
-  // GET /documents/:docPath/sections — section list with involvement metadata
+  // GET /documents/:docPath/sections — CANONICAL section list with involvement
+  // metadata. Proposal-scoped reads live on the dedicated
+  // `GET /api/proposals/:id/documents/:docPath/sections` route — this route is
+  // canonical-only and takes no proposal_id parameter.
   router.get("/documents/:docPath(*)/sections", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
 
-      const proposalIdQuery = req.query.proposal_id;
-      if (Array.isArray(proposalIdQuery)) {
-        sendApiError(res, 400, "proposal_id must be a single string value.");
-        return;
-      }
-      const proposalId = typeof proposalIdQuery === "string" ? proposalIdQuery.trim() : "";
-
-      if (proposalId.length > 0) {
-        const writer = requireAuthenticatedWriter(req, res);
-        if (!writer) return;
-        try {
-          await verifyProposalForRead(proposalId, writer.id);
-        } catch (error) {
-          if (error instanceof SectionsReadForbiddenError) {
-            sendApiError(res, 403, error.message);
-            return;
-          }
-          throw error;
-        }
-      }
-
-      const { response, headingPaths } = await readSectionList(docPath, proposalId);
+      const { response, headingPaths } = await readCanonicalSectionList(docPath);
       broadcastAgentReading(req, docPath, headingPaths, onWsEvent);
 
       const out: GetDocumentSectionsResponse = response;
       res.json(out);
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-        sendApiError(res, 404, error);
-        return;
-      }
-      if (error instanceof ProposalNotFoundError) {
         sendApiError(res, 404, error);
         return;
       }
@@ -190,6 +171,40 @@ export function registerSectionRoutes(
       });
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // POST /api/documents/:docPath/live-move — LIVE human drag-drop cross-section
+  // move (claim-review 03 / Option E). A refusable CONTROL operation on the open
+  // DocSession, explicitly OUTSIDE the CRDT binary protocol: 200 {ok} on success,
+  // 409 {message} (prose) on refusal. DISTINCT from the agent proposal-structure
+  // move route below.
+  router.post("/documents/:docPath(*)/live-move", async (req, res, next) => {
+    try {
+      const docPath = req.params.docPath;
+      const writer = await requireDocWritePermission(req, res, docPath);
+      if (!writer) return;
+
+      const parsed = LiveMoveSectionRequest.parse(req.body);
+      if (!parsed.ok) {
+        sendApiError(res, 400, parsed.message);
+        return;
+      }
+      const { source_heading_path, target_heading_path, position } = parsed.value;
+
+      const result = await liveMoveSectionUseCase(docPath, source_heading_path, target_heading_path, position);
+      if (!result.ok) {
+        // Apply-time refusal → 409 with the backend's prose (never a bare code).
+        sendApiError(res, 409, result.message ?? "The section move was refused.");
+        return;
+      }
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      if (error instanceof InvalidDocPathError) {
         sendApiError(res, 404, error);
         return;
       }

@@ -4,7 +4,11 @@ import { createTestServer, type TestServerContext } from "../helpers/test-server
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { authFor } from "../helpers/auth.js";
 
-describe("PUT /api/proposals/:id — modify proposal", () => {
+// PUT /api/proposals/:id now updates ONLY the manifest (intent + target scope).
+// Staged section CONTENT is written through the dedicated routes:
+//   PUT /api/proposals/:id/sections                       (bulk)
+//   PUT /api/proposals/:id/documents/:docPath/sections    (per-document)
+describe("PUT /api/proposals/:id — manifest + staged-content split", () => {
   let ctx: TestServerContext;
   let pendingProposalId: string;
   let inProgressProposalId: string;
@@ -17,7 +21,7 @@ describe("PUT /api/proposals/:id — modify proposal", () => {
     ctx = await createTestServer();
     await createSampleDocument(ctx.dataCtx.rootDir);
 
-    // Create a human_reservation proposal (stays pending)
+    // Create a human_reservation proposal (stays draft)
     const pendingRes = await request(ctx.app)
       .post("/api/proposals")
       .set("Authorization", ctx.humanToken)
@@ -88,137 +92,190 @@ describe("PUT /api/proposals/:id — modify proposal", () => {
     else process.env.KS_AUTH_MODE = prevAuthMode;
   });
 
-  it("successfully modifies a pending proposal", async () => {
+  // ── Manifest route (intent + scope only, NO content) ──────────────────
+
+  it("successfully updates a draft proposal manifest", async () => {
     const res = await request(ctx.app)
       .put(`/api/proposals/${pendingProposalId}`)
       .set("Authorization", ctx.humanToken)
       .send({
-        sections: [
-          {
-            doc_path: SAMPLE_DOC_PATH,
-            heading_path: ["Overview"],
-            content: "Updated human content.\n",
-          },
-        ],
+        intent: "Updated intent",
+        targets: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] }],
       });
 
     expect(res.status).toBe(200);
     expect(res.body.proposal).toBeDefined();
+    expect(Array.isArray(res.body.proposal.sections)).toBe(true);
   });
 
-  it("returns updated proposal with modified sections", async () => {
+  it("rejects a manifest body that carries section content fields (no content here)", async () => {
+    // The narrowed route requires `targets[]`; a body shaped like the old
+    // section-content payload (only `sections`) fails the parser.
     const res = await request(ctx.app)
       .put(`/api/proposals/${pendingProposalId}`)
       .set("Authorization", ctx.humanToken)
       .send({
         sections: [
-          {
-            doc_path: SAMPLE_DOC_PATH,
-            heading_path: ["Overview"],
-            content: "Further updated content.\n",
-          },
+          { doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"], content: "x\n" },
         ],
       });
 
-    expect(res.status).toBe(200);
-    expect(res.body.proposal.sections).toBeDefined();
-    expect(Array.isArray(res.body.proposal.sections)).toBe(true);
+    expect(res.status).toBe(400);
   });
 
-  it("returns 409 when trying to change selected sections after proposal is inprogress", async () => {
+  it("returns 409 when changing the selected scope after the proposal is inprogress", async () => {
     const res = await request(ctx.app)
       .put(`/api/proposals/${inProgressProposalId}`)
       .set("Authorization", ctx.humanToken)
       .send({
-        sections: [
-          {
-            doc_path: SAMPLE_DOC_PATH,
-            heading_path: ["Overview"],
-            content: "Attempt to drift lock scope.\n",
-          },
-        ],
+        targets: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] }],
       });
 
     expect(res.status).toBe(409);
   });
 
-  it("returns 409 if proposal is already committed", async () => {
+  it("returns 409 if the proposal is already committed", async () => {
     const res = await request(ctx.app)
       .put(`/api/proposals/${committedProposalId}`)
       .set("Authorization", ctx.agentToken)
       .send({
-        sections: [
-          {
-            doc_path: SAMPLE_DOC_PATH,
-            heading_path: [],
-            content: "Cannot modify committed.\n",
-          },
-        ],
+        targets: [{ doc_path: SAMPLE_DOC_PATH, heading_path: [] }],
       });
 
     expect(res.status).toBe(409);
   });
 
-  it("returns 403 if not proposal owner", async () => {
+  it("returns 403 if not the proposal owner", async () => {
     const otherToken = authFor("other-user", "agent");
 
     const res = await request(ctx.app)
       .put(`/api/proposals/${pendingProposalId}`)
       .set("Authorization", otherToken)
       .send({
-        sections: [
-          {
-            doc_path: SAMPLE_DOC_PATH,
-            heading_path: ["Overview"],
-            content: "Unauthorized modification.\n",
-          },
-        ],
+        targets: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] }],
       });
 
     expect(res.status).toBe(403);
   });
 
-  it("returns 404 for non-existent proposal", async () => {
+  it("returns 404 for a non-existent proposal", async () => {
     const res = await request(ctx.app)
       .put("/api/proposals/nonexistent-id-12345")
       .set("Authorization", ctx.agentToken)
       .send({
-        sections: [
-          {
-            doc_path: SAMPLE_DOC_PATH,
-            heading_path: ["Overview"],
-            content: "Update nonexistent.\n",
-          },
-        ],
+        targets: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] }],
       });
 
     expect(res.status).toBe(404);
-  });
-
-  it("accepts empty sections array for proposal updates (document-level operations)", async () => {
-    const res = await request(ctx.app)
-      .put(`/api/proposals/${pendingProposalId}`)
-      .set("Authorization", ctx.humanToken)
-      .send({
-        sections: [],
-      });
-
-    expect(res.status).toBe(200);
   });
 
   it("returns 401 without auth", async () => {
     const res = await request(ctx.app)
       .put(`/api/proposals/${pendingProposalId}`)
       .send({
+        targets: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] }],
+      });
+
+    expect(res.status).toBe(401);
+  });
+
+  // ── Bulk staged-content route (PUT /api/proposals/:id/sections) ───────
+
+  it("writes staged content in bulk and reflects it on the proposal read", async () => {
+    const writeRes = await request(ctx.app)
+      .put(`/api/proposals/${pendingProposalId}/sections`)
+      .set("Authorization", ctx.humanToken)
+      .send({
         sections: [
           {
             doc_path: SAMPLE_DOC_PATH,
             heading_path: ["Overview"],
-            content: "No auth.\n",
+            content: "Bulk-written overview content.\n",
           },
         ],
       });
+    expect(writeRes.status).toBe(200);
+    expect(writeRes.body.proposal).toBeDefined();
 
-    expect(res.status).toBe(401);
+    const readRes = await request(ctx.app)
+      .get(`/api/proposals/${pendingProposalId}/documents/${SAMPLE_DOC_PATH}/sections`)
+      .set("Authorization", ctx.humanToken);
+    expect(readRes.status).toBe(200);
+    const overview = readRes.body.sections.find(
+      (s: { heading_path: string[] }) =>
+        s.heading_path.length === 1 && s.heading_path[0] === "Overview",
+    );
+    expect(overview?.content).toContain("Bulk-written overview content.");
+  });
+
+  it("bulk staged-content write returns 403 for a non-owner", async () => {
+    const otherToken = authFor("other-user", "agent");
+    const res = await request(ctx.app)
+      .put(`/api/proposals/${pendingProposalId}/sections`)
+      .set("Authorization", otherToken)
+      .send({
+        sections: [
+          { doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"], content: "nope\n" },
+        ],
+      });
+    expect(res.status).toBe(403);
+  });
+
+  it("bulk staged-content write returns 409 for a committed proposal", async () => {
+    const res = await request(ctx.app)
+      .put(`/api/proposals/${committedProposalId}/sections`)
+      .set("Authorization", ctx.agentToken)
+      .send({
+        sections: [
+          { doc_path: SAMPLE_DOC_PATH, heading_path: [], content: "nope\n" },
+        ],
+      });
+    expect(res.status).toBe(409);
+  });
+
+  // ── Per-document staged-content route ─────────────────────────────────
+
+  it("writes staged content for a single document via the per-document route", async () => {
+    const writeRes = await request(ctx.app)
+      .put(`/api/proposals/${pendingProposalId}/documents/${SAMPLE_DOC_PATH}/sections`)
+      .set("Authorization", ctx.humanToken)
+      .send({
+        sections: [
+          { heading_path: ["Overview"], content: "Per-document overview content.\n" },
+        ],
+      });
+    expect(writeRes.status).toBe(200);
+    expect(writeRes.body.proposal).toBeDefined();
+
+    const readRes = await request(ctx.app)
+      .get(`/api/proposals/${pendingProposalId}/documents/${SAMPLE_DOC_PATH}/sections`)
+      .set("Authorization", ctx.humanToken);
+    expect(readRes.status).toBe(200);
+    const overview = readRes.body.sections.find(
+      (s: { heading_path: string[] }) =>
+        s.heading_path.length === 1 && s.heading_path[0] === "Overview",
+    );
+    expect(overview?.content).toContain("Per-document overview content.");
+  });
+
+  it("per-document staged-content write returns 404 for a non-existent proposal", async () => {
+    const res = await request(ctx.app)
+      .put(`/api/proposals/nonexistent-id-12345/documents/${SAMPLE_DOC_PATH}/sections`)
+      .set("Authorization", ctx.humanToken)
+      .send({
+        sections: [{ heading_path: ["Overview"], content: "nope\n" }],
+      });
+    expect(res.status).toBe(404);
+  });
+
+  // ── Manifest empty-scope (document-level operations) ──────────────────
+
+  it("accepts an empty targets array (document-level operations)", async () => {
+    const res = await request(ctx.app)
+      .put(`/api/proposals/${pendingProposalId}`)
+      .set("Authorization", ctx.humanToken)
+      .send({ targets: [] });
+
+    expect(res.status).toBe(200);
   });
 });

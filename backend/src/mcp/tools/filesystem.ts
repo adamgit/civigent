@@ -11,8 +11,7 @@ import { makeToolErrorResult } from "../protocol.js";
 import { readAssembledDocument, DocumentNotFoundError } from "../../storage/document-reader.js";
 import { readDocumentsTree } from "../../storage/documents-tree.js";
 import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
-import { ProposalEditor } from "../../storage/proposal-editor.js";
-import { writeDocumentsToProposalAndBuildManifest } from "../../storage/import-service.js";
+import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { readDocumentStructure, flattenStructureToHeadingPaths } from "../../storage/heading-resolver.js";
 import {
@@ -179,21 +178,16 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
     intent,
   );
 
-  // Rename the document inside the proposal: copies the effective source
-  // document to the destination path and tombstones the source. Snapshot the
-  // effective source heading paths first for proposal metadata.
-  const moveEditor = ProposalEditor.open(moveProposalId, "pending");
-  const headingPaths = await moveEditor.listHeadingPaths(source);
-  await moveEditor.renameDocument(source, destination);
-
-  // Update proposal sections to cover both source (delete) and destination
-  // (write) sections so evaluation checks contention on both.
-  const proposalSections = [
-    ...headingPaths.map((hp) => ({ doc_path: source, heading_path: hp })),
-    ...headingPaths.map((hp) => ({ doc_path: destination, heading_path: hp })),
-  ];
-  const { updateProposalSections: updateMoveProposalSections } = await import("../../storage/proposal-repository.js");
-  await updateMoveProposalSections(moveProposalId, proposalSections);
+  // Rename the document inside the proposal through the single manifest-owning
+  // boundary: copies the effective source document to the destination and
+  // tombstones the source, deriving the manifest from both the source (delete)
+  // and destination (write) heading paths so contention is evaluated on both.
+  const { manifest } = await mutateProposalContent(moveProposalId, {
+    kind: "rename_document",
+    docPath: source,
+    newPath: destination,
+  });
+  const proposalSections: Array<{ doc_path: string; heading_path: string[] }> = manifest.sections;
 
   // Agent write policy gate
   const policyResult = await evaluateAgentWritePolicy(moveProposalId);
@@ -295,18 +289,12 @@ async function writeDocumentViaProposal(
     intent,
   );
 
-  // Write each whole-document payload through the shared ProposalEditor recipe
-  // (clear/create to live-empty, then root-target upsert), reading back the
-  // normalized heading paths to build proposal section metadata.
-  const allSectionTargets = await writeDocumentsToProposalAndBuildManifest(
-    writeProposalId,
-    "pending",
-    files.map((f) => ({ docPath: f.path, content: f.content })),
-  );
-
-  // Update proposal sections to match the actual normalized structure
-  const { updateProposalSections } = await import("../../storage/proposal-repository.js");
-  await updateProposalSections(writeProposalId, allSectionTargets);
+  // Write each whole-document payload + derive the manifest from the normalized
+  // on-disk heading structure through the single manifest-owning boundary.
+  const { manifest: allSectionTargets } = await mutateProposalContent(writeProposalId, {
+    kind: "write_document_markdown",
+    files: files.map((f) => ({ docPath: f.path, markdown: f.content })),
+  });
 
   const policyResult = await evaluateAgentWritePolicy(writeProposalId);
 
@@ -333,8 +321,8 @@ async function writeDocumentViaProposal(
     if (ctx.emitEvent) {
       ctx.emitEvent({
         type: "content:committed",
-        doc_path: allSectionTargets[0]?.doc_path ?? files[0]?.path ?? "",
-        sections: allSectionTargets.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+        doc_path: allSectionTargets.sections[0]?.doc_path ?? files[0]?.path ?? "",
+        sections: allSectionTargets.sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
         commit_sha: committedHead,
         writer_id: writer.id,
         writer_display_name: writer.displayName,
@@ -418,17 +406,13 @@ async function deleteDocumentViaProposal(
     `Delete document: ${docPath}`,
   );
 
-  // Read canonical headings and write a tombstone marker via the editor.
-  const delEditor = ProposalEditor.open(delProposalId, "pending");
-  const headingPaths = await delEditor.deleteDocument(docPath);
-
-  // Update proposal sections to match the canonical structure
-  const proposalSections = headingPaths.map((hp) => ({
-    doc_path: docPath,
-    heading_path: hp,
-  }));
-  const { updateProposalSections: updateDelProposalSections } = await import("../../storage/proposal-repository.js");
-  await updateDelProposalSections(delProposalId, proposalSections);
+  // Tombstone the document + derive the manifest from the real canonical heading
+  // paths going away, through the single manifest-owning boundary.
+  const { manifest } = await mutateProposalContent(delProposalId, {
+    kind: "delete_document",
+    docPath,
+  });
+  const proposalSections: Array<{ doc_path: string; heading_path: string[] }> = manifest.sections;
 
   // Agent write policy gate
   const policyResult = await evaluateAgentWritePolicy(delProposalId);

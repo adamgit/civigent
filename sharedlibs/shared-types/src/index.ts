@@ -1,3 +1,34 @@
+// ─── JSON Boundary Helpers ─────────────────────────────────────────
+
+export type JsonObject = { readonly [key: string]: JsonValue };
+
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly JsonValue[]
+  | JsonObject;
+
+/**
+ * Parse JSON into the only shapes JSON can produce. SyntaxError is intentionally
+ * allowed to propagate with its original message and stack.
+ */
+export function parseJson(text: string): JsonValue {
+  return JSON.parse(text);
+}
+
+function isJsonArray(value: JsonValue): value is readonly JsonValue[] {
+  return Array.isArray(value);
+}
+
+export function expectJsonObject(value: JsonValue, label = "value"): JsonObject {
+  if (typeof value !== "object" || value === null || isJsonArray(value)) {
+    throw new Error(`${label} must be a JSON object, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
 // ─── Writer Identity ───────────────────────────────────────────────
 
 /**
@@ -130,15 +161,89 @@ export interface SectionTargetRef {
 }
 
 /**
- * ProposalTargetRef — identity of a thing a proposal targets, used by proposal
- * FSM lock shapes and agent-write-policy result shapes (spec 12 §Data Shapes).
+ * ProposalTargetRef — the authoritative lock/audit/policy claim a proposal makes
+ * (spec 12 §Data Shapes). A discriminated union of:
  *
- * Aliased to {@link SectionTargetRef} for now (a `{ doc_path, heading_path }`
- * pair). TODO(Area Q open question): revisit if proposals must target
- * tombstones / whole documents wider than a single section ref, in which case
- * this should become a distinct discriminated type rather than an alias.
+ *  - a SECTION target: a specific section within a document (the semantic content
+ *    unit; carries a `heading_path`).
+ *  - a DOCUMENT target: a claim on a document's path / existence / structural
+ *    identity (document create/delete/rename). NOT a semantic whole-document
+ *    content unit — a live-empty document still has a document target so the FSM
+ *    lock + audit/manifest can name the contested operation.
+ *
+ * Conflict semantics (owned by the FSM lock index, spec 12 §Proposed Abstractions):
+ * section↔same-section, document↔same-document-path, document↔every-section-under
+ * -that-path, section↔document-for-its-path. Document rename claims old + new paths.
  */
-export type ProposalTargetRef = SectionTargetRef;
+export interface ProposalSectionTargetRef {
+  kind: "section";
+  doc_path: string;
+  heading_path: string[];
+}
+
+export interface DocumentTargetRef {
+  kind: "document";
+  doc_path: string;
+}
+
+export type ProposalTargetRef = ProposalSectionTargetRef | DocumentTargetRef;
+
+// ─── Proposal target helpers (normalization, keying, display, equality) ──
+// Do NOT route document targets through SectionRef.fromTarget — document targets
+// need their own key form (spec 12 §"Add target helper functions").
+
+/** Wrap a section ref as a tagged section target. */
+export function asSectionTarget(ref: SectionTargetRef): ProposalSectionTargetRef {
+  return { kind: "section", doc_path: ref.doc_path, heading_path: [...ref.heading_path] };
+}
+
+/** Build a document target for a document path. */
+export function documentTargetRef(docPath: string): DocumentTargetRef {
+  return { kind: "document", doc_path: docPath };
+}
+
+/** Map a section view (`ProposalSection` / `SectionTargetRef`) list to section targets. */
+export function sectionsToTargets(sections: SectionTargetRef[]): ProposalSectionTargetRef[] {
+  return sections.map(asSectionTarget);
+}
+
+/** The section subset of a target list, as plain `SectionTargetRef`s (drops `kind`). */
+export function sectionTargetsOf(targets: ProposalTargetRef[]): SectionTargetRef[] {
+  return targets
+    .filter((t): t is ProposalSectionTargetRef => t.kind === "section")
+    .map((t) => ({ doc_path: t.doc_path, heading_path: [...t.heading_path] }));
+}
+
+/** A plain section ref for a section target, or null for a document target. */
+export function targetToSectionRef(target: ProposalTargetRef): SectionTargetRef | null {
+  return target.kind === "section"
+    ? { doc_path: target.doc_path, heading_path: [...target.heading_path] }
+    : null;
+}
+
+/**
+ * Stable key for a proposal target. Document and section targets live in
+ * separate key namespaces so a document key never collides with a section key.
+ */
+export function proposalTargetKey(target: ProposalTargetRef): string {
+  return target.kind === "document"
+    ? "doc::" + target.doc_path
+    : sectionGlobalKey(target.doc_path, target.heading_path);
+}
+
+/** Human-readable label for a proposal target (display/prose). */
+export function proposalTargetLabel(target: ProposalTargetRef): string {
+  if (target.kind === "document") return `${target.doc_path} (whole document)`;
+  const heading = target.heading_path.length > 0
+    ? target.heading_path.join(" > ")
+    : "(document intro)";
+  return `${target.doc_path} :: ${heading}`;
+}
+
+/** Structural equality of two proposal targets. */
+export function proposalTargetsEqual(a: ProposalTargetRef, b: ProposalTargetRef): boolean {
+  return proposalTargetKey(a) === proposalTargetKey(b);
+}
 
 // ─── Section Key Functions ─────────────────────────────────────────
 // Single source of truth for key separator format. Zero dependencies.
@@ -219,9 +324,216 @@ export interface AdminConfig {
   agent_auth_policy: AgentAuthPolicy;
 }
 
+// ─── ACL / RBAC Datatypes ──────────────────────────────────────────
+//
+// The auth model is role-based: a document requires a role for each action, and a
+// connection holds a set of effective roles. These datatypes give that model a
+// shared, validated vocabulary instead of loose `string` / `{ read?, write? }`
+// shapes. Each type ships a companion object exposing `.parse(...)` (and, where
+// useful, a `.of(...)` constructor) so the type and its trust boundary share one
+// discoverable name. Parsers consume `JsonValue` and fail loud with field-specific
+// prose; they never coerce. Brand minting for `RoleName` is confined to this
+// section's parser/constructor — there is no scattered `as RoleName` elsewhere.
+
+/** A document permission action. */
+export type AclAction = "read" | "write";
+
+export const AclAction = {
+  values: ["read", "write"] as const,
+  parse(value: JsonValue, label = "action"): AclAction {
+    if (value === "read" || value === "write") return value;
+    throw new Error(`${label} must be "read" or "write", got ${JSON.stringify(value)}`);
+  },
+};
+
+/**
+ * The three auto-granted "magic" roles. They are auto-granted based on connection
+ * state but are otherwise ordinary roles for the permission check.
+ */
+export type BuiltinRoleName = "public" | "authenticated" | "admin";
+
+export const BuiltinRoleName = {
+  values: ["public", "authenticated", "admin"] as const,
+  is(value: string): value is BuiltinRoleName {
+    return value === "public" || value === "authenticated" || value === "admin";
+  },
+  parse(value: JsonValue, label = "builtin role"): BuiltinRoleName {
+    if (typeof value === "string" && BuiltinRoleName.is(value)) return value;
+    throw new Error(
+      `${label} must be one of ${BuiltinRoleName.values.join(", ")}, got ${JSON.stringify(value)}`,
+    );
+  },
+};
+
+declare const __roleName: unique symbol;
+
+/**
+ * A role name. Branded so auth-domain functions accept/return validated role
+ * names rather than arbitrary strings. A role name is a non-empty, trimmed string;
+ * construct it only through `RoleName.of` / `RoleName.parse` (the sole minting
+ * boundary for the brand).
+ */
+export type RoleName = string & { readonly [__roleName]: true };
+
+export const RoleName = {
+  /** Widen a `RoleName` back to its underlying string (no assertion — the brand is a subtype). */
+  text(name: RoleName): string {
+    return name;
+  },
+  /** Construct a `RoleName` from a trusted in-process string, validating non-emptiness. */
+  of(value: string, label = "role name"): RoleName {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      throw new Error(`${label} must be a non-empty string`);
+    }
+    return trimmed as RoleName;
+  },
+  /** Parse a `RoleName` from an untrusted JSON value. */
+  parse(value: JsonValue, label = "role name"): RoleName {
+    if (typeof value !== "string") {
+      throw new Error(`${label} must be a string, got ${JSON.stringify(value)}`);
+    }
+    return RoleName.of(value, label);
+  },
+  /** Parse a JSON array of role names. */
+  parseArray(value: JsonValue, label = "roles"): RoleName[] {
+    if (!Array.isArray(value)) {
+      throw new Error(`${label} must be an array of strings, got ${JSON.stringify(value)}`);
+    }
+    return value.map((element, index) => RoleName.parse(element, `${label}[${index}]`));
+  },
+};
+
+/**
+ * The required roles for the read and write actions on a document (or the system
+ * defaults). Either action may be absent, meaning "inherit / unchanged".
+ */
+export interface AclPermissionSet {
+  read?: RoleName;
+  write?: RoleName;
+}
+
+export const AclPermissionSet = {
+  parse(value: JsonValue, label = "permissions"): AclPermissionSet {
+    const obj = expectJsonObject(value, label);
+    const out: AclPermissionSet = {};
+    if (obj.read !== undefined && obj.read !== null) {
+      out.read = RoleName.parse(obj.read, `${label}.read`);
+    }
+    if (obj.write !== undefined && obj.write !== null) {
+      out.write = RoleName.parse(obj.write, `${label}.write`);
+    }
+    return out;
+  },
+};
+
+// ── ACL / RBAC API contracts ───────────────────────────────────────
+//
+// Request-contract companions return a `RequestParseResult` rather than throwing,
+// so a route boundary can map an invalid body to `400` prose
+// (`if (!parsed.ok) { sendApiError(res, 400, parsed.message); return; }`) while
+// letting genuine domain/storage failures propagate fail-loud. The primitive
+// parsers above (`RoleName.parse`, `AclPermissionSet.parse`, …) throw; the request
+// parsers convert those throws into a result message.
+
+/** Result of parsing an untrusted request body into a typed API contract. */
+export type RequestParseResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; message: string };
+
+/**
+ * Run a throwing primitive parser and convert its failure into a request-parse
+ * result message. Validation throws become `{ ok: false, message }` (→ 400);
+ * the caller never sees the raw exception.
+ */
+function asRequestParseResult<T>(build: () => T): RequestParseResult<T> {
+  try {
+    return { ok: true, value: build() };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Full snapshot of the ACL/RBAC state returned by `GET /admin/acl`. `defaults`
+ * always resolves both actions; per-document `acl` entries and role assignments
+ * are partial maps.
+ */
+export interface AclSnapshot {
+  defaults: { read: RoleName; write: RoleName };
+  acl: Record<string, AclPermissionSet>;
+  roles: Record<string, RoleName[]>;
+  customRoles: RoleName[];
+}
+
+/** Body of `PUT /admin/acl/defaults` — update the system default read/write roles. */
+export interface SetAclDefaultsRequest {
+  read?: RoleName;
+  write?: RoleName;
+}
+
+export const SetAclDefaultsRequest = {
+  parse(value: JsonValue, label = "set ACL defaults request"): RequestParseResult<SetAclDefaultsRequest> {
+    return asRequestParseResult(() => AclPermissionSet.parse(value, label));
+  },
+};
+
+/** Body of `PUT /admin/acl/doc/:docPath` — set the required roles for one document. */
+export interface SetDocumentAclRequest {
+  read?: RoleName;
+  write?: RoleName;
+}
+
+export const SetDocumentAclRequest = {
+  parse(value: JsonValue, label = "set document ACL request"): RequestParseResult<SetDocumentAclRequest> {
+    return asRequestParseResult(() => AclPermissionSet.parse(value, label));
+  },
+};
+
+/** Body of `PUT /admin/roles/:userId` — replace a user's assigned roles. */
+export interface SetUserRolesRequest {
+  roles: RoleName[];
+}
+
+export const SetUserRolesRequest = {
+  parse(value: JsonValue, label = "set user roles request"): RequestParseResult<SetUserRolesRequest> {
+    return asRequestParseResult(() => {
+      const obj = expectJsonObject(value, label);
+      return { roles: RoleName.parseArray(obj.roles, `${label}.roles`) };
+    });
+  },
+};
+
+/** Body of `POST /admin/custom-roles` — create a new custom role. */
+export interface CreateCustomRoleRequest {
+  name: RoleName;
+}
+
+export const CreateCustomRoleRequest = {
+  parse(value: JsonValue, label = "create custom role request"): RequestParseResult<CreateCustomRoleRequest> {
+    return asRequestParseResult(() => {
+      const obj = expectJsonObject(value, label);
+      return { name: RoleName.parse(obj.name, `${label}.name`) };
+    });
+  },
+};
+
 // ─── Proposal Model (v4 — layered storage / domain / DTO) ─────────
 
 export type ProposalStatus = "draft" | "pending" | "inprogress" | "committing" | "committed" | "withdrawn";
+
+/**
+ * A detected defect on a proposal that was read leniently (so admin UI can load
+ * and surface the problem) but must NOT be allowed to transition until repaired.
+ * Absent/empty on healthy proposals. The set is open for new detectors to extend.
+ *
+ *   "missing-targets" — an older on-disk proposal predates the `targets` field
+ *     and carried only `sections`; `targets` was backfilled from `sections` on
+ *     read, which is lossy in the dangerous direction (a document-level claim
+ *     cannot be expressed as section claims), so the proposal is quarantined
+ *     until an admin autofix re-derives and persists `targets`.
+ */
+export type ProposalDefect = "missing-targets";
 
 // ── Storage layer (what is stored in meta.json on disk) ────────────
 
@@ -230,7 +542,28 @@ export interface ProposalFileBase {
   id: ProposalId;
   writer: WriterIdentity;
   intent: string;
+  /**
+   * Section content/evaluation view (with per-section `justification`). This is
+   * the semantic content unit set; it is NOT the authoritative lock/audit claim
+   * set — that is {@link ProposalFileBase.targets} (spec 12 §Data Shapes).
+   */
   sections: ProposalSection[];
+  /**
+   * Authoritative lock/audit/policy claim set (spec 12 §Data Shapes). Includes
+   * section targets (mirroring `sections`) AND document targets for document
+   * create/delete/rename, so a live-empty document operation still claims a
+   * target. Derived/maintained only by the manifest-owning storage boundary.
+   * Defensively backfilled from `sections` when an older on-disk proposal lacks it.
+   */
+  targets: ProposalTargetRef[];
+  /**
+   * Non-empty when this proposal was read leniently despite a detected defect
+   * (see {@link ProposalDefect}). Absent on healthy proposals. A degraded
+   * proposal is quarantined: it may be read and surfaced to admins, but the
+   * storage/lock layer refuses to let it acquire locks or commit until an admin
+   * autofix clears the marker. Never written by normal creation paths.
+   */
+  degraded?: ProposalDefect[];
   created_at: string;
   /**
    * Owning DocSession identity for CRDT-materialized live-edit proposals
@@ -262,11 +595,13 @@ export interface CommittedProposalFile extends ProposalFileBase {
  */
 export type HumanInvolvementCommittedProposalMetadata = Record<string, number>;
 
-/** In-progress proposal meta.json — adds lock metadata from draft→inprogress transition. */
-export interface InProgressProposalFile extends ProposalFileBase {
-  locked_sections: ProposalSection[];
-  locked_at: string;
-}
+/**
+ * In-progress proposal meta.json. Adds no fields beyond {@link ProposalFileBase}:
+ * `targets` is the single authoritative lock/audit/policy claim set, so no separate
+ * `locked_targets`/`locked_at` mirror is stored (spec 12 — the directory status is
+ * the `inprogress` claim, and `targets` is what is claimed).
+ */
+export type InProgressProposalFile = ProposalFileBase;
 
 /** Withdrawn proposal meta.json — adds optional withdrawal reason. */
 export interface WithdrawnProposalFile extends ProposalFileBase {
@@ -600,15 +935,253 @@ export interface CreateProposalResponse {
   lockEvaluation?: ProposalLockResult;
 }
 
-export interface UpdateProposalRequest {
+/**
+ * Body of `PUT /api/proposals/:id` — the narrowed proposal manifest update:
+ * intent + the target section scope (the lock claim) ONLY. Section CONTENT is no
+ * longer carried here; staged content is written through the dedicated
+ * `PUT /api/proposals/:id/sections` (bulk) and
+ * `PUT /api/proposals/:id/documents/:docPath/sections` (per-document) routes.
+ */
+export interface UpdateProposalManifestRequest {
   intent?: string;
+  targets: Array<{
+    doc_path: string;
+    heading_path: string[];
+    justification?: string;
+  }>;
+}
+
+/**
+ * Body of `PUT /api/proposals/:id/sections` — bulk staged-content replace across
+ * any number of target documents. Each entry carries explicit `doc_path` and the
+ * full markdown `content` to stage into the proposal content tree.
+ */
+export interface ReplaceProposalSectionsRequest {
   sections: Array<{
     doc_path: string;
     heading_path: string[];
     content: string;
-    justification?: string;
   }>;
 }
+
+/**
+ * Body of `PUT /api/proposals/:id/documents/:docPath/sections` — per-document
+ * staged-content write. The document is identified by the URL path; each entry
+ * carries the in-document `heading_path` and the full markdown `content`.
+ */
+export interface WriteProposalDocumentSectionsRequest {
+  sections: Array<{
+    heading_path: string[];
+    content: string;
+  }>;
+}
+
+/**
+ * Response of `GET /api/proposals/:id/sections` — a bulk read of the effective
+ * proposal-scoped section list + content for every document the proposal targets.
+ */
+export interface GetProposalSectionsResponse {
+  proposal_id: ProposalId;
+  documents: GetDocumentSectionsResponse[];
+}
+
+// ── Proposal request parsing (companion parsers) ───────────────────
+//
+// `CreateProposalRequest.parse` / `UpdateProposalManifestRequest.parse` /
+// `ReplaceProposalSectionsRequest.parse` / `WriteProposalDocumentSectionsRequest.parse`
+// validate an untrusted request body and return a `RequestParseResult` for the route's
+// `if (!parsed.ok) { sendApiError(res, 400, parsed.message); return; }` boundary.
+// They validate shape only (record-ness, field types) — they are NOT a DTO
+// boundary and do not apply human/agent policy (the use cases still do that).
+
+type ProposalSectionInput = {
+  doc_path: string;
+  heading_path: string[];
+  content: string;
+  justification?: string;
+};
+
+function jsonRequireString(obj: JsonObject, key: string, label: string): string {
+  const value = obj[key];
+  if (typeof value !== "string") {
+    throw new Error(`${label}.${key} must be a string, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+function jsonOptionalString(obj: JsonObject, key: string, label: string): string | undefined {
+  const value = obj[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`${label}.${key} must be a string when present, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+function jsonRequireStringArray(obj: JsonObject, key: string, label: string): string[] {
+  const value = obj[key];
+  if (!Array.isArray(value)) {
+    throw new Error(`${label}.${key} must be an array of strings, got ${JSON.stringify(value)}`);
+  }
+  return value.map((element, index) => {
+    if (typeof element !== "string") {
+      throw new Error(`${label}.${key}[${index}] must be a string, got ${JSON.stringify(element)}`);
+    }
+    return element;
+  });
+}
+
+function parseProposalSectionInput(value: JsonValue, label: string): ProposalSectionInput {
+  const obj = expectJsonObject(value, label);
+  const section: ProposalSectionInput = {
+    doc_path: jsonRequireString(obj, "doc_path", label),
+    heading_path: jsonRequireStringArray(obj, "heading_path", label),
+    content: jsonRequireString(obj, "content", label),
+  };
+  const justification = jsonOptionalString(obj, "justification", label);
+  if (justification !== undefined) section.justification = justification;
+  return section;
+}
+
+function parseProposalSectionInputs(value: JsonValue, label: string): ProposalSectionInput[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array, got ${JSON.stringify(value)}`);
+  }
+  return value.map((element, index) => parseProposalSectionInput(element, `${label}[${index}]`));
+}
+
+export const CreateProposalRequest = {
+  parse(value: JsonValue, label = "create proposal request"): RequestParseResult<CreateProposalRequest> {
+    return asRequestParseResult(() => {
+      const obj = expectJsonObject(value, label);
+      return {
+        intent: jsonRequireString(obj, "intent", label),
+        sections: parseProposalSectionInputs(obj.sections, `${label}.sections`),
+      };
+    });
+  },
+};
+
+type ProposalTargetInput = {
+  doc_path: string;
+  heading_path: string[];
+  justification?: string;
+};
+
+function parseProposalTargetInput(value: JsonValue, label: string): ProposalTargetInput {
+  const obj = expectJsonObject(value, label);
+  const target: ProposalTargetInput = {
+    doc_path: jsonRequireString(obj, "doc_path", label),
+    heading_path: jsonRequireStringArray(obj, "heading_path", label),
+  };
+  const justification = jsonOptionalString(obj, "justification", label);
+  if (justification !== undefined) target.justification = justification;
+  return target;
+}
+
+function parseProposalTargetInputs(value: JsonValue, label: string): ProposalTargetInput[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array, got ${JSON.stringify(value)}`);
+  }
+  return value.map((element, index) => parseProposalTargetInput(element, `${label}[${index}]`));
+}
+
+export const UpdateProposalManifestRequest = {
+  parse(value: JsonValue, label = "update proposal manifest request"): RequestParseResult<UpdateProposalManifestRequest> {
+    return asRequestParseResult(() => {
+      const obj = expectJsonObject(value, label);
+      const request: UpdateProposalManifestRequest = {
+        targets: parseProposalTargetInputs(obj.targets, `${label}.targets`),
+      };
+      const intent = jsonOptionalString(obj, "intent", label);
+      if (intent !== undefined) request.intent = intent;
+      return request;
+    });
+  },
+};
+
+type ProposalSectionContentInput = {
+  doc_path: string;
+  heading_path: string[];
+  content: string;
+};
+
+function parseProposalSectionContentInput(value: JsonValue, label: string): ProposalSectionContentInput {
+  const obj = expectJsonObject(value, label);
+  return {
+    doc_path: jsonRequireString(obj, "doc_path", label),
+    heading_path: jsonRequireStringArray(obj, "heading_path", label),
+    content: jsonRequireString(obj, "content", label),
+  };
+}
+
+export const ReplaceProposalSectionsRequest = {
+  parse(value: JsonValue, label = "replace proposal sections request"): RequestParseResult<ReplaceProposalSectionsRequest> {
+    return asRequestParseResult(() => {
+      const obj = expectJsonObject(value, label);
+      const sectionsValue = obj.sections;
+      if (!Array.isArray(sectionsValue)) {
+        throw new Error(`${label}.sections must be an array, got ${JSON.stringify(sectionsValue)}`);
+      }
+      return {
+        sections: sectionsValue.map((element, index) =>
+          parseProposalSectionContentInput(element, `${label}.sections[${index}]`),
+        ),
+      };
+    });
+  },
+};
+
+export const WriteProposalDocumentSectionsRequest = {
+  parse(value: JsonValue, label = "write proposal document sections request"): RequestParseResult<WriteProposalDocumentSectionsRequest> {
+    return asRequestParseResult(() => {
+      const obj = expectJsonObject(value, label);
+      const sectionsValue = obj.sections;
+      if (!Array.isArray(sectionsValue)) {
+        throw new Error(`${label}.sections must be an array, got ${JSON.stringify(sectionsValue)}`);
+      }
+      return {
+        sections: sectionsValue.map((element, index) => {
+          const itemLabel = `${label}.sections[${index}]`;
+          const itemObj = expectJsonObject(element, itemLabel);
+          return {
+            heading_path: jsonRequireStringArray(itemObj, "heading_path", itemLabel),
+            content: jsonRequireString(itemObj, "content", itemLabel),
+          };
+        }),
+      };
+    });
+  },
+};
+
+// ── Live cross-section move (control-plane REST, NOT CRDT) ─────────
+
+/** Drop position relative to the target section. */
+export type LiveMovePosition = "before" | "after";
+
+/** Body of `POST /documents/:docPath/live-move` — the refusable live drag-drop move. */
+export interface LiveMoveSectionRequest {
+  source_heading_path: string[];
+  target_heading_path: string[];
+  position: LiveMovePosition;
+}
+
+export const LiveMoveSectionRequest = {
+  parse(value: JsonValue, label = "live move request"): RequestParseResult<LiveMoveSectionRequest> {
+    return asRequestParseResult(() => {
+      const obj = expectJsonObject(value, label);
+      const position = obj.position;
+      if (position !== "before" && position !== "after") {
+        throw new Error(`${label}.position must be "before" or "after", got ${JSON.stringify(position)}`);
+      }
+      return {
+        source_heading_path: jsonRequireStringArray(obj, "source_heading_path", label),
+        target_heading_path: jsonRequireStringArray(obj, "target_heading_path", label),
+        position,
+      };
+    });
+  },
+};
 
 export interface CommitProposalAccepted {
   proposal_id: ProposalId;
@@ -764,15 +1337,10 @@ export interface ContentCommittedEvent {
   seconds_ago: number;
 }
 
-export interface DirtyChangedEvent {
-  type: "dirty:changed";
-  writer_id: string;
-  doc_path: string;
-  heading_path: string[];
-  dirty: boolean;
-  base_head: string | null;
-  committed_head?: string;
-}
+// NOTE: the legacy `dirty:changed` event (DirtyChangedEvent) has been retired.
+// It had no server emitter and the frontend ignored it; its role — signalling a
+// section has uncommitted edits — is now served, per-section and with editor
+// identity, by `SectionPendingStateEvent` (`section:pending`/`section:settled`).
 
 export interface WriterDirtyStateChangedEvent {
   type: "writer:dirty-state-changed";
@@ -898,9 +1466,35 @@ export interface SectionBlockStateEvent {
   heading_path?: string[];
 }
 
+/**
+ * Per-section "uncommitted edits" events (Guarantee B). These ride the JSON
+ * application WebSocket alongside the block-state events and tell viewers a
+ * section has live edits in a DocSession's `inprogress` proposal that are NOT
+ * yet committed to canonical:
+ *   section:pending  — the section gained uncommitted edits (a human is editing
+ *                      it; the proposal has not committed). Carries the editor
+ *                      identity so the UI can say "edited by Alice — not saved".
+ *   section:settled  — the section's uncommitted edits committed (or the
+ *                      inprogress proposal was abandoned); clear the pending mark.
+ *
+ * This is DISTINCT from `section:blocked` (a *separate* proposal locked the
+ * section read-only) and from `content:committed` (the canonical commit itself).
+ * `fragment_key` is the opaque backend-owned CRDT fragment identity, matching the
+ * block-state events so the browser keys both on the same per-section identity.
+ */
+export interface SectionPendingStateEvent {
+  type: "section:pending" | "section:settled";
+  doc_path: string;
+  fragment_key: string;
+  heading_path?: string[];
+  /** The editor whose uncommitted edit made the section pending. Omitted for
+   *  `section:settled`. */
+  writer_id?: string;
+  writer_display_name?: string;
+}
+
 export type WsServerEvent =
   | ContentCommittedEvent
-  | DirtyChangedEvent
   | WriterDirtyStateChangedEvent
   | SessionStatusChangedEvent
   | AgentReadingEvent
@@ -913,6 +1507,7 @@ export type WsServerEvent =
   | ProposalWithdrawnEvent
   | ProposalSectionAvailabilityEvent
   | SectionBlockStateEvent
+  | SectionPendingStateEvent
   | CatalogChangedEvent;
 
 // ─── WebSocket Client Messages ─────────────────────────────────────

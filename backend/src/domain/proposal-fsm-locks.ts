@@ -17,6 +17,7 @@
  */
 
 import { ProposalFsmLockIndex, type ProposalLockHolder } from "./proposal-fsm-lock-index.js";
+import { proposalTargetLabel } from "../types/shared.js";
 import type {
   ProposalId,
   ProposalLockConflict,
@@ -37,10 +38,7 @@ export interface CheckProposalLocksInput {
 }
 
 function describeTarget(target: ProposalTargetRef): string {
-  const heading = target.heading_path.length > 0
-    ? target.heading_path.join(" > ")
-    : "(document intro)";
-  return `${target.doc_path} :: ${heading}`;
+  return proposalTargetLabel(target);
 }
 
 function conflictMessage(target: ProposalTargetRef, holder: ProposalLockHolder): string {
@@ -85,13 +83,13 @@ export async function checkProposalLocks(
     return {
       acquired: true,
       conflicts: [],
-      message: "All targeted sections are available to lock.",
+      message: "All targets are available to lock.",
     };
   }
 
   const summary = conflicts.length === 1
-    ? "1 targeted section is locked by another proposal."
-    : `${conflicts.length} targeted sections are locked by other proposals.`;
+    ? "1 target is locked by another proposal."
+    : `${conflicts.length} targets are locked by other proposals.`;
 
   return {
     acquired: false,

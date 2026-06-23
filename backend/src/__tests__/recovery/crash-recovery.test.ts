@@ -13,7 +13,7 @@
  * There is NO session-file recovery.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { writeFile, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
@@ -26,8 +26,27 @@ import {
   transitionToCommitting,
 } from "../../storage/proposal-repository.js";
 import { detectAndRecoverCrash } from "../../storage/crash-recovery.js";
+import { gitExec } from "../../storage/git-repo.js";
 
 const humanWriter = { id: "human-test", type: "human" as const, displayName: "Human Test", email: "human@test.local" };
+
+async function readSampleDocSnapshot(rootDir: string): Promise<{
+  skeleton: string;
+  sections: Record<string, string>;
+}> {
+  const diskRelative = SAMPLE_DOC_PATH.replace(/^\//, "");
+  const skeletonPath = join(rootDir, "content", diskRelative);
+  const sectionsDir = `${skeletonPath}.sections`;
+  const sectionFiles = (await readdir(sectionsDir)).filter((entry) => entry.endsWith(".md")).sort();
+  const sections: Record<string, string> = {};
+  for (const file of sectionFiles) {
+    sections[file] = await readFile(join(sectionsDir, file), "utf8");
+  }
+  return {
+    skeleton: await readFile(skeletonPath, "utf8"),
+    sections,
+  };
+}
 
 describe("Crash Recovery — proposal FSM + git integrity", () => {
   let ctx: TempDataRootContext;
@@ -118,6 +137,83 @@ describe("Crash Recovery — proposal FSM + git integrity", () => {
     // committing/ directory drained.
     const committing = await readdir(join(ctx.rootDir, "proposals", "committing")).catch(() => []);
     expect(committing).not.toContain(id);
+  });
+
+  it("is repeat-stable after finishing a committing proposal", async () => {
+    const { id } = await createProposal(
+      humanWriter,
+      "repeat-stable recovery",
+      [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"], content: "Recovered exactly once.\n" }],
+    );
+    await transitionToInProgress(id);
+    await transitionToCommitting(id);
+
+    const first = await detectAndRecoverCrash(ctx.rootDir);
+    const snapshotAfterFirstRun = await readSampleDocSnapshot(ctx.rootDir);
+    const headAfterFirstRun = await gitExec(["rev-parse", "HEAD"], ctx.rootDir);
+
+    const second = await detectAndRecoverCrash(ctx.rootDir);
+    const snapshotAfterSecondRun = await readSampleDocSnapshot(ctx.rootDir);
+    const headAfterSecondRun = await gitExec(["rev-parse", "HEAD"], ctx.rootDir);
+
+    expect(first.committingRerun).toContain(id);
+    expect((await readProposal(id)).status).toBe("committed");
+    expect(second).toEqual({
+      recovered: false,
+      pendingDiscarded: 0,
+      committingFinalized: [],
+      committingRerun: [],
+    });
+    expect(snapshotAfterSecondRun).toEqual(snapshotAfterFirstRun);
+    expect(headAfterSecondRun).toBe(headAfterFirstRun);
+  });
+
+  it("fails closed on dirty tracked canonical residue with no committing proposal", async () => {
+    const overviewPath = join(
+      ctx.rootDir,
+      "content",
+      SAMPLE_DOC_PATH.replace(/^\//, "") + ".sections",
+      "overview.md",
+    );
+    await writeFile(overviewPath, "Ambiguous dirty canonical residue.\n", "utf8");
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+      throw new Error(`process.exit:${code ?? ""}`);
+    }) as typeof process.exit);
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(detectAndRecoverCrash(ctx.rootDir)).rejects.toThrow("process.exit:1");
+    } finally {
+      exitSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    }
+
+    expect(await readFile(overviewPath, "utf8")).toBe("Ambiguous dirty canonical residue.\n");
+    const status = await gitExec(["status", "--porcelain"], ctx.rootDir);
+    expect(status).toContain("content/ops/strategy.md.sections/overview.md");
+  });
+
+  it("drains committing proposals so the recovery source cannot be applied again", async () => {
+    const { id } = await createProposal(
+      humanWriter,
+      "drain committing source",
+      [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Timeline"], content: "Recovered timeline once.\n" }],
+    );
+    await transitionToInProgress(id);
+    await transitionToCommitting(id);
+
+    await detectAndRecoverCrash(ctx.rootDir);
+
+    const committing = await readdir(join(ctx.rootDir, "proposals", "committing")).catch(() => []);
+    const committed = await readdir(join(ctx.rootDir, "proposals", "committed"));
+    expect(committing).not.toContain(id);
+    expect(committed).toContain(id);
+
+    const second = await detectAndRecoverCrash(ctx.rootDir);
+    expect(second.committingFinalized).not.toContain(id);
+    expect(second.committingRerun).not.toContain(id);
+    expect(second.recovered).toBe(false);
   });
 
   it("leaves inprogress proposals untouched as durable live state", async () => {

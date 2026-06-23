@@ -233,18 +233,26 @@ export function _setBootstrapCode(code: string | null): void {
   _bootstrapCode = code;
 }
 
+/**
+ * Thrown when a refresh token is expired, malformed, or not actually a refresh
+ * token (wrong `token_use`). Distinguishes the legitimate "this credential is no
+ * longer valid → 401 invalid_grant" case from unexpected failures, which must
+ * propagate fail-loud instead of being collapsed into a 401.
+ */
+export class InvalidRefreshTokenError extends Error {}
+
 export function exchangeRefreshToken(refreshToken: string): IssuedAuthTokenPair {
   let claims;
   try {
     claims = decodeAndValidateToken(refreshToken);
   } catch (error) {
     if (error instanceof InvalidAuthTokenError) {
-      throw new Error("unauthorized: invalid refresh token.");
+      throw new InvalidRefreshTokenError("unauthorized: invalid refresh token.");
     }
     throw error;
   }
   if (claims.token_use !== "refresh") {
-    throw new Error("unauthorized: invalid refresh token.");
+    throw new InvalidRefreshTokenError("unauthorized: invalid refresh token.");
   }
   return issueTokenPair({
     id: claims.sub,

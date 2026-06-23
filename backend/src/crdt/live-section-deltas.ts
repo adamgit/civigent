@@ -91,7 +91,7 @@ export async function computeCanonicalToLiveDeltas(
     }
     const fragmentContent = buildFragmentContent(body, entry.level, entry.heading);
     const current = liveFragments.readFragmentString(entry.fragmentKey);
-    if ((fragmentContent as string) === (current as string)) continue;
+    if (fragmentContent === current) continue;
 
     deltas.push({ fragmentKey: entry.fragmentKey, content: fragmentContent });
     fragmentKeys.push(entry.fragmentKey);

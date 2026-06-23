@@ -6,7 +6,7 @@ import type {
 } from "../../types/shared.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { CanonicalReader } from "../../storage/canonical-reader.js";
-import { ProposalEditor } from "../../storage/proposal-editor.js";
+import { mutateProposalContent, ProposalSectionNotFoundError } from "../../storage/mutate-proposal-content.js";
 import {
   getDataRoot,
 } from "../../storage/data-root.js";
@@ -29,7 +29,6 @@ export {
 import {
   createTransientProposal,
   readProposal,
-  updateProposalSections,
 } from "../../storage/proposal-repository.js";
 import { evaluateAgentWritePolicy, commitProposalToCanonical } from "../../storage/commit-pipeline.js";
 import { AgentWritePolicy, humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
@@ -38,6 +37,7 @@ import { BLOCKING_LOCK_STATUSES } from "../../domain/proposal-fsm-locks.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
+import { requestDocSessionMove, type MoveSectionResult } from "../../ws/crdt-ws-coordinator.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
 
 export { broadcastAgentReading };
@@ -67,31 +67,76 @@ export interface ReadSectionListResult {
 }
 
 /**
- * Build the section-list response. When `proposalId` is supplied (the explicit
- * proposal-preview path), content comes from the writer's ProposalReader overlay
- * (writer ownership must be verified by the caller via `verifyProposalForRead`);
- * otherwise the default GET reads CANONICAL content only via `CanonicalReader`.
- * The default read no longer consults any session/live overlay (MW-7).
+ * Verify the writer owns the proposal before any proposal-scoped read. A writer
+ * may only read sections through their own proposal.
  */
 export async function verifyProposalForRead(proposalId: string, writerId: string): Promise<void> {
   const proposal = await readProposal(proposalId);
   if (proposal.writer.id !== writerId) {
-    throw new SectionsReadForbiddenError("You can only read sections using your own proposal_id.");
+    throw new SectionsReadForbiddenError("You can only read sections using your own proposal.");
   }
 }
 
-export async function readSectionList(docPath: string, proposalId: string): Promise<ReadSectionListResult> {
-  let sectionReader: {
-    getSectionList: (docPath: string) => Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>>;
-    readAllSections: (docPath: string) => Promise<Map<string, import("../../storage/section-formatting.js").SectionBody>>;
-  };
-  if (proposalId.length > 0) {
-    const proposal = await readProposal(proposalId);
-    sectionReader = ProposalReader.open(proposal.id, proposal.status);
-  } else {
-    sectionReader = CanonicalReader.open();
+/** Minimal reader surface the section-list builder needs (CanonicalReader or ProposalReader). */
+interface SectionListReader {
+  getSectionList(docPath: string): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>>;
+  readAllSections(docPath: string): Promise<Map<string, import("../../storage/section-formatting.js").SectionBody>>;
+}
+
+/**
+ * Read the CANONICAL (committed) section list + content for a document. This is
+ * the default `GET /api/documents/:docPath/sections`; it consults no proposal and
+ * no session/live overlay (MW-7).
+ */
+export async function readCanonicalSectionList(docPath: string): Promise<ReadSectionListResult> {
+  return buildSectionListResponse(docPath, CanonicalReader.open(), undefined);
+}
+
+/**
+ * Read the EFFECTIVE proposal-scoped section list + content for a document
+ * (proposal-content-first with canonical fallback) via `ProposalReader`. Backs
+ * `GET /api/proposals/:id/documents/:docPath/sections`. The caller must have
+ * verified writer ownership via `verifyProposalForRead`.
+ */
+export async function readProposalSectionList(proposalId: string, docPath: string): Promise<ReadSectionListResult> {
+  const proposal = await readProposal(proposalId);
+  return buildSectionListResponse(docPath, ProposalReader.open(proposal.id, proposal.status), proposalId);
+}
+
+/**
+ * Bulk read of the effective proposal-scoped section list + content for EVERY
+ * document the proposal targets. Backs `GET /api/proposals/:id/sections`. The
+ * caller must have verified writer ownership via `verifyProposalForRead`.
+ */
+export async function readProposalAllSections(
+  proposalId: string,
+): Promise<{ documents: GetDocumentSectionsResponse[] }> {
+  const proposal = await readProposal(proposalId);
+  const reader = ProposalReader.open(proposal.id, proposal.status);
+
+  // Distinct targeted documents, in first-seen order.
+  const docPaths: string[] = [];
+  const seen = new Set<string>();
+  for (const section of proposal.sections) {
+    if (!seen.has(section.doc_path)) {
+      seen.add(section.doc_path);
+      docPaths.push(section.doc_path);
+    }
   }
 
+  const documents: GetDocumentSectionsResponse[] = [];
+  for (const docPath of docPaths) {
+    const { response } = await buildSectionListResponse(docPath, reader, proposalId);
+    documents.push(response);
+  }
+  return { documents };
+}
+
+async function buildSectionListResponse(
+  docPath: string,
+  sectionReader: SectionListReader,
+  excludeProposalId: string | undefined,
+): Promise<ReadSectionListResult> {
   const sectionList = await sectionReader.getSectionList(docPath);
 
   const headingPaths: string[][] = sectionList.map((s) => s.headingPath);
@@ -107,10 +152,10 @@ export async function readSectionList(docPath: string, proposalId: string): Prom
   {
     const lockIndex = await ProposalFsmLockIndex.build({
       statuses: BLOCKING_LOCK_STATUSES,
-      excludeProposalId: proposalId.length > 0 ? proposalId : undefined,
+      excludeProposalId,
     });
     for (const headingPath of headingPaths) {
-      if (lockIndex.holderFor({ doc_path: docPath, heading_path: headingPath })) {
+      if (lockIndex.holderFor({ kind: "section", doc_path: docPath, heading_path: headingPath })) {
         blockedHeadingKeys.add(SectionRef.headingKey(headingPath));
       }
     }
@@ -175,6 +220,27 @@ export function hasActiveSession(docPath: string): boolean {
   return lookupDocSession(docPath) !== undefined;
 }
 
+// ─── Live cross-section move (CONTROL-PLANE, claim-review 03 / Option E) ──
+
+/**
+ * Drive a LIVE human drag-drop cross-section move for an OPEN DocSession. This is
+ * a refusable CONTROL operation (request/response + prose refusal), explicitly
+ * OUTSIDE the CRDT binary protocol — it reaches the unavoidable Y.Doc reorder ONLY
+ * through the coordinator's narrow `requestDocSessionMove(...)` seam. Returns the
+ * typed `{ ok, message }` outcome the route maps to 200 / 409.
+ *
+ * DISTINCT from `moveSectionUseCase` (the agent/REST proposal-structure move). No
+ * CRDT binary frame is involved at any point.
+ */
+export async function liveMoveSectionUseCase(
+  docPath: string,
+  sourceHeadingPath: string[],
+  targetHeadingPath: string[],
+  position: "before" | "after",
+): Promise<MoveSectionResult> {
+  return requestDocSessionMove(docPath, { sourceHeadingPath, targetHeadingPath, position });
+}
+
 export async function deleteSectionUseCase(
   docPath: string,
   headingPath: string[],
@@ -184,9 +250,9 @@ export async function deleteSectionUseCase(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     `Delete section "${headingPath.join(" > ")}" from ${docPath}`,
   );
-  const editor = ProposalEditor.open(proposalId, "pending");
-  await editor.deleteSection(docPath, headingPath);
-  await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: headingPath }]);
+  // The manifest is derived by the mutation boundary from the REAL removed subtree
+  // (target + all descendants) — never hand-built from request params (Claim 3).
+  await mutateProposalContent(proposalId, { kind: "delete_section", docPath, headingPath });
   const { policyResult, committedHead } = await evaluateAndMaybeCommit(proposalId, writer.type);
   if (!committedHead) return { kind: "blocked", proposalId, policyResult };
   return { kind: "committed", proposalId, committedHead, policyResult };
@@ -209,19 +275,17 @@ export async function moveSectionUseCase(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     `Move section "${headingPath.join(" > ")}" in ${docPath}`,
   );
-  const editor = ProposalEditor.open(proposalId, "pending");
 
-  const currentSection = (await editor.getSectionList(docPath)).find((entry) =>
-    entry.headingPath.length === headingPath.length
-    && entry.headingPath.every((segment, index) => segment === headingPath[index]),
-  );
-  if (!currentSection) {
-    throw new SectionNotFoundForMoveError(`Section not found: ${headingPath.join(" > ")} in ${docPath}`);
+  // The boundary resolves the target level and derives the manifest from the real
+  // removed (old) + added (new) identities of the moved subtree (Claim 3).
+  try {
+    await mutateProposalContent(proposalId, { kind: "move_section", docPath, headingPath, newParentPath });
+  } catch (error) {
+    if (error instanceof ProposalSectionNotFoundError) {
+      throw new SectionNotFoundForMoveError(error.message);
+    }
+    throw error;
   }
-  const targetLevel = newParentPath.length === 0 ? currentSection.level : newParentPath.length + 1;
-
-  await editor.moveSection(docPath, headingPath, newParentPath, targetLevel);
-  await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: headingPath }]);
   const { policyResult, committedHead } = await evaluateAndMaybeCommit(proposalId, writer.type);
   if (!committedHead) return { kind: "blocked", proposalId, policyResult };
   return { kind: "committed", proposalId, committedHead, policyResult };
@@ -242,10 +306,15 @@ export async function renameSectionUseCase(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     `Rename section "${headingPath.join(" > ")}" to "${newHeading}" in ${docPath}`,
   );
-  const editor = ProposalEditor.open(proposalId, "pending");
-  await editor.renameSection(docPath, headingPath, newHeading);
-  const newHeadingPath = [...headingPath.slice(0, -1), newHeading];
-  await updateProposalSections(proposalId, [{ doc_path: docPath, heading_path: newHeadingPath }]);
+  // The boundary derives the manifest from the OLD removed identities and the NEW
+  // added identities (descendants included), not just the new heading path (Claim 3).
+  const { newHeadingPath: resultHeadingPath } = await mutateProposalContent(proposalId, {
+    kind: "rename_section",
+    docPath,
+    headingPath,
+    newHeading,
+  });
+  const newHeadingPath = resultHeadingPath ?? [...headingPath.slice(0, -1), newHeading];
   const { policyResult, committedHead } = await evaluateAndMaybeCommit(proposalId, writer.type);
   if (!committedHead) return { result: { kind: "blocked", proposalId, policyResult }, newHeadingPath };
   return { result: { kind: "committed", proposalId, committedHead, policyResult }, newHeadingPath };

@@ -9,12 +9,8 @@
  *   - a per-section editability map (`"editable" | "blocked" | "gone"`)
  *     driven by the server `section:blocked|unblocked|gone` events
  *
- * The legacy per-fragment persistence lifecycle (clean / dirty / received /
- * deleting) and the receipt/overlay machinery are removed — spec
- * 05-ydoc-lifecycle §"Content Flush" (removed) and §"Section-Level Persistence
- * Status Indicators" (the document-level SaveStatus machine is removed). The
- * per-section block-state is now the load-bearing editability authority
- * (§"Section block-state events").
+ * The per-section block-state is the load-bearing editability authority
+ * (spec 05-ydoc-lifecycle §"Section block-state events").
  *
  * Integrates with React via `useSyncExternalStore(subscribe, getSnapshot)`.
  * Snapshot getters return referentially stable values: the same object
@@ -55,6 +51,17 @@ export type CrdtConnectionState =
  */
 export type SectionEditability = "editable" | "blocked" | "gone";
 
+/**
+ * A section with uncommitted edits in a DocSession's `inprogress` proposal
+ * (Guarantee B), driven by the server `section:pending` / `section:settled`
+ * events. `writerId` lets the UI distinguish "you are editing this" from
+ * "edited by {writerDisplayName} — not yet saved".
+ */
+export interface PendingSection {
+  readonly writerId: string;
+  readonly writerDisplayName: string;
+}
+
 type Listener = () => void;
 
 /**
@@ -68,6 +75,12 @@ export interface ReplicaSnapshot {
   readonly error: string | null;
   readonly publishPaused: boolean;
   readonly sectionEditability: ReadonlyMap<string, SectionEditability>;
+  /** Guarantee A (doc-level): true when every local edit has been acknowledged
+   *  as received by the server (the receipt watermark has caught up). */
+  readonly receiptAllReceived: boolean;
+  /** Guarantee B: sections with uncommitted edits in the live inprogress
+   *  proposal, keyed by fragment_key. */
+  readonly pendingSections: ReadonlyMap<string, PendingSection>;
   readonly version: number;
 }
 
@@ -83,15 +96,19 @@ export class BrowserFragmentReplicaStore {
   private _error: string | null = null;
   private _publishPaused = false;
   private _sectionEditability: Map<string, SectionEditability> = new Map();
+  private _receiptAllReceived = true;
+  private _pendingSections: Map<string, PendingSection> = new Map();
   private _version = 0;
 
   private _snapshot: ReplicaSnapshot;
   private _sectionEditabilityView: ReadonlyMap<string, SectionEditability>;
+  private _pendingSectionsView: ReadonlyMap<string, PendingSection>;
 
   constructor(doc: Y.Doc, awareness: Awareness) {
     this.doc = doc;
     this.awareness = awareness;
     this._sectionEditabilityView = this._sectionEditability;
+    this._pendingSectionsView = this._pendingSections;
     this._snapshot = this.buildSnapshot();
   }
 
@@ -133,6 +150,24 @@ export class BrowserFragmentReplicaStore {
    */
   getSectionEditabilityForKey = (fragmentKey: string): SectionEditability =>
     this._sectionEditability.get(fragmentKey) ?? "editable";
+
+  /** Guarantee A: true when the receipt watermark has caught up to all local
+   *  edits (nothing in flight to the server). */
+  getReceiptAllReceived = (): boolean => this._receiptAllReceived;
+
+  /** Guarantee B: the full pending-sections map (referentially stable view). */
+  getPendingSections = (): ReadonlyMap<string, PendingSection> =>
+    this._pendingSectionsView;
+
+  /** Guarantee B: the pending entry for a single fragment, or null when it has
+   *  no uncommitted edits. */
+  getPendingSectionForKey = (fragmentKey: string): PendingSection | null =>
+    this._pendingSections.get(fragmentKey) ?? null;
+
+  // Whether ANY/which pending edits are "mine" is a presentation concern,
+  // resolved against session authorship in `useDocSaveStatusInputs` by reading
+  // the pending-sections map above — never here. The store is server truth only
+  // and deliberately knows nothing about the current editor's session.
 
   // ─── Mutations ─────────────────────────────────────────────────
   //
@@ -185,6 +220,34 @@ export class BrowserFragmentReplicaStore {
     this.setSectionEditability(fragmentKey, "gone");
   }
 
+  /**
+   * Guarantee A: update the receipt watermark — true once every local edit is
+   * acknowledged received by the server. Driven by the binary `MSG_UPDATE_ACK`
+   * frame via the transport.
+   */
+  setReceiptAllReceived(next: boolean): void {
+    if (this.destroyed || this._receiptAllReceived === next) return;
+    this._receiptAllReceived = next;
+    this.bump();
+  }
+
+  /** Server `section:pending` — the section gained uncommitted edits. */
+  setSectionPending(fragmentKey: string, writer: PendingSection): void {
+    if (this.destroyed) return;
+    const current = this._pendingSections.get(fragmentKey);
+    if (current && current.writerId === writer.writerId
+      && current.writerDisplayName === writer.writerDisplayName) return;
+    this._pendingSections.set(fragmentKey, writer);
+    this.bumpPendingSections();
+  }
+
+  /** Server `section:settled` — the section's uncommitted edits committed. */
+  setSectionSettled(fragmentKey: string): void {
+    if (this.destroyed || !this._pendingSections.has(fragmentKey)) return;
+    this._pendingSections.delete(fragmentKey);
+    this.bumpPendingSections();
+  }
+
   private setSectionEditability(fragmentKey: string, next: SectionEditability): void {
     if (this.destroyed) return;
     const current = this._sectionEditability.get(fragmentKey) ?? "editable";
@@ -224,6 +287,13 @@ export class BrowserFragmentReplicaStore {
     this.bump();
   }
 
+  private bumpPendingSections(): void {
+    // Fresh reference so `snapshot.pendingSections === prev.pendingSections`
+    // tracks actual mutation (same pattern as the editability view).
+    this._pendingSectionsView = new Map(this._pendingSections);
+    this.bump();
+  }
+
   private bump(): void {
     this._version += 1;
     this._snapshot = this.buildSnapshot();
@@ -237,6 +307,8 @@ export class BrowserFragmentReplicaStore {
       error: this._error,
       publishPaused: this._publishPaused,
       sectionEditability: this._sectionEditabilityView,
+      receiptAllReceived: this._receiptAllReceived,
+      pendingSections: this._pendingSectionsView,
       version: this._version,
     };
   }

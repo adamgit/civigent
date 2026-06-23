@@ -14,6 +14,17 @@ interface DocumentTopbarProps {
   /** True while a DocSession publication pause is freezing editors. */
   publishPaused: boolean;
   isEditing: boolean;
+  /** Guarantee A: every local edit acknowledged received by the server. */
+  allReceived: boolean;
+  /** Guarantee B (local): a live inprogress proposal still holds edits authored
+   *  by the current user (writer-filtered, not the global pending set). */
+  hasLocalUncommittedEdits: boolean;
+  /** Inbound/remote activity not attributable to the current user: another
+   *  writer's pending edits exist (or an update just landed) and none are yours. */
+  hasInboundActivity: boolean;
+  /** Sticky: the user has committed at least one local edit this editing
+   *  session — keeps a clean doc on "saved" instead of collapsing to "idle". */
+  hadLocalEdits: boolean;
 }
 
 export function DocumentTopbar({
@@ -27,13 +38,24 @@ export function DocumentTopbar({
   crdtState,
   publishPaused,
   isEditing,
+  allReceived,
+  hasLocalUncommittedEdits,
+  hasInboundActivity,
+  hadLocalEdits,
 }: DocumentTopbarProps) {
-  // The legacy per-section save-status popup (SAVE_STATE_META + receipt
-  // lifecycle) is removed (spec 05 §"Section-Level Persistence Status
-  // Indicators"). The topbar now shows a single coarse transport/publish
-  // status derived from the live connection state and the publication-pause
-  // flag — nothing per-section.
-  const status = resolveTransportStatus(crdtState, publishPaused, isEditing);
+  // The topbar shows a single coarse transport/save status derived from the live
+  // connection state, the receipt watermark, the writer-filtered local-edit
+  // flags, and the publication-pause flag — honest semantic boundaries, nothing
+  // per-section, and a stranger's edits never borrow a first-person label.
+  const status = resolveTransportStatus(
+    crdtState,
+    publishPaused,
+    isEditing,
+    allReceived,
+    hasLocalUncommittedEdits,
+    hasInboundActivity,
+    hadLocalEdits,
+  );
   const meta = TRANSPORT_STATUS_META[status];
 
   return (

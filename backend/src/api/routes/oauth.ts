@@ -23,6 +23,23 @@ import {
 } from "../../auth/oauth-tokens.js";
 import { lookupAgentBySecret, lookupAgentKey } from "../../auth/agent-keys.js";
 import { issueTokenPair, ACCESS_TTL_SECONDS } from "../../auth/tokens.js";
+import {
+  OAuthDynamicClientRegistrationRequest,
+  OAuthAuthorizationRequest,
+  OAuthTokenRequest,
+  type OAuthAuthorizationCodeTokenRequest,
+  type OAuthRefreshTokenRequest,
+  type OAuthTokenResponse,
+  type OAuthErrorResponse,
+  type OAuthAuthorizationServerMetadata,
+  type OAuthProtectedResourceMetadata,
+} from "../../auth/oauth-types.js";
+
+/** Send an RFC 6749 §5.2 OAuth error response with the given HTTP status. */
+function sendOAuthError(res: Response, status: number, error: string, description: string): void {
+  const body: OAuthErrorResponse = { error, error_description: description };
+  res.status(status).json(body);
+}
 
 // ─── Registration rate limiter (process-level, no deps) ─────────
 
@@ -104,17 +121,18 @@ export function createOAuthRouter(): Router {
 
   router.get("/.well-known/oauth-protected-resource", (req: Request, res: Response) => {
     const publicUrl = getMCPPublicURL(req);
-    res.json({
+    const metadata: OAuthProtectedResourceMetadata = {
       resource: publicUrl,
       authorization_servers: [publicUrl],
-    });
+    };
+    res.json(metadata);
   });
 
   // ── Discovery: Authorization Server Metadata (RFC 8414) ────
 
   router.get("/.well-known/oauth-authorization-server", (req: Request, res: Response) => {
     const publicUrl = getMCPPublicURL(req);
-    res.json({
+    const metadata: OAuthAuthorizationServerMetadata = {
       issuer: publicUrl,
       authorization_endpoint: `${publicUrl}/oauth/authorize`,
       token_endpoint: `${publicUrl}/oauth/token`,
@@ -123,7 +141,8 @@ export function createOAuthRouter(): Router {
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
-    });
+    };
+    res.json(metadata);
   });
 
   // ── DCR: Dynamic Client Registration (RFC 7591) ────────────
@@ -131,23 +150,20 @@ export function createOAuthRouter(): Router {
   router.post("/oauth/register", async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!checkRegisterRateLimit()) {
-        res.status(429).json({
-          error: "too_many_requests",
-          error_description: "Too many registration requests. Try again later.",
-        });
+        sendOAuthError(res, 429, "too_many_requests", "Too many registration requests. Try again later.");
         return;
       }
-      const body = req.body as Record<string, unknown>;
-      const clientName = typeof body.client_name === "string" ? body.client_name.trim() : "";
-      const clientSecret = typeof body.client_secret === "string" ? body.client_secret : null;
-      const redirectUris = Array.isArray(body.redirect_uris) ? body.redirect_uris : [];
-      const grantTypes = Array.isArray(body.grant_types) ? body.grant_types : ["authorization_code"];
+      const registration = OAuthDynamicClientRegistrationRequest.parse(req.body);
+      const clientName = registration.client_name?.trim() ?? "";
+      const clientSecret = registration.client_secret ?? null;
+      const redirectUris = registration.redirect_uris;
+      const grantTypes = registration.grant_types;
 
       // Path 1: Pre-authenticated agent (has client_secret)
       if (clientSecret) {
         const entry = await lookupAgentBySecret(clientSecret);
         if (!entry) {
-          res.status(401).json({ error: "invalid_client", error_description: "Invalid client secret." });
+          sendOAuthError(res, 401, "invalid_client", "Invalid client secret.");
           return;
         }
         res.status(201).json({
@@ -162,18 +178,12 @@ export function createOAuthRouter(): Router {
 
       // Path 2: Anonymous agent (no client_secret)
       if (getAgentAuthPolicy() !== "open") {
-        res.status(403).json({
-          error: "access_denied",
-          error_description: "Anonymous agent registration is disabled. Contact the administrator to register a named agent identity.",
-        });
+        sendOAuthError(res, 403, "access_denied", "Anonymous agent registration is disabled. Contact the administrator to register a named agent identity.");
         return;
       }
 
       if (!clientName) {
-        res.status(400).json({
-          error: "invalid_client_metadata",
-          error_description: "client_name is required.",
-        });
+        sendOAuthError(res, 400, "invalid_client_metadata", "client_name is required.");
         return;
       }
 
@@ -194,39 +204,34 @@ export function createOAuthRouter(): Router {
 
   router.get("/oauth/authorize", async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const clientId = typeof req.query.client_id === "string" ? req.query.client_id : "";
-      const redirectUri = typeof req.query.redirect_uri === "string" ? req.query.redirect_uri : "";
-      const codeChallenge = typeof req.query.code_challenge === "string" ? req.query.code_challenge : "";
-      const codeChallengeMethod = typeof req.query.code_challenge_method === "string"
-        ? req.query.code_challenge_method : "S256";
-      const state = typeof req.query.state === "string" ? req.query.state : "";
-      const responseType = typeof req.query.response_type === "string" ? req.query.response_type : "code";
+      const authRequest = OAuthAuthorizationRequest.parseQuery(req.query);
+      const { client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge } = authRequest;
 
       // Validate required params — JSON 400 (cannot trust redirect_uri until client_id validated)
       if (!clientId || !redirectUri || !codeChallenge) {
-        res.status(400).json({ error: "invalid_request", error_description: "Missing required OAuth parameters (client_id, redirect_uri, code_challenge)." });
+        sendOAuthError(res, 400, "invalid_request", "Missing required OAuth parameters (client_id, redirect_uri, code_challenge).");
         return;
       }
 
       // Validate client_id before trusting any other parameters
       const client = await resolveClientId(clientId);
       if (!client) {
-        res.status(400).json({ error: "invalid_request", error_description: "Invalid or expired client_id." });
+        sendOAuthError(res, 400, "invalid_request", "Invalid or expired client_id.");
         return;
       }
 
-      if (responseType !== "code") {
-        res.status(400).json({ error: "unsupported_response_type", error_description: "Only response_type=code is supported." });
+      if (authRequest.response_type !== "code") {
+        sendOAuthError(res, 400, "unsupported_response_type", "Only response_type=code is supported.");
         return;
       }
 
       // Auto-approve: 302 redirect with auth code. Registration already enforces
       // policy (anonymous blocked if not "open", pre-auth requires valid secret).
       // Agents are the only consumers of this endpoint — humans use OIDC.
-      const code = mintAuthCode(clientId, redirectUri, codeChallenge, codeChallengeMethod);
+      const code = mintAuthCode(clientId, redirectUri, codeChallenge, authRequest.code_challenge_method);
       const redirectTarget = new URL(redirectUri);
       redirectTarget.searchParams.set("code", code);
-      if (state) redirectTarget.searchParams.set("state", state);
+      if (authRequest.state) redirectTarget.searchParams.set("state", authRequest.state);
       res.redirect(302, redirectTarget.toString());
     } catch (error) {
       next(error);
@@ -237,29 +242,24 @@ export function createOAuthRouter(): Router {
 
   router.post("/oauth/authorize", async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const body = req.body as Record<string, unknown>;
-      const clientId = typeof body.client_id === "string" ? body.client_id : "";
-      const redirectUri = typeof body.redirect_uri === "string" ? body.redirect_uri : "";
-      const codeChallenge = typeof body.code_challenge === "string" ? body.code_challenge : "";
-      const codeChallengeMethod = typeof body.code_challenge_method === "string"
-        ? body.code_challenge_method : "S256";
-      const state = typeof body.state === "string" ? body.state : "";
+      const authRequest = OAuthAuthorizationRequest.parseBody(req.body);
+      const { client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge } = authRequest;
 
       if (!clientId || !redirectUri || !codeChallenge) {
-        res.status(400).json({ error: "invalid_request", error_description: "Missing required parameters (client_id, redirect_uri, code_challenge)." });
+        sendOAuthError(res, 400, "invalid_request", "Missing required parameters (client_id, redirect_uri, code_challenge).");
         return;
       }
 
       const client = await resolveClientId(clientId);
       if (!client) {
-        res.status(400).json({ error: "invalid_request", error_description: "Invalid or expired client_id." });
+        sendOAuthError(res, 400, "invalid_request", "Invalid or expired client_id.");
         return;
       }
 
-      const code = mintAuthCode(clientId, redirectUri, codeChallenge, codeChallengeMethod);
+      const code = mintAuthCode(clientId, redirectUri, codeChallenge, authRequest.code_challenge_method);
       const redirectTarget = new URL(redirectUri);
       redirectTarget.searchParams.set("code", code);
-      if (state) redirectTarget.searchParams.set("state", state);
+      if (authRequest.state) redirectTarget.searchParams.set("state", authRequest.state);
 
       res.redirect(302, redirectTarget.toString());
     } catch (error) {
@@ -272,27 +272,27 @@ export function createOAuthRouter(): Router {
   router.post("/oauth/token", async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!checkTokenRateLimit()) {
-        res.status(429)
-          .setHeader("Retry-After", "60")
-          .json({
-            error: "too_many_requests",
-            error_description: "Too many token requests. Try again later.",
-          });
+        const body: OAuthErrorResponse = {
+          error: "too_many_requests",
+          error_description: "Too many token requests. Try again later.",
+        };
+        res.status(429).setHeader("Retry-After", "60").json(body);
         return;
       }
 
-      const body = req.body as Record<string, unknown>;
-      const grantType = typeof body.grant_type === "string" ? body.grant_type : "";
+      const tokenRequest = OAuthTokenRequest.parse(req.body);
+      if ("supported" in tokenRequest) {
+        sendOAuthError(res, 400, "unsupported_grant_type", `Unsupported grant_type: ${tokenRequest.grant_type}`);
+        return;
+      }
 
-      if (grantType === "authorization_code") {
-        await handleAuthCodeGrant(req, res);
-      } else if (grantType === "refresh_token") {
-        await handleRefreshGrant(req, res);
-      } else {
-        res.status(400).json({
-          error: "unsupported_grant_type",
-          error_description: `Unsupported grant_type: ${grantType}`,
-        });
+      switch (tokenRequest.grant_type) {
+        case "authorization_code":
+          await handleAuthCodeGrant(tokenRequest, res);
+          break;
+        case "refresh_token":
+          await handleRefreshGrant(tokenRequest, res);
+          break;
       }
     } catch (error) {
       next(error);
@@ -304,17 +304,16 @@ export function createOAuthRouter(): Router {
 
 // ─── Token grant handlers ────────────────────────────────────────
 
-async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
-  const body = req.body as Record<string, unknown>;
-  const code = typeof body.code === "string" ? body.code : "";
-  const codeVerifier = typeof body.code_verifier === "string" ? body.code_verifier : "";
-  const clientId = typeof body.client_id === "string" ? body.client_id : "";
-  const clientSecret = typeof body.client_secret === "string" ? body.client_secret : null;
-  const redirectUri = typeof body.redirect_uri === "string" ? body.redirect_uri : "";
+async function handleAuthCodeGrant(request: OAuthAuthorizationCodeTokenRequest, res: Response): Promise<void> {
+  const code = request.code;
+  const codeVerifier = request.code_verifier;
+  const clientId = request.client_id;
+  const clientSecret = request.client_secret ?? null;
+  const redirectUri = request.redirect_uri;
 
   if (!code || !codeVerifier) {
     console.warn("oauth token: missing code or code_verifier");
-    res.status(400).json({ error: "invalid_request", error_description: "code and code_verifier are required." });
+    sendOAuthError(res, 400, "invalid_request", "code and code_verifier are required.");
     return;
   }
 
@@ -322,21 +321,21 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
   const authCode = validateAuthCode(code);
   if (!authCode) {
     console.warn("oauth token: invalid auth code");
-    res.status(400).json({ error: "invalid_grant", error_description: "Invalid or expired authorization code." });
+    sendOAuthError(res, 400, "invalid_grant", "Invalid or expired authorization code.");
     return;
   }
 
   // Verify client_id matches
   if (clientId && clientId !== authCode.client_id) {
     console.warn("oauth token: client_id mismatch");
-    res.status(400).json({ error: "invalid_grant", error_description: "client_id mismatch." });
+    sendOAuthError(res, 400, "invalid_grant", "client_id mismatch.");
     return;
   }
 
   // Verify redirect_uri matches (required per OAuth 2.1 when redirect_uri was in the auth request)
   if (redirectUri && redirectUri !== authCode.redirect_uri) {
     console.warn("oauth token: redirect_uri mismatch");
-    res.status(400).json({ error: "invalid_grant", error_description: "redirect_uri mismatch." });
+    sendOAuthError(res, 400, "invalid_grant", "redirect_uri mismatch.");
     return;
   }
 
@@ -347,7 +346,7 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
 
   if (computedChallenge !== authCode.code_challenge) {
     console.warn("oauth token: PKCE failed");
-    res.status(400).json({ error: "invalid_grant", error_description: "PKCE verification failed." });
+    sendOAuthError(res, 400, "invalid_grant", "PKCE verification failed.");
     return;
   }
 
@@ -364,12 +363,13 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
       type: "agent",
       displayName: anon.agent_name,
     });
-    res.json({
+    const response: OAuthTokenResponse = {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       token_type: "Bearer",
       expires_in: ACCESS_TTL_SECONDS,
-    });
+    };
+    res.json(response);
     return;
   }
 
@@ -381,28 +381,19 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
       // verify: client_secret is mandatory
       if (!clientSecret) {
         console.warn("oauth token: missing client_secret (verify policy)");
-        res.status(401).json({
-          error: "invalid_client",
-          error_description: "client_secret is required (policy: verify).",
-        });
+        sendOAuthError(res, 401, "invalid_client", "client_secret is required (policy: verify).");
         return;
       }
       if (preAuth.secretHash === "none") {
         console.warn("oauth token: agent has no secret hash (verify policy)");
-        res.status(401).json({
-          error: "invalid_client",
-          error_description: "Agent was registered without a secret. Re-register the agent with a secret to use verify policy.",
-        });
+        sendOAuthError(res, 401, "invalid_client", "Agent was registered without a secret. Re-register the agent with a secret to use verify policy.");
         return;
       }
       const { compareSecret } = await import("../../auth/agent-keys.js");
       const secretValid = await compareSecret(clientSecret, preAuth.secretHash);
       if (!secretValid) {
         console.warn("oauth token: invalid client_secret");
-        res.status(401).json({
-          error: "invalid_client",
-          error_description: "Invalid client_secret.",
-        });
+        sendOAuthError(res, 401, "invalid_client", "Invalid client_secret.");
         return;
       }
     }
@@ -414,45 +405,49 @@ async function handleAuthCodeGrant(req: Request, res: Response): Promise<void> {
       type: "agent",
       displayName: preAuth.displayName,
     });
-    res.json({
+    const response: OAuthTokenResponse = {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       token_type: "Bearer",
       expires_in: ACCESS_TTL_SECONDS,
-    });
+    };
+    res.json(response);
     return;
   }
 
   // Unknown client_id
   console.warn("oauth token: unknown client_id");
-  res.status(400).json({ error: "invalid_client", error_description: "Unknown client_id." });
+  sendOAuthError(res, 400, "invalid_client", "Unknown client_id.");
 }
 
-async function handleRefreshGrant(req: Request, res: Response): Promise<void> {
-  const body = req.body as Record<string, unknown>;
-  const refreshToken = typeof body.refresh_token === "string" ? body.refresh_token : "";
+async function handleRefreshGrant(request: OAuthRefreshTokenRequest, res: Response): Promise<void> {
+  const refreshToken = request.refresh_token;
 
   if (!refreshToken) {
     console.warn("oauth token: missing refresh_token");
-    res.status(400).json({ error: "invalid_request", error_description: "refresh_token is required." });
+    sendOAuthError(res, 400, "invalid_request", "refresh_token is required.");
     return;
   }
 
+  const { exchangeRefreshToken, InvalidRefreshTokenError } = await import("../../auth/service.js");
   try {
-    const { exchangeRefreshToken } = await import("../../auth/service.js");
     const tokens = exchangeRefreshToken(refreshToken);
-    res.json({
+    const response: OAuthTokenResponse = {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       token_type: "Bearer",
       expires_in: ACCESS_TTL_SECONDS,
-    });
+    };
+    res.json(response);
   } catch (err) {
-    console.warn("oauth token: invalid refresh_token");
-    res.status(401).json({
-      error: "invalid_grant",
-      error_description: (err as Error).message,
-    });
+    // Only an invalid/expired refresh token is a 401 invalid_grant. Any other
+    // failure propagates fail-loud to the route's error handler.
+    if (err instanceof InvalidRefreshTokenError) {
+      console.warn("oauth token: invalid refresh_token");
+      sendOAuthError(res, 401, "invalid_grant", err.message);
+      return;
+    }
+    throw err;
   }
 }
 

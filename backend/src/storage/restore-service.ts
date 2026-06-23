@@ -11,7 +11,8 @@ import type { WriterIdentity, AnyProposal, ProposalSection } from "../types/shar
 import { CanonicalReader } from "./canonical-reader.js";
 import { DocumentNotFoundError, DocumentAssemblyError } from "./content-layer.js";
 import { ProposalEditor } from "./proposal-editor.js";
-import { createTransientProposal, updateProposalSections, readProposal } from "./proposal-repository.js";
+import { createTransientProposal, unsafeReplaceProposalManifestForRecoveryOnly, readProposal } from "./proposal-repository.js";
+import { documentTargetRef } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
 
 export class RestoreValidationError extends Error {}
@@ -83,7 +84,18 @@ export async function createRestoreProposal(
     // Document doesn't exist in canonical yet — no deletions to track
   }
 
-  await updateProposalSections(restoreProposalId, [...restoredTargets, ...deletedSections]);
+  // Restore legitimately owns its own manifest derivation (byte-for-byte git
+  // replay + canonical-diff of deleted sections), so it uses the explicit
+  // recovery escape hatch rather than the `mutateProposalContent(...)` boundary
+  // (Claim 3: narrowly-justified recovery internal). It also claims a DOCUMENT
+  // target for the restored document path so the restore holds a lock/audit claim
+  // even when the historical version has no sections (spec 12 / Claim 10).
+  await unsafeReplaceProposalManifestForRecoveryOnly(
+    restoreProposalId,
+    [...restoredTargets, ...deletedSections],
+    undefined,
+    [documentTargetRef(docPath)],
+  );
 
   // Read fresh proposal from disk — sections are up-to-date after update
   const proposal = await readProposal(restoreProposalId);

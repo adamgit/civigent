@@ -23,7 +23,7 @@ import {
   getBlame,
   readDocument,
   restoreDocument,
-  getRestoreValidationError,
+  RestoreValidationError,
   overwriteDocument,
   renameDocument,
   createDocument,
@@ -48,6 +48,11 @@ import {
   emitCatalogMutationEvents,
   emitContentCommittedForSections,
 } from "../application/events.js";
+import {
+  QueryParamError,
+  optionalStringParam,
+  boundedIntParam,
+} from "../helpers/query-params.js";
 
 export function registerDocumentRoutes(
   router: Router,
@@ -57,10 +62,14 @@ export function registerDocumentRoutes(
   router.get("/documents/tree", async (req, res, next) => {
     try {
       const writer = resolveAuthenticatedWriter(req);
-      const basePath = (req.query.path as string) ?? "";
+      const basePath = optionalStringParam(req.query.path, "path") ?? "";
       const response: GetDocumentsTreeResponse = await readTree(basePath, writer !== null);
       res.json(response);
     } catch (error) {
+      if (error instanceof QueryParamError) {
+        sendApiError(res, 400, error);
+        return;
+      }
       if (error instanceof DocumentsTreePathNotFoundError) {
         sendApiError(res, 404, error);
         return;
@@ -98,10 +107,10 @@ export function registerDocumentRoutes(
       const docPath = req.params.docPath;
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
-      const afterHead = req.query.after_head as string | undefined;
+      const afterHead = optionalStringParam(req.query.after_head, "after_head");
       res.json(await getChangesSince(docPath, afterHead));
     } catch (error) {
-      if (error instanceof InvalidDocPathError) {
+      if (error instanceof QueryParamError || error instanceof InvalidDocPathError) {
         sendApiError(res, 400, error);
         return;
       }
@@ -115,10 +124,14 @@ export function registerDocumentRoutes(
       const docPath = req.params.docPath;
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
-      const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 30, 1), 100);
-      const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
+      const limit = boundedIntParam(req.query.limit, "limit", { fallback: 30, min: 1, max: 100 });
+      const offset = boundedIntParam(req.query.offset, "offset", { fallback: 0, min: 0, max: Number.MAX_SAFE_INTEGER });
       res.json(await getHistory(docPath, limit, offset));
     } catch (error) {
+      if (error instanceof QueryParamError) {
+        sendApiError(res, 400, error);
+        return;
+      }
       next(error);
     }
   });
@@ -164,9 +177,8 @@ export function registerDocumentRoutes(
         sendApiError(res, 409, error.message);
         return;
       }
-      const RestoreValidationError = await getRestoreValidationError();
       if (error instanceof RestoreValidationError) {
-        sendApiError(res, 422, error as Error);
+        sendApiError(res, 422, error);
         return;
       }
       next(error);

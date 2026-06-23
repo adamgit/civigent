@@ -13,6 +13,7 @@
 
 import path from "node:path";
 import { readFile, readdir } from "node:fs/promises";
+import { pathExists, readDirentsIfExists, readFileIfExists } from "./fs-primitives.js";
 import { importFilesToProposal, type ImportFile } from "./import-service.js";
 import { commitProposalToCanonical } from "./commit-pipeline.js";
 import type { WriterIdentity } from "../types/shared.js";
@@ -37,15 +38,12 @@ function normalizeRelPath(relPath: string): string {
 
 async function readImportIgnorePatterns(sourceRoot: string): Promise<string[]> {
   const ignorePath = path.join(sourceRoot, ".importignore");
-  try {
-    const content = await readFile(ignorePath, "utf8");
-    return content
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && !line.startsWith("#"));
-  } catch {
-    return [];
-  }
+  const content = await readFileIfExists(ignorePath);
+  if (content === null) return [];
+  return content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"));
 }
 
 function isIgnored(relPath: string, isDirectory: boolean, patterns: string[]): boolean {
@@ -98,27 +96,19 @@ async function collectImportMarkdownFiles(sourceRoot: string, patterns: string[]
   return files;
 }
 
-async function isDirectoryEmpty(targetDir: string): Promise<boolean> {
-  const entries = await readdir(targetDir, { withFileTypes: true });
-  return entries.length === 0;
-}
-
 export async function bootstrapContentSeed(
   sourceRoot: string,
   contentRoot: string,
 ): Promise<BootstrapContentSeedSummary> {
   const summary: BootstrapContentSeedSummary = { imported: 0, failed: 0, skipped: 0, errors: [] };
 
-  try {
-    if (!(await isDirectoryEmpty(contentRoot))) {
-      summary.skipped += 1;
-      return summary;
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-    // contentRoot doesn't exist yet — will be created by the proposal pipeline
+  // An absent contentRoot is a valid "fresh install" state (it will be created
+  // by the proposal pipeline) and counts as empty, so seeding proceeds. A
+  // non-empty contentRoot means content already exists, so we skip.
+  const existingEntries = await readDirentsIfExists(contentRoot);
+  if (existingEntries.length > 0) {
+    summary.skipped += 1;
+    return summary;
   }
 
   const ignorePatterns = await readImportIgnorePatterns(sourceRoot);
@@ -163,14 +153,8 @@ export async function bootstrapContentSeedFromDirectoryIfNeeded(
   sourceRoot: string,
   contentRoot: string,
 ): Promise<BootstrapContentSeedSummary> {
-  try {
-    await readdir(sourceRoot);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") {
-      return { imported: 0, failed: 0, skipped: 1, errors: [] };
-    }
-    throw error;
+  if (!(await pathExists(sourceRoot))) {
+    return { imported: 0, failed: 0, skipped: 1, errors: [] };
   }
   return bootstrapContentSeed(sourceRoot, contentRoot);
 }

@@ -138,4 +138,35 @@ describe("C5: forced restore/overwrite aborts on a failed pre-handoff publish", 
     const result = await restoreDocument(SAMPLE_DOC_PATH, headBefore, WRITER);
     expect(result.committedSha).toBeTruthy();
   });
+
+  it("retry after abort: once the editor frontier settles, the forced operation succeeds and the live edit is published first", async () => {
+    const session = await openSession();
+    const editor = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "editor-sock-1");
+    disposers.push(editor.dispose);
+    await session.enqueue(() =>
+      processArbitratedClientUpdate(session, WRITER.id, buildClientUpdateForOverview(session, buildFragmentContent(IN_FLIGHT as SectionBody, 2, "Overview"))),
+    );
+    expect(session.generator.hasCurrentProposal()).toBe(true);
+
+    // First attempt: an active editor never acks → handoff aborts → restore throws,
+    // and the live in-flight proposal is PRESERVED (not raced past).
+    session.publishPause = new DocSessionPublishPause({ readinessTimeoutMs: 60 });
+    const headBefore = await getHeadSha(getDataRoot());
+    await expect(restoreDocument(SAMPLE_DOC_PATH, headBefore, WRITER)).rejects.toBeInstanceOf(
+      DocSessionHandoffFailedError,
+    );
+    expect(session.generator.hasCurrentProposal()).toBe(true);
+    expect(await getHeadSha(getDataRoot())).toBe(headBefore);
+
+    // Frontier settles: the editor leaves, so the required-ack set is now empty.
+    editor.dispose();
+    session.publishPause = new DocSessionPublishPause({ readinessTimeoutMs: 60 });
+
+    // Retry: the handoff now publishes the live edit into canonical, then restore
+    // proceeds (no longer racing the editor).
+    const result = await restoreDocument(SAMPLE_DOC_PATH, headBefore, WRITER);
+    expect(result.committedSha).toBeTruthy();
+    // The live edit was published during the handoff (current proposal cleared).
+    expect(session.generator.hasCurrentProposal()).toBe(false);
+  });
 });

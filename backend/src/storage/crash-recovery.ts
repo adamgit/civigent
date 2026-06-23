@@ -43,7 +43,8 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import { readdir, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
+import { readDirentsIfExists } from "./fs-primitives.js";
 import path from "node:path";
 import { getDataRoot, getContentGitPrefix, getProposalsGitPrefix, getProposalsPendingRoot } from "./data-root.js";
 import { gitExec, gitStatusPorcelain } from "./git-repo.js";
@@ -142,13 +143,9 @@ export interface CrashRecoveryResult {
 async function discardPendingProposals(ctx: RecoveryContext): Promise<number> {
   ctx.phase = "discard-pending-proposals";
   const pendingRoot = getProposalsPendingRoot();
-  let entries;
-  try {
-    entries = await ctx.fs(`readdir ${pendingRoot}`, () => readdir(pendingRoot, { withFileTypes: true }));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
-    throw error;
-  }
+  // An absent pending-proposals directory is a valid state (no transient
+  // proposals were in flight) — there is nothing to discard.
+  const entries = await ctx.fs(`readdir ${pendingRoot}`, () => readDirentsIfExists(pendingRoot));
   let discarded = 0;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;

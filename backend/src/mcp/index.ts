@@ -57,6 +57,7 @@ export function createKnowledgeStoreMcpRouter(options?: {
 
   const server = new McpServer({
     registry,
+    tier,
     serverName: "knowledge-store",
     serverVersion: "0.1.0",
   });

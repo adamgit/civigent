@@ -53,9 +53,14 @@
 import * as Y from "yjs";
 import type {
   DocumentReplacementNoticePayload,
+  EditorFocusTarget,
+  JsonObject,
+  JsonValue,
   ModeTransitionRequest,
   ModeTransitionResult,
+  RequestedMode,
 } from "../types/shared.js";
+import { expectJsonObject } from "../types/shared.js";
 
 // ─── Message type constants ──────────────────────────────────────
 
@@ -63,6 +68,18 @@ export const MSG_SYNC_STEP_1 = 0;
 export const MSG_SYNC_STEP_2 = 1;
 export const MSG_YJS_UPDATE = 2;
 export const MSG_AWARENESS = 3;
+/**
+ * Server → client receipt watermark (Guarantee A). After the server has applied
+ * + arbitrated a client `MSG_YJS_UPDATE` through the DocSession actor lane, it
+ * emits this frame carrying a monotonically increasing count of YJS_UPDATE
+ * frames processed FROM that socket. Because the per-socket message chain is
+ * FIFO and each update's lane command is awaited before the next frame is read,
+ * a single scalar count is a true watermark: "every update you sent up to count
+ * N is received and applied to the authoritative Y.Doc". The client counts its
+ * own sent updates independently; the two counters stay aligned by FIFO order,
+ * so NO sequence number rides the `MSG_YJS_UPDATE` frame (format unchanged).
+ */
+export const MSG_UPDATE_ACK = 4;
 export const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0B;
 export const MSG_MODE_TRANSITION_REQUEST = 0x0C;
 export const MSG_MODE_TRANSITION_RESULT = 0x0D;
@@ -77,14 +94,13 @@ export const MSG_DOC_PUBLISH_PAUSE_START = 0x10;
 export const MSG_DOC_PUBLISH_READY = 0x11;
 export const MSG_DOC_PUBLISH_PAUSE_END = 0x12;
 
-// ─── Cross-section move (MW-10) ──────────────────────────────────
-// Client → Server: request a backend-owned structural reorder of a section
-// relative to a sibling (spec 05 §Structural Normalization — structural moves
-// are backend-owned via the Y.transact primitive; Y.js has no moveTo between
-// top-level types). Carries JSON `SectionMoveRequest`. The actual Y.Doc reorder
-// runs inside the DocSession actor lane. 0x13 is the next free opcode after the
-// publish-pause range; 0x08 stays permanently reserved-removed.
-export const MSG_SECTION_MOVE_REQUEST = 0x13;
+// ─── Cross-section move — REMOVED from the binary protocol ───────
+// Opcode 0x13 is RESERVED/UNUSED (do not reassign). The live cross-section move
+// was moved off the CRDT binary channel onto a REST control-plane endpoint
+// (`POST /documents/:docPath/live-move` → `requestDocSessionMove(...)`), because
+// it is a refusable CONTROL operation (request/response + prose refusal), not
+// content propagation where "the YJS_UPDATE delta is the broadcast"
+// (claim-review 03 / Option E). 0x08 also stays permanently reserved-removed.
 
 // ─── WebSocket close codes ───────────────────────────────────────
 
@@ -121,6 +137,23 @@ export function encodeUpdate(update: Uint8Array): Uint8Array {
   return buf;
 }
 
+/**
+ * Encode a receipt-watermark ack (Guarantee A): `[MSG_UPDATE_ACK][count:uint32 BE]`.
+ * `count` is the number of YJS_UPDATE frames processed from the target socket so
+ * far. Sent to the originating socket only, after the update's lane command has
+ * resolved (i.e. the update is materialized into the authoritative Y.Doc).
+ */
+export function encodeUpdateAck(count: number): Uint8Array {
+  const buf = new Uint8Array(5);
+  buf[0] = MSG_UPDATE_ACK;
+  // uint32 big-endian; wraps at 2^32 (≈4.3B updates per session — unreachable).
+  buf[1] = (count >>> 24) & 0xff;
+  buf[2] = (count >>> 16) & 0xff;
+  buf[3] = (count >>> 8) & 0xff;
+  buf[4] = count & 0xff;
+  return buf;
+}
+
 export function encodeDocumentReplacementNotice(payload: DocumentReplacementNoticePayload): Uint8Array {
   const json = new TextEncoder().encode(JSON.stringify(payload));
   const msg = new Uint8Array(1 + json.length);
@@ -135,6 +168,65 @@ export function encodeModeTransitionRequest(payload: ModeTransitionRequest): Uin
   msg[0] = MSG_MODE_TRANSITION_REQUEST;
   msg.set(json, 1);
   return msg;
+}
+
+// ─── Mode-transition decode (JSON trust boundary) ────────────────
+//
+// Colocated with encodeModeTransitionRequest so encode/decode for the frame are
+// one auditable boundary. Every invalid field throws an `Error` naming the field
+// and the offending value — no `as`, no `null`-return, no catch-and-substitute.
+
+function requireStringField(obj: JsonObject, key: string, label: string): string {
+  const value = obj[key];
+  if (typeof value !== "string") {
+    throw new Error(`${label}.${key} must be a string, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+function decodeRequestedMode(value: JsonValue, label: string): RequestedMode {
+  if (value === "none" || value === "observer" || value === "editor") return value;
+  throw new Error(`${label} must be "none" | "observer" | "editor", got ${JSON.stringify(value)}`);
+}
+
+function decodeEditorFocusTargetOrNull(value: JsonValue, label: string): EditorFocusTarget | null {
+  if (value === null) return null;
+  const obj = expectJsonObject(value, label);
+  const kind = obj["kind"];
+  if (kind === "before_first_heading") {
+    return { kind: "before_first_heading" };
+  }
+  if (kind === "heading_path") {
+    const rawPath = obj["heading_path"];
+    if (!Array.isArray(rawPath)) {
+      throw new Error(`${label}.heading_path must be an array, got ${JSON.stringify(rawPath)}`);
+    }
+    const heading_path = rawPath.map((element, index) => {
+      if (typeof element !== "string") {
+        throw new Error(`${label}.heading_path[${index}] must be a string, got ${JSON.stringify(element)}`);
+      }
+      return element;
+    });
+    return { kind: "heading_path", heading_path };
+  }
+  throw new Error(`${label}.kind must be "before_first_heading" | "heading_path", got ${JSON.stringify(kind)}`);
+}
+
+/**
+ * Decode a `MSG_MODE_TRANSITION_REQUEST` payload from the wire. Throws (with the
+ * offending field) on any malformed input — the `editorFocusTarget` union is
+ * validated here rather than flowing unchecked from wire to `state`.
+ */
+export function decodeModeTransitionRequest(value: JsonValue): ModeTransitionRequest {
+  const label = "ModeTransitionRequest";
+  const obj = expectJsonObject(value, label);
+  return {
+    requestId: requireStringField(obj, "requestId", label),
+    clientInstanceId: requireStringField(obj, "clientInstanceId", label),
+    docPath: requireStringField(obj, "docPath", label),
+    requestedMode: decodeRequestedMode(obj["requestedMode"], `${label}.requestedMode`),
+    editorFocusTarget: decodeEditorFocusTargetOrNull(obj["editorFocusTarget"], `${label}.editorFocusTarget`),
+  };
 }
 
 export function encodeModeTransitionResult(payload: ModeTransitionResult): Uint8Array {
@@ -160,51 +252,6 @@ export function encodeDocPublishReady(): Uint8Array {
 /** Server → client: the publish attempt ended (committed or aborted); editors may unfreeze. */
 export function encodeDocPublishPauseEnd(): Uint8Array {
   return new Uint8Array([MSG_DOC_PUBLISH_PAUSE_END]);
-}
-
-// ─── Cross-section move codec (MW-10) ────────────────────────────
-
-/** Client → server: request a backend-owned section reorder relative to a sibling. */
-export interface SectionMoveRequest {
-  /** Heading path of the section being moved. */
-  sourceHeadingPath: string[];
-  /** Heading path of the sibling to position relative to. */
-  targetHeadingPath: string[];
-  /** Place the moved section immediately before or after the target sibling. */
-  position: "before" | "after";
-}
-
-/** Client → server: encode a section-move request as a JSON binary frame. */
-export function encodeSectionMoveRequest(req: SectionMoveRequest): Uint8Array {
-  const json = new TextEncoder().encode(JSON.stringify(req));
-  const msg = new Uint8Array(1 + json.length);
-  msg[0] = MSG_SECTION_MOVE_REQUEST;
-  msg.set(json, 1);
-  return msg;
-}
-
-/** Parse a section-move request payload (JSON body, no leading opcode). Returns
- *  null when the payload is malformed or missing required fields. */
-export function decodeSectionMoveRequest(payload: Uint8Array): SectionMoveRequest | null {
-  try {
-    const obj = JSON.parse(new TextDecoder().decode(payload)) as Partial<SectionMoveRequest>;
-    if (
-      !Array.isArray(obj.sourceHeadingPath)
-      || !Array.isArray(obj.targetHeadingPath)
-      || (obj.position !== "before" && obj.position !== "after")
-      || !obj.sourceHeadingPath.every((s) => typeof s === "string")
-      || !obj.targetHeadingPath.every((s) => typeof s === "string")
-    ) {
-      return null;
-    }
-    return {
-      sourceHeadingPath: obj.sourceHeadingPath,
-      targetHeadingPath: obj.targetHeadingPath,
-      position: obj.position,
-    };
-  } catch {
-    return null;
-  }
 }
 
 /** Parse the message type and payload from a raw binary frame. Returns null for empty frames. */

@@ -11,7 +11,8 @@
  */
 
 import path from "node:path";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir } from "node:fs/promises";
+import { readFileIfExists } from "./fs-primitives.js";
 import { getContentRoot } from "./data-root.js";
 import {
   type FlatEntry,
@@ -181,13 +182,13 @@ export async function applyDocumentMarkdownToDraft(
 
     newEntries.push({ heading: isBeforeFirstHeading ? "" : heading, level: section.level, sectionFile });
 
-    // Read canonical section content for comparison
+    // Read canonical section content for comparison. An absent body file is a
+    // valid "no canonical content yet" state; the empty default stands.
     let canonicalBody = "";
     if (matchedEntry) {
-      try {
-        canonicalBody = bodyFromDisk(await readFile(matchedEntry.absolutePath, "utf8")) as string;
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      const rawCanonical = await readFileIfExists(matchedEntry.absolutePath);
+      if (rawCanonical !== null) {
+        canonicalBody = bodyFromDisk(rawCanonical) as string;
       }
     }
 

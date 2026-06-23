@@ -8,6 +8,7 @@ import type { CrdtTransport } from "../services/crdt-transport";
 import type { DocumentSection } from "../pages/document-page-utils";
 import { headingPathToLabel } from "../pages/document-page-utils";
 import { resolveWriterId } from "../services/api-client";
+import type { LocalEditOriginSink } from "../status/sessionAuthorship";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import { useSectionHover } from "../contexts/sectionHoverUtils";
 import { rewriteMarkdownDocHref } from "../app/docsRouteUtils";
@@ -40,6 +41,10 @@ export interface DocumentSectionRendererProps {
   canEditProposalContent: boolean;
   proposalScopeMutationInFlight: boolean;
   isReady: boolean;
+  /** Write-only port: records that THIS session locally authored an edit to this
+   *  fragment, so the save-status ladder can tell your work from inbound activity.
+   *  Typed as the sink only — this component can write, never read or serialize. */
+  localEditSink: LocalEditOriginSink;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
   onStartEditing: (index: number, coords: { x: number; y: number }) => void;
   onFocusSection: (index: number, headingPath: string[], coords: { x: number; y: number }) => void;
@@ -116,6 +121,7 @@ export function DocumentSectionRenderer({
   canEditProposalContent,
   proposalScopeMutationInFlight,
   isReady,
+  localEditSink,
   mouseDownPosRef,
   onStartEditing,
   onFocusSection,
@@ -286,6 +292,7 @@ export function DocumentSectionRenderer({
                 canDrop={transferService ? () => transferService.canDrop(fk) : undefined}
                 onCursorExit={(direction) => onCursorExit(i, direction)}
                 onCrossSectionDrop={(transfer) => onCrossSectionDrop(section, transfer)}
+                onLocalEdit={() => localEditSink.recordLocalEdit(fk)}
                 onReady={() => onEditorReady(i)}
                 onUnready={onEditorUnready ? () => onEditorUnready(i) : undefined}
               />

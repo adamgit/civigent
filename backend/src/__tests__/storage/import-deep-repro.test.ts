@@ -126,7 +126,11 @@ describe("deeply nested import repro", () => {
       const allContent = await overlay.readAllSections(file.docPath);
       expect(allContent.size).toBeGreaterThanOrEqual(4);
     }
-  });
+    // I/O-heavy: 20 deeply-nested document imports + commit + readback. The
+    // default 5s per-test timeout is too tight under parallel-suite contention
+    // (the work itself completes in ~3s in isolation); give it headroom so the
+    // suite is not flaky.
+  }, 20000);
 
   it("reimport of content directory (with .sections/ artifacts) is rejected", async () => {
     // First: import a normal document

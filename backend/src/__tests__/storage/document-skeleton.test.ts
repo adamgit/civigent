@@ -462,25 +462,6 @@ describe("DocumentSkeleton.fromNodes", () => {
   });
 });
 
-// ─── buildOverlaySkeleton regression tests ───────────────────────
-//
-// REMOVED — the `buildOverlaySkeleton(...)` method was deleted from
-// `DocumentSkeletonInternal` (item 109/145).
-//
-// Whole-document writes now go through the dedicated
-// `writeFreshDocumentFromParsedMarkdown` primitive called by
-// `upsertDocumentFromMarkdown`. That path clears the doc to live-empty
-// and writes fresh structure; it does not reuse canonical section-file IDs.
-//
-// The BFH upsert path (`upsertSectionFromMarkdownCore` with headingPath=[])
-// remains the legitimate path for user-typed or agent-sent content that
-// lands in the before-first-heading cell and auto-splits into headed
-// sections — that is core app functionality, not the abuse this cleanup
-// targets.
-//
-// Regression tests for section-file-ID reuse should be re-added if an
-// ID-reuse optimization is implemented in the future.
-
 describe("DocumentSkeleton tombstone", () => {
   it("tombstoneDocumentExplicit writes a marker that shadows canonical reads", async () => {
     const ctx = await createTempDataRoot();
@@ -496,14 +477,11 @@ describe("DocumentSkeleton tombstone", () => {
       const overlay = new ProposalShadowContentLayer(overlayDir, ctx.contentDir);
       await overlay.tombstoneDocumentExplicit(SAMPLE_DOC_PATH);
 
-      // Re-read: overlay has the persisted tombstone marker, so fromDisk should
-      // shadow canonical and expose the document as empty + tombstoned.
+      // Re-read: the proposal tombstone marker shadows canonical, so the
+      // effective document state is "tombstone" and the loaded skeleton is empty.
+      // Assert the observable proposal-facing state, not load-time provenance.
+      expect(await overlay.getDocumentState(SAMPLE_DOC_PATH)).toBe("tombstone");
       const skeleton = await DocumentSkeleton.fromDisk(SAMPLE_DOC_PATH, overlayDir, ctx.contentDir);
-      // loadedFromOverlay reflects that overlay won structure resolution
-      // (the tombstone is in the overlay, shadowing canonical) — semantically
-      // closest to the previous overlayPersisted check.
-      expect(skeleton.overlaySkeletonFileExisted).toBe(true);
-      expect(skeleton.isTombstonedInOverlay).toBe(true);
       expect(skeleton.areSkeletonRootsEmpty).toBe(true);
     } finally {
       await ctx.cleanup();

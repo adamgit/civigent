@@ -95,7 +95,7 @@ describe("discovery module", () => {
 
   describe("listReadableDocuments", () => {
     it("root scope returns both docs with correct section_count", async () => {
-      const rows = await listReadableDocuments(null, "/");
+      const { rows } = await listReadableDocuments(null, "/");
       expect(rows).toHaveLength(2);
 
       const byPath = new Map(rows.map((r) => [r.doc_path, r]));
@@ -104,7 +104,7 @@ describe("discovery module", () => {
     });
 
     it("single-doc scope returns one row", async () => {
-      const rows = await listReadableDocuments(null, DOC_A);
+      const { rows } = await listReadableDocuments(null, DOC_A);
       expect(rows).toHaveLength(1);
       expect(rows[0].doc_path).toBe(DOC_A);
       expect(rows[0].section_count).toBe(3);
@@ -115,7 +115,7 @@ describe("discovery module", () => {
 
   describe("listReadableSections", () => {
     it("returns flat section rows with correct heading/heading_path/body_size_bytes", async () => {
-      const rows = await listReadableSections(null, DOC_A);
+      const { rows } = await listReadableSections(null, DOC_A);
       expect(rows).toHaveLength(3);
 
       // BFH entry: heading="" and heading_path=[]
@@ -137,7 +137,7 @@ describe("discovery module", () => {
     });
 
     it("doc-scoped path returns only that doc's sections", async () => {
-      const rows = await listReadableSections(null, DOC_B);
+      const { rows } = await listReadableSections(null, DOC_B);
       expect(rows).toHaveLength(1);
       expect(rows[0].doc_path).toBe(DOC_B);
       expect(rows[0].heading).toBe("Summary");

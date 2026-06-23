@@ -3,29 +3,28 @@
  *
  * Receives useSessionMode outputs as params.
  *
- * Area N: the `MSG_SECTION_FOCUS` wire send is removed (spec 05 §4 > Removed
- * message types), so `provider.focusSection()` and the `editorFocusTarget`
- * mirror side-effects that only existed to feed that wire message are gone. The
- * local focus-index / neighbor `handleCursorExit` (ArrowUp/ArrowDown) and the
- * `setViewingSections` awareness write are kept (spec §"Cross-Section Cursor
- * Movement"). Focus / start-edit into a `"blocked"` or `"gone"` section, or
- * while a publication pause is active, is refused (read from the store).
+ * Focus is local-only: the local focus-index / neighbor `handleCursorExit`
+ * (ArrowUp/ArrowDown) and the `setViewingSections` awareness write (spec
+ * §"Cross-Section Cursor Movement"). Focus / start-edit into a `"blocked"` or
+ * `"gone"` section, or while a publication pause is active, is refused (read
+ * from the store).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { sectionHeadingKey } from "../types/shared.js";
 import { type MilkdownEditorHandle } from "../components/MilkdownEditor";
 import { type DocumentSection, getSectionFragmentKey } from "../pages/document-page-utils";
-import type { CrdtProvider } from "../services/crdt-provider";
+import type { CrdtTransport } from "../services/crdt-transport";
 import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
+import type { LocalPresence } from "../services/local-presence";
 
 export interface UseSectionFocusParams {
   sections: DocumentSection[];
-  crdtProviderRef: React.MutableRefObject<CrdtProvider | null>;
+  presenceRef: React.MutableRefObject<LocalPresence | null>;
   storeRef: React.MutableRefObject<BrowserFragmentReplicaStore | null>;
   readyEditors: Set<number>;
   editorRefs: React.MutableRefObject<Map<number, MilkdownEditorHandle>>;
-  ensureProvider: () => Promise<CrdtProvider | null>;
+  ensureProvider: () => Promise<CrdtTransport | null>;
 }
 
 export interface UseSectionFocusReturn {
@@ -37,12 +36,12 @@ export interface UseSectionFocusReturn {
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
   startEditing: (sectionIndex: number, clickCoords?: { x: number; y: number }) => Promise<void>;
   handleCursorExit: (sectionIndex: number, direction: "up" | "down") => void;
-  setViewingSections: (provider: CrdtProvider, sectionIndex: number) => void;
+  setViewingSection: (sectionIndex: number) => void;
 }
 
 export function useSectionFocus({
   sections,
-  crdtProviderRef,
+  presenceRef,
   storeRef,
   readyEditors,
   editorRefs,
@@ -69,17 +68,12 @@ export function useSectionFocus({
     return editability === "editable";
   }, [storeRef]);
 
-  // viewingPresence: set Awareness viewingSections on focus change
-  const setViewingSections = useCallback((provider: CrdtProvider, sectionIndex: number) => {
+  // viewingPresence: broadcast which section this client is viewing on focus change
+  const setViewingSection = useCallback((sectionIndex: number) => {
     const section = sections[sectionIndex];
     if (!section) return;
-    const fk = getSectionFragmentKey(section);
-    const currentUser = provider.awareness.getLocalState()?.user;
-    provider.awareness.setLocalStateField("user", {
-      ...currentUser,
-      viewingSections: [fk],
-    });
-  }, [sections]);
+    presenceRef.current?.setViewingSection(getSectionFragmentKey(section));
+  }, [sections, presenceRef]);
 
   // Click-to-edit a section
   const startEditing = useCallback(async (sectionIndex: number, clickCoords?: { x: number; y: number }) => {
@@ -91,8 +85,8 @@ export function useSectionFocus({
 
     setFocusedSectionIndex(sectionIndex);
     pendingFocusRef.current = { index: sectionIndex, position: "start", coords: clickCoords };
-    setViewingSections(provider, sectionIndex);
-  }, [ensureProvider, sections, setViewingSections, canFocusSection]);
+    setViewingSection(sectionIndex);
+  }, [ensureProvider, sections, setViewingSection, canFocusSection]);
 
   // Cross-section cursor navigation
   const handleCursorExit = useCallback((sectionIndex: number, direction: "up" | "down") => {
@@ -108,11 +102,10 @@ export function useSectionFocus({
       position: direction === "up" ? "end" : "start",
     };
 
-    const provider = crdtProviderRef.current;
-    if (provider) {
-      setViewingSections(provider, targetIndex);
+    if (presenceRef.current) {
+      setViewingSection(targetIndex);
     }
-  }, [sections, setViewingSections, crdtProviderRef, canFocusSection]);
+  }, [sections, setViewingSection, presenceRef, canFocusSection]);
 
   // Focus editor after it is ready AND visible
   useEffect(() => {
@@ -138,7 +131,7 @@ export function useSectionFocus({
   // Restore focus after a sections refresh re-fetches sections
   useEffect(() => {
     const refocusPath = pendingStructureRefocusRef.current;
-    if (!refocusPath || !crdtProviderRef.current) return;
+    if (!refocusPath || !presenceRef.current) return;
     pendingStructureRefocusRef.current = null;
 
     const exactIdx = sections.findIndex(
@@ -151,7 +144,7 @@ export function useSectionFocus({
     } else {
       setFocusedSectionIndex(null);
     }
-  }, [sections, crdtProviderRef, canFocusSection]);
+  }, [sections, presenceRef, canFocusSection]);
 
   return {
     focusedSectionIndex,
@@ -162,6 +155,6 @@ export function useSectionFocus({
     mouseDownPosRef,
     startEditing,
     handleCursorExit,
-    setViewingSections,
+    setViewingSection,
   };
 }

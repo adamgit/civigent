@@ -25,12 +25,13 @@ import type {
   BrowserFragmentReplicaStore,
   SectionEditability,
 } from "../services/browser-fragment-replica-store";
-import type { CrdtProvider, PublishPauseBarrier } from "../services/crdt-provider";
+import type { PublishPauseBarrier } from "../services/crdt-provider";
+import type { CrdtTransport } from "../services/crdt-transport";
 
 export interface UseEditorRegistryParams {
   sections: DocumentSection[];
   store: BrowserFragmentReplicaStore | null;
-  crdtProvider: CrdtProvider | null;
+  transport: CrdtTransport | null;
 }
 
 export interface UseEditorRegistryReturn {
@@ -58,7 +59,7 @@ function settleQuiescence(): Promise<void> {
 export function useEditorRegistry({
   sections,
   store,
-  crdtProvider,
+  transport,
 }: UseEditorRegistryParams): UseEditorRegistryReturn {
   const [readyEditors, setReadyEditors] = useState<Set<number>>(new Set());
   const editorRefs = useRef<Map<number, MilkdownEditorHandle>>(new Map());
@@ -104,16 +105,16 @@ export function useEditorRegistry({
   // drives editors read-only; freeze() only needs to wait for that flip to
   // commit before the provider sends `doc_publish_ready`.
   useEffect(() => {
-    if (!crdtProvider) return;
+    if (!transport) return;
     const barrier: PublishPauseBarrier = {
       freeze: () => settleQuiescence(),
       unfreeze: () => { /* store flag flip re-enables editors */ },
     };
-    crdtProvider.setPublishPauseBarrier(barrier);
+    transport.setPublishPauseBarrier(barrier);
     return () => {
-      crdtProvider.setPublishPauseBarrier(null);
+      transport.setPublishPauseBarrier(null);
     };
-  }, [crdtProvider]);
+  }, [transport]);
 
   return {
     readyEditors,

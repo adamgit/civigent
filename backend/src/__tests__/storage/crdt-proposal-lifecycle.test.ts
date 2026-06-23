@@ -76,7 +76,7 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
     expect(await findInProgressProposalForDoc("nonexistent.md")).toBeNull();
   });
 
-  it("updates the current-proposal section manifest, keeping locked_sections in sync", async () => {
+  it("updates the current-proposal section manifest, keeping targets in sync", async () => {
     const docSessionId = crypto.randomUUID() as DocSessionId;
     const { id } = await getOrCreateInProgressProposalForDocSession({
       docSessionId,
@@ -91,7 +91,7 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
     expect(updated.sections.map((s) => SectionRef.headingKey(s.heading_path)).sort()).toEqual(
       sections.map((s) => SectionRef.headingKey(s.heading_path)).sort(),
     );
-    expect(updated.locked_sections?.length).toBe(2);
+    expect(updated.targets.length).toBe(2);
 
     const reread = await readProposal(id);
     expect(reread.sections).toHaveLength(2);
@@ -115,7 +115,7 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
     expect(p.sections.map((s) => key(s.heading_path)).sort()).toEqual(
       [key(["Overview"]), key(["Timeline"])].sort(),
     );
-    expect(p.locked_sections?.map((s) => key(s.heading_path)).sort()).toEqual(
+    expect(p.targets.map((s) => key((s as { heading_path: string[] }).heading_path)).sort()).toEqual(
       [key(["Overview"]), key(["Timeline"])].sort(),
     );
 

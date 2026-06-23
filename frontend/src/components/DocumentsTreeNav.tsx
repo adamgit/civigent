@@ -502,7 +502,9 @@ export function DocumentsTreeNav({
                 <div key={i} className="text-xs py-1 border-b last:border-b-0">
                   <div className="font-medium">{target.target.doc_path}</div>
                   <div className="text-gray-500">
-                    {target.target.heading_path.join(" > ")}
+                    {target.target.kind === "section"
+                      ? target.target.heading_path.join(" > ")
+                      : "(whole document)"}
                     {" — "}
                     {/* Area M: render backend prose, not a code/score. */}
                     {target.message}

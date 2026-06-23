@@ -134,8 +134,7 @@ function renderChecks(checks: DiagHealthCheck[]) {
   }
 }
 
-// Session-overlay and raw-fragment durable layers were removed (plan §D); the
-// surviving layers are Canonical and live CRDT.
+// The durable layers are Canonical and live CRDT.
 const WINNER_COLORS: Record<string, string> = {
   canonical: "bg-blue-100 text-blue-800",
   crdt: "bg-green-100 text-green-800",

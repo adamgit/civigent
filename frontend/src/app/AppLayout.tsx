@@ -63,6 +63,10 @@ export function AppLayout() {
   const [creatingDoc, setCreatingDoc] = useState(false);
   const [newDocError, setNewDocError] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  // Visible degraded state for an authoritative session check that genuinely
+  // failed (500 / network / malformed) — distinct from a normal signed-out, so
+  // the initial load never fails silently. Cleared on the next clean read.
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const [docBadges, setDocBadges] = useState<Set<string>>(() => readBadgeDocPaths());
   const [treeRowFlashes, setTreeRowFlashes] = useState<Map<string, TreeRowFlashEntry>>(new Map());
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
@@ -244,7 +248,7 @@ export function AppLayout() {
     return disconnect;
   }, []);
 
-  const revalidateSession = useCallback(() => {
+  const revalidateSession = useCallback((options?: { initial?: boolean }) => {
     apiClient.getSessionInfo()
       .then((session) => {
         if (session.authenticated && session.user?.id) {
@@ -254,8 +258,35 @@ export function AppLayout() {
           clearWriterId();
           setCurrentUser(null);
         }
+        // A clean read clears any prior degraded banner.
+        setSessionError(null);
       })
-      .catch(() => {});
+      .catch((err) => {
+        // 503 system_starting never reaches here — `requestJson` routes it to the
+        // system-starting handler and returns a never-settling promise.
+        if (err instanceof SystemStartingError) return;
+        const message = err instanceof Error ? err.message : String(err);
+        // NEVER discard the error: record it to the diagnostic ring buffer so the
+        // failure is debuggable even though the UX fallback is non-fatal.
+        recordWsDiag({
+          source: "session-revalidate",
+          type: "getSessionInfo",
+          summary: `error: ${message}`,
+          payload: { error: message, initial: !!options?.initial },
+        });
+        // Soft fallback in every case: identity falls back to signed-out.
+        clearWriterId();
+        setCurrentUser(null);
+        // A 401 has already fired the unauthorized handler — that's a normal
+        // not-signed-in, not a degraded server state, so no banner for it. A
+        // genuine 500 / network / malformed failure on the AUTHORITATIVE initial
+        // load surfaces a visible degraded state instead of failing silently;
+        // high-frequency background refreshes keep the soft signed-out fallback.
+        const unauthorized = err instanceof Error && /^401\b/.test(err.message);
+        if (options?.initial && !unauthorized) {
+          setSessionError(message);
+        }
+      });
   }, []);
 
   // Initial data load — runs independently of SSE (which is dev-only).
@@ -263,7 +294,7 @@ export function AppLayout() {
   // and the recovery poll below takes over.
   useEffect(() => {
     loadTree().catch(() => {});
-    revalidateSession();
+    revalidateSession({ initial: true });
   }, [revalidateSession]);
 
   // Recovery poll: when systemStarting is set (by 503 handler or SSE),
@@ -400,7 +431,6 @@ export function AppLayout() {
   }, [treeRowFlashes]);
 
   useEffect(() => {
-    wsClient.connect();
     let refreshTimer: number | null = null;
     const scheduleTreeRefresh = (reason: string) => {
       const coalesced = refreshTimer != null;
@@ -458,6 +488,7 @@ export function AppLayout() {
         }, 4500);
       }
     });
+    wsClient.connect();
     return () => {
       if (refreshTimer != null) {
         window.clearTimeout(refreshTimer);
@@ -652,6 +683,17 @@ export function AppLayout() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Content */}
         <main className="flex-1 overflow-y-auto canvas-scroll">
+          {/* Authoritative session check failed (500 / network / malformed) — a
+              visible degraded state so the initial load never fails silently. */}
+          {sessionError ? (
+            <div
+              role="alert"
+              data-testid="session-degraded"
+              className="bg-red-50 border-b border-red-200 px-4 py-2 text-xs text-red-800"
+            >
+              Couldn&apos;t verify your session: {sessionError}. You may be signed out — retry by refreshing or refocusing the tab.
+            </div>
+          ) : null}
           {/* Toasts */}
           {toasts.length > 0 ? (
             <div className="fixed top-4 right-4 z-20 grid gap-1.5">

@@ -119,11 +119,13 @@ class HumanInvolvementCompatibilityPolicy
     try {
       return await secondsSinceLastCommit(ref, commitInfoByFilePath);
     } catch (err) {
-      if (
-        err instanceof DocumentNotFoundError ||
-        err instanceof HeadingNotFoundError ||
-        (err instanceof Error && err.message.includes("Skeleton integrity error"))
-      ) {
+      // FAIL LOUD (claim-review 04): score 0 ONLY for the legitimate "section not
+      // yet in canonical" case (a brand-new doc/heading materialized only in the
+      // proposal shadow). A skeleton-integrity error, I/O fault, or any other
+      // failure is NOT "no history" — it is corruption/instability and MUST throw,
+      // never coerce to null → 0. The catch is narrowed to the two not-yet-canonical
+      // errors precisely so corruption is no longer absorbed here.
+      if (err instanceof DocumentNotFoundError || err instanceof HeadingNotFoundError) {
         return null;
       }
       throw err;
@@ -175,7 +177,7 @@ class HumanInvolvementCompatibilityPolicy
       });
 
       targets.push({
-        target: { doc_path: section.doc_path, heading_path: [...section.heading_path] },
+        target: { kind: "section", doc_path: section.doc_path, heading_path: [...section.heading_path] },
         canWrite: !result.blocked,
         message: result.blocked
           ? this.blockedTargetMessage(ref, result.score, section.justification)
@@ -203,7 +205,7 @@ class HumanInvolvementCompatibilityPolicy
       const passing = targets.filter((t) => t.canWrite);
       passing.sort((a, b) => b.details.score - a.details.score);
       const offending = passing[0];
-      if (offending) {
+      if (offending && offending.target.kind === "section") {
         offending.canWrite = false;
         offending.details.blockedReason = "aggregate_impact";
         offending.message =
@@ -285,6 +287,9 @@ class HumanInvolvementCompatibilityPolicy
     // callers used to hand-build from `humanInvolvement_score`.
     const snapshot: HumanInvolvementCommittedProposalMetadata = {};
     for (const target of result.targets) {
+      // The HI policy only scores section targets; document targets (if ever
+      // present) carry no synthetic score and are skipped (spec 12 §Data Shapes).
+      if (target.target.kind !== "section") continue;
       const ref = SectionRef.fromTarget(target.target);
       snapshot[ref.globalKey] = target.details.score;
     }

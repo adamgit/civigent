@@ -108,7 +108,7 @@ describe("GET /api/documents/:doc_path/sections", () => {
     expect(overview?.content).toContain(SAMPLE_SECTIONS.overview);
   });
 
-  it("returns proposal-overlay content when proposal_id is provided", async () => {
+  it("returns proposal-scoped content via the proposal document-sections route", async () => {
     const createRes = await request(ctx.app)
       .post("/api/proposals")
       .set("Authorization", ctx.humanToken)
@@ -126,13 +126,44 @@ describe("GET /api/documents/:doc_path/sections", () => {
     const proposalId = createRes.body.proposal_id as string;
 
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/sections`)
-      .query({ proposal_id: proposalId })
+      .get(`/api/proposals/${proposalId}/documents/${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
     const overview = sectionByHeadingPath(res.body.sections, ["Overview"]);
     expect(overview?.content).toContain("Proposal-specific overview content.");
+  });
+
+  it("bulk-reads all targeted documents via GET /api/proposals/:id/sections", async () => {
+    const createRes = await request(ctx.app)
+      .post("/api/proposals")
+      .set("Authorization", ctx.humanToken)
+      .send({
+        intent: "Bulk read check",
+        sections: [
+          {
+            doc_path: SAMPLE_DOC_PATH,
+            heading_path: ["Overview"],
+            content: "Bulk overview content.",
+          },
+        ],
+      });
+    expect(createRes.status).toBe(201);
+    const proposalId = createRes.body.proposal_id as string;
+
+    const res = await request(ctx.app)
+      .get(`/api/proposals/${proposalId}/sections`)
+      .set("Authorization", ctx.humanToken);
+
+    expect(res.status).toBe(200);
+    expect(res.body.proposal_id).toBe(proposalId);
+    expect(Array.isArray(res.body.documents)).toBe(true);
+    const sampleDoc = res.body.documents.find(
+      (d: { doc_path: string }) => d.doc_path === SAMPLE_DOC_PATH,
+    );
+    expect(sampleDoc).toBeDefined();
+    const overview = sectionByHeadingPath(sampleDoc.sections, ["Overview"]);
+    expect(overview?.content).toContain("Bulk overview content.");
   });
 
   it("returns CANONICAL content (not proposal-overlay) on the default GET while a proposal exists (MW-7)", async () => {
@@ -185,8 +216,7 @@ describe("GET /api/documents/:doc_path/sections", () => {
     const proposalId = createRes.body.proposal_id as string;
 
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/sections`)
-      .query({ proposal_id: proposalId })
+      .get(`/api/proposals/${proposalId}/documents/${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -194,16 +224,15 @@ describe("GET /api/documents/:doc_path/sections", () => {
     expect(timeline?.content).toContain(SAMPLE_SECTIONS.timeline);
   });
 
-  it("returns 404 for invalid proposal_id", async () => {
+  it("returns 404 for an invalid proposal id on the proposal section route", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/sections`)
-      .query({ proposal_id: "not-a-real-proposal-id" })
+      .get(`/api/proposals/not-a-real-proposal-id/documents/${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(404);
   });
 
-  it("returns 403 for unrelated proposal_id owned by another writer", async () => {
+  it("returns 403 for a proposal owned by another writer", async () => {
     const otherHumanToken = authFor("human-other-user", "human");
     const createRes = await request(ctx.app)
       .post("/api/proposals")
@@ -216,8 +245,7 @@ describe("GET /api/documents/:doc_path/sections", () => {
     const proposalId = createRes.body.proposal_id as string;
 
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/sections`)
-      .query({ proposal_id: proposalId })
+      .get(`/api/proposals/${proposalId}/documents/${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(403);
@@ -294,8 +322,7 @@ describe("GET /api/documents/:doc_path/sections", () => {
     const proposalId = createRes.body.proposal_id as string;
 
     const res = await request(ctx.app)
-      .get(`/api/documents/${NESTED_DOC_PATH}/sections`)
-      .query({ proposal_id: proposalId })
+      .get(`/api/proposals/${proposalId}/documents/${NESTED_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);

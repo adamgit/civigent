@@ -14,14 +14,12 @@ import {
   type RequestedMode,
 } from "../types/shared.js";
 import type { DocumentSection } from "../pages/document-page-utils";
-import type { CrdtProvider } from "../services/crdt-provider";
 
 export interface UseProposalDraftingParams {
   decodedDocPath: string | null;
   sections: DocumentSection[];
   setError: (e: string | null) => void;
   loadSections: (docPath: string) => Promise<DocumentSection[]>;
-  crdtProviderRef: React.MutableRefObject<CrdtProvider | null>;
   setFocusedSectionIndex: React.Dispatch<React.SetStateAction<number | null>>;
   requestMode: (mode: RequestedMode) => Promise<void>;
 }
@@ -88,7 +86,6 @@ export function useProposalDrafting({
   sections,
   setError,
   loadSections,
-  crdtProviderRef,
   setFocusedSectionIndex,
   requestMode,
 }: UseProposalDraftingParams): UseProposalDraftingReturn {
@@ -197,10 +194,19 @@ export function useProposalDrafting({
   ) => {
     const proposalId = activeProposalIdRef.current;
     if (!proposalId) return;
+    const sections = [...nextSections.values()];
     await runQueuedMutation(async () => {
-      await apiClient.updateProposal(proposalId, {
+      // Content first, then the manifest (intent + target scope) — these are
+      // separate routes (content vs. intent/scope). Content-first is the
+      // safer order for the unavoidable non-atomic window: if the content
+      // write fails, the manifest/scope is left untouched (nothing changed)
+      // rather than leaving scope expanded ahead of content that never landed.
+      // Staging content does not depend on the manifest scope being set first
+      // (the content route is ownership/mutability-gated only).
+      await apiClient.replaceProposalSections(proposalId, { sections });
+      await apiClient.updateProposalManifest(proposalId, {
         intent: proposalIntentRef.current,
-        sections: [...nextSections.values()],
+        targets: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
       });
       await refreshActiveProposal(proposalId);
     });
@@ -326,9 +332,10 @@ export function useProposalDrafting({
         nextSections.delete(key);
       } else {
         let baselineContent = section.content;
-        const proposalView = await apiClient.getDocumentSections(decodedDocPath, {
-          proposalId: activeProposalIdRef.current,
-        });
+        const proposalView = await apiClient.getProposalDocumentSections(
+          activeProposalIdRef.current,
+          decodedDocPath,
+        );
         const matched = proposalView.sections.find((candidate) =>
           headingPathEquals(candidate.heading_path, section.heading_path)
         );

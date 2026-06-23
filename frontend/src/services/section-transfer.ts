@@ -14,18 +14,18 @@
  * is an agent-only signal (plan §P / §N "do not use agent write-policy state as
  * a human edit/read-only lock"). Denial text is a prose `message`, never a code.
  *
- * Mutation path (Area N/H, MW-10): the legacy client-routed whole-section
- * rewrite (`MSG_SECTION_MUTATE`) is removed (spec 05 §4 > Removed message types).
- * Cross-section structural moves are owned by the backend's identity-preserving
- * Y.transact primitive driven by CRDTProposalGenerator (spec 05 §"Structural
- * Normalization") — Y.js has no `moveTo` between top-level types. `execute()`
- * now issues a `section_move` request to the backend (a binary CRDT frame routed
- * through the DocSession actor lane) and resolves once the server applies the
- * reorder and fans out the new Y.Doc state. `canDrop` still gates affordances on
- * transport availability + FSM-lock + CRDT block-state.
+ * Mutation path: the live cross-section move is a CONTROL-PLANE REST operation
+ * (claim-review 03 / Option E), explicitly NOT a CRDT binary frame. `execute()`
+ * POSTs to the live-move endpoint (`apiClient.liveMoveSection`) and resolves on
+ * the precise `200` ack, or renders the `409` prose refusal verbatim. The backend
+ * owns the identity-preserving Y.transact reorder (Y.js has no `moveTo` between
+ * top-level types) and fans the new Y.Doc state out over the WS; live editors
+ * (including the requester) repaint from that fan-out. `canDrop` gates affordances
+ * on transport availability + FSM-lock + CRDT block-state.
  */
 
-import type { CrdtProvider } from "./crdt-provider.js";
+import type { CrdtTransport } from "./crdt-transport.js";
+import { apiClient } from "./api-client.js";
 import {
   captureCaretOffsets,
   restoreCaretOffsets,
@@ -125,7 +125,7 @@ export interface SectionInfo {
 }
 
 export interface SectionTransferDeps {
-  crdtProvider: CrdtProvider;
+  transport: CrdtTransport;
   getSections: () => SectionInfo[];
   /**
    * @deprecated Presence-driven drop gating was removed (spec 06 §7 — no
@@ -164,7 +164,7 @@ export class SectionTransferService {
    */
   canDrop(targetFragmentKey: string): DropVerdict {
     // 0. Editor/transport availability (publication-pause / disconnected).
-    if (this.deps.crdtProvider.state !== "connected") {
+    if (this.deps.transport.state !== "connected") {
       return {
         allowed: false,
         kind: "unavailable",
@@ -200,16 +200,18 @@ export class SectionTransferService {
   /**
    * Execute a cross-section move.
    *
-   * The move is backend-owned (MW-10): there is no surviving client RPC that
-   * rewrites a section's Y.XmlFragment while preserving CRDT identity, and Y.js
-   * has no `moveTo` between top-level types. `execute()` issues a `section_move`
-   * request through the CRDT provider; the backend reorders the section inside
-   * the DocSession actor's Y.transact and fans out the new Y.Doc state. The
-   * promise resolves once that server-applied reorder reaches this client.
+   * The live move is a CONTROL-PLANE REST operation (claim-review 03 / Option E),
+   * explicitly NOT a CRDT binary frame: `execute()` POSTs to the live-move endpoint
+   * and resolves on the precise `200` ack (no more resolving on "any remote Y
+   * update"), or renders the `409` prose refusal VERBATIM. The backend reorders the
+   * section inside the DocSession actor's Y.transact and fans the new state out over
+   * the WS — live editors (including the requester) still repaint from that fan-out;
+   * the REST response is the ack/refusal channel only.
    *
-   * Caret recovery for the moved section is best-effort/deferred ("100% correct
-   * data" is the accepted bar): the backend re-seeds the moved fragments, so
-   * local caret position in the moved section may reset.
+   * The structural reorder is backend-owned (Y.js has no `moveTo` between top-level
+   * types). Caret recovery for the moved section is best-effort/deferred ("100%
+   * correct data" is the accepted bar): the re-seed resets caret position, restored
+   * by content offset once the fan-out lands.
    */
   async execute(transfer: SectionTransfer): Promise<TransferResult> {
     if (this._executing) {
@@ -221,12 +223,12 @@ export class SectionTransferService {
 
     try {
       // Pre-Step: Check CRDT connection liveness
-      if (this.deps.crdtProvider.state !== "connected") {
+      if (this.deps.transport.state !== "connected") {
         return { success: false, error: "CRDT session disconnected — drop cancelled", sourceModified: false, targetModified: false };
       }
 
-      // Recheck preconditions. Surface the verdict's prose message
-      // (plan §M — never interpolate a reason code into user-facing text).
+      // Recheck preconditions (defense-in-depth client gating). Surface the
+      // verdict's prose message (plan §M — never interpolate a reason code).
       const verdict = this.canDrop(transfer.targetFragmentKey);
       if (!verdict.allowed) {
         return {
@@ -247,32 +249,34 @@ export class SectionTransferService {
       const sourceView = this.deps.getEditorViewForFragment?.(transfer.sourceFragmentKey) ?? null;
       const capturedCaret = captureCaretOffsets(sourceView);
 
-      // Issue the backend-owned move. A drop ONTO a target section positions the
-      // dragged section immediately before that target (insert-at-target-slot).
-      try {
-        await this.deps.crdtProvider.sendSectionMove({
-          sourceHeadingPath: transfer.sourceHeadingPath,
-          targetHeadingPath: transfer.targetHeadingPath,
-          position: "before",
-        });
-      } catch (err) {
-        return {
-          success: false,
-          error: err instanceof Error ? err.message : "Section move failed.",
-          sourceModified: false,
-          targetModified: false,
-        };
+      // ORDERING BARRIER (claim-review 03): a live move re-seeds EVERY live
+      // fragment from the proposal layout, so the requester's in-flight keystrokes
+      // MUST be materialized first or they are clobbered. The REST channel does not
+      // inherit the binary path's FIFO ordering for free, so flush + await our
+      // edits' materialization (client-side quiescence) before issuing the move.
+      await this.deps.transport.flushAndAwaitSync();
+
+      // Issue the live move over the CONTROL plane. A drop ONTO a target positions
+      // the dragged section immediately before that target (insert-at-target-slot).
+      const result = await apiClient.liveMoveSection(this.deps.transport.documentPath, {
+        sourceHeadingPath: transfer.sourceHeadingPath,
+        targetHeadingPath: transfer.targetHeadingPath,
+        position: "before",
+      });
+      if (!result.ok) {
+        // Apply-time refusal (publish-pause race, section deleted mid-drag, …) —
+        // render the backend's prose VERBATIM. Section order is unchanged.
+        return { success: false, error: result.message, sourceModified: false, targetModified: false };
       }
 
-      // WS-6: restore the caret once the server-applied re-seed has propagated to
-      // the editor (defer one macrotask so the ySyncPlugin has rebuilt the view).
-      // The moved section keeps its fragment key (the reorder preserves the
-      // section-file id), so we look it up again and restore by offset.
+      // WS-6: restore the caret once the server-applied re-seed lands as the WS
+      // fan-out update (not on a fixed macrotask). The moved section keeps its
+      // fragment key (the reorder preserves the section-file id).
       if (capturedCaret) {
-        setTimeout(() => {
+        this.deps.transport.onceRemoteUpdate(() => {
           const view = this.deps.getEditorViewForFragment?.(transfer.sourceFragmentKey) ?? null;
           restoreCaretOffsets(view, capturedCaret);
-        }, 0);
+        });
       }
 
       // The backend reorder moved the section atomically; no separate source

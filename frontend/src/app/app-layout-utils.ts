@@ -81,12 +81,12 @@ export function classifyWsEvent(
 ): WsEventClassification {
   const noop: WsEventClassification = { refreshTree: false, addBadge: null, showToast: null };
 
-  // `dirty:changed` is still emitted on the JSON app WS but is not an
-  // AppLayout-level trigger (tree refresh / badges / toasts). The
-  // `writer:dirty-state-changed` / `session:status-changed` dirty-persistence
-  // triggers were removed (plan §F), so they no longer need a branch — unknown
-  // event types fall through to the trailing `noop` below regardless.
-  if (event.type === "dirty:changed") {
+  // Per-section editor affordance events (`section:pending`/`section:settled`,
+  // like the block-state events) ride the JSON app WS but are NOT AppLayout-level
+  // triggers (tree refresh / badges / toasts) — they are consumed per-section in
+  // useDocumentWebSocket. They return noop here. Unknown event types fall through
+  // to the trailing `noop` below regardless.
+  if (event.type === "section:pending" || event.type === "section:settled") {
     return noop;
   }
 

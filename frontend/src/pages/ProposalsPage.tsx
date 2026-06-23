@@ -28,6 +28,34 @@ export function ProposalsPage() {
   const [proposals, setProposals] = useState<AnyProposal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Per-(proposal,defect) autofix in-flight keys and per-proposal autofix errors.
+  const [autofixing, setAutofixing] = useState<Set<string>>(new Set());
+  const [autofixErrors, setAutofixErrors] = useState<Record<string, string>>({});
+
+  const handleAutofix = async (proposalId: string, detectorId: string) => {
+    const key = `${proposalId}:${detectorId}`;
+    setAutofixing((prev) => new Set(prev).add(key));
+    setAutofixErrors((prev) => {
+      const next = { ...prev };
+      delete next[proposalId];
+      return next;
+    });
+    try {
+      const { proposal } = await apiClient.autofixProposalDefect(proposalId, detectorId);
+      setProposals((prev) => prev.map((p) => (p.id === proposalId ? proposal : p)));
+    } catch (err) {
+      setAutofixErrors((prev) => ({
+        ...prev,
+        [proposalId]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setAutofixing((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -92,17 +120,55 @@ export function ProposalsPage() {
               {filteredProposals.length === 0 ? (
                 <div className="p-4 text-xs text-text-muted">No proposals found.</div>
               ) : (
-                filteredProposals.map((proposal) => (
+                filteredProposals.map((proposal) => {
+                  const degraded = proposal.degraded ?? [];
+                  const isDegraded = degraded.length > 0;
+                  return (
                   <Link
                     key={proposal.id}
                     to={`/proposals/${encodeURIComponent(proposal.id)}`}
-                    className="block border-b border-[#f5f2ed] hover:bg-[#faf8f5] last:border-b-0"
+                    data-testid={isDegraded ? "proposal-row-degraded" : "proposal-row"}
+                    className={`block border-b last:border-b-0 ${isDegraded ? "border-red-200 bg-red-50 hover:bg-red-100" : "border-[#f5f2ed] hover:bg-[#faf8f5]"}`}
                     style={{
                       padding: "14px 16px",
                       textDecoration: "none",
                       opacity: proposal.status === "withdrawn" ? 0.65 : 1,
+                      ...(isDegraded ? { borderLeft: "3px solid var(--color-status-red, #dc2626)" } : {}),
                     }}
                   >
+                    {/* Degraded banner — quarantined until autofixed */}
+                    {isDegraded ? (
+                      <div className="mb-2 rounded border border-red-200 bg-white/70 px-2 py-1.5">
+                        <div className="text-[11px] font-semibold text-red-800">
+                          Degraded — quarantined until repaired (cannot lock or commit)
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                          {degraded.map((defect) => {
+                            const key = `${proposal.id}:${defect}`;
+                            const busy = autofixing.has(key);
+                            return (
+                              <button
+                                key={defect}
+                                type="button"
+                                disabled={busy}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  void handleAutofix(proposal.id, defect);
+                                }}
+                                className="text-[11px] font-medium px-2 py-0.5 rounded border border-red-300 bg-red-100 text-red-800 hover:bg-red-200 disabled:opacity-60"
+                              >
+                                {busy ? `Autofixing ${defect}…` : `Autofix ${defect}`}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {autofixErrors[proposal.id] ? (
+                          <div className="mt-1 text-[11px] text-red-700">{autofixErrors[proposal.id]}</div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
                     {/* Top row */}
                     <div className="flex items-center gap-2 mb-1.5">
                       <StatusPill variant={statusPillVariant(proposal.status)} showDot>
@@ -174,7 +240,8 @@ export function ProposalsPage() {
                       <span>{proposal.sections.length} write targets</span>
                     </div>
                   </Link>
-                ))
+                  );
+                })
               )}
             </ContentPanel.Body>
             <ContentPanel.Summary>

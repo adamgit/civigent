@@ -114,7 +114,7 @@ export interface MilkdownEditorProps {
   store?: BrowserFragmentReplicaStore | null;
   /** CRDT transport handle (retained for callers that pass it through; the
    *  editor binds directly to `store.doc` via y-prosemirror and issues no wire
-   *  calls — the legacy overlay-import coupling is removed). */
+   *  calls). */
   transport?: CrdtTransport | null;
   /** Whether the CRDT transport has completed initial sync (Y.Doc has content). */
   crdtSynced?: boolean;
@@ -132,6 +132,12 @@ export interface MilkdownEditorProps {
   canDrop?: () => DropVerdict;
   /** Called when content is dropped from a different section's editor. */
   onCrossSectionDrop?: (transfer: SectionTransfer) => void;
+  /** Called on a GENUINE local edit to the bound fragment (this session's own
+   *  typing/paste/IME/drop), never on a remote or programmatic Y.Doc apply.
+   *  Sourced from the editor's native `beforeinput` event, which fires only for
+   *  real user input and not for ProseMirror/ySync's programmatic DOM updates.
+   *  CRDT mode only. */
+  onLocalEdit?: () => void;
   /** Called when the editor is fully initialized and has content (safe to display). */
   onReady?: () => void;
   /** Called when the editor is being destroyed (cleanup). */
@@ -179,6 +185,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     onCursorExit,
     canDrop,
     onCrossSectionDrop,
+    onLocalEdit,
     onReady,
     onUnready,
     expectsCrdt = false,
@@ -188,6 +195,10 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   const controllerRef = useRef<EditorLifecycleController | null>(null);
   const deferredFocusRef = useRef<"start" | "end" | null>(null);
   const headingPathRef = useRef<string[]>([]);
+  // Cleanup for the native `beforeinput` listener that surfaces genuine local
+  // edits. Held so it can be removed on CRDT-detach and on unmount, so a leaked
+  // listener never fires against a destroyed component.
+  const localEditListenerCleanupRef = useRef<(() => void) | null>(null);
 
   // Refs for async callbacks that need current prop values
   const storeRef = useRef(store);
@@ -206,6 +217,8 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   canDropRef.current = canDrop;
   const onCrossSectionDropRef = useRef(onCrossSectionDrop);
   onCrossSectionDropRef.current = onCrossSectionDrop;
+  const onLocalEditRef = useRef(onLocalEdit);
+  onLocalEditRef.current = onLocalEdit;
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
   const onUnreadyRef = useRef(onUnready);
@@ -324,6 +337,23 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     const awareness = replicaStore.awareness;
     const color = userColor ?? pickColor(userName);
 
+    // Surface GENUINE local edits to this fragment. The producer is the editor's
+    // native `beforeinput` event, which fires only for real user input (typing,
+    // paste, IME, drop) and NEVER for ProseMirror/ySync's programmatic DOM
+    // updates when binding or applying a remote frame. Yjs `transaction.local`
+    // was the previous discriminator but it is wrong: attach-time awareness/sync
+    // transactions also run as `local=true` (proven at runtime — the awareness
+    // listener writes back via a deferred dispatch), polluting the session
+    // authorship ledger on open and mislabelling an inbound update as your save.
+    teardownLocalEditObserver();
+    const editorDom = view.dom;
+    const localEditHandler = (): void => onLocalEditRef.current?.();
+    editorDom.addEventListener("beforeinput", localEditHandler);
+    localEditListenerCleanupRef.current = () => {
+      editorDom.removeEventListener("beforeinput", localEditHandler);
+      localEditListenerCleanupRef.current = null;
+    };
+
     const newState = view.state.reconfigure({
       plugins: [
         ...view.state.plugins,
@@ -344,7 +374,12 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     ctrl.send("attach_done");
   }
 
+  function teardownLocalEditObserver(): void {
+    localEditListenerCleanupRef.current?.();
+  }
+
   function detachCrdt(ctrl: EditorLifecycleController): void {
+    teardownLocalEditObserver();
     const crepe = ctrl.getCrepe();
     if (!crepe || !ctrl.crdtAttached) return;
     try {
@@ -589,6 +624,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 
     return () => {
       cleanupDragListeners?.();
+      teardownLocalEditObserver();
       if (debounceTimer !== null) clearTimeout(debounceTimer);
 
       // Silence ProseMirror dispatch before async crepe.destroy() starts.
@@ -655,9 +691,41 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 
   // ── Read-only toggling ─────────────────────────────────
 
+  // A publish pause (doc_publish_pause_start/end) freezes editors read-only
+  // mid-edit; `setReadonly(true)` drops contentEditable, which the browser
+  // responds to by blurring the element — the caret disappears. ProseMirror keeps
+  // the selection in its state across the toggle, so when the pause lifts we
+  // re-focus the editor that was focused before the freeze and the caret returns
+  // to where it was. Without this the active writer loses their caret on every
+  // autonomous/last-editor publish and must click back in.
+  const prevReadOnlyRef = useRef(readOnly);
+  const hadFocusBeforeReadOnlyRef = useRef(false);
   useEffect(() => {
-    const crepe = controllerRef.current?.getCrepe();
-    if (crepe) crepe.setReadonly(readOnly);
+    const ctrl = controllerRef.current;
+    const crepe = ctrl?.getCrepe();
+    const wasReadOnly = prevReadOnlyRef.current;
+    prevReadOnlyRef.current = readOnly;
+    if (!crepe) return;
+
+    if (readOnly && !wasReadOnly) {
+      try {
+        hadFocusBeforeReadOnlyRef.current = crepe.editor.ctx.get(editorViewCtx).hasFocus();
+      } catch {
+        // Editor mid-teardown — treat as unfocused.
+        hadFocusBeforeReadOnlyRef.current = false;
+      }
+    }
+
+    crepe.setReadonly(readOnly);
+
+    if (!readOnly && wasReadOnly && ctrl?.isReady() && hadFocusBeforeReadOnlyRef.current) {
+      hadFocusBeforeReadOnlyRef.current = false;
+      try {
+        crepe.editor.ctx.get(editorViewCtx).focus();
+      } catch {
+        // Editor mid-teardown — nothing to focus.
+      }
+    }
   }, [readOnly]);
 
   // ── Render ─────────────────────────────────────────────

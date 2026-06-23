@@ -181,7 +181,7 @@ export async function resolveAllSectionPaths(
 ): Promise<Map<string, ResolvedSection>> {
   let skeleton: DocumentSkeleton;
   try {
-    skeleton = await DocumentSkeleton.fromDisk(docPath, rootDir, rootDir);
+    skeleton = await DocumentSkeleton.fromSingleRoot(docPath, rootDir);
   } catch {
     return new Map(); // skeleton doesn't exist (e.g. overlay root with no changes)
   }

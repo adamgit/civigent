@@ -1,12 +1,14 @@
 import type {
   CreateProposalRequest,
-  UpdateProposalRequest,
+  UpdateProposalManifestRequest,
+  ReplaceProposalSectionsRequest,
+  WriteProposalDocumentSectionsRequest,
   ProposalDTO,
   ProposalStatus,
   HumanInvolvementPolicyResult,
   WriterIdentity,
-  ProposalId,
 } from "../../types/shared.js";
+import { sectionTargetsOf } from "../../types/shared.js";
 import {
   createProposal,
   readProposal,
@@ -18,19 +20,22 @@ import {
   listCommittingProposals,
   listCommittedProposals,
   listWithdrawnProposals,
+  listDegradedProposals,
   findDraftProposalByWriter,
-  updateProposalSections,
+  declareReservedProposalSectionsFromRequest,
   transitionToWithdrawn,
   transitionToInProgress,
   isProposalMutable,
   isProposalStatus,
   ProposalNotFoundError,
   InvalidProposalStateError,
+  ProposalIntegrityError,
 } from "../../storage/proposal-repository.js";
 import { evaluateAgentWritePolicy, commitProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { applyCommittedCanonicalToLiveSession } from "../../ws/crdt-ws-coordinator.js";
 import { AgentWritePolicy, humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
 import { ProposalEditor } from "../../storage/proposal-editor.js";
+import { sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
 import { SectionRef } from "../../domain/section-ref.js";
 
 export { ProposalNotFoundError, InvalidProposalStateError, isProposalStatus };
@@ -59,6 +64,12 @@ export async function listProposalsForStatusFilter(status?: ProposalStatus) {
 export async function listMyProposals(writerId: string, status?: ProposalStatus) {
   const all = await listProposalsForStatusFilter(status);
   return all.filter((p) => p.writer.id === writerId);
+}
+
+/** The degraded (quarantined) proposals an admin must tend to — scans only the
+ *  degradable statuses, never the full committed/withdrawn history. */
+export async function listDegradedProposalsUseCase() {
+  return listDegradedProposals();
 }
 
 // ─── Create ─────────────────────────────────────────────
@@ -133,7 +144,7 @@ export async function createProposalUseCase(
     const editor = ProposalEditor.open(proposalId, "draft");
     for (const sc of sectionContents) {
       const heading = sc.heading_path.length === 0 ? "" : sc.heading_path[sc.heading_path.length - 1]!;
-      await editor.writeSection(sc.doc_path, sc.heading_path, heading, sc.content);
+      await editor.writeSection(sc.doc_path, sc.heading_path, heading, sectionWriteInputFromExternal(sc.content));
     }
   }
 
@@ -154,7 +165,7 @@ export async function createProposalUseCase(
   return {
     proposalId,
     intent,
-    draftSections: agentWritePolicy.targets.map((t) => ({ doc_path: t.target.doc_path, heading_path: t.target.heading_path })),
+    draftSections: sectionTargetsOf(agentWritePolicy.targets.map((t) => t.target)),
     agentWritePolicy,
     outcome: agentWritePolicy.canWrite ? "accepted" : "blocked",
   };
@@ -165,10 +176,18 @@ export async function createProposalUseCase(
 export async function readProposalDto(id: string): Promise<ProposalDTO> {
   const { proposal, sectionContent } = await readProposalWithContent(id);
 
-  const sectionsWithContent = proposal.sections.map((s) => ({
-    ...s,
-    content: sectionContent.get(SectionRef.fromTarget(s).globalKey) ?? null,
-  }));
+  // `readProposalWithContent` now throws `ProposalIntegrityError` for any claimed
+  // section whose body is missing, so every claimed section resolves here — no
+  // `?? null` coercion that would hide a missing/corrupt body (claim-review 04).
+  const sectionsWithContent = proposal.sections.map((s) => {
+    const key = SectionRef.fromTarget(s).globalKey;
+    const content = sectionContent.get(key);
+    if (content === undefined) {
+      // Unreachable in practice (the reader threw upstream); assert rather than coerce.
+      throw new ProposalIntegrityError(proposal.id, key);
+    }
+    return { ...s, content };
+  });
 
   let dto: ProposalDTO;
   if (proposal.status === "committed" || proposal.status === "withdrawn") {
@@ -201,7 +220,7 @@ export type ModifyProposalResult =
 export async function modifyProposalUseCase(
   proposalId: string,
   writer: ProposalWriter,
-  body: UpdateProposalRequest,
+  body: UpdateProposalManifestRequest,
 ): Promise<ModifyProposalResult> {
   const proposal = await readProposal(proposalId);
   if (proposal.writer.id !== writer.id) {
@@ -210,19 +229,20 @@ export async function modifyProposalUseCase(
   if (!isProposalMutable(proposal)) {
     return { ok: false, status: 409, message: `Cannot modify proposal in ${proposal.status} state.` };
   }
-  if (!Array.isArray(body.sections)) {
-    return { ok: false, status: 400, message: "sections[] is required." };
+  if (!Array.isArray(body.targets)) {
+    return { ok: false, status: 400, message: "targets[] is required." };
   }
 
-  // Lock-boundary invariant: once a human proposal is inprogress, callers may
-  // update section content but cannot change the selected section scope.
+  // Lock-boundary invariant: once a human proposal is inprogress, callers cannot
+  // change the selected section scope. Section CONTENT is updated through the
+  // dedicated staged-content routes, which leave the manifest scope untouched.
   if (proposal.status === "inprogress" && proposal.writer.type === "human") {
-    const lockedSections = proposal.locked_sections ?? proposal.sections;
+    const lockedSections = sectionTargetsOf(proposal.targets);
     const currentKeys = new Set(
       lockedSections.map((s) => new SectionRef(s.doc_path, s.heading_path).globalKey),
     );
     const requestedKeys = new Set(
-      body.sections.map((s) => new SectionRef(s.doc_path, s.heading_path).globalKey),
+      body.targets.map((s) => new SectionRef(s.doc_path, s.heading_path).globalKey),
     );
     const scopeChanged = currentKeys.size !== requestedKeys.size
       || [...requestedKeys].some((key) => !currentKeys.has(key));
@@ -235,23 +255,21 @@ export async function modifyProposalUseCase(
     }
   }
 
-  const { proposal: updated } = await updateProposalSections(
+  // Human/agent reservation: the section scope is the caller's explicit
+  // declaration (the lock claim), not a structural-mutation-derived manifest, so
+  // it uses the dedicated reservation declarator rather than the
+  // `mutateProposalContent(...)` boundary (Claim 3 §Human reservations). This route
+  // owns ONLY intent + scope; staged content is written through the staged-content
+  // routes (`replaceProposalSectionsUseCase` / `writeProposalDocumentSectionsUseCase`).
+  const { proposal: updated } = await declareReservedProposalSectionsFromRequest(
     proposal.id,
-    body.sections.map((s) => ({
-      doc_path: s.doc_path,
-      heading_path: s.heading_path,
-      justification: s.justification,
+    body.targets.map((t) => ({
+      doc_path: t.doc_path,
+      heading_path: t.heading_path,
+      justification: t.justification,
     })),
     body.intent,
   );
-
-  {
-    const editor = ProposalEditor.open(proposal.id, updated.status);
-    for (const s of body.sections) {
-      const heading = s.heading_path.length === 0 ? "" : s.heading_path[s.heading_path.length - 1]!;
-      await editor.writeSection(s.doc_path, s.heading_path, heading, s.content);
-    }
-  }
 
   const previousSections = proposal.sections;
   const updatedSections = updated.sections;
@@ -286,6 +304,85 @@ export async function modifyProposalUseCase(
     intent: updated.intent,
     isHuman: false,
   };
+}
+
+// ─── Staged-content writes ──────────────────────────────
+//
+// Section CONTENT is written through ProposalEditor into the proposal content
+// tree, separately from the manifest (intent + scope) owned by
+// `modifyProposalUseCase`. These routes leave the manifest scope untouched.
+
+export type StageProposalContentResult =
+  | { ok: false; status: number; message: string }
+  | {
+      ok: true;
+      proposal: AnyProposalResult | (AnyProposalResult & { agentWritePolicy: HumanInvolvementPolicyResult });
+      isHuman: boolean;
+    };
+
+async function stageProposalSectionContent(
+  proposalId: string,
+  writer: ProposalWriter,
+  sections: Array<{ doc_path: string; heading_path: string[]; content: string }>,
+): Promise<StageProposalContentResult> {
+  const proposal = await readProposal(proposalId);
+  if (proposal.writer.id !== writer.id) {
+    return { ok: false, status: 403, message: "You can only modify your own proposals." };
+  }
+  if (!isProposalMutable(proposal)) {
+    return { ok: false, status: 409, message: `Cannot modify proposal in ${proposal.status} state.` };
+  }
+
+  const editor = ProposalEditor.open(proposal.id, proposal.status);
+  for (const s of sections) {
+    const heading = s.heading_path.length === 0 ? "" : s.heading_path[s.heading_path.length - 1]!;
+    await editor.writeSection(s.doc_path, s.heading_path, heading, sectionWriteInputFromExternal(s.content));
+  }
+
+  // Re-read so the response reflects the proposal's current manifest state
+  // (unchanged by content writes) consistently with the modify route's `updated`.
+  const updated = await readProposal(proposal.id);
+  if (proposal.writer.type === "human") {
+    return { ok: true, proposal: updated, isHuman: true };
+  }
+  const agentWritePolicy = await evaluateAgentWritePolicy(proposal.id);
+  return { ok: true, proposal: { ...updated, agentWritePolicy }, isHuman: false };
+}
+
+/**
+ * Bulk staged-content replace across any number of target documents
+ * (`PUT /api/proposals/:id/sections`). Routed through `ProposalEditor`.
+ */
+export async function replaceProposalSectionsUseCase(
+  proposalId: string,
+  writer: ProposalWriter,
+  body: ReplaceProposalSectionsRequest,
+): Promise<StageProposalContentResult> {
+  if (!Array.isArray(body.sections)) {
+    return { ok: false, status: 400, message: "sections[] is required." };
+  }
+  return stageProposalSectionContent(proposalId, writer, body.sections);
+}
+
+/**
+ * Per-document staged-content write (`PUT /api/proposals/:id/documents/:docPath/sections`).
+ * The document is supplied by the URL; each entry carries an in-document heading
+ * path + content. Routed through `ProposalEditor`.
+ */
+export async function writeProposalDocumentSectionsUseCase(
+  proposalId: string,
+  writer: ProposalWriter,
+  docPath: string,
+  body: WriteProposalDocumentSectionsRequest,
+): Promise<StageProposalContentResult> {
+  if (!Array.isArray(body.sections)) {
+    return { ok: false, status: 400, message: "sections[] is required." };
+  }
+  return stageProposalSectionContent(
+    proposalId,
+    writer,
+    body.sections.map((s) => ({ doc_path: docPath, heading_path: s.heading_path, content: s.content })),
+  );
 }
 
 // ─── Acquire locks (draft → inprogress) ─────────────────
@@ -415,7 +512,7 @@ async function propagateCommitToLiveSessions(
     byDoc.get(ref.docPath)!.push([...ref.headingPath]);
   }
   for (const [docPath, headingPaths] of byDoc) {
-    await applyCommittedCanonicalToLiveSession(docPath, headingPaths, originProposalId as ProposalId);
+    await applyCommittedCanonicalToLiveSession(docPath, headingPaths, originProposalId);
   }
 }
 

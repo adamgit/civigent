@@ -300,6 +300,26 @@ export function SearchTextPage() {
           <p style={{ marginBottom: 0 }}>
             {response.matches.length} match{response.matches.length === 1 ? "" : "es"} for <strong>{pattern}</strong> ({syntax})
           </p>
+          {response.failures && response.failures.length > 0 ? (
+            <div
+              role="alert"
+              style={{
+                fontSize: 13,
+                color: "var(--color-danger, #b00020)",
+                background: "var(--color-page-bg)",
+                border: "1px solid var(--color-danger, #b00020)",
+                borderRadius: 8,
+                padding: "8px 10px",
+              }}
+            >
+              {response.failures.length} document{response.failures.length === 1 ? "" : "s"} failed to load and {response.failures.length === 1 ? "is" : "are"} not included in these results:
+              <ul style={{ margin: "6px 0 0", paddingLeft: "1.25rem" }}>
+                {response.failures.map((f, i) => (
+                  <li key={`${f.doc_path}:${i}`}><code>{f.doc_path}</code> — {f.error}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           <div
             style={{
               fontSize: 12,

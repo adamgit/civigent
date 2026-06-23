@@ -17,14 +17,11 @@
  *
  * One connection per document.
  *
- * The legacy session-overlay / focus / pulse / mutate / receipt / idle-timeout
- * protocol items (0x04-0x07, 0x09, 0x0A, 0x0F) are removed (spec 05 §4 >
- * Removed message types). The DocSession publish-pause control messages ride
- * this same ordered editor channel as Yjs updates; processing a
- * `doc_publish_ready` ack proves earlier Yjs updates from this socket have
- * already reached the DocSession actor. Section block-state events
- * (`section:blocked|unblocked|gone`) travel on the JSON application WebSocket,
- * NOT here (see useDocumentWebSocket.ts).
+ * The DocSession publish-pause control messages ride this same ordered editor
+ * channel as Yjs updates; processing a `doc_publish_ready` ack proves earlier
+ * Yjs updates from this socket have already reached the DocSession actor.
+ * Section block-state events (`section:blocked|unblocked|gone`) travel on the
+ * JSON application WebSocket, NOT here (see useDocumentWebSocket.ts).
  */
 
 import * as Y from "yjs";
@@ -57,13 +54,20 @@ const MSG_SYNC_STEP_1 = 0;
 const MSG_SYNC_STEP_2 = 1;
 const MSG_YJS_UPDATE = 2;
 const MSG_AWARENESS = 3;
+// Server → client receipt watermark (Guarantee A): `[MSG_UPDATE_ACK][count:uint32 BE]`.
+// `count` is how many YJS_UPDATE frames the server has processed from THIS socket.
+// We count our own sent updates independently; FIFO ordering keeps the two
+// counters aligned, so no sequence number rides the YJS_UPDATE frame.
+const MSG_UPDATE_ACK = 4;
 const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0B;
 const MSG_MODE_TRANSITION_REQUEST = 0x0C;
 const MSG_MODE_TRANSITION_RESULT = 0x0D;
 const MSG_DOC_PUBLISH_PAUSE_START = 0x10;
 const MSG_DOC_PUBLISH_READY = 0x11;
 const MSG_DOC_PUBLISH_PAUSE_END = 0x12;
-const MSG_SECTION_MOVE_REQUEST = 0x13;
+// 0x13 (was MSG_SECTION_MOVE_REQUEST) is RESERVED/UNUSED: the live cross-section
+// move moved off the CRDT binary channel onto a REST control-plane endpoint
+// (claim-review 03 / Option E).
 
 // ─── Connection states ─────────────────────────────────────────────
 
@@ -97,6 +101,11 @@ export interface CrdtProviderEvents {
   /** Fired when a local Y.Doc update is sent to the server (user keystroke).
    *  Receives the set of fragment keys (shared type names) that were modified. */
   onLocalUpdate?: (modifiedFragmentKeys: string[]) => void;
+  /** Receipt watermark changed (Guarantee A). `allReceived` is true when every
+   *  local edit has been acknowledged by the server; `pendingFragmentKeys` lists
+   *  sections whose latest local edit is not yet acknowledged. Fired on each
+   *  local update (sent), each `MSG_UPDATE_ACK` (received), and on (re)connect. */
+  onReceiptChange?: (summary: { allReceived: boolean; pendingFragmentKeys: string[] }) => void;
   /** Fired when the server closes this socket with code 4022 (document replaced).
    *  The provider reconnects immediately (backoff reset). */
   onSessionReinit?: () => void;
@@ -129,6 +138,14 @@ export class CrdtProvider {
   private reconnectAttempts = 0;
   private destroyed = false;
   private synced = false;
+  // ─── Receipt watermark (Guarantee A) ───
+  // Count of YJS_UPDATE frames we have sent on the CURRENT connection, and the
+  // highest count the server has acknowledged processing. Reset on every new
+  // connection (the server's per-socket counter resets too). A fragment is
+  // "received" once the seq stamped on its latest local edit is ≤ ackedUpdateCount.
+  private sentUpdateCount = 0;
+  private ackedUpdateCount = 0;
+  private lastSentSeqByFragment = new Map<string, number>();
   private updateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
   private awarenessUpdateHandler: ((changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => void) | null = null;
   private lastTouchedFragments = new Set<string>();
@@ -139,6 +156,8 @@ export class CrdtProvider {
   private readonly clientInstanceId: ClientInstanceId;
   private readonly docPath: string;
   private initialTransitionRequest: ModeTransitionRequest | null = null;
+  /** One-shot resolvers awaiting the NEXT SYNC_STEP_2 (the live-move ordering barrier). */
+  private syncRoundtripResolvers: Array<() => void> = [];
 
   // Publish-pause quiescence barrier state. The provider is the single owner.
   private publishPaused = false;
@@ -185,9 +204,15 @@ export class CrdtProvider {
     // Listen for local Y.Doc changes to broadcast.
     this.updateHandler = (update: Uint8Array, origin: unknown) => {
       if (origin === this) return;
+      // Receipt watermark: this is one YJS_UPDATE frame — stamp it with the next
+      // sequence number and record that seq against every fragment it touched, so
+      // a later MSG_UPDATE_ACK ≥ seq proves those sections are received.
+      this.sentUpdateCount += 1;
       this.sendUpdate(update);
       const touched = [...this.lastTouchedFragments];
       this.lastTouchedFragments.clear();
+      for (const key of touched) this.lastSentSeqByFragment.set(key, this.sentUpdateCount);
+      this.emitReceiptChange();
       this.events.onLocalUpdate?.(touched);
     };
     this.doc.on("update", this.updateHandler);
@@ -267,49 +292,64 @@ export class CrdtProvider {
     return this.publishPaused;
   }
 
-  // ─── Cross-section move (MW-10) ────────────────────────────────
+  // ─── Live cross-section move ordering barrier (claim-review 03 / Option E) ──
+
+  /** The document path this provider is bound to (for the REST live-move call). */
+  get documentPath(): string {
+    return this.docPath;
+  }
 
   /**
-   * Request a backend-owned cross-section move: reposition `sourceHeadingPath`
-   * before/after the sibling `targetHeadingPath`. Y.js has no `moveTo` between
-   * top-level types, so the structural reorder is owned by the backend (spec 05
-   * §Structural Normalization), driven through the DocSession actor. The backend
-   * applies the reorder and fans out the resulting Y.Doc state.
+   * Ordering barrier for the REST live cross-section move: flush in-flight local
+   * edits to the server and resolve once they are MATERIALIZED, so the subsequent
+   * REST move (which re-seeds every live fragment from the proposal layout) cannot
+   * clobber the requester's just-typed keystrokes.
    *
-   * Resolves when the server-applied reorder arrives as a remote Y.Doc update
-   * (the fan-out), or rejects on `timeoutMs` / disconnect. The backend sends no
-   * dedicated result frame; the applied Y.Doc update is the acknowledgement.
+   * Local Y.Doc updates are sent synchronously on every edit, so by drag time they
+   * are already on the wire (the drag is a deliberate post-typing gesture). This
+   * issues a SYNC_STEP_1 and awaits the resulting SYNC_STEP_2: the server's
+   * per-socket message chain awaits each earlier YJS_UPDATE's materialization
+   * before handling this later SYNC_STEP_1, so SYNC_STEP_2 confirms our edits are
+   * materialized. Resolves (does not reject) on timeout / disconnect — the move
+   * then proceeds best-effort rather than blocking the user.
    */
-  sendSectionMove(
-    req: { sourceHeadingPath: string[]; targetHeadingPath: string[]; position: "before" | "after" },
-    timeoutMs = 5000,
-  ): Promise<void> {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error("CRDT session disconnected — move cancelled"));
-    }
-    return new Promise<void>((resolve, reject) => {
+  flushAndAwaitSync(timeoutMs = 3000): Promise<void> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return Promise.resolve();
+    return new Promise<void>((resolve) => {
       let settled = false;
-      const onUpdate = (_update: Uint8Array, origin: unknown) => {
-        // The server fan-out arrives as a remote update (origin === this, set by
-        // applyUpdate in handleMessage). A local edit would have origin !== this.
-        if (origin !== this) return;
-        finish();
-      };
-      const finish = (err?: Error) => {
+      const done = () => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        this.doc.off("update", onUpdate);
-        if (err) reject(err); else resolve();
+        resolve();
       };
-      const timer = setTimeout(
-        () => finish(new Error("Section move timed out — the server did not apply it.")),
-        timeoutMs,
-      );
-      this.doc.on("update", onUpdate);
-      const json = new TextEncoder().encode(JSON.stringify(req));
-      this.sendRaw(MSG_SECTION_MOVE_REQUEST, json);
+      const timer = setTimeout(done, timeoutMs);
+      this.syncRoundtripResolvers.push(done);
+      this.sendSyncStep1();
     });
+  }
+
+  /**
+   * Fire `cb` once, on the NEXT remote Y.Doc update (the server fan-out, `origin
+   * === this`). Used by the live-move caret recovery: after the REST 200 ack, the
+   * reorder's re-seed lands as a remote update — restore the caret then. A
+   * `timeoutMs` fallback fires `cb` anyway so caret restore is never stranded.
+   */
+  onceRemoteUpdate(cb: () => void, timeoutMs = 2000): void {
+    let fired = false;
+    const fire = () => {
+      if (fired) return;
+      fired = true;
+      clearTimeout(timer);
+      this.doc.off("update", onUpdate);
+      cb();
+    };
+    const onUpdate = (_update: Uint8Array, origin: unknown) => {
+      if (origin !== this) return;
+      fire();
+    };
+    const timer = setTimeout(fire, timeoutMs);
+    this.doc.on("update", onUpdate);
   }
 
   // ─── Internal ─────────────────────────────────────────
@@ -334,6 +374,13 @@ export class CrdtProvider {
     this.ws.onopen = () => {
       // Reset sync state and pending notification on every new connection.
       this.synced = false;
+      // Receipt watermark resets per connection — the server's per-socket counter
+      // starts at 0 for this new socket. Post-reconnect edits re-sync via the sync
+      // protocol; the connection-state indicator covers the resync window.
+      this.sentUpdateCount = 0;
+      this.ackedUpdateCount = 0;
+      this.lastSentSeqByFragment.clear();
+      this.emitReceiptChange();
       this.pendingDocumentReplacementNotice = null;
       this.reconnectAttempts = 0;
       this.setState("connected");
@@ -433,10 +480,31 @@ export class CrdtProvider {
           this.pendingDocumentReplacementNotice = null;
           this.events.onDocumentReplacementNotice?.(n);
         }
+        // Resolve any pending live-move ordering barrier: a SYNC_STEP_2 means the
+        // server processed our earlier (FIFO) YJS_UPDATE frames — its per-socket
+        // message chain awaits each update's materialization before handling the
+        // later SYNC_STEP_1 we sent — so our in-flight edits are now materialized.
+        if (this.syncRoundtripResolvers.length > 0) {
+          const resolvers = this.syncRoundtripResolvers;
+          this.syncRoundtripResolvers = [];
+          for (const r of resolvers) r();
+        }
         break;
       }
       case MSG_YJS_UPDATE: {
         Y.applyUpdate(this.doc, payload, this);
+        break;
+      }
+      case MSG_UPDATE_ACK: {
+        // Receipt watermark: the server has processed `count` of our YJS_UPDATE
+        // frames. `count` is a uint32 big-endian following the opcode.
+        if (payload.length >= 4) {
+          const count = ((payload[0] << 24) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) >>> 0;
+          if (count > this.ackedUpdateCount) {
+            this.ackedUpdateCount = count;
+            this.emitReceiptChange();
+          }
+        }
         break;
       }
       case MSG_AWARENESS: {
@@ -517,6 +585,19 @@ export class CrdtProvider {
     this.publishReadySent = false;
     this.barrier?.unfreeze();
     this.events.onPublishPauseEnd?.();
+  }
+
+  /** Recompute + emit the receipt-watermark summary (Guarantee A). */
+  private emitReceiptChange(): void {
+    if (!this.events.onReceiptChange) return;
+    const allReceived = this.ackedUpdateCount >= this.sentUpdateCount;
+    const pendingFragmentKeys: string[] = [];
+    if (!allReceived) {
+      for (const [key, seq] of this.lastSentSeqByFragment) {
+        if (seq > this.ackedUpdateCount) pendingFragmentKeys.push(key);
+      }
+    }
+    this.events.onReceiptChange({ allReceived, pendingFragmentKeys });
   }
 
   private sendSyncStep1(): void {

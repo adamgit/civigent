@@ -8,6 +8,7 @@
 
 import {
   sectionGlobalKey,
+  proposalTargetLabel,
   type ProposalId,
   type HumanInvolvementPolicyResult,
   type HumanInvolvementCommittedProposalMetadata,
@@ -46,6 +47,16 @@ export interface CommitProposalToCanonicalOptions {
    * Area E) never rolls back; it finishes `committing` or fails-with-report.
    */
   ownerKind?: CommittingRollbackOwnerKind;
+  /**
+   * Synthesized audit-log description headline (spec 10 §Commit-description
+   * synthesis). When present it REPLACES the default `agent proposal: <intent>`
+   * headline while KEEPING the Sections/Targets blocks and the
+   * `Proposal:`/`Writer:`/`Writer-Type:` trailers (attribution must survive).
+   * The CRDTProposalGenerator publish path supplies this, synthesized from the
+   * proposal's final changed section-set; other callers omit it (unchanged
+   * behaviour). Ignored when `commitMessageOverride` is set (that wins outright).
+   */
+  descriptionHeadline?: string;
 }
 
 /**
@@ -84,6 +95,15 @@ function buildPublishCommitMessage(
         .map((s) => `  - ${sectionGlobalKey(s.doc_path, s.heading_path)}`)
         .join("\n")
     : "  (none — document-level operation)";
+  // Authoritative committed claim set (spec 12 / Claim 10): list every target,
+  // including document targets that have no section, so a live-empty document
+  // operation is still named in the audit trail. The decoder now always
+  // populates `targets` (deriving from `sections` for legacy missing-targets
+  // files and tagging them `degraded`), so no fallback is needed here.
+  const auditTargets = proposal.targets;
+  const targetList = auditTargets.length > 0
+    ? auditTargets.map((t) => `  - ${proposalTargetLabel(t)}`).join("\n")
+    : "  (none)";
   const trailers = [
     `Proposal: ${proposal.id}`,
     `Writer: ${proposal.writer.id}`,
@@ -92,8 +112,11 @@ function buildPublishCommitMessage(
   if (options.restoreTargetSha) {
     trailers.push(`Restore-Target: ${options.restoreTargetSha}`);
   }
+  const headline = options.descriptionHeadline?.trim()
+    ? options.descriptionHeadline.trim()
+    : `agent proposal: ${proposal.intent}`;
   const commitMessage = options.commitMessageOverride
-    ?? `agent proposal: ${proposal.intent}\n\nSections:\n${sectionList}\n\n${trailers.join("\n")}`;
+    ?? `${headline}\n\nSections:\n${sectionList}\n\nTargets:\n${targetList}\n\n${trailers.join("\n")}`;
   const author = options.authorOverride ?? {
     name: proposal.writer.displayName,
     email: `${proposal.writer.id}@knowledge-store.local`,

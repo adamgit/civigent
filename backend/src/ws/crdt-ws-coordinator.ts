@@ -19,7 +19,6 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import * as Y from "yjs";
-import { isDevSupervised } from "../runtime/system-state.js";
 import { resolveWriterWithExpiry } from "../auth/context.js";
 import { checkDocPermission } from "../auth/acl.js";
 import {
@@ -29,11 +28,12 @@ import {
   releaseDocSession,
   joinSession,
   updateActivity,
-  addObserverHolder,
-  removeObserverHolder,
+  addObserverSocket,
+  removeObserverSocket,
   countEditorSockets,
   getPendingReplacementNotice,
   setBroadcastSessionReplacementInvalidation,
+  setBroadcastAdminRebuildInvalidation,
   noteFragmentActivity,
   type DocSession,
 } from "../crdt/ydoc-lifecycle.js";
@@ -46,6 +46,7 @@ import { classifyStructuralChange } from "../crdt/structural-change.js";
 import {
   computeStructuralSplitPlan,
   applyStructuralSplitPlan,
+  reflectSplitIntoProposal,
   computeStructuralMergePlan,
   applyStructuralMergePlan,
   reflectMergeIntoProposal,
@@ -57,15 +58,18 @@ import {
   type StructuralHeadingEditPlan,
 } from "../crdt/structural-appliers.js";
 import { getHeadSha } from "../storage/git-repo.js";
-import { getDataRoot, getContentRoot } from "../storage/data-root.js";
-import { resolveLiveSectionLayout } from "../crdt/live-section-layout.js";
+import { getDataRoot } from "../storage/data-root.js";
+import { resolveLiveSectionLayout, buildLiveSeedContentMap } from "../crdt/live-section-layout.js";
 import { checkProposalLocks } from "../domain/proposal-fsm-locks.js";
+import { emitContentCommittedEventsByDoc } from "../api/application/events.js";
 import type { PublishTriggerDecision, PublishResult } from "../crdt/crdt-proposal-generator.js";
+import type { SectionRefReceipt } from "../storage/canonical-store.js";
 import type { PublishPauseResult } from "../crdt/docsession-publish-pause.js";
 import { SectionRef } from "../domain/section-ref.js";
-import type { FragmentContent } from "../storage/section-formatting.js";
+import { EMPTY_FRAGMENT, type FragmentContent } from "../storage/section-formatting.js";
 import type { WsServerEvent } from "../types/shared.js";
 import type { ClientInstanceId, RemoteParticipant, ModeTransitionRequest, ModeTransitionResult, ProposalId } from "../types/shared.js";
+import { parseJson } from "../types/shared.js";
 import {
   MSG_SYNC_STEP_1,
   MSG_SYNC_STEP_2,
@@ -73,25 +77,27 @@ import {
   MSG_AWARENESS,
   MSG_MODE_TRANSITION_REQUEST,
   MSG_DOC_PUBLISH_READY,
-  MSG_SECTION_MOVE_REQUEST,
   encodeSyncStep2,
   encodeUpdate,
+  encodeUpdateAck,
   encodeDocumentReplacementNotice,
   encodeModeTransitionResult,
+  decodeModeTransitionRequest,
   encodeDocPublishPauseStart,
   encodeDocPublishPauseEnd,
   decodeMessage,
-  decodeSectionMoveRequest,
-  type SectionMoveRequest,
   parseCrdtUrl,
+  WS_CLOSE_SESSION_ENDED,
   WS_CLOSE_DOCUMENT_REPLACED,
   WS_CLOSE_SUPERSEDED,
   WS_CLOSE_INVALID_URL,
   WS_CLOSE_AUTH_FAILED,
   WS_CLOSE_AUTHORIZATION_FAILED,
+  WS_CLOSE_ADMIN_REBUILD,
 } from "./crdt-ws-frames.js";
 import {
   CrdtSocketState,
+  type CoordinatorSocket,
   socketState,
   sendToSocket,
   checkTokenExpired,
@@ -100,7 +106,7 @@ import {
 
 // ─── Per-doc socket tracking ─────────────────────────────────────
 
-const docSockets = new Map<string, Set<WebSocket>>();
+const docSockets = new Map<string, Set<CoordinatorSocket>>();
 const participants = new Map<ClientInstanceId, RemoteParticipant>();
 
 /**
@@ -157,7 +163,7 @@ function removeParticipant(clientInstanceId: ClientInstanceId): void {
  *
  * Exported for unit tests (`backend/src/__tests__/ws/join-and-notify-ordering.test.ts`).
  */
-export function joinAndNotify(session: DocSession, socket: WebSocket, st: CrdtSocketState): void {
+export function joinAndNotify(session: DocSession, socket: CoordinatorSocket, st: CrdtSocketState): void {
   if (st.joined) return;
   const notification = getPendingReplacementNotice(st.docPath);
   if (notification) sendToSocket(socket, encodeDocumentReplacementNotice(notification));
@@ -165,7 +171,7 @@ export function joinAndNotify(session: DocSession, socket: WebSocket, st: CrdtSo
   st.joined = true;
 }
 
-function addSocket(docPath: string, socket: WebSocket): void {
+function addSocket(docPath: string, socket: CoordinatorSocket): void {
   let sockets = docSockets.get(docPath);
   if (!sockets) {
     sockets = new Set();
@@ -174,7 +180,7 @@ function addSocket(docPath: string, socket: WebSocket): void {
   sockets.add(socket);
 }
 
-function removeSocket(docPath: string, socket: WebSocket): void {
+function removeSocket(docPath: string, socket: CoordinatorSocket): void {
   const sockets = docSockets.get(docPath);
   if (!sockets) return;
   sockets.delete(socket);
@@ -196,21 +202,33 @@ export function registerFakeEditorSocketForTest(
   docPath: string,
   socketId: string,
   onSend?: (data: Uint8Array) => void,
-): { socket: WebSocket; state: CrdtSocketState; dispose: () => void } {
-  const fake = {
+  onClose?: (code: number, reason: string) => void,
+): { socket: CoordinatorSocket; state: CrdtSocketState; dispose: () => void } {
+  const fake: CoordinatorSocket = {
     readyState: WebSocket.OPEN,
     send(data: Uint8Array) { onSend?.(data); },
-  } as unknown as WebSocket;
-  const st = {
+    close(code?: number, reason?: string) {
+      fake.readyState = WebSocket.CLOSED;
+      onClose?.(code ?? 0, reason ?? "");
+    },
+  };
+  const st: CrdtSocketState = {
     clientInstanceId: socketId,
     writerId: "user-alice",
-    socketId,
-    socketRole: "editor",
-    requestedMode: "edit",
-    attachmentState: "attached",
+    writerType: "human",
+    writerDisplayName: "Alice",
     docPath,
+    socketRole: "editor",
+    requestedMode: "editor",
+    attachmentState: "attached_to_session",
     docSessionId: null,
-  } as unknown as CrdtSocketState;
+    editorFocusTarget: null,
+    tokenExp: Infinity,
+    canRead: true,
+    canWrite: true,
+    socketId,
+    joined: true,
+  };
   addSocket(docPath, fake);
   socketState.set(fake, st);
   return {
@@ -224,8 +242,63 @@ export function registerFakeEditorSocketForTest(
 }
 
 /** TEST-ONLY: drive the real binary-frame handler (C3 single-broadcast test). */
-export function handleMessageForTest(socket: WebSocket, state: CrdtSocketState, data: Buffer): Promise<void> {
+export function handleMessageForTest(socket: CoordinatorSocket, state: CrdtSocketState, data: Buffer): Promise<void> {
   return handleMessage(socket, state, data);
+}
+
+/**
+ * TEST-ONLY: register a fake OBSERVER socket in the coordinator's per-doc socket
+ * registry so the 4021 last-editor-leave eviction (`closeObserverSocketsForDoc`)
+ * can be driven deterministically. `onClose` captures the close code/reason the
+ * coordinator sends. Mirrors `registerFakeEditorSocketForTest` for the observer
+ * role (Claim 2 observer-lifecycle tests).
+ */
+export function registerFakeObserverSocketForTest(
+  docPath: string,
+  socketId: string,
+  onClose?: (code: number, reason: string) => void,
+  onSend?: (data: Uint8Array) => void,
+): { socket: CoordinatorSocket; state: CrdtSocketState; dispose: () => void } {
+  const fake: CoordinatorSocket = {
+    readyState: WebSocket.OPEN,
+    send(data: Uint8Array) { onSend?.(data); },
+    close(code?: number, reason?: string) {
+      fake.readyState = WebSocket.CLOSED;
+      onClose?.(code ?? 0, reason ?? "");
+    },
+  };
+  const st: CrdtSocketState = {
+    clientInstanceId: socketId,
+    writerId: "observer-bob",
+    writerType: "human",
+    writerDisplayName: "Bob",
+    docPath,
+    socketRole: "observer",
+    requestedMode: "observer",
+    attachmentState: "attached_to_session",
+    docSessionId: null,
+    editorFocusTarget: null,
+    tokenExp: Infinity,
+    canRead: true,
+    canWrite: false,
+    socketId,
+    joined: true,
+  };
+  addSocket(docPath, fake);
+  socketState.set(fake, st);
+  return {
+    socket: fake,
+    state: st,
+    dispose: () => {
+      removeSocket(docPath, fake);
+      socketState.delete(fake);
+    },
+  };
+}
+
+/** TEST-ONLY: drive the last-editor-leave observer eviction (4021). */
+export function closeObserverSocketsForDocForTest(docPath: string): number {
+  return closeObserverSocketsForDoc(docPath);
 }
 
 /**
@@ -241,7 +314,22 @@ export function broadcastSessionReplacementInvalidation(docPath: string): void {
   }
 }
 
-function broadcastToOthers(docPath: string, sender: WebSocket, data: Uint8Array): void {
+/**
+ * Close all connected CRDT sockets for a document with code 4024 (admin
+ * force-rebuild). Distinct from 4022 (restore): clients reconnect immediately and
+ * reseed from the new canonical content, and no in-flight CRDT work is salvaged
+ * (spec 01 §3 YDocLifecycleManager DD-4). This is the only place in the codebase
+ * that sends close code 4024.
+ */
+export function broadcastAdminRebuildInvalidation(docPath: string): void {
+  for (const socket of docSockets.get(docPath) ?? []) {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.close(WS_CLOSE_ADMIN_REBUILD, "admin rebuild");
+    }
+  }
+}
+
+function broadcastToOthers(docPath: string, sender: CoordinatorSocket, data: Uint8Array): void {
   const sockets = docSockets.get(docPath);
   if (!sockets) return;
   for (const s of sockets) {
@@ -273,6 +361,27 @@ function activeEditorSocketIds(docPath: string): string[] {
   return ids;
 }
 
+/**
+ * Close every live observer socket for a document with close code 4021
+ * (`session_ended`), used when the last editor leaves and the Y.Doc is about to
+ * be discarded (spec 05 §Observer CRDT Channel: "When the last editor disconnects
+ * … observer sockets are notified via close code 4021"). The frontend
+ * (`observer-crdt-provider.ts`) handles 4021 by falling back to canonical REST
+ * reads and reconnecting to await the next live editing session. Returns the
+ * number of observer sockets closed.
+ */
+function closeObserverSocketsForDoc(docPath: string): number {
+  let closed = 0;
+  for (const socket of docSockets.get(docPath) ?? []) {
+    const st = socketState.get(socket);
+    if (st?.socketRole === "observer" && socket.readyState === WebSocket.OPEN) {
+      socket.close(WS_CLOSE_SESSION_ENDED, "session_ended");
+      closed++;
+    }
+  }
+  return closed;
+}
+
 // ─── Event handler ──────────────────────────────────────────────
 
 let onWsEvent: ((event: WsServerEvent) => void) | null = null;
@@ -291,6 +400,20 @@ export function setCrdtEventHandler(handler: (event: WsServerEvent) => void): vo
 export interface PublishAttemptOutcome {
   outcome: "committed" | "noop" | "aborted" | "failed";
   message?: string;
+  /**
+   * Canonical commit SHA, present ONLY on `outcome === "committed"`. Surfaced from
+   * `PublishResult.commitSha` so `finalizeAndEnd` can emit a `content:committed`
+   * JSON app-event (spec 05 §Proposal Publication; spec 06 §7) without re-reading
+   * the commit.
+   */
+  commitSha?: string;
+  /**
+   * The sections whose canonical body actually changed in this commit, present
+   * ONLY on `outcome === "committed"`. Surfaced from `AbsorbResult.changedSections`
+   * so the `content:committed` event carries the same section list the REST/MCP
+   * commit paths emit.
+   */
+  changedSections?: SectionRefReceipt[];
 }
 
 /**
@@ -313,6 +436,8 @@ function mapPublishResultToOutcome(result: PublishResult): PublishAttemptOutcome
       return {
         outcome: "committed",
         message: `Published proposal ${result.proposalId ?? ""} to canonical${result.commitSha ? ` (${result.commitSha})` : ""}.`,
+        commitSha: result.commitSha,
+        changedSections: result.absorbResult?.changedSections,
       };
     case "noop-no-proposal":
       return { outcome: "noop", message: "No in-flight proposal to publish." };
@@ -330,17 +455,52 @@ function mapPublishResultToOutcome(result: PublishResult): PublishAttemptOutcome
  * of outcome. Caller MUST hold the actor lane (the commit is a lane operation).
  */
 async function finalizeAndEnd(session: DocSession, ready: boolean): Promise<PublishAttemptOutcome> {
+  let outcome: PublishAttemptOutcome;
   try {
     if (ready) {
-      return mapPublishResultToOutcome(await session.generator.finalizeAndPublish());
+      outcome = mapPublishResultToOutcome(await session.generator.finalizeAndPublish());
+    } else {
+      outcome = { outcome: "aborted", message: "Publish aborted: editors did not acknowledge readiness in time." };
     }
-    return { outcome: "aborted", message: "Publish aborted: editors did not acknowledge readiness in time." };
   } catch (error) {
-    return { outcome: "failed", message: `Publish failed: ${describeError(error)}` };
+    outcome = { outcome: "failed", message: `Publish failed: ${describeError(error)}` };
   } finally {
     session.publishPause.end();
     broadcastToAll(session.docPath, encodeDocPublishPauseEnd());
   }
+  // Emit the JSON `content:committed` app-event so non-CRDT viewers (canonical
+  // document view, heatmap, governance, dashboard, coordination) refresh after an
+  // autonomous live publication (spec 05 §Proposal Publication: the CRDT publish
+  // reuses the standard proposal-commit notification; spec 06 §7: content:committed
+  // is the single push that refreshes canonical content + human-involvement).
+  //
+  // GUARD: fire ONLY on a real commit. A `noop` (finalize-if-landed re-run /
+  // no-proposal), `aborted`, or `failed` outcome MUST NOT broadcast, to avoid
+  // spurious refresh storms. This is deliberately OUTSIDE the `finally` (and thus
+  // off the binary pause-end fan-out path): the binary `doc_publish_pause_end`
+  // frame always fires for editors; this JSON event only fires on commit.
+  if (outcome.outcome === "committed" && outcome.commitSha) {
+    emitContentCommittedEventsByDoc(
+      onWsEvent ?? undefined,
+      session.generator.getWriterIdentity(),
+      session.generator.getContributorIds(),
+      outcome.commitSha,
+      (outcome.changedSections ?? []).map((s) => ({ doc_path: s.docPath, heading_path: s.headingPath })),
+    );
+    // Guarantee B: the inprogress proposal committed, so every section that was
+    // announced as `section:pending` for this doc has now settled (its edits are
+    // canonical). Drain the per-doc pending set, emitting `section:settled` per
+    // fragment so viewers clear the "not yet saved" mark. (An aborted/failed
+    // publish leaves the set intact — those edits are still uncommitted.)
+    const announced = pendingFragmentsByDoc.get(session.docPath);
+    if (announced && onWsEvent) {
+      for (const fragmentKey of announced) {
+        onWsEvent({ type: "section:settled", doc_path: session.docPath, fragment_key: fragmentKey });
+      }
+    }
+    pendingFragmentsByDoc.delete(session.docPath);
+  }
+  return outcome;
 }
 
 /**
@@ -477,14 +637,18 @@ export function cancelQuiescenceTimer(docPath: string): void {
  * Identity-preserving structural normalization for every quiesced dirty fragment
  * (WS-2/WS-3/WS-4). Classifies each fragment against its CANONICAL (pre-edit)
  * identity and dispatches to the matching identity-preserving applier, reflecting
- * the change into the `inprogress` proposal where the per-edit materialize could
- * not (merge/rename/level-change). Runs inside the actor lane. Returns true when
- * any structural mutation was applied (so the caller broadcasts the new state).
+ * the change into the `inprogress` proposal. Per-edit materialization is
+ * topology-neutral (verbatim section bodies), so EVERY structural change —
+ * split as well as merge / rename / level-change — is reflected into the proposal
+ * here, not by the per-edit materialize. Runs inside the actor lane. Returns true
+ * when any structural mutation was applied (so the caller broadcasts the new state).
  *
  * Live applies go through the generator's `normalizeQuiescedSection` Y.transact
- * primitive (compute-outside / apply-inside + pre-flight clock check). Proposal
- * reflection (disk I/O) runs OUTSIDE the transaction, and only AFTER a successful
- * live apply, so proposal and live never diverge on a clock-check abort.
+ * primitive (compute-outside / apply-inside + pre-flight clock check). For
+ * SPLIT the proposal reflection runs FIRST (the live reshape is derived from the
+ * resulting proposal layout) and is idempotent across clock-check retries; for
+ * MERGE / RENAME / level-change the proposal reflection runs only AFTER a
+ * successful live apply, so proposal and live never diverge on an abort.
  */
 async function normalizeQuiescedStructure(session: DocSession): Promise<boolean> {
   const proposalId = session.generator.getCurrentProposalId();
@@ -501,8 +665,22 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<boolean>
     );
 
     if (change.kind === "root-split" || change.kind === "section-split") {
-      // The proposal is already split by the per-edit materialize; only the live
-      // Y.Doc must be reshaped (identity-preserving index deletes + seed-new).
+      // Per-edit materialize is topology-neutral (verbatim bodies), so the
+      // settled embedded heading is still literal body text in the proposal.
+      // Reflect the split into the proposal FIRST (item 21) — that is what
+      // promotes the heading into a real section, preserving the survivor's id;
+      // then `computeStructuralSplitPlan` sources the live reshape (and the new
+      // live fragment keys) from the resulting proposal layout (item 22). The
+      // reflection is idempotent, so a retry after a clock-check abort cannot
+      // duplicate proposal sections (item 23).
+      if (proposalId) {
+        await reflectSplitIntoProposal(
+          proposalId,
+          session.docPath,
+          session.liveFragments.readFragmentString(fragmentKey),
+          identity,
+        );
+      }
       const res = await session.generator.normalizeQuiescedSection<StructuralSplitPlan>(
         session.liveFragments.ydoc,
         [fragmentKey],
@@ -739,7 +917,7 @@ async function arbitrateLiveEdit(
   // identity. A touched fragment with no authoritative section identity (brand
   // new, ahead of the skeleton) cannot be claimed by a competing proposal yet, so
   // it is always materialize-wins.
-  const targets: Array<{ doc_path: string; heading_path: string[] }> = [];
+  const targets: Array<{ kind: "section"; doc_path: string; heading_path: string[] }> = [];
   const fragmentKeyByGlobalIndex: string[] = [];
   for (const fragmentKey of touchedKeys) {
     const headingPath = headingByFragmentKey.get(fragmentKey);
@@ -747,7 +925,7 @@ async function arbitrateLiveEdit(
       materializeKeys.push(fragmentKey);
       continue;
     }
-    targets.push({ doc_path: session.docPath, heading_path: headingPath });
+    targets.push({ kind: "section", doc_path: session.docPath, heading_path: headingPath });
     fragmentKeyByGlobalIndex.push(fragmentKey);
   }
 
@@ -761,11 +939,18 @@ async function arbitrateLiveEdit(
     targets,
   });
 
-  const blockedGlobalKeys = new Set(
-    lockResult.conflicts.map((c) =>
-      new SectionRef(session.docPath, c.target.heading_path).globalKey,
-    ),
-  );
+  const blockedGlobalKeys = new Set<string>();
+  for (const c of lockResult.conflicts) {
+    // Conflicts here are queried section targets; a document conflict (whole-doc
+    // proposal) blocks every section, so claim its doc_path for all touched keys.
+    if (c.target.kind === "section") {
+      blockedGlobalKeys.add(new SectionRef(session.docPath, c.target.heading_path).globalKey);
+    } else {
+      for (const t of targets) {
+        blockedGlobalKeys.add(new SectionRef(session.docPath, t.heading_path).globalKey);
+      }
+    }
+  }
 
   for (let i = 0; i < targets.length; i++) {
     const fragmentKey = fragmentKeyByGlobalIndex[i]!;
@@ -791,6 +976,17 @@ async function arbitrateLiveEdit(
  * MUST be called inside `session.enqueue(...)` — it is the actor-lane body for
  * MSG_YJS_UPDATE and is exported so the arbitration can be unit-tested directly.
  */
+/**
+ * Guarantee B: fragments announced as `section:pending` for a doc's live
+ * DocSession but not yet settled. Keyed by docPath → set of fragment keys. A
+ * fragment is added on its first materialized edit into the current `inprogress`
+ * proposal (emitting `section:pending` once), and the whole set is drained
+ * (emitting `section:settled` per fragment) when that proposal commits. Module
+ * state, not DocSession state, so it survives a refresh-gap session discard while
+ * the `inprogress` proposal still carries the uncommitted edits.
+ */
+const pendingFragmentsByDoc = new Map<string, Set<string>>();
+
 export async function processArbitratedClientUpdate(
   session: DocSession,
   writerId: string,
@@ -833,7 +1029,7 @@ export async function processArbitratedClientUpdate(
     // into the DocSession proposal.
     session.liveFragments.replaceFragmentString(
       blockedKey,
-      prior ?? ("" as FragmentContent),
+      prior ?? EMPTY_FRAGMENT,
       SERVER_NORMALIZATION_ORIGIN,
     );
     if (onWsEvent) {
@@ -872,12 +1068,50 @@ export async function processArbitratedClientUpdate(
     // edit pushes the fire point out so normalization + autonomous publish only
     // run once the document goes quiet — never mid-burst.
     armQuiescenceTimer(session);
+
+    // Guarantee B: announce each section that newly gained uncommitted edits in
+    // this DocSession's `inprogress` proposal, ONCE per fragment per proposal
+    // lifetime, with the editor identity so viewers can show "edited by X — not
+    // yet saved". Settled on commit (see finalizeAndEnd).
+    if (onWsEvent) {
+      const announced = pendingFragmentsByDoc.get(docPath) ?? new Set<string>();
+      const editor = session.holders.get(writerId)?.identity;
+      for (const fragmentKey of arbitration.materializeKeys) {
+        if (announced.has(fragmentKey)) continue;
+        announced.add(fragmentKey);
+        onWsEvent({
+          type: "section:pending",
+          doc_path: docPath,
+          fragment_key: fragmentKey,
+          writer_id: writerId,
+          writer_display_name: editor?.displayName ?? writerId,
+        });
+      }
+      pendingFragmentsByDoc.set(docPath, announced);
+    }
   }
 }
 
 // ─── MW-10: cross-section move (backend-owned structural reorder) ─
 
-/** Outcome of a cross-section move request (for the client + tests). */
+/**
+ * Control-plane request shape for a LIVE cross-section move. This is the
+ * application/REST-facing input (claim-review 03 / Option E) — the move is a
+ * refusable CONTROL operation, NOT a CRDT content edit, so it carries NO binary
+ * frame coupling. The mechanical Y.Doc reorder is still owned by the CRDT
+ * subsystem (`moveLiveSection`) but is reachable ONLY through the
+ * `requestDocSessionMove(...)` seam below.
+ */
+export interface LiveSectionMoveRequest {
+  /** Heading path of the section being moved. */
+  sourceHeadingPath: string[];
+  /** Heading path of the sibling to position relative to. */
+  targetHeadingPath: string[];
+  /** Place the moved section immediately before or after the target sibling. */
+  position: "before" | "after";
+}
+
+/** Outcome of a cross-section move request (for the REST caller + tests). */
 export interface MoveSectionResult {
   ok: boolean;
   /** Prose reason when refused (plan §M: never a bare code). Undefined on success. */
@@ -910,7 +1144,7 @@ export interface MoveSectionResult {
  */
 export async function moveLiveSection(
   session: DocSession,
-  req: SectionMoveRequest,
+  req: LiveSectionMoveRequest,
 ): Promise<MoveSectionResult> {
   if (session.state !== "active") {
     return { ok: false, message: "This document isn't ready for editing right now — try again in a moment." };
@@ -945,8 +1179,8 @@ export async function moveLiveSection(
   const lockResult = await checkProposalLocks({
     proposalId: ownProposalId ?? "__docsession-no-proposal__",
     targets: [
-      { doc_path: docPath, heading_path: req.sourceHeadingPath },
-      { doc_path: docPath, heading_path: req.targetHeadingPath },
+      { kind: "section", doc_path: docPath, heading_path: req.sourceHeadingPath },
+      { kind: "section", doc_path: docPath, heading_path: req.targetHeadingPath },
     ],
   });
   if (lockResult.conflicts.length > 0) {
@@ -954,9 +1188,6 @@ export async function moveLiveSection(
   }
 
   const { ProposalEditor } = await import("../storage/proposal-editor.js");
-  const { proposalContentRoot } = await import("../storage/proposal-repository.js");
-  const { ProposalShadowContentLayer } = await import("../storage/content-layer.js");
-  const { buildFragmentContent, EMPTY_BODY } = await import("../storage/section-formatting.js");
 
   // Materialize the current live state into the DocSession proposal FIRST so the
   // reorder operates on a proposal skeleton that reflects unsaved live edits.
@@ -970,18 +1201,11 @@ export async function moveLiveSection(
     return { ok: false, message: "That move isn't possible — the sections aren't siblings or no longer exist." };
   }
 
-  // Re-derive the new authoritative layout and re-seed the live Y.Doc fragments
-  // from the reordered proposal content tree inside ONE Y.transact.
-  const newLayout = await resolveLiveSectionLayout(docPath, proposalId);
-  const seedRoot = proposalContentRoot(proposalId, "inprogress");
-  const seed = new ProposalShadowContentLayer(seedRoot, getContentRoot());
-  const bulkContent = await seed.readAllSections(docPath);
-  const contentMap = new Map<string, FragmentContent>();
-  for (const entry of newLayout) {
-    const headingKey = SectionRef.headingKey(entry.headingPath);
-    const bodyContent = bulkContent?.get(headingKey) ?? EMPTY_BODY;
-    contentMap.set(entry.fragmentKey, buildFragmentContent(bodyContent, entry.level, entry.heading));
-  }
+  // Re-seed the live Y.Doc fragments from the reordered proposal content tree
+  // inside ONE Y.transact. The seed/rebuild helper resolves the new authoritative
+  // layout and bodies through the proposal-bound read APIs — no root-pair content
+  // layer is constructed here.
+  const contentMap = await buildLiveSeedContentMap(docPath, proposalId);
   // Single transaction (replaceFragmentStrings clears + repopulates atomically):
   // every live fragment is set to the new order's content in one Y.transact.
   session.liveFragments.replaceFragmentStrings(contentMap, SERVER_NORMALIZATION_ORIGIN);
@@ -994,7 +1218,7 @@ export async function moveLiveSection(
 // ─── Message handler ────────────────────────────────────────────
 
 async function applyModeTransition(
-  socket: WebSocket,
+  socket: CoordinatorSocket,
   state: CrdtSocketState,
   request: ModeTransitionRequest,
 ): Promise<ModeTransitionResult> {
@@ -1015,7 +1239,7 @@ async function applyModeTransition(
     state.requestedMode = request.requestedMode;
     state.editorFocusTarget = request.editorFocusTarget;
     if (state.socketRole === "observer") {
-      removeObserverHolder(state.docPath, state.writerId, state.socketId);
+      removeObserverSocket(state.docPath, state.socketId);
     } else {
       await releaseDocSession(state.docPath, state.writerId, state.socketId);
     }
@@ -1071,11 +1295,7 @@ async function applyModeTransition(
     const session = lookupDocSession(state.docPath);
     state.socketRole = "observer";
     if (session) {
-      addObserverHolder(session, state.writerId, {
-        id: state.writerId,
-        type: state.writerType,
-        displayName: state.writerDisplayName,
-      }, state.socketId);
+      addObserverSocket(session, state.socketId);
       joinAndNotify(session, socket, state);
       state.docSessionId = session.docSessionId;
       state.attachmentState = "attached_to_session";
@@ -1138,11 +1358,7 @@ async function applyModeTransition(
         if (client === socket) continue;
         const st = socketState.get(client);
         if (!st || st.socketRole !== "observer" || st.joined || client.readyState !== WebSocket.OPEN) continue;
-        addObserverHolder(session, st.writerId, {
-          id: st.writerId,
-          type: st.writerType,
-          displayName: st.writerDisplayName,
-        }, st.socketId);
+        addObserverSocket(session, st.socketId);
         st.docSessionId = session.docSessionId;
         st.attachmentState = "attached_to_session";
         joinAndNotify(session, client, st);
@@ -1174,7 +1390,7 @@ async function applyModeTransition(
 }
 
 async function handleMessage(
-  socket: WebSocket,
+  socket: CoordinatorSocket,
   state: CrdtSocketState,
   data: Buffer,
 ): Promise<void> {
@@ -1191,8 +1407,7 @@ async function handleMessage(
     if (
       msgType === MSG_SYNC_STEP_2 ||
       msgType === MSG_YJS_UPDATE ||
-      msgType === MSG_DOC_PUBLISH_READY ||
-      msgType === MSG_SECTION_MOVE_REQUEST
+      msgType === MSG_DOC_PUBLISH_READY
     ) {
       throw new Error(
         `Observer socket sent write message (type 0x${msgType.toString(16)}) for ${state.docPath} — ` +
@@ -1214,23 +1429,10 @@ async function handleMessage(
 
   switch (msgType) {
     case MSG_MODE_TRANSITION_REQUEST: {
-      let request: ModeTransitionRequest;
-      try {
-        request = JSON.parse(new TextDecoder().decode(payload)) as ModeTransitionRequest;
-      } catch {
-        const rejected: ModeTransitionResult = {
-          kind: "rejected",
-          requestId: "invalid",
-          clientInstanceId: state.clientInstanceId,
-          requestedMode: state.requestedMode,
-          attachmentState: state.attachmentState,
-          docSessionId: state.docSessionId,
-          clientRole: state.socketRole,
-          reason: "Invalid mode transition payload",
-        };
-        sendToSocket(socket, encodeModeTransitionResult(rejected));
-        break;
-      }
+      // Trust boundary: decode + validate every field (the decode throws with the
+      // offending field on malformed input). The error must propagate — it is NOT
+      // swallowed and substituted with a generic reject.
+      const request = decodeModeTransitionRequest(parseJson(new TextDecoder().decode(payload)));
       const result = await applyModeTransition(socket, state, request);
       sendToSocket(socket, encodeModeTransitionResult(result));
       break;
@@ -1255,6 +1457,14 @@ async function handleMessage(
       // peers. The broadcast lives inside `processArbitratedClientUpdate` precisely
       // so it cannot be reordered ahead of the server state it must follow.
       await activeSession.enqueue(() => processArbitratedClientUpdate(activeSession, writerId, payload));
+      // Receipt watermark (Guarantee A): the lane command above has resolved, so
+      // this update is applied + arbitrated into the authoritative Y.Doc. Echo the
+      // running per-socket processed-count back to the origin so the client can
+      // assert "all my edits up to N are received by the server". One small frame
+      // per processed update to the origin only; the per-socket FIFO keeps the
+      // server's count aligned with the client's own sent-count.
+      state.receivedUpdateCount = (state.receivedUpdateCount ?? 0) + 1;
+      sendToSocket(socket, encodeUpdateAck(state.receivedUpdateCount));
       break;
     }
     case MSG_AWARENESS: {
@@ -1278,21 +1488,17 @@ async function handleMessage(
       activeSession.publishPause.markReady(socketId);
       break;
     }
-    case MSG_SECTION_MOVE_REQUEST: {
-      const activeSession = session!;
-      const req = decodeSectionMoveRequest(payload);
-      if (!req) break; // malformed — ignore (best-effort; no error frame contract)
-      // Route the backend-owned structural move through the actor lane so the
-      // Y.Doc reorder is serialized against inbound edits and publish (MW-10).
-      await activeSession.enqueue(() => moveLiveSection(activeSession, req));
-      break;
-    }
+    // NOTE: the live cross-section move is NOT a CRDT binary frame. It is a
+    // refusable CONTROL operation handled by the REST endpoint
+    // (`POST /documents/:docPath/live-move`) via the `requestDocSessionMove(...)`
+    // seam (claim-review 03 / Option E). Opcode 0x13 is left reserved/unused.
   }
 }
 
 // ─── Session replacement invalidation callback wiring ────────────
 
 setBroadcastSessionReplacementInvalidation((docPath) => broadcastSessionReplacementInvalidation(docPath));
+setBroadcastAdminRebuildInvalidation((docPath) => broadcastAdminRebuildInvalidation(docPath));
 
 // ─── Public API ─────────────────────────────────────────────────
 
@@ -1312,13 +1518,21 @@ export function createCrdtWsServer(): CrdtWsServer {
     let messageChain: Promise<void> = Promise.resolve();
     socket.on("message", (raw) => {
       if (checkTokenExpired(socket, state)) return;
-      const data = raw instanceof Buffer ? raw : Buffer.from(raw as ArrayBuffer);
+      // RawData is Buffer | ArrayBuffer | Buffer[]; handle all three. The Buffer[]
+      // (fragmented-frame) arm must be concatenated, not dropped.
+      const data = Array.isArray(raw)
+        ? Buffer.concat(raw)
+        : Buffer.isBuffer(raw)
+          ? raw
+          : Buffer.from(raw);
       messageChain = messageChain.then(() => handleMessage(socket, state, data)).then(null, (err) => {
+        // The connection is now in an unrecoverable state; close it. Do NOT swallow
+        // the error or downgrade it to a logged generic close — re-raise it loudly
+        // (full message + stack) on a fresh tick so a propagated decode/parse (or
+        // any handler) error surfaces server-side, while keeping the serialized
+        // message chain unpoisoned for the (already-closing) socket.
         socket.close(1011, "internal error");
-        if (isDevSupervised) {
-          throw err;
-        }
-        console.error(`[crdt-ws-coordinator] unhandled error for ${state.docPath}:`, err);
+        queueMicrotask(() => { throw err; });
       });
     });
 
@@ -1332,8 +1546,14 @@ export function createCrdtWsServer(): CrdtWsServer {
 
       if (state.attachmentState !== "detached") {
         if (state.socketRole === "observer") {
-          removeObserverHolder(state.docPath, state.writerId, state.socketId);
+          // Observer disconnect is lifecycle-neutral: drop the socket only. It is
+          // NOT a holder, so there is no `releaseDocSession` call and no effect on
+          // Y.Doc retention or commit cadence (spec 05 §Observer CRDT Channel).
+          removeObserverSocket(state.docPath, state.socketId);
         } else if (wasEditor) {
+          // Was this the last editor? `removeSocket` above already dropped this
+          // socket, so an empty editor set means it was the last one leaving.
+          const lastEditorLeaving = activeEditorSocketIds(state.docPath).length === 0;
           if (session) {
             const socketId = state.socketId;
             // C2: if a publish pause is awaiting this socket, a disconnect aborts
@@ -1345,12 +1565,17 @@ export function createCrdtWsServer(): CrdtWsServer {
             // Rule 2 (spec 10 §Default publish-trigger policy): when the last
             // editor leaves, publish the DocSession's `inprogress` proposal into
             // canonical BEFORE the Y.Doc is discarded, so live work is not
-            // stranded as an unpublished proposal. `removeSocket` above already
-            // dropped this socket, so an empty editor set means it was the last.
+            // stranded as an unpublished proposal.
             // The decision + publish wiring lives in `publishOnLastEditorDisconnect`
             // so it is unit-testable; the close handler must call that same fn.
             await publishOnLastEditorDisconnect(session, activeEditorSocketIds(state.docPath).length);
           }
+          // ORDER (spec 05 §Observer CRDT Channel): publish → notify+close
+          // observers with 4021 → discard the Y.Doc. Closing observers BEFORE the
+          // discard means the publish has already landed canonical, so observers
+          // lose nothing by falling back to REST reads. Only fire on the LAST
+          // editor leaving (the only point the live surface actually ends).
+          if (lastEditorLeaving) closeObserverSocketsForDoc(state.docPath);
           const released = await releaseDocSession(state.docPath, state.writerId, state.socketId);
           // If the session ended (no holders), cancel any pending quiescence
           // timer so it does not fire against a discarded session.
@@ -1474,4 +1699,29 @@ export async function requestDocSessionPublish(docPath: string): Promise<Publish
   const session = lookupDocSession(docPath);
   if (!session) return { outcome: "noop", message: "No live session for this document." };
   return runPublishAttempt(session);
+}
+
+/**
+ * Narrow application-facing CONTROL-PLANE seam for a LIVE cross-section move
+ * (claim-review 03 / Option E), mirroring `requestDocSessionPublish`. The live
+ * cross-section move is a refusable control operation, explicitly NOT part of the
+ * CRDT binary protocol: the REST layer calls THIS to drive the reorder, and gets a
+ * typed `{ ok, message }` outcome back (200/409 at the REST boundary). The
+ * mechanical Y.Doc reorder + WS fan-out stays inside the CRDT subsystem
+ * (`moveLiveSection`, which MUST touch the live Y.Doc) but is reachable ONLY
+ * through this seam — never via a binary frame.
+ *
+ * Runs the reorder on the DocSession actor lane so it is serialized against
+ * inbound edits and publish. A missing session refuses with prose (the document
+ * has no live editing surface to reorder).
+ */
+export async function requestDocSessionMove(
+  docPath: string,
+  req: LiveSectionMoveRequest,
+): Promise<MoveSectionResult> {
+  const session = lookupDocSession(docPath);
+  if (!session) {
+    return { ok: false, message: "This document isn't being edited live right now — open it for editing and try again." };
+  }
+  return session.enqueue(() => moveLiveSection(session, req));
 }

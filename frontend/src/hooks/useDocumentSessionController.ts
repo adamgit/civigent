@@ -8,9 +8,10 @@ import {
 } from "../pages/document-page-utils";
 import { sectionHeadingKey, type ContentCommittedEvent, type DocumentReplacementNoticePayload, type DocumentSessionControllerState, type EditorFocusTarget, type ProposalDTO, type RequestedMode } from "../types/shared.js";
 import type { ProposalSectionAvailabilityEvent } from "../types/shared.js";
-import type { CrdtConnectionState, CrdtProvider } from "../services/crdt-provider";
+import type { CrdtConnectionState } from "../services/crdt-provider";
 import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 import type { CrdtTransport } from "../services/crdt-transport";
+import type { LocalPresence } from "../services/local-presence";
 import type { MilkdownEditorHandle } from "../components/MilkdownEditor";
 import {
   useSessionMode,
@@ -32,10 +33,10 @@ export interface UseDocumentSessionControllerParams {
 export interface UseDocumentSessionControllerReturn {
   focusedSectionIndex: number | null;
   setFocusedSectionIndex: React.Dispatch<React.SetStateAction<number | null>>;
-  crdtProvider: CrdtProvider | null;
   store: BrowserFragmentReplicaStore | null;
   storeRef: React.MutableRefObject<BrowserFragmentReplicaStore | null>;
   transport: CrdtTransport | null;
+  presence: LocalPresence | null;
   crdtSynced: boolean;
   crdtState: CrdtConnectionState;
   crdtError: string | null;
@@ -59,7 +60,8 @@ export interface UseDocumentSessionControllerReturn {
   proposalOverlayVersion: number;
   controllerState: DocumentSessionControllerState;
 
-  crdtProviderRef: React.MutableRefObject<CrdtProvider | null>;
+  transportRef: React.MutableRefObject<CrdtTransport | null>;
+  presenceRef: React.MutableRefObject<LocalPresence | null>;
   controllerStateRef: React.MutableRefObject<DocumentSessionControllerState>;
   mountedEditorFragmentKeysRef: React.MutableRefObject<Set<string>>;
   editorRefs: React.MutableRefObject<Map<number, MilkdownEditorHandle>>;
@@ -70,7 +72,7 @@ export interface UseDocumentSessionControllerReturn {
   proposalSaveTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
 
-  ensureProvider: () => Promise<CrdtProvider | null>;
+  ensureProvider: () => Promise<CrdtTransport | null>;
   stopEditing: () => void;
   startEditing: (sectionIndex: number, clickCoords?: { x: number; y: number }) => Promise<void>;
   startManualPublish: () => Promise<void>;
@@ -87,7 +89,7 @@ export interface UseDocumentSessionControllerReturn {
   handleCursorExit: (sectionIndex: number, direction: "up" | "down") => void;
   setEditorRef: (index: number, handle: MilkdownEditorHandle | null) => void;
   mountEligible: (index: number) => boolean;
-  setViewingSections: (provider: CrdtProvider, sectionIndex: number) => void;
+  setViewingSection: (sectionIndex: number) => void;
   requestMode: (mode: RequestedMode, focusTarget?: EditorFocusTarget | null) => Promise<void>;
   stopObserver: () => void;
 
@@ -124,12 +126,12 @@ export function useDocumentSessionController(
   const registry = useEditorRegistry({
     sections: params.sections,
     store: session.store,
-    crdtProvider: session.crdtProvider,
+    transport: session.transport,
   });
 
   const focus = useSectionFocus({
     sections: params.sections,
-    crdtProviderRef: session.crdtProviderRef,
+    presenceRef: session.presenceRef,
     storeRef,
     readyEditors: registry.readyEditors,
     editorRefs: registry.editorRefs,
@@ -152,7 +154,6 @@ export function useDocumentSessionController(
     sections: params.sections,
     setError: params.setError,
     loadSections: params.loadSections,
-    crdtProviderRef: session.crdtProviderRef,
     setFocusedSectionIndex: focus.setFocusedSectionIndex,
     requestMode: session.requestMode,
   });
@@ -168,10 +169,10 @@ export function useDocumentSessionController(
   const runtime = {
     focusedSectionIndex: focus.focusedSectionIndex,
     setFocusedSectionIndex: focus.setFocusedSectionIndex,
-    crdtProvider: session.crdtProvider,
     store: session.store,
     storeRef,
     transport: session.transport,
+    presence: session.presence,
     crdtSynced: session.crdtSynced,
     crdtState: session.crdtState,
     crdtError: session.crdtError,
@@ -194,7 +195,8 @@ export function useDocumentSessionController(
     proposalSectionConflicts: proposal.proposalSectionConflicts,
     proposalOverlayVersion: proposal.proposalOverlayVersion,
     controllerState: session.controllerState,
-    crdtProviderRef: session.crdtProviderRef,
+    transportRef: session.transportRef,
+    presenceRef: session.presenceRef,
     controllerStateRef: session.controllerStateRef,
     mountedEditorFragmentKeysRef: registry.mountedEditorFragmentKeysRef,
     editorRefs: registry.editorRefs,
@@ -221,7 +223,7 @@ export function useDocumentSessionController(
     handleCursorExit: focus.handleCursorExit,
     setEditorRef: registry.setEditorRef,
     mountEligible: registry.mountEligible,
-    setViewingSections: focus.setViewingSections,
+    setViewingSection: focus.setViewingSection,
     requestMode: session.requestMode,
     stopObserver: session.stopObserver,
   };
@@ -242,9 +244,8 @@ export function useDocumentSessionController(
       if (runtime.storeRef.current?.getPublishPaused()) return;
       runtime.setFocusedSectionIndex(index);
       runtime.pendingFocusRef.current = { index, position: "start", coords };
-      const provider = runtime.crdtProviderRef.current;
-      if (provider) {
-        runtime.setViewingSections(provider, index);
+      if (runtime.presenceRef.current) {
+        runtime.setViewingSection(index);
       }
     },
     moveFocus: (direction) => {
@@ -284,8 +285,7 @@ export function useDocumentSessionController(
       params.setSections(sections);
     },
     handleCommittedSections: (_event: ContentCommittedEvent) => {
-      // The receipt-driven `markSectionsClean` lifecycle is removed (spec 05
-      // §"Content Flush"). Canonical refresh on `content:committed` is handled by
+      // Canonical refresh on `content:committed` is handled by
       // useDocumentWebSocket; there is no per-section persistence map to clean.
     },
   }), [
@@ -295,8 +295,8 @@ export function useDocumentSessionController(
     runtime.startEditing,
     runtime.setFocusedSectionIndex,
     runtime.pendingFocusRef,
-    runtime.crdtProviderRef,
-    runtime.setViewingSections,
+    runtime.presenceRef,
+    runtime.setViewingSection,
     runtime.focusedSectionIndexRef,
     runtime.handleCursorExit,
     runtime.setEditorRef,

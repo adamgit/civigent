@@ -16,10 +16,10 @@ import {
   type JsonRpcRequest,
   type JsonRpcSuccessResponse,
   type JsonRpcErrorResponse,
-  type McpInitializeParams,
   type McpInitializeResult,
-  type McpToolCallParams,
   type McpToolsListResult,
+  McpInitializeParams,
+  McpToolCallParams,
   isJsonRpcRequest,
   isJsonRpcNotification,
   makeSuccessResponse,
@@ -31,6 +31,8 @@ import {
   MCP_METHODS,
 } from "./protocol.js";
 import { type ToolRegistry, type ToolContext, type McpSession } from "./tool-registry.js";
+import { type GatedTier, governanceForcedRejection } from "./governance-gate.js";
+import { makeToolErrorResult } from "./protocol.js";
 import type { AuthenticatedWriter } from "../auth/context.js";
 import type { WsServerEvent } from "../types/shared.js";
 import { isSystemReady } from "../startup-state.js";
@@ -40,6 +42,12 @@ import { isSystemReady } from "../startup-state.js";
 export interface McpServerOptions {
   /** Tool registry with all registered tools */
   registry: ToolRegistry;
+  /**
+   * The service tier this server instance serves. Threaded from the router factory
+   * so the call-time governance gate knows which tier it is gating — Tier 1/2 calls
+   * are rejected under `forced` governance mode, Tier 3 is never gated.
+   */
+  tier: GatedTier;
   /** Server name reported in initialize response */
   serverName?: string;
   /** Server version reported in initialize response */
@@ -50,12 +58,14 @@ export interface McpServerOptions {
 
 export class McpServer {
   private registry: ToolRegistry;
+  private tier: GatedTier;
   private serverName: string;
   private serverVersion: string;
   private initialized = false;
 
   constructor(options: McpServerOptions) {
     this.registry = options.registry;
+    this.tier = options.tier;
     this.serverName = options.serverName ?? "knowledge-store";
     this.serverVersion = options.serverVersion ?? "0.1.0";
   }
@@ -166,14 +176,9 @@ export class McpServer {
   private handleInitialize(
     req: JsonRpcRequest,
   ): JsonRpcSuccessResponse | JsonRpcErrorResponse {
-    const params = req.params as unknown as McpInitializeParams | undefined;
-
-    if (!params?.protocolVersion) {
-      return makeErrorResponse(
-        req.id,
-        JSONRPC_ERRORS.INVALID_PARAMS,
-        "Missing protocolVersion in initialize params",
-      );
+    const parsed = McpInitializeParams.parse(req.params);
+    if (!parsed.ok) {
+      return makeErrorResponse(req.id, JSONRPC_ERRORS.INVALID_PARAMS, parsed.message);
     }
 
     const result: McpInitializeResult = {
@@ -209,15 +214,11 @@ export class McpServer {
     session: McpSession,
     emitEvent?: (event: WsServerEvent) => void,
   ): Promise<JsonRpcSuccessResponse | JsonRpcErrorResponse> {
-    const params = req.params as unknown as McpToolCallParams | undefined;
-
-    if (!params?.name) {
-      return makeErrorResponse(
-        req.id,
-        JSONRPC_ERRORS.INVALID_PARAMS,
-        "Missing tool name in tools/call params",
-      );
+    const parsed = McpToolCallParams.parse(req.params);
+    if (!parsed.ok) {
+      return makeErrorResponse(req.id, JSONRPC_ERRORS.INVALID_PARAMS, parsed.message);
     }
+    const params = parsed.value;
 
     if (!this.registry.hasTool(params.name)) {
       return makeErrorResponse(
@@ -225,6 +226,14 @@ export class McpServer {
         JSONRPC_ERRORS.INVALID_PARAMS,
         `Unknown tool: ${params.name}`,
       );
+    }
+
+    // Governance gate (read at call time): under `forced` mode the filesystem-facing
+    // Tier 1/2 tools are disabled. Reject BEFORE building the context or invoking the
+    // handler so no read or write occurs — the agent learns it must use Tier 3.
+    const governanceRejection = governanceForcedRejection(this.tier);
+    if (governanceRejection !== null) {
+      return makeSuccessResponse(req.id, makeToolErrorResult(governanceRejection));
     }
 
     const ctx: ToolContext = {

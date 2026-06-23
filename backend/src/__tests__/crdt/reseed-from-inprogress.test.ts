@@ -24,7 +24,7 @@ import {
 } from "../../crdt/ydoc-lifecycle.js";
 import {
   getOrCreateInProgressProposalForDocSession,
-  updateProposalSections,
+  updateCurrentProposalSections,
   findInProgressProposalForDoc,
   listInProgressProposalsForDoc,
 } from "../../storage/proposal-repository.js";
@@ -62,7 +62,7 @@ describe("MW-4: acquire reseeds the live Y.Doc from an existing inprogress propo
     });
     const editor = ProposalEditor.open(created.id, "inprogress");
     await editor.writeSection(SAMPLE_DOC_PATH, ["Overview"], "Overview", IN_FLIGHT_BODY);
-    await updateProposalSections(created.id, [
+    await updateCurrentProposalSections(created.id, [
       { doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] },
     ]);
 
@@ -121,7 +121,7 @@ describe("C1: acquire adopts the existing inprogress proposal identity", () => {
     });
     const editor = ProposalEditor.open(created.id, "inprogress");
     await editor.writeSection(SAMPLE_DOC_PATH, ["Overview"], "Overview", IN_FLIGHT_BODY);
-    await updateProposalSections(created.id, [
+    await updateCurrentProposalSections(created.id, [
       { doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] },
     ]);
 

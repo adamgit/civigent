@@ -17,12 +17,10 @@
  *      Awareness. The store is unaffected (its own `destroy()` is the
  *      caller's responsibility).
  *
- * The legacy receipt / session-overlay / focus / pulse / mutate / idle-timeout
- * plumbing is removed (spec 05 §4 > Removed message types). The transport now
- * relays DocSession publication-pause state to the store. Per-section
- * block-state (`section:blocked|unblocked|gone`) rides the JSON application
- * WebSocket, not this binary channel — it is routed into the store by
- * `useDocumentWebSocket.ts`, not here.
+ * The transport relays DocSession publication-pause state to the store.
+ * Per-section block-state (`section:blocked|unblocked|gone`) rides the JSON
+ * application WebSocket, not this binary channel — it is routed into the store
+ * by `useDocumentWebSocket.ts`, not here.
  */
 
 import * as Y from "yjs";
@@ -51,6 +49,8 @@ export interface CrdtTransportOptions {
   onError?: (reason: string) => void;
   /** Fired when a local Y.Doc update is produced. */
   onLocalUpdate?: (modifiedFragmentKeys: string[]) => void;
+  /** Receipt watermark changed (Guarantee A) — mirrors `store.setReceiptAllReceived`. */
+  onReceiptChange?: (summary: { allReceived: boolean; pendingFragmentKeys: string[] }) => void;
   /** Called when the server initiates a document-replacement reconnection (4022). */
   onSessionReinit?: () => void;
   /** Called when the server initiates an admin force-rebuild reconnection (4024). */
@@ -95,6 +95,10 @@ export class CrdtTransport {
         onLocalUpdate: (modifiedFragmentKeys) => {
           this.opts.onLocalUpdate?.(modifiedFragmentKeys);
         },
+        onReceiptChange: (summary) => {
+          this.store?.setReceiptAllReceived(summary.allReceived);
+          this.opts.onReceiptChange?.(summary);
+        },
         onSessionReinit: () => {
           this.opts.onSessionReinit?.();
         },
@@ -138,6 +142,14 @@ export class CrdtTransport {
     this.provider.connect();
   }
 
+  get state(): CrdtConnectionState {
+    return this.provider.state;
+  }
+
+  get documentPath(): string {
+    return this.provider.documentPath;
+  }
+
   disconnect(): void {
     this.provider.disconnect();
   }
@@ -153,9 +165,11 @@ export class CrdtTransport {
     this.provider.setPublishPauseBarrier(barrier);
   }
 
-  /** Direct access to the wrapped provider. Transitional escape hatch for
-   *  callers that still use provider-only surface. */
-  get rawProvider(): CrdtProvider {
-    return this.provider;
+  flushAndAwaitSync(timeoutMs?: number): Promise<void> {
+    return this.provider.flushAndAwaitSync(timeoutMs);
+  }
+
+  onceRemoteUpdate(cb: () => void, timeoutMs?: number): void {
+    this.provider.onceRemoteUpdate(cb, timeoutMs);
   }
 }

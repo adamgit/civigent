@@ -1,5 +1,11 @@
 import { type Router } from "express";
 import {
+  SetAclDefaultsRequest,
+  SetDocumentAclRequest,
+  SetUserRolesRequest,
+  CreateCustomRoleRequest,
+} from "../../types/shared.js";
+import {
   sendApiError,
   requireAdmin,
   getMCPPublicURL,
@@ -26,6 +32,7 @@ import {
   removeCustomRole,
   getAgentActivity,
   getHeatmap,
+  autofixProposalDefect,
   AdminConfigValidationError,
   SnapshotGenerationDisabledError,
   SnapshotRootNotWritableError,
@@ -190,6 +197,22 @@ export function registerAdminRoutes(router: Router): void {
     }
   });
 
+  // ─── Proposal defect autofix ──────────────────────────
+  router.post("/admin/proposals/:id/autofix/:detectorId", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const result = await autofixProposalDefect(req.params.id, req.params.detectorId);
+      if (!result.ok) {
+        sendApiError(res, result.status, result.message);
+        return;
+      }
+      res.json({ proposal: result.proposal });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // ─── Agent activity summary ───────────────────────────
   router.get("/agents/summary", async (_req, res, next) => {
     try {
@@ -214,8 +237,12 @@ export function registerAdminRoutes(router: Router): void {
     try {
       const admin = await requireAdmin(req, res);
       if (!admin) return;
-      const { read, write } = req.body as { read?: string; write?: string };
-      await setAclDefaults(read, write);
+      const parsed = SetAclDefaultsRequest.parse(req.body);
+      if (!parsed.ok) {
+        sendApiError(res, 400, parsed.message);
+        return;
+      }
+      await setAclDefaults(parsed.value);
       res.json({ ok: true });
     } catch (error) {
       next(error);
@@ -226,8 +253,12 @@ export function registerAdminRoutes(router: Router): void {
     try {
       const admin = await requireAdmin(req, res);
       if (!admin) return;
-      const { read, write } = req.body as { read?: string; write?: string };
-      await setDocAclEntry(req.params.docPath, read, write);
+      const parsed = SetDocumentAclRequest.parse(req.body);
+      if (!parsed.ok) {
+        sendApiError(res, 400, parsed.message);
+        return;
+      }
+      await setDocAclEntry(req.params.docPath, parsed.value);
       res.json({ ok: true });
     } catch (error) {
       next(error);
@@ -249,12 +280,12 @@ export function registerAdminRoutes(router: Router): void {
     try {
       const admin = await requireAdmin(req, res);
       if (!admin) return;
-      const { roles } = req.body as { roles: string[] };
-      if (!Array.isArray(roles)) {
-        sendApiError(res, 400, "roles must be a string array.");
+      const parsed = SetUserRolesRequest.parse(req.body);
+      if (!parsed.ok) {
+        sendApiError(res, 400, parsed.message);
         return;
       }
-      await setRoles(req.params.userId, roles);
+      await setRoles(req.params.userId, parsed.value);
       res.json({ ok: true });
     } catch (error) {
       next(error);
@@ -276,12 +307,12 @@ export function registerAdminRoutes(router: Router): void {
     try {
       const admin = await requireAdmin(req, res);
       if (!admin) return;
-      const { name } = req.body as { name: string };
-      if (!name || typeof name !== "string") {
-        sendApiError(res, 400, "name is required.");
+      const parsed = CreateCustomRoleRequest.parse(req.body);
+      if (!parsed.ok) {
+        sendApiError(res, 400, parsed.message);
         return;
       }
-      await createCustomRole(name);
+      await createCustomRole(parsed.value);
       res.json({ ok: true });
     } catch (error) {
       if (error instanceof Error && (error.message.includes("magic role") || error.message.includes("already exists"))) {

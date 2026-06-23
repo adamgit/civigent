@@ -45,7 +45,6 @@ import {
   type FragmentContent,
 } from "../storage/section-formatting.js";
 import { BEFORE_FIRST_HEADING_KEY, fragmentKeyFromSectionFile } from "./ydoc-fragments.js";
-import { SectionRef } from "../domain/section-ref.js";
 import {
   CRDTProposalGenerator,
   type LiveDocumentSource,
@@ -72,8 +71,6 @@ export interface HolderEntry {
   identity: WriterIdentity;
   /** socketIds of live editor sockets for this user. */
   editorSocketIds: Set<string>;
-  /** socketIds of live observer sockets for this user. */
-  observerSocketIds: Set<string>;
 }
 
 // ─── DocSession interface + actor lane ───────────────────────────
@@ -86,8 +83,23 @@ export interface DocSession {
   /** Thin Y.Doc fragment adapter: live fragment string reads/writes. */
   liveFragments: LiveFragmentStringsStore;
   docPath: string;
-  /** All connected participants (editors + observers) keyed by writerId. */
+  /**
+   * EDITOR session holders only, keyed by writerId. Observers never become
+   * holders (spec 05 §Observer CRDT Channel: "Observer connections do not call
+   * `acquireDocSession` — they never become session holders"). The Y.Doc discard
+   * refcount is driven solely by this map, so a lingering observer can no longer
+   * pin a Y.Doc after the last editor leaves.
+   */
   holders: Map<string, HolderEntry>;
+  /**
+   * Live observer socketIds for this document, tracked SEPARATELY from `holders`
+   * and deliberately NOT consulted by the Y.Doc-discard test in
+   * `releaseDocSession`. Observer presence has no effect on Y.Doc retention or
+   * commit cadence (spec 05 §Observer CRDT Channel › Session Lifecycle); this set
+   * exists so the coordinator can notify + close observers with 4021 when the last
+   * editor leaves, and for lifecycle assertions.
+   */
+  observerSocketIds: Set<string>;
   /** Last edit timestamp per live fragment key. Read by the quiescence command
    *  in the WS coordinator (MW-1b/MW-2) to decide when a fragment has settled. */
   fragmentLastActivity: Map<string, number>;
@@ -135,6 +147,12 @@ let _broadcastSessionReplacementInvalidation: ((docPath: string) => void) | null
 
 export function setBroadcastSessionReplacementInvalidation(cb: (docPath: string) => void): void {
   _broadcastSessionReplacementInvalidation = cb;
+}
+
+let _broadcastAdminRebuildInvalidation: ((docPath: string) => void) | null = null;
+
+export function setBroadcastAdminRebuildInvalidation(cb: (docPath: string) => void): void {
+  _broadcastAdminRebuildInvalidation = cb;
 }
 
 // ─── Lookup ──────────────────────────────────────────────────────
@@ -185,27 +203,41 @@ export function getSessionsForWriter(writerId: string): DocSession[] {
  * adapter. Section identity is resolved from the current `inprogress` proposal
  * skeleton when present, else canonical; the body is read live from the Y.Doc.
  */
-function makeLiveDocumentSource(session: DocSession): LiveDocumentSource {
+/**
+ * Explicit dependencies the live document source needs. Passed instead of the
+ * whole `DocSession` so the source can be built BEFORE the (circular) generator
+ * exists: `getCurrentProposalId` is a lazy accessor that reads the generator
+ * once it has been assigned, and `liveFragments` / `contributors` are the same
+ * references the final `DocSession` holds (so mutations stay visible).
+ */
+interface LiveDocumentSourceDeps {
+  docPath: string;
+  liveFragments: LiveFragmentStringsStore;
+  contributors: Map<string, WriterIdentity>;
+  getCurrentProposalId: () => ReturnType<CRDTProposalGenerator["getCurrentProposalId"]>;
+}
+
+function makeLiveDocumentSource(deps: LiveDocumentSourceDeps): LiveDocumentSource {
   return {
     async snapshotSections(): Promise<LiveSectionSnapshot[]> {
       const { resolveLiveSectionLayout } = await import("./live-section-layout.js");
-      const layout = await resolveLiveSectionLayout(session.docPath, session.generator.getCurrentProposalId());
+      const layout = await resolveLiveSectionLayout(deps.docPath, deps.getCurrentProposalId());
       const snapshots: LiveSectionSnapshot[] = [];
       for (const entry of layout) {
-        const fragment = session.liveFragments.readFragmentString(entry.fragmentKey);
+        const fragment = deps.liveFragments.readFragmentString(entry.fragmentKey);
         const body = stripHeadingFromFragment(fragment, entry.level);
         snapshots.push({
           headingPath: [...entry.headingPath],
           heading: entry.heading,
           level: entry.level,
-          body: body as unknown as string,
+          body,
           fragmentKey: entry.fragmentKey,
         });
       }
       return snapshots;
     },
     contributingWriterIds(): Iterable<string> {
-      return session.contributors.keys();
+      return deps.contributors.keys();
     },
   };
 }
@@ -235,7 +267,6 @@ export async function acquireDocSession(
       session.holders.set(writerId, {
         identity,
         editorSocketIds: new Set(socketId ? [socketId] : []),
-        observerSocketIds: new Set(),
       });
     }
     session.lastActivityAt = Date.now();
@@ -260,7 +291,6 @@ export async function acquireDocSession(
   session.holders.set(writerId, {
     identity,
     editorSocketIds: new Set(socketId ? [socketId] : []),
-    observerSocketIds: new Set(),
   });
   session.lastActivityAt = Date.now();
   session.state = "active";
@@ -327,45 +357,60 @@ async function constructDocSession(
 
   const liveStrings = new LiveFragmentStringsStore(ydoc, orderedKeys, docPath);
 
-  const session: DocSession = {
-    state: "acquiring",
-    ydoc,
-    liveFragments: liveStrings,
-    docPath,
-    holders: new Map(),
-    fragmentLastActivity: new Map(),
-    lastActivityAt: Date.now(),
-    createdAt: Date.now(),
-    baseHead,
-    lastWriterId: writerId,
-    contributors: new Map(),
-    docSessionId,
-    // Filled in below once we can reference `session` for the live source.
-    generator: null as unknown as CRDTProposalGenerator,
-    publishPause: new DocSessionPublishPause(),
-    enqueue: null as unknown as DocSession["enqueue"],
-  };
+  // Build the non-circular pieces first, then construct the final DocSession once
+  // every field has a real value — no forged `null as unknown as ...` placeholders.
 
   // Ordered command lane: a serial promise chain. Each command runs to completion
   // (or its own await point) before the next observes/mutates session state.
   let lane: Promise<unknown> = Promise.resolve();
-  session.enqueue = <T>(command: () => Promise<T> | T): Promise<T> => {
+  const enqueue: DocSession["enqueue"] = <T>(command: () => Promise<T> | T): Promise<T> => {
     const result = lane.then(() => command());
     // Keep the lane alive regardless of individual command outcome.
     lane = result.then(() => undefined, () => undefined);
     return result;
   };
 
-  session.generator = new CRDTProposalGenerator({
+  // Shared contributor map: the live source and the final DocSession reference the
+  // SAME map so edit-attribution writes stay visible to snapshot reads.
+  const contributors = new Map<string, WriterIdentity>();
+
+  const generator: CRDTProposalGenerator = new CRDTProposalGenerator({
     docPath,
-    docSessionId: session.docSessionId,
+    docSessionId,
     writer: { id: writerId, type: "human", displayName: writerId },
-    source: makeLiveDocumentSource(session),
+    // The source reads `getCurrentProposalId` lazily; `generator` is assigned by
+    // the time any snapshot runs, so referencing it here is safe (it is never
+    // invoked during construction).
+    source: makeLiveDocumentSource({
+      docPath,
+      liveFragments: liveStrings,
+      contributors,
+      getCurrentProposalId: () => generator.getCurrentProposalId(),
+    }),
     // (C1) Bind the generator to the adopted proposal explicitly, so first-edit
     // materialization targets it even if the docSessionId keying ever changes
     // (and as the sole binding for a legacy proposal lacking a docSessionId).
     initialProposalId: existingInProgress?.id,
   });
+
+  const session: DocSession = {
+    state: "acquiring",
+    ydoc,
+    liveFragments: liveStrings,
+    docPath,
+    holders: new Map(),
+    observerSocketIds: new Set(),
+    fragmentLastActivity: new Map(),
+    lastActivityAt: Date.now(),
+    createdAt: Date.now(),
+    baseHead,
+    lastWriterId: writerId,
+    contributors,
+    docSessionId,
+    generator,
+    publishPause: new DocSessionPublishPause(),
+    enqueue,
+  };
 
   if (skeleton.areSkeletonRootsEmpty) {
     // Bootstrap an empty BFH fragment so the first client edit has a section.
@@ -376,19 +421,13 @@ async function constructDocSession(
       liveStrings.replaceFragmentStrings(bootstrapMap);
     });
   } else {
-    // Reseed each section's live fragment from the seed root (inprogress proposal
-    // content tree if present, else canonical) so reconnects/restart resume the
-    // in-flight state.
-    const { ProposalShadowContentLayer } = await import("../storage/content-layer.js");
-    const seed = new ProposalShadowContentLayer(seedRoot, canonicalRoot);
-    const bulkContent = await seed.readAllSections(docPath);
-    const contentMap = new Map<string, FragmentContent>();
-    skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
-      const fragmentKey = fragmentKeyFromSectionFile(sectionFile, headingPath.length === 0);
-      const headingKey = SectionRef.headingKey([...headingPath]);
-      const bodyContent = bulkContent?.get(headingKey) ?? EMPTY_BODY;
-      contentMap.set(fragmentKey, buildFragmentContentFn(bodyContent, level, heading));
-    });
+    // Reseed each section's live fragment from the current `inprogress` proposal
+    // (if present, else canonical) so reconnects/restart resume the in-flight
+    // state. The seed/rebuild helper resolves layout + bodies through the
+    // proposal-bound read APIs — it is not handed a `(primaryRoot, canonicalRoot)`
+    // pair.
+    const { buildLiveSeedContentMap } = await import("./live-section-layout.js");
+    const contentMap = await buildLiveSeedContentMap(docPath, existingInProgress?.id ?? null);
     liveStrings.replaceFragmentStrings(contentMap);
   }
 
@@ -415,7 +454,7 @@ export function removeEditorHolder(
   const holder = session.holders.get(writerId);
   if (holder) {
     if (socketId) holder.editorSocketIds.delete(socketId);
-    if (holder.editorSocketIds.size === 0 && holder.observerSocketIds.size === 0) {
+    if (holder.editorSocketIds.size === 0) {
       session.holders.delete(writerId);
     }
   }
@@ -433,11 +472,14 @@ export async function releaseDocSession(
   const session = removal.session;
   if (!session) return { sessionEnded: false, contributors: [] };
 
-  // The Y.Doc stays alive while ≥1 transport is connected (spec 05 §Session
-  // Lifecycle). Last-transport-disconnect is the manager's GC trigger; the
-  // current `inprogress` proposal carries in-flight live state across the gap so
-  // a subsequent reconnect resumes seamlessly. We discard the in-memory Y.Doc
-  // when no holders remain (perf/caching policy DD-8: discard).
+  // The Y.Doc is discarded when the last EDITOR leaves (spec 05 §Observer CRDT
+  // Channel: the trigger is "no live editor-backed CRDT surface for that
+  // docPath"). Since observers are no longer holders, `holders.size === 0` is an
+  // editor-only refcount by construction — a lingering observer no longer pins
+  // the Y.Doc. The current `inprogress` proposal carries in-flight live state
+  // across the gap so a subsequent reconnect resumes seamlessly (DD-8: discard).
+  // The coordinator notifies + closes any remaining observers with 4021 BEFORE it
+  // calls this, so observers fall back to canonical REST reads losing nothing.
   if (session.holders.size === 0) {
     discardSession(session);
     return { sessionEnded: true, contributors: [] };
@@ -523,7 +565,7 @@ export function joinSession(
   sendRaw(syncStep1);
 }
 
-// ─── Observer holder management ──────────────────────────────────
+// ─── Observer socket tracking (NOT holders) ──────────────────────
 
 /** Count the total number of live editor sockets across all holders in a session. */
 export function countEditorSockets(session: DocSession): number {
@@ -532,28 +574,26 @@ export function countEditorSockets(session: DocSession): number {
   return count;
 }
 
-export function addObserverHolder(session: DocSession, writerId: string, identity: WriterIdentity, socketId?: string): void {
-  const existing = session.holders.get(writerId);
-  if (existing) {
-    if (socketId) existing.observerSocketIds.add(socketId);
-  } else {
-    session.holders.set(writerId, {
-      identity,
-      editorSocketIds: new Set(),
-      observerSocketIds: new Set(socketId ? [socketId] : []),
-    });
-  }
+/**
+ * Track an observer socket on the session WITHOUT making it a holder (spec 05
+ * §Observer CRDT Channel: observers never become session holders). The set is
+ * separate from `holders` and is not consulted by the Y.Doc-discard test, so an
+ * observer cannot pin a Y.Doc or affect the publish-trigger refcount.
+ */
+export function addObserverSocket(session: DocSession, socketId: string): void {
+  session.observerSocketIds.add(socketId);
 }
 
-export function removeObserverHolder(docPath: string, writerId: string, socketId?: string): void {
+/**
+ * Drop an observer socket. Lifecycle-neutral by contract: it does NOT call
+ * `releaseDocSession` and has no effect on Y.Doc retention or commit cadence
+ * (spec 05 §Observer CRDT Channel: "Observer disconnection has no effect on
+ * Y.Doc retention policy or commit cadence").
+ */
+export function removeObserverSocket(docPath: string, socketId: string): void {
   const session = sessions.get(docPath);
   if (!session) return;
-  const holder = session.holders.get(writerId);
-  if (!holder) return;
-  if (socketId) holder.observerSocketIds.delete(socketId);
-  if (holder.editorSocketIds.size === 0 && holder.observerSocketIds.size === 0) {
-    session.holders.delete(writerId);
-  }
+  session.observerSocketIds.delete(socketId);
 }
 
 // ─── Cleanup ─────────────────────────────────────────────────────
@@ -618,6 +658,42 @@ export async function invalidateSessionForReplacement(
 
   if (_broadcastSessionReplacementInvalidation) {
     _broadcastSessionReplacementInvalidation(docPath);
+  }
+
+  const session = sessions.get(docPath);
+  if (session) {
+    assertState(session, ["active", "acquiring"]);
+    session.publishPause.end();
+    session.state = "ended";
+    session.ydoc.destroy();
+    sessions.delete(docPath);
+    sessionPromises.delete(docPath);
+  }
+}
+
+/**
+ * Admin force-rebuild (DD-4) lifecycle side-effects (spec 01 §3 YDocLifecycleManager;
+ * spec 05 §Session Lifecycle / §Close codes). A rare, deliberately disruptive
+ * primitive: an admin has committed to canonical bypassing all blocking (HI
+ * evaluation, `inprogress` lock, freeze), and the live Y.Doc must be torn down so
+ * connected clients reseed from the new canonical content.
+ *
+ * Precondition: the admin's canonical mutation has already landed at the
+ * route/store boundary. This function does the disruptive part only:
+ *   1. Close all CRDT sockets to the document with the admin-rebuild close code
+ *      4024 (via callback) so clients reconnect immediately and reseed.
+ *   2. Destroy + discard the in-memory live Y.Doc.
+ *
+ * No salvage of in-flight CRDT content is attempted: any live work in the
+ * destroyed Y.Doc that overlaps the rebuilt sections is discarded BY DESIGN
+ * (spec 01 §3: "the admin operation is by design destructive of live work that
+ * overlaps the rebuilt sections"). This is distinct from restore (4022): there is
+ * no reconnect notice and no publish-or-abort handoff — the admin operation has
+ * already bypassed live editing.
+ */
+export async function invalidateSessionForAdminRebuild(docPath: string): Promise<void> {
+  if (_broadcastAdminRebuildInvalidation) {
+    _broadcastAdminRebuildInvalidation(docPath);
   }
 
   const session = sessions.get(docPath);

@@ -13,6 +13,7 @@ import {
   type ProposalSectionAvailabilityEvent,
   type ProposalWithdrawnEvent,
   type SectionBlockStateEvent,
+  type SectionPendingStateEvent,
 } from "../types/shared.js";
 import {
   type DocumentSection,
@@ -24,8 +25,8 @@ import {
   getSectionFragmentKey,
   HIGHLIGHT_DURATION_MS,
 } from "../pages/document-page-utils";
-import type { CrdtProvider } from "../services/crdt-provider";
 import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
+import type { CrdtTransport } from "../services/crdt-transport";
 
 // ─── Hook parameters ─────────────────────────────────────────────
 
@@ -33,7 +34,7 @@ export interface UseDocumentWebSocketParams {
   decodedDocPath: string | null;
   sectionsRef: React.MutableRefObject<DocumentSection[]>;
   setSections: React.Dispatch<React.SetStateAction<DocumentSection[]>>;
-  crdtProviderRef: React.MutableRefObject<CrdtProvider | null>;
+  transportRef: React.MutableRefObject<CrdtTransport | null>;
   focusedSectionIndexRef: React.MutableRefObject<number | null>;
   /** Fragment keys of currently mounted Milkdown editors — used to exclude CRDT-bound
    *  sections from the REST refresh on content:committed without positional index coupling. */
@@ -68,7 +69,7 @@ export function useDocumentWebSocket({
   decodedDocPath,
   sectionsRef,
   setSections,
-  crdtProviderRef,
+  transportRef,
   focusedSectionIndexRef,
   mountedEditorFragmentKeysRef,
   pendingStructureRefocusRef,
@@ -145,10 +146,9 @@ export function useDocumentWebSocket({
           return Array.from(next.values());
         });
 
-        // The receipt-driven `markSectionsClean` lifecycle is removed (spec 05
-        // §"Content Flush"). `content:committed` is now only a canonical-refresh
-        // hint (spec 06 §"Refresh Strategy"); the selective REST refresh below
-        // reseeds non-CRDT-bound previews.
+        // `content:committed` is a canonical-refresh hint (spec 06 §"Refresh
+        // Strategy"); the REST refresh below adopts fresh server topology while
+        // preserving mounted editor content by fragment_key.
 
         // Clear draft proposal indicators for committed sections
         const committedSectionKeys = new Set(
@@ -159,35 +159,38 @@ export function useDocumentWebSocket({
         );
 
         // Refresh sections to pick up new content
-        if (!crdtProviderRef.current) {
+        if (!transportRef.current) {
           // No active CRDT session — full reload is safe
           loadSections(decodedDocPath);
         } else {
-          // CRDT session active — selectively refresh non-CRDT-bound sections only.
-          // Exclude sections whose fragment key appears in mountedEditorFragmentKeysRef
-          // (identity-based, not positional ±1 — safe under insert/reorder/structure change).
+          // CRDT session active: adopt fresh server topology even while editors are
+          // mounted; only a mounted section's live content is preserved. Matched by
+          // opaque fragment_key — never positional index or heading text.
           apiClient.getDocumentSections(decodedDocPath).then((resp) => {
             const crdtBound = mountedEditorFragmentKeysRef.current;
             setSections((prev) => {
-              const next = [...prev];
-              const freshByKey = new Map(
-                resp.sections.map((s) => [sectionHeadingKey(s.heading_path), s]),
+              const prevByFragmentKey = new Map(
+                prev.map((s) => [getSectionFragmentKey(s), s]),
               );
-              for (let i = 0; i < next.length; i++) {
-                const fk = getSectionFragmentKey(next[i]);
-                if (crdtBound.has(fk)) continue; // skip sections with live editors
-                const key = sectionHeadingKey(next[i].heading_path);
-                const fresh = freshByKey.get(key);
-                if (fresh) {
-                  next[i] = fresh;
+              const nextSections = resp.sections.map((fresh) => {
+                const fk = getSectionFragmentKey(fresh);
+                if (crdtBound.has(fk)) {
+                  const prevSection = prevByFragmentKey.get(fk);
+                  if (prevSection) return { ...fresh, content: prevSection.content };
                 }
+                return fresh;
+              });
+              // Reconcile focus by fragment identity: keep focus on the focused
+              // fragment's NEW index, or clear it if that fragment no longer exists.
+              const focusedIndex = focusedSectionIndexRef.current;
+              if (focusedIndex !== null && focusedIndex >= 0 && focusedIndex < prev.length) {
+                const focusedFk = getSectionFragmentKey(prev[focusedIndex]);
+                const newIndex = nextSections.findIndex(
+                  (s) => getSectionFragmentKey(s) === focusedFk,
+                );
+                focusedSectionIndexRef.current = newIndex >= 0 ? newIndex : null;
               }
-              // If section count changed (structure changed), use fresh list but
-              // only when no CRDT editor is mounted to avoid disruption.
-              if (resp.sections.length !== prev.length && crdtBound.size === 0) {
-                return resp.sections;
-              }
-              return next;
+              return nextSections;
             });
           }).catch((err) => {
             setError(`Failed to refresh sections after commit: ${err instanceof Error ? err.message : String(err)}`);
@@ -235,6 +238,27 @@ export function useDocumentWebSocket({
         return;
       }
 
+      // ── section:pending | section:settled ──
+      // Guarantee B: a section gained (or settled) uncommitted edits in a live
+      // DocSession inprogress proposal. Routed into the replica store, which owns
+      // the per-section pending map (keyed by fragment_key, like block-state).
+      if (event.type === "section:pending" || event.type === "section:settled") {
+        const pendingState = event as SectionPendingStateEvent;
+        if (normalizeDocPath(pendingState.doc_path) !== normalizeDocPath(decodedDocPath)) return;
+        const store = storeRef.current;
+        if (store) {
+          if (pendingState.type === "section:pending") {
+            store.setSectionPending(pendingState.fragment_key, {
+              writerId: pendingState.writer_id ?? "",
+              writerDisplayName: pendingState.writer_display_name ?? "",
+            });
+          } else {
+            store.setSectionSettled(pendingState.fragment_key);
+          }
+        }
+        return;
+      }
+
       // ── doc:renamed ──
       if (event.type === "doc:renamed") {
         const renamed = event as DocRenamedEvent;
@@ -244,9 +268,8 @@ export function useDocumentWebSocket({
         return;
       }
 
-      // (doc:structure-changed handling removed — spec 05 §4 > Removed message
-      // types. Structural changes now arrive as ordinary YJS_UPDATE deltas on
-      // the CRDT socket; canonical previews refresh on `content:committed`.)
+      // Structural changes arrive as ordinary YJS_UPDATE deltas on the CRDT
+      // socket; canonical previews refresh on `content:committed`.
 
       // ── proposal:created ──
       if (event.type === "proposal:draft") {
@@ -284,12 +307,6 @@ export function useDocumentWebSocket({
         onProposalSectionAvailability?.(availability);
         return;
       }
-
-      // NOTE (Area P): the `proposal:injected_into_session` branch was removed.
-      // `ProposalInjectedIntoSessionEvent` is gone from `WsServerEvent` (sessions/
-      // overlay durability deleted, plan §D), so the event can never fire. The
-      // `onSectionsInjectedByProposal` option is retained for now; Area N owns
-      // any replacement injection/refresh signal wiring.
     });
     return () => {
       wsClient.unsubscribe(decodedDocPath);

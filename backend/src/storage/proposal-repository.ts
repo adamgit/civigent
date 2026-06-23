@@ -1,7 +1,11 @@
 import path from "node:path";
 import crypto from "node:crypto";
-import { readFile, writeFile, readdir, rename, mkdir } from "node:fs/promises";
+import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
+import { pathExists, readDirentsIfExists } from "./fs-primitives.js";
 import { SectionRef } from "../domain/section-ref.js";
+import { mintProposalManifest, type ProposalManifest } from "./proposal-manifest.js";
+import { parseJson, sectionsToTargets, TERMINAL_PROPOSAL_STATUSES } from "../types/shared.js";
+import { decodeProposal, decodeInProgressProposal, readLandedCommittedHead } from "./proposal-file-decoder.js";
 import {
   getProposalsDraftRoot,
   getProposalsPendingRoot,
@@ -22,6 +26,7 @@ import type {
   ProposalLockResult,
   ProposalSection,
   ProposalStatus,
+  ProposalTargetRef,
   HumanInvolvementCommittedProposalMetadata,
   WithdrawnProposalFile,
   WriterIdentity,
@@ -29,6 +34,22 @@ import type {
 
 export class ProposalNotFoundError extends Error {}
 export class InvalidProposalStateError extends Error {}
+
+/**
+ * A proposal claims a section in its `meta.json` manifest but that section's body
+ * cannot be read from the proposal content tree (corruption / stale metadata).
+ * Single-subject reads FAIL LOUD with this rather than silently dropping the
+ * section (claim-review 04: errors must always be surfaced, never coerced away).
+ */
+export class ProposalIntegrityError extends Error {
+  constructor(public readonly proposalId: ProposalId, public readonly sectionKey: string, cause?: unknown) {
+    super(
+      `Proposal ${proposalId} claims section "${sectionKey}" but its body is missing or unreadable in the proposal content tree` +
+      (cause instanceof Error ? `: ${cause.message}` : "") + ".",
+    );
+    this.name = "ProposalIntegrityError";
+  }
+}
 
 /**
  * Returns true if the proposal is in a state where its sections can be modified.
@@ -115,12 +136,48 @@ export async function locateProposalContentRoot(id: ProposalId): Promise<string>
   return proposalContentRoot(id, status);
 }
 
-async function readJsonFile(filePath: string): Promise<AnyProposalFile> {
+/**
+ * Read + decode a proposal `meta.json` into its domain object. The `status` is
+ * the directory-discovered lifecycle state (never read from JSON). Decoding is
+ * the trust boundary (see {@link decodeProposal}): a malformed/invalid file throws.
+ */
+async function readProposalFile(filePath: string, status: ProposalStatus): Promise<AnyProposal> {
   const content = await readFile(filePath, "utf8");
-  return JSON.parse(content) as AnyProposalFile;
+  return decodeProposal(parseJson(content), status);
 }
 
-async function writeJsonFile(filePath: string, data: AnyProposalFile): Promise<void> {
+/**
+ * Lifecycle states where a proposal's `targets` becomes the permanent,
+ * load-bearing lock/audit claim — the COMMIT boundary. The restored
+ * crash-on-corruption lives here: a proposal still carrying a `degraded` marker
+ * (a legacy file read leniently, whose `targets` were DERIVED from `sections`
+ * and are lossy in the dangerous direction — a document-level claim cannot be
+ * expressed as section claims) must NOT be baked into the permanent committed
+ * record. It has to be autofixed first (which re-derives + clears the marker).
+ *
+ * Note the guard is on `degraded`, NOT on empty `targets`: a zero-section
+ * document-level proposal legitimately has empty `targets` and is committable,
+ * and draft / pending / CRDT-`inprogress` proposals are legitimately empty
+ * containers while their content is assembled. Emptiness is not corruption; an
+ * un-repaired lossy derivation is.
+ */
+const COMMIT_BOUNDARY_STATUSES: ReadonlySet<ProposalStatus> = new Set<ProposalStatus>([
+  "committing",
+  "committed",
+]);
+
+async function writeJsonFile(
+  filePath: string,
+  data: AnyProposalFile,
+  status: ProposalStatus,
+): Promise<void> {
+  if (COMMIT_BOUNDARY_STATUSES.has(status) && data.degraded !== undefined && data.degraded.length > 0) {
+    throw new Error(
+      `Refusing to commit proposal ${data.id} to ${filePath}: it is degraded [${data.degraded.join(", ")}]. ` +
+        `A degraded proposal carries derived, possibly-lossy \`targets\` and must be autofixed ` +
+        `(re-deriving \`targets\` and clearing the marker) before it can be committed — never persisted as-is.`,
+    );
+  }
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, JSON.stringify(data, null, 2), "utf8");
 }
@@ -128,21 +185,21 @@ async function writeJsonFile(filePath: string, data: AnyProposalFile): Promise<v
 async function locateProposal(id: ProposalId): Promise<{ status: ProposalStatus; filePath: string }> {
   for (const status of ALL_STATUSES) {
     const filePath = proposalPath(status, id);
-    try {
-      await readFile(filePath, "utf8");
+    if (await pathExists(filePath)) {
       return { status, filePath };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        continue;
-      }
-      throw error;
     }
   }
   throw new ProposalNotFoundError(`Proposal not found: ${id}`);
 }
 
-function toProposal(file: AnyProposalFile, status: ProposalStatus): AnyProposal {
-  return { ...file, status } as AnyProposal;
+/**
+ * Project a decoded proposal domain object back to its on-disk file shape by
+ * dropping the directory-derived `status` (which is NEVER stored in `meta.json`).
+ * Returns a fresh object; the input is not mutated.
+ */
+function proposalToFile(proposal: AnyProposal): AnyProposalFile {
+  const { status: _status, ...file } = proposal;
+  return file;
 }
 
 function proposalCreatedAtTimestamp(proposal: AnyProposal): number {
@@ -175,11 +232,12 @@ export async function createProposal(
     writer,
     intent,
     sections: sections ?? [],
+    targets: sectionsToTargets(sections ?? []),
     created_at: now,
   };
   const contentRoot = proposalContentRoot(id, "draft");
   await mkdir(contentRoot, { recursive: true });
-  await writeJsonFile(proposalPath("draft", id), file);
+  await writeJsonFile(proposalPath("draft", id), file, "draft");
   if (writer.type === "agent") {
     const { agentEventLog } = await import("../mcp/agent-event-log.js");
     agentEventLog.append(writer, { kind: "proposal_created", proposalId: id });
@@ -206,28 +264,46 @@ export async function createTransientProposal(
     writer,
     intent,
     sections: sections ?? [],
+    targets: sectionsToTargets(sections ?? []),
     created_at: now,
   };
   const contentRoot = proposalContentRoot(id, "pending");
   await mkdir(contentRoot, { recursive: true });
-  await writeJsonFile(proposalPath("pending", id), file);
+  await writeJsonFile(proposalPath("pending", id), file, "pending");
   return { id, contentRoot };
 }
 
 export async function readProposal(id: ProposalId): Promise<AnyProposal> {
   for (const status of ALL_STATUSES) {
     const filePath = proposalPath(status, id);
-    try {
-      const file = await readJsonFile(filePath);
-      return toProposal(file, status);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        continue;
-      }
-      throw error;
-    }
+    // Absence in this status dir is a normal lookup miss; a present-but-corrupt
+    // meta.json must surface (decoding throws, not a silent miss).
+    if (!(await pathExists(filePath))) continue;
+    return readProposalFile(filePath, status);
   }
   throw new ProposalNotFoundError(`Proposal not found: ${id}`);
+}
+
+/**
+ * Persist an in-place metadata repair for an existing proposal, WITHOUT changing
+ * its lifecycle status (no directory rename). Used by the admin defect-autofix
+ * surface to write back a proposal whose derived `targets` were re-derived and
+ * whose `degraded` marker was cleared. The repair must keep the same status as
+ * the on-disk proposal (this is not a transition path). The write goes through
+ * {@link writeJsonFile}, so the commit-boundary degraded guard still applies — a
+ * repair that fails to clear the marker is rejected rather than persisted.
+ */
+export async function rewriteProposalMeta(id: ProposalId, repaired: AnyProposal): Promise<AnyProposal> {
+  const { status, filePath } = await locateProposal(id);
+  if (repaired.status !== status) {
+    throw new InvalidProposalStateError(
+      `Cannot rewrite proposal ${id} meta: repaired status is ${repaired.status}, but on disk it is ${status}. ` +
+        `In-place repair must not change lifecycle status.`,
+    );
+  }
+  await writeJsonFile(filePath, proposalToFile(repaired), status);
+  // Re-decode for the typed return (also round-trip-validates the written file).
+  return readProposalFile(filePath, status);
 }
 
 /**
@@ -239,8 +315,12 @@ export async function readProposal(id: ProposalId): Promise<AnyProposal> {
  * Routed through `ProposalReader` (effective proposal-content read path)
  * rather than reaching into the content store directly. The dynamic import
  * breaks the proposal-reader -> proposal-repository -> proposal-reader cycle.
- * Sections whose effective bodies are missing are silently omitted, matching
- * the previous `readSectionBatch` behavior.
+ *
+ * FAIL LOUD (claim-review 04): this is a SINGLE-SUBJECT read. A section the
+ * manifest claims whose body is missing/unreadable is CORRUPTION — it throws
+ * `ProposalIntegrityError` rather than silently dropping the section. Every
+ * claimed section therefore resolves (or the whole read fails), so callers can
+ * drop their `?? null` / `?? ""` coercions over a missing entry.
  */
 export async function readProposalWithContent(id: ProposalId): Promise<{ proposal: AnyProposal; sectionContent: Map<string, string> }> {
   const proposal = await readProposal(id);
@@ -255,7 +335,11 @@ export async function readProposalWithContent(id: ProposalId): Promise<{ proposa
       const body = await reader.readSection(ref.docPath, ref.headingPath);
       sectionContent.set(ref.globalKey, body);
     } catch (err) {
-      if (err instanceof SectionNotFoundError || err instanceof DocumentNotFoundError) continue;
+      if (err instanceof SectionNotFoundError || err instanceof DocumentNotFoundError) {
+        // A manifest-claimed section with no readable body is corruption — surface
+        // it, do NOT continue past it.
+        throw new ProposalIntegrityError(id, ref.globalKey, err);
+      }
       throw err;
     }
   }
@@ -267,26 +351,17 @@ export async function listProposalsByStatuses(statuses: readonly ProposalStatus[
   const proposals: AnyProposal[] = [];
 
   for (const currentStatus of statuses) {
-    let entries;
-    try {
-      entries = await readdir(statusDir(currentStatus), { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        continue;
-      }
-      throw error;
-    }
+    // An absent status directory means no proposals in that status.
+    const entries = await readDirentsIfExists(statusDir(currentStatus));
     for (const entry of entries) {
       if (!entry.isDirectory()) {
         continue;
       }
-      try {
-        const file = await readJsonFile(path.join(statusDir(currentStatus), entry.name, "meta.json"));
-        proposals.push(toProposal(file, currentStatus));
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw error;
-      }
+      // A proposal directory without a meta.json is skipped; a present-but-corrupt
+      // meta.json surfaces (decoding throws).
+      const metaPath = path.join(statusDir(currentStatus), entry.name, "meta.json");
+      if (!(await pathExists(metaPath))) continue;
+      proposals.push(await readProposalFile(metaPath, currentStatus));
     }
   }
 
@@ -300,6 +375,19 @@ export async function listAllProposals(): Promise<AnyProposal[]> {
 
 export async function listActiveProposals(): Promise<AnyProposal[]> {
   return listProposalsByStatuses(["draft", "inprogress", "committing"]);
+}
+
+/**
+ * The proposals an admin needs to tend to: those still carrying a `degraded`
+ * marker. Scans ONLY the degradable (non-terminal) statuses — a terminal
+ * proposal is never tagged degraded (see the decoder), and reading the full
+ * committed/withdrawn history just to filter it out would be a needless
+ * full-history decode. This is the focused query behind the home-page alert.
+ */
+export async function listDegradedProposals(): Promise<AnyProposal[]> {
+  const degradableStatuses = ALL_STATUSES.filter((s) => !TERMINAL_PROPOSAL_STATUSES.has(s));
+  const proposals = await listProposalsByStatuses(degradableStatuses);
+  return proposals.filter((p) => p.degraded !== undefined && p.degraded.length > 0);
 }
 
 export async function listDraftProposals(): Promise<AnyProposal[]> {
@@ -341,9 +429,62 @@ export interface UpdateProposalResult {
   contentRoot: string;
 }
 
+/**
+ * Replace a proposal's `sections` manifest. The manifest is BRAND-GATED: it can
+ * only be a `ProposalManifest` produced by the `mutateProposalContent(...)`
+ * boundary (or the explicit recovery escape hatch below), never a raw
+ * `ProposalSection[]` hand-built from request parameters (spec 12 §Proposal FSM
+ * locking — the manifest is the lock/policy/audit/event claim set and must be
+ * derived from the authoritative mutation result). See {@link ProposalManifest}.
+ */
 export async function updateProposalSections(
   id: ProposalId,
+  manifest: ProposalManifest,
+  intent?: string,
+): Promise<UpdateProposalResult> {
+  return writeProposalSectionsFile(id, manifest, intent);
+}
+
+/**
+ * Low-level escape hatch: replace a proposal's `sections` manifest from a RAW
+ * array, bypassing the `mutateProposalContent(...)` boundary. NARROWLY justified
+ * for recovery / bootstrap / CRDT-internal callers that legitimately own their
+ * own manifest derivation (e.g. restore's replay+deleted merge, the CRDT
+ * generator's live-edit manifest growth) and are not application/MCP request
+ * handlers. Application and MCP code MUST NOT call this — use
+ * `mutateProposalContent(...)` instead.
+ */
+export async function unsafeReplaceProposalManifestForRecoveryOnly(
+  id: ProposalId,
   sections: ProposalSection[],
+  intent?: string,
+  extraTargets: ProposalTargetRef[] = [],
+): Promise<UpdateProposalResult> {
+  return writeProposalSectionsFile(id, mintProposalManifest(sections, extraTargets), intent);
+}
+
+/**
+ * Declare a proposal's `sections` from a human/agent DRAFT RESERVATION request.
+ * This is the one legitimate caller-DECLARED manifest: a human reservation (spec
+ * 12 §Human reservations) explicitly selects the section scope it intends to edit
+ * (and which it will hold locks over), so the manifest IS the declaration, not a
+ * structural-mutation result. Distinct from the recovery hatch above and from the
+ * `mutateProposalContent(...)` boundary. The lock-scope invariant (no scope change
+ * while `inprogress`) is enforced by the caller before this is called. Application
+ * code may call ONLY this for the reservation-modify path — all structural content
+ * mutations MUST go through `mutateProposalContent(...)`.
+ */
+export async function declareReservedProposalSectionsFromRequest(
+  id: ProposalId,
+  sections: ProposalSection[],
+  intent?: string,
+): Promise<UpdateProposalResult> {
+  return writeProposalSectionsFile(id, mintProposalManifest(sections), intent);
+}
+
+async function writeProposalSectionsFile(
+  id: ProposalId,
+  manifest: ProposalManifest,
   intent?: string,
 ): Promise<UpdateProposalResult> {
   const { status, filePath } = await locateProposal(id);
@@ -352,14 +493,18 @@ export async function updateProposalSections(
       `Cannot update proposal ${id}: status is ${status}, expected draft, pending, or inprogress.`,
     );
   }
-  const file = await readJsonFile(filePath);
-  file.sections = sections;
-  if (intent !== undefined) {
-    file.intent = intent;
-  }
-  await writeJsonFile(filePath, file);
+  // Immutable update: build a fresh file object from the decoded current proposal.
+  const current = await readProposalFile(filePath, status);
+  const file: AnyProposalFile = {
+    ...proposalToFile(current),
+    sections: [...manifest.sections],
+    targets: [...manifest.targets],
+    ...(intent !== undefined ? { intent } : {}),
+  };
+  await writeJsonFile(filePath, file, status);
   const contentRoot = proposalContentRoot(id, status);
-  return { proposal: toProposal(file, status), contentRoot };
+  // Re-decode for the typed return (also round-trip-validates the written file).
+  return { proposal: await readProposalFile(filePath, status), contentRoot };
 }
 
 // ─── Lock acquisition (draft → inprogress) ────────────────────────
@@ -401,9 +546,15 @@ export async function transitionToInProgress(id: ProposalId): Promise<LockAcquis
       `Cannot transition proposal ${id} to inprogress: only human proposals may acquire locks.`,
     );
   }
-  if (proposal.sections.length === 0) {
+  if (proposal.targets.length === 0) {
     throw new InvalidProposalStateError(
-      `Cannot transition proposal ${id} to inprogress: select at least one section.`,
+      `Cannot transition proposal ${id} to inprogress: select at least one target.`,
+    );
+  }
+  if (proposal.degraded !== undefined && proposal.degraded.length > 0) {
+    throw new InvalidProposalStateError(
+      `Cannot transition proposal ${id} to inprogress: it is degraded [${proposal.degraded.join(", ")}] ` +
+        `and carries derived, possibly-lossy targets. Autofix it before it can acquire locks.`,
     );
   }
 
@@ -413,10 +564,7 @@ export async function transitionToInProgress(id: ProposalId): Promise<LockAcquis
 
   const lockResult = await checkProposalLocks({
     proposalId: id,
-    targets: proposal.sections.map((section) => ({
-      doc_path: section.doc_path,
-      heading_path: section.heading_path,
-    })),
+    targets: proposal.targets,
   });
 
   if (!lockResult.acquired) {
@@ -424,16 +572,12 @@ export async function transitionToInProgress(id: ProposalId): Promise<LockAcquis
     return { ...lockResult };
   }
 
-  // All checks passed — write enriched meta.json then atomic rename
-  const now = new Date().toISOString();
+  // All checks passed — write meta.json then atomic rename. `targets` is the
+  // authoritative claim set; no separate lock mirror is stored.
   const { status: _s, ...rest } = proposal;
-  const file: InProgressProposalFile = {
-    ...rest,
-    locked_sections: proposal.sections,
-    locked_at: now,
-  };
+  const file: InProgressProposalFile = { ...rest };
 
-  await writeJsonFile(proposalPath("draft", id), file);
+  await writeJsonFile(proposalPath("draft", id), file, "draft");
 
   const fromDir = proposalDir("draft", id);
   const toDir = proposalDir("inprogress", id);
@@ -463,6 +607,38 @@ export async function transitionToCommitting(id: ProposalId): Promise<AnyProposa
     );
   }
 
+  // Quarantine gate: a degraded proposal (legacy file whose `targets` were
+  // derived from `sections` and are lossy in the dangerous direction) must be
+  // autofixed before commit, never baked into the permanent committed record.
+  // EVERY commit passes through here, so this is the single domain-level refusal
+  // (the storage write boundary backstops it). Mirrors the empty-targets /
+  // degraded refusal in {@link transitionToInProgress}.
+  if (proposal.degraded !== undefined && proposal.degraded.length > 0) {
+    throw new InvalidProposalStateError(
+      `Cannot transition proposal ${id} to committing: it is degraded [${proposal.degraded.join(", ")}] ` +
+        `and carries derived, possibly-lossy targets. Autofix it before it can be committed.`,
+    );
+  }
+
+  // MANDATORY exclusive-claim gate (spec 12 §Transition Semantics): EVERY commit
+  // passes through here — agent/human/CRDT/restore/overwrite/import/structural
+  // alike. Before claiming `committing`, assert no OTHER proposal holds an
+  // exclusive lock (`inprogress`/`committing`) on this proposal's full target set.
+  // There is no bypass / forced-operation flag: a forced flow must stage a
+  // complete manifest and pass this same gate. Self-exclusion (excludeProposalId)
+  // lets a proposal's own `inprogress`/`pending` claim progress to `committing`
+  // without blocking itself. On conflict this throws `ProposalLockConflictError`
+  // (carrying the full conflict result) BEFORE any directory rename, so the
+  // proposal is left untouched in its source status.
+  //
+  // Dynamic import avoids the circular dependency
+  // (proposal-fsm-locks → proposal-fsm-lock-index → proposal-repository).
+  const { assertProposalLocksAvailable } = await import("../domain/proposal-fsm-locks.js");
+  await assertProposalLocksAvailable({
+    proposalId: id,
+    targets: proposal.targets,
+  });
+
   const fromDir = proposalDir(proposal.status, id);
   const toDir = proposalDir("committing", id);
   await mkdir(statusDir("committing"), { recursive: true });
@@ -488,7 +664,7 @@ export async function transitionToCommitted(
   // If crash happens after rename: proposal is in "committed" with correct meta.
   const { status: _s, ...rest } = proposal;
   const file: CommittedProposalFile = { ...rest, committed_head: committedHead, humanInvolvement_at_commit: committedMetadata };
-  await writeJsonFile(proposalPath("committing", id), file);
+  await writeJsonFile(proposalPath("committing", id), file, "committing");
 
   // Atomic directory rename
   const fromDir = proposalDir("committing", id);
@@ -496,7 +672,7 @@ export async function transitionToCommitted(
   await mkdir(statusDir("committed"), { recursive: true });
   await rename(fromDir, toDir);
 
-  return toProposal(file, "committed");
+  return { ...file, status: "committed" };
 }
 
 /**
@@ -518,18 +694,15 @@ export async function transitionToCommitted(
  */
 export async function finalizeCommittingProposal(id: ProposalId): Promise<AnyProposal | null> {
   const filePath = proposalPath("committing", id);
-  let file: AnyProposalFile;
-  try {
-    file = await readJsonFile(filePath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new ProposalNotFoundError(`Committing proposal not found: ${id}`);
-    }
-    throw error;
+  if (!(await pathExists(filePath))) {
+    throw new ProposalNotFoundError(`Committing proposal not found: ${id}`);
   }
+  const json = parseJson(await readFile(filePath, "utf8"));
 
-  const committedHead = (file as Partial<CommittedProposalFile>).committed_head;
-  if (typeof committedHead !== "string" || committedHead.length === 0) {
+  // Recovery-only local check: was the canonical commit already landed (the
+  // crash-before-rename case)? This check does not pollute the normal domain type.
+  const committedHead = readLandedCommittedHead(json);
+  if (committedHead === null) {
     return null;
   }
 
@@ -538,7 +711,9 @@ export async function finalizeCommittingProposal(id: ProposalId): Promise<AnyPro
   await mkdir(statusDir("committed"), { recursive: true });
   await rename(fromDir, toDir);
 
-  return toProposal(file, "committed");
+  // The committing file already carries the full committed metadata (written
+  // before the rename), so it decodes cleanly as a committed proposal.
+  return decodeProposal(json, "committed");
 }
 
 export async function transitionToWithdrawn(
@@ -555,7 +730,7 @@ export async function transitionToWithdrawn(
   // Write enriched meta.json BEFORE rename so the rename is the single atomic commit point.
   const { status: _s, ...rest } = proposal;
   const file: WithdrawnProposalFile = { ...rest, withdrawal_reason: reason };
-  await writeJsonFile(proposalPath(proposal.status, id), file);
+  await writeJsonFile(proposalPath(proposal.status, id), file, proposal.status);
 
   // Atomic directory rename
   const fromDir = proposalDir(proposal.status, id);
@@ -567,7 +742,7 @@ export async function transitionToWithdrawn(
     const { agentEventLog } = await import("../mcp/agent-event-log.js");
     agentEventLog.append(proposal.writer, { kind: "proposal_withdrawn", proposalId: id });
   }
-  return toProposal(file, "withdrawn");
+  return { ...file, status: "withdrawn" };
 }
 
 /**
@@ -613,16 +788,16 @@ export async function rollbackCommittingToInProgress(id: ProposalId): Promise<In
       `Cannot rollback proposal ${id}: status is ${status}, expected committing.`,
     );
   }
-  // The committing meta.json was carried unchanged from inprogress and still
-  // holds the lock fields; restore the inprogress projection from disk.
-  const file = (await readJsonFile(filePath)) as InProgressProposalFile;
+  // The committing meta.json was carried unchanged from inprogress; restore the
+  // inprogress projection from disk (committing/inprogress share the base shape).
+  const json = parseJson(await readFile(filePath, "utf8"));
 
   const fromDir = proposalDir("committing", id);
   const toDir = proposalDir("inprogress", id);
   await mkdir(statusDir("inprogress"), { recursive: true });
   await rename(fromDir, toDir);
 
-  return { ...file, status: "inprogress" };
+  return decodeInProgressProposal(json);
 }
 
 /**
@@ -670,7 +845,7 @@ export async function findInProgressProposalForDocSession(
   const match = inProgress.find(
     (proposal) => proposal.docSessionId === docSessionId,
   );
-  return (match as InProgressProposal | undefined) ?? null;
+  return match !== undefined && match.status === "inprogress" ? match : null;
 }
 
 /**
@@ -696,10 +871,11 @@ export async function listInProgressProposalsForDoc(
 ): Promise<InProgressProposal[]> {
   const inProgress = await listInProgressProposals();
   return inProgress.filter(
-    (proposal) =>
-      proposal.docSessionId !== undefined
+    (proposal): proposal is InProgressProposal =>
+      proposal.status === "inprogress"
+      && proposal.docSessionId !== undefined
       && proposal.sections.some((section) => section.doc_path === docPath),
-  ) as InProgressProposal[];
+  );
 }
 
 /**
@@ -729,29 +905,29 @@ export async function getOrCreateInProgressProposalForDocSession(input: {
   const id = generateProposalId();
   const now = new Date().toISOString();
   const sections = input.sections ?? [];
+  const targets = sectionsToTargets(sections);
   const file: InProgressProposalFile = {
     id,
     writer: input.writer,
     intent: input.intent ?? "",
     sections,
+    targets,
     created_at: now,
     docSessionId: input.docSessionId,
-    locked_sections: sections,
-    locked_at: now,
   };
 
   const contentRoot = proposalContentRoot(id, "inprogress");
   await mkdir(contentRoot, { recursive: true });
-  await writeJsonFile(proposalPath("inprogress", id), file);
+  await writeJsonFile(proposalPath("inprogress", id), file, "inprogress");
 
   return { id, contentRoot, proposal: { ...file, status: "inprogress" } };
 }
 
 /**
- * Update the section manifest (and lock-section mirror) of a CRDT-owned
- * `inprogress` proposal as its live content tree grows. Distinct from
- * {@link updateProposalSections}: it keeps `locked_sections` in sync with
- * `sections` for a DocSession-owned `inprogress` proposal.
+ * Update the section manifest of a CRDT-owned `inprogress` proposal as its live
+ * content tree grows. Distinct from {@link updateProposalSections}: it keeps
+ * `targets` in sync with `sections` for a DocSession-owned `inprogress` proposal
+ * (live editing is section-only, so the claim set is the section targets).
  */
 export async function updateCurrentProposalSections(
   id: ProposalId,
@@ -764,12 +940,19 @@ export async function updateCurrentProposalSections(
       `Cannot update current-proposal sections for ${id}: status is ${status}, expected inprogress.`,
     );
   }
-  const file = (await readJsonFile(filePath)) as InProgressProposalFile;
-  file.sections = sections;
-  file.locked_sections = sections;
-  if (intent !== undefined) file.intent = intent;
-  await writeJsonFile(filePath, file);
-  return { ...file, status: "inprogress" };
+  const current = await readProposalFile(filePath, "inprogress");
+  if (current.status !== "inprogress") {
+    throw new InvalidProposalStateError(`Proposal ${id} is not inprogress as located.`);
+  }
+  // Immutable update: fresh object, no mutation of the decoded input.
+  const updated: InProgressProposal = {
+    ...current,
+    sections,
+    targets: sectionsToTargets(sections),
+    ...(intent !== undefined ? { intent } : {}),
+  };
+  await writeJsonFile(filePath, proposalToFile(updated), status);
+  return updated;
 }
 
 /**
@@ -779,8 +962,8 @@ export async function updateCurrentProposalSections(
  * by section global key. This keeps the live proposal's lock claim covering only
  * what has actually been edited this session — NOT the whole document — restoring
  * the section-by-section contention model (a one-section edit must not lock every
- * section against agents). `locked_sections` is kept identical to `sections` (the
- * `sections` field is the authoritative lock-claim set; see assumptions.md C4).
+ * section against agents). `targets` is kept identical to the section targets of
+ * `sections` (live editing is section-only; see assumptions.md C4).
  */
 export async function unionCurrentProposalSections(
   id: ProposalId,
@@ -793,7 +976,10 @@ export async function unionCurrentProposalSections(
       `Cannot union current-proposal sections for ${id}: status is ${status}, expected inprogress.`,
     );
   }
-  const file = (await readJsonFile(filePath)) as InProgressProposalFile;
+  const current = await readProposalFile(filePath, "inprogress");
+  if (current.status !== "inprogress") {
+    throw new InvalidProposalStateError(`Proposal ${id} is not inprogress as located.`);
+  }
 
   // Add wins over remove: a section that is both written and removed in the same
   // delta (e.g. a split whose parent is restructured but survives) stays claimed.
@@ -805,15 +991,19 @@ export async function unionCurrentProposalSections(
   );
   const merged: ProposalSection[] = [];
   const seen = new Set<string>();
-  for (const section of [...file.sections, ...addSections]) {
+  for (const section of [...current.sections, ...addSections]) {
     const key = SectionRef.fromTarget(section).globalKey;
     if (removeKeys.has(key) || seen.has(key)) continue;
     seen.add(key);
     merged.push(section);
   }
 
-  file.sections = merged;
-  file.locked_sections = merged;
-  await writeJsonFile(filePath, file);
-  return { ...file, status: "inprogress" };
+  // Immutable update: fresh object, no mutation of the decoded input.
+  const updated: InProgressProposal = {
+    ...current,
+    sections: merged,
+    targets: sectionsToTargets(merged),
+  };
+  await writeJsonFile(filePath, proposalToFile(updated), status);
+  return updated;
 }

@@ -4,7 +4,7 @@
  * After item 191 the class no longer holds long-lived writable
  * `DocumentSkeletonInternal` instances across calls. Every method that
  * needs a writable skeleton fresh-loads via `mutableFromDisk(...)` and
- * every state read goes straight to disk via `readOverlayDocumentState(...)`.
+ * every state read goes straight to disk via `getDocumentState(...)`.
  *
  * These tests pin five behaviors that the previous cached model could
  * mask or actively break:

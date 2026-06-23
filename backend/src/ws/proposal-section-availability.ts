@@ -1,7 +1,10 @@
 import type {
+  ProposalLockConflict,
   ProposalSectionAvailabilityEntry,
   ProposalSectionAvailabilityEvent,
+  ProposalSectionTargetRef,
 } from "../types/shared.js";
+import { asSectionTarget } from "../types/shared.js";
 import {
   listDraftProposals,
   listInProgressProposals,
@@ -38,17 +41,21 @@ export async function buildProposalSectionAvailabilityEvent(
 
   const lockResult = await checkProposalLocks({
     proposalId: proposal.id,
-    targets: scopedSections.map((section) => ({
-      doc_path: section.doc_path,
-      heading_path: section.heading_path,
-    })),
+    targets: scopedSections.map((section) => asSectionTarget(section)),
   });
 
+  // Conflicts are the queried section targets (this human proposal scopes only
+  // sections); key each by its section global key for the per-section payload.
   const conflictByGlobalKey = new Map(
-    lockResult.conflicts.map((conflict) => [
-      SectionRef.fromTarget(conflict.target).globalKey,
-      conflict,
-    ]),
+    lockResult.conflicts
+      .filter(
+        (conflict): conflict is ProposalLockConflict & { target: ProposalSectionTargetRef } =>
+          conflict.target.kind === "section",
+      )
+      .map((conflict) => [
+        new SectionRef(conflict.target.doc_path, conflict.target.heading_path).globalKey,
+        conflict,
+      ]),
   );
 
   const payloadSections: ProposalSectionAvailabilityEntry[] = scopedSections.map((section) => {

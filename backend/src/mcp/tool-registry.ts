@@ -10,6 +10,7 @@ import type { McpToolDefinition, McpToolCallResult } from "./protocol.js";
 import { makeToolResult, makeToolErrorResult } from "./protocol.js";
 import type { AuthenticatedWriter } from "../auth/context.js";
 import type { WsServerEvent } from "../types/shared.js";
+import { ProposalLockConflictError } from "../domain/proposal-fsm-locks.js";
 
 // ─── Tool handler context ────────────────────────────────
 
@@ -119,6 +120,13 @@ export class ToolRegistry {
       }
       return result;
     } catch (error) {
+      // A commit-boundary FSM lock conflict (spec 12) is an expected agent-facing
+      // CONFLICT, not a fault: surface the top-level prose `message` and the full
+      // structured `lock_conflicts[]` (each with its own prose) via the Area M
+      // blocked shaper — never a bare code, never just a stack.
+      if (error instanceof ProposalLockConflictError) {
+        return jsonBlockedToolResult(error.result.message, { lock_conflicts: error.result.conflicts });
+      }
       // Per CLAUDE.md: never hide errors — expose full stack trace
       const message = error instanceof Error
         ? error.stack ?? error.message

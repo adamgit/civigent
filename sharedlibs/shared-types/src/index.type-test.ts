@@ -35,8 +35,9 @@ import type {
   HumanInvolvementCommittedProposalMetadata,
 } from "./index.js";
 
-// ── Shared sample target ──────────────────────────────────────────
-const target: ProposalTargetRef = { doc_path: "doc.md", heading_path: ["A", "B"] };
+// ── Shared sample targets ─────────────────────────────────────────
+const target: ProposalTargetRef = { kind: "section", doc_path: "doc.md", heading_path: ["A", "B"] };
+const docTarget: ProposalTargetRef = { kind: "document", doc_path: "doc.md" };
 
 // ── Agent write policy: human-involvement compatibility instantiation ──
 const hiTargetDetails: HumanInvolvementTargetDetails = {
@@ -115,6 +116,7 @@ const draftDto: DraftProposalDTO = {
   writer: { id: "u1", type: "human", displayName: "Alice" },
   intent: "edit",
   sections: [{ doc_path: "doc.md", heading_path: ["A"] }],
+  targets: [{ kind: "section", doc_path: "doc.md", heading_path: ["A"] }],
   created_at: "2026-01-01T00:00:00Z",
   agentWritePolicy: hiResult,
   lockEvaluation: lockResult,
@@ -126,9 +128,8 @@ const inProgressDto: InProgressProposalDTO = {
   writer: { id: "u1", type: "human", displayName: "Alice" },
   intent: "edit",
   sections: [{ doc_path: "doc.md", heading_path: ["A"] }],
+  targets: [{ kind: "section", doc_path: "doc.md", heading_path: ["A"] }, docTarget],
   created_at: "2026-01-01T00:00:00Z",
-  locked_sections: [{ doc_path: "doc.md", heading_path: ["A"] }],
-  locked_at: "2026-01-01T00:00:00Z",
   agentWritePolicy: hiResult,
 };
 

@@ -7,6 +7,8 @@ import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
 import { rememberRecentDoc } from "../services/recent-docs";
 import { ProposalPanel } from "../components/ProposalPanel";
 import { DocumentTopbar } from "../components/DocumentTopbar";
+import { useDocumentActivity } from "../hooks/useDocumentActivity";
+import { DocumentActivityIndicator } from "../components/DocumentActivityIndicator";
 import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
 import { DocumentSectionRenderer } from "../components/DocumentSectionRenderer";
 import { DocumentFooter } from "../components/DocumentFooter";
@@ -32,13 +34,21 @@ import {
 } from "./document-page-utils";
 import { useDocumentSessionController } from "../hooks/useDocumentSessionController";
 import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
+import { useInitialObserverGuard } from "../hooks/useInitialObserverGuard";
 import { useGovernanceData } from "../hooks/useGovernanceData";
 import { useBlameData } from "../hooks/useBlameData";
+import { buildSectionAuthorshipTargets } from "../models/section-authorship-model";
 import { GovernanceLeftGutter } from "../components/GovernanceLeftGutter";
 import { GovernanceRightGutter } from "../components/GovernanceRightGutter";
 import { AttributionOverlay } from "../components/AttributionOverlay";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
 import { usePublishPaused, useSectionEditabilityMap } from "../hooks/useFragmentStoreHooks";
+import { useDocSaveStatusInputs } from "../hooks/useDocSaveStatusInputs";
+import {
+  EphemeralSessionAuthorshipLedger,
+  type LocalEditOriginSink,
+  type SessionAuthorshipView,
+} from "../status/sessionAuthorship";
 import "../governance-gutters.css";
 
 // ─── Component ───────────────────────────────────────────────────
@@ -105,7 +115,6 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   const {
     focusedSectionIndex,
     setFocusedSectionIndex,
-    crdtProvider,
     store,
     storeRef,
     transport,
@@ -130,7 +139,8 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     proposalSectionConflicts,
     proposalOverlayVersion,
     controllerState,
-    crdtProviderRef,
+    transportRef,
+    presenceRef,
     controllerStateRef,
     mountedEditorFragmentKeysRef,
     editorRefs,
@@ -152,7 +162,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     handleProposalSectionChange,
     handleCursorExit,
     setEditorRef,
-    setViewingSections,
+    setViewingSection,
     requestMode,
     stopObserver,
   } = useDocumentSessionController({
@@ -230,7 +240,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     decodedDocPath,
     sectionsRef,
     setSections,
-    crdtProviderRef,
+    transportRef,
     focusedSectionIndexRef,
     mountedEditorFragmentKeysRef,
     pendingStructureRefocusRef,
@@ -249,10 +259,10 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
 
   // ── Cross-section drag/drop service ──────────────────────
   const transferServiceRef = useRef<SectionTransferService | null>(null);
-  const activeCrdtProvider = crdtProviderRef.current;
-  if (activeCrdtProvider && !transferServiceRef.current) {
+  const activeTransport = transportRef.current;
+  if (activeTransport && !transferServiceRef.current) {
     transferServiceRef.current = new SectionTransferService({
-      crdtProvider: activeCrdtProvider,
+      transport: activeTransport,
       getSections: () => sectionsRef.current.map(s => ({
         heading_path: s.heading_path,
         fragment_key: getSectionFragmentKey(s),
@@ -264,7 +274,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
       })),
     });
   }
-  if (!activeCrdtProvider) transferServiceRef.current = null;
+  if (!activeTransport) transferServiceRef.current = null;
 
   const { dragOverSectionIndex } = useSectionDragDrop({
     containerRef: sectionsContainerRef,
@@ -319,20 +329,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     return () => clearTimeout(timer);
   }, [sectionsLoading]);
 
-  useEffect(() => {
-    if (!decodedDocPath) return;
-    let cancelled = false;
-    loadSections(decodedDocPath).then(() => {
-      if (cancelled) return;
-      // Start observer unless the user clicked into edit mode while sections were loading.
-      // Read via ref so this async callback doesn't need controllerState in the dep array.
-      if (controllerStateRef.current.requestedMode !== "editor") requestMode("observer");
-    });
-    return () => {
-      cancelled = true;
-      stopObserver();
-    };
-  }, [decodedDocPath, loadSections, requestMode, stopObserver, controllerStateRef]);
+  useInitialObserverGuard({ decodedDocPath, loadSections, requestMode, stopObserver, controllerStateRef });
 
   // ── Load changes-since (recently changed sections) ───────
   useEffect(() => {
@@ -372,9 +369,20 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   const docTitle = decodedDocPath ? getDocDisplayName(decodedDocPath) : "Untitled";
 
   // Document-level publication-pause flag — drives the topbar status and the
-  // editing banner. The per-section receipt save-state machine is removed
-  // (spec 05 §"Content Flush" / §"Section-Level Persistence Status Indicators").
+  // editing banner.
   const publishPaused = usePublishPaused(store);
+  // One session-authorship ledger per editing mount (see DocumentPage): dies on
+  // unmount/refresh so stranded work reads as inbound. Handed down only as the
+  // two segregated ports.
+  const authorshipLedger = useMemo(() => new EphemeralSessionAuthorshipLedger(), []);
+  const localEditSink: LocalEditOriginSink = authorshipLedger;
+  const authorshipView: SessionAuthorshipView = authorshipLedger;
+  // Honest save-status inputs with YOUR work split from inbound/remote activity
+  // (shared with DocumentPage via the same hook).
+  const saveStatus = useDocSaveStatusInputs(store, isEditing, authorshipView);
+  // Presentation-only activity pill: "Saving… → Saved" (local) or
+  // "Updating… → Up to date" (inbound), same as DocumentPage.
+  const documentActivity = useDocumentActivity(publishPaused, saveStatus.hasLocalEdits);
   // Per-section CRDT block-state (spec 05 §"Section block-state events").
   const editabilityMap = useSectionEditabilityMap(store);
 
@@ -383,20 +391,24 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
 
   // ── Attribution overlay (blame) ──────────────────────────
   const [showAttribution, setShowAttribution] = useState(false);
-  const sectionFiles = useMemo(() => sections.map((s) => s.section_file), [sections]);
-  // Word-count fingerprint so blame re-fetches when content changes (e.g. after restore)
-  const contentFingerprint = useMemo(() => sections.map((s) => s.word_count).join(","), [sections]);
-  const blameMap = useBlameData(decodedDocPath ?? "", sectionFiles, showAttribution && !sectionsLoading, contentFingerprint);
+  const authorshipTargets = useMemo(
+    () => buildSectionAuthorshipTargets(renderSections),
+    [renderSections],
+  );
+  const blameMap = useBlameData(
+    decodedDocPath ?? "",
+    authorshipTargets,
+    showAttribution && !sectionsLoading,
+  );
 
   // ── B3: Stable section callbacks (extracted from sections.map) ───
   const handleFocusSection = useCallback((idx: number, _headingPath: string[], coords: { x: number; y: number }) => {
     setFocusedSectionIndex(idx);
     pendingFocusRef.current = { index: idx, position: "start", coords };
-    const provider = crdtProviderRef.current;
-    if (provider) {
-      setViewingSections(provider, idx);
+    if (presenceRef.current) {
+      setViewingSection(idx);
     }
-  }, [setFocusedSectionIndex, setViewingSections, crdtProviderRef, pendingFocusRef]);
+  }, [setFocusedSectionIndex, setViewingSection, presenceRef, pendingFocusRef]);
 
   const handleEditorReady = useCallback((idx: number) => {
     setReadyEditors(prev => {
@@ -458,6 +470,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
 
   return (
     <SectionHoverProvider activeSectionIndex={focusedSectionIndex}>
+    <DocumentActivityIndicator activity={documentActivity} />
     <div className="flex flex-col h-full">
       <DocumentTopbar
         docPath={decodedDocPath}
@@ -470,6 +483,10 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
         crdtState={crdtState}
         publishPaused={publishPaused}
         isEditing={isEditing}
+        allReceived={saveStatus.allReceived}
+        hasLocalUncommittedEdits={saveStatus.hasLocalUncommittedEdits}
+        hasInboundActivity={saveStatus.hasInboundActivity}
+        hadLocalEdits={saveStatus.hadLocalEdits}
       />
 
       {/* Document-level connection banner */}
@@ -594,22 +611,24 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
               // gone → unmounted/removed from the canvas entirely.
               if (crdtGone) return null;
 
-              const blameEntry = showAttribution ? blameMap.get(section.section_file) : undefined;
-              const attributionReady = showAttribution && blameEntry && !blameEntry.loading;
+              const authorshipTarget = showAttribution ? authorshipTargets[i] : undefined;
+              const blameEntry = authorshipTarget ? blameMap.get(authorshipTarget.key) : undefined;
+              const attributionReady = showAttribution && authorshipTarget && blameEntry && !blameEntry.loading;
+              const attributionLoading = showAttribution && authorshipTarget && (!blameEntry || blameEntry.loading);
 
               if (attributionReady) {
                 // Attribution mode: render colored source lines INSTEAD OF the section renderer
                 return (
                   <div key={fk}>
-                    {section.heading_path.length > 0 ? (
+                    {authorshipTarget.heading ? (
                       <h2 className="font-[family-name:var(--font-body)] text-lg font-semibold text-text-primary mt-6 mb-2">
-                        {section.heading_path[section.heading_path.length - 1]}
+                        {authorshipTarget.heading}
                       </h2>
                     ) : null}
                     <AttributionOverlay
                       lines={blameEntry.lines}
                       loading={false}
-                      content={section.content}
+                      content={authorshipTarget.bodyContent}
                       error={blameEntry.error}
                     />
                   </div>
@@ -618,7 +637,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
 
               return (
                 <div key={fk}>
-                  {showAttribution && blameEntry?.loading ? (
+                  {attributionLoading ? (
                     <AttributionOverlay lines={null} loading={true} content="" />
                   ) : null}
                   {!showAttribution ? (
@@ -650,6 +669,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       canEditProposalContent={activeProposalStatus === "inprogress"}
                       proposalScopeMutationInFlight={proposalScopeMutationInFlight}
                       isReady={readyEditors.has(i)}
+                      localEditSink={localEditSink}
                       mouseDownPosRef={mouseDownPosRef}
                       onStartEditing={startEditing}
                       onFocusSection={handleFocusSection}

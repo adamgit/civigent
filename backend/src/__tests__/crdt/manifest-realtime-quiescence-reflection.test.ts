@@ -1,0 +1,280 @@
+/**
+ * Real-time proposal-manifest reflection for quiescence structural reflections.
+ *
+ * The `inprogress` proposal's section MANIFEST (the `(doc_path, heading_path)`
+ * set it CLAIMS / locks, stored as `proposal.sections`) is grown per-edit by
+ * `growProposalManifest` (UNION of the section identities the materialize wrote)
+ * and replaced wholesale at publish by `replaceProposalManifest`.
+ *
+ * The quiescence structural reflections — `reflectSplitIntoProposal`,
+ * `reflectMergeIntoProposal`, `reflectHeadingEditIntoProposal` — mutate proposal
+ * CONTENT (promote / fold / rename a section) but do NOT touch the manifest, so a
+ * promoted / merged / renamed section's CLAIM only reconciles at publish (or a
+ * later per-edit materialize that happens to touch it). These tests pin the hole:
+ * with publish DEFERRED (an editor socket is attached so the settled-dirty-frontier
+ * publish runs the off-lane pause and does NOT commit inline + replace the
+ * manifest), the manifest must already reflect the structural reflection AT
+ * QUIESCENCE — not only at publish.
+ *
+ * EXPECTED TO FAIL on today's code (the reflections do not update the manifest);
+ * pass once the real-time manifest add/remove lands in each reflection.
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { markdownToJSON } from "@ks/milkdown-serializer";
+import { updateYFragment } from "y-prosemirror";
+import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
+import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
+import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
+import {
+  armQuiescenceTimer,
+  registerFakeEditorSocketForTest,
+  setCrdtEventHandler,
+} from "../../ws/crdt-ws-coordinator.js";
+import { BEFORE_FIRST_HEADING_KEY, getBackendSchema } from "../../crdt/ydoc-fragments.js";
+import { buildFragmentContent } from "../../storage/section-formatting.js";
+import type { FragmentContent, SectionBody } from "../../storage/section-formatting.js";
+import { getHeadSha } from "../../storage/git-repo.js";
+import { getDataRoot } from "../../storage/data-root.js";
+import {
+  readProposal,
+  getOrCreateInProgressProposalForDocSession,
+  updateCurrentProposalSections,
+} from "../../storage/proposal-repository.js";
+import { ProposalReader } from "../../storage/proposal-reader.js";
+import { ProposalEditor } from "../../storage/proposal-editor.js";
+import { reflectMergeIntoProposal } from "../../crdt/structural-appliers.js";
+import type { StructuralMergePlan } from "../../crdt/structural-appliers.js";
+import type { DocSessionId } from "../../types/shared.js";
+import { SectionRef } from "../../domain/section-ref.js";
+
+const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
+const OVERVIEW_KEY = "section::overview";
+const TIMELINE_KEY = "section::timeline";
+
+async function openSession(): Promise<DocSession> {
+  const baseHead = await getHeadSha(getDataRoot());
+  return acquireDocSession(SAMPLE_DOC_PATH, WRITER.id, baseHead, WRITER, "sock-1");
+}
+
+/** Advance fake timers past the quiescence threshold and drain the actor lane. */
+async function fireQuiescence(session: DocSession): Promise<void> {
+  armQuiescenceTimer(session);
+  await vi.advanceTimersByTimeAsync(session.generator.publishTriggerPolicy.quiescenceThresholdMs + 50);
+  await session.enqueue(() => undefined);
+}
+
+/** Edit a heading-bearing fragment via the identity-preserving minimal diff. */
+function setFragmentViaMinimalDiff(session: DocSession, key: string, markdown: string): void {
+  const frag = session.ydoc.getXmlFragment(key);
+  const target = getBackendSchema().nodeFromJSON(markdownToJSON(markdown));
+  session.ydoc.transact(() => updateYFragment(session.ydoc, frag, target, { mapping: new Map(), isOMark: new Map() }));
+}
+
+/** The set of heading-keys the `inprogress` proposal currently CLAIMS (manifest). */
+async function claimedHeadingKeys(proposalId: string): Promise<string[]> {
+  const proposal = await readProposal(proposalId);
+  return proposal.sections.map((s) => SectionRef.headingKey(s.heading_path));
+}
+
+describe("real-time proposal-manifest reflection at quiescence (publish deferred)", () => {
+  let ctx: TempDataRootContext;
+
+  beforeEach(async () => {
+    ctx = await createTempDataRoot();
+    await createSampleDocument(ctx.rootDir);
+    setCrdtEventHandler(() => {});
+  });
+
+  afterEach(async () => {
+    destroyAllSessions();
+    vi.useRealTimers();
+    await ctx.cleanup();
+  });
+
+  it("SPLIT (section): claims the promoted embedded heading at quiescence, not only at publish", async () => {
+    vi.useFakeTimers();
+    const session = await openSession();
+    // Attach an editor socket: the settled-frontier publish then runs the off-lane
+    // pause (awaiting an ack that never arrives) and never finalizes inline, so the
+    // manifest is NOT replaced wholesale — we observe the per-edit + reflection state.
+    const editor = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "editor-sock");
+    try {
+      // Author types an embedded `### Sub` heading into the Overview body.
+      session.liveFragments.replaceFragmentString(
+        OVERVIEW_KEY,
+        "## Overview\n\nbase overview body\n\n### Sub\n\nbrand new sub body" as FragmentContent,
+      );
+      session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
+      const proposalId = await session.generator.materializeEdit({ touchedFragmentKeys: [OVERVIEW_KEY] });
+
+      await fireQuiescence(session);
+
+      // The reflection ran: proposal CONTENT now carries the promoted section.
+      const reader = ProposalReader.open(proposalId, "inprogress");
+      const headingPaths = await reader.listHeadingPaths(SAMPLE_DOC_PATH);
+      expect(headingPaths.some((p) => SectionRef.headingKey(p) === SectionRef.headingKey(["Overview", "Sub"]))).toBe(true);
+
+      // The MANIFEST must claim the promoted section in real time (the hole).
+      const claimed = await claimedHeadingKeys(proposalId);
+      expect(claimed).toContain(SectionRef.headingKey(["Overview", "Sub"]));
+    } finally {
+      editor.dispose();
+    }
+  });
+
+  it("SPLIT (BFH root-split): claims the promoted root heading at quiescence", async () => {
+    vi.useFakeTimers();
+    const session = await openSession();
+    const editor = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "editor-sock");
+    try {
+      // Author types a `## h3 added` heading into the before-first-heading body.
+      const bfhWithHeading = [
+        "This is the strategy document preamble.",
+        "",
+        "## h3 added",
+        "",
+        "promoted body",
+      ].join("\n");
+      session.liveFragments.replaceFragmentString(
+        BEFORE_FIRST_HEADING_KEY,
+        buildFragmentContent(bfhWithHeading as SectionBody, 0, ""),
+      );
+      session.fragmentLastActivity.set(BEFORE_FIRST_HEADING_KEY, Date.now());
+      const proposalId = await session.generator.materializeEdit({ touchedFragmentKeys: [BEFORE_FIRST_HEADING_KEY] });
+
+      await fireQuiescence(session);
+
+      // The reflection ran: the root-split promoted `h3 added` into a real section.
+      const reader = ProposalReader.open(proposalId, "inprogress");
+      const headingPaths = await reader.listHeadingPaths(SAMPLE_DOC_PATH);
+      expect(headingPaths.some((p) => SectionRef.headingKey(p) === SectionRef.headingKey(["h3 added"]))).toBe(true);
+
+      // The MANIFEST must claim the promoted root heading in real time.
+      const claimed = await claimedHeadingKeys(proposalId);
+      expect(claimed).toContain(SectionRef.headingKey(["h3 added"]));
+    } finally {
+      editor.dispose();
+    }
+  });
+
+  it("MERGE: drops the deleted heading from the manifest at quiescence", async () => {
+    vi.useFakeTimers();
+    const session = await openSession();
+    const editor = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "editor-sock");
+    try {
+      // Author deletes the Timeline heading line (and edits its body) → Timeline
+      // folds into Overview. The body change makes the per-edit materialize CLAIM
+      // Timeline under its pre-edit identity; the quiescence merge reflection then
+      // folds it away — the claim must drop too.
+      setFragmentViaMinimalDiff(session, TIMELINE_KEY, "Q1: Planning. Q2: Execution. Q3: Review. CHANGED.");
+      session.fragmentLastActivity.set(TIMELINE_KEY, Date.now());
+      const proposalId = await session.generator.materializeEdit({ touchedFragmentKeys: [TIMELINE_KEY] });
+
+      // Pre-quiescence: the per-edit materialize claimed Timeline under its identity.
+      expect(await claimedHeadingKeys(proposalId)).toContain(SectionRef.headingKey(["Timeline"]));
+
+      await fireQuiescence(session);
+
+      // The reflection ran: Timeline is gone from proposal CONTENT.
+      const reader = ProposalReader.open(proposalId, "inprogress");
+      const headingPaths = await reader.listHeadingPaths(SAMPLE_DOC_PATH);
+      expect(headingPaths.some((p) => SectionRef.headingKey(p) === SectionRef.headingKey(["Timeline"]))).toBe(false);
+
+      // The MANIFEST must drop the merged-away claim in real time.
+      const claimed = await claimedHeadingKeys(proposalId);
+      expect(claimed).not.toContain(SectionRef.headingKey(["Timeline"]));
+    } finally {
+      editor.dispose();
+    }
+  });
+
+  it("MERGE (keep-children): remaps a claimed descendant from its OLD path to its NEW reparented path", async () => {
+    // Reflection-level test (line-43 keep-children parenthetical). Build an
+    // inprogress proposal on a FRESH doc (no canonical fallback) with a parent
+    // `Beta` that has a child, claim both at their pre-merge paths, then delete the
+    // `Beta` heading KEEPING children. The child must be claimed at its NEW path
+    // (`["Alpha","Child"]`), not its stale pre-merge path (`["Beta","Child"]`).
+    const docPath = "/test/keep-children.md";
+    const created = await getOrCreateInProgressProposalForDocSession({
+      docSessionId: "ds-keep-children" as DocSessionId,
+      docPath,
+      writer: WRITER,
+    });
+    const proposalId = created.id;
+    const editor = ProposalEditor.open(proposalId, "inprogress");
+    await editor.writeSection(docPath, ["Alpha"], "Alpha", "alpha body");
+    await editor.writeSection(docPath, ["Beta"], "Beta", "beta body");
+    await editor.writeSection(docPath, ["Beta", "Child"], "Child", "child body");
+
+    // Claim Alpha, Beta, and Beta>Child at their CURRENT (pre-merge) paths.
+    await updateCurrentProposalSections(proposalId, [
+      { doc_path: docPath, heading_path: ["Alpha"] },
+      { doc_path: docPath, heading_path: ["Beta"] },
+      { doc_path: docPath, heading_path: ["Beta", "Child"] },
+    ]);
+
+    // Delete the Beta heading, keeping children → Child reparents under Alpha (the
+    // predecessor). Only `removedHeadingPath` is consumed by the keep-children
+    // branch; the live-apply fields are unused here.
+    const plan: StructuralMergePlan = {
+      predecessorKey: "unused",
+      predecessorTarget: "" as never,
+      predecessorIdentity: { headingPath: ["Alpha"], heading: "Alpha", level: 2 },
+      removeKey: "unused",
+      removedHeadingPath: ["Beta"],
+      orphanBody: "beta body" as never,
+      affectedKeys: [],
+    };
+    await reflectMergeIntoProposal(proposalId, docPath, plan);
+
+    // Content followed: Child now lives under Alpha; Beta's heading is gone.
+    const reader = ProposalReader.open(proposalId, "inprogress");
+    const headingPaths = await reader.listHeadingPaths(docPath);
+    expect(headingPaths.some((p) => SectionRef.headingKey(p) === SectionRef.headingKey(["Alpha", "Child"]))).toBe(true);
+    expect(headingPaths.some((p) => SectionRef.headingKey(p) === SectionRef.headingKey(["Beta"]))).toBe(false);
+
+    // The MANIFEST reparented the claim: NEW path claimed, OLD paths dropped.
+    const claimed = await claimedHeadingKeys(proposalId);
+    expect(claimed).toContain(SectionRef.headingKey(["Alpha", "Child"]));
+    expect(claimed).not.toContain(SectionRef.headingKey(["Beta", "Child"]));
+    expect(claimed).not.toContain(SectionRef.headingKey(["Beta"]));
+    expect(claimed).toContain(SectionRef.headingKey(["Alpha"]));
+  });
+
+  it("RENAME: drops the old heading path and claims the new one at quiescence", async () => {
+    vi.useFakeTimers();
+    const session = await openSession();
+    const editor = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "editor-sock");
+    try {
+      // Author renames the Overview heading (same level) and edits its body. The
+      // body change makes the per-edit materialize CLAIM the OLD identity; the
+      // quiescence rename reflection retitles it — the claim must remap to the NEW
+      // path.
+      setFragmentViaMinimalDiff(
+        session,
+        OVERVIEW_KEY,
+        "## Strategic Overview\n\nThe overview covers our strategic goals. CHANGED.",
+      );
+      session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
+      const proposalId = await session.generator.materializeEdit({ touchedFragmentKeys: [OVERVIEW_KEY] });
+
+      // Pre-quiescence: the per-edit materialize claimed the OLD heading path.
+      expect(await claimedHeadingKeys(proposalId)).toContain(SectionRef.headingKey(["Overview"]));
+
+      await fireQuiescence(session);
+
+      // The reflection ran: proposal CONTENT now holds the renamed section.
+      const reader = ProposalReader.open(proposalId, "inprogress");
+      const headingPaths = await reader.listHeadingPaths(SAMPLE_DOC_PATH);
+      expect(headingPaths.some((p) => SectionRef.headingKey(p) === SectionRef.headingKey(["Strategic Overview"]))).toBe(true);
+
+      // The MANIFEST must drop the OLD path and claim the NEW one in real time.
+      const claimed = await claimedHeadingKeys(proposalId);
+      expect(claimed).not.toContain(SectionRef.headingKey(["Overview"]));
+      expect(claimed).toContain(SectionRef.headingKey(["Strategic Overview"]));
+    } finally {
+      editor.dispose();
+    }
+  });
+});

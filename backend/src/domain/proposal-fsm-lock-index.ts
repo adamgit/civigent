@@ -1,24 +1,29 @@
 /**
- * ProposalFsmLockIndex — batch index of proposal section claims by target.
+ * ProposalFsmLockIndex — batch index of proposal target claims.
  *
  * This is the efficient multi-target lookup backing `proposal-fsm-locks.ts`.
- * It indexes the section claims held by proposals in a policy-supplied set of
- * blocking statuses (today: `inprogress` + `committing`) keyed by the globally
- * unique section target key, with self-exclusion by proposal id.
+ * It indexes the claims held by proposals in a policy-supplied set of blocking
+ * statuses (today: `inprogress` + `committing`), with self-exclusion by proposal
+ * id, covering BOTH section targets and document targets (spec 12 §Data Shapes).
  *
- * Salvaged mechanics (and ONLY these) from the deleted `section-presence.ts`:
- *   - SectionRef target matching (reuses `domain/section-ref.ts`)
- *   - batched claim indexing across proposals
- *   - `excludeProposalId` self-exclusion
- *   - lock-holder metadata for conflict explanations
+ * Conflict semantics (spec 12 §Proposed Abstractions):
+ *   - a section target conflicts with the same section target;
+ *   - a document target conflicts with a document target for the same doc_path;
+ *   - a document target conflicts with EVERY section target under that doc_path;
+ *   - a section target conflicts with a document target for its doc_path.
  *
- * Deliberately NOT carried over: dirty-session-file checks, live focus /
- * editor-socket gating, `active_live_edit`/`uncommitted_live_edits` reasons,
- * and `blockLevel: "all"` heuristic scanning. All edits now route through
- * proposals, so a proposal claim is the only lock primitive (spec 12 Non-Goals).
+ * All doc-path comparisons are normalized via `normalizeDocPath` so a section
+ * claim and a document claim on the same document always collide regardless of
+ * leading-slash / casing conventions.
+ *
+ * Deliberately NOT carried over from the deleted heuristic modules: dirty-session
+ * checks, live focus / editor-socket gating, soft-block reasons, and impact
+ * scanning. All edits route through proposals, so a proposal claim is the only
+ * lock primitive (spec 12 Non-Goals).
  */
 
 import { SectionRef } from "./section-ref.js";
+import { normalizeDocPath } from "../storage/path-utils.js";
 import { listProposalsByStatuses } from "../storage/proposal-repository.js";
 import type {
   ProposalStatus,
@@ -41,15 +46,24 @@ export interface BuildLockIndexOptions {
 }
 
 /**
- * Batch index of section claims held by blocking-status proposals, keyed by
- * `SectionRef.globalKey`. The first claim wins for a given target (proposals
- * holding exclusive locks should not overlap by construction).
+ * Batch index of claims held by blocking-status proposals. Section claims are
+ * keyed by `SectionRef.globalKey`; document claims by normalized doc_path. A
+ * separate per-doc list of section holders answers the "document target conflicts
+ * with any section under that doc" rule. First claim wins for a given key.
  */
 export class ProposalFsmLockIndex {
-  private readonly holdersByGlobalKey: Map<string, ProposalLockHolder>;
+  private readonly sectionHolders: Map<string, ProposalLockHolder>;
+  private readonly documentHolders: Map<string, ProposalLockHolder>;
+  private readonly sectionHoldersByDoc: Map<string, ProposalLockHolder>;
 
-  private constructor(holders: Map<string, ProposalLockHolder>) {
-    this.holdersByGlobalKey = holders;
+  private constructor(
+    sectionHolders: Map<string, ProposalLockHolder>,
+    documentHolders: Map<string, ProposalLockHolder>,
+    sectionHoldersByDoc: Map<string, ProposalLockHolder>,
+  ) {
+    this.sectionHolders = sectionHolders;
+    this.documentHolders = documentHolders;
+    this.sectionHoldersByDoc = sectionHoldersByDoc;
   }
 
   /**
@@ -57,29 +71,45 @@ export class ProposalFsmLockIndex {
    * Performs a single batched read; per-target lookups afterwards are zero-I/O.
    */
   static async build(options: BuildLockIndexOptions): Promise<ProposalFsmLockIndex> {
-    const holders = new Map<string, ProposalLockHolder>();
+    const sectionHolders = new Map<string, ProposalLockHolder>();
+    const documentHolders = new Map<string, ProposalLockHolder>();
+    const sectionHoldersByDoc = new Map<string, ProposalLockHolder>();
     const proposals = await listProposalsByStatuses(options.statuses);
 
     for (const proposal of proposals) {
       if (options.excludeProposalId && proposal.id === options.excludeProposalId) continue;
-      for (const section of proposal.sections) {
-        const key = SectionRef.fromTarget(section).globalKey;
-        if (holders.has(key)) continue;
-        holders.set(key, {
-          blockingProposalId: proposal.id,
-          blockingProposalStatus: proposal.status,
-          blockingWriter: proposal.writer,
-        });
+      const holder: ProposalLockHolder = {
+        blockingProposalId: proposal.id,
+        blockingProposalStatus: proposal.status,
+        blockingWriter: proposal.writer,
+      };
+      for (const target of proposal.targets) {
+        if (target.kind === "document") {
+          const key = normalizeDocPath(target.doc_path);
+          if (!documentHolders.has(key)) documentHolders.set(key, holder);
+        } else {
+          const ref = SectionRef.fromTarget(target);
+          if (!sectionHolders.has(ref.globalKey)) sectionHolders.set(ref.globalKey, holder);
+          if (!sectionHoldersByDoc.has(ref.docPath)) sectionHoldersByDoc.set(ref.docPath, holder);
+        }
       }
     }
 
-    return new ProposalFsmLockIndex(holders);
+    return new ProposalFsmLockIndex(sectionHolders, documentHolders, sectionHoldersByDoc);
   }
 
-  /** Lookup the lock holder (if any) for a single target. */
+  /** Lookup the lock holder (if any) conflicting with a single target. */
   holderFor(target: ProposalTargetRef): ProposalLockHolder | null {
-    const key = SectionRef.fromTarget(target).globalKey;
-    return this.holdersByGlobalKey.get(key) ?? null;
+    if (target.kind === "document") {
+      const doc = normalizeDocPath(target.doc_path);
+      // A document target conflicts with a document claim on the same path, or
+      // with any section claim under that document.
+      return this.documentHolders.get(doc) ?? this.sectionHoldersByDoc.get(doc) ?? null;
+    }
+    const ref = SectionRef.fromTarget(target);
+    // A section target conflicts with the same section claim, or with a document
+    // claim covering its document.
+    return this.sectionHolders.get(ref.globalKey) ?? this.documentHolders.get(ref.docPath) ?? null;
   }
 
   /**

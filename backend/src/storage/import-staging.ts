@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
+import { readDirentsIfExists } from "./fs-primitives.js";
 import { getImportStagingRoot } from "./data-root.js";
 import { parseDocumentMarkdown } from "./markdown-sections.js";
 import type { ImportFile } from "./import-service.js";
@@ -54,15 +55,8 @@ export async function createStagingFolder(): Promise<{ importId: string; staging
 
 export async function listStagingFolders(): Promise<StagingFolderInfo[]> {
   const root = getImportStagingRoot();
-  let entries;
-  try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return [];
-    }
-    throw err;
-  }
+  // An absent staging root means no staging folders exist yet.
+  const entries = await readDirentsIfExists(root);
 
   const results: StagingFolderInfo[] = [];
   for (const entry of entries) {

@@ -36,7 +36,8 @@
  */
 
 import path from "node:path";
-import { access, readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { writeFile, mkdir, rm } from "node:fs/promises";
+import { pathExists, readFileIfExists } from "./fs-primitives.js";
 import type { DocStructureNode } from "../types/shared.js";
 import { normalizeDocPath } from "./path-utils.js";
 import { staleHeadingPath } from "./skeleton-errors.js";
@@ -119,7 +120,13 @@ export function serializeSkeletonEntries(entries: SkeletonEntry[]): string {
 export const SECTIONS_DIR_SUFFIX = ".sections";
 export const TOMBSTONE_SUFFIX = ".tombstone";
 
-export type OverlayDocumentState = "missing" | "live" | "tombstone";
+/**
+ * Effective state of a document inside a proposal content tree, resolved
+ * tombstone-first then live then missing. Callers reason about proposal
+ * document state — not raw storage layout. Re-exported to facade callers via
+ * `proposal-facade-types`.
+ */
+export type ProposalDocumentState = "missing" | "live" | "tombstone";
 
 
 export function resolveSkeletonPath(docPath: string, contentRoot: string): string {
@@ -131,30 +138,48 @@ export function resolveTombstonePath(docPath: string, overlayRoot: string): stri
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await readFile(filePath, "utf8");
-    return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw err;
-  }
+  return pathExists(filePath);
 }
 
 export async function skeletonFileExists(docPath: string, contentRoot: string): Promise<boolean> {
   return fileExists(resolveSkeletonPath(docPath, contentRoot));
 }
 
-export async function readOverlayDocumentState(
-  docPath: string,
-  overlayRoot: string,
-  canonicalRoot: string,
-): Promise<OverlayDocumentState> {
-  if (overlayRoot !== canonicalRoot && await fileExists(resolveTombstonePath(docPath, overlayRoot))) {
-    return "tombstone";
-  }
-  if (await skeletonFileExists(docPath, overlayRoot)) return "live";
-  if (await skeletonFileExists(docPath, canonicalRoot)) return "live";
-  return "missing";
+/**
+ * Single-root tombstone-marker existence check. A storage primitive — it makes
+ * no proposal/canonical fallback decision. The proposal subsystem composes it
+ * with `skeletonFileExists(...)` to resolve effective document state
+ * (tombstone-first, then proposal skeleton, then canonical fallback).
+ */
+export async function tombstoneFileExists(docPath: string, contentRoot: string): Promise<boolean> {
+  return fileExists(resolveTombstonePath(docPath, contentRoot));
+}
+
+/**
+ * Single-root tombstone-marker write. A mechanical storage primitive on ONE
+ * content root: it writes the `.tombstone` marker file (creating parent dirs)
+ * and nothing else. It carries NO proposal meaning — removing the skeleton /
+ * `.sections` tree and deciding WHEN a document is "deleted" (proposal deletion
+ * / rename) is the proposal subsystem's job, which composes this primitive.
+ */
+export async function writeTombstoneMarker(docPath: string, contentRoot: string): Promise<void> {
+  const tombstonePath = resolveTombstonePath(docPath, contentRoot);
+  await mkdir(path.dirname(tombstonePath), { recursive: true });
+  await writeFile(
+    tombstonePath,
+    `This file marks file ${normalizeDocPath(docPath)} to be deleted when this proposal is committed\n`,
+    "utf8",
+  );
+}
+
+/**
+ * Single-root tombstone-marker clear. A mechanical storage primitive on ONE
+ * content root: it removes the `.tombstone` marker file (idempotent). The
+ * decision of WHEN to clear a tombstone (document create / rename /
+ * resurrection) belongs to the proposal subsystem, not here.
+ */
+export async function clearTombstoneMarker(docPath: string, contentRoot: string): Promise<void> {
+  await rm(resolveTombstonePath(docPath, contentRoot), { force: true });
 }
 
 /**
@@ -291,74 +316,45 @@ export class DocumentSkeleton {
   readonly docPath: string;
   protected roots: SkeletonNode[];
 
-  // ── Three independent provenance/state concepts (do NOT collapse) ──
-  //
-  // 1. loadedFromOverlay: the structural nodes currently held in this
-  //    instance were read from the overlay skeleton file (not the
-  //    canonical fallback). True for any DocumentSkeleton constructed
-  //    via fromDisk that found and parsed an overlay skeleton file.
-  //
-  // 2. overlaySkeletonFileExisted: at the moment fromDisk was called,
-  //    SOME overlay marker existed for this docPath — either a live
-  //    skeleton file or a tombstone. This is a strict superset of
-  //    loadedFromOverlay (a tombstone makes file-existed true even
-  //    though no nodes loaded).
-  //
-  // 3. hasBeenWrittenToOverlay: this specific in-memory instance has
-  //    successfully persisted its state to the overlay since being
-  //    constructed (via flushToOverlay or by being created via a
-  //    factory that auto-persists). It is allowed for a freshly-loaded
-  //    readonly DocumentSkeleton to have all three false-true-false
-  //    independently of each other.
-  //
-  // Item 137 explicitly forbids collapsing these into one property.
-  protected _loadedFromOverlay: boolean = false;
-  protected _overlaySkeletonFileExisted: boolean = false;
+  // `hasBeenWrittenToOverlay`: this specific in-memory instance has successfully
+  // persisted its state to the overlay since being constructed (via persistSkeletonTree
+  // or a factory that auto-persists). The load-time "loaded from proposal root vs
+  // canonical fallback" provenance flags were removed: no caller needs them, and
+  // the only internal consumer (`materializeInheritedSkeletonFromCanonical`) now
+  // reads disk state on demand via the single-root primitives.
   protected _hasBeenWrittenToOverlay: boolean = false;
 
-  protected _overlayTombstoned: boolean = false;
   protected readonly overlayRoot: string;
+
   /**
-   * Canonical content root. Used by `writeTree()` to detect when a body-holder
-   * placeholder would be synthesized in the overlay over a non-empty canonical
-   * body file — in that case, the placeholder is skipped because
-   * `ProposalShadowContentLayer.readBodyFromLayers()` already falls back to canonical.
-   * Defaults to `overlayRoot` for single-root callers (recovery, in-memory).
+   * Optional placeholder-suppression policy injected by the proposal subsystem.
+   * `DocumentSkeleton` is single-root and has NO canonical knowledge of its own:
+   * when `writeTree()` is about to synthesize an empty body-holder placeholder, it
+   * asks this policy whether a body for that file already exists in a shadowed
+   * (canonical) layer — if so, the placeholder is skipped so the canonical body
+   * is not shadowed. Absent (single-layer / canonical tooling) → always synthesize.
+   *
+   * This is how the spec's "DocumentSkeleton reads one content root, the proposal
+   * facades compose canonical fallback" boundary is honoured: the canonical
+   * awareness lives in the closure the proposal subsystem supplies, not in DS.
    */
-  protected readonly canonicalRoot: string;
+  protected _shadowBodyExists?: (bodyFilePath: string) => Promise<boolean>;
 
   protected constructor(
     docPath: string,
     roots: SkeletonNode[],
-    overlayRoot: string,
-    canonicalRoot: string = overlayRoot,
+    contentRoot: string,
   ) {
     this.docPath = docPath;
     this.roots = roots;
-    this.overlayRoot = overlayRoot;
-    this.canonicalRoot = canonicalRoot;
+    this.overlayRoot = contentRoot;
   }
-
-  /**
-   * True when this instance's structural nodes were resolved from the
-   * overlay skeleton file rather than from the canonical fallback.
-   */
-  get loadedFromOverlay(): boolean { return this._loadedFromOverlay; }
-
-  /**
-   * True when an overlay file (live skeleton OR tombstone) existed at the
-   * moment of load. Strict superset of loadedFromOverlay.
-   */
-  get overlaySkeletonFileExisted(): boolean { return this._overlaySkeletonFileExisted; }
 
   /**
    * True when this in-memory instance has persisted its state to the
    * overlay since being constructed.
    */
   get hasBeenWrittenToOverlay(): boolean { return this._hasBeenWrittenToOverlay; }
-
-  /** True when the overlay contains a tombstone marker for this document. */
-  get isTombstonedInOverlay(): boolean { return this._overlayTombstoned; }
 
   /** True when the loaded skeleton tree has zero section entries. */
   get areSkeletonRootsEmpty(): boolean { return this.roots.length === 0; }
@@ -851,18 +847,44 @@ export class DocumentSkeleton {
     return resolveSkeletonPath(docPath, contentRoot) + ".sections";
   }
 
+  /**
+   * Single-root skeleton load: read the structural tree from EXACTLY one content
+   * root with NO overlay→canonical fallback and NO tombstone handling. Returns an
+   * empty skeleton when no skeleton file exists at `contentRoot`. Body I/O on the
+   * returned instance is bound to that same single root.
+   *
+   * This is the single-layer read API — use it for canonical-only / single-root
+   * reads instead of the `fromDisk(docPath, root, root)` trick. The proposal
+   * subsystem composes proposal-root structure, tombstone state, and canonical
+   * fallback via the effective-load `fromDisk(...)`.
+   */
+  static async fromSingleRoot(docPath: string, contentRoot: string): Promise<DocumentSkeleton> {
+    const nodes = await readTreeRecursive(resolveSkeletonPath(docPath, contentRoot));
+    validateNoDuplicateRoots(nodes, docPath);
+    return new DocumentSkeleton(docPath, nodes, contentRoot);
+  }
+
+  /**
+   * Effective-load (read): resolve the document's STRUCTURE across a proposal
+   * content root (`overlayRoot`) with canonical (`canonicalRoot`) fallback. This
+   * is the proposal-owned effective read, composed by the proposal subsystem
+   * (`ProposalShadowContentLayer`, behind `ProposalReader`/`ProposalEditor`) and
+   * by the DocSession seed which reads the current proposal's effective skeleton.
+   *
+   * The returned instance is bound to a SINGLE content root (`overlayRoot`): reads
+   * are read-only and section bodies are resolved by the proposal subsystem's
+   * `readEffectiveSectionBody()` (which falls back to canonical), so the instance
+   * needs no canonical knowledge. NOT for single-root structure reads — use
+   * `fromSingleRoot(...)`.
+   */
   static async fromDisk(
     docPath: string,
     overlayRoot: string,
     canonicalRoot: string,
   ): Promise<DocumentSkeleton> {
-    const { nodes, overlayExisted, overlayTombstoned } = await buildSkeletonTree(docPath, overlayRoot, canonicalRoot);
+    const nodes = await buildSkeletonTree(docPath, overlayRoot, canonicalRoot);
     validateNoDuplicateRoots(nodes, docPath);
-    const skeleton = new DocumentSkeleton(docPath, nodes, overlayRoot, canonicalRoot);
-    skeleton._loadedFromOverlay = overlayExisted && !overlayTombstoned;
-    skeleton._overlaySkeletonFileExisted = overlayExisted;
-    skeleton._overlayTombstoned = overlayTombstoned;
-    return skeleton;
+    return new DocumentSkeleton(docPath, nodes, overlayRoot);
   }
 
   // --- Protected helpers ---
@@ -962,19 +984,14 @@ export class DocumentSkeleton {
    * insertSectionUnder write the body file themselves, in which case
    * the existence check makes this a no-op.
    *
-   * Overlay-shadowing rule: when the overlay differs from the canonical root
-   * AND the canonical layer already has a body file at the same relative path,
-   * skip the empty-placeholder synthesis. `ProposalShadowContentLayer.readBodyFromLayers()`
-   * already falls back to canonical, so the structural "body file must exist
-   * somewhere" invariant is satisfied without the overlay placeholder. Writing
-   * an empty overlay file there would shadow the non-empty canonical body for
-   * untouched nested parents — the bug this guard fixes. Truly new structures
-   * (no canonical body file yet) still get the placeholder.
-   *
-   * This intentionally crosses the "skeleton writes skeleton files,
-   * body writes happen through ContentLayer" boundary for this one case —
-   * it's the single place where the skeleton layer creates a structural
-   * dependency that requires a body file to exist.
+   * Shadow-suppression rule: before synthesizing an empty placeholder, DS asks
+   * the injected `_shadowBodyExists` policy (when present) whether a body for that
+   * file already exists in a shadowed layer. If so it skips the placeholder, so a
+   * non-empty canonical body is not shadowed for untouched nested parents (the
+   * proposal subsystem's `readEffectiveSectionBody()` falls back to canonical, so
+   * the "body must exist somewhere" invariant still holds). DS holds NO canonical
+   * knowledge of its own — the closure is supplied by the proposal subsystem.
+   * Truly new structures (no shadowed body) still get the placeholder.
    */
   protected async writeTree(
     nodes: SkeletonNode[],
@@ -994,20 +1011,14 @@ export class DocumentSkeleton {
       for (const node of nodes) {
         if (isBodyHolderShape(node)) {
           const bodyFilePath = path.join(sectionsDir, node.sectionFile);
-          const overlayExists = await access(bodyFilePath).then(() => true, () => false);
-          if (overlayExists) continue;
+          if (await pathExists(bodyFilePath)) continue;
 
-          // Dual-root layouts (overlay ≠ canonical): if canonical already
-          // has the body file, do NOT synthesize an empty overlay placeholder
-          // — that would shadow non-empty canonical content for untouched
-          // nested parents. Single-root layouts (overlay === canonical)
-          // collapse to the legacy behavior automatically.
-          if (this.overlayRoot !== this.canonicalRoot) {
-            const relFromOverlay = path.relative(this.overlayRoot, bodyFilePath);
-            const canonicalBodyPath = path.join(this.canonicalRoot, relFromOverlay);
-            const canonicalExists = await access(canonicalBodyPath).then(() => true, () => false);
-            if (canonicalExists) continue;
-          }
+          // Proposal subsystem shadow policy: if a body for this file already
+          // exists in a shadowed (canonical) layer, do NOT synthesize an empty
+          // placeholder — that would shadow the non-empty canonical content for
+          // untouched nested parents. DS itself has no canonical knowledge; the
+          // proposal subsystem injects this closure (absent → always synthesize).
+          if (this._shadowBodyExists && (await this._shadowBodyExists(bodyFilePath))) continue;
 
           await mkdir(sectionsDir, { recursive: true });
           await writeFile(bodyFilePath, "", "utf8");
@@ -1112,7 +1123,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * structural decisions it made. The method then:
    *
    *   1. Validates that the returned plan is internally consistent.
-   *   2. Persists the skeleton via flushToOverlay().
+   *   2. Persists the skeleton via persistSkeletonTree().
    *   3. Returns the plan to the caller, who is responsible for performing
    *      the body-file writes and fragment-key remaps declared in the plan.
    *
@@ -1163,7 +1174,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
 
     const plan = await mutate(ctx);
     validateMutationPlan(plan, this.docPath);
-    await this.flushToOverlay();
+    await this.persistSkeletonTree();
     return plan;
   }
 
@@ -1516,7 +1527,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
       // (6) If the merge target transitioned from leaf to parent (it
       // gained promoted children), addBodyHoldersToParents created a new
       // body-holder child for it. The old leaf sectionFile will be
-      // overwritten with skeleton markers by flushToOverlay, so update
+      // overwritten with skeleton markers by persistSkeletonTree, so update
       // resolvedMergeTarget to point to the body holder and emit a
       // fragment key remap.
       if (!mergeTargetWasCreated) {
@@ -1831,35 +1842,41 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
   // --- Persistence ---
 
   /**
-   * Persist skeleton to the overlay root. Always writes unconditionally.
+   * Low-level single-root skeleton writer: write this skeleton's tree to its own
+   * content root. Always writes unconditionally. This is NOT a semantic "flush to
+   * overlay" operation — it makes no proposal/canonical decision and carries no
+   * deletion/rename meaning; it just serializes the in-memory tree to disk at the
+   * one root this instance owns. Used only by proposal-owned mutations
+   * (`applyStructuralMutationTransaction`, the empty-skeleton factory, first-edit
+   * materialization) and canonical-only tooling.
    *
-   * Flips hasBeenWrittenToOverlay true. Does NOT change loadedFromOverlay
-   * (that reflects load-time provenance only). overlaySkeletonFileExisted
-   * is also flipped true because the act of writing guarantees a file is
-   * now present.
+   * Flips hasBeenWrittenToOverlay true. Load-time provenance is no longer tracked
+   * on the instance — callers that need to know whether a proposal-root
+   * skeleton/tombstone exists read it from disk via the single-root primitives.
    *
-   * PROTECTED per checklist items 139/141: this method must not be called
-   * from outside the DocumentSkeleton/DocumentSkeletonInternal class
-   * hierarchy. External callers should mutate skeletons via
-   * `applyStructuralMutationTransaction(...)` (which persists exactly once
-   * after the mutation closure runs) or via the explicit operations on
+   * PROTECTED per checklist items 139/141: this method must not be called from
+   * outside the DocumentSkeleton/DocumentSkeletonInternal class hierarchy.
+   * External callers should mutate skeletons via
+   * `applyStructuralMutationTransaction(...)` (which persists exactly once after
+   * the mutation closure runs) or via the explicit operations on
    * `ProposalShadowContentLayer`. The previous public visibility allowed callers
-   * to bypass the transaction primitive, which was the root cause of
-   * coordination bugs (skeleton persisted before body writes finished,
-   * fragment remaps performed against the wrong-version skeleton, etc).
+   * to bypass the transaction primitive, which was the root cause of coordination
+   * bugs (skeleton persisted before body writes finished, fragment remaps
+   * performed against the wrong-version skeleton, etc).
    *
-   * Overlay shadowing rule: structural body-holder placeholders are written
-   * by `writeTree()` only when no canonical body file exists at the same
-   * relative path. Intentional "clear body" semantics travel through
-   * `ProposalShadowContentLayer` writes, not through this method. Don't add a
-   * read-time empty-file fallback to compensate — see `writeTree()` doc.
+   * Body-holder placeholders are written by `writeTree()` only when no canonical
+   * body file exists at the same relative path. Intentional "clear body" semantics
+   * travel through `ProposalShadowContentLayer` writes, not through this method.
+   * Don't add a read-time empty-file fallback to compensate — see `writeTree()`.
    */
-  protected async flushToOverlay(): Promise<void> {
-    await rm(resolveTombstonePath(this.docPath, this.overlayRoot), { force: true });
+  protected async persistSkeletonTree(): Promise<void> {
+    // No tombstone clearing here: this generic writer carries no deletion/rename
+    // meaning. A proposal tombstone is cleared only by explicit proposal
+    // document-create / document-rename / document-resurrection semantics (via the
+    // `clearTombstoneMarker` primitive). All paths that reach this writer have
+    // already rejected tombstoned documents upstream.
     await this.writeTree(this.roots, this.skeletonPath);
-    this._overlaySkeletonFileExisted = true;
     this._hasBeenWrittenToOverlay = true;
-    this._overlayTombstoned = false;
   }
 
   // --- Static factories ---
@@ -1876,7 +1893,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    *
    * Used as a starting point for new-doc imports and for tests that need
    * a blank mutable skeleton. The returned instance has no persisted state
-   * — callers must invoke flushToOverlay() to write it.
+   * — callers must invoke persistSkeletonTree() to write it.
    */
   static inMemoryEmpty(
     docPath: string,
@@ -1886,108 +1903,110 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
   }
 
   /**
-   * The single blessed entry point for transitioning a document from
-   * "missing" to "persisted live-empty in the overlay" at the skeleton
-   * layer (item 166).
+   * The single blessed entry point for creating an empty `DocumentSkeleton`
+   * in a given content root at the skeleton layer.
    *
-   * Constructs a zero-root in-memory skeleton, flushes it to the overlay
-   * via the protected flushToOverlay() pathway, and returns the writable
+   * Constructs a zero-root in-memory skeleton, persists it into `contentRoot`
+   * via the protected persistSkeletonTree() pathway, and returns the writable
    * instance so the CURRENT caller can use it immediately within the same
    * operation if needed. No hidden extra writes — exactly one structural
-   * file is written (the empty overlay skeleton file), nothing else.
+   * file is written (the empty skeleton file), nothing else. `contentRoot`
+   * is whatever content root the caller owns (a proposal content root, or a
+   * canonical root for canonical-only tooling); this method does not know or
+   * care which.
    *
-   * This method exists so that `ProposalShadowContentLayer.createDocument(...)`
-   * has ONE sanctioned skeleton-layer call to make for new-doc creation
-   * instead of having to know the inMemoryEmpty(...) → flushToOverlay()
-   * choreography. After item 161, flushToOverlay is `protected` and is
-   * not directly callable from outside the DSInternal class hierarchy.
+   * This method exists so that callers such as
+   * `ProposalShadowContentLayer.createDocument(...)` have ONE sanctioned
+   * skeleton-layer call to make for new-doc creation instead of having to
+   * know the inMemoryEmpty(...) → persistSkeletonTree() choreography. persistSkeletonTree
+   * is `protected` and is not directly callable from outside the DSInternal
+   * class hierarchy.
    *
-   * Per item 195: this method does NOT exist to feed any cross-call
-   * cache. The returned instance is for SAME-OPERATION use only — the
-   * caller may use it immediately and discard it, or ignore the return
-   * value entirely. Subsequent operations on the same docPath must
-   * fresh-load via `mutableFromDisk(...)`.
+   * This method does NOT exist to feed any cross-call cache. The returned
+   * instance is for SAME-OPERATION use only — the caller may use it
+   * immediately and discard it, or ignore the return value entirely.
+   * Subsequent operations on the same docPath must fresh-load via
+   * `mutableFromDisk(...)`.
    *
    * Caller responsibilities NOT covered by this method:
    *   - State policy (reject "live", reject "tombstone", only act on
-   *     "missing") — those decisions stay in ProposalShadowContentLayer.
+   *     "missing") — those decisions stay with the proposal-owned caller.
    */
-  static async persistNewEmptyToOverlay(
+  static async createEmptySkeletonInRoot(
     docPath: string,
-    overlayRoot: string,
+    contentRoot: string,
   ): Promise<DocumentSkeletonInternal> {
-    const skeleton = new DocumentSkeletonInternal(docPath, [], overlayRoot);
-    await skeleton.flushToOverlay();
+    const skeleton = new DocumentSkeletonInternal(docPath, [], contentRoot);
+    await skeleton.persistSkeletonTree();
     return skeleton;
   }
 
   // --- Static factories ---
   // inMemoryEmpty:             creates an in-memory-only empty skeleton (no disk writes)
-  // persistNewEmptyToOverlay:  creates AND persists a live-empty doc to the overlay (item 166)
-  // mutableFromDisk:           loads from overlay+canonical, NEVER writes
-  // materializeOverlayIfMissing: separate explicit step that persists if needed
-  // fromNodes:                 builds from pre-assembled nodes (used by crash recovery)
+  // createEmptySkeletonInRoot: creates AND persists an empty skeleton into a content root
+  // loadNodesFromRoot:         single-root structure read (no instance), for proposal-composed loads
+  // fromNodes:                 builds a single-root mutable skeleton from pre-assembled nodes
+  // materializeInheritedSkeletonFromCanonical: first-edit canonical init (persists inherited structure)
 
   /**
-   * Construct a skeleton from pre-assembled nodes. Used by crash recovery to build
-   * a compound skeleton from multiple sources without going through mutableFromDisk().
-   * targetRoot is used as both overlay and canonical root (recovery writes directly
-   * to canonical).
+   * Single-root structure read: read the skeleton node tree from EXACTLY one
+   * content root (no fallback). Returns `[]` when the skeleton file is absent.
+   * The proposal subsystem composes the proposal-root-or-canonical decision and
+   * passes the result to `fromNodes(...)`; DS itself never chooses between roots.
+   */
+  static async loadNodesFromRoot(docPath: string, contentRoot: string): Promise<SkeletonNode[]> {
+    const nodes = await readTreeRecursive(resolveSkeletonPath(docPath, contentRoot));
+    validateNoDuplicateRoots(nodes, docPath);
+    return nodes;
+  }
+
+  /**
+   * Construct a single-root mutable skeleton bound to `contentRoot` from
+   * pre-assembled nodes. This is the spec-aligned mutable factory: it takes ONE
+   * content root (writes go there) and an OPTIONAL `shadowBodyExists` policy by
+   * which the proposal subsystem injects canonical-fallback awareness for
+   * placeholder suppression — DS holds no canonical knowledge itself. Used by the
+   * proposal write path (structure loaded via `loadNodesFromRoot`) and by crash
+   * recovery (no policy — recovery writes a self-contained tree).
    */
   static fromNodes(
     docPath: string,
     nodes: SkeletonNode[],
-    targetRoot: string,
+    contentRoot: string,
+    shadowBodyExists?: (bodyFilePath: string) => Promise<boolean>,
   ): DocumentSkeletonInternal {
     validateNoDuplicateRoots(nodes, docPath);
-    return new DocumentSkeletonInternal(docPath, nodes, targetRoot);
-  }
-
-  /**
-   * Load a mutable skeleton from disk. This is a PURE LOAD — it never
-   * writes anything to disk. Per checklist item 107, the previous
-   * DocumentSkeletonInternal.fromDisk silently auto-persisted to overlay
-   * when it loaded from canonical fallback, which violated its name and
-   * surprised callers. That hidden write has been split off into the
-   * separate materializeOverlayIfMissing() instance method below.
-   */
-  static async mutableFromDisk(
-    docPath: string,
-    overlayRoot: string,
-    canonicalRoot: string,
-  ): Promise<DocumentSkeletonInternal> {
-    const { nodes, overlayExisted, overlayTombstoned } = await buildSkeletonTree(docPath, overlayRoot, canonicalRoot);
-    validateNoDuplicateRoots(nodes, docPath);
-    const skeleton = new DocumentSkeletonInternal(docPath, nodes, overlayRoot, canonicalRoot);
-    skeleton._loadedFromOverlay = overlayExisted && !overlayTombstoned;
-    skeleton._overlaySkeletonFileExisted = overlayExisted;
-    skeleton._overlayTombstoned = overlayTombstoned;
+    const skeleton = new DocumentSkeletonInternal(docPath, nodes, contentRoot);
+    if (shadowBodyExists) skeleton._shadowBodyExists = shadowBodyExists;
     return skeleton;
   }
 
   /**
-   * If this instance was loaded from canonical fallback (no overlay file
-   * existed) AND it has at least one structural node, persist it into the
-   * overlay so subsequent reads find it where they expect.
+   * Proposal first-edit canonical initialization: when the first proposal-local
+   * edit targets a document inherited from canonical (the proposal root has no
+   * skeleton yet, but the effective document is live via canonical fallback),
+   * persist the inherited structure into the proposal root so the proposal owns a
+   * skeleton for the document the subsequent body write attaches to.
    *
-   * Idempotent: calling this on an instance that already has an overlay
-   * file is a no-op. Calling it on an empty skeleton is a no-op (an empty
-   * skeleton has nothing to materialize).
+   * This is the mechanism the proposal write implementation
+   * (`ProposalShadowContentLayer.ensureProposalSkeletonForWrite`) invokes — it is
+   * not a generic "flush" and makes no structural change; it materializes the
+   * canonical structure verbatim.
    *
-   * This is intentionally a separate explicit step from mutableFromDisk —
-   * the previous combined behavior performed a hidden write inside a method
-   * called "fromDisk", which violated the principle of least surprise and
-   * masked the materialization in stack traces.
-   *
-   * Overlay shadowing rule: this delegates to `flushToOverlay()`, so the
-   * structural-placeholder suppression in `writeTree()` applies here too —
-   * a materialization will not shadow non-empty canonical body files for
-   * untouched nested parents.
+   * Idempotent and fallback-preserving: a no-op when the proposal root already
+   * has a skeleton or tombstone, and a no-op for an empty skeleton. It delegates
+   * to `persistSkeletonTree()`, so `writeTree()`'s placeholder suppression applies
+   * — materialization never shadows non-empty canonical body files for untouched
+   * nested parents (canonical body fallback is preserved).
    */
-  async materializeOverlayIfMissing(): Promise<void> {
-    if (this._overlaySkeletonFileExisted) return;
+  async materializeInheritedSkeletonFromCanonical(): Promise<void> {
+    // No-op when the proposal root already has a marker (skeleton or tombstone),
+    // read directly from disk via the single-root primitives. Also a no-op for an
+    // empty skeleton (nothing inherited to materialize).
+    if (await skeletonFileExists(this.docPath, this.overlayRoot)) return;
+    if (await tombstoneFileExists(this.docPath, this.overlayRoot)) return;
     if (this.roots.length === 0) return;
-    await this.flushToOverlay();
+    await this.persistSkeletonTree();
   }
 }
 
@@ -1997,34 +2016,27 @@ async function buildSkeletonTree(
   docPath: string,
   overlayRoot: string,
   canonicalRoot: string,
-): Promise<{ nodes: SkeletonNode[]; overlayExisted: boolean; overlayTombstoned: boolean }> {
+): Promise<SkeletonNode[]> {
   const overlayPath = resolveSkeletonPath(docPath, overlayRoot);
   const canonicalPath = resolveSkeletonPath(docPath, canonicalRoot);
 
+  // Effective-load fallback resolution: a proposal tombstone shadows canonical
+  // as an empty (pending-deletion) document.
   if (overlayRoot !== canonicalRoot && await fileExists(resolveTombstonePath(docPath, overlayRoot))) {
-    return { nodes: [], overlayExisted: true, overlayTombstoned: true };
+    return [];
   }
 
-  // Try overlay first, then canonical
+  // Structure: try the proposal root first, then canonical fallback.
   let skeletonPath: string;
-  let overlayExisted = false;
-  try {
-    await readFile(overlayPath, "utf8");
+  if (await pathExists(overlayPath)) {
     skeletonPath = overlayPath;
-    overlayExisted = true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    try {
-      await readFile(canonicalPath, "utf8");
-      skeletonPath = canonicalPath;
-    } catch (err2) {
-      if ((err2 as NodeJS.ErrnoException).code !== "ENOENT") throw err2;
-      return { nodes: [], overlayExisted: false, overlayTombstoned: false }; // No skeleton found
-    }
+  } else if (await pathExists(canonicalPath)) {
+    skeletonPath = canonicalPath;
+  } else {
+    return []; // No skeleton found
   }
 
-  const nodes = await readTreeRecursive(skeletonPath);
-  return { nodes, overlayExisted, overlayTombstoned: false };
+  return readTreeRecursive(skeletonPath);
 }
 
 /**
@@ -2035,13 +2047,8 @@ async function buildSkeletonTree(
  * heading level numbers within a file.
  */
 async function readTreeRecursive(skeletonPath: string): Promise<SkeletonNode[]> {
-  let content: string;
-  try {
-    content = await readFile(skeletonPath, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    return []; // File doesn't exist — no entries
-  }
+  const content = await readFileIfExists(skeletonPath);
+  if (content === null) return []; // File doesn't exist — no entries
 
   const entries = parseSkeletonToEntries(content);
   if (entries.length === 0) return [];
@@ -2074,22 +2081,19 @@ async function readTreeRecursive(skeletonPath: string): Promise<SkeletonNode[]> 
  * exist; otherwise returns a flat, document-order list of entries.
  *
  * Use this to observe one storage layer independently (e.g., diagnostics
- * comparing canonical-only and overlay-only structures). Do NOT reach for
- * `DocumentSkeleton.fromDisk(docPath, root, root)` for single-root reads —
- * that trick uses the overlay-fallback-to-canonical factory in a mode it was
- * not designed for and has been a historical source of bugs.
+ * comparing canonical-only and overlay-only structures) when you need flat
+ * entries. For a single-root read that returns a full `DocumentSkeleton`, use
+ * `DocumentSkeleton.fromSingleRoot(docPath, root)` — never the
+ * `fromDisk(docPath, root, root)` trick, which drives the effective-load
+ * (overlay-fallback-to-canonical) factory in a mode it was not designed for and
+ * has been a historical source of bugs.
  */
 export async function listSkeletonEntriesAtRoot(
   docPath: string,
   root: string,
 ): Promise<FlatEntry[] | null> {
   const skeletonPath = resolveSkeletonPath(docPath, root);
-  try {
-    await access(skeletonPath);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw err;
-  }
+  if (!(await pathExists(skeletonPath))) return null;
   const rootNodes = await readTreeRecursive(skeletonPath);
   const out: FlatEntry[] = [];
   const walk = (nodes: SkeletonNode[], parentPath: string[], parentSkeletonPath: string): void => {

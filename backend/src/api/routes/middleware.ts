@@ -9,6 +9,7 @@ import {
 } from "../../auth/context.js";
 import { checkDocPermission } from "../../auth/acl.js";
 import { getMCPPublicURL } from "../../auth/oauth-config.js";
+import { ProposalLockConflictError } from "../../domain/proposal-fsm-locks.js";
 
 // Re-exports of auth gating consumed by HTTP-only route modules (which may not
 // import auth/* directly). middleware.ts is the single auth-aware seam.
@@ -192,8 +193,9 @@ export function agentWritePolicyRouteBody(result: HumanInvolvementPolicyResult) 
     can_write: result.canWrite,
     message: result.message,
     targets: result.targets.map((t) => ({
+      kind: t.target.kind,
       doc_path: t.target.doc_path,
-      heading_path: t.target.heading_path,
+      heading_path: t.target.kind === "section" ? t.target.heading_path : undefined,
       can_write: t.canWrite,
       message: t.message,
     })),
@@ -202,9 +204,19 @@ export function agentWritePolicyRouteBody(result: HumanInvolvementPolicyResult) 
 
 /**
  * Final error-handling Express middleware. Installed LAST by assembly.
+ *
+ * A `ProposalLockConflictError` (raised by the mandatory commit-boundary FSM lock
+ * gate, spec 12) is a CONFLICT, not a server fault: it is surfaced as 409 with the
+ * top-level prose `message` AND the full structured `conflicts[]` (each carrying
+ * the blocking proposal id/status/writer + prose), never collapsed into a bare
+ * code or a generic 500.
  */
 export function installErrorHandler(router: Router): void {
   router.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
+    if (error instanceof ProposalLockConflictError) {
+      sendApiError(res, 409, error.result.message, { conflicts: error.result.conflicts });
+      return;
+    }
     sendApiError(res, 500, error.stack || error.message);
   });
 }

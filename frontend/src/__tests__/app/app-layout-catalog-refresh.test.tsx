@@ -25,10 +25,17 @@ import { installFetchMock, jsonResponse, type InstalledFetchMock } from "../help
 type EventHandler = (event: WsServerEvent) => void;
 
 const wsHandlers: EventHandler[] = [];
+let eventToEmitOnConnect: WsServerEvent | null = null;
 
 vi.mock("../../services/ws-client", () => ({
   KnowledgeStoreWsClient: class {
-    connect = vi.fn();
+    connect = vi.fn(() => {
+      if (eventToEmitOnConnect) {
+        for (const handler of wsHandlers) {
+          handler(eventToEmitOnConnect);
+        }
+      }
+    });
     disconnect = vi.fn();
     focusDocument = vi.fn();
     blurDocument = vi.fn();
@@ -77,6 +84,7 @@ describe("AppLayout tree refresh on catalog:changed", () => {
 
   beforeEach(() => {
     wsHandlers.length = 0;
+    eventToEmitOnConnect = null;
     treeFetchCount = 0;
     currentTree = [];
     localStorage.clear();
@@ -86,6 +94,7 @@ describe("AppLayout tree refresh on catalog:changed", () => {
 
   afterEach(() => {
     fetchMock?.restore();
+    eventToEmitOnConnect = null;
     localStorage.clear();
     vi.restoreAllMocks();
   });
@@ -149,6 +158,56 @@ describe("AppLayout tree refresh on catalog:changed", () => {
 
     await waitFor(() => {
       expect(screen.getByText("bar.md")).toBeDefined();
+    });
+  });
+
+  it("does not drop a catalog:changed event emitted during WS connect", async () => {
+    const newDocPath = "/foo/from-connect.md";
+    fetchMock = installFetchMock(async (input) => {
+      const url = String(input);
+      if (url === "/api/documents/tree") {
+        treeFetchCount += 1;
+        const tree = treeFetchCount === 1
+          ? []
+          : [
+              {
+                name: "foo",
+                path: "/foo",
+                type: "directory" as const,
+                children: [
+                  { name: "from-connect.md", path: newDocPath, type: "file" as const },
+                ],
+              },
+            ];
+        return jsonResponse({ tree });
+      }
+      if (url === "/api/auth/session") {
+        return jsonResponse({
+          authenticated: true,
+          user: { id: "u1", type: "human", displayName: "Tester" },
+        });
+      }
+      return jsonResponse({});
+    });
+
+    eventToEmitOnConnect = {
+      type: "catalog:changed",
+      added_doc_paths: [newDocPath],
+      removed_doc_paths: [],
+      writer_type: "agent",
+      writer_display_name: "Agent Bot",
+    } as WsServerEvent;
+
+    renderAppLayout();
+
+    await waitFor(
+      () => {
+        expect(treeFetchCount).toBeGreaterThan(1);
+      },
+      { timeout: 2000 },
+    );
+    await waitFor(() => {
+      expect(screen.getByText("from-connect.md")).toBeDefined();
     });
   });
 });

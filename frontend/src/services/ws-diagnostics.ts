@@ -20,6 +20,7 @@ export type WsDiagSource =
   | "ws-classification"
   | "ws-lifecycle"
   | "broadcast-auth"
+  | "session-revalidate"
   | "tree-refresh-schedule"
   | "tree-fetch"
   | "tree-fetch-result"

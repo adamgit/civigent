@@ -111,6 +111,43 @@ describe("POST /api/proposals/:id/commit — commit proposal", () => {
     expect(commitEvents.length).toBe(1);
   });
 
+  it("returns 409 with prose + structured conflicts when a commit is blocked by another proposal's lock", async () => {
+    // A human holder acquires an exclusive inprogress lock on a section.
+    const holderRes = await request(ctx.app)
+      .post("/api/proposals?replace=true")
+      .set("Authorization", ctx.humanToken)
+      .send({
+        intent: "Human holder for lock-conflict test",
+        sections: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Timeline"], content: "Holder content.\n" }],
+      });
+    const holderId = holderRes.body.proposal_id;
+    expect((await transitionToInProgress(holderId)).acquired).toBe(true);
+
+    // An agent proposal targeting the SAME section tries to commit → blocked.
+    const agentRes = await request(ctx.app)
+      .post("/api/proposals")
+      .set("Authorization", ctx.agentToken)
+      .send({
+        intent: "Agent edit colliding with the human lock",
+        sections: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Timeline"], content: "Agent content.\n" }],
+      });
+    const agentId = agentRes.body.proposal_id;
+
+    const commitRes = await request(ctx.app)
+      .post(`/api/proposals/${agentId}/commit`)
+      .set("Authorization", ctx.agentToken);
+
+    // 409 with the top-level prose message AND the structured conflicts — never a
+    // bare code or a generic 500.
+    expect(commitRes.status).toBe(409);
+    expect(typeof commitRes.body.message).toBe("string");
+    expect(commitRes.body.message.length).toBeGreaterThan(0);
+    expect(Array.isArray(commitRes.body.details?.conflicts)).toBe(true);
+    expect(commitRes.body.details.conflicts[0].blockingProposalId).toBe(holderId);
+    expect(commitRes.body.details.conflicts[0].blockingProposalStatus).toBe("inprogress");
+    expect(typeof commitRes.body.details.conflicts[0].message).toBe("string");
+  });
+
   it("returns 409 if already committed", async () => {
     const res = await request(ctx.app)
       .post(`/api/proposals/${committedProposalId}/commit`)

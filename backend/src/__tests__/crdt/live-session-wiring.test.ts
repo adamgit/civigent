@@ -146,19 +146,21 @@ describe("live-editing pipeline wiring (MW-1b/2/3)", () => {
     // A SEPARATE writer commits a change to Overview's canonical body via a
     // distinct (non-DocSession) proposal.
     const { createTransientProposal } = await import("../../storage/proposal-repository.js");
-    const { ProposalEditor } = await import("../../storage/proposal-editor.js");
     const { commitProposalToCanonicalDetailed } = await import("../../storage/commit-pipeline.js");
-    const { updateProposalSections } = await import("../../storage/proposal-repository.js");
+    const { mutateProposalContent } = await import("../../storage/mutate-proposal-content.js");
 
     const { id: otherProposalId } = await createTransientProposal(
       { id: "user-bob", type: "human", displayName: "Bob" },
       "edit overview",
     );
-    const editor = ProposalEditor.open(otherProposalId, "pending");
-    await editor.writeSection(SAMPLE_DOC_PATH, ["Overview"], "Overview", "COMMITTED BY BOB");
-    await updateProposalSections(otherProposalId, [
-      { doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] },
-    ]);
+    // Write + derive the manifest through the single manifest-owning boundary.
+    await mutateProposalContent(otherProposalId, {
+      kind: "write_section",
+      docPath: SAMPLE_DOC_PATH,
+      headingPath: ["Overview"],
+      heading: "Overview",
+      content: "COMMITTED BY BOB",
+    });
     const absorb = await commitProposalToCanonicalDetailed(otherProposalId, {});
 
     const headingPaths = absorb.changedSections.map((s) => [...s.headingPath]);

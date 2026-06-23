@@ -17,6 +17,7 @@ import {
   readProposal,
 } from "../../storage/proposal-repository.js";
 import type { WriterIdentity, ProposalTargetRef } from "../../types/shared.js";
+import { sectionTargetsOf } from "../../types/shared.js";
 
 const DOC = "doc.md";
 
@@ -206,7 +207,7 @@ describe("committing-failure rollback target (caller context)", () => {
     await ctx.cleanup();
   });
 
-  it("human/DocSession proposal returns committing -> inprogress, preserving lock fields", async () => {
+  it("human/DocSession proposal returns committing -> inprogress, preserving its target claim set", async () => {
     const holder = await createProposal(HUMAN_A, "edit", [
       { doc_path: DOC, heading_path: ["Overview"] },
     ]);
@@ -215,8 +216,8 @@ describe("committing-failure rollback target (caller context)", () => {
 
     const restored = await rollbackCommittingToInProgress(holder.id);
     expect(restored.status).toBe("inprogress");
-    expect(restored.locked_sections).toBeDefined();
-    expect(restored.locked_at).toBeDefined();
+    expect(restored.targets.length).toBeGreaterThan(0);
+    expect(sectionTargetsOf(restored.targets).map((t) => t.heading_path)).toEqual([["Overview"]]);
     expect((await readProposal(holder.id)).status).toBe("inprogress");
   });
 

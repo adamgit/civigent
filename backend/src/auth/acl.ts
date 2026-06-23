@@ -25,11 +25,15 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { getAuthRoot } from "../storage/data-root.js";
 import { isSingleUserMode, type AuthenticatedWriter } from "./context.js";
 import { readEnvVar } from "../env.js";
+import {
+  AclAction,
+  AclPermissionSet,
+  BuiltinRoleName,
+  RoleName,
+  type AclSnapshot,
+} from "../types/shared.js";
 
-/** PermissionLevel is now a plain string — any role name is valid. */
-export type PermissionLevel = string;
-
-const MAGIC_ROLES = ["public", "authenticated", "admin"] as const;
+export type { AclSnapshot } from "../types/shared.js";
 
 interface DefaultsFile {
   read?: string;
@@ -143,8 +147,8 @@ export async function grantAdmin(writerId: string): Promise<void> {
  *   2. Longest-prefix folder match in acl.json
  *   3. defaults.json "read" value (fallback: "authenticated")
  */
-export async function getDocReadPermission(docPath: string): Promise<string> {
-  return resolveDocPermission(docPath, "read");
+export async function getDocReadPermission(docPath: string): Promise<RoleName> {
+  return RoleName.of(await resolveDocPermissionRaw(docPath, "read"));
 }
 
 /**
@@ -155,11 +159,16 @@ export async function getDocReadPermission(docPath: string): Promise<string> {
  *   2. Longest-prefix folder match in acl.json
  *   3. defaults.json "write" value (fallback: "authenticated")
  */
-export async function getDocWritePermission(docPath: string): Promise<string> {
-  return resolveDocPermission(docPath, "write");
+export async function getDocWritePermission(docPath: string): Promise<RoleName> {
+  return RoleName.of(await resolveDocPermissionRaw(docPath, "write"));
 }
 
-async function resolveDocPermission(docPath: string, action: "read" | "write"): Promise<string> {
+/**
+ * Resolve the effective required role for `(docPath, action)` as a raw persisted
+ * string. Internal to this module: the hot permission path compares raw strings;
+ * public getters mint the result into a `RoleName` at the boundary.
+ */
+async function resolveDocPermissionRaw(docPath: string, action: AclAction): Promise<string> {
   const cache = await loadCache();
 
   // Exact match
@@ -187,28 +196,30 @@ async function resolveDocPermission(docPath: string, action: "read" | "write"): 
 export async function checkDocPermission(
   writer: AuthenticatedWriter | null,
   docPath: string,
-  action: "read" | "write",
+  action: AclAction,
 ): Promise<boolean> {
-  const requiredRole = await resolveDocPermission(docPath, action);
+  const requiredRole = await resolveDocPermissionRaw(docPath, action);
   const effectiveRoles = await getEffectiveRoles(writer);
   return effectiveRoles.includes(requiredRole);
 }
 
 /**
- * Compute the effective roles for a writer.
- * Always includes "public". Authenticated writers get "authenticated" plus any
- * roles from roles.json (including "admin" if present).
+ * Compute the effective roles for a writer as raw persisted strings.
+ * Always includes the builtin "public" role. Authenticated writers also get
+ * "authenticated" plus any roles from roles.json (including "admin" if present).
+ * Internal to the hot permission path; not exposed as `RoleName[]`.
  */
 async function getEffectiveRoles(writer: AuthenticatedWriter | null): Promise<string[]> {
-  const roles: string[] = ["public"];
+  const [PUBLIC, AUTHENTICATED, ADMIN] = BuiltinRoleName.values;
+  const roles: string[] = [PUBLIC];
 
   if (!writer) return roles;
 
-  roles.push("authenticated");
+  roles.push(AUTHENTICATED);
 
   // In single_user mode, the configured user is always admin
   if (isSingleUserMode() && writer.id === getSingleUserId()) {
-    roles.push("admin");
+    roles.push(ADMIN);
   }
 
   const cache = await loadCache();
@@ -224,32 +235,34 @@ async function getEffectiveRoles(writer: AuthenticatedWriter | null): Promise<st
 
 // ── Custom roles ─────────────────────────────────────────────────────
 
-export async function listCustomRoles(): Promise<string[]> {
+export async function listCustomRoles(): Promise<RoleName[]> {
   const cache = await loadCache();
-  return [...cache.customRoles];
+  return cache.customRoles.map((role) => RoleName.of(role));
 }
 
-export async function addCustomRole(name: string): Promise<void> {
-  if ((MAGIC_ROLES as readonly string[]).includes(name)) {
-    throw new Error(`Cannot create magic role "${name}" — it is auto-granted by the system.`);
+export async function addCustomRole(name: RoleName): Promise<void> {
+  const raw = RoleName.text(name);
+  if (BuiltinRoleName.is(raw)) {
+    throw new Error(`Cannot create magic role "${raw}" — it is auto-granted by the system.`);
   }
   const cache = await loadCache();
-  if (cache.customRoles.includes(name)) {
-    throw new Error(`Custom role "${name}" already exists.`);
+  if (cache.customRoles.includes(raw)) {
+    throw new Error(`Custom role "${raw}" already exists.`);
   }
-  cache.customRoles.push(name);
+  cache.customRoles.push(raw);
   await writeCustomRoles(cache.customRoles);
   invalidateCache();
 }
 
-export async function deleteCustomRole(name: string): Promise<void> {
-  if ((MAGIC_ROLES as readonly string[]).includes(name)) {
-    throw new Error(`Cannot delete magic role "${name}" — it is auto-granted by the system.`);
+export async function deleteCustomRole(name: RoleName): Promise<void> {
+  const raw = RoleName.text(name);
+  if (BuiltinRoleName.is(raw)) {
+    throw new Error(`Cannot delete magic role "${raw}" — it is auto-granted by the system.`);
   }
   const cache = await loadCache();
-  const idx = cache.customRoles.indexOf(name);
+  const idx = cache.customRoles.indexOf(raw);
   if (idx === -1) {
-    throw new Error(`Custom role "${name}" does not exist.`);
+    throw new Error(`Custom role "${raw}" does not exist.`);
   }
   cache.customRoles.splice(idx, 1);
   await writeCustomRoles(cache.customRoles);
@@ -263,40 +276,52 @@ async function writeCustomRoles(roles: string[]): Promise<void> {
 }
 
 // ── Admin API support ────────────────────────────────────────────
-
-export interface AclSnapshot {
-  defaults: { read: string; write: string };
-  acl: Record<string, { read?: string; write?: string }>;
-  roles: Record<string, string[]>;
-  customRoles: string[];
-}
+//
+// `AclSnapshot` is the shared API contract (re-exported at the top of this file).
+// On-disk persistence stays as plain JSON strings; these functions mint/widen
+// `RoleName` at the domain boundary only.
 
 export async function getAclSnapshot(): Promise<AclSnapshot> {
   const cache = await loadCache();
+  const [, AUTHENTICATED] = BuiltinRoleName.values;
+  const acl: Record<string, AclPermissionSet> = {};
+  for (const [docPath, perms] of Object.entries(cache.acl)) {
+    const entry: AclPermissionSet = {};
+    if (perms.read !== undefined) entry.read = RoleName.of(perms.read);
+    if (perms.write !== undefined) entry.write = RoleName.of(perms.write);
+    acl[docPath] = entry;
+  }
+  const roles: Record<string, RoleName[]> = {};
+  for (const [userId, assigned] of Object.entries(cache.roles)) {
+    roles[userId] = assigned.map((role) => RoleName.of(role));
+  }
   return {
     defaults: {
-      read: cache.defaults.read ?? "authenticated",
-      write: cache.defaults.write ?? "authenticated",
+      read: RoleName.of(cache.defaults.read ?? AUTHENTICATED),
+      write: RoleName.of(cache.defaults.write ?? AUTHENTICATED),
     },
-    acl: { ...cache.acl },
-    roles: { ...cache.roles },
-    customRoles: [...cache.customRoles],
+    acl,
+    roles,
+    customRoles: cache.customRoles.map((role) => RoleName.of(role)),
   };
 }
 
-export async function updateDefaults(defaults: { read?: string; write?: string }): Promise<void> {
+export async function updateDefaults(defaults: AclPermissionSet): Promise<void> {
   const cache = await loadCache();
-  if (defaults.read !== undefined) cache.defaults.read = defaults.read;
-  if (defaults.write !== undefined) cache.defaults.write = defaults.write;
+  if (defaults.read !== undefined) cache.defaults.read = RoleName.text(defaults.read);
+  if (defaults.write !== undefined) cache.defaults.write = RoleName.text(defaults.write);
   const authDir = getAuthRoot();
   await mkdir(authDir, { recursive: true });
   await writeFile(path.join(authDir, "defaults.json"), JSON.stringify(cache.defaults, null, 2) + "\n");
   invalidateCache();
 }
 
-export async function setDocAcl(docPath: string, perms: { read?: string; write?: string }): Promise<void> {
+export async function setDocAcl(docPath: string, perms: AclPermissionSet): Promise<void> {
   const cache = await loadCache();
-  cache.acl[docPath] = { ...cache.acl[docPath], ...perms };
+  const next: { read?: string; write?: string } = { ...cache.acl[docPath] };
+  if (perms.read !== undefined) next.read = RoleName.text(perms.read);
+  if (perms.write !== undefined) next.write = RoleName.text(perms.write);
+  cache.acl[docPath] = next;
   const authDir = getAuthRoot();
   await mkdir(authDir, { recursive: true });
   await writeFile(path.join(authDir, "acl.json"), JSON.stringify(cache.acl, null, 2) + "\n");
@@ -312,9 +337,9 @@ export async function removeDocAcl(docPath: string): Promise<void> {
   invalidateCache();
 }
 
-export async function setUserRoles(userId: string, roles: string[]): Promise<void> {
+export async function setUserRoles(userId: string, roles: RoleName[]): Promise<void> {
   const cache = await loadCache();
-  cache.roles[userId] = roles;
+  cache.roles[userId] = roles.map((role) => RoleName.text(role));
   const authDir = getAuthRoot();
   await mkdir(authDir, { recursive: true });
   await writeFile(path.join(authDir, "roles.json"), JSON.stringify(cache.roles, null, 2) + "\n");

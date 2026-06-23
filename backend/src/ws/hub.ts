@@ -1,7 +1,8 @@
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
-import type { WsClientMessage, WsServerEvent } from "../types/shared.js";
+import type { JsonObject, JsonValue, WsClientMessage, WsServerEvent } from "../types/shared.js";
+import { expectJsonObject, parseJson } from "../types/shared.js";
 import { resolveAuthenticatedWriterFromHeaders } from "../auth/context.js";
 
 interface SocketState {
@@ -15,31 +16,43 @@ export interface WsHub {
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
 }
 
-function safeParseMessage(raw: string): WsClientMessage | null {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const obj = parsed as Record<string, unknown>;
+/**
+ * Decode a hub client message at the JSON trust boundary.
+ *
+ * Malformed input THROWS (full message): `parseJson` carries its own `SyntaxError`
+ * for non-JSON, `expectJsonObject` throws for non-objects, and a subscription
+ * command with a non-string path throws naming the field — none are swallowed.
+ *
+ * Returns `null` ONLY for a well-formed message that is not a subscription command
+ * (the frontend also sends `{ type: "document_focus" | "document_blur" }` over this
+ * same socket; the hub does not own those and ignores them). That is NOT an error
+ * swallow — it is a different, valid message class outside `WsClientMessage`.
+ */
+function decodeWsClientMessage(value: JsonValue): WsClientMessage | null {
+  const obj: JsonObject = expectJsonObject(value, "hub client message");
 
-    if (obj.action === "subscribe" && typeof obj.doc_path === "string") {
-      return { action: "subscribe", doc_path: obj.doc_path };
+  const action = obj["action"];
+  if (action === "subscribe" || action === "unsubscribe") {
+    const docPath = obj["doc_path"];
+    if (typeof docPath !== "string") {
+      throw new Error(`hub client message "${action}" requires a string doc_path, got ${JSON.stringify(docPath)}`);
     }
-    if (obj.action === "unsubscribe" && typeof obj.doc_path === "string") {
-      return { action: "unsubscribe", doc_path: obj.doc_path };
-    }
-
-    // v2 backward compat: subscribe/unsubscribe as top-level keys
-    if (typeof obj.subscribe === "string") {
-      return { action: "subscribe", doc_path: obj.subscribe };
-    }
-    if (typeof obj.unsubscribe === "string") {
-      return { action: "unsubscribe", doc_path: obj.unsubscribe };
-    }
-
-    return null;
-  } catch {
-    return null;
+    return { action, doc_path: docPath };
   }
+
+  // Top-level subscribe/unsubscribe key form — the shape the frontend actually sends.
+  const subscribe = obj["subscribe"];
+  if (typeof subscribe === "string") {
+    return { action: "subscribe", doc_path: subscribe };
+  }
+  const unsubscribe = obj["unsubscribe"];
+  if (typeof unsubscribe === "string") {
+    return { action: "unsubscribe", doc_path: unsubscribe };
+  }
+
+  // Well-formed, but not a subscription command (e.g. document focus/blur). Not
+  // this hub's concern — ignored without throwing.
+  return null;
 }
 
 export function createWsHub(): WsHub {
@@ -81,13 +94,15 @@ export function createWsHub(): WsHub {
       const state = socketState.get(socket);
       if (!state) return;
 
-      const parsed = safeParseMessage(String(data));
-      if (!parsed) return;
+      // Decode at the trust boundary: malformed input throws (propagates — never
+      // swallowed); a non-subscription message decodes to null and is ignored.
+      const message = decodeWsClientMessage(parseJson(String(data)));
+      if (message === null) return;
 
-      if (parsed.action === "subscribe") {
-        state.subscriptions.add(parsed.doc_path);
-      } else if (parsed.action === "unsubscribe") {
-        state.subscriptions.delete(parsed.doc_path);
+      if (message.action === "subscribe") {
+        state.subscriptions.add(message.doc_path);
+      } else {
+        state.subscriptions.delete(message.doc_path);
       }
     });
 

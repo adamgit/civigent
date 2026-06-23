@@ -31,13 +31,34 @@ export function HomePage() {
 
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [activityError, setActivityError] = useState<string | null>(null);
+
+  // Degraded-proposal alert: count proposals quarantined by a detected defect so
+  // admins are prompted to autofix them on ProposalsPage.
+  const [degradedCount, setDegradedCount] = useState(0);
+  const [degradedError, setDegradedError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     apiClient
       .getActivity(100, 30)
-      .then((res) => { if (!cancelled) { setItems(res.items); setLoading(false); } })
-      .catch(() => { if (!cancelled) setLoading(false); });
+      .then((res) => { if (!cancelled) { setItems(res.items); setActivityError(null); setLoading(false); } })
+      .catch((err) => { if (!cancelled) { setActivityError(err instanceof Error ? err.message : String(err)); setLoading(false); } });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .listDegradedProposals()
+      .then((res) => {
+        if (!cancelled) {
+          // Endpoint already filters to degraded proposals — just count them.
+          setDegradedCount(res.proposals.length);
+          setDegradedError(null);
+        }
+      })
+      .catch((err) => { if (!cancelled) setDegradedError(err instanceof Error ? err.message : String(err)); });
     return () => { cancelled = true; };
   }, []);
 
@@ -74,6 +95,26 @@ export function HomePage() {
   return (
     <div className="flex-1 overflow-auto canvas-scroll" style={{ fontFamily: "var(--font-ui)" }}>
       <div style={{ maxWidth: 740, margin: "0 auto", padding: "2.5rem 1.5rem 3rem" }}>
+
+        {/* Degraded-proposal alert — quarantined proposals need an admin autofix */}
+        {degradedCount > 0 && (
+          <div
+            role="alert"
+            data-testid="degraded-proposals-alert"
+            className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-[13px] text-red-800"
+          >
+            <strong>{degradedCount}</strong> {degradedCount === 1 ? "proposal is" : "proposals are"} degraded and
+            quarantined (cannot lock or commit until repaired).{" "}
+            <Link to="/proposals" className="font-medium underline">
+              Review &amp; autofix on Proposals &rarr;
+            </Link>
+          </div>
+        )}
+        {degradedError && (
+          <p className="text-error" style={{ marginBottom: "1rem" }}>
+            Could not check for degraded proposals: {degradedError}
+          </p>
+        )}
 
         {/* Header */}
         <div style={{ marginBottom: "1.75rem" }}>
@@ -284,6 +325,11 @@ export function HomePage() {
         <hr style={{ border: "none", borderTop: "1px solid var(--color-footer-border)", margin: "0 0 1.5rem" }} />
 
         {/* Activity feeds */}
+        {activityError && (
+          <p className="text-error" style={{ marginBottom: "1rem" }}>
+            Could not load activity: {activityError}
+          </p>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
 
           {/* Recent human edits */}
@@ -293,7 +339,7 @@ export function HomePage() {
             </p>
             <div style={{ maxHeight: 220, overflowY: "auto" }} className="canvas-scroll">
               {loading && <p style={{ fontSize: 12, color: "var(--color-text-muted)" }}>Loading&hellip;</p>}
-              {!loading && humanEdits.length === 0 && (
+              {!loading && !activityError && humanEdits.length === 0 && (
                 <p style={{ fontSize: 12, color: "var(--color-text-muted)" }}>No recent human edits.</p>
               )}
               {humanEdits.map((item) => {
@@ -356,7 +402,7 @@ export function HomePage() {
             </p>
             <div style={{ maxHeight: 220, overflowY: "auto" }} className="canvas-scroll">
               {loading && <p style={{ fontSize: 12, color: "var(--color-text-muted)" }}>Loading&hellip;</p>}
-              {!loading && agentActivity.length === 0 && (
+              {!loading && !activityError && agentActivity.length === 0 && (
                 <p style={{ fontSize: 12, color: "var(--color-text-muted)" }}>No recent agent activity.</p>
               )}
               {agentActivity.map((item) => {

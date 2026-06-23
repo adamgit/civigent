@@ -16,6 +16,9 @@ import { OverwriteMarkdownModal } from "../components/OverwriteMarkdownModal";
 import { useCrossSectionCopy } from "../hooks/useCrossSectionCopy";
 import { useViewingPresence } from "../hooks/useViewingPresence";
 import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
+import { useInitialObserverGuard } from "../hooks/useInitialObserverGuard";
+import { useDocumentActivity } from "../hooks/useDocumentActivity";
+import { DocumentActivityIndicator } from "../components/DocumentActivityIndicator";
 import { DocumentResourceModel } from "../models/document-resource-model";
 import type { Awareness } from "y-protocols/awareness";
 import {
@@ -37,6 +40,12 @@ import {
 import { useDocumentSessionController } from "../hooks/useDocumentSessionController";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
 import { usePublishPaused } from "../hooks/useFragmentStoreHooks";
+import { useDocSaveStatusInputs } from "../hooks/useDocSaveStatusInputs";
+import {
+  EphemeralSessionAuthorshipLedger,
+  type LocalEditOriginSink,
+  type SessionAuthorshipView,
+} from "../status/sessionAuthorship";
 
 // ─── viewingPresence: small component to call the hook per-section ──
 
@@ -133,7 +142,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const {
     focusedSectionIndex,
     setFocusedSectionIndex,
-    crdtProvider,
     store,
     storeRef,
     transport,
@@ -159,7 +167,8 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     proposalOverlayVersion,
     proposalSectionsRef,
     controllerState,
-    crdtProviderRef,
+    transportRef,
+    presenceRef,
     controllerStateRef,
     mountedEditorFragmentKeysRef,
     editorRefs,
@@ -180,7 +189,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     handleProposalSectionChange,
     handleCursorExit,
     setEditorRef,
-    setViewingSections,
+    setViewingSection,
     requestMode,
     stopObserver,
   } = useDocumentSessionController({
@@ -305,7 +314,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     decodedDocPath,
     sectionsRef,
     setSections,
-    crdtProviderRef,
+    transportRef,
     focusedSectionIndexRef,
     mountedEditorFragmentKeysRef,
     pendingStructureRefocusRef,
@@ -325,10 +334,10 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
   // ── Cross-section drag/drop service ──────────────────────
   const transferServiceRef = useRef<SectionTransferService | null>(null);
-  const activeCrdtProvider = crdtProviderRef.current;
-  if (activeCrdtProvider && !transferServiceRef.current) {
+  const activeTransport = transportRef.current;
+  if (activeTransport && !transferServiceRef.current) {
     transferServiceRef.current = new SectionTransferService({
-      crdtProvider: activeCrdtProvider,
+      transport: activeTransport,
       getSections: () => sectionsRef.current.map(s => ({
         heading_path: s.heading_path,
         fragment_key: getSectionFragmentKey(s),
@@ -351,7 +360,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
       },
     });
   }
-  if (!activeCrdtProvider) transferServiceRef.current = null;
+  if (!activeTransport) transferServiceRef.current = null;
 
   const { dragOverSectionIndex } = useSectionDragDrop({
     containerRef: sectionsContainerRef,
@@ -406,20 +415,8 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     return () => clearTimeout(timer);
   }, [sectionsLoading]);
 
-  useEffect(() => {
-    if (!decodedDocPath) return;
-    let cancelled = false;
-    loadSections(decodedDocPath).then(() => {
-      if (cancelled) return;
-      // Start observer unless the user clicked into edit mode while sections were loading.
-      // Read via ref so this async callback doesn't need controllerState in the dep array.
-      if (controllerStateRef.current.requestedMode !== "editor") requestMode("observer");
-    });
-    return () => {
-      cancelled = true;
-      stopObserver();
-    };
-  }, [decodedDocPath, loadSections, requestMode, stopObserver, controllerStateRef]);
+  useInitialObserverGuard({ decodedDocPath, loadSections, requestMode, stopObserver, controllerStateRef });
+
 
   // ── Load changes-since (recently changed sections) ───────
   useEffect(() => {
@@ -442,10 +439,9 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   }, [decodedDocPath, lastVisitSeed, setRecentlyChangedSections]);
 
   // ── Transport failure while editing → silently return to read view ──
-  // The idle-timeout (4020) teardown is removed (no idle timer in this
-  // architecture). A genuine transport failure still drops the editor back to
-  // a canonical read view; restore (4022) / admin-rebuild (4024) reconnect
-  // inside the provider and never reach "disconnected" here.
+  // A genuine transport failure drops the editor back to a canonical read view;
+  // restore (4022) / admin-rebuild (4024) reconnect inside the provider and
+  // never reach "disconnected" here.
   useEffect(() => {
     if (
       crdtState === "disconnected"
@@ -463,18 +459,34 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const docTitle = decodedDocPath ? getDocDisplayName(decodedDocPath) : "Untitled";
 
   // Document-level publication-pause flag — drives the topbar status and the
-  // editing banner. (The per-section receipt save-state machine is removed.)
+  // editing banner.
   const publishPaused = usePublishPaused(store);
+  // One session-authorship ledger per editing mount: records which fragments
+  // THIS editor instance dirtied this session. Not a singleton, not on the
+  // store, not in localStorage — it dies on unmount/refresh, so work stranded
+  // from a previous session correctly reads as inbound. Handed down only as the
+  // two segregated ports: the write-only sink to the section editors, the
+  // read-only view to the status hook.
+  const authorshipLedger = useMemo(() => new EphemeralSessionAuthorshipLedger(), []);
+  const localEditSink: LocalEditOriginSink = authorshipLedger;
+  const authorshipView: SessionAuthorshipView = authorshipLedger;
+  // Honest save-status inputs for the topbar and activity pill, with YOUR work
+  // split from inbound/remote activity (session-authored pending edits + sticky
+  // session flag) so a stranger's or stranded commit never reads as your save.
+  const saveStatus = useDocSaveStatusInputs(store, isEditing, authorshipView);
+  // Presentation-only activity state: turns the brief publish-pause freeze into a
+  // "Saving… → Saved" (local) or "Updating… → Up to date" (inbound) affordance
+  // instead of a silent read-only blip.
+  const documentActivity = useDocumentActivity(publishPaused, saveStatus.hasLocalEdits);
 
   // ── B3: Stable section callbacks (extracted from sections.map) ───
   const handleFocusSection = useCallback((idx: number, _headingPath: string[], coords: { x: number; y: number }) => {
     setFocusedSectionIndex(idx);
     pendingFocusRef.current = { index: idx, position: "start", coords };
-    const provider = crdtProviderRef.current;
-    if (provider) {
-      setViewingSections(provider, idx);
+    if (presenceRef.current) {
+      setViewingSection(idx);
     }
-  }, [setFocusedSectionIndex, setViewingSections]);
+  }, [setFocusedSectionIndex, setViewingSection, presenceRef]);
 
   const handleEditorReady = useCallback((idx: number) => {
     setReadyEditors(prev => {
@@ -536,6 +548,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
   return (
     <SectionHoverProvider activeSectionIndex={focusedSectionIndex}>
+    <DocumentActivityIndicator activity={documentActivity} />
     <div className="flex flex-col h-full">
       <DocumentTopbar
         docPath={decodedDocPath}
@@ -548,6 +561,10 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         crdtState={crdtState}
         publishPaused={publishPaused}
         isEditing={isEditing}
+        allReceived={saveStatus.allReceived}
+        hasLocalUncommittedEdits={saveStatus.hasLocalUncommittedEdits}
+        hasInboundActivity={saveStatus.hasInboundActivity}
+        hadLocalEdits={saveStatus.hadLocalEdits}
       />
 
       {/* Replacement notice — shown after a reconnect following restore/overwrite */}
@@ -754,6 +771,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
             crdtError={crdtError}
             transferService={transferServiceRef.current}
             readyEditors={readyEditors}
+            localEditSink={localEditSink}
             mouseDownPosRef={mouseDownPosRef}
             onStartEditing={startEditing}
             onFocusSection={handleFocusSection}

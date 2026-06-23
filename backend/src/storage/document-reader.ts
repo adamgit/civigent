@@ -2,7 +2,7 @@ import { getContentRoot } from "./data-root.js";
 import { resolveDocPathUnderContent } from "./path-utils.js";
 import { ContentLayer } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
-import { buildFragmentContent, bodyAsFragment, type SectionBody, type FragmentContent } from "./section-formatting.js";
+import { buildFragmentContent, fragmentFromBodyHolder, type SectionBody, type FragmentContent } from "./section-formatting.js";
 import { isDocumentBeforeFirstHeading } from "./section-shape.js";
 
 // Re-export error classes from ContentLayer (callers import from here)
@@ -30,7 +30,7 @@ export function prependHeadings(
 ): Map<string, FragmentContent> {
   const result = new Map<string, FragmentContent>();
   for (const [key, body] of bodyMap) {
-    result.set(key, bodyAsFragment(body));
+    result.set(key, fragmentFromBodyHolder(body));
   }
   for (const { heading, level, headingPath } of sections) {
     if (isDocumentBeforeFirstHeading({ heading, level, headingPath })) continue;

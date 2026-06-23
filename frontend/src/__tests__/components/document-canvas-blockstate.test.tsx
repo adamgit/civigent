@@ -80,6 +80,7 @@ function renderCanvas(
         crdtError={null}
         transferService={null}
         readyEditors={focusedSectionIndex !== null ? new Set([focusedSectionIndex]) : new Set()}
+        localEditSink={{ recordLocalEdit: () => {} }}
         mouseDownPosRef={{ current: null }}
         onStartEditing={() => {}}
         onFocusSection={() => {}}

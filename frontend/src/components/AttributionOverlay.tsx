@@ -25,6 +25,10 @@ function getBorderColor(fillColor: string): string {
   return fillColor.replace(/0\.\d+\)$/, "0.6)");
 }
 
+function contentToDisplayLines(content: string): string[] {
+  return content.length === 0 ? [] : content.split("\n");
+}
+
 /**
  * Inline colored-line attribution view.
  *
@@ -60,9 +64,11 @@ export function AttributionOverlay({ lines, loading, content, error }: Attributi
     );
   }
 
+  const contentLines = contentToDisplayLines(content);
+
   if (!lines || lines.length === 0) {
     // Empty section (e.g. before-first-heading with no content) — nothing to render.
-    if (!content) return null;
+    if (contentLines.length === 0) return null;
     return (
       <div style={{ padding: "12px 0", color: "var(--color-status-red, #b91c1c)", fontSize: 12 }}>
         Attribution error: server returned no blame data for this section. Content exists so attribution must exist.
@@ -70,13 +76,20 @@ export function AttributionOverlay({ lines, loading, content, error }: Attributi
     );
   }
 
-  const contentLines = content.split("\n");
+  if (contentLines.length === 0) return null;
+
+  if (lines.length !== contentLines.length) {
+    return (
+      <div style={{ padding: "12px 0", color: "var(--color-status-red, #b91c1c)", fontSize: 12 }}>
+        Attribution error: blame returned {lines.length} lines for {contentLines.length} rendered content lines.
+      </div>
+    );
+  }
+
   const lineTypeMap = new Map<number, BlameLineAttribution["type"]>();
   for (const entry of lines) {
     lineTypeMap.set(entry.line, entry.type);
   }
-  // Lines beyond blame coverage (e.g. trailing newline artefact) inherit the last blamed type.
-  const lastBlamedType = lines.length > 0 ? lines[lines.length - 1].type : "unknown";
 
   return (
     <div
@@ -90,7 +103,14 @@ export function AttributionOverlay({ lines, loading, content, error }: Attributi
     >
       {contentLines.map((text, index) => {
         const lineNum = index + 1;
-        const type = lineTypeMap.get(lineNum) ?? lastBlamedType;
+        const type = lineTypeMap.get(lineNum);
+        if (!type) {
+          return (
+            <div key={lineNum} style={{ padding: "0 8px", color: "var(--color-status-red, #b91c1c)" }}>
+              Attribution error: missing blame for rendered line {lineNum}.
+            </div>
+          );
+        }
         return (
           <div
             key={lineNum}

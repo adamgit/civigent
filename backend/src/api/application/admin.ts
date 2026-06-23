@@ -3,12 +3,17 @@ import {
   getAdminConfig,
   updateAdminConfig,
 } from "../../admin-config.js";
-import { HUMAN_INVOLVEMENT_PRESETS } from "../../types/shared.js";
+import { HUMAN_INVOLVEMENT_PRESETS, RoleName } from "../../types/shared.js";
 import type {
+  AclSnapshot,
   AdminConfig,
+  CreateCustomRoleRequest,
   GetActivityResponse,
   GetAdminSnapshotHealthResponse,
   GetAdminSnapshotHistoryResponse,
+  SetAclDefaultsRequest,
+  SetDocumentAclRequest,
+  SetUserRolesRequest,
 } from "../../types/shared.js";
 import { readActivity } from "../../storage/activity-reader.js";
 import {
@@ -36,7 +41,14 @@ import {
   rotateAgentSecret,
   lookupAgentKey,
 } from "../../auth/agent-keys.js";
-import { listAllProposals } from "../../storage/proposal-repository.js";
+import {
+  listAllProposals,
+  readProposal,
+  rewriteProposalMeta,
+  ProposalNotFoundError,
+} from "../../storage/proposal-repository.js";
+import { findProposalDefectDetector } from "../../domain/proposal-defect-detectors.js";
+import type { AnyProposal } from "../../types/shared.js";
 import path from "node:path";
 import type { GetHeatmapResponse, HeatmapEntry } from "../../types/shared.js";
 import { readDocumentsTree } from "../../storage/documents-tree.js";
@@ -92,6 +104,47 @@ export async function getActivity(limit: number, days: number): Promise<GetActiv
   return { items };
 }
 
+// ─── Proposal defect autofix ────────────────────────────
+
+export type AutofixProposalResult =
+  | { ok: false; status: number; message: string }
+  | { ok: true; proposal: AnyProposal };
+
+/**
+ * Run a named defect detector's autofix on a single proposal and persist the
+ * repair. Returns a typed failure (404 unknown detector / 404 missing proposal /
+ * 409 not-degraded) or the repaired proposal. The repair must clear the marker;
+ * the storage write boundary backstops it.
+ */
+export async function autofixProposalDefect(
+  id: string,
+  detectorId: string,
+): Promise<AutofixProposalResult> {
+  const detector = findProposalDefectDetector(detectorId);
+  if (!detector) {
+    return { ok: false, status: 404, message: `Unknown proposal defect detector: ${detectorId}.` };
+  }
+  let proposal: AnyProposal;
+  try {
+    proposal = await readProposal(id);
+  } catch (error) {
+    if (error instanceof ProposalNotFoundError) {
+      return { ok: false, status: 404, message: `Proposal not found: ${id}.` };
+    }
+    throw error;
+  }
+  if (!detector.detect(proposal)) {
+    return {
+      ok: false,
+      status: 409,
+      message: `Proposal ${id} does not exhibit defect "${detectorId}"; nothing to autofix.`,
+    };
+  }
+  const repaired = detector.fix(proposal);
+  const persisted = await rewriteProposalMeta(id, repaired);
+  return { ok: true, proposal: persisted };
+}
+
 // ─── Agent keys ─────────────────────────────────────────
 
 export async function listAgents() {
@@ -138,36 +191,36 @@ export async function getAgentsSummary() {
 
 // ─── ACL / RBAC ─────────────────────────────────────────
 
-export async function getAcl() {
+export async function getAcl(): Promise<AclSnapshot> {
   return getAclSnapshot();
 }
 
-export async function setAclDefaults(read?: string, write?: string): Promise<void> {
-  await updateDefaults({ read, write });
+export async function setAclDefaults(request: SetAclDefaultsRequest): Promise<void> {
+  await updateDefaults(request);
 }
 
-export async function setDocAclEntry(docPath: string, read?: string, write?: string): Promise<void> {
-  await setDocAcl(docPath, { read, write });
+export async function setDocAclEntry(docPath: string, request: SetDocumentAclRequest): Promise<void> {
+  await setDocAcl(docPath, request);
 }
 
 export async function removeDocAclEntry(docPath: string): Promise<void> {
   await removeDocAcl(docPath);
 }
 
-export async function setRoles(userId: string, roles: string[]): Promise<void> {
-  await setUserRoles(userId, roles);
+export async function setRoles(userId: string, request: SetUserRolesRequest): Promise<void> {
+  await setUserRoles(userId, request.roles);
 }
 
 export async function removeRoles(userId: string): Promise<void> {
   await removeUserRoles(userId);
 }
 
-export async function createCustomRole(name: string): Promise<void> {
-  await addCustomRole(name);
+export async function createCustomRole(request: CreateCustomRoleRequest): Promise<void> {
+  await addCustomRole(request.name);
 }
 
 export async function removeCustomRole(name: string): Promise<void> {
-  await deleteCustomRole(name);
+  await deleteCustomRole(RoleName.of(name));
 }
 
 // ─── Heatmap ────────────────────────────────────────────
@@ -194,44 +247,40 @@ export async function getHeatmap(): Promise<GetHeatmapResponse> {
     if (entry.type !== "file") continue;
     const docPath = entry.path;
 
-    try {
-      const structure = await readDocumentStructure(docPath);
-      const headingPaths = flattenStructureToHeadingPaths(structure);
+    const structure = await readDocumentStructure(docPath);
+    const headingPaths = flattenStructureToHeadingPaths(structure);
 
-      const [gitCommitInfo, canonicalPaths] = await Promise.all([
-        readDocSectionCommitInfo(docPath),
-        resolveAllSectionPaths(getContentRoot(), docPath),
-      ]);
+    const [gitCommitInfo, canonicalPaths] = await Promise.all([
+      readDocSectionCommitInfo(docPath),
+      resolveAllSectionPaths(getContentRoot(), docPath),
+    ]);
 
-      const commitByHeading = new Map<string, SectionCommitInfo>();
-      for (const [headingKey, resolved] of canonicalPaths) {
-        const relFromDataRoot = path.relative(getDataRoot(), resolved.absolutePath);
-        const info = gitCommitInfo.get(relFromDataRoot);
-        if (info) commitByHeading.set(headingKey, info);
-      }
+    const commitByHeading = new Map<string, SectionCommitInfo>();
+    for (const [headingKey, resolved] of canonicalPaths) {
+      const relFromDataRoot = path.relative(getDataRoot(), resolved.absolutePath);
+      const info = gitCommitInfo.get(relFromDataRoot);
+      if (info) commitByHeading.set(headingKey, info);
+    }
 
-      const crdtSessionActive = lookupDocSession(docPath) !== undefined;
+    const crdtSessionActive = lookupDocSession(docPath) !== undefined;
 
-      for (const headingPath of headingPaths) {
-        const headingKey = SectionRef.headingKey(headingPath);
-        const agentWritePolicy = await AgentWritePolicy.summarizeSection(
-          new SectionRef(docPath, headingPath),
-          gitCommitInfo,
-        );
-        const commitInfo = commitByHeading.get(headingKey);
+    for (const headingPath of headingPaths) {
+      const headingKey = SectionRef.headingKey(headingPath);
+      const agentWritePolicy = await AgentWritePolicy.summarizeSection(
+        new SectionRef(docPath, headingPath),
+        gitCommitInfo,
+      );
+      const commitInfo = commitByHeading.get(headingKey);
 
-        sections.push({
-          doc_path: docPath,
-          heading_path: headingPath,
-          agentWritePolicy,
-          crdt_session_active: crdtSessionActive,
-          last_human_commit_sha: commitInfo?.sha ?? null,
-          last_commit_author: commitInfo?.authorName ?? null,
-          last_commit_timestamp: commitInfo ? new Date(commitInfo.timestampMs).toISOString() : null,
-        });
-      }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      sections.push({
+        doc_path: docPath,
+        heading_path: headingPath,
+        agentWritePolicy,
+        crdt_session_active: crdtSessionActive,
+        last_human_commit_sha: commitInfo?.sha ?? null,
+        last_commit_author: commitInfo?.authorName ?? null,
+        last_commit_timestamp: commitInfo ? new Date(commitInfo.timestampMs).toISOString() : null,
+      });
     }
   }
 
@@ -247,13 +296,13 @@ export async function getHeatmap(): Promise<GetHeatmapResponse> {
 // ─── Agent MCP activity log ─────────────────────────────
 
 export async function getAgentActivity(): Promise<{ sessions: unknown[] }> {
-  const { readFile } = await import("node:fs/promises");
+  const { readFileIfExists } = await import("../../storage/fs-primitives.js");
   const { getMonitoringRoot } = await import("../../storage/data-root.js");
   const logPath = (await import("node:path")).join(getMonitoringRoot(), "agent-mcp-activity.jsonl");
-  let raw: string;
-  try {
-    raw = await readFile(logPath, "utf-8");
-  } catch {
+  // A genuinely absent log file means no agent activity has been recorded yet —
+  // a valid empty state. Any other read failure (permission, I/O) propagates.
+  const raw = await readFileIfExists(logPath);
+  if (raw === null) {
     return { sessions: [] };
   }
   const sessions = raw

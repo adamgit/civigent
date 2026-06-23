@@ -5,7 +5,7 @@ import { access } from "node:fs/promises";
 import { getContentGitPrefix } from "./data-root.js";
 import { parseSkeletonToEntries } from "./document-skeleton.js";
 import type { AttributionWriterType } from "../types/shared.js";
-import { bodyFromGit, bodyToDisk, buildFragmentContent, assembleFragments, bodyAsFragment, type FragmentContent } from "./section-formatting.js";
+import { bodyFromGit, bodyToDisk, buildFragmentContent, assembleFragments, fragmentFromBodyHolder, type FragmentContent } from "./section-formatting.js";
 import { isBodyHolderShape } from "./section-shape.js";
 
 const execFileAsync = promisify(execFile);
@@ -264,7 +264,7 @@ async function gitShowFileOrNull(
   try {
     return await gitShowFile(dataRoot, sha, relativePath);
   } catch (err) {
-    const msg = (err as Error).message ?? "";
+    const msg = err instanceof Error ? err.message : "";
     if (msg.includes("does not exist") || msg.includes("exists on disk, but not in")) {
       return null;
     }
@@ -330,7 +330,7 @@ async function assembleSkeletonFromGit(
       parts.push(buildFragmentContent(body, parentVisibleLevel, parentVisibleHeading));
     } else if (isBeforeFirstHeading) {
       // Document-level BFH: anonymous content, no heading line.
-      if (body) parts.push(bodyAsFragment(body));
+      if (body) parts.push(fragmentFromBodyHolder(body));
     } else {
       parts.push(buildFragmentContent(body, entry.level, entry.heading));
     }

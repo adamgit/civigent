@@ -9,8 +9,8 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
  *
  * `[]` used to mean "whole document" — an overload that confused callers and
  * masked bugs. Whole-document enumeration goes through
- * `readAllSubtreeEntries(docPath)`; before-first-heading reads go through
- * `readSection(ref(docPath, []))`. These tests lock in the rejection
+ * `getSectionList(docPath)` + `readSection(...)`; before-first-heading reads go
+ * through `readSection(ref(docPath, []))`. These tests lock in the rejection
  * behavior and prove the proper subtree path still works.
  */
 describe("ContentLayer.readSubtree — empty headingPath rejection", () => {
@@ -45,8 +45,8 @@ describe("ContentLayer.readSubtree — empty headingPath rejection", () => {
     expect(entries[0].bodyContent).toContain("A body.");
   });
 
-  it("readSubtree(docPath, []) throws and the message names readAllSubtreeEntries", async () => {
+  it("readSubtree(docPath, []) throws and the message names getSectionList", async () => {
     const layer = new ContentLayer(ctx.contentDir);
-    await expect(layer.readSubtree(DOC, [])).rejects.toThrow(/readAllSubtreeEntries/);
+    await expect(layer.readSubtree(DOC, [])).rejects.toThrow(/getSectionList/);
   });
 });

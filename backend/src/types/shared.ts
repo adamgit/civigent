@@ -1,5 +1,6 @@
 export type {
   AdminConfig,
+  AclSnapshot,
   ActivityItem,
   AgentReadingEvent,
   ApiError,
@@ -8,9 +9,7 @@ export type {
   ChangesSinceResponse,
   CommitProposalResponse,
   ContentCommittedEvent,
-  CreateProposalRequest,
   CreateProposalResponse,
-  DirtyChangedEvent,
   WriterDirtyStateChangedEvent,
   SessionStatusChangedEvent,
   DocPath,
@@ -34,6 +33,7 @@ export type {
   SnapshotRunRecord,
   GetDocumentResponse,
   GetDocumentSectionsResponse,
+  GetProposalSectionsResponse,
   GetDocumentsTreeResponse,
   GetHeatmapResponse,
   GovernanceMode,
@@ -63,6 +63,8 @@ export type {
   ProposalId,
 
   ProposalTargetRef,
+  ProposalSectionTargetRef,
+  DocumentTargetRef,
   AgentWritePolicyResult,
   AgentWritePolicyTarget,
   HumanInvolvementPolicyDetails,
@@ -78,6 +80,7 @@ export type {
   SectionAgentWritePolicySummary,
   ProposalSection,
   ProposalStatus,
+  ProposalDefect,
   ReadDocStructureResponse,
   ReadProposalResponse,
   ReadSectionResponse,
@@ -87,7 +90,6 @@ export type {
   SectionTarget,
   SectionTargetRef,
   SessionInfoResponse,
-  UpdateProposalRequest,
   WithdrawProposalResponse,
   AcquireLocksResponse,
   AllSessionStatusesResponse,
@@ -104,12 +106,50 @@ export type {
   BlameLineAttribution,
   BlameResponse,
   DocumentReplacementNoticePayload,
+  JsonObject,
+  JsonValue,
 } from "../../../sharedlibs/shared-types/src/index.js";
 
 export {
+  AclAction,
+  BuiltinRoleName,
+  RoleName,
+  AclPermissionSet,
+  SetAclDefaultsRequest,
+  SetDocumentAclRequest,
+  SetUserRolesRequest,
+  CreateCustomRoleRequest,
+  CreateProposalRequest,
+  UpdateProposalManifestRequest,
+  ReplaceProposalSectionsRequest,
+  WriteProposalDocumentSectionsRequest,
+  LiveMoveSectionRequest,
   HUMAN_INVOLVEMENT_PRESETS,
+  expectJsonObject,
   sectionHeadingKey,
   sectionGlobalKey,
   sectionTargetToHeadingPath,
   headingPathToSectionTarget,
+  parseJson,
+  asSectionTarget,
+  documentTargetRef,
+  sectionsToTargets,
+  sectionTargetsOf,
+  targetToSectionRef,
+  proposalTargetKey,
+  proposalTargetLabel,
+  proposalTargetsEqual,
 } from "../../../sharedlibs/shared-types/src/index.js";
+
+import type { ProposalStatus } from "../../../sharedlibs/shared-types/src/index.js";
+
+/**
+ * The terminal proposal statuses: once a proposal is committed or withdrawn it
+ * can never transition again, so correctness guards (e.g. the `degraded`
+ * quarantine that blocks lock-acquisition/commit) are meaningless for them.
+ * Single source of truth — consume this rather than re-listing the strings.
+ */
+export const TERMINAL_PROPOSAL_STATUSES: ReadonlySet<ProposalStatus> = new Set<ProposalStatus>([
+  "committed",
+  "withdrawn",
+]);

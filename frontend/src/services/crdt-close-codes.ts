@@ -2,7 +2,7 @@
  * WebSocket close codes shared between frontend and backend.
  * Must stay in sync with backend/src/ws/crdt-ws-frames.ts WS_CLOSE_* constants.
  *
- * (4020 idle_timeout was removed — there is no idle timer in this architecture.)
+ * (4020 is unused/reserved: there is no idle timer in this architecture.)
  */
 
 export const WS_CLOSE_AUTH_REQUIRED = 4001;

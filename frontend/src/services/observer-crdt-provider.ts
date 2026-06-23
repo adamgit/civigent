@@ -3,7 +3,7 @@
  *
  * Lightweight variant of CrdtProvider for non-editing viewers.
  * Receives Y.Doc updates but never sends YJS_UPDATE. No Awareness, no dirty
- * tracking. (Legacy SECTION_FOCUS / ACTIVITY_PULSE frames are removed.)
+ * tracking.
  *
  * Binary protocol (subset of backend/src/ws/crdt-ws-frames.ts):
  *   0x00 SYNC_STEP_1     — State vector (bidirectional for initial sync)

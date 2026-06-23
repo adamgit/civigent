@@ -19,15 +19,15 @@ import type { FlatEntry } from "./document-skeleton.js";
 
 /**
  * Effective state of a document inside a proposal content tree, resolved
- * tombstone-first then live then missing. A proposal may shadow a canonical
- * document as pending-deletion ("tombstone"), present its own or canonical
- * structure ("live"), or have no view of it at all ("missing").
+ * tombstone-first then live then missing. A proposal may mark a canonical
+ * document as pending-deletion ("tombstone"), present its own or inherited
+ * canonical structure ("live"), or have no view of it at all ("missing").
  *
- * This is structurally the same union as the storage-layer
- * `OverlayDocumentState`, re-exported here so facade callers never import
- * from the storage engine module.
+ * Re-exported from the storage engine so facade callers reason about proposal
+ * document state through this proposal-facing module rather than importing the
+ * engine's resolver directly.
  */
-export type ProposalDocumentState = "tombstone" | "live" | "missing";
+export type { ProposalDocumentState } from "./document-skeleton.js";
 
 /**
  * Result of a section read through a facade: the effective body content at a
@@ -46,9 +46,8 @@ export interface ProposalSectionReadResult {
  * This re-exposes the storage engine's detailed remap/result shape
  * (written / removed entries, fragment-key remaps, live-reload entries,
  * structure changes) so callers that need to reconcile derived state (e.g.
- * live CRDT fragments) keep the same information they had when calling the
- * shadow layer directly — without importing the engine type by its
- * storage-layer name.
+ * live CRDT fragments) keep the same information they had at the engine
+ * level — without importing the engine type by its storage-layer name.
  */
 export type ProposalWriteResult = UpsertSectionFromMarkdownDetailedResult;
 

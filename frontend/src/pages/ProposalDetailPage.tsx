@@ -7,6 +7,7 @@ import type {
   HumanInvolvementPolicyResult,
   HumanInvolvementTargetDetails,
 } from "../types/shared.js";
+import { proposalTargetKey, proposalTargetLabel } from "../types/shared.js";
 import { headingPathToLabel } from "./document-page-utils";
 import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 
@@ -266,7 +267,8 @@ export function ProposalDetailPage() {
               <tbody>
                 {proposal.sections.map((section, idx) => {
                   const target = agentWritePolicy?.targets.find(
-                    (t) => t.target.doc_path === section.doc_path
+                    (t) => t.target.kind === "section"
+                      && t.target.doc_path === section.doc_path
                       && JSON.stringify(t.target.heading_path) === JSON.stringify(section.heading_path)
                   );
                   const details: HumanInvolvementTargetDetails | undefined = target?.details;
@@ -325,8 +327,8 @@ export function ProposalDetailPage() {
               <p>{lockEvaluation.message}</p>
               <ul>
                 {lockEvaluation.conflicts.map((conflict, i) => (
-                  <li key={`${conflict.target.doc_path}-${conflict.target.heading_path.join("/")}-${i}`}>
-                    {headingPathToLabel(conflict.target.heading_path)}: {conflict.message}
+                  <li key={`${proposalTargetKey(conflict.target)}-${i}`}>
+                    {proposalTargetLabel(conflict.target)}: {conflict.message}
                   </li>
                 ))}
               </ul>

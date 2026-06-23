@@ -110,8 +110,12 @@ describe("GET /api/documents/:doc_path/changes-since", () => {
           content: "Updated overview content.\n",
         },
       ],
+      targets: [
+        { kind: "section", doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] },
+      ],
       created_at: new Date().toISOString(),
       committed_head: newSha,
+      humanInvolvement_at_commit: {},
     };
     const proposalSubDir = join(committedDir, "test-proposal-1");
     await mkdir(proposalSubDir, { recursive: true });

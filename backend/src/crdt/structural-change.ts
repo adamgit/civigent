@@ -20,7 +20,7 @@
 
 import { parseDocumentMarkdown, type ParsedSection } from "../storage/markdown-sections.js";
 import { headingsEqual } from "../storage/document-skeleton.js";
-import type { FragmentContent, SectionBody } from "../storage/section-formatting.js";
+import { bodyFromStructuralAssembly, type FragmentContent, type SectionBody } from "../storage/section-formatting.js";
 
 /** The authoritative identity a live fragment is supposed to carry. */
 export interface AuthoritativeSectionIdentity {
@@ -91,7 +91,7 @@ function toDescriptor(section: ParsedSection): SubsectionDescriptor {
     headingPath: [...section.headingPath],
     heading: section.heading,
     level: section.level,
-    body: trimTrailingNewlines(section.body as string) as SectionBody,
+    body: bodyFromStructuralAssembly(section.body),
   };
 }
 
@@ -125,7 +125,7 @@ export function classifyStructuralChange(
   fragmentMarkdown: FragmentContent,
   identity: AuthoritativeSectionIdentity,
 ): StructuralChange {
-  const parsed = parseDocumentMarkdown(fragmentMarkdown as string);
+  const parsed = parseDocumentMarkdown(fragmentMarkdown);
   const realSections = parsed.filter((s) => s.headingPath.length > 0);
   const isRoot = identity.headingPath.length === 0;
 
@@ -136,7 +136,7 @@ export function classifyStructuralChange(
   // Root split: heading(s) typed inside the root / before-first-heading section.
   if (isRoot && realSections.length > 0) {
     const rootParsed = parsed.find((s) => s.headingPath.length === 0);
-    const rootBody = trimTrailingNewlines((rootParsed?.body as string) ?? "") as SectionBody;
+    const rootBody = bodyFromStructuralAssembly(rootParsed?.body ?? "");
     return { kind: "root-split", rootBody, sections: realSections.map(toDescriptor) };
   }
 
@@ -155,15 +155,17 @@ export function classifyStructuralChange(
       const preamble = trimTrailingNewlines(
         parsed
           .filter((s) => s.headingPath.length === 0)
-          .map((s) => s.body as string)
+          .map((s) => s.body)
           .join("\n"),
       );
-      const body = trimTrailingNewlines(section.body as string);
-      const combinedBody = (body
-        ? preamble
-          ? `${body}\n\n${preamble}`
-          : body
-        : preamble) as SectionBody;
+      const body = trimTrailingNewlines(section.body);
+      const combinedBody = bodyFromStructuralAssembly(
+        body
+          ? preamble
+            ? `${body}\n\n${preamble}`
+            : body
+          : preamble,
+      );
       return { kind: "heading-relocated", heading: section.heading, level: section.level, combinedBody };
     }
   }
@@ -175,12 +177,12 @@ export function classifyStructuralChange(
 
   // Heading deletion: a non-root fragment now holds only orphan body, no heading.
   if (!isRoot && realSections.length === 0) {
-    const orphanedBody = trimTrailingNewlines(
+    const orphanedBody = bodyFromStructuralAssembly(
       parsed
         .filter((s) => s.headingPath.length === 0)
-        .map((s) => s.body as string)
+        .map((s) => s.body)
         .join("\n"),
-    ) as SectionBody;
+    );
     return { kind: "heading-deletion", orphanedBody };
   }
 

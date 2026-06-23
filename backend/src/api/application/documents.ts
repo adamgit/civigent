@@ -17,8 +17,8 @@ import {
 } from "../../storage/data-root.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { CanonicalReader } from "../../storage/canonical-reader.js";
-import { ProposalEditor } from "../../storage/proposal-editor.js";
-import { writeDocumentsToProposalAndBuildManifest } from "../../storage/import-service.js";
+import { ProposalReader } from "../../storage/proposal-reader.js";
+import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 import { getHeadSha, gitLogRecent, isValidSha } from "../../storage/git-repo.js";
 import {
   readAssembledDocument,
@@ -29,7 +29,6 @@ import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/p
 import { readChangesSince } from "../../storage/activity-reader.js";
 import {
   createTransientProposal,
-  updateProposalSections,
   findDraftProposalByWriter,
   transitionToWithdrawn,
 } from "../../storage/proposal-repository.js";
@@ -59,6 +58,7 @@ import {
   SearchTextExecutionError,
 } from "../../storage/discovery.js";
 import { getDocReadPermission } from "../../auth/acl.js";
+import { RoleName } from "../../types/shared.js";
 import type { AuthenticatedWriter } from "../../auth/context.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
 
@@ -87,7 +87,7 @@ async function filterTreeToPublic(entries: DocumentTreeEntry[]): Promise<Documen
   for (const entry of entries) {
     if (entry.type === "file") {
       const perm = await getDocReadPermission(entry.path);
-      if (perm === "public") {
+      if (RoleName.text(perm) === "public") {
         result.push(entry);
       }
     } else {
@@ -133,14 +133,14 @@ export async function getHistory(docPath: string, limit: number, offset: number)
   return { doc_path: docPath, versions: entries };
 }
 
-export async function getHistoryPreview(docPath: string, sha: string) {
+export async function getHistoryPreview(docPath: string, sha: string): Promise<{ doc_path: string; sha: string; content: string; corrupt: boolean; missingSections: string[] }> {
   const { assembleDocumentAtCommit } = await import("../../storage/git-repo.js");
   const dataRoot = getDataRoot();
   const { content, missingSections } = await assembleDocumentAtCommit(dataRoot, sha, docPath);
   if (missingSections.length > 0) {
     return { doc_path: docPath, sha, content, corrupt: true, missingSections };
   }
-  return { doc_path: docPath, sha, content, corrupt: false, missingSections: [] as string[] };
+  return { doc_path: docPath, sha, content, corrupt: false, missingSections: [] };
 }
 
 // ─── Diagnostics ────────────────────────────────────────
@@ -154,21 +154,17 @@ export async function getDiagnostics(docPath: string) {
 
 export async function getBlame(docPath: string, sectionFile: string) {
   const contentRoot = getContentRoot();
-  const { absolutePath: sectionFilePath, level, headingPath } = await new ContentLayer(contentRoot).resolveSectionFileId(docPath, sectionFile);
+  const { absolutePath: sectionFilePath } = await new ContentLayer(contentRoot).resolveSectionFileId(docPath, sectionFile);
 
   const { computeSectionBlame } = await import("../../storage/section-blame.js");
   const lines = await computeSectionBlame(sectionFilePath);
 
-  const isHeaded = level > 0 && headingPath.length > 0;
-  if (isHeaded && lines.length > 0) {
-    const headingOffset = 2;
-    const headingType = lines[0].type;
-    for (const entry of lines) entry.line += headingOffset;
-    lines.unshift(
-      { line: 1, type: headingType },
-      { line: 2, type: headingType },
-    );
-  }
+  // Blame is computed on the body-only section file. The governance attribution
+  // view renders the heading separately (as its own <h2>, outside the overlay)
+  // and feeds the overlay body-only content, so blame lines align 1:1 with the
+  // rendered body lines. Do NOT inject/offset heading lines here: a prior +2
+  // offset assumed the renderer embedded the heading line, which it does not,
+  // and that shifted every headed section's per-line colors down by two.
   return { lines };
 }
 
@@ -305,7 +301,9 @@ export type StructuralCommitResult =
 
 // ─── Restore (forced-canonical-replacement) ─────────────
 
-export class RestoreValidationError extends Error {}
+// Re-export the real constructor thrown by the restore service so route-level
+// `instanceof` checks narrow against the actual class (not a duplicate shadow).
+export { RestoreValidationError } from "../../storage/restore-service.js";
 
 /**
  * Thrown when a forced canonical replacement (restore/overwrite) cannot first
@@ -336,7 +334,7 @@ export async function restoreDocument(docPath: string, sha: string, writer: Docu
   const { getCommitWriterType } = await import("../../storage/git-repo.js");
   const targetWriterType = await getCommitWriterType(getDataRoot(), sha);
   const restoreWriter: DocumentWriter = targetWriterType
-    ? { ...writer, type: targetWriterType as DocumentWriter["type"] }
+    ? { ...writer, type: targetWriterType }
     : writer;
 
   // Preserve current live state before restore replaces canonical content
@@ -354,11 +352,6 @@ export async function restoreDocument(docPath: string, sha: string, writer: Docu
 
   await invalidateSessionForReplacement(docPath, { message: "document was restored to an earlier version" });
   return { committedSha };
-}
-
-export async function getRestoreValidationError(): Promise<typeof RestoreValidationError> {
-  const { RestoreValidationError: Err } = await import("../../storage/restore-service.js");
-  return Err as unknown as typeof RestoreValidationError;
 }
 
 // ─── Overwrite ──────────────────────────────────────────
@@ -384,12 +377,10 @@ export async function overwriteDocument(docPath: string, markdown: string, admin
     `Admin overwrite: ${docPath}`,
   );
 
-  const sectionTargets = await writeDocumentsToProposalAndBuildManifest(
-    proposalId,
-    "pending",
-    [{ docPath, content: markdown }],
-  );
-  await updateProposalSections(proposalId, sectionTargets);
+  await mutateProposalContent(proposalId, {
+    kind: "write_document_markdown",
+    files: [{ docPath, markdown }],
+  });
 
   const committedSha = await commitProposalToCanonical(proposalId, {}, undefined, {});
 
@@ -415,15 +406,7 @@ export async function renameDocument(docPath: string, newPath: string, writer: D
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     `Rename document: ${docPath} -> ${newPath}`,
   );
-  const editor = ProposalEditor.open(proposalId, "pending");
-
-  const headingPaths = await editor.listHeadingPaths(docPath);
-  await editor.renameDocument(docPath, newPath);
-
-  await updateProposalSections(proposalId, [
-    ...headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp })),
-    ...headingPaths.map((hp) => ({ doc_path: newPath, heading_path: hp })),
-  ]);
+  await mutateProposalContent(proposalId, { kind: "rename_document", docPath, newPath });
   const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
   if (!committedHead) return { kind: "blocked", proposalId, policyResult };
   return { kind: "committed", proposalId, committedHead, policyResult };
@@ -443,16 +426,14 @@ export async function createDocument(docPath: string, writer: DocumentWriter): P
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     `Create document: ${docPath}`,
   );
-  const editor = ProposalEditor.open(proposalId, "pending");
-  const state = await editor.getDocumentState(docPath);
+  const state = await ProposalReader.open(proposalId, "pending").getDocumentState(docPath);
   if (state === "live") {
     throw new DocumentAlreadyExistsError("Document already exists.");
   }
   if (state === "tombstone") {
     throw new DocumentPendingDeletionError("Document is pending deletion.");
   }
-  await editor.createDocument(docPath);
-  await updateProposalSections(proposalId, []);
+  await mutateProposalContent(proposalId, { kind: "create_document", docPath });
   const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
   if (!committedHead) return { kind: "blocked", proposalId, policyResult };
   return { kind: "committed", proposalId, committedHead, policyResult };
@@ -508,15 +489,13 @@ export async function patchDocument(docPath: string, diffText: string, writer: D
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     intent,
   );
-  const patchTargets = await writeDocumentsToProposalAndBuildManifest(
-    patchProposalId,
-    "pending",
-    [{ docPath, content: patchedContent }],
-  );
-  await updateProposalSections(patchProposalId, patchTargets);
+  const { manifest: patchTargets } = await mutateProposalContent(patchProposalId, {
+    kind: "write_document_markdown",
+    files: [{ docPath, markdown: patchedContent }],
+  });
 
   let committedMetadata: HumanInvolvementCommittedProposalMetadata = {};
-  const commitSections: Array<{ doc_path: string; heading_path: string[] }> = patchTargets;
+  const commitSections: Array<{ doc_path: string; heading_path: string[] }> = patchTargets.sections;
 
   if (writer.type === "human") {
     // Human-initiated patch — bypass Agent Write Policy entirely (spec 12).
@@ -562,11 +541,7 @@ export async function deleteDocument(docPath: string, writer: DocumentWriter): P
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     `Delete document: ${docPath}`,
   );
-  const headingPaths = await ProposalEditor.open(proposalId, "pending").deleteDocument(docPath);
-  await updateProposalSections(
-    proposalId,
-    headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp })),
-  );
+  await mutateProposalContent(proposalId, { kind: "delete_document", docPath });
   const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
   if (!committedHead) return { kind: "blocked", proposalId, policyResult };
   return { kind: "committed", proposalId, committedHead, policyResult };

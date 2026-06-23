@@ -1,8 +1,13 @@
 import { encodeDocPath } from "../utils/path-encoding.js";
 import type {
+  AclSnapshot,
   AdminConfig,
   AuthUser,
   BlameResponse,
+  SetAclDefaultsRequest,
+  SetDocumentAclRequest,
+  SetUserRolesRequest,
+  CreateCustomRoleRequest,
   ChangesSinceResponse,
   CommitProposalResponse,
   CreateDocumentResponse,
@@ -14,9 +19,11 @@ import type {
   GetAgentsFullSummaryResponse,
   GetDocumentResponse,
   GetDocumentSectionsResponse,
+  GetProposalSectionsResponse,
   GetDocumentsTreeResponse,
   GetHeatmapResponse,
   ListProposalsResponse,
+  AnyProposal,
   AuthMethod,
   ProposalId,
   ProposalStatus,
@@ -24,7 +31,9 @@ import type {
   ReadProposalResponse,
   ReadSectionResponse,
   SessionInfoResponse,
-  UpdateProposalRequest,
+  UpdateProposalManifestRequest,
+  ReplaceProposalSectionsRequest,
+  WriteProposalDocumentSectionsRequest,
   AcquireLocksResponse,
   WithdrawProposalResponse,
 } from "../types/shared.js";
@@ -106,9 +115,8 @@ export interface DiagLayerStatus {
 }
 
 /**
- * Winner of the per-section layer comparison. The session-overlay and
- * raw-fragment durable layers were removed (plan §D), so the surviving layers
- * are canonical and live CRDT; the backend winner is now one of these.
+ * Winner of the per-section layer comparison. The durable layers are canonical
+ * and live CRDT; the backend winner is one of these.
  */
 export type DiagSectionWinner = "canonical" | "crdt" | "none" | "error";
 
@@ -165,6 +173,12 @@ export interface SearchTextMatch {
   match_offset_bytes: number;
 }
 
+export interface DiscoveryFailure {
+  doc_path: string;
+  heading_path?: string[];
+  error: string;
+}
+
 export interface SearchTextResponse {
   matches: SearchTextMatch[];
   timings: {
@@ -174,6 +188,8 @@ export interface SearchTextResponse {
     match_mapping_ms: number;
     context_read_ms: number;
   };
+  /** Per-row read failures (claim-review 04) — surfaced as markers, never dropped. */
+  failures?: DiscoveryFailure[];
 }
 
 interface GetDocumentsTreeOptions {
@@ -341,12 +357,7 @@ interface RefreshTokenResponse {
   authenticated: boolean;
 }
 
-export interface AclSnapshot {
-  defaults: { read: string; write: string };
-  acl: Record<string, { read?: string; write?: string }>;
-  roles: Record<string, string[]>;
-  customRoles: string[];
-}
+export type { AclSnapshot } from "../types/shared.js";
 
 async function tryBootstrapSingleUserSession(): Promise<boolean> {
   if (singleUserBootstrapInFlight) {
@@ -585,6 +596,40 @@ export const apiClient = {
     return requestJson<GetDocumentResponse>(`/api/documents/${encoded}`);
   },
 
+  /**
+   * LIVE human drag-drop cross-section move (claim-review 03 / Option E). A
+   * CONTROL-PLANE REST call — 200 is the precise success ack; 409 carries the
+   * backend's prose refusal, returned VERBATIM (Area M — never a bare code) so the
+   * caller can render it. DISTINCT from the agent proposal-structure move.
+   */
+  async liveMoveSection(
+    docPath: string,
+    req: { sourceHeadingPath: string[]; targetHeadingPath: string[]; position: "before" | "after" },
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    await tryBootstrapSingleUserSession();
+    const encoded = encodeDocPath(docPath);
+    const response = await fetch(`/api/documents/${encoded}/live-move`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Requested-With": "fetch" },
+      credentials: "include",
+      body: JSON.stringify({
+        source_heading_path: req.sourceHeadingPath,
+        target_heading_path: req.targetHeadingPath,
+        position: req.position,
+      }),
+    });
+    if (response.ok) return { ok: true };
+    const text = await response.text();
+    let message = `The section move was refused (${response.status}).`;
+    try {
+      const parsed = JSON.parse(text) as { message?: string };
+      if (typeof parsed.message === "string" && parsed.message.trim().length > 0) message = parsed.message;
+    } catch {
+      // Non-JSON body — keep the default refusal message.
+    }
+    return { ok: false, message };
+  },
+
   async getDocumentsTree(options?: GetDocumentsTreeOptions): Promise<GetDocumentsTreeResponse> {
     const params = new URLSearchParams();
     if (options?.path != null) {
@@ -611,27 +656,32 @@ export const apiClient = {
     return requestJson<ReadDocStructureResponse>(`/api/documents/${encoded}/structure`);
   },
 
-  // NOTE (MW-7 / spec 04 §5): default document/section loads are CANONICAL-ONLY.
-  // `DocumentResourceModel.loadSections()` calls this with NO options, so normal
-  // loads never request an overlay. `options.proposalId` is RETAINED solely for
-  // the explicit proposal-preview path (`useProposalDrafting`): it appends
-  // `?proposal_id=` and the backend section route honours it by reading that
-  // proposal's content via `ProposalReader` (writer-ownership-verified). It is
-  // NOT the session/live overlay that MW-7 removed.
-  async getDocumentSections(
+  // Document/section loads are CANONICAL-ONLY (spec 04 §5). This route takes no
+  // proposal parameter — proposal-scoped reads use the dedicated proposal routes
+  // (`getProposalDocumentSections` / `getProposalSections`).
+  async getDocumentSections(docPath: string): Promise<GetDocumentSectionsResponse> {
+    const encoded = encodeDocPath(docPath);
+    return requestJson<GetDocumentSectionsResponse>(`/api/documents/${encoded}/sections`);
+  },
+
+  // Effective proposal-scoped section list + content for a single document
+  // (proposal-content-first with canonical fallback) via `ProposalReader`.
+  async getProposalDocumentSections(
+    proposalId: ProposalId,
     docPath: string,
-    options?: { proposalId?: string },
   ): Promise<GetDocumentSectionsResponse> {
     const encoded = encodeDocPath(docPath);
-    const params = new URLSearchParams();
-    if (options?.proposalId) {
-      params.set("proposal_id", options.proposalId);
-    }
-    const query = params.toString();
-    const url = query.length > 0
-      ? `/api/documents/${encoded}/sections?${query}`
-      : `/api/documents/${encoded}/sections`;
-    return requestJson<GetDocumentSectionsResponse>(url);
+    return requestJson<GetDocumentSectionsResponse>(
+      `/api/proposals/${encodeURIComponent(proposalId)}/documents/${encoded}/sections`,
+    );
+  },
+
+  // Bulk read of the effective proposal-scoped sections for every document the
+  // proposal targets.
+  async getProposalSections(proposalId: ProposalId): Promise<GetProposalSectionsResponse> {
+    return requestJson<GetProposalSectionsResponse>(
+      `/api/proposals/${encodeURIComponent(proposalId)}/sections`,
+    );
   },
 
   async getChangesSince(docPath: string, afterHead?: string): Promise<ChangesSinceResponse> {
@@ -679,12 +729,46 @@ export const apiClient = {
     });
   },
 
-  async updateProposal(id: ProposalId, body: UpdateProposalRequest): Promise<ReadProposalResponse> {
+  // Update the proposal MANIFEST (intent + target scope) ONLY. Staged section
+  // content is written through `replaceProposalSections` / `writeProposalDocumentSections`.
+  async updateProposalManifest(
+    id: ProposalId,
+    body: UpdateProposalManifestRequest,
+  ): Promise<ReadProposalResponse> {
     return requestJson<ReadProposalResponse>(`/api/proposals/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
+  },
+
+  // Bulk staged-content replace across any number of target documents.
+  async replaceProposalSections(
+    id: ProposalId,
+    body: ReplaceProposalSectionsRequest,
+  ): Promise<ReadProposalResponse> {
+    return requestJson<ReadProposalResponse>(`/api/proposals/${encodeURIComponent(id)}/sections`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+
+  // Per-document staged-content write.
+  async writeProposalDocumentSections(
+    id: ProposalId,
+    docPath: string,
+    body: WriteProposalDocumentSectionsRequest,
+  ): Promise<ReadProposalResponse> {
+    const encoded = encodeDocPath(docPath);
+    return requestJson<ReadProposalResponse>(
+      `/api/proposals/${encodeURIComponent(id)}/documents/${encoded}/sections`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
   },
 
   async acquireLocks(id: ProposalId): Promise<AcquireLocksResponse> {
@@ -714,6 +798,25 @@ export const apiClient = {
   async listProposals(status?: ProposalStatus): Promise<ListProposalsResponse> {
     const query = status ? `?status=${encodeURIComponent(status)}` : "";
     return requestJson<ListProposalsResponse>(`/api/proposals${query}`);
+  },
+
+  /**
+   * The degraded (quarantined) proposals only — server-side filtered to the
+   * degradable statuses, so the home-page alert never decodes full history.
+   */
+  async listDegradedProposals(): Promise<ListProposalsResponse> {
+    return requestJson<ListProposalsResponse>("/api/proposals/degraded");
+  },
+
+  /**
+   * Admin-only: run a named defect detector's autofix on a degraded proposal,
+   * returning the repaired proposal (its `degraded` marker cleared).
+   */
+  async autofixProposalDefect(id: ProposalId, detectorId: string): Promise<{ proposal: AnyProposal }> {
+    return requestJson<{ proposal: AnyProposal }>(
+      `/api/admin/proposals/${encodeURIComponent(id)}/autofix/${encodeURIComponent(detectorId)}`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
   },
 
   async listDraftProposals(): Promise<ListProposalsResponse> {
@@ -747,13 +850,8 @@ export const apiClient = {
     return requestJson<GetHeatmapResponse>("/api/heatmap");
   },
 
-  // NOTE (Area P / Areas D/E): `getAllSessionStatuses()` (GET
-  // /api/session-statuses/all) and `getSessionState()` (GET
-  // /api/admin/session-state) were removed — their backend routes
-  // (`session-statuses.ts` / `session-inspector.ts`) were deleted along with the
-  // `sessions/` overlay + raw-fragment durability authority. Live durability now
-  // lives in the `inprogress` proposal / DocSession; any future ops summary needs
-  // a new backing query.
+  // Live durability lives in the `inprogress` proposal / DocSession; any future
+  // ops summary needs a new backing query.
 
   // --- Git history ---
 
@@ -882,7 +980,7 @@ export const apiClient = {
     return requestJson<AclSnapshot>("/api/admin/acl");
   },
 
-  async updateAclDefaults(defaults: { read?: string; write?: string }): Promise<void> {
+  async updateAclDefaults(defaults: SetAclDefaultsRequest): Promise<void> {
     await requestJson("/api/admin/acl/defaults", {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -890,7 +988,7 @@ export const apiClient = {
     });
   },
 
-  async setDocAcl(docPath: string, perms: { read?: string; write?: string }): Promise<void> {
+  async setDocAcl(docPath: string, perms: SetDocumentAclRequest): Promise<void> {
     await requestJson(`/api/admin/acl/doc/${encodeDocPath(docPath)}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -904,11 +1002,11 @@ export const apiClient = {
     });
   },
 
-  async setUserRoles(userId: string, roles: string[]): Promise<void> {
+  async setUserRoles(userId: string, request: SetUserRolesRequest): Promise<void> {
     await requestJson(`/api/admin/roles/${encodeURIComponent(userId)}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ roles }),
+      body: JSON.stringify(request),
     });
   },
 
@@ -918,11 +1016,11 @@ export const apiClient = {
     });
   },
 
-  async createCustomRole(name: string): Promise<void> {
+  async createCustomRole(request: CreateCustomRoleRequest): Promise<void> {
     await requestJson("/api/admin/custom-roles", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify(request),
     });
   },
 

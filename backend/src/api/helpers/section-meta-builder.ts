@@ -73,43 +73,39 @@ export async function buildSectionInvolvementMeta(
   const result = new Map<string, SectionInvolvementMeta>();
 
   for (const headingPath of headingPaths) {
-    try {
-      const headingKey = SectionRef.headingKey(headingPath);
-      const content = bulkContent.get(headingKey) ?? "";
+    const headingKey = SectionRef.headingKey(headingPath);
+    const content = bulkContent.get(headingKey) ?? "";
 
-      const agentWritePolicy = await AgentWritePolicy.summarizeSection(
-        new SectionRef(docPath, headingPath),
-        gitCommitInfo,
-      );
-      const wordCount = countWords(content);
-      const lengthWarning = wordCount > SECTION_LENGTH_WARNING_THRESHOLD;
+    const agentWritePolicy = await AgentWritePolicy.summarizeSection(
+      new SectionRef(docPath, headingPath),
+      gitCommitInfo,
+    );
+    const wordCount = countWords(content);
+    const lengthWarning = wordCount > SECTION_LENGTH_WARNING_THRESHOLD;
 
-      const commitInfo = commitByHeading.get(headingKey);
-      const nowMs = Date.now();
-      result.set(headingKey, {
-        agentWritePolicy,
-        crdt_session_active: crdtSessionActive,
-        section_length_warning: lengthWarning,
-        word_count: wordCount,
-        last_editor: commitInfo
-          ? {
-              id: commitInfo.writerId,
-              name: commitInfo.authorName,
-              timestampMs: commitInfo.timestampMs,
-              type: commitInfo.writerType,
-              seconds_ago: Math.max(0, (nowMs - commitInfo.timestampMs) / 1000),
-            }
-          : {
-              id: "unknown",
-              name: "unknown",
-              timestampMs: 0,
-              type: "unknown" as AttributionWriterType,
-              seconds_ago: 0,
-            },
-      });
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    }
+    const commitInfo = commitByHeading.get(headingKey);
+    const nowMs = Date.now();
+    result.set(headingKey, {
+      agentWritePolicy,
+      crdt_session_active: crdtSessionActive,
+      section_length_warning: lengthWarning,
+      word_count: wordCount,
+      last_editor: commitInfo
+        ? {
+            id: commitInfo.writerId,
+            name: commitInfo.authorName,
+            timestampMs: commitInfo.timestampMs,
+            type: commitInfo.writerType,
+            seconds_ago: Math.max(0, (nowMs - commitInfo.timestampMs) / 1000),
+          }
+        : {
+            id: "unknown",
+            name: "unknown",
+            timestampMs: 0,
+              type: "unknown",
+            seconds_ago: 0,
+          },
+    });
   }
 
   return result;

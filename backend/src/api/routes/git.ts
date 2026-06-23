@@ -1,16 +1,25 @@
 import { type Router } from "express";
 import { sendApiError } from "./middleware.js";
 import { getGitLog, getGitDiff, isValidSha } from "../application/git.js";
+import {
+  QueryParamError,
+  optionalStringParam,
+  boundedIntParam,
+} from "../helpers/query-params.js";
 
 export function registerGitRoutes(router: Router): void {
   router.get("/git/log", async (req, res, next) => {
     try {
-      const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 30, 1), 100);
-      const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
-      const docPath = (req.query.doc_path as string) || undefined;
+      const limit = boundedIntParam(req.query.limit, "limit", { fallback: 30, min: 1, max: 100 });
+      const offset = boundedIntParam(req.query.offset, "offset", { fallback: 0, min: 0, max: Number.MAX_SAFE_INTEGER });
+      const docPath = optionalStringParam(req.query.doc_path, "doc_path") || undefined;
       const entries = await getGitLog({ limit, offset, docPath });
       res.json(entries);
     } catch (error) {
+      if (error instanceof QueryParamError) {
+        sendApiError(res, 400, error);
+        return;
+      }
       next(error);
     }
   });

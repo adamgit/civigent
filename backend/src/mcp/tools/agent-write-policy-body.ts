@@ -13,8 +13,9 @@ export function agentWritePolicyToolBody(result: HumanInvolvementPolicyResult) {
     can_write: result.canWrite,
     message: result.message,
     targets: result.targets.map((t) => ({
+      kind: t.target.kind,
       doc_path: t.target.doc_path,
-      heading_path: t.target.heading_path,
+      heading_path: t.target.kind === "section" ? t.target.heading_path : undefined,
       can_write: t.canWrite,
       message: t.message,
     })),

@@ -27,13 +27,13 @@ const pendingProposal: DraftProposalDTO = {
     details: { aggregateImpact: 0.5, aggregateThreshold: 0.8 },
     targets: [
       {
-        target: { doc_path: "ops/strategy.md", heading_path: ["Overview"] },
+        target: { kind: "section", doc_path: "ops/strategy.md", heading_path: ["Overview"] },
         canWrite: true,
         message: "Agents may write to this section.",
         details: { score: 0.35, blockedReason: null, justification: null },
       },
       {
-        target: { doc_path: "ops/strategy.md", heading_path: ["Goals"] },
+        target: { kind: "section", doc_path: "ops/strategy.md", heading_path: ["Goals"] },
         canWrite: false,
         message: "Recent human activity makes this section off-limits to agents.",
         details: { score: 0.65, blockedReason: "aggregate_impact", justification: null },

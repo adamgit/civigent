@@ -3,10 +3,10 @@
  * content tree, exposed through `DocumentSkeleton`.
  *
  * Construction resolves the proposal content root internally (via
- * `proposalContentRoot`) and shadows it over the canonical content tree. The
- * proposal-internal storage layout (skeleton / body / `.tombstone` files) is
- * never exposed to callers — they work in terms of doc paths, heading paths,
- * effective document state, and section bodies only.
+ * `proposalContentRoot`) and resolves reads proposal-content-first with
+ * canonical fallback. The proposal-internal storage layout (skeleton / body /
+ * `.tombstone` files) is never exposed to callers — they work in terms of doc
+ * paths, heading paths, effective document state, and section bodies only.
  *
  * Spec source of truth: `01-data-primitives.md` ("ProposalReader /
  * ProposalEditor API surface") and `04-decisions-and-apis.md`
@@ -123,10 +123,10 @@ export class ProposalReader {
 
   /**
    * Discovery rows for real sections only (heading, heading path, body size).
-   * Delegates through the shadow layer's structure reads.
+   * Delegates through the proposal content engine's structure reads.
    */
   async getSectionDiscoveryList(docPath: string): Promise<SectionDiscoveryEntry[]> {
-    // ProposalShadowContentLayer has no discovery-list method; build it from
+    // The proposal content engine has no discovery-list method; build it from
     // the section list. Body sizes are not part of the facade contract for
     // proposals, so we expose 0 — callers needing sizes read the section.
     const sections = await this.shadow.getSectionList(docPath);

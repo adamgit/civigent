@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient, type AclSnapshot } from "../services/api-client";
+import {
+  RoleName,
+  BuiltinRoleName,
+  type SetAclDefaultsRequest,
+  type SetDocumentAclRequest,
+} from "../types/shared";
 
-const MAGIC_ROLES = ["public", "authenticated", "admin"];
+const MAGIC_ROLES: string[] = [...BuiltinRoleName.values];
 
 export function PermissionsPage() {
   const [snapshot, setSnapshot] = useState<AclSnapshot | null>(null);
@@ -36,7 +42,11 @@ export function PermissionsPage() {
   const handleUpdateDefaults = async (field: "read" | "write", value: string) => {
     setSaving(true);
     try {
-      await apiClient.updateAclDefaults({ [field]: value });
+      const request: SetAclDefaultsRequest =
+        field === "read"
+          ? { read: RoleName.of(value) }
+          : { write: RoleName.of(value) };
+      await apiClient.updateAclDefaults(request);
       await reload();
     } catch (err) {
       setError((err as Error).message);
@@ -51,7 +61,7 @@ export function PermissionsPage() {
     if (!name) return;
     setSaving(true);
     try {
-      await apiClient.createCustomRole(name);
+      await apiClient.createCustomRole({ name: RoleName.of(name) });
       setNewRoleName("");
       await reload();
     } catch (err) {
@@ -77,9 +87,9 @@ export function PermissionsPage() {
     e.preventDefault();
     const docPath = newDocPath.trim();
     if (!docPath) return;
-    const perms: { read?: string; write?: string } = {};
-    if (newDocRead) perms.read = newDocRead;
-    if (newDocWrite) perms.write = newDocWrite;
+    const perms: SetDocumentAclRequest = {};
+    if (newDocRead) perms.read = RoleName.of(newDocRead);
+    if (newDocWrite) perms.write = RoleName.of(newDocWrite);
     if (!perms.read && !perms.write) return;
     setSaving(true);
     try {
@@ -111,10 +121,14 @@ export function PermissionsPage() {
     e.preventDefault();
     const userId = newUserId.trim();
     if (!userId) return;
-    const roles = newUserRoles.split(",").map(r => r.trim()).filter(Boolean);
+    const roles = newUserRoles
+      .split(",")
+      .map(r => r.trim())
+      .filter(Boolean)
+      .map(r => RoleName.of(r));
     setSaving(true);
     try {
-      await apiClient.setUserRoles(userId, roles);
+      await apiClient.setUserRoles(userId, { roles });
       setNewUserId("");
       setNewUserRoles("");
       await reload();

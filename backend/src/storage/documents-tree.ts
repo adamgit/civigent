@@ -1,5 +1,6 @@
 import path from "node:path";
 import { readdir } from "node:fs/promises";
+import { directoryExists } from "./fs-primitives.js";
 import { getContentRoot } from "./data-root.js";
 import { assertChildPath } from "./path-utils.js";
 import { SECTIONS_DIR_SUFFIX } from "./document-skeleton.js";
@@ -94,26 +95,14 @@ export async function readDocumentsTree(rawPath?: string, recursive?: boolean): 
   const relative = toRelativeFromRoot(normalizedPath);
   const targetDir = assertChildPath(contentRoot, path.join(contentRoot, relative));
 
-  let dirEntries;
-  try {
-    dirEntries = await readdir(targetDir, { withFileTypes: true });
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") {
-      // Root path with no content directory = empty store (fresh install), not an error.
-      if (normalizedPath === "/") {
-        return [];
-      }
-      throw new DocumentsTreePathNotFoundError(`Browse path not found: ${normalizedPath}`);
+  if (!(await directoryExists(targetDir))) {
+    // Root path with no content directory = empty store (fresh install), not an error.
+    if (normalizedPath === "/") {
+      return [];
     }
-    throw error;
-  }
-
-  const recursiveListing = recursive ?? (rawPath == null || rawPath.trim().length === 0);
-
-  if (!dirEntries) {
     throw new DocumentsTreePathNotFoundError(`Browse path not found: ${normalizedPath}`);
   }
 
+  const recursiveListing = recursive ?? (rawPath == null || rawPath.trim().length === 0);
   return buildEntries(normalizedPath, targetDir, recursiveListing);
 }

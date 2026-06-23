@@ -1,5 +1,5 @@
 import path from "node:path";
-import { access, readFile } from "node:fs/promises";
+import { pathExists, readFileBufferIfExists } from "./fs-primitives.js";
 import { spawn } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { checkDocPermission } from "../auth/acl.js";
@@ -12,7 +12,8 @@ import {
 } from "./documents-tree.js";
 import { getContentRoot } from "./data-root.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "./path-utils.js";
-import type { DocumentTreeEntry } from "../types/shared.js";
+import type { DocumentTreeEntry, JsonValue } from "../types/shared.js";
+import { expectJsonObject, parseJson } from "../types/shared.js";
 
 export const DISCOVERY_NOT_FOUND_OR_NO_ACCESS_MESSAGE = "Not found or you do not have read access";
 
@@ -26,6 +27,28 @@ export interface ListSectionsRow {
   heading: string;
   heading_path: string[];
   body_size_bytes: number;
+}
+
+/**
+ * An EXPLICIT per-row read failure in a multi-subject fan-out (claim-review 04):
+ * a doc/section the fan-out was asked to read but whose body/structure could not
+ * be read. Surfaced alongside the good rows — NEVER silently dropped — so the
+ * frontend can render a "this document failed to load" marker per failed row.
+ */
+export interface DiscoveryFailure {
+  doc_path: string;
+  heading_path?: string[];
+  error: string;
+}
+
+export interface ListDocumentsResult {
+  rows: ListDocumentsRow[];
+  failures: DiscoveryFailure[];
+}
+
+export interface ListSectionsResult {
+  rows: ListSectionsRow[];
+  failures: DiscoveryFailure[];
 }
 
 export interface SearchTextMatch {
@@ -46,6 +69,8 @@ export interface SearchTextTimings {
 export interface SearchTextResult {
   matches: SearchTextMatch[];
   timings: SearchTextTimings;
+  /** Per-row read failures (claim-review 04) — surfaced, never silently dropped. */
+  failures: DiscoveryFailure[];
 }
 
 export interface SearchTextInput {
@@ -152,18 +177,17 @@ async function resolveDocScope(
   normalizedDocPath: string,
 ): Promise<string[]> {
   const contentRoot = getContentRoot();
+  let absoluteDocPath: string;
   try {
-    const absoluteDocPath = resolveDocPathUnderContent(contentRoot, normalizedDocPath);
-    await access(absoluteDocPath);
+    absoluteDocPath = resolveDocPathUnderContent(contentRoot, normalizedDocPath);
   } catch (error) {
-    if (
-      error instanceof InvalidDocPathError ||
-      (error as NodeJS.ErrnoException).code === "ENOENT" ||
-      (error as NodeJS.ErrnoException).code === "ENOTDIR"
-    ) {
+    if (error instanceof InvalidDocPathError) {
       throw new DiscoveryNotFoundError();
     }
     throw error;
+  }
+  if (!(await pathExists(absoluteDocPath))) {
+    throw new DiscoveryNotFoundError();
   }
 
   const readable = await checkDocPermission(writer, normalizedDocPath, "read");
@@ -287,42 +311,50 @@ function collectRawMatchesFromRgJsonLine(
 ): void {
   if (line.trim().length === 0) return;
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return;
+  // ripgrep --json emits one JSON object per line. parseJson lets a genuine
+  // SyntaxError propagate (a non-JSON line from `rg --json` is unexpected).
+  const event = expectJsonObject(parseJson(line), "ripgrep --json line");
+
+  // Non-`match` events (begin/end/summary/context) are not failures — ignore them.
+  if (event["type"] !== "match") return;
+
+  // A `match` event with a malformed shape IS a failure: surface it with field detail.
+  const data = expectJsonObject(event["data"], "ripgrep match event `data`");
+  const pathObj = expectJsonObject(data["path"], "ripgrep match `data.path`");
+  const absolutePath = pathObj["text"];
+  const absoluteOffset = data["absolute_offset"];
+  const submatches = data["submatches"];
+  if (typeof absolutePath !== "string") {
+    throw new SearchTextExecutionError(`ripgrep match event has a non-string data.path.text: ${JSON.stringify(absolutePath)}`);
+  }
+  if (typeof absoluteOffset !== "number") {
+    throw new SearchTextExecutionError(`ripgrep match event has a non-number data.absolute_offset: ${JSON.stringify(absoluteOffset)}`);
+  }
+  if (!isJsonValueArray(submatches)) {
+    throw new SearchTextExecutionError(`ripgrep match event data.submatches is not an array: ${JSON.stringify(submatches)}`);
   }
 
-  const event = parsed as {
-    type?: string;
-    data?: {
-      path?: { text?: string };
-      absolute_offset?: number;
-      submatches?: Array<{ start?: number; end?: number }>;
-    };
-  };
-
-  if (event.type !== "match") return;
-
-  const absolutePath = event.data?.path?.text;
-  const absoluteOffset = event.data?.absolute_offset;
-  const submatches = event.data?.submatches;
-  if (typeof absolutePath !== "string" || typeof absoluteOffset !== "number" || !Array.isArray(submatches)) {
-    return;
-  }
-
-  for (const submatch of submatches) {
-    if (typeof submatch.start !== "number" || typeof submatch.end !== "number") continue;
+  for (const submatchValue of submatches) {
+    const submatch = expectJsonObject(submatchValue, "ripgrep submatch");
+    const start = submatch["start"];
+    const end = submatch["end"];
+    if (typeof start !== "number" || typeof end !== "number") {
+      throw new SearchTextExecutionError(`ripgrep submatch has non-number start/end: ${JSON.stringify(submatchValue)}`);
+    }
     results.push({
       absolutePath,
-      startByte: absoluteOffset + submatch.start,
-      endByte: absoluteOffset + submatch.end,
+      startByte: absoluteOffset + start,
+      endByte: absoluteOffset + end,
     });
     if (results.length >= maxResults) {
       return;
     }
   }
+}
+
+/** Local array guard — `Array.isArray` does not narrow a `readonly JsonValue[]` union member. */
+function isJsonValueArray(value: JsonValue): value is readonly JsonValue[] {
+  return Array.isArray(value);
 }
 
 async function runRipgrepInScope(
@@ -373,11 +405,14 @@ async function runRipgrepInScope(
     };
 
     child.on("error", (error) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      // A spawn ENOENT here means the ripgrep EXECUTABLE is missing — this is a
+      // distinct execution failure, NOT a content-path absence, so it is modelled
+      // separately and never routed through the absence-aware fs helpers.
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
         settleReject(new SearchTextExecutionError("ripgrep binary not found. Install ripgrep in the runtime image."));
         return;
       }
-      settleReject(error as Error);
+      settleReject(error instanceof Error ? error : new Error(String(error)));
     });
 
     child.stdout.on("data", (chunk: Buffer | string) => {
@@ -435,47 +470,47 @@ async function runRipgrepInScope(
 export async function listReadableDocuments(
   writer: AuthenticatedWriter | null,
   root: string | undefined,
-): Promise<ListDocumentsRow[]> {
+): Promise<ListDocumentsResult> {
   const { docPaths } = await resolveScopedReadableDocuments(writer, root, "root");
   const layer = new ContentLayer(getContentRoot());
 
-  const rows = await Promise.all(
-    docPaths.map(async (docPath) => {
+  const results = await Promise.all(
+    docPaths.map(async (docPath): Promise<{ row?: ListDocumentsRow; failure?: DiscoveryFailure }> => {
       try {
         const sections = await layer.getSectionDiscoveryList(docPath);
-        return {
-          doc_path: docPath,
-          section_count: sections.length,
-        };
+        return { row: { doc_path: docPath, section_count: sections.length } };
       } catch (error) {
-        if (error instanceof DocumentNotFoundError) {
-          return null;
-        }
-        throw error;
+        // FAIL LOUD per-row (claim-review 04): a doc the ACL listed as readable
+        // whose structure can't be read is surfaced as an explicit failure, NOT
+        // silently dropped — the other rows still render.
+        return { failure: { doc_path: docPath, error: error instanceof Error ? error.message : String(error) } };
       }
     }),
   );
 
-  return rows.filter((row): row is ListDocumentsRow => row !== null);
+  return {
+    rows: results.filter((r): r is { row: ListDocumentsRow } => r.row !== undefined).map((r) => r.row),
+    failures: results.filter((r): r is { failure: DiscoveryFailure } => r.failure !== undefined).map((r) => r.failure),
+  };
 }
 
 export async function listReadableSections(
   writer: AuthenticatedWriter | null,
   pathScope: string | undefined,
-): Promise<ListSectionsRow[]> {
+): Promise<ListSectionsResult> {
   const { docPaths } = await resolveScopedReadableDocuments(writer, pathScope, "path");
   const layer = new ContentLayer(getContentRoot());
   const rows: ListSectionsRow[] = [];
+  const failures: DiscoveryFailure[] = [];
 
   for (const docPath of docPaths) {
     let sections;
     try {
       sections = await layer.getSectionDiscoveryList(docPath);
     } catch (error) {
-      if (error instanceof DocumentNotFoundError) {
-        continue;
-      }
-      throw error;
+      // FAIL LOUD per-row (claim-review 04): surface the failed doc, keep the rest.
+      failures.push({ doc_path: docPath, error: error instanceof Error ? error.message : String(error) });
+      continue;
     }
 
     for (const section of sections) {
@@ -488,7 +523,7 @@ export async function listReadableSections(
     }
   }
 
-  return rows;
+  return { rows, failures };
 }
 
 export async function searchReadableText(
@@ -502,29 +537,31 @@ export async function searchReadableText(
   const scopeAndAclMs = performance.now() - scopeStart;
   const contentRoot = getContentRoot();
   const readableDocSet = new Set(docPaths);
+  // Per-row read failures (claim-review 04): a ripgrep match whose section can't
+  // be resolved, or whose matched file vanished, is surfaced — not silently
+  // dropped. (ACL-scope filtering and stale-path dedup are legitimate non-failure
+  // skips and are NOT collected here.)
+  const failures: DiscoveryFailure[] = [];
 
   let absoluteSearchScope = contentRoot;
   if (scope.kind === "folder") {
     absoluteSearchScope = path.join(contentRoot, scope.normalized_path.replace(/^\/+/, ""));
   } else if (scope.kind === "document") {
     absoluteSearchScope = resolveDocPathUnderContent(contentRoot, scope.normalized_path) + ".sections";
-    try {
-      await access(absoluteSearchScope);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT" || code === "ENOTDIR") {
-        return {
-          matches: [],
-          timings: {
-            total_ms: roundMs(performance.now() - totalStart),
-            scope_and_acl_ms: roundMs(scopeAndAclMs),
-            ripgrep_ms: 0,
-            match_mapping_ms: 0,
-            context_read_ms: 0,
-          },
-        };
-      }
-      throw error;
+    // Optional dir: a document with no `.sections/` yet is a valid empty state
+    // (NOT a failure) — return empty matches.
+    if (!(await pathExists(absoluteSearchScope))) {
+      return {
+        matches: [],
+        timings: {
+          total_ms: roundMs(performance.now() - totalStart),
+          scope_and_acl_ms: roundMs(scopeAndAclMs),
+          ripgrep_ms: 0,
+          match_mapping_ms: 0,
+          context_read_ms: 0,
+        },
+        failures: [],
+      };
     }
   }
 
@@ -547,6 +584,7 @@ export async function searchReadableText(
         match_mapping_ms: 0,
         context_read_ms: 0,
       },
+      failures,
     };
   }
 
@@ -572,10 +610,10 @@ export async function searchReadableText(
         absolutePath: rawMatch.absolutePath,
       });
     } catch (error) {
-      if (error instanceof DocumentNotFoundError) {
-        continue;
-      }
-      if (error instanceof SectionNotFoundError) {
+      if (error instanceof DocumentNotFoundError || error instanceof SectionNotFoundError) {
+        // A ripgrep match in a doc/section that no longer resolves is corruption /
+        // staleness — surface it as a per-row failure, keep the other matches.
+        failures.push({ doc_path: docPath, error: error instanceof Error ? error.message : String(error) });
         continue;
       }
       throw error;
@@ -595,16 +633,15 @@ export async function searchReadableText(
     let fileContent = fileCache.get(fileMeta.absolutePath);
     if (!fileContent) {
       const contextReadStart = performance.now();
-      try {
-        fileContent = await readFile(fileMeta.absolutePath);
-      } catch (error) {
-        contextReadMs += performance.now() - contextReadStart;
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          continue;
-        }
-        throw error;
-      }
+      const readContent = await readFileBufferIfExists(fileMeta.absolutePath);
       contextReadMs += performance.now() - contextReadStart;
+      if (readContent === null) {
+        // The file ripgrep matched vanished before we could read its context —
+        // surface as a per-row failure rather than silently dropping the match.
+        failures.push({ doc_path: fileMeta.docPath, heading_path: [...fileMeta.headingPath], error: `Matched file disappeared before context read: ${fileMeta.absolutePath}` });
+        continue;
+      }
+      fileContent = readContent;
       fileCache.set(fileMeta.absolutePath, fileContent);
     }
 
@@ -625,5 +662,6 @@ export async function searchReadableText(
       match_mapping_ms: roundMs(matchMappingMs),
       context_read_ms: roundMs(contextReadMs),
     },
+    failures,
   };
 }

@@ -7,6 +7,9 @@ import { isOidcConfigured, getOidcDisplayName, getOidcPublicUrl } from "../../au
 import { generateOidcState, generateOidcNonce, storeOidcState, retrieveAndClearOidcState } from "../../auth/oidc-state.js";
 import { buildOidcRedirectUrl, redeemOidcCode } from "../../auth/oidc-provider.js";
 import { sendApiError } from "./middleware.js";
+import { QueryParamError, optionalStringParam } from "../helpers/query-params.js";
+import { fileURLToPath } from "node:url";
+import { readFileIfExists } from "../../storage/fs-primitives.js";
 
 const BUILD_INFO_FILE_URL = new URL("../../../build-info.json", import.meta.url);
 
@@ -57,8 +60,11 @@ function clearAuthCookies(req: Request, res: Response): void {
 export function registerAuthRoutes(router: Router): void {
   router.get("/build-info", async (_req, res, next) => {
     try {
-      const { readFile } = await import("node:fs/promises");
-      const raw = await readFile(BUILD_INFO_FILE_URL, "utf8");
+      const raw = await readFileIfExists(fileURLToPath(BUILD_INFO_FILE_URL));
+      if (raw === null) {
+        sendApiError(res, 404, "build-info.json is not available on this server.");
+        return;
+      }
       const parsed = JSON.parse(raw);
       const version = typeof parsed?.version === "string" ? parsed.version : null;
       const sha = typeof parsed?.sha === "string" ? parsed.sha : null;
@@ -69,10 +75,6 @@ export function registerAuthRoutes(router: Router): void {
       }
       res.status(200).json({ version, sha, date });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
-        sendApiError(res, 404, "build-info.json is not available on this server.");
-        return;
-      }
       next(error);
     }
   });
@@ -98,7 +100,7 @@ export function registerAuthRoutes(router: Router): void {
         sendApiError(res, 503, "OIDC is not configured on this server.");
         return;
       }
-      const returnTo = sanitizeReturnTo((req.query.return_to as string) ?? "");
+      const returnTo = sanitizeReturnTo(optionalStringParam(req.query.return_to, "return_to") ?? "");
 
       const state = generateOidcState();
       const nonce = generateOidcNonce();
@@ -113,6 +115,10 @@ export function registerAuthRoutes(router: Router): void {
       }
       res.redirect(302, url);
     } catch (error) {
+      if (error instanceof QueryParamError) {
+        sendApiError(res, 400, error);
+        return;
+      }
       next(error);
     }
   });

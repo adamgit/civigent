@@ -28,6 +28,25 @@ import { yDocToProsemirrorJSON, prosemirrorJSONToYDoc } from "y-prosemirror";
 import { getBackendSchema } from "./ydoc-fragments.js";
 import { fragmentFromRemark, type FragmentContent } from "../storage/section-formatting.js";
 
+/**
+ * The top-level shared types stored in `Y.Doc.share` and keyed by
+ * `Y.Transaction.changed` — derived from the official Yjs declarations so we
+ * never spell `any` or reach into a private Yjs internal type.
+ */
+type YSharedType = Y.Doc["share"] extends Map<string, infer V> ? V : never;
+
+/**
+ * Yjs ↔ ProseMirror-JSON boundary. `yDocToProsemirrorJSON` is weakly typed
+ * (`Record<string, any>`); this is the single adapter that crosses that boundary
+ * into the `Record<string, unknown>` shape `jsonToMarkdown` consumes (the
+ * `any → unknown` widening is implicit and safe), so no `as` assertion is needed
+ * at the call sites.
+ */
+function fragmentToMarkdown(doc: Y.Doc, fragmentKey: string): FragmentContent {
+  const pmJson: Record<string, unknown> = yDocToProsemirrorJSON(doc, fragmentKey);
+  return fragmentFromRemark(jsonToMarkdown(pmJson));
+}
+
 export class LiveFragmentStringsStore {
   readonly ydoc: Y.Doc;
   readonly docPath: string;
@@ -41,7 +60,7 @@ export class LiveFragmentStringsStore {
 
   /** Y.AbstractType → fragment key name reverse lookup. Rebuilt lazily when
    *  `ydoc.share` grows (new fragments appear during structural reconciliation). */
-  private reverseMap = new Map<object, string>();
+  private reverseMap = new Map<YSharedType, string>();
   private lastShareSize = 0;
 
   constructor(ydoc: Y.Doc, orderedKeys: string[], docPath: string) {
@@ -52,11 +71,15 @@ export class LiveFragmentStringsStore {
     this.ydoc.on("afterTransaction", (txn: Y.Transaction) => {
       if (this.ydoc.share.size !== this.lastShareSize) this.rebuildReverseMap();
       for (const [type] of txn.changed) {
-        let current: unknown = type;
-        while ((current as { _item?: { parent?: unknown } })._item?.parent) {
-          current = (current as { _item: { parent: unknown } })._item.parent;
+        // Walk up to the top-level shared type via the public `parent` getter
+        // (no private `_item` traversal), then attribute the change to its key.
+        let current: YSharedType = type;
+        let parent = current.parent;
+        while (parent) {
+          current = parent;
+          parent = current.parent;
         }
-        const name = this.reverseMap.get(current as object);
+        const name = this.reverseMap.get(current);
         if (name) {
           this.touchedThisTransaction.add(name);
         }
@@ -134,8 +157,7 @@ export class LiveFragmentStringsStore {
    * so it is always current — never stale.
    */
   readFragmentString(fragmentKey: string): FragmentContent {
-    const pmJson = yDocToProsemirrorJSON(this.ydoc, fragmentKey);
-    return fragmentFromRemark(jsonToMarkdown(pmJson as Record<string, unknown>));
+    return fragmentToMarkdown(this.ydoc, fragmentKey);
   }
 
   /**
@@ -167,8 +189,7 @@ export class LiveFragmentStringsStore {
     Y.applyUpdate(tmp, state);
     try {
       for (const fragmentKey of keys) {
-        const pmJson = yDocToProsemirrorJSON(tmp, fragmentKey);
-        result.set(fragmentKey, fragmentFromRemark(jsonToMarkdown(pmJson as Record<string, unknown>)));
+        result.set(fragmentKey, fragmentToMarkdown(tmp, fragmentKey));
       }
     } finally {
       tmp.destroy();

@@ -826,3 +826,115 @@ a {
   cursor: pointer;
   color: #92400e;
 }
+
+/* ─── Document activity indicator (publish-pause "Saving / Saved") ───── */
+
+.doc-activity {
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  z-index: 40;
+  transform: translateX(-50%) translateY(-8px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 280ms ease, transform 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.doc-activity--visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.doc-activity-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--color-topbar-border, #e5e1db);
+  box-shadow: 0 4px 16px rgba(26, 22, 16, 0.10);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary, #5c564c);
+  white-space: nowrap;
+}
+.doc-activity-pill--done {
+  color: #2f8f5b;
+  border-color: rgba(47, 143, 91, 0.30);
+}
+
+.doc-activity-label { letter-spacing: 0.01em; }
+
+/* Rotating ring spinner */
+.doc-activity-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  border: 1.5px solid rgba(153, 136, 102, 0.30);
+  border-top-color: var(--color-sidebar-marker, #998866);
+  animation: doc-activity-spin 0.7s linear infinite;
+}
+@keyframes doc-activity-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Animated trailing dots */
+.doc-activity-dots {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  margin-left: -2px;
+}
+.doc-activity-dots span {
+  width: 3px;
+  height: 3px;
+  border-radius: 9999px;
+  background: currentColor;
+  opacity: 0.5;
+  animation: doc-activity-dot 1s ease-in-out infinite;
+}
+.doc-activity-dots span:nth-child(2) { animation-delay: 0.15s; }
+.doc-activity-dots span:nth-child(3) { animation-delay: 0.30s; }
+@keyframes doc-activity-dot {
+  0%, 100% { transform: translateY(0); opacity: 0.35; }
+  50%      { transform: translateY(-3px); opacity: 0.9; }
+}
+
+/* Completion check — draws in, then the pill settles */
+.doc-activity-check {
+  overflow: visible;
+}
+.doc-activity-check path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  animation: doc-activity-check-draw 0.42s cubic-bezier(0.65, 0, 0.35, 1) forwards;
+}
+.doc-activity-pill--done {
+  animation: doc-activity-pop 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes doc-activity-check-draw {
+  to { stroke-dashoffset: 0; }
+}
+@keyframes doc-activity-pop {
+  0%   { transform: scale(0.92); }
+  60%  { transform: scale(1.04); }
+  100% { transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .doc-activity,
+  .doc-activity-spinner,
+  .doc-activity-dots span,
+  .doc-activity-check path,
+  .doc-activity-pill--done {
+    animation: none;
+    transition: opacity 120ms linear;
+  }
+  .doc-activity-check path { stroke-dashoffset: 0; }
+}

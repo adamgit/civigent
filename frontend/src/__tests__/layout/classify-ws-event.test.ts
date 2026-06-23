@@ -2,11 +2,13 @@ import { describe, it, expect } from "vitest";
 import { classifyWsEvent } from "../../app/app-layout-utils";
 
 describe("classifyWsEvent", () => {
-  it("ignores dirty:changed events", () => {
-    const result = classifyWsEvent({ type: "dirty:changed" }, "/doc.md", true);
-    expect(result.refreshTree).toBe(false);
-    expect(result.addBadge).toBeNull();
-    expect(result.showToast).toBeNull();
+  it("ignores per-section pending/settled events (handled per-section, not at AppLayout)", () => {
+    for (const type of ["section:pending", "section:settled"]) {
+      const result = classifyWsEvent({ type }, "/doc.md", true);
+      expect(result.refreshTree).toBe(false);
+      expect(result.addBadge).toBeNull();
+      expect(result.showToast).toBeNull();
+    }
   });
 
   it("catalog:changed triggers refreshTree and passes flash data", () => {

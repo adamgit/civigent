@@ -13,6 +13,7 @@ import {
 } from "../pages/document-page-utils";
 import { sectionHeadingKey } from "../types/shared.js";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
+import type { LocalEditOriginSink } from "../status/sessionAuthorship";
 import { SummaryWhoChangedThisSection } from "./SummaryWhoChangedThisSection.js";
 import { useSectionEditabilityMap, usePublishPaused } from "../hooks/useFragmentStoreHooks";
 
@@ -36,6 +37,9 @@ export interface DocumentCanvasProps {
   crdtError: string | null;
   transferService: SectionTransferService | null;
   readyEditors: Set<number>;
+  /** Write-only session-authorship port, passed straight through to each section
+   *  renderer. The canvas neither reads nor stores it. */
+  localEditSink: LocalEditOriginSink;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
   onStartEditing: (index: number, coords: { x: number; y: number }) => void | Promise<void>;
   onFocusSection: (index: number, headingPath: string[], coords: { x: number; y: number }) => void;
@@ -68,6 +72,7 @@ export function DocumentCanvas({
   crdtError,
   transferService,
   readyEditors,
+  localEditSink,
   mouseDownPosRef,
   onStartEditing,
   onFocusSection,
@@ -145,6 +150,7 @@ export function DocumentCanvas({
                 canEditProposalContent={canEditProposalContent}
                 proposalScopeMutationInFlight={proposalScopeMutationInFlight}
                 isReady={readyEditors.has(i)}
+                localEditSink={localEditSink}
                 mouseDownPosRef={mouseDownPosRef}
                 onStartEditing={onStartEditing}
                 onFocusSection={onFocusSection}

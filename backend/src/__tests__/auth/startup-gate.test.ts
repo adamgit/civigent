@@ -52,7 +52,7 @@ describe("Startup gate — MCP tool calls blocked during recovery", () => {
     const { ToolRegistry } = await import("../../mcp/tool-registry.js");
 
     const registry = new ToolRegistry();
-    const server = new McpServer({ registry });
+    const server = new McpServer({ registry, tier: 3 });
 
     const writer = { id: "test", type: "human" as const, displayName: "Test" };
     const session = {};
@@ -78,7 +78,7 @@ describe("Startup gate — MCP tool calls blocked during recovery", () => {
     const { ToolRegistry } = await import("../../mcp/tool-registry.js");
 
     const registry = new ToolRegistry();
-    const server = new McpServer({ registry });
+    const server = new McpServer({ registry, tier: 3 });
 
     const writer = { id: "test", type: "human" as const, displayName: "Test" };
     const session = {};

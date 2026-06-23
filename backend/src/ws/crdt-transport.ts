@@ -44,15 +44,34 @@ export interface CrdtSocketState {
   /** True after joinSession has been called for this socket. Used to prevent
    *  double-join in the pre-connected observer loop. */
   joined: boolean;
+  /** Receipt watermark (Guarantee A): count of YJS_UPDATE frames processed from
+   *  this socket so far. Incremented after each update's lane command resolves;
+   *  echoed back as `MSG_UPDATE_ACK` so the client can assert "all my edits up to
+   *  N are received". Optional/defaulted to 0 so existing socket-state literals
+   *  (incl. test fakes) need no change. */
+  receivedUpdateCount?: number;
+}
+
+/**
+ * The narrow socket surface the coordinator's per-doc registry actually uses:
+ * liveness (`readyState`), frame send, and close. The ws `WebSocket` satisfies
+ * this structurally, so typing the registry against this interface (rather than
+ * the full ws type) lets test fakes implement exactly this surface with no
+ * `as unknown as` casts.
+ */
+export interface CoordinatorSocket {
+  readyState: number;
+  send(data: Uint8Array): void;
+  close(code?: number, reason?: string): void;
 }
 
 // ─── Module state ───────────────────────────────────────────────
 
 /** Per-socket auth + routing state. */
-export const socketState = new Map<WebSocket, CrdtSocketState>();
+export const socketState = new Map<CoordinatorSocket, CrdtSocketState>();
 
 /** Send abstraction — coordinator calls this instead of socket.send() directly. */
-export function sendToSocket(socket: WebSocket, data: Uint8Array): void {
+export function sendToSocket(socket: CoordinatorSocket, data: Uint8Array): void {
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(data);
   }
@@ -61,7 +80,7 @@ export function sendToSocket(socket: WebSocket, data: Uint8Array): void {
 // ─── Auth utilities ──────────────────────────────────────────────
 
 /** Check if a socket's auth token has expired. Returns true if expired (closes the socket). */
-export function checkTokenExpired(ws: WebSocket, state: CrdtSocketState): boolean {
+export function checkTokenExpired(ws: CoordinatorSocket, state: CrdtSocketState): boolean {
   if (state.tokenExp === Infinity) return false; // single_user mode
   const nowSec = Math.floor(Date.now() / 1000);
   if (nowSec < state.tokenExp) return false;

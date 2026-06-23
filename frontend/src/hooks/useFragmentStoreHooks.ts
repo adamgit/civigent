@@ -14,19 +14,19 @@
  * so the caller can subscribe unconditionally even before `useDocumentSession`
  * has finished constructing the store.
  *
- * The legacy persistence (dirty/received) subscriptions are removed — the
- * receipt lifecycle no longer exists (spec 05 §"Content Flush"). In their
- * place: publication-pause and per-section editability subscriptions.
+ * Exposes publication-pause and per-section editability subscriptions.
  */
 
 import { useCallback, useSyncExternalStore } from "react";
 import type {
   BrowserFragmentReplicaStore,
   CrdtConnectionState,
+  PendingSection,
   SectionEditability,
 } from "../services/browser-fragment-replica-store";
 
 const EMPTY_EDITABILITY_MAP: ReadonlyMap<string, SectionEditability> = new Map();
+const EMPTY_PENDING_MAP: ReadonlyMap<string, PendingSection> = new Map();
 
 function subscribeNoop(): () => void {
   return () => {};
@@ -86,6 +86,50 @@ export function useSectionEditabilityMap(
     store ? store.subscribe : subscribeNoop,
     () => (store ? store.getSectionEditability() : EMPTY_EDITABILITY_MAP),
     () => EMPTY_EDITABILITY_MAP,
+  );
+}
+
+/**
+ * Guarantee A (doc-level): subscribe to whether every local edit has been
+ * acknowledged received by the server. False while edits are in flight.
+ */
+export function useReceiptAllReceived(
+  store: BrowserFragmentReplicaStore | null,
+): boolean {
+  return useSyncExternalStore(
+    store ? store.subscribe : subscribeNoop,
+    () => (store ? store.getReceiptAllReceived() : true),
+    () => true,
+  );
+}
+
+/** Guarantee B: subscribe to the full pending-sections map. */
+export function usePendingSections(
+  store: BrowserFragmentReplicaStore | null,
+): ReadonlyMap<string, PendingSection> {
+  return useSyncExternalStore(
+    store ? store.subscribe : subscribeNoop,
+    () => (store ? store.getPendingSections() : EMPTY_PENDING_MAP),
+    () => EMPTY_PENDING_MAP,
+  );
+}
+
+/**
+ * Guarantee B: subscribe to a single fragment's pending entry (or null). Used by
+ * the per-section gutter affordance to show "edited by X — not yet saved".
+ */
+export function usePendingSectionForKey(
+  store: BrowserFragmentReplicaStore | null,
+  fragmentKey: string,
+): PendingSection | null {
+  const getSnapshot = useCallback(
+    () => (store ? store.getPendingSectionForKey(fragmentKey) : null),
+    [store, fragmentKey],
+  );
+  return useSyncExternalStore(
+    store ? store.subscribe : subscribeNoop,
+    getSnapshot,
+    () => null,
   );
 }
 

@@ -13,11 +13,40 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness";
-import { BrowserFragmentReplicaStore } from "../../../services/browser-fragment-replica-store.js";
+import {
+  BrowserFragmentReplicaStore,
+  type CrdtConnectionState,
+} from "../../../services/browser-fragment-replica-store.js";
 import { resolveTransportStatus } from "../../../services/section-save-state.js";
 
 const FRAG_A = "section::alpha";
 const FRAG_B = "section::beta";
+
+/**
+ * Named-field wrapper over the positional `resolveTransportStatus` signature so
+ * the assertions read as honest scenarios. `localPending` = YOUR pending edits;
+ * `inbound` = someone else's pending edits exist and none are yours; `hadLocal`
+ * = sticky "you committed local work this session".
+ */
+function status(opts: {
+  connection?: CrdtConnectionState;
+  publishPaused?: boolean;
+  isEditing?: boolean;
+  allReceived?: boolean;
+  localPending?: boolean;
+  inbound?: boolean;
+  hadLocal?: boolean;
+}): string {
+  return resolveTransportStatus(
+    opts.connection ?? "connected",
+    opts.publishPaused ?? false,
+    opts.isEditing ?? true,
+    opts.allReceived ?? true,
+    opts.localPending ?? false,
+    opts.inbound ?? false,
+    opts.hadLocal ?? false,
+  );
+}
 
 describe("DocumentPage transport/publish status", () => {
   let doc: Y.Doc;
@@ -38,30 +67,63 @@ describe("DocumentPage transport/publish status", () => {
 
   describe("resolveTransportStatus", () => {
     it("read-only viewers (not editing) see nothing", () => {
-      expect(resolveTransportStatus("connected", false, false)).toBe("idle");
-      expect(resolveTransportStatus("disconnected", true, false)).toBe("idle");
+      expect(status({ isEditing: false })).toBe("idle");
+      expect(status({ isEditing: false, publishPaused: true, connection: "disconnected" })).toBe("idle");
     });
 
-    it("connected + synced while editing = synced", () => {
-      expect(resolveTransportStatus("connected", false, true)).toBe("synced");
+    it("connected + clean with no local edits this session = idle (show nothing)", () => {
+      expect(status({})).toBe("idle");
     });
 
-    it("publication pause wins over a healthy connection", () => {
-      expect(resolveTransportStatus("connected", true, true)).toBe("publishing");
+    it("connected + clean after a real local save = saved", () => {
+      expect(status({ hadLocal: true })).toBe("saved");
     });
 
     it("connecting / reconnecting surface their own status", () => {
-      expect(resolveTransportStatus("connecting", false, true)).toBe("connecting");
-      expect(resolveTransportStatus("reconnecting", false, true)).toBe("reconnecting");
+      expect(status({ connection: "connecting" })).toBe("connecting");
+      expect(status({ connection: "reconnecting" })).toBe("reconnecting");
     });
 
     it("error / disconnected while editing = offline", () => {
-      expect(resolveTransportStatus("error", false, true)).toBe("offline");
-      expect(resolveTransportStatus("disconnected", false, true)).toBe("offline");
+      expect(status({ connection: "error" })).toBe("offline");
+      expect(status({ connection: "disconnected" })).toBe("offline");
     });
 
     it("offline outranks publication pause", () => {
-      expect(resolveTransportStatus("disconnected", true, true)).toBe("offline");
+      expect(status({ connection: "disconnected", publishPaused: true })).toBe("offline");
+    });
+
+    it("publish pause carrying YOUR edits = saving; not yours = updating", () => {
+      expect(status({ publishPaused: true, localPending: true })).toBe("saving");
+      expect(status({ publishPaused: true, allReceived: false })).toBe("saving");
+      expect(status({ publishPaused: true, inbound: true })).toBe("updating");
+      expect(status({ publishPaused: true })).toBe("updating");
+    });
+
+    // (a) Inbound publish-pause with no local edits must never read as your save.
+    it("inbound publish-pause with no local edits → updating then upToDate (never receivedNotSaved/saved)", () => {
+      // Pause running, stranded/other work committing, nothing of yours.
+      const duringPause = status({ publishPaused: true, inbound: true });
+      expect(duringPause).toBe("updating");
+      expect(duringPause).not.toBe("saving");
+
+      // Pause ended, inbound pending still present, still no local edits.
+      const afterPause = status({ inbound: true });
+      expect(afterPause).toBe("upToDate");
+      expect(afterPause).not.toBe("receivedNotSaved");
+      expect(afterPause).not.toBe("saved");
+    });
+
+    // (b) A real local edit still walks the full local ladder.
+    it("a real local edit walks syncing → receivedNotSaved → saving → saved", () => {
+      // In flight to the server.
+      expect(status({ allReceived: false })).toBe("syncing");
+      // Received, but the inprogress proposal still holds your edits.
+      expect(status({ localPending: true })).toBe("receivedNotSaved");
+      // The autonomous commit runs for your edits.
+      expect(status({ publishPaused: true, localPending: true })).toBe("saving");
+      // Committed and clean — sticky flag keeps it on "saved", not "idle".
+      expect(status({ hadLocal: true })).toBe("saved");
     });
   });
 

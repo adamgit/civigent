@@ -22,16 +22,16 @@ import { DocumentNotFoundError } from "../../storage/document-reader.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
 import {
   readProposal,
-  updateProposalSections,
   isProposalMutable,
   ProposalNotFoundError,
   InvalidProposalStateError,
 } from "../../storage/proposal-repository.js";
+import { mutateProposalContent, ProposalSectionNotFoundError } from "../../storage/mutate-proposal-content.js";
+import { sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
 import { evaluateAgentWritePolicy } from "../../storage/commit-pipeline.js";
 import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
 import type { McpToolCallResult } from "../protocol.js";
-import type { AnyProposal, ProposalSection } from "../../types/shared.js";
-import { ProposalEditor } from "../../storage/proposal-editor.js";
+import type { AnyProposal } from "../../types/shared.js";
 import { checkDocPermission } from "../../auth/acl.js";
 
 // ─── Proposal validation helper ──────────────────────────
@@ -39,7 +39,7 @@ import { checkDocPermission } from "../../auth/acl.js";
 async function loadAndValidateProposal(
   proposalId: string,
   writerId: string,
-): Promise<{ proposal: AnyProposal; editor: ProposalEditor } | McpToolCallResult> {
+): Promise<{ proposal: AnyProposal } | McpToolCallResult> {
   try {
     const proposal = await readProposal(proposalId);
     if (proposal.writer.id !== writerId) {
@@ -48,9 +48,9 @@ async function loadAndValidateProposal(
     if (!isProposalMutable(proposal)) {
       return makeToolErrorResult(`Cannot modify proposal in ${proposal.status} state.`);
     }
-    // Open a proposal-scoped editor facade for this proposal's content tree.
-    const editor = ProposalEditor.open(proposalId, proposal.status);
-    return { proposal, editor };
+    // Validation only — the manifest-owning mutation goes through
+    // `mutateProposalContent(...)`, which opens its own short-lived editor.
+    return { proposal };
   } catch (error) {
     if (error instanceof ProposalNotFoundError) {
       return makeToolErrorResult(`Proposal not found: ${proposalId}`);
@@ -102,24 +102,19 @@ const createSectionHandler: ToolHandler = async (args, ctx) => {
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
-  const { proposal, editor } = validated;
 
   try {
-    // Auto-create headings and write content atomically through ProposalEditor.
-    {
-      const heading = headingPath.length === 0 ? "" : headingPath[headingPath.length - 1]!;
-      await editor.createSection(docPath, headingPath, heading, content);
-    }
-
-    // Update proposal sections metadata
-    const existingSections = proposal.sections.filter(
-      (s) => !(s.doc_path === docPath && JSON.stringify(s.heading_path) === JSON.stringify(headingPath)),
-    );
-    const updatedSections: ProposalSection[] = [
-      ...existingSections,
-      { doc_path: docPath, heading_path: headingPath },
-    ];
-    const { proposal: updated } = await updateProposalSections(proposalId, updatedSections);
+    // Auto-create headings + write content AND derive the manifest from the real
+    // parser-expanded sections (embedded headings become real sections) — never
+    // from the requested heading path alone (Claim 3).
+    const heading = headingPath.length === 0 ? "" : headingPath[headingPath.length - 1]!;
+    const { proposal: updated } = await mutateProposalContent(proposalId, {
+      kind: "create_section",
+      docPath,
+      headingPath,
+      heading,
+      content: content === undefined ? undefined : sectionWriteInputFromExternal(content),
+    });
 
     // Broadcast proposal:draft
     if (ctx.emitEvent && updated.sections.length > 0) {
@@ -179,20 +174,15 @@ const deleteSectionHandler: ToolHandler = async (args, ctx) => {
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
-  const { proposal, editor } = validated;
 
   try {
-    await editor.deleteSection(docPath, headingPath);
-
-    // Update proposal sections metadata
-    const existingSections = proposal.sections.filter(
-      (s) => !(s.doc_path === docPath && JSON.stringify(s.heading_path) === JSON.stringify(headingPath)),
-    );
-    const updatedSections: ProposalSection[] = [
-      ...existingSections,
-      { doc_path: docPath, heading_path: headingPath },
-    ];
-    const { proposal: updated } = await updateProposalSections(proposalId, updatedSections);
+    // The manifest is derived from the REAL removed subtree (target + every
+    // deleted descendant) by the mutation boundary (Claim 3).
+    const { proposal: updated } = await mutateProposalContent(proposalId, {
+      kind: "delete_section",
+      docPath,
+      headingPath,
+    });
 
     if (ctx.emitEvent && updated.sections.length > 0) {
       ctx.emitEvent({
@@ -255,32 +245,24 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
-  const { proposal, editor } = validated;
 
   try {
-    // Determine target level from the effective proposal section list.
-    const currentSection = (await editor.getSectionList(docPath)).find((entry) =>
-      entry.headingPath.length === headingPath.length
-      && entry.headingPath.every((segment, index) => segment === headingPath[index]),
-    );
-    if (!currentSection) {
-      return makeToolErrorResult(`Section not found: ${headingPath.join(" > ")} in ${docPath}`);
+    // The boundary resolves the target level and derives the manifest from the
+    // real removed (old) + added (new) identities of the moved subtree (Claim 3).
+    let updated: AnyProposal;
+    try {
+      ({ proposal: updated } = await mutateProposalContent(proposalId, {
+        kind: "move_section",
+        docPath,
+        headingPath,
+        newParentPath,
+      }));
+    } catch (moveError) {
+      if (moveError instanceof ProposalSectionNotFoundError) {
+        return makeToolErrorResult(moveError.message);
+      }
+      throw moveError;
     }
-    const targetLevel = newParentPath.length === 0
-      ? currentSection.level
-      : newParentPath.length + 1;
-
-    await editor.moveSection(docPath, headingPath, newParentPath, targetLevel);
-
-    // Update proposal sections metadata
-    const existingSections = proposal.sections.filter(
-      (s) => !(s.doc_path === docPath && JSON.stringify(s.heading_path) === JSON.stringify(headingPath)),
-    );
-    const updatedSections: ProposalSection[] = [
-      ...existingSections,
-      { doc_path: docPath, heading_path: headingPath },
-    ];
-    const { proposal: updated } = await updateProposalSections(proposalId, updatedSections);
 
     if (ctx.emitEvent && updated.sections.length > 0) {
       ctx.emitEvent({
@@ -342,21 +324,17 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
-  const { proposal, editor } = validated;
 
   try {
-    await editor.renameSection(docPath, headingPath, newHeading);
-    const newHeadingPath = [...headingPath.slice(0, -1), newHeading];
-
-    // Update proposal sections metadata with new heading path
-    const existingSections = proposal.sections.filter(
-      (s) => !(s.doc_path === docPath && JSON.stringify(s.heading_path) === JSON.stringify(headingPath)),
-    );
-    const updatedSections: ProposalSection[] = [
-      ...existingSections,
-      { doc_path: docPath, heading_path: newHeadingPath },
-    ];
-    const { proposal: updated } = await updateProposalSections(proposalId, updatedSections);
+    // The boundary derives the manifest from the OLD removed identities and the
+    // NEW added identities (descendants included), not just the new path (Claim 3).
+    const { proposal: updated, newHeadingPath: mutatedHeadingPath } = await mutateProposalContent(proposalId, {
+      kind: "rename_section",
+      docPath,
+      headingPath,
+      newHeading,
+    });
+    const newHeadingPath = mutatedHeadingPath ?? [...headingPath.slice(0, -1), newHeading];
 
     if (ctx.emitEvent && updated.sections.length > 0) {
       ctx.emitEvent({
@@ -411,21 +389,14 @@ const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
-  const { proposal, editor } = validated;
 
   try {
-    // Read canonical headings and write tombstone in one step via the editor.
-    const headingPaths = await editor.deleteDocument(docPath);
-
-    // Add all document sections to proposal's sections[] metadata
-    const existingSections = proposal.sections.filter(
-      (s) => s.doc_path !== docPath,
-    );
-    const updatedSections: ProposalSection[] = [
-      ...existingSections,
-      ...headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp })),
-    ];
-    const { proposal: updated } = await updateProposalSections(proposalId, updatedSections);
+    // The boundary tombstones the document and derives the manifest from the real
+    // canonical heading paths going away (Claim 3).
+    const { proposal: updated } = await mutateProposalContent(proposalId, {
+      kind: "delete_document",
+      docPath,
+    });
 
     if (ctx.emitEvent && updated.sections.length > 0) {
       ctx.emitEvent({
@@ -486,33 +457,16 @@ const renameDocumentHandler: ToolHandler = async (args, ctx) => {
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
-  const { proposal, editor } = validated;
 
   try {
-    // Snapshot effective heading paths of the source document BEFORE the
-    // rename so we can populate proposal section metadata for both old
-    // (tombstoned) and new (created) entries. Per item 303, proposal metadata
-    // updates remain caller-side rather than being absorbed into the storage
-    // primitive.
-    const headingPaths = await editor.listHeadingPaths(docPath);
-
-    // Dedicated rename primitive (items 287/297) — preserves structure and
-    // body state directly via document-level copy + tombstone, never
-    // reinterpreting the source as a sequence of user section upserts.
-    await editor.renameDocument(docPath, newPath);
-
-    // Update proposal sections metadata — add entries for both old-path
-    // (being deleted by tombstone) and new-path (created by copy) sections
-    // so the agent write policy evaluates both.
-    const existingSections = proposal.sections.filter(
-      (s) => s.doc_path !== docPath && s.doc_path !== newPath,
-    );
-    const updatedSections: ProposalSection[] = [
-      ...existingSections,
-      ...headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp })),
-      ...headingPaths.map((hp) => ({ doc_path: newPath, heading_path: hp })),
-    ];
-    const { proposal: updated } = await updateProposalSections(proposalId, updatedSections);
+    // The boundary snapshots the source heading paths, performs the dedicated
+    // document copy+tombstone rename, and derives the manifest from both the
+    // old-path (tombstoned) and new-path (created) sections (Claim 3).
+    const { proposal: updated } = await mutateProposalContent(proposalId, {
+      kind: "rename_document",
+      docPath,
+      newPath,
+    });
 
     if (ctx.emitEvent && updated.sections.length > 0) {
       ctx.emitEvent({

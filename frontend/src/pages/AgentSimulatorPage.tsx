@@ -526,12 +526,40 @@ export function AgentSimulatorPage() {
       return;
     }
 
-    const resp = await agentFetch<{ proposal?: unknown; sections?: unknown[] }>(
+    // Manifest (intent + target scope, with justifications) and staged content are
+    // now separate routes. Declare the scope first, then write the content.
+    const manifestResp = await agentFetch<{ proposal?: unknown }>(
       `/api/proposals/${encodeURIComponent(proposalId)}`,
       agent.token,
       {
         method: "PUT",
-        body: JSON.stringify({ sections }),
+        body: JSON.stringify({
+          targets: sections.map((s) => ({
+            doc_path: s.doc_path,
+            heading_path: s.heading_path,
+            ...(s.justification ? { justification: s.justification } : {}),
+          })),
+        }),
+      },
+    );
+    if (!manifestResp.ok) {
+      setUpdateResponse(manifestResp);
+      setUpdating(false);
+      return;
+    }
+
+    const resp = await agentFetch<{ proposal?: unknown }>(
+      `/api/proposals/${encodeURIComponent(proposalId)}/sections`,
+      agent.token,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          sections: sections.map((s) => ({
+            doc_path: s.doc_path,
+            heading_path: s.heading_path,
+            content: s.content,
+          })),
+        }),
       },
     );
     setUpdateResponse(resp);

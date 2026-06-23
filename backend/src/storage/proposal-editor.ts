@@ -32,7 +32,7 @@ import { gitShowFile, extractHistoricalTree } from "./git-repo.js";
 import { ContentLayer } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
 import type { ContentEntry, FlatEntry } from "./document-skeleton.js";
-import type { SectionBody } from "./section-formatting.js";
+import { sectionWriteInputFromExternal, type SectionBody, type SectionBodyWithPotentialSubsections } from "./section-formatting.js";
 import type { ProposalId, ProposalStatus } from "../types/shared.js";
 import type { ProposalSubtreeMutationResult } from "./proposal-facade-types.js";
 
@@ -59,9 +59,15 @@ export class ProposalEditor extends ProposalReader {
    * ancestors root-to-leaf, then writes the body — callers never observe a
    * partial heading chain).
    *
-   * `content` is treated as section markdown and routed through the
-   * parser-driven upsert path so embedded headings expand into real sections
-   * (NOT a body-only write).
+   * For a real (non-empty) heading path, `content` is treated as section
+   * markdown and routed through the parser-driven upsert path so embedded
+   * headings expand into real sections (NOT a body-only write).
+   *
+   * For the before-first-heading target (`headingPath === []`, `heading === ""`)
+   * the write is BODY-ONLY: `content` is stored verbatim as the BFH body and is
+   * NEVER parsed for structure. Embedded heading syntax stays literal text and
+   * cannot create/rename/reorder headed sections. Whole-document structural
+   * writes use `writeDocumentFromMarkdown(...)`, never a `[]` section write.
    *
    * `heading` is the leaf heading text (empty string when targeting the
    * before-first-heading root section, i.e. `headingPath === []`).
@@ -70,10 +76,46 @@ export class ProposalEditor extends ProposalReader {
     docPath: string,
     headingPath: string[],
     heading: string,
-    content: string,
+    content: SectionBodyWithPotentialSubsections,
     opts?: { contentIsFullMarkdown?: boolean },
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
     return this.shadow.upsertSection(new SectionRef(docPath, headingPath), heading, content, opts);
+  }
+
+  /**
+   * CRDT MATERIALIZATION ONLY. Store a touched live section's body VERBATIM at
+   * its existing identity — topology-neutral (no parsing, no structural
+   * expansion), id-preserving. This is the per-edit (keystroke-rate)
+   * write-through: embedded heading syntax stays literal body text and never
+   * becomes a section on a keystroke. Structural promotion of a settled
+   * embedded heading happens once, at quiescence normalization, NOT here.
+   *
+   * Every section identity — including BFH (`headingPath: []`) — uses this same
+   * contract. REST / MCP / manual proposal editing / import / restore must keep
+   * using the parser-driven `writeSection(...)`, which intentionally expands
+   * embedded headings into real sections.
+   */
+  async materializeSectionBody(
+    docPath: string,
+    headingPath: string[],
+    body: SectionBody,
+  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+    return this.shadow.writeSectionBodyVerbatim(new SectionRef(docPath, headingPath), body);
+  }
+
+  /**
+   * QUIESCENCE REFLECTION ONLY. Promote a settled `## Heading` that was typed
+   * into the before-first-heading (BFH) body into a real top-level section,
+   * preserving the pre-heading orphan as the BFH body and every existing
+   * section's id. The root-split counterpart of the parser-driven section-split
+   * reflection (`writeSection(headedPath, …, { contentIsFullMarkdown })`).
+   * Idempotent: a no-op once the heading is already promoted.
+   */
+  async splitBeforeFirstHeading(
+    docPath: string,
+    bfhFragmentMarkdown: string,
+  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+    return this.shadow.splitBeforeFirstHeadingPromotingHeadings(docPath, bfhFragmentMarkdown);
   }
 
   /**
@@ -100,7 +142,7 @@ export class ProposalEditor extends ProposalReader {
     docPath: string,
     headingPath: string[],
     heading: string,
-    initialContent: string = "",
+    initialContent: SectionBodyWithPotentialSubsections = sectionWriteInputFromExternal(""),
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
     return this.shadow.upsertSection(new SectionRef(docPath, headingPath), heading, initialContent);
   }
@@ -149,7 +191,10 @@ export class ProposalEditor extends ProposalReader {
    * subtrees re-parent up KEEPING their section-file ids (live fragment keys /
    * cursors survive). See `ProposalShadowContentLayer.removeHeadingPreservingChildren`.
    */
-  async deleteHeadingKeepingChildren(docPath: string, headingPath: string[]): Promise<void> {
+  async deleteHeadingKeepingChildren(
+    docPath: string,
+    headingPath: string[],
+  ): Promise<{ removed: FlatEntry[]; added: FlatEntry[] }> {
     return this.shadow.removeHeadingPreservingChildren(docPath, headingPath);
   }
 
@@ -163,9 +208,9 @@ export class ProposalEditor extends ProposalReader {
     headingPath: string[],
     newHeading: string,
     newLevel: number,
-    body: string,
+    body: SectionBody,
   ): Promise<ContentEntry> {
-    return this.shadow.retitleSectionInPlace(docPath, headingPath, newHeading, newLevel, body as SectionBody);
+    return this.shadow.retitleSectionInPlace(docPath, headingPath, newHeading, newLevel, body);
   }
 
   // ─── Document-level structural operations (tombstone semantics) ────
@@ -194,15 +239,6 @@ export class ProposalEditor extends ProposalReader {
    */
   async renameDocument(sourceDocPath: string, destinationDocPath: string): Promise<void> {
     await this.shadow.renameDocument(sourceDocPath, destinationDocPath);
-  }
-
-  /**
-   * Copy a canonical document skeleton + section files into the proposal at a
-   * new path. Used by proposal-backed move/rename flows that stage the
-   * destination document.
-   */
-  async copyCanonicalDocument(sourceDocPath: string, destinationDocPath: string): Promise<void> {
-    await this.shadow.copyCanonicalDocumentToOverlay(sourceDocPath, destinationDocPath);
   }
 
   // ─── Historical replay ────────────────────────────────────────────

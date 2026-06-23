@@ -19,6 +19,9 @@ import {
   Schema,
   Node as ProseMirrorNode,
   Fragment,
+  type SchemaSpec,
+  type NodeSpec,
+  type MarkSpec,
 } from "@milkdown/prose/model";
 import { ParserState, SerializerState } from "@milkdown/transformer";
 
@@ -950,13 +953,13 @@ export function getRemarkProcessor(): Processor {
  * Only includes ProseMirror-relevant properties (content, group, attrs, etc.),
  * not the parseMarkdown/toMarkdown handlers.
  */
-export function getSchemaSpec(): { nodes: Record<string, unknown>; marks: Record<string, unknown> } {
-  const nodes: Record<string, unknown> = {};
+export function getSchemaSpec(): SchemaSpec {
+  const nodes: Record<string, NodeSpec> = {};
   for (const [name, spec] of Object.entries(schemaSpec.nodes)) {
     const { parseMarkdown, toMarkdown, ...pmSpec } = spec as any;
     nodes[name] = pmSpec;
   }
-  const marks: Record<string, unknown> = {};
+  const marks: Record<string, MarkSpec> = {};
   for (const [name, spec] of Object.entries(schemaSpec.marks)) {
     const { parseMarkdown, toMarkdown, ...pmSpec } = spec as any;
     marks[name] = pmSpec;

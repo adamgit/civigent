@@ -6,9 +6,10 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CrdtProvider, type CrdtConnectionState } from "../services/crdt-provider";
+import { type CrdtConnectionState } from "../services/crdt-provider";
 import { CrdtTransport } from "../services/crdt-transport";
 import { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
+import { LocalPresence } from "../services/local-presence";
 import { ObserverCrdtProvider } from "../services/observer-crdt-provider";
 import { fragmentToMarkdown } from "../services/fragment-to-markdown";
 import {
@@ -41,18 +42,19 @@ export interface UseSessionModeParams {
 // ─── Return ──────────────────────────────────────────────
 
 export interface UseSessionModeReturn {
-  crdtProvider: CrdtProvider | null;
   store: BrowserFragmentReplicaStore | null;
   transport: CrdtTransport | null;
+  transportRef: React.MutableRefObject<CrdtTransport | null>;
+  presence: LocalPresence | null;
+  presenceRef: React.MutableRefObject<LocalPresence | null>;
   crdtSynced: boolean;
   crdtState: CrdtConnectionState;
   crdtError: string | null;
   editingLoading: boolean;
   controllerState: DocumentSessionControllerState;
   setControllerState: React.Dispatch<React.SetStateAction<DocumentSessionControllerState>>;
-  crdtProviderRef: React.MutableRefObject<CrdtProvider | null>;
   controllerStateRef: React.MutableRefObject<DocumentSessionControllerState>;
-  ensureProvider: () => Promise<CrdtProvider | null>;
+  ensureProvider: () => Promise<CrdtTransport | null>;
   stopEditing: () => void;
   requestMode: (mode: RequestedMode, focusTarget?: EditorFocusTarget | null) => Promise<void>;
   stopObserver: () => void;
@@ -73,9 +75,9 @@ export function useSessionMode({
   const clientInstanceIdRef = useRef<string>(randomUuid());
 
   // ── State ──────────────────────────────────────────────
-  const [crdtProvider, setCrdtProvider] = useState<CrdtProvider | null>(null);
   const [store, setStore] = useState<BrowserFragmentReplicaStore | null>(null);
   const [transport, setTransport] = useState<CrdtTransport | null>(null);
+  const [presence, setPresence] = useState<LocalPresence | null>(null);
   const [crdtSynced, setCrdtSynced] = useState(false);
   const [crdtState, setCrdtState] = useState<CrdtConnectionState>("disconnected");
   const [crdtError, setCrdtError] = useState<string | null>(null);
@@ -91,9 +93,9 @@ export function useSessionMode({
   });
 
   // ── Refs ───────────────────────────────────────────────
-  const crdtProviderRef = useRef<CrdtProvider | null>(null);
   const transportRef = useRef<CrdtTransport | null>(null);
   const storeRef = useRef<BrowserFragmentReplicaStore | null>(null);
+  const presenceRef = useRef<LocalPresence | null>(null);
   const controllerStateRef = useRef<DocumentSessionControllerState>(controllerState);
   const observerRef = useRef<ObserverCrdtProvider | null>(null);
   const observerDocSessionIdRef = useRef<string | null>(null);
@@ -102,7 +104,6 @@ export function useSessionMode({
   onStopEditingRef.current = onStopEditing;
 
   // ── Ref sync ───────────────────────────────────────────
-  useEffect(() => { crdtProviderRef.current = crdtProvider; }, [crdtProvider]);
   useEffect(() => { controllerStateRef.current = controllerState; }, [controllerState]);
 
   const applyModeTransitionResult = useCallback((result: ModeTransitionResult) => {
@@ -229,7 +230,7 @@ export function useSessionMode({
       storeRef.current = null;
       transportRef.current?.destroy();
       transportRef.current = null;
-      crdtProviderRef.current = null;
+      presenceRef.current = null;
       observerRef.current?.destroy();
     };
   }, []);
@@ -241,15 +242,10 @@ export function useSessionMode({
       transportRef.current.destroy();
       storeRef.current = null;
       transportRef.current = null;
-      crdtProviderRef.current = null;
+      presenceRef.current = null;
       setStore(null);
       setTransport(null);
-      setCrdtProvider(null);
-      setCrdtSynced(false);
-      setCrdtState("disconnected");
-    } else if (crdtProviderRef.current) {
-      crdtProviderRef.current.destroy();
-      setCrdtProvider(null);
+      setPresence(null);
       setCrdtSynced(false);
       setCrdtState("disconnected");
     }
@@ -289,9 +285,9 @@ export function useSessionMode({
   useEffect(() => { stopEditingRef.current = stopEditing; }, [stopEditing]);
 
   // ── Ensure provider ────────────────────────────────────
-  const ensureProvider = useCallback(async (): Promise<CrdtProvider | null> => {
+  const ensureProvider = useCallback(async (): Promise<CrdtTransport | null> => {
     if (!decodedDocPath) return null;
-    if (crdtProviderRef.current) return crdtProviderRef.current;
+    if (transportRef.current) return transportRef.current;
 
     stopObserver();
     setCrdtError(null);
@@ -346,16 +342,16 @@ export function useSessionMode({
         nextTransport.doc,
         nextTransport.awareness,
       );
+      const nextPresence = new LocalPresence(nextTransport.awareness);
       nextTransport.attachStore(nextStore);
       nextTransport.connect();
-      const provider = nextTransport.rawProvider;
-      setCrdtProvider(provider);
       setStore(nextStore);
       setTransport(nextTransport);
-      crdtProviderRef.current = provider;
+      setPresence(nextPresence);
       transportRef.current = nextTransport;
       storeRef.current = nextStore;
-      return provider;
+      presenceRef.current = nextPresence;
+      return nextTransport;
     } catch (err) {
       setEditingLoading(false);
       setCrdtError(err instanceof Error ? err.message : String(err));
@@ -368,7 +364,7 @@ export function useSessionMode({
     if (!decodedDocPath) return;
     if (mode === "none") {
       stopObserver();
-      if (crdtProviderRef.current) {
+      if (transportRef.current) {
         stopEditing();
       } else {
         setControllerState((prev) => ({
@@ -384,7 +380,7 @@ export function useSessionMode({
       return;
     }
     if (mode === "observer") {
-      if (crdtProviderRef.current) {
+      if (transportRef.current) {
         stopEditing();
         return;
       }
@@ -415,16 +411,17 @@ export function useSessionMode({
   }, [decodedDocPath, stopObserver, stopEditing, startObserver, ensureProvider, applyModeTransitionResult]);
 
   return {
-    crdtProvider,
     store,
     transport,
+    transportRef,
+    presence,
+    presenceRef,
     crdtSynced,
     crdtState,
     crdtError,
     editingLoading,
     controllerState,
     setControllerState,
-    crdtProviderRef,
     controllerStateRef,
     ensureProvider,
     stopEditing,

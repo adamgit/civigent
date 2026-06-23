@@ -48,6 +48,8 @@ import type { AbsorbResult } from "../storage/canonical-store.js";
 import type { UpsertSectionFromMarkdownDetailedResult } from "../storage/content-layer.js";
 import type { FlatEntry } from "../storage/document-skeleton.js";
 import { SectionRef } from "../domain/section-ref.js";
+import { type SectionBody } from "../storage/section-formatting.js";
+import { synthesizeCommitDescription } from "../storage/commit-description.js";
 
 /**
  * One materialized section of the live document, as observed from the live Y.Doc
@@ -63,7 +65,7 @@ export interface LiveSectionSnapshot {
   /** Heading level (0 for the before-first-heading root). */
   level: number;
   /** Effective body markdown for the section (no embedded heading line). */
-  body: string;
+  body: SectionBody;
   /**
    * The live Y.Doc fragment key backing this section. Lets the generator scope a
    * per-edit materialization to ONLY the touched fragments (C4) without
@@ -304,6 +306,28 @@ export class CRDTProposalGenerator {
     return this.currentProposalId !== null;
   }
 
+  /**
+   * The writer identity recorded for this DocSession's proposals (the DocSession
+   * owner). Used as the aggregate `writer` for the `content:committed` event on an
+   * autonomous publish — DocSession publishes are not HI-scored and may aggregate
+   * several human contributors, so a system/aggregate owner identity is acceptable
+   * (Claim 1, task 4; spec 06 §7).
+   */
+  getWriterIdentity(): WriterIdentity {
+    return this.writer;
+  }
+
+  /**
+   * The live writer ids that contributed edits this session, for `contributor_ids`
+   * on the `content:committed` event (the same set the generator tracks for
+   * co-author attribution in commit metadata). Falls back to the DocSession owner
+   * when the source tracks no distinct contributors.
+   */
+  getContributorIds(): string[] {
+    const ids = [...(this.source.contributingWriterIds?.() ?? [])];
+    return ids.length > 0 ? ids : [this.writer.id];
+  }
+
   // ─── Lazy first-edit + subsequent-edit materialization ────────────
 
   /**
@@ -386,14 +410,23 @@ export class CRDTProposalGenerator {
       liveReloadEntries: [],
     };
 
-    // Materialize each (in-scope) live section into the proposal content tree.
-    // ProposalEditor atomically auto-creates the document, missing leaf heading,
-    // and ancestors. Aggregate the authoritative engine delta across the loop.
+    // Materialize each (in-scope) live section into the proposal content tree
+    // through the TOPOLOGY-NEUTRAL verbatim body write — uniformly for EVERY
+    // section, with NO per-edit structural classification and NO BFH special
+    // case. The section body is stored exactly as authored (id-preserving); any
+    // embedded heading syntax stays literal body text. This is the per-edit
+    // (keystroke-rate) contract: no intermediate editor state becomes a
+    // persistent section. Promotion of a settled embedded heading into a real
+    // section is done ONCE, at quiescence normalization
+    // (`normalizeQuiescedStructure` → split reflection), not here.
+    //
+    // ProposalEditor atomically auto-creates the document and the section's
+    // structural slot (incl. a missing BFH) without parsing. Aggregate the
+    // authoritative engine delta across the loop.
     for (const section of toWrite) {
-      const result = await editor.writeSection(
+      const result = await editor.materializeSectionBody(
         this.docPath,
         section.headingPath,
-        section.heading,
         section.body,
       );
       this.accumulateDelta(delta, result);
@@ -580,6 +613,14 @@ export class CRDTProposalGenerator {
     }
     const proposalId = this.currentProposalId;
 
+    // Capture the EDITED section-set (the per-edit-grown manifest) BEFORE the
+    // final whole-document materialization replaces the manifest with the full
+    // section list. The audit-log description must reflect what was CHANGED this
+    // session (spec 10 §Commit-description synthesis), not every section in the
+    // document.
+    const editedProposal = await findInProgressProposalForDocSession(this.docSessionId);
+    const changedSections = (editedProposal?.sections ?? []).map((s) => ({ headingPath: s.heading_path }));
+
     // Final materialization from the live Y.Doc into the current proposal.
     try {
       await this.materializeIntoProposal(proposalId);
@@ -600,6 +641,12 @@ export class CRDTProposalGenerator {
     const committedMetadata: HumanInvolvementCommittedProposalMetadata =
       this.buildCommittedMetadata ? this.buildCommittedMetadata(proposal) : {};
 
+    // Synthesize the audit-log description from the session's changed section-set
+    // at publish time (spec 10 §Commit-description synthesis), not from early raw
+    // activity. No preferred-narrative classifier is wired in V1, so this is the
+    // honest conservative fallback derived from the changed section-set.
+    const descriptionHeadline = synthesizeCommitDescription({ changedSections });
+
     try {
       const absorbResult = await commitProposalToCanonicalDetailed(
         proposalId,
@@ -609,7 +656,7 @@ export class CRDTProposalGenerator {
         // proposal to `inprogress` (kept as the DocSession current proposal),
         // NOT `draft` (spec 02 › Why `committing`). The pipeline owns this
         // rollback via `ownerKind`; the catch below is a defensive fallback.
-        { ownerKind: "docsession" },
+        { ownerKind: "docsession", descriptionHeadline },
       );
       // Successful commit clears the current-proposal reference; the next edit
       // lazily creates the next inprogress proposal.

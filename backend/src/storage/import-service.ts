@@ -6,9 +6,9 @@
  * proposal system — no direct skeleton creation, no direct git commits.
  */
 
-import { ProposalEditor } from "./proposal-editor.js";
-import { createTransientProposal, updateProposalSections } from "./proposal-repository.js";
-import type { ProposalId, ProposalSection, ProposalStatus, WriterIdentity } from "../types/shared.js";
+import { createTransientProposal } from "./proposal-repository.js";
+import { mutateProposalContent } from "./mutate-proposal-content.js";
+import type { ProposalId, WriterIdentity } from "../types/shared.js";
 
 export class ImportValidationError extends Error {
   constructor(message: string) {
@@ -20,32 +20,6 @@ export class ImportValidationError extends Error {
 export interface ImportFile {
   docPath: string;
   content: string;
-}
-
-/**
- * Shared recipe: write each whole-document markdown payload into a proposal
- * through `ProposalEditor`, then read back the normalized heading paths to
- * build a flat section manifest. The single dedup target for import, MCP
- * filesystem writes, and REST overwrite/patch.
- *
- * Owns ONLY the storage write + manifest derivation — proposal creation,
- * validation, ACL checks, and response shaping stay with the caller.
- */
-export async function writeDocumentsToProposalAndBuildManifest(
-  proposalId: ProposalId,
-  status: ProposalStatus,
-  files: ImportFile[],
-): Promise<ProposalSection[]> {
-  const editor = ProposalEditor.open(proposalId, status);
-  const sectionTargets: ProposalSection[] = [];
-  for (const file of files) {
-    await editor.writeDocumentFromMarkdown(file.docPath, file.content);
-    const headingPaths = await editor.listHeadingPaths(file.docPath);
-    for (const hp of headingPaths) {
-      sectionTargets.push({ doc_path: file.docPath, heading_path: hp });
-    }
-  }
-  return sectionTargets;
 }
 
 export interface ImportFilesToProposalResult {
@@ -87,17 +61,12 @@ export async function importFilesToProposal(
     }
   }
 
-  // Write each file through the shared ProposalEditor recipe, then read back
-  // the normalized heading paths to build proposal section metadata.
-  // Transient proposals live in "pending".
-  const allSectionTargets = await writeDocumentsToProposalAndBuildManifest(
-    proposalId,
-    "pending",
-    files,
-  );
-
-  // Update proposal sections to match actual normalized structure
-  await updateProposalSections(proposalId, allSectionTargets);
+  // Write each whole-document payload + derive the manifest from the normalized
+  // on-disk heading structure through the single manifest-owning boundary.
+  await mutateProposalContent(proposalId, {
+    kind: "write_document_markdown",
+    files: files.map((f) => ({ docPath: f.docPath, markdown: f.content })),
+  });
 
   return { id: proposalId, contentRoot: propContentRoot };
 }

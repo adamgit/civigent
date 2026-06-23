@@ -33,8 +33,8 @@
  */
 
 import path from "node:path";
-import { readFile, copyFile, mkdir, readdir, rm } from "node:fs/promises";
-import type { Dirent } from "node:fs";
+import { copyFile, mkdir, rm } from "node:fs/promises";
+import { readDirIfExists, readDirentsIfExists, readFileIfExists } from "./fs-primitives.js";
 import { ContentLayer, DocumentNotFoundError } from "./content-layer.js";
 import { getContentGitPrefix } from "./data-root.js";
 import { parseSkeletonToEntries, TOMBSTONE_SUFFIX } from "./document-skeleton.js";
@@ -203,13 +203,7 @@ export class CanonicalStore {
    * the affected docPath.
    */
   private async discoverDocPathsInStaging(stagingRoot: string): Promise<string[]> {
-    let allEntries: Dirent[];
-    try {
-      allEntries = await readdir(stagingRoot, { recursive: true, withFileTypes: true }) as Dirent[];
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw err;
-    }
+    const allEntries = await readDirentsIfExists(stagingRoot, { recursive: true });
 
     const docPaths: string[] = [];
     for (const entry of allEntries) {
@@ -254,14 +248,9 @@ export class CanonicalStore {
   }
 
   private async deletionPass(stagingRoot: string, diag: (msg: string) => void, docPaths?: string[]): Promise<void> {
-    // Walk stagingRoot for all .md files not inside a .sections/ directory
-    let allEntries: Dirent[];
-    try {
-      allEntries = await readdir(stagingRoot, { recursive: true, withFileTypes: true }) as Dirent[];
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return; // empty staging root
-      throw err;
-    }
+    // Walk stagingRoot for all .md files not inside a .sections/ directory.
+    // An absent staging root is an empty staging root — nothing to delete.
+    const allEntries = await readDirentsIfExists(stagingRoot, { recursive: true });
 
     const stagingDocEntries = allEntries.filter(entry => {
       if (entry.isDirectory()) return false;
@@ -312,13 +301,8 @@ export class CanonicalStore {
       // DO NOT replace this with file-system directory listings of the
       // staging .sections/ directory. That was a prior regression that caused
       // silent data loss on every sparse-overlay absorb.
-      let stagingContent: string;
-      try {
-        stagingContent = await readFile(stagingSkeletonPath, "utf8");
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw err;
-      }
+      const stagingContent = await readFileIfExists(stagingSkeletonPath);
+      if (stagingContent === null) continue;
 
       const stagingSectionsDir = path.join(stagingRoot, relDocPath + ".sections");
       const declaredByNewSkeleton = await this.collectSkeletonDeclaredFiles(
@@ -351,13 +335,7 @@ export class CanonicalStore {
    * For determining what SHOULD exist, use collectSkeletonDeclaredFiles instead.
    */
   private async listRelativeFilesRecursive(rootDir: string): Promise<string[]> {
-    let entries: Dirent[];
-    try {
-      entries = await readdir(rootDir, { recursive: true, withFileTypes: true }) as Dirent[];
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw err;
-    }
+    const entries = await readDirentsIfExists(rootDir, { recursive: true });
 
     return entries
       .filter((entry) => !entry.isDirectory())
@@ -393,15 +371,21 @@ export class CanonicalStore {
       declared.add(rel);
 
       // Read the section file to check if it is itself a sub-skeleton.
-      // Overlay-first, canonical-fallback for sparse overlays.
-      let sectionContent: string | null = null;
-      try {
-        sectionContent = await readFile(path.join(primarySectionsDir, entry.sectionFile), "utf8");
-      } catch {
-        try {
-          sectionContent = await readFile(path.join(fallbackSectionsDir, entry.sectionFile), "utf8");
-        } catch {
-          continue; // body file absent everywhere — skip sub-skeleton check
+      // Overlay-first, canonical-fallback for sparse overlays. Only a genuinely
+      // absent file falls through to the fallback; any other read failure
+      // (permission, I/O) propagates unchanged.
+      let sectionContent = await readFileIfExists(path.join(primarySectionsDir, entry.sectionFile));
+      if (sectionContent === null) {
+        sectionContent = await readFileIfExists(path.join(fallbackSectionsDir, entry.sectionFile));
+        if (sectionContent === null) {
+          // FAIL LOUD (claim-review 04): a skeleton-DECLARED body file missing from
+          // BOTH the staging overlay and the canonical fallback is corruption —
+          // skipping it would silently under-compute the orphan-deletion set. Throw
+          // instead of `continue`.
+          throw new Error(
+            `Skeleton integrity error: declared section file "${rel}" is missing from both the staging overlay ` +
+            `(${primarySectionsDir}) and canonical fallback (${fallbackSectionsDir}).`,
+          );
         }
       }
 
@@ -430,23 +414,16 @@ export class CanonicalStore {
    * readTreeRecursive.
    */
   private async pruneEmptySectionsDirs(dir: string): Promise<void> {
-    let entries: Dirent[];
-    try {
-      entries = await readdir(dir, { withFileTypes: true }) as Dirent[];
-    } catch {
-      return;
-    }
+    const entries = await readDirentsIfExists(dir);
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       if (!entry.name.endsWith(".sections")) continue;
       const subDir = path.join(dir, entry.name);
       await this.pruneEmptySectionsDirs(subDir); // recurse children first
-      try {
-        const remaining = await readdir(subDir);
-        if (remaining.length === 0) {
-          await rm(subDir, { recursive: true, force: true });
-        }
-      } catch { /* already gone */ }
+      const remaining = await readDirIfExists(subDir);
+      if (remaining.length === 0) {
+        await rm(subDir, { recursive: true, force: true });
+      }
     }
   }
 
@@ -463,36 +440,24 @@ export class CanonicalStore {
   }
 
   private async pruneEmptyDirsUnder(dir: string, diag: (msg: string) => void): Promise<void> {
-    let entries: Dirent[];
-    try {
-      entries = await readdir(dir, { withFileTypes: true }) as Dirent[];
-    } catch {
-      return;
-    }
+    const entries = await readDirentsIfExists(dir);
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       if (entry.name === ".git" || entry.name.endsWith(".sections")) continue;
       const childDir = path.join(dir, entry.name);
       await this.pruneEmptyDirsUnder(childDir, diag); // recurse children first
-      try {
-        const remaining = await readdir(childDir);
-        if (remaining.length === 0) {
-          await rm(childDir, { recursive: true, force: true });
-          const relPath = path.relative(this.canonicalRoot, childDir).replace(/\\/g, "/");
-          diag(`pruned empty content directory: ${relPath}/`);
-        }
-      } catch { /* already gone */ }
+      const remaining = await readDirIfExists(childDir);
+      if (remaining.length === 0) {
+        await rm(childDir, { recursive: true, force: true });
+        const relPath = path.relative(this.canonicalRoot, childDir).replace(/\\/g, "/");
+        diag(`pruned empty content directory: ${relPath}/`);
+      }
     }
   }
 
   private async copyPass(stagingRoot: string, diag: (msg: string) => void, docPaths?: string[]): Promise<void> {
-    let allEntries: Dirent[];
-    try {
-      allEntries = await readdir(stagingRoot, { recursive: true, withFileTypes: true }) as Dirent[];
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw err;
-    }
+    // An absent staging root is an empty staging root — nothing to copy.
+    const allEntries = await readDirentsIfExists(stagingRoot, { recursive: true });
 
     let copied = 0;
     for (const entry of allEntries) {

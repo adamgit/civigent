@@ -41,6 +41,10 @@ describe("Post-commit notify invariants", () => {
         { doc_path: "/sample.md", heading_path: ["Overview"] },
         { doc_path: "/sample.md", heading_path: ["Timeline"] },
       ],
+      targets: [
+        { kind: "section", doc_path: "/sample.md", heading_path: ["Overview"] },
+        { kind: "section", doc_path: "/sample.md", heading_path: ["Timeline"] },
+      ],
       created_at: new Date().toISOString(),
       status: "draft",
     });
@@ -83,6 +87,7 @@ describe("Post-commit notify invariants", () => {
       intent: "restore",
       writer: { id: "admin", type: "human", displayName: "Admin" },
       sections: [{ doc_path: "/sample.md", heading_path: ["Overview"] }],
+      targets: [{ kind: "section", doc_path: "/sample.md", heading_path: ["Overview"] }],
       created_at: new Date().toISOString(),
       status: "draft",
     });

@@ -24,13 +24,35 @@
 import * as Y from "yjs";
 import { markdownToJSON } from "@ks/milkdown-serializer";
 import { updateYFragment } from "y-prosemirror";
-import { buildFragmentContent, EMPTY_BODY, appendToBody, type FragmentContent, type SectionBody } from "../storage/section-formatting.js";
+import { buildFragmentContent, EMPTY_BODY, appendToBody, appendBodyToFragment, bodyFromFragmentStrippingLeadingHeading, sectionWriteInputFromBody, type FragmentContent, type SectionBody } from "../storage/section-formatting.js";
 import { SectionRef } from "../domain/section-ref.js";
-import { resolveLiveSectionLayout, type LiveSectionLayoutEntry } from "./live-section-layout.js";
+import { resolveLiveSectionLayout, readLiveSectionBodies, type LiveSectionLayoutEntry } from "./live-section-layout.js";
 import { getBackendSchema } from "./ydoc-fragments.js";
 import type { LiveFragmentStringsStore } from "./live-fragment-strings-store.js";
 import type { StructuralChange } from "./structural-change.js";
-import type { ProposalId } from "../types/shared.js";
+import type { ProposalId, ProposalSection } from "../types/shared.js";
+import type { UpsertSectionFromMarkdownDetailedResult } from "../storage/content-layer.js";
+import type { FlatEntry } from "../storage/document-skeleton.js";
+
+/**
+ * Build the manifest add/remove for a write result, MIRRORING the per-edit
+ * `growProposalManifest` (C4) delta→manifest shape: ADD the body-bearing
+ * written-entry heading paths (sub-skeleton parents carry no body claim), DROP
+ * the removed-entry heading paths. Used by the quiescence reflections to keep the
+ * `inprogress` proposal's section CLAIM in sync with the structural promotion /
+ * fold they apply to proposal CONTENT — without a full proposal re-derive (which
+ * would over-claim unedited inherited sections).
+ */
+function manifestDeltaFromResult(
+  docPath: string,
+  result: UpsertSectionFromMarkdownDetailedResult,
+): { add: ProposalSection[]; remove: ProposalSection[] } {
+  const add = result.writtenEntries
+    .filter((e) => !e.isSubSkeleton)
+    .map((e) => ({ doc_path: docPath, heading_path: [...e.headingPath] }));
+  const remove = result.removedEntries.map((e) => ({ doc_path: docPath, heading_path: [...e.headingPath] }));
+  return { add, remove };
+}
 
 /**
  * Identity-preserving "set this live fragment's content to `targetMarkdown`"
@@ -53,7 +75,7 @@ export function updateFragmentPreservingIdentity(
   targetMarkdown: FragmentContent,
 ): void {
   const frag = ydoc.getXmlFragment(fragmentKey);
-  const targetNode = getBackendSchema().nodeFromJSON(markdownToJSON(targetMarkdown as string));
+  const targetNode = getBackendSchema().nodeFromJSON(markdownToJSON(targetMarkdown));
   updateYFragment(ydoc, frag, targetNode, { mapping: new Map(), isOMark: new Map() });
 }
 
@@ -101,6 +123,11 @@ function indexOfNthHeading(ydoc: Y.Doc, fragmentKey: string, n: number): number 
  * Compute the identity-preserving split plan for a `root-split` / `section-split`
  * classified change. Runs OUTSIDE the transaction.
  *
+ * PRECONDITION: the proposal layout has ALREADY been split for this change by
+ * `reflectSplitIntoProposal(...)` (the quiescence-time reflection). Per-edit
+ * materialization is topology-neutral and never splits the proposal, so this
+ * plan reads the post-reflection layout to derive the live reshape.
+ *
  *  - The survivor is the dirty fragment itself (its key is preserved by WS-0's
  *    survivor id-reuse, so the live key already matches the proposal layout).
  *  - The moved-out content is everything from the first NEW heading onward:
@@ -145,19 +172,14 @@ export async function computeStructuralSplitPlan(
   const headingOrdinal = change.kind === "root-split" ? 1 : 2;
   const deleteFrom = indexOfNthHeading(ydoc, dirtyKey, headingOrdinal);
 
-  // Seed each new fragment from the proposal body at its authoritative shape.
-  const { proposalContentRoot } = await import("../storage/proposal-repository.js");
-  const { ProposalShadowContentLayer } = await import("../storage/content-layer.js");
-  const { getContentRoot } = await import("../storage/data-root.js");
-  const seedRoot = currentProposalId
-    ? proposalContentRoot(currentProposalId, "inprogress")
-    : getContentRoot();
-  const seedLayer = new ProposalShadowContentLayer(seedRoot, getContentRoot());
-  const bulkContent = await seedLayer.readAllSections(docPath);
+  // Seed each new fragment from the current proposal's effective body at its
+  // authoritative shape — through the proposal-bound reader for the current
+  // `inprogress` proposal, or a canonical-only read when there is no proposal.
+  const bulkContent = await readLiveSectionBodies(docPath, currentProposalId);
 
   const seeds = new Map<string, FragmentContent>();
   for (const entry of addedEntries) {
-    const body = (bulkContent?.get(SectionRef.headingKey(entry.headingPath)) ?? EMPTY_BODY) as SectionBody;
+    const body = bulkContent?.get(SectionRef.headingKey(entry.headingPath)) ?? EMPTY_BODY;
     seeds.set(entry.fragmentKey, buildFragmentContent(body, entry.level, entry.heading));
   }
 
@@ -241,14 +263,8 @@ export async function computeStructuralMergePlan(
   const predecessor = canonicalLayout[idx - 1];
 
   const orphanBody = change.orphanedBody;
-  const predecessorCurrent = liveFragments.readFragmentString(predecessor.fragmentKey) as string;
-  const predecessorTarget = (
-    (orphanBody as string).length === 0
-      ? predecessorCurrent
-      : predecessorCurrent.trim().length === 0
-        ? (orphanBody as string)
-        : `${predecessorCurrent.replace(/\n+$/, "")}\n\n${orphanBody as string}`
-  ) as FragmentContent;
+  const predecessorCurrent = liveFragments.readFragmentString(predecessor.fragmentKey);
+  const predecessorTarget = appendBodyToFragment(predecessorCurrent, orphanBody);
 
   return {
     predecessorKey: predecessor.fragmentKey,
@@ -318,29 +334,120 @@ export async function reflectMergeIntoProposal(
   }
 
   if (hasChildren) {
+    // The catch guards ONLY the content op (the EXPECTED "no preceding sibling"
+    // error → fall through to the subtree-delete + append path below); the
+    // subsequent manifest update runs OUTSIDE it so a genuine manifest error is
+    // never swallowed (CLAUDE.md error policy).
+    let remap: { removed: FlatEntry[]; added: FlatEntry[] } | null = null;
     try {
-      await editor.deleteHeadingKeepingChildren(docPath, plan.removedHeadingPath);
-      return;
+      remap = await editor.deleteHeadingKeepingChildren(docPath, plan.removedHeadingPath);
     } catch {
-      // No preceding sibling (e.g. predecessor is the BFH) — fall through to the
-      // subtree-delete + append path below.
+      remap = null;
+    }
+    if (remap) {
+      // Real-time manifest reparent (placement decision in assumptions.md): the
+      // deleted heading + its descendants' OLD paths are dropped; the reparented
+      // descendants (and the body-grown predecessor) are claimed at their NEW
+      // paths. Both sets come from the engine's removed/added entries (same
+      // sectionFile ids, different heading paths), so the claim follows the
+      // reparent deterministically — no stale pre-merge descendant claim survives.
+      // Idempotent: union-add dedups, remove is a no-op once the old path is gone.
+      const removeClaims: ProposalSection[] = remap.removed.map((e) => ({ doc_path: docPath, heading_path: [...e.headingPath] }));
+      const addClaims: ProposalSection[] = remap.added
+        .filter((e) => !e.isSubSkeleton)
+        .map((e) => ({ doc_path: docPath, heading_path: [...e.headingPath] }));
+      const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
+      await unionCurrentProposalSections(proposalId, addClaims, removeClaims);
+      return;
     }
   }
 
   // Leaf deletion (or the keep-children fallback): delete the folded-away section
   // FIRST so its (materialize-written) body does not linger, then re-write the
   // predecessor body with the orphan appended.
-  await editor.deleteSection(docPath, plan.removedHeadingPath);
-  if ((plan.orphanBody as string).length > 0) {
-    const existing = (await editor.readSection(docPath, plan.predecessorIdentity.headingPath)) ?? "";
-    const merged = appendToBody(existing as SectionBody, plan.orphanBody);
-    await editor.writeSection(
+  const deleted = await editor.deleteSection(docPath, plan.removedHeadingPath);
+  // Real-time manifest (placement decision in assumptions.md): DROP the merged-away
+  // section (and any descendants the subtree-delete removed) from the claim, and
+  // (re)claim the predecessor whose body grew with the folded orphan. Mirrors
+  // `growProposalManifest`'s union; idempotent (remove is a no-op once gone).
+  const remove: ProposalSection[] = deleted.map((e) => ({ doc_path: docPath, heading_path: [...e.headingPath] }));
+  const add: ProposalSection[] = [];
+  if (plan.orphanBody.length > 0) {
+    const existing = (await editor.readSection(docPath, plan.predecessorIdentity.headingPath)) ?? EMPTY_BODY;
+    const merged = appendToBody(existing, plan.orphanBody);
+    const result = await editor.writeSection(
       docPath,
       plan.predecessorIdentity.headingPath,
       plan.predecessorIdentity.heading,
-      merged as unknown as string,
+      // Body-only content crossing into the parser-driven write path.
+      sectionWriteInputFromBody(merged),
     );
+    const delta = manifestDeltaFromResult(docPath, result);
+    add.push(...delta.add);
+    remove.push(...delta.remove);
   }
+  const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
+  await unionCurrentProposalSections(proposalId, add, remove);
+}
+
+// ─── SPLIT (embedded heading promoted) — proposal reflection ──────
+
+/**
+ * Reflect a settled split into the `inprogress` proposal (WS-3), promoting an
+ * embedded heading the author typed into a section body into a real section.
+ *
+ * Per-edit materialization is TOPOLOGY-NEUTRAL (it stores section bodies
+ * verbatim, embedded heading and all), so at quiescence the proposal still
+ * carries the heading as literal body text — this reflection is what actually
+ * splits the proposal. It MUST run BEFORE `computeStructuralSplitPlan`, which
+ * derives the live reshape (and new live fragment keys) from the resulting
+ * proposal layout.
+ *
+ *  - section-split (a real heading path): the live fragment markdown is the
+ *    section's full fragment (its own heading + body + the embedded heading).
+ *    The parser-driven `writeSection(headingPath, …, { contentIsFullMarkdown })`
+ *    trims the survivor body and creates the embedded section once, REUSING the
+ *    survivor's `sectionFile` id (WS-0). Idempotent via the upsert identity
+ *    short-circuit.
+ *  - root-split (BFH, `headingPath: []`): a `[]` write is body-only and cannot
+ *    promote structure, so the dedicated BFH-split primitive inserts the
+ *    promoted heading at the front, preserving the orphan as the BFH body and
+ *    every existing section id. Idempotent via its own already-promoted guard.
+ *
+ * Both branches are no-ops on a retry whose prior live apply aborted, so a
+ * clock-check abort cannot duplicate proposal sections (item 23).
+ */
+export async function reflectSplitIntoProposal(
+  proposalId: ProposalId,
+  docPath: string,
+  fragmentMarkdown: string,
+  identity: { headingPath: readonly string[]; heading: string },
+): Promise<void> {
+  const { ProposalEditor } = await import("../storage/proposal-editor.js");
+  const { sectionWriteInputFromExternal } = await import("../storage/section-formatting.js");
+  const editor = ProposalEditor.open(proposalId, "inprogress");
+
+  const result =
+    identity.headingPath.length === 0
+      ? await editor.splitBeforeFirstHeading(docPath, fragmentMarkdown)
+      : await editor.writeSection(
+          docPath,
+          [...identity.headingPath],
+          identity.heading,
+          sectionWriteInputFromExternal(fragmentMarkdown),
+          { contentIsFullMarkdown: true },
+        );
+
+  // Real-time manifest claim (placement decision in assumptions.md): claim the
+  // promoted section AT QUIESCENCE, here where the content promotion happens, not
+  // only at publish. Both branches return the engine delta, so the claim reuses
+  // the exact `growProposalManifest` union (ADD body-bearing written entries — the
+  // promoted `["Overview","Sub"]` / `["h3 added"]` — and DROP removed entries),
+  // leaving the survivor's existing claim intact. Idempotent across clock-check
+  // retries: union-add dedups and remove is a no-op once the key is gone.
+  const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
+  const { add, remove } = manifestDeltaFromResult(docPath, result);
+  await unionCurrentProposalSections(proposalId, add, remove);
 }
 
 // ─── RENAME / LEVEL-CHANGE / RELOCATED (heading edits) ────────────
@@ -388,12 +495,12 @@ export function computeStructuralHeadingEditPlan(
   if (change.kind === "heading-relocated") {
     target = buildFragmentContent(change.combinedBody, newLevel, newHeading);
   } else {
-    const current = liveFragments.readFragmentString(dirtyKey) as string;
+    const current = liveFragments.readFragmentString(dirtyKey);
     // Strip the (possibly wrong-level / multiple) leading heading lines the parser
     // already accounted for, by rebuilding from the parsed single section's body.
     // The simplest correct target is the live content with its heading line
     // normalized: re-derive body from the live fragment minus its first heading.
-    const body = stripFirstHeadingLine(current);
+    const body = bodyFromFragmentStrippingLeadingHeading(current);
     target = buildFragmentContent(body, newLevel, newHeading);
   }
 
@@ -405,17 +512,6 @@ export function computeStructuralHeadingEditPlan(
     newLevel,
     affectedKeys: [dirtyKey],
   };
-}
-
-/** Strip the first ATX heading line (and following blank line) from markdown. */
-function stripFirstHeadingLine(markdown: string): SectionBody {
-  const lines = markdown.split("\n");
-  if (lines.length > 0 && /^#{1,6}\s/.test(lines[0])) {
-    let start = 1;
-    while (start < lines.length && lines[start].trim() === "") start += 1;
-    return lines.slice(start).join("\n").replace(/\n+$/, "") as SectionBody;
-  }
-  return markdown.replace(/\n+$/, "") as SectionBody;
 }
 
 /**
@@ -452,6 +548,35 @@ export async function reflectHeadingEditIntoProposal(
   // re-keying renameSection/moveSection would diverge the proposal from the
   // identity-preserved live fragment. The corrected stripped body is written too
   // (materialize may have left a wrong-level heading embedded in the body).
-  const body = stripFirstHeadingLine(plan.target as string);
-  await editor.retitleSection(docPath, plan.fromHeadingPath, plan.newHeading, plan.newLevel, body as unknown as string);
+  const body = bodyFromFragmentStrippingLeadingHeading(plan.target);
+  const newEntry = await editor.retitleSection(docPath, plan.fromHeadingPath, plan.newHeading, plan.newLevel, body);
+
+  // Real-time manifest remap (placement decision in assumptions.md). The in-place
+  // retitle keeps the section under the same parent (only the last path segment
+  // changes), so its descendants' paths re-prefix from the old heading path to the
+  // new one. Remap ONLY the claims actually present in the manifest (read from the
+  // manifest itself — NOT a content re-derive, which would over-claim unedited
+  // inherited sections): DROP each claimed path inside the old subtree, ADD it at
+  // its new path. Idempotent: on a clock-check retry the manifest already holds the
+  // new paths, so nothing matches the old prefix and the remap is a no-op.
+  const fromPath = plan.fromHeadingPath;
+  const newPath = [...newEntry.headingPath];
+  const { readProposal, unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
+  const proposal = await readProposal(proposalId);
+  const oldKey = SectionRef.headingKey([...fromPath]);
+  const remove: ProposalSection[] = [];
+  const add: ProposalSection[] = [];
+  for (const claimed of proposal.sections) {
+    if (claimed.doc_path !== docPath) continue;
+    const hp = claimed.heading_path;
+    const isSelf = SectionRef.headingKey(hp) === oldKey;
+    const isDescendant = hp.length > fromPath.length && fromPath.every((seg, i) => seg === hp[i]);
+    if (!isSelf && !isDescendant) continue;
+    remove.push({ doc_path: docPath, heading_path: [...hp] });
+    add.push({
+      doc_path: docPath,
+      heading_path: isSelf ? newPath : [...newPath, ...hp.slice(fromPath.length)],
+    });
+  }
+  if (remove.length > 0) await unionCurrentProposalSections(proposalId, add, remove);
 }
