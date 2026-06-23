@@ -11,6 +11,7 @@ import { useDocumentActivity } from "../hooks/useDocumentActivity";
 import { DocumentActivityIndicator } from "../components/DocumentActivityIndicator";
 import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
 import { DocumentSectionRenderer } from "../components/DocumentSectionRenderer";
+import { connectionBannerInfo } from "../services/crdt-connection-ux";
 import { DocumentFooter } from "../components/DocumentFooter";
 import DocumentDiagnostics from "../components/DocumentDiagnostics";
 import { OverwriteMarkdownModal } from "../components/OverwriteMarkdownModal";
@@ -120,7 +121,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     transport,
     crdtSynced,
     crdtState,
-    crdtError,
+    observerState,
     editingLoading,
     readyEditors,
     setReadyEditors,
@@ -367,6 +368,9 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
 
   // ── Derived ──────────────────────────────────────────────
   const docTitle = decodedDocPath ? getDocDisplayName(decodedDocPath) : "Untitled";
+  // Connection banner for every non-live transport phase — editor state while
+  // editing, observer state while viewing (null when live / no banner needed).
+  const crdtBanner = connectionBannerInfo(isEditing, crdtState, observerState);
 
   // Document-level publication-pause flag — drives the topbar status and the
   // editing banner.
@@ -489,14 +493,17 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
         hadLocalEdits={saveStatus.hadLocalEdits}
       />
 
-      {/* Document-level connection banner */}
-      {isEditing && crdtState === "reconnecting" ? (
-        <div className="bg-amber-50 border-b border-amber-200 px-4 py-1.5 text-xs text-amber-800 font-medium">
-          Reconnecting{"\u2026"}
-        </div>
-      ) : isEditing && (crdtState === "error" || crdtState === "disconnected") ? (
-        <div className="bg-red-50 border-b border-red-200 px-4 py-1.5 text-xs text-red-800 font-medium">
-          Offline &mdash; changes won&apos;t be saved
+      {/* Document-level connection banner \u2014 shown for EVERY non-live phase
+          (connecting / reconnecting / offline), while editing OR viewing. */}
+      {crdtBanner ? (
+        <div
+          className={`border-b px-4 py-1.5 text-xs font-medium ${
+            crdtBanner.tone === "red"
+              ? "bg-red-50 border-red-200 text-red-800"
+              : "bg-amber-50 border-amber-200 text-amber-800"
+          }`}
+        >
+          {crdtBanner.message}
         </div>
       ) : null}
 
@@ -663,7 +670,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       store={store}
                       transport={transport}
                       crdtSynced={crdtSynced}
-                      crdtError={crdtError}
+                      crdtState={crdtState}
                       transferService={transferServiceRef.current}
                       proposalMode={proposalMode}
                       canEditProposalContent={activeProposalStatus === "inprogress"}

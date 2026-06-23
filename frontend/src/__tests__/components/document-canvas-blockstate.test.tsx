@@ -37,6 +37,7 @@ import { DocumentCanvas } from "../../components/DocumentCanvas";
 import { BrowserFragmentReplicaStore } from "../../services/browser-fragment-replica-store";
 import { SectionHoverProvider } from "../../contexts/SectionHoverContext";
 import type { DocumentSection } from "../../pages/document-page-utils";
+import type { CrdtConnectionState } from "../../services/crdt-provider";
 
 function makeSection(file: string, heading: string): DocumentSection {
   return {
@@ -57,6 +58,7 @@ function renderCanvas(
   store: BrowserFragmentReplicaStore,
   sections: DocumentSection[],
   focusedSectionIndex: number | null,
+  crdtState: CrdtConnectionState = "connected",
 ) {
   return render(
     <SectionHoverProvider activeSectionIndex={focusedSectionIndex}>
@@ -77,7 +79,7 @@ function renderCanvas(
         store={store}
         transport={null}
         crdtSynced={true}
-        crdtError={null}
+        crdtState={crdtState}
         transferService={null}
         readyEditors={focusedSectionIndex !== null ? new Set([focusedSectionIndex]) : new Set()}
         localEditSink={{ recordLocalEdit: () => {} }}
@@ -141,5 +143,45 @@ describe("DocumentCanvas block-state / publication-pause flow", () => {
     renderCanvas(store, sections, 0);
     const editor = screen.getByTestId("editor-section::a");
     expect(editor.getAttribute("data-readonly")).toBe("false");
+  });
+
+  // ── Connection-degraded rendering (connecting / reconnecting / offline) ──
+  // The regression these guard: degraded UI was gated on `reconnecting`/`error`
+  // only, so `connecting` (first-connect / hung socket) rendered a normal live,
+  // writable editor with no paused affordance. Each non-live phase must force the
+  // focused editor read-only AND surface a "editing paused" label.
+
+  it("a focused section while CONNECTING is read-only and shows the paused label", () => {
+    renderCanvas(store, sections, 0, "connecting");
+    const editor = screen.getByTestId("editor-section::a");
+    expect(editor.getAttribute("data-readonly")).toBe("true");
+    expect(screen.getByText(/Connecting — editing paused/)).toBeDefined();
+  });
+
+  it("a focused section while RECONNECTING is read-only and shows the paused label", () => {
+    renderCanvas(store, sections, 0, "reconnecting");
+    const editor = screen.getByTestId("editor-section::a");
+    expect(editor.getAttribute("data-readonly")).toBe("true");
+    expect(screen.getByText(/Reconnecting — editing paused/)).toBeDefined();
+  });
+
+  it("a focused section while OFFLINE (error) is read-only and shows the paused label", () => {
+    renderCanvas(store, sections, 0, "error");
+    const editor = screen.getByTestId("editor-section::a");
+    expect(editor.getAttribute("data-readonly")).toBe("true");
+    expect(screen.getByText(/Offline — editing paused/)).toBeDefined();
+  });
+
+  it("a degraded NEIGHBOR (mounted but not focused) falls back to static prose, not a live editor", () => {
+    // focus section a (index 0); section b (index 1) is an eagerly-mounted
+    // neighbor. While degraded it must NOT mount a live editor.
+    renderCanvas(store, sections, 0, "reconnecting");
+    expect(screen.queryByTestId("editor-section::b")).toBeNull();
+    expect(screen.getByText(/Beta body/)).toBeDefined();
+  });
+
+  it("the focused editor is writable again once the socket is live", () => {
+    renderCanvas(store, sections, 0, "connected");
+    expect(screen.getByTestId("editor-section::a").getAttribute("data-readonly")).toBe("false");
   });
 });

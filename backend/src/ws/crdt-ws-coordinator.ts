@@ -1052,18 +1052,42 @@ export async function processArbitratedClientUpdate(
   // raw-bytes relay.
   broadcastToAll(docPath, encodeUpdate(Y.encodeStateAsUpdate(session.ydoc, beforeSV)));
 
-  // Only the fragments the live edit WON are recorded as activity and
-  // materialized — the blocked ones never enter the DocSession proposal.
-  for (const fragmentKey of arbitration.materializeKeys) {
+  // No-op filter: a client update can re-encode a fragment's Y structure WITHOUT
+  // changing its normalized markdown — entering edit mode round-trips the fragment
+  // through ProseMirror (the trailing-newline / round-trip corruption), which
+  // `txn.changed` reports as "touched" even though nothing actually changed.
+  // Materializing such a key would lazily create a FALSE `inprogress` proposal
+  // (and arm the autonomous publish on it). Compare each WON key's post-apply
+  // content against its pre-edit content — reconstructed from the snapshot already
+  // captured above (`preEditState`) — and drop the keys that are identical after
+  // normalization. This reuses `readFragmentString`'s `section-formatting`
+  // normalization + the `live-section-deltas` `===` equality idiom; no new newline
+  // logic. A brand-new section has no pre-edit content (empty in the snapshot), so
+  // it survives whenever it carries real content. Blocked keys were reverted and
+  // excluded above; the single net-delta broadcast already happened, so a dropped
+  // key still propagates its (content-identical) re-encode and peers stay
+  // converged — nothing is published for it.
+  const preEditMaterializeContent = session.liveFragments.snapshotFragmentContentFromState(
+    preEditState,
+    arbitration.materializeKeys,
+  );
+  const materializeKeys = arbitration.materializeKeys.filter(
+    (fragmentKey) =>
+      session.liveFragments.readFragmentString(fragmentKey) !== preEditMaterializeContent.get(fragmentKey),
+  );
+
+  // Only the fragments whose content ACTUALLY changed are recorded as activity and
+  // materialized — blocked ones were reverted above, no-op re-encodes are dropped.
+  for (const fragmentKey of materializeKeys) {
     noteFragmentActivity(session, writerId, fragmentKey);
   }
-  if (arbitration.materializeKeys.length > 0) {
+  if (materializeKeys.length > 0) {
     // Materialize the live edit into the DocSession's single inprogress proposal
     // (lazy-creates it on the first materialized edit). C4: SCOPE the materialize
     // to ONLY the fragments this edit WON, so the proposal's lock claim grows
     // section-by-section instead of snapping to the whole document (which would
     // lock every section against agents — a contention-model inversion).
-    await session.generator.materializeEdit({ touchedFragmentKeys: arbitration.materializeKeys });
+    await session.generator.materializeEdit({ touchedFragmentKeys: materializeKeys });
     // Arm/re-arm the per-section quiescence timer (MW-1b/2). Re-arming on every
     // edit pushes the fire point out so normalization + autonomous publish only
     // run once the document goes quiet — never mid-burst.
@@ -1076,7 +1100,7 @@ export async function processArbitratedClientUpdate(
     if (onWsEvent) {
       const announced = pendingFragmentsByDoc.get(docPath) ?? new Set<string>();
       const editor = session.holders.get(writerId)?.identity;
-      for (const fragmentKey of arbitration.materializeKeys) {
+      for (const fragmentKey of materializeKeys) {
         if (announced.has(fragmentKey)) continue;
         announced.add(fragmentKey);
         onWsEvent({

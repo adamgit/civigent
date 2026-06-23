@@ -9,6 +9,7 @@ import {
 import { sectionHeadingKey, type ContentCommittedEvent, type DocumentReplacementNoticePayload, type DocumentSessionControllerState, type EditorFocusTarget, type ProposalDTO, type RequestedMode } from "../types/shared.js";
 import type { ProposalSectionAvailabilityEvent } from "../types/shared.js";
 import type { CrdtConnectionState } from "../services/crdt-provider";
+import type { ObserverConnectionState } from "../services/observer-crdt-provider";
 import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 import type { CrdtTransport } from "../services/crdt-transport";
 import type { LocalPresence } from "../services/local-presence";
@@ -39,6 +40,7 @@ export interface UseDocumentSessionControllerReturn {
   presence: LocalPresence | null;
   crdtSynced: boolean;
   crdtState: CrdtConnectionState;
+  observerState: ObserverConnectionState;
   crdtError: string | null;
   editingLoading: boolean;
   readyEditors: Set<number>;
@@ -175,6 +177,7 @@ export function useDocumentSessionController(
     presence: session.presence,
     crdtSynced: session.crdtSynced,
     crdtState: session.crdtState,
+    observerState: session.observerState,
     crdtError: session.crdtError,
     editingLoading: session.editingLoading,
     readyEditors: registry.readyEditors,

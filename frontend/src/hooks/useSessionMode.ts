@@ -10,7 +10,7 @@ import { type CrdtConnectionState } from "../services/crdt-provider";
 import { CrdtTransport } from "../services/crdt-transport";
 import { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 import { LocalPresence } from "../services/local-presence";
-import { ObserverCrdtProvider } from "../services/observer-crdt-provider";
+import { ObserverCrdtProvider, type ObserverConnectionState } from "../services/observer-crdt-provider";
 import { fragmentToMarkdown } from "../services/fragment-to-markdown";
 import {
   type DocumentReplacementNoticePayload,
@@ -49,6 +49,7 @@ export interface UseSessionModeReturn {
   presenceRef: React.MutableRefObject<LocalPresence | null>;
   crdtSynced: boolean;
   crdtState: CrdtConnectionState;
+  observerState: ObserverConnectionState;
   crdtError: string | null;
   editingLoading: boolean;
   controllerState: DocumentSessionControllerState;
@@ -80,6 +81,12 @@ export function useSessionMode({
   const [presence, setPresence] = useState<LocalPresence | null>(null);
   const [crdtSynced, setCrdtSynced] = useState(false);
   const [crdtState, setCrdtState] = useState<CrdtConnectionState>("disconnected");
+  // Observer (read-only viewing) connection state — distinct from the editor
+  // transport's `crdtState`. Surfaced so a server loss while only VIEWING isn't
+  // silently lost: the observer reconnects forever, and the page turns this into
+  // a connection banner. "disconnected" means "no observer running" (initial or
+  // intentionally stopped), NOT a failure.
+  const [observerState, setObserverState] = useState<ObserverConnectionState>("disconnected");
   const [crdtError, setCrdtError] = useState<string | null>(null);
   const [editingLoading, setEditingLoading] = useState(false);
   const [controllerState, setControllerState] = useState<DocumentSessionControllerState>({
@@ -135,6 +142,8 @@ export function useSessionMode({
       observerRef.current.destroy();
       observerRef.current = null;
     }
+    // No observer running → not a degraded state, so no banner.
+    setObserverState("disconnected");
   }, []);
 
   const startObserver = useCallback((
@@ -147,6 +156,7 @@ export function useSessionMode({
   ) => {
     if (observerRef.current) return;
     const observer = new ObserverCrdtProvider(docPath, {
+      onStateChange: (state) => setObserverState(state),
       onChange: () => {
         const ydoc = observer.doc;
         setSections((current) => {
@@ -418,6 +428,7 @@ export function useSessionMode({
     presenceRef,
     crdtSynced,
     crdtState,
+    observerState,
     crdtError,
     editingLoading,
     controllerState,

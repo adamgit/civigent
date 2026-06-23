@@ -9,6 +9,7 @@ import { ProposalPanel } from "../components/ProposalPanel";
 import { DocumentTopbar } from "../components/DocumentTopbar";
 import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
 import { DocumentCanvas } from "../components/DocumentCanvas";
+import { connectionBannerInfo } from "../services/crdt-connection-ux";
 import { DocumentFooter } from "../components/DocumentFooter";
 import { DocumentHistory } from "../components/DocumentHistory";
 import DocumentDiagnostics from "../components/DocumentDiagnostics";
@@ -147,7 +148,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     transport,
     crdtSynced,
     crdtState,
-    crdtError,
+    observerState,
     editingLoading,
     readyEditors,
     setReadyEditors,
@@ -328,6 +329,9 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
   // Derived
   const isEditing = isEditingMode;
+  // Connection banner for every non-live transport phase — editor state while
+  // editing, observer state while viewing (null when live / no banner needed).
+  const crdtBanner = connectionBannerInfo(isEditing, crdtState, observerState);
   const focusedHeadingPath = focusedSectionIndex !== null && renderSections[focusedSectionIndex]
     ? renderSections[focusedSectionIndex].heading_path
     : null;
@@ -575,14 +579,17 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         </div>
       )}
 
-      {/* Document-level connection banner — visible only during transport failures */}
-      {isEditing && crdtState === "reconnecting" ? (
-        <div className="bg-amber-50 border-b border-amber-200 px-4 py-1.5 text-xs text-amber-800 font-medium">
-          Reconnecting\u2026
-        </div>
-      ) : isEditing && (crdtState === "error" || crdtState === "disconnected") ? (
-        <div className="bg-red-50 border-b border-red-200 px-4 py-1.5 text-xs text-red-800 font-medium">
-          Offline &mdash; changes won&apos;t be saved
+      {/* Document-level connection banner — shown for EVERY non-live phase
+          (connecting / reconnecting / offline), while editing OR viewing. */}
+      {crdtBanner ? (
+        <div
+          className={`border-b px-4 py-1.5 text-xs font-medium ${
+            crdtBanner.tone === "red"
+              ? "bg-red-50 border-red-200 text-red-800"
+              : "bg-amber-50 border-amber-200 text-amber-800"
+          }`}
+        >
+          {crdtBanner.message}
         </div>
       ) : null}
 
@@ -768,7 +775,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
             store={store}
             transport={transport}
             crdtSynced={crdtSynced}
-            crdtError={crdtError}
+            crdtState={crdtState}
             transferService={transferServiceRef.current}
             readyEditors={readyEditors}
             localEditSink={localEditSink}

@@ -5,6 +5,8 @@ import { Link } from "react-router-dom";
 import { MilkdownEditor, type MilkdownEditorHandle } from "./MilkdownEditor";
 import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 import type { CrdtTransport } from "../services/crdt-transport";
+import type { CrdtConnectionState } from "../services/crdt-provider";
+import { isCrdtDegraded, crdtBannerInfo } from "../services/crdt-connection-ux";
 import type { DocumentSection } from "../pages/document-page-utils";
 import { headingPathToLabel } from "../pages/document-page-utils";
 import { resolveWriterId } from "../services/api-client";
@@ -35,7 +37,10 @@ export interface DocumentSectionRendererProps {
   store: BrowserFragmentReplicaStore | null;
   transport: CrdtTransport | null;
   crdtSynced: boolean;
-  crdtError: string | null;
+  /** CRDT transport connection state. `reconnecting`/`error` mean the socket is
+   *  down: the section keeps showing its (in-memory) content but goes read-only
+   *  + faded rather than being blanked. */
+  crdtState: CrdtConnectionState;
   transferService: SectionTransferService | null;
   proposalMode: boolean;
   canEditProposalContent: boolean;
@@ -115,7 +120,7 @@ export function DocumentSectionRenderer({
   store,
   transport,
   crdtSynced,
-  crdtError,
+  crdtState,
   transferService,
   proposalMode,
   canEditProposalContent,
@@ -138,6 +143,16 @@ export function DocumentSectionRenderer({
   // block-state. (Publication pause does not remove the section, it only
   // freezes the live editor — handled via the `readOnly` prop below.)
   const unavailableForEdit = isLockedByOtherHuman || crdtBlocked;
+  // Transport is not live (first-connect `connecting`, dropped `reconnecting`,
+  // or hard `error`/`disconnected`). The Y.Doc still holds all content in memory,
+  // so we keep rendering the section — we do NOT blank it. Offline keystrokes
+  // would be silently dropped by `sendRaw` (and an unsynced editor isn't typeable
+  // anyway), so the live editor is forced read-only + faded while degraded and
+  // eagerly-mounted neighbors fall back to faded static content. Every non-live
+  // phase is covered — see crdt-connection-ux.ts (the `connecting` flash on a
+  // healthy connect is sub-second; a hung/dead server stays here).
+  const crdtDegraded = isCrdtDegraded(crdtState);
+  const crdtPaused = crdtBannerInfo(crdtState);
   const markdownComponents = {
     a({ node: _node, href, children, ...props }: React.ComponentProps<"a"> & { node?: unknown }) {
       const resolvedHref = typeof href === "string" ? rewriteMarkdownDocHref(href) : null;
@@ -169,6 +184,8 @@ export function DocumentSectionRenderer({
           ? `bg-blue-50/30 border-l-blue-500`
           : highlightLabel
           ? `bg-green-50/70 border-l-green-400 cursor-pointer hover:bg-section-hover`
+          : isFocused && crdtDegraded
+          ? `cursor-pointer border-l-amber-400 opacity-75`
           : isFocused
           ? `cursor-pointer hover:bg-section-hover border-l-accent-emphasis`
           : hasRemotePresence
@@ -246,58 +263,77 @@ export function DocumentSectionRenderer({
 
       {/* Section body: editor or static preview */}
       {hasEditor ? (
-        crdtError ? (
-          <div className="border border-status-red rounded-md p-3 bg-status-red-light/30 text-sm text-status-red my-2">
-            <p className="font-semibold mb-1">CRDT connection failed</p>
-            <p className="text-xs">{crdtError}</p>
+        crdtDegraded && !isFocused ? (
+          // Degraded neighbor: this editor was eagerly mounted (focused ±1) but
+          // is not the one being edited. Edits can't be synced while the socket
+          // is not live, so fall back to faded static content rather than a live
+          // editor.
+          <div className="doc-prose opacity-50">
+            <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+              {section.content}
+            </ReactMarkdown>
           </div>
         ) : (
-          <div className="relative">
-            {/* ReactMarkdown underlayer — shown until editor is ready, then unmounted */}
-            {!isReady && (
-              <div className="doc-prose">
-                <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
-                  {section.content}
-                </ReactMarkdown>
+          <>
+            {/* Degraded focused section: editing is paused until the socket is
+                live again. `crdtPaused` is non-null for every non-live phase
+                (connecting / reconnecting / offline), each with its own label. */}
+            {crdtPaused ? (
+              <p
+                className={`text-[10px] font-medium mb-1 ${
+                  crdtPaused.tone === "red" ? "text-status-red" : "text-amber-700"
+                }`}
+              >
+                {crdtPaused.sectionLabel}
+              </p>
+            ) : null}
+            <div className={`relative${crdtDegraded ? " opacity-50" : ""}`}>
+              {/* ReactMarkdown underlayer — shown until editor is ready, then unmounted */}
+              {!isReady && (
+                <div className="doc-prose">
+                  <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+                    {section.content}
+                  </ReactMarkdown>
+                </div>
+              )}
+              {/* MilkdownEditor overlay — absolute until ready, then back in flow */}
+              <div
+                className={isReady ? "" : "absolute inset-0"}
+                style={{ minHeight: isReady ? undefined : 60 }}
+                onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
+                onClick={(e) => {
+                  if (e.shiftKey || e.button !== 0 || e.defaultPrevented) return;
+                  if (window.getSelection()?.isCollapsed === false) return;
+                  const down = mouseDownPosRef.current;
+                  if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
+                  if (!isFocused) {
+                    onFocusSection(i, section.heading_path, { x: e.clientX, y: e.clientY });
+                  }
+                }}
+              >
+                <MilkdownEditor
+                  ref={(handle) => onSetEditorRef(i, handle)}
+                  markdown={section.content}
+                  store={proposalMode ? null : store}
+                  transport={proposalMode ? null : transport}
+                  crdtSynced={crdtSynced}
+                  fragmentKey={fk}
+                  userName={resolveWriterId()}
+                  readOnly={!isFocused || unavailableForEdit || publishPaused || crdtDegraded || (proposalMode && !canEditProposalContent)}
+                  expectsCrdt={!proposalMode}
+                  onChange={proposalMode && canEditProposalContent && onProposalSectionChange
+                    ? (md) => onProposalSectionChange(i, md)
+                    : undefined}
+                  canDrop={transferService ? () => transferService.canDrop(fk) : undefined}
+                  onCursorExit={(direction) => onCursorExit(i, direction)}
+                  onCrossSectionDrop={(transfer) => onCrossSectionDrop(section, transfer)}
+                  onLocalEdit={() => localEditSink.recordLocalEdit(fk)}
+                  onReady={() => onEditorReady(i)}
+                  onUnready={onEditorUnready ? () => onEditorUnready(i) : undefined}
+                />
               </div>
-            )}
-            {/* MilkdownEditor overlay — absolute until ready, then back in flow */}
-            <div
-              className={isReady ? "" : "absolute inset-0"}
-              style={{ minHeight: isReady ? undefined : 60 }}
-              onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
-              onClick={(e) => {
-                if (e.shiftKey || e.button !== 0 || e.defaultPrevented) return;
-                if (window.getSelection()?.isCollapsed === false) return;
-                const down = mouseDownPosRef.current;
-                if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
-                if (!isFocused) {
-                  onFocusSection(i, section.heading_path, { x: e.clientX, y: e.clientY });
-                }
-              }}
-            >
-              <MilkdownEditor
-                ref={(handle) => onSetEditorRef(i, handle)}
-                markdown={section.content}
-                store={proposalMode ? null : store}
-                transport={proposalMode ? null : transport}
-                crdtSynced={crdtSynced}
-                fragmentKey={fk}
-                userName={resolveWriterId()}
-                readOnly={!isFocused || unavailableForEdit || publishPaused || (proposalMode && !canEditProposalContent)}
-                expectsCrdt={!proposalMode}
-                onChange={proposalMode && canEditProposalContent && onProposalSectionChange
-                  ? (md) => onProposalSectionChange(i, md)
-                  : undefined}
-                canDrop={transferService ? () => transferService.canDrop(fk) : undefined}
-                onCursorExit={(direction) => onCursorExit(i, direction)}
-                onCrossSectionDrop={(transfer) => onCrossSectionDrop(section, transfer)}
-                onLocalEdit={() => localEditSink.recordLocalEdit(fk)}
-                onReady={() => onEditorReady(i)}
-                onUnready={onEditorUnready ? () => onEditorUnready(i) : undefined}
-              />
             </div>
-          </div>
+          </>
         )
       ) : (
         <div className="doc-prose">

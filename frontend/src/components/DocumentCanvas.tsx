@@ -2,6 +2,7 @@ import React from "react";
 import { DocumentSectionRenderer } from "./DocumentSectionRenderer";
 import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 import type { CrdtTransport } from "../services/crdt-transport";
+import type { CrdtConnectionState } from "../services/crdt-provider";
 import type { MilkdownEditorHandle } from "./MilkdownEditor";
 import type {
   DocumentSection,
@@ -34,7 +35,7 @@ export interface DocumentCanvasProps {
   store: BrowserFragmentReplicaStore | null;
   transport: CrdtTransport | null;
   crdtSynced: boolean;
-  crdtError: string | null;
+  crdtState: CrdtConnectionState;
   transferService: SectionTransferService | null;
   readyEditors: Set<number>;
   /** Write-only session-authorship port, passed straight through to each section
@@ -69,7 +70,7 @@ export function DocumentCanvas({
   store,
   transport,
   crdtSynced,
-  crdtError,
+  crdtState,
   transferService,
   readyEditors,
   localEditSink,
@@ -144,7 +145,7 @@ export function DocumentCanvas({
                 store={store}
                 transport={transport}
                 crdtSynced={crdtSynced}
-                crdtError={crdtError}
+                crdtState={crdtState}
                 transferService={transferService}
                 proposalMode={proposalMode}
                 canEditProposalContent={canEditProposalContent}
