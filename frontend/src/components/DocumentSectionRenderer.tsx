@@ -53,9 +53,9 @@ export interface DocumentSectionRendererProps {
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
   onStartEditing: (index: number, coords: { x: number; y: number }) => void;
   onFocusSection: (index: number, headingPath: string[], coords: { x: number; y: number }) => void;
-  onSetEditorRef: (index: number, handle: MilkdownEditorHandle | null) => void;
-  onEditorReady: (index: number) => void;
-  onEditorUnready?: (index: number) => void;
+  onSetEditorRef: (fragmentKey: string, handle: MilkdownEditorHandle | null) => void;
+  onEditorReady: (fragmentKey: string) => void;
+  onEditorUnready?: (fragmentKey: string) => void;
   onProposalSectionChange?: (index: number, markdown: string) => void;
   onToggleProposalSection?: () => void;
   onCursorExit: (index: number, direction: "up" | "down") => void;
@@ -299,7 +299,6 @@ export function DocumentSectionRenderer({
               {/* MilkdownEditor overlay — absolute until ready, then back in flow */}
               <div
                 className={isReady ? "" : "absolute inset-0"}
-                style={{ minHeight: isReady ? undefined : 60 }}
                 onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
                 onClick={(e) => {
                   if (e.shiftKey || e.button !== 0 || e.defaultPrevented) return;
@@ -312,7 +311,7 @@ export function DocumentSectionRenderer({
                 }}
               >
                 <MilkdownEditor
-                  ref={(handle) => onSetEditorRef(i, handle)}
+                  ref={(handle) => onSetEditorRef(fk, handle)}
                   markdown={section.content}
                   store={proposalMode ? null : store}
                   transport={proposalMode ? null : transport}
@@ -328,8 +327,8 @@ export function DocumentSectionRenderer({
                   onCursorExit={(direction) => onCursorExit(i, direction)}
                   onCrossSectionDrop={(transfer) => onCrossSectionDrop(section, transfer)}
                   onLocalEdit={() => localEditSink.recordLocalEdit(fk)}
-                  onReady={() => onEditorReady(i)}
-                  onUnready={onEditorUnready ? () => onEditorUnready(i) : undefined}
+                  onReady={() => onEditorReady(fk)}
+                  onUnready={onEditorUnready ? () => onEditorUnready(fk) : undefined}
                 />
               </div>
             </div>

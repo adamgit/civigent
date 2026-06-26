@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, act, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, act, cleanup, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { jsonResponse } from "../../helpers/fetch-mocks";
 import type { WsServerEvent } from "../../../types/shared";
@@ -8,6 +8,24 @@ import type { WsServerEvent } from "../../../types/shared";
 
 type WsEventHandler = (event: WsServerEvent) => void;
 let capturedWsHandler: WsEventHandler | null = null;
+
+/** Build the rich, SERVER-AUTHORED section shape `doc:structure-changed` carries
+ *  (identical to GET …/sections). The client never synthesizes these fields, so the
+ *  test payload must be fully populated too. */
+function richStructureSection(heading: string, headingPath: string[], fragmentKey: string) {
+  return {
+    heading,
+    heading_path: headingPath,
+    depth: headingPath.length,
+    content: "",
+    agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
+    crdt_session_active: true,
+    section_length_warning: false,
+    word_count: 0,
+    fragment_key: fragmentKey,
+    section_file: `${fragmentKey.replace(/^frag:/, "")}.md`,
+  };
+}
 
 vi.mock("../../../services/ws-client", () => ({
   KnowledgeStoreWsClient: class {
@@ -25,16 +43,42 @@ vi.mock("../../../services/ws-client", () => ({
 
 vi.mock("../../../services/crdt-provider", () => ({
   CrdtProvider: class {
-    connect = vi.fn();
+    _opts: Record<string, unknown>;
+    constructor(_doc: unknown, _docPath: string, opts: Record<string, unknown>) {
+      this._opts = opts;
+    }
+    state = "connected";
+    awareness = {
+      getLocalState: () => ({ user: {} }),
+      setLocalStateField: vi.fn(),
+    };
+    connect = () => {
+      (this._opts?.onStateChange as ((s: string) => void) | undefined)?.("connected");
+      (this._opts?.onSynced as (() => void) | undefined)?.();
+    };
     disconnect = vi.fn();
     destroy = vi.fn();
     focusSection = vi.fn();
+    setPublishPauseBarrier = vi.fn();
+    get isPublishPaused() { return false; }
   },
 }));
 
-vi.mock("../../../components/MilkdownEditor", () => ({
-  MilkdownEditor: () => <div data-testid="milkdown-editor">Editor</div>,
-}));
+vi.mock("../../../components/MilkdownEditor", async () => {
+  const React = await import("react");
+  return {
+    MilkdownEditor: React.forwardRef(
+      (props: { fragmentKey?: string; onReady?: () => void }, _ref: unknown) => {
+        React.useEffect(() => { props.onReady?.(); }, []);
+        return (
+          <div data-testid="milkdown-editor" data-fragment-key={props.fragmentKey}>
+            Editor:{props.fragmentKey}
+          </div>
+        );
+      },
+    ),
+  };
+});
 
 vi.mock("../../../components/ProposalPanel", () => ({
   ProposalPanel: () => <div data-testid="proposal-panel">ProposalPanel</div>,
@@ -149,56 +193,49 @@ describe("DocumentPage realtime", () => {
     });
   });
 
-  it("removed doc:structure-changed event no longer triggers a structure refetch", async () => {
-    // Spec 05 §4 > Removed message types: `doc:structure-changed` is gone.
-    // Structural changes now arrive as ordinary YJS_UPDATE deltas on the CRDT
-    // socket, so a stray legacy event must NOT cause an extra structure fetch.
-    let structureFetchCount = 0;
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
-      const urlStr = String(url);
-      if (urlStr.includes("/sections")) {
-        return jsonResponse({
-          sections: [
-            {
-              heading: "",
-              heading_path: [],
-              depth: 0,
-              content: "Root.\n",
-              agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
-              crdt_session_active: false,
-              section_length_warning: false,
-              word_count: 1,
-              fragment_key: "frag:sec_root",
-              section_file: "sec_root.md",
-            },
-          ],
-        });
-      }
-      if (urlStr.includes("/structure")) {
-        structureFetchCount += 1;
-        return jsonResponse({ structure: [] });
-      }
-      if (urlStr.includes("/changes-since")) {
-        return jsonResponse({ changed_sections: [] });
-      }
-      return jsonResponse({});
-    });
-
+  // Todolist item 28/60 (the live-topology-adoption fix): a LIVE split is pushed
+  // to the client as a `doc:structure-changed` app event carrying the authoritative
+  // live section list. The page adopts it straight from the payload — NO REST
+  // refetch (a live uncommitted split is invisible to canonical until commit) — so
+  // the newly-promoted editable section surfaces BEFORE any `content:committed`,
+  // while the survivor's mounted editor is preserved.
+  it("a LIVE doc:structure-changed split surfaces the new editable section before content:committed", async () => {
     renderDocPage();
     await waitFor(() => {
-      expect(structureFetchCount).toBeGreaterThan(0);
+      expect(screen.getByText(/Overview v1/)).toBeDefined();
     });
-    const initialStructureCount = structureFetchCount;
+    const fetchesBeforeSplit = sectionsFetchCount;
 
-    act(() => {
-      capturedWsHandler?.({
-        type: "doc:structure-changed",
-        doc_path: "test.md",
-      } as WsServerEvent);
+    // Focus the survivor (Overview) so its editor mounts — this is the section a
+    // user is typing into when the split happens.
+    fireEvent.click(screen.getByText(/Overview v1/));
+    await waitFor(() => {
+      const editors = screen.getAllByTestId("milkdown-editor");
+      expect(editors.some((e) => e.getAttribute("data-fragment-key") === "frag:sec_overview")).toBe(true);
     });
 
-    // Give any (incorrect) async refetch a chance to run, then assert no change.
-    await new Promise((r) => setTimeout(r, 50));
-    expect(structureFetchCount).toBe(initialStructureCount);
+    // A live split lands: the server pushes the new live section list (survivor +
+    // a brand-new same-level sibling) as a doc:structure-changed event. No commit.
+    capturedWsHandler?.({
+      type: "doc:structure-changed",
+      doc_path: "test.md",
+      sections: [
+        richStructureSection("", [], "frag:sec_root"),
+        richStructureSection("Overview", ["Overview"], "frag:sec_overview"),
+        richStructureSection("Second Section", ["Second Section"], "frag:sec_second"),
+      ],
+    } as WsServerEvent);
+
+    // The promoted sibling surfaces as an editable section (adjacent to the focused
+    // survivor → its editor mounts) WITHOUT any content:committed or REST refetch.
+    await waitFor(() => {
+      const editors = screen.getAllByTestId("milkdown-editor");
+      expect(editors.some((e) => e.getAttribute("data-fragment-key") === "frag:sec_second")).toBe(true);
+    });
+    // No canonical refetch happened — the event payload was the source of truth.
+    expect(sectionsFetchCount).toBe(fetchesBeforeSplit);
+    // The survivor's editor is preserved (not torn down / remounted by adoption).
+    const editors = screen.getAllByTestId("milkdown-editor");
+    expect(editors.some((e) => e.getAttribute("data-fragment-key") === "frag:sec_overview")).toBe(true);
   });
 });

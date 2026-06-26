@@ -57,6 +57,27 @@ describe("classifyStructuralChange (WS-1)", () => {
     expect(change.sections[1].body).toBe("brand new sub body");
   });
 
+  it("section-split (sibling): a SECOND same-level heading splits into a top-level sibling section", () => {
+    // Unlike the nested `### New Sub` case above, a second heading at the SAME
+    // level as the survivor is a SIBLING, not a child — so its descriptor stays
+    // top-level (`["Second Section"]`, NOT `["Overview", "Second Section"]`) and
+    // keeps the survivor's level. This is the split shape a live editor produces
+    // when an author types a second `##` heading into a section body.
+    const change = classifyStructuralChange(
+      md("## Overview\n\nbase overview body\n\n## Second Section\n\nbrand new sibling body"),
+      overview,
+    );
+    expect(change.kind).toBe("section-split");
+    if (change.kind !== "section-split") throw new Error("wrong kind");
+    expect(change.sections.map((s) => s.heading)).toEqual(["Overview", "Second Section"]);
+    // Two TOP-LEVEL descriptors (siblings) — neither nested under the other.
+    expect(change.sections.map((s) => s.headingPath)).toEqual([["Overview"], ["Second Section"]]);
+    // The new sibling lands at the SAME level as the survivor.
+    expect(change.sections.map((s) => s.level)).toEqual([2, 2]);
+    expect(change.sections[0].body).toBe("base overview body");
+    expect(change.sections[1].body).toBe("brand new sibling body");
+  });
+
   it("heading-rename: the heading text changed at the same level", () => {
     const change = classifyStructuralChange(md("## Overview Renamed\n\nbody"), overview);
     expect(change.kind).toBe("heading-rename");

@@ -36,26 +36,19 @@ describe("Auth middleware enforcement", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns 401 on GET /api/documents/tree without auth", async () => {
-    const res = await request(ctx.app).get("/api/documents/tree");
+  it("returns 401 on GET /api/workspace/tree without auth", async () => {
+    const res = await request(ctx.app).get("/api/workspace/tree");
     expect(res.status).toBe(401);
   });
 
-  it("returns 401 on GET /api/documents/:path/sections without auth", async () => {
-    const res = await request(ctx.app).get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/sections`);
+  it("returns 401 on GET /api/workspace/:path/sections without auth", async () => {
+    const res = await request(ctx.app).get(`/api/workspace/${SAMPLE_DOC_PATH.replace(/^\//, "")}/sections`);
     expect(res.status).toBe(401);
   });
 
-  it("returns 401 on GET /api/sections without auth", async () => {
+  it("returns 401 on unauthenticated PUT /api/workspace/:path", async () => {
     const res = await request(ctx.app)
-      .get("/api/sections")
-      .query({ doc_path: SAMPLE_DOC_PATH, heading_path: "[]" });
-    expect(res.status).toBe(401);
-  });
-
-  it("returns 401 on unauthenticated PUT /api/documents/:path", async () => {
-    const res = await request(ctx.app)
-      .put("/api/documents/new-doc")
+      .put("/api/workspace/new-doc")
       .set("Content-Type", "text/markdown")
       .send("# New doc");
     expect(res.status).toBe(401);
@@ -108,7 +101,7 @@ describe("Auth middleware enforcement", () => {
 
   // ─── RBAC per-document read enforcement ──────────────────────────
 
-  it("returns 403 on GET /documents/:path/sections when user lacks required custom role", async () => {
+  it("returns 403 on GET /workspace/:path/sections when user lacks required custom role", async () => {
     // Set up ACL requiring a custom role for this doc
     const authDir = path.join(ctx.dataCtx.rootDir, "auth");
     await mkdir(authDir, { recursive: true });
@@ -119,7 +112,7 @@ describe("Auth middleware enforcement", () => {
     invalidateCache();
 
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/sections`)
+      .get(`/api/workspace/${SAMPLE_DOC_PATH.replace(/^\//, "")}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(403);
@@ -129,7 +122,7 @@ describe("Auth middleware enforcement", () => {
     invalidateCache();
   });
 
-  it("returns 403 on DELETE /documents/:path when user lacks write role", async () => {
+  it("returns 403 on DELETE /workspace/:path when user lacks write role", async () => {
     const authDir = path.join(ctx.dataCtx.rootDir, "auth");
     await mkdir(authDir, { recursive: true });
     await writeFile(
@@ -139,7 +132,7 @@ describe("Auth middleware enforcement", () => {
     invalidateCache();
 
     const res = await request(ctx.app)
-      .delete(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
+      .delete(`/api/workspace/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
       .set("Authorization", ctx.humanToken)
       .set("X-Requested-With", "fetch");
 
@@ -150,7 +143,7 @@ describe("Auth middleware enforcement", () => {
     invalidateCache();
   });
 
-  it("returns 200 on GET /documents/:path/sections when user has the required custom role", async () => {
+  it("returns 200 on GET /workspace/:path/sections when user has the required custom role", async () => {
     const authDir = path.join(ctx.dataCtx.rootDir, "auth");
     await mkdir(authDir, { recursive: true });
     await writeFile(
@@ -164,7 +157,7 @@ describe("Auth middleware enforcement", () => {
     invalidateCache();
 
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/sections`)
+      .get(`/api/workspace/${SAMPLE_DOC_PATH.replace(/^\//, "")}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);

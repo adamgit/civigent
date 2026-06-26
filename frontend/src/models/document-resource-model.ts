@@ -5,17 +5,18 @@ import type { DocumentSection } from "../pages/document-page-utils";
 /**
  * REST-backed resource model for document-level operations.
  *
- * Reads are canonical-only: `loadSections()`/`reloadSections()` call
- * `apiClient.getDocumentSections(docPath)` with no proposal/overlay argument,
- * matching spec 04 §5 ("GET .../sections reads canonical document state only";
- * proposal content is read via proposal APIs). Live CRDT/transport state is
- * owned by the editor/transport layer and intentionally stays outside this model.
+ * Reads are workspace (working-copy) reads: `loadSections()`/`reloadSections()`
+ * and `loadStructure()` call the `apiClient.getWorkspace*` methods, which resolve
+ * the in-progress proposal for the doc (if any) first, with canonical fallback —
+ * so the human editor sees its own working copy. Proposal-scoped reads still go
+ * through the dedicated proposal APIs. Live CRDT/transport state is owned by the
+ * editor/transport layer and intentionally stays outside this model.
  */
 export class DocumentResourceModel {
   private lastDocPath: string | null = null;
 
   async loadSections(docPath: string): Promise<DocumentSection[]> {
-    const response = await apiClient.getDocumentSections(docPath);
+    const response = await apiClient.getWorkspaceDocumentSections(docPath);
     this.lastDocPath = docPath;
     return response.sections;
   }
@@ -26,7 +27,7 @@ export class DocumentResourceModel {
   }
 
   async loadStructure(docPath: string): Promise<DocStructureNode[]> {
-    const response = await apiClient.getDocumentStructure(docPath);
+    const response = await apiClient.getWorkspaceDocumentStructure(docPath);
     return response.structure;
   }
 

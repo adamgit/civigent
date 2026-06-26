@@ -4,7 +4,7 @@ import { createTestServer } from "../helpers/test-server.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import type { TestServerContext } from "../helpers/test-server.js";
 
-describe("PUT /api/documents/:doc_path (create)", () => {
+describe("PUT /api/workspace/:doc_path (create)", () => {
   let ctx: TestServerContext;
 
   beforeAll(async () => {
@@ -18,7 +18,7 @@ describe("PUT /api/documents/:doc_path (create)", () => {
 
   it("creates a new document and returns 201 with doc_path", async () => {
     const res = await request(ctx.app)
-      .put("/api/documents/new/test-doc.md")
+      .put("/api/workspace/new/test-doc.md")
       .set("Authorization", ctx.humanToken)
       .set("Content-Type", "text/markdown")
       .send("# Test Document\n\nSome content here.\n");
@@ -29,7 +29,7 @@ describe("PUT /api/documents/:doc_path (create)", () => {
 
   it("returns 409 if document already exists", async () => {
     const res = await request(ctx.app)
-      .put(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
+      .put(`/api/workspace/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
       .set("Authorization", ctx.humanToken)
       .set("Content-Type", "text/markdown")
       .send("# Duplicate\n\nShould conflict.\n");
@@ -39,7 +39,7 @@ describe("PUT /api/documents/:doc_path (create)", () => {
 
   it("returns error for invalid path with traversal", async () => {
     const res = await request(ctx.app)
-      .put("/api/documents/../../bad.md")
+      .put("/api/workspace/../../bad.md")
       .set("Authorization", ctx.humanToken)
       .set("Content-Type", "text/markdown")
       .send("# Bad path\n");

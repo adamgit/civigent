@@ -22,7 +22,7 @@ describe("Startup gate — 503 during recovery", () => {
   it("returns 503 on data endpoints when system is not ready", async () => {
     _resetSystemReadyForTesting();
 
-    const res = await request(app).get("/api/documents/tree");
+    const res = await request(app).get("/api/workspace/tree");
     expect(res.status).toBe(503);
     expect(res.body.error).toBe("system_starting");
 

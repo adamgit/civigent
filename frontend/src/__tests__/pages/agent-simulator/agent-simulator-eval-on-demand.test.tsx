@@ -19,10 +19,10 @@ describe("AgentSimulatorPage evaluation-data on demand (spec 12)", () => {
   let getStructure: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    vi.spyOn(apiClient, "getDocumentsTree").mockResolvedValue({
+    vi.spyOn(apiClient, "getWorkspaceTree").mockResolvedValue({
       tree: [{ type: "file", path: TARGET_DOC }],
     } as never);
-    getStructure = vi.spyOn(apiClient, "getDocumentStructure").mockResolvedValue({
+    getStructure = vi.spyOn(apiClient, "getCanonicalDocumentStructure").mockResolvedValue({
       structure: [{ heading: "Overview", level: 1, children: [] }],
     } as never);
 

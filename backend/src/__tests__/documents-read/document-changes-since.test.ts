@@ -7,7 +7,7 @@ import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content
 import { gitExec } from "../../storage/git-repo.js";
 import type { TestServerContext } from "../helpers/test-server.js";
 
-describe("GET /api/documents/:doc_path/changes-since", () => {
+describe("GET /api/canonical/:doc_path/changes-since", () => {
   let ctx: TestServerContext;
   let headSha: string;
 
@@ -17,7 +17,7 @@ describe("GET /api/documents/:doc_path/changes-since", () => {
 
     // Fetch the current head_sha
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
+      .get(`/api/canonical/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
       .set("Authorization", ctx.humanToken);
     headSha = res.body.head_sha;
   });
@@ -28,7 +28,7 @@ describe("GET /api/documents/:doc_path/changes-since", () => {
 
   it("returns response with since_sha, current_sha, changed, and changed_sections", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/changes-since`)
+      .get(`/api/canonical/${SAMPLE_DOC_PATH.replace(/^\//, "")}/changes-since`)
       .query({ after_head: headSha })
       .set("Authorization", ctx.humanToken);
 
@@ -43,7 +43,7 @@ describe("GET /api/documents/:doc_path/changes-since", () => {
 
   it("returns no changes when SHA matches current HEAD", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/changes-since`)
+      .get(`/api/canonical/${SAMPLE_DOC_PATH.replace(/^\//, "")}/changes-since`)
       .query({ after_head: headSha })
       .set("Authorization", ctx.humanToken);
 
@@ -56,7 +56,7 @@ describe("GET /api/documents/:doc_path/changes-since", () => {
 
   it("returns changed=false when no after_head is provided", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/changes-since`)
+      .get(`/api/canonical/${SAMPLE_DOC_PATH.replace(/^\//, "")}/changes-since`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -67,7 +67,7 @@ describe("GET /api/documents/:doc_path/changes-since", () => {
 
   it("returns current_sha as a non-empty string", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/changes-since`)
+      .get(`/api/canonical/${SAMPLE_DOC_PATH.replace(/^\//, "")}/changes-since`)
       .query({ after_head: headSha })
       .set("Authorization", ctx.humanToken);
 
@@ -94,7 +94,7 @@ describe("GET /api/documents/:doc_path/changes-since", () => {
 
     // Get the new HEAD SHA
     const newHeadRes = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
+      .get(`/api/canonical/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
       .set("Authorization", ctx.humanToken);
     const newSha = newHeadRes.body.head_sha;
 
@@ -127,7 +127,7 @@ describe("GET /api/documents/:doc_path/changes-since", () => {
 
     // Now query changes since the old SHA
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/changes-since`)
+      .get(`/api/canonical/${SAMPLE_DOC_PATH.replace(/^\//, "")}/changes-since`)
       .query({ after_head: oldSha })
       .set("Authorization", ctx.humanToken);
 
@@ -142,7 +142,7 @@ describe("GET /api/documents/:doc_path/changes-since", () => {
 
   it("returns changed=false for an invalid/unknown SHA (graceful degradation)", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}/changes-since`)
+      .get(`/api/canonical/${SAMPLE_DOC_PATH.replace(/^\//, "")}/changes-since`)
       .query({ after_head: "0000000000000000000000000000000000000000" })
       .set("Authorization", ctx.humanToken);
 
@@ -154,7 +154,7 @@ describe("GET /api/documents/:doc_path/changes-since", () => {
 
   it("returns 404 for path traversal attempt (URL-normalized before routing)", async () => {
     const res = await request(ctx.app)
-      .get("/api/documents/../../etc/passwd/changes-since")
+      .get("/api/canonical/../../etc/passwd/changes-since")
       .query({ after_head: headSha })
       .set("Authorization", ctx.humanToken);
 
@@ -163,7 +163,7 @@ describe("GET /api/documents/:doc_path/changes-since", () => {
 
   it("returns 400 for non-.md path (InvalidDocPathError)", async () => {
     const res = await request(ctx.app)
-      .get("/api/documents/secret-no-ext/changes-since")
+      .get("/api/canonical/secret-no-ext/changes-since")
       .query({ after_head: headSha })
       .set("Authorization", ctx.humanToken);
 

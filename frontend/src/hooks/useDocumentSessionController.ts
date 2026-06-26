@@ -43,8 +43,8 @@ export interface UseDocumentSessionControllerReturn {
   observerState: ObserverConnectionState;
   crdtError: string | null;
   editingLoading: boolean;
-  readyEditors: Set<number>;
-  setReadyEditors: React.Dispatch<React.SetStateAction<Set<number>>>;
+  readyEditors: Set<string>;
+  setReadyEditors: React.Dispatch<React.SetStateAction<Set<string>>>;
   proposalMode: boolean;
   activeProposalId: string | null;
   activeProposal: ProposalDTO | null;
@@ -66,7 +66,7 @@ export interface UseDocumentSessionControllerReturn {
   presenceRef: React.MutableRefObject<LocalPresence | null>;
   controllerStateRef: React.MutableRefObject<DocumentSessionControllerState>;
   mountedEditorFragmentKeysRef: React.MutableRefObject<Set<string>>;
-  editorRefs: React.MutableRefObject<Map<number, MilkdownEditorHandle>>;
+  editorRefs: React.MutableRefObject<Map<string, MilkdownEditorHandle>>;
   pendingFocusRef: React.MutableRefObject<{ index: number; position: "start" | "end"; coords?: { x: number; y: number } } | null>;
   pendingStructureRefocusRef: React.MutableRefObject<string[] | null>;
   focusedSectionIndexRef: React.MutableRefObject<number | null>;
@@ -89,20 +89,13 @@ export interface UseDocumentSessionControllerReturn {
   removeProposalSection: (docPath: string, headingPath: string[]) => Promise<void>;
   handleProposalSectionChange: (sectionIndex: number, markdown: string) => void;
   handleCursorExit: (sectionIndex: number, direction: "up" | "down") => void;
-  setEditorRef: (index: number, handle: MilkdownEditorHandle | null) => void;
+  setEditorRef: (fragmentKey: string, handle: MilkdownEditorHandle | null) => void;
   mountEligible: (index: number) => boolean;
   setViewingSection: (sectionIndex: number) => void;
   requestMode: (mode: RequestedMode, focusTarget?: EditorFocusTarget | null) => Promise<void>;
   stopObserver: () => void;
 
   sessionController: DocumentSessionController;
-}
-
-function findSectionIndexByFragmentKey(
-  sections: DocumentSection[],
-  fragmentKey: string,
-): number {
-  return sections.findIndex((section) => getSectionFragmentKey(section) === fragmentKey);
 }
 
 export function useDocumentSessionController(
@@ -140,16 +133,31 @@ export function useDocumentSessionController(
     ensureProvider: session.ensureProvider,
   });
 
+  // Evict ready editors that fall outside the mount window. readyEditors is keyed
+  // by fragment_key, so prune by whether each ready fragment key's CURRENT index
+  // (resolved against the live section list) is still inside the window. Depending
+  // on `params.sections` means this also re-runs after a structural shift, so a
+  // ready fragment whose index moved out of the window is correctly evicted.
   useEffect(() => {
     registry.setReadyEditors((prev) => {
-      if (focus.focusedSectionIndex === null) return new Set();
-      const next = new Set<number>();
-      for (const idx of prev) {
-        if (shouldMountEditor(idx, focus.focusedSectionIndex)) next.add(idx);
+      if (prev.size === 0) return prev;
+      const focusedIndex = focus.focusedSectionIndex;
+      if (focusedIndex === null) return new Set();
+      const windowKeys = new Set<string>();
+      params.sections.forEach((s, idx) => {
+        if (shouldMountEditor(idx, focusedIndex)) {
+          windowKeys.add(getSectionFragmentKey(s));
+        }
+      });
+      let changed = false;
+      const next = new Set<string>();
+      for (const fk of prev) {
+        if (windowKeys.has(fk)) next.add(fk);
+        else changed = true;
       }
-      return next;
+      return changed ? next : prev;
     });
-  }, [focus.focusedSectionIndex, registry.setReadyEditors]);
+  }, [focus.focusedSectionIndex, params.sections, registry.setReadyEditors]);
 
   const proposal = useProposalDrafting({
     decodedDocPath: params.decodedDocPath,
@@ -256,28 +264,24 @@ export function useDocumentSessionController(
       if (focused == null) return;
       runtime.handleCursorExit(focused, direction);
     },
+    // Editor registry is keyed by fragment identity end-to-end, so these pass the
+    // fragment key straight through — no index translation.
     registerEditor: (fragmentKey, handle) => {
-      const idx = findSectionIndexByFragmentKey(params.sections, fragmentKey);
-      if (idx >= 0) {
-        runtime.setEditorRef(idx, handle);
-      }
+      runtime.setEditorRef(fragmentKey, handle);
     },
     markEditorReady: (fragmentKey) => {
-      const idx = findSectionIndexByFragmentKey(params.sections, fragmentKey);
-      if (idx < 0) return;
       runtime.setReadyEditors((prev) => {
+        if (prev.has(fragmentKey)) return prev;
         const next = new Set(prev);
-        next.add(idx);
+        next.add(fragmentKey);
         return next;
       });
     },
     markEditorUnready: (fragmentKey) => {
-      const idx = findSectionIndexByFragmentKey(params.sections, fragmentKey);
-      if (idx < 0) return;
       runtime.setReadyEditors((prev) => {
-        if (!prev.has(idx)) return prev;
+        if (!prev.has(fragmentKey)) return prev;
         const next = new Set(prev);
-        next.delete(idx);
+        next.delete(fragmentKey);
         return next;
       });
     },
@@ -292,7 +296,6 @@ export function useDocumentSessionController(
       // useDocumentWebSocket; there is no per-section persistence map to clean.
     },
   }), [
-    params.sections,
     params.setSections,
     runtime.setReadyEditors,
     runtime.startEditing,

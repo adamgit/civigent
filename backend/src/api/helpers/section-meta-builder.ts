@@ -2,7 +2,9 @@
  * Shared section human-human-involvement metadata builder.
  *
  * Eliminates the duplicated 4-way pre-fetch → commit map → evaluate loop
- * between GET /documents/:docPath and GET /documents/:docPath/sections.
+ * between the canonical assembled-document read and the canonical/workspace
+ * section-list reads (GET /canonical/:docPath, GET /canonical/:docPath/sections,
+ * GET /workspace/:docPath/sections).
  */
 
 import path from "node:path";

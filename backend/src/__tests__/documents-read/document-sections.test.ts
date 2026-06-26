@@ -65,7 +65,7 @@ async function createNestedDocument(dataRoot: string): Promise<void> {
   );
 }
 
-describe("GET /api/documents/:doc_path/sections", () => {
+describe("GET /api/canonical/:doc_path/sections", () => {
   let ctx: TestServerContext;
 
   beforeAll(async () => {
@@ -90,7 +90,17 @@ describe("GET /api/documents/:doc_path/sections", () => {
 
   it("returns sections array", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/canonical/${SAMPLE_DOC_PATH}/sections`)
+      .set("Authorization", ctx.humanToken);
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.sections)).toBe(true);
+    expect(res.body.sections.length).toBeGreaterThan(0);
+  });
+
+  it("workspace returns the same section list when no in-progress proposal exists", async () => {
+    const res = await request(ctx.app)
+      .get(`/api/workspace/${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -100,7 +110,7 @@ describe("GET /api/documents/:doc_path/sections", () => {
 
   it("keeps existing behavior unchanged without proposal_id", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/canonical/${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -186,7 +196,7 @@ describe("GET /api/documents/:doc_path/sections", () => {
     expect(createRes.status).toBe(201);
 
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/canonical/${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -253,7 +263,7 @@ describe("GET /api/documents/:doc_path/sections", () => {
 
   it("each section has heading_path, content, agentWritePolicy, word_count", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/canonical/${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -269,7 +279,7 @@ describe("GET /api/documents/:doc_path/sections", () => {
 
   it("returns 404 for non-existent document", async () => {
     const res = await request(ctx.app)
-      .get("/api/documents/nonexistent.md/sections")
+      .get("/api/canonical/nonexistent.md/sections")
       .set("Authorization", ctx.humanToken);
 
     // Non-existent docs return 404 (no skeleton on disk)
@@ -278,7 +288,7 @@ describe("GET /api/documents/:doc_path/sections", () => {
 
   it("returns headed content for a parent section whose body lives in a body-holder child", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${NESTED_DOC_PATH}/sections`)
+      .get(`/api/canonical/${NESTED_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);

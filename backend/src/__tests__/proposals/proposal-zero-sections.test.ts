@@ -42,7 +42,7 @@ describe("Proposals with zero sections — document-level operations", () => {
 
   it("PUT /documents creates live-empty doc with zero sections via auto-committed proposal", async () => {
     const res = await request(ctx.app)
-      .put("/api/documents/test/zero-sections-create.md")
+      .put("/api/workspace/test/zero-sections-create.md")
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(201);
@@ -50,7 +50,7 @@ describe("Proposals with zero sections — document-level operations", () => {
 
     // Verify the document is live with zero sections
     const docRes = await request(ctx.app)
-      .get("/api/documents/test/zero-sections-create.md/sections")
+      .get("/api/workspace/test/zero-sections-create.md/sections")
       .set("Authorization", ctx.humanToken);
 
     expect(docRes.status).toBe(200);
@@ -60,7 +60,7 @@ describe("Proposals with zero sections — document-level operations", () => {
   it("agent proposal with one section on empty doc creates only that section", async () => {
     // Create the empty document first
     const createRes = await request(ctx.app)
-      .put("/api/documents/test/with-overview.md")
+      .put("/api/workspace/test/with-overview.md")
       .set("Authorization", ctx.humanToken);
 
     expect(createRes.status).toBe(201);
@@ -94,7 +94,7 @@ describe("Proposals with zero sections — document-level operations", () => {
 
     // Verify the document has exactly one section (Overview), no synthetic BFH
     const docRes = await request(ctx.app)
-      .get("/api/documents/test/with-overview.md/sections")
+      .get("/api/workspace/test/with-overview.md/sections")
       .set("Authorization", ctx.humanToken);
 
     expect(docRes.status).toBe(200);
@@ -105,21 +105,21 @@ describe("Proposals with zero sections — document-level operations", () => {
   it("DELETE removes a document via tombstone proposal", async () => {
     // Create a document first
     const createRes = await request(ctx.app)
-      .put("/api/documents/test/to-delete.md")
+      .put("/api/workspace/test/to-delete.md")
       .set("Authorization", ctx.humanToken);
 
     expect(createRes.status).toBe(201);
 
     // Delete it
     const deleteRes = await request(ctx.app)
-      .delete("/api/documents/test/to-delete.md")
+      .delete("/api/workspace/test/to-delete.md")
       .set("Authorization", ctx.humanToken);
 
     expect(deleteRes.status).toBe(200);
 
     // Verify it's gone
     const readRes = await request(ctx.app)
-      .get("/api/documents/test/to-delete.md")
+      .get("/api/canonical/test/to-delete.md")
       .set("Authorization", ctx.humanToken);
 
     expect(readRes.status).toBe(404);

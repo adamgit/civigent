@@ -1159,7 +1159,7 @@ export const WriteProposalDocumentSectionsRequest = {
 /** Drop position relative to the target section. */
 export type LiveMovePosition = "before" | "after";
 
-/** Body of `POST /documents/:docPath/live-move` — the refusable live drag-drop move. */
+/** Body of `POST /workspace/:docPath/live-move` — the refusable live drag-drop move. */
 export interface LiveMoveSectionRequest {
   source_heading_path: string[];
   target_heading_path: string[];
@@ -1379,9 +1379,21 @@ export interface PresenceDoneEvent {
   heading_path: string[];
 }
 
+/**
+ * Emitted whenever a document's LIVE section topology changes during an editing
+ * session (split / merge / rename / level-change / relocate / reorder), carrying the
+ * full authoritative section list in document order — the SAME shape and fields as
+ * `GET /workspace/:docPath/sections` (`GetDocumentSectionsResponse.sections`). Every
+ * field is server-authored; the browser adopts the list verbatim and NEVER
+ * synthesizes section metadata. The frontend adopts it directly (no canonical
+ * refetch — a live split is invisible to canonical until commit), preserving mounted
+ * editors by `fragment_key`. Also emitted by the canonical REST structure routes
+ * (delete / move / rename) when no session is live, where the list is canonical.
+ */
 export interface DocStructureChangedEvent {
   type: "doc:structure-changed";
   doc_path: string;
+  sections: GetDocumentSectionsResponse["sections"];
 }
 
 export interface DocRenamedEvent {

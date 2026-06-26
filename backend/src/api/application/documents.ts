@@ -8,7 +8,6 @@ import type {
   ReadDocStructureResponse,
   SectionMeta,
   HumanInvolvementPolicyResult,
-  HumanInvolvementCommittedProposalMetadata,
   WriterIdentity,
 } from "../../types/shared.js";
 import {
@@ -29,8 +28,6 @@ import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/p
 import { readChangesSince } from "../../storage/activity-reader.js";
 import {
   createTransientProposal,
-  findDraftProposalByWriter,
-  transitionToWithdrawn,
 } from "../../storage/proposal-repository.js";
 import {
   readDocumentStructure,
@@ -61,6 +58,7 @@ import { getDocReadPermission } from "../../auth/acl.js";
 import { RoleName } from "../../types/shared.js";
 import type { AuthenticatedWriter } from "../../auth/context.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
+import { openWorkspaceReader } from "./sections.js";
 
 export { broadcastAgentReading };
 
@@ -108,11 +106,23 @@ export async function readTree(basePath: string, isAuthenticated: boolean): Prom
 
 // ─── Structure ──────────────────────────────────────────
 
-export async function readStructure(docPath: string): Promise<{ response: ReadDocStructureResponse; headingPaths: string[][] }> {
-  // Canonical-only read (MW-7): document structure GET reads canonical content
-  // directly, never a session/live overlay. Proposal-preview structure reads go
-  // through ProposalReader on an explicit proposal endpoint.
+export async function readCanonicalStructure(docPath: string): Promise<{ response: ReadDocStructureResponse; headingPaths: string[][] }> {
+  // Canonical (committed) structure read: reads canonical content directly, never
+  // a session/live overlay. The agent-facing surface. Proposal-preview structure
+  // reads go through ProposalReader on an explicit proposal endpoint.
   const structure = await CanonicalReader.open().getDocumentStructure(docPath);
+  return {
+    response: { doc_path: docPath, structure },
+    headingPaths: flattenStructureToHeadingPaths(structure),
+  };
+}
+
+export async function readWorkspaceStructure(docPath: string): Promise<{ response: ReadDocStructureResponse; headingPaths: string[][] }> {
+  // Working-copy structure read: resolves the in-progress proposal (if any) for
+  // the doc, else canonical — the same reader selection as workspace section
+  // reads (see openWorkspaceReader). No live-fragment assembly.
+  const reader = await openWorkspaceReader(docPath);
+  const structure = await reader.getDocumentStructure(docPath);
   return {
     response: { doc_path: docPath, structure },
     headingPaths: flattenStructureToHeadingPaths(structure),
@@ -170,7 +180,7 @@ export async function getBlame(docPath: string, sectionFile: string) {
 
 // ─── Full document read (catch-all GET) ─────────────────
 
-export async function readDocument(docPath: string): Promise<{ response: GetDocumentResponse; headingPaths: string[][] }> {
+export async function readCanonicalDocument(docPath: string): Promise<{ response: GetDocumentResponse; headingPaths: string[][] }> {
   const assembled = await readAssembledDocument(docPath);
 
   const structure = await readDocumentStructure(docPath);
@@ -437,78 +447,6 @@ export async function createDocument(docPath: string, writer: DocumentWriter): P
   const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
   if (!committedHead) return { kind: "blocked", proposalId, policyResult };
   return { kind: "committed", proposalId, committedHead, policyResult };
-}
-
-// ─── Patch document (catch-all PATCH) ───────────────────
-
-export type PatchDocumentResult =
-  | { kind: "not_found"; error: Error }
-  | { kind: "parse_error"; error: Error }
-  | { kind: "no_changes" }
-  | { kind: "blocked"; proposalId: string; policyResult: HumanInvolvementPolicyResult }
-  | {
-      kind: "committed";
-      proposalId: string;
-      committedHead: string;
-      sections: Array<{ doc_path: string; heading_path: string[] }>;
-    };
-
-export async function patchDocument(docPath: string, diffText: string, writer: DocumentWriter): Promise<PatchDocumentResult> {
-  let currentContent: string;
-  try {
-    currentContent = await readAssembledDocument(docPath);
-  } catch (error) {
-    if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-      return { kind: "not_found", error };
-    }
-    throw error;
-  }
-
-  const { applyUnifiedDiff, DiffParseError, DiffApplyError } = await import("../../storage/diff-parser.js");
-  let patchedContent: string;
-  try {
-    patchedContent = applyUnifiedDiff(currentContent, diffText);
-  } catch (error) {
-    if (error instanceof DiffParseError || error instanceof DiffApplyError) {
-      return { kind: "parse_error", error };
-    }
-    throw error;
-  }
-
-  if (patchedContent === currentContent) {
-    return { kind: "no_changes" };
-  }
-
-  const intent = `Patch document: ${docPath}`;
-  const existing = await findDraftProposalByWriter(writer.id);
-  if (existing) {
-    await transitionToWithdrawn(existing.id, "auto-withdrawn by PATCH");
-  }
-
-  const { id: patchProposalId } = await createTransientProposal(
-    { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
-    intent,
-  );
-  const { manifest: patchTargets } = await mutateProposalContent(patchProposalId, {
-    kind: "write_document_markdown",
-    files: [{ docPath, markdown: patchedContent }],
-  });
-
-  let committedMetadata: HumanInvolvementCommittedProposalMetadata = {};
-  const commitSections: Array<{ doc_path: string; heading_path: string[] }> = patchTargets.sections;
-
-  if (writer.type === "human") {
-    // Human-initiated patch — bypass Agent Write Policy entirely (spec 12).
-  } else {
-    const policyResult = await evaluateAgentWritePolicy(patchProposalId);
-    if (!policyResult.canWrite) {
-      return { kind: "blocked", proposalId: patchProposalId, policyResult };
-    }
-    committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
-  }
-
-  const committedHead = await commitProposalToCanonical(patchProposalId, committedMetadata);
-  return { kind: "committed", proposalId: patchProposalId, committedHead, sections: commitSections };
 }
 
 // ─── Delete document (catch-all DELETE) ─────────────────

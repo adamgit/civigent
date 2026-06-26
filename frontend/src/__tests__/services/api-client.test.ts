@@ -38,28 +38,28 @@ describe("api-client", () => {
 
   // ─── API method endpoints ─────────────────────────────────
 
-  it("getDocumentsTree calls /api/documents/tree", async () => {
+  it("getWorkspaceTree calls /api/workspace/tree", async () => {
     fetchMock = installFetchMock(async (input) => {
       if (String(input).includes("/api/auth/session")) {
         return jsonResponse({ authenticated: true, user: { id: "u" }, login_providers: [] });
       }
       return jsonResponse({ tree: [] });
     });
-    await apiClient.getDocumentsTree();
-    expect(fetchMock.calls.some((c) => String(c.input).includes("/api/documents/tree"))).toBe(true);
+    await apiClient.getWorkspaceTree();
+    expect(fetchMock.calls.some((c) => String(c.input).includes("/api/workspace/tree"))).toBe(true);
   });
 
-  it("getDocumentSections calls /api/documents/{encoded}/sections", async () => {
+  it("getWorkspaceDocumentSections calls /api/workspace/{encoded}/sections", async () => {
     fetchMock = installFetchMock(async (input) => {
       if (String(input).includes("/api/auth/session")) {
         return jsonResponse({ authenticated: true, user: { id: "u" }, login_providers: [] });
       }
       return jsonResponse({ sections: [] });
     });
-    await apiClient.getDocumentSections("ops/strategy.md");
+    await apiClient.getWorkspaceDocumentSections("ops/strategy.md");
     expect(
       fetchMock.calls.some((c) =>
-        String(c.input).includes("/api/documents/ops/strategy.md/sections"),
+        String(c.input).includes("/api/workspace/ops/strategy.md/sections"),
       ),
     ).toBe(true);
   });
@@ -121,7 +121,7 @@ describe("api-client", () => {
       }
       return jsonResponse({ tree: [] });
     });
-    await apiClient.getDocumentsTree();
+    await apiClient.getWorkspaceTree();
     for (const call of fetchMock.calls) {
       expect(call.init?.credentials).toBe("include");
     }
@@ -133,13 +133,13 @@ describe("api-client", () => {
     fetchMock = installFetchMock(async () =>
       jsonResponse({ message: "Not found" }, { status: 404 }),
     );
-    await expect(apiClient.getDocumentsTree()).rejects.toThrow("Not found");
+    await expect(apiClient.getWorkspaceTree()).rejects.toThrow("Not found");
   });
 
   it("non-ok response throws with raw text when not JSON", async () => {
     fetchMock = installFetchMock(async () =>
       new Response("Server Error", { status: 500 }),
     );
-    await expect(apiClient.getDocumentsTree()).rejects.toThrow("Server Error");
+    await expect(apiClient.getWorkspaceTree()).rejects.toThrow("Server Error");
   });
 });

@@ -7,6 +7,7 @@ import {
   type AgentReadingEvent,
   type ContentCommittedEvent,
   type DocRenamedEvent,
+  type DocStructureChangedEvent,
   type DocStructureNode,
   type ProposalDraftEvent,
   type ProposalInProgressEvent,
@@ -22,7 +23,7 @@ import {
   type PendingProposalIndicator,
   normalizeDocPath,
   headingPathToLabel,
-  getSectionFragmentKey,
+  adoptFreshSectionLayout,
   HIGHLIGHT_DURATION_MS,
 } from "../pages/document-page-utils";
 import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
@@ -166,32 +167,16 @@ export function useDocumentWebSocket({
           // CRDT session active: adopt fresh server topology even while editors are
           // mounted; only a mounted section's live content is preserved. Matched by
           // opaque fragment_key — never positional index or heading text.
-          apiClient.getDocumentSections(decodedDocPath).then((resp) => {
+          apiClient.getWorkspaceDocumentSections(decodedDocPath).then((resp) => {
             const crdtBound = mountedEditorFragmentKeysRef.current;
-            setSections((prev) => {
-              const prevByFragmentKey = new Map(
-                prev.map((s) => [getSectionFragmentKey(s), s]),
-              );
-              const nextSections = resp.sections.map((fresh) => {
-                const fk = getSectionFragmentKey(fresh);
-                if (crdtBound.has(fk)) {
-                  const prevSection = prevByFragmentKey.get(fk);
-                  if (prevSection) return { ...fresh, content: prevSection.content };
-                }
-                return fresh;
-              });
-              // Reconcile focus by fragment identity: keep focus on the focused
-              // fragment's NEW index, or clear it if that fragment no longer exists.
-              const focusedIndex = focusedSectionIndexRef.current;
-              if (focusedIndex !== null && focusedIndex >= 0 && focusedIndex < prev.length) {
-                const focusedFk = getSectionFragmentKey(prev[focusedIndex]);
-                const newIndex = nextSections.findIndex(
-                  (s) => getSectionFragmentKey(s) === focusedFk,
-                );
-                focusedSectionIndexRef.current = newIndex >= 0 ? newIndex : null;
-              }
-              return nextSections;
-            });
+            setSections((prev) =>
+              adoptFreshSectionLayout({
+                prev,
+                fresh: resp.sections,
+                crdtBoundFragmentKeys: crdtBound,
+                focusedSectionIndexRef,
+              }),
+            );
           }).catch((err) => {
             setError(`Failed to refresh sections after commit: ${err instanceof Error ? err.message : String(err)}`);
           });
@@ -268,8 +253,30 @@ export function useDocumentWebSocket({
         return;
       }
 
-      // Structural changes arrive as ordinary YJS_UPDATE deltas on the CRDT
-      // socket; canonical previews refresh on `content:committed`.
+      // ── doc:structure-changed ──
+      // The authoritative section list changed during a session (split / merge /
+      // rename / level-change / relocate / reorder) OR canonical structure changed
+      // via a REST op with no session. The event carries the FULL server-authored
+      // section list (same shape as GET …/sections) — adopt it straight from the
+      // PAYLOAD, NOT a REST refetch: a live uncommitted split is invisible to
+      // canonical until commit, so only the event carries it. The shared adopter
+      // preserves mounted editors' live content by fragment_key; new sections mount
+      // on their fragment_key (body fills from the live Y.Doc binary channel, which
+      // is unordered w.r.t. this event); gone sections (merge/delete) unmount.
+      if (event.type === "doc:structure-changed") {
+        const structureChanged = event as DocStructureChangedEvent;
+        if (normalizeDocPath(structureChanged.doc_path) !== normalizeDocPath(decodedDocPath)) return;
+        const crdtBound = mountedEditorFragmentKeysRef.current;
+        setSections((prev) =>
+          adoptFreshSectionLayout({
+            prev,
+            fresh: structureChanged.sections,
+            crdtBoundFragmentKeys: crdtBound,
+            focusedSectionIndexRef,
+          }),
+        );
+        return;
+      }
 
       // ── proposal:created ──
       if (event.type === "proposal:draft") {

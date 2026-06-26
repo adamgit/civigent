@@ -42,7 +42,7 @@ let getDocumentSectionsImpl: (docPath: string) => Promise<{ sections: DocumentSe
 
 vi.mock("../../services/api-client", () => ({
   apiClient: {
-    getDocumentSections: (docPath: string) => getDocumentSectionsImpl(docPath),
+    getWorkspaceDocumentSections: (docPath: string) => getDocumentSectionsImpl(docPath),
   },
   resolveWriterId: () => "test-user",
 }));

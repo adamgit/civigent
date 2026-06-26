@@ -12,8 +12,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
-import { acquireDocSession, destroyAllSessions } from "../../crdt/ydoc-lifecycle.js";
-import { armQuiescenceTimer } from "../../ws/crdt-ws-coordinator.js";
+import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
+import {
+  armQuiescenceTimer,
+  registerFakeEditorSocketForTest,
+  setCrdtEventHandler,
+} from "../../ws/crdt-ws-coordinator.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
 import type { SectionBody } from "../../storage/section-formatting.js";
 import { getHeadSha, gitExec } from "../../storage/git-repo.js";
@@ -22,6 +26,7 @@ import { getDataRoot } from "../../storage/data-root.js";
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 const OVERVIEW_KEY = "section::overview";
 const TIMELINE_KEY = "section::timeline";
+const EDITOR_SOCKET = "editor-sock-1";
 
 async function openSession() {
   const baseHead = await getHeadSha(getDataRoot());
@@ -32,15 +37,34 @@ async function drainLane(session: { enqueue: <T>(c: () => T | Promise<T>) => Pro
   await session.enqueue(() => undefined);
 }
 
+/**
+ * Ack an OFF-lane publish pause (a required editor socket is attached) and pump
+ * fake timers until the finalize lane command commits — so the commit-description
+ * synthesis runs through the production editor-ack path.
+ */
+async function ackPauseAndCommit(session: DocSession, socketId: string): Promise<void> {
+  expect(session.publishPause.isActive()).toBe(true);
+  expect(session.generator.hasCurrentProposal()).toBe(true);
+  session.publishPause.markReady(socketId);
+  for (let i = 0; i < 50 && session.generator.hasCurrentProposal(); i++) {
+    await vi.advanceTimersByTimeAsync(1);
+  }
+  await drainLane(session);
+}
+
 describe("autonomous publish synthesizes the audit-log commit description", () => {
   let ctx: TempDataRootContext;
+  const disposers: Array<() => void> = [];
 
   beforeEach(async () => {
     ctx = await createTempDataRoot();
     await createSampleDocument(ctx.rootDir);
+    setCrdtEventHandler(() => undefined);
   });
 
   afterEach(async () => {
+    while (disposers.length) disposers.pop()!();
+    setCrdtEventHandler(() => undefined);
     destroyAllSessions();
     vi.useRealTimers();
     await ctx.cleanup();
@@ -49,6 +73,8 @@ describe("autonomous publish synthesizes the audit-log commit description", () =
   it("writes a headline derived from the final changed sections, keeping attribution trailers", async () => {
     vi.useFakeTimers();
     const session = await openSession();
+    // Route the synthesis through the production off-lane pause + editor ack.
+    disposers.push(registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, EDITOR_SOCKET).dispose);
 
     session.liveFragments.replaceFragmentString(
       OVERVIEW_KEY,
@@ -69,6 +95,9 @@ describe("autonomous publish synthesizes the audit-log commit description", () =
       session.generator.publishTriggerPolicy.quiescenceThresholdMs + 50,
     );
     await drainLane(session);
+
+    // Off-lane path: ack the pause to drive the editor-ack commit.
+    await ackPauseAndCommit(session, EDITOR_SOCKET);
     expect(session.generator.hasCurrentProposal()).toBe(false);
 
     const message = await gitExec(["log", "-1", "--format=%B"], getDataRoot());

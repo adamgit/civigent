@@ -4,7 +4,7 @@ import { createTestServer } from "../helpers/test-server.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import type { TestServerContext } from "../helpers/test-server.js";
 
-describe("GET /api/documents/tree", () => {
+describe("GET /api/workspace/tree", () => {
   let ctx: TestServerContext;
 
   beforeAll(async () => {
@@ -18,7 +18,7 @@ describe("GET /api/documents/tree", () => {
 
   it("returns { tree } with hierarchical listing", async () => {
     const res = await request(ctx.app)
-      .get("/api/documents/tree")
+      .get("/api/workspace/tree")
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -28,7 +28,7 @@ describe("GET /api/documents/tree", () => {
 
   it("after creating a document, tree contains the new entry", async () => {
     const res = await request(ctx.app)
-      .get("/api/documents/tree")
+      .get("/api/workspace/tree")
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -38,7 +38,7 @@ describe("GET /api/documents/tree", () => {
 
   it("entries have name, path, type properties", async () => {
     const res = await request(ctx.app)
-      .get("/api/documents/tree")
+      .get("/api/workspace/tree")
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);

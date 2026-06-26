@@ -354,13 +354,11 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         sectionKey: p.sectionKey,
         writerDisplayName: p.writerDisplayName,
       })),
-      // WS-6: resolve the live editor view for a fragment key (fragment key →
-      // section index → mounted editor handle) so the move can capture/restore
-      // the moved section's caret across the backend re-seed.
+      // WS-6: resolve the live editor view for a fragment key (editorRefs is keyed
+      // by fragment key) so the move can capture/restore the moved section's caret
+      // across the backend re-seed.
       getEditorViewForFragment: (fragmentKey) => {
-        const idx = sectionsRef.current.findIndex((s) => getSectionFragmentKey(s) === fragmentKey);
-        if (idx < 0) return null;
-        return editorRefs.current.get(idx)?.getView() ?? null;
+        return editorRefs.current.get(fragmentKey)?.getView() ?? null;
       },
     });
   }
@@ -377,7 +375,10 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
       const s = sectionsRef.current[idx];
       return s ? s.heading_path : null;
     },
-    hasEditor: (idx) => editorRefs.current.has(idx),
+    hasEditor: (idx) => {
+      const s = sectionsRef.current[idx];
+      return s ? editorRefs.current.has(getSectionFragmentKey(s)) : false;
+    },
     getSectionContent: (idx) => sectionsRef.current[idx]?.content ?? null,
   });
 
@@ -492,19 +493,20 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     }
   }, [setFocusedSectionIndex, setViewingSection, presenceRef]);
 
-  const handleEditorReady = useCallback((idx: number) => {
+  const handleEditorReady = useCallback((fk: string) => {
     setReadyEditors(prev => {
+      if (prev.has(fk)) return prev;
       const next = new Set(prev);
-      next.add(idx);
+      next.add(fk);
       return next;
     });
   }, []);
 
-  const handleEditorUnready = useCallback((idx: number) => {
+  const handleEditorUnready = useCallback((fk: string) => {
     setReadyEditors(prev => {
-      if (!prev.has(idx)) return prev;
+      if (!prev.has(fk)) return prev;
       const next = new Set(prev);
-      next.delete(idx);
+      next.delete(fk);
       return next;
     });
   }, []);

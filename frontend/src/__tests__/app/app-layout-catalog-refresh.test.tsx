@@ -5,7 +5,7 @@
  * Diagnoses "MCP-created documents don't appear in sidebar tree" by isolating
  * the UI side from the backend emission path: the event is injected directly
  * into the mocked `KnowledgeStoreWsClient`'s `onEvent` handler, then we assert
- * both that `apiClient.getDocumentsTree` is re-called (via the
+ * both that `apiClient.getWorkspaceTree` is re-called (via the
  * `scheduleTreeRefresh` → `loadTree({background:true})` path in
  * AppLayout.tsx around lines 363–372) and that `DocumentsTreeNav` renders the
  * newly-added entry.
@@ -99,11 +99,11 @@ describe("AppLayout tree refresh on catalog:changed", () => {
     vi.restoreAllMocks();
   });
 
-  it("calls getDocumentsTree and renders the new doc after a catalog:changed event", async () => {
+  it("calls getWorkspaceTree and renders the new doc after a catalog:changed event", async () => {
     currentTree = [];
     fetchMock = installFetchMock(async (input) => {
       const url = String(input);
-      if (url === "/api/documents/tree") {
+      if (url === "/api/workspace/tree") {
         treeFetchCount += 1;
         return jsonResponse({ tree: currentTree });
       }
@@ -165,7 +165,7 @@ describe("AppLayout tree refresh on catalog:changed", () => {
     const newDocPath = "/foo/from-connect.md";
     fetchMock = installFetchMock(async (input) => {
       const url = String(input);
-      if (url === "/api/documents/tree") {
+      if (url === "/api/workspace/tree") {
         treeFetchCount += 1;
         const tree = treeFetchCount === 1
           ? []

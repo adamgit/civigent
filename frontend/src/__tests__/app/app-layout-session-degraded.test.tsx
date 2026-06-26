@@ -102,7 +102,7 @@ describe("AppLayout session degraded state", () => {
   it("(a) a 500 on the initial session check surfaces a degraded banner and records a diag", async () => {
     fetchMock = installFetchMock(async (input) => {
       const url = String(input);
-      if (url === "/api/documents/tree") return jsonResponse({ tree: [] });
+      if (url === "/api/workspace/tree") return jsonResponse({ tree: [] });
       if (url === "/api/auth/session") return serverError();
       return jsonResponse({});
     });
@@ -122,7 +122,7 @@ describe("AppLayout session degraded state", () => {
     let failSession = false;
     fetchMock = installFetchMock(async (input) => {
       const url = String(input);
-      if (url === "/api/documents/tree") return jsonResponse({ tree: [] });
+      if (url === "/api/workspace/tree") return jsonResponse({ tree: [] });
       if (url === "/api/auth/session") {
         return failSession ? serverError() : sessionResponse("Active User");
       }

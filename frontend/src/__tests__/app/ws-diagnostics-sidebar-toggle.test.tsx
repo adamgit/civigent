@@ -42,7 +42,7 @@ describe("AppLayout sidebar WS Diagnostics toggle", () => {
   beforeEach(() => {
     fetchMock = installFetchMock(async (input) => {
       const url = String(input);
-      if (url === "/api/documents/tree") return jsonResponse({ tree: [] });
+      if (url === "/api/workspace/tree") return jsonResponse({ tree: [] });
       if (url === "/api/auth/session") {
         return jsonResponse({
           authenticated: true,

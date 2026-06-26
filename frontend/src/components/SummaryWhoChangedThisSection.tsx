@@ -47,8 +47,12 @@ export function SummaryWhoChangedThisSection({ editorId, editorName, secondsAgo,
     <div className="section-who-changed-anchor">
       <div className="section-who-changed">
         <div className={`section-who-changed-name ${isUnknown ? "text-error" : "text-text-primary"}`}>{displayName}</div>
+        {/* `.section-who-changed-meta` is `display: contents`, so the badge and age
+            below are hoisted to direct flex children of `.section-who-changed` for
+            column-wrap. Badge is BEFORE age in source order (per the todolist);
+            CSS `order` on the badge keeps the tall visual stack name / age / badge.
+            See styles.css for the spill-order trade-off. */}
         <div className="section-who-changed-meta">
-          {ageLabel ? <div className="section-who-changed-age text-text-muted">{ageLabel}</div> : null}
           <div className="section-who-changed-type-line">
             <span
               className={`inline-block px-1.5 py-px rounded text-[10px] font-semibold ${
@@ -63,6 +67,7 @@ export function SummaryWhoChangedThisSection({ editorId, editorName, secondsAgo,
               </span>
             ) : null}
           </div>
+          {ageLabel ? <div className="section-who-changed-age text-text-muted">{ageLabel}</div> : null}
         </div>
       </div>
     </div>

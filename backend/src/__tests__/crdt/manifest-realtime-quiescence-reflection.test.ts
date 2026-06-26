@@ -29,6 +29,7 @@ import { acquireDocSession, destroyAllSessions, type DocSession } from "../../cr
 import {
   armQuiescenceTimer,
   registerFakeEditorSocketForTest,
+  resetCoordinatorPublishStateForTest,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
 import { BEFORE_FIRST_HEADING_KEY, getBackendSchema } from "../../crdt/ydoc-fragments.js";
@@ -43,6 +44,7 @@ import {
 } from "../../storage/proposal-repository.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { ProposalEditor } from "../../storage/proposal-editor.js";
+import { readSection } from "../../storage/section-reader.js";
 import { reflectMergeIntoProposal } from "../../crdt/structural-appliers.js";
 import type { StructuralMergePlan } from "../../crdt/structural-appliers.js";
 import type { DocSessionId } from "../../types/shared.js";
@@ -61,6 +63,32 @@ async function openSession(): Promise<DocSession> {
 async function fireQuiescence(session: DocSession): Promise<void> {
   armQuiescenceTimer(session);
   await vi.advanceTimersByTimeAsync(session.generator.publishTriggerPolicy.quiescenceThresholdMs + 50);
+  await session.enqueue(() => undefined);
+}
+
+/**
+ * Ack the OFF-lane publish pause (a required editor socket is attached) the way
+ * the post-C2 handler does — directly, off the lane — and pump fake timers until
+ * the finalize lane command commits and clears the current proposal. Used by the
+ * canonical-content test below (the deferred-publish tests above never ack, so
+ * the pause stays open and nothing commits).
+ */
+async function ackPauseAndCommit(session: DocSession, socketId: string): Promise<void> {
+  // The off-lane publish (runPublishAttempt) establishes the pause ONE microtask
+  // after the quiescence command returns; the structural-normalization (split) path
+  // lengthens that chain, so a single lane drain can race ahead of pause-establishment.
+  // Pump fake timers until the pause is actually up before asserting/acking. (Real-timer
+  // suites such as publish-pause-deadlock poll via waitUntil for the same reason.)
+  for (let i = 0; i < 200 && !session.publishPause.isActive(); i++) {
+    await vi.advanceTimersByTimeAsync(1);
+    await session.enqueue(() => undefined);
+  }
+  expect(session.publishPause.isActive()).toBe(true);
+  expect(session.generator.hasCurrentProposal()).toBe(true);
+  session.publishPause.markReady(socketId);
+  for (let i = 0; i < 50 && session.generator.hasCurrentProposal(); i++) {
+    await vi.advanceTimersByTimeAsync(1);
+  }
   await session.enqueue(() => undefined);
 }
 
@@ -88,6 +116,10 @@ describe("real-time proposal-manifest reflection at quiescence (publish deferred
 
   afterEach(async () => {
     destroyAllSessions();
+    // The deferred-publish tests deliberately leave an off-lane pause un-acked,
+    // which leaves a forever-pending publishChains entry for SAMPLE_DOC_PATH (module
+    // state). Clear it so the COMMIT test's publish is not chained behind it.
+    resetCoordinatorPublishStateForTest();
     vi.useRealTimers();
     await ctx.cleanup();
   });
@@ -118,6 +150,66 @@ describe("real-time proposal-manifest reflection at quiescence (publish deferred
       // The MANIFEST must claim the promoted section in real time (the hole).
       const claimed = await claimedHeadingKeys(proposalId);
       expect(claimed).toContain(SectionRef.headingKey(["Overview", "Sub"]));
+    } finally {
+      editor.dispose();
+    }
+  });
+
+  it("SPLIT (sibling): claims the promoted SAME-LEVEL sibling heading at quiescence, not only at publish", async () => {
+    vi.useFakeTimers();
+    const session = await openSession();
+    const editor = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "editor-sock");
+    try {
+      // Author types a SECOND SAME-LEVEL (`##`) heading into the Overview body — a
+      // SIBLING split, not a nested child.
+      session.liveFragments.replaceFragmentString(
+        OVERVIEW_KEY,
+        "## Overview\n\nbase overview body\n\n## Second Section\n\nbrand new sibling body" as FragmentContent,
+      );
+      session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
+      const proposalId = await session.generator.materializeEdit({ touchedFragmentKeys: [OVERVIEW_KEY] });
+
+      await fireQuiescence(session);
+
+      // The reflection ran: proposal CONTENT now carries the promoted sibling at
+      // the TOP level (not nested under Overview).
+      const reader = ProposalReader.open(proposalId, "inprogress");
+      const headingPaths = await reader.listHeadingPaths(SAMPLE_DOC_PATH);
+      expect(headingPaths.some((p) => SectionRef.headingKey(p) === SectionRef.headingKey(["Second Section"]))).toBe(true);
+
+      // The MANIFEST must claim the promoted sibling in real time (the hole).
+      const claimed = await claimedHeadingKeys(proposalId);
+      expect(claimed).toContain(SectionRef.headingKey(["Second Section"]));
+    } finally {
+      editor.dispose();
+    }
+  });
+
+  it("SPLIT (sibling): driving the publish through to COMMIT lands the promoted sibling in CANONICAL", async () => {
+    vi.useFakeTimers();
+    const session = await openSession();
+    const editor = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "editor-sock");
+    try {
+      session.liveFragments.replaceFragmentString(
+        OVERVIEW_KEY,
+        "## Overview\n\nbase overview body\n\n## Second Section\n\nbrand new sibling body" as FragmentContent,
+      );
+      session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
+      await session.generator.materializeEdit({ touchedFragmentKeys: [OVERVIEW_KEY] });
+
+      // Quiesce → off-lane pause (the manifest reflects the split but nothing has
+      // committed yet, exactly as the deferred-publish tests above assert).
+      await fireQuiescence(session);
+
+      // Now ack the pause to drive the real commit, and assert CANONICAL content —
+      // not just the in-progress proposal manifest. The promoted sibling section
+      // and the survivor's retained body must both reach canonical.
+      await ackPauseAndCommit(session, "editor-sock");
+      expect(session.generator.hasCurrentProposal()).toBe(false);
+
+      expect(await readSection(SAMPLE_DOC_PATH, ["Second Section"])).toContain("brand new sibling body");
+      expect(await readSection(SAMPLE_DOC_PATH, ["Overview"])).toContain("base overview body");
+      expect(await readSection(SAMPLE_DOC_PATH, ["Overview"])).not.toContain("brand new sibling body");
     } finally {
       editor.dispose();
     }

@@ -160,13 +160,18 @@ a {
   justify-content: flex-end;
 }
 
+/* Height-bounded vertical flex with COLUMN-WRAP: the three atoms (name / age /
+ * badge) stack top→bottom, but when the section is too short to hold all three
+ * the overflow atom spills into a NEW COLUMN instead of clipping. `align-content:
+ * flex-end` packs the columns toward the cross-end (right) so extra columns grow
+ * LEFTWARD, matching the right-anchored, overflow-left gutter chrome. */
 .section-who-changed {
   display: flex;
-  flex-direction: column;
+  flex-flow: column wrap;
   height: 100%;
   min-height: 0;
-  justify-content: flex-start;
-  max-width: 200px;
+  align-content: flex-end;
+  gap: 2px 6px;
   padding-right: 8px;
   font-size: 11px;
   line-height: 1.45;
@@ -175,32 +180,33 @@ a {
 
 .section-who-changed-name {
   font-weight: 500;
-  line-height: 1.45;
-  margin-bottom: 2px;
+}
+
+/* The three atoms are direct, independently-wrappable flex children. Column-wrap
+ * only wraps DIRECT children, so `.section-who-changed-meta` is collapsed to
+ * `display: contents` (below) to hoist age + badge up to siblings of name. */
+.section-who-changed-name,
+.section-who-changed-age,
+.section-who-changed-type-line {
+  flex: 0 0 auto;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .section-who-changed-meta {
-  display: flex;
-  flex-direction: column;
-  flex-wrap: wrap;
-  align-content: flex-start;
-  column-gap: 6px;
-  row-gap: 2px;
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: hidden;
+  display: contents;
 }
 
-.section-who-changed-age,
-.section-who-changed-type-line,
 .section-who-changed-raw {
   white-space: nowrap;
 }
 
 .section-who-changed-type-line {
+  /* `order: 1` restores the tall single-column visual to name / age / badge
+   * (today's look) regardless of source order. Consequence: the badge is last in
+   * the wrap sequence, so it is the atom that spills to a side column first when
+   * the section is too short. (Preserving the tall order and "age spills first"
+   * are not simultaneously expressible in flex column-wrap — see assumptions.md.) */
+  order: 1;
   display: inline-flex;
   align-items: center;
   gap: 4px;

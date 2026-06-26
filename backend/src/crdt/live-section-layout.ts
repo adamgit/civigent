@@ -42,7 +42,15 @@ export async function resolveLiveSectionLayout(
   const skeleton = await DocumentSkeletonInternal.fromDisk(docPath, skeletonRoot, canonicalRoot);
   const entries: LiveSectionLayoutEntry[] = [];
   const seen = new Set<string>();
-  skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+  // Option A: use the VISIBLE-section view so a sub-skeleton parent's body-holder
+  // fragment is reported with the parent's heading + level (NOT the literal
+  // `("", 0)` body-holder shape). This unifies the live path with the read/REST
+  // path (which already uses the visible view), so mounting a sub-skeleton parent
+  // as an editor shows its heading (bug 3 root fix). The emitted fragmentKey set is
+  // unchanged — both views emit the same non-sub-skeleton nodes; only the
+  // (heading, level) reported for a nested body-holder differs. The document-level
+  // BFH (`headingPath=[]`) is still emitted as `("", 0)`.
+  skeleton.forEachVisibleSection((heading, level, sectionFile, headingPath) => {
     const fragmentKey = fragmentKeyFromSectionFile(sectionFile, headingPath.length === 0);
     if (seen.has(fragmentKey)) return;
     seen.add(fragmentKey);

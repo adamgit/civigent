@@ -18,7 +18,7 @@ const AGENT = { id: "reader-agent", type: "agent" as const, displayName: "Reader
 
 async function readSections(ctx: TestServerContext): Promise<number> {
   const res = await request(ctx.app)
-    .get(`/api/documents${SAMPLE_DOC_PATH}/sections`)
+    .get(`/api/canonical${SAMPLE_DOC_PATH}/sections`)
     .set("Authorization", ctx.agentToken);
   return res.status;
 }

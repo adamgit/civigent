@@ -100,17 +100,100 @@ describe("WS-2: identity-preserving SPLIT", () => {
     // WS-0: the survivor keeps its key (body-holder reuses `section::overview`).
     expect(session.liveFragments.getFragmentKeys()).toContain(OVERVIEW_KEY);
 
+    // Option A: the survivor became a sub-skeleton parent, but its live fragment
+    // RETAINS its `## Overview` heading line (no body-holder strip), and the live
+    // layout reports it with the parent's VISIBLE heading "Overview" — NOT the old
+    // `{heading:"", level:0}` shape. This is the bug-3 fix: mounting the parent as
+    // an editor shows its heading.
+    const survivorEntry = layout.find((e) => e.fragmentKey === OVERVIEW_KEY)!;
+    expect(survivorEntry).toBeDefined();
+    expect(survivorEntry.heading).toBe("Overview");
+    expect(survivorEntry.level).toBe(2);
+    expect((session.liveFragments.readFragmentString(OVERVIEW_KEY) as string).startsWith("## Overview")).toBe(true);
+
     // LOAD-BEARING: the surviving Overview body node kept its Yjs struct id —
-    // the split deleted only the moved-out nodes (and the leading heading),
+    // the split deleted only the moved-out nodes (the heading is NOT stripped),
     // never re-minted the body. A cursor anchored to it would still resolve.
     const survivorFrag = session.ydoc.getXmlFragment(OVERVIEW_KEY);
     const survivorBodyNode = survivorFrag.get(survivorFrag.length - 1);
     expect(structId(survivorBodyNode)).toEqual(bodyParaIdBefore);
     expect((survivorBodyNode as Y.XmlElement).toString()).toBe(originalBody);
+    // The heading node survived at the front (Option A: every live fragment carries
+    // its heading, including a survivor that became a sub-skeleton parent).
+    expect(survivorFrag.get(0) instanceof Y.XmlElement && (survivorFrag.get(0) as Y.XmlElement).nodeName === "heading").toBe(true);
 
     // And the moved-out sub content is gone from the survivor.
     expect(session.liveFragments.readFragmentString(OVERVIEW_KEY) as string).not.toContain(
       "brand new sub body",
+    );
+  });
+
+  it("SIBLING split: the survivor stays a LEAF (keeps its heading + section-file id); the new sibling lands at the same level", async () => {
+    vi.useFakeTimers();
+    const session = await openSession();
+
+    // The Overview fragment starts as [heading "Overview", paragraph <body>].
+    const frag = session.ydoc.getXmlFragment(OVERVIEW_KEY);
+    expect(frag.length).toBe(2);
+    const bodyParaIdBefore = structId(frag.get(1));
+    expect(bodyParaIdBefore).not.toBeNull();
+    const originalBody = (frag.get(1) as Y.XmlElement).toString();
+
+    // Author types a SECOND SAME-LEVEL (`##`) heading at the END of Overview via a
+    // real minimal diff — a SIBLING split, NOT a nested child. The existing body
+    // node is untouched and keeps its struct id.
+    const target = getBackendSchema().nodeFromJSON(
+      markdownToJSON(
+        `## Overview\n\n${(frag.get(1) as Y.XmlElement).toString().replace(/<\/?paragraph>/g, "")}\n\n## Second Section\n\nbrand new sibling body`,
+      ),
+    );
+    session.ydoc.transact(() =>
+      updateYFragment(session.ydoc, frag, target, { mapping: new Map(), isOMark: new Map() }),
+    );
+    expect(structId(frag.get(1))).toEqual(bodyParaIdBefore);
+
+    session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
+    await session.generator.materializeEdit();
+
+    await fireQuiescence(session);
+
+    const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, session.generator.getCurrentProposalId());
+
+    // The new sibling split out into its own fragment, at the SAME level (2) and
+    // as a TOP-LEVEL heading path (not nested under Overview).
+    const sibling = layout.find((e) => e.heading === "Second Section")!;
+    expect(sibling).toBeDefined();
+    expect(sibling.level).toBe(2);
+    expect(sibling.headingPath).toEqual(["Second Section"]);
+    expect(session.liveFragments.getFragmentKeys()).toContain(sibling.fragmentKey);
+    expect(session.liveFragments.readFragmentString(sibling.fragmentKey) as string).toContain(
+      "brand new sibling body",
+    );
+    // The new sibling is a DISTINCT fragment from the survivor (no key reuse).
+    expect(sibling.fragmentKey).not.toBe(OVERVIEW_KEY);
+
+    // The survivor stays a LEAF — it KEEPS its heading "Overview" at level 2 (it is
+    // NOT a heading="" / level-0 body-holder the way a nested-child split makes it),
+    // and it KEEPS its section-file id (`section::overview`).
+    const survivor = layout.find((e) => e.fragmentKey === OVERVIEW_KEY)!;
+    expect(survivor).toBeDefined();
+    expect(survivor.heading).toBe("Overview");
+    expect(survivor.level).toBe(2);
+    expect(survivor.headingPath).toEqual(["Overview"]);
+    expect(session.liveFragments.getFragmentKeys()).toContain(OVERVIEW_KEY);
+
+    // LOAD-BEARING: the surviving Overview body node kept its Yjs struct id (the
+    // split deleted only the moved-out sibling nodes — the heading + body were not
+    // re-minted), and the heading node was NOT stripped (leaf survivor, not a
+    // body-holder). A cursor anchored to the body would still resolve.
+    const survivorFrag = session.ydoc.getXmlFragment(OVERVIEW_KEY);
+    const survivorBodyNode = survivorFrag.get(survivorFrag.length - 1);
+    expect(structId(survivorBodyNode)).toEqual(bodyParaIdBefore);
+    expect((survivorBodyNode as Y.XmlElement).toString()).toBe(originalBody);
+
+    // The moved-out sibling content is gone from the survivor.
+    expect(session.liveFragments.readFragmentString(OVERVIEW_KEY) as string).not.toContain(
+      "brand new sibling body",
     );
   });
 });

@@ -110,6 +110,12 @@ describe("MW-15: live structural normalization (split / orphan-merge)", () => {
     const overviewLive = session.liveFragments.readFragmentString(overviewBodyHolder.fragmentKey) as string;
     expect(overviewLive).toContain("base overview body");
     expect(overviewLive).not.toContain("brand new sub body");
+    // Option A: the Overview body-holder is reported with the parent's VISIBLE
+    // heading "Overview" (not `heading:""`), and its LIVE fragment RETAINS the
+    // `## Overview` heading line — the bug-3 fix (mounting the parent shows its
+    // heading), not the old body-only body-holder.
+    expect(overviewBodyHolder.heading).toBe("Overview");
+    expect(overviewLive.startsWith("## Overview")).toBe(true);
 
     // WS-0 (split survivor identity): the split survivor KEEPS its section-file
     // id. Overview became a sub-skeleton parent, so its body now lives in a
@@ -119,6 +125,65 @@ describe("MW-15: live structural normalization (split / orphan-merge)", () => {
     // old key was reconciled away.)
     expect(overviewBodyHolder.fragmentKey).toBe(OVERVIEW_KEY);
     expect(session.liveFragments.getFragmentKeys()).toContain(OVERVIEW_KEY);
+  });
+
+  it("(1-sibling) SPLIT: a SAME-LEVEL embedded heading becomes a top-level sibling live fragment", async () => {
+    vi.useFakeTimers();
+    const session = await openSession();
+
+    // Baseline: three live fragments (BFH, Overview, Timeline), no sibling yet.
+    expect(session.liveFragments.getFragmentKeys()).toEqual([
+      "section::__beforeFirstHeading__",
+      "section::overview",
+      "section::timeline",
+    ]);
+
+    // Author types a SECOND SAME-LEVEL (`##`) heading inside the Overview fragment.
+    const dirty =
+      "## Overview\n\nbase overview body\n\n## Second Section\n\nbrand new sibling body" as FragmentContent;
+    session.liveFragments.replaceFragmentString(OVERVIEW_KEY, dirty);
+    session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
+    await session.generator.materializeEdit();
+
+    await fireQuiescence(session);
+
+    // The proposal layout split Overview into a LEAF Overview + a top-level
+    // Second Section sibling. The LIVE Y.Doc must hold a fragment for EACH entry.
+    const layout = await resolveLiveSectionLayout(
+      SAMPLE_DOC_PATH,
+      session.generator.getCurrentProposalId(),
+    );
+    const headings = layout.map((e) => e.heading);
+    expect(headings).toContain("Second Section");
+    expect(headings).toContain("Overview");
+    expect(headings).toContain("Timeline");
+
+    const liveKeys = new Set(session.liveFragments.getFragmentKeys());
+    for (const entry of layout) {
+      expect(liveKeys.has(entry.fragmentKey)).toBe(true);
+    }
+
+    // The new sibling carries the moved-out body LIVE, at the top level.
+    const sibling = layout.find((e) => e.heading === "Second Section")!;
+    expect(sibling.level).toBe(2);
+    expect(sibling.headingPath).toEqual(["Second Section"]);
+    const siblingLive = session.liveFragments.readFragmentString(sibling.fragmentKey) as string;
+    expect(siblingLive).toContain("brand new sibling body");
+    expect(siblingLive).toContain("Second Section");
+
+    // The survivor stays a LEAF (keeps its "Overview" heading — NOT a heading=""
+    // body-holder) and REUSES the original `section::overview` id (no re-key).
+    const survivor = layout.find((e) => e.fragmentKey === OVERVIEW_KEY)!;
+    expect(survivor.heading).toBe("Overview");
+    expect(survivor.level).toBe(2);
+    expect(survivor.headingPath).toEqual(["Overview"]);
+    const survivorLive = session.liveFragments.readFragmentString(OVERVIEW_KEY) as string;
+    expect(survivorLive).toContain("base overview body");
+    expect(survivorLive).not.toContain("brand new sibling body");
+    // There is NO heading="" body-holder for Overview in a sibling split.
+    expect(
+      layout.some((e) => e.headingPath.length === 1 && e.headingPath[0] === "Overview" && e.heading === ""),
+    ).toBe(false);
   });
 
   it("(1b) SPLIT preserves the Yjs identity of an UNAFFECTED section (cursors survive)", async () => {

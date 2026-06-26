@@ -176,6 +176,11 @@ export function classifyStructuralChange(
   }
 
   // Heading deletion: a non-root fragment now holds only orphan body, no heading.
+  // Option A: a sub-skeleton parent's body-holder now carries the PARENT's headed
+  // identity (heading=Parent/level=N — never the old `{heading:"",level:0,path>0}`
+  // shape), so a clean body-holder takes the headed-section `clean` path above and
+  // CANNOT reach this branch. This branch is therefore only ever a genuine heading
+  // deletion (→ merge into the predecessor), as intended.
   if (!isRoot && realSections.length === 0) {
     const orphanedBody = bodyFromStructuralAssembly(
       parsed

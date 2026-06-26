@@ -288,7 +288,10 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
       const s = sectionsRef.current[idx];
       return s ? s.heading_path : null;
     },
-    hasEditor: (idx) => editorRefs.current.has(idx),
+    hasEditor: (idx) => {
+      const s = sectionsRef.current[idx];
+      return s ? editorRefs.current.has(getSectionFragmentKey(s)) : false;
+    },
     getSectionContent: (idx) => sectionsRef.current[idx]?.content ?? null,
   });
 
@@ -414,19 +417,20 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     }
   }, [setFocusedSectionIndex, setViewingSection, presenceRef, pendingFocusRef]);
 
-  const handleEditorReady = useCallback((idx: number) => {
+  const handleEditorReady = useCallback((fk: string) => {
     setReadyEditors(prev => {
+      if (prev.has(fk)) return prev;
       const next = new Set(prev);
-      next.add(idx);
+      next.add(fk);
       return next;
     });
   }, []);
 
-  const handleEditorUnready = useCallback((idx: number) => {
+  const handleEditorUnready = useCallback((fk: string) => {
     setReadyEditors(prev => {
-      if (!prev.has(idx)) return prev;
+      if (!prev.has(fk)) return prev;
       const next = new Set(prev);
-      next.delete(idx);
+      next.delete(fk);
       return next;
     });
   }, []);
@@ -675,7 +679,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
                       proposalMode={proposalMode}
                       canEditProposalContent={activeProposalStatus === "inprogress"}
                       proposalScopeMutationInFlight={proposalScopeMutationInFlight}
-                      isReady={readyEditors.has(i)}
+                      isReady={readyEditors.has(fk)}
                       localEditSink={localEditSink}
                       mouseDownPosRef={mouseDownPosRef}
                       onStartEditing={startEditing}

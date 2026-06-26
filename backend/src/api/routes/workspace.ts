@@ -1,6 +1,5 @@
 import { type Router } from "express";
 import type {
-  GetDocumentResponse,
   GetDocumentsTreeResponse,
   ReadDocStructureResponse,
   WsServerEvent,
@@ -15,24 +14,16 @@ import {
 } from "./middleware.js";
 import {
   readTree,
-  readStructure,
-  getChangesSince,
-  getHistory,
-  getHistoryPreview,
+  readWorkspaceStructure,
   getDiagnostics,
-  getBlame,
-  readDocument,
   restoreDocument,
   RestoreValidationError,
   overwriteDocument,
   renameDocument,
   createDocument,
-  patchDocument,
   deleteDocument,
-  broadcastAgentReading,
   isValidSha,
   DocumentNotFoundError,
-  DocumentAssemblyError,
   InvalidDocPathError,
   DocumentsTreePathNotFoundError,
   InvalidDocumentsTreePathError,
@@ -44,22 +35,26 @@ import {
   DocumentNotFoundForDeleteError,
   UncommittedSessionFilesError,
 } from "../application/documents.js";
-import {
-  emitCatalogMutationEvents,
-  emitContentCommittedForSections,
-} from "../application/events.js";
+import { emitCatalogMutationEvents } from "../application/events.js";
 import {
   QueryParamError,
   optionalStringParam,
-  boundedIntParam,
 } from "../helpers/query-params.js";
 
-export function registerDocumentRoutes(
+// ─── Workspace (human working-copy) routes ──────────────────────────────
+//
+// The human frontend surface: working-copy reads (in-progress proposal first,
+// canonical fallback — see openWorkspaceReader), the catalog/tree the sidebar
+// renders, and human edits. Human edits are proposal edits against the working
+// copy that commit through the agent-write-policy pipeline (write invariant).
+// Workspace reads do NOT emit `agent:reading` (they are human-facing).
+
+export function registerWorkspaceRoutes(
   router: Router,
   onWsEvent: ((event: WsServerEvent) => void) | undefined,
 ): void {
-  // GET /documents/tree
-  router.get("/documents/tree", async (req, res, next) => {
+  // GET /workspace/tree
+  router.get("/workspace/tree", async (req, res, next) => {
     try {
       const writer = resolveAuthenticatedWriter(req);
       const basePath = optionalStringParam(req.query.path, "path") ?? "";
@@ -82,14 +77,13 @@ export function registerDocumentRoutes(
     }
   });
 
-  // GET /documents/:docPath/structure
-  router.get("/documents/:docPath(*)/structure", async (req, res, next) => {
+  // GET /workspace/:docPath/structure — working-copy structure (no agent:reading)
+  router.get("/workspace/:docPath(*)/structure", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
-      const { response, headingPaths } = await readStructure(docPath);
-      broadcastAgentReading(req, docPath, headingPaths, onWsEvent);
+      const { response } = await readWorkspaceStructure(docPath);
       const out: ReadDocStructureResponse = response;
       res.json(out);
     } catch (error) {
@@ -101,63 +95,20 @@ export function registerDocumentRoutes(
     }
   });
 
-  // GET /documents/:docPath/changes-since
-  router.get("/documents/:docPath(*)/changes-since", async (req, res, next) => {
+  // GET /workspace/:docPath/diagnostics — live-crdt-vs-canonical comparison
+  router.get("/workspace/:docPath(*)/diagnostics", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
-      const access = await requireDocReadPermission(req, res, docPath);
-      if (!access) return;
-      const afterHead = optionalStringParam(req.query.after_head, "after_head");
-      res.json(await getChangesSince(docPath, afterHead));
+      const accessResult = await requireDocReadPermission(req, res, docPath);
+      if (!accessResult) return;
+      res.json(await getDiagnostics(docPath));
     } catch (error) {
-      if (error instanceof QueryParamError || error instanceof InvalidDocPathError) {
-        sendApiError(res, 400, error);
-        return;
-      }
       next(error);
     }
   });
 
-  // GET /documents/:docPath/history
-  router.get("/documents/:docPath(*)/history", async (req, res, next) => {
-    try {
-      const docPath = req.params.docPath;
-      const access = await requireDocReadPermission(req, res, docPath);
-      if (!access) return;
-      const limit = boundedIntParam(req.query.limit, "limit", { fallback: 30, min: 1, max: 100 });
-      const offset = boundedIntParam(req.query.offset, "offset", { fallback: 0, min: 0, max: Number.MAX_SAFE_INTEGER });
-      res.json(await getHistory(docPath, limit, offset));
-    } catch (error) {
-      if (error instanceof QueryParamError) {
-        sendApiError(res, 400, error);
-        return;
-      }
-      next(error);
-    }
-  });
-
-  // GET /documents/:docPath/history/:sha/preview
-  router.get("/documents/:docPath(*)/history/:sha/preview", async (req, res, next) => {
-    try {
-      const { docPath, sha } = req.params;
-      const access = await requireDocReadPermission(req, res, docPath);
-      if (!access) return;
-      if (!isValidSha(sha)) {
-        sendApiError(res, 400, new Error(`Invalid SHA format: "${sha}"`));
-        return;
-      }
-      res.json(await getHistoryPreview(docPath, sha));
-    } catch (error) {
-      if (error instanceof DocumentNotFoundError) {
-        sendApiError(res, 404, error);
-        return;
-      }
-      next(error);
-    }
-  });
-
-  // POST /documents/:docPath/restore
-  router.post("/documents/:docPath(*)/restore", async (req, res, next) => {
+  // POST /workspace/:docPath/restore
+  router.post("/workspace/:docPath(*)/restore", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
       const writer = await requireDocWritePermission(req, res, docPath);
@@ -185,8 +136,8 @@ export function registerDocumentRoutes(
     }
   });
 
-  // POST /documents/:docPath/overwrite
-  router.post("/documents/:docPath(*)/overwrite", async (req, res, next) => {
+  // POST /workspace/:docPath/overwrite (admin-only)
+  router.post("/workspace/:docPath(*)/overwrite", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
       const admin = await requireAdmin(req, res);
@@ -218,37 +169,8 @@ export function registerDocumentRoutes(
     }
   });
 
-  // GET /documents/:docPath/diagnostics
-  router.get("/documents/:docPath(*)/diagnostics", async (req, res, next) => {
-    try {
-      const docPath = req.params.docPath;
-      const accessResult = await requireDocReadPermission(req, res, docPath);
-      if (!accessResult) return;
-      res.json(await getDiagnostics(docPath));
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  // GET /documents/:docPath/blame/:sectionFile
-  router.get("/documents/:docPath(*)/blame/:sectionFile", async (req, res, next) => {
-    try {
-      const docPath = req.params.docPath;
-      const access = await requireDocReadPermission(req, res, docPath);
-      if (!access) return;
-      const response = await getBlame(docPath, req.params.sectionFile);
-      res.json(response);
-    } catch (error) {
-      if (error instanceof InvalidDocPathError) {
-        sendApiError(res, 400, error);
-        return;
-      }
-      next(error);
-    }
-  });
-
-  // POST /documents/:docPath/rename
-  router.post("/documents/:docPath(*)/rename", async (req, res, next) => {
+  // POST /workspace/:docPath/rename
+  router.post("/workspace/:docPath(*)/rename", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
       const writer = await requireDocWritePermission(req, res, docPath);
@@ -304,37 +226,14 @@ export function registerDocumentRoutes(
   });
 }
 
-// ─── Document catch-all routes ──────────────────────────
-// Registered LAST so they never shadow more-specific /documents/ routes.
-export function registerDocumentCatchAllRoutes(
+// ─── Workspace catch-all routes ─────────────────────────
+// Registered LAST so they never shadow the more-specific /workspace/ routes.
+export function registerWorkspaceCatchAllRoutes(
   router: Router,
   onWsEvent: ((event: WsServerEvent) => void) | undefined,
 ): void {
-  // GET /documents/:docPath — read assembled document
-  router.get("/documents/:docPath(*)", async (req, res, next) => {
-    try {
-      const docPath = req.params.docPath;
-      const accessResult = await requireDocReadPermission(req, res, docPath);
-      if (!accessResult) return;
-      const { response, headingPaths } = await readDocument(docPath);
-      broadcastAgentReading(req, docPath, headingPaths, onWsEvent);
-      const out: GetDocumentResponse = response;
-      res.json(out);
-    } catch (error) {
-      if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-        sendApiError(res, 404, error);
-        return;
-      }
-      if (error instanceof DocumentAssemblyError) {
-        sendApiError(res, 500, error);
-        return;
-      }
-      next(error);
-    }
-  });
-
-  // PUT /documents/:docPath — create document
-  router.put("/documents/:docPath(*)", async (req, res, next) => {
+  // PUT /workspace/:docPath — create document
+  router.put("/workspace/:docPath(*)", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
       const writer = await requireDocWritePermission(req, res, docPath);
@@ -386,58 +285,8 @@ export function registerDocumentCatchAllRoutes(
     }
   });
 
-  // PATCH /documents/:docPath — apply unified diff
-  router.patch("/documents/:docPath(*)", async (req, res, next) => {
-    try {
-      const docPath = req.params.docPath;
-      const writer = await requireDocWritePermission(req, res, docPath);
-      if (!writer) return;
-      const diffText = typeof req.body === "string" ? req.body : req.body?.diff;
-
-      if (!diffText || typeof diffText !== "string") {
-        sendApiError(res, 400, "Request body must be a unified diff (text/x-diff or text/plain, or JSON with 'diff' field).");
-        return;
-      }
-
-      const result = await patchDocument(docPath, diffText, writer);
-      if (result.kind === "not_found") {
-        sendApiError(res, 404, result.error);
-        return;
-      }
-      if (result.kind === "parse_error") {
-        sendApiError(res, 400, result.error);
-        return;
-      }
-      if (result.kind === "no_changes") {
-        res.status(200).json({ doc_path: docPath, no_changes: true });
-        return;
-      }
-      if (result.kind === "blocked") {
-        res.status(409).json({
-          doc_path: docPath,
-          proposal_id: result.proposalId,
-          status: "draft",
-          outcome: "blocked",
-          message: result.policyResult.message,
-          agent_write_policy: agentWritePolicyRouteBody(result.policyResult),
-        });
-        return;
-      }
-
-      emitContentCommittedForSections(onWsEvent, docPath, result.sections, result.committedHead, writer, [writer.id]);
-
-      res.status(200).json({
-        doc_path: docPath,
-        committed_head: result.committedHead,
-        status: "committed",
-      });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  // DELETE /documents/:docPath — delete document
-  router.delete("/documents/:docPath(*)", async (req, res, next) => {
+  // DELETE /workspace/:docPath — delete document
+  router.delete("/workspace/:docPath(*)", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
       const writer = await requireDocWritePermission(req, res, docPath);

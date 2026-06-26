@@ -37,7 +37,7 @@ describe("agent:reading signal (spec 06)", () => {
   it("emits agent:reading with the actor + heading paths when an agent reads sections", async () => {
     ctx.wsEvents.length = 0;
     const res = await request(ctx.app)
-      .get(`/api/documents${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/canonical${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.agentToken);
     expect(res.status).toBe(200);
 
@@ -52,7 +52,7 @@ describe("agent:reading signal (spec 06)", () => {
   it("emits agent:reading when an agent reads document structure", async () => {
     ctx.wsEvents.length = 0;
     const res = await request(ctx.app)
-      .get(`/api/documents${SAMPLE_DOC_PATH}/structure`)
+      .get(`/api/canonical${SAMPLE_DOC_PATH}/structure`)
       .set("Authorization", ctx.agentToken);
     expect(res.status).toBe(200);
     expect(readingEvents(ctx.wsEvents).length).toBeGreaterThanOrEqual(1);
@@ -61,7 +61,7 @@ describe("agent:reading signal (spec 06)", () => {
   it("does NOT emit agent:reading for a HUMAN read (it is an agent signal)", async () => {
     ctx.wsEvents.length = 0;
     const res = await request(ctx.app)
-      .get(`/api/documents${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/canonical${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
     expect(res.status).toBe(200);
     expect(readingEvents(ctx.wsEvents)).toHaveLength(0);
@@ -70,7 +70,7 @@ describe("agent:reading signal (spec 06)", () => {
   it("does NOT signal content reading for a meta read (changes-since)", async () => {
     ctx.wsEvents.length = 0;
     const res = await request(ctx.app)
-      .get(`/api/documents${SAMPLE_DOC_PATH}/changes-since`)
+      .get(`/api/canonical${SAMPLE_DOC_PATH}/changes-since`)
       .set("Authorization", ctx.agentToken);
     expect(res.status).toBe(200);
     expect(readingEvents(ctx.wsEvents)).toHaveLength(0);

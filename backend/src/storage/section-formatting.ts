@@ -211,9 +211,10 @@ import { isBodyHolderShape } from "./section-shape.js";
 
 /**
  * Build a full fragment (heading + body) from a body and heading info.
- * Body-holder-shape inputs (level=0, heading="") return the body as-is —
- * the heading line is suppressed because the caller is asking for an
- * anonymous content fragment.
+ * Option A: the only `level=0, heading=""` input is the document-level
+ * before-first-heading (BFH) — it has no heading line, so the body is returned
+ * as-is. Every other live fragment (including a sub-skeleton parent's body-holder)
+ * now carries its heading and takes the headed-fragment path below.
  */
 export function buildFragmentContent(body: SectionBody, level: number, heading: string): FragmentContent {
   if (isBodyHolderShape({ level, heading })) return fragmentFromBodyHolder(body);

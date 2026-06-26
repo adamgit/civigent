@@ -1,7 +1,7 @@
 /**
  * Tier 1 + Tier 2 MCP tools — filesystem-compatible surface.
  *
- * Tools: read_file, write_file, write_files, list_directory,
+ * Tools: read_file, write_file, write_files, apply_patch, list_directory,
  *        delete_file, move_file, plan_changes
  */
 
@@ -20,6 +20,7 @@ import {
   transitionToWithdrawn,
 } from "../../storage/proposal-repository.js";
 import { resolveDocPathUnderContent, InvalidDocPathError } from "../../storage/path-utils.js";
+import { applyUnifiedDiff, DiffParseError, DiffApplyError } from "../../storage/diff-parser.js";
 import { access } from "node:fs/promises";
 import {
   evaluateAgentWritePolicy,
@@ -237,6 +238,53 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
       agent_write_policy: agentWritePolicyToolBody(policyResult),
     });
   }
+};
+
+// ─── apply_patch (unified-diff write) ────────────────────
+//
+// Replaces the dropped REST `PATCH /documents/:docPath` route. Like every write
+// tool it edits a proposal and commits through the agent-write-policy pipeline;
+// it never touches canonical directly. The diff is applied to the current
+// assembled document, then the patched whole-document payload is written via the
+// shared auto-proposal path.
+
+const applyPatchHandler: ToolHandler = async (args, ctx) => {
+  const filePath = args.path as string | undefined;
+  const diffText = args.diff as string | undefined;
+
+  if (!filePath) return makeToolErrorResult("Missing required parameter: path");
+  if (diffText === undefined) return makeToolErrorResult("Missing required parameter: diff");
+
+  const writeAllowed = await checkDocPermission(ctx.writer, filePath, "write");
+  if (!writeAllowed) {
+    return makeToolErrorResult(`Permission denied: you do not have write access to "${filePath}".`);
+  }
+
+  let currentContent: string;
+  try {
+    currentContent = await readAssembledDocument(filePath);
+  } catch (error) {
+    if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
+      return makeToolErrorResult(`Document not found: ${filePath}`);
+    }
+    throw error;
+  }
+
+  let patchedContent: string;
+  try {
+    patchedContent = applyUnifiedDiff(currentContent, diffText);
+  } catch (error) {
+    if (error instanceof DiffParseError || error instanceof DiffApplyError) {
+      return makeToolErrorResult(error.stack || error.message);
+    }
+    throw error;
+  }
+
+  if (patchedContent === currentContent) {
+    return jsonToolResult({ success: true, doc_path: filePath, no_changes: true });
+  }
+
+  return writeDocumentViaProposal([{ path: filePath, content: patchedContent }], ctx);
 };
 
 // ─── plan_changes (Tier 2) ───────────────────────────────
@@ -568,6 +616,21 @@ export function registerFilesystemTools(registry: ToolRegistry): void {
     moveFileHandler,
   );
 
+  registry.register(
+    {
+      name: "apply_patch",
+      description: "Apply a unified diff to a document. The diff is applied to the current assembled markdown, then written through the proposal system — it may be accepted immediately, or blocked when the active agent write policy declines or another proposal holds an exclusive lock on a target section. A blocked result includes a prose message and per-target explanations. If the diff produces no change, the result reports no_changes.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Logical document path (e.g. 'ops/sales/strategy.md')" },
+          diff: { type: "string", description: "Unified diff to apply to the document's current content" },
+        },
+        required: ["path", "diff"],
+      },
+    },
+    applyPatchHandler,
+  );
 }
 
 export function registerPlanChangesTool(registry: ToolRegistry): void {

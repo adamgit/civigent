@@ -14,8 +14,8 @@ import { renderHook } from "@testing-library/react";
 import { useCrossSectionCopy } from "../../hooks/useCrossSectionCopy";
 
 const sections = [
-  { heading_path: ["Overview"], heading: "Overview", depth: 1, content: "## Overview\n\nOverview body." },
-  { heading_path: ["Timeline"], heading: "Timeline", depth: 1, content: "## Timeline\n\nTimeline body." },
+  { heading_path: ["Overview"], heading: "Overview", depth: 1, content: "## Overview\n\nOverview body.", fragment_key: "section::overview" },
+  { heading_path: ["Timeline"], heading: "Timeline", depth: 1, content: "## Timeline\n\nTimeline body.", fragment_key: "section::timeline" },
 ];
 
 let container: HTMLDivElement;

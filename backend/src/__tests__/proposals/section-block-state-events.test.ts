@@ -107,7 +107,7 @@ describe("MW-5: section block-state events", () => {
     ctx.wsEvents.length = 0;
 
     const delRes = await request(ctx.app)
-      .delete(`/api/documents${SAMPLE_DOC_PATH}/sections/${encodeURIComponent("Timeline")}`)
+      .delete(`/api/workspace${SAMPLE_DOC_PATH}/sections/${encodeURIComponent("Timeline")}`)
       .set("Authorization", ctx.humanToken);
     expect(delRes.status).toBe(200);
     expect(delRes.body.deleted).toBe(true);

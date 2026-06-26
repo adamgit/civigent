@@ -73,7 +73,7 @@ describe("api-client auth endpoints", () => {
 
   describe("401 -> refresh -> retry", () => {
     it("retries the original request once after a successful browser refresh", async () => {
-      // Sequence: bootstrap session -> 401 on /api/documents/tree -> refresh succeeds -> retry succeeds
+      // Sequence: bootstrap session -> 401 on /api/workspace/tree -> refresh succeeds -> retry succeeds
       fetchMock = installQueuedFetchMock([
         // 1. tryBootstrapSingleUserSession calls /api/auth/session
         jsonResponse({ authenticated: true, user: { id: "u", displayName: "U" }, login_providers: [] }),
@@ -85,7 +85,7 @@ describe("api-client auth endpoints", () => {
         jsonResponse({ tree: [] }),
       ]);
 
-      const result = await apiClient.getDocumentsTree();
+      const result = await apiClient.getWorkspaceTree();
       expect(result.tree).toEqual([]);
 
       // Verify the refresh was called
@@ -95,7 +95,7 @@ describe("api-client auth endpoints", () => {
       expect(refreshCall).toBeDefined();
 
       // Verify the original request was retried (called twice total)
-      const treeCalls = fetchMock.calls.filter((c) => String(c.input) === "/api/documents/tree");
+      const treeCalls = fetchMock.calls.filter((c) => String(c.input) === "/api/workspace/tree");
       expect(treeCalls.length).toBe(2);
     });
 
@@ -109,10 +109,10 @@ describe("api-client auth endpoints", () => {
         jsonResponse({ authenticated: false }, { status: 401, statusText: "Unauthorized" }),
       ]);
 
-      await expect(apiClient.getDocumentsTree()).rejects.toThrow();
+      await expect(apiClient.getWorkspaceTree()).rejects.toThrow();
 
       // Should not have retried the original request
-      const treeCalls = fetchMock.calls.filter((c) => String(c.input) === "/api/documents/tree");
+      const treeCalls = fetchMock.calls.filter((c) => String(c.input) === "/api/workspace/tree");
       expect(treeCalls.length).toBe(1);
     });
 
@@ -128,7 +128,7 @@ describe("api-client auth endpoints", () => {
         jsonResponse({ tree: [] }),
       ]);
 
-      await apiClient.getDocumentsTree();
+      await apiClient.getWorkspaceTree();
 
       const refreshCall = fetchMock.calls.find(
         (c) => String(c.input) === "/api/auth/token/refresh",

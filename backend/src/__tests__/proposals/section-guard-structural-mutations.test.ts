@@ -30,7 +30,7 @@ describe("structural mutations: human lifecycle is not lock-gated", () => {
   it("human creates a doc, edits it, then deletes it — succeeds (not 409)", async () => {
     // 1. Human creates a document
     const createRes = await request(ctx.app)
-      .put("/api/documents/guard-test/human-lifecycle.md")
+      .put("/api/workspace/guard-test/human-lifecycle.md")
       .set("Authorization", ctx.humanToken)
       .set("Content-Type", "text/markdown")
       .send("# Lifecycle Test\n\nInitial content.\n");
@@ -50,7 +50,7 @@ describe("structural mutations: human lifecycle is not lock-gated", () => {
     // 3. Human deletes the document — not gated by FSM locks (no competing
     //    proposal holds these sections), so it succeeds.
     const deleteRes = await request(ctx.app)
-      .delete("/api/documents/guard-test/human-lifecycle.md")
+      .delete("/api/workspace/guard-test/human-lifecycle.md")
       .set("Authorization", ctx.humanToken);
 
     expect(deleteRes.status).toBe(200);

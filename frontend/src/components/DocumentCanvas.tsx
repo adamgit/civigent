@@ -37,16 +37,16 @@ export interface DocumentCanvasProps {
   crdtSynced: boolean;
   crdtState: CrdtConnectionState;
   transferService: SectionTransferService | null;
-  readyEditors: Set<number>;
+  readyEditors: Set<string>;
   /** Write-only session-authorship port, passed straight through to each section
    *  renderer. The canvas neither reads nor stores it. */
   localEditSink: LocalEditOriginSink;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
   onStartEditing: (index: number, coords: { x: number; y: number }) => void | Promise<void>;
   onFocusSection: (index: number, headingPath: string[], coords: { x: number; y: number }) => void;
-  onSetEditorRef: (index: number, handle: MilkdownEditorHandle | null) => void;
-  onEditorReady: (index: number) => void;
-  onEditorUnready: (index: number) => void;
+  onSetEditorRef: (fragmentKey: string, handle: MilkdownEditorHandle | null) => void;
+  onEditorReady: (fragmentKey: string) => void;
+  onEditorUnready: (fragmentKey: string) => void;
   onProposalSectionChange?: (index: number, markdown: string) => void;
   onToggleProposalSection?: (section: DocumentSection) => void | Promise<void>;
   onCursorExit: (index: number, direction: "up" | "down") => void;
@@ -150,7 +150,7 @@ export function DocumentCanvas({
                 proposalMode={proposalMode}
                 canEditProposalContent={canEditProposalContent}
                 proposalScopeMutationInFlight={proposalScopeMutationInFlight}
-                isReady={readyEditors.has(i)}
+                isReady={readyEditors.has(fk)}
                 localEditSink={localEditSink}
                 mouseDownPosRef={mouseDownPosRef}
                 onStartEditing={onStartEditing}

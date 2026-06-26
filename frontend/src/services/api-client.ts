@@ -29,7 +29,6 @@ import type {
   ProposalStatus,
   ReadDocStructureResponse,
   ReadProposalResponse,
-  ReadSectionResponse,
   SessionInfoResponse,
   UpdateProposalManifestRequest,
   ReplaceProposalSectionsRequest,
@@ -568,7 +567,7 @@ export const apiClient = {
 
   async createDocument(docPath: string): Promise<CreateDocumentResponse> {
     const encoded = encodeDocPath(docPath);
-    return requestJson<CreateDocumentResponse>(`/api/documents/${encoded}`, {
+    return requestJson<CreateDocumentResponse>(`/api/workspace/${encoded}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: "{}",
@@ -577,23 +576,24 @@ export const apiClient = {
 
   async deleteDocument(docPath: string): Promise<void> {
     const encoded = encodeDocPath(docPath);
-    await requestJson<void>(`/api/documents/${encoded}`, {
+    await requestJson<void>(`/api/workspace/${encoded}`, {
       method: "DELETE",
     });
   },
 
   async renameDocument(docPath: string, newPath: string): Promise<{ old_path: string; new_path: string; committed_head: string }> {
     const encoded = encodeDocPath(docPath);
-    return requestJson<{ old_path: string; new_path: string; committed_head: string }>(`/api/documents/${encoded}/rename`, {
+    return requestJson<{ old_path: string; new_path: string; committed_head: string }>(`/api/workspace/${encoded}/rename`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ new_path: newPath }),
     });
   },
 
+  // The agent-facing assembled committed read (canonical, read-only).
   async getDocument(docPath: string): Promise<GetDocumentResponse> {
     const encoded = encodeDocPath(docPath);
-    return requestJson<GetDocumentResponse>(`/api/documents/${encoded}`);
+    return requestJson<GetDocumentResponse>(`/api/canonical/${encoded}`);
   },
 
   /**
@@ -608,7 +608,7 @@ export const apiClient = {
   ): Promise<{ ok: true } | { ok: false; message: string }> {
     await tryBootstrapSingleUserSession();
     const encoded = encodeDocPath(docPath);
-    const response = await fetch(`/api/documents/${encoded}/live-move`, {
+    const response = await fetch(`/api/workspace/${encoded}/live-move`, {
       method: "POST",
       headers: { "content-type": "application/json", "X-Requested-With": "fetch" },
       credentials: "include",
@@ -630,7 +630,7 @@ export const apiClient = {
     return { ok: false, message };
   },
 
-  async getDocumentsTree(options?: GetDocumentsTreeOptions): Promise<GetDocumentsTreeResponse> {
+  async getWorkspaceTree(options?: GetDocumentsTreeOptions): Promise<GetDocumentsTreeResponse> {
     const params = new URLSearchParams();
     if (options?.path != null) {
       params.set("path", options.path);
@@ -639,29 +639,36 @@ export const apiClient = {
       params.set("recursive", String(options.recursive));
     }
     const query = params.toString();
-    const url = query.length > 0 ? `/api/documents/tree?${query}` : "/api/documents/tree";
+    const url = query.length > 0 ? `/api/workspace/tree?${query}` : "/api/workspace/tree";
     return requestJson<GetDocumentsTreeResponse>(url);
   },
 
   async probeSystemReady(): Promise<boolean> {
-    const response = await fetch("/api/documents/tree", {
+    const response = await fetch("/api/workspace/tree", {
       headers: { "X-Requested-With": "fetch" },
       credentials: "include",
     });
     return response.status !== 503;
   },
 
-  async getDocumentStructure(docPath: string): Promise<ReadDocStructureResponse> {
+  // Working-copy structure read (in-progress proposal first, canonical fallback).
+  async getWorkspaceDocumentStructure(docPath: string): Promise<ReadDocStructureResponse> {
     const encoded = encodeDocPath(docPath);
-    return requestJson<ReadDocStructureResponse>(`/api/documents/${encoded}/structure`);
+    return requestJson<ReadDocStructureResponse>(`/api/workspace/${encoded}/structure`);
   },
 
-  // Document/section loads are CANONICAL-ONLY (spec 04 §5). This route takes no
-  // proposal parameter — proposal-scoped reads use the dedicated proposal routes
-  // (`getProposalDocumentSections` / `getProposalSections`).
-  async getDocumentSections(docPath: string): Promise<GetDocumentSectionsResponse> {
+  // Committed (canonical) structure read — the agent-facing surface.
+  async getCanonicalDocumentStructure(docPath: string): Promise<ReadDocStructureResponse> {
     const encoded = encodeDocPath(docPath);
-    return requestJson<GetDocumentSectionsResponse>(`/api/documents/${encoded}/sections`);
+    return requestJson<ReadDocStructureResponse>(`/api/canonical/${encoded}/structure`);
+  },
+
+  // Working-copy section list + content (in-progress proposal first, canonical
+  // fallback). Takes no proposal parameter — proposal-scoped reads use the
+  // dedicated proposal routes (`getProposalDocumentSections` / `getProposalSections`).
+  async getWorkspaceDocumentSections(docPath: string): Promise<GetDocumentSectionsResponse> {
+    const encoded = encodeDocPath(docPath);
+    return requestJson<GetDocumentSectionsResponse>(`/api/workspace/${encoded}/sections`);
   },
 
   // Effective proposal-scoped section list + content for a single document
@@ -687,14 +694,7 @@ export const apiClient = {
   async getChangesSince(docPath: string, afterHead?: string): Promise<ChangesSinceResponse> {
     const encoded = encodeDocPath(docPath);
     const params = afterHead ? `?after_head=${encodeURIComponent(afterHead)}` : "";
-    return requestJson<ChangesSinceResponse>(`/api/documents/${encoded}/changes-since${params}`);
-  },
-
-  async readSection(docPath: string, headingPath: string[]): Promise<ReadSectionResponse> {
-    const params = new URLSearchParams();
-    params.set("doc_path", docPath);
-    params.set("heading_path", headingPath.join("/"));
-    return requestJson<ReadSectionResponse>(`/api/sections?${params.toString()}`);
+    return requestJson<ChangesSinceResponse>(`/api/canonical/${encoded}/changes-since${params}`);
   },
 
   async searchText(options: {
@@ -876,17 +876,17 @@ export const apiClient = {
     if (opts?.limit) params.set("limit", String(opts.limit));
     if (opts?.offset) params.set("offset", String(opts.offset));
     const qs = params.toString();
-    return requestJson<DocHistoryResponse>(`/api/documents/${encoded}/history${qs ? `?${qs}` : ""}`);
+    return requestJson<DocHistoryResponse>(`/api/canonical/${encoded}/history${qs ? `?${qs}` : ""}`);
   },
 
   async getDocHistoryPreview(docPath: string, sha: string): Promise<DocHistoryPreviewResponse> {
     const encoded = encodeDocPath(docPath);
-    return requestJson<DocHistoryPreviewResponse>(`/api/documents/${encoded}/history/${encodeURIComponent(sha)}/preview`);
+    return requestJson<DocHistoryPreviewResponse>(`/api/canonical/${encoded}/history/${encodeURIComponent(sha)}/preview`);
   },
 
   async restoreDoc(docPath: string, sha: string): Promise<DocRestoreResponse> {
     const encoded = encodeDocPath(docPath);
-    return requestJson<DocRestoreResponse>(`/api/documents/${encoded}/restore`, {
+    return requestJson<DocRestoreResponse>(`/api/workspace/${encoded}/restore`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sha }),
@@ -895,7 +895,7 @@ export const apiClient = {
 
   async overwriteDoc(docPath: string, markdown: string): Promise<{ committed_sha: string }> {
     const encoded = encodeDocPath(docPath);
-    return requestJson<{ committed_sha: string }>(`/api/documents/${encoded}/overwrite`, {
+    return requestJson<{ committed_sha: string }>(`/api/workspace/${encoded}/overwrite`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ markdown }),
@@ -970,7 +970,7 @@ export const apiClient = {
 
   async getBlame(docPath: string, sectionFile: string): Promise<BlameResponse> {
     return requestJson<BlameResponse>(
-      `/api/documents/${encodeDocPath(docPath)}/blame/${encodeURIComponent(sectionFile)}`,
+      `/api/canonical/${encodeDocPath(docPath)}/blame/${encodeURIComponent(sectionFile)}`,
     );
   },
 
@@ -1038,6 +1038,6 @@ export const apiClient = {
 
   async getDocDiagnostics(docPath: string): Promise<DocDiagnosticsResponse> {
     const encoded = encodeDocPath(docPath);
-    return requestJson<DocDiagnosticsResponse>(`/api/documents/${encoded}/diagnostics`);
+    return requestJson<DocDiagnosticsResponse>(`/api/workspace/${encoded}/diagnostics`);
   },
 };

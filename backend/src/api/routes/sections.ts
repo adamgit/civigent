@@ -8,8 +8,8 @@ import {
   agentWritePolicyRouteBody,
 } from "./middleware.js";
 import {
-  readSingleSection,
   readCanonicalSectionList,
+  readWorkspaceSectionList,
   deleteSectionUseCase,
   moveSectionUseCase,
   renameSectionUseCase,
@@ -17,16 +17,13 @@ import {
   hasActiveSession,
   broadcastAgentReading,
   SectionNotFoundForMoveError,
-  SectionNotFoundError,
-  HeadingNotFoundError,
   InvalidDocPathError,
   DocumentNotFoundError,
   DocumentAssemblyError,
 } from "../application/sections.js";
-import { emitDocStructureChanged, resolveSectionFragmentKey } from "../application/events.js";
-import { QueryParamError, optionalStringParam } from "../helpers/query-params.js";
+import { emitCanonicalStructureChanged, resolveSectionFragmentKey } from "../application/events.js";
 
-// Helper: parse heading path from URL param (colon-separated)
+
 function parseHeadingPathParam(raw: string): string[] {
   return raw.split(":").map((s) => decodeURIComponent(s.trim())).filter(Boolean);
 }
@@ -35,44 +32,9 @@ export function registerSectionRoutes(
   router: Router,
   onWsEvent: ((event: WsServerEvent) => void) | undefined,
 ): void {
-  // GET /sections — read a single section by query params
-  router.get("/sections", async (req, res, next) => {
-    try {
-      const docPath = optionalStringParam(req.query.doc_path, "doc_path");
-      const headingPathRaw = optionalStringParam(req.query.heading_path, "heading_path");
-
-      if (!docPath || !headingPathRaw) {
-        sendApiError(res, 400, "doc_path and heading_path query params are required.");
-        return;
-      }
-
-      const headingPath = headingPathRaw.split("/").map((s) => s.trim()).filter(Boolean);
-      const response = await readSingleSection(docPath, headingPath);
-
-      broadcastAgentReading(req, docPath, [headingPath], onWsEvent);
-      res.json(response);
-    } catch (error) {
-      if (error instanceof QueryParamError) {
-        sendApiError(res, 400, error);
-        return;
-      }
-      if (error instanceof SectionNotFoundError || error instanceof HeadingNotFoundError) {
-        sendApiError(res, 404, error);
-        return;
-      }
-      if (error instanceof InvalidDocPathError) {
-        sendApiError(res, 400, error);
-        return;
-      }
-      next(error);
-    }
-  });
-
-  // GET /documents/:docPath/sections — CANONICAL section list with involvement
-  // metadata. Proposal-scoped reads live on the dedicated
-  // `GET /api/proposals/:id/documents/:docPath/sections` route — this route is
-  // canonical-only and takes no proposal_id parameter.
-  router.get("/documents/:docPath(*)/sections", async (req, res, next) => {
+  
+  // GET /canonical/:docPath/sections — committed section list (emits agent:reading)
+  router.get("/canonical/:docPath(*)/sections", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
       const access = await requireDocReadPermission(req, res, docPath);
@@ -96,26 +58,32 @@ export function registerSectionRoutes(
     }
   });
 
-  // POST /api/documents/:docPath/sections — DISABLED per items 323-327.
-  router.post("/documents/:docPath(*)/sections", async (_req, res) => {
-    sendApiError(
-      res,
-      410,
-      "POST /api/documents/:docPath/sections is disabled because it mixed " +
-        "structural inputs (heading, level) with arbitrary markdown content " +
-        "without a defined reconciliation contract. Example: level=2 with " +
-        "content starting `# New Heading` is ambiguous (preserve level 2? " +
-        "normalize to the markdown heading? reject? split/rewrite?). The " +
-        "route must not be re-enabled until ONE contract is chosen. Future " +
-        "implementers: either (a) redesign as a pure upsert-style content " +
-        "API around upsertSection(), or (b) redesign as a " +
-        "strictly structural API with content rules that forbid structural " +
-        "ambiguity.",
-    );
+  // GET /workspace/:docPath/sections — working-copy section list (no agent:reading)
+  router.get("/workspace/:docPath(*)/sections", async (req, res, next) => {
+    try {
+      const docPath = req.params.docPath;
+      const access = await requireDocReadPermission(req, res, docPath);
+      if (!access) return;
+
+      const { response } = await readWorkspaceSectionList(docPath);
+
+      const out: GetDocumentSectionsResponse = response;
+      res.json(out);
+    } catch (error) {
+      if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      if (error instanceof DocumentAssemblyError) {
+        sendApiError(res, 500, error);
+        return;
+      }
+      next(error);
+    }
   });
 
-  // DELETE /api/documents/:docPath/sections/:headingPath — Delete a section
-  router.delete("/documents/:docPath(*)/sections/:headingPath", async (req, res, next) => {
+  // DELETE /workspace/:docPath/sections/:headingPath
+  router.delete("/workspace/:docPath(*)/sections/:headingPath", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
       const writer = await requireDocWritePermission(req, res, docPath);
@@ -132,9 +100,9 @@ export function registerSectionRoutes(
         return;
       }
 
-      // MW-5: resolve the section's CRDT fragment_key BEFORE the delete commits —
-      // afterwards the section no longer resolves in the canonical layout. We emit
-      // the captured `section:gone` only once the delete actually succeeds.
+      
+      
+      
       const goneFragmentKey = await resolveSectionFragmentKey(docPath, headingPath);
 
       const result = await deleteSectionUseCase(docPath, headingPath, writer);
@@ -150,9 +118,9 @@ export function registerSectionRoutes(
         return;
       }
 
-      emitDocStructureChanged(onWsEvent, docPath);
-      // MW-5: the section's canonical identity was deleted → emit `section:gone`
-      // keyed by the pre-delete fragment_key so live viewers un-mount it.
+      await emitCanonicalStructureChanged(onWsEvent, docPath);
+      
+      
       if (onWsEvent && goneFragmentKey) {
         onWsEvent({
           type: "section:gone",
@@ -178,12 +146,12 @@ export function registerSectionRoutes(
     }
   });
 
-  // POST /api/documents/:docPath/live-move — LIVE human drag-drop cross-section
-  // move (claim-review 03 / Option E). A refusable CONTROL operation on the open
-  // DocSession, explicitly OUTSIDE the CRDT binary protocol: 200 {ok} on success,
-  // 409 {message} (prose) on refusal. DISTINCT from the agent proposal-structure
-  // move route below.
-  router.post("/documents/:docPath(*)/live-move", async (req, res, next) => {
+  
+  
+  
+  
+  
+  router.post("/workspace/:docPath(*)/live-move", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
       const writer = await requireDocWritePermission(req, res, docPath);
@@ -198,7 +166,7 @@ export function registerSectionRoutes(
 
       const result = await liveMoveSectionUseCase(docPath, source_heading_path, target_heading_path, position);
       if (!result.ok) {
-        // Apply-time refusal → 409 with the backend's prose (never a bare code).
+        
         sendApiError(res, 409, result.message ?? "The section move was refused.");
         return;
       }
@@ -212,8 +180,8 @@ export function registerSectionRoutes(
     }
   });
 
-  // PUT /api/documents/:docPath/sections/:headingPath/move — Move a section
-  router.put("/documents/:docPath(*)/sections/:headingPath/move", async (req, res, next) => {
+  
+  router.put("/workspace/:docPath(*)/sections/:headingPath/move", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
       const writer = await requireDocWritePermission(req, res, docPath);
@@ -258,7 +226,7 @@ export function registerSectionRoutes(
         return;
       }
 
-      emitDocStructureChanged(onWsEvent, docPath);
+      await emitCanonicalStructureChanged(onWsEvent, docPath);
 
       res.status(200).json({
         doc_path: docPath,
@@ -277,8 +245,8 @@ export function registerSectionRoutes(
     }
   });
 
-  // PUT /api/documents/:docPath/sections/:headingPath/rename — Rename a section heading
-  router.put("/documents/:docPath(*)/sections/:headingPath/rename", async (req, res, next) => {
+  
+  router.put("/workspace/:docPath(*)/sections/:headingPath/rename", async (req, res, next) => {
     try {
       const docPath = req.params.docPath;
       const writer = await requireDocWritePermission(req, res, docPath);
@@ -314,7 +282,7 @@ export function registerSectionRoutes(
         return;
       }
 
-      emitDocStructureChanged(onWsEvent, docPath);
+      await emitCanonicalStructureChanged(onWsEvent, docPath);
 
       res.status(200).json({
         doc_path: docPath,

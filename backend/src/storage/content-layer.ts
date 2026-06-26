@@ -1061,40 +1061,15 @@ export class ProposalShadowContentLayer {
         `Illegal arguments: targeting the headingless root section but provided a heading.`,
       );
     }
-    // A non-BFH target with an empty heading is the NESTED BODY-HOLDER write
-    // shape (`{ headingPath:[...non-empty], heading:"", level:0 }`), produced by
-    // the live-document snapshot (`forEachSection`) for a sub-skeleton parent's
-    // body-holder child. `upsertSection` resolves the parent's real heading
-    // before dispatching, so the empty heading is legal here — the caller is
-    // asking to update that section's own body, not to create a headless node.
-    // It is only rejected when the section can't be resolved (handled in
-    // `upsertSection`), never via this argument-shape guard.
-  }
-
-  /**
-   * Resolve a NESTED BODY-HOLDER write target (`heading === ""`,
-   * `headingPath.length > 0`) to the existing section's real heading + level.
-   *
-   * This shape is emitted by `DocumentSkeleton.forEachSection` (and therefore the
-   * live-document snapshot in `ydoc-lifecycle.ts`) for the body-holder child of a
-   * sub-skeleton parent: the entry carries the PARENT's heading path but the
-   * body-holder's anonymous `("", 0)` shape. A body-only update to that section
-   * must preserve the parent heading, level, and all descendant sections, so we
-   * recover the parent identity from the live skeleton and let the body-only
-   * convenience path (Case C → item-378 children-preservation) do the write.
-   *
-   * Returns `null` when the target section does not yet exist in the live
-   * skeleton — there is no parent identity to recover, so the empty heading is a
-   * genuine caller error and the validator's rejection stands.
-   */
-  private async resolveNestedBodyHolderHeading(
-    ref: SectionRef,
-  ): Promise<{ heading: string; level: number } | null> {
-    if ((await this.getDocumentState(ref.docPath)) !== "live") return null;
-    const skeleton = await this.readSkeleton(ref.docPath);
-    const existing = skeleton.findStructuralNodeByHeadingPath(ref.headingPath);
-    if (!existing) return null;
-    return { heading: existing.heading, level: existing.level };
+    // Option A: the ONLY headingless live fragment is the document-level BFH
+    // (`headingPath: []`). A sub-skeleton parent's body-holder now carries the
+    // parent's real heading on the live snapshot, so a non-BFH target with an
+    // empty heading is no longer a legal shape — it can only be a caller error.
+    if (!targetingBfh && !headingProvided) {
+      throw new Error(
+        `Illegal arguments: targeting a headed section but missing the section heading.`,
+      );
+    }
   }
 
   async upsertSection(
@@ -1119,30 +1094,9 @@ export class ProposalShadowContentLayer {
       return await this.writeSectionBodyVerbatim(ref, content as unknown as SectionBody);
     }
 
-    // ── Nested body-holder body-only write ────────────────────────────
-    //
-    // A non-BFH target with an empty heading is the body-holder snapshot shape
-    // for a sub-skeleton parent (see `resolveNestedBodyHolderHeading`). Recover
-    // the parent's real heading + level from the live skeleton and route the
-    // body through the body-only convenience path (Case C), which lands on the
-    // item-378 children-preservation branch — updating only the parent's own
-    // body and leaving every descendant section intact. Without this, the
-    // snapshot re-materialize of a post-split body-holder would either throw
-    // (empty heading) or clobber descendants. When the section can't be
-    // resolved the empty heading is a real caller error — re-run the guard so
-    // it throws the original "missing the section heading" message.
-    if (heading.trim().length === 0) {
-      const resolved = await this.resolveNestedBodyHolderHeading(ref);
-      if (resolved === null) {
-        throw new Error(
-          `Illegal arguments: targeting a headed section but missing the section heading.`,
-        );
-      }
-      const markdown = content
-        ? `${"#".repeat(resolved.level)} ${resolved.heading}\n\n${content}`
-        : `${"#".repeat(resolved.level)} ${resolved.heading}`;
-      return await this.upsertSectionFromMarkdownCore(ref, markdown);
-    }
+    // Option A: a non-BFH target always carries a real heading (the body-holder
+    // snapshot now reports the parent heading), and the validator above rejects an
+    // empty heading here — so there is no nested-body-holder empty-heading branch.
 
     const parsed = getParser().parseDocumentMarkdown(content);
     const firstHeaded = parsed.find((sec) => !parsedSectionIsHeadless(sec));

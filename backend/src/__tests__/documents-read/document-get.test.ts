@@ -4,7 +4,7 @@ import { createTestServer } from "../helpers/test-server.js";
 import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 import type { TestServerContext } from "../helpers/test-server.js";
 
-describe("GET /api/documents/:doc_path", () => {
+describe("GET /api/canonical/:doc_path", () => {
   let ctx: TestServerContext;
 
   beforeAll(async () => {
@@ -18,7 +18,7 @@ describe("GET /api/documents/:doc_path", () => {
 
   it("returns assembled markdown content with doc_path, content, head_sha, sections_meta", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
+      .get(`/api/canonical/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -32,7 +32,7 @@ describe("GET /api/documents/:doc_path", () => {
 
   it("returns head_sha as a string", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
+      .get(`/api/canonical/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -42,7 +42,7 @@ describe("GET /api/documents/:doc_path", () => {
 
   it("returns sections_meta as an array", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
+      .get(`/api/canonical/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -52,7 +52,7 @@ describe("GET /api/documents/:doc_path", () => {
 
   it("returns 404 for non-existent document", async () => {
     const res = await request(ctx.app)
-      .get("/api/documents/nonexistent.md")
+      .get("/api/canonical/nonexistent.md")
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(404);
@@ -60,7 +60,7 @@ describe("GET /api/documents/:doc_path", () => {
 
   it("returns 404 for path traversal attempt", async () => {
     const res = await request(ctx.app)
-      .get("/api/documents/../../etc/passwd")
+      .get("/api/canonical/../../etc/passwd")
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(404);

@@ -81,7 +81,9 @@ function renderCanvas(
         crdtSynced={true}
         crdtState={crdtState}
         transferService={null}
-        readyEditors={focusedSectionIndex !== null ? new Set([focusedSectionIndex]) : new Set()}
+        readyEditors={focusedSectionIndex !== null && sections[focusedSectionIndex]
+          ? new Set([sections[focusedSectionIndex].fragment_key])
+          : new Set<string>()}
         localEditSink={{ recordLocalEdit: () => {} }}
         mouseDownPosRef={{ current: null }}
         onStartEditing={() => {}}

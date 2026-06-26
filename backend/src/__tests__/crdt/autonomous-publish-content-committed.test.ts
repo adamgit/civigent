@@ -28,8 +28,10 @@ import {
   publishOnLastEditorDisconnect,
   requestDocSessionPublish,
   armQuiescenceTimer,
+  registerFakeEditorSocketForTest,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
+import type { DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
 import type { FragmentContent, SectionBody } from "../../storage/section-formatting.js";
 import { getHeadSha } from "../../storage/git-repo.js";
@@ -38,6 +40,7 @@ import type { WsServerEvent } from "../../types/shared.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 const OVERVIEW_KEY = "section::overview";
+const EDITOR_SOCKET = "editor-sock-1";
 
 async function openSession() {
   const baseHead = await getHeadSha(getDataRoot());
@@ -49,9 +52,34 @@ async function drainLane(session: { enqueue: <T>(c: () => T | Promise<T>) => Pro
   await session.enqueue(() => undefined);
 }
 
+/**
+ * Ack an OFF-lane publish pause (a required editor socket is attached) the way
+ * the post-C2 handler does — directly, off the lane — and pump fake timers until
+ * the finalize lane command commits and clears the current proposal.
+ */
+async function ackPauseAndCommit(session: DocSession, socketId: string): Promise<void> {
+  // The off-lane publish (runPublishAttempt) establishes the pause ONE microtask
+  // after the quiescence command returns; the structural-normalization (split) path
+  // lengthens that chain, so a single lane drain can race ahead of pause-establishment.
+  // Pump fake timers until the pause is actually up before asserting/acking. (Real-timer
+  // suites such as publish-pause-deadlock poll via waitUntil for the same reason.)
+  for (let i = 0; i < 200 && !session.publishPause.isActive(); i++) {
+    await vi.advanceTimersByTimeAsync(1);
+    await session.enqueue(() => undefined);
+  }
+  expect(session.publishPause.isActive()).toBe(true);
+  expect(session.generator.hasCurrentProposal()).toBe(true);
+  session.publishPause.markReady(socketId);
+  for (let i = 0; i < 50 && session.generator.hasCurrentProposal(); i++) {
+    await vi.advanceTimersByTimeAsync(1);
+  }
+  await drainLane(session);
+}
+
 describe("Claim 1: CRDT autonomous publish emits content:committed", () => {
   let ctx: TempDataRootContext;
   let wsEvents: WsServerEvent[];
+  const disposers: Array<() => void> = [];
 
   beforeEach(async () => {
     ctx = await createTempDataRoot();
@@ -61,6 +89,7 @@ describe("Claim 1: CRDT autonomous publish emits content:committed", () => {
   });
 
   afterEach(async () => {
+    while (disposers.length) disposers.pop()!();
     setCrdtEventHandler(() => undefined);
     destroyAllSessions();
     vi.useRealTimers();
@@ -96,9 +125,14 @@ describe("Claim 1: CRDT autonomous publish emits content:committed", () => {
     expect(event.contributor_ids).toContain(WRITER.id);
   });
 
-  it("emits content:committed on quiescence (settled-dirty-frontier) publish", async () => {
+  it("emits content:committed on quiescence (settled-dirty-frontier) publish via the off-lane editor ack", async () => {
     vi.useFakeTimers();
     const session = await openSession();
+    // A live editor socket is attached, so the settled-dirty-frontier publish goes
+    // through the production off-lane pause + editor ack — the path the live UI
+    // actually depends on for its `content:committed` refresh (NOT the inline
+    // empty-required-set short-circuit that fires only when no editor is present).
+    disposers.push(registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, EDITOR_SOCKET).dispose);
 
     const edited: FragmentContent = buildFragmentContent(
       "autonomously published body" as SectionBody,
@@ -113,6 +147,9 @@ describe("Claim 1: CRDT autonomous publish emits content:committed", () => {
     armQuiescenceTimer(session);
     await vi.advanceTimersByTimeAsync(session.generator.publishTriggerPolicy.quiescenceThresholdMs + 50);
     await drainLane(session);
+
+    // The publish entered the OFF-lane pause (it did NOT commit inline) — ack it.
+    await ackPauseAndCommit(session, EDITOR_SOCKET);
 
     // Settled-dirty-frontier publish cleared the current-proposal reference.
     expect(session.generator.hasCurrentProposal()).toBe(false);

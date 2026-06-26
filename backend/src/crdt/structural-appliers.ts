@@ -81,15 +81,14 @@ export function updateFragmentPreservingIdentity(
 
 /**
  * A precomputed identity-preserving split: mutate the survivor fragment in place
- * (delete the moved-out trailing nodes; optionally strip the leading heading when
- * the survivor became a body-holder) and seed each genuinely-new fragment.
+ * (delete the moved-out trailing nodes) and seed each genuinely-new fragment.
+ * Under Option A every live fragment carries its heading — including a survivor
+ * that becomes a sub-skeleton parent — so there is no leading-heading strip.
  */
 export interface StructuralSplitPlan {
   survivorKey: string;
   /** Delete survivor children from this index to the end (the moved-out content). */
   deleteFrom: number;
-  /** Strip the leading heading node (survivor became a body-holder body-only). */
-  stripLeadingHeading: boolean;
   /** New fragment key → its full content, seeded fresh (no prior identity). */
   seeds: Map<string, FragmentContent>;
   /** Fragment keys this plan touches, for the generator's pre-flight clock check. */
@@ -134,11 +133,10 @@ function indexOfNthHeading(ydoc: Y.Doc, fragmentKey: string, n: number): number 
  *      • section-split: from the SECOND heading (the first heading is the
  *        survivor's own heading);
  *      • root-split: from the FIRST heading (the root/BFH survivor has no heading).
- *  - When the survivor became a sub-skeleton parent its body now lives in a
- *    body-holder (the layout entry for the survivor key carries heading="" at
- *    level 0 under a non-empty heading path), so the leading heading node is
- *    stripped — leaving the survivor fragment body-only, which is what the live
- *    source's re-snapshot expects. A sibling-split survivor keeps its heading.
+ *  - The survivor ALWAYS keeps its own heading line (Option A: every live fragment
+ *    carries its heading, including a survivor that becomes a sub-skeleton parent —
+ *    its body-holder layout entry now reports the parent's visible heading/level,
+ *    and `snapshotSections` strips that heading at the parent level on re-snapshot).
  *  - New sections are whatever layout keys are absent from the live set; each is
  *    seeded from the proposal body at its authoritative heading/level.
  *
@@ -157,15 +155,6 @@ export async function computeStructuralSplitPlan(
   const liveKeys = new Set(liveFragments.getFragmentKeys());
   const addedEntries = layout.filter((e) => !liveKeys.has(e.fragmentKey));
   if (addedEntries.length === 0) return null;
-
-  // Survivor body-holder detection: after a child-split the survivor's key maps
-  // to a body-holder (heading="" / level 0) under a real heading path.
-  const survivorEntry = layout.find((e) => e.fragmentKey === dirtyKey);
-  const survivorIsBodyHolder =
-    !!survivorEntry &&
-    survivorEntry.heading === "" &&
-    survivorEntry.level === 0 &&
-    survivorEntry.headingPath.length > 0;
 
   // Moved-out boundary: the first NEW heading. root-split → 1st heading;
   // section-split → 2nd heading (the survivor owns the 1st).
@@ -186,7 +175,6 @@ export async function computeStructuralSplitPlan(
   return {
     survivorKey: dirtyKey,
     deleteFrom,
-    stripLeadingHeading: survivorIsBodyHolder,
     seeds,
     affectedKeys: [dirtyKey, ...addedEntries.map((e) => e.fragmentKey)],
   };
@@ -195,8 +183,8 @@ export async function computeStructuralSplitPlan(
 /**
  * Apply a precomputed split plan INSIDE the generator's `Y.transact`. The
  * survivor's surviving children keep their struct ids; only the moved-out
- * trailing nodes (and, for a body-holder survivor, the leading heading) are
- * tombstoned. New fragments are seeded fresh.
+ * trailing nodes are tombstoned (the survivor keeps its own heading — Option A).
+ * New fragments are seeded fresh.
  */
 export function applyStructuralSplitPlan(
   liveFragments: LiveFragmentStringsStore,
@@ -205,14 +193,9 @@ export function applyStructuralSplitPlan(
   origin: unknown,
 ): void {
   const frag = ydoc.getXmlFragment(plan.survivorKey);
-  // Delete the moved-out trailing nodes first (higher indices), so the leading
-  // heading strip below operates on stable indices.
+  // Delete the moved-out trailing nodes (the survivor keeps its heading + body).
   if (plan.deleteFrom < frag.length) {
     frag.delete(plan.deleteFrom, frag.length - plan.deleteFrom);
-  }
-  // Strip the leading heading node when the survivor became a body-holder.
-  if (plan.stripLeadingHeading && frag.length > 0 && isHeadingNode(frag.get(0))) {
-    frag.delete(0, 1);
   }
   // Seed genuinely-new fragments (identity does not matter — they are new).
   for (const [key, content] of plan.seeds) {

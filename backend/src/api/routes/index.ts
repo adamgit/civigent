@@ -8,7 +8,8 @@ import {
   installErrorHandler,
 } from "./middleware.js";
 import { registerAuthRoutes } from "./auth.js";
-import { registerDocumentRoutes, registerDocumentCatchAllRoutes } from "./documents.js";
+import { registerCanonicalRoutes, registerCanonicalCatchAllRoutes } from "./canonical.js";
+import { registerWorkspaceRoutes, registerWorkspaceCatchAllRoutes } from "./workspace.js";
 import { registerSectionRoutes } from "./sections.js";
 import { registerProposalRoutes } from "./proposals.js";
 import { registerImportRoutes } from "./imports.js";
@@ -44,7 +45,8 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
 
   // Route modules.
   registerAuthRoutes(router);
-  registerDocumentRoutes(router, onWsEvent);
+  registerCanonicalRoutes(router, onWsEvent);
+  registerWorkspaceRoutes(router, onWsEvent);
   registerSectionRoutes(router, onWsEvent);
   registerSearchRoutes(router);
   registerProposalRoutes(router, onWsEvent);
@@ -53,9 +55,10 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   registerAdminRoutes(router);
   registerGitRoutes(router);
 
-  // Document catch-all (`:docPath(*)`) routes MUST register last so they never
-  // shadow more-specific /documents/ routes.
-  registerDocumentCatchAllRoutes(router, onWsEvent);
+  // Catch-all (`:docPath(*)`) routes MUST register last so they never shadow the
+  // more-specific /canonical/ and /workspace/ routes.
+  registerCanonicalCatchAllRoutes(router, onWsEvent);
+  registerWorkspaceCatchAllRoutes(router, onWsEvent);
 
   // Error handler installed last.
   installErrorHandler(router);

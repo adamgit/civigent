@@ -121,7 +121,7 @@ export function AppLayout() {
       payload: { background: !!options?.background },
     });
     return apiClient
-      .getDocumentsTree()
+      .getWorkspaceTree()
       .then((response) => {
         setEntries(response.tree);
         setTreeError(null);

@@ -3,15 +3,15 @@
  *
  * After an author types an embedded heading into a fragment and `materializeEdit()`
  * splits it into a body-holder + a new section, the live document layout
- * (`resolveLiveSectionLayout` / `forEachSection`) emits the nested body-holder as
- * `{ headingPath: ["Overview"], heading: "", level: 0 }`. Re-snapshotting that into
- * the proposal via `ProposalEditor.writeSection(docPath, ["Overview"], "", body)`
- * USED to throw "targeting a headed section but missing the section heading"
- * (`content-layer.ts validateUpsertHeadingArgument`).
+ * (`resolveLiveSectionLayout` / `forEachVisibleSection`) emits the nested
+ * body-holder with its PARENT's VISIBLE heading + level (Option A:
+ * `{ headingPath: ["Overview"], heading: "Overview", level: <##> }`), and its live
+ * fragment RETAINS the `## Overview` heading line — NOT the literal `("", 0)`
+ * body-holder shape the live path used to report. Re-snapshotting still round-trips
+ * correctly (preserving the parent heading + its children).
  *
- * Fixed: the materialize/upsert contract now round-trips a nested body-holder as a
- * body-only write to its parent section, preserving the parent heading and its
- * children. This test FAILS (throws) without that fix.
+ * Fixed: the materialize/upsert contract round-trips the body-holder as a body
+ * write to its parent section, preserving the parent heading and its children.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -74,8 +74,9 @@ describe("MW-16: materialize after a structural-dirty split", () => {
     void proposalId;
 
     // SECOND materialize — re-snapshots the post-split layout, which now contains
-    // the nested body-holder { headingPath:["Overview"], heading:"", level:0 }.
-    // Pre-fix: throws "targeting a headed section but missing the section heading".
+    // the nested body-holder reported (Option A) with the parent's VISIBLE heading
+    // { headingPath:["Overview"], heading:"Overview", level:<##> }.
+    // Pre-fix: threw "targeting a headed section but missing the section heading".
     const secondId = await session.generator.materializeEdit();
 
     // THIRD materialize — must remain stable (still does not throw).
@@ -97,8 +98,72 @@ describe("MW-16: materialize after a structural-dirty split", () => {
     const headings = layout.map((e) => e.heading);
     expect(headings).toContain("New Sub");
     expect(headings).toContain("Timeline");
+    // Option A: the Overview body-holder is reported with the parent's VISIBLE
+    // heading + level (same `##` level as a top-level sibling like Timeline), NOT
+    // the literal `("", 0)` shape.
+    const overviewBodyHolder = layout.find(
+      (e) => e.headingPath.length === 1 && e.headingPath[0] === "Overview",
+    );
+    expect(overviewBodyHolder).toBeDefined();
+    expect(overviewBodyHolder!.heading).toBe("Overview");
+    const timelineEntry = layout.find((e) => e.heading === "Timeline")!;
+    expect(overviewBodyHolder!.level).toBe(timelineEntry.level);
+    expect(overviewBodyHolder!.level).toBeGreaterThan(0);
+
+    // …and the survivor's LIVE fragment RETAINS its heading line (Option A: every
+    // live fragment carries its heading; the body-holder is no longer body-only).
+    const { buildLiveSeedContentMap } = await import("../../crdt/live-section-layout.js");
+    const seed = await buildLiveSeedContentMap(SAMPLE_DOC_PATH, thirdId);
+    const overviewFragment = seed.get(overviewBodyHolder!.fragmentKey) as unknown as string;
+    expect(overviewFragment.startsWith(`${"#".repeat(overviewBodyHolder!.level)} Overview`)).toBe(true);
+    expect(overviewFragment).toContain("base overview body");
+  });
+
+  it("a second (and third) materializeEdit() after a SIBLING split does not throw and preserves both sections", async () => {
+    vi.useFakeTimers();
+    const session = await openSession();
+
+    // Author types a SECOND SAME-LEVEL (`##`) heading inside the Overview fragment,
+    // then materializes — this splits Overview into a LEAF survivor + a new SIBLING
+    // section (the survivor keeps its heading, so the body-holder branch of
+    // `computeStructuralSplitPlan` is NOT taken — a distinct code path from the
+    // nested-child case above).
+    const dirty =
+      "## Overview\n\nbase overview body\n\n## Second Section\n\nbrand new sibling body" as FragmentContent;
+    session.liveFragments.replaceFragmentString(OVERVIEW_KEY, dirty);
+    session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
+    await session.generator.materializeEdit();
+
+    // Settle the split into the live Y.Doc (the new sibling fragment is born).
+    await fireQuiescence(session);
+
+    // SECOND + THIRD materialize — re-snapshots the post-split layout (a leaf
+    // Overview + a top-level Second Section). Must remain stable and not throw.
+    const secondId = await session.generator.materializeEdit();
+    const thirdId = await session.generator.materializeEdit();
+    expect(thirdId).toBe(secondId);
+
+    // The proposal content tree is correct: Overview keeps its (leaf) body, and the
+    // new Second Section is a TOP-LEVEL sibling carrying the moved-out body.
+    const { ProposalReader } = await import("../../storage/proposal-reader.js");
+    const reader = ProposalReader.open(thirdId, "inprogress");
+    const overviewBody = (await reader.readSection(SAMPLE_DOC_PATH, ["Overview"])) as unknown as string;
+    expect(overviewBody).toContain("base overview body");
+    expect(overviewBody).not.toContain("brand new sibling body");
+    const siblingBody = (await reader.readSection(SAMPLE_DOC_PATH, ["Second Section"])) as unknown as string;
+    expect(siblingBody).toContain("brand new sibling body");
+
+    // The live layout resolves Overview (leaf) + Second Section + Timeline.
+    const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, thirdId);
+    const headings = layout.map((e) => e.heading);
+    expect(headings).toContain("Overview");
+    expect(headings).toContain("Second Section");
+    expect(headings).toContain("Timeline");
+    // The survivor stays a LEAF — there is NO heading="" body-holder for Overview.
     expect(
       layout.some((e) => e.headingPath.length === 1 && e.headingPath[0] === "Overview" && e.heading === ""),
-    ).toBe(true);
+    ).toBe(false);
+    const sibling = layout.find((e) => e.heading === "Second Section")!;
+    expect(sibling.headingPath).toEqual(["Second Section"]);
   });
 });

@@ -22,8 +22,8 @@ export interface UseSectionFocusParams {
   sections: DocumentSection[];
   presenceRef: React.MutableRefObject<LocalPresence | null>;
   storeRef: React.MutableRefObject<BrowserFragmentReplicaStore | null>;
-  readyEditors: Set<number>;
-  editorRefs: React.MutableRefObject<Map<number, MilkdownEditorHandle>>;
+  readyEditors: Set<string>;
+  editorRefs: React.MutableRefObject<Map<string, MilkdownEditorHandle>>;
   ensureProvider: () => Promise<CrdtTransport | null>;
 }
 
@@ -107,14 +107,18 @@ export function useSectionFocus({
     }
   }, [sections, setViewingSection, presenceRef, canFocusSection]);
 
-  // Focus editor after it is ready AND visible
+  // Focus editor after it is ready AND visible. Readiness + ref are keyed by
+  // fragment identity, so resolve the pending index → its CURRENT fragment key.
   useEffect(() => {
     if (!pendingFocusRef.current) return;
     const { index, position, coords } = pendingFocusRef.current;
-    if (!readyEditors.has(index)) return;
+    const section = sections[index];
+    if (!section) return;
+    const fk = getSectionFragmentKey(section);
+    if (!readyEditors.has(fk)) return;
 
     const raf = requestAnimationFrame(() => {
-      const handle = editorRefs.current.get(index);
+      const handle = editorRefs.current.get(fk);
       if (handle) {
         if (coords) {
           handle.focusAtCoords(coords.x, coords.y);
@@ -126,7 +130,18 @@ export function useSectionFocus({
     });
 
     return () => cancelAnimationFrame(raf);
-  }, [focusedSectionIndex, readyEditors, editorRefs]);
+  }, [focusedSectionIndex, readyEditors, editorRefs, sections]);
+
+  // Reconcile the React focus STATE after a structural shift. `adoptFreshSectionLayout`
+  // already moved `focusedSectionIndexRef` to the focused fragment's NEW index by
+  // identity, but the state at `useState` above is left stale — so the mount-window /
+  // eviction effects (keyed off the state) never re-run. Syncing state to the
+  // reconciled ref on every sections change fixes the index for the focused fragment
+  // (or clears it when that fragment is gone). No-op when focus did not move.
+  useEffect(() => {
+    const reconciled = focusedSectionIndexRef.current;
+    setFocusedSectionIndex((prev) => (prev === reconciled ? prev : reconciled));
+  }, [sections]);
 
   // Restore focus after a sections refresh re-fetches sections
   useEffect(() => {

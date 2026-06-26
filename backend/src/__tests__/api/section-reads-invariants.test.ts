@@ -1,7 +1,7 @@
 /**
  * Group A9: REST API Section Reads Invariant Tests
  *
- * Iteration 3.5 invariant tests for GET /documents/:docPath/sections.
+ * Iteration 3.5 invariant tests for GET /canonical/:docPath/sections.
  * Document section reads are canonical-only; live CRDT/proposal state is not
  * overlaid through this endpoint.
  */
@@ -28,7 +28,7 @@ describe("A9: REST API Section Reads Invariants", () => {
 
   it("A9.1: GET sections returns canonical section content", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${DOC_PATH_URL}/sections`)
+      .get(`/api/canonical/${DOC_PATH_URL}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -44,7 +44,7 @@ describe("A9: REST API Section Reads Invariants", () => {
 
   it("A9.2: section list reflects canonical DocumentSkeleton structure", async () => {
     const res = await request(ctx.app)
-      .get(`/api/documents/${DOC_PATH_URL}/sections`)
+      .get(`/api/canonical/${DOC_PATH_URL}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);

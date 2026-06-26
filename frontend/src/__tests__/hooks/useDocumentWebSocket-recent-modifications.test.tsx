@@ -31,7 +31,7 @@ vi.mock("../../services/ws-client", () => ({
 }));
 
 vi.mock("../../services/api-client", () => ({
-  apiClient: { getDocumentSections: async () => ({ sections: [] }) },
+  apiClient: { getWorkspaceDocumentSections: async () => ({ sections: [] }) },
   resolveWriterId: () => "test-user",
 }));
 

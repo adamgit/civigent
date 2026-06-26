@@ -120,7 +120,12 @@ export async function gitLogRecent(
     `--skip`, String(skip),
   ];
   if (opts.docPath) {
-    args.push("--", `${getContentGitPrefix()}/${opts.docPath}`);
+    // Scope to BOTH the skeleton file AND its nested `.sections/` body tree. A doc's
+    // commits frequently change ONLY nested section files (editing a child section
+    // never touches the top-level skeleton), so filtering on the skeleton path alone
+    // silently drops those commits from the document's history.
+    const base = `${getContentGitPrefix()}/${opts.docPath}`;
+    args.push("--", base, `${base}.sections/`);
   }
   let output: string;
   try {

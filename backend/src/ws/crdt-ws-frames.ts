@@ -97,7 +97,7 @@ export const MSG_DOC_PUBLISH_PAUSE_END = 0x12;
 // ─── Cross-section move — REMOVED from the binary protocol ───────
 // Opcode 0x13 is RESERVED/UNUSED (do not reassign). The live cross-section move
 // was moved off the CRDT binary channel onto a REST control-plane endpoint
-// (`POST /documents/:docPath/live-move` → `requestDocSessionMove(...)`), because
+// (`POST /workspace/:docPath/live-move` → `requestDocSessionMove(...)`), because
 // it is a refusable CONTROL operation (request/response + prose refusal), not
 // content propagation where "the YJS_UPDATE delta is the broadcast"
 // (claim-review 03 / Option E). 0x08 also stays permanently reserved-removed.

@@ -113,7 +113,7 @@ function AddSectionForm({
   // Load headings when doc changes
   useEffect(() => {
     if (!addDocPath) { setAddHeadings([]); return; }
-    apiClient.getDocumentStructure(addDocPath)
+    apiClient.getCanonicalDocumentStructure(addDocPath)
       .then((data) => {
         if (data.structure) setAddHeadings(flattenHeadings(data.structure));
       })
@@ -299,7 +299,7 @@ export function AgentSimulatorPage() {
 
   // Load document tree on mount
   useEffect(() => {
-    apiClient.getDocumentsTree()
+    apiClient.getWorkspaceTree()
       .then((data) => {
         const docs = (data.tree ?? []).filter((e: { type: string }) => e.type === "file");
         setDocTree(docs);
@@ -313,7 +313,7 @@ export function AgentSimulatorPage() {
       setHeadings([]);
       return;
     }
-    apiClient.getDocumentStructure(docPath)
+    apiClient.getCanonicalDocumentStructure(docPath)
       .then((data) => {
         if (data.structure) {
           setHeadings(flattenHeadings(data.structure));

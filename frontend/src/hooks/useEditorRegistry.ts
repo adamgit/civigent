@@ -35,11 +35,13 @@ export interface UseEditorRegistryParams {
 }
 
 export interface UseEditorRegistryReturn {
-  readyEditors: Set<number>;
-  setReadyEditors: React.Dispatch<React.SetStateAction<Set<number>>>;
-  editorRefs: React.MutableRefObject<Map<number, MilkdownEditorHandle>>;
+  /** Ready editors keyed by `fragment_key` (identity), not positional index. */
+  readyEditors: Set<string>;
+  setReadyEditors: React.Dispatch<React.SetStateAction<Set<string>>>;
+  /** Editor handles keyed by `fragment_key` (identity), not positional index. */
+  editorRefs: React.MutableRefObject<Map<string, MilkdownEditorHandle>>;
   mountedEditorFragmentKeysRef: React.MutableRefObject<Set<string>>;
-  setEditorRef: (index: number, handle: MilkdownEditorHandle | null) => void;
+  setEditorRef: (fragmentKey: string, handle: MilkdownEditorHandle | null) => void;
   /** True when section `index` may be mounted (not blocked, not gone). */
   mountEligible: (index: number) => boolean;
 }
@@ -61,8 +63,8 @@ export function useEditorRegistry({
   store,
   transport,
 }: UseEditorRegistryParams): UseEditorRegistryReturn {
-  const [readyEditors, setReadyEditors] = useState<Set<number>>(new Set());
-  const editorRefs = useRef<Map<number, MilkdownEditorHandle>>(new Map());
+  const [readyEditors, setReadyEditors] = useState<Set<string>>(new Set());
+  const editorRefs = useRef<Map<string, MilkdownEditorHandle>>(new Map());
   const mountedEditorFragmentKeysRef = useRef<Set<string>>(new Set());
   const sectionsRef = useRef<DocumentSection[]>([]);
   const storeRef = useRef<BrowserFragmentReplicaStore | null>(store);
@@ -75,21 +77,15 @@ export function useEditorRegistry({
     storeRef.current = store;
   }, [store]);
 
-  const setEditorRef = useCallback((index: number, handle: MilkdownEditorHandle | null) => {
+  const setEditorRef = useCallback((fragmentKey: string, handle: MilkdownEditorHandle | null) => {
     if (handle) {
-      editorRefs.current.set(index, handle);
+      editorRefs.current.set(fragmentKey, handle);
     } else {
-      editorRefs.current.delete(index);
+      editorRefs.current.delete(fragmentKey);
     }
-    // Keep mountedEditorFragmentKeysRef in sync for identity-based CRDT exclusion.
-    const mounted = new Set<string>();
-    for (const i of editorRefs.current.keys()) {
-      const s = sectionsRef.current[i];
-      if (s) {
-        mounted.add(getSectionFragmentKey(s));
-      }
-    }
-    mountedEditorFragmentKeysRef.current = mounted;
+    // editorRefs is now keyed by fragment_key, so the mounted-keys set for
+    // identity-based CRDT exclusion derives directly from its keys.
+    mountedEditorFragmentKeysRef.current = new Set(editorRefs.current.keys());
   }, []);
 
   const mountEligible = useCallback((index: number): boolean => {

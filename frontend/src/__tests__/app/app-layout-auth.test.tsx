@@ -82,7 +82,7 @@ describe("AppLayout auth state", () => {
   it("loads the current user from session info on mount", async () => {
     fetchMock = installFetchMock(async (input) => {
       const url = String(input);
-      if (url === "/api/documents/tree") {
+      if (url === "/api/workspace/tree") {
         return jsonResponse({ tree: [] });
       }
       if (url === "/api/auth/session") {
@@ -102,7 +102,7 @@ describe("AppLayout auth state", () => {
     let returnAuthenticated = true;
     fetchMock = installFetchMock(async (input) => {
       const url = String(input);
-      if (url === "/api/documents/tree") {
+      if (url === "/api/workspace/tree") {
         return jsonResponse({ tree: [] });
       }
       if (url === "/api/auth/session") {
@@ -135,7 +135,7 @@ describe("AppLayout auth state", () => {
       let sessionCallCount = 0;
       fetchMock = installFetchMock(async (input) => {
         const url = String(input);
-        if (url === "/api/documents/tree") return jsonResponse({ tree: [] });
+        if (url === "/api/workspace/tree") return jsonResponse({ tree: [] });
         if (url === "/api/auth/session") {
           sessionCallCount++;
           return sessionResponse("Visible User");
@@ -168,7 +168,7 @@ describe("AppLayout auth state", () => {
       let sessionCallCount = 0;
       fetchMock = installFetchMock(async (input) => {
         const url = String(input);
-        if (url === "/api/documents/tree") return jsonResponse({ tree: [] });
+        if (url === "/api/workspace/tree") return jsonResponse({ tree: [] });
         if (url === "/api/auth/session") {
           sessionCallCount++;
           return sessionResponse("Focus User");
@@ -199,7 +199,7 @@ describe("AppLayout auth state", () => {
       let sessionCallCount = 0;
       fetchMock = installFetchMock(async (input) => {
         const url = String(input);
-        if (url === "/api/documents/tree") return jsonResponse({ tree: [] });
+        if (url === "/api/workspace/tree") return jsonResponse({ tree: [] });
         if (url === "/api/auth/session") {
           sessionCallCount++;
           if (sessionCallCount <= 1) return unauthenticatedSessionResponse();
@@ -239,7 +239,7 @@ describe("AppLayout auth state", () => {
     it("clears currentUser immediately on 'logout' broadcast", async () => {
       fetchMock = installFetchMock(async (input) => {
         const url = String(input);
-        if (url === "/api/documents/tree") return jsonResponse({ tree: [] });
+        if (url === "/api/workspace/tree") return jsonResponse({ tree: [] });
         if (url === "/api/auth/session") return sessionResponse("Active User");
         return jsonResponse({});
       });
@@ -267,7 +267,7 @@ describe("AppLayout auth state", () => {
       let sessionCallCount = 0;
       fetchMock = installFetchMock(async (input) => {
         const url = String(input);
-        if (url === "/api/documents/tree") return jsonResponse({ tree: [] });
+        if (url === "/api/workspace/tree") return jsonResponse({ tree: [] });
         if (url === "/api/auth/session") {
           sessionCallCount++;
           return sessionResponse("Refreshed User");

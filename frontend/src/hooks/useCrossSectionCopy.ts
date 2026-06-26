@@ -18,9 +18,10 @@ export interface CrossSectionCopyOptions {
     content: string;
     depth: number;
     heading: string;
+    fragment_key: string;
   }>;
-  /** Map from section index → editor handle ref. */
-  editorRefs: React.RefObject<Map<number, MilkdownEditorHandle>>;
+  /** Map from section `fragment_key` → editor handle ref. */
+  editorRefs: React.RefObject<Map<string, MilkdownEditorHandle>>;
 }
 
 /**
@@ -124,7 +125,7 @@ export function useCrossSectionCopy({
         const isFirst = i === 0;
         const isLast = i === intersected.length - 1;
         const editors = editorRefs.current;
-        const handle = editors?.get(sectionIndex);
+        const handle = editors?.get(section.fragment_key);
 
         if (isFirst && handle) {
           // Partial: from selection start to end of this section's editor

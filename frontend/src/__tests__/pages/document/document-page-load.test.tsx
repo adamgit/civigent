@@ -75,13 +75,13 @@ describe("DocumentPage load", () => {
   beforeEach(() => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
       const urlStr = String(url);
-      if (urlStr.includes("/api/documents/") && urlStr.includes("/sections")) {
+      if (urlStr.includes("/api/workspace/") && urlStr.includes("/sections")) {
         return jsonResponse(sectionResponse);
       }
-      if (urlStr.includes("/api/documents/") && urlStr.includes("/structure")) {
+      if (urlStr.includes("/api/workspace/") && urlStr.includes("/structure")) {
         return jsonResponse({ structure: [{ heading: "Overview", level: 1, children: [] }] });
       }
-      if (urlStr.includes("/api/documents/") && urlStr.includes("/changes-since")) {
+      if (urlStr.includes("/api/canonical/") && urlStr.includes("/changes-since")) {
         return jsonResponse({ changed_sections: [] });
       }
       return jsonResponse({});
@@ -157,13 +157,13 @@ describe("DocumentPage load", () => {
     };
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
       const urlStr = String(url);
-      if (urlStr.includes("/api/documents/") && urlStr.includes("/sections")) {
+      if (urlStr.includes("/api/workspace/") && urlStr.includes("/sections")) {
         return jsonResponse(emptyBfhResponse);
       }
-      if (urlStr.includes("/api/documents/") && urlStr.includes("/structure")) {
+      if (urlStr.includes("/api/workspace/") && urlStr.includes("/structure")) {
         return jsonResponse({ structure: [] });
       }
-      if (urlStr.includes("/api/documents/") && urlStr.includes("/changes-since")) {
+      if (urlStr.includes("/api/canonical/") && urlStr.includes("/changes-since")) {
         return jsonResponse({ changed_sections: [] });
       }
       return jsonResponse({});

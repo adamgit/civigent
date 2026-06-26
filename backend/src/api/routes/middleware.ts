@@ -146,9 +146,15 @@ export function installGlobalAuth(router: Router): void {
       next();
       return;
     }
-    // Unauthenticated: allow through to all document GET routes (each handler
-    // checks per-document read permission via requireDocReadPermission)
-    if (req.method === "GET" && p.startsWith("/documents/") && p !== "/documents/tree") {
+    // Unauthenticated: allow through to the per-document GET read surfaces
+    // (canonical committed reads + workspace working-copy reads) so a PUBLIC doc
+    // can be read without logging in. Each handler still enforces the per-document
+    // read ACL via requireDocReadPermission (non-public docs are 401/403'd there).
+    // The catalog `tree` stays excluded exactly as `/documents/tree` was.
+    if (
+      req.method === "GET" &&
+      (p.startsWith("/canonical/") || (p.startsWith("/workspace/") && p !== "/workspace/tree"))
+    ) {
       next();
       return;
     }

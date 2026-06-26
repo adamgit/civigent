@@ -47,6 +47,47 @@ export function getSectionFragmentKey(section: DocumentSection): string {
   return section.fragment_key;
 }
 
+/**
+ * Adopt a fresh authoritative section layout into the page's section list,
+ * reconciling against the previous list by opaque `fragment_key` (never positional
+ * index or heading text). Shared by BOTH topology sources:
+ *  - the `content:committed` REST refresh (fresh = `GET …/sections`), and
+ *  - the live `doc:structure-changed` event (fresh = the event's `sections`, which
+ *    is already the SAME server-authored shape — adopted verbatim, no mapping).
+ *
+ * A fragment with a currently-mounted Milkdown editor (`crdtBoundFragmentKeys`)
+ * keeps its live in-editor content — the fresh server/canonical body would clobber
+ * unsaved live edits. Focus is reconciled by fragment identity: it follows the
+ * focused fragment to its NEW index, or clears if that fragment no longer exists.
+ * `focusedSectionIndexRef` is mutated in place to the reconciled index.
+ */
+export function adoptFreshSectionLayout(params: {
+  prev: DocumentSection[];
+  fresh: DocumentSection[];
+  crdtBoundFragmentKeys: Set<string>;
+  focusedSectionIndexRef: { current: number | null };
+}): DocumentSection[] {
+  const { prev, fresh, crdtBoundFragmentKeys, focusedSectionIndexRef } = params;
+  const prevByFragmentKey = new Map(prev.map((s) => [getSectionFragmentKey(s), s]));
+  const nextSections = fresh.map((freshSection) => {
+    const fk = getSectionFragmentKey(freshSection);
+    if (crdtBoundFragmentKeys.has(fk)) {
+      const prevSection = prevByFragmentKey.get(fk);
+      if (prevSection) return { ...freshSection, content: prevSection.content };
+    }
+    return freshSection;
+  });
+  // Reconcile focus by fragment identity: keep focus on the focused fragment's NEW
+  // index, or clear it if that fragment no longer exists.
+  const focusedIndex = focusedSectionIndexRef.current;
+  if (focusedIndex !== null && focusedIndex >= 0 && focusedIndex < prev.length) {
+    const focusedFk = getSectionFragmentKey(prev[focusedIndex]);
+    const newIndex = nextSections.findIndex((s) => getSectionFragmentKey(s) === focusedFk);
+    focusedSectionIndexRef.current = newIndex >= 0 ? newIndex : null;
+  }
+  return nextSections;
+}
+
 export function mergeSectionsWithProposalOverlay(
   sections: DocumentSection[],
   decodedDocPath: string | null,
