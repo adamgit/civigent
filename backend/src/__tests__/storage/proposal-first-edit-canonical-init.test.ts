@@ -1,10 +1,14 @@
 /**
- * First-edit canonical initialization (todolist item 30).
+ * First-edit sparse-overlay write (todolist item 30; manifest-overlay Step 1).
  *
- * Editing a canonical-backed document through a proposal:
- *  - initializes the proposal skeleton for that document,
+ * Editing a canonical-backed document's section body through a proposal:
+ *  - does NOT snapshot the canonical skeleton into the proposal (the proposal
+ *    stays sparse — a body-only edit creates no proposal skeleton file),
  *  - writes ONLY the intended section's body file into the proposal tree,
  *  - preserves canonical fallback bodies for sections the edit did not touch.
+ *
+ * Effective structure is resolved as current canonical merged with the proposal's
+ * manifest at read time, so a body-only proposal needs no skeleton of its own.
  */
 
 import { describe, it, expect, afterEach } from "vitest";
@@ -59,8 +63,8 @@ async function proposalBodyFilesContent(proposalId: string): Promise<string> {
   return parts.join("\n----\n");
 }
 
-describe("first-edit canonical initialization (item 30)", () => {
-  it("initializes the proposal skeleton, writes only the touched body, preserves canonical fallback", async () => {
+describe("first-edit sparse-overlay write (item 30 / manifest-overlay Step 1)", () => {
+  it("stays sparse (no proposal skeleton), writes only the touched body, preserves canonical fallback", async () => {
     ctx = await createTempDataRoot();
     await seedCanonical();
 
@@ -79,8 +83,9 @@ describe("first-edit canonical initialization (item 30)", () => {
       content: sectionWriteInputFromExternal("Proposal A body."),
     });
 
-    // The proposal skeleton now exists.
-    expect(await pathExists(resolveSkeletonPath(DOC, proposalRoot))).toBe(true);
+    // Manifest-overlay Step 1: a body-only edit does NOT snapshot a proposal
+    // skeleton — the proposal stays sparse and inherits structure from canonical.
+    expect(await pathExists(resolveSkeletonPath(DOC, proposalRoot))).toBe(false);
 
     const reader = ProposalReader.open(id, "pending");
     // Section A reads the new proposal body; Section B falls back to canonical.
@@ -94,12 +99,12 @@ describe("first-edit canonical initialization (item 30)", () => {
     expect(proposalBodies).not.toContain("Canonical B body.");
   });
 
-  it("is idempotent: a second edit (skeleton already present) does not re-init or clobber prior edits (item 42)", async () => {
+  it("is idempotent: a second body edit does not clobber prior edits (item 42)", async () => {
     ctx = await createTempDataRoot();
     await seedCanonical();
 
     const { id } = await createTransientProposal(WRITER, "i30 idempotent");
-    // First edit initializes the proposal skeleton.
+    // First edit writes only Section A's body (sparse — no skeleton snapshot).
     await mutateProposalContent(id, {
       kind: "write_section",
       docPath: DOC,
@@ -107,8 +112,8 @@ describe("first-edit canonical initialization (item 30)", () => {
       heading: "Section A",
       content: sectionWriteInputFromExternal("Proposal A body."),
     });
-    // Second edit on the SAME doc: the proposal skeleton already exists, so the
-    // first-edit init is a no-op; this must not clobber Section A's body.
+    // Second edit on the SAME doc writes only Section B's body; it must not
+    // clobber Section A's body (each section overlays canonical independently).
     await mutateProposalContent(id, {
       kind: "write_section",
       docPath: DOC,

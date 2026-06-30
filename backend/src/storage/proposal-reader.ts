@@ -18,7 +18,7 @@ import {
   DocumentNotFoundError,
   type SectionDiscoveryEntry,
 } from "./content-layer.js";
-import { proposalContentRoot } from "./proposal-repository.js";
+import { proposalContentRoot, loadDeletedSectionFiles } from "./proposal-repository.js";
 import { getContentRoot } from "./data-root.js";
 import { SectionRef } from "../domain/section-ref.js";
 import type { DocStructureNode } from "../types/shared.js";
@@ -39,7 +39,15 @@ export class ProposalReader {
     this.proposalId = proposalId;
     this.contentRoot = contentRoot;
     this.canonicalRoot = canonicalRoot;
-    this.shadow = new ProposalShadowContentLayer(contentRoot, canonicalRoot);
+    // Identity-based delete detection (D5): give the shadow layer this proposal's
+    // deleted canonical section-file ids so effective-structure reads merge the
+    // sparse overlay over current canonical (inherit untouched sections; drop
+    // sections whose id is in the deleted set — survives ancestor restructure).
+    this.shadow = new ProposalShadowContentLayer(
+      contentRoot,
+      canonicalRoot,
+      (docPath) => loadDeletedSectionFiles(proposalId, docPath),
+    );
   }
 
   /**

@@ -25,7 +25,7 @@ import {
   type UpsertSectionFromMarkdownDetailedResult,
 } from "./content-layer.js";
 import { ProposalReader } from "./proposal-reader.js";
-import { proposalContentRoot } from "./proposal-repository.js";
+import { proposalContentRoot, recordDeletedSectionFiles } from "./proposal-repository.js";
 import { getContentRoot, getDataRoot, getContentGitPrefix } from "./data-root.js";
 import { resolveSkeletonPath } from "./document-skeleton.js";
 import { gitShowFile, extractHistoricalTree } from "./git-repo.js";
@@ -182,7 +182,13 @@ export class ProposalEditor extends ProposalReader {
 
   /** Delete a subtree (target section plus all descendants). */
   async deleteSection(docPath: string, headingPath: string[]): Promise<FlatEntry[]> {
-    return this.shadow.deleteSubtree(docPath, headingPath);
+    const removed = await this.shadow.deleteSubtree(docPath, headingPath);
+    // Identity-based delete detection (D3): record the deleted canonical
+    // section-file ids so the manifest merge drops them by id, not by heading
+    // path. A whole-subtree delete removes everything it returns — nothing is
+    // re-parented — so every removed entry's id is a genuine delete.
+    await recordDeletedSectionFiles(this.proposalId, docPath, removed.map((e) => e.sectionFile));
+    return removed;
   }
 
   /**
@@ -195,7 +201,18 @@ export class ProposalEditor extends ProposalReader {
     docPath: string,
     headingPath: string[],
   ): Promise<{ removed: FlatEntry[]; added: FlatEntry[] }> {
-    return this.shadow.removeHeadingPreservingChildren(docPath, headingPath);
+    const result = await this.shadow.removeHeadingPreservingChildren(docPath, headingPath);
+    // Identity-based delete detection (D3): only the heading's OWN section is
+    // deleted — its descendants re-parent KEEPING their ids, so they appear in
+    // BOTH `removed` (old path) and `added` (new path). Record only ids that are
+    // removed and NOT re-added, or a surviving re-parented child would be wrongly
+    // dropped by the merge.
+    const addedIds = new Set(result.added.map((e) => e.sectionFile));
+    const deletedIds = result.removed
+      .filter((e) => !addedIds.has(e.sectionFile))
+      .map((e) => e.sectionFile);
+    await recordDeletedSectionFiles(this.proposalId, docPath, deletedIds);
+    return result;
   }
 
   /**

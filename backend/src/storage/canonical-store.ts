@@ -34,10 +34,16 @@
 
 import path from "node:path";
 import { copyFile, mkdir, rm } from "node:fs/promises";
-import { readDirIfExists, readDirentsIfExists, readFileIfExists } from "./fs-primitives.js";
+import { pathExists, readDirIfExists, readDirentsIfExists, readFileIfExists } from "./fs-primitives.js";
 import { ContentLayer, DocumentNotFoundError } from "./content-layer.js";
 import { getContentGitPrefix } from "./data-root.js";
-import { parseSkeletonToEntries, TOMBSTONE_SUFFIX } from "./document-skeleton.js";
+import {
+  parseSkeletonToEntries,
+  resolveSkeletonPath,
+  resolveEffectiveSkeletonNodes,
+  DocumentSkeletonInternal,
+  TOMBSTONE_SUFFIX,
+} from "./document-skeleton.js";
 import type { SectionBody } from "./section-formatting.js";
 import { gitExec, getHeadSha } from "./git-repo.js";
 
@@ -124,6 +130,13 @@ export class CanonicalStore {
       diagnostics?: string[];
       documentPathsToRewrite?: string[];
       absorbedSectionRefs?: SectionRefReceipt[];
+      /**
+       * Identity-based delete detection (D5): canonical section-file ids the
+       * proposal deleted, keyed by doc path. Threaded into the absorb merge so a
+       * deleted section is dropped from the new canonical skeleton by stable id
+       * (survives ancestor restructure). Absent → no deletes for that doc.
+       */
+      deletedSectionFilesByDoc?: ReadonlyMap<string, ReadonlySet<string>>;
       /** Transitional alias for older callers. */
       docPaths?: string[];
     },
@@ -134,20 +147,60 @@ export class CanonicalStore {
       // Pass 0: Determine affected storage-root doc paths and snapshot canonical BEFORE
       // any mutation, so we can compute the actual changed-section set after
       // the git commit lands. Callers that already know the rooted storage
-      // closure pass opts.documentPathsToRewrite; otherwise we walk the staging tree.
-      const documentPathsToRewrite = opts?.documentPathsToRewrite ?? opts?.docPaths;
-      const affectedDocPaths = documentPathsToRewrite
-        ? documentPathsToRewrite.map(normalizeDocPath)
-        : await this.discoverDocPathsInStaging(stagingRoot);
+      // closure pass opts.documentPathsToRewrite; otherwise we derive the set
+      // from the proposal MANIFEST (`absorbedSectionRefs`) unioned with the
+      // staging-skeleton walk. Manifest-overlay model (Step 5): a sparse
+      // body-only proposal writes NO staging skeleton, so the skeleton walk
+      // alone would miss its document and the diff would report zero changed
+      // sections even though copyPass overlaid the edited body onto canonical.
+      // The manifest is the authoritative scope of what the commit touched, so
+      // it drives the snapshot/diff set.
+      const absorbedSectionRefs = dedupeSectionRefReceipts(opts?.absorbedSectionRefs ?? []);
+      // An EXPLICIT scope (`documentPathsToRewrite` / `docPaths`) is the
+      // authoritative, ISOLATED set of docs to process — every deletion/copy pass
+      // is confined to it (a docPath-filtered commit must never touch another
+      // doc). Such ops are whole-document (restore / import / document
+      // delete/rename, or a DocSession whole-document publish), so they ALSO take
+      // the wholesale replacement path (Step 5d), NOT the section-scoped merge.
+      const explicitScope = (opts?.documentPathsToRewrite ?? opts?.docPaths)?.map(normalizeDocPath);
+      const documentTargetSet = new Set(explicitScope ?? []);
+      // Without an explicit scope, derive the affected set from the proposal
+      // MANIFEST (`absorbedSectionRefs`) unioned with the staging-skeleton walk.
+      // Manifest-overlay model (Step 5): a sparse body-only proposal writes NO
+      // staging skeleton, so the skeleton walk alone would miss its document and
+      // the diff would report zero changed sections even though copyPass overlaid
+      // the edited body onto canonical.
+      const affectedDocPaths = explicitScope ?? [
+        ...absorbedSectionRefs.map((ref) => normalizeDocPath(ref.docPath)),
+        ...await this.discoverDocPathsInStaging(stagingRoot),
+      ];
       const rewrittenDocumentPaths = [...new Set(affectedDocPaths)];
       const beforeContent = await this.snapshotDocPaths(rewrittenDocumentPaths);
-      const absorbedSectionRefs = dedupeSectionRefReceipts(opts?.absorbedSectionRefs ?? []);
+
+      // Pass 0.5 — Manifest-overlay merge (Step 5a/5b/5c). For each section-scoped
+      // document the proposal CLAIMS (in the manifest) that carries structure (a
+      // staging skeleton), rewrite the staging skeleton to the EFFECTIVE MERGE of
+      // current canonical with the proposal's sparse overlay (inherit untouched
+      // canonical sections; drop sections the proposal deleted, keyed by canonical
+      // section-file id — D5) BEFORE the wholesale passes run. This way the
+      // orphan-deletion + copy passes below operate against current canonical + the
+      // sparse overlay, never a proposal's frozen whole-document snapshot — so a
+      // section canonical gained after the proposal opened is preserved on commit.
+      // Skipped for whole-document targets (Step 5d, wholesale replacement) and for
+      // docs with no manifest claim (direct absorb callers / legacy staging).
+      const deletedSectionFilesByDoc = opts?.deletedSectionFilesByDoc;
+      const claimedDocPaths = new Set(absorbedSectionRefs.map((ref) => normalizeDocPath(ref.docPath)));
+      for (const docPath of claimedDocPaths) {
+        if (documentTargetSet.has(docPath)) continue; // whole-doc op → wholesale
+        const deletedIds = deletedSectionFilesByDoc?.get(docPath) ?? new Set<string>();
+        await this.rewriteStagingSkeletonToMerge(stagingRoot, docPath, deletedIds, diag);
+      }
 
       // Pass 1: Deletion — find orphaned canonical body files and tombstoned documents
-      await this.deletionPass(stagingRoot, diag, documentPathsToRewrite);
+      await this.deletionPass(stagingRoot, diag, rewrittenDocumentPaths);
 
       // Pass 2: Copy — recursively copy staging tree onto canonical
-      await this.copyPass(stagingRoot, diag, documentPathsToRewrite);
+      await this.copyPass(stagingRoot, diag, rewrittenDocumentPaths);
 
       // Pass 2.5: Prune empty content directories left behind by document
       // deletions or moves. Must run after both deletion and copy passes so
@@ -453,6 +506,53 @@ export class CanonicalStore {
         diag(`pruned empty content directory: ${relPath}/`);
       }
     }
+  }
+
+  /**
+   * Manifest-overlay (Step 5a/b/c): rewrite a section-scoped document's STAGING
+   * skeleton to the effective MERGE of current canonical with the proposal's
+   * sparse overlay, in place, before the wholesale deletion/copy passes run.
+   *
+   * The merge (`resolveEffectiveSkeletonNodes`) is current canonical overlaid by
+   * the proposal's structural entries (created/renamed/moved/leveled + edited),
+   * with sections the proposal deleted (by canonical section-file id — D5) dropped
+   * and every other canonical section inherited at its canonical-relative position.
+   * Persisting that merged tree into staging makes the existing orphan-deletion +
+   * copy passes correct by construction: inherited sections are now DECLARED by the
+   * staging skeleton (so they are not orphan-deleted from canonical) and deleted-id
+   * sections are not (so they ARE deleted); only the proposal's own edited body
+   * files exist in staging to copy.
+   *
+   * The body-holder placeholder policy checks CANONICAL: an inherited sub-skeleton
+   * parent's body lives only in canonical, so no empty placeholder is synthesized
+   * into staging (which the copy pass would otherwise overwrite canonical with).
+   *
+   * No-op when the document has no staging skeleton (a body-only proposal — its
+   * structure is wholly inherited and canonical's skeleton already stands).
+   */
+  private async rewriteStagingSkeletonToMerge(
+    stagingRoot: string,
+    docPath: string,
+    deletedSectionFiles: ReadonlySet<string>,
+    diag: (msg: string) => void,
+  ): Promise<void> {
+    const stagingSkeletonPath = resolveSkeletonPath(docPath, stagingRoot);
+    if (!(await pathExists(stagingSkeletonPath))) return;
+
+    const mergedNodes = await resolveEffectiveSkeletonNodes(
+      docPath,
+      stagingRoot,
+      this.canonicalRoot,
+      deletedSectionFiles,
+    );
+    await DocumentSkeletonInternal.persistNodesToRoot(
+      docPath,
+      mergedNodes,
+      stagingRoot,
+      (stagingBodyPath) =>
+        pathExists(path.join(this.canonicalRoot, path.relative(stagingRoot, stagingBodyPath))),
+    );
+    diag(`${docPath}: staging skeleton rewritten to canonical⊕overlay merge`);
   }
 
   private async copyPass(stagingRoot: string, diag: (msg: string) => void, docPaths?: string[]): Promise<void> {

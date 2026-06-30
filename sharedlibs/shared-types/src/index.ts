@@ -564,6 +564,14 @@ export interface ProposalFileBase {
    * autofix clears the marker. Never written by normal creation paths.
    */
   degraded?: ProposalDefect[];
+  /**
+   * Canonical section-file ids this proposal has deleted (identity-based delete
+   * detection). Grow-only; absent on older on-disk proposals (decodes to `[]`).
+   * The manifest merge keys delete-vs-inherit on this id set, NOT on a heading
+   * path claim, so deletes survive ancestor restructuring without re-pathing.
+   * `sections`/`targets` still carry the deleted path for lock/audit.
+   */
+  deleted_section_files?: DeletedSectionFileRef[];
   created_at: string;
   /**
    * Owning DocSession identity for CRDT-materialized live-edit proposals
@@ -666,6 +674,19 @@ export interface ProposalSection {
   doc_path: string;
   heading_path: string[];
   justification?: string;
+}
+
+/**
+ * A canonical section-file id this proposal has DELETED, recorded by stable id
+ * rather than by heading path (identity-based delete detection). The manifest
+ * merge drops a canonical section whose `sectionFile` id is in this set, so a
+ * delete survives any ancestor rename/move without re-pathing — paths move, ids
+ * do not. The `sections`/`targets` claim still keeps the deleted section's path
+ * (for lock/audit); this set is the SOLE delete signal the merge reads.
+ */
+export interface DeletedSectionFileRef {
+  doc_path: string;
+  section_file: string;
 }
 
 // ─── Agent Write Policy (spec 12 §Data Shapes) ─────────────────────

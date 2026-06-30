@@ -16,6 +16,7 @@ import {
 } from "../types/shared.js";
 import { AgentWritePolicy } from "../domain/agent-write-policy.js";
 import { getContentRoot, getDataRoot } from "./data-root.js";
+import { normalizeDocPath } from "./path-utils.js";
 import { readProposal } from "./proposal-repository.js";
 import {
   transitionToCommitting,
@@ -163,9 +164,31 @@ async function absorbCommittingProposalToCanonical(
   const store = new CanonicalStore(getContentRoot(), dataRoot);
   const { commitMessage, author } = buildPublishCommitMessage(proposal, options);
 
+  // Manifest-overlay (Step 5d): ONLY whole-document ops (restore/import, document
+  // delete/rename) claim DOCUMENT targets and take the wholesale replacement path,
+  // not the section-scoped merge. Pass their paths so absorb gates them out of the
+  // merge. EVERY other proposal — including a DocSession live publish (U4) — passes
+  // none → manifest-scoped merge (current canonical overlaid by the manifest).
+  const documentTargetPaths = proposal.targets
+    .filter((t): t is { kind: "document"; doc_path: string } => t.kind === "document")
+    .map((t) => t.doc_path);
+  const wholesaleDocPaths = [...new Set(documentTargetPaths)];
+
+  // Identity-based delete detection (D5): hand the absorb merge the canonical
+  // section-file ids this proposal deleted, grouped by doc, so the new canonical
+  // skeleton drops them by stable id (a delete survives ancestor rename/move).
+  const deletedSectionFilesByDoc = new Map<string, Set<string>>();
+  for (const ref of proposal.deleted_section_files ?? []) {
+    const dp = normalizeDocPath(ref.doc_path);
+    if (!deletedSectionFilesByDoc.has(dp)) deletedSectionFilesByDoc.set(dp, new Set<string>());
+    deletedSectionFilesByDoc.get(dp)!.add(ref.section_file);
+  }
+
   const absorbResult = await store.absorbChangedSections(overlayRoot, commitMessage, author, {
     diagnostics,
     absorbedSectionRefs: proposalSectionRefs(proposal),
+    documentPathsToRewrite: wholesaleDocPaths.length > 0 ? wholesaleDocPaths : undefined,
+    deletedSectionFilesByDoc,
   });
   // Transition to committed
   await transitionToCommitted(proposal.id, absorbResult.commitSha, committedMetadata);

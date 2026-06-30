@@ -474,14 +474,16 @@ describe("DocumentSkeleton tombstone", () => {
       // item 93/133 — readonly DS no longer hosts tombstone writes; the
       // mutating concern lives on the mutating abstraction.
       const overlayDir = join(ctx.rootDir, "overlay", "content");
-      const overlay = new ProposalShadowContentLayer(overlayDir, ctx.contentDir);
+      // U5: a proposal-overlay layer carries a claimed-keys provider (no wholesale
+      // fallback). The doc is tombstoned, so the claim set is irrelevant (empty).
+      const overlay = new ProposalShadowContentLayer(overlayDir, ctx.contentDir, async () => new Set<string>());
       await overlay.tombstoneDocumentExplicit(SAMPLE_DOC_PATH);
 
       // Re-read: the proposal tombstone marker shadows canonical, so the
       // effective document state is "tombstone" and the loaded skeleton is empty.
       // Assert the observable proposal-facing state, not load-time provenance.
       expect(await overlay.getDocumentState(SAMPLE_DOC_PATH)).toBe("tombstone");
-      const skeleton = await DocumentSkeleton.fromDisk(SAMPLE_DOC_PATH, overlayDir, ctx.contentDir);
+      const skeleton = await DocumentSkeleton.fromDisk(SAMPLE_DOC_PATH, overlayDir, ctx.contentDir, new Set<string>());
       expect(skeleton.areSkeletonRootsEmpty).toBe(true);
     } finally {
       await ctx.cleanup();

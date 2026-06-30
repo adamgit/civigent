@@ -2,9 +2,14 @@
  * EditorLifecycleController — explicit state machine for Milkdown editor lifecycle.
  *
  * States:
- *   unmounted → creating → created → awaiting_sync → attaching → ready
- *                                                                  ↓
- *                                              destroyed ← destroying
+ *   unmounted → creating → created → awaiting_sync → attaching → attached → ready
+ *                                                                            ↓
+ *                                                        destroyed ← destroying
+ *
+ * `attached` is the brief "CRDT plugins installed but the first ySync content
+ * transaction has not yet rendered" window. Readiness (`ready`) is reached only
+ * once that content has applied (or a fallback for a genuinely-empty fragment),
+ * so the static→live editor swap never exposes an empty editor for a frame.
  *
  * No React dependency. Consumed by MilkdownEditor.tsx effects.
  */
@@ -20,6 +25,7 @@ export type EditorState =
   | "created"
   | "awaiting_sync"
   | "attaching"
+  | "attached"
   | "ready"
   | "destroying"
   | "destroyed";
@@ -31,6 +37,7 @@ export type EditorEvent =
   | "crdt_provider_removed"
   | "crdt_synced"
   | "attach_done"
+  | "content_synced"
   | "unmount";
 
 // ─── Transition table ───────────────────────────────────
@@ -56,7 +63,14 @@ const TRANSITIONS: Record<EditorState, Partial<Record<EditorEvent, TransitionEnt
     unmount: { target: "destroying" },
   },
   attaching: {
-    attach_done: { target: "ready" },
+    attach_done: { target: "attached" },
+    unmount: { target: "destroying" },
+  },
+  attached: {
+    // Readiness waits for the first ySync content transaction (or the
+    // empty-fragment fallback) — see FirstSyncReadyLatch.
+    content_synced: { target: "ready" },
+    crdt_provider_removed: { target: "created" },
     unmount: { target: "destroying" },
   },
   ready: {

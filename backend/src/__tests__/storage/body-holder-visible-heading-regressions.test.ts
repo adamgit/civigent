@@ -127,7 +127,7 @@ describe("body-holder visible heading regressions", () => {
       "Body-holder fallback regression",
       [{ doc_path: `/${DOC_PATH}`, heading_path: ["Introduction"] }],
     );
-    const overlay = new ProposalShadowContentLayer(contentRoot, ctx.contentDir);
+    const overlay = new ProposalShadowContentLayer(contentRoot, ctx.contentDir, async () => new Set<string>());
 
     await overlay.upsertSection(
       new SectionRef(`/${DOC_PATH}`, ["Introduction"]),

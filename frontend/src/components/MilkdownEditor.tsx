@@ -35,7 +35,7 @@ import { editorViewCtx } from "@milkdown/core";
 import { $prose } from "@milkdown/utils";
 import { Plugin } from "@milkdown/prose/state";
 import { TextSelection } from "@milkdown/prose/state";
-import { ySyncPlugin, yCursorPlugin, yUndoPlugin } from "y-prosemirror";
+import { ySyncPlugin, ySyncPluginKey, yCursorPlugin, yUndoPlugin } from "y-prosemirror";
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
 
@@ -44,6 +44,7 @@ import { proseMirrorNodeToMarkdown } from "@ks/milkdown-serializer";
 import { pmPosToMarkdownOffset } from "../services/drop-position";
 import { applyDragOverVerdict, type SectionTransfer, type DropVerdict } from "../services/section-transfer";
 import { EditorLifecycleController } from "../services/editor-lifecycle";
+import { FirstSyncReadyLatch } from "../services/first-sync-ready-latch";
 import { rewriteMarkdownDocHref } from "../app/docsRouteUtils";
 
 // ─── Module-level drag source tracking ───────────────────
@@ -199,6 +200,11 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   // edits. Held so it can be removed on CRDT-detach and on unmount, so a leaked
   // listener never fires against a destroyed component.
   const localEditListenerCleanupRef = useRef<(() => void) | null>(null);
+  // First-sync readiness latch + its empty-fragment fallback rAF. Held so detach
+  // / unmount during the post-attach await window can cancel both and never mark
+  // a torn-down editor ready.
+  const firstSyncLatchRef = useRef<FirstSyncReadyLatch | null>(null);
+  const firstSyncFallbackRafRef = useRef<number | null>(null);
 
   // Refs for async callbacks that need current prop values
   const storeRef = useRef(store);
@@ -354,12 +360,37 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
       localEditListenerCleanupRef.current = null;
     };
 
+    // Readiness must wait until ySync has actually rendered this fragment's
+    // content into the editor — y-prosemirror populates on a DEFERRED dispatch,
+    // so flipping `isReady` at attach time exposes an empty editor for one frame
+    // (the click-to-edit height jump). The latch fires markReady once the first
+    // ySync content transaction is seen (detector below) or, for a genuinely-
+    // empty fragment that emits none, via the rAF fallback armed after attach.
+    teardownFirstSyncLatch();
+    const latch = new FirstSyncReadyLatch(() => {
+      // Defer the React/FSM work out of the ProseMirror dispatch that triggered
+      // the detector, and re-check liveness across that gap.
+      queueMicrotask(() => {
+        if (controllerRef.current !== ctrl || ctrl.state !== "attached") return;
+        ctrl.send("content_synced");
+        markReady(crepe);
+      });
+    });
+    firstSyncLatchRef.current = latch;
+    const firstSyncDetector = new Plugin({
+      appendTransaction: (trs, _oldState, _newState) => {
+        latch.noteTransactions(trs, ySyncPluginKey);
+        return null;
+      },
+    });
+
     const newState = view.state.reconfigure({
       plugins: [
         ...view.state.plugins,
         ySyncPlugin(yXmlFragment),
         yCursorPlugin(awareness, { cursorBuilder: buildCollabCursor }),
         yUndoPlugin(),
+        firstSyncDetector,
       ],
     });
     view.updateState(newState);
@@ -372,14 +403,38 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 
     ctrl.setCrdtAttached(true);
     ctrl.send("attach_done");
+
+    // Empty-fragment fallback: a fragment that emits no ySync content transaction
+    // would never trip the detector, so mark ready after one frame (the editor is
+    // already settled to empty). Idempotent with the detector via the latch.
+    if (typeof requestAnimationFrame === "function") {
+      firstSyncFallbackRafRef.current = requestAnimationFrame(() => {
+        firstSyncFallbackRafRef.current = null;
+        latch.fallback();
+      });
+    } else {
+      latch.fallback();
+    }
   }
 
   function teardownLocalEditObserver(): void {
     localEditListenerCleanupRef.current?.();
   }
 
+  /** Cancel a pending first-sync readiness latch + its fallback rAF (so neither
+   *  marks a detached/unmounted editor ready). */
+  function teardownFirstSyncLatch(): void {
+    firstSyncLatchRef.current?.cancel();
+    firstSyncLatchRef.current = null;
+    if (firstSyncFallbackRafRef.current !== null) {
+      cancelAnimationFrame(firstSyncFallbackRafRef.current);
+      firstSyncFallbackRafRef.current = null;
+    }
+  }
+
   function detachCrdt(ctrl: EditorLifecycleController): void {
     teardownLocalEditObserver();
+    teardownFirstSyncLatch();
     const crepe = ctrl.getCrepe();
     if (!crepe || !ctrl.crdtAttached) return;
     try {
@@ -414,8 +469,17 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     controllerRef.current = ctrl;
     ctrl.send("start_create");
 
+    // Each Crepe instance mounts into its OWN root element under `container`,
+    // created synchronously here. This lets cleanup remove exactly THIS
+    // instance's DOM synchronously — even if the async `crepe.create()` has not
+    // mounted yet (StrictMode double-invoke / rapid remount). A `create()` that
+    // resolves after cleanup then mounts into an already-detached node, so it
+    // contributes no layout and two editors can never stack in the container.
+    const editorRoot = document.createElement("div");
+    container.appendChild(editorRoot);
+
     const crepe = new Crepe({
-      root: container,
+      root: editorRoot,
       defaultValue: expectsCrdt ? "" : markdown,
       features: {
         [CrepeFeature.CodeMirror]: false,
@@ -611,8 +675,9 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
         ctrl.send("crdt_provider_set");
         if (crdtSyncedRef.current) {
           ctrl.send("crdt_synced");
+          // attachCrdt now defers markReady to the first-sync latch (the editor is
+          // marked ready only once ySync has rendered content, or via fallback).
           attachCrdt(ctrl, crepe, currentStore, fragmentKeyCapture);
-          markReady(crepe);
         }
       } else if (!currentStore && ctrl.state === "created") {
         // No CRDT store — editor is ready immediately
@@ -625,6 +690,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     return () => {
       cleanupDragListeners?.();
       teardownLocalEditObserver();
+      teardownFirstSyncLatch();
       if (debounceTimer !== null) clearTimeout(debounceTimer);
 
       // Silence ProseMirror dispatch before async crepe.destroy() starts.
@@ -635,12 +701,26 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
         // Editor might not be fully created yet.
       }
 
+      // Synchronously remove THIS instance's root from layout. Because each
+      // instance owns its own `editorRoot` (not the shared `container`), this
+      // removes exactly this editor and never touches a sibling remount's root.
+      // crepe.destroy() resolves on a later tick; if the async create() is still
+      // in flight it will mount into this now-detached node (zero layout), so a
+      // StrictMode double-invoke / rapid remount can never stack two roots.
+      editorRoot.remove();
+
       ctrl.send("unmount");
       controllerRef.current = null;
       setReady(false);
       onUnreadyRef.current?.();
       deferredFocusRef.current = null;
-      void crepe.destroy();
+      // Full teardown still proceeds; the DOM is already detached above, so guard
+      // the now-detached editor's destroy against a teardown-time DOM error.
+      try {
+        void crepe.destroy();
+      } catch {
+        // Editor DOM already detached above — nothing left to tear down.
+      }
     };
     // markdown intentionally excluded — only used as initial value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -662,7 +742,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 
     return () => {
       const c = controllerRef.current;
-      if (c && store && (c.state === "awaiting_sync" || c.state === "ready")) {
+      if (c && store && (c.state === "awaiting_sync" || c.state === "attached" || c.state === "ready")) {
         detachCrdt(c);
         c.send("crdt_provider_removed");
       }
@@ -682,10 +762,10 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     if (!crepe) return;
 
     ctrl.send("crdt_synced");
-    // Now in "attaching" — perform the actual attachment
+    // Now in "attaching" — perform the actual attachment. attachCrdt sends
+    // "attach_done" → state is "attached"; markReady is deferred to the
+    // first-sync latch (fires on the first ySync content tx, or fallback).
     attachCrdt(ctrl, crepe, store, fragmentKey);
-    // attachCrdt sends "attach_done" → state is now "ready"
-    markReady(crepe);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [crdtSynced]);
 

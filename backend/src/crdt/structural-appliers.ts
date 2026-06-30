@@ -328,19 +328,19 @@ export async function reflectMergeIntoProposal(
       remap = null;
     }
     if (remap) {
-      // Real-time manifest reparent (placement decision in assumptions.md): the
-      // deleted heading + its descendants' OLD paths are dropped; the reparented
-      // descendants (and the body-grown predecessor) are claimed at their NEW
-      // paths. Both sets come from the engine's removed/added entries (same
-      // sectionFile ids, different heading paths), so the claim follows the
-      // reparent deterministically — no stale pre-merge descendant claim survives.
-      // Idempotent: union-add dedups, remove is a no-op once the old path is gone.
-      const removeClaims: ProposalSection[] = remap.removed.map((e) => ({ doc_path: docPath, heading_path: [...e.headingPath] }));
+      // Real-time manifest reparent (U1): the reparented descendants (and the
+      // body-grown predecessor) are claimed at their NEW paths. The deleted
+      // heading and the descendants' OLD paths are NOT dropped from the manifest —
+      // the manifest only ever grows, so the deleted heading stays claimed-but-
+      // absent (its delete signal) and the stale old descendant paths are harmless
+      // extra claims (the merge keys surviving sections by section-file id, which
+      // the reparent preserves, so a reparented descendant is never dropped).
+      // Idempotent across clock-check retries: union-add dedups.
       const addClaims: ProposalSection[] = remap.added
         .filter((e) => !e.isSubSkeleton)
         .map((e) => ({ doc_path: docPath, heading_path: [...e.headingPath] }));
       const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
-      await unionCurrentProposalSections(proposalId, addClaims, removeClaims);
+      await unionCurrentProposalSections(proposalId, addClaims);
       return;
     }
   }
@@ -348,12 +348,12 @@ export async function reflectMergeIntoProposal(
   // Leaf deletion (or the keep-children fallback): delete the folded-away section
   // FIRST so its (materialize-written) body does not linger, then re-write the
   // predecessor body with the orphan appended.
-  const deleted = await editor.deleteSection(docPath, plan.removedHeadingPath);
-  // Real-time manifest (placement decision in assumptions.md): DROP the merged-away
-  // section (and any descendants the subtree-delete removed) from the claim, and
-  // (re)claim the predecessor whose body grew with the folded orphan. Mirrors
-  // `growProposalManifest`'s union; idempotent (remove is a no-op once gone).
-  const remove: ProposalSection[] = deleted.map((e) => ({ doc_path: docPath, heading_path: [...e.headingPath] }));
+  await editor.deleteSection(docPath, plan.removedHeadingPath);
+  // Real-time manifest (U1): the merged-away section stays CLAIMED — removing its
+  // overlay content alone IS the delete (claimed-but-absent), so we never drop it
+  // from the manifest. We only ever ADD claims here: the predecessor whose body
+  // grew with the folded orphan. Mirrors `growProposalManifest`'s grow-only union;
+  // idempotent across clock-check retries (union-add dedups).
   const add: ProposalSection[] = [];
   if (plan.orphanBody.length > 0) {
     const existing = (await editor.readSection(docPath, plan.predecessorIdentity.headingPath)) ?? EMPTY_BODY;
@@ -365,12 +365,10 @@ export async function reflectMergeIntoProposal(
       // Body-only content crossing into the parser-driven write path.
       sectionWriteInputFromBody(merged),
     );
-    const delta = manifestDeltaFromResult(docPath, result);
-    add.push(...delta.add);
-    remove.push(...delta.remove);
+    add.push(...manifestDeltaFromResult(docPath, result).add);
   }
   const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
-  await unionCurrentProposalSections(proposalId, add, remove);
+  await unionCurrentProposalSections(proposalId, add);
 }
 
 // ─── SPLIT (embedded heading promoted) — proposal reflection ──────
@@ -423,14 +421,14 @@ export async function reflectSplitIntoProposal(
 
   // Real-time manifest claim (placement decision in assumptions.md): claim the
   // promoted section AT QUIESCENCE, here where the content promotion happens, not
-  // only at publish. Both branches return the engine delta, so the claim reuses
-  // the exact `growProposalManifest` union (ADD body-bearing written entries — the
-  // promoted `["Overview","Sub"]` / `["h3 added"]` — and DROP removed entries),
-  // leaving the survivor's existing claim intact. Idempotent across clock-check
-  // retries: union-add dedups and remove is a no-op once the key is gone.
+  // only at publish. The manifest is GROW-ONLY (D6): ADD body-bearing written
+  // entries — the promoted `["Overview","Sub"]` / `["h3 added"]` — leaving the
+  // survivor's existing claim intact and NEVER shrinking it. Deletes ride the
+  // id-based `deleted_section_files` set, not a manifest path-claim removal.
+  // Idempotent across clock-check retries: union-add dedups.
   const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
-  const { add, remove } = manifestDeltaFromResult(docPath, result);
-  await unionCurrentProposalSections(proposalId, add, remove);
+  const { add } = manifestDeltaFromResult(docPath, result);
+  await unionCurrentProposalSections(proposalId, add);
 }
 
 // ─── RENAME / LEVEL-CHANGE / RELOCATED (heading edits) ────────────
@@ -534,32 +532,16 @@ export async function reflectHeadingEditIntoProposal(
   const body = bodyFromFragmentStrippingLeadingHeading(plan.target);
   const newEntry = await editor.retitleSection(docPath, plan.fromHeadingPath, plan.newHeading, plan.newLevel, body);
 
-  // Real-time manifest remap (placement decision in assumptions.md). The in-place
-  // retitle keeps the section under the same parent (only the last path segment
-  // changes), so its descendants' paths re-prefix from the old heading path to the
-  // new one. Remap ONLY the claims actually present in the manifest (read from the
-  // manifest itself — NOT a content re-derive, which would over-claim unedited
-  // inherited sections): DROP each claimed path inside the old subtree, ADD it at
-  // its new path. Idempotent: on a clock-check retry the manifest already holds the
-  // new paths, so nothing matches the old prefix and the remap is a no-op.
-  const fromPath = plan.fromHeadingPath;
-  const newPath = [...newEntry.headingPath];
-  const { readProposal, unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
-  const proposal = await readProposal(proposalId);
-  const oldKey = SectionRef.headingKey([...fromPath]);
-  const remove: ProposalSection[] = [];
-  const add: ProposalSection[] = [];
-  for (const claimed of proposal.sections) {
-    if (claimed.doc_path !== docPath) continue;
-    const hp = claimed.heading_path;
-    const isSelf = SectionRef.headingKey(hp) === oldKey;
-    const isDescendant = hp.length > fromPath.length && fromPath.every((seg, i) => seg === hp[i]);
-    if (!isSelf && !isDescendant) continue;
-    remove.push({ doc_path: docPath, heading_path: [...hp] });
-    add.push({
-      doc_path: docPath,
-      heading_path: isSelf ? newPath : [...newPath, ...hp.slice(fromPath.length)],
-    });
-  }
-  if (remove.length > 0) await unionCurrentProposalSections(proposalId, add, remove);
+  // Identity-based delete detection (D6): the manifest is now GROW-ONLY — no
+  // path-remap on rename. Deletes ride the id-based `deleted_section_files` set,
+  // not a manifest path-claim, so a renamed ancestor no longer needs its
+  // descendants' delete-claims re-pathed (the merge keys deletes by stable
+  // section-file id, which the id-preserving retitle keeps). CLAIM the renamed
+  // section at its NEW path (grow-only union) so locks/audit cover it; the section
+  // keeps its id, so the merge tracks it by id regardless of which path is claimed.
+  // Stale old-path claims left in the manifest are harmless extra claims.
+  const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
+  await unionCurrentProposalSections(proposalId, [
+    { doc_path: docPath, heading_path: [...newEntry.headingPath] },
+  ]);
 }

@@ -32,14 +32,24 @@ export async function resolveLiveSectionLayout(
   currentProposalId: ProposalId | null,
 ): Promise<LiveSectionLayoutEntry[]> {
   const { DocumentSkeletonInternal } = await import("../storage/document-skeleton.js");
-  const { proposalContentRoot } = await import("../storage/proposal-repository.js");
+  const { proposalContentRoot, loadDeletedSectionFiles } = await import("../storage/proposal-repository.js");
 
   const canonicalRoot = getContentRoot();
   const skeletonRoot = currentProposalId
     ? proposalContentRoot(currentProposalId, "inprogress")
     : canonicalRoot;
 
-  const skeleton = await DocumentSkeletonInternal.fromDisk(docPath, skeletonRoot, canonicalRoot);
+  // Manifest-overlay (U3 / D5): the LIVE structure merges like EVERY other proposal
+  // read — current canonical overlaid by the proposal's structural changes, with a
+  // section the user deleted this session dropped by its canonical section-file id
+  // (identity-based delete detection). A section canonical gained after the session
+  // opened is inherited because its id is not deleted. There is NO live wholesale
+  // opt-out. With no current proposal the skeleton root IS canonical, so `fromDisk`
+  // takes the canonical-only path and the deleted ids are irrelevant (left undefined).
+  const deletedSectionFiles = currentProposalId
+    ? await loadDeletedSectionFiles(currentProposalId, docPath)
+    : undefined;
+  const skeleton = await DocumentSkeletonInternal.fromDisk(docPath, skeletonRoot, canonicalRoot, deletedSectionFiles);
   const entries: LiveSectionLayoutEntry[] = [];
   const seen = new Set<string>();
   // Option A: use the VISIBLE-section view so a sub-skeleton parent's body-holder

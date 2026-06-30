@@ -79,7 +79,7 @@ describe("deeply nested import repro", () => {
     await commitProposalToCanonical(id, scores);
 
     const sessionSectionsContentRoot = scratchOverlayContentRoot();
-    const overlay = new ProposalShadowContentLayer(sessionSectionsContentRoot, getContentRoot());
+    const overlay = new ProposalShadowContentLayer(sessionSectionsContentRoot, getContentRoot(), async () => new Set<string>());
 
     const allContent = await overlay.readAllSections(docPath);
     expect(allContent.size).toBeGreaterThanOrEqual(5);
@@ -120,7 +120,7 @@ describe("deeply nested import repro", () => {
 
     const contentRoot = getContentRoot();
     const sessionSectionsContentRoot = scratchOverlayContentRoot();
-    const overlay = new ProposalShadowContentLayer(sessionSectionsContentRoot, contentRoot);
+    const overlay = new ProposalShadowContentLayer(sessionSectionsContentRoot, contentRoot, async () => new Set<string>());
 
     for (const file of files) {
       const allContent = await overlay.readAllSections(file.docPath);

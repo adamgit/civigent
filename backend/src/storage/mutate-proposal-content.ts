@@ -145,6 +145,12 @@ export async function mutateProposalContent(
       affected = flatEntriesToSections(operation.docPath, removed);
       // Defensive: if the engine ever returns an empty set, still claim the target.
       if (affected.length === 0) affected = sectionsUnder(operation.docPath, [operation.headingPath]);
+      // Identity-based delete detection (D3/D4): the delete is recorded inside
+      // `editor.deleteSection` as the removed canonical section-file IDS in the
+      // proposal's `deleted_section_files` set — that id set is the signal the
+      // effective-structure merge and the absorb use to drop the section (by id, so
+      // it survives ancestor rename/move). `unionSections` below still KEEPS the
+      // deleted heading path in `sections` for lock/audit (the manifest is grow-only).
       break;
     }
     case "move_section": {

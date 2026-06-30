@@ -250,15 +250,16 @@ describe("real-time proposal-manifest reflection at quiescence (publish deferred
     }
   });
 
-  it("MERGE: drops the deleted heading from the manifest at quiescence", async () => {
+  it("MERGE: keeps the deleted heading claimed-but-absent in the manifest at quiescence (U1)", async () => {
     vi.useFakeTimers();
     const session = await openSession();
     const editor = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "editor-sock");
     try {
       // Author deletes the Timeline heading line (and edits its body) → Timeline
       // folds into Overview. The body change makes the per-edit materialize CLAIM
-      // Timeline under its pre-edit identity; the quiescence merge reflection then
-      // folds it away — the claim must drop too.
+      // Timeline under its pre-edit identity; the quiescence merge reflection folds
+      // it away from CONTENT but the claim STAYS (U1: claimed-but-absent = the
+      // delete signal for the manifest-scoped merge).
       setFragmentViaMinimalDiff(session, TIMELINE_KEY, "Q1: Planning. Q2: Execution. Q3: Review. CHANGED.");
       session.fragmentLastActivity.set(TIMELINE_KEY, Date.now());
       const proposalId = await session.generator.materializeEdit({ touchedFragmentKeys: [TIMELINE_KEY] });
@@ -273,20 +274,24 @@ describe("real-time proposal-manifest reflection at quiescence (publish deferred
       const headingPaths = await reader.listHeadingPaths(SAMPLE_DOC_PATH);
       expect(headingPaths.some((p) => SectionRef.headingKey(p) === SectionRef.headingKey(["Timeline"]))).toBe(false);
 
-      // The MANIFEST must drop the merged-away claim in real time.
+      // The MANIFEST keeps the merged-away section claimed (claimed-but-absent).
       const claimed = await claimedHeadingKeys(proposalId);
-      expect(claimed).not.toContain(SectionRef.headingKey(["Timeline"]));
+      expect(claimed).toContain(SectionRef.headingKey(["Timeline"]));
     } finally {
       editor.dispose();
     }
   });
 
-  it("MERGE (keep-children): remaps a claimed descendant from its OLD path to its NEW reparented path", async () => {
+  it("MERGE (keep-children): claims the reparented descendant at its NEW path (U1: old claims kept)", async () => {
     // Reflection-level test (line-43 keep-children parenthetical). Build an
     // inprogress proposal on a FRESH doc (no canonical fallback) with a parent
     // `Beta` that has a child, claim both at their pre-merge paths, then delete the
     // `Beta` heading KEEPING children. The child must be claimed at its NEW path
-    // (`["Alpha","Child"]`), not its stale pre-merge path (`["Beta","Child"]`).
+    // (`["Alpha","Child"]`). Under U1 the manifest only GROWS — the stale pre-merge
+    // paths (`["Beta"]`, `["Beta","Child"]`) are NOT dropped (harmless extra claims:
+    // the merge keys surviving sections by section-file id, so a reparented
+    // descendant is never re-inherited and the deleted `Beta` heading stays
+    // claimed-but-absent).
     const docPath = "/test/keep-children.md";
     const created = await getOrCreateInProgressProposalForDocSession({
       docSessionId: "ds-keep-children" as DocSessionId,
@@ -326,23 +331,25 @@ describe("real-time proposal-manifest reflection at quiescence (publish deferred
     expect(headingPaths.some((p) => SectionRef.headingKey(p) === SectionRef.headingKey(["Alpha", "Child"]))).toBe(true);
     expect(headingPaths.some((p) => SectionRef.headingKey(p) === SectionRef.headingKey(["Beta"]))).toBe(false);
 
-    // The MANIFEST reparented the claim: NEW path claimed, OLD paths dropped.
+    // The MANIFEST grew: NEW reparented path claimed; stale OLD paths kept (U1).
     const claimed = await claimedHeadingKeys(proposalId);
     expect(claimed).toContain(SectionRef.headingKey(["Alpha", "Child"]));
-    expect(claimed).not.toContain(SectionRef.headingKey(["Beta", "Child"]));
-    expect(claimed).not.toContain(SectionRef.headingKey(["Beta"]));
+    expect(claimed).toContain(SectionRef.headingKey(["Beta", "Child"]));
+    expect(claimed).toContain(SectionRef.headingKey(["Beta"]));
     expect(claimed).toContain(SectionRef.headingKey(["Alpha"]));
   });
 
-  it("RENAME: drops the old heading path and claims the new one at quiescence", async () => {
+  it("RENAME: claims the new heading path at quiescence (manifest grow-only, keeps the old)", async () => {
     vi.useFakeTimers();
     const session = await openSession();
     const editor = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "editor-sock");
     try {
       // Author renames the Overview heading (same level) and edits its body. The
       // body change makes the per-edit materialize CLAIM the OLD identity; the
-      // quiescence rename reflection retitles it — the claim must remap to the NEW
-      // path.
+      // quiescence rename reflection retitles it (id-preserving) and ADDS the NEW
+      // path claim. The manifest is grow-only (D6) — the old path stays as a
+      // harmless extra claim; deletes/renames are tracked by stable section-file id,
+      // not by shrinking the manifest.
       setFragmentViaMinimalDiff(
         session,
         OVERVIEW_KEY,
@@ -361,10 +368,11 @@ describe("real-time proposal-manifest reflection at quiescence (publish deferred
       const headingPaths = await reader.listHeadingPaths(SAMPLE_DOC_PATH);
       expect(headingPaths.some((p) => SectionRef.headingKey(p) === SectionRef.headingKey(["Strategic Overview"]))).toBe(true);
 
-      // The MANIFEST must drop the OLD path and claim the NEW one in real time.
+      // The MANIFEST claims the NEW path in real time (grow-only): the new path is
+      // added; the old path is NOT dropped (it remains as a harmless extra claim).
       const claimed = await claimedHeadingKeys(proposalId);
-      expect(claimed).not.toContain(SectionRef.headingKey(["Overview"]));
       expect(claimed).toContain(SectionRef.headingKey(["Strategic Overview"]));
+      expect(claimed).toContain(SectionRef.headingKey(["Overview"]));
     } finally {
       editor.dispose();
     }

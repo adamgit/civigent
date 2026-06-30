@@ -881,8 +881,9 @@ export class DocumentSkeleton {
     docPath: string,
     overlayRoot: string,
     canonicalRoot: string,
+    deletedSectionFiles?: ReadonlySet<string>,
   ): Promise<DocumentSkeleton> {
-    const nodes = await buildSkeletonTree(docPath, overlayRoot, canonicalRoot);
+    const nodes = await buildSkeletonTree(docPath, overlayRoot, canonicalRoot, deletedSectionFiles);
     validateNoDuplicateRoots(nodes, docPath);
     return new DocumentSkeleton(docPath, nodes, overlayRoot);
   }
@@ -1982,6 +1983,25 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
   }
 
   /**
+   * Manifest-overlay absorb (Step 5a): persist a pre-assembled (already merged)
+   * node tree as the skeleton at `root`, writing only the structural listing
+   * files and sub-skeleton body-holder placeholders (the latter suppressed by
+   * `shadowBodyExists` when a body already exists at `root`). Content body files
+   * are NOT touched — the caller copies edited bodies and leaves inherited bodies
+   * in place. Used by `CanonicalStore` to rebuild the canonical skeleton from the
+   * effective merge instead of copying a proposal's frozen snapshot wholesale.
+   */
+  static async persistNodesToRoot(
+    docPath: string,
+    nodes: SkeletonNode[],
+    root: string,
+    shadowBodyExists?: (bodyFilePath: string) => Promise<boolean>,
+  ): Promise<void> {
+    const skeleton = DocumentSkeletonInternal.fromNodes(docPath, nodes, root, shadowBodyExists);
+    await skeleton.persistSkeletonTree();
+  }
+
+  /**
    * Proposal first-edit canonical initialization: when the first proposal-local
    * edit targets a document inherited from canonical (the proposal root has no
    * skeleton yet, but the effective document is live via canonical fallback),
@@ -2012,31 +2032,196 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
 
 // ─── Tree construction from disk ─────────────────────────────────
 
+/**
+ * Manifest-overlay effective structure (Step 2).
+ *
+ * A proposal is a sparse, manifest-scoped overlay: it owns only the sections in
+ * its `targets[]`/`sections` manifest; every other section is inherited from
+ * *current* canonical. So the effective structure of a proposal read is NOT the
+ * proposal skeleton wholesale (a frozen snapshot that would drop sections
+ * canonical gained after the proposal opened) — it is current canonical MERGED
+ * with the proposal's sparse structural changes:
+ *
+ *   - body-only proposal (no overlay skeleton)  → pure canonical structure;
+ *   - structural proposal (overlay skeleton)    → overlay is the spine
+ *     (created / renamed / moved / leveled sections + edited sections, deleted
+ *     sections absent), and every canonical section the spine does NOT carry is
+ *     inherited at its canonical-relative position — UNLESS this proposal DELETED
+ *     it (its `sectionFile` id is in the proposal's `deleted_section_files` set,
+ *     so it is dropped).
+ *
+ * There is no wholesale-overlay path (U5): the ONLY non-merge read is canonical
+ * itself (`overlayRoot === canonicalRoot`). A proposal-overlay read with no
+ * deleted-ids provider is an error, not a silent wholesale fallback.
+ *
+ * Section identity is the `sectionFile` id, which a structural overlay preserves
+ * for inherited sections (it derives from canonical), so id-matching is sound:
+ * an overlay id absent from canonical was created by the proposal; a canonical id
+ * absent from the overlay was either deleted (its id is in the deleted set) or
+ * added to canonical after the proposal opened (inherited). Keying the delete on
+ * the stable id — not the heading path — means a delete needs no re-pathing when
+ * an ancestor is renamed or moved (D4 / identity-based delete detection).
+ */
+/**
+ * Manifest-overlay (Step 5a): the effective merged node tree (current canonical
+ * overlaid by a proposal's sparse structural changes, claimed-but-absent =
+ * deleted). Exposed for `CanonicalStore` absorb, which persists this tree as the
+ * new canonical skeleton instead of copying the proposal's frozen snapshot.
+ */
+export async function resolveEffectiveSkeletonNodes(
+  docPath: string,
+  overlayRoot: string,
+  canonicalRoot: string,
+  deletedSectionFiles?: ReadonlySet<string>,
+): Promise<SkeletonNode[]> {
+  return buildSkeletonTree(docPath, overlayRoot, canonicalRoot, deletedSectionFiles);
+}
+
 async function buildSkeletonTree(
   docPath: string,
   overlayRoot: string,
   canonicalRoot: string,
+  deletedSectionFiles?: ReadonlySet<string>,
 ): Promise<SkeletonNode[]> {
   const overlayPath = resolveSkeletonPath(docPath, overlayRoot);
   const canonicalPath = resolveSkeletonPath(docPath, canonicalRoot);
 
+  // The ONLY non-merge path (U5): reading canonical itself (`overlayRoot ===
+  // canonicalRoot`). Read the single root wholesale.
+  if (overlayRoot === canonicalRoot) {
+    if (!(await pathExists(canonicalPath))) return [];
+    return readTreeRecursive(canonicalPath);
+  }
+
+  // U5: ONE law for every proposal-overlay read (`overlayRoot !== canonicalRoot`) —
+  // it merges current canonical with the proposal's deleted-section-file id set
+  // (D4: deletes are keyed by stable `sectionFile` id, NOT heading path, so a
+  // delete survives ancestor rename/move without re-pathing). A missing provider
+  // is a wiring omission, never a silent wholesale fallback — fail loud so "no
+  // merge" can never happen by omission again (01 §3 "Manifest-scoped overlay
+  // (universal)"; CLAUDE.md error policy). `loadDeletedSectionFiles` always returns
+  // a set (no deletes is `new Set()`, not `undefined`), so `undefined` here means
+  // no provider.
+  if (deletedSectionFiles === undefined) {
+    throw new Error(
+      `Proposal-overlay structure read for "${docPath}" (overlay "${overlayRoot}" ≠ canonical ` +
+        `"${canonicalRoot}") arrived with no deleted-section-files provider. Every overlay read must ` +
+        `merge current canonical with the proposal's deleted-id set; wire a deletedSectionFilesProvider ` +
+        `(ProposalReader / ProposalShadowContentLayer) — there is no wholesale fallback.`,
+    );
+  }
+
   // Effective-load fallback resolution: a proposal tombstone shadows canonical
   // as an empty (pending-deletion) document.
-  if (overlayRoot !== canonicalRoot && await fileExists(resolveTombstonePath(docPath, overlayRoot))) {
+  if (await fileExists(resolveTombstonePath(docPath, overlayRoot))) {
     return [];
   }
 
-  // Structure: try the proposal root first, then canonical fallback.
-  let skeletonPath: string;
-  if (await pathExists(overlayPath)) {
-    skeletonPath = overlayPath;
-  } else if (await pathExists(canonicalPath)) {
-    skeletonPath = canonicalPath;
-  } else {
-    return []; // No skeleton found
+  const canonicalNodes = (await pathExists(canonicalPath))
+    ? await readTreeRecursive(canonicalPath)
+    : [];
+
+  // Body-only (sparse) proposal: no overlay skeleton → structure is fully
+  // inherited from current canonical (the trivial merge: nothing claimed
+  // structurally).
+  if (!(await pathExists(overlayPath))) {
+    return canonicalNodes;
   }
 
-  return readTreeRecursive(skeletonPath);
+  const overlayNodes = await readTreeRecursive(overlayPath);
+
+  // No canonical to inherit (proposal-created document) → overlay is the whole
+  // structure.
+  if (canonicalNodes.length === 0) return overlayNodes;
+
+  return mergeEffectiveSkeleton(canonicalNodes, overlayNodes, deletedSectionFiles);
+}
+
+/** Collect every `sectionFile` id in a node forest (all nesting levels). */
+function collectSectionFileIds(nodes: SkeletonNode[], out: Set<string>): void {
+  for (const node of nodes) {
+    out.add(node.sectionFile);
+    if (node.children.length > 0) collectSectionFileIds(node.children, out);
+  }
+}
+
+/**
+ * Merge current-canonical structure with a structural proposal's overlay
+ * (the spine), inheriting canonical sections the spine does not carry. See
+ * `buildSkeletonTree`'s doc comment for the model.
+ */
+function mergeEffectiveSkeleton(
+  canonicalNodes: SkeletonNode[],
+  overlayNodes: SkeletonNode[],
+  deletedSectionFiles: ReadonlySet<string>,
+): SkeletonNode[] {
+  const spineIds = new Set<string>();
+  collectSectionFileIds(overlayNodes, spineIds);
+  return mergeSiblings(canonicalNodes, overlayNodes, deletedSectionFiles, spineIds);
+}
+
+function mergeSiblings(
+  canonicalSibs: SkeletonNode[],
+  overlaySibs: SkeletonNode[],
+  deletedSectionFiles: ReadonlySet<string>,
+  spineIds: ReadonlySet<string>,
+): SkeletonNode[] {
+  const canonById = new Map<string, SkeletonNode>();
+  for (const c of canonicalSibs) canonById.set(c.sectionFile, c);
+
+  // 1. Lay down the overlay order (the proposal's intended structure). For a
+  //    section the overlay shares with canonical (same id), recurse to merge
+  //    deeper inherited descendants; an overlay-only id is proposal-created and
+  //    keeps its overlay subtree verbatim.
+  const result: SkeletonNode[] = [];
+  for (const o of overlaySibs) {
+    const c = canonById.get(o.sectionFile);
+    if (c) {
+      result.push({
+        ...o,
+        children: mergeSiblings(c.children, o.children, deletedSectionFiles, spineIds),
+      });
+    } else {
+      result.push(o);
+    }
+  }
+
+  // 2. Splice in canonical sections the spine does NOT carry anywhere
+  //    (inherited), at their canonical-relative position — unless this proposal
+  //    DELETED them. The delete check is keyed on the stable `sectionFile` id
+  //    (D4 / identity-based delete detection), so a delete survives any ancestor
+  //    rename/move without re-pathing — paths move, ids do not.
+  for (let i = 0; i < canonicalSibs.length; i++) {
+    const c = canonicalSibs[i];
+    if (spineIds.has(c.sectionFile)) continue; // represented in the spine (possibly moved)
+    if (deletedSectionFiles.has(c.sectionFile)) continue; // deleted by this proposal (by id)
+    if (isBodyHolderShape(c) && result.some((r) => isBodyHolderShape(r))) {
+      // Never produce a second body holder at a level — the spine's wins.
+      continue;
+    }
+    const pos = canonicalInsertPosition(result, canonicalSibs, i);
+    result.splice(pos, 0, c);
+  }
+
+  return result;
+}
+
+/**
+ * Resolve where to splice an inherited canonical sibling into the merged result:
+ * immediately after its nearest preceding canonical sibling that is present in
+ * `result`; front of the list if none precede it.
+ */
+function canonicalInsertPosition(
+  result: SkeletonNode[],
+  canonicalSibs: SkeletonNode[],
+  i: number,
+): number {
+  for (let j = i - 1; j >= 0; j--) {
+    const prevId = canonicalSibs[j].sectionFile;
+    const idx = result.findIndex((r) => r.sectionFile === prevId);
+    if (idx >= 0) return idx + 1;
+  }
+  return 0;
 }
 
 /**

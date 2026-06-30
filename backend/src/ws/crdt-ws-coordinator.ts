@@ -475,6 +475,19 @@ export interface PublishAttemptOutcome {
 
 const publishChains = new Map<string, Promise<PublishAttemptOutcome>>();
 
+/**
+ * Surface a non-success autonomous publish outcome loudly. The autonomous publish
+ * paths (quiescence trigger, last-editor-disconnect) are fire-and-forget — there
+ * is no caller to throw to — so a `failed`/`aborted` publish, which can mean the
+ * user's edits did NOT reach canonical, must NEVER be silently discarded
+ * (CLAUDE.md error policy: an error is never allowed to be hidden).
+ */
+function surfacePublishOutcome(docPath: string, outcome: PublishAttemptOutcome): void {
+  if (outcome.outcome === "failed" || outcome.outcome === "aborted") {
+    console.error(`[publish:${docPath}] ${outcome.outcome}: ${outcome.message}`);
+  }
+}
+
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -512,6 +525,10 @@ async function finalizeAndEnd(session: DocSession, ready: boolean): Promise<Publ
       outcome = { outcome: "aborted", message: "Publish aborted: editors did not acknowledge readiness in time." };
     }
   } catch (error) {
+    // Never hide a publish failure. This is the autonomous (fire-and-forget)
+    // publish path, so there is no caller to rethrow to — surface the FULL error
+    // (with stack) loudly; the outcome still carries the message onward.
+    console.error(`[publish:${session.docPath}] finalize/publish threw`, error);
     outcome = { outcome: "failed", message: `Publish failed: ${describeError(error)}` };
   } finally {
     session.publishPause.end();
@@ -847,17 +864,12 @@ async function runQuiescenceCommand(session: DocSession): Promise<void> {
   if (decision.shouldPublish) {
     const requiredSockets = activeEditorSocketIds(session.docPath);
     if (requiredSockets.length === 0) {
-      
-      
-      
-      
-      await publishInlineOnLane(session);
+      surfacePublishOutcome(session.docPath, await publishInlineOnLane(session));
     } else {
-      
-      
-      
-      
-      void runPublishAttempt(session);
+      void runPublishAttempt(session).then(
+        (outcome) => surfacePublishOutcome(session.docPath, outcome),
+        (err) => console.error(`[publish:${session.docPath}] autonomous publish threw`, err),
+      );
     }
   }
 }
@@ -1269,9 +1281,19 @@ export async function moveLiveSection(
 
   const { ProposalEditor } = await import("../storage/proposal-editor.js");
 
-  
-  
-  const proposalId = await session.generator.materializeEdit();
+  // Flush the moved sections' live content into the proposal before the
+  // structural reorder. This MUST be a manifest-SCOPED materialize (union), not
+  // the whole-document materialize: the whole-document path REPLACES the manifest
+  // with the current live section set, which would silently drop any
+  // claimed-but-absent delete-claim from earlier this session (U1 — a live delete
+  // stays in the manifest as the delete signal). A replace here resurrects the
+  // deleted descendant on the next merge. Scoping to the source/target fragments
+  // unions them in while preserving every existing claim.
+  const sourceFragmentKey = byHeadingKey.get(sourceKey)!.fragmentKey;
+  const targetFragmentKey = byHeadingKey.get(targetKey)!.fragmentKey;
+  const proposalId = await session.generator.materializeEdit({
+    touchedFragmentKeys: [sourceFragmentKey, targetFragmentKey],
+  });
 
   
   const editor = ProposalEditor.open(proposalId, "inprogress");
@@ -1759,11 +1781,7 @@ export async function publishOnLastEditorDisconnect(
     noCollaboratorMutatingChangedSet: true,
   });
   if (decision.shouldPublish) {
-    
-    
-    
-    
-    await runPublishAttempt(session);
+    surfacePublishOutcome(session.docPath, await runPublishAttempt(session));
   }
   return decision;
 }

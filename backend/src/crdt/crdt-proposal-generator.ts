@@ -450,10 +450,15 @@ export class CRDTProposalGenerator {
   }
 
   /**
-   * Per-edit manifest growth (C4): UNION the heading paths the engine actually
-   * WROTE (body-bearing entries only) into the proposal's existing section claim,
-   * and DROP the heading paths it REMOVED (a structural merge folds a section
-   * away). This keeps the live proposal locking only the edited section-set.
+   * Per-edit manifest growth (C4 / U1): UNION the heading paths the engine
+   * actually WROTE (body-bearing entries only) into the proposal's existing
+   * section claim. The manifest only ever GROWS as the live document is edited —
+   * a section a live edit REMOVES from the overlay is NOT dropped from the
+   * manifest: it stays claimed-but-absent, which is the delete signal the
+   * manifest-scoped merge reads (01 §3 "Manifest-scoped overlay (universal)";
+   * 10 §15). This keeps the live proposal the same kind of object as every other
+   * proposal — one law, no live opt-out — while still locking only the edited
+   * section-set.
    */
   private async growProposalManifest(proposalId: ProposalId, delta: MaterializeDelta): Promise<void> {
     const add = this.dedupSections(
@@ -461,10 +466,7 @@ export class CRDTProposalGenerator {
         .filter((e) => !e.isSubSkeleton)
         .map((e) => ({ doc_path: this.docPath, heading_path: [...e.headingPath] })),
     );
-    const remove = this.dedupSections(
-      delta.removedEntries.map((e) => ({ doc_path: this.docPath, heading_path: [...e.headingPath] })),
-    );
-    await unionCurrentProposalSections(proposalId, add, remove);
+    await unionCurrentProposalSections(proposalId, add);
   }
 
   /** Whole-document manifest (finalize/publish): replace with the full section set. */
@@ -613,17 +615,29 @@ export class CRDTProposalGenerator {
     }
     const proposalId = this.currentProposalId;
 
-    // Capture the EDITED section-set (the per-edit-grown manifest) BEFORE the
-    // final whole-document materialization replaces the manifest with the full
-    // section list. The audit-log description must reflect what was CHANGED this
-    // session (spec 10 §Commit-description synthesis), not every section in the
-    // document.
+    // The EDITED section-set IS the proposal's manifest (U1–U4: the manifest tracks
+    // exactly what this session created / edited / deleted — claimed-but-absent for
+    // deletes). The audit-log description reflects what was CHANGED this session
+    // (spec 10 §Commit-description synthesis), not every section in the document.
     const editedProposal = await findInProgressProposalForDocSession(this.docSessionId);
     const changedSections = (editedProposal?.sections ?? []).map((s) => ({ headingPath: s.heading_path }));
 
-    // Final materialization from the live Y.Doc into the current proposal.
+    // Final materialization is MANIFEST-SCOPED (U4), not whole-document: flush the
+    // current live content of exactly the claimed sections into the proposal
+    // overlay. Inherited (unclaimed) sections are NOT written — absorb inherits them
+    // live from current canonical via the manifest merge; claimed-but-absent deletes
+    // are not in the live snapshot, so they stay deleted. By publish time the actor
+    // has processed every inbound update (publish-trigger precondition), so every
+    // edited section is already claimed — the manifest is the complete change-set.
+    const claimedHeadingKeys = new Set(
+      (editedProposal?.sections ?? []).map((s) => SectionRef.headingKey(s.heading_path)),
+    );
+    const liveSections = await this.source.snapshotSections();
+    const touchedFragmentKeys = liveSections
+      .filter((s) => claimedHeadingKeys.has(SectionRef.headingKey(s.headingPath)))
+      .map((s) => s.fragmentKey);
     try {
-      await this.materializeIntoProposal(proposalId);
+      await this.materializeIntoProposal(proposalId, { touchedFragmentKeys });
     } catch (error) {
       // Abort before `committing` — keep the existing inprogress proposal as the
       // current proposal and resume editing (spec 10 §Publish failure handling).
@@ -656,6 +670,13 @@ export class CRDTProposalGenerator {
         // proposal to `inprogress` (kept as the DocSession current proposal),
         // NOT `draft` (spec 02 › Why `committing`). The pipeline owns this
         // rollback via `ownerKind`; the catch below is a defensive fallback.
+        //
+        // Manifest-scoped absorb (U4): a DocSession publish is the SAME sparse
+        // section merge as every other proposal — current canonical overlaid by
+        // this proposal's manifest (edits applied, claimed-but-absent deletes
+        // dropped, unclaimed sections inherited). There is NO `wholeDocumentRewrite`
+        // opt-out; only true document-target ops (restore/import/delete/rename) take
+        // the wholesale path, gated by their document targets in the pipeline.
         { ownerKind: "docsession", descriptionHeadline },
       );
       // Successful commit clears the current-proposal reference; the next edit

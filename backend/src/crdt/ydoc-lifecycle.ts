@@ -305,7 +305,7 @@ async function constructDocSession(
 ): Promise<DocSession> {
   const { DocumentSkeletonInternal } = await import("../storage/document-skeleton.js");
   const { listInProgressProposalsForDoc } = await import("../storage/proposal-repository.js");
-  const { proposalContentRoot } = await import("../storage/proposal-repository.js");
+  const { proposalContentRoot, loadDeletedSectionFiles } = await import("../storage/proposal-repository.js");
 
   const canonicalRoot = getContentRoot();
 
@@ -340,7 +340,18 @@ async function constructDocSession(
   // explicit `initialProposalId` below still binds the generator to it).
   const docSessionId = existingInProgress?.docSessionId ?? crypto.randomUUID();
 
-  const skeleton = await DocumentSkeletonInternal.fromDisk(docPath, seedRoot, canonicalRoot);
+  // Manifest-overlay (U3 / D5): seed via the SAME merge as every other proposal
+  // read — current canonical overlaid by the adopted proposal's structural changes.
+  // A body-only in-flight proposal has no overlay skeleton, so reconstruct inherits
+  // CURRENT canonical structure (including sections committed after the proposal
+  // opened — the data-loss fix); a section the live session deleted is dropped by
+  // its canonical section-file id (identity-based delete detection). There is NO
+  // live wholesale opt-out. With no adopted proposal the seed root IS canonical, so
+  // `fromDisk` takes the canonical-only path (deleted ids irrelevant, left undefined).
+  const deletedSectionFiles = existingInProgress
+    ? await loadDeletedSectionFiles(existingInProgress.id, docPath)
+    : undefined;
+  const skeleton = await DocumentSkeletonInternal.fromDisk(docPath, seedRoot, canonicalRoot, deletedSectionFiles);
   const ydoc = new Y.Doc();
 
   const orderedKeys: string[] = [];

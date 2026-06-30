@@ -404,7 +404,13 @@ a {
   /* Removed: this seems to have no benefit, and reduces quality of reading: max-width: 588px; */
 }
 .doc-prose > *:first-child,
-.milkdown .ProseMirror > *:first-child {
+.milkdown .ProseMirror > *:first-child,
+/* The Cursor feature inserts `div.prosemirror-virtual-cursor` as the first
+ * in-flow child of `.ProseMirror`, so `*:first-child` zeroes IT instead of the
+ * heading — leaving the heading's top margin to collapse up and shift the first
+ * section down ~12px. Also zero the block immediately after the cursor so the
+ * live editor's leading margin matches the static `.doc-prose` render. */
+.milkdown .ProseMirror > .prosemirror-virtual-cursor + * {
   margin-top: 0;
 }
 

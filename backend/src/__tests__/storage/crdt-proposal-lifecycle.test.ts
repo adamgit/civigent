@@ -97,7 +97,7 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
     expect(reread.sections).toHaveLength(2);
   });
 
-  it("unionCurrentProposalSections grows the manifest monotonically and drops merged-away sections (C4)", async () => {
+  it("unionCurrentProposalSections grows the manifest monotonically — grow-only, never shrinks (C4/D6)", async () => {
     const docSessionId = crypto.randomUUID() as DocSessionId;
     const { id } = await getOrCreateInProgressProposalForDocSession({
       docSessionId,
@@ -123,17 +123,13 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
     p = await unionCurrentProposalSections(id, [{ doc_path: "guide.md", heading_path: ["Overview"] }]);
     expect(p.sections).toHaveLength(2);
 
-    // A structural merge drops the folded-away section from the claim.
-    p = await unionCurrentProposalSections(id, [], [{ doc_path: "guide.md", heading_path: ["Timeline"] }]);
-    expect(p.sections.map((s) => key(s.heading_path))).toEqual([key(["Overview"])]);
-
-    // Add wins over remove when a section is both written and (spuriously) removed.
-    p = await unionCurrentProposalSections(
-      id,
-      [{ doc_path: "guide.md", heading_path: ["Overview"] }],
-      [{ doc_path: "guide.md", heading_path: ["Overview"] }],
+    // D6: the manifest is GROW-ONLY — there is no remove path. A delete does NOT
+    // shrink `sections` (it is tracked separately by canonical section-file id in
+    // `deleted_section_files`), so re-unioning anything only ever keeps/adds claims.
+    p = await unionCurrentProposalSections(id, [{ doc_path: "guide.md", heading_path: ["Timeline"] }]);
+    expect(p.sections.map((s) => key(s.heading_path)).sort()).toEqual(
+      [key(["Overview"]), key(["Timeline"])].sort(),
     );
-    expect(p.sections.map((s) => key(s.heading_path))).toEqual([key(["Overview"])]);
   });
 
   it("returns a committing proposal to inprogress on runtime publish failure (not draft)", async () => {

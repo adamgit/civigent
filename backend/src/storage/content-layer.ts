@@ -686,10 +686,26 @@ export class ContentLayer {
 export class ProposalShadowContentLayer {
   readonly overlayRoot: string;
   readonly canonicalRoot: string;
+  /**
+   * Identity-based delete detection (D4/D5): supplies the canonical section-file
+   * IDS this proposal has DELETED for a document, so the effective-structure merge
+   * can drop a deleted section by stable id (a delete then survives any ancestor
+   * rename/move without re-pathing) while inheriting every other canonical
+   * section. Injected by `ProposalReader`/`ProposalEditor` (which know the proposal
+   * id). Absent for canonical-only constructions (`overlayRoot === canonicalRoot`)
+   * and direct test constructions, where the merge degrades to "inherit all,
+   * delete none" (strictly non-destructive).
+   */
+  private readonly deletedSectionFilesProvider?: (docPath: string) => Promise<ReadonlySet<string> | undefined>;
 
-  constructor(overlayRoot: string, canonicalRoot: string) {
+  constructor(
+    overlayRoot: string,
+    canonicalRoot: string,
+    deletedSectionFilesProvider?: (docPath: string) => Promise<ReadonlySet<string> | undefined>,
+  ) {
     this.overlayRoot = overlayRoot;
     this.canonicalRoot = canonicalRoot;
+    this.deletedSectionFilesProvider = deletedSectionFilesProvider;
   }
 
   /**
@@ -820,7 +836,14 @@ export class ProposalShadowContentLayer {
     if (state === "missing") {
       throw new DocumentNotFoundError(`Document "${docPath}" does not exist.`);
     }
-    return DocumentSkeleton.fromDisk(docPath, this.overlayRoot, this.canonicalRoot);
+    // Manifest-overlay (Step 2 / D4): the effective structure is current canonical
+    // merged with this proposal's sparse overlay, with sections whose `sectionFile`
+    // id is in the proposal's deleted-id set treated as deletes. Deleted ids come
+    // from the injected provider; a canonical-only layer never merges.
+    const deletedSectionFiles = this.overlayRoot !== this.canonicalRoot && this.deletedSectionFilesProvider
+      ? await this.deletedSectionFilesProvider(docPath)
+      : undefined;
+    return DocumentSkeleton.fromDisk(docPath, this.overlayRoot, this.canonicalRoot, deletedSectionFiles);
   }
 
   /**
@@ -967,12 +990,11 @@ export class ProposalShadowContentLayer {
 
     // Effective source skeleton (proposal-first, canonical fallback): structure +
     // section-file IDs, with no markdown parse. Read-only — the rename only walks
-    // it (`forEachNode`), so the effective-load read suffices.
-    const sourceSkeleton = await DocumentSkeleton.fromDisk(
-      sourceDocPath,
-      this.overlayRoot,
-      this.canonicalRoot,
-    );
+    // it (`forEachNode`). Routed through `readSkeleton` so the claim-tracked merge
+    // (current canonical ⊕ this proposal's manifest) governs it like every other
+    // overlay read (U5) — never a provider-less wholesale fallback. Source state is
+    // already validated live above, so the missing/tombstone guards are no-ops here.
+    const sourceSkeleton = await this.readSkeleton(sourceDocPath);
 
     const overlaySrcSkeletonPath = resolveDocSkeletonPath(this.overlayRoot, sourceDocPath);
     const overlayDestSkeletonPath = resolveDocSkeletonPath(this.overlayRoot, destinationDocPath);
@@ -1930,12 +1952,18 @@ export class ProposalShadowContentLayer {
   }
 
   /**
-   * Write-path invariant gate + first-edit canonical initialization: a real
-   * proposal body write must never occur before the proposal skeleton exists for
-   * that document. When the first proposal-local edit targets a document inherited
-   * from canonical (no proposal skeleton yet, but live via canonical fallback),
-   * this initializes the proposal skeleton from canonical so the body write has a
-   * proposal-owned skeleton to attach to.
+   * Write-path invariant gate: a real proposal body write must never target a
+   * tombstoned or missing document. It does NOT materialize structure.
+   *
+   * Manifest-overlay model (Step 1): a body write to an inherited section must NOT
+   * snapshot the whole canonical skeleton into the proposal. The writable skeleton
+   * loaded for the write already resolves the target section's canonical
+   * section-file id (the canonical-structure fallback in `loadWritableSkeleton`),
+   * so the overlay body file keys to that same id and overlays canonical. The
+   * proposal therefore stays sparse: a body-only edit creates no proposal skeleton
+   * file — only the edited body file(s). Effective structure is resolved as
+   * *current* canonical merged with the manifest at read time, not from a frozen
+   * first-write snapshot.
    *
    * This is the proposal write implementation's own operation — it runs only on
    * write paths, never on reads.
@@ -1951,12 +1979,6 @@ export class ProposalShadowContentLayer {
     if (state === "missing") {
       throw new DocumentNotFoundError(`Document "${docPath}" does not exist.`);
     }
-
-    // First proposal-local edit on an inherited canonical document: materialize
-    // the inherited structure into the proposal root (canonical body fallback is
-    // preserved by the injected placeholder-suppression policy).
-    const skeleton = await this.loadWritableSkeleton(docPath);
-    await skeleton.materializeInheritedSkeletonFromCanonical();
   }
 
   /**
@@ -2616,11 +2638,19 @@ export class ProposalShadowContentLayer {
       const removed = ctx.flattenNode(movedNode, parentPath, ctx.resolveSkeletonPathFor(parentPath));
       sourceSiblings.splice(sourceIdx, 1);
 
-      // Retarget the moved node to the new level and file id.
+      // Retarget the moved node to the new level, PRESERVING its section-file id
+      // (identity-based delete detection, D4): paths move, ids do not. Keeping the
+      // id means the manifest-overlay merge still matches the moved section — and
+      // its (possibly deleted) descendants — to canonical BY ID. Re-keying here
+      // would make the merge treat the canonical original as an unmatched inherited
+      // section and splice it back in wholesale, resurrecting any deleted
+      // descendant and duplicating the moved section. (A pure sibling reorder
+      // already preserves the id; a reparent now does too — and live fragment keys
+      // survive a move, so no remap is emitted.)
       const relabeled: SkeletonNode = {
         heading: movedNode.heading,
         level: newLevel,
-        sectionFile: generateSectionFilename(movedNode.heading),
+        sectionFile: movedNode.sectionFile,
         children: movedNode.children,
       };
 
@@ -2654,7 +2684,8 @@ export class ProposalShadowContentLayer {
         removed,
         added,
         bodyWrites,
-        fragmentKeyRemaps: [{ from: movedNode.sectionFile, to: relabeled.sectionFile }],
+        // Id preserved across the move → no fragment-key remap (live keys survive).
+        fragmentKeyRemaps: [],
       } satisfies StructuralMutationPlan;
     });
 

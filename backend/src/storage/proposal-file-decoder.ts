@@ -39,6 +39,7 @@ import {
 } from "../types/shared.js";
 import type {
   AnyProposal,
+  DeletedSectionFileRef,
   HumanInvolvementCommittedProposalMetadata,
   InProgressProposal,
   ProposalFileBase,
@@ -132,6 +133,30 @@ function decodeProposalSections(value: JsonValue, label: string): ProposalSectio
   return value.map((element, index) => decodeProposalSection(element, `${label}[${index}]`));
 }
 
+function decodeDeletedSectionFileRef(value: JsonValue, label: string): DeletedSectionFileRef {
+  const obj = expectJsonObject(value, label);
+  return {
+    doc_path: requireString(obj, "doc_path", label),
+    section_file: requireString(obj, "section_file", label),
+  };
+}
+
+/**
+ * Decode the optional `deleted_section_files` id set (identity-based delete
+ * detection). Absent on proposals written before the field existed → `[]`. A
+ * PRESENT-but-malformed value throws (same strictness posture as `targets`).
+ */
+function decodeDeletedSectionFiles(obj: JsonObject, label: string): DeletedSectionFileRef[] {
+  if (!("deleted_section_files" in obj)) return [];
+  const value = obj["deleted_section_files"];
+  if (!isJsonArray(value)) {
+    throw new Error(`${label}.deleted_section_files must be an array, got ${JSON.stringify(value)}`);
+  }
+  return value.map((element, index) =>
+    decodeDeletedSectionFileRef(element, `${label}.deleted_section_files[${index}]`),
+  );
+}
+
 function decodeProposalTargetRef(value: JsonValue, label: string): ProposalTargetRef {
   const obj = expectJsonObject(value, label);
   const kind = obj["kind"];
@@ -202,6 +227,7 @@ function decodeProposalFileBase(obj: JsonObject, label: string, status: Proposal
     targets: missingTargets
       ? sectionsToTargets(sections)
       : decodeProposalTargets(obj["targets"], `${label}.targets`),
+    deleted_section_files: decodeDeletedSectionFiles(obj, label),
     created_at: requireString(obj, "created_at", label),
   };
   if (missingTargets && !TERMINAL_PROPOSAL_STATUSES.has(status)) base.degraded = ["missing-targets"];

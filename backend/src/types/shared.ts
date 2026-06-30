@@ -79,6 +79,7 @@ export type {
   ProposalLockResult,
   SectionAgentWritePolicySummary,
   ProposalSection,
+  DeletedSectionFileRef,
   ProposalStatus,
   ProposalDefect,
   ReadDocStructureResponse,

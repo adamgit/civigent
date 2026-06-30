@@ -3,7 +3,8 @@ import crypto from "node:crypto";
 import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
 import { pathExists, readDirentsIfExists } from "./fs-primitives.js";
 import { SectionRef } from "../domain/section-ref.js";
-import { mintProposalManifest, type ProposalManifest } from "./proposal-manifest.js";
+import { mintProposalManifest, unionDeletedSectionFiles, type ProposalManifest } from "./proposal-manifest.js";
+import { normalizeDocPath } from "./path-utils.js";
 import { parseJson, sectionsToTargets, TERMINAL_PROPOSAL_STATUSES } from "../types/shared.js";
 import { decodeProposal, decodeInProgressProposal, readLandedCommittedHead } from "./proposal-file-decoder.js";
 import {
@@ -18,6 +19,7 @@ import type {
   AnyProposal,
   AnyProposalFile,
   CommittedProposalFile,
+  DeletedSectionFileRef,
   DocSessionId,
   InProgressProposal,
   InProgressProposalFile,
@@ -282,6 +284,59 @@ export async function readProposal(id: ProposalId): Promise<AnyProposal> {
     return readProposalFile(filePath, status);
   }
   throw new ProposalNotFoundError(`Proposal not found: ${id}`);
+}
+
+/**
+ * Record canonical section-file ids this proposal has DELETED (identity-based
+ * delete detection). Appends + dedupes into the grow-only `deleted_section_files`
+ * field for `docPath`; `sections`/`targets` are left untouched (a deleted section
+ * keeps its path claim there for lock/audit). The other manifest writers spread
+ * `...current`, so the field they don't manage survives their writes. A no-op for
+ * an empty id list. Allowed on non-terminal statuses only (a committed/withdrawn
+ * proposal is immutable).
+ */
+export async function recordDeletedSectionFiles(
+  proposalId: ProposalId,
+  docPath: string,
+  sectionFiles: string[],
+): Promise<void> {
+  if (sectionFiles.length === 0) return;
+  const { status, filePath } = await locateProposal(proposalId);
+  if (status !== "draft" && status !== "pending" && status !== "inprogress") {
+    throw new InvalidProposalStateError(
+      `Cannot record deleted section files for ${proposalId}: status is ${status}, expected draft, pending, or inprogress.`,
+    );
+  }
+  const current = await readProposalFile(filePath, status);
+  const normalized = normalizeDocPath(docPath);
+  const added: DeletedSectionFileRef[] = sectionFiles.map((section_file) => ({
+    doc_path: normalized,
+    section_file,
+  }));
+  const updated: AnyProposalFile = {
+    ...proposalToFile(current),
+    deleted_section_files: unionDeletedSectionFiles(current.deleted_section_files ?? [], added),
+  };
+  await writeJsonFile(filePath, updated, status);
+}
+
+/**
+ * Load the set of canonical section-file ids this proposal has deleted for
+ * `docPath` (identity-based delete detection). This is the merge's delete
+ * discriminator — a canonical section whose `sectionFile` id is in this set is
+ * dropped (deleted), everything else is inherited. Absent field → empty set.
+ */
+export async function loadDeletedSectionFiles(
+  proposalId: ProposalId,
+  docPath: string,
+): Promise<Set<string>> {
+  const proposal = await readProposal(proposalId);
+  const target = normalizeDocPath(docPath);
+  const ids = new Set<string>();
+  for (const ref of proposal.deleted_section_files ?? []) {
+    if (normalizeDocPath(ref.doc_path) === target) ids.add(ref.section_file);
+  }
+  return ids;
 }
 
 /**
@@ -957,18 +1012,18 @@ export async function updateCurrentProposalSections(
 
 /**
  * MONOTONICALLY grow a CRDT-owned `inprogress` proposal's section manifest as the
- * live document is edited (C4): UNION `addSections` into the existing `sections`
- * and DROP `removeSections` (a structural merge folds a section away), then dedup
- * by section global key. This keeps the live proposal's lock claim covering only
- * what has actually been edited this session — NOT the whole document — restoring
- * the section-by-section contention model (a one-section edit must not lock every
- * section against agents). `targets` is kept identical to the section targets of
- * `sections` (live editing is section-only; see assumptions.md C4).
+ * live document is edited (C4): UNION `addSections` into the existing `sections`,
+ * deduped by section global key. The manifest is GROW-ONLY (D6) — it never shrinks.
+ * A delete does NOT drop a section from `sections`: deletes are tracked by stable
+ * canonical section-file id in `deleted_section_files` (identity-based delete
+ * detection), so the manifest stays a pure grow-only lock/audit claim set and the
+ * structural merge keys delete-vs-inherit on the id set, not on a manifest path.
+ * `targets` is kept identical to the section targets of `sections` (live editing is
+ * section-only; see assumptions.md C4).
  */
 export async function unionCurrentProposalSections(
   id: ProposalId,
   addSections: ProposalSection[],
-  removeSections: ProposalSection[] = [],
 ): Promise<InProgressProposal> {
   const { status, filePath } = await locateProposal(id);
   if (status !== "inprogress") {
@@ -981,19 +1036,11 @@ export async function unionCurrentProposalSections(
     throw new InvalidProposalStateError(`Proposal ${id} is not inprogress as located.`);
   }
 
-  // Add wins over remove: a section that is both written and removed in the same
-  // delta (e.g. a split whose parent is restructured but survives) stays claimed.
-  const addKeys = new Set(addSections.map((s) => SectionRef.fromTarget(s).globalKey));
-  const removeKeys = new Set(
-    removeSections
-      .map((s) => SectionRef.fromTarget(s).globalKey)
-      .filter((k) => !addKeys.has(k)),
-  );
   const merged: ProposalSection[] = [];
   const seen = new Set<string>();
   for (const section of [...current.sections, ...addSections]) {
     const key = SectionRef.fromTarget(section).globalKey;
-    if (removeKeys.has(key) || seen.has(key)) continue;
+    if (seen.has(key)) continue;
     seen.add(key);
     merged.push(section);
   }
