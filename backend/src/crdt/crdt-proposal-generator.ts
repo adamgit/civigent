@@ -153,7 +153,12 @@ export interface PublishTriggerSignals {
   forcedCanonicalOperation: boolean;
   /** Rule 2: the last editor socket for the DocSession has disconnected. */
   lastEditorLeft: boolean;
-  /** There is at least one materialized edit (a current `inprogress` proposal). */
+  /**
+   * There is a bound `inprogress` proposal to publish — adopted on reconstruction
+   * OR created by an edit. This is "is there anything to publish", NOT "did this
+   * attachment author it": the autonomous-publish caller applies the stricter
+   * authored-edit gate itself before consulting the policy.
+   */
   hasCurrentProposal: boolean;
   /**
    * Rule 3 prerequisites (settled dirty frontier). ALL must hold:
@@ -262,11 +267,28 @@ export class CRDTProposalGenerator {
   readonly publishTriggerPolicy: PublishTriggerPolicy;
 
   /**
-   * The DocSession actor's current-proposal reference. `null` until the first
-   * materialized edit lazily creates the single `inprogress` proposal, and
-   * cleared again only by a successful publish (spec 10 §One active proposal).
+   * The proposal this DocSession is BOUND to: the adopted stranded `inprogress`
+   * proposal on reconstruction (set from `initialProposalId`), or the proposal
+   * lazily created on the first materialized edit. This is the "which proposal am
+   * I working in" reference every consumer needs — live seeding, edit
+   * arbitration, lock arbitration, canonical-delta loopback, the last-editor
+   * leave-path flush, and finalize. Cleared only by a successful publish (spec 10
+   * §One active proposal). NOTE: being bound does NOT imply this attachment
+   * authored anything — an adopted-but-untouched session is bound with no
+   * authored edit. See `authoredProposalId`.
    */
-  private currentProposalId: ProposalId | null = null;
+  private boundProposalId: ProposalId | null = null;
+
+  /**
+   * The proposal THIS attachment has actually authored into: `null` until this
+   * generator materializes its own edit (`materializeEdit` /
+   * `materializeEditDetailed`), and cleared again by a successful publish. Unlike
+   * `boundProposalId` it is NOT set by adoption — so it is the truthful "there is
+   * ≥1 materialized edit from this attachment" signal, and the sole basis for the
+   * autonomous (quiescence) publish decision. An adopted proposal must never be
+   * autonomously published by a session that never wrote into it.
+   */
+  private authoredProposalId: ProposalId | null = null;
 
   constructor(opts: CRDTProposalGeneratorOptions) {
     this.docPath = opts.docPath;
@@ -275,7 +297,9 @@ export class CRDTProposalGenerator {
     this.source = opts.source;
     this.buildCommittedMetadata = opts.buildCommittedMetadata;
     this.publishTriggerPolicy = opts.publishTriggerPolicy ?? new PublishTriggerPolicy();
-    this.currentProposalId = opts.initialProposalId ?? null;
+    // Adoption binds the generator to the stranded proposal but does NOT count as
+    // an authored edit (authoredProposalId stays null until first materialize).
+    this.boundProposalId = opts.initialProposalId ?? null;
   }
 
   /**
@@ -298,12 +322,27 @@ export class CRDTProposalGenerator {
    * proposal).
    */
   getCurrentProposalId(): ProposalId | null {
-    return this.currentProposalId;
+    return this.boundProposalId;
   }
 
-  /** True once a proposal has been lazily created and not yet published. */
+  /**
+   * True once this DocSession is bound to a proposal (adopted on reconstruction
+   * OR lazily created by an edit) and it has not yet been published. This is the
+   * "is there a proposal to work in / to publish" predicate; it does NOT imply
+   * this attachment authored anything — use {@link hasAuthoredEdit} for that.
+   */
   hasCurrentProposal(): boolean {
-    return this.currentProposalId !== null;
+    return this.boundProposalId !== null;
+  }
+
+  /**
+   * True once THIS attachment has materialized at least one edit of its own. The
+   * truthful "≥1 materialized edit" signal (distinct from adoption), and the sole
+   * gate for autonomous publish: a session that merely adopted a stranded
+   * proposal must never autonomously publish work it never authored.
+   */
+  hasAuthoredEdit(): boolean {
+    return this.authoredProposalId !== null;
   }
 
   /**
@@ -346,6 +385,9 @@ export class CRDTProposalGenerator {
   async materializeEdit(scope?: MaterializeScope): Promise<ProposalId> {
     const proposalId = await this.ensureCurrentProposal();
     await this.materializeIntoProposal(proposalId, scope);
+    // This attachment has now authored an edit into the bound proposal — the only
+    // event that arms the autonomous publish gate (distinct from mere adoption).
+    this.authoredProposalId = proposalId;
     return proposalId;
   }
 
@@ -359,6 +401,9 @@ export class CRDTProposalGenerator {
   ): Promise<{ proposalId: ProposalId; delta: MaterializeDelta }> {
     const proposalId = await this.ensureCurrentProposal();
     const delta = await this.materializeIntoProposal(proposalId, scope);
+    // This attachment has now authored an edit into the bound proposal — the only
+    // event that arms the autonomous publish gate (distinct from mere adoption).
+    this.authoredProposalId = proposalId;
     return { proposalId, delta };
   }
 
@@ -368,15 +413,26 @@ export class CRDTProposalGenerator {
    * (or a concurrent DocSession lookup) returns the same proposal because the
    * repository helper keys on DocSession identity and enforces the invariant.
    */
+  /**
+   * Release both the bound and authored references after a publish that removed
+   * the proposal from `inprogress` (successful commit, or a proposal that vanished
+   * under us). The next edit re-binds and re-arms from scratch. Kept as one
+   * primitive so the two references can never drift out of a half-cleared state.
+   */
+  private clearProposalBinding(): void {
+    this.boundProposalId = null;
+    this.authoredProposalId = null;
+  }
+
   async ensureCurrentProposal(): Promise<ProposalId> {
-    if (this.currentProposalId !== null) return this.currentProposalId;
+    if (this.boundProposalId !== null) return this.boundProposalId;
 
     const created = await getOrCreateInProgressProposalForDocSession({
       docSessionId: this.docSessionId,
       docPath: this.docPath,
       writer: this.writer,
     });
-    this.currentProposalId = created.id;
+    this.boundProposalId = created.id;
     return created.id;
   }
 
@@ -610,10 +666,10 @@ export class CRDTProposalGenerator {
    * §Publish failure handling).
    */
   async finalizeAndPublish(): Promise<PublishResult> {
-    if (this.currentProposalId === null) {
+    if (this.boundProposalId === null) {
       return { status: "noop-no-proposal" };
     }
-    const proposalId = this.currentProposalId;
+    const proposalId = this.boundProposalId;
 
     // The EDITED section-set IS the proposal's manifest (U1–U4: the manifest tracks
     // exactly what this session created / edited / deleted — claimed-but-absent for
@@ -648,7 +704,7 @@ export class CRDTProposalGenerator {
     if (!proposal) {
       // The proposal vanished from under us (e.g. concurrent admin op). Treat as
       // a no-op publish rather than committing stale state.
-      this.currentProposalId = null;
+      this.clearProposalBinding();
       return { status: "noop-no-proposal" };
     }
 
@@ -679,9 +735,9 @@ export class CRDTProposalGenerator {
         // the wholesale path, gated by their document targets in the pipeline.
         { ownerKind: "docsession", descriptionHeadline },
       );
-      // Successful commit clears the current-proposal reference; the next edit
-      // lazily creates the next inprogress proposal.
-      this.currentProposalId = null;
+      // Successful commit clears both the bound and authored references; the next
+      // edit lazily creates and re-arms the next inprogress proposal.
+      this.clearProposalBinding();
       return {
         status: "committed",
         proposalId,
@@ -699,7 +755,8 @@ export class CRDTProposalGenerator {
       } catch {
         // Already rolled back (proposal not in `committing`) — expected.
       }
-      // Keep currentProposalId pointing at the same proposal.
+      // Keep both references pointing at the same proposal: editing resumes into
+      // it, and an attachment that had authored edits stays armed to retry publish.
       return { status: "failed-returned-to-inprogress", proposalId, error };
     }
   }

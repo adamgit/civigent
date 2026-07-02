@@ -5,7 +5,7 @@
  * dedicated `storageRole` field on `FlatEntry`/`ContentEntry`) by changing only
  * the predicate bodies, with no caller-side rewrites.
  *
- * The four predicates each name a distinct INTENT, so callers don't have to
+ * The three predicates each name a distinct INTENT, so callers don't have to
  * re-derive which equivalence applies to their site:
  *
  *   - isBodyHolderShape:           pure shape test; use inside DocumentSkeleton
@@ -21,10 +21,6 @@
  *                                  heading line ONLY for the document BFH —
  *                                  assembly, `prependHeadings`, git-history
  *                                  assembly, snapshot rendering.
- *
- *   - isNestedBodyHolder:          sub-skeleton body holder (parentPath > 0).
- *                                  Use in the visible-section traversal to
- *                                  fold the entry's metadata onto its parent.
  *
  *   - parsedSectionIsHeadless:     parser-output shape test — "this parsed
  *                                  fragment carries no heading line". Same
@@ -50,10 +46,6 @@ export function isBodyHolderShape(node: BodyHolderShapeInput): boolean {
 
 export function isDocumentBeforeFirstHeading(entry: BodyHolderEntryInput): boolean {
   return isBodyHolderShape(entry) && entry.headingPath.length === 0;
-}
-
-export function isNestedBodyHolder(entry: BodyHolderEntryInput): boolean {
-  return isBodyHolderShape(entry) && entry.headingPath.length > 0;
 }
 
 export function parsedSectionIsHeadless(section: BodyHolderShapeInput): boolean {

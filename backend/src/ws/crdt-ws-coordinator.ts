@@ -35,6 +35,7 @@ import {
   setBroadcastSessionReplacementInvalidation,
   setBroadcastAdminRebuildInvalidation,
   noteFragmentActivity,
+  onSessionDiscard,
   type DocSession,
 } from "../crdt/ydoc-lifecycle.js";
 import {
@@ -687,6 +688,12 @@ export function cancelQuiescenceTimer(docPath: string): void {
   }
 }
 
+// Cancel a doc's autonomous-publish timer the instant its live session is torn
+// down, on EVERY discard route. This removes the dangling-timer leak at its
+// source: a timer can no longer outlive the session that armed it and fire
+// against a later session re-acquired for the same doc.
+onSessionDiscard(cancelQuiescenceTimer);
+
 
 
 
@@ -841,8 +848,14 @@ async function runQuiescenceCommand(session: DocSession): Promise<void> {
     await emitLiveStructureChanged(session);
   }
 
-  
-  if (!session.generator.hasCurrentProposal()) return;
+  // AUTONOMOUS-publish gate. Unlike the last-editor leave-path and explicit
+  // PublishNow (which may flush an adopted proposal), the quiescence timer may
+  // only commit work THIS attachment actually authored. A session that merely
+  // adopted a stranded `inprogress` proposal is bound but has authored nothing,
+  // so `hasAuthoredEdit()` is false and we leave it alone — otherwise a leftover
+  // timer publishes-and-freezes an editor that never typed
+  // (crdt/quiescence-timer-safety). `hasAuthoredEdit()` implies `hasCurrentProposal()`.
+  if (!session.generator.hasAuthoredEdit()) return;
   if (session.publishPause.isActive()) return;
 
   
@@ -1681,10 +1694,9 @@ export function createCrdtWsServer(): CrdtWsServer {
           
           
           if (lastEditorLeaving) closeObserverSocketsForDoc(state.docPath);
-          const released = await releaseDocSession(state.docPath, state.writerId, state.socketId);
-          
-          
-          if (released.sessionEnded) cancelQuiescenceTimer(state.docPath);
+          // The quiescence timer is cancelled by the `onSessionDiscard` hook when
+          // `releaseDocSession` discards the session — no special-case needed here.
+          await releaseDocSession(state.docPath, state.writerId, state.socketId);
         }
       }
     });

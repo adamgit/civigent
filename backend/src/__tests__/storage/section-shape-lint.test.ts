@@ -14,7 +14,7 @@ import { describe, it, expect } from "vitest";
  *
  * If this test fails, you've reintroduced an inline shape comparison. Replace
  * it with `isBodyHolderShape` / `isDocumentBeforeFirstHeading` /
- * `isNestedBodyHolder` / `parsedSectionIsHeadless` from `./section-shape.ts`.
+ * `parsedSectionIsHeadless` from `./section-shape.ts`.
  */
 
 const SHAPE_PATTERN = /level\s*===\s*0\s*&&\s*[A-Za-z_.]*\bheading\s*===\s*""|heading\s*===\s*""\s*&&\s*[A-Za-z_.]*\blevel\s*===\s*0/;
@@ -63,7 +63,7 @@ describe("section-shape lint", () => {
         .join("\n");
       throw new Error(
         `Found ${offenders.length} raw body-holder shape comparison(s) outside section-shape.ts:\n${detail}\n\n` +
-        `Replace with one of: isBodyHolderShape, isDocumentBeforeFirstHeading, isNestedBodyHolder, parsedSectionIsHeadless.`,
+        `Replace with one of: isBodyHolderShape, isDocumentBeforeFirstHeading, parsedSectionIsHeadless.`,
       );
     }
     expect(offenders).toHaveLength(0);

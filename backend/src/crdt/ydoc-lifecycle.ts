@@ -499,6 +499,23 @@ export async function releaseDocSession(
   return { sessionEnded: false, contributors: [] };
 }
 
+/**
+ * Listeners invoked with a docPath whenever its live session is torn down, on
+ * EVERY discard route (last-editor-leave, replacement/rebuild, shutdown). The WS
+ * coordinator registers `cancelQuiescenceTimer` here so a session's autonomous-
+ * publish timer is cancelled the moment the session that armed it dies — no route
+ * can leave a coordinator timer dangling against a later session for the doc.
+ * Kept as an upward hook so the lower lifecycle layer stays free of any coordinator
+ * (timer) import.
+ */
+const sessionDiscardListeners = new Set<(docPath: string) => void>();
+export function onSessionDiscard(listener: (docPath: string) => void): void {
+  sessionDiscardListeners.add(listener);
+}
+function notifySessionDiscarded(docPath: string): void {
+  for (const listener of sessionDiscardListeners) listener(docPath);
+}
+
 /** Discard an in-memory live Y.Doc with no remaining holders. Durable in-flight
  *  state remains in the `inprogress` proposal content tree. */
 function discardSession(session: DocSession): void {
@@ -507,6 +524,7 @@ function discardSession(session: DocSession): void {
   sessionPromises.delete(session.docPath);
   session.state = "ended";
   session.ydoc.destroy();
+  notifySessionDiscarded(session.docPath);
 }
 
 // ─── Per-section activity attribution ────────────────────────────
@@ -612,6 +630,10 @@ export function removeObserverSocket(docPath: string, socketId: string): void {
 export function destroyAllSessions(): void {
   for (const session of sessions.values()) {
     session.ydoc.destroy();
+    session.state = "ended";
+    // Fire the same discard hook every other teardown route uses, so shutdown /
+    // test-reset also cancels any coordinator-owned quiescence timer.
+    notifySessionDiscarded(session.docPath);
   }
   sessions.clear();
   sessionPromises.clear();
