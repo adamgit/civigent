@@ -1,13 +1,38 @@
 # Civigent
 
-A collaborative wiki where humans and AI agents co-author markdown documents in real time.
+## What is it?
+
+A modern document-authoring system where humans and AI agents can safely co-author serious structured content, with git-like auditability and proposal governance, but with human-friendly interfaces and live collaborative editing.
+
+e.g. like Google Docs - but with strong governance and explicit management of "AI input" vs "human input"
+
+e.g. like Notion - but free, open-source, and with AI built-in to the core, instead of bolted-on to the product
+
+e.g. like git - but vastly more user-friendly, and you will never see a "merge conflict" because the system made them impossible by-design
+
+## Key differentiators
+
+1. **Unified write model**
+
+Many systems bolt AI edits onto a collaborative editor as suggestions or patches. Civigent’s spec instead treats live human work, agent work, imports, restores, and manual proposals as variants of the same audited proposal pipeline.
+
+2. **Agent safety without making agents second-class**
+
+Agents can discover, propose, commit, and be tracked, but they cannot peek into live human state or bypass canonical review/policy. That gives a clean boundary: humans get live workspace, agents get canonical plus proposals.
+
+3. **Section-level semantic model**
+
+Stable section identity, sparse proposal manifests, section/document target locks, and overlay commits mean the app can support concurrent edits without falling into whole-document snapshot conflicts or accidental overwrites.
+
+# More info...
 
 Civigent solves the problem of humans and AI agents editing the same content simultaneously. Instead of locking or last-write-wins, it uses continuous human-involvement scoring to protect human work from agent overwrites while letting agents work freely on uncontested sections. The result: humans and agents collaborate on the same documents without stepping on each other.
 
 * It is **AI Native** providing MCP-first access in the backend that gives Agents all the tools they need to operate and collaborate with humans.
 * It is **Human Native** providing a modern UI for humans to collaboratively edit docs together in realtime, and see what the AI Agents are doing/planning/changing.
 
-Powerful uses include:
+Power-user examples include:
+
 1. Control a swarm of agents more easily via a large number of documents, instead of manually via Chat sessions and text files
 2. (meta) Store an Agent's own internal Memory.MD files in Civigent, letting you peek into its brain and control its actions and thinking effortlessly (works for any agents that use Markdown as their internal format)
 3. Allow a swarm of agents to collaborate with your existing human teams on editing business documents across your organization - but with strong governance controls on Agent activity
@@ -18,12 +43,14 @@ This is the first public release. It has been extensively tested and is in use b
 
 ## Key features
 
-- **Real-time collaborative editing** — CRDT-based (Yjs) with per-section Milkdown editors, multi-tab support via SharedWorker
-- **Human-involvement scoring** — continuous decay function protects recently-edited human content from agent overwrites, with admin-configurable presets (30s to 8h)
-- **Proposal workflow** — agents submit proposals that are evaluated per-section; blocked sections can be justified or reworked
-- **Full audit log** — every change is a git commit with writer attribution and semantic chunking
-- **MCP agent support** — three tiers of MCP tools, from simple filesystem-style reads/writes to full proposal-based collaboration
-- **No database** — all state lives on the filesystem (content, sessions, proposals, auth). An `ls` shows the complete system state.
+- **Human and agent co-authoring by design** — humans edit live, agents work through proposals, and every path to canonical content goes through the same governed pipeline instead of a bolt-on AI side channel.
+- **Safe real-time collaboration** — CRDT-backed editing lets people work together fluidly while section-level identity, locks, and proposal manifests prevent accidental overwrites and traditional merge conflicts.
+- **Agent governance and visibility** — agents can read, propose, commit, and be tracked through MCP, while humans can see agent reading activity, draft intent, recent commits, and other actionable signals.
+- **Proposal-backed control for every write** — live edits, manual human proposals, agent writes, imports, restores, and filesystem-style MCP writes are all represented as auditable proposals before they affect canonical content.
+- **Human work stays protected** — agent writes are gated by policy, including human-involvement scoring that protects recently edited sections while allowing uncontested work to move quickly.
+- **Structured section-level documents** — stable section identities survive renames and moves, so collaboration happens at the meaningful unit of the document rather than through brittle whole-file snapshots.
+- **Git-style auditability without git UX** — canonical changes are committed with attribution and reviewable history, but end users work in a normal collaborative document interface.
+- **Self-hosted and file-backed** — all durable state lives on disk as content, proposals, suggested edits, auth, and history; no hidden database is required.
 
 ## Quick start (end users)
 
