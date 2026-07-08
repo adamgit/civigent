@@ -20,6 +20,8 @@ import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
 import { useInitialObserverGuard } from "../hooks/useInitialObserverGuard";
 import { useDocumentActivity } from "../hooks/useDocumentActivity";
 import { DocumentActivityIndicator } from "../components/DocumentActivityIndicator";
+import { DocumentSectionNav, type DocumentSectionNavItem } from "../components/DocumentSectionNav";
+import { useTopViewportSection } from "../hooks/useTopViewportSection";
 import { DocumentResourceModel } from "../models/document-resource-model";
 import type { Awareness } from "y-protocols/awareness";
 import {
@@ -117,6 +119,8 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const [lastVisitSeed, setLastVisitSeed] = useState<{ docPath: string; since: string | null } | null>(null);
 
   const sectionsContainerRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const paperRef = useRef<HTMLDivElement>(null);
   const resourceModel = useMemo(() => new DocumentResourceModel(), []);
 
   // ── Load sections ────────────────────────────────────────
@@ -336,6 +340,46 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   const focusedHeadingPath = focusedSectionIndex !== null && renderSections[focusedSectionIndex]
     ? renderSections[focusedSectionIndex].heading_path
     : null;
+
+  // ── Section navigation overlay (right-gutter index) ──────
+  // Derived entirely from the live render list — the same structure the page
+  // renders/edits when CRDT is active. Empty-heading (before-first-heading) rows
+  // are omitted; line length/indent scale off nesting depth (heading_path length).
+  const navItems = useMemo<DocumentSectionNavItem[]>(
+    () =>
+      renderSections
+        .filter((s) => s.heading_path.length > 0)
+        .map((s) => ({
+          fragmentKey: getSectionFragmentKey(s),
+          heading: s.heading,
+          depth: Math.max(1, s.heading_path.length),
+          headingPath: s.heading_path,
+        })),
+    [renderSections],
+  );
+  const navActiveFragmentKey = useTopViewportSection(scrollContainerRef, renderSections.length);
+  const navEditingFragmentKey =
+    isEditing && focusedSectionIndex !== null && renderSections[focusedSectionIndex]
+      ? getSectionFragmentKey(renderSections[focusedSectionIndex])
+      : null;
+  const handleNavigateToSection = useCallback((fragmentKey: string) => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    let target: HTMLElement | null = null;
+    for (const el of container.querySelectorAll<HTMLElement>("[data-fragment-key]")) {
+      if (el.getAttribute("data-fragment-key") === fragmentKey) {
+        target = el;
+        break;
+      }
+    }
+    if (!target) return;
+    const top =
+      container.scrollTop + (target.getBoundingClientRect().top - container.getBoundingClientRect().top);
+    container.scrollTo({ top: Math.max(0, top - 8), behavior: "smooth" });
+  }, []);
+  const handleNavigateToTop = useCallback(() => {
+    scrollContainerRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
 
   // ── Cross-section drag/drop service ──────────────────────
   const transferServiceRef = useRef<SectionTransferService | null>(null);
@@ -651,6 +695,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
       {/* Canvas scroll area */}
       <div
+        ref={scrollContainerRef}
         className="flex-1 overflow-auto canvas-scroll px-5 pt-8 pb-24"
         style={{ background: "var(--color-page-bg)" }}
       >
@@ -659,7 +704,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
           {/* Header row */}
           <div className="flex">
             <div className="w-[200px] min-w-[100px] shrink" />
-            <div className="flex-1 min-w-[700px] bg-canvas-bg border border-b-0 border-[rgba(0,0,0,0.06)] rounded-t-sm px-14 pt-12 relative">
+            <div ref={paperRef} className="flex-1 min-w-[700px] bg-canvas-bg border border-b-0 border-[rgba(0,0,0,0.06)] rounded-t-sm px-14 pt-12 relative">
               {/* Document title */}
               <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight mb-1 tracking-tight">
                 {docTitle}
@@ -815,6 +860,18 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
         </div>
       </div>
+
+      {/* Section navigation index — right-gutter panel */}
+      <DocumentSectionNav
+        title={docTitle}
+        items={navItems}
+        activeFragmentKey={navActiveFragmentKey}
+        editingFragmentKey={navEditingFragmentKey}
+        onNavigate={handleNavigateToSection}
+        onNavigateToTop={handleNavigateToTop}
+        anchorRef={paperRef}
+        scrollContainerRef={scrollContainerRef}
+      />
 
       <DocumentFooter
         docPath={decodedDocPath}
