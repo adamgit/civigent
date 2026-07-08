@@ -33,8 +33,10 @@ export function ActivityTabStrip({ tabs, activeKey, onTabChange }: ActivityTabSt
               borderRadius: "6px 6px 0 0",
               background: active ? "white" : "none",
               color: active ? "#1d5a66" : "var(--color-text-muted)",
-              borderBottom: active ? "2px solid #2d7a8a" : "2px solid transparent",
               marginBottom: -1,
+              // All-longhand bottom border: mixing the `borderBottom` shorthand
+              // with these longhands for the same edge trips React's
+              // shorthand/non-shorthand rerender warning.
               border: "none",
               borderBottomWidth: 2,
               borderBottomStyle: "solid",

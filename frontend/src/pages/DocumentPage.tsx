@@ -42,6 +42,7 @@ import { useDocumentSessionController } from "../hooks/useDocumentSessionControl
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
 import { usePublishPaused } from "../hooks/useFragmentStoreHooks";
 import { useDocSaveStatusInputs } from "../hooks/useDocSaveStatusInputs";
+import { resolveTransportStatus } from "../services/section-save-state";
 import {
   EphemeralSessionAuthorshipLedger,
   type LocalEditOriginSink,
@@ -479,10 +480,22 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   // split from inbound/remote activity (session-authored pending edits + sticky
   // session flag) so a stranger's or stranded commit never reads as your save.
   const saveStatus = useDocSaveStatusInputs(store, isEditing, authorshipView);
-  // Presentation-only activity state: turns the brief publish-pause freeze into a
-  // "Saving… → Saved" (local) or "Updating… → Up to date" (inbound) affordance
-  // instead of a silent read-only blip.
-  const documentActivity = useDocumentActivity(publishPaused, saveStatus.hasLocalEdits);
+  // Single authoritative save-state model, shared with the topbar (same
+  // `resolveTransportStatus`). The activity pill is a presentation adapter over
+  // it — never a second model derived from raw `publishPaused` + `hasLocalEdits`.
+  const transportStatus = resolveTransportStatus(
+    crdtState,
+    publishPaused,
+    isEditing,
+    saveStatus.allReceived,
+    saveStatus.hasLocalUncommittedEdits,
+    saveStatus.hasInboundActivity,
+    saveStatus.hadLocalEdits,
+  );
+  // Presentation-only activity state: turns the publish-pause freeze into a
+  // "Saving… → Saved" (local) or "Updating… → Up to date" (inbound) affordance —
+  // but only reaches "Saved" when the model actually confirms the landing.
+  const documentActivity = useDocumentActivity(transportStatus);
 
   // ── B3: Stable section callbacks (extracted from sections.map) ───
   const handleFocusSection = useCallback((idx: number, _headingPath: string[], coords: { x: number; y: number }) => {

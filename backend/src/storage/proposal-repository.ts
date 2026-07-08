@@ -1,11 +1,11 @@
 import path from "node:path";
 import crypto from "node:crypto";
-import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
+import { readFile, writeFile, rename, mkdir, rm } from "node:fs/promises";
 import { pathExists, readDirentsIfExists } from "./fs-primitives.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { mintProposalManifest, unionDeletedSectionFiles, type ProposalManifest } from "./proposal-manifest.js";
 import { normalizeDocPath } from "./path-utils.js";
-import { parseJson, sectionsToTargets, TERMINAL_PROPOSAL_STATUSES } from "../types/shared.js";
+import { parseJson, sectionGlobalKey, sectionsToTargets } from "../types/shared.js";
 import { decodeProposal, decodeInProgressProposal, readLandedCommittedHead } from "./proposal-file-decoder.js";
 import {
   getProposalsDraftRoot,
@@ -434,14 +434,17 @@ export async function listActiveProposals(): Promise<AnyProposal[]> {
 
 /**
  * The proposals an admin needs to tend to: those still carrying a `degraded`
- * marker. Scans ONLY the degradable (non-terminal) statuses — a terminal
- * proposal is never tagged degraded (see the decoder), and reading the full
- * committed/withdrawn history just to filter it out would be a needless
- * full-history decode. This is the focused query behind the home-page alert.
+ * marker. Scans every status a `degraded` marker can appear in: the non-terminal
+ * (degradable) statuses carry `missing-targets`, and terminal `committed` carries
+ * `empty-committed` — a committed zero-claim record is terminal corruption and
+ * must surface for audit/recovery investigation, not stay hidden. Only `withdrawn`
+ * is skipped: the decoder never tags a withdrawn proposal, so scanning that
+ * history would be a needless full-history decode. This is the focused query
+ * behind the home-page alert.
  */
 export async function listDegradedProposals(): Promise<AnyProposal[]> {
-  const degradableStatuses = ALL_STATUSES.filter((s) => !TERMINAL_PROPOSAL_STATUSES.has(s));
-  const proposals = await listProposalsByStatuses(degradableStatuses);
+  const scannedStatuses = ALL_STATUSES.filter((s) => s !== "withdrawn");
+  const proposals = await listProposalsByStatuses(scannedStatuses);
   return proposals.filter((p) => p.degraded !== undefined && p.degraded.length > 0);
 }
 
@@ -556,8 +559,32 @@ async function writeProposalSectionsFile(
     targets: [...manifest.targets],
     ...(intent !== undefined ? { intent } : {}),
   };
-  await writeJsonFile(filePath, file, status);
   const contentRoot = proposalContentRoot(id, status);
+  const emptiedDraft = status === "draft" && manifest.sections.length === 0 && manifest.targets.length === 0;
+  const backupRoot = `${contentRoot}.empty-${crypto.randomUUID()}`;
+  let movedContentAside = false;
+
+  if (emptiedDraft && await pathExists(contentRoot)) {
+    await rename(contentRoot, backupRoot);
+    movedContentAside = true;
+  }
+
+  try {
+    if (emptiedDraft) {
+      await mkdir(contentRoot, { recursive: true });
+    }
+    await writeJsonFile(filePath, file, status);
+  } catch (error) {
+    if (movedContentAside) {
+      await rm(contentRoot, { recursive: true, force: true });
+      await rename(backupRoot, contentRoot);
+    }
+    throw error;
+  }
+
+  if (movedContentAside) {
+    await rm(backupRoot, { recursive: true, force: true });
+  }
   // Re-decode for the typed return (also round-trip-validates the written file).
   return { proposal: await readProposalFile(filePath, status), contentRoot };
 }
@@ -675,6 +702,69 @@ export async function transitionToCommitting(id: ProposalId): Promise<AnyProposa
     );
   }
 
+  // A DocSession-owned (live-edit) proposal with ZERO targets is corruption, not a
+  // committable operation: a live edit that claimed no section must never reach
+  // `committing`. Empty document-level operations (import/restore/tombstone) stay
+  // explicitly represented by DOCUMENT targets, so they have a non-empty target set
+  // and pass. This is the FSM-boundary backstop for the empty-manifest refusals in
+  // {@link updateCurrentProposalSections} / {@link unionCurrentProposalSections}.
+  if (isCrdtOwnedProposal(proposal) && proposal.targets.length === 0) {
+    throw new InvalidProposalStateError(
+      `Cannot transition DocSession-owned proposal ${id} to committing: it has zero targets. ` +
+        `A live-edit proposal with no targets is corruption, never an empty document-level op.`,
+    );
+  }
+
+  // GENERAL empty-targets gate (spec follow-up — commit-boundary target
+  // integrity): a proposal with an EMPTY target set locks and audits nothing, so
+  // it must never reach `committing` — even when `sections` is non-empty.
+  // `targets` is the authoritative lock/audit claim set; a non-empty `sections`
+  // content view cannot make an empty target set safe (a section content write
+  // whose claim never reached `targets` is exactly the corruption this guards).
+  // This is the universal form of the DocSession refusal above and applies to
+  // agent / human / transient proposals alike. Zero-section operations are
+  // legitimate ONLY when they carry an explicit DOCUMENT target
+  // (create/delete/rename/restore/import), which keeps `targets` non-empty. The
+  // ONLY exempt path is the startup-recovery entrypoint
+  // (`publishCommittingProposalToCanonical`), which does not pass through here,
+  // so classified idempotency re-runs are unaffected.
+  if (proposal.targets.length === 0) {
+    throw new InvalidProposalStateError(
+      `Cannot transition proposal ${id} to committing: it has zero targets. ` +
+        `\`targets\` is the authoritative lock/audit claim set — an empty target set ` +
+        `claims and locks nothing, so it can never be committed, even with ${proposal.sections.length} ` +
+        `section(s) present. A zero-section operation must carry an explicit document target.`,
+    );
+  }
+
+  // SECTION/TARGET CONSISTENCY gate (spec follow-up): every `sections[]` content
+  // claim must have an exact matching section target in `targets`. `targets` is
+  // the authoritative lock/audit claim set; a section written into the proposal
+  // whose claim never reached `targets` is corruption — it would be committed
+  // without ever having been locked or audited. This fires BEFORE the lock check,
+  // canonical absorb, and git commit. (`targets` MAY carry extra entries beyond
+  // `sections` — document targets, and deleted sections whose path-claim is
+  // grow-only retained for lock/audit — so the requirement is one-directional:
+  // sections ⊆ section-targets, not equality.)
+  const sectionTargetKeys = new Set(
+    proposal.targets
+      .filter((t) => t.kind === "section")
+      .map((t) => sectionGlobalKey(t.doc_path, t.heading_path)),
+  );
+  const unclaimedSections = proposal.sections.filter(
+    (s) => !sectionTargetKeys.has(sectionGlobalKey(s.doc_path, s.heading_path)),
+  );
+  if (unclaimedSections.length > 0) {
+    const labels = unclaimedSections
+      .map((s) => sectionGlobalKey(s.doc_path, s.heading_path))
+      .join(", ");
+    throw new InvalidProposalStateError(
+      `Cannot transition proposal ${id} to committing: ${unclaimedSections.length} section claim(s) ` +
+        `[${labels}] are present in \`sections\` but have no matching section target in \`targets\`. ` +
+        `A section that was never claimed as a lock/audit target is corrupt and cannot be committed.`,
+    );
+  }
+
   // MANDATORY exclusive-claim gate (spec 12 §Transition Semantics): EVERY commit
   // passes through here — agent/human/CRDT/restore/overwrite/import/structural
   // alike. Before claiming `committing`, assert no OTHER proposal holds an
@@ -692,6 +782,14 @@ export async function transitionToCommitting(id: ProposalId): Promise<AnyProposa
   await assertProposalLocksAvailable({
     proposalId: id,
     targets: proposal.targets,
+    // Lock-boundary empty-target refusal (spec follow-up): normal commit lock
+    // checks require a NON-EMPTY target set for ALL writer types and proposal
+    // origins — agent / human / transient / DocSession alike. An empty lock result
+    // must never be treated as proof a proposal is safe to commit. This is
+    // belt-and-suspenders with the universal zero-targets refusal above; the ONLY
+    // path that legitimately locks-then-commits without a fresh target set is the
+    // classified recovery/idempotency re-run, which bypasses this function.
+    requireNonEmpty: true,
   });
 
   const fromDir = proposalDir(proposal.status, id);
@@ -999,6 +1097,17 @@ export async function updateCurrentProposalSections(
   if (current.status !== "inprogress") {
     throw new InvalidProposalStateError(`Proposal ${id} is not inprogress as located.`);
   }
+  // A DocSession-owned (live-edit) proposal must never be persisted with an empty
+  // section set once materialization has run: `sections` is grow-only (D6) and a
+  // live delete keeps its path claim, so an empty result means a client update
+  // materialized nothing — corruption, not a legitimate document-level op. Fail
+  // loud rather than saving an empty manifest that later publishes as data loss.
+  if (isCrdtOwnedProposal(current) && sections.length === 0) {
+    throw new Error(
+      `Refusing to persist an empty section manifest on DocSession-owned proposal ${id}: a ` +
+        `live-edit proposal with no sections after materialization is corruption.`,
+    );
+  }
   // Immutable update: fresh object, no mutation of the decoded input.
   const updated: InProgressProposal = {
     ...current,
@@ -1043,6 +1152,17 @@ export async function unionCurrentProposalSections(
     if (seen.has(key)) continue;
     seen.add(key);
     merged.push(section);
+  }
+
+  // A DocSession-owned (live-edit) proposal must never end up with an empty section
+  // set: the manifest is grow-only, so an empty union means an authored edit both
+  // started from and added nothing — corruption. Fail loud rather than persisting an
+  // empty manifest that later publishes as data loss.
+  if (isCrdtOwnedProposal(current) && merged.length === 0) {
+    throw new Error(
+      `Refusing to persist an empty section manifest on DocSession-owned proposal ${id}: a ` +
+        `live-edit proposal with no sections after materialization is corruption.`,
+    );
   }
 
   // Immutable update: fresh object, no mutation of the decoded input.

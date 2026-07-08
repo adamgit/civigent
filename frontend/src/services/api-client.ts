@@ -502,6 +502,8 @@ export const apiClient = {
     defaultServerName: string;
     internalPort: number;
     mcpUrl: string;
+    /** Stable tool key → current wire name, for `{{tool:key}}` token substitution. */
+    toolKeys: Record<string, string>;
   }> {
     return requestJson("/api/setup", undefined, false);
   },

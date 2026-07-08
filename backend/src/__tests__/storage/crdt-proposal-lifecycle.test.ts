@@ -139,6 +139,10 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
       docPath: "guide.md",
       writer,
     });
+    // A DocSession-owned proposal must carry ≥1 target to reach `committing`
+    // (empty live-edit manifests are corruption); give it one so this rollback
+    // fixture is a valid proposal.
+    await updateCurrentProposalSections(id, [{ doc_path: "guide.md", heading_path: ["Intro"] }]);
 
     await transitionToCommitting(id);
     expect((await readProposal(id)).status).toBe("committing");
@@ -158,6 +162,9 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
       docPath: "guide.md",
       writer,
     });
+    // Give the DocSession proposal a target so it is a valid (non-empty) proposal
+    // eligible to reach `committing`.
+    await updateCurrentProposalSections(id, [{ doc_path: "guide.md", heading_path: ["Intro"] }]);
     await transitionToCommitting(id);
     const recovered = await rollbackCommittingProposal(id, "docsession");
     expect(recovered.status).toBe("inprogress");

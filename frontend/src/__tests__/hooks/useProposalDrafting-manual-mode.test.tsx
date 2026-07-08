@@ -112,6 +112,54 @@ describe("manual proposal mode (spec 11)", () => {
     );
   });
 
+  it("removing the only selected draft section persists an empty scope (valid draft, not corruption)", async () => {
+    const overview = section(["Overview"], "Overview body.\n");
+    const { result } = renderHook(() => useProposalDrafting(params([overview])));
+
+    // getProposal reflects the evolving draft scope across the enter/select/remove
+    // refreshes: empty on enter, one section after select, empty again after remove.
+    api.getProposal
+      .mockResolvedValueOnce({ proposal: { id: "p1", status: "draft", intent: "", sections: [] } })
+      .mockResolvedValueOnce({
+        proposal: {
+          id: "p1",
+          status: "draft",
+          intent: "",
+          sections: [{ doc_path: "test.md", heading_path: ["Overview"], content: "Overview body.\n" }],
+        },
+      })
+      .mockResolvedValue({ proposal: { id: "p1", status: "draft", intent: "", sections: [] } });
+
+    await act(async () => { await result.current.startManualPublish(); });
+
+    // Select the one section.
+    await act(async () => { await result.current.toggleProposalSection(overview); });
+    expect(result.current.selectedProposalSectionKeys.size).toBe(1);
+
+    api.updateProposalManifest.mockClear();
+    api.replaceProposalSections.mockClear();
+
+    // Remove that same (only) section — the last one.
+    await act(async () => { await result.current.removeProposalSection("test.md", ["Overview"]); });
+
+    // The empty draft scope is persisted as targets: [] (not blocked, not corruption).
+    expect(api.replaceProposalSections).toHaveBeenCalledWith("p1", { sections: [] });
+    expect(api.updateProposalManifest).toHaveBeenCalledWith("p1", { intent: "", targets: [] });
+    expect(result.current.selectedProposalSectionKeys.size).toBe(0);
+    expect(result.current.panelError).toBeNull();
+    expect(result.current.activeProposalStatus).toBe("draft");
+
+    // The lifecycle boundary (backend) refuses locks on the empty draft; the hook
+    // surfaces that refusal verbatim rather than pretending the draft is committable.
+    api.acquireLocks.mockResolvedValueOnce({
+      acquired: false,
+      message: "Cannot acquire locks: select at least one section before entering inprogress.",
+    } as never);
+    await act(async () => { await result.current.acquireProposalLocks(); });
+    expect(result.current.panelError).toMatch(/select at least one section/i);
+    expect(result.current.activeProposalStatus).toBe("draft");
+  });
+
   it("fixes the section scope once inprogress (scope edits refused, no save call)", async () => {
     const overview = section(["Overview"], "Overview body.\n");
     const timeline = section(["Timeline"], "Timeline body.\n");

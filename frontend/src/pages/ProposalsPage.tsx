@@ -21,6 +21,10 @@ function statusPillVariant(status: string): "green" | "yellow" | "red" | "muted"
   }
 }
 
+function isTerminalEmptyCommitted(proposal: AnyProposal): boolean {
+  return proposal.status === "committed" && (proposal.degraded ?? []).includes("empty-committed");
+}
+
 export function ProposalsPage() {
   const [statusFilter, setStatusFilter] = useState<string>("All");
   const [writerFilter, setWriterFilter] = useState<string>("All writers");
@@ -136,16 +140,27 @@ export function ProposalsPage() {
                       ...(isDegraded ? { borderLeft: "3px solid var(--color-status-red, #dc2626)" } : {}),
                     }}
                   >
-                    {/* Degraded banner — quarantined until autofixed */}
                     {isDegraded ? (
                       <div className="mb-2 rounded border border-red-200 bg-white/70 px-2 py-1.5">
                         <div className="text-[11px] font-semibold text-red-800">
-                          Degraded — quarantined until repaired (cannot lock or commit)
+                          {isTerminalEmptyCommitted(proposal)
+                            ? "Degraded — terminal corrupt audit record"
+                            : "Degraded — repair required before lock or commit"}
                         </div>
                         <div className="mt-1 flex flex-wrap items-center gap-1.5">
                           {degraded.map((defect) => {
                             const key = `${proposal.id}:${defect}`;
                             const busy = autofixing.has(key);
+                            if (defect === "empty-committed") {
+                              return (
+                                <span
+                                  key={defect}
+                                  className="text-[11px] font-medium px-2 py-0.5 rounded border border-red-300 bg-red-100 text-red-800"
+                                >
+                                  <code>{defect}</code> — terminal corrupt audit record
+                                </span>
+                              );
+                            }
                             return (
                               <button
                                 key={defect}

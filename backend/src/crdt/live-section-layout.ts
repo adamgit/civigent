@@ -10,7 +10,7 @@
  */
 
 import { getContentRoot } from "../storage/data-root.js";
-import { fragmentKeyFromSectionFile } from "./ydoc-fragments.js";
+import { BEFORE_FIRST_HEADING_KEY, fragmentKeyFromSectionFile } from "./ydoc-fragments.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { buildFragmentContent, EMPTY_BODY, type FragmentContent, type SectionBody } from "../storage/section-formatting.js";
 import type { ProposalId } from "../types/shared.js";
@@ -20,6 +20,52 @@ export interface LiveSectionLayoutEntry {
   headingPath: string[];
   heading: string;
   level: number;
+}
+
+function emptyDocumentFirstEditSection(): LiveSectionLayoutEntry {
+  return {
+    fragmentKey: BEFORE_FIRST_HEADING_KEY,
+    headingPath: [],
+    heading: "",
+    level: 0,
+  };
+}
+
+async function existingEmptyDocumentCanReceiveFirstEdit(
+  docPath: string,
+  skeletonRoot: string,
+  canonicalRoot: string,
+): Promise<boolean> {
+  const { skeletonFileExists, tombstoneFileExists } = await import("../storage/document-skeleton.js");
+
+  if (skeletonRoot !== canonicalRoot && await tombstoneFileExists(docPath, skeletonRoot)) {
+    return false;
+  }
+
+  if (await skeletonFileExists(docPath, skeletonRoot)) {
+    return true;
+  }
+
+  return skeletonRoot !== canonicalRoot && await skeletonFileExists(docPath, canonicalRoot);
+}
+
+function resolvePersistedLiveSectionLayout(
+  skeleton: { forEachVisibleSection: (visitor: (heading: string, level: number, sectionFile: string, headingPath: string[]) => void) => void },
+): LiveSectionLayoutEntry[] {
+  const entries: LiveSectionLayoutEntry[] = [];
+  const seen = new Set<string>();
+  skeleton.forEachVisibleSection((heading, level, sectionFile, headingPath) => {
+    const fragmentKey = fragmentKeyFromSectionFile(sectionFile, headingPath.length === 0);
+    if (seen.has(fragmentKey)) return;
+    seen.add(fragmentKey);
+    entries.push({
+      fragmentKey,
+      headingPath: [...headingPath],
+      heading,
+      level,
+    });
+  });
+  return entries;
 }
 
 /**
@@ -50,28 +96,12 @@ export async function resolveLiveSectionLayout(
     ? await loadDeletedSectionFiles(currentProposalId, docPath)
     : undefined;
   const skeleton = await DocumentSkeletonInternal.fromDisk(docPath, skeletonRoot, canonicalRoot, deletedSectionFiles);
-  const entries: LiveSectionLayoutEntry[] = [];
-  const seen = new Set<string>();
-  // Option A: use the VISIBLE-section view so a sub-skeleton parent's body-holder
-  // fragment is reported with the parent's heading + level (NOT the literal
-  // `("", 0)` body-holder shape). This unifies the live path with the read/REST
-  // path (which already uses the visible view), so mounting a sub-skeleton parent
-  // as an editor shows its heading (bug 3 root fix). The emitted fragmentKey set is
-  // unchanged — both views emit the same non-sub-skeleton nodes; only the
-  // (heading, level) reported for a nested body-holder differs. The document-level
-  // BFH (`headingPath=[]`) is still emitted as `("", 0)`.
-  skeleton.forEachVisibleSection((heading, level, sectionFile, headingPath) => {
-    const fragmentKey = fragmentKeyFromSectionFile(sectionFile, headingPath.length === 0);
-    if (seen.has(fragmentKey)) return;
-    seen.add(fragmentKey);
-    entries.push({
-      fragmentKey,
-      headingPath: [...headingPath],
-      heading,
-      level,
-    });
-  });
-  return entries;
+  const persistedLayout = resolvePersistedLiveSectionLayout(skeleton);
+  if (persistedLayout.length > 0) return persistedLayout;
+  if (skeleton.areSkeletonRootsEmpty && await existingEmptyDocumentCanReceiveFirstEdit(docPath, skeletonRoot, canonicalRoot)) {
+    return [emptyDocumentFirstEditSection()];
+  }
+  return [];
 }
 
 /**

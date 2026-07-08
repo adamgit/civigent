@@ -268,14 +268,29 @@ describe("PUT /api/proposals/:id — manifest + staged-content split", () => {
     expect(res.status).toBe(404);
   });
 
-  // ── Manifest empty-scope (document-level operations) ──────────────────
+  // ── Manifest empty-scope while draft is valid draft state ─────────────
 
-  it("accepts an empty targets array (document-level operations)", async () => {
+  it("accepts an empty targets array on a draft (emptying a manual draft is valid draft state)", async () => {
+    // Removing the last selected section of a manual draft persists an empty
+    // draft scope. Empty draft state is valid and editable; the refusal for an
+    // empty claim set lives at the lifecycle boundaries (acquire-locks / commit).
     const res = await request(ctx.app)
       .put(`/api/proposals/${pendingProposalId}`)
       .set("Authorization", ctx.humanToken)
       .send({ targets: [] });
 
     expect(res.status).toBe(200);
+    expect(res.body.proposal.targets).toEqual([]);
+    expect(res.body.proposal.sections).toEqual([]);
+    // An empty draft is not corruption — it must carry no degraded marker.
+    expect(res.body.proposal.degraded ?? []).toEqual([]);
+
+    // The empty draft cannot acquire locks: the refusal is at the lifecycle
+    // boundary, not at draft-editing persistence.
+    const lockRes = await request(ctx.app)
+      .post(`/api/proposals/${pendingProposalId}/acquire-locks`)
+      .set("Authorization", ctx.humanToken)
+      .send({});
+    expect(lockRes.status).toBe(409);
   });
 });

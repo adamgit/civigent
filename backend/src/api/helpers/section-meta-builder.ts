@@ -77,15 +77,18 @@ export async function buildSectionInvolvementMeta(
   for (const headingPath of headingPaths) {
     const headingKey = SectionRef.headingKey(headingPath);
     const content = bulkContent.get(headingKey) ?? "";
+    const commitInfo = commitByHeading.get(headingKey);
 
-    const agentWritePolicy = await AgentWritePolicy.summarizeSection(
+    // O(1): derive the summary from the already-resolved per-section commit
+    // info. Do NOT call summarizeSection here — it re-resolves the heading (a
+    // full skeleton reparse) per section, which is quadratic across a document.
+    const agentWritePolicy = AgentWritePolicy.summarizeSectionFromCommitInfo(
       new SectionRef(docPath, headingPath),
-      gitCommitInfo,
+      commitInfo ?? null,
     );
     const wordCount = countWords(content);
     const lengthWarning = wordCount > SECTION_LENGTH_WARNING_THRESHOLD;
 
-    const commitInfo = commitByHeading.get(headingKey);
     const nowMs = Date.now();
     result.set(headingKey, {
       agentWritePolicy,

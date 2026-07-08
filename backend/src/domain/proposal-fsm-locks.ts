@@ -35,6 +35,15 @@ export const BLOCKING_LOCK_STATUSES: readonly ProposalStatus[] = ["inprogress", 
 export interface CheckProposalLocksInput {
   proposalId: ProposalId;
   targets: readonly ProposalTargetRef[];
+  /**
+   * When true, an EMPTY target set is itself a lock failure (not a vacuous
+   * success). Set on commit/acquire paths that require exclusive ownership — a
+   * proposal that would lock nothing must not be waved through as "safe to
+   * commit" over `[]`. Left false for callers where an empty set is legitimate
+   * (e.g. an agent document-level op with no sections), preserving their
+   * behaviour. Default false.
+   */
+  requireNonEmpty?: boolean;
 }
 
 function describeTarget(target: ProposalTargetRef): string {
@@ -70,6 +79,19 @@ function toConflict(target: ProposalTargetRef, holder: ProposalLockHolder): Prop
 export async function checkProposalLocks(
   input: CheckProposalLocksInput,
 ): Promise<ProposalLockResult> {
+  // An empty target set holds no exclusive claim; on an exclusive-ownership path
+  // that is corruption, not availability. Reject it explicitly so a `[]` result is
+  // never mistaken for proof the proposal is safe to commit/acquire.
+  if (input.requireNonEmpty && input.targets.length === 0) {
+    return {
+      acquired: false,
+      conflicts: [],
+      message:
+        "Refusing an empty target set on an exclusive-ownership path: a proposal that locks " +
+        "nothing is corruption, not a committable operation.",
+    };
+  }
+
   const index = await ProposalFsmLockIndex.build({
     statuses: BLOCKING_LOCK_STATUSES,
     excludeProposalId: input.proposalId,

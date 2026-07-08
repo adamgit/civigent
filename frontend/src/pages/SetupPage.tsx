@@ -13,6 +13,25 @@ interface SetupInfo {
   defaultServerName: string;
   internalPort: number;
   mcpUrl: string;
+  /** Stable tool key → current wire name, for `{{tool:key}}` token substitution. */
+  toolKeys: Record<string, string>;
+}
+
+/**
+ * Render a served agent-skill template: substitute `%%name%%` (server name) and
+ * `{{tool:key}}` tokens (current wire tool names). The `.md` files carry stable
+ * keys only; the wire name lives solely in the tool registry and arrives here via
+ * `/api/setup`. An unknown key is left as its literal token so a template/registry
+ * mismatch is visible rather than silently swallowed.
+ */
+function renderTemplate(
+  template: string,
+  serverName: string,
+  toolKeys: Record<string, string>,
+): string {
+  return template
+    .replaceAll("%%name%%", serverName)
+    .replace(/\{\{tool:([a-zA-Z0-9]+)\}\}/g, (match, key: string) => toolKeys[key] ?? match);
 }
 
 /** mcp__<name>__<tool>  —  longest tool is write_proposal_section (22 chars) */
@@ -217,7 +236,7 @@ export function SetupPage() {
                 <p style={{ color: "#555", fontSize: "0.9rem", margin: "0 0 0.5rem" }}>
                   File: 
                 </p>
-                <CopyBlock label="SKILL.md" content={skillTemplate.replaceAll("%%name%%", serverName)} />
+                <CopyBlock label="SKILL.md" content={renderTemplate(skillTemplate, serverName, info.toolKeys)} />
               </div>
             )}
 
@@ -259,7 +278,7 @@ export function SetupPage() {
                   Save this file as <code>.cursor/rules/{serverName}.mdc</code> in your project
                   so Cursor's AI knows how to use the Knowledge Store tools:
                 </p>
-                <CopyBlock label={`${serverName}.mdc`} content={cursorRuleTemplate.replaceAll("%%name%%", serverName)} />
+                <CopyBlock label={`${serverName}.mdc`} content={renderTemplate(cursorRuleTemplate, serverName, info.toolKeys)} />
 
                 <h3 style={{ fontSize: "0.95rem", margin: "1.5rem 0 0.5rem" }}>To remove later:</h3>
                 <p style={{ color: "#555", fontSize: "0.9rem" }}>

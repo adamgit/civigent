@@ -154,6 +154,10 @@ async function absorbCommittingProposalToCanonical(
   committedMetadata: HumanInvolvementCommittedProposalMetadata,
   diagnostics: string[] | undefined,
   options: CommitProposalToCanonicalOptions,
+  // Only the crash-recovery re-run entrypoint sets this: a re-run of an
+  // already-landed commit legitimately produces an empty absorb (idempotency).
+  // Normal publishes leave it false and FAIL on an empty absorb.
+  allowEmptyCommit = false,
 ): Promise<AbsorbResult> {
   const proposal = await readProposal(proposalId);
   const dataRoot = getDataRoot();
@@ -189,6 +193,16 @@ async function absorbCommittingProposalToCanonical(
     absorbedSectionRefs: proposalSectionRefs(proposal),
     documentPathsToRewrite: wholesaleDocPaths.length > 0 ? wholesaleDocPaths : undefined,
     deletedSectionFilesByDoc,
+    // Empty-absorb permission is scoped to explicit classified recovery/idempotency
+    // paths ONLY (`allowEmptyCommit`, set solely by
+    // `publishCommittingProposalToCanonical`). A normal agent / human / transient /
+    // DocSession publish must FAIL if it would rewrite no documents and absorb no
+    // sections — being non-DocSession is NOT a licence to write an empty canonical
+    // commit. Legitimate document-level operations (create/delete/rename/restore/
+    // import) prove themselves via their DOCUMENT targets: those populate
+    // `documentPathsToRewrite`, so `rewrittenDocumentPaths` is non-empty and the
+    // absorb passes the empty-commit guard without any empty allowance.
+    allowEmpty: allowEmptyCommit,
   });
   // Transition to committed
   await transitionToCommitted(proposal.id, absorbResult.commitSha, committedMetadata);
@@ -306,11 +320,14 @@ export async function publishCommittingProposalToCanonical(
       `Cannot recover-publish proposal ${proposalId}: status is ${proposal.status}, expected committing.`,
     );
   }
+  // Recovery/idempotency path: a re-run of an already-landed commit legitimately
+  // absorbs nothing, so an empty commit is permitted here (and only here).
   return absorbCommittingProposalToCanonical(
     proposalId,
     committedMetadata,
     diagnostics,
     options,
+    true,
   );
 }
 

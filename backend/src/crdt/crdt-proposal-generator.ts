@@ -458,6 +458,20 @@ export class CRDTProposalGenerator {
       ? sections.filter((s) => scope.touchedFragmentKeys.includes(s.fragmentKey))
       : sections;
 
+    // A scope naming fragments that map to NO live section is an untargetable edit
+    // (e.g. the empty-document BFH before any section exists): materializing it
+    // would silently produce an empty proposal that later publishes as canonical
+    // data loss. Fail loud instead. Guard only fires for a NON-empty scope — a
+    // manifest-scoped publish of a delete-only proposal legitimately has an empty
+    // `touchedFragmentKeys` (its claims are all claimed-but-absent deletes).
+    if (scope && scope.touchedFragmentKeys.length > 0 && toWrite.length === 0) {
+      throw new Error(
+        `Scoped materialization for ${this.docPath} touched ${scope.touchedFragmentKeys.length} ` +
+          `fragment(s) (${scope.touchedFragmentKeys.join(", ")}) but none map to a live section — ` +
+          `refusing to update the proposal with an empty (data-losing) no-op.`,
+      );
+    }
+
     const delta: MaterializeDelta = {
       writtenEntries: [],
       removedEntries: [],
@@ -488,8 +502,16 @@ export class CRDTProposalGenerator {
       this.accumulateDelta(delta, result);
     }
 
+    // NOTE: the item also asks to require "at least one materialized write/delta",
+    // but a verbatim body write is idempotent — it returns an EMPTY delta when the
+    // body already matches the overlay (content-layer `writeSectionBodyVerbatim`).
+    // The manifest-scoped FINALIZE path (`finalizeAndPublish`) re-materializes every
+    // already-staged claimed section at publish, so an empty aggregate delta with a
+    // NON-empty scope is the normal, correct publish case. A delta-empty throw here
+    // would break every ordinary publish, so the anti-data-loss guarantee is carried
+    // solely by the `toWrite.length === 0` check above (scope maps to a live section).
     if (scope) {
-      await this.growProposalManifest(proposalId, delta);
+      await this.growProposalManifest(proposalId, delta, toWrite);
     } else {
       await this.replaceProposalManifest(proposalId, sections);
     }
@@ -516,12 +538,24 @@ export class CRDTProposalGenerator {
    * proposal — one law, no live opt-out — while still locking only the edited
    * section-set.
    */
-  private async growProposalManifest(proposalId: ProposalId, delta: MaterializeDelta): Promise<void> {
-    const add = this.dedupSections(
-      delta.writtenEntries
+  private async growProposalManifest(
+    proposalId: ProposalId,
+    delta: MaterializeDelta,
+    scopedSections: LiveSectionSnapshot[],
+  ): Promise<void> {
+    // Claim BOTH the body-bearing entries the engine wrote (incl. auto-created
+    // ancestors) AND every explicitly-scoped touched section. The latter matters
+    // when a scoped section's verbatim body write is idempotent (no delta) — e.g.
+    // a live REORDER flushes source/target whose bodies are unchanged: those
+    // sections are still being structurally claimed by this proposal and MUST
+    // enter the manifest, or the change is lost on publish (an empty manifest
+    // materializes nothing). Grow-only union, so over-claiming is safe.
+    const add = this.dedupSections([
+      ...delta.writtenEntries
         .filter((e) => !e.isSubSkeleton)
         .map((e) => ({ doc_path: this.docPath, heading_path: [...e.headingPath] })),
-    );
+      ...scopedSections.map((s) => ({ doc_path: this.docPath, heading_path: [...s.headingPath] })),
+    ]);
     await unionCurrentProposalSections(proposalId, add);
   }
 

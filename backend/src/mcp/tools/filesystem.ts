@@ -515,6 +515,7 @@ async function deleteDocumentViaProposal(
 
 export function registerFilesystemTools(registry: ToolRegistry): void {
   registry.register(
+    "readFile",
     {
       name: "read_file",
       description: "Read a document from the Knowledge Store. Returns the full assembled markdown content.",
@@ -530,6 +531,7 @@ export function registerFilesystemTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "writeFile",
     {
       name: "write_file",
       description: "Write content to a document. The write goes through the proposal system — it may be accepted immediately, or blocked when the active agent write policy declines (e.g. recent human involvement) or another proposal holds an exclusive lock on a target section. A blocked result includes a prose message and per-target explanations describing what clears the block.",
@@ -546,6 +548,7 @@ export function registerFilesystemTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "writeFiles",
     {
       name: "write_files",
       description: "Write multiple documents as one coordinated change. All files are submitted as a single proposal so they succeed or fail together.",
@@ -572,6 +575,7 @@ export function registerFilesystemTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "listDirectory",
     {
       name: "list_directory",
       description: "List documents and directories in the Knowledge Store. Returns a tree of entries with name, path, and type.",
@@ -586,6 +590,7 @@ export function registerFilesystemTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "deleteFile",
     {
       name: "delete_file",
       description: "Delete a document from the Knowledge Store.",
@@ -601,6 +606,7 @@ export function registerFilesystemTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "moveFile",
     {
       name: "move_file",
       description: "Move/rename a document in the Knowledge Store.",
@@ -617,6 +623,7 @@ export function registerFilesystemTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "applyPatch",
     {
       name: "apply_patch",
       description: "Apply a unified diff to a document. The diff is applied to the current assembled markdown, then written through the proposal system — it may be accepted immediately, or blocked when the active agent write policy declines or another proposal holds an exclusive lock on a target section. A blocked result includes a prose message and per-target explanations. If the diff produces no change, the result reports no_changes.",
@@ -635,6 +642,7 @@ export function registerFilesystemTools(registry: ToolRegistry): void {
 
 export function registerPlanChangesTool(registry: ToolRegistry): void {
   registry.register(
+    "planChanges",
     {
       name: "plan_changes",
       description: "Declare intent before writing (Tier 2). Sets a human-readable description of what you are about to change. The description is attached to the next write_file or write_files call.",

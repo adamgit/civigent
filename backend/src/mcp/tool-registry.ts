@@ -49,26 +49,80 @@ export type ToolHandler = (
 // ─── Registry ────────────────────────────────────────────
 
 interface RegisteredTool {
+  /**
+   * Stable identifier for this tool, independent of its wire `name`. This is the
+   * single place the tool is addressed by code/docs; the wire `name` is free to
+   * change without touching any `{{tool:key}}` reference. NOT emitted on the wire.
+   */
+  key: string;
   definition: McpToolDefinition;
   handler: ToolHandler;
 }
 
 export class ToolRegistry {
   private tools = new Map<string, RegisteredTool>();
+  /**
+   * Wire names that have been renamed/removed. A call to one of these returns a
+   * migration message (not an unknown-tool error) so an agent holding a stale tool
+   * list learns to refresh rather than seeing a hard failure.
+   */
+  private deprecatedNames = new Set<string>();
 
   /**
-   * Register a tool with its schema definition and handler.
-   * Throws if a tool with the same name is already registered.
+   * Register a tool with a stable `key`, its schema definition, and handler.
+   * The `key` is required with no default: a wire-name rename must touch
+   * `definition.name` and NOTHING else, so a key that silently followed `name`
+   * would defeat the single-source-of-truth invariant.
+   * Throws if the `key` is missing or if the `key` or wire `name` is already
+   * registered.
    */
-  register(definition: McpToolDefinition, handler: ToolHandler): void {
+  register(key: string, definition: McpToolDefinition, handler: ToolHandler): void {
+    if (!key) {
+      throw new Error(`Tool "${definition.name}" registered without a stable key`);
+    }
     if (this.tools.has(definition.name)) {
       throw new Error(`Tool "${definition.name}" is already registered`);
     }
-    this.tools.set(definition.name, { definition, handler });
+    for (const existing of this.tools.values()) {
+      if (existing.key === key) {
+        throw new Error(`Tool key "${key}" is already registered`);
+      }
+    }
+    this.tools.set(definition.name, { key, definition, handler });
   }
 
   /**
-   * List all registered tool definitions (for tools/list response).
+   * Mark one or more wire names as deprecated (renamed/removed). A `tools/call`
+   * for a deprecated name is answered with a migration message rather than an
+   * unknown-tool error. See `server.ts` `handleToolCall`.
+   */
+  deprecate(...names: string[]): void {
+    for (const name of names) this.deprecatedNames.add(name);
+  }
+
+  /**
+   * Whether the given wire name is a deprecated (renamed/removed) tool name.
+   */
+  isDeprecated(name: string): boolean {
+    return this.deprecatedNames.has(name);
+  }
+
+  /**
+   * Map of stable `key` → current wire `name` for every registered tool. Used by
+   * `/api/setup` so the frontend can substitute `{{tool:key}}` tokens in the served
+   * `skill.md` / `cursor-rule.md` templates at render time.
+   */
+  toolKeyCatalog(): Record<string, string> {
+    const catalog: Record<string, string> = {};
+    for (const tool of this.tools.values()) {
+      catalog[tool.key] = tool.definition.name;
+    }
+    return catalog;
+  }
+
+  /**
+   * List all registered tool definitions (for tools/list response). The stable
+   * `key` is intentionally NOT included — it is not part of the wire contract.
    */
   listTools(): McpToolDefinition[] {
     return [...this.tools.values()].map((t) => t.definition);

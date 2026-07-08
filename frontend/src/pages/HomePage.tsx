@@ -33,8 +33,6 @@ export function HomePage() {
   const [loading, setLoading] = useState(true);
   const [activityError, setActivityError] = useState<string | null>(null);
 
-  // Degraded-proposal alert: count proposals quarantined by a detected defect so
-  // admins are prompted to autofix them on ProposalsPage.
   const [degradedCount, setDegradedCount] = useState(0);
   const [degradedError, setDegradedError] = useState<string | null>(null);
 
@@ -103,10 +101,9 @@ export function HomePage() {
             data-testid="degraded-proposals-alert"
             className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-[13px] text-red-800"
           >
-            <strong>{degradedCount}</strong> {degradedCount === 1 ? "proposal is" : "proposals are"} degraded and
-            quarantined (cannot lock or commit until repaired).{" "}
+            <strong>{degradedCount}</strong> {degradedCount === 1 ? "proposal needs" : "proposals need"} admin review.{" "}
             <Link to="/proposals" className="font-medium underline">
-              Review &amp; autofix on Proposals &rarr;
+              Review on Proposals &rarr;
             </Link>
           </div>
         )}

@@ -86,9 +86,10 @@ describe("degraded proposal quarantine + autofix", () => {
     // A healthy draft — must NOT be returned.
     const healthy = await createProposal(HUMAN, "healthy draft", SECTIONS);
 
-    // A legacy COMMITTED proposal on disk (missing `targets`). Terminal: it is
-    // neither scanned by the degradable-only query nor tagged by the decoder, so
-    // it must be absent from the result.
+    // A legacy COMMITTED proposal on disk (missing `targets`) with a real section
+    // claim. `committed` IS scanned by the degraded query (so `empty-committed`
+    // records surface), but this one has non-empty derived targets and is terminal,
+    // so the decoder tags no marker — it must be absent from the result.
     const committedId = "prop-legacy-committed";
     const committedDir = join(getProposalsCommittedRoot(), committedId);
     await mkdir(committedDir, { recursive: true });

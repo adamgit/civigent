@@ -88,6 +88,19 @@ export function validateCreateProposal(writerType: "human" | "agent", body: Crea
     if (!Array.isArray(body.sections)) {
       return { ok: false, status: 400, message: "sections[] is required for agent proposals." };
     }
+    // A CreateProposalRequest cannot carry a document target, so an agent request
+    // with zero sections claims and changes nothing — a known-uncommittable draft.
+    // Reject it here rather than creating a draft that only fails later at commit.
+    if (body.sections.length === 0) {
+      return {
+        ok: false,
+        status: 400,
+        message:
+          "sections[] must claim at least one section: an agent proposal that claims nothing " +
+          "cannot be committed. Document-level operations (create/delete/rename) are not created " +
+          "through this endpoint.",
+      };
+    }
     for (const section of body.sections) {
       if (!section.doc_path || !Array.isArray(section.heading_path) || typeof section.content !== "string") {
         return { ok: false, status: 400, message: "Each section must have doc_path, heading_path, and content." };
@@ -231,6 +244,23 @@ export async function modifyProposalUseCase(
   }
   if (!Array.isArray(body.targets)) {
     return { ok: false, status: 400, message: "targets[] is required." };
+  }
+  // A manual draft may be emptied: removing the last selected section persists an
+  // empty draft scope (`targets: []`). Empty draft state is valid and editable —
+  // the refusal for an empty claim set belongs at the lifecycle boundaries
+  // (`transitionToInProgress` / `transitionToCommitting`), not at draft-editing
+  // persistence. A non-draft (inprogress human) proposal is scope-locked and
+  // cannot be emptied here, so an empty target set is still rejected there.
+  if (body.targets.length === 0 && proposal.status !== "draft") {
+    return {
+      ok: false,
+      status: 400,
+      message:
+        "targets[] cannot be empty for a proposal that is no longer a draft. This route only " +
+        "declares section claims and cannot create document targets, so an empty claim set is " +
+        "invalid once the proposal has left draft. Document-level operations are represented by " +
+        "the APIs that write explicit { kind: \"document\", doc_path } targets.",
+    };
   }
 
   // Lock-boundary invariant: once a human proposal is inprogress, callers cannot
@@ -406,7 +436,11 @@ export async function acquireLocksUseCase(proposalId: string, writerId: string):
   if (proposal.intent.trim().length === 0) {
     return { kind: "error", status: 409, message: "Cannot acquire locks: intent is required before entering inprogress." };
   }
-  if (proposal.sections.length === 0) {
+  // `targets` is the authoritative lock/audit claim set. An empty manual draft is
+  // valid draft state (editable), but it locks and audits nothing, so it can never
+  // acquire locks: the empty-scope refusal lives here at the lifecycle boundary
+  // (backstopped by `transitionToInProgress`), not at draft-editing persistence.
+  if (proposal.targets.length === 0) {
     return { kind: "error", status: 409, message: "Cannot acquire locks: select at least one section before entering inprogress." };
   }
 

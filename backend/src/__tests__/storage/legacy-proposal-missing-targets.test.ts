@@ -68,3 +68,50 @@ describe("legacy committed proposal without targets", () => {
     ).toThrow(/targets/);
   });
 });
+
+/**
+ * `empty-committed` is a decoded domain-state invariant (committed + zero sections
+ * + zero targets), NOT a raw-JSON-shape check. It must fire regardless of how the
+ * empty target set arrived on disk: absent key, explicit `[]`, or written by a
+ * prior bad implementation.
+ */
+describe("empty-committed classification from decoded domain state", () => {
+  const EMPTY_COMMITTED_BASE = {
+    id: "prop-empty",
+    writer: { id: "agent-1", type: "agent", displayName: "Agent A" },
+    intent: "empty commit",
+    sections: [],
+    created_at: "2025-01-01T00:00:00.000Z",
+    committed_head: "abc123",
+    humanInvolvement_at_commit: {},
+  };
+
+  it("tags empty-committed when the targets key is absent (derives to [])", () => {
+    const decoded = decodeProposal(EMPTY_COMMITTED_BASE, "committed");
+    expect(decoded.degraded).toEqual(["empty-committed"]);
+  });
+
+  it("tags empty-committed when targets is explicitly [] (not a missing key)", () => {
+    const decoded = decodeProposal({ ...EMPTY_COMMITTED_BASE, targets: [] }, "committed");
+    expect(decoded.degraded).toEqual(["empty-committed"]);
+  });
+
+  it("does NOT tag empty-committed for a non-committed zero-claim proposal", () => {
+    // A non-terminal empty proposal is missing-targets territory (via absent key),
+    // never empty-committed.
+    const decoded = decodeProposal(EMPTY_COMMITTED_BASE, "draft");
+    expect(decoded.degraded).toEqual(["missing-targets"]);
+  });
+
+  it("does NOT tag empty-committed when the committed proposal still has section targets", () => {
+    const decoded = decodeProposal(
+      {
+        ...EMPTY_COMMITTED_BASE,
+        sections: [{ doc_path: "/notes.md", heading_path: ["Overview"] }],
+        targets: [{ kind: "section", doc_path: "/notes.md", heading_path: ["Overview"] }],
+      },
+      "committed",
+    );
+    expect(decoded.degraded).toBeUndefined();
+  });
+});

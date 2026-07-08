@@ -61,6 +61,7 @@ import {
 import { getHeadSha } from "../storage/git-repo.js";
 import { getDataRoot } from "../storage/data-root.js";
 import { resolveLiveSectionLayout, buildLiveSeedContentMap } from "../crdt/live-section-layout.js";
+import { BEFORE_FIRST_HEADING_KEY } from "../crdt/ydoc-fragments.js";
 import { checkProposalLocks } from "../domain/proposal-fsm-locks.js";
 import { emitContentCommittedEventsByDoc, emitLiveStructureChanged as emitLiveStructureChangedEvent } from "../api/application/events.js";
 import type { PublishTriggerDecision, PublishResult } from "../crdt/crdt-proposal-generator.js";
@@ -463,7 +464,20 @@ export interface PublishAttemptOutcome {
 
 
 
+  /**
+   * Canonical body DIFF for this commit — the set of sections whose body content
+   * actually changed. Drives recently-changed highlighting ONLY. Must NOT be used
+   * as the pending-fragment settle receipt: an edit-then-revert-to-canonical lands
+   * (is covered by the publish) yet produces no diff, so it is absent here.
+   */
   changedSections?: SectionRefReceipt[];
+  /**
+   * Publish COVERAGE receipt — every section this publish absorbed/covered (the
+   * proposal manifest closure), independent of whether its body content changed.
+   * This is the correct receipt for clearing pending fragments: a fragment whose
+   * section ref is covered here settled, including the edit-then-revert case.
+   */
+  absorbedSectionRefs?: SectionRefReceipt[];
 }
 
 
@@ -501,6 +515,7 @@ function mapPublishResultToOutcome(result: PublishResult): PublishAttemptOutcome
         message: `Published proposal ${result.proposalId ?? ""} to canonical${result.commitSha ? ` (${result.commitSha})` : ""}.`,
         commitSha: result.commitSha,
         changedSections: result.absorbResult?.changedSections,
+        absorbedSectionRefs: result.absorbResult?.absorbedSectionRefs,
       };
     case "noop-no-proposal":
       return { outcome: "noop", message: "No in-flight proposal to publish." };
@@ -559,13 +574,48 @@ async function finalizeAndEnd(session: DocSession, ready: boolean): Promise<Publ
     
     
     
+    // Settle ONLY pending fragments PROVEN to have landed in canonical by this
+    // commit — i.e. whose section is in the publish COVERAGE receipt
+    // (`absorbedSectionRefs`), NOT the body diff (`changedSections`). Coverage, not
+    // diff, is the correct proof: an edit-then-revert-to-canonical is absorbed by
+    // the publish (covered) but produces no diff, so keying on `changedSections`
+    // would strand it pending as a false "not saved". A committed outcome that does
+    // not cover a given pending fragment's section still does NOT prove it saved:
+    // that fragment stays pending (a later edit/publish resolves it) rather than
+    // being silently cleared. (Empty-publish data-loss guard.)
     const announced = pendingFragmentsByDoc.get(session.docPath);
     if (announced && onWsEvent) {
-      for (const fragmentKey of announced) {
-        onWsEvent({ type: "section:settled", doc_path: session.docPath, fragment_key: fragmentKey });
+      const landedHeadingKeys = new Set(
+        (outcome.absorbedSectionRefs ?? []).map((s) => SectionRef.headingKey(s.headingPath)),
+      );
+      let landedFragmentKeys = new Set<string>();
+      if (landedHeadingKeys.size > 0) {
+        const layout = await resolveLiveSectionLayout(
+          session.docPath,
+          session.generator.getCurrentProposalId(),
+        );
+        landedFragmentKeys = new Set(
+          layout
+            .filter((e) => landedHeadingKeys.has(SectionRef.headingKey(e.headingPath)))
+            .map((e) => e.fragmentKey),
+        );
       }
+      const stillPending = new Set<string>();
+      for (const fragmentKey of announced) {
+        if (landedFragmentKeys.has(fragmentKey)) {
+          onWsEvent({ type: "section:settled", doc_path: session.docPath, fragment_key: fragmentKey });
+        } else {
+          stillPending.add(fragmentKey);
+        }
+      }
+      if (stillPending.size > 0) {
+        pendingFragmentsByDoc.set(session.docPath, stillPending);
+      } else {
+        pendingFragmentsByDoc.delete(session.docPath);
+      }
+    } else {
+      pendingFragmentsByDoc.delete(session.docPath);
     }
-    pendingFragmentsByDoc.delete(session.docPath);
   }
   return outcome;
 }
@@ -1003,8 +1053,23 @@ async function arbitrateLiveEdit(
   for (const fragmentKey of touchedKeys) {
     const headingPath = headingByFragmentKey.get(fragmentKey);
     if (!headingPath) {
-      materializeKeys.push(fragmentKey);
-      continue;
+      // A touched fragment with no section identity in the resolved layout is
+      // corruption — EXCEPT the empty-document bootstrap BFH, whose live fragment
+      // exists before any section does. That one resolves to the document-level
+      // section (`heading_path: []`) so the edit materializes a real BFH section
+      // instead of a silent no-op. Every OTHER unresolved key must fail here,
+      // before its Y.Doc update can be treated as durable (never a phantom
+      // materialize with no target).
+      if (fragmentKey === BEFORE_FIRST_HEADING_KEY) {
+        targets.push({ kind: "section", doc_path: session.docPath, heading_path: [] });
+        fragmentKeyByGlobalIndex.push(fragmentKey);
+        continue;
+      }
+      throw new Error(
+        `Live edit touched fragment "${fragmentKey}" which has no section identity in the ` +
+          `resolved layout for ${session.docPath}. Refusing to acknowledge an untargetable edit ` +
+          `as durable.`,
+      );
     }
     targets.push({ kind: "section", doc_path: session.docPath, heading_path: headingPath });
     fragmentKeyByGlobalIndex.push(fragmentKey);

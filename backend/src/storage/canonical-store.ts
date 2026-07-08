@@ -139,6 +139,15 @@ export class CanonicalStore {
       deletedSectionFilesByDoc?: ReadonlyMap<string, ReadonlySet<string>>;
       /** Transitional alias for older callers. */
       docPaths?: string[];
+      /**
+       * When true, a totally-empty absorb (no rewritten documents AND no
+       * absorbed/changed sections) is permitted — this is reserved for explicitly
+       * classified recovery/idempotency paths (crash-recovery re-runs of an
+       * already-landed commit). Normal publishes leave it false and FAIL on an
+       * empty absorb rather than write an empty canonical commit that would present
+       * a data-losing no-op as a successful publish. Default false.
+       */
+      allowEmpty?: boolean;
     },
   ): Promise<AbsorbResult> {
     const diag = (msg: string) => { if (opts?.diagnostics) opts.diagnostics!.push(msg); };
@@ -175,6 +184,22 @@ export class CanonicalStore {
         ...await this.discoverDocPathsInStaging(stagingRoot),
       ];
       const rewrittenDocumentPaths = [...new Set(affectedDocPaths)];
+
+      // Reject a totally-empty absorb on a normal publish. `changedSections` is a
+      // diff over exactly `rewrittenDocumentPaths`, so an empty document set implies
+      // an empty changed-section set too; combined with an empty manifest
+      // (`absorbedSectionRefs`) that means the publish would rewrite nothing and
+      // absorb nothing — a data-losing no-op that `--allow-empty` would otherwise
+      // paper over as a successful commit. Only the classified recovery/idempotency
+      // path (`allowEmpty`) may proceed to an empty commit.
+      if (!opts?.allowEmpty && rewrittenDocumentPaths.length === 0 && absorbedSectionRefs.length === 0) {
+        throw new Error(
+          "Refusing to publish an empty canonical commit: this absorb would rewrite no documents " +
+            "and absorb no sections. A live-edit publish that lands nothing is corruption, not a " +
+            "no-op — only classified recovery/idempotency paths may commit empty.",
+        );
+      }
+
       const beforeContent = await this.snapshotDocPaths(rewrittenDocumentPaths);
 
       // Pass 0.5 — Manifest-overlay merge (Step 5a/5b/5c). For each section-scoped

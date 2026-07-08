@@ -45,6 +45,7 @@ import { AttributionOverlay } from "../components/AttributionOverlay";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
 import { usePublishPaused, useSectionEditabilityMap } from "../hooks/useFragmentStoreHooks";
 import { useDocSaveStatusInputs } from "../hooks/useDocSaveStatusInputs";
+import { resolveTransportStatus } from "../services/section-save-state";
 import {
   EphemeralSessionAuthorshipLedger,
   type LocalEditOriginSink,
@@ -387,9 +388,21 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   // Honest save-status inputs with YOUR work split from inbound/remote activity
   // (shared with DocumentPage via the same hook).
   const saveStatus = useDocSaveStatusInputs(store, isEditing, authorshipView);
+  // Single authoritative save-state model, shared with the topbar. The activity
+  // pill is a presentation adapter over it (same as DocumentPage), never a second
+  // model derived from raw `publishPaused` + `hasLocalEdits`.
+  const transportStatus = resolveTransportStatus(
+    crdtState,
+    publishPaused,
+    isEditing,
+    saveStatus.allReceived,
+    saveStatus.hasLocalUncommittedEdits,
+    saveStatus.hasInboundActivity,
+    saveStatus.hadLocalEdits,
+  );
   // Presentation-only activity pill: "Saving… → Saved" (local) or
-  // "Updating… → Up to date" (inbound), same as DocumentPage.
-  const documentActivity = useDocumentActivity(publishPaused, saveStatus.hasLocalEdits);
+  // "Updating… → Up to date" (inbound) — "Saved" only once the model confirms.
+  const documentActivity = useDocumentActivity(transportStatus);
   // Per-section CRDT block-state (spec 05 §"Section block-state events").
   const editabilityMap = useSectionEditabilityMap(store);
 

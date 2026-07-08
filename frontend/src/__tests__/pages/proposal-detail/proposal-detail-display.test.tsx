@@ -20,6 +20,10 @@ const pendingProposal: DraftProposalDTO = {
       heading_path: ["Goals"],
     },
   ],
+  targets: [
+    { kind: "section", doc_path: "ops/strategy.md", heading_path: ["Overview"] },
+    { kind: "section", doc_path: "ops/strategy.md", heading_path: ["Goals"] },
+  ],
   created_at: "2026-01-01T00:00:00.000Z",
   agentWritePolicy: {
     canWrite: false,
@@ -50,9 +54,38 @@ const committedProposal: CommittedProposalDomain = {
   sections: [
     { doc_path: "ops/strategy.md", heading_path: ["Overview"] },
   ],
+  targets: [
+    { kind: "section", doc_path: "ops/strategy.md", heading_path: ["Overview"] },
+  ],
   created_at: "2026-01-01T00:00:00.000Z",
   committed_head: "abc123def",
   humanInvolvement_at_commit: {},
+};
+
+const missingTargetsProposal: CommittedProposalDomain = {
+  id: "prop-degraded-missing",
+  writer: { id: "agent-1", type: "agent", displayName: "Agent Alpha" },
+  intent: "Legacy proposal",
+  status: "committed",
+  sections: [{ doc_path: "ops/strategy.md", heading_path: ["Overview"] }],
+  targets: [{ kind: "section", doc_path: "ops/strategy.md", heading_path: ["Overview"] }],
+  created_at: "2026-01-01T00:00:00.000Z",
+  committed_head: "abc123def",
+  humanInvolvement_at_commit: {},
+  degraded: ["missing-targets"],
+};
+
+const emptyCommittedProposal: CommittedProposalDomain = {
+  id: "prop-degraded-empty",
+  writer: { id: "agent-1", type: "agent", displayName: "Agent Alpha" },
+  intent: "Empty committed corruption",
+  status: "committed",
+  sections: [],
+  targets: [],
+  created_at: "2026-01-01T00:00:00.000Z",
+  committed_head: "def456abc",
+  humanInvolvement_at_commit: {},
+  degraded: ["empty-committed"],
 };
 
 function renderDetail(proposalId: string) {
@@ -74,6 +107,12 @@ describe("ProposalDetailPage display", () => {
       }
       if (urlStr.includes("/api/proposals/prop-2")) {
         return jsonResponse({ proposal: committedProposal });
+      }
+      if (urlStr.includes("/api/proposals/prop-degraded-missing")) {
+        return jsonResponse({ proposal: missingTargetsProposal });
+      }
+      if (urlStr.includes("/api/proposals/prop-degraded-empty")) {
+        return jsonResponse({ proposal: emptyCommittedProposal });
       }
       if (urlStr.includes("/api/proposals/nonexistent")) {
         return new Response(JSON.stringify({ message: "Not found" }), {
@@ -152,6 +191,33 @@ describe("ProposalDetailPage display", () => {
       expect(screen.getByText(/Blocked sections: 1/)).toBeDefined();
       expect(screen.getByText(/Allowed sections: 1/)).toBeDefined();
     });
+  });
+
+  it("degraded banner shows the raw defect token, no autofix/English semantics", async () => {
+    renderDetail("prop-degraded-missing");
+    await waitFor(() => {
+      expect(screen.getByText("Degraded proposal")).toBeDefined();
+    });
+    // Raw code token verbatim — not translated into English.
+    expect(screen.getByText("missing-targets")).toBeDefined();
+    // No frontend autofix promise and no per-defect English semantics.
+    expect(screen.queryByText(/autofix/i)).toBeNull();
+    expect(screen.queryByText(/repairable/i)).toBeNull();
+    expect(screen.queryByText(/non-autofixable/)).toBeNull();
+  });
+
+  it("committed degraded banner reads as a corrupt terminal record, no future lock/commit lifecycle", async () => {
+    renderDetail("prop-degraded-empty");
+    await waitFor(() => {
+      expect(screen.getByText("Degraded proposal")).toBeDefined();
+    });
+    // Raw code token verbatim.
+    expect(screen.getByText("empty-committed")).toBeDefined();
+    // Terminal committed corruption: describe it as a corrupt terminal record.
+    expect(screen.getByText(/corrupt terminal proposal record/)).toBeDefined();
+    // Must NOT imply a future commit/lock lifecycle that is already impossible.
+    expect(screen.queryByText(/cannot acquire locks/)).toBeNull();
+    expect(screen.queryByText(/autofix/i)).toBeNull();
   });
 
   it("shows error for non-existent proposal", async () => {

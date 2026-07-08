@@ -501,6 +501,7 @@ const renameDocumentHandler: ToolHandler = async (args, ctx) => {
 
 export function registerStructuralTools(registry: ToolRegistry): void {
   registry.register(
+    "createSection",
     {
       name: "create_section",
       description: "Create a section at the specified heading path within a document. Operates within a proposal. Missing ancestor headings are auto-created.",
@@ -519,6 +520,7 @@ export function registerStructuralTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "deleteSection",
     {
       name: "delete_section",
       description: "Delete a section from a document. Operates within a proposal.",
@@ -536,6 +538,7 @@ export function registerStructuralTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "moveSection",
     {
       name: "move_section",
       description: "Move a section to a new position in the document hierarchy. Operates within a proposal.",
@@ -554,6 +557,7 @@ export function registerStructuralTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "renameSection",
     {
       name: "rename_section",
       description: "Rename a section heading. Operates within a proposal.",
@@ -572,6 +576,7 @@ export function registerStructuralTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "deleteDocument",
     {
       name: "delete_document",
       description: "Delete an entire document from the Knowledge Store. Operates within a proposal.",
@@ -588,6 +593,7 @@ export function registerStructuralTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "renameDocument",
     {
       name: "rename_document",
       description: "Rename a document (move to a new path). Operates within a proposal.",

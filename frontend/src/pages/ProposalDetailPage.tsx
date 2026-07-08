@@ -4,6 +4,7 @@ import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
 import type {
   ProposalDTO,
+  ProposalDefect,
   HumanInvolvementPolicyResult,
   HumanInvolvementTargetDetails,
 } from "../types/shared.js";
@@ -18,129 +19,102 @@ function involvementColor(score: number): string {
   return "#94a3b8";
 }
 
-/** Reconstruct what the on-disk JSON file contains (status is NOT stored in the file). */
-function reconstructFileJson(proposal: ProposalDTO): Record<string, unknown> {
-  const file: Record<string, unknown> = {
-    id: proposal.id,
-    writer: proposal.writer,
-    intent: proposal.intent,
-    sections: proposal.sections,
-    created_at: proposal.created_at,
-  };
-  if (proposal.status === "committed") {
-    const committed = proposal as import("../types/shared.js").CommittedProposalDomain;
-    file.committed_head = committed.committed_head;
-    file.humanInvolvement_at_commit = committed.humanInvolvement_at_commit;
-  }
-  if (proposal.status === "withdrawn" && "withdrawal_reason" in proposal) {
-    file.withdrawal_reason = (proposal as import("../types/shared.js").WithdrawnProposalDomain).withdrawal_reason;
-  }
-  return file;
-}
-
-const fieldCheckStyle: React.CSSProperties = {
-  fontFamily: "'JetBrains Mono', monospace",
-  fontSize: "12px",
-  padding: "4px 8px",
-  display: "flex",
-  alignItems: "center",
-  gap: "6px",
-};
-
-function FieldCheck({ label, present, expectedWhen }: { label: string; present: boolean; expectedWhen: string }) {
+/**
+ * Prominent banner for a degraded proposal. `degraded` is a decoded domain field
+ * (never written by healthy proposals). The raw defect token(s) are shown verbatim
+ * as code — the frontend does NOT translate them into English, promise an autofix,
+ * or otherwise duplicate backend semantics; the codes ARE the truth. The only prose
+ * that varies is the lifecycle framing: a TERMINAL (committed/withdrawn) proposal is
+ * a corrupt permanent record retained for audit, so it must not imply any future
+ * commit/lock lifecycle; a non-terminal one is simply flagged as degraded.
+ */
+function DegradedBanner({ defects, terminal }: { defects: ProposalDefect[]; terminal: boolean }) {
   return (
-    <div style={fieldCheckStyle}>
-      <span style={{ color: present ? "#3a9a5c" : "#8a8279", fontSize: "14px" }}>
-        {present ? "\u2713" : "\u2717"}
-      </span>
-      <span style={{ color: present ? "#1a1610" : "#b8b2a8" }}>{label}</span>
-      <span style={{ color: "#b8b2a8", fontSize: "10px", marginLeft: "auto" }}>{expectedWhen}</span>
+    <div
+      role="alert"
+      style={{
+        marginTop: "1rem",
+        border: "2px solid #b91c1c",
+        borderRadius: "8px",
+        background: "#fef2f2",
+        padding: "12px 16px",
+        color: "#7f1d1d",
+      }}
+    >
+      <strong style={{ fontSize: "14px" }}>Degraded proposal</strong>
+      <p style={{ margin: "4px 0 6px" }}>
+        {terminal
+          ? "This is a corrupt terminal proposal record. It is retained only for audit and " +
+            "recovery investigation."
+          : "This proposal was decoded with one or more defects and is flagged as degraded."}
+      </p>
+      <ul style={{ margin: 0 }}>
+        {defects.map((defect) => (
+          <li key={defect} style={{ marginBottom: "4px" }}>
+            <code>{defect}</code>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
 
-function ProposalFileViewer({ proposal }: { proposal: ProposalDTO }) {
-  const [expanded, setExpanded] = useState(false);
-
-  const directoryPath = `proposals/${proposal.status}/${proposal.id}/meta.json`;
-  const fileJson = reconstructFileJson(proposal);
+/**
+ * Decoded domain truth for the proposal: the authoritative `targets` claim set,
+ * the identity-based `deleted_section_files` set, and the owning `docSessionId`.
+ * These are decoded fields off the DTO — NOT a reconstruction of on-disk bytes.
+ */
+function ProposalTruthPanel({ proposal }: { proposal: ProposalDTO }) {
+  const targets = proposal.targets;
+  const deletedSectionFiles = proposal.deleted_section_files ?? [];
 
   return (
-    <div style={{
-      marginTop: "1.5rem",
-      border: "1px solid var(--color-footer-border)",
-      borderRadius: "8px",
-      overflow: "hidden",
-      background: "#fff",
-    }}>
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        style={{
-          width: "100%",
-          display: "flex",
-          alignItems: "center",
-          gap: "8px",
-          padding: "10px 14px",
-          background: expanded ? "#faf8f5" : "#fff",
-          border: "none",
-          cursor: "pointer",
-          fontFamily: "'JetBrains Mono', monospace",
-          fontSize: "12px",
-          color: "#5c564c",
-          textAlign: "left",
-        }}
-      >
-        <span style={{ fontSize: "10px", transition: "transform 0.15s", transform: expanded ? "rotate(90deg)" : "rotate(0deg)" }}>
-          &#9654;
-        </span>
-        <span>On-Disk File Viewer</span>
-        <span style={{ color: "#b8b2a8", marginLeft: "auto", fontSize: "11px" }}>{directoryPath}</span>
-      </button>
-
-      {expanded && (
-        <div style={{ borderTop: "1px solid #f0ede8" }}>
-          {/* Directory info */}
-          <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--color-footer-border)" }}>
-            <div style={{ fontSize: "11px", fontWeight: 600, color: "#8a8279", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "6px" }}>
-              File Location
-            </div>
-            <div className="code-inline">
-              <span style={{ color: "var(--color-text-muted)" }}>$KS_DATA_ROOT/</span>
-              <span style={{ color: "var(--color-accent)", fontWeight: 600 }}>proposals/{proposal.status}/</span>
-              <span>{proposal.id}.json</span>
-            </div>
-            <div style={{ fontSize: "11px", color: "#8a8279", marginTop: "6px" }}>
-              Status is derived from the directory — it is <strong>not</strong> stored inside the JSON file.
-              State transitions move the file between directories.
-            </div>
-          </div>
-
-          {/* Field presence checks */}
-          <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--color-footer-border)" }}>
-            <div style={{ fontSize: "11px", fontWeight: 600, color: "#8a8279", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "6px" }}>
-              Field Presence
-            </div>
-            <div style={{ background: "#f7f5f1", borderRadius: "5px", padding: "4px 0" }}>
-              <FieldCheck label="status" present={false} expectedWhen="never stored in file" />
-              <FieldCheck label="agentWritePolicy" present={false} expectedWhen="never stored — computed at read time" />
-              <FieldCheck label="committed_head" present={proposal.status === "committed" && "committed_head" in proposal} expectedWhen="written at commit time only" />
-              <FieldCheck label="humanInvolvement_at_commit" present={proposal.status === "committed" && "humanInvolvement_at_commit" in proposal} expectedWhen="written at commit time only" />
-              <FieldCheck label="withdrawal_reason" present={proposal.status === "withdrawn" && "withdrawal_reason" in proposal} expectedWhen="written at withdrawal only" />
-            </div>
-          </div>
-
-          {/* Raw JSON */}
-          <div style={{ padding: "12px 14px" }}>
-            <div style={{ fontSize: "11px", fontWeight: 600, color: "#8a8279", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "6px" }}>
-              Raw File Contents
-            </div>
-            <pre className="code-inline" style={{ overflow: "auto", maxHeight: "400px", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.5 }}>
-              {JSON.stringify(fileJson, null, 2)}
-            </pre>
-          </div>
-        </div>
+    <div style={{ marginTop: "1.5rem" }}>
+      <h2>Targets ({targets.length})</h2>
+      <p>The authoritative lock / audit / policy claim set for this proposal.</p>
+      {targets.length === 0 ? (
+        <p>No targets.</p>
+      ) : (
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left", padding: "0.3rem" }}>Kind</th>
+              <th style={{ textAlign: "left", padding: "0.3rem" }}>Document</th>
+              <th style={{ textAlign: "left", padding: "0.3rem" }}>Target</th>
+            </tr>
+          </thead>
+          <tbody>
+            {targets.map((target, idx) => (
+              <tr key={`${proposalTargetKey(target)}-${idx}`}>
+                <td style={{ padding: "0.3rem" }}>{target.kind}</td>
+                <td style={{ padding: "0.3rem" }}>
+                  <Link to={`/docs/${stripLeadingSlashForRoute(target.doc_path)}`}>{target.doc_path}</Link>
+                </td>
+                <td style={{ padding: "0.3rem" }}>{proposalTargetLabel(target)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
+
+      {deletedSectionFiles.length > 0 ? (
+        <>
+          <h2>Deleted Section Files ({deletedSectionFiles.length})</h2>
+          <p>Canonical section-file ids this proposal has deleted (identity-based delete detection).</p>
+          <ul>
+            {deletedSectionFiles.map((ref, idx) => (
+              <li key={`${ref.doc_path}-${ref.section_file}-${idx}`}>
+                <code>{ref.section_file}</code> in{" "}
+                <Link to={`/docs/${stripLeadingSlashForRoute(ref.doc_path)}`}>{ref.doc_path}</Link>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+
+      {proposal.docSessionId ? (
+        <p>DocSession: <code>{proposal.docSessionId}</code></p>
+      ) : null}
     </div>
   );
 }
@@ -231,8 +205,10 @@ export function ProposalDetailPage() {
     }
   }, [loadProposal, proposal]);
 
+  // Affected documents derive from the authoritative `targets` claim set (not
+  // `sections`), so document-level targets with no sections are still surfaced.
   const affectedDocs = proposal
-    ? Array.from(new Set(proposal.sections.map((s) => s.doc_path)))
+    ? Array.from(new Set(proposal.targets.map((t) => t.doc_path)))
     : [];
 
   return (
@@ -243,6 +219,12 @@ export function ProposalDetailPage() {
       {error ? <p className="text-error">{error}</p> : null}
       {proposal ? (
         <>
+          {proposal.degraded && proposal.degraded.length > 0 ? (
+            <DegradedBanner
+              defects={proposal.degraded}
+              terminal={proposal.status === "committed" || proposal.status === "withdrawn"}
+            />
+          ) : null}
           <p>Status: <strong>{proposal.status}</strong></p>
           <p>Writer: {proposal.writer.displayName} ({proposal.writer.type})</p>
           <p>Created: {new Date(proposal.created_at).toLocaleString()}</p>
@@ -346,7 +328,7 @@ export function ProposalDetailPage() {
             </ul>
           )}
 
-          <ProposalFileViewer proposal={proposal} />
+          <ProposalTruthPanel proposal={proposal} />
 
           <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
             <button type="button" onClick={() => void loadProposal()} disabled={actionBusy || loading}>

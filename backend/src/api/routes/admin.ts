@@ -10,6 +10,7 @@ import {
   requireAdmin,
   getMCPPublicURL,
 } from "./middleware.js";
+import { getToolKeyCatalog } from "../application/setup.js";
 import {
   getAdminConfigWithDescription,
   updateAdminConfigWithDescription,
@@ -142,6 +143,9 @@ export function registerAdminRoutes(router: Router): void {
       defaultServerName,
       internalPort: Number(process.env.PORT ?? "3000"),
       mcpUrl: `${getMCPPublicURL(req)}/mcp`,
+      // Stable key → current wire name, so the frontend can resolve `{{tool:key}}`
+      // tokens in the served skill.md / cursor-rule.md templates at render time.
+      toolKeys: getToolKeyCatalog(),
     });
   });
 

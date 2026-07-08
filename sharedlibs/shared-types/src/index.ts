@@ -532,8 +532,14 @@ export type ProposalStatus = "draft" | "pending" | "inprogress" | "committing" |
  *     read, which is lossy in the dangerous direction (a document-level claim
  *     cannot be expressed as section claims), so the proposal is quarantined
  *     until an admin autofix re-derives and persists `targets`.
+ *   "empty-committed" — a TERMINAL committed proposal that omits `targets` AND has
+ *     empty `sections`, so the lenient backfill derives ZERO targets: an empty
+ *     committed proposal that claimed and changed nothing. This is corruption
+ *     (an empty-publish no-op made permanent), not a benign legacy shape, and is
+ *     NOT autofixable (there is nothing to re-derive from empty sections). The
+ *     marker exists purely so such a proposal cannot read as healthy in the log.
  */
-export type ProposalDefect = "missing-targets";
+export type ProposalDefect = "missing-targets" | "empty-committed";
 
 // ── Storage layer (what is stored in meta.json on disk) ────────────
 

@@ -64,15 +64,13 @@ export function CoordinationPage() {
     }
   }, []);
 
-  // Poll heatmap + proposals every 10s
+  // Load heatmap + proposals once on mount. Auto-refresh is intentionally
+  // disabled: the heatmap payload is very large (~12.5k section rows) and
+  // re-rendering it on an interval froze the tab. This page is slated for a
+  // full rewrite; until then it loads once.
   useEffect(() => {
     void loadHeatmap();
     void loadProposals();
-    const interval = setInterval(() => {
-      void loadHeatmap();
-      void loadProposals();
-    }, 10000);
-    return () => clearInterval(interval);
   }, [loadHeatmap, loadProposals]);
 
   // WebSocket for live events
@@ -108,16 +106,15 @@ export function CoordinationPage() {
           return next;
         });
       }
-      // Refresh heatmap on relevant events
-      if (event.type === "content:committed" || event.type === "presence:editing" || event.type === "presence:done") {
-        void loadHeatmap();
-      }
+      // Auto-refresh disabled (see mount effect): reloading the large heatmap
+      // on every commit/presence event re-froze the tab. Live agent-reading
+      // dots above still update; the heatmap itself refreshes on next visit.
     });
     return () => {
       ws.disconnect();
       wsRef.current = null;
     };
-  }, [loadHeatmap]);
+  }, []);
 
   const activeAgentCount = Array.from(agentReadings.values()).filter(
     (a) => Date.now() - a.lastSeenAt < 5 * 60 * 1000,

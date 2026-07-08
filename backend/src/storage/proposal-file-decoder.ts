@@ -1,35 +1,4 @@
-/**
- * Proposal `meta.json` trust boundary.
- *
- * This is the ONLY place that turns the untyped JSON of an on-disk proposal
- * `meta.json` into a typed domain object. It consumes `JsonValue` / `JsonObject`
- * (via the shared JSON helpers) and returns freshly constructed proposal objects:
- * it never returns a parsed JSON object directly, never mutates parsed JSON, and
- * uses no `as` / `unknown` / `any`.
- *
- * Strictness:
- *   - Required current fields (`id`, `writer`, `intent`, `sections`, `targets`,
- *     `created_at`, plus the committed/withdrawn fields where applicable) must be
- *     present and valid, or decoding throws a full-message `Error` naming the field.
- *   - Extra/unknown fields are ignored (old `locked_*` fields are harmless extras —
- *     never read, never written, never surfaced on the decoded object).
- *   - A `targets` key that is PRESENT but malformed is INVALID and throws. A
- *     legacy file that OMITS `targets` entirely (written before the field existed)
- *     is read LENIENTLY for ALL statuses: its section-claim targets are derived
- *     from `sections` (never from `locked_targets` / `locked_sections`) so the read
- *     never throws and the admin UI can load and surface it. The
- *     `degraded: ["missing-targets"]` quarantine tag, however, is set ONLY for
- *     NON-TERMINAL statuses (draft/pending/inprogress/committing): such a proposal
- *     is barred from lock-acquisition/commit until an admin autofix re-derives and
- *     persists `targets`. A committed/withdrawn proposal is terminal — it can never
- *     lock or commit again — so tagging it would be pure noise; it decodes with
- *     usable display targets and no marker. The hard crash-on-missing-targets lives
- *     at the WRITE boundary (`proposal-repository`), where new corruption would
- *     actually be introduced, NOT at decode.
- *
- * The proposal `status` is NEVER read from `meta.json` — it is discovered from the
- * directory the file lives in and passed in by the repository.
- */
+/** Decodes an on-disk proposal `meta.json` into a typed domain object. */
 import {
   expectJsonObject,
   sectionsToTargets,
@@ -203,21 +172,6 @@ function decodeHumanInvolvementCommittedMetadata(
 
 function decodeProposalFileBase(obj: JsonObject, label: string, status: ProposalStatus): ProposalFileBase {
   const sections = decodeProposalSections(obj["sections"], `${label}.sections`);
-  // Lenient READ for the legacy missing-`targets` shape: proposals written before
-  // `targets` existed carry only `sections`. When the key is entirely ABSENT we
-  // derive the section-claim targets from `sections` (their only possible claims)
-  // for display, for ALL statuses. A PRESENT-but-malformed `targets` still throws —
-  // strictness is only relaxed for the missing-key legacy shape.
-  //
-  // The `degraded: ["missing-targets"]` quarantine tag, however, is set ONLY for
-  // NON-TERMINAL statuses. The tag exists to keep the corruption tripwire alive
-  // where it matters: the lossy derivation must never be baked into a permanent
-  // record, so a degraded draft/inprogress is barred from lock-acquisition/commit
-  // until an admin autofix re-derives and persists `targets`. A committed/withdrawn
-  // proposal is terminal — it can never lock or commit again — so tagging it is
-  // pure noise (every legacy terminal proposal predates the field). The hard
-  // crash-on-missing-targets lives at the WRITE boundary (proposal-repository),
-  // where new corruption would actually be born.
   const missingTargets = !("targets" in obj);
   const base: ProposalFileBase = {
     id: requireString(obj, "id", label),
@@ -230,9 +184,12 @@ function decodeProposalFileBase(obj: JsonObject, label: string, status: Proposal
     deleted_section_files: decodeDeletedSectionFiles(obj, label),
     created_at: requireString(obj, "created_at", label),
   };
-  if (missingTargets && !TERMINAL_PROPOSAL_STATUSES.has(status)) base.degraded = ["missing-targets"];
+  if (status === "committed" && base.sections.length === 0 && base.targets.length === 0) {
+    base.degraded = ["empty-committed"];
+  } else if (missingTargets && !TERMINAL_PROPOSAL_STATUSES.has(status)) {
+    base.degraded = ["missing-targets"];
+  }
   const docSessionId = optionalString(obj, "docSessionId", label);
-  // DocSessionId is a plain string alias — no brand construction needed.
   if (docSessionId !== undefined) base.docSessionId = docSessionId;
   return base;
 }

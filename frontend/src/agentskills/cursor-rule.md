@@ -17,27 +17,27 @@ The system operates at **section-level granularity**. Sections are identified by
 
 Read a top-level section called "Overview" from the published/live wiki:
 ```
-read_published_section(doc_path: "/my-doc.md", heading_path: ["Overview"])
+{{tool:readPublishedSection}}(doc_path: "/my-doc.md", heading_path: ["Overview"])
 ```
 
 Read a nested section "Weapons" inside "Ship Building" from the published/live wiki:
 ```
-read_published_section(doc_path: "/my-doc.md", heading_path: ["Ship Building", "Weapons"])
+{{tool:readPublishedSection}}(doc_path: "/my-doc.md", heading_path: ["Ship Building", "Weapons"])
 ```
 
 Read a section from a proposal:
 ```
-read_proposal_section(proposal_id: "<proposal-id>", doc_path: "/my-doc.md", heading_path: ["Overview"])
+{{tool:readProposalSection}}(proposal_id: "<proposal-id>", doc_path: "/my-doc.md", heading_path: ["Overview"])
 ```
 
 ## Reading & Research
 
-1. **Find documents:** `list_documents` returns readable documents in the live wiki.
-2. **Inspect section inventory:** `list_sections` returns section headings and `body_size_bytes` without body text.
-3. **Search before reading:** `search_text` supports `syntax: "literal" | "regexp"` for exact phrases and patterns.
-4. **Understand structure:** `read_doc_structure` shows a document's section tree (headings and nesting).
-5. **Read published content:** `read_published_section` reads a specific section by `doc_path` and `heading_path` (JSON array of strings) from the published/live (canonical) system. It will NOT show proposal-only edits. Use `read_doc` for an entire document.
-6. **Read proposal content:** `read_proposal_section` reads a specific section from a proposal. `read_proposal` reads the whole proposal and its section content.
+1. **Find documents:** `{{tool:listDocuments}}` returns readable documents in the live wiki.
+2. **Inspect section inventory:** `{{tool:listSections}}` returns section headings and `body_size_bytes` without body text.
+3. **Search before reading:** `{{tool:searchText}}` supports `syntax: "literal" | "regexp"` for exact phrases and patterns.
+4. **Understand structure:** `{{tool:readDocStructure}}` shows a document's section tree (headings and nesting).
+5. **Read published content:** `{{tool:readPublishedSection}}` reads a specific section by `doc_path` and `heading_path` (JSON array of strings) from the published/live (canonical) system. It will NOT show proposal-only edits. Use `{{tool:readDoc}}` for an entire document.
+6. **Read proposal content:** `{{tool:readProposalSection}}` reads a specific section from a proposal. `{{tool:readProposal}}` reads the whole proposal and its section content.
 
 ## Making Changes (Proposal Workflow)
 
@@ -45,38 +45,38 @@ read_proposal_section(proposal_id: "<proposal-id>", doc_path: "/my-doc.md", head
 
 ### Quick write (2 calls):
 
-1. `create_proposal` — provide `intent` (string) and `sections` (array of `{doc_path, heading_path, content, justification?}`). Content is written immediately into the proposal.
-2. `publish_proposal` — runs the publish gates and either publishes (returns `committed_head`) or reports that the proposal cannot be published yet, with a per-target indication of which sections are unavailable and a human-readable explanation of why.
+1. `{{tool:createProposal}}` — provide `intent` (string) and `sections` (array of `{doc_path, heading_path, content, justification?}`). Content is written immediately into the proposal.
+2. `{{tool:publishProposal}}` — runs the publish gates and either publishes (returns `committed_head`) or reports that the proposal cannot be published yet, with a per-target indication of which sections are unavailable and a human-readable explanation of why.
 
 ### Incremental write (3+ calls):
 
-1. `create_proposal` — create the proposal (can include initial content or not).
-2. `write_proposal_section` — add or update section content within your proposal. Repeat as needed.
-3. `read_proposal_section` or `read_proposal` — inspect the proposal content you just wrote.
-4. `publish_proposal` — same as above.
+1. `{{tool:createProposal}}` — create the proposal (can include initial content or not).
+2. `{{tool:writeProposalSection}}` — add or update section content within your proposal. Repeat as needed.
+3. `{{tool:readProposalSection}}` or `{{tool:readProposal}}` — inspect the proposal content you just wrote.
+4. `{{tool:publishProposal}}` — same as above.
 
-Use `withdraw_proposal` to withdraw a proposal you no longer need.
+Use `{{tool:withdrawProposal}}` to withdraw a proposal you no longer need.
 
-### When `publish_proposal` cannot publish
+### When `{{tool:publishProposal}}` cannot publish
 
-A publish can be held back when a target section is claimed by another proposal holding an exclusive lock (for example a human working through their own proposal on that section), or when the agent write-policy in force does not permit agents to write a targeted section right now. The proposal stays draft and the response explains, per target, which sections are unavailable. Respond by waiting and retrying once the contention clears, narrowing the proposal via `write_proposal_section` so it no longer touches the unavailable sections, or withdrawing it.
+A publish can be held back when a target section is claimed by another proposal holding an exclusive lock (for example a human working through their own proposal on that section), or when the agent write-policy in force does not permit agents to write a targeted section right now. The proposal stays draft and the response explains, per target, which sections are unavailable. Respond by waiting and retrying once the contention clears, narrowing the proposal via `{{tool:writeProposalSection}}` so it no longer touches the unavailable sections, or withdrawing it.
 
 ## Checking Proposals
 
-- `my_proposals` — list your own proposals and their status.
-- `list_proposals` — list all proposals. Check before creating new ones to avoid conflicts.
-- `read_proposal` — read full details of a specific proposal.
+- `{{tool:myProposals}}` — list your own proposals and their status.
+- `{{tool:listProposals}}` — list all proposals. Check before creating new ones to avoid conflicts.
+- `{{tool:readProposal}}` — read full details of a specific proposal.
 
 ## Structural Changes
 
-These modify the document tree itself (headings, not body content). **All require an active proposal** — pass `proposal_id` to each call, then `publish_proposal` when done.
+These modify the document tree itself (headings, not body content). **All require an active proposal** — pass `proposal_id` to each call, then `{{tool:publishProposal}}` when done.
 
-- `create_section`, `delete_section`, `move_section`, `rename_section`
-- `delete_document`, `rename_document`
+- `{{tool:createSection}}`, `{{tool:deleteSection}}`, `{{tool:moveSection}}`, `{{tool:renameSection}}`
+- `{{tool:deleteDocument}}`, `{{tool:renameDocument}}`
 
 ## Important Behaviours
 
-- **Always read before writing** — use `read_published_section` or `read_doc_structure` first.
-- **Verify proposal content with proposal reads** — after writing to a proposal, use `read_proposal_section` or `read_proposal`. Do not use `read_published_section` for draft verification; it reads the published/live system and will not show your proposal-only edits.
+- **Always read before writing** — use `{{tool:readPublishedSection}}` or `{{tool:readDocStructure}}` first.
+- **Verify proposal content with proposal reads** — after writing to a proposal, use `{{tool:readProposalSection}}` or `{{tool:readProposal}}`. Do not use `{{tool:readPublishedSection}}` for draft verification; it reads the published/live system and will not show your proposal-only edits.
 - **Publish gates** — a target section may be unavailable because another proposal holds an exclusive lock on it, or because agent write-policy does not currently permit agents to write it. This is expected, not an error. Wait and retry later, narrow your scope, or withdraw.
-- **Clear intent** — write descriptive intent in `create_proposal` so reviewers understand your purpose.
+- **Clear intent** — write descriptive intent in `{{tool:createProposal}}` so reviewers understand your purpose.

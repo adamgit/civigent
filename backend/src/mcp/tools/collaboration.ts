@@ -718,6 +718,7 @@ const writeProposalSectionHandler: ToolHandler = async (args, ctx) => {
 
 export function registerCollaborationTools(registry: ToolRegistry): void {
   registry.register(
+    "listDocuments",
     {
       name: "list_documents",
       description: "List readable documents under a live scope path with lightweight section counts.",
@@ -732,6 +733,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "listSections",
     {
       name: "list_sections",
       description: "List readable sections under a live scope without returning body text.",
@@ -746,6 +748,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "searchText",
     {
       name: "search_text",
       description: "Run lexical search across live readable section bodies using literal or regular-expression syntax.",
@@ -766,6 +769,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "readDoc",
     {
       name: "read_doc",
       description: "Read the full live markdown content of a document, including its heading structure.",
@@ -781,6 +785,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "readDocStructure",
     {
       name: "read_doc_structure",
       description: "Read the heading structure of a document without fetching body content. Useful for understanding document organization before reading specific sections.",
@@ -796,6 +801,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "readPublishedSection",
     {
       name: "read_published_section",
       description: "Read the published/live (canonical) content of a specific section. This reads the published system and will NOT show proposal-only edits. To read a section as it appears inside a proposal (draft/committed/withdrawn), use read_proposal_section instead.",
@@ -816,6 +822,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "createProposal",
     {
       name: "create_proposal",
       description: "Create a new proposal with intent and section changes. The proposal starts in draft status. Use publish_proposal to publish it.",
@@ -846,6 +853,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "writeProposalSection",
     {
       name: "write_proposal_section",
       description: "Replace the content at the specified heading path within an existing draft proposal. Creates the section and any missing ancestors if needed.",
@@ -865,6 +873,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "publishProposal",
     {
       name: "publish_proposal",
       description: "Attempt to publish a draft proposal to the live wiki. If any sections are blocked, the proposal remains draft.",
@@ -880,6 +889,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "withdrawProposal",
     {
       name: "withdraw_proposal",
       description: "Withdraw/cancel a draft proposal. The proposal moves to withdrawn state and cannot be modified further.",
@@ -896,6 +906,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "listProposals",
     {
       name: "list_proposals",
       description: "List proposals, optionally filtered by status.",
@@ -910,6 +921,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "myProposals",
     {
       name: "my_proposals",
       description: "List your own proposals, optionally filtered by status. Preferred way to check your proposal state.",
@@ -924,6 +936,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "readProposal",
     {
       name: "read_proposal",
       description: "Read the details of a specific proposal, including its sections, content, and human-involvement evaluation.",
@@ -939,6 +952,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   );
 
   registry.register(
+    "readProposalSection",
     {
       name: "read_proposal_section",
       description: "Read a specific section as it appears inside a proposal.",
@@ -958,4 +972,8 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
     },
     readProposalSectionHandler,
   );
+
+  // Renamed wire names — a call to one returns a migration message, not an
+  // unknown-tool error. `commit_proposal` was renamed to `publish_proposal`.
+  registry.deprecate("commit_proposal");
 }

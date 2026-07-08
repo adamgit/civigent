@@ -72,6 +72,19 @@ export interface AgentWritePolicyImpl<TResult> {
     ref: SectionRef,
     commitInfoByFilePath: Map<string, SectionCommitInfo>,
   ): Promise<SectionAgentWritePolicySummary>;
+  /**
+   * O(1) section-level summary derived from a PRE-RESOLVED per-section commit
+   * info (the section's single most-recent canonical commit, or null when there
+   * is no commit history). For bulk read surfaces (heatmap, section-list) that
+   * have ALREADY resolved every section's file path and joined it to the git
+   * batch map: they MUST use this instead of `summarizeSection`, which re-resolves
+   * the heading (a full skeleton reparse) per call and is therefore quadratic
+   * across a document.
+   */
+  summarizeSectionFromCommitInfo(
+    ref: SectionRef,
+    commitInfoForSection: SectionCommitInfo | null,
+  ): SectionAgentWritePolicySummary;
 }
 
 // ─── Human-involvement compatibility policy ──────────────────────────
@@ -264,8 +277,34 @@ class HumanInvolvementCompatibilityPolicy
       ref,
       this.filterToHumanCommits(commitInfoByFilePath),
     );
+    return this.buildSectionSummary(ref, secondsSince);
+  }
+
+  /**
+   * O(1) counterpart of `summarizeSection` for callers that have already
+   * resolved the section's most-recent commit (see interface doc). Human-
+   * involvement scoring counts only HUMAN activity, so an agent's own most-recent
+   * commit scores as "no human history" (null) — identical to the
+   * `filterToHumanCommits` semantics of the map-based path, which likewise drops
+   * a file whose most-recent commit was an agent.
+   */
+  summarizeSectionFromCommitInfo(
+    ref: SectionRef,
+    commitInfoForSection: SectionCommitInfo | null,
+  ): SectionAgentWritePolicySummary {
+    const secondsSince =
+      commitInfoForSection && commitInfoForSection.writerType !== "agent"
+        ? Math.max(0, (Date.now() - commitInfoForSection.timestampMs) / 1000)
+        : null;
+    return this.buildSectionSummary(ref, secondsSince);
+  }
+
+  private buildSectionSummary(
+    ref: SectionRef,
+    secondsSinceLastHumanActivity: number | null,
+  ): SectionAgentWritePolicySummary {
     const result = evaluateSectionHumanInvolvement({
-      secondsSinceLastHumanActivity: secondsSince,
+      secondsSinceLastHumanActivity,
       hasJustification: false,
     });
     return {

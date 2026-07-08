@@ -266,11 +266,15 @@ export async function getHeatmap(): Promise<GetHeatmapResponse> {
 
     for (const headingPath of headingPaths) {
       const headingKey = SectionRef.headingKey(headingPath);
-      const agentWritePolicy = await AgentWritePolicy.summarizeSection(
-        new SectionRef(docPath, headingPath),
-        gitCommitInfo,
-      );
       const commitInfo = commitByHeading.get(headingKey);
+      // O(1): use the already-resolved per-section commit info. Do NOT call
+      // summarizeSection here — it re-resolves the heading (a full skeleton
+      // reparse) per section, which is quadratic across the document and, over
+      // every document, hangs the server.
+      const agentWritePolicy = AgentWritePolicy.summarizeSectionFromCommitInfo(
+        new SectionRef(docPath, headingPath),
+        commitInfo ?? null,
+      );
 
       sections.push({
         doc_path: docPath,
