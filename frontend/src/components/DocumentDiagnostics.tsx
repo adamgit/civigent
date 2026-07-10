@@ -14,6 +14,70 @@ interface DocumentDiagnosticsProps {
   onClose: () => void;
 }
 
+/**
+ * Aggregate the "structural corruption is present" signal into a single top-of-
+ * panel red banner. Draws from BOTH check-level failures (duplicate paths,
+ * duplicate siblings, logical loss, unreadable sections, sub-skeleton invalid
+ * state) and section-level layer errors so an unreadable body doesn't hide
+ * because its diagnostic check hasn't been wired in yet.
+ */
+function renderInvalidStructureBanner(data: DocDiagnosticsResponse) {
+  const triggerCheckNames = new Set([
+    "duplicate-heading-paths",
+    "duplicate-sibling-headings",
+    "duplicate-fragment-keys",
+    "no-logical-loss-in-heading-map",
+    "public-api-returns-every-physical-section",
+    "recursive-all-sections-readable",
+    "top-level-all-sections-readable",
+    "top-level-all-sections-parseable",
+    "recursive-structure-load",
+    "top-level-skeleton-parse",
+    "duplicate-section-files",
+  ]);
+  const failing = data.checks.filter((c) => !c.pass && triggerCheckNames.has(c.name));
+  const anyLayerError = data.sections.some((s) => s.winner === "error" || s.canonical.error || s.crdt.error || s.proposal.error);
+  const backendStates = data.backend_states ?? [];
+  if (failing.length === 0 && !anyLayerError && backendStates.length === 0) return null;
+  const failedNames = failing.map((c) => c.name);
+  if (anyLayerError && !failedNames.includes("layer-inspection-error")) failedNames.push("layer-inspection-error");
+  return (
+    <div className="border-2 border-red-500 bg-red-50 rounded p-3">
+      <h3 className="text-sm font-bold text-red-800">Invalid document structure detected</h3>
+      <p className="text-[12px] text-red-800 mt-1">
+        Normal document reads may hide sections or surface a materially different document than the physical files.
+        Editing or publishing in this state can lose data.
+      </p>
+      <ul className="text-[11px] text-red-800 mt-2 list-disc pl-5 space-y-0.5">
+        <li>Repair duplicate headings before editing or publishing.</li>
+        <li>Investigate unreadable / errored sections in the layers panel below.</li>
+        <li>Review the collision groups panel for the specific physical files involved.</li>
+      </ul>
+      {backendStates.length > 0 && (
+        <div className="mt-3 border-t border-red-300 pt-2">
+          <div className="text-[12px] font-semibold text-red-900 mb-1">Backend-reported invalid state</div>
+          <ul className="text-[11px] text-red-900 space-y-1">
+            {backendStates.map((state, i) => (
+              <li key={`${state.kind}-${i}`}>
+                <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mr-2 ${state.kind === "live" ? "bg-yellow-200 text-yellow-900" : "bg-red-200 text-red-900"}`}>
+                  {state.kind === "live" ? "live (transient)" : `${state.kind} (durable)`}
+                </span>
+                <span>{state.message}</span>
+                {state.details.length > 0 && (
+                  <div className="ml-4 text-[10px] text-red-700 font-mono">{state.details.join("; ")}</div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div className="text-[11px] text-red-700 mt-2 font-mono">
+        Failing signals: {failedNames.length > 0 ? failedNames.join(", ") : "(backend state only)"}
+      </div>
+    </div>
+  );
+}
+
 function renderSummary(summary: DiagSummary) {
   const items = [
     { label: "Top-level entries", value: summary.top_level_entries },
@@ -22,9 +86,24 @@ function renderSummary(summary: DiagSummary) {
     { label: "Recursive sub-skeleton parents", value: summary.recursive_subskeleton_parents },
     { label: "Recursive max depth", value: summary.recursive_max_depth },
   ];
+  // Physical / logical / API counts are the lossy-read signal — a mismatch means
+  // normal document reads hide at least one physical section. Highlight in red.
+  const lossyCounts = [
+    { label: "Physical body files", value: summary.physical_section_count },
+    { label: "Unique heading paths (logical)", value: summary.logical_section_count },
+    { label: "API-returned sections", value: summary.api_section_count },
+  ];
+  const anyCountNonNull =
+    summary.physical_section_count !== null ||
+    summary.logical_section_count !== null ||
+    summary.api_section_count !== null;
+  const mismatch =
+    anyCountNonNull &&
+    (summary.physical_section_count !== summary.logical_section_count ||
+      summary.physical_section_count !== summary.api_section_count);
   return (
     <div className="border border-gray-200 rounded p-3">
-      <h3 className="text-sm font-semibold mb-2">Structure Summary</h3>
+      <h3 className="text-sm font-semibold mb-2">Structure Summary (with lossy-read counts)</h3>
       <div className="space-y-1">
         {items.map((item) => (
           <div key={item.label} className="flex items-center justify-between gap-3 text-[12px] font-mono">
@@ -32,6 +111,19 @@ function renderSummary(summary: DiagSummary) {
             <span>{item.value ?? "\u2014"}</span>
           </div>
         ))}
+      </div>
+      <div className="mt-2 pt-2 border-t border-gray-100 space-y-1">
+        {lossyCounts.map((item) => (
+          <div key={item.label} className={`flex items-center justify-between gap-3 text-[12px] font-mono ${mismatch ? "text-red-700" : "text-gray-700"}`}>
+            <span className={mismatch ? "text-red-700" : "text-gray-600"}>{item.label}</span>
+            <span className={mismatch ? "font-semibold" : ""}>{item.value ?? "\u2014"}</span>
+          </div>
+        ))}
+        {mismatch && (
+          <div className="text-[11px] text-red-700 mt-1">
+            Physical / logical / API counts disagree \u2014 normal document reads hide at least one physical section.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -106,7 +198,12 @@ function renderChecks(checks: DiagHealthCheck[]) {
               <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500 border-b border-gray-100">
                 {category}
               </div>
-              {categoryChecks.map((check, i) => (
+              {categoryChecks.map((check, i) => {
+                // Failing duplicate-heading-paths / duplicate-sibling-headings
+                // checks link to the collision groups panel so the operator can
+                // jump straight to the offending physical rows.
+                const linksToCollisions = !check.pass && (check.name === "duplicate-heading-paths" || check.name === "duplicate-sibling-headings");
+                return (
                 <div
                   key={`${category}-${check.name}`}
                   className={`flex items-start gap-2 px-3 py-1 text-[12px] font-mono ${i < categoryChecks.length - 1 ? "border-b border-gray-100" : ""}`}
@@ -115,11 +212,15 @@ function renderChecks(checks: DiagHealthCheck[]) {
                     {check.pass ? "\u2713" : "\u2717"}
                   </span>
                   <span className="font-medium">{check.name}</span>
+                  {linksToCollisions && (
+                    <a href="#collision-groups" className="text-[11px] text-red-700 underline">show collisions</a>
+                  )}
                   {check.detail && (
                     <span className="text-gray-500 ml-2">{check.detail}</span>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           ))}
         </div>
@@ -134,9 +235,10 @@ function renderChecks(checks: DiagHealthCheck[]) {
   }
 }
 
-// The durable layers are Canonical and live CRDT.
+// The durable layers are Canonical, the inprogress proposal, and the live CRDT.
 const WINNER_COLORS: Record<string, string> = {
   canonical: "bg-blue-100 text-blue-800",
+  proposal: "bg-lime-100 text-lime-800",
   crdt: "bg-green-100 text-green-800",
   none: "bg-gray-100 text-gray-500",
   error: "bg-red-100 text-red-800",
@@ -168,44 +270,166 @@ function renderLayerCell(layer: DiagLayerStatus, isWinner: boolean) {
   );
 }
 
+/**
+ * Group sections by `headingKey` so a duplicate-heading-path collision — where
+ * multiple physical section files land at the same address — is visible as a
+ * single group. `__crdt_only__::…` keys are synthesized when a CRDT fragment has
+ * no canonical entry; those are never collisions with real heading paths.
+ */
+function collectCollisionGroups(sections: DiagSectionLayerInfo[]): DiagSectionLayerInfo[][] {
+  const byKey = new Map<string, DiagSectionLayerInfo[]>();
+  for (const s of sections) {
+    if (s.headingKey.startsWith("__crdt_only__::")) continue;
+    const list = byKey.get(s.headingKey);
+    if (list) list.push(s);
+    else byKey.set(s.headingKey, [s]);
+  }
+  const groups: DiagSectionLayerInfo[][] = [];
+  for (const rows of byKey.values()) {
+    if (rows.length >= 2) groups.push(rows);
+  }
+  return groups;
+}
+
+/**
+ * With duplicate section files at the same heading path, normal app reads via a
+ * heading-key map keep the LAST-seen entry (a naive `map.set` in insertion
+ * order). That is the row a normal document read would surface; the earlier
+ * rows are physically present but MASKED. Encoded here as the single point of
+ * change so the "select vs mask" story stays consistent if the app's map
+ * insertion policy changes.
+ */
+function collisionWinnerIndex(rows: DiagSectionLayerInfo[]): number {
+  return rows.length - 1;
+}
+
+function renderCollisionGroups(sections: DiagSectionLayerInfo[]) {
+  const groups = collectCollisionGroups(sections);
+  if (groups.length === 0) return null;
+  return (
+    <div id="collision-groups" className="border border-red-300 bg-red-50 rounded p-3">
+      <h3 className="text-sm font-semibold mb-2 text-red-800">Heading-path collisions ({groups.length})</h3>
+      <p className="text-[12px] text-red-900 mb-2">
+        Two sibling sections that carry the same heading text under the same parent cannot be uniquely
+        addressed by a heading path — the app looks up sections by that path, so one section will hide
+        another after refresh. Every physical file below is present on disk, but only one is reachable
+        through a normal read.
+      </p>
+      <details className="mb-2 text-[11px] text-red-900">
+        <summary className="cursor-pointer font-semibold">Safe repair choices</summary>
+        <ul className="list-disc pl-5 mt-1 space-y-0.5">
+          <li>Rename one of the duplicate headings so each has a unique path.</li>
+          <li>Merge the two bodies into a single section (copy the hidden body's content into the visible one, then delete the extra file).</li>
+          <li>Move one of them under a different parent so their paths differ.</li>
+          <li>Recover the hidden body from git history (see the section file id below) before deleting.</li>
+        </ul>
+        <p className="mt-1 italic">Do not attempt to auto-repair from diagnostics — pick a target manually and edit outside the app if needed.</p>
+      </details>
+      <div className="space-y-3">
+        {groups.map((rows) => {
+          const winnerIdx = collisionWinnerIndex(rows);
+          const headingLabel = rows[0].headingKey || "(before first heading)";
+          return (
+            <div key={rows[0].headingKey} className="border border-red-200 bg-white rounded overflow-hidden">
+              <div className="px-2 py-1.5 bg-red-100 text-red-900 text-[11px] font-mono flex items-center justify-between">
+                <span>{headingLabel}</span>
+                <span className="text-[10px] font-semibold">{rows.length} physical rows</span>
+              </div>
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr className="bg-gray-50">
+                    <th className="px-2 py-1 text-left text-[10px] font-semibold text-gray-600">Fragment key</th>
+                    <th className="px-2 py-1 text-left text-[10px] font-semibold text-gray-600">Section file</th>
+                    <th className="px-2 py-1 text-left text-[10px] font-semibold text-gray-600">Layer winner</th>
+                    <th className="px-2 py-1 text-left text-[10px] font-semibold text-gray-600">Body preview</th>
+                    <th className="px-2 py-1 text-left text-[10px] font-semibold text-gray-600">App reads</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row, i) => {
+                    const preview = row.canonical.contentPreview ?? row.crdt.contentPreview ?? "—";
+                    return (
+                      <tr key={row.fragmentKey} className="border-t border-red-100">
+                        <td className="px-2 py-1 text-[11px] font-mono text-gray-700">{row.fragmentKey}</td>
+                        <td className="px-2 py-1 text-[11px] font-mono text-gray-700">{row.sectionFile || "—"}</td>
+                        <td className="px-2 py-1 text-[11px] font-mono">
+                          <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${WINNER_COLORS[row.winner] ?? "bg-gray-100 text-gray-600"}`}>
+                            {row.winner}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1 text-[11px] font-mono text-gray-700 max-w-[240px]">
+                          <div className="overflow-hidden text-ellipsis whitespace-nowrap">{preview}</div>
+                        </td>
+                        <td className="px-2 py-1 text-[11px] font-mono">
+                          {i === winnerIdx ? (
+                            <span className="inline-block px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-semibold">selected</span>
+                          ) : (
+                            <span className="inline-block px-1.5 py-0.5 rounded bg-gray-200 text-gray-700 text-[10px]">masked</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
+  // The React key is `fragmentKey` (physical identity), not `headingKey`. If
+  // two rows share `headingKey` (a duplicate-heading-paths corruption case),
+  // both are preserved as distinct rows in the table — the identity below the
+  // heading label makes the collision visible.
+  const rowKey = section.fragmentKey || `idx-${index}`;
   try {
     if (section.error && section.winner === "error") {
       return [
-        <tr key={`${index}-section`} className="border-b border-gray-100 bg-gray-50">
-          <td colSpan={4} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
+        <tr key={`${rowKey}-section`} className="border-b border-gray-100 bg-gray-50">
+          <td colSpan={5} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
             <div className="flex flex-wrap items-center gap-1">
               <span>{section.headingKey || "(body holder)"}</span>
               {section.isSubSkeleton ? (
                 <span className="inline-block px-1 py-0 rounded bg-purple-100 text-purple-700 text-[9px] font-semibold">sub-skeleton</span>
               ) : null}
             </div>
-            <div className="mt-0.5 text-gray-400 text-[10px]">{section.sectionFile}</div>
+            <div className="mt-0.5 text-gray-400 text-[10px]">
+              {section.fragmentKey}
+              {section.sectionFile ? <> · {section.sectionFile}</> : null}
+            </div>
           </td>
         </tr>,
-        <tr key={`${index}-error`} className="border-b border-gray-100">
+        <tr key={`${rowKey}-error`} className="border-b border-gray-100">
           <td className="px-2 py-1 bg-gray-50" />
-          <td colSpan={3} className="px-2 py-1 text-red-600 text-[11px]">
+          <td colSpan={4} className="px-2 py-1 text-red-600 text-[11px]">
             {section.error}
           </td>
         </tr>,
       ];
     }
     return [
-      <tr key={`${index}-section`} className="border-b border-gray-100 bg-gray-50">
-        <td colSpan={4} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
+      <tr key={`${rowKey}-section`} className="border-b border-gray-100 bg-gray-50">
+        <td colSpan={5} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
           <div className="flex flex-wrap items-center gap-1">
             <span>{section.headingKey || "(body holder)"}</span>
             {section.isSubSkeleton ? (
               <span className="inline-block px-1 py-0 rounded bg-purple-100 text-purple-700 text-[9px] font-semibold">sub-skeleton</span>
             ) : null}
           </div>
-          <div className="mt-0.5 text-gray-400 text-[10px]">{section.sectionFile}</div>
+          <div className="mt-0.5 text-gray-400 text-[10px]">
+            {section.fragmentKey}
+            {section.sectionFile ? <> · {section.sectionFile}</> : null}
+          </div>
         </td>
       </tr>,
-      <tr key={`${index}-layers`} className="border-b border-gray-100">
+      <tr key={`${rowKey}-layers`} className="border-b border-gray-100">
         <td className="px-2 py-1 bg-gray-50" />
         {renderLayerCell(section.canonical, section.winner === "canonical")}
+        {renderLayerCell(section.proposal, section.winner === "proposal")}
         {renderLayerCell(section.crdt, section.winner === "crdt")}
         <td className="px-2 py-1 text-[11px]">
           <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${WINNER_COLORS[section.winner] ?? "bg-gray-100 text-gray-600"}`}>
@@ -221,14 +445,14 @@ function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
     ];
   } catch (e) {
     return [
-      <tr key={`${index}-section`} className="border-b border-gray-100 bg-gray-50">
-        <td colSpan={4} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
+      <tr key={`${rowKey}-section`} className="border-b border-gray-100 bg-gray-50">
+        <td colSpan={5} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
           {section.sectionFile}
         </td>
       </tr>,
-      <tr key={`${index}-render-error`} className="border-b border-gray-100">
+      <tr key={`${rowKey}-render-error`} className="border-b border-gray-100">
         <td className="px-2 py-1 bg-gray-50" />
-        <td colSpan={3} className="px-2 py-1 text-red-600 text-[11px]">
+        <td colSpan={4} className="px-2 py-1 text-red-600 text-[11px]">
           Render error: {e instanceof Error ? e.message : String(e)}
         </td>
       </tr>,
@@ -247,6 +471,7 @@ function renderSectionTable(sections: DiagSectionLayerInfo[]) {
               <tr className="bg-gray-50 sticky top-0">
                 <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-gray-600">Section</th>
                 <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-gray-600">Canonical</th>
+                <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-gray-600">Proposal (durable)</th>
                 <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-gray-600">CRDT (live)</th>
                 <th className="px-2 py-1.5 text-left text-[11px] font-semibold text-gray-600">Winner</th>
               </tr>
@@ -255,7 +480,7 @@ function renderSectionTable(sections: DiagSectionLayerInfo[]) {
               {sections.map((section, i) => renderSectionRow(section, i))}
               {sections.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="px-2 py-4 text-center text-gray-400 text-sm">
+                  <td colSpan={5} className="px-2 py-4 text-center text-gray-400 text-sm">
                     No sections found
                   </td>
                 </tr>
@@ -315,13 +540,17 @@ export default function DocumentDiagnostics({ docPath, onClose }: DocumentDiagno
           )}
 
           {data && (
-            <div className="grid grid-cols-1 xl:grid-cols-[340px_340px_minmax(0,1fr)] gap-4">
-              <div className="flex flex-col gap-4">
-                {renderSummary(data.summary)}
-                {renderRestoreProvenance(data.restore_provenance)}
+            <div className="flex flex-col gap-4">
+              {renderInvalidStructureBanner(data)}
+              {renderCollisionGroups(data.sections)}
+              <div className="grid grid-cols-1 xl:grid-cols-[340px_340px_minmax(0,1fr)] gap-4">
+                <div className="flex flex-col gap-4">
+                  {renderSummary(data.summary)}
+                  {renderRestoreProvenance(data.restore_provenance)}
+                </div>
+                {renderChecks(data.checks)}
+                {renderSectionTable(data.sections)}
               </div>
-              {renderChecks(data.checks)}
-              {renderSectionTable(data.sections)}
             </div>
           )}
         </div>

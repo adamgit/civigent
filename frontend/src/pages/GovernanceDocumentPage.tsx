@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useParams } from "react-router-dom";
-import { apiClient } from "../services/api-client";
-import { getLastDocumentVisitAt, markDocumentVisitedNow } from "../services/document-visit-history";
 import { SectionTransferService, type SectionTransfer } from "../services/section-transfer";
 import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
 import { rememberRecentDoc } from "../services/recent-docs";
@@ -87,7 +85,6 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
 
   // ── Metadata state ───────────────────────────────────────
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [lastVisitSeed, setLastVisitSeed] = useState<{ docPath: string; since: string | null } | null>(null);
 
   const sectionsContainerRef = useRef<HTMLDivElement>(null);
   const resourceModel = useMemo(() => new DocumentResourceModel(), []);
@@ -234,7 +231,6 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   // ── WebSocket hook ────────────────────────────────────────
   const {
     recentlyChangedSections,
-    setRecentlyChangedSections,
     recentlyChangedByLabel,
     agentReadingIndicators,
     pendingProposalIndicatorsRef,
@@ -307,9 +303,6 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   useEffect(() => {
     if (!decodedDocPath) return;
     rememberRecentDoc(decodedDocPath);
-    const previousVisit = getLastDocumentVisitAt(decodedDocPath);
-    setLastVisitSeed({ docPath: decodedDocPath, since: previousVisit });
-    markDocumentVisitedNow(decodedDocPath);
   }, [decodedDocPath]);
 
   // ── Fetch lightweight structure metadata (skeleton only, no git) ──
@@ -336,25 +329,9 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
 
   useInitialObserverGuard({ decodedDocPath, loadSections, requestMode, stopObserver, controllerStateRef });
 
-  // ── Load changes-since (recently changed sections) ───────
-  useEffect(() => {
-    if (!decodedDocPath || !lastVisitSeed || lastVisitSeed.docPath !== decodedDocPath) return;
-    let cancelled = false;
-    apiClient.getChangesSince(decodedDocPath).then((response) => {
-      if (cancelled) return;
-      const changedSections = Array.isArray(response.changed_sections) ? response.changed_sections : [];
-      setRecentlyChangedSections((previous) => {
-        const next = new Map(previous.map((entry) => [entry.key, entry]));
-        for (const change of changedSections) {
-          const headingPath = Array.isArray(change.heading_path) ? change.heading_path : [];
-          const label = headingPathToLabel(headingPath);
-          next.set(label, { key: label, label, changedAtMs: Date.now(), changedByName: "Writer" });
-        }
-        return Array.from(next.values());
-      });
-    }).catch(() => { /* non-fatal background fetch */ });
-    return () => { cancelled = true; };
-  }, [decodedDocPath, lastVisitSeed, setRecentlyChangedSections]);
+  // Recently-changed sections are seeded live from `content:committed`
+  // WebSocket events via `useDocumentWebSocket`. There is no page-load
+  // history fetch.
 
   // ── Handle idle timeout ──────────────────────────────────
   useEffect(() => {
@@ -399,6 +376,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     saveStatus.hasLocalUncommittedEdits,
     saveStatus.hasInboundActivity,
     saveStatus.hadLocalEdits,
+    saveStatus.backendError,
   );
   // Presentation-only activity pill: "Saving… → Saved" (local) or
   // "Updating… → Up to date" (inbound) — "Saved" only once the model confirms.
@@ -508,6 +486,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
         hasLocalUncommittedEdits={saveStatus.hasLocalUncommittedEdits}
         hasInboundActivity={saveStatus.hasInboundActivity}
         hadLocalEdits={saveStatus.hadLocalEdits}
+        backendError={saveStatus.backendError}
       />
 
       {/* Document-level connection banner \u2014 shown for EVERY non-live phase

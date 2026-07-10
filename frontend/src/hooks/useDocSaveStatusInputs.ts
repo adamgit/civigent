@@ -20,12 +20,16 @@
  *   - `hasLocalEdits`            — your in-flight OR pending edits (`!allReceived || local pending`)
  *   - `hasInboundActivity`       — pending edits exist and none are this session's
  *   - `hadLocalEdits`            — sticky: you committed local work this editing session
+ *   - `backendError`             — server-reported durable failure (materialize / normalize /
+ *                                  validate / publish), passed through so the topbar can
+ *                                  surface an explicit `error` rung that must not collapse
+ *                                  into `savedToProposal` / `saved` / `upToDate`.
  */
 
 import { useEffect, useMemo, useState } from "react";
 import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 import type { SessionAuthorshipView } from "../status/sessionAuthorship";
-import { useReceiptAllReceived, usePendingSections } from "./useFragmentStoreHooks";
+import { useReceiptAllReceived, usePendingSections, useError } from "./useFragmentStoreHooks";
 
 export interface DocSaveStatusInputs {
   /** Guarantee A: every local edit acknowledged received by the server. */
@@ -38,6 +42,12 @@ export interface DocSaveStatusInputs {
   hasInboundActivity: boolean;
   /** Sticky: you committed at least one local edit this editing session. */
   hadLocalEdits: boolean;
+  /**
+   * Server-reported durable failure (materialize / normalize / validate /
+   * publish). `null` when clean. Feeds the topbar's `error` rung; must remain
+   * visible until the backend reports the error is cleared.
+   */
+  backendError: string | null;
 }
 
 export function useDocSaveStatusInputs(
@@ -47,6 +57,7 @@ export function useDocSaveStatusInputs(
 ): DocSaveStatusInputs {
   const allReceived = useReceiptAllReceived(store);
   const pendingSections = usePendingSections(store);
+  const backendError = useError(store);
   const pendingKeys = useMemo(() => [...pendingSections.keys()], [pendingSections]);
 
   // The intersection of server-truth pending and session authorship — the only
@@ -79,5 +90,6 @@ export function useDocSaveStatusInputs(
     hasLocalEdits,
     hasInboundActivity,
     hadLocalEdits,
+    backendError,
   };
 }

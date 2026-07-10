@@ -14,8 +14,9 @@
 
 | Guide | Audience | Description |
 |-------|----------|-------------|
-| [Deployment Guide](deployment.md) | Admins | Docker setup, data directory, import, reverse proxy, env vars |
+| [Deployment Guide](deployment.md) | Admins | Docker setup, data directory, reverse proxy, env vars |
 | [Configuration Reference](configuration.md) | Admins | Involvement presets, admin API, snapshots, auth modes |
+| [Backup, Restore, and Import](backup-restore.md) | Admins | First-time markdown import, private Git remote backup, whole-instance restore onto a virgin target |
 | [Agent Management](agent-management.md) | Admins | OAuth setup, anonymous vs pre-authenticated agents, MCP tools |
 | [Crash Recovery](crash-recovery.md) | Admins | How to recover from crashes, what data is recoverable, where/why |
 | [Recipes](recipes.md) | Admins | Common tasks that aren't immediately obvious from the UI |

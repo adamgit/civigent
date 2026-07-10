@@ -156,9 +156,6 @@ describe("DocumentPage realtime", () => {
       if (urlStr.includes("/structure")) {
         return jsonResponse({ structure: [{ heading: "Overview", level: 1, children: [] }] });
       }
-      if (urlStr.includes("/changes-since")) {
-        return jsonResponse({ changed_sections: [] });
-      }
       return jsonResponse({});
     });
   });

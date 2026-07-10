@@ -10,7 +10,7 @@
  * the publish pause merely ending — that does not prove the commit landed. It is
  * reached ONLY when the shared model actually resolves to `saved` (for a local
  * save) or `upToDate` (for an inbound update). If, after the active phase, the
- * model instead settles on `receivedNotSaved`, `syncing`, `offline`, or any other
+ * model instead settles on `savedToProposal`, `syncing`, `offline`, or any other
  * non-success state, the pill fades to idle WITHOUT claiming success — the topbar's
  * `DocTransportStatus` surfaces the real state. This is what keeps an empty /
  * failed publish from flashing a false "Saved".
@@ -42,7 +42,7 @@ const SETTLED_MS = 1300;
 /**
  * After the active phase ends, how long to wait for the model to actually reach
  * its success rung (`saved` / `upToDate`) before giving up and fading to idle
- * WITHOUT a "Saved". This absorbs the brief `saving → receivedNotSaved → saved`
+ * WITHOUT a "Saved". This absorbs the brief `saving → savedToProposal → saved`
  * transient (the publish pause lifts a tick before the `section:settled` events
  * clear the pending set) while never converting a stuck non-success into success.
  */
@@ -116,7 +116,7 @@ export function useDocumentActivity(status: DocTransportStatus): DocumentActivit
       return;
     }
 
-    // Otherwise the model is in a transient/non-success rung (`receivedNotSaved`,
+    // Otherwise the model is in a transient/non-success rung (`savedToProposal`,
     // `syncing`, `upToDate` under a local save, `connecting`, …). Keep showing
     // "active" and wait a bounded grace for the success rung to arrive; if it does
     // not, fade to idle WITHOUT inferring success. Arm the grace timer once.

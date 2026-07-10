@@ -96,6 +96,7 @@ import {
   WS_CLOSE_AUTH_FAILED,
   WS_CLOSE_AUTHORIZATION_FAILED,
   WS_CLOSE_ADMIN_REBUILD,
+  WS_CLOSE_SYSTEM_LOCKDOWN,
 } from "./crdt-ws-frames.js";
 import {
   CrdtSocketState,
@@ -343,6 +344,23 @@ export function broadcastAdminRebuildInvalidation(docPath: string): void {
   for (const socket of docSockets.get(docPath) ?? []) {
     if (socket.readyState === WebSocket.OPEN) {
       socket.close(WS_CLOSE_ADMIN_REBUILD, "admin rebuild");
+    }
+  }
+}
+
+/**
+ * Close every tracked CRDT socket across every document with
+ * `WS_CLOSE_SYSTEM_LOCKDOWN` and reason `system_lockdown`. Called by the
+ * backup / restore lockdown flow so live editing cannot mutate content while
+ * a Git backup or restore runs. The readiness gate rejects reconnect
+ * attempts until the operation completes.
+ */
+export function closeAllCrdtSocketsForSystemLockdown(): void {
+  for (const sockets of docSockets.values()) {
+    for (const socket of sockets) {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.close(WS_CLOSE_SYSTEM_LOCKDOWN, "system_lockdown");
+      }
     }
   }
 }
@@ -775,13 +793,20 @@ onSessionDiscard(cancelQuiescenceTimer);
 
 async function normalizeQuiescedStructure(session: DocSession): Promise<boolean> {
   const proposalId = session.generator.getCurrentProposalId();
-  const canonicalLayout = await resolveLiveSectionLayout(session.docPath, null);
+  // Effective pre-normalization layout: canonical overlaid by the current
+  // `inprogress` proposal's manifest (identity-based delete overlay). A live
+  // edit this session already promoted (proposal-only section) or an unclaimed
+  // canonical section gained externally is only addressable through this view.
+  // A canonical-only lookup here silently skipped proposal-only fragments and
+  // picked the wrong predecessor for a heading-deletion merge when a live edit
+  // inserted a section between two canonical siblings.
+  const effectiveLayout = await resolveLiveSectionLayout(session.docPath, proposalId);
   let applied = false;
 
   
   for (const fragmentKey of [...session.liveFragments.getFragmentKeys()]) {
-    const identity = canonicalLayout.find((e) => e.fragmentKey === fragmentKey);
-    if (!identity) continue; 
+    const identity = effectiveLayout.find((e) => e.fragmentKey === fragmentKey);
+    if (!identity) continue;
     const change = classifyStructuralChange(
       session.liveFragments.readFragmentString(fragmentKey),
       identity,
@@ -821,7 +846,7 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<boolean>
       );
       applied = applied || res.applied;
     } else if (change.kind === "heading-deletion") {
-      const plan = await computeStructuralMergePlan(session.liveFragments, session.docPath, fragmentKey, change);
+      const plan = await computeStructuralMergePlan(session.liveFragments, session.docPath, proposalId, fragmentKey, change);
       if (!plan) continue;
       const res = await session.generator.normalizeQuiescedSection<StructuralMergePlan>(
         session.liveFragments.ydoc,

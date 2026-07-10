@@ -8,14 +8,19 @@ import type {
   SetDocumentAclRequest,
   SetUserRolesRequest,
   CreateCustomRoleRequest,
-  ChangesSinceResponse,
   CommitProposalResponse,
   CreateDocumentResponse,
   CreateProposalRequest,
   CreateProposalResponse,
   GetActivityResponse,
+  GetAdminGitBackupStatusResponse,
+  GetAdminGitRestoreStatusResponse,
+  GetAdminRuntimeMemoryResponse,
   GetAdminSnapshotHealthResponse,
   GetAdminSnapshotHistoryResponse,
+  RunAdminGitBackupResponse,
+  RunAdminGitRestoreResponse,
+  VerifyAdminGitBackupResponse,
   GetAgentsFullSummaryResponse,
   GetDocumentResponse,
   GetDocumentSectionsResponse,
@@ -117,14 +122,22 @@ export interface DiagLayerStatus {
  * Winner of the per-section layer comparison. The durable layers are canonical
  * and live CRDT; the backend winner is one of these.
  */
-export type DiagSectionWinner = "canonical" | "crdt" | "none" | "error";
+export type DiagSectionWinner = "canonical" | "proposal" | "crdt" | "none" | "error";
 
 export interface DiagSectionLayerInfo {
+  /** Physical identity — one row per unique section body file. */
+  fragmentKey: string;
+  /** Heading key (`headingPath.join(">>")`) — data, not identity. */
   headingKey: string;
+  /** Heading path — data, not identity. Multiple rows can share it. */
   headingPath: string[];
+  /** Canonical section-file name (empty when CRDT-only). */
   sectionFile: string;
   isSubSkeleton: boolean;
   canonical: DiagLayerStatus;
+  /** Effective inprogress-proposal body — durable saved state that survives
+   *  refresh. Absent when no inprogress proposal covers this section. */
+  proposal: DiagLayerStatus;
   crdt: DiagLayerStatus;
   winner: DiagSectionWinner;
   gitHistoryExists?: boolean | null;
@@ -144,6 +157,9 @@ export interface DiagSummary {
   recursive_content_sections: number | null;
   recursive_subskeleton_parents: number | null;
   recursive_max_depth: number | null;
+  physical_section_count: number | null;
+  logical_section_count: number | null;
+  api_section_count: number | null;
 }
 
 export interface DiagRestoreProvenance {
@@ -157,11 +173,21 @@ export interface DiagRestoreProvenance {
   target_only_heading_keys: string[];
 }
 
+export type DiagBackendStateKind = "live" | "proposal" | "canonical";
+export interface DiagBackendState {
+  kind: DiagBackendStateKind;
+  message: string;
+  details: string[];
+}
+
 export interface DocDiagnosticsResponse {
   doc_path: string;
   checks: DiagHealthCheck[];
   sections: DiagSectionLayerInfo[];
   summary: DiagSummary;
+  /** Backend-reported invalid/error signals aggregated for this document, or
+   *  an empty array when nothing is degraded. */
+  backend_states: DiagBackendState[];
   restore_provenance: DiagRestoreProvenance;
 }
 
@@ -458,6 +484,38 @@ export const apiClient = {
     await requestJson<{ ok: boolean }>("/api/admin/snapshot-now", { method: "POST" });
   },
 
+  async getAdminRuntimeMemory(): Promise<GetAdminRuntimeMemoryResponse> {
+    return requestJson<GetAdminRuntimeMemoryResponse>("/api/admin/runtime-memory");
+  },
+
+  async getAdminGitBackupStatus(): Promise<GetAdminGitBackupStatusResponse> {
+    return requestJson<GetAdminGitBackupStatusResponse>("/api/admin/git-backup/status");
+  },
+
+  async runAdminGitBackup(): Promise<RunAdminGitBackupResponse> {
+    return requestJson<RunAdminGitBackupResponse>("/api/admin/git-backup/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+  },
+
+  async verifyAdminGitBackup(): Promise<VerifyAdminGitBackupResponse> {
+    return requestJson<VerifyAdminGitBackupResponse>("/api/admin/git-backup/verify", {
+      method: "POST",
+    });
+  },
+
+  async getAdminGitRestoreStatus(): Promise<GetAdminGitRestoreStatusResponse> {
+    return requestJson<GetAdminGitRestoreStatusResponse>("/api/admin/git-backup/restore-status");
+  },
+
+  async runAdminGitRestore(): Promise<RunAdminGitRestoreResponse> {
+    return requestJson<RunAdminGitRestoreResponse>("/api/admin/git-backup/restore", {
+      method: "POST",
+    });
+  },
+
   async updateAdminConfig(nextConfig: Partial<AdminConfig>): Promise<AdminConfig> {
     return requestJson<AdminConfig>("/api/admin/config", {
       method: "PUT",
@@ -691,12 +749,6 @@ export const apiClient = {
     return requestJson<GetProposalSectionsResponse>(
       `/api/proposals/${encodeURIComponent(proposalId)}/sections`,
     );
-  },
-
-  async getChangesSince(docPath: string, afterHead?: string): Promise<ChangesSinceResponse> {
-    const encoded = encodeDocPath(docPath);
-    const params = afterHead ? `?after_head=${encodeURIComponent(afterHead)}` : "";
-    return requestJson<ChangesSinceResponse>(`/api/canonical/${encoded}/changes-since${params}`);
   },
 
   async searchText(options: {

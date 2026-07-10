@@ -113,6 +113,18 @@ For deployment guidance, see [Snapshots](deployment.md#snapshots-optional) in th
 
 ---
 
+## Git remote backup
+
+Civigent can push canonical published content history and durable auth/RBAC state to a private Git remote as a whole-instance backup. Restore only runs on a virgin target — this is a one-directional export/import, not a two-way sync. The admin page at `/admin/git-backup` runs and monitors it.
+
+Proposal directories and companion deployment secrets (`KS_AUTH_SECRET`, `KS_AGENT_ANON_SALT`, OIDC config) are deliberately excluded from the backup contract.
+
+For wiring instructions (SSH-key vs ssh-agent, `backup-secrets/` folder layout, `.env` and `quickstart/compose.yaml` additions), see [Backup, Restore, and Import](backup-restore.md).
+
+The env-var reference table for the five `KS_BACKUP_*` / `SSH_AUTH_SOCK` variables lives in the [Environment variable reference](#git-remote-backup-optional) below.
+
+---
+
 ## Environment variable reference
 
 ### Required for production (non-single-user mode)
@@ -142,9 +154,22 @@ For deployment guidance, see [Snapshots](deployment.md#snapshots-optional) in th
 | `KS_INVOLVEMENT_PRESET` | Human involvement preset (`yolo`, `aggressive`, `eager`, `conservative`) | `eager` |
 | `KS_IMPORT_ROOT` | Path inside the container where the import volume is mounted | `/import` |
 
+### Git remote backup (optional)
+
+Wiring instructions and the recommended `backup-secrets/` folder layout live in [Backup, Restore, and Import — Private Git remote backup](backup-restore.md#private-git-remote-backup-optional).
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `KS_BACKUP_GIT_REMOTE` | SSH URL of the private backup repository. When unset, the Git remote backup feature is not configured. | (unset — feature disabled) |
+| `KS_BACKUP_GIT_AUTH_MODE` | Credential channel: `ssh-key` (mounted private key) or `ssh-agent` (host agent socket). Required when `KS_BACKUP_GIT_REMOTE` is set. | (unset — required with the remote) |
+| `KS_BACKUP_SSH_KEY_PATH` | In-container path to the mounted read-only private key file. Required when `KS_BACKUP_GIT_AUTH_MODE=ssh-key`. | (unset — required for `ssh-key` mode) |
+| `KS_BACKUP_KNOWN_HOSTS_PATH` | In-container path to a `known_hosts` file used for strict host-key checking. Optional; admin page shows a warning when unset but backup availability is not blocked. | (unset — advisory warning shown) |
+| `SSH_AUTH_SOCK` | Standard OpenSSH agent socket path (not a Civigent-prefixed variable — set by the host shell). Required when `KS_BACKUP_GIT_AUTH_MODE=ssh-agent`. | (host-managed) |
+
 ---
 
 ## What's next
 
+- [Backup, Restore, and Import](backup-restore.md) — first-time markdown import, private Git remote backup, restore onto a virgin target
 - [Agent Management](agent-management.md) — manage agent identities and access control
 - [Architecture Overview](architecture.md) — understand how the system works internally

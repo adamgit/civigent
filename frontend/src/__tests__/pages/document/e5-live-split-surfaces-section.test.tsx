@@ -146,7 +146,6 @@ describe("E5: live split surfaces a new editable section without content:committ
         });
       }
       if (urlStr.includes("/structure")) return jsonResponse({ structure: [] });
-      if (urlStr.includes("/changes-since")) return jsonResponse({ changed_sections: [] });
       return jsonResponse({});
     });
   });

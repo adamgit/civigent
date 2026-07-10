@@ -143,7 +143,6 @@ describe("E6: cross-client split must not silently vanish the current client's c
         });
       }
       if (urlStr.includes("/structure")) return jsonResponse({ structure: [] });
-      if (urlStr.includes("/changes-since")) return jsonResponse({ changed_sections: [] });
       return jsonResponse({});
     });
   });

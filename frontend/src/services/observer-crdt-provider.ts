@@ -21,6 +21,7 @@ import type {
 import {
   WS_CLOSE_DOCUMENT_REPLACED,
   WS_CLOSE_ADMIN_REBUILD,
+  WS_CLOSE_SYSTEM_LOCKDOWN,
   WS_CLOSE_SESSION_ENDED,
   WS_CLOSE_INVALID_URL,
   WS_CLOSE_YDOC_INIT_FAILED,
@@ -195,6 +196,15 @@ export class ObserverCrdtProvider {
         this.setState("disconnected");
         this.events.onSessionEnded?.();
         // Reconnect to wait for next editing session
+        this.scheduleReconnect();
+        return;
+      }
+
+      if (event.code === WS_CLOSE_SYSTEM_LOCKDOWN) {
+        // Backup / restore lockdown reads as "temporary server unavailable".
+        // Fall straight into the standard backoff/reconnect path — the
+        // "reconnecting" state emitted by scheduleReconnect() is the whole
+        // UI cue, matching how other short server unavailability is shown.
         this.scheduleReconnect();
         return;
       }

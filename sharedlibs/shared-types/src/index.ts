@@ -929,15 +929,6 @@ export interface ReadSectionResponse {
   head_sha: string;
 }
 
-// ─── Changes Since ─────────────────────────────────────────────────
-
-export interface ChangesSinceResponse {
-  since_sha: string;
-  current_sha: string;
-  changed: boolean;
-  changed_sections: SectionTargetRef[];
-}
-
 // ─── Proposal API ──────────────────────────────────────────────────
 
 /** Evaluation outcome: did all sections pass, or were some blocked? */
@@ -1310,6 +1301,198 @@ export interface GetAdminSnapshotHistoryResponse {
   current_snapshot_file_count: number;
   commits_since_last_snapshot: number | null;
   history: SnapshotRunRecord[];
+}
+
+// ─── Runtime Memory ────────────────────────────────────────────────
+//
+// In-memory-only runtime memory monitor for EC2 sizing. Values are bytes on the
+// wire; the frontend owns MiB/GiB formatting. `container_memory_bytes` is
+// sourced from `/sys/fs/cgroup/memory.current` and is `null` outside a cgroup
+// environment (e.g. non-container dev). `process_rss_bytes` and
+// `heap_used_bytes` come from `process.memoryUsage()`.
+
+export interface RuntimeMemorySample {
+  timestamp_ms: number;
+  container_memory_bytes: number | null;
+  process_rss_bytes: number;
+  heap_used_bytes: number;
+}
+
+export interface RuntimeMemoryHighWaterMark {
+  container_memory_bytes: number | null;
+  process_rss_bytes: number;
+  heap_used_bytes: number;
+}
+
+export interface RuntimeMemoryProcess {
+  pid: number;
+  name: string;
+  display_name: string;
+  expected_in_production: boolean;
+  rss_bytes: number;
+}
+
+export interface GetAdminRuntimeMemoryResponse {
+  started_at: string;
+  sample_interval_ms: number;
+  sample_capacity: number;
+  current: RuntimeMemorySample | null;
+  high_water_mark: RuntimeMemoryHighWaterMark;
+  cgroup_processes: RuntimeMemoryProcess[];
+  samples: RuntimeMemorySample[];
+}
+
+// ─── Git Backup ────────────────────────────────────────────────────
+//
+// Private Git remote backup and restore of durable whole-instance state.
+// Backup includes canonical published content Git history and auth/RBAC
+// state only; proposal directories are excluded from backup and restore.
+//
+// Wire types are shape-only: the backend derives status by shelling out to
+// `git` from the data root (never accepting admin-supplied commands) and
+// returns these structured payloads for the admin UI to render.
+
+/** Which credential channel the backend uses to talk to the backup remote. */
+export type GitBackupAuthMode = "ssh-key" | "ssh-agent";
+
+/**
+ * Overall availability of the Git backup feature. `not_configured` means
+ * `KS_BACKUP_GIT_REMOTE` is absent (or the auth-mode env pair is invalid);
+ * `configured` means the wiring is present — individual checks (SSH key
+ * reachability, remote reachability, atomic-push support) still determine
+ * whether the Run button lights up.
+ */
+export type GitBackupFeatureState = "not_configured" | "configured";
+
+/**
+ * Completeness state of a would-be backup at this instant. `quiet` means
+ * there are no active proposals to drop; `warning` means active proposals
+ * exist — backup can still run (under lockdown) but will not include the
+ * unpublished proposal work.
+ */
+export type GitBackupQuietState = "quiet" | "warning";
+
+/**
+ * Status of one backup-readiness probe.
+ *
+ *   `pass`           — the probe ran and the check succeeded.
+ *   `fail`           — the probe ran and the check failed; `message` explains
+ *                      what the admin needs to change.
+ *   `not_applicable` — the probe does not apply in the current configuration
+ *                      (e.g. `ssh_agent_socket_reachable` while
+ *                      `credential_mode` is `ssh-key`).
+ *   `not_checked`    — the probe is deliberately skipped in this response
+ *                      (e.g. atomic-push support is only proved at backup run
+ *                      time because probing it would mutate a local ref).
+ *
+ * The discriminated union replaces an earlier `GitBackupStatusCheck | null`
+ * shape where `null` overloaded "does not apply" and "was not checked" and
+ * "the check has no message when passing".
+ */
+export type GitBackupStatusCheck =
+  | { status: "pass" }
+  | { status: "fail"; message: string }
+  | { status: "not_applicable" }
+  | { status: "not_checked" };
+
+/**
+ * In-memory record of the most recent successful backup this process ran.
+ * Persisted only for the lifetime of the running backend (spec: no on-disk
+ * record of backup history).
+ */
+export interface GitBackupLastSuccess {
+  timestamp: string;
+  local_content_sha: string;
+  local_auth_sha: string;
+  remote_url: string;
+  remote_content_sha: string;
+  remote_auth_sha: string;
+}
+
+/** Response of `GET /api/admin/git-backup/status`. */
+export interface GetAdminGitBackupStatusResponse {
+  feature_state: GitBackupFeatureState;
+  remote_url: string | null;
+  credential_mode: GitBackupAuthMode | null;
+  /** `not_applicable` when `credential_mode` is not `ssh-key`. */
+  ssh_key_reachable: GitBackupStatusCheck;
+  /**
+   * Presence-and-socket-type check on the configured `SSH_AUTH_SOCK` path;
+   * `not_applicable` when `credential_mode` is not `ssh-agent`. This does
+   * NOT prove SSH auth works — actual auth failures surface in
+   * `remote_reachable`.
+   */
+  ssh_agent_socket_reachable: GitBackupStatusCheck;
+  known_hosts_configured: boolean;
+  known_hosts_warning: string | null;
+  /** `not_checked` when the feature is not configured. */
+  remote_reachable: GitBackupStatusCheck;
+  /**
+   * Always `not_checked` in this status payload: proving atomic-push works
+   * requires building a temporary local `refs/heads/auth/main`, which is a
+   * mutating side effect and must not happen just because the admin loaded
+   * this page. `POST /api/admin/git-backup/run` builds a fresh auth snapshot
+   * and does the real atomic push, and surfaces any refusal there as an
+   * actionable 409.
+   */
+  atomic_push_supported: GitBackupStatusCheck;
+  quiet_state: GitBackupQuietState;
+  active_proposal_count: number;
+  local_content_sha: string | null;
+  local_auth_sha: string | null;
+  remote_content_sha: string | null;
+  remote_auth_sha: string | null;
+  last_successful_backup: GitBackupLastSuccess | null;
+}
+
+/**
+ * `POST /api/admin/git-backup/run` takes no request body: the backend
+ * refuses backup whenever active proposals exist (no client-side override),
+ * so there is nothing for the client to encode.
+ */
+
+/** Response of `POST /api/admin/git-backup/run`. */
+export interface RunAdminGitBackupResponse {
+  last_successful_backup: GitBackupLastSuccess;
+}
+
+/** Response of `POST /api/admin/git-backup/verify`. */
+export interface VerifyAdminGitBackupResponse {
+  content_ref_match: boolean;
+  auth_ref_match: boolean;
+  local_content_sha: string;
+  local_auth_sha: string | null;
+  remote_content_sha: string | null;
+  remote_auth_sha: string | null;
+  message: string;
+}
+
+/** Response of `GET /api/admin/git-backup/restore-status`. */
+export interface GetAdminGitRestoreStatusResponse {
+  feature_state: GitBackupFeatureState;
+  remote_url: string | null;
+  credential_mode: GitBackupAuthMode | null;
+  /** `not_checked` when the feature is not configured. */
+  remote_reachable: GitBackupStatusCheck;
+  remote_content_sha: string | null;
+  remote_auth_sha: string | null;
+  target_virgin: boolean;
+  target_virgin_message: string;
+  content_commit_count: number;
+  content_file_count: number;
+  /**
+   * Count of ALL files (recursive) under `data/auth/`. Any file at all blocks
+   * restore — there is no whitelist of "durable" filenames — because we cannot
+   * safely assume incidental files belong to the operator rather than to
+   * mid-migration state.
+   */
+  auth_file_count: number;
+}
+
+/** Response of `POST /api/admin/git-backup/restore`. */
+export interface RunAdminGitRestoreResponse {
+  content_sha: string;
+  auth_sha: string;
 }
 
 // ─── Create Document ───────────────────────────────────────────

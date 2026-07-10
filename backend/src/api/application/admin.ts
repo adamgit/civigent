@@ -9,12 +9,27 @@ import type {
   AdminConfig,
   CreateCustomRoleRequest,
   GetActivityResponse,
+  GetAdminGitBackupStatusResponse,
+  GetAdminGitRestoreStatusResponse,
+  GetAdminRuntimeMemoryResponse,
   GetAdminSnapshotHealthResponse,
   GetAdminSnapshotHistoryResponse,
+  RunAdminGitBackupResponse,
+  RunAdminGitRestoreResponse,
   SetAclDefaultsRequest,
   SetDocumentAclRequest,
   SetUserRolesRequest,
+  VerifyAdminGitBackupResponse,
 } from "../../types/shared.js";
+import { getRuntimeMemoryStats } from "../../runtime/memory-stats.js";
+import {
+  GitBackupOperationError,
+  getGitBackupStatus,
+  getGitRestoreStatus,
+  runGitRestore,
+  runQuietStateGitBackup,
+  verifyGitBackup,
+} from "../../backup/git-backup-service.js";
 import { readActivity } from "../../storage/activity-reader.js";
 import {
   getSnapshotHealth,
@@ -67,6 +82,7 @@ export {
   AdminConfigValidationError,
   SnapshotGenerationDisabledError,
   SnapshotRootNotWritableError,
+  GitBackupOperationError,
 };
 
 // ─── Config ─────────────────────────────────────────────
@@ -81,6 +97,34 @@ export function updateAdminConfigWithDescription(body: Partial<AdminConfig>): Ad
   const updated = updateAdminConfig(body);
   const preset = HUMAN_INVOLVEMENT_PRESETS[updated.humanInvolvement_preset];
   return { ...updated, preset_description: preset.description };
+}
+
+// ─── Runtime memory ─────────────────────────────────────
+
+export function getRuntimeMemory(): GetAdminRuntimeMemoryResponse {
+  return getRuntimeMemoryStats();
+}
+
+// ─── Git backup / restore ───────────────────────────────
+
+export async function readGitBackupStatus(): Promise<GetAdminGitBackupStatusResponse> {
+  return getGitBackupStatus();
+}
+
+export async function runGitBackup(): Promise<RunAdminGitBackupResponse> {
+  return runQuietStateGitBackup();
+}
+
+export async function verifyGitBackupRefs(): Promise<VerifyAdminGitBackupResponse> {
+  return verifyGitBackup();
+}
+
+export async function readGitRestoreStatus(): Promise<GetAdminGitRestoreStatusResponse> {
+  return getGitRestoreStatus();
+}
+
+export async function runGitBackupRestore(): Promise<RunAdminGitRestoreResponse> {
+  return runGitRestore();
 }
 
 // ─── Snapshots ──────────────────────────────────────────

@@ -12,6 +12,7 @@ import { maybeGenerateBootstrapCode } from "./auth/service.js";
 import { isSystemReady, setSystemReady } from "./startup-state.js";
 import { isDevSupervised } from "./runtime/system-state.js";
 import type { FatalReport, WorkerIpcMessage } from "./runtime/system-state.js";
+import { startRuntimeMemorySampler } from "./runtime/memory-stats.js";
 import type { WsServerEvent } from "./types/shared.js";
 import { buildProposalSectionAvailabilityEventsForDoc } from "./ws/proposal-section-availability.js";
 
@@ -136,6 +137,8 @@ validateOAuthConfig();
 // the `inprogress` proposal content tree, not from `sessions/` on disk.
 
 ipcSend({ type: "starting" });
+
+startRuntimeMemorySampler();
 
 // Start listening IMMEDIATELY so the port is open and the startup gate can serve 503s.
 // Recovery runs after listen — requests hit the middleware gate until setSystemReady().

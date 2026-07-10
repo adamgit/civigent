@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient, resolveWriterId } from "../services/api-client";
 import type { AdminConfig, HumanInvolvementPresetName, GetAdminSnapshotHealthResponse, AnyProposal } from "../types/shared.js";
@@ -12,12 +11,33 @@ const HUMAN_INVOLVEMENT_PRESETS: { value: HumanInvolvementPresetName; label: str
   { value: "conservative", label: "Conservative", description: "~8 hour wait. Maximum protection." },
 ];
 
+function Card({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+  return (
+    <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white mb-4">
+      <div className="px-4 py-2.5 border-b border-footer-border bg-[#faf8f5]">
+        <div className="text-[13px] font-semibold text-text-primary">{title}</div>
+        {subtitle && <div className="text-[11px] text-text-muted">{subtitle}</div>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function KVRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-baseline gap-4 px-4 py-2 border-b border-footer-border last:border-0">
+      <span className="text-[12px] font-medium text-text-muted w-56 shrink-0">{label}</span>
+      <span className="text-[13px] text-text-primary">{children}</span>
+    </div>
+  );
+}
+
 export function AdminPage() {
   const [proposals, setProposals] = useState<AnyProposal[]>([]);
   const [sessionWriterId, setSessionWriterId] = useState<string | null>(null);
   const [activityCount, setActivityCount] = useState(0);
   const [adminConfig, setAdminConfig] = useState<AdminConfig | null>(null);
-  const [snapshotHealth, setSnapshotHealth] = useState<GetAdminSnapshotHealthResponse | null>(null);
+  const [, setSnapshotHealth] = useState<GetAdminSnapshotHealthResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [limitSetting, setLimitSetting] = useState(() => readNumberSetting("ks_whats_new_limit", 20));
@@ -86,98 +106,148 @@ export function AdminPage() {
   };
 
   return (
-    <section>
+    <div className="flex flex-col h-full">
       <SharedPageHeader title="Administration" backTo="/" />
-      <p>Operational status, human-involvement preset configuration, and local frontend controls.</p>
+      <div className="flex-1 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
+        <p className="text-[12px] text-text-muted mb-4">
+          Operational status, human-involvement preset configuration, and local frontend controls.
+        </p>
 
-      <h2>Current Session</h2>
-      <p>Active writer ID: {sessionWriterId ?? resolveWriterId()}</p>
-      <p><Link to="/login">Change writer identity</Link></p>
+        {error && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded text-[12px] font-mono whitespace-pre-wrap">
+            {error}
+          </div>
+        )}
 
-      <h2>Agent Management</h2>
-      <p><Link to="/admin/permissions">Manage permissions</Link> — roles, defaults, and per-document access control.</p>
-      <p><Link to="/admin/agents-auth">Manage pre-authenticated agents</Link> — add, remove, and view agent keys.</p>
+        <Card title="Current Session">
+          <KVRow label="Active writer ID">
+            <span className="font-mono">{sessionWriterId ?? resolveWriterId()}</span>
+          </KVRow>
+        </Card>
 
-      <h2>Monitoring</h2>
-      <p><Link to="/admin/agent-mcp-logs">Agent MCP Logs</Link> — per-session tool call history and metadata.</p>
+        <Card title="Manual Search" subtitle="Raw `GET /api/search` form for quick backend/manual testing.">
+          <form action="/api/search" method="GET" target="_blank" className="px-4 py-3 flex flex-wrap gap-2 items-center">
+            <input type="hidden" name="root" value="/" />
+            <input type="hidden" name="case_sensitive" value="false" />
+            <input type="hidden" name="max_results" value="20" />
+            <input type="hidden" name="context_bytes" value="100" />
+            <input
+              type="text"
+              name="pattern"
+              placeholder="Search /api/search"
+              className="input-field"
+              style={{ flex: 1, minWidth: "16rem", height: 34 }}
+              required
+            />
+            <select name="syntax" defaultValue="literal" className="input-field" style={{ width: "8rem", height: 34 }}>
+              <option value="literal">Plaintext</option>
+              <option value="regexp">Regexp</option>
+            </select>
+            <button
+              type="submit"
+              className="text-xs px-3 py-1.5 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530]"
+            >
+              Search raw GET
+            </button>
+          </form>
+        </Card>
 
-      <h2>Snapshots</h2>
-      <p><Link to="/admin/snapshots">View snapshot history</Link> — per-batch file counts, timestamps, and errors.</p>
+        <Card title="Operational Snapshot">
+          <div className="px-4 py-3 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void reloadOperationalSnapshot()}
+              disabled={loading}
+              className="text-xs px-3 py-1.5 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530] disabled:opacity-50"
+            >
+              Refresh snapshot
+            </button>
+            {loading && <span className="text-[11px] text-text-muted">Loading operational snapshot…</span>}
+          </div>
+          {!loading && !error && (
+            <>
+              <KVRow label="Proposals total">{proposalCounts.total}</KVRow>
+              <KVRow label="Draft proposals">{proposalCounts.pending}</KVRow>
+              <KVRow label="Committed proposals">{proposalCounts.committed}</KVRow>
+              <KVRow label="Withdrawn proposals">{proposalCounts.withdrawn}</KVRow>
+              <KVRow label="Recent activity items (7d/50)">{activityCount}</KVRow>
+            </>
+          )}
+        </Card>
 
-      <h2>Manual Search</h2>
-      <p>Raw `GET /api/search` form for quick backend/manual testing.</p>
-      <form action="/api/search" method="GET" target="_blank" style={{ display: "grid", gap: "0.5rem", maxWidth: "42rem" }}>
-        <input type="hidden" name="root" value="/" />
-        <input type="hidden" name="case_sensitive" value="false" />
-        <input type="hidden" name="max_results" value="20" />
-        <input type="hidden" name="context_bytes" value="100" />
-        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-          <input type="text" name="pattern" placeholder="Search /api/search" className="input-field" style={{ flex: 1, minWidth: "16rem", height: 34 }} required />
-          <select name="syntax" defaultValue="literal" className="input-field" style={{ width: "8rem", height: 34 }}>
-            <option value="literal">Plaintext</option>
-            <option value="regexp">Regexp</option>
-          </select>
-          <button type="submit">Search raw GET</button>
-        </div>
-      </form>
+        <Card
+          title="Human Involvement Preset"
+          subtitle="Controls how long agents wait after human activity before writing."
+        >
+          {!adminConfig ? (
+            <p className="px-4 py-3 text-[12px] text-text-muted">Loading…</p>
+          ) : (
+            <div className="px-4 py-3 flex flex-col gap-2">
+              {HUMAN_INVOLVEMENT_PRESETS.map((preset) => (
+                <label key={preset.value} className="flex items-baseline gap-2 text-[13px] text-text-primary">
+                  <input
+                    type="radio"
+                    name="humanInvolvement_preset"
+                    value={preset.value}
+                    checked={adminConfig.humanInvolvement_preset === preset.value}
+                    onChange={() => void handlePresetChange(preset.value)}
+                    disabled={presetSaving}
+                  />
+                  <strong className="text-text-primary">{preset.label}</strong>
+                  <span className="text-text-muted"> — {preset.description}</span>
+                </label>
+              ))}
+              <p className="text-[11px] text-text-muted mt-2">
+                Midpoint: {adminConfig.humanInvolvement_midpoint_seconds}s · Steepness: {adminConfig.humanInvolvement_steepness}
+              </p>
+            </div>
+          )}
+        </Card>
 
-      <h2>Operational Snapshot</h2>
-      <p><button type="button" onClick={() => void reloadOperationalSnapshot()}>Refresh snapshot</button></p>
-      {loading ? <p>Loading operational snapshot...</p> : null}
-      {error ? <p className="text-error">{error}</p> : null}
-      {!loading && !error ? (
-        <ul>
-          <li>Proposals total: {proposalCounts.total}</li>
-          <li>Draft proposals: {proposalCounts.pending}</li>
-          <li>Committed proposals: {proposalCounts.committed}</li>
-          <li>Withdrawn proposals: {proposalCounts.withdrawn}</li>
-          <li>Recent activity items (7d/50): {activityCount}</li>
-        </ul>
-      ) : null}
-
-      <h2>Human Involvement Preset</h2>
-      <p>Controls how long agents wait after human activity before writing.</p>
-      {!adminConfig ? <p>Loading...</p> : (
-        <div style={{ display: "grid", gap: "0.6rem", maxWidth: "44rem" }}>
-          {HUMAN_INVOLVEMENT_PRESETS.map((preset) => (
-            <label key={preset.value} style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+        <Card
+          title="Local Frontend Preferences"
+          subtitle="These values are stored locally in your browser."
+        >
+          <div className="px-4 py-3 flex flex-col gap-2">
+            <label className="flex items-center gap-2 text-[13px] text-text-primary">
+              <span className="w-36 text-text-muted text-[12px]">What&apos;s New limit</span>
               <input
-                type="radio"
-                name="humanInvolvement_preset"
-                value={preset.value}
-                checked={adminConfig.humanInvolvement_preset === preset.value}
-                onChange={() => void handlePresetChange(preset.value)}
-                disabled={presetSaving}
+                type="number"
+                min={1}
+                value={limitSetting}
+                onChange={(e) => setLimitSetting(Number(e.target.value || "1"))}
+                className="input-field"
+                style={{ width: "7rem", height: 30 }}
               />
-              <strong>{preset.label}</strong> — {preset.description}
             </label>
-          ))}
-          <p style={{ fontSize: "0.9rem", opacity: 0.7 }}>
-            Midpoint: {adminConfig.humanInvolvement_midpoint_seconds}s | Steepness: {adminConfig.humanInvolvement_steepness}
-          </p>
-        </div>
-      )}
-
-      <h2>Local Frontend Preferences</h2>
-      <p>These values are stored locally in your browser.</p>
-      <div style={{ display: "grid", gap: "0.6rem", maxWidth: "40rem" }}>
-        <label>
-          What's New limit
-          <input type="number" min={1} value={limitSetting} onChange={(e) => setLimitSetting(Number(e.target.value || "1"))} style={{ marginLeft: "0.5rem", width: "7rem" }} />
-        </label>
-        <label>
-          What's New days
-          <input type="number" min={1} value={daysSetting} onChange={(e) => setDaysSetting(Number(e.target.value || "1"))} style={{ marginLeft: "0.5rem", width: "7rem" }} />
-        </label>
-        <button type="button" onClick={saveLocalSettings}>Save local preferences</button>
+            <label className="flex items-center gap-2 text-[13px] text-text-primary">
+              <span className="w-36 text-text-muted text-[12px]">What&apos;s New days</span>
+              <input
+                type="number"
+                min={1}
+                value={daysSetting}
+                onChange={(e) => setDaysSetting(Number(e.target.value || "1"))}
+                className="input-field"
+                style={{ width: "7rem", height: 30 }}
+              />
+            </label>
+            <div>
+              <button
+                type="button"
+                onClick={saveLocalSettings}
+                className="text-xs px-3 py-1.5 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530]"
+              >
+                Save local preferences
+              </button>
+            </div>
+          </div>
+          {savedMessage && (
+            <p className="px-4 py-2 text-[12px] text-emerald-700 border-t border-footer-border bg-[#faf8f5]">
+              {savedMessage}
+            </p>
+          )}
+        </Card>
       </div>
-      {savedMessage ? <p>{savedMessage}</p> : null}
-
-      <h2>Links</h2>
-      <ul>
-        <li><Link to="/proposals">Open proposals list</Link></li>
-        <li><Link to="/docs">Open document hub</Link></li>
-      </ul>
-    </section>
+    </div>
   );
 }

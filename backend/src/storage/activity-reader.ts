@@ -4,44 +4,12 @@
  * Reads activity from committed proposals (agent) and git history (human auto-commits).
  */
 
-import { getContentRoot, getDataRoot } from "./data-root.js";
-import { resolveDocPathUnderContent } from "./path-utils.js";
-import { getCommitsBetween, getHeadSha } from "./git-repo.js";
 import { listCommittedProposals } from "./proposal-repository.js";
 import type {
   ActivityItem,
-  ChangesSinceResponse,
   CommittedProposalDomain,
   SectionTargetRef,
 } from "../types/shared.js";
-
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message.toLowerCase();
-  return String(error).toLowerCase();
-}
-
-function isNoHistoryHeadError(error: unknown): boolean {
-  const message = getErrorMessage(error);
-  return (
-    message.includes("does not have any commits") ||
-    message.includes("your current branch") ||
-    message.includes("not a valid object name head") ||
-    (message.includes("unknown revision") && message.includes("head")) ||
-    (message.includes("ambiguous argument") && message.includes("head"))
-  );
-}
-
-function isUnknownShaError(error: unknown): boolean {
-  const message = getErrorMessage(error);
-  return (
-    message.includes("unknown revision") ||
-    message.includes("bad revision") ||
-    message.includes("bad object") ||
-    message.includes("not a valid object name") ||
-    message.includes("ambiguous argument") ||
-    message.includes("invalid revision range")
-  );
-}
 
 async function readCommittedProposals(): Promise<CommittedProposalDomain[]> {
   const proposals = await listCommittedProposals();
@@ -83,53 +51,4 @@ export async function readActivity(limit: number, days: number): Promise<Activit
   }
 
   return items;
-}
-
-export async function readChangesSince(docPath: string, afterHead?: string): Promise<ChangesSinceResponse> {
-  resolveDocPathUnderContent(getContentRoot(), docPath);
-  const dataRoot = getDataRoot();
-  let currentSha: string;
-  try {
-    currentSha = await getHeadSha(dataRoot);
-  } catch (error) {
-    if (!isNoHistoryHeadError(error)) throw error;
-    return { since_sha: afterHead || "", current_sha: "", changed: false, changed_sections: [] };
-  }
-
-  if (!afterHead) {
-    return { since_sha: "", current_sha: currentSha, changed: false, changed_sections: [] };
-  }
-
-  let allowedShas: Set<string>;
-  try {
-    allowedShas = await getCommitsBetween(dataRoot, afterHead);
-  } catch (error) {
-    if (!isUnknownShaError(error)) throw error;
-    return { since_sha: afterHead, current_sha: currentSha, changed: false, changed_sections: [] };
-  }
-
-  if (allowedShas.size === 0) {
-    return { since_sha: afterHead, current_sha: currentSha, changed: false, changed_sections: [] };
-  }
-
-  const proposals = await readCommittedProposals();
-  const changedSections: SectionTargetRef[] = [];
-
-  for (const proposal of proposals) {
-    if (!proposal.committed_head || !allowedShas.has(proposal.committed_head)) continue;
-    for (const section of proposal.sections) {
-      if (section.doc_path !== docPath) continue;
-      changedSections.push({
-        doc_path: section.doc_path,
-        heading_path: section.heading_path,
-      });
-    }
-  }
-
-  return {
-    since_sha: afterHead,
-    current_sha: currentSha,
-    changed: changedSections.length > 0,
-    changed_sections: changedSections,
-  };
 }

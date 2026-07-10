@@ -33,10 +33,17 @@ import {
   removeCustomRole,
   getAgentActivity,
   getHeatmap,
+  getRuntimeMemory,
   autofixProposalDefect,
   AdminConfigValidationError,
   SnapshotGenerationDisabledError,
   SnapshotRootNotWritableError,
+  readGitBackupStatus,
+  runGitBackup,
+  verifyGitBackupRefs,
+  readGitRestoreStatus,
+  runGitBackupRestore,
+  GitBackupOperationError,
 } from "../application/admin.js";
 
 export function registerAdminRoutes(router: Router): void {
@@ -342,6 +349,17 @@ export function registerAdminRoutes(router: Router): void {
     }
   });
 
+  // ─── Runtime memory ───────────────────────────────────
+  router.get("/admin/runtime-memory", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      res.json(getRuntimeMemory());
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // ─── Agent MCP activity log ───────────────────────────
   router.get("/admin/agent-activity", async (req, res, next) => {
     try {
@@ -349,6 +367,83 @@ export function registerAdminRoutes(router: Router): void {
       if (!admin) return;
       res.json(await getAgentActivity());
     } catch (error) {
+      next(error);
+    }
+  });
+
+  // ─── Git backup / restore ─────────────────────────────
+  //
+  // Every route below is admin-gated. Actionable failures the admin can act
+  // on (misconfigured env, unreachable remote, refused restore, active
+  // proposals without an acknowledgement) come out of the service layer as
+  // `GitBackupOperationError` and are surfaced as `409` so the admin UI
+  // shows the prose message from the plan doc directly.
+  router.get("/admin/git-backup/status", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      res.json(await readGitBackupStatus());
+    } catch (error) {
+      if (error instanceof GitBackupOperationError) {
+        sendApiError(res, 409, error.message);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  router.post("/admin/git-backup/run", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      res.json(await runGitBackup());
+    } catch (error) {
+      if (error instanceof GitBackupOperationError) {
+        sendApiError(res, 409, error.message);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  router.post("/admin/git-backup/verify", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      res.json(await verifyGitBackupRefs());
+    } catch (error) {
+      if (error instanceof GitBackupOperationError) {
+        sendApiError(res, 409, error.message);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  router.get("/admin/git-backup/restore-status", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      res.json(await readGitRestoreStatus());
+    } catch (error) {
+      if (error instanceof GitBackupOperationError) {
+        sendApiError(res, 409, error.message);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  router.post("/admin/git-backup/restore", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      res.json(await runGitBackupRestore());
+    } catch (error) {
+      if (error instanceof GitBackupOperationError) {
+        sendApiError(res, 409, error.message);
+        return;
+      }
       next(error);
     }
   });

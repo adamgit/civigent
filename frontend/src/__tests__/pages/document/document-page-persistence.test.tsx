@@ -36,6 +36,7 @@ function status(opts: {
   localPending?: boolean;
   inbound?: boolean;
   hadLocal?: boolean;
+  backendError?: string | null;
 }): string {
   return resolveTransportStatus(
     opts.connection ?? "connected",
@@ -45,6 +46,7 @@ function status(opts: {
     opts.localPending ?? false,
     opts.inbound ?? false,
     opts.hadLocal ?? false,
+    opts.backendError ?? null,
   );
 }
 
@@ -101,7 +103,7 @@ describe("DocumentPage transport/publish status", () => {
     });
 
     // (a) Inbound publish-pause with no local edits must never read as your save.
-    it("inbound publish-pause with no local edits → updating then upToDate (never receivedNotSaved/saved)", () => {
+    it("inbound publish-pause with no local edits → updating then upToDate (never savedToProposal/saved)", () => {
       // Pause running, stranded/other work committing, nothing of yours.
       const duringPause = status({ publishPaused: true, inbound: true });
       expect(duringPause).toBe("updating");
@@ -110,20 +112,47 @@ describe("DocumentPage transport/publish status", () => {
       // Pause ended, inbound pending still present, still no local edits.
       const afterPause = status({ inbound: true });
       expect(afterPause).toBe("upToDate");
-      expect(afterPause).not.toBe("receivedNotSaved");
+      expect(afterPause).not.toBe("savedToProposal");
       expect(afterPause).not.toBe("saved");
     });
 
     // (b) A real local edit still walks the full local ladder.
-    it("a real local edit walks syncing → receivedNotSaved → saving → saved", () => {
+    it("a real local edit walks syncing → savedToProposal → saving → saved", () => {
       // In flight to the server.
       expect(status({ allReceived: false })).toBe("syncing");
       // Received, but the inprogress proposal still holds your edits.
-      expect(status({ localPending: true })).toBe("receivedNotSaved");
+      expect(status({ localPending: true })).toBe("savedToProposal");
       // The autonomous commit runs for your edits.
       expect(status({ publishPaused: true, localPending: true })).toBe("saving");
       // Committed and clean — sticky flag keeps it on "saved", not "idle".
       expect(status({ hadLocal: true })).toBe("saved");
+    });
+
+    // A server-signalled durable failure must not be hidden by the "looks fine"
+    // rungs — pending / saved / up-to-date. Transport-level problems still win
+    // because reconnecting first is what unblocks the round trip.
+    it("backend error surfaces as `error` and does not collapse into pending/saved/up-to-date", () => {
+      expect(status({ backendError: "normalize failed" })).toBe("error");
+      expect(status({ backendError: "publish failed", localPending: true })).toBe("error");
+      expect(status({ backendError: "materialize failed", hadLocal: true })).toBe("error");
+      expect(status({ backendError: "validate failed", inbound: true })).toBe("error");
+      // Publish pause does not mask the error either.
+      expect(status({ backendError: "commit failed", publishPaused: true })).toBe("error");
+      // Transport-level failures still dominate (reconnect first, then diagnose).
+      expect(status({ backendError: "x", connection: "disconnected" })).toBe("offline");
+      expect(status({ backendError: "x", connection: "reconnecting" })).toBe("reconnecting");
+    });
+
+    // Session-authored edits landing in the proposal are DURABLE (survive refresh
+    // as replayed `section:pending`) — they are not an "unsaved" warning state.
+    // The label must name that fact, not read as "Received — not yet saved".
+    it("savedToProposal (Guarantee B) labels the proposal-durable rung, not an unsaved warning", () => {
+      // Local pending with clean receipt watermark = proposal-saved but not
+      // published. NOT `syncing` (in flight) and NOT `saved` (canonical).
+      const s = status({ localPending: true });
+      expect(s).toBe("savedToProposal");
+      expect(s).not.toBe("syncing");
+      expect(s).not.toBe("saved");
     });
   });
 

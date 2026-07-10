@@ -126,9 +126,6 @@ describe("DocumentPage proposal mode", () => {
       if (urlStr.includes("/structure")) {
         return jsonResponse({ structure: [] });
       }
-      if (urlStr.includes("/changes-since")) {
-        return jsonResponse({ changed_sections: [] });
-      }
       return jsonResponse({});
     });
   });

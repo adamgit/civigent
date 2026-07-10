@@ -25,6 +25,10 @@ interface DocumentTopbarProps {
   /** Sticky: the user has committed at least one local edit this editing
    *  session — keeps a clean doc on "saved" instead of collapsing to "idle". */
   hadLocalEdits: boolean;
+  /** Server-reported durable failure (materialize / normalize / validate /
+   *  publish). Surfaced as an explicit `error` rung that must not collapse into
+   *  the pending / saved / up-to-date labels. `null` when clean. */
+  backendError: string | null;
 }
 
 export function DocumentTopbar({
@@ -42,11 +46,13 @@ export function DocumentTopbar({
   hasLocalUncommittedEdits,
   hasInboundActivity,
   hadLocalEdits,
+  backendError,
 }: DocumentTopbarProps) {
   // The topbar shows a single coarse transport/save status derived from the live
   // connection state, the receipt watermark, the writer-filtered local-edit
-  // flags, and the publication-pause flag — honest semantic boundaries, nothing
-  // per-section, and a stranger's edits never borrow a first-person label.
+  // flags, the publication-pause flag, and the server-reported error signal —
+  // honest semantic boundaries, nothing per-section, and a stranger's edits
+  // never borrow a first-person label.
   const status = resolveTransportStatus(
     crdtState,
     publishPaused,
@@ -55,6 +61,7 @@ export function DocumentTopbar({
     hasLocalUncommittedEdits,
     hasInboundActivity,
     hadLocalEdits,
+    backendError,
   );
   const meta = TRANSPORT_STATUS_META[status];
 

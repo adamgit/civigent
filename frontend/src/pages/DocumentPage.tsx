@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { apiClient } from "../services/api-client";
-import { getLastDocumentVisitAt, markDocumentVisitedNow } from "../services/document-visit-history";
 import { SectionTransferService, type SectionTransfer } from "../services/section-transfer";
 import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
 import { rememberRecentDoc } from "../services/recent-docs";
@@ -116,7 +114,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
   // ── Metadata state ───────────────────────────────────────
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [lastVisitSeed, setLastVisitSeed] = useState<{ docPath: string; since: string | null } | null>(null);
 
   const sectionsContainerRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -312,7 +309,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   // ── WebSocket hook ────────────────────────────────────────
   const {
     recentlyChangedSections,
-    setRecentlyChangedSections,
     recentlyChangedByLabel,
     agentReadingIndicators,
     pendingProposalIndicatorsRef,
@@ -438,9 +434,6 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   useEffect(() => {
     if (!decodedDocPath) return;
     rememberRecentDoc(decodedDocPath);
-    const previousVisit = getLastDocumentVisitAt(decodedDocPath);
-    setLastVisitSeed({ docPath: decodedDocPath, since: previousVisit });
-    markDocumentVisitedNow(decodedDocPath);
   }, [decodedDocPath]);
 
   // ── Fetch lightweight structure metadata (skeleton only, no git) ──
@@ -467,26 +460,10 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
   useInitialObserverGuard({ decodedDocPath, loadSections, requestMode, stopObserver, controllerStateRef });
 
-
-  // ── Load changes-since (recently changed sections) ───────
-  useEffect(() => {
-    if (!decodedDocPath || !lastVisitSeed || lastVisitSeed.docPath !== decodedDocPath) return;
-    let cancelled = false;
-    apiClient.getChangesSince(decodedDocPath).then((response) => {
-      if (cancelled) return;
-      const changedSections = Array.isArray(response.changed_sections) ? response.changed_sections : [];
-      setRecentlyChangedSections((previous) => {
-        const next = new Map(previous.map((entry) => [entry.key, entry]));
-        for (const change of changedSections) {
-          const headingPath = Array.isArray(change.heading_path) ? change.heading_path : [];
-          const label = headingPathToLabel(headingPath);
-          next.set(label, { key: label, label, changedAtMs: Date.now(), changedByName: "Writer" });
-        }
-        return Array.from(next.values());
-      });
-    }).catch(() => { /* non-fatal background fetch */ });
-    return () => { cancelled = true; };
-  }, [decodedDocPath, lastVisitSeed, setRecentlyChangedSections]);
+  // Recently-changed sections are seeded live from `content:committed`
+  // WebSocket events via `useDocumentWebSocket`. There is no page-load
+  // history fetch — a fresh visit to a document starts with an empty
+  // "recently changed" indicator and fills in as edits arrive.
 
   // ── Transport failure while editing → silently return to read view ──
   // A genuine transport failure drops the editor back to a canonical read view;
@@ -535,6 +512,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     saveStatus.hasLocalUncommittedEdits,
     saveStatus.hasInboundActivity,
     saveStatus.hadLocalEdits,
+    saveStatus.backendError,
   );
   // Presentation-only activity state: turns the publish-pause freeze into a
   // "Saving… → Saved" (local) or "Updating… → Up to date" (inbound) affordance —
@@ -628,6 +606,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         hasLocalUncommittedEdits={saveStatus.hasLocalUncommittedEdits}
         hasInboundActivity={saveStatus.hasInboundActivity}
         hadLocalEdits={saveStatus.hadLocalEdits}
+        backendError={saveStatus.backendError}
       />
 
       {/* Replacement notice — shown after a reconnect following restore/overwrite */}

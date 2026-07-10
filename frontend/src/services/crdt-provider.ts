@@ -41,6 +41,7 @@ import {
   WS_CLOSE_AUTH_FAILED,
   WS_CLOSE_DOCUMENT_REPLACED,
   WS_CLOSE_ADMIN_REBUILD,
+  WS_CLOSE_SYSTEM_LOCKDOWN,
   WS_CLOSE_INVALID_URL,
   WS_CLOSE_YDOC_INIT_FAILED,
 } from "./crdt-close-codes";
@@ -417,6 +418,15 @@ export class CrdtProvider {
         this.reconnectAttempts = 0;
         this.events.onForceRebuild?.();
         this.openWebSocket();
+        return;
+      }
+
+      if (event.code === WS_CLOSE_SYSTEM_LOCKDOWN) {
+        // Backup / restore lockdown reads as "temporary server unavailable" —
+        // the connection-state indicator during reconnect is the whole UI cue,
+        // matching the way we handle other short server-side unavailability.
+        // Document pages currently render connection state, not error prose.
+        this.scheduleReconnect();
         return;
       }
 

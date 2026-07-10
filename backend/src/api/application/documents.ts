@@ -1,7 +1,6 @@
 import path from "node:path";
 import { access } from "node:fs/promises";
 import type {
-  ChangesSinceResponse,
   DocumentTreeEntry,
   GetDocumentResponse,
   GetDocumentsTreeResponse,
@@ -25,7 +24,6 @@ import {
   DocumentNotFoundError,
 } from "../../storage/document-reader.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
-import { readChangesSince } from "../../storage/activity-reader.js";
 import {
   createTransientProposal,
 } from "../../storage/proposal-repository.js";
@@ -127,12 +125,6 @@ export async function readWorkspaceStructure(docPath: string): Promise<{ respons
     response: { doc_path: docPath, structure },
     headingPaths: flattenStructureToHeadingPaths(structure),
   };
-}
-
-// ─── changes-since ──────────────────────────────────────
-
-export async function getChangesSince(docPath: string, afterHead?: string): Promise<ChangesSinceResponse> {
-  return readChangesSince(docPath, afterHead);
 }
 
 // ─── History / preview ──────────────────────────────────

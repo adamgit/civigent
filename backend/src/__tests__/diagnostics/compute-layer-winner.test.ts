@@ -4,22 +4,37 @@ import { computeLayerWinner } from "../../diagnostics/document-diagnostics/colle
 const PRESENT = { exists: true };
 const ABSENT = { exists: false };
 
-// Session overlay + raw-fragment disk layers are gone (Area D / spec 05). The
-// only durable baseline is canonical; the only live layer is the CRDT Y.Doc.
+// Layer precedence (lowest -> highest freshness):
+//   canonical -> proposal (inprogress) -> crdt (live)
+// The proposal rung is the durable saved state a refreshed client reconstructs
+// from; the crdt rung wins over both when a live session exists.
 describe("computeLayerWinner", () => {
   it("no layer present → none", () => {
-    expect(computeLayerWinner({ canonical: ABSENT, crdt: ABSENT })).toBe("none");
+    expect(computeLayerWinner({ canonical: ABSENT, proposal: ABSENT, crdt: ABSENT })).toBe("none");
   });
 
   it("canonical-only → canonical", () => {
+    expect(computeLayerWinner({ canonical: PRESENT, proposal: ABSENT, crdt: ABSENT })).toBe("canonical");
+  });
+
+  it("proposal shadows canonical (durable saved state wins over stale canonical)", () => {
+    expect(computeLayerWinner({ canonical: PRESENT, proposal: PRESENT, crdt: ABSENT })).toBe("proposal");
+  });
+
+  it("proposal-only (canonical missing) → proposal", () => {
+    expect(computeLayerWinner({ canonical: ABSENT, proposal: PRESENT, crdt: ABSENT })).toBe("proposal");
+  });
+
+  it("crdt shadows both canonical and proposal", () => {
+    expect(computeLayerWinner({ canonical: PRESENT, proposal: PRESENT, crdt: PRESENT })).toBe("crdt");
+  });
+
+  it("crdt-only (both canonical and proposal missing) → crdt", () => {
+    expect(computeLayerWinner({ canonical: ABSENT, proposal: ABSENT, crdt: PRESENT })).toBe("crdt");
+  });
+
+  it("proposal parameter is optional — legacy callers without it still resolve canonical vs crdt", () => {
     expect(computeLayerWinner({ canonical: PRESENT, crdt: ABSENT })).toBe("canonical");
-  });
-
-  it("crdt shadows canonical", () => {
     expect(computeLayerWinner({ canonical: PRESENT, crdt: PRESENT })).toBe("crdt");
-  });
-
-  it("crdt-only (canonical missing) → crdt", () => {
-    expect(computeLayerWinner({ canonical: ABSENT, crdt: PRESENT })).toBe("crdt");
   });
 });

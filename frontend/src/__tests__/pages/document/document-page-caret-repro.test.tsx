@@ -169,7 +169,6 @@ describe("caret vanishes on initial open — reproduction harness", () => {
       const urlStr = String(url);
       if (urlStr.includes("/sections")) return jsonResponse({ sections: [overviewSection] });
       if (urlStr.includes("/structure")) return jsonResponse({ structure: [] });
-      if (urlStr.includes("/changes-since")) return jsonResponse({ changed_sections: [] });
       return jsonResponse({});
     });
   });

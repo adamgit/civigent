@@ -90,6 +90,22 @@ export async function getCommitsBetween(dataRoot: string, afterSha: string): Pro
   return new Set(output.split("\n").filter(Boolean));
 }
 
+/**
+ * List the set of files (git-relative paths) that differ between `afterSha` and HEAD,
+ * optionally scoped to one or more pathspecs. Wraps `git diff --name-only afterSha..HEAD -- <paths>`.
+ * Returns the net set of changed files across the entire range.
+ */
+export async function getChangedFilesInRange(
+  dataRoot: string,
+  afterSha: string,
+  paths: string[] = [],
+): Promise<Set<string>> {
+  const args = ["diff", "--name-only", `${afterSha}..HEAD`];
+  if (paths.length > 0) args.push("--", ...paths);
+  const output = await gitExec(args, dataRoot);
+  return new Set(output.split("\n").filter(Boolean));
+}
+
 export interface GitLogEntry {
   sha: string;
   author_name: string;

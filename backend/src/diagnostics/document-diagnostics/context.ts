@@ -10,6 +10,7 @@ import { gitExec } from "../../storage/git-repo.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { isBodyHolderShape, isDocumentBeforeFirstHeading } from "../../storage/section-shape.js";
 import type {
+  DiagBackendState,
   DiagHealthCheck,
   DiagRestoreProvenance,
   DiagSectionLayerInfo,
@@ -18,6 +19,8 @@ import type {
 
 export interface RecursiveStructuralEntry {
   sectionFile: string;
+  heading: string;
+  level: number;
   headingPath: string[];
   absolutePath: string;
   isSubSkeleton: boolean;
@@ -70,6 +73,7 @@ export interface DocumentDiagnosticsContext {
   sections: DiagSectionLayerInfo[];
   summary: DiagSummary;
   restoreProvenance: DiagRestoreProvenance;
+  backendStates: DiagBackendState[];
   skeletonAssessment?: SkeletonAssessment | null;
   recursiveSkeleton?: RecursiveSkeletonView | null;
   recursiveSkeletonLoadError?: Error | null;
@@ -101,7 +105,11 @@ export function createDocumentDiagnosticsContext(docPath: string): DocumentDiagn
       recursive_content_sections: null,
       recursive_subskeleton_parents: null,
       recursive_max_depth: null,
+      physical_section_count: null,
+      logical_section_count: null,
+      api_section_count: null,
     },
+    backendStates: [],
     restoreProvenance: {
       current_head_sha: null,
       last_restore_commit_sha: null,
@@ -148,6 +156,8 @@ function recursiveSkeletonViewFromFlatEntries(entries: FlatEntry[]): RecursiveSk
     allStructuralEntries() {
       return entries.map((e) => ({
         sectionFile: e.sectionFile,
+        heading: e.heading,
+        level: e.level,
         headingPath: [...e.headingPath],
         absolutePath: e.absolutePath,
         isSubSkeleton: e.isSubSkeleton,
@@ -193,6 +203,101 @@ export function collectDuplicateFragmentKeyDetails(
     );
   });
   return duplicates;
+}
+
+/**
+ * Report every heading path that appears more than once among the recursive
+ * physical content sections — the illegal shape a duplicate check must expose,
+ * INDEPENDENT of any heading-key-keyed map (which silently collapses duplicates
+ * into a single logical row). Iteration is over raw recursive entries so a
+ * physical duplicate is reported with all involved `sectionFile` ids and
+ * fragment keys, matching what the operator needs to disambiguate the repair.
+ */
+export function collectDuplicateHeadingPathDetails(
+  skeleton: Pick<RecursiveSkeletonView, "forEachSection">,
+): string[] {
+  const groups = new Map<string, Array<{ sectionFile: string; fragmentKey: string; headingPath: string[]; heading: string; level: number }>>();
+  skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+    const key = SectionRef.headingKey(headingPath);
+    const fragmentKey = fragmentKeyFromSectionFile(
+      sectionFile,
+      isDocumentBeforeFirstHeading({ heading, level, headingPath }),
+    );
+    const list = groups.get(key);
+    const row = { sectionFile, fragmentKey, headingPath: [...headingPath], heading, level };
+    if (list) list.push(row);
+    else groups.set(key, [row]);
+  });
+  const duplicates: string[] = [];
+  for (const [, rows] of groups) {
+    if (rows.length < 2) continue;
+    const label = rows[0].headingPath.length > 0 ? rows[0].headingPath.join(" > ") : "(before first heading)";
+    const memberList = rows
+      .map((r) => `${r.sectionFile} (${r.fragmentKey})`)
+      .join(", ");
+    duplicates.push(`${label}: ${memberList}`);
+  }
+  return duplicates;
+}
+
+/**
+ * Detect the illegal skeleton shape where two direct-child nodes of the same
+ * parent share a heading, at any depth. Distinct from `collectDuplicateHeading
+ * PathDetails` (which reports identical full paths anywhere in the tree): this
+ * one walks each sibling-list independently, so a repeated heading buried
+ * inside a nested sub-skeleton is caught before the flat heading-key map masks
+ * it. Duplicate document-level BFH / body-holder roots and duplicate named
+ * sibling headings are reported as distinct groups so the operator can tell
+ * which shape they are looking at.
+ */
+export function collectDuplicateSiblingHeadingDetails(
+  skeleton: Pick<RecursiveSkeletonView, "allStructuralEntries">,
+): string[] {
+  interface Row { sectionFile: string; heading: string; level: number; headingPath: string[]; isBodyHolder: boolean }
+  const groups = new Map<string, Row[]>();
+  for (const entry of skeleton.allStructuralEntries()) {
+    const isBodyHolder = isBodyHolderShape(entry);
+    // Parent path = the sibling-list this node belongs to.
+    // A body-holder's `headingPath` already equals its parent's headingPath (Option A
+    // does not push a segment for BFH-shape entries); a real named node's parent is
+    // its own path minus the last segment.
+    const parentPath = isBodyHolder ? [...entry.headingPath] : entry.headingPath.slice(0, -1);
+    const parentKey = parentPath.join(">>");
+    // Group by (parent, heading text, level, body-holder-shape) — the last flag
+    // segregates duplicate body-holders from a same-heading named-sibling duplicate
+    // so operator-facing details stay unambiguous.
+    const groupKey = `${parentKey}||${entry.heading}@${entry.level}@${isBodyHolder ? "bh" : "h"}`;
+    const row: Row = {
+      sectionFile: entry.sectionFile,
+      heading: entry.heading,
+      level: entry.level,
+      headingPath: [...entry.headingPath],
+      isBodyHolder,
+    };
+    const list = groups.get(groupKey);
+    if (list) list.push(row);
+    else groups.set(groupKey, [row]);
+  }
+  const details: string[] = [];
+  for (const [, rows] of groups) {
+    if (rows.length < 2) continue;
+    const first = rows[0];
+    const parentPath = first.isBodyHolder ? first.headingPath : first.headingPath.slice(0, -1);
+    const parentLabel = parentPath.length > 0 ? parentPath.join(" > ") : "(document root)";
+    let identityLabel: string;
+    if (first.isBodyHolder) {
+      identityLabel = parentPath.length === 0
+        ? "duplicate document-level before-first-heading root"
+        : `duplicate body-holder for "${parentPath[parentPath.length - 1]}"`;
+    } else {
+      identityLabel = `duplicate sibling heading "${first.heading}" (level ${first.level})`;
+    }
+    const memberList = rows
+      .map((r) => `${r.sectionFile} (${fragmentKeyFromSectionFile(r.sectionFile, r.isBodyHolder && r.headingPath.length === 0)})`)
+      .join(", ");
+    details.push(`Under ${parentLabel}: ${identityLabel} — ${memberList}`);
+  }
+  return details;
 }
 
 export function collectDuplicateSectionFileDetails(

@@ -194,43 +194,17 @@ Once the server is running, see the [Configuration Reference](configuration.md) 
 
 ---
 
-## Data directory and backups
+## Data directory, backup, restore, and import
 
-See [Architecture Overview — Data directory structure](architecture.md#data-directory-structure) for the full directory layout and backup guidance.
+See [Architecture Overview — Data directory structure](architecture.md#data-directory-structure) for the full directory layout.
 
----
+For first-time import of existing markdown files, private Git remote backup, and whole-instance restore onto a virgin target, see [Backup, Restore, and Import](backup-restore.md). That guide covers:
 
-## Importing content
+- `IMPORT_CONTENT_FROM` — first-time import from a host directory of markdown files
+- `KS_BACKUP_*` env vars, `backup-secrets/` folder, and `quickstart/compose.yaml` additions for the private Git remote backup
+- Restore onto a virgin target and the companion secrets (`KS_AUTH_SECRET`, `KS_AGENT_ANON_SALT`, OIDC) that must be copied separately
 
-### First-time import from markdown files
-
-Set `IMPORT_CONTENT_FROM` in your `.env` file to point at a directory of markdown files. This is a compose-level variable — it controls the host path that gets mounted into the container at `/import`. The server itself reads from that mount.
-
-```env
-IMPORT_CONTENT_FROM=/path/to/your/markdown
-```
-
-The import runs **once** on first startup when the content directory is empty. After that, it's skipped automatically (idempotent).
-
-### Import behavior
-
-- Each `.md` file becomes a document
-- An atomic staging pattern ensures partial imports don't corrupt data
-
-### Import rules
-
-- **Case-insensitive duplicate detection**: Two headings at the same level with the same name (even different capitalization) cause the file to fail
-- **`.importignore` support**: Place a `.importignore` file in the source directory to exclude files/folders (gitignore-style patterns: `*.obsidian/`, `node_modules/`, `.git/`)
-- **Read-only mount**: The import source is mounted read-only (`/import:ro`) — your original files are never modified
-
-### Import summary
-
-The server logs a summary after import:
-```
-Import complete: 150 imported, 0 failed, 0 skipped
-```
-
-If files fail (e.g., duplicate headings), the summary includes error details per file.
+Backup and restore both run under a full-process lockdown that fences off new HTTP requests, WebSocket upgrades, and MCP tool calls for the duration. Git credentials never touch Civigent data, auth state, browser storage, or backup refs — the SSH key file, agent socket, and `known_hosts` file are all supplied by the deployment environment.
 
 ---
 
@@ -321,5 +295,6 @@ Snapshots are a **derived cache** — they can be regenerated from /content at a
 ## What's next
 
 - [Configuration Reference](configuration.md) — env var reference, involvement presets, snapshots, admin API
+- [Backup, Restore, and Import](backup-restore.md) — first-time markdown import, private Git remote backup, and restore onto a virgin target
 - [Agent Management](agent-management.md) — manage agent identities and access
 - [Architecture Overview](architecture.md) — understand the system internals

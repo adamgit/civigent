@@ -235,15 +235,19 @@ export interface StructuralMergePlan {
 export async function computeStructuralMergePlan(
   liveFragments: LiveFragmentStringsStore,
   docPath: string,
+  currentProposalId: ProposalId | null,
   dirtyKey: string,
   change: Extract<StructuralChange, { kind: "heading-deletion" }>,
 ): Promise<StructuralMergePlan | null> {
-  // Resolve doc order from the CANONICAL layout (the pre-edit structure): the
-  // predecessor is the section immediately before the dirty one.
-  const canonicalLayout: LiveSectionLayoutEntry[] = await resolveLiveSectionLayout(docPath, null);
-  const idx = canonicalLayout.findIndex((e) => e.fragmentKey === dirtyKey);
+  // Resolve doc order from the EFFECTIVE pre-normalization layout (canonical +
+  // inprogress proposal manifest overlay): the predecessor is the section
+  // immediately before the dirty one in document order — including sections
+  // this session already promoted (proposal-only) that a canonical-only lookup
+  // would miss and mis-attribute the merge to the wrong predecessor.
+  const effectiveLayout: LiveSectionLayoutEntry[] = await resolveLiveSectionLayout(docPath, currentProposalId);
+  const idx = effectiveLayout.findIndex((e) => e.fragmentKey === dirtyKey);
   if (idx <= 0) return null; // no predecessor in document order
-  const predecessor = canonicalLayout[idx - 1];
+  const predecessor = effectiveLayout[idx - 1];
 
   const orphanBody = change.orphanedBody;
   const predecessorCurrent = liveFragments.readFragmentString(predecessor.fragmentKey);
@@ -258,7 +262,7 @@ export async function computeStructuralMergePlan(
       level: predecessor.level,
     },
     removeKey: dirtyKey,
-    removedHeadingPath: [...(canonicalLayout[idx].headingPath)],
+    removedHeadingPath: [...(effectiveLayout[idx].headingPath)],
     orphanBody,
     affectedKeys: [predecessor.fragmentKey, dirtyKey],
   };

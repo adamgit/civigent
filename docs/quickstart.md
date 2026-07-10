@@ -101,6 +101,8 @@ Go to **http://localhost:8080** (or whatever port you chose) in your browser. Yo
 
 **Back up your data:** Copy the `wiki-data/` folder. It contains everything durable — your content, edit history, and proposals. The separate `snapshots/` folder is a derived cache and should not be backed up.
 
+For an offsite backup that pushes canonical content history and auth/RBAC state to a private Git remote (and can restore onto a new machine), see the [Backup, Restore, and Import](backup-restore.md) guide.
+
 ---
 
 ## Importing existing content
@@ -119,6 +121,8 @@ Content is imported **once** on first startup. After that, the import is skipped
 
 - Each `.md` file becomes a document
 - If two headings at the same level have the same name (even different capitalization), the import will fail for that file
+
+For the full import behavior, `.importignore` support, and the private Git remote backup + restore flow, see [Backup, Restore, and Import](backup-restore.md).
 
 ---
 

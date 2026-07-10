@@ -46,6 +46,7 @@
  *   4022 — document_replaced: restore/overwrite invalidated session; all clients reconnect immediately (no backoff)
  *   4023 — superseded_by_new_tab: same user opened a new editor tab for this document
  *   4024 — admin_rebuild: admin force-rebuild invalidated the live Y.Doc; clients reconnect immediately and reseed
+ *   4025 — system_lockdown: admin-triggered backup or restore fenced off live sockets; reconnect once readiness returns
  *
  * (4020 idle_timeout is REMOVED — there is no idle timer in this architecture.)
  */
@@ -114,6 +115,13 @@ export const WS_CLOSE_DOCUMENT_REPLACED = 4022;
 export const WS_CLOSE_SUPERSEDED = 4023;
 /** Admin force-rebuild invalidation. Distinct from 4022 (restore) and session-end codes. */
 export const WS_CLOSE_ADMIN_REBUILD = 4024;
+/**
+ * Admin-triggered whole-instance lockdown for backup or restore. Every live
+ * CRDT socket is closed with this code and reason `system_lockdown`; the
+ * frontend treats it as a system-starting condition and reconnects through
+ * the readiness/backoff path once the readiness gate opens again.
+ */
+export const WS_CLOSE_SYSTEM_LOCKDOWN = 4025;
 export const WS_CLOSE_REASON_MAX_LENGTH = 123;
 
 // ─── URL routing constants ────────────────────────────────────────

@@ -5,25 +5,31 @@ import { ContentLayer } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import type { FlatEntry } from "../../storage/document-skeleton.js";
 import { isBodyHolderShape } from "../../storage/section-shape.js";
+import { findInProgressProposalForDoc } from "../../storage/proposal-repository.js";
+import { ProposalReader } from "../../storage/proposal-reader.js";
+import type { SectionBody } from "../../storage/section-formatting.js";
 import type { DocumentDiagnosticsContext } from "./context.js";
 import type { DiagLayerStatus } from "./types.js";
 
 /**
- * Precedence order (lowest → highest freshness). The on-disk session overlay
- * and raw-fragment sidecar layers are gone (Area D / spec 05 "Session
- * Persistence"): the only durable baseline is canonical, and the only live
- * layer is the CRDT Y.Doc.
+ * Precedence order (lowest → highest freshness):
  *
- *   canonical → crdt
+ *   canonical → proposal (inprogress) → crdt (live)
  *
- * Exported for focused testing of the precedence logic in isolation from the
- * filesystem / skeleton context.
+ * The proposal rung is the durable saved state: with no live CRDT session, a
+ * refresh reconstructs from the inprogress proposal, not canonical alone. A
+ * canonical-only view of diagnostics would hide the difference between the
+ * two, so callers see the effective-proposal body directly here. Exported for
+ * focused testing of the precedence logic in isolation from the filesystem /
+ * skeleton context.
  */
 export function computeLayerWinner(layers: {
   canonical: Pick<DiagLayerStatus, "exists">;
+  proposal?: Pick<DiagLayerStatus, "exists">;
   crdt: Pick<DiagLayerStatus, "exists">;
-}): "none" | "canonical" | "crdt" {
+}): "none" | "canonical" | "proposal" | "crdt" {
   if (layers.crdt.exists) return "crdt";
+  if (layers.proposal && layers.proposal.exists) return "proposal";
   if (layers.canonical.exists) return "canonical";
   return "none";
 }
@@ -67,6 +73,20 @@ export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Pro
   try {
     const canonicalLayer = new ContentLayer(ctx.contentRoot);
     const canonicalEntries = await canonicalLayer.listCanonicalEntries(ctx.docPath);
+
+    // Effective inprogress proposal — durable saved state (survives refresh via
+    // the proposal reader, which merges canonical + inprogress overlay). Read
+    // through `ProposalReader.readAllSections` so the same rules every other
+    // proposal-bound read applies (identity-based delete overlay).
+    let proposalBodies: Map<string, SectionBody> | null = null;
+    try {
+      const inprogress = await findInProgressProposalForDoc(ctx.docPath);
+      if (inprogress) {
+        proposalBodies = await ProposalReader.open(inprogress.id, "inprogress").readAllSections(ctx.docPath);
+      }
+    } catch {
+      proposalBodies = null;
+    }
 
     const session = lookupDocSession(ctx.docPath);
     const crdtKeys = session ? session.liveFragments.getFragmentKeys() : [];
@@ -117,6 +137,19 @@ export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Pro
           ? await readLayer(row.canonicalEntry.absolutePath)
           : absentLayer();
 
+        let proposal: DiagLayerStatus = absentLayer();
+        if (proposalBodies && row.canonicalEntry) {
+          const body = proposalBodies.get(headingKey);
+          if (body !== undefined) {
+            proposal = {
+              exists: true,
+              byteLength: Buffer.byteLength(body, "utf8"),
+              contentPreview: body.slice(0, 200),
+              error: null,
+            };
+          }
+        }
+
         let crdt: DiagLayerStatus = absentLayer();
         if (row.hasCrdt && session) {
           try {
@@ -140,24 +173,28 @@ export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Pro
           }
         }
 
-        const winner = computeLayerWinner({ canonical, crdt });
+        const winner = computeLayerWinner({ canonical, proposal, crdt });
 
         ctx.sections.push({
+          fragmentKey,
           headingKey,
           headingPath,
           sectionFile,
           isSubSkeleton,
           canonical,
+          proposal,
           crdt,
           winner,
         });
       } catch (err) {
         ctx.sections.push({
+          fragmentKey,
           headingKey: "__crdt_only__::" + fragmentKey,
           headingPath: [],
           sectionFile: "",
           isSubSkeleton: false,
           canonical: absentLayer(),
+          proposal: absentLayer(),
           crdt: absentLayer(),
           winner: "error",
           error: err instanceof Error ? err.message : String(err),

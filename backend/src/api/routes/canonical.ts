@@ -10,7 +10,6 @@ import {
 } from "./middleware.js";
 import {
   readCanonicalStructure,
-  getChangesSince,
   getHistory,
   getHistoryPreview,
   getBlame,
@@ -23,7 +22,6 @@ import {
 } from "../application/documents.js";
 import {
   QueryParamError,
-  optionalStringParam,
   boundedIntParam,
 } from "../helpers/query-params.js";
 
@@ -31,8 +29,7 @@ import {
 //
 // Committed audit-log content reads + audit views. Never a write target (see the
 // write invariant: every write edits a proposal and commits through the
-// agent-write-policy pipeline). Content reads emit `agent:reading`; the
-// `changes-since` meta read does NOT.
+// agent-write-policy pipeline). Content reads emit `agent:reading`.
 
 export function registerCanonicalRoutes(
   router: Router,
@@ -51,24 +48,6 @@ export function registerCanonicalRoutes(
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
         sendApiError(res, 404, error);
-        return;
-      }
-      next(error);
-    }
-  });
-
-  // GET /canonical/:docPath/changes-since — committed-commit metadata; a meta
-  // read that does NOT emit `agent:reading`.
-  router.get("/canonical/:docPath(*)/changes-since", async (req, res, next) => {
-    try {
-      const docPath = req.params.docPath;
-      const access = await requireDocReadPermission(req, res, docPath);
-      if (!access) return;
-      const afterHead = optionalStringParam(req.query.after_head, "after_head");
-      res.json(await getChangesSince(docPath, afterHead));
-    } catch (error) {
-      if (error instanceof QueryParamError || error instanceof InvalidDocPathError) {
-        sendApiError(res, 400, error);
         return;
       }
       next(error);

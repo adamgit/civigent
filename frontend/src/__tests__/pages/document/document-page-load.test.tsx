@@ -81,9 +81,6 @@ describe("DocumentPage load", () => {
       if (urlStr.includes("/api/workspace/") && urlStr.includes("/structure")) {
         return jsonResponse({ structure: [{ heading: "Overview", level: 1, children: [] }] });
       }
-      if (urlStr.includes("/api/canonical/") && urlStr.includes("/changes-since")) {
-        return jsonResponse({ changed_sections: [] });
-      }
       return jsonResponse({});
     });
   });
@@ -162,9 +159,6 @@ describe("DocumentPage load", () => {
       }
       if (urlStr.includes("/api/workspace/") && urlStr.includes("/structure")) {
         return jsonResponse({ structure: [] });
-      }
-      if (urlStr.includes("/api/canonical/") && urlStr.includes("/changes-since")) {
-        return jsonResponse({ changed_sections: [] });
       }
       return jsonResponse({});
     });

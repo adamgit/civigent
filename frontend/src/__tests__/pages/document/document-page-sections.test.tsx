@@ -119,9 +119,6 @@ describe("DocumentPage sections", () => {
           ],
         });
       }
-      if (urlStr.includes("/changes-since")) {
-        return jsonResponse({ changed_sections: [] });
-      }
       return jsonResponse({});
     });
   });

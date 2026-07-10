@@ -108,7 +108,6 @@ describe("DocumentPage lazy editor mounting (spec 05)", () => {
       const urlStr = String(url);
       if (urlStr.includes("/sections")) return jsonResponse({ sections: SECTIONS });
       if (urlStr.includes("/structure")) return jsonResponse({ structure: [] });
-      if (urlStr.includes("/changes-since")) return jsonResponse({ changed_sections: [] });
       return jsonResponse({});
     });
   });

@@ -4,7 +4,7 @@
  * An authenticated AGENT's reads of content endpoints (sections, structure) emit
  * an `agent:reading` event carrying the actor + targeted heading paths — without
  * the agent declaring reading intent. Human reads do NOT emit it (it is an agent
- * signal), and meta reads (changes-since) do not signal content reading.
+ * signal).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -67,12 +67,4 @@ describe("agent:reading signal (spec 06)", () => {
     expect(readingEvents(ctx.wsEvents)).toHaveLength(0);
   });
 
-  it("does NOT signal content reading for a meta read (changes-since)", async () => {
-    ctx.wsEvents.length = 0;
-    const res = await request(ctx.app)
-      .get(`/api/canonical${SAMPLE_DOC_PATH}/changes-since`)
-      .set("Authorization", ctx.agentToken);
-    expect(res.status).toBe(200);
-    expect(readingEvents(ctx.wsEvents)).toHaveLength(0);
-  });
 });

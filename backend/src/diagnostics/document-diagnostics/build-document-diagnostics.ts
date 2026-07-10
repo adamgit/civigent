@@ -13,6 +13,11 @@ import { runRecursiveAllSectionsReadableCheck } from "./checks/recursive-all-sec
 import { runRecursiveNoStaleSubskeletonFilesCheck } from "./checks/recursive-no-stale-subskeleton-files.js";
 import { runDuplicateSectionFilesInRecursiveSkeletonCheck } from "./checks/duplicate-section-files-in-recursive-skeleton.js";
 import { runDuplicateFragmentKeysCheck } from "./checks/duplicate-fragment-keys.js";
+import { runDuplicateHeadingPathsCheck } from "./checks/duplicate-heading-paths.js";
+import { runDuplicateSiblingHeadingsCheck } from "./checks/duplicate-sibling-headings.js";
+import { runLogicalDocumentLossCheck } from "./checks/logical-document-loss.js";
+import { runBodyVsSkeletonHeadingsCheck } from "./checks/body-vs-skeleton-headings.js";
+import { runBackendStateCheck } from "./checks/backend-state.js";
 import { runRestoreTargetRecursiveMatchCheck } from "./checks/restore-target-recursive-match.js";
 import { runRestoreFeasibleCheck } from "./checks/restore-feasible.js";
 
@@ -36,6 +41,11 @@ export async function buildDocumentDiagnostics(docPath: string): Promise<DocDiag
   await runRecursiveNoStaleSubskeletonFilesCheck(ctx);
   await runDuplicateSectionFilesInRecursiveSkeletonCheck(ctx);
   await runDuplicateFragmentKeysCheck(ctx);
+  await runDuplicateHeadingPathsCheck(ctx);
+  await runDuplicateSiblingHeadingsCheck(ctx);
+  await runLogicalDocumentLossCheck(ctx);
+  await runBodyVsSkeletonHeadingsCheck(ctx);
+  await runBackendStateCheck(ctx);
 
   await runRestoreTargetRecursiveMatchCheck(ctx);
   await collectSectionLayers(ctx);
@@ -47,5 +57,6 @@ export async function buildDocumentDiagnostics(docPath: string): Promise<DocDiag
     sections: ctx.sections,
     summary: ctx.summary,
     restore_provenance: ctx.restoreProvenance,
+    backend_states: ctx.backendStates,
   };
 }

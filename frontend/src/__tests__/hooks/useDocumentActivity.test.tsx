@@ -5,7 +5,7 @@
  * The pill NEVER infers success on its own: it shows "Saved" / "Up to date" ONLY
  * when the shared `DocTransportStatus` model actually reaches its success rung
  * (`saved` for a local save, `upToDate` for an inbound update). Any other terminal
- * rung (`receivedNotSaved` stuck, `offline`, `idle`) must fade WITHOUT claiming
+ * rung (`savedToProposal` stuck, `offline`, `idle`) must fade WITHOUT claiming
  * success. These tests pin exactly that mapping.
  *
  * The pill's wording (mirrors DocumentActivityIndicator):
@@ -49,12 +49,12 @@ describe("useDocumentActivity — DocTransportStatus adapter", () => {
     });
   }
 
-  it("saving → receivedNotSaved → saved shows 'Saved'", () => {
+  it("saving → savedToProposal → saved shows 'Saved'", () => {
     const { result, rerender } = renderFor("saving");
     expect(pillLabel(result.current)).toBe("Saving");
 
     // Transient not-yet-committed rung: stays active, no false success.
-    rerender({ status: "receivedNotSaved" });
+    rerender({ status: "savedToProposal" });
     expect(pillLabel(result.current)).toBe("Saving");
 
     // The shared model confirms the landing → success is now legitimate.
@@ -63,9 +63,9 @@ describe("useDocumentActivity — DocTransportStatus adapter", () => {
     expect(pillLabel(result.current)).toBe("Saved");
   });
 
-  it("saving → receivedNotSaved stuck past the grace fades WITHOUT 'Saved'", () => {
+  it("saving → savedToProposal stuck past the grace fades WITHOUT 'Saved'", () => {
     const { result, rerender } = renderFor("saving");
-    rerender({ status: "receivedNotSaved" });
+    rerender({ status: "savedToProposal" });
     expect(pillLabel(result.current)).toBe("Saving");
 
     // Never reaches `saved`; the bounded confirm-grace expires → fade to hidden,
