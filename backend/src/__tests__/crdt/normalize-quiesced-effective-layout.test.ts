@@ -291,12 +291,17 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
     expect(overviewLive).not.toContain("Q1: Planning. Q2: Execution. Q3: Review.");
   });
 
-  it("no-proposal canonical fallback: an existing canonical section still splits correctly on the FIRST quiescence", async () => {
+  it("first-edit canonical seed: no proposal exists before the first edit; the first accepted edit creates the inprogress proposal and quiescence normalizes the canonical-origin section through the proposal-backed lifecycle", async () => {
     vi.useFakeTimers();
     const session = await openSession();
     disposers.push(pinPublishOpen().dispose);
 
-    // Baseline: no proposal exists yet — the effective and canonical layouts agree.
+    // Sequence under test:
+    //   1. No `inprogress` proposal exists yet — canonical and effective layouts agree.
+    //   2. The first accepted edit materializes the `inprogress` proposal.
+    //   3. Coordinator-driven quiescence then normalizes with a NON-NULL current
+    //      proposal id (proposal-backed lifecycle), NOT a separate "no-proposal"
+    //      quiescence branch.
     expect(session.generator.hasCurrentProposal()).toBe(false);
 
     setFragmentViaMinimalDiff(
@@ -306,11 +311,11 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
     );
     session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
     await session.generator.materializeEdit();
+    expect(session.generator.hasCurrentProposal()).toBe(true);
     await fireQuiescence(session);
 
-    // The split promoted the embedded heading into a real section — the canonical
-    // fallback path (identity in canonical, first materialize creates the proposal)
-    // still works after the fix. Regression guard for the canonical branch.
+    // The split promoted the embedded heading into a real section — canonical
+    // origin, proposal-backed normalization.
     const layout = await resolveLiveSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),

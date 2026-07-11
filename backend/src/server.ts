@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { createApp } from "./app.js";
 import { createWsHub } from "./ws/hub.js";
-import { createCrdtWsServer, setCrdtEventHandler } from "./ws/crdt-sync.js";
+import { createCrdtWsServer, setCrdtEventHandler, setCrdtPrivateEventHandler } from "./ws/crdt-sync.js";
 import { assertDataRootExists, getContentRoot, getDataRoot, getImportRoot, ensureV3Directories } from "./storage/data-root.js";
 import { ensureGitRepoReady } from "./storage/git-repo.js";
 import { detectAndRecoverCrash } from "./storage/crash-recovery.js";
@@ -97,6 +97,10 @@ function handleWsEvent(event: WsServerEvent): void {
 
 // Wire up CRDT events so they broadcast through the hub
 setCrdtEventHandler((event) => handleWsEvent(event));
+// Wire up CRDT origin-only private events (section:edit-rejected) so they
+// deliver to a single `(doc_path, clientInstanceId)` tab, not to the ordinary
+// document subscription broadcast.
+setCrdtPrivateEventHandler((target, event) => wsHub.sendPrivate(target, event));
 
 const app = createApp({
   onWsEvent: (event) => handleWsEvent(event),

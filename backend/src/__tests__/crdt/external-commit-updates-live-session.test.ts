@@ -23,6 +23,7 @@ import {
   destroyAllSessions,
   lookupDocSession,
 } from "../../crdt/ydoc-lifecycle.js";
+import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
 import { applyCommittedCanonicalToLiveSession } from "../../ws/crdt-ws-coordinator.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
 import type { SectionBody } from "../../storage/section-formatting.js";
@@ -106,5 +107,40 @@ describe("external commit updates the active live Y.Doc without a session reset"
     expect(session.liveFragments.readFragmentString(TIMELINE_KEY) as string).toContain(
       "alice's local unpublished timeline",
     );
+  });
+
+  it("unregisters a live fragment when an external commit deletes an inherited section", async () => {
+    const session = await openSession();
+
+    // Alice claims only Overview in this DocSession. Timeline remains an
+    // inherited canonical section, so an external delete is allowed to remove it.
+    session.liveFragments.replaceFragmentString(
+      OVERVIEW_KEY,
+      buildFragmentContent("alice's local unpublished overview" as SectionBody, 2, "Overview"),
+    );
+    session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
+    await session.generator.materializeEdit({ touchedFragmentKeys: [OVERVIEW_KEY] });
+
+    const { id: externalProposalId } = await createTransientProposal(
+      { id: "user-bob", type: "human", displayName: "Bob" },
+      "delete timeline externally",
+    );
+    await mutateProposalContent(externalProposalId, {
+      kind: "delete_section",
+      docPath: SAMPLE_DOC_PATH,
+      headingPath: ["Timeline"],
+    });
+    const absorb = await commitProposalToCanonicalDetailed(externalProposalId, {});
+    const changedHeadingPaths = absorb.changedSections.map((s) => [...s.headingPath]);
+
+    await applyCommittedCanonicalToLiveSession(SAMPLE_DOC_PATH, changedHeadingPaths, externalProposalId);
+    await drainLane(session);
+
+    const effectiveLayout = await resolveLiveSectionLayout(
+      SAMPLE_DOC_PATH,
+      session.generator.getCurrentProposalId(),
+    );
+    expect(effectiveLayout.map((entry) => entry.headingPath.join(">>"))).not.toContain("Timeline");
+    expect(session.liveFragments.getFragmentKeys()).not.toContain(TIMELINE_KEY);
   });
 });

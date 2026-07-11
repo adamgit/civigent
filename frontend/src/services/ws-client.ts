@@ -1,4 +1,27 @@
 import type { WsClientMessage, WsServerEvent } from "../types/shared.js";
+
+/**
+ * Envelope carrying a private origin-only app event across the shared
+ * WebSocket. The backend hub emits this shape via `sendPrivate(...)` so the
+ * shared-worker layer can forward the inner event ONLY to the tab whose
+ * `clientInstanceId` matches — other tabs sharing the same socket must not
+ * observe the rejection payload. Envelope-first delivery avoids leaking
+ * semantic rejection explanations across tabs of the same writer.
+ */
+interface PrivateEnvelope {
+  __private__: true;
+  target_client_instance_id: string;
+  event: WsServerEvent;
+}
+
+export function isPrivateEnvelope(value: unknown): value is PrivateEnvelope {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { __private__?: unknown }).__private__ === true &&
+    typeof (value as { target_client_instance_id?: unknown }).target_client_instance_id === "string"
+  );
+}
 import { randomUuid } from "../utils/random-uuid";
 import { recordWsDiag, type WsDiagSource } from "./ws-diagnostics";
 
@@ -8,6 +31,13 @@ interface TabState {
   subscriptions: string[];
   focusedDocPath: string | null;
   focusedSection: { docPath: string; headingPath: string[] } | null;
+  /**
+   * Stable per-tab client instance id. Used by the shared worker to filter
+   * private origin-only app events (`section:edit-rejected`) so they only
+   * reach the tab whose edit was rejected. Null when the tab has no per-tab
+   * identity yet — private events for other tabs are dropped in that case.
+   */
+  clientInstanceId: string | null;
   updatedAt: number;
 }
 
@@ -53,6 +83,7 @@ class SharedWorkerTransport implements CrossTabTransport {
     subscriptions: [],
     focusedDocPath: null,
     focusedSection: null,
+    clientInstanceId: null,
     updatedAt: Date.now(),
   };
 
@@ -230,6 +261,7 @@ class BroadcastFallbackTransport implements CrossTabTransport {
     subscriptions: [],
     focusedDocPath: null,
     focusedSection: null,
+    clientInstanceId: null,
     updatedAt: Date.now(),
   };
 
@@ -516,6 +548,7 @@ class SessionWsManager {
   private focusedSection: { docPath: string; headingPath: string[] } | null = null;
   private heartbeatTimer: number | null = null;
   private fallbackTransitioned = false;
+  private clientInstanceId: string | null = null;
 
   addListener(handler: WsEventHandler): () => void {
     this.listeners.add(handler);
@@ -644,11 +677,12 @@ class SessionWsManager {
     });
   }
 
-  subscribe(docPath: string): void {
+  subscribe(docPath: string, clientInstanceId?: string): void {
     const normalized = docPath.trim();
     if (!normalized) {
       return;
     }
+    if (clientInstanceId) this.clientInstanceId = clientInstanceId;
     const previous = this.localSubscriptionRefCounts.get(normalized) ?? 0;
     this.localSubscriptionRefCounts.set(normalized, previous + 1);
     this.pushTabState();
@@ -695,6 +729,7 @@ class SessionWsManager {
       subscriptions: Array.from(this.localSubscriptionRefCounts.keys()),
       focusedDocPath: this.focusedDocPath,
       focusedSection: this.focusedSection,
+      clientInstanceId: this.clientInstanceId,
       updatedAt: Date.now(),
     });
   }
@@ -791,8 +826,14 @@ export class KnowledgeStoreWsClient {
     this.removeListener = this.manager.addListener(handler);
   }
 
-  subscribe(docPath: string): void {
-    this.manager.subscribe(docPath);
+  /**
+   * Subscribe to a document. When a stable per-tab `clientInstanceId` is
+   * supplied, it is bound to this tab's shared-worker/hub state so private
+   * origin-only app events (`section:edit-rejected`) route only to this tab.
+   * Ordinary broadcast events continue to be delivered regardless of the id.
+   */
+  subscribe(docPath: string, clientInstanceId?: string): void {
+    this.manager.subscribe(docPath, clientInstanceId);
   }
 
   unsubscribe(docPath: string): void {

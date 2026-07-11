@@ -90,6 +90,16 @@ export function classifyWsEvent(
     return noop;
   }
 
+  // `section:edit-rejected` is origin-only and consumed exclusively by the
+  // document page (interruptive rejection modal). AppLayout must not refresh
+  // the tree, add a badge, or emit a toast for it — those channels would leak
+  // the rejection into unrelated navigation UI. Kept alongside the per-section
+  // no-op list rather than the classification switch to make the intent
+  // explicit.
+  if (event.type === "section:edit-rejected") {
+    return noop;
+  }
+
   if (event.type === "catalog:changed") {
     return {
       refreshTree: true,

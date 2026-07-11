@@ -271,14 +271,23 @@ function renderLayerCell(layer: DiagLayerStatus, isWinner: boolean) {
 }
 
 /**
- * Group sections by `headingKey` so a duplicate-heading-path collision — where
- * multiple physical section files land at the same address — is visible as a
- * single group. `__crdt_only__::…` keys are synthesized when a CRDT fragment has
- * no canonical entry; those are never collisions with real heading paths.
+ * Group addressable content rows by `headingKey` so a duplicate-heading-path
+ * collision — where multiple physical section bodies land at the same address —
+ * is visible as a single group.
+ *
+ * Sub-skeleton parent files are structural indexes, not independently readable
+ * section bodies. A healthy parent-with-children has both a parent sub-skeleton
+ * file and a body-holder row folded onto the same visible heading path; counting
+ * both here creates a false collision. Keep those structural rows in the layer
+ * table, but exclude them from the "normal app read hides a body" warning.
+ *
+ * `__crdt_only__::…` keys are synthesized when a CRDT fragment has no canonical
+ * entry; those are never collisions with real heading paths.
  */
 function collectCollisionGroups(sections: DiagSectionLayerInfo[]): DiagSectionLayerInfo[][] {
   const byKey = new Map<string, DiagSectionLayerInfo[]>();
   for (const s of sections) {
+    if (s.isSubSkeleton) continue;
     if (s.headingKey.startsWith("__crdt_only__::")) continue;
     const list = byKey.get(s.headingKey);
     if (list) list.push(s);

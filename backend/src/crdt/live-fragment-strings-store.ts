@@ -26,7 +26,7 @@ import * as Y from "yjs";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
 import { yDocToProsemirrorJSON, prosemirrorJSONToYDoc } from "y-prosemirror";
 import { getBackendSchema } from "./ydoc-fragments.js";
-import { fragmentFromRemark, type FragmentContent } from "../storage/section-formatting.js";
+import { fragmentFromRemark, EMPTY_FRAGMENT, type FragmentContent } from "../storage/section-formatting.js";
 
 /**
  * The top-level shared types stored in `Y.Doc.share` and keyed by
@@ -224,6 +224,30 @@ export class LiveFragmentStringsStore {
    */
   replaceFragmentStrings(map: Map<string, FragmentContent>, origin: unknown = undefined): void {
     this.replaceAndClearFragmentStrings(map, [], origin);
+  }
+
+  /**
+   * Restore a set of fragment keys to their content in a previously
+   * `captureState()`-ed snapshot. The CRDT live-edit acceptance gate uses this
+   * when one or more validators reject fragments in a client update — every
+   * rejected key is reverted from the pre-update snapshot in a single
+   * server-origin Yjs transaction, keeping the shared Y.Doc free of
+   * partial-state visibility. Missing keys are cleared to empty so a rejected
+   * fragment that did not exist before the update leaves no residue.
+   */
+  restoreFragmentsFromSnapshot(
+    state: Uint8Array,
+    fragmentKeys: Iterable<string>,
+    origin: unknown = undefined,
+  ): void {
+    const keys = [...fragmentKeys];
+    if (keys.length === 0) return;
+    const priorContent = this.snapshotFragmentContentFromState(state, keys);
+    const revertMap = new Map<string, FragmentContent>();
+    for (const key of keys) {
+      revertMap.set(key, priorContent.get(key) ?? EMPTY_FRAGMENT);
+    }
+    this.replaceFragmentStrings(revertMap, origin);
   }
 
   /**

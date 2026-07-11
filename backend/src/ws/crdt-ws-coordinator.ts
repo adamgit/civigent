@@ -44,6 +44,7 @@ import {
   type FragmentStringDelta,
 } from "../crdt/live-section-deltas.js";
 import { classifyStructuralChange } from "../crdt/structural-change.js";
+import { validateLiveEditForDuplicateSiblingHeadings } from "../crdt/live-edit-structural-validation.js";
 import {
   computeStructuralSplitPlan,
   applyStructuralSplitPlan,
@@ -63,12 +64,11 @@ import { getDataRoot } from "../storage/data-root.js";
 import { resolveLiveSectionLayout, buildLiveSeedContentMap } from "../crdt/live-section-layout.js";
 import { BEFORE_FIRST_HEADING_KEY } from "../crdt/ydoc-fragments.js";
 import { checkProposalLocks } from "../domain/proposal-fsm-locks.js";
-import { emitContentCommittedEventsByDoc, emitLiveStructureChanged as emitLiveStructureChangedEvent } from "../api/application/events.js";
+import { emitContentCommittedEventsByDoc, emitLiveStructureChanged as emitLiveStructureChangedEvent, emitSectionEditRejected } from "../api/application/events.js";
 import type { PublishTriggerDecision, PublishResult } from "../crdt/crdt-proposal-generator.js";
 import type { SectionRefReceipt } from "../storage/canonical-store.js";
 import type { PublishPauseResult } from "../crdt/docsession-publish-pause.js";
 import { SectionRef } from "../domain/section-ref.js";
-import { EMPTY_FRAGMENT, type FragmentContent } from "../storage/section-formatting.js";
 import type { WsServerEvent } from "../types/shared.js";
 import type { ClientInstanceId, RemoteParticipant, ModeTransitionRequest, ModeTransitionResult, ProposalId } from "../types/shared.js";
 import { parseJson } from "../types/shared.js";
@@ -424,6 +424,22 @@ let onWsEvent: ((event: WsServerEvent) => void) | null = null;
 
 export function setCrdtEventHandler(handler: (event: WsServerEvent) => void): void {
   onWsEvent = handler;
+}
+
+/**
+ * Origin-only private event handler for the CRDT WebSocket coordinator. Distinct
+ * from `onWsEvent` (broadcast) so semantic rejection payloads never accidentally
+ * fan out to the whole document subscription. `null` by default so tests and
+ * transports that never wire private routing simply drop these events.
+ */
+let onWsPrivateEvent:
+  | ((target: { docPath: string; clientInstanceId: ClientInstanceId }, event: WsServerEvent) => void)
+  | null = null;
+
+export function setCrdtPrivateEventHandler(
+  handler: (target: { docPath: string; clientInstanceId: ClientInstanceId }, event: WsServerEvent) => void,
+): void {
+  onWsPrivateEvent = handler;
 }
 
 
@@ -791,8 +807,42 @@ onSessionDiscard(cancelQuiescenceTimer);
 
 
 
+/**
+ * Quiescence-time structural normalization.
+ *
+ * Applies each fragment's settled structural change (root-split, section-split,
+ * heading-rename, heading-level-change, heading-relocated, heading-deletion)
+ * into the shared Y.Doc and reflects the corresponding structural op into the
+ * `inprogress` proposal. This function assumes the CRDT live-edit acceptance
+ * gate already REJECTED any client update whose settled structure would be
+ * invalid (e.g. a rename producing a duplicate sibling heading).
+ *
+ * Ingress vs quiescence responsibility split:
+ *   - Expected invalid live edits are the acceptance gate's responsibility —
+ *     they are rejected before proposal materialization and the origin client
+ *     is told through the `section:edit-rejected` app event.
+ *   - `normalizeQuiescedStructure()` is NOT a discovery point for those
+ *     expected-invalid shapes. If a duplicate-sibling-heading (or equivalent
+ *     ingress-guarded) error surfaces here it means ingress missed it — a
+ *     correctness bug in the gate — and MUST propagate through the existing
+ *     exceptional error path. This function does not emit
+ *     `section:edit-rejected` and does not maintain a controlled
+ *     document-level structural-error state.
+ */
 async function normalizeQuiescedStructure(session: DocSession): Promise<boolean> {
+  // Coordinator-driven quiescence normalization is only reachable through
+  // `runQuiescenceCommand` after `hasCurrentProposal()` — the first-edit
+  // canonical seed case runs through proposal creation/materialization first,
+  // NOT through a separate no-proposal normalization branch. A null id here
+  // means the caller gated wrong, which is an internal invariant failure.
   const proposalId = session.generator.getCurrentProposalId();
+  if (proposalId === null) {
+    throw new Error(
+      `Quiescence-time structural normalization requires a current inprogress ` +
+        `proposal but none exists for ${session.docPath}. The coordinator's ` +
+        `runQuiescenceCommand must gate on hasCurrentProposal() first.`,
+    );
+  }
   // Effective pre-normalization layout: canonical overlaid by the current
   // `inprogress` proposal's manifest (identity-based delete overlay). A live
   // edit this session already promoted (proposal-only section) or an unclaimed
@@ -806,29 +856,33 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<boolean>
   
   for (const fragmentKey of [...session.liveFragments.getFragmentKeys()]) {
     const identity = effectiveLayout.find((e) => e.fragmentKey === fragmentKey);
-    if (!identity) continue;
+    if (!identity) {
+      // Client-touched untargetable fragments are the ingress acceptance gate's
+      // job; the only benign shape here is stale-empty bookkeeping (registered,
+      // never edited, empty content). Anything else is a server-side registry
+      // vs. layout drift bug — surface it via the exceptional path.
+      const content = session.liveFragments.readFragmentString(fragmentKey);
+      const hasActivity = session.fragmentLastActivity.has(fragmentKey);
+      if (!hasActivity && content.trim() === "") continue;
+      throw new Error(
+        `Quiescence-time structural normalization found registered live fragment ` +
+          `"${fragmentKey}" with no identity in the effective layout for ` +
+          `${session.docPath}. Ingress should have rejected any client update that ` +
+          `left this state; refusing to normalize an untargetable fragment.`,
+      );
+    }
     const change = classifyStructuralChange(
       session.liveFragments.readFragmentString(fragmentKey),
       identity,
     );
 
     if (change.kind === "root-split" || change.kind === "section-split") {
-      
-      
-      
-      
-      
-      
-      
-      
-      if (proposalId) {
-        await reflectSplitIntoProposal(
-          proposalId,
-          session.docPath,
-          session.liveFragments.readFragmentString(fragmentKey),
-          identity,
-        );
-      }
+      await reflectSplitIntoProposal(
+        proposalId,
+        session.docPath,
+        session.liveFragments.readFragmentString(fragmentKey),
+        identity,
+      );
       const res = await session.generator.normalizeQuiescedSection<StructuralSplitPlan>(
         session.liveFragments.ydoc,
         [fragmentKey],
@@ -854,7 +908,7 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<boolean>
         () => plan,
         (p) => applyStructuralMergePlan(session.liveFragments, session.liveFragments.ydoc, p, SERVER_NORMALIZATION_ORIGIN),
       );
-      if (res.applied && proposalId) await reflectMergeIntoProposal(proposalId, session.docPath, plan);
+      if (res.applied) await reflectMergeIntoProposal(proposalId, session.docPath, plan);
       applied = applied || res.applied;
     } else if (
       change.kind === "heading-rename" ||
@@ -868,7 +922,7 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<boolean>
         () => plan,
         (p) => applyStructuralHeadingEditPlan(session.liveFragments.ydoc, p),
       );
-      if (res.applied && proposalId) {
+      if (res.applied) {
         await reflectHeadingEditIntoProposal(proposalId, session.docPath, plan, change.kind);
       }
       applied = applied || res.applied;
@@ -877,6 +931,10 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<boolean>
   }
 
   return applied;
+}
+
+export function normalizeQuiescedStructureForTest(session: DocSession): Promise<boolean> {
+  return normalizeQuiescedStructure(session);
 }
 
 async function runQuiescenceCommand(session: DocSession): Promise<void> {
@@ -982,7 +1040,10 @@ export async function applyCommittedCanonicalToLiveSession(
   changedHeadingPaths: readonly string[][],
   originProposalId: ProposalId | null,
 ): Promise<void> {
-  if (changedHeadingPaths.length === 0) return;
+  // `changedHeadingPaths` is a body-diff receipt only — structure-only or
+  // delete-only commits can leave it empty for a rewritten doc. Topology
+  // reconcile below still needs to run, so the empty-list case is NOT an early
+  // return; the effective-layout diff carries the removal signal.
   const session = lookupDocSession(docPath);
   if (!session) return;
   
@@ -1000,26 +1061,45 @@ export async function applyCommittedCanonicalToLiveSession(
       proposalId,
       changedHeadingPaths,
     );
-    if (deltas.length === 0) return;
-    const byKey = new Map(deltas.map((d) => [d.fragmentKey, d]));
-    await session.generator.applyCanonicalDeltaToLive<FragmentStringDelta[]>(
+
+    // Topology reconcile for external structural removes: a registered live
+    // fragment absent from the post-commit effective layout is an inherited
+    // section the external commit deleted. The effective layout already
+    // respects the current proposal's manifest overlay, so a proposal-claimed
+    // section stays present here and its live fragment is preserved. An
+    // identity-preserving external rename keeps the sectionFile-derived
+    // fragment key in the effective layout too — only the heading/body delta
+    // path updates it.
+    const effectiveLayout = await resolveLiveSectionLayout(docPath, proposalId);
+    const effectiveKeys = new Set(effectiveLayout.map((e) => e.fragmentKey));
+    const removalKeys: string[] = [];
+    for (const liveKey of session.liveFragments.getFragmentKeys()) {
+      if (!effectiveKeys.has(liveKey)) removalKeys.push(liveKey);
+    }
+
+    if (deltas.length === 0 && removalKeys.length === 0) return;
+
+    const affectedKeys = [...fragmentKeys, ...removalKeys];
+    await session.generator.applyCanonicalDeltaToLive<{
+      deltas: FragmentStringDelta[];
+      removalKeys: string[];
+    }>(
       session.liveFragments.ydoc,
-      fragmentKeys,
-      () => deltas,
-      (toApply) => {
+      affectedKeys,
+      () => ({ deltas, removalKeys }),
+      ({ deltas: toApply, removalKeys: toRemove }) => {
         for (const delta of toApply) {
           applyFragmentStringDelta(session.liveFragments, delta, SERVER_NORMALIZATION_ORIGIN);
         }
-        void byKey;
+        for (const key of toRemove) {
+          const fragment = session.liveFragments.ydoc.getXmlFragment(key);
+          while (fragment.length > 0) fragment.delete(0, 1);
+          session.liveFragments.unregisterFragmentKey(key);
+        }
       },
     );
-    
-    
-    
+
     broadcastToAll(docPath, encodeUpdate(Y.encodeStateAsUpdate(session.ydoc)));
-    
-    
-    
     await emitLiveStructureChanged(session);
   });
 }
@@ -1033,11 +1113,57 @@ export async function applyCommittedCanonicalToLiveSession(
 
 
 
-interface EditArbitration {
-  blockedKeys: string[];
-  materializeKeys: string[];
-  
-  blockedHeadingPaths: Map<string, string[]>;
+/**
+ * Structured result of the CRDT live-edit acceptance gate.
+ *
+ * The gate splits the fragments touched by one client Y.js update into an
+ * accepted set (materialize into the DocSession `inprogress` proposal) and
+ * zero or more rejection groups. Each rejection group is the smallest closed
+ * accept/reject unit — for lock conflicts that is a single fragment; for
+ * structural rejections (e.g. duplicate sibling headings) it is every
+ * fragment participating in the same structural operation, since accepting
+ * only part of the operation would corrupt topology meaning.
+ *
+ * Rejection metadata is populated from the responsible validator and is
+ * suitable for both the existing `section:blocked` app event and the future
+ * origin-private `section:edit-rejected` app event without shape re-derivation.
+ */
+type LiveEditRejectionReason =
+  | "proposal-lock-conflict"
+  | "duplicate-sibling-heading"
+  | "invalid-live-edit-structure";
+
+interface LiveEditRejectedFragment {
+  fragmentKey: string;
+  headingPath?: string[];
+  heading?: string;
+}
+
+interface LiveEditRejectionGroup {
+  fragmentKeys: string[];
+  reasonCode: LiveEditRejectionReason;
+  affectedFragments: LiveEditRejectedFragment[];
+  title: string;
+  message: string;
+  whatHappened: string;
+  whyRejected: string;
+  serverAction: string;
+  guidance: string;
+}
+
+interface LiveEditAcceptanceResult {
+  acceptedFragmentKeys: string[];
+  rejectionGroups: LiveEditRejectionGroup[];
+}
+
+/**
+ * Origin identity of a CRDT live edit. `clientInstanceId` targets exactly one
+ * tab of exactly one connected client and is the routing key for origin-only
+ * app events (e.g. the future `section:edit-rejected`). `null` marks a
+ * server-internal or synthetic edit that has no addressable origin.
+ */
+export interface LiveEditOrigin {
+  clientInstanceId: ClientInstanceId | null;
 }
 
 
@@ -1051,16 +1177,18 @@ interface EditArbitration {
 
 
 
-async function arbitrateLiveEdit(
+/**
+ * CRDT live-edit acceptance gate. Runs registered validators (today: proposal
+ * lock check) against the touched fragments and returns the structured accept
+ * / reject split. Future validators (structural checks, etc.) plug in
+ * alongside the lock validator without changing this function's return shape.
+ */
+async function runLiveEditAcceptanceGate(
   session: DocSession,
   touchedKeys: ReadonlySet<string>,
-): Promise<EditArbitration> {
-  const blockedKeys: string[] = [];
-  const materializeKeys: string[] = [];
-  const blockedHeadingPaths = new Map<string, string[]>();
-  if (touchedKeys.size === 0) {
-    return { blockedKeys, materializeKeys, blockedHeadingPaths };
-  }
+): Promise<LiveEditAcceptanceResult> {
+  const empty: LiveEditAcceptanceResult = { acceptedFragmentKeys: [], rejectionGroups: [] };
+  if (touchedKeys.size === 0) return empty;
 
   const ownProposalId = session.generator.getCurrentProposalId();
   const layout = await resolveLiveSectionLayout(session.docPath, ownProposalId);
@@ -1069,22 +1197,16 @@ async function arbitrateLiveEdit(
     headingByFragmentKey.set(entry.fragmentKey, entry.headingPath);
   }
 
-  
-  
-  
-  
+  // Resolve each touched fragment to its section identity (heading path). The
+  // empty-document BFH bootstrap resolves to the document-level `[]` slot so
+  // its first edit can materialize a real BFH section; any OTHER unresolved
+  // fragment fails hard, since acknowledging an untargetable edit as durable
+  // would be a phantom materialize.
   const targets: Array<{ kind: "section"; doc_path: string; heading_path: string[] }> = [];
   const fragmentKeyByGlobalIndex: string[] = [];
   for (const fragmentKey of touchedKeys) {
     const headingPath = headingByFragmentKey.get(fragmentKey);
     if (!headingPath) {
-      // A touched fragment with no section identity in the resolved layout is
-      // corruption — EXCEPT the empty-document bootstrap BFH, whose live fragment
-      // exists before any section does. That one resolves to the document-level
-      // section (`heading_path: []`) so the edit materializes a real BFH section
-      // instead of a silent no-op. Every OTHER unresolved key must fail here,
-      // before its Y.Doc update can be treated as durable (never a phantom
-      // materialize with no target).
       if (fragmentKey === BEFORE_FIRST_HEADING_KEY) {
         targets.push({ kind: "section", doc_path: session.docPath, heading_path: [] });
         fragmentKeyByGlobalIndex.push(fragmentKey);
@@ -1100,11 +1222,8 @@ async function arbitrateLiveEdit(
     fragmentKeyByGlobalIndex.push(fragmentKey);
   }
 
-  if (targets.length === 0) {
-    return { blockedKeys, materializeKeys, blockedHeadingPaths };
-  }
+  if (targets.length === 0) return empty;
 
-  
   const lockResult = await checkProposalLocks({
     proposalId: ownProposalId ?? "__docsession-no-proposal__",
     targets,
@@ -1112,8 +1231,6 @@ async function arbitrateLiveEdit(
 
   const blockedGlobalKeys = new Set<string>();
   for (const c of lockResult.conflicts) {
-    
-    
     if (c.target.kind === "section") {
       blockedGlobalKeys.add(new SectionRef(session.docPath, c.target.heading_path).globalKey);
     } else {
@@ -1123,19 +1240,73 @@ async function arbitrateLiveEdit(
     }
   }
 
+  const lockAccepted: string[] = [];
+  const rejectionGroups: LiveEditRejectionGroup[] = [];
   for (let i = 0; i < targets.length; i++) {
     const fragmentKey = fragmentKeyByGlobalIndex[i]!;
     const headingPath = targets[i]!.heading_path;
     const globalKey = new SectionRef(session.docPath, headingPath).globalKey;
     if (blockedGlobalKeys.has(globalKey)) {
-      blockedKeys.push(fragmentKey);
-      blockedHeadingPaths.set(fragmentKey, headingPath);
+      // Lock conflicts are per-fragment: each blocked fragment is its own
+      // smallest closed rejection group.
+      rejectionGroups.push(buildProposalLockRejectionGroup(fragmentKey, headingPath));
     } else {
-      materializeKeys.push(fragmentKey);
+      lockAccepted.push(fragmentKey);
     }
   }
 
-  return { blockedKeys, materializeKeys, blockedHeadingPaths };
+  // Second validator: reject touched fragments whose settled structural change
+  // would produce a duplicate sibling heading path. Runs only on fragments the
+  // lock validator did not already reject — a lock-blocked fragment is
+  // reverted anyway and never lands in the proposal, so its post-update
+  // markdown is not authoritative for structural intent.
+  const structuralRejectedKeys = new Set<string>();
+  if (lockAccepted.length > 0) {
+    const structural = validateLiveEditForDuplicateSiblingHeadings({
+      touchedFragmentKeys: lockAccepted,
+      layout,
+      readPostUpdateMarkdown: (key) => session.liveFragments.readFragmentString(key),
+    });
+    for (const group of structural.rejectionGroups) {
+      rejectionGroups.push({
+        fragmentKeys: [...group.fragmentKeys],
+        reasonCode: group.reasonCode,
+        affectedFragments: group.affectedFragments.map((f) => ({
+          fragmentKey: f.fragmentKey,
+          headingPath: f.headingPath,
+          heading: f.heading,
+        })),
+        title: group.title,
+        message: group.message,
+        whatHappened: group.whatHappened,
+        whyRejected: group.whyRejected,
+        serverAction: group.serverAction,
+        guidance: group.guidance,
+      });
+      for (const key of group.fragmentKeys) structuralRejectedKeys.add(key);
+    }
+  }
+
+  const acceptedFragmentKeys = lockAccepted.filter((k) => !structuralRejectedKeys.has(k));
+  return { acceptedFragmentKeys, rejectionGroups };
+}
+
+function buildProposalLockRejectionGroup(
+  fragmentKey: string,
+  headingPath: string[],
+): LiveEditRejectionGroup {
+  const headingLabel = headingPath.length === 0 ? "the before-first-heading section" : `“${headingPath.join(" > ")}”`;
+  return {
+    fragmentKeys: [fragmentKey],
+    reasonCode: "proposal-lock-conflict",
+    affectedFragments: [{ fragmentKey, headingPath, heading: headingPath[headingPath.length - 1] }],
+    title: "Section locked by another proposal",
+    message: `${headingLabel} is currently claimed by another in-flight proposal.`,
+    whatHappened: "Your edit reached the server but the target section is claimed by another proposal.",
+    whyRejected: "Only one in-flight proposal can hold a section at a time.",
+    serverAction: "Your recent edits to that section were reverted to the last accepted server state.",
+    guidance: "Wait for the other proposal to publish or be discarded, then try editing again.",
+  };
 }
 
 
@@ -1158,12 +1329,40 @@ async function arbitrateLiveEdit(
 
 const pendingFragmentsByDoc = new Map<string, Set<string>>();
 
+/**
+ * CRDT live-edit acceptance gate.
+ *
+ * Runs on the DocSession actor lane after a client Y.js update lands on the
+ * shared Y.Doc, BEFORE any proposal materialization. Splits the touched
+ * fragments into ACCEPTED and REJECTED groups via
+ * `runLiveEditAcceptanceGate(...)` — today this rejects only proposal-lock
+ * conflicts, but the gate is the single insertion point for future rejection
+ * reasons (structural validation, etc.).
+ *
+ * On rejection the pre-update snapshot of the rejected fragments is written
+ * back in a single server-origin Yjs transaction so the shared Y.Doc is
+ * restored before we broadcast. A single Yjs correction is then broadcast to
+ * every connected CRDT client, INCLUDING the origin, so the origin's editor
+ * snaps back to the accepted state. Rejected fragments are never materialized
+ * into the DocSession `inprogress` proposal and never emit `section:pending`.
+ *
+ * The Y.js transport ack is issued by the caller (`handleMessage()` /
+ * `MSG_YJS_UPDATE`) after this function resolves — this function must not
+ * throw for expected rejections, or the origin client would stay stuck in a
+ * syncing state.
+ */
 export async function processArbitratedClientUpdate(
   session: DocSession,
   writerId: string,
   payload: Uint8Array,
+  origin: LiveEditOrigin = { clientInstanceId: null },
 ): Promise<void> {
   const docPath = session.docPath;
+  // `origin.clientInstanceId` is the private routing target for future
+  // origin-only app events (section:edit-rejected). It is intentionally NOT
+  // used for the broadcast section:blocked path below and is not attached to
+  // any document-wide app-event callback.
+  void origin;
   
   
   
@@ -1186,30 +1385,71 @@ export async function processArbitratedClientUpdate(
   
   
   
-  const arbitration = await arbitrateLiveEdit(session, touchedKeys);
-  
-  
-  const blockedPriorContent = session.liveFragments.snapshotFragmentContentFromState(
-    preEditState,
-    arbitration.blockedKeys,
-  );
-  for (const blockedKey of arbitration.blockedKeys) {
-    const prior = blockedPriorContent.get(blockedKey);
-    
-    
-    
-    session.liveFragments.replaceFragmentString(
-      blockedKey,
-      prior ?? EMPTY_FRAGMENT,
+  const acceptance = await runLiveEditAcceptanceGate(session, touchedKeys);
+
+  // Collect every rejected fragment across all rejection groups. Each group
+  // is the smallest closed accept/reject unit — accepting only part of a
+  // structural operation would corrupt topology meaning — so we revert every
+  // fragment in each group together.
+  const rejectedFragmentKeys: string[] = [];
+  for (const group of acceptance.rejectionGroups) {
+    for (const key of group.fragmentKeys) rejectedFragmentKeys.push(key);
+  }
+
+  if (rejectedFragmentKeys.length > 0) {
+    // Single server-origin Yjs transaction across ALL rejected fragments so
+    // the shared Y.Doc has no partial-state visibility between the reverts and
+    // the broadcast, and every rejection is captured in one `beforeSV`-anchored
+    // correction update.
+    session.liveFragments.restoreFragmentsFromSnapshot(
+      preEditState,
+      rejectedFragmentKeys,
       SERVER_NORMALIZATION_ORIGIN,
     );
     if (onWsEvent) {
-      onWsEvent({
-        type: "section:blocked",
-        doc_path: docPath,
-        fragment_key: blockedKey,
-        heading_path: arbitration.blockedHeadingPaths.get(blockedKey),
-      });
+      for (const group of acceptance.rejectionGroups) {
+        if (group.reasonCode !== "proposal-lock-conflict") continue;
+        for (const affected of group.affectedFragments) {
+          onWsEvent({
+            type: "section:blocked",
+            doc_path: docPath,
+            fragment_key: affected.fragmentKey,
+            heading_path: affected.headingPath,
+          });
+        }
+      }
+    }
+    // Emit `section:edit-rejected` for every non-lock rejection group. This is
+    // an origin-only app event: it goes ONLY to the tab whose edit was
+    // rejected, keyed by `(doc_path, clientInstanceId)`. Lock conflicts keep
+    // using the existing broadcast `section:blocked` event because the
+    // block-state UI already covers them and other clients also need to know
+    // the section is locked.
+    if (origin.clientInstanceId !== null && onWsPrivateEvent) {
+      for (const group of acceptance.rejectionGroups) {
+        if (group.reasonCode === "proposal-lock-conflict") continue;
+        emitSectionEditRejected(
+          (target, event) => {
+            if (onWsPrivateEvent) onWsPrivateEvent(target, event);
+          },
+          { docPath, clientInstanceId: origin.clientInstanceId },
+          {
+            fragmentKeys: [...group.fragmentKeys],
+            affectedFragments: group.affectedFragments.map((f) => ({
+              fragmentKey: f.fragmentKey,
+              headingPath: f.headingPath,
+              heading: f.heading,
+            })),
+            reasonCode: group.reasonCode,
+            title: group.title,
+            message: group.message,
+            whatHappened: group.whatHappened,
+            whyRejected: group.whyRejected,
+            serverAction: group.serverAction,
+            guidance: group.guidance,
+          },
+        );
+      }
     }
   }
 
@@ -1240,9 +1480,9 @@ export async function processArbitratedClientUpdate(
   
   const preEditMaterializeContent = session.liveFragments.snapshotFragmentContentFromState(
     preEditState,
-    arbitration.materializeKeys,
+    acceptance.acceptedFragmentKeys,
   );
-  const materializeKeys = arbitration.materializeKeys.filter(
+  const materializeKeys = acceptance.acceptedFragmentKeys.filter(
     (fragmentKey) =>
       session.liveFragments.readFragmentString(fragmentKey) !== preEditMaterializeContent.get(fragmentKey),
   );
@@ -1253,11 +1493,12 @@ export async function processArbitratedClientUpdate(
     noteFragmentActivity(session, writerId, fragmentKey);
   }
   if (materializeKeys.length > 0) {
-    
-    
-    
-    
-    
+    // Invariant: `materializeKeys` is `acceptance.acceptedFragmentKeys`
+    // filtered to fragments whose post-update content actually differs from the
+    // pre-update snapshot. Every key here has already been through the CRDT
+    // live-edit acceptance gate — no lock-blocked or structurally-rejected
+    // fragment reaches `materializeEdit()`, so rejected live edits never create
+    // proposal manifest claims or DocSession `inprogress` proposal state.
     await session.generator.materializeEdit({ touchedFragmentKeys: materializeKeys });
     
     
@@ -1657,14 +1898,15 @@ async function handleMessage(
     case MSG_YJS_UPDATE: {
       const activeSession = session!;
       const writerId = state.writerId;
-      
-      
-      
-      
-      
-      
-      
-      await activeSession.enqueue(() => processArbitratedClientUpdate(activeSession, writerId, payload));
+      // Pass the origin socket's `clientInstanceId` through the acceptance-gate
+      // pipeline. It is intentionally NOT used for the existing broadcast
+      // `section:blocked` event; it exists solely to route future origin-only
+      // rejection app events (`section:edit-rejected`) back to this one tab
+      // without leaking rejection explanations to other subscribed clients.
+      const origin: LiveEditOrigin = { clientInstanceId: state.clientInstanceId };
+      await activeSession.enqueue(() =>
+        processArbitratedClientUpdate(activeSession, writerId, payload, origin),
+      );
       
       
       

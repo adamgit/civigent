@@ -59,6 +59,13 @@ export interface UseSessionModeReturn {
   stopEditing: () => void;
   requestMode: (mode: RequestedMode, focusTarget?: EditorFocusTarget | null) => Promise<void>;
   stopObserver: () => void;
+  /**
+   * Stable per-tab client instance id, reused across mode transitions so the
+   * CRDT origin socket and the JSON app WebSocket subscription share one
+   * routing identity. Passed through to `KnowledgeStoreWsClient.subscribe(...)`
+   * so origin-only app events (`section:edit-rejected`) target this exact tab.
+   */
+  clientInstanceId: string;
 }
 
 // ─── Hook ────────────────────────────────────────────────
@@ -438,5 +445,6 @@ export function useSessionMode({
     stopEditing,
     requestMode,
     stopObserver,
+    clientInstanceId: clientInstanceIdRef.current,
   };
 }

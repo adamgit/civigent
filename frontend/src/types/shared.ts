@@ -126,6 +126,8 @@ export type {
   CatalogChangedEvent,
   SectionBlockStateEvent,
   SectionPendingStateEvent,
+  SectionEditRejectedEvent,
+  SectionEditRejectedReasonCode,
   BlameLineAttribution,
   BlameResponse,
   DocumentReplacementNoticePayload,

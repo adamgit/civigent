@@ -112,6 +112,8 @@ export type {
   AttributionWriterType,
   WsClientMessage,
   WsServerEvent,
+  SectionEditRejectedEvent,
+  SectionEditRejectedReasonCode,
   AgentConnectionStatus,
   AgentProposalSnapshot,
   AgentActivitySummary,

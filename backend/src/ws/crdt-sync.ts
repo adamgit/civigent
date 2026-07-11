@@ -9,6 +9,11 @@
  * Callers (server.ts, tests) import from this module for backward compatibility.
  */
 
-export { createCrdtWsServer, setCrdtEventHandler, type CrdtWsServer } from "./crdt-ws-coordinator.js";
+export {
+  createCrdtWsServer,
+  setCrdtEventHandler,
+  setCrdtPrivateEventHandler,
+  type CrdtWsServer,
+} from "./crdt-ws-coordinator.js";
 export { encodeUpdate } from "./crdt-ws-frames.js";
 export { broadcastToAll } from "./crdt-ws-coordinator.js";

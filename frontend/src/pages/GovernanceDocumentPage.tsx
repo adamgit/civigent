@@ -112,6 +112,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
 
   // ── CRDT hook ─────────────────────────────────────────────
   const {
+    clientInstanceId,
     focusedSectionIndex,
     setFocusedSectionIndex,
     store,
@@ -236,6 +237,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     pendingProposalIndicatorsRef,
   } = useDocumentWebSocket({
     decodedDocPath,
+    clientInstanceId,
     sectionsRef,
     setSections,
     transportRef,

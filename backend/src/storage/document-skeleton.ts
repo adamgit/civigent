@@ -33,6 +33,16 @@
  *   all paths under that root. Canonical is not its concern.
  * - Swallow errors on behalf of callers. If a heading is not found, throw.
  *   Whether that is fatal is the caller's decision, not the skeleton's.
+ * - Enforce the CRDT live-edit "no duplicate sibling headings" rule as a
+ *   global invariant. That rule is a CURRENT heading-path-addressability
+ *   constraint of the CRDT/proposal-materialization path, NOT a claim about
+ *   the canonical model. It is guarded at three focused sites — the direct
+ *   skeleton-retitle primitives in `content-layer.ts` (renameHeading,
+ *   retitleSubSkeletonParentInPlace, retitleSectionInPlace), the direct
+ *   `moveSubtree` primitive there, and the CRDT ingress structural validator
+ *   (`live-edit-structural-validation.ts`) — plus surfaced diagnostically by
+ *   the document diagnostics suite. Any future relaxation of that rule
+ *   should be made in those focused sites, not by widening the skeleton.
  */
 
 import path from "node:path";

@@ -537,6 +537,14 @@ export class CRDTProposalGenerator {
    * 10 §15). This keeps the live proposal the same kind of object as every other
    * proposal — one law, no live opt-out — while still locking only the edited
    * section-set.
+   *
+   * Acceptance-gate invariant: `scopedSections` here is derived from the
+   * `touchedFragmentKeys` passed to `materializeEdit(...)`. The CRDT live-edit
+   * acceptance gate filters those keys to accepted-only before calling
+   * `materializeEdit(...)` (see `processArbitratedClientUpdate(...)` in the
+   * WebSocket coordinator), so `growProposalManifest(...)` NEVER receives a
+   * rejected fragment. Rejected live edits therefore cannot create proposal
+   * manifest claims.
    */
   private async growProposalManifest(
     proposalId: ProposalId,

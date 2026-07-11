@@ -354,8 +354,15 @@ async function writeDocumentViaProposal(
 
     // MW-3: push the committed canonical change into any open live DocSession
     // for the affected docs (canonical→live; the coordinator skips a self-commit).
+    // `changedSections` is a body-diff receipt only; structure-only or
+    // delete-only commits still need topology reconcile, so also include every
+    // rewritten doc path (its list may be empty and that is fine — the
+    // coordinator re-derives removals from the post-commit effective layout).
     {
       const byDoc = new Map<string, string[][]>();
+      for (const docPath of absorbResult.rewrittenDocumentPaths) {
+        if (!byDoc.has(docPath)) byDoc.set(docPath, []);
+      }
       for (const ref of absorbResult.changedSections) {
         if (!byDoc.has(ref.docPath)) byDoc.set(ref.docPath, []);
         byDoc.get(ref.docPath)!.push([...ref.headingPath]);

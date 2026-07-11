@@ -14,6 +14,7 @@ import {
   type ProposalSectionAvailabilityEvent,
   type ProposalWithdrawnEvent,
   type SectionBlockStateEvent,
+  type SectionEditRejectedEvent,
   type SectionPendingStateEvent,
 } from "../types/shared.js";
 import {
@@ -33,6 +34,12 @@ import type { CrdtTransport } from "../services/crdt-transport";
 
 export interface UseDocumentWebSocketParams {
   decodedDocPath: string | null;
+  /**
+   * Stable per-tab client instance id, reused across mode transitions. Bound
+   * to the JSON app WebSocket subscription so origin-only app events
+   * (`section:edit-rejected`) route only to this tab.
+   */
+  clientInstanceId: string;
   sectionsRef: React.MutableRefObject<DocumentSection[]>;
   setSections: React.Dispatch<React.SetStateAction<DocumentSection[]>>;
   transportRef: React.MutableRefObject<CrdtTransport | null>;
@@ -47,6 +54,13 @@ export interface UseDocumentWebSocketParams {
   setError: (e: string | null) => void;
   onSectionsInjectedByProposal?: (headingPaths: string[][], writerDisplayName: string) => void;
   onProposalSectionAvailability?: (event: ProposalSectionAvailabilityEvent) => void;
+  /**
+   * Called when the server rejects one of this tab's CRDT live edits. The
+   * event is origin-only (routed by `(doc_path, clientInstanceId)`) — the
+   * document page opens an interruptive modal from the callback. Not routed
+   * into generic error state, the topbar save status, or inline notices.
+   */
+  onSectionEditRejected?: (event: SectionEditRejectedEvent) => void;
 }
 
 // ─── Hook return type ─────────────────────────────────────────────
@@ -68,6 +82,7 @@ import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 
 export function useDocumentWebSocket({
   decodedDocPath,
+  clientInstanceId,
   sectionsRef,
   setSections,
   transportRef,
@@ -80,6 +95,7 @@ export function useDocumentWebSocket({
   setError,
   onSectionsInjectedByProposal,
   onProposalSectionAvailability,
+  onSectionEditRejected,
 }: UseDocumentWebSocketParams): UseDocumentWebSocketReturn {
   const navigate = useNavigate();
 
@@ -126,7 +142,9 @@ export function useDocumentWebSocket({
   useEffect(() => {
     if (!decodedDocPath) return;
     wsClient.connect();
-    wsClient.subscribe(decodedDocPath);
+    // Bind the stable per-tab id at subscribe time so the hub/private-event
+    // routing knows the identity of this document tab.
+    wsClient.subscribe(decodedDocPath, clientInstanceId);
     wsClient.onEvent((event) => {
       // ── content:committed (v3 shape) ──
       if (event.type === "content:committed") {
@@ -220,6 +238,19 @@ export function useDocumentWebSocket({
           else if (blockState.type === "section:unblocked") store.setSectionUnblocked(blockState.fragment_key);
           else store.setSectionGone(blockState.fragment_key);
         }
+        return;
+      }
+
+      // ── section:edit-rejected ──
+      // Origin-only expected rejection of one of THIS tab's CRDT live edits
+      // (duplicate sibling heading, etc). The hub only delivers this event to
+      // the tab whose edit was rejected. It is routed to a page-level rejection
+      // handler that renders an interruptive modal — NOT the topbar save
+      // status, NOT the generic error banner, NOT the block-state store.
+      if (event.type === "section:edit-rejected") {
+        const rejected = event as SectionEditRejectedEvent;
+        if (normalizeDocPath(rejected.doc_path) !== normalizeDocPath(decodedDocPath)) return;
+        if (onSectionEditRejected) onSectionEditRejected(rejected);
         return;
       }
 

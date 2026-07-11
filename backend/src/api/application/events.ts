@@ -1,4 +1,11 @@
-import type { GetDocumentSectionsResponse, WsServerEvent, WriterIdentity } from "../../types/shared.js";
+import type {
+  GetDocumentSectionsResponse,
+  WsServerEvent,
+  WriterIdentity,
+  SectionEditRejectedEvent,
+  SectionEditRejectedReasonCode,
+  ClientInstanceId,
+} from "../../types/shared.js";
 import { emitCatalogMutationEvents, type CatalogMutationSummary } from "../../mcp/catalog-events.js";
 import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
 import { SectionRef } from "../../domain/section-ref.js";
@@ -314,4 +321,65 @@ export async function emitSectionBlockState(
       heading_path: headingPath,
     });
   }
+}
+
+/**
+ * Private, origin-only emitter for `section:edit-rejected`. Constructs the
+ * user-facing rejection payload from an acceptance-gate rejection group and
+ * hands it to a per-tab private-send callback keyed by
+ * `(doc_path, clientInstanceId)`.
+ *
+ * The transport (`sendPrivate`) is supplied by the caller — the JSON WebSocket
+ * hub owns per-tab routing (see `backend/src/ws/hub.ts` extension) so this
+ * helper stays transport-agnostic. It deliberately does NOT route by
+ * `writer_id`: one writer can have multiple tabs on the same document, and a
+ * per-writer send would leak the rejection into unrelated tabs. It also does
+ * NOT feed the normal document-wide broadcast callback, and it does NOT
+ * emit any `doc:structural-error`-shaped state (that event type is
+ * intentionally absent from the union — `doc:structure-changed` remains
+ * reserved for topology updates only).
+ */
+export interface SectionEditRejectedGroupInput {
+  fragmentKeys: string[];
+  affectedFragments: Array<{
+    fragmentKey: string;
+    headingPath?: string[];
+    heading?: string;
+  }>;
+  reasonCode: SectionEditRejectedReasonCode;
+  title: string;
+  message: string;
+  whatHappened: string;
+  whyRejected: string;
+  serverAction: string;
+  guidance: string;
+}
+
+export function emitSectionEditRejected(
+  sendPrivate: (
+    target: { docPath: string; clientInstanceId: ClientInstanceId },
+    event: SectionEditRejectedEvent,
+  ) => void,
+  target: { docPath: string; clientInstanceId: ClientInstanceId | null },
+  group: SectionEditRejectedGroupInput,
+): void {
+  if (target.clientInstanceId === null) return;
+  const event: SectionEditRejectedEvent = {
+    type: "section:edit-rejected",
+    doc_path: target.docPath,
+    rejected_by: "server",
+    affected_fragments: group.affectedFragments.map((f) => ({
+      fragment_key: f.fragmentKey,
+      heading_path: f.headingPath,
+      heading: f.heading,
+    })),
+    reason_code: group.reasonCode,
+    title: group.title,
+    message: group.message,
+    what_happened: group.whatHappened,
+    why_rejected: group.whyRejected,
+    server_action: group.serverAction,
+    guidance: group.guidance,
+  };
+  sendPrivate({ docPath: target.docPath, clientInstanceId: target.clientInstanceId }, event);
 }

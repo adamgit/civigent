@@ -114,4 +114,15 @@ describe("classifyWsEvent", () => {
       expect(result.showToast).toBeNull();
     }
   });
+
+  it("section:edit-rejected is a layout-level no-op (document-page-only rejection modal)", () => {
+    // Origin-only CRDT rejection payloads must NEVER trigger a tree refresh,
+    // add a badge, or emit a toast — the document page owns the rejection
+    // explanation via SectionEditRejectedModal. AppLayout classification
+    // silently ignores it.
+    const result = classifyWsEvent({ type: "section:edit-rejected", doc_path: "doc.md" }, "/doc.md", true);
+    expect(result.refreshTree).toBe(false);
+    expect(result.addBadge).toBeNull();
+    expect(result.showToast).toBeNull();
+  });
 });

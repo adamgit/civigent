@@ -257,6 +257,83 @@ export class DocumentNotFoundError extends Error {}
 export class DocumentAssemblyError extends Error {}
 export class MultiSectionContentError extends Error {}
 
+/**
+ * A rename/move would produce two same-parent siblings with the same heading
+ * text at the same level. Ambiguous heading-path addressability under the
+ * current model, so we reject the operation before it can be persisted. Guards
+ * the direct skeleton-retitle primitives (`renameHeading`,
+ * `retitleSubSkeletonParentInPlace`, `retitleSectionInPlace`) and the direct
+ * `moveSubtree` primitive; not a global skeleton invariant.
+ */
+export class DuplicateSiblingHeadingError extends Error {
+  readonly operation: "rename" | "move";
+  readonly docPath: string;
+  readonly parentHeadingPath: readonly string[];
+  readonly proposedHeading: string;
+  readonly proposedLevel: number;
+  readonly conflictingSectionFile: string;
+  readonly targetSectionFile: string;
+  constructor(args: {
+    operation: "rename" | "move";
+    docPath: string;
+    parentHeadingPath: readonly string[];
+    proposedHeading: string;
+    proposedLevel: number;
+    conflictingSectionFile: string;
+    targetSectionFile: string;
+  }) {
+    const parentLabel = args.parentHeadingPath.length === 0
+      ? "the document root"
+      : `[${args.parentHeadingPath.join(" > ")}]`;
+    const verb = args.operation === "move" ? "move" : "rename";
+    const destinationLabel = args.operation === "move" ? "destination" : "sibling list";
+    super(
+      `Cannot ${verb} section: ${destinationLabel} under ${parentLabel} already ` +
+      `contains a sibling with heading "${args.proposedHeading}" at level ${args.proposedLevel} in ${args.docPath}.`,
+    );
+    this.name = "DuplicateSiblingHeadingError";
+    this.operation = args.operation;
+    this.docPath = args.docPath;
+    this.parentHeadingPath = args.parentHeadingPath;
+    this.proposedHeading = args.proposedHeading;
+    this.proposedLevel = args.proposedLevel;
+    this.conflictingSectionFile = args.conflictingSectionFile;
+    this.targetSectionFile = args.targetSectionFile;
+  }
+}
+
+/**
+ * Reject an operation whose proposed heading/level would collide with an
+ * existing same-parent sibling. Excludes the target's own `sectionFile` so a
+ * no-op rename or same-location move does not self-trigger the guard.
+ */
+function assertNoDuplicateSiblingHeadingCollision(
+  siblings: readonly SkeletonNode[],
+  args: {
+    operation: "rename" | "move";
+    docPath: string;
+    parentHeadingPath: readonly string[];
+    targetSectionFile: string;
+    proposedHeading: string;
+    proposedLevel: number;
+  },
+): void {
+  for (const sibling of siblings) {
+    if (sibling.sectionFile === args.targetSectionFile) continue;
+    if (sibling.level !== args.proposedLevel) continue;
+    if (!headingsEqual(sibling.heading, args.proposedHeading)) continue;
+    throw new DuplicateSiblingHeadingError({
+      operation: args.operation,
+      docPath: args.docPath,
+      parentHeadingPath: args.parentHeadingPath,
+      proposedHeading: args.proposedHeading,
+      proposedLevel: args.proposedLevel,
+      conflictingSectionFile: sibling.sectionFile,
+      targetSectionFile: args.targetSectionFile,
+    });
+  }
+}
+
 export interface SectionDiscoveryEntry {
   heading: string;
   headingPath: string[];
@@ -2302,6 +2379,14 @@ export class ProposalShadowContentLayer {
       }
 
       const oldNode = siblings[idx];
+      assertNoDuplicateSiblingHeadingCollision(siblings, {
+        operation: "rename",
+        docPath,
+        parentHeadingPath: parentPath,
+        targetSectionFile: oldNode.sectionFile,
+        proposedHeading: newHeading,
+        proposedLevel: oldNode.level,
+      });
       const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
       const removed = ctx.flattenNode(oldNode, parentPath, parentSkeletonPath);
 
@@ -2373,6 +2458,14 @@ export class ProposalShadowContentLayer {
       if (idx < 0) {
         throw staleHeadingPath(docPath, headingPath, "cannot retitle sub-skeleton parent");
       }
+      assertNoDuplicateSiblingHeadingCollision(siblings, {
+        operation: "rename",
+        docPath,
+        parentHeadingPath: parentPath,
+        targetSectionFile: siblings[idx].sectionFile,
+        proposedHeading: newHeading,
+        proposedLevel: newLevel,
+      });
       siblings[idx].heading = newHeading;
       siblings[idx].level = newLevel;
       return {
@@ -2578,6 +2671,14 @@ export class ProposalShadowContentLayer {
       const siblings = ctx.findSiblingList(parentPath);
       const idx = siblings.findIndex((n) => headingsEqual(n.heading, target));
       if (idx < 0) throw staleHeadingPath(docPath, headingPath, "cannot retitle");
+      assertNoDuplicateSiblingHeadingCollision(siblings, {
+        operation: "rename",
+        docPath,
+        parentHeadingPath: parentPath,
+        targetSectionFile: siblings[idx].sectionFile,
+        proposedHeading: newHeading,
+        proposedLevel: newLevel,
+      });
       siblings[idx].heading = newHeading;
       siblings[idx].level = newLevel;
       return { removed: [], added: [], bodyWrites: [], fragmentKeyRemaps: [] } satisfies StructuralMutationPlan;
@@ -2635,6 +2736,22 @@ export class ProposalShadowContentLayer {
         throw staleHeadingPath(docPath, headingPath, "cannot move (source)");
       }
       const movedNode = sourceSiblings[sourceIdx];
+
+      // Reject a move that would place the section next to a same-parent
+      // sibling with the same heading text at the destination level. Runs
+      // BEFORE any splice so the in-memory skeleton is untouched on rejection.
+      // Excluding the moved node's own `sectionFile` allows a no-op /
+      // same-location move (source and destination parents equal) to succeed.
+      const destSiblingsCheck = ctx.findSiblingList(newParentPath);
+      assertNoDuplicateSiblingHeadingCollision(destSiblingsCheck, {
+        operation: "move",
+        docPath,
+        parentHeadingPath: newParentPath,
+        targetSectionFile: movedNode.sectionFile,
+        proposedHeading: movedNode.heading,
+        proposedLevel: newLevel,
+      });
+
       const removed = ctx.flattenNode(movedNode, parentPath, ctx.resolveSkeletonPathFor(parentPath));
       sourceSiblings.splice(sourceIdx, 1);
 

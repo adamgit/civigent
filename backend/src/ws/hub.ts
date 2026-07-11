@@ -1,7 +1,13 @@
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
-import type { JsonObject, JsonValue, WsClientMessage, WsServerEvent } from "../types/shared.js";
+import type {
+  JsonObject,
+  JsonValue,
+  WsClientMessage,
+  WsServerEvent,
+  ClientInstanceId,
+} from "../types/shared.js";
 import { expectJsonObject, parseJson } from "../types/shared.js";
 import { resolveAuthenticatedWriterFromHeaders } from "../auth/context.js";
 
@@ -9,10 +15,25 @@ interface SocketState {
   writerId: string;
   writerDisplayName: string;
   subscriptions: Set<string>;
+  // Stable per-tab identity supplied by the client. Used ONLY for private
+  // origin-only routing (see `sendPrivate`) — the ordinary broadcast path
+  // does not consult this field.
+  clientInstanceId: ClientInstanceId | null;
 }
 
 export interface WsHub {
   broadcast(event: WsServerEvent): void;
+  /**
+   * Deliver an origin-only app event (e.g. `section:edit-rejected`) to the one
+   * socket whose `(docPath, clientInstanceId)` matches the target. Silently
+   * drops the event when no socket matches — the origin tab may have already
+   * closed, and re-broadcasting to compensate would leak the rejection into
+   * every other tab. Never routes by `writer_id`.
+   */
+  sendPrivate(
+    target: { docPath: string; clientInstanceId: ClientInstanceId },
+    event: WsServerEvent,
+  ): void;
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
 }
 
@@ -32,12 +53,28 @@ function decodeWsClientMessage(value: JsonValue): WsClientMessage | null {
   const obj: JsonObject = expectJsonObject(value, "hub client message");
 
   const action = obj["action"];
-  if (action === "subscribe" || action === "unsubscribe") {
+  if (action === "subscribe") {
+    const docPath = obj["doc_path"];
+    if (typeof docPath !== "string") {
+      throw new Error(`hub client message "${action}" requires a string doc_path, got ${JSON.stringify(docPath)}`);
+    }
+    const rawInstanceId = obj["clientInstanceId"];
+    const clientInstanceId = typeof rawInstanceId === "string" ? rawInstanceId : undefined;
+    return { action, doc_path: docPath, clientInstanceId };
+  }
+  if (action === "unsubscribe") {
     const docPath = obj["doc_path"];
     if (typeof docPath !== "string") {
       throw new Error(`hub client message "${action}" requires a string doc_path, got ${JSON.stringify(docPath)}`);
     }
     return { action, doc_path: docPath };
+  }
+  if (action === "identify") {
+    const rawInstanceId = obj["clientInstanceId"];
+    if (typeof rawInstanceId !== "string") {
+      throw new Error(`hub client message "identify" requires a string clientInstanceId`);
+    }
+    return { action, clientInstanceId: rawInstanceId };
   }
 
   // Top-level subscribe/unsubscribe key form — the shape the frontend actually sends.
@@ -88,6 +125,7 @@ export function createWsHub(): WsHub {
       writerId: writer.id,
       writerDisplayName: writer.displayName,
       subscriptions: new Set<string>(),
+      clientInstanceId: null,
     });
 
     socket.on("message", (data) => {
@@ -101,9 +139,16 @@ export function createWsHub(): WsHub {
 
       if (message.action === "subscribe") {
         state.subscriptions.add(message.doc_path);
-      } else {
-        state.subscriptions.delete(message.doc_path);
+        if (message.clientInstanceId !== undefined) {
+          state.clientInstanceId = message.clientInstanceId;
+        }
+        return;
       }
+      if (message.action === "identify") {
+        state.clientInstanceId = message.clientInstanceId;
+        return;
+      }
+      state.subscriptions.delete(message.doc_path);
     });
 
     socket.on("close", () => {
@@ -111,9 +156,43 @@ export function createWsHub(): WsHub {
     });
   });
 
+  const sendPrivateInternal = (
+    target: { docPath: string; clientInstanceId: ClientInstanceId },
+    event: WsServerEvent,
+  ): void => {
+    // Wrap the event in a private envelope so the shared-worker layer can
+    // filter it to the ONE tab whose `clientInstanceId` matches, even when
+    // that tab shares a leader WebSocket with other tabs of the same writer.
+    // The envelope is unwrapped in `frontend/src/workers/ws-shared-worker.ts`
+    // (`forwardPrivateEnvelope`) before delivery to a tab port; other tabs
+    // never observe the payload.
+    const envelope = JSON.stringify({
+      __private__: true as const,
+      target_client_instance_id: target.clientInstanceId,
+      event,
+    });
+    for (const [socket, state] of socketState.entries()) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
+      if (state.clientInstanceId !== target.clientInstanceId) continue;
+      // Require an active subscription to the doc so a tab that never opened
+      // this document still cannot receive its rejection payload — matching
+      // clientInstanceId is necessary but not sufficient.
+      const explicitlySubscribed = state.subscriptions.has(target.docPath);
+      const sessionWide = state.subscriptions.size === 0;
+      if (!explicitlySubscribed && !sessionWide) continue;
+      socket.send(envelope);
+      // The origin identity is unique per tab; no need to keep scanning after
+      // a hit. Silently drop if no socket matches.
+      return;
+    }
+  };
+
   return {
     broadcast(event: WsServerEvent) {
       broadcastInternal(event);
+    },
+    sendPrivate(target, event) {
+      sendPrivateInternal(target, event);
     },
     handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer) {
       wsServer.handleUpgrade(request, socket, head, (ws) => {

@@ -12,6 +12,7 @@ import { DocumentFooter } from "../components/DocumentFooter";
 import { DocumentHistory } from "../components/DocumentHistory";
 import DocumentDiagnostics from "../components/DocumentDiagnostics";
 import { OverwriteMarkdownModal } from "../components/OverwriteMarkdownModal";
+import { SectionEditRejectedModal } from "../components/SectionEditRejectedModal";
 import { useCrossSectionCopy } from "../hooks/useCrossSectionCopy";
 import { useViewingPresence } from "../hooks/useViewingPresence";
 import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
@@ -143,6 +144,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
 
   // ── CRDT hook ─────────────────────────────────────────────
   const {
+    clientInstanceId,
     focusedSectionIndex,
     setFocusedSectionIndex,
     store,
@@ -306,6 +308,25 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     return map;
   }, [injectedSections]);
 
+  // ── Section-edit rejection modal state ────────────────────
+  // Latest origin-only `section:edit-rejected` event for this tab. The modal
+  // stays open until the user explicitly dismisses it — the shared Y.Doc
+  // correction already restored valid content, so keeping the editor usable
+  // behind the modal is safe (spec: interruptive-but-non-blocking rejection
+  // UI). Nested typing avoids a hard dep on the shared-types facade here.
+  const [sectionEditRejection, setSectionEditRejection] = useState<
+    import("../types/shared").SectionEditRejectedEvent | null
+  >(null);
+  const onSectionEditRejected = useCallback(
+    (event: import("../types/shared").SectionEditRejectedEvent) => {
+      setSectionEditRejection(event);
+    },
+    [],
+  );
+  const dismissSectionEditRejection = useCallback(() => {
+    setSectionEditRejection(null);
+  }, []);
+
   // ── WebSocket hook ────────────────────────────────────────
   const {
     recentlyChangedSections,
@@ -314,6 +335,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     pendingProposalIndicatorsRef,
   } = useDocumentWebSocket({
     decodedDocPath,
+    clientInstanceId,
     sectionsRef,
     setSections,
     transportRef,
@@ -326,6 +348,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     setError,
     onSectionsInjectedByProposal,
     onProposalSectionAvailability: applyProposalSectionAvailabilityEvent,
+    onSectionEditRejected,
   });
 
   // Derived
@@ -670,6 +693,14 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
       {/* Overwrite from Markdown modal */}
       {showOverwrite && decodedDocPath && (
         <OverwriteMarkdownModal docPath={decodedDocPath} onClose={() => setShowOverwrite(false)} />
+      )}
+
+      {/* Origin-only CRDT live-edit rejection modal */}
+      {sectionEditRejection && (
+        <SectionEditRejectedModal
+          event={sectionEditRejection}
+          onDismiss={dismissSectionEditRejection}
+        />
       )}
 
       {/* Canvas scroll area */}

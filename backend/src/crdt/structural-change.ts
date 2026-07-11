@@ -16,6 +16,14 @@
  * the appliers that used to live alongside it (and clobbered Yjs struct identity
  * by clear+recreate) are deliberately NOT here — the new appliers mutate the
  * surviving Y.XmlFragment in place.
+ *
+ * REUSE FROM CRDT INGRESS VALIDATION: `classifyStructuralChange(...)` is also
+ * the sole classifier for the CRDT live-edit acceptance gate's structural
+ * validators (split / rename / level-change / heading-deletion / relocation
+ * shapes). Ingress validators wrap this classifier with additional checks
+ * (e.g. duplicate-sibling-heading rejection) but must not fork the classifier
+ * itself, mutate Y.Doc or proposal state through it, or bleed
+ * quiescence-normalization decisions into ingress rejection.
  */
 
 import { parseDocumentMarkdown, type ParsedSection } from "../storage/markdown-sections.js";

@@ -1715,6 +1715,53 @@ export interface SectionPendingStateEvent {
   writer_display_name?: string;
 }
 
+/**
+ * Reason code for an expected CRDT live-edit rejection. Every value MUST also
+ * appear in the backend acceptance-gate rejection group's reason code so the
+ * two shapes stay unified end-to-end.
+ *   duplicate-sibling-heading   — the settled structural change would produce
+ *                                 two same-parent siblings with matching
+ *                                 heading text at the same level, breaking
+ *                                 heading-path addressability.
+ *   invalid-live-edit-structure — reserved for future ingress-time structural
+ *                                 validators.
+ */
+export type SectionEditRejectedReasonCode =
+  | "duplicate-sibling-heading"
+  | "invalid-live-edit-structure";
+
+/**
+ * Origin-only per-section CRDT live-edit rejection event. Emitted ONLY to the
+ * client instance whose edit was rejected — never broadcast to the whole
+ * document subscription. Carries substantial user-facing explanation fields
+ * (`title`, `message`, `what_happened`, `why_rejected`, `server_action`,
+ * `guidance`) so the frontend can render an interruptive rejection modal
+ * without inventing its own copy. `rejected_by` is fixed to `"server"` today —
+ * only the acceptance gate rejects live edits — and is included so future
+ * client-side or peer-side rejection sources can be distinguished without
+ * versioning the union.
+ *
+ * See also: the acceptance gate's `LiveEditRejectionGroup` shape in
+ * `backend/src/ws/crdt-ws-coordinator.ts` — the two must stay in lockstep.
+ */
+export interface SectionEditRejectedEvent {
+  type: "section:edit-rejected";
+  doc_path: string;
+  rejected_by: "server";
+  affected_fragments: Array<{
+    fragment_key: string;
+    heading_path?: string[];
+    heading?: string;
+  }>;
+  reason_code: SectionEditRejectedReasonCode;
+  title: string;
+  message: string;
+  what_happened: string;
+  why_rejected: string;
+  server_action: string;
+  guidance: string;
+}
+
 export type WsServerEvent =
   | ContentCommittedEvent
   | WriterDirtyStateChangedEvent
@@ -1730,6 +1777,7 @@ export type WsServerEvent =
   | ProposalSectionAvailabilityEvent
   | SectionBlockStateEvent
   | SectionPendingStateEvent
+  | SectionEditRejectedEvent
   | CatalogChangedEvent;
 
 // ─── WebSocket Client Messages ─────────────────────────────────────
@@ -1747,6 +1795,14 @@ export type WsServerEvent =
 export interface WsSubscribeMessage {
   action: "subscribe";
   doc_path: string;
+  /**
+   * Stable per-tab client instance identity. When present, the hub routes
+   * origin-only app events (e.g. `section:edit-rejected`) exclusively to the
+   * matching `(doc_path, clientInstanceId)` tab, so semantic rejection
+   * explanations never leak into other tabs of the same writer. Omit when a
+   * connection has no per-tab identity (server-internal subscribers, tests).
+   */
+  clientInstanceId?: string;
 }
 
 export interface WsUnsubscribeMessage {
@@ -1754,9 +1810,20 @@ export interface WsUnsubscribeMessage {
   doc_path: string;
 }
 
+/**
+ * Hint that binds a client-instance identity to this connection without
+ * subscribing to a specific document. Useful during the initial handshake so
+ * private events can be routed even before the tab explicitly subscribes.
+ */
+export interface WsIdentifyMessage {
+  action: "identify";
+  clientInstanceId: string;
+}
+
 export type WsClientMessage =
   | WsSubscribeMessage
-  | WsUnsubscribeMessage;
+  | WsUnsubscribeMessage
+  | WsIdentifyMessage;
 
 // ─── Agent Activity View ─────────────────────────────────────────
 

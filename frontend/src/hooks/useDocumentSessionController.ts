@@ -32,6 +32,8 @@ export interface UseDocumentSessionControllerParams {
 }
 
 export interface UseDocumentSessionControllerReturn {
+  /** Stable per-tab client instance id (forwarded from useSessionMode). */
+  clientInstanceId: string;
   focusedSectionIndex: number | null;
   setFocusedSectionIndex: React.Dispatch<React.SetStateAction<number | null>>;
   store: BrowserFragmentReplicaStore | null;
@@ -177,6 +179,7 @@ export function useDocumentSessionController(
   }, [proposal.proposalSaveTimerRef]);
 
   const runtime = {
+    clientInstanceId: session.clientInstanceId,
     focusedSectionIndex: focus.focusedSectionIndex,
     setFocusedSectionIndex: focus.setFocusedSectionIndex,
     store: session.store,
