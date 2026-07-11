@@ -12,12 +12,12 @@
  *   2. top-of-viewport section → blue
  *   3. otherwise               → neutral
  *
- * Positioning: the component pins itself (fixed) so its left edge sits at the
- * right edge of the white paper (measured from `anchorRef`) and its top aligns
- * with the top of the paper, clamped below the topbar so it stays visible while
- * scrolling. Because it is viewport-anchored, when the window is too narrow to
- * show the full gutter the panel is simply clipped off the right edge — the user
- * widens the window to reveal it. All document data arrives via props.
+ * Positioning: the component pins itself (fixed) from the paper's right edge to
+ * the scroll viewport's right edge. It stays outside normal document layout, so
+ * wrapping labels cannot change the paper or page sizing. Because it is
+ * viewport-anchored, when the window is too narrow to show the full gutter the
+ * panel is simply clipped off the right edge — the user widens the window to
+ * reveal it. All document data arrives via props.
  */
 
 import { useLayoutEffect, useState } from "react";
@@ -50,8 +50,6 @@ export interface DocumentSectionNavProps {
   scrollContainerRef: React.RefObject<HTMLElement | null>;
 }
 
-const PANEL_WIDTH = 200;
-const GAP_FROM_PAPER = 12;
 const TOPBAR_FALLBACK = 46;
 
 const BASE_TICK_WIDTH = 14;
@@ -82,6 +80,7 @@ function readTopbarHeight(): number {
 interface PanelPos {
   left: number;
   top: number;
+  width: number;
 }
 
 function usePanelPosition(
@@ -100,13 +99,23 @@ function usePanelPosition(
       const el = anchorRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
+      const scroller = scrollContainerRef.current;
+      const scrollerRect = scroller?.getBoundingClientRect();
+      const scrollerStyle = scroller ? getComputedStyle(scroller) : null;
+      const scrollerPaddingRight = scrollerStyle
+        ? Number.parseFloat(scrollerStyle.paddingRight) || 0
+        : 0;
+      const right = scrollerRect
+        ? scrollerRect.right - scrollerPaddingRight
+        : window.innerWidth;
       const topbarBottom = readTopbarHeight() + 22;
       const next: PanelPos = {
-        left: rect.right + GAP_FROM_PAPER,
+        left: rect.right,
         top: Math.max(topbarBottom, rect.top),
+        width: Math.max(0, right - rect.right),
       };
       setPos((prev) =>
-        prev && prev.left === next.left && prev.top === next.top ? prev : next,
+        prev && prev.left === next.left && prev.top === next.top && prev.width === next.width ? prev : next,
       );
     };
 
@@ -126,6 +135,7 @@ function usePanelPosition(
     window.addEventListener("resize", schedule);
     const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(schedule) : null;
     ro?.observe(anchor);
+    if (scroller) ro?.observe(scroller);
 
     return () => {
       scroller?.removeEventListener("scroll", schedule);
@@ -160,7 +170,8 @@ export function DocumentSectionNav({
         position: "fixed",
         left: pos ? pos.left : -9999,
         top: pos ? pos.top : 0,
-        width: PANEL_WIDTH,
+        width: pos ? pos.width : 0,
+        boxSizing: "border-box",
         maxHeight: pos
           ? `calc(100vh - ${pos.top}px - var(--spacing-footer-h) - 16px)`
           : undefined,
@@ -242,7 +253,7 @@ export function DocumentSectionNav({
               onClick={() => onNavigate(item.fragmentKey)}
               style={{
                 display: "flex",
-                alignItems: "center",
+                alignItems: "flex-start",
                 gap: 8,
                 width: "100%",
                 border: "none",
@@ -260,6 +271,7 @@ export function DocumentSectionNav({
                   flex: "none",
                   height: emphasized ? 3 : 2,
                   width: tickWidth(item.depth),
+                  marginTop: 7,
                   borderRadius: 2,
                   background: lineColor,
                   transition: "background-color 120ms ease, height 120ms ease",
@@ -269,9 +281,8 @@ export function DocumentSectionNav({
                 style={{
                   flex: 1,
                   minWidth: 0,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
+                  overflowWrap: "anywhere",
+                  wordBreak: "break-word",
                   fontSize: 12.5,
                   fontWeight: emphasized ? 600 : 400,
                   lineHeight: 1.3,

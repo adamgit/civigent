@@ -55,6 +55,9 @@ export interface CrdtTransportOptions {
   onSessionReinit?: () => void;
   /** Called when the server initiates an admin force-rebuild reconnection (4024). */
   onForceRebuild?: () => void;
+  /** Called when the server closes this editor socket with 4023 because a newer
+   *  same-writer editor tab superseded this one. Not a reconnect. */
+  onSuperseded?: () => void;
   /** Delivered once after onSynced on the post-replacement reconnect. */
   onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
   /** Server-authoritative result for this tab's requested CRDT mode transition. */
@@ -104,6 +107,9 @@ export class CrdtTransport {
         },
         onForceRebuild: () => {
           this.opts.onForceRebuild?.();
+        },
+        onSuperseded: () => {
+          this.opts.onSuperseded?.();
         },
         onDocumentReplacementNotice: (payload) => {
           this.opts.onDocumentReplacementNotice?.(payload);

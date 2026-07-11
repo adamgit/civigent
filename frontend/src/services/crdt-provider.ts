@@ -42,6 +42,7 @@ import {
   WS_CLOSE_DOCUMENT_REPLACED,
   WS_CLOSE_ADMIN_REBUILD,
   WS_CLOSE_SYSTEM_LOCKDOWN,
+  WS_CLOSE_SUPERSEDED,
   WS_CLOSE_INVALID_URL,
   WS_CLOSE_YDOC_INIT_FAILED,
 } from "./crdt-close-codes";
@@ -113,6 +114,12 @@ export interface CrdtProviderEvents {
   /** Fired when the server closes this socket with the admin force-rebuild code
    *  (4024). Behaves like 4022: reconnect immediately, reseed canonical. */
   onForceRebuild?: () => void;
+  /** Fired when the server closes this editor socket with 4023 because the same
+   *  writer opened a newer editor tab that took over. This is an intentional
+   *  editor-session handoff, not a transport failure: the provider will not
+   *  reconnect and will not surface `onError`. The consumer should drop this
+   *  session back to read/observer mode. */
+  onSuperseded?: () => void;
   /** Fired once, after onSynced on the post-replacement reconnection, with the replacement notice. */
   onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
   /** Server-authoritative result for this tab's requested CRDT mode transition. */
@@ -421,6 +428,21 @@ export class CrdtProvider {
         return;
       }
 
+      if (event.code === WS_CLOSE_SUPERSEDED) {
+        // 4023 superseded_by_new_tab: the same writer opened a newer editor
+        // socket for this document which took over as the DocSession editor.
+        // Do NOT reconnect — reconnecting would fight the new editor tab and
+        // ping-pong the DocSession editor role. Do NOT surface a generic error;
+        // this is a normal editor-session handoff. The consumer moves this
+        // session to a non-editing state so the document page can drop back to
+        // read/observer mode.
+        this.clearReconnectTimer();
+        this.reconnectAttempts = 0;
+        this.setState("disconnected");
+        this.events.onSuperseded?.();
+        return;
+      }
+
       if (event.code === WS_CLOSE_SYSTEM_LOCKDOWN) {
         // Backup / restore lockdown reads as "temporary server unavailable" —
         // the connection-state indicator during reconnect is the whole UI cue,
@@ -472,14 +494,21 @@ export class CrdtProvider {
 
     switch (msgType) {
       case MSG_SYNC_STEP_1: {
-        // Server requests our state — reply with sync step 2.
+        // Server requests our state — reply with sync step 2. The server
+        // IGNORES this reply as a document mutation (the backend Y.Doc is
+        // authoritative and does not accept offline client content via the
+        // sync protocol); we still send it to complete the Yjs sync round-trip
+        // so `flushAndAwaitSync()` can use the returning SYNC_STEP_2 as an
+        // ordering barrier. Real client edits must go out as MSG_YJS_UPDATE.
         const stateVector = payload;
         const diff = Y.encodeStateAsUpdate(this.doc, stateVector);
         this.sendRaw(MSG_SYNC_STEP_2, diff);
         break;
       }
       case MSG_SYNC_STEP_2: {
-        // Server sends state diff — apply it.
+        // Server sends the authoritative state diff — apply it. This is how
+        // clients bootstrap FROM the backend Y.Doc; the reverse direction
+        // (client-to-server SYNC_STEP_2) is intentionally not a write path.
         Y.applyUpdate(this.doc, payload, this);
         if (!this.synced) {
           this.synced = true;

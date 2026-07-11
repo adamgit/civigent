@@ -1779,14 +1779,16 @@ async function applyModeTransition(
     }
     state.requestedMode = request.requestedMode;
     state.editorFocusTarget = request.editorFocusTarget;
-    
-    for (const existingSocket of docSockets.get(state.docPath) ?? []) {
-      if (existingSocket === socket) continue;
-      const st = socketState.get(existingSocket);
-      if (st?.writerId === state.writerId && st?.socketRole === "editor" && existingSocket.readyState === WebSocket.OPEN) {
-        existingSocket.close(WS_CLOSE_SUPERSEDED, "superseded_by_new_tab");
-      }
-    }
+
+    // Attach the requesting socket to the DocSession as the new editor BEFORE
+    // superseding older same-writer editor sockets. If we closed the old socket
+    // first, `activeEditorSocketIds()` would briefly return zero (WebSocket
+    // readyState flips to CLOSING synchronously) and the old socket's close
+    // handler — running during the awaits below — would fire
+    // `publishOnLastEditorDisconnect` with `remainingEditorCount === 0`,
+    // triggering publish/discard during what should be a live handoff.
+    // Ordering the attach first keeps `activeEditorSocketIds()` above zero
+    // throughout the handoff.
     const baseHead = await getHeadSha(getDataRoot());
     const session = await acquireDocSession(
       state.docPath,
@@ -1800,6 +1802,21 @@ async function applyModeTransition(
     state.attachmentState = "attached_to_session";
 
     joinAndNotify(session, socket, state);
+
+    // Now that the replacement editor is counted as active (socketRole ===
+    // "editor" and readyState === OPEN), supersede any older same-writer editor
+    // sockets for this document. Their close handlers will see the replacement
+    // editor as still active, so the "last editor left" publish trigger does
+    // NOT fire. Distinct writers are not touched — collaborative editing is
+    // preserved. At most one live editor socket per (writerId, docPath) remains
+    // once the superseded sockets' close events have run.
+    for (const existingSocket of docSockets.get(state.docPath) ?? []) {
+      if (existingSocket === socket) continue;
+      const st = socketState.get(existingSocket);
+      if (st?.writerId === state.writerId && st?.socketRole === "editor" && existingSocket.readyState === WebSocket.OPEN) {
+        existingSocket.close(WS_CLOSE_SUPERSEDED, "superseded_by_new_tab");
+      }
+    }
 
     
     if (countEditorSockets(session) === 1) {
@@ -1851,10 +1868,17 @@ async function handleMessage(
   const participant = participants.get(state.clientInstanceId);
   const effectiveRole = participant?.clientRole ?? state.socketRole;
 
-  
+  // Observer sockets may not mutate the DocSession. MSG_SYNC_STEP_2 is
+  // intentionally NOT in this list: the backend sends SYNC_STEP_1 to every
+  // joining socket (including observers) to request their state vector, and
+  // the client's SYNC_STEP_2 reply is the normal, protocol-required response.
+  // Since inbound client MSG_SYNC_STEP_2 is ignored as a document mutation
+  // (see the MSG_SYNC_STEP_2 case below), letting an observer's sync reply
+  // through is harmless — it does not mutate the DocSession, materialize
+  // proposals, emit pending events, or affect receipts. MSG_YJS_UPDATE and
+  // MSG_DOC_PUBLISH_READY remain write-only and are still rejected.
   if (effectiveRole === "observer") {
     if (
-      msgType === MSG_SYNC_STEP_2 ||
       msgType === MSG_YJS_UPDATE ||
       msgType === MSG_DOC_PUBLISH_READY
     ) {
@@ -1892,7 +1916,16 @@ async function handleMessage(
       break;
     }
     case MSG_SYNC_STEP_2: {
-      Y.applyUpdate(doc!, payload);
+      // Client-to-server MSG_SYNC_STEP_2 is IGNORED as a document mutation.
+      // The backend Y.Doc is the sole authority; clients bootstrap FROM it
+      // (server-to-client SYNC_STEP_2 above in MSG_SYNC_STEP_1) and cannot
+      // mutate it through the sync-protocol reply. Client document mutations
+      // must arrive as MSG_YJS_UPDATE so they enter the DocSession actor lane
+      // through `processArbitratedClientUpdate(...)` (acceptance gate,
+      // proposal materialization, broadcast). Applying an inbound
+      // MSG_SYNC_STEP_2 with `Y.applyUpdate(doc, payload)` would bypass that
+      // lane and let stale/offline client state overwrite server-owned
+      // fragments, so this handler is intentionally a no-op.
       break;
     }
     case MSG_YJS_UPDATE: {

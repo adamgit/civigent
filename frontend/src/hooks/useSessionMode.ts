@@ -350,6 +350,20 @@ export function useSessionMode({
             loadSections(decodedDocPath);
           }
         },
+        onSuperseded: () => {
+          // 4023 superseded_by_new_tab: the same writer opened a newer editor
+          // tab that took over the DocSession editor role for this document.
+          // Tear down this editor transport and drop back to observer mode
+          // instead of reconnecting — reconnecting would supersede the newer
+          // tab in return and cause an editor-role ping-pong.
+          // Surface a non-error explanation on the page-local status message
+          // channel so the user understands the editor session moved, rather
+          // than seeing this tab go silently read-only. Real network/auth
+          // failures use `setError` / connection-state banners, so this string
+          // stays out of those paths.
+          setStatusMessage("Editing moved to another tab. This tab is now read-only.");
+          stopEditingRef.current?.();
+        },
         onDocumentReplacementNotice: (payload) => {
           onDocumentReplacementNotice?.(payload);
         },

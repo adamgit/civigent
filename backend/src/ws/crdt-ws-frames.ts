@@ -17,10 +17,24 @@
  * (spec 05 §4 calls them "events"; 06-mirror-and-signals §7 describes JSON-WS
  * pushes). See assumptions.md "Area H decisions".
  *
+ * Backend authority: the DocSession Y.Doc is the sole source of truth for
+ * document content. Clients bootstrap FROM the backend via server→client
+ * SYNC_STEP_2 and mutate the DocSession ONLY through MSG_YJS_UPDATE, which
+ * enters the DocSession actor lane via `processArbitratedClientUpdate(...)`
+ * (acceptance gate + proposal materialization + broadcast). Client→server
+ * SYNC_STEP_2 replies are IGNORED as document mutations by design — offline
+ * client document content is not supported in this architecture, so allowing
+ * the sync reply to apply as `Y.applyUpdate(doc, payload)` on the server would
+ * bypass the acceptance gate and let stale client state overwrite the
+ * authoritative Y.Doc. See `crdt-ws-coordinator.ts` MSG_SYNC_STEP_2 handler.
+ *
  * Binary protocol:
  *   0x00 SYNC_STEP_1                — State vector (client→server and server→client)
- *   0x01 SYNC_STEP_2                — State diff  (client→server and server→client)
- *   0x02 YJS_UPDATE                 — Incremental Yjs update (bidirectional)
+ *   0x01 SYNC_STEP_2                — State diff: server→client bootstraps client
+ *                                     state; client→server is IGNORED (no writes
+ *                                     via sync protocol; use YJS_UPDATE instead)
+ *   0x02 YJS_UPDATE                 — Incremental Yjs update; the ONLY client→server
+ *                                     document mutation path
  *   0x03 AWARENESS                  — Awareness data
  *   0x0B DOCUMENT_REPLACEMENT_NOTICE — Server → Client: reconnect notice after restore/overwrite
  *   0x0C MODE_TRANSITION_REQUEST    — Client → Server: request mode transition (JSON ModeTransitionRequest)

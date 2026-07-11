@@ -567,9 +567,15 @@ const MSG_SYNC_STEP_2_BYTE = 0x01;
  * Perform the atomic join sequence for a socket connecting to a session:
  *   1. Send SYNC_STEP_2 with the full Y.Doc state so the client receives all
  *      current content immediately (critical for pre-connected observers whose
- *      SYNC_STEP_1 was dropped because no session existed at the time).
- *   2. Send SYNC_STEP_1 (server's state vector) so the client can contribute any
- *      local state the server lacks (reconnecting editors with offline work).
+ *      SYNC_STEP_1 was dropped because no session existed at the time). This
+ *      is the sole authoritative bootstrap of client state — the backend
+ *      DocSession Y.Doc is the source of truth.
+ *   2. Send SYNC_STEP_1 (server's state vector) so the client can complete its
+ *      Yjs sync protocol round-trip. The client's SYNC_STEP_2 reply is IGNORED
+ *      as a document mutation by the coordinator (offline client document
+ *      content is unsupported in this architecture); any client edits must
+ *      enter the DocSession via MSG_YJS_UPDATE so they pass through
+ *      `processArbitratedClientUpdate` (acceptance gate + materialization).
  *
  * `emitPresenceEvent` is retained as a no-op-friendly hook for the coordinator's
  * join ordering; presence replay was removed with the focus protocol.

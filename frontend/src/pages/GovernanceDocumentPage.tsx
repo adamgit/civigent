@@ -5,6 +5,7 @@ import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
 import { rememberRecentDoc } from "../services/recent-docs";
 import { ProposalPanel } from "../components/ProposalPanel";
 import { DocumentTopbar } from "../components/DocumentTopbar";
+import { DocumentConnectionBanner } from "../components/DocumentConnectionBanner";
 import { useDocumentActivity } from "../hooks/useDocumentActivity";
 import { DocumentActivityIndicator } from "../components/DocumentActivityIndicator";
 import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
@@ -472,38 +473,30 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   return (
     <SectionHoverProvider activeSectionIndex={focusedSectionIndex}>
     <DocumentActivityIndicator activity={documentActivity} />
-    <div className="flex flex-col h-full">
-      <DocumentTopbar
-        docPath={decodedDocPath}
-        showHistory={showHistory}
-        onToggleHistory={() => setShowHistory((v) => !v)}
-        showDiagnostics={showDiagnostics}
-        onToggleDiagnostics={() => setShowDiagnostics((v) => !v)}
-        showOverwrite={showOverwrite}
-        onToggleOverwrite={() => setShowOverwrite((v) => !v)}
-        crdtState={crdtState}
-        publishPaused={publishPaused}
-        isEditing={isEditing}
-        allReceived={saveStatus.allReceived}
-        hasLocalUncommittedEdits={saveStatus.hasLocalUncommittedEdits}
-        hasInboundActivity={saveStatus.hasInboundActivity}
-        hadLocalEdits={saveStatus.hadLocalEdits}
-        backendError={saveStatus.backendError}
-      />
+    <div className="relative flex flex-col h-full">
+      <div className="relative shrink-0">
+        <DocumentTopbar
+          docPath={decodedDocPath}
+          showHistory={showHistory}
+          onToggleHistory={() => setShowHistory((v) => !v)}
+          showDiagnostics={showDiagnostics}
+          onToggleDiagnostics={() => setShowDiagnostics((v) => !v)}
+          showOverwrite={showOverwrite}
+          onToggleOverwrite={() => setShowOverwrite((v) => !v)}
+          crdtState={crdtState}
+          publishPaused={publishPaused}
+          isEditing={isEditing}
+          allReceived={saveStatus.allReceived}
+          hasLocalUncommittedEdits={saveStatus.hasLocalUncommittedEdits}
+          hasInboundActivity={saveStatus.hasInboundActivity}
+          hadLocalEdits={saveStatus.hadLocalEdits}
+          backendError={saveStatus.backendError}
+        />
 
-      {/* Document-level connection banner \u2014 shown for EVERY non-live phase
-          (connecting / reconnecting / offline), while editing OR viewing. */}
-      {crdtBanner ? (
-        <div
-          className={`border-b px-4 py-1.5 text-xs font-medium ${
-            crdtBanner.tone === "red"
-              ? "bg-red-50 border-red-200 text-red-800"
-              : "bg-amber-50 border-amber-200 text-amber-800"
-          }`}
-        >
-          {crdtBanner.message}
-        </div>
-      ) : null}
+        {/* Document-level connection banner overlays the content so transient
+            connect phases don't shift the document layout. */}
+        <DocumentConnectionBanner banner={crdtBanner} />
+      </div>
 
       {/* Diagnostics modal */}
       {showDiagnostics && decodedDocPath && (

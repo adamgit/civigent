@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vites
 import * as Y from "yjs";
 import { CrdtProvider } from "../../services/crdt-provider";
 import type { DocumentReplacementNoticePayload } from "../../types/shared";
-import { WS_CLOSE_DOCUMENT_REPLACED, WS_CLOSE_ADMIN_REBUILD } from "../../services/crdt-close-codes";
+import { WS_CLOSE_DOCUMENT_REPLACED, WS_CLOSE_ADMIN_REBUILD, WS_CLOSE_SUPERSEDED } from "../../services/crdt-close-codes";
 
 // Protocol message types (must match crdt-provider.ts)
 const MSG_SYNC_STEP_1 = 0x00;
@@ -263,6 +263,36 @@ describe("CrdtProvider document replacement notice handling", () => {
     const ws2 = StubWebSocket.lastInstance!;
     expect(ws2).not.toBe(ws1);
     expect(onSessionReinit).toHaveBeenCalledTimes(1);
+    provider.destroy();
+  });
+
+  it("superseded (4023) fires onSuperseded, does NOT reconnect, and does NOT surface a generic error", () => {
+    const onSuperseded = vi.fn();
+    const onError = vi.fn();
+    const onSessionReinit = vi.fn();
+    const onForceRebuild = vi.fn();
+    const doc = new Y.Doc();
+    const provider = new CrdtProvider(doc, "/test/doc.md", {
+      onSuperseded,
+      onError,
+      onSessionReinit,
+      onForceRebuild,
+    });
+
+    provider.connect();
+    const ws1 = StubWebSocket.lastInstance!;
+    ws1.open();
+
+    ws1.onclose?.(new CloseEvent("close", { code: WS_CLOSE_SUPERSEDED }));
+
+    // No new WebSocket was opened — this is not a reconnect.
+    expect(StubWebSocket.lastInstance).toBe(ws1);
+    expect(onSuperseded).toHaveBeenCalledTimes(1);
+    // 4023 is not a transport failure: no generic error surface, no restore/rebuild.
+    expect(onError).not.toHaveBeenCalled();
+    expect(onSessionReinit).not.toHaveBeenCalled();
+    expect(onForceRebuild).not.toHaveBeenCalled();
+    expect(provider.state).toBe("disconnected");
     provider.destroy();
   });
 
