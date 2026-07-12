@@ -106,6 +106,7 @@ import {
   checkTokenExpired,
   rejectUpgrade,
 } from "./crdt-transport.js";
+import { handleProcessFatal } from "../runtime/fatal-handler.js";
 
 
 
@@ -829,7 +830,21 @@ onSessionDiscard(cancelQuiescenceTimer);
  *     `section:edit-rejected` and does not maintain a controlled
  *     document-level structural-error state.
  */
-async function normalizeQuiescedStructure(session: DocSession): Promise<boolean> {
+interface QuiescedStructureNormalizationResult {
+  applied: boolean;
+  /**
+   * Sections removed from the effective layout by live structural normalization:
+   * heading-deletion merges (dirty fragment folded onto its predecessor) and
+   * empty-BFH root-split dissolves (bootstrap BFH left the layout because the
+   * surviving preamble was empty). Carried out to the caller so it can emit
+   * `section:gone` for each removed fragment — clients must unmount the
+   * cleared-but-still-in-`ydoc.share` fragment before further local writes
+   * can echo into a dead key (spec 05/06 §"Section block-state events").
+   */
+  removedFragments: Array<{ fragmentKey: string; headingPath: string[] }>;
+}
+
+async function normalizeQuiescedStructure(session: DocSession): Promise<QuiescedStructureNormalizationResult> {
   // Coordinator-driven quiescence normalization is only reachable through
   // `runQuiescenceCommand` after `hasCurrentProposal()` — the first-edit
   // canonical seed case runs through proposal creation/materialization first,
@@ -852,8 +867,9 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<boolean>
   // inserted a section between two canonical siblings.
   const effectiveLayout = await resolveLiveSectionLayout(session.docPath, proposalId);
   let applied = false;
+  const removedFragments: Array<{ fragmentKey: string; headingPath: string[] }> = [];
 
-  
+
   for (const fragmentKey of [...session.liveFragments.getFragmentKeys()]) {
     const identity = effectiveLayout.find((e) => e.fragmentKey === fragmentKey);
     if (!identity) {
@@ -883,21 +899,43 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<boolean>
         session.liveFragments.readFragmentString(fragmentKey),
         identity,
       );
+      // Compute the plan once outside the transaction so the coordinator can
+      // read `dissolveSurvivorBfh` off the applied plan post-apply. Matches the
+      // merge branch's outside-compute pattern; the retry loop reuses the same
+      // plan since the reflected proposal state is stable across attempts.
+      const plan = await computeStructuralSplitPlan(
+        session.liveFragments,
+        session.liveFragments.ydoc,
+        session.docPath,
+        proposalId,
+        fragmentKey,
+        change,
+      );
+      if (!plan) continue;
       const res = await session.generator.normalizeQuiescedSection<StructuralSplitPlan>(
         session.liveFragments.ydoc,
-        [fragmentKey],
-        () =>
-          computeStructuralSplitPlan(
-            session.liveFragments,
-            session.liveFragments.ydoc,
-            session.docPath,
-            proposalId,
-            fragmentKey,
-            change,
-          ),
-        (plan) =>
-          applyStructuralSplitPlan(session.liveFragments, session.liveFragments.ydoc, plan, SERVER_NORMALIZATION_ORIGIN),
+        plan.affectedKeys,
+        () => plan,
+        (p) =>
+          applyStructuralSplitPlan(session.liveFragments, session.liveFragments.ydoc, p, SERVER_NORMALIZATION_ORIGIN),
       );
+      if (res.applied && plan.dissolveSurvivorBfh) {
+        // Dissolve BFH from the proposal after the live apply succeeded so the
+        // effective layout matches the unregistered live set. `deleteSection([])`
+        // splices BFH out of the proposal skeleton roots AND records its
+        // canonical section-file id in `deletedSectionFiles`, so the manifest
+        // overlay drops the inherited-canonical BFH entry too. Ordered AFTER
+        // live apply: if a clock-check retry exhausted its budget, the proposal
+        // still carries BFH and the next quiescence starts from a legal state
+        // (BFH in both live and layout) rather than a mismatched one.
+        const { ProposalEditor } = await import("../storage/proposal-editor.js");
+        const editor = ProposalEditor.open(proposalId, "inprogress");
+        await editor.deleteSection(session.docPath, []);
+        removedFragments.push({
+          fragmentKey: plan.survivorKey,
+          headingPath: [],
+        });
+      }
       applied = applied || res.applied;
     } else if (change.kind === "heading-deletion") {
       const plan = await computeStructuralMergePlan(session.liveFragments, session.docPath, proposalId, fragmentKey, change);
@@ -908,7 +946,13 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<boolean>
         () => plan,
         (p) => applyStructuralMergePlan(session.liveFragments, session.liveFragments.ydoc, p, SERVER_NORMALIZATION_ORIGIN),
       );
-      if (res.applied) await reflectMergeIntoProposal(proposalId, session.docPath, plan);
+      if (res.applied) {
+        await reflectMergeIntoProposal(proposalId, session.docPath, plan);
+        removedFragments.push({
+          fragmentKey: plan.removeKey,
+          headingPath: plan.removedHeadingPath,
+        });
+      }
       applied = applied || res.applied;
     } else if (
       change.kind === "heading-rename" ||
@@ -930,11 +974,11 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<boolean>
     
   }
 
-  return applied;
+  return { applied, removedFragments };
 }
 
-export function normalizeQuiescedStructureForTest(session: DocSession): Promise<boolean> {
-  return normalizeQuiescedStructure(session);
+export async function normalizeQuiescedStructureForTest(session: DocSession): Promise<boolean> {
+  return (await normalizeQuiescedStructure(session)).applied;
 }
 
 async function runQuiescenceCommand(session: DocSession): Promise<void> {
@@ -969,16 +1013,40 @@ async function runQuiescenceCommand(session: DocSession): Promise<void> {
   
   
   let appliedAnyStructural = false;
+  let removedFragments: Array<{ fragmentKey: string; headingPath: string[] }> = [];
   if (session.generator.hasCurrentProposal() && !anyStillActive) {
-    appliedAnyStructural = await normalizeQuiescedStructure(session);
+    const result = await normalizeQuiescedStructure(session);
+    appliedAnyStructural = result.applied;
+    removedFragments = result.removedFragments;
   }
   if (appliedAnyStructural) {
-    
-    
+
+
     broadcastToAll(session.docPath, encodeUpdate(Y.encodeStateAsUpdate(session.ydoc)));
-    
-    
+
+
     await emitLiveStructureChanged(session);
+    // Live structural removals (heading-deletion merges and empty-BFH
+    // root-split dissolves) must emit `section:gone` for each removed
+    // fragment, matching REST canonical delete. Without this the browser
+    // can keep a writable binding to a cleared-but-still-in-`ydoc.share`
+    // key and later touch a fragment with no layout identity — the
+    // acceptance-gate "no layout identity" throw. Emitted in addition to
+    // `doc:structure-changed` because the two events feed different frontend
+    // paths: structure-changed reconciles the section list, `section:gone`
+    // drives per-fragment detach/unmount via the block-state store (spec 05
+    // §"Section block-state events"). See the sibling REST path in
+    // `api/routes/sections.ts`.
+    if (onWsEvent) {
+      for (const removed of removedFragments) {
+        onWsEvent({
+          type: "section:gone",
+          doc_path: session.docPath,
+          fragment_key: removed.fragmentKey,
+          heading_path: removed.headingPath,
+        });
+      }
+    }
   }
 
   // AUTONOMOUS-publish gate. Unlike the last-editor leave-path and explicit
@@ -2009,13 +2077,12 @@ export function createCrdtWsServer(): CrdtWsServer {
           ? raw
           : Buffer.from(raw);
       messageChain = messageChain.then(() => handleMessage(socket, state, data)).then(null, (err) => {
-        
-        
-        
-        
-        
+        // Route through the process-boundary fatal policy: under
+        // KS_FATAL_ERRORS_MODE=crash this exits the process (preserving
+        // legacy queueMicrotask-throw behaviour); under `report` the process
+        // stays alive and the fatal is surfaced to clients via the WS hub.
         socket.close(1011, "internal error");
-        queueMicrotask(() => { throw err; });
+        handleProcessFatal(err, "uncaughtException");
       });
     });
 

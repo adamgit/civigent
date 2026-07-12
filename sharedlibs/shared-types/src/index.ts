@@ -1762,6 +1762,34 @@ export interface SectionEditRejectedEvent {
   guidance: string;
 }
 
+/**
+ * Structured report of a process-level fatal invariant failure. Produced by
+ * the backend fatal handler and surfaced to clients under
+ * `KS_FATAL_ERRORS_MODE=report`.
+ *
+ * Shared with dev-supervisor SSE (see `SystemState`) so both delivery paths
+ * (dev SSE, prod WS) use one shape.
+ */
+export interface FatalReport {
+  message: string;
+  stack: string;
+  cause: string | null;
+  origin: "uncaughtException" | "unhandledRejection";
+  /** ISO-8601. */
+  timestamp: string;
+}
+
+/**
+ * System-scoped app event emitted when the backend hits a fatal invariant
+ * failure while `KS_FATAL_ERRORS_MODE=report`. Has no `doc_path`; the hub
+ * fans it out to every open socket. Frontend consumers open the full-screen
+ * fatal UI in response.
+ */
+export interface SystemFatalEvent {
+  type: "system:fatal";
+  report: FatalReport;
+}
+
 export type WsServerEvent =
   | ContentCommittedEvent
   | WriterDirtyStateChangedEvent
@@ -1778,7 +1806,8 @@ export type WsServerEvent =
   | SectionBlockStateEvent
   | SectionPendingStateEvent
   | SectionEditRejectedEvent
-  | CatalogChangedEvent;
+  | CatalogChangedEvent
+  | SystemFatalEvent;
 
 // ─── WebSocket Client Messages ─────────────────────────────────────
 //

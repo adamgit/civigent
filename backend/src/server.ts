@@ -11,8 +11,10 @@ import { validateOAuthConfig, getMCPPublicURL, getOidcPublicUrl, isMCPPublicURLF
 import { maybeGenerateBootstrapCode } from "./auth/service.js";
 import { isSystemReady, setSystemReady } from "./startup-state.js";
 import { isDevSupervised } from "./runtime/system-state.js";
-import type { FatalReport, WorkerIpcMessage } from "./runtime/system-state.js";
+import type { WorkerIpcMessage } from "./runtime/system-state.js";
 import { startRuntimeMemorySampler } from "./runtime/memory-stats.js";
+import { getFatalErrorsMode } from "./runtime/fatal-errors-mode.js";
+import { installProcessFatalHandlers, setFatalReportDeliveryHandler } from "./runtime/fatal-handler.js";
 import type { WsServerEvent } from "./types/shared.js";
 import { buildProposalSectionAvailabilityEventsForDoc } from "./ws/proposal-section-availability.js";
 
@@ -24,30 +26,12 @@ function ipcSend(msg: WorkerIpcMessage): void {
 }
 
 // ─── Process-boundary fatal handlers (installed before any async work) ───
-// Normalize unhandled rejections into thrown errors so there is one fatal path.
-// In Node v15+ this is already the default, but being explicit prevents
-// future Node flag changes from silently swallowing rejections.
-process.on("unhandledRejection", (reason) => {
-  throw reason instanceof Error ? reason : new Error(String(reason));
-});
-
-// In supervised mode, catch fatal errors and IPC them to the parent before exiting.
-// In direct (production) mode, no handler is installed — Node's default crash
-// behavior (print stack + exit 1) is preserved.
-if (isDevSupervised) {
-  process.on("uncaughtException", (err) => {
-    const error = err instanceof Error ? err : new Error(String(err));
-    const report: FatalReport = {
-      message: error.message,
-      stack: error.stack ?? "",
-      cause: error.cause != null ? String(error.cause) : null,
-      origin: "uncaughtException",
-      timestamp: new Date().toISOString(),
-    };
-    ipcSend({ type: "fatal", report });
-    process.exit(1);
-  });
-}
+// Behaviour branches on KS_FATAL_ERRORS_MODE inside handleProcessFatal:
+//   crash  — supervised-dev IPCs the report to the parent then exit(1);
+//            direct/prod logs the stack and exit(1).
+//   report — process stays alive; delivery to connected clients happens via
+//            the WS-hub callback wired further below (task 3).
+installProcessFatalHandlers();
 
 let buildInfo: { version: string; sha: string; date: string } | null = null;
 try {
@@ -95,6 +79,14 @@ function handleWsEvent(event: WsServerEvent): void {
   void emitDerivedProposalSectionAvailability(event);
 }
 
+// In KS_FATAL_ERRORS_MODE=report the process stays alive after a fatal; deliver
+// the FatalReport to every connected client by broadcasting a system-scoped
+// (no doc_path) app event. Late-joining tabs are handled by the hub's sticky
+// replay in ws/hub.ts (see getCurrentFatal usage).
+setFatalReportDeliveryHandler((report) => {
+  wsHub.broadcast({ type: "system:fatal", report });
+});
+
 // Wire up CRDT events so they broadcast through the hub
 setCrdtEventHandler((event) => handleWsEvent(event));
 // Wire up CRDT origin-only private events (section:edit-rejected) so they
@@ -132,6 +124,10 @@ server.on("upgrade", (request, socket, head) => {
 
 // Validate OAuth config before anything else — fail fast on misconfiguration
 validateOAuthConfig();
+
+// Parse+validate KS_FATAL_ERRORS_MODE eagerly so an invalid value fails at
+// startup rather than the first time a fatal fires.
+getFatalErrorsMode();
 
 // Startup crash recovery (detectAndRecoverCrash) is narrowed to proposal-FSM
 // cleanup + git integrity: discard transient `pending` proposals, finish-forward

@@ -119,6 +119,8 @@ export type {
   AgentActivitySummary,
   GetAgentsFullSummaryResponse,
   CatalogChangedEvent,
+  FatalReport,
+  SystemFatalEvent,
   BlameLineAttribution,
   BlameResponse,
   DocumentReplacementNoticePayload,

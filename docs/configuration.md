@@ -151,6 +151,7 @@ The env-var reference table for the five `KS_BACKUP_*` / `SSH_AUTH_SOCK` variabl
 | `KS_SNAPSHOT_ROOT` | Override the snapshots directory | sibling `snapshots/` directory next to `KS_DATA_ROOT` |
 | `KS_SNAPSHOT_ENABLED` | Enable assembled document snapshots | `true` |
 | `KS_GOVERNANCE_MODE` | Governance feature mode (`available` or `forced`) | `available` |
+| `KS_FATAL_ERRORS_MODE` | What to do after a process-level fatal invariant failure: `report` keeps the process alive and surfaces the error to connected clients (accepts continued availability with the risk of further corruption); `crash` exits so an orchestrator/supervisor can restart. Invalid values fail at startup. | `report` |
 | `KS_INVOLVEMENT_PRESET` | Human involvement preset (`yolo`, `aggressive`, `eager`, `conservative`) | `eager` |
 | `KS_IMPORT_ROOT` | Path inside the container where the import volume is mounted | `/import` |
 

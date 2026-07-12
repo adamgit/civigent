@@ -78,12 +78,22 @@ export function adoptFreshSectionLayout(params: {
     return freshSection;
   });
   // Reconcile focus by fragment identity: keep focus on the focused fragment's NEW
-  // index, or clear it if that fragment no longer exists.
+  // index, or clear it if that fragment no longer exists. Special case: when the
+  // dropped focused fragment is the bootstrap BFH (dissolved after empty-preamble
+  // root-split), hand focus to the first headed section in the fresh layout so
+  // the caret follows the promoted heading instead of landing on an invisible row.
   const focusedIndex = focusedSectionIndexRef.current;
   if (focusedIndex !== null && focusedIndex >= 0 && focusedIndex < prev.length) {
     const focusedFk = getSectionFragmentKey(prev[focusedIndex]);
     const newIndex = nextSections.findIndex((s) => getSectionFragmentKey(s) === focusedFk);
-    focusedSectionIndexRef.current = newIndex >= 0 ? newIndex : null;
+    if (newIndex >= 0) {
+      focusedSectionIndexRef.current = newIndex;
+    } else if (focusedFk === BEFORE_FIRST_HEADING_KEY) {
+      const firstHeaded = nextSections.findIndex((s) => s.heading_path.length > 0);
+      focusedSectionIndexRef.current = firstHeaded >= 0 ? firstHeaded : null;
+    } else {
+      focusedSectionIndexRef.current = null;
+    }
   }
   return nextSections;
 }

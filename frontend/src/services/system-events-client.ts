@@ -11,13 +11,8 @@
  * error and retrying with exponential backoff.
  */
 
-export interface FatalReport {
-  message: string;
-  stack: string;
-  cause: string | null;
-  origin: "uncaughtException" | "unhandledRejection";
-  timestamp: string;
-}
+import type { FatalReport } from "../types/shared.js";
+export type { FatalReport };
 
 export interface SystemState {
   state: "starting" | "ready" | "fatal";

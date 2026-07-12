@@ -10,6 +10,7 @@ import type {
 } from "../types/shared.js";
 import { expectJsonObject, parseJson } from "../types/shared.js";
 import { resolveAuthenticatedWriterFromHeaders } from "../auth/context.js";
+import { getCurrentFatal } from "../runtime/fatal-handler.js";
 
 interface SocketState {
   writerId: string;
@@ -127,6 +128,17 @@ export function createWsHub(): WsHub {
       subscriptions: new Set<string>(),
       clientInstanceId: null,
     });
+
+    // Sticky-fatal replay: if the process is already in KS_FATAL_ERRORS_MODE
+    // "report" and a fatal has fired, a browser tab that connects afterwards
+    // must still see the fatal screen. Send the current report to just this
+    // new socket immediately — no subscription is required because the event
+    // is system-scoped (no doc_path).
+    const currentFatal = getCurrentFatal();
+    if (currentFatal) {
+      const stickyEvent: WsServerEvent = { type: "system:fatal", report: currentFatal };
+      socket.send(JSON.stringify(stickyEvent));
+    }
 
     socket.on("message", (data) => {
       const state = socketState.get(socket);

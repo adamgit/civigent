@@ -336,6 +336,15 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     replicaStore: BrowserFragmentReplicaStore,
     fk: string,
   ): void {
+    // Belt-and-braces re-bind guard (spec 05 §"Section block-state events"):
+    // the canvas render guard already skips a "gone" fragment, but a mount that
+    // raced ahead of a just-arrived `section:gone` (or `doc:structure-changed`
+    // that dropped this key) must NOT call `doc.getXmlFragment(fk)` — Yjs
+    // creates the top-level type on read, so a re-bind resurrects a
+    // cleared-but-still-in-`share` fragment and the user's next keystroke
+    // echoes into it. We bail *before* the getXmlFragment call; the imminent
+    // React unmount then tears the editor down cleanly.
+    if (replicaStore.getSectionEditabilityForKey(fk) === "gone") return;
     const view = crepe.editor.ctx.get(editorViewCtx);
     ctrl.setBasePlugins([...view.state.plugins]);
 

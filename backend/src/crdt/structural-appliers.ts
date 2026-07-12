@@ -27,7 +27,7 @@ import { updateYFragment } from "y-prosemirror";
 import { buildFragmentContent, EMPTY_BODY, appendToBody, appendBodyToFragment, bodyFromFragmentStrippingLeadingHeading, sectionWriteInputFromBody, type FragmentContent, type SectionBody } from "../storage/section-formatting.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { resolveLiveSectionLayout, readLiveSectionBodies, type LiveSectionLayoutEntry } from "./live-section-layout.js";
-import { getBackendSchema } from "./ydoc-fragments.js";
+import { BEFORE_FIRST_HEADING_KEY, getBackendSchema } from "./ydoc-fragments.js";
 import type { LiveFragmentStringsStore } from "./live-fragment-strings-store.js";
 import type { StructuralChange } from "./structural-change.js";
 import type { ProposalId, ProposalSection } from "../types/shared.js";
@@ -93,6 +93,16 @@ export interface StructuralSplitPlan {
   seeds: Map<string, FragmentContent>;
   /** Fragment keys this plan touches, for the generator's pre-flight clock check. */
   affectedKeys: string[];
+  /**
+   * Bootstrap BFH dissolve on empty-preamble root-split. When the survivor is
+   * the before-first-heading fragment AND the surviving `rootBody` is empty/
+   * whitespace, the applier unregisters the BFH live fragment key after clearing
+   * its children so it leaves the effective layout. The coordinator additionally
+   * removes BFH from the proposal skeleton (`deleteSection([])`) and emits
+   * `section:gone` for BFH — same client contract as heading-deletion merge.
+   * A non-empty preamble keeps BFH as the survivor section (unchanged root-split).
+   */
+  dissolveSurvivorBfh?: boolean;
 }
 
 const HEADING_NODE = "heading";
@@ -172,11 +182,22 @@ export async function computeStructuralSplitPlan(
     seeds.set(entry.fragmentKey, buildFragmentContent(body, entry.level, entry.heading));
   }
 
+  // Bootstrap BFH dissolve: an empty-doc BFH that just got its first heading
+  // typed inside has no preamble content to keep as a section — treat that
+  // survivor as a bootstrap mount target rather than a durable section (spec
+  // 14 empty-doc BFH rule). A non-empty preamble keeps BFH via the normal
+  // identity-preserving split path.
+  const dissolveSurvivorBfh =
+    change.kind === "root-split" &&
+    dirtyKey === BEFORE_FIRST_HEADING_KEY &&
+    change.rootBody.trim() === "";
+
   return {
     survivorKey: dirtyKey,
     deleteFrom,
     seeds,
     affectedKeys: [dirtyKey, ...addedEntries.map((e) => e.fragmentKey)],
+    ...(dissolveSurvivorBfh ? { dissolveSurvivorBfh: true } : {}),
   };
 }
 
@@ -200,6 +221,13 @@ export function applyStructuralSplitPlan(
   // Seed genuinely-new fragments (identity does not matter — they are new).
   for (const [key, content] of plan.seeds) {
     liveFragments.replaceFragmentString(key, content, origin);
+  }
+  // Bootstrap BFH dissolve: unregister the emptied BFH so `getFragmentKeys()`
+  // stops listing it. Y.js cannot remove the top-level XmlFragment from
+  // `ydoc.share`; the canvas render guard + block-state gone signal keep the
+  // browser from touching the cleared-but-still-in-`share` key.
+  if (plan.dissolveSurvivorBfh) {
+    liveFragments.unregisterFragmentKey(plan.survivorKey);
   }
 }
 

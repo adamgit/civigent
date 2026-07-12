@@ -449,6 +449,14 @@ export function AppLayout() {
       }, 180);
     };
     wsClient.onEvent((event) => {
+      // System-scoped fatal — applies in BOTH dev and prod builds and takes
+      // precedence over everything else. Under KS_FATAL_ERRORS_MODE=report
+      // the backend stays alive and broadcasts this over the app WS instead
+      // of dying; late-joining tabs receive it via the hub's sticky replay.
+      if (event.type === "system:fatal") {
+        setFatalReport(event.report);
+        return;
+      }
       const tabActive = windowFocusedRef.current && documentVisibleRef.current;
       const result = classifyWsEvent(event, focusedDocPathRef.current, tabActive);
       const eventRecord = event as unknown as Record<string, unknown>;

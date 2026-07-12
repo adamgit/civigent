@@ -124,6 +124,8 @@ export type {
   AgentActivitySummary,
   GetAgentsFullSummaryResponse,
   CatalogChangedEvent,
+  FatalReport,
+  SystemFatalEvent,
   SectionBlockStateEvent,
   SectionPendingStateEvent,
   SectionEditRejectedEvent,

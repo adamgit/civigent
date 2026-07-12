@@ -5,6 +5,10 @@
  * (parent) and server.ts (worker) import from here.
  */
 
+import type { FatalReport } from "../types/shared.js";
+
+export type { FatalReport };
+
 // ---------------------------------------------------------------------------
 // Dev-supervised mode detection
 // ---------------------------------------------------------------------------
@@ -18,14 +22,6 @@ export const isDevSupervised = typeof process.send === "function";
 // ---------------------------------------------------------------------------
 
 export type SystemLifecyclePhase = "starting" | "ready" | "fatal";
-
-export interface FatalReport {
-  message: string;
-  stack: string;
-  cause: string | null;
-  origin: "uncaughtException" | "unhandledRejection";
-  timestamp: string; // ISO-8601
-}
 
 export interface SystemState {
   state: SystemLifecyclePhase;

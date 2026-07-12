@@ -190,6 +190,7 @@ Once the server is running, see the [Configuration Reference](configuration.md) 
 - **Human-involvement presets** — control how long human edits protect sections from agent overwrites (`yolo` / `aggressive` / `eager` / `conservative`)
 - **Hard block conditions** — conditions that always block agents regardless of preset
 - **Snapshot configuration** — enable pre-assembled document snapshots for external tools
+- **Fatal-error policy** — `KS_FATAL_ERRORS_MODE` controls process behaviour on an invariant failure. Default `report` keeps the process alive and surfaces the error to every connected client over the app WebSocket (browser tabs show the fatal screen; a tab opened after the fatal still receives it on connect). Set `crash` to have the process exit so your orchestrator/supervisor can restart it. `report` accepts continued availability with the risk of further corruption after a fatal.
 - **Admin API** — change presets and read system health programmatically
 
 ---
