@@ -71,23 +71,31 @@ export function ProposalPanel({
         alignItems: "flex-end",
         gap: "0.4rem",
       }}>
-        <button
-          type="button"
-          onClick={() => void onStartManualPublish()}
-          disabled={creatingProposal}
-          style={{
-            padding: "0.5rem 0.9rem",
-            fontSize: "0.82rem",
-            cursor: creatingProposal ? "default" : "pointer",
-            borderRadius: "999px",
-            border: "1px solid #2563eb",
-            background: "#2563eb",
-            color: "#fff",
-            boxShadow: "0 3px 10px rgba(37,99,235,0.25)",
-          }}
+        {/* Temporarily disabled pending next release of Civigent */}
+        <span
+          title="Temporarily disabled pending next release of Civigent"
+          style={{ cursor: "not-allowed", display: "inline-block" }}
         >
-          {creatingProposal ? "Starting..." : "Start Manual Publish"}
-        </button>
+          <button
+            type="button"
+            disabled
+            aria-disabled="true"
+            style={{
+              padding: "0.5rem 0.9rem",
+              fontSize: "0.82rem",
+              cursor: "not-allowed",
+              borderRadius: "999px",
+              border: "1px solid #94a3b8",
+              background: "#94a3b8",
+              color: "#f1f5f9",
+              boxShadow: "none",
+              opacity: 0.85,
+              pointerEvents: "none",
+            }}
+          >
+            Start Manual Publish
+          </button>
+        </span>
         {panelError ? (
           <p style={{ color: "#c0392b", fontSize: "0.75rem", margin: 0, maxWidth: "18rem", textAlign: "right" }}>
             {panelError}

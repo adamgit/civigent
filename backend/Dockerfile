@@ -1,6 +1,6 @@
 # ── Base ──────────────────────────────────────────────
 FROM node:24-alpine AS base
-RUN apk add --no-cache git ripgrep
+RUN apk add --no-cache git ripgrep openssh-client
 WORKDIR /app
 
 # ── Dev target ────────────────────────────────────────

@@ -1,6 +1,8 @@
 {
     "name": "Node.js + TypeScript",
-    "image": "mcr.microsoft.com/devcontainers/javascript-node:24-bookworm",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
     "remoteUser": "node",
     "customizations": {
         "vscode": {

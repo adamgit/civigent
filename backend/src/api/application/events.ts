@@ -180,10 +180,20 @@ export async function emitLiveStructureChanged(
   liveEditor?: Pick<WriterIdentity, "id" | "type" | "displayName">,
 ): Promise<void> {
   if (!emit) return;
-  const { readProposalSectionList, readCanonicalSectionList } = await import("./sections.js");
-  const { response } = currentProposalId
-    ? await readProposalSectionList(currentProposalId, docPath)
-    : await readCanonicalSectionList(docPath);
+  const { readProposalSectionList, readCanonicalSectionList, readLiveSectionList } = await import("./sections.js");
+  const { lookupDocSession } = await import("../../crdt/ydoc-lifecycle.js");
+  // Spec 06 §Browser freshness: while a DocSession is live, `content` is the live
+  // fragment markdown (same bytes the shared doc shows), NOT a `prependHeadings`
+  // reconstruction from the topology-lagging proposal/canonical skeleton — so a
+  // demotion-before-quiescence ships the live body-only text. Topology still comes
+  // from the reader (this does not move merge/delete earlier than quiescence).
+  // With no session (cold structural change), keep the reconstructing cold read.
+  const session = lookupDocSession(docPath);
+  const { response } = session
+    ? await readLiveSectionList(docPath, currentProposalId, session.liveFragments)
+    : currentProposalId
+      ? await readProposalSectionList(currentProposalId, docPath)
+      : await readCanonicalSectionList(docPath);
   const sections = liveEditor
     ? response.sections.map((s) => overrideUnknownLastEditorWithLiveWriter(s, liveEditor))
     : response.sections;

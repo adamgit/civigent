@@ -4,6 +4,7 @@ import { apiClient, SystemStartingError, setUnauthorizedHandler, setSystemStarti
 import { KnowledgeStoreWsClient } from "../services/ws-client";
 import { connectSystemEvents, type FatalReport } from "../services/system-events-client";
 import { DocumentsTreeNav } from "../components/DocumentsTreeNav";
+import { SidebarNavLinks } from "../components/SidebarNavLinks";
 import { SystemFatalScreen } from "../components/SystemFatalScreen";
 import { WsDiagnosticsConsole } from "../components/WsDiagnosticsConsole";
 import { rememberRecentDoc } from "../services/recent-docs";
@@ -74,10 +75,10 @@ export function AppLayout() {
   const [fatalReport, setFatalReport] = useState<FatalReport | null>(null);
   const [windowFocused, setWindowFocused] = useState(() => document.hasFocus());
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
-  const [adminExpanded, setAdminExpanded] = useState(() => {
-    try { return localStorage.getItem("ks_sidebar_admin_expanded") === "true"; } catch { return false; }
-  });
   const [wsDiagOpen, setWsDiagOpen] = useState(false);
+  const [rootImporting, setRootImporting] = useState(false);
+  const [rootImportError, setRootImportError] = useState<string | null>(null);
+  const rootImportInputRef = useRef<HTMLInputElement>(null);
   const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
   const focusedDocPath = useMemo(() => parseRouteDocPath(location.pathname), [location.pathname]);
   useEffect(() => {
@@ -193,6 +194,38 @@ export function AppLayout() {
       .finally(() => {
         setCreatingDoc(false);
       });
+  };
+
+  const handleRootExport = () => {
+    window.location.href = `/api/export?path=${encodeURIComponent("/")}`;
+  };
+
+  const handleRootImportClick = () => {
+    setRootImportError(null);
+    if (rootImportInputRef.current) {
+      rootImportInputRef.current.value = "";
+      rootImportInputRef.current.click();
+    }
+  };
+
+  const handleRootImportSelected = async () => {
+    const input = rootImportInputRef.current;
+    if (!input?.files || input.files.length === 0) return;
+    setRootImporting(true);
+    setRootImportError(null);
+    try {
+      const files = Array.from(input.files).filter((file) => file.name.toLowerCase().endsWith(".md"));
+      if (files.length === 0) {
+        throw new Error("No .md files selected.");
+      }
+      const staging = await apiClient.createImport();
+      await apiClient.uploadImportFiles(staging.import_id, files);
+      navigate(`/imports?expand=${encodeURIComponent(staging.import_id)}`);
+    } catch (error) {
+      setRootImportError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRootImporting(false);
+    }
   };
 
   useEffect(() => {
@@ -528,7 +561,7 @@ export function AppLayout() {
   return (
     <div className="flex h-screen">
       {/* Sidebar */}
-      <aside className="w-[--spacing-sidebar-w] min-w-[--spacing-sidebar-w] bg-sidebar-bg border-r border-sidebar-border flex flex-col select-none">
+      <aside className="w-[--spacing-sidebar-w] min-w-[--spacing-sidebar-w] bg-sidebar-bg border-r border-sidebar-border flex flex-col select-none overflow-visible">
         {/* Sidebar header */}
         <div className="px-3.5 pt-3.5 pb-2.5 flex items-center justify-between gap-2">
           <span className="text-xs font-semibold text-sidebar-heading uppercase tracking-wide">
@@ -546,30 +579,78 @@ export function AppLayout() {
           </button>
         </div>
 
+        {/* Primary nav links (movable component) */}
+        <SidebarNavLinks variant="primary" />
+
         {/* Sidebar tree */}
         <div className="flex-1 px-2 py-0.5 overflow-y-auto sidebar-scroll">
-          <div className="flex items-center justify-between px-1.5 pt-2.5 pb-1.5">
-            <Link to="/docs" className="flex items-center gap-1.5 text-[10.5px] font-semibold text-sidebar-heading uppercase tracking-wider hover:text-sidebar-text-hover transition-colors" style={{ textDecoration: "none" }}>
-              <span className="opacity-50">&#128196;</span> All Documents
+          <input
+            ref={rootImportInputRef}
+            type="file"
+            accept=".md"
+            multiple
+            className="hidden"
+            onChange={() => { void handleRootImportSelected(); }}
+          />
+          {/* All Documents + root export/import — text aligns with tree folder icons */}
+          <div className="flex items-center gap-1 pt-2.5 pb-1.5">
+            <Link
+              to="/docs"
+              className="min-w-0 flex-1 text-[10.5px] font-semibold text-sidebar-heading uppercase tracking-wider hover:text-sidebar-text-hover transition-colors truncate"
+              style={{ textDecoration: "none" }}
+            >
+              All Documents
             </Link>
+            <button
+              type="button"
+              title="Export all documents as ZIP"
+              className="text-[11px] text-sidebar-text opacity-50 hover:opacity-100 bg-transparent border-none cursor-pointer p-0.5 leading-none transition-opacity"
+              onClick={handleRootExport}
+            >
+              &#8595;
+            </button>
+            <button
+              type="button"
+              title="Import .md files to root"
+              className="text-[11px] text-sidebar-text opacity-50 hover:opacity-100 bg-transparent border-none cursor-pointer p-0.5 leading-none transition-opacity disabled:opacity-30"
+              onClick={handleRootImportClick}
+              disabled={rootImporting}
+            >
+              &#8593;
+            </button>
             {!loadingTree && (
               <button
                 type="button"
                 onClick={() => setShowNewDocForm((v) => !v)}
-                className="text-[15px] text-sidebar-heading bg-transparent border-none cursor-pointer leading-none opacity-0 hover:opacity-100 transition-opacity"
+                className="text-[15px] text-sidebar-heading bg-transparent border-none cursor-pointer leading-none opacity-50 hover:opacity-100 transition-opacity"
+                title="Create a new document"
+                aria-label="Create a new document"
               >
                 +
               </button>
             )}
           </div>
+          {rootImportError ? (
+            <p className="text-[11px] text-status-red m-0 mb-1">{rootImportError}</p>
+          ) : null}
+          {rootImporting ? (
+            <p className="text-[10px] text-text-faint m-0 mb-1">Importing...</p>
+          ) : null}
 
           {!loadingTree && showNewDocForm && (
-            <form onSubmit={handleNewDocSubmit} className="flex flex-col gap-1 mb-1.5 px-1.5">
+            <form onSubmit={handleNewDocSubmit} className="flex flex-col gap-1 mb-1.5">
               <div className="flex gap-1">
                 <input
                   type="text"
                   value={newDocPath}
                   onChange={(e) => setNewDocPath(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Escape") return;
+                    e.preventDefault();
+                    setShowNewDocForm(false);
+                    setNewDocPath("");
+                    setNewDocError(null);
+                  }}
                   placeholder="path/to/my-doc"
                   className="flex-1 min-w-0 text-xs font-[family-name:var(--font-ui)] bg-white/60 border border-sidebar-border rounded px-2 py-1 outline-none focus:border-accent-border"
                   autoFocus
@@ -590,18 +671,18 @@ export function AppLayout() {
           )}
 
           {loadingTree ? (
-            <p className="text-xs text-sidebar-text px-1.5 py-2">Loading tree...</p>
+            <p className="text-xs text-sidebar-text py-2">Loading tree...</p>
           ) : null}
           {!loadingTree && syncingTree ? (
-            <p className="text-[10px] text-text-faint px-1.5">Refreshing...</p>
+            <p className="text-[10px] text-text-faint">Refreshing...</p>
           ) : null}
           {systemStarting ? (
-            <p className="text-xs text-text-faint px-1.5 py-2">Waiting for system...</p>
+            <p className="text-xs text-text-faint py-2">Waiting for system...</p>
           ) : treeError ? (
-            <p className="text-xs text-status-red px-1.5 py-2">Tree unavailable: {treeError}</p>
+            <p className="text-xs text-status-red py-2">Tree unavailable: {treeError}</p>
           ) : null}
           {!loadingTree && !systemStarting && !treeError && entries.length === 0 ? (
-            <p className="text-xs text-sidebar-text px-1.5 py-2">
+            <p className="text-xs text-sidebar-text py-2">
               No documents yet.{" "}
               <button
                 type="button"
@@ -625,62 +706,8 @@ export function AppLayout() {
           ) : null}
         </div>
 
-        {/* Sidebar nav */}
-        <nav className="px-2 pt-2.5 pb-3.5 border-t border-sidebar-border flex flex-col gap-px">
-          <Link to="/setup" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-            <span className="text-xs w-4 text-center opacity-50">&#128268;</span> Connect Agent
-          </Link>
-          <Link to="/history" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-            <span className="text-xs w-4 text-center opacity-50">&#128336;</span> Audit Log
-          </Link>
-          <Link to="/agents-activity" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-            <span className="text-xs w-4 text-center opacity-50">&#129302;</span> Agents
-          </Link>
-          <div>
-            <div className="flex items-center">
-              <Link to="/admin" className="flex-1 flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-                <span className="text-xs w-4 text-center opacity-50">&#9881;</span> Admin
-              </Link>
-              <button
-                onClick={() => setAdminExpanded(p => { const next = !p; try { localStorage.setItem("ks_sidebar_admin_expanded", String(next)); } catch {} return next; })}
-                className="px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all"
-              >
-                {adminExpanded ? "\u25B4" : "\u25BE"}
-              </button>
-            </div>
-            {adminExpanded && (
-              <div className="flex flex-col gap-px pl-4">
-                <Link to="/proposals" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-                  <span className="text-xs w-4 text-center opacity-50">&#128203;</span> Proposals
-                </Link>
-                <Link to="/coordination" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-                  <span className="text-xs w-4 text-center opacity-50">&#128301;</span> Coordination
-                </Link>
-                <Link to="/admin/agents-auth" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-                  <span className="text-xs w-4 text-center opacity-50">&#128273;</span> Agent Keys
-                </Link>
-                <Link to="/agent-simulator" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-                  <span className="text-xs w-4 text-center opacity-50">&#129302;</span> Agent Sim
-                </Link>
-                <Link to="/imports" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-                  <span className="text-xs w-4 text-center opacity-50">&#128229;</span> Imports
-                </Link>
-                <Link to="/admin/agent-mcp-logs" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-                  <span className="text-xs w-4 text-center opacity-50">&#128202;</span> Agent Monitoring
-                </Link>
-                <Link to="/admin/snapshots" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-                  <span className="text-xs w-4 text-center opacity-50">&#128247;</span> Snapshots
-                </Link>
-                <Link to="/admin/git-backup" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-                  <span className="text-xs w-4 text-center opacity-50">&#128190;</span> Git Backup
-                </Link>
-                <Link to="/admin/runtime-memory" className="flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all">
-                  <span className="text-xs w-4 text-center opacity-50">&#128200;</span> Runtime Memory
-                </Link>
-              </div>
-            )}
-          </div>
-        </nav>
+        {/* Footer nav links (movable component) */}
+        <SidebarNavLinks variant="footer" />
 
         {/* Version footer */}
         <div className="px-3.5 py-2 border-t border-sidebar-border">

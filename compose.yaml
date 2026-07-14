@@ -34,6 +34,13 @@ services:
       - KS_OIDC_DISPLAY_NAME=${KS_OIDC_DISPLAY_NAME:-}
       - KS_AGENT_AUTH_POLICY=${KS_AGENT_AUTH_POLICY:-}
       - KS_AGENT_ANON_SALT=${KS_AGENT_ANON_SALT:-}
+      # Private Git remote backup — see docs/backup-restore.md for volume mounts.
+      # When KS_BACKUP_GIT_REMOTE is unset the feature is off.
+      - KS_BACKUP_GIT_REMOTE=${KS_BACKUP_GIT_REMOTE:-}
+      - KS_BACKUP_GIT_AUTH_MODE=${KS_BACKUP_GIT_AUTH_MODE:-}
+      - KS_BACKUP_SSH_KEY_PATH=${KS_BACKUP_SSH_KEY_PATH:-}
+      - KS_BACKUP_KNOWN_HOSTS_PATH=${KS_BACKUP_KNOWN_HOSTS_PATH:-}
+      - SSH_AUTH_SOCK=${SSH_AUTH_SOCK:-}
 
   frontend:
     build:

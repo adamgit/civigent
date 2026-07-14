@@ -187,19 +187,23 @@ export function HomePage() {
             onFocus={() => setShowHowItWorks(true)}
             onBlur={() => setShowHowItWorks(false)}
           >
-            <Link
-              to="/features"
+            <div
               style={{
-                display: "block",
                 background: "var(--color-sidebar-bg)",
                 borderRadius: 8,
                 padding: "10px 14px",
-                textDecoration: "none",
               }}
             >
               <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 1 }}>How it works</div>
-              <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-accent)" }}>Features &rarr;</div>
-            </Link>
+              <div style={{ display: "flex", gap: 14, fontSize: 13, fontWeight: 500 }}>
+                <Link to="/features" style={{ color: "var(--color-accent)", textDecoration: "none" }}>
+                  Features &rarr;
+                </Link>
+                <Link to="/help" style={{ color: "var(--color-accent)", textDecoration: "none" }}>
+                  Help &rarr;
+                </Link>
+              </div>
+            </div>
             {showHowItWorks && (
               <div
                 style={{

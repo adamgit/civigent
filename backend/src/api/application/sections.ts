@@ -33,6 +33,8 @@ import { BLOCKING_LOCK_STATUSES } from "../../domain/proposal-fsm-locks.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
+import type { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
+import type { FragmentContent } from "../../storage/section-formatting.js";
 import { requestDocSessionMove, type MoveSectionResult } from "../../ws/crdt-ws-coordinator.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
 
@@ -99,9 +101,40 @@ export async function openWorkspaceReader(docPath: string): Promise<CanonicalRea
  * Section list for the human working copy. Reuses the canonical builder; unlike
  * the canonical read it does NOT emit `agent:reading` (the route omits the
  * broadcast — workspace reads are human-facing).
+ *
+ * Spec 06 §Browser freshness: the workspace during a live session IS live
+ * DocSession state. When a DocSession is active, section `content` is the live
+ * fragment markdown (same bytes the shared doc shows) rather than a
+ * `prependHeadings` reconstruction from the topology-lagging proposal/canonical
+ * skeleton. Topology/order/identity still come from the reader (unchanged), so
+ * this is display-authority only.
  */
 export async function readWorkspaceSectionList(docPath: string): Promise<ReadSectionListResult> {
-  return buildSectionListResponse(docPath, await openWorkspaceReader(docPath), undefined);
+  const session = lookupDocSession(docPath);
+  return buildSectionListResponse(
+    docPath,
+    await openWorkspaceReader(docPath),
+    undefined,
+    session?.liveFragments,
+  );
+}
+
+/**
+ * Live section list for a document with an ACTIVE DocSession. Topology reader is
+ * the session's `inprogress` proposal when one exists (else canonical), and
+ * section `content` is the live Y.Doc fragment markdown (no `prependHeadings`).
+ * Used by `emitLiveStructureChanged` so the `doc:structure-changed` payload's
+ * `content` matches the shared doc during demotion-before-quiescence.
+ */
+export async function readLiveSectionList(
+  docPath: string,
+  currentProposalId: string | null,
+  liveFragments: LiveFragmentStringsStore,
+): Promise<ReadSectionListResult> {
+  const reader = currentProposalId
+    ? ProposalReader.open(currentProposalId, "inprogress")
+    : CanonicalReader.open();
+  return buildSectionListResponse(docPath, reader, currentProposalId ?? undefined, liveFragments);
 }
 
 
@@ -144,10 +177,37 @@ export async function readProposalAllSections(
   return { documents };
 }
 
+/**
+ * Live-only section content: the current markdown of each section's live Y.Doc
+ * fragment (the same bytes the shared doc shows), keyed by heading key. Used
+ * instead of `prependHeadings` while a DocSession is active so that
+ * demotion-before-quiescence ships the live body-only text — NOT a `# Heading`
+ * reconstructed from the (topology-lagging) proposal/canonical skeleton.
+ *
+ * Topology/identity still come from the reader's `getSectionList` above (so this
+ * is display-authority only — it does NOT move merge/delete earlier than
+ * quiescence). `readFragmentString` is sourced directly from Yjs state, so it is
+ * always current; it is the same read `snapshotSections` uses for
+ * materialization.
+ */
+function buildLiveSectionContent(
+  sectionList: Array<{ headingPath: string[]; sectionFile: string }>,
+  liveFragments: LiveFragmentStringsStore,
+): Map<string, FragmentContent> {
+  const bulkContent = new Map<string, FragmentContent>();
+  for (const s of sectionList) {
+    const headingKey = SectionRef.headingKey(s.headingPath);
+    const fragmentKey = fragmentKeyFromSectionFile(s.sectionFile, s.headingPath.length === 0);
+    bulkContent.set(headingKey, liveFragments.readFragmentString(fragmentKey));
+  }
+  return bulkContent;
+}
+
 async function buildSectionListResponse(
   docPath: string,
   sectionReader: SectionListReader,
   excludeProposalId: string | undefined,
+  liveFragments?: LiveFragmentStringsStore,
 ): Promise<ReadSectionListResult> {
   const sectionList = await sectionReader.getSectionList(docPath);
 
@@ -156,7 +216,11 @@ async function buildSectionListResponse(
     sectionList.map((s) => [SectionRef.headingKey(s.headingPath), s.sectionFile]),
   );
 
-  const bulkContent = prependHeadings(sectionList, await sectionReader.readAllSections(docPath));
+  // Live path: content from the shared Y.Doc fragments (no `prependHeadings`).
+  // Cold path: reconstruct heading+body from the reader's body-only storage.
+  const bulkContent = liveFragments
+    ? buildLiveSectionContent(sectionList, liveFragments)
+    : prependHeadings(sectionList, await sectionReader.readAllSections(docPath));
 
   const involvementMeta = await buildSectionInvolvementMeta(docPath, headingPaths, bulkContent);
 

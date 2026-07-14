@@ -169,8 +169,8 @@ export function DocumentCanvas({
               />
             </div>
 
-            {/* Right gutter — empty placeholder */}
-            <div className="w-[200px] min-w-[100px] shrink" />
+            {/* Right gutter — reserves space for the fixed section nav (min 140). */}
+            <div className="w-[200px] min-w-[140px] shrink" />
           </div>
         );
       }) : null}

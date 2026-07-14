@@ -4,13 +4,19 @@
  *
  * When a CRDT session is active, a `content:committed` canonical-refresh hint must
  * adopt the FRESH server topology (splits, merges, renames, inserts, deletes are
- * reflected even while editors are mounted) while PRESERVING the live local content
- * of any section whose Milkdown editor is currently mounted. Matching is by opaque
- * fragment_key — never positional index or heading text. With no CRDT session, a
- * full reload is delegated to `loadSections`.
+ * reflected even while editors are mounted). Matching is by opaque fragment_key —
+ * never positional index or heading text.
  *
- * These assert visible state outcomes (resulting topology + preserved/refreshed
- * content + surfaced errors), not which refresh code path ran.
+ * `.content` is NOT display authority while live (BUG1/F3): an EXISTING key keeps
+ * its prior `.content` as a cold seed (mounted or not — the live Y.Doc fragment,
+ * read via the reactive selector, is what the UI paints), and the fresh server
+ * `.content` is ignored for it (it may be a reconstructed/lying payload — a
+ * separate P1 server concern). A BRAND-NEW key takes the fresh `.content` as its
+ * bootstrap seed until its live fragment exists. With no CRDT session, a full
+ * reload is delegated to `loadSections`.
+ *
+ * These assert visible state outcomes (resulting topology + seeded content +
+ * surfaced errors), not which refresh code path ran.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -138,10 +144,10 @@ describe("content:committed topology refresh (spec 06)", () => {
     vi.clearAllMocks();
   });
 
-  it("preserves mounted editor content while refreshing non-mounted previews", async () => {
+  it("keeps every existing key's content as a cold seed (fresh payload ignored for existing keys)", async () => {
     const initial = [
-      makeSection({ heading: "Overview", heading_path: ["Overview"], fragment_key: "frag:sec_overview", content: "STALE overview (live editor)\n" }),
-      makeSection({ heading: "Timeline", heading_path: ["Timeline"], fragment_key: "frag:sec_timeline", content: "STALE timeline\n" }),
+      makeSection({ heading: "Overview", heading_path: ["Overview"], fragment_key: "frag:sec_overview", content: "SEED overview (live editor)\n" }),
+      makeSection({ heading: "Timeline", heading_path: ["Timeline"], fragment_key: "frag:sec_timeline", content: "SEED timeline\n" }),
     ];
     const { params, holder } = buildParams(initial, {
       crdtActive: true,
@@ -150,7 +156,7 @@ describe("content:committed topology refresh (spec 06)", () => {
     getDocumentSectionsImpl = async () => ({
       sections: [
         makeSection({ heading: "Overview", heading_path: ["Overview"], fragment_key: "frag:sec_overview", content: "FRESH overview (must be ignored)\n" }),
-        makeSection({ heading: "Timeline", heading_path: ["Timeline"], fragment_key: "frag:sec_timeline", content: "FRESH timeline\n" }),
+        makeSection({ heading: "Timeline", heading_path: ["Timeline"], fragment_key: "frag:sec_timeline", content: "FRESH timeline (must be ignored)\n" }),
       ],
     });
 
@@ -163,9 +169,11 @@ describe("content:committed topology refresh (spec 06)", () => {
 
     const overview = holder.sections.find((s) => s.fragment_key === "frag:sec_overview");
     const timeline = holder.sections.find((s) => s.fragment_key === "frag:sec_timeline");
-    // Mounted editor's live content preserved; non-mounted preview refreshed.
-    expect(overview!.content).toBe("STALE overview (live editor)\n");
-    expect(timeline!.content).toBe("FRESH timeline\n");
+    // Both existing keys keep their prior seed — the fresh server `.content` is
+    // ignored (display authority is the live fragment). Mount state is irrelevant;
+    // Overview is mounted, Timeline is not, and both keep their seed.
+    expect(overview!.content).toBe("SEED overview (live editor)\n");
+    expect(timeline!.content).toBe("SEED timeline\n");
     // Topology matches fresh server topology, by fragment_key.
     expect(fragKeys(holder.sections)).toEqual(["frag:sec_overview", "frag:sec_timeline"]);
   });
@@ -253,12 +261,12 @@ describe("content:committed topology refresh (spec 06)", () => {
     expect(focusedSectionIndexRef.current).toBe(2);
   });
 
-  it("clears focus when the focused fragment no longer exists", async () => {
+  it("hands focus to the surviving predecessor when the focused fragment is removed", async () => {
     const initial = [
       makeSection({ heading: "Stay", heading_path: ["Stay"], fragment_key: "frag:sec_stay", content: "stay\n" }),
       makeSection({ heading: "Gone", heading_path: ["Gone"], fragment_key: "frag:sec_gone", content: "gone\n" }),
     ];
-    const { params, focusedSectionIndexRef } = buildParams(initial, {
+    const { params, focusedSectionIndexRef, holder } = buildParams(initial, {
       crdtActive: true,
       mountedFragmentKeys: [],
       focusedSectionIndex: 1,
@@ -273,7 +281,10 @@ describe("content:committed topology refresh (spec 06)", () => {
     emitCommitted([{ doc_path: "test.md", heading_path: ["Stay"] }]);
     await settle();
 
-    expect(focusedSectionIndexRef.current).toBeNull();
+    // The focused "Gone" fragment (index 1) was removed; focus is forced off it
+    // onto its surviving predecessor "Stay" (index 0), never left on the dead key.
+    expect(focusedSectionIndexRef.current).toBe(0);
+    expect(holder.sections[focusedSectionIndexRef.current!].fragment_key).toBe("frag:sec_stay");
   });
 
   it("surfaces an error when the post-commit refresh fetch fails", async () => {

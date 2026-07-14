@@ -468,6 +468,34 @@ a {
   line-height: 1.4;
   padding: 0;
 }
+/* Empty heading affordance: ProseMirror keeps a trailing <br> in empty
+ * textblocks, so :empty never matches. Show a light label only while editing. */
+.milkdown .ProseMirror[contenteditable="true"] h1:has(> br.ProseMirror-trailingBreak:only-child),
+.milkdown .ProseMirror[contenteditable="true"] h2:has(> br.ProseMirror-trailingBreak:only-child),
+.milkdown .ProseMirror[contenteditable="true"] h3:has(> br.ProseMirror-trailingBreak:only-child),
+.milkdown .ProseMirror[contenteditable="true"] h4:has(> br.ProseMirror-trailingBreak:only-child),
+.milkdown .ProseMirror[contenteditable="true"] h5:has(> br.ProseMirror-trailingBreak:only-child),
+.milkdown .ProseMirror[contenteditable="true"] h6:has(> br.ProseMirror-trailingBreak:only-child) {
+  position: relative;
+}
+.milkdown .ProseMirror[contenteditable="true"] h1:has(> br.ProseMirror-trailingBreak:only-child)::before,
+.milkdown .ProseMirror[contenteditable="true"] h2:has(> br.ProseMirror-trailingBreak:only-child)::before,
+.milkdown .ProseMirror[contenteditable="true"] h3:has(> br.ProseMirror-trailingBreak:only-child)::before,
+.milkdown .ProseMirror[contenteditable="true"] h4:has(> br.ProseMirror-trailingBreak:only-child)::before,
+.milkdown .ProseMirror[contenteditable="true"] h5:has(> br.ProseMirror-trailingBreak:only-child)::before,
+.milkdown .ProseMirror[contenteditable="true"] h6:has(> br.ProseMirror-trailingBreak:only-child)::before {
+  position: absolute;
+  pointer-events: none;
+  height: 0;
+  color: var(--color-text-faint);
+  font-weight: 400;
+}
+.milkdown .ProseMirror[contenteditable="true"] h1:has(> br.ProseMirror-trailingBreak:only-child)::before { content: "Heading one"; }
+.milkdown .ProseMirror[contenteditable="true"] h2:has(> br.ProseMirror-trailingBreak:only-child)::before { content: "Heading two"; }
+.milkdown .ProseMirror[contenteditable="true"] h3:has(> br.ProseMirror-trailingBreak:only-child)::before { content: "Heading three"; }
+.milkdown .ProseMirror[contenteditable="true"] h4:has(> br.ProseMirror-trailingBreak:only-child)::before { content: "Heading four"; }
+.milkdown .ProseMirror[contenteditable="true"] h5:has(> br.ProseMirror-trailingBreak:only-child)::before { content: "Heading five"; }
+.milkdown .ProseMirror[contenteditable="true"] h6:has(> br.ProseMirror-trailingBreak:only-child)::before { content: "Heading six"; }
 .milkdown .ProseMirror p {
   font-family: var(--font-body);
   font-size: 15.5px;
@@ -949,4 +977,16 @@ a {
     transition: opacity 120ms linear;
   }
   .doc-activity-check path { stroke-dashoffset: 0; }
+}
+
+/* ===== DOCUMENT SECTION NAV (right gutter) ===== */
+.doc-section-nav__item:hover .doc-section-nav__label,
+.doc-section-nav__item:focus-visible .doc-section-nav__label {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.doc-section-nav__item:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+  border-radius: 4px;
 }

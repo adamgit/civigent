@@ -14,6 +14,7 @@ import { LoginPage } from "../pages/LoginPage";
 import { GitHistoryPage } from "../pages/GitHistoryPage";
 import { SetupPage } from "../pages/SetupPage";
 import { FeaturesPage } from "../pages/FeaturesPage";
+import { HelpPage } from "../pages/HelpPage";
 import { AgentsPage } from "../pages/AgentsPage";
 import { AgentFeedPage } from "../pages/AgentFeedPage";
 import { ImportsPage } from "../pages/ImportsPage";
@@ -47,6 +48,7 @@ export const routeConfig: RouteObject[] = [
       { path: "coordination", element: <CoordinationPage /> },
       { path: "setup", element: <SetupPage /> },
       { path: "features", element: <FeaturesPage /> },
+      { path: "help", element: <HelpPage /> },
       { path: "agents-activity", element: <AgentsPage /> },
       { path: "agents-activity/feed", element: <AgentFeedPage /> },
       { path: "imports", element: <ImportsPage /> },

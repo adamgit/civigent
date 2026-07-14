@@ -103,7 +103,7 @@ cd ../frontend && npm ci
 
 ### Option A: DevContainer (recommended)
 
-Open the repo in VS Code/Cursor and "Reopen in Container" when prompted. You still need to run the **First-time dependency install** commands above inside the container once (the Dev Container image includes Node.js only).
+Open the repo in VS Code/Cursor and "Reopen in Container" when prompted. You still need to run the **First-time dependency install** commands above inside the container once (the Dev Container image includes Node.js plus runtime tools such as `git`, `ssh`, and `ripgrep`).
 
 To build and run your local changes:
 

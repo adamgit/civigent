@@ -13,6 +13,7 @@ import { resolveWriterId } from "../services/api-client";
 import type { LocalEditOriginSink } from "../status/sessionAuthorship";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import { useSectionHover } from "../contexts/sectionHoverUtils";
+import { useDisplaySectionMarkdown } from "../hooks/useDisplaySectionMarkdown";
 import { rewriteMarkdownDocHref } from "../app/docsRouteUtils";
 
 export interface DocumentSectionRendererProps {
@@ -139,6 +140,17 @@ export function DocumentSectionRenderer({
   onCrossSectionDrop,
 }: DocumentSectionRendererProps) {
   const { setHoveredSection } = useSectionHover();
+  // BUG1 display authority: static paint surfaces (degraded neighbour,
+  // pre-ready underlayer, unfocused static preview) must show the LIVE fragment
+  // text, not a reconstructed `# Heading` that can linger in `section.content`
+  // after the fragment already demoted to body. The reactive selector reads the
+  // fragment when it exists in the shared doc (non-creating `share.has`) and
+  // re-renders these non-ySync surfaces when it changes, falling back to the
+  // cold `section.content` seed otherwise. Proposal mode has no live CRDT
+  // authority (the editor binds no store), so we gate the store to null there
+  // and keep painting the proposal overlay content verbatim.
+  const displayStore = proposalMode ? null : store;
+  const displayMarkdown = useDisplaySectionMarkdown(section, displayStore);
   // Unavailable-for-human-edit: a proposal FSM lock conflict OR a CRDT
   // block-state. (Publication pause does not remove the section, it only
   // freezes the live editor — handled via the `readOnly` prop below.)
@@ -270,7 +282,7 @@ export function DocumentSectionRenderer({
           // editor.
           <div className="doc-prose opacity-50">
             <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
-              {section.content}
+              {displayMarkdown}
             </ReactMarkdown>
           </div>
         ) : (
@@ -292,7 +304,7 @@ export function DocumentSectionRenderer({
               {!isReady && (
                 <div className="doc-prose">
                   <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
-                    {section.content}
+                    {displayMarkdown}
                   </ReactMarkdown>
                 </div>
               )}
@@ -337,7 +349,7 @@ export function DocumentSectionRenderer({
       ) : (
         <div className="doc-prose">
           <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
-            {section.content}
+            {displayMarkdown}
           </ReactMarkdown>
         </div>
       )}

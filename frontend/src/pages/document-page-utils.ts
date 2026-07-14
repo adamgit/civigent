@@ -55,26 +55,42 @@ export function getSectionFragmentKey(section: DocumentSection): string {
  *  - the live `doc:structure-changed` event (fresh = the event's `sections`, which
  *    is already the SAME server-authored shape — adopted verbatim, no mapping).
  *
- * A fragment with a currently-mounted Milkdown editor (`crdtBoundFragmentKeys`)
- * keeps its live in-editor content — the fresh server/canonical body would clobber
- * unsaved live edits. Focus is reconciled by fragment identity: it follows the
- * focused fragment to its NEW index, or clears if that fragment no longer exists.
+ * Adoption is an identity/order operation, NOT a display-content operation. It
+ * is only ever called while a live CRDT session is active (the cold, no-session
+ * refresh path uses a full `loadSections` reload instead). While a session is
+ * live, the display authority for an existing section is its Y.Doc fragment —
+ * read reactively via `useDisplaySectionMarkdown` — NOT the `.content` string on
+ * these rows. So for a key that already existed in `prev`, we take order,
+ * fragment key, heading/level/path identity and all other structural meta from
+ * `fresh`, but keep the previous `.content` as a cold seed/fallback and never
+ * install `fresh.content`: after a demotion, `fresh.content` can be a
+ * reconstructed `# Heading` (server `prependHeadings`) that no longer matches the
+ * live fragment. (Whether the live payload's `.content` lies is a separate P1
+ * server concern — we do not sanitize it here; we simply stop treating adopted
+ * or preserved `.content` as live display text.) A brand-new key that only
+ * appears in `fresh` keeps `fresh.content` as its bootstrap seed until its live
+ * fragment exists.
+ *
+ * Focus is reconciled by fragment identity: it follows the focused fragment to
+ * its NEW index, or clears if that fragment no longer exists.
  * `focusedSectionIndexRef` is mutated in place to the reconciled index.
  */
 export function adoptFreshSectionLayout(params: {
   prev: DocumentSection[];
   fresh: DocumentSection[];
-  crdtBoundFragmentKeys: Set<string>;
   focusedSectionIndexRef: { current: number | null };
 }): DocumentSection[] {
-  const { prev, fresh, crdtBoundFragmentKeys, focusedSectionIndexRef } = params;
+  const { prev, fresh, focusedSectionIndexRef } = params;
   const prevByFragmentKey = new Map(prev.map((s) => [getSectionFragmentKey(s), s]));
   const nextSections = fresh.map((freshSection) => {
     const fk = getSectionFragmentKey(freshSection);
-    if (crdtBoundFragmentKeys.has(fk)) {
-      const prevSection = prevByFragmentKey.get(fk);
-      if (prevSection) return { ...freshSection, content: prevSection.content };
-    }
+    const prevSection = prevByFragmentKey.get(fk);
+    // Existing live key: identity/order/meta from fresh, but `.content` is cold
+    // seed/fallback only — keep the last-known seed, never the (possibly
+    // reconstructed) fresh.content. Live display comes from the fragment.
+    if (prevSection) return { ...freshSection, content: prevSection.content };
+    // New key: no prior seed — fresh.content is the cold bootstrap seed until
+    // the live fragment arrives.
     return freshSection;
   });
   // Reconcile focus by fragment identity: keep focus on the focused fragment's NEW
@@ -91,8 +107,38 @@ export function adoptFreshSectionLayout(params: {
     } else if (focusedFk === BEFORE_FIRST_HEADING_KEY) {
       const firstHeaded = nextSections.findIndex((s) => s.heading_path.length > 0);
       focusedSectionIndexRef.current = firstHeaded >= 0 ? firstHeaded : null;
+    } else if (focusedIndex === 0) {
+      // The document's FIRST section (which had no predecessor) was removed at
+      // quiescence: a no-predecessor heading-deletion folds its body into BFH, or
+      // dissolves BFH when the body is empty. Hand focus to the new leading
+      // section — BFH if it was created, else the first remaining section — so the
+      // caret is never left on the removed headed key. (A non-first section that
+      // vanishes, e.g. a predecessor merge or delete, keeps the null-clear below;
+      // the merge-survivor handoff is a separate item.)
+      const bfhIndex = nextSections.findIndex(
+        (s) => getSectionFragmentKey(s) === BEFORE_FIRST_HEADING_KEY,
+      );
+      focusedSectionIndexRef.current =
+        bfhIndex >= 0 ? bfhIndex : nextSections.length > 0 ? 0 : null;
     } else {
-      focusedSectionIndexRef.current = null;
+      // A non-first focused fragment was removed at quiescence (heading-deletion
+      // merge into its predecessor, or a delete). Observing that delete forces the
+      // caret OFF the removed key onto the merge survivor — its predecessor — if
+      // that predecessor is still present, else the section that now occupies the
+      // removed slot, else null. Never leave focus on a removed key. Order-
+      // independent w.r.t. section:gone vs the Yjs binary clear: driven purely by
+      // the adopted fresh layout.
+      const predecessorFk = getSectionFragmentKey(prev[focusedIndex - 1]);
+      const predecessorIndex = nextSections.findIndex(
+        (s) => getSectionFragmentKey(s) === predecessorFk,
+      );
+      if (predecessorIndex >= 0) {
+        focusedSectionIndexRef.current = predecessorIndex;
+      } else if (nextSections.length > 0) {
+        focusedSectionIndexRef.current = Math.min(focusedIndex, nextSections.length - 1);
+      } else {
+        focusedSectionIndexRef.current = null;
+      }
     }
   }
   return nextSections;

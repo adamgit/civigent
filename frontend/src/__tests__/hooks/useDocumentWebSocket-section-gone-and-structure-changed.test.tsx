@@ -188,12 +188,12 @@ describe("doc:structure-changed dropping a fragment_key (spec 06 §Refresh Strat
     expect(holder.sections.find((s) => s.fragment_key === "frag:sec_timeline")).toBeUndefined();
   });
 
-  it("clears focus when the focused fragment is dropped by the structure change", () => {
+  it("forces focus onto the merge survivor when the focused fragment is dropped by the structure change", () => {
     const initial = [
       makeSection({ heading: "Overview", heading_path: ["Overview"], fragment_key: "frag:sec_overview", content: "overview\n" }),
       makeSection({ heading: "Timeline", heading_path: ["Timeline"], fragment_key: "frag:sec_timeline", content: "timeline\n" }),
     ];
-    // Focus is on Timeline (index 1) — the one the server drops.
+    // Focus is on Timeline (index 1) — the one the server merges away into Overview.
     const { params, holder, focusedSectionIndexRef } = buildParams(initial, {
       store: null,
       focusedSectionIndex: 1,
@@ -208,19 +208,20 @@ describe("doc:structure-changed dropping a fragment_key (spec 06 §Refresh Strat
       ],
     });
 
-    // Focus reconciled to null (the focused fragment_key is gone from the fresh
-    // layout) — so `shouldMountEditor(_, null)` returns false and no editor is
-    // mounted for any surviving neighbor via a wrong-index carry-over.
-    expect(focusedSectionIndexRef.current).toBeNull();
+    // Observing the delete forces focus OFF the removed Timeline key onto its
+    // surviving predecessor Overview (index 0) — never left on the dead key, and
+    // not cleared to null (which would drop the caret entirely).
+    expect(focusedSectionIndexRef.current).toBe(0);
+    expect(holder.sections[focusedSectionIndexRef.current!].fragment_key).toBe("frag:sec_overview");
     // And the dropped fragment_key is no longer in the list to render.
     expect(holder.sections.find((s) => s.fragment_key === "frag:sec_timeline")).toBeUndefined();
   });
 
   it("drops a fragment_key from the layout even when its editor was mounted", () => {
-    // The merged-away section had a mounted editor. adoptFreshSectionLayout only
-    // preserves `content` for MOUNTED-and-STILL-PRESENT fragments; a mounted
-    // fragment that's absent from `fresh` is unconditionally dropped, which is
-    // what forces the editor to unmount at the next render.
+    // The merged-away section had a mounted editor. adoptFreshSectionLayout keeps
+    // `content` (as a cold seed) only for keys STILL PRESENT in `fresh`; a
+    // fragment absent from `fresh` is unconditionally dropped — mounted or not —
+    // which is what forces the editor to unmount at the next render.
     const initial = [
       makeSection({ heading: "Keep", heading_path: ["Keep"], fragment_key: "frag:sec_keep", content: "keep\n" }),
       makeSection({ heading: "Folded", heading_path: ["Folded"], fragment_key: "frag:sec_folded", content: "LIVE folded body\n" }),

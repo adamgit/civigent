@@ -55,9 +55,13 @@ import {
   computeStructuralHeadingEditPlan,
   applyStructuralHeadingEditPlan,
   reflectHeadingEditIntoProposal,
+  computeStructuralOrphanToBfhPlan,
+  applyStructuralOrphanToBfhPlan,
+  reflectOrphanToBfhIntoProposal,
   type StructuralSplitPlan,
   type StructuralMergePlan,
   type StructuralHeadingEditPlan,
+  type StructuralOrphanToBfhPlan,
 } from "../crdt/structural-appliers.js";
 import { getHeadSha } from "../storage/git-repo.js";
 import { getDataRoot } from "../storage/data-root.js";
@@ -939,21 +943,51 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
       applied = applied || res.applied;
     } else if (change.kind === "heading-deletion") {
       const plan = await computeStructuralMergePlan(session.liveFragments, session.docPath, proposalId, fragmentKey, change);
-      if (!plan) continue;
-      const res = await session.generator.normalizeQuiescedSection<StructuralMergePlan>(
-        session.liveFragments.ydoc,
-        plan.affectedKeys,
-        () => plan,
-        (p) => applyStructuralMergePlan(session.liveFragments, session.liveFragments.ydoc, p, SERVER_NORMALIZATION_ORIGIN),
-      );
-      if (res.applied) {
-        await reflectMergeIntoProposal(proposalId, session.docPath, plan);
-        removedFragments.push({
-          fragmentKey: plan.removeKey,
-          headingPath: plan.removedHeadingPath,
-        });
+      if (plan) {
+        const res = await session.generator.normalizeQuiescedSection<StructuralMergePlan>(
+          session.liveFragments.ydoc,
+          plan.affectedKeys,
+          () => plan,
+          (p) => applyStructuralMergePlan(session.liveFragments, session.liveFragments.ydoc, p, SERVER_NORMALIZATION_ORIGIN),
+        );
+        if (res.applied) {
+          await reflectMergeIntoProposal(proposalId, session.docPath, plan);
+          removedFragments.push({
+            fragmentKey: plan.removeKey,
+            headingPath: plan.removedHeadingPath,
+          });
+        }
+        applied = applied || res.applied;
+      } else {
+        // No predecessor to merge into: the demoted section is the document's
+        // first section. Its orphan body settles under the before-first-heading
+        // (BFH) preamble via a DEDICATED path (create/register BFH, delete the old
+        // headed identity), with empty-BFH dissolve when the orphan is empty. A
+        // null plan here means the shape is not the no-predecessor hole (has
+        // descendants / not first) — leave it (identity still resolves).
+        const bfhPlan = await computeStructuralOrphanToBfhPlan(
+          session.liveFragments,
+          session.docPath,
+          proposalId,
+          fragmentKey,
+          change,
+        );
+        if (!bfhPlan) continue;
+        const res = await session.generator.normalizeQuiescedSection<StructuralOrphanToBfhPlan>(
+          session.liveFragments.ydoc,
+          bfhPlan.affectedKeys,
+          () => bfhPlan,
+          (p) => applyStructuralOrphanToBfhPlan(session.liveFragments, session.liveFragments.ydoc, p, SERVER_NORMALIZATION_ORIGIN),
+        );
+        if (res.applied) {
+          await reflectOrphanToBfhIntoProposal(proposalId, session.docPath, bfhPlan);
+          removedFragments.push({
+            fragmentKey: bfhPlan.removeKey,
+            headingPath: bfhPlan.removedHeadingPath,
+          });
+        }
+        applied = applied || res.applied;
       }
-      applied = applied || res.applied;
     } else if (
       change.kind === "heading-rename" ||
       change.kind === "heading-level-change" ||
@@ -1037,6 +1071,14 @@ async function runQuiescenceCommand(session: DocSession): Promise<void> {
     // drives per-fragment detach/unmount via the block-state store (spec 05
     // §"Section block-state events"). See the sibling REST path in
     // `api/routes/sections.ts`.
+    // Tombstone every removed key so a late ("ghost") client write into the
+    // still-in-`share` emptied slot is handled as an expected delete-under-you at
+    // ingress (revert + force-off) instead of the acceptance-gate corruption
+    // fatal — this closes the demote→navigate consecutive-H1 crash (F6). Done
+    // regardless of `onWsEvent` so the gate protection holds in headless runs.
+    for (const removed of removedFragments) {
+      session.removedFragmentTombstones.set(removed.fragmentKey, removed.headingPath);
+    }
     if (onWsEvent) {
       for (const removed of removedFragments) {
         onWsEvent({
@@ -1222,6 +1264,15 @@ interface LiveEditRejectionGroup {
 interface LiveEditAcceptanceResult {
   acceptedFragmentKeys: string[];
   rejectionGroups: LiveEditRejectionGroup[];
+  /**
+   * Touched fragments that a quiescence normalization already REMOVED this
+   * session (in `session.removedFragmentTombstones`) and that no longer resolve
+   * to a layout identity. A late client write into the emptied-but-still-in-
+   * `share` slot — the demote→navigate race — is an expected delete-under-you,
+   * not corruption: the caller reverts it and re-emits `section:gone` to force
+   * the still-bound client off, rather than fataling.
+   */
+  removedTargetFragmentKeys: string[];
 }
 
 /**
@@ -1255,7 +1306,7 @@ async function runLiveEditAcceptanceGate(
   session: DocSession,
   touchedKeys: ReadonlySet<string>,
 ): Promise<LiveEditAcceptanceResult> {
-  const empty: LiveEditAcceptanceResult = { acceptedFragmentKeys: [], rejectionGroups: [] };
+  const empty: LiveEditAcceptanceResult = { acceptedFragmentKeys: [], rejectionGroups: [], removedTargetFragmentKeys: [] };
   if (touchedKeys.size === 0) return empty;
 
   const ownProposalId = session.generator.getCurrentProposalId();
@@ -1264,6 +1315,7 @@ async function runLiveEditAcceptanceGate(
   for (const entry of layout) {
     headingByFragmentKey.set(entry.fragmentKey, entry.headingPath);
   }
+  const removedTargetFragmentKeys: string[] = [];
 
   // Resolve each touched fragment to its section identity (heading path). The
   // empty-document BFH bootstrap resolves to the document-level `[]` slot so
@@ -1280,6 +1332,15 @@ async function runLiveEditAcceptanceGate(
         fragmentKeyByGlobalIndex.push(fragmentKey);
         continue;
       }
+      // A late write into a section this quiescence already deleted (its top-level
+      // XmlFragment lingers in `share` because Yjs can't delete it) is an expected
+      // delete-under-you, not corruption — hand it back for revert + force-off.
+      // The hard fatal stays for any OTHER untargetable fragment (registry/layout
+      // drift), so the gate still detects genuine corruption.
+      if (session.removedFragmentTombstones.has(fragmentKey)) {
+        removedTargetFragmentKeys.push(fragmentKey);
+        continue;
+      }
       throw new Error(
         `Live edit touched fragment "${fragmentKey}" which has no section identity in the ` +
           `resolved layout for ${session.docPath}. Refusing to acknowledge an untargetable edit ` +
@@ -1290,7 +1351,7 @@ async function runLiveEditAcceptanceGate(
     fragmentKeyByGlobalIndex.push(fragmentKey);
   }
 
-  if (targets.length === 0) return empty;
+  if (targets.length === 0) return { acceptedFragmentKeys: [], rejectionGroups: [], removedTargetFragmentKeys };
 
   const lockResult = await checkProposalLocks({
     proposalId: ownProposalId ?? "__docsession-no-proposal__",
@@ -1356,7 +1417,7 @@ async function runLiveEditAcceptanceGate(
   }
 
   const acceptedFragmentKeys = lockAccepted.filter((k) => !structuralRejectedKeys.has(k));
-  return { acceptedFragmentKeys, rejectionGroups };
+  return { acceptedFragmentKeys, rejectionGroups, removedTargetFragmentKeys };
 }
 
 function buildProposalLockRejectionGroup(
@@ -1521,14 +1582,40 @@ export async function processArbitratedClientUpdate(
     }
   }
 
-  
-  
-  
-  
-  
-  
-  
-  
+  // Late write into a section quiescence already deleted (demote→navigate race).
+  // Revert the ghost content from the pre-update snapshot (leaving the leftover
+  // slot empty, as the merge left it), then re-unregister the key — the revert
+  // path re-registers it — and re-emit `section:gone` so the still-bound origin
+  // detaches. This is the delete-under-you completion: list + editable set agree,
+  // and no corruption fatal fires. These keys are NOT in `acceptedFragmentKeys`,
+  // so nothing materializes into the proposal for them.
+  if (acceptance.removedTargetFragmentKeys.length > 0) {
+    session.liveFragments.restoreFragmentsFromSnapshot(
+      preEditState,
+      acceptance.removedTargetFragmentKeys,
+      SERVER_NORMALIZATION_ORIGIN,
+    );
+    for (const fragmentKey of acceptance.removedTargetFragmentKeys) {
+      session.liveFragments.unregisterFragmentKey(fragmentKey);
+      if (onWsEvent) {
+        onWsEvent({
+          type: "section:gone",
+          doc_path: docPath,
+          fragment_key: fragmentKey,
+          heading_path: session.removedFragmentTombstones.get(fragmentKey) ?? [],
+        });
+      }
+    }
+  }
+
+
+
+
+
+
+
+
+
   broadcastToAll(docPath, encodeUpdate(Y.encodeStateAsUpdate(session.ydoc, beforeSV)));
 
   

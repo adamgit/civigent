@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { SectionTransferService, type SectionTransfer } from "../services/section-transfer";
 import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
@@ -56,9 +56,11 @@ import "../governance-gutters.css";
 
 interface GovernanceDocumentPageProps {
   docPathOverride?: string | null;
+  /** Optional control rendered to the right of the document title on the paper. */
+  titleAccessory?: ReactNode;
 }
 
-export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPageProps = {}) {
+export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: GovernanceDocumentPageProps = {}) {
   const params = useParams();
   const decodedDocPath = useMemo(() => {
     if (typeof docPathOverride === "string" && docPathOverride.length > 0) {
@@ -300,6 +302,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
     containerRef: sectionsContainerRef,
     sections,
     editorRefs,
+    store,
   });
 
   // ── Recent doc tracking ──────────────────────────────────
@@ -473,7 +476,7 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
   return (
     <SectionHoverProvider activeSectionIndex={focusedSectionIndex}>
     <DocumentActivityIndicator activity={documentActivity} />
-    <div className="relative flex flex-col h-full">
+    <div className="relative flex flex-col h-full" style={{ background: "var(--color-page-bg)" }}>
       <div className="relative shrink-0">
         <DocumentTopbar
           docPath={decodedDocPath}
@@ -527,9 +530,12 @@ export function GovernanceDocumentPage({ docPathOverride }: GovernanceDocumentPa
             ref={sectionsContainerRef}
             className="bg-canvas-bg shadow-[0_1px_4px_rgba(0,0,0,0.04),0_6px_24px_rgba(0,0,0,0.025)] rounded-sm px-14 pt-12 pb-16 relative min-h-[calc(100vh-200px)]"
           >
-            <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight mb-1 tracking-tight">
-              {docTitle}
-            </h1>
+            <div className="flex items-center justify-between gap-4 mb-1">
+              <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight tracking-tight min-w-0">
+                {docTitle}
+              </h1>
+              {titleAccessory}
+            </div>
             <div className="text-xs text-text-muted mb-7 pb-5 border-b border-[#eae7e2] flex items-center justify-between gap-4">
               <span>{decodedDocPath ?? ""}</span>
               <button

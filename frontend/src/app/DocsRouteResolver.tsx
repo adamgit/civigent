@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useOutletContext, useParams } from "react-router-dom";
 import { apiClient } from "../services/api-client";
 import { DocsBrowserPage } from "../pages/DocsBrowserPage";
@@ -11,9 +11,9 @@ import type { AppLayoutOutletContext } from "./AppLayout";
 
 export type DocViewMode = "standard" | "governance";
 
-function ViewModeToggle({ viewMode, onChange }: { viewMode: DocViewMode; onChange: (mode: DocViewMode) => void }) {
+export function ViewModeToggle({ viewMode, onChange }: { viewMode: DocViewMode; onChange: (mode: DocViewMode) => void }) {
   return (
-    <div className="flex items-center gap-0.5 bg-[#f5f2ed] rounded p-0.5 text-[11px]">
+    <div className="flex items-center gap-0.5 bg-[#f5f2ed] rounded p-0.5 text-[11px] shrink-0">
       <button
         onClick={() => onChange("standard")}
         className={`px-2 py-0.5 rounded transition-all ${
@@ -92,20 +92,25 @@ export function DocsRouteResolver() {
     return <GovernanceDocumentPage key={resolved.docPath} docPathOverride={resolved.docPath} />;
   }
 
+  const titleAccessory: ReactNode = (
+    <ViewModeToggle viewMode={viewMode} onChange={setViewMode} />
+  );
+
+  if (viewMode === "governance") {
+    return (
+      <GovernanceDocumentPage
+        key={resolved.docPath}
+        docPathOverride={resolved.docPath}
+        titleAccessory={titleAccessory}
+      />
+    );
+  }
+
   return (
-    <div className="flex flex-col h-full">
-      {/* View mode toggle bar */}
-      <div className="flex items-center justify-end px-3 py-1 bg-topbar-bg border-b border-topbar-border">
-        <ViewModeToggle viewMode={viewMode} onChange={setViewMode} />
-      </div>
-      {/* Page content */}
-      <div className="flex-1 min-h-0">
-        {viewMode === "governance" ? (
-          <GovernanceDocumentPage key={resolved.docPath} docPathOverride={resolved.docPath} />
-        ) : (
-          <DocumentPage key={resolved.docPath} docPathOverride={resolved.docPath} />
-        )}
-      </div>
-    </div>
+    <DocumentPage
+      key={resolved.docPath}
+      docPathOverride={resolved.docPath}
+      titleAccessory={titleAccessory}
+    />
   );
 }

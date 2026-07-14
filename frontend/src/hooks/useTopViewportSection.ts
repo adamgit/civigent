@@ -1,11 +1,12 @@
 /**
- * useTopViewportSection — detect which document section is currently at the top
- * of the scroll viewport.
+ * useSectionViewportVisibility — how much of each document section is on-screen.
  *
  * Scans the section wrapper elements (tagged with `data-fragment-key` by
- * DocumentSectionRenderer) inside the given scroll container and returns the
- * fragment key of the last section whose top edge is at or above the container's
- * top edge — i.e. the section the top of the viewport is currently inside.
+ * DocumentSectionRenderer) inside the given scroll container and returns a map
+ * of fragment key → visible fraction:
+ *   0     = fully off-screen
+ *   1     = fully on-screen
+ *   (0,1) = fraction of the section's height intersecting the viewport
  *
  * Recomputes on scroll (rAF-throttled), on resize, and whenever `revision`
  * changes (pass the live section count / a structural revision so the observer
@@ -14,13 +15,36 @@
 
 import { useEffect, useState } from "react";
 
-const TOP_THRESHOLD_PX = 8;
+export type SectionVisibilityMap = Record<string, number>;
 
-export function useTopViewportSection(
+function intersectionRatio(
+  elRect: DOMRectReadOnly,
+  containerRect: DOMRectReadOnly,
+): number {
+  const top = Math.max(elRect.top, containerRect.top);
+  const bottom = Math.min(elRect.bottom, containerRect.bottom);
+  const visibleHeight = Math.max(0, bottom - top);
+  if (elRect.height <= 0) return 0;
+  // Round so subpixel scroll jitter does not thrash React state.
+  return Math.round(Math.min(1, visibleHeight / elRect.height) * 100) / 100;
+}
+
+function visibilityMapsEqual(a: SectionVisibilityMap, b: SectionVisibilityMap): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
+export function useSectionViewportVisibility(
   scrollContainerRef: React.RefObject<HTMLElement | null>,
   revision: number,
-): string | null {
-  const [activeFragmentKey, setActiveFragmentKey] = useState<string | null>(null);
+): SectionVisibilityMap {
+  const [visibilityByFragmentKey, setVisibilityByFragmentKey] =
+    useState<SectionVisibilityMap>({});
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -30,22 +54,19 @@ export function useTopViewportSection(
 
     const compute = () => {
       rafId = 0;
-      const containerTop = container.getBoundingClientRect().top;
+      const containerRect = container.getBoundingClientRect();
       const els = container.querySelectorAll<HTMLElement>("[data-fragment-key]");
-      let current: string | null = null;
+      const next: SectionVisibilityMap = {};
+
       for (const el of els) {
-        const top = el.getBoundingClientRect().top;
-        if (top - containerTop <= TOP_THRESHOLD_PX) {
-          current = el.getAttribute("data-fragment-key");
-        } else {
-          break;
-        }
+        const key = el.getAttribute("data-fragment-key");
+        if (!key) continue;
+        next[key] = intersectionRatio(el.getBoundingClientRect(), containerRect);
       }
-      // Scrolled above the first section — highlight the first one.
-      if (current === null && els.length > 0) {
-        current = els[0].getAttribute("data-fragment-key");
-      }
-      setActiveFragmentKey((prev) => (prev === current ? prev : current));
+
+      setVisibilityByFragmentKey((prev) =>
+        visibilityMapsEqual(prev, next) ? prev : next,
+      );
     };
 
     const schedule = () => {
@@ -63,5 +84,5 @@ export function useTopViewportSection(
     };
   }, [scrollContainerRef, revision]);
 
-  return activeFragmentKey;
+  return visibilityByFragmentKey;
 }

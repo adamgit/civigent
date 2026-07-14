@@ -291,40 +291,44 @@ export function DocumentsTreeNav({
   }, []);
 
   const dirActionButtons = (folderPath: string, stopPropagation = false) => (
-    <span className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
+    <span className="flex items-center gap-1">
+      {/* Export/import appear on hover to the left of + so the + stays fixed at the right edge */}
+      <span className="hidden group-hover:flex items-center gap-1">
+        <button
+          type="button"
+          title={`Export ${getDisplayName(folderPath)} as ZIP`}
+          className="text-sidebar-text/55 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[11px] leading-none transition-colors"
+          onClick={(e) => {
+            if (stopPropagation) e.stopPropagation();
+            triggerExport(folderPath);
+          }}
+        >
+          &#8595;
+        </button>
+        <button
+          type="button"
+          title={`Import .md files into ${getDisplayName(folderPath)}`}
+          className="text-sidebar-text/55 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[11px] leading-none transition-colors"
+          onClick={(e) => {
+            if (stopPropagation) e.stopPropagation();
+            triggerImport(folderPath);
+          }}
+          disabled={importingFolder !== null}
+        >
+          &#8593;
+        </button>
+      </span>
       <button
         type="button"
         title={`Create a new document in ${getDisplayName(folderPath)}`}
-        className="text-sidebar-text/55 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[12px] leading-none transition-colors"
+        aria-label={`Create a new document in ${getDisplayName(folderPath)}`}
+        className="text-sidebar-text/70 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[18px] font-medium leading-none transition-colors"
         onClick={(e) => {
           if (stopPropagation) e.stopPropagation();
           onCreateDocumentInFolder?.(folderPath);
         }}
       >
         +
-      </button>
-      <button
-        type="button"
-        title={`Export ${getDisplayName(folderPath)} as ZIP`}
-        className="text-sidebar-text/55 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[11px] leading-none transition-colors"
-        onClick={(e) => {
-          if (stopPropagation) e.stopPropagation();
-          triggerExport(folderPath);
-        }}
-      >
-        &#8595;
-      </button>
-      <button
-        type="button"
-        title={`Import .md files into ${getDisplayName(folderPath)}`}
-        className="text-sidebar-text/55 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[11px] leading-none transition-colors"
-        onClick={(e) => {
-          if (stopPropagation) e.stopPropagation();
-          triggerImport(folderPath);
-        }}
-        disabled={importingFolder !== null}
-      >
-        &#8593;
       </button>
     </span>
   );
@@ -460,27 +464,6 @@ export function DocumentsTreeNav({
           Importing to {getDisplayName(importingFolder)}...
         </div>
       ) : null}
-
-      {/* Root-level export/import buttons */}
-      <div className="flex items-center gap-2 px-1.5 mb-0.5 justify-end">
-        <button
-          type="button"
-          title="Export all documents as ZIP"
-          className="text-[11px] text-sidebar-text opacity-50 hover:opacity-100 bg-transparent border-none cursor-pointer p-0.5 transition-opacity"
-          onClick={() => triggerExport("/")}
-        >
-          &#8595; Export
-        </button>
-        <button
-          type="button"
-          title="Import .md files to root"
-          className="text-[11px] text-sidebar-text opacity-50 hover:opacity-100 bg-transparent border-none cursor-pointer p-0.5 transition-opacity"
-          onClick={() => triggerImport("/")}
-          disabled={importingFolder !== null}
-        >
-          &#8593; Import
-        </button>
-      </div>
 
       {sortedEntries.length === 0 ? (
         <p className="text-xs text-text-faint px-1.5 py-2">{emptyLabel}</p>

@@ -8,6 +8,7 @@
 import { useEffect } from "react";
 import { proseMirrorNodeToMarkdown } from "@ks/milkdown-serializer";
 import type { MilkdownEditorHandle } from "../components/MilkdownEditor";
+import { displaySectionMarkdown, type DisplayStore } from "../services/display-section-markdown";
 
 export interface CrossSectionCopyOptions {
   /** Ref to the container div that wraps all section elements. */
@@ -22,6 +23,11 @@ export interface CrossSectionCopyOptions {
   }>;
   /** Map from section `fragment_key` → editor handle ref. */
   editorRefs: React.RefObject<Map<string, MilkdownEditorHandle>>;
+  /** Live CRDT store (null when no session). When present, the copy fallback for
+   *  an unmounted section reads the live fragment via `displaySectionMarkdown`
+   *  instead of the React `section.content` string — which after a demotion can
+   *  still carry a reconstructed `# Heading` the live fragment no longer has. */
+  store: DisplayStore | null;
 }
 
 /**
@@ -91,6 +97,7 @@ export function useCrossSectionCopy({
   containerRef,
   sections,
   editorRefs,
+  store,
 }: CrossSectionCopyOptions): void {
   useEffect(() => {
     const container = containerRef.current;
@@ -127,17 +134,22 @@ export function useCrossSectionCopy({
         const editors = editorRefs.current;
         const handle = editors?.get(section.fragment_key);
 
+        // Non-editor fallback = live fragment (heading+body) when the store has
+        // it, else the cold `section.content` seed. Never the raw React string,
+        // which can hold a stale reconstructed heading after a demotion.
+        const fallback = displaySectionMarkdown(section, store);
         if (isFirst && handle) {
           // Partial: from selection start to end of this section's editor
-          // Note: section.content already includes the heading (prepended by backend),
-          // and the ProseMirror doc also contains it, so we do NOT add headingPrefix.
+          // Note: the fragment/section content already includes the heading
+          // (prepended by backend, and the ProseMirror doc also contains it), so
+          // we do NOT add a headingPrefix.
           const partial = extractPartialMarkdown(
             handle,
             range.startContainer,
             range.startOffset,
             "start",
           );
-          markdownParts.push(partial ?? section.content);
+          markdownParts.push(partial ?? fallback);
         } else if (isLast && handle) {
           // Partial: from start of this section's editor to selection end
           const partial = extractPartialMarkdown(
@@ -146,10 +158,10 @@ export function useCrossSectionCopy({
             range.endOffset,
             "end",
           );
-          markdownParts.push(partial ?? section.content);
+          markdownParts.push(partial ?? fallback);
         } else {
           // Fully selected middle section — use full content (already includes heading)
-          markdownParts.push(section.content);
+          markdownParts.push(fallback);
         }
       }
 
@@ -161,5 +173,5 @@ export function useCrossSectionCopy({
 
     container.addEventListener("copy", handleCopy);
     return () => container.removeEventListener("copy", handleCopy);
-  }, [containerRef, sections, editorRefs]);
+  }, [containerRef, sections, editorRefs, store]);
 }

@@ -1,8 +1,11 @@
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 import type { CrdtConnectionState } from "../services/crdt-provider";
 import { resolveTransportStatus, TRANSPORT_STATUS_META } from "../services/section-save-state";
 
 interface DocumentTopbarProps {
+  /** Canonical document path — used to resolve the parent-folder back link. */
   docPath: string | null;
   showHistory: boolean;
   onToggleHistory: () => void;
@@ -29,6 +32,36 @@ interface DocumentTopbarProps {
    *  publish). Surfaced as an explicit `error` rung that must not collapse into
    *  the pending / saved / up-to-date labels. `null` when clean. */
   backendError: string | null;
+}
+
+/** Route for the parent folder's details page, or `/docs` for root-level docs. */
+export function parentFolderRoute(docPath: string | null): string {
+  if (!docPath) return "/docs";
+  const normalized = docPath.replace(/\/+$/, "");
+  const lastSlash = normalized.lastIndexOf("/");
+  if (lastSlash <= 0) return "/docs";
+  const parent = normalized.slice(0, lastSlash);
+  return `/docs/${stripLeadingSlashForRoute(parent)}`;
+}
+
+function ClockIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className="shrink-0 text-text-muted"
+    >
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 4.5V8l2.5 1.5" />
+    </svg>
+  );
 }
 
 export function DocumentTopbar({
@@ -64,47 +97,99 @@ export function DocumentTopbar({
     backendError,
   );
   const meta = TRANSPORT_STATUS_META[status];
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuActive = showDiagnostics || !!showOverwrite;
+  const backTo = useMemo(() => parentFolderRoute(docPath), [docPath]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [menuOpen]);
 
   return (
-    <header className="h-[--spacing-topbar-h] min-h-[--spacing-topbar-h] bg-topbar-bg border-b border-topbar-border flex items-center px-4 gap-2.5">
+    <header className="h-[--spacing-topbar-h] min-h-[--spacing-topbar-h] bg-transparent flex items-center px-4 gap-2.5">
       <Link
-        to="/docs"
+        to={backTo}
         className="w-[26px] h-[26px] rounded-[5px] flex items-center justify-center text-text-muted text-[15px] hover:bg-section-hover hover:text-text-primary transition-all"
+        title="Back to folder"
+        aria-label="Back to folder"
       >
         &#8592;
       </Link>
-      <span className="font-[family-name:var(--font-ui)] text-sm font-medium text-text-primary flex-1 truncate">
-        {docPath ?? "No document selected"}
-      </span>
+
+      <div className="flex-1" />
 
       {/* Version history toggle */}
       <button
         onClick={onToggleHistory}
-        className={`text-[11px] px-2 py-1 rounded ${showHistory ? "bg-[#e8f4f6] text-[#1d5a66]" : "bg-[#f5f2ed] text-text-muted hover:text-text-primary"}`}
+        className={`inline-flex items-center gap-1.5 text-[11px] px-2 py-1 rounded ${showHistory ? "bg-[#e8f4f6] text-[#1d5a66]" : "bg-[#f5f2ed] text-text-muted hover:text-text-primary"}`}
         title="Version history"
       >
+        <ClockIcon />
         History
       </button>
 
-      {/* Diagnostics toggle */}
-      <button
-        onClick={onToggleDiagnostics}
-        className={`text-[11px] px-2 py-1 rounded ${showDiagnostics ? "bg-[#e8f4f6] text-[#1d5a66]" : "bg-[#f5f2ed] text-text-muted hover:text-text-primary"}`}
-        title="Document diagnostics"
-      >
-        Diagnostics
-      </button>
-
-      {/* Overwrite from Markdown toggle */}
-      {onToggleOverwrite && (
+      {/* Overflow menu: diagnostics + overwrite */}
+      <div className="relative" ref={menuRef}>
         <button
-          onClick={onToggleOverwrite}
-          className={`text-[11px] px-2 py-1 rounded ${showOverwrite ? "bg-[#e8f4f6] text-[#1d5a66]" : "bg-[#f5f2ed] text-text-muted hover:text-text-primary"}`}
-          title="Overwrite document from raw markdown"
+          onClick={() => setMenuOpen((open) => !open)}
+          className={`w-[26px] h-[26px] rounded flex items-center justify-center text-[15px] leading-none ${
+            menuOpen || menuActive
+              ? "bg-[#e8f4f6] text-[#1d5a66]"
+              : "bg-[#f5f2ed] text-text-muted hover:text-text-primary"
+          }`}
+          title="More options"
+          aria-label="More options"
+          aria-expanded={menuOpen}
+          aria-haspopup="menu"
         >
-          Overwrite
+          &#8943;
         </button>
-      )}
+        {menuOpen ? (
+          <div
+            role="menu"
+            className="absolute right-0 top-full mt-1 z-50 min-w-[140px] rounded border border-topbar-border bg-canvas-bg py-1 shadow-sm"
+          >
+            <button
+              role="menuitem"
+              onClick={() => {
+                onToggleDiagnostics();
+                setMenuOpen(false);
+              }}
+              className={`w-full text-left text-[11px] px-3 py-1.5 ${
+                showDiagnostics
+                  ? "bg-[#e8f4f6] text-[#1d5a66]"
+                  : "text-text-muted hover:bg-section-hover hover:text-text-primary"
+              }`}
+            >
+              Diagnostics
+            </button>
+            {onToggleOverwrite ? (
+              <button
+                role="menuitem"
+                onClick={() => {
+                  onToggleOverwrite();
+                  setMenuOpen(false);
+                }}
+                className={`w-full text-left text-[11px] px-3 py-1.5 ${
+                  showOverwrite
+                    ? "bg-[#e8f4f6] text-[#1d5a66]"
+                    : "text-text-muted hover:bg-section-hover hover:text-text-primary"
+                }`}
+              >
+                Overwrite
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
 
       {/* Coarse transport/publish status indicator (no per-section popup) */}
       {meta.label ? (

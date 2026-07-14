@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { SectionTransferService, type SectionTransfer } from "../services/section-transfer";
 import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
@@ -21,7 +21,7 @@ import { useInitialObserverGuard } from "../hooks/useInitialObserverGuard";
 import { useDocumentActivity } from "../hooks/useDocumentActivity";
 import { DocumentActivityIndicator } from "../components/DocumentActivityIndicator";
 import { DocumentSectionNav, type DocumentSectionNavItem } from "../components/DocumentSectionNav";
-import { useTopViewportSection } from "../hooks/useTopViewportSection";
+import { useSectionViewportVisibility } from "../hooks/useTopViewportSection";
 import { DocumentResourceModel } from "../models/document-resource-model";
 import type { Awareness } from "y-protocols/awareness";
 import {
@@ -74,9 +74,11 @@ function ViewingPresenceDots({ awareness, sectionKey }: { awareness: Awareness |
 
 interface DocumentPageProps {
   docPathOverride?: string | null;
+  /** Optional control rendered to the right of the document title on the paper. */
+  titleAccessory?: ReactNode;
 }
 
-export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
+export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPageProps = {}) {
   const params = useParams();
   const navigate = useNavigate();
   const decodedDocPath = useMemo(() => {
@@ -364,7 +366,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   // ── Section navigation overlay (right-gutter index) ──────
   // Derived entirely from the live render list — the same structure the page
   // renders/edits when CRDT is active. Empty-heading (before-first-heading) rows
-  // are omitted; line length/indent scale off nesting depth (heading_path length).
+  // are omitted; tick indent scales off ATX heading level from section content.
   const navItems = useMemo<DocumentSectionNavItem[]>(
     () =>
       renderSections
@@ -372,12 +374,17 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
         .map((s) => ({
           fragmentKey: getSectionFragmentKey(s),
           heading: s.heading,
-          depth: Math.max(1, s.heading_path.length),
+          // ATX level from the heading line (## → 2), not outline path length —
+          // path length collapses H1/H2 roots to the same indent.
+          depth: /^#{1,6}/.exec(s.content)?.[0].length ?? Math.max(1, s.heading_path.length),
           headingPath: s.heading_path,
         })),
     [renderSections],
   );
-  const navActiveFragmentKey = useTopViewportSection(scrollContainerRef, renderSections.length);
+  const navVisibilityByFragmentKey = useSectionViewportVisibility(
+    scrollContainerRef,
+    renderSections.length,
+  );
   const navEditingFragmentKey =
     isEditing && focusedSectionIndex !== null && renderSections[focusedSectionIndex]
       ? getSectionFragmentKey(renderSections[focusedSectionIndex])
@@ -452,6 +459,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
     containerRef: sectionsContainerRef,
     sections,
     editorRefs,
+    store,
   });
 
   // ── Recent doc tracking ──────────────────────────────────
@@ -614,7 +622,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
   return (
     <SectionHoverProvider activeSectionIndex={focusedSectionIndex}>
     <DocumentActivityIndicator activity={documentActivity} />
-    <div className="relative flex flex-col h-full">
+    <div className="relative flex flex-col h-full" style={{ background: "var(--color-page-bg)" }}>
       <div className="relative shrink-0">
         <DocumentTopbar
           docPath={decodedDocPath}
@@ -708,10 +716,13 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
           <div className="flex">
             <div className="w-[200px] min-w-[100px] shrink" />
             <div ref={paperRef} className="flex-1 min-w-[700px] bg-canvas-bg border border-b-0 border-[rgba(0,0,0,0.06)] rounded-t-sm px-14 pt-12 relative">
-              {/* Document title */}
-              <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight mb-1 tracking-tight">
-                {docTitle}
-              </h1>
+              {/* Document title + optional view-mode toggle */}
+              <div className="flex items-center justify-between gap-4 mb-1">
+                <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight tracking-tight min-w-0">
+                  {docTitle}
+                </h1>
+                {titleAccessory}
+              </div>
               <div className="text-xs text-text-muted mb-7 pb-5 border-b border-[#eae7e2] flex items-center gap-2">
                 {renaming ? (
                   <form
@@ -818,7 +829,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
                 </button>
               ) : null}
             </div>
-            <div className="w-[200px] min-w-[100px] shrink" />
+            <div className="w-[200px] min-w-[140px] shrink" />
           </div>
 
           <DocumentCanvas
@@ -858,7 +869,7 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
           <div className="flex">
             <div className="w-[200px] min-w-[100px] shrink" />
             <div className="flex-1 min-w-[700px] bg-canvas-bg border border-t-0 border-[rgba(0,0,0,0.06)] rounded-b-sm pb-16 min-h-[100px]" />
-            <div className="w-[200px] min-w-[100px] shrink" />
+            <div className="w-[200px] min-w-[140px] shrink" />
           </div>
 
         </div>
@@ -868,8 +879,8 @@ export function DocumentPage({ docPathOverride }: DocumentPageProps = {}) {
       <DocumentSectionNav
         title={docTitle}
         items={navItems}
-        activeFragmentKey={navActiveFragmentKey}
         editingFragmentKey={navEditingFragmentKey}
+        visibilityByFragmentKey={navVisibilityByFragmentKey}
         onNavigate={handleNavigateToSection}
         onNavigateToTop={handleNavigateToTop}
         anchorRef={paperRef}

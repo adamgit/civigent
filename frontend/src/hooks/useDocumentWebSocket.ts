@@ -183,15 +183,14 @@ export function useDocumentWebSocket({
           loadSections(decodedDocPath);
         } else {
           // CRDT session active: adopt fresh server topology even while editors are
-          // mounted; only a mounted section's live content is preserved. Matched by
+          // mounted. Identity/order comes from the server list; `.content` stays a
+          // cold seed (live display authority is the Y.Doc fragment). Matched by
           // opaque fragment_key — never positional index or heading text.
           apiClient.getWorkspaceDocumentSections(decodedDocPath).then((resp) => {
-            const crdtBound = mountedEditorFragmentKeysRef.current;
             setSections((prev) =>
               adoptFreshSectionLayout({
                 prev,
                 fresh: resp.sections,
-                crdtBoundFragmentKeys: crdtBound,
                 focusedSectionIndexRef,
               }),
             );
@@ -297,12 +296,10 @@ export function useDocumentWebSocket({
       if (event.type === "doc:structure-changed") {
         const structureChanged = event as DocStructureChangedEvent;
         if (normalizeDocPath(structureChanged.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-        const crdtBound = mountedEditorFragmentKeysRef.current;
         setSections((prev) =>
           adoptFreshSectionLayout({
             prev,
             fresh: structureChanged.sections,
-            crdtBoundFragmentKeys: crdtBound,
             focusedSectionIndexRef,
           }),
         );
