@@ -61,7 +61,7 @@ describe("cross-section copy (spec 05)", () => {
   it("copies clean markdown when the selection spans multiple sections", () => {
     const containerRef = { current: container };
     const editorRefs = { current: new Map() }; // no live editors → full section content used
-    renderHook(() => useCrossSectionCopy({ containerRef, sections, editorRefs, store: null }));
+    renderHook(() => useCrossSectionCopy({ containerRef, sections, editorRefs }));
 
     selectRange(s0.firstChild!, 0, s1.firstChild!, (s1.firstChild as Text).length);
     const { prevented, setData } = dispatchCopy();
@@ -76,7 +76,7 @@ describe("cross-section copy (spec 05)", () => {
   it("defers to Milkdown's built-in clipboard for an intra-section selection", () => {
     const containerRef = { current: container };
     const editorRefs = { current: new Map() };
-    renderHook(() => useCrossSectionCopy({ containerRef, sections, editorRefs, store: null }));
+    renderHook(() => useCrossSectionCopy({ containerRef, sections, editorRefs }));
 
     // Selection entirely within section 0.
     selectRange(s0.firstChild!, 0, s0.firstChild!, 4);

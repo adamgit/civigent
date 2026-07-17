@@ -50,7 +50,7 @@ function params(sections: DocumentSection[]): UseProposalDraftingParams {
     setError: vi.fn(),
     loadSections: vi.fn(async () => sections),
     setFocusedSectionIndex: vi.fn(),
-    requestMode: vi.fn(async () => {}),
+    leaveLiveEditing: vi.fn(async () => {}),
   };
 }
 

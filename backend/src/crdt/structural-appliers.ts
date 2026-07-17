@@ -50,7 +50,7 @@ function manifestDeltaFromResult(
   const add = result.writtenEntries
     .filter((e) => !e.isSubSkeleton)
     .map((e) => ({ doc_path: docPath, heading_path: [...e.headingPath] }));
-  const remove = result.removedEntries.map((e) => ({ doc_path: docPath, heading_path: [...e.headingPath] }));
+  const remove = result.removedContentEntries.map((e) => ({ doc_path: docPath, heading_path: [...e.headingPath] }));
   return { add, remove };
 }
 
@@ -413,6 +413,18 @@ export async function reflectMergeIntoProposal(
 // a DEDICATED plan (not a fake predecessor merge onto `StructuralMergePlan`).
 // When the orphan body is empty/whitespace, no durable empty BFH is created
 // (dissolve), matching the already-shipped empty-BFH dissolve behavior.
+//
+// NESTED first-section demotion (option B): when the demoted first section has
+// DESCENDANTS, leaving it as a headed identity with no heading parenting those
+// children is structural corruption. `reparentChildren` routes the proposal
+// reflection through `collapseHeadingReparentingToBfh`, which moves the orphan
+// body under BFH AND reparents the former children to top level KEEPING their
+// section-file ids (live fragment keys survive — no live mutation of the child
+// fragments is needed). The demoted headed identity is removed. The
+// empty/whitespace-orphan DISSOLVE rule applies to the nested case too: the
+// collapse auto-creates BFH as its reparent merge target, so the reflection
+// deletes that empty preamble afterwards, and the live side never seeds BFH —
+// topology hands off to the first reparented child.
 
 export interface StructuralOrphanToBfhPlan {
   /** The demoted first headed section fragment to remove. */
@@ -427,17 +439,32 @@ export interface StructuralOrphanToBfhPlan {
   orphanBody: SectionBody;
   /** True when the orphan body is empty/whitespace: do NOT create a durable BFH. */
   dissolveBfh: boolean;
+  /**
+   * True when the demoted first section has descendants: reflect via
+   * `collapseHeadingReparentingToBfh` (reparent children to top level, keep ids)
+   * instead of the leaf `writeSection([]) + deleteSection` path. With an
+   * empty/whitespace orphan the reflection deletes the collapse's auto-created
+   * BFH merge target afterwards (`dissolveBfh` applies to both shapes).
+   */
+  reparentChildren: boolean;
   affectedKeys: string[];
 }
 
 /**
  * Compute the no-predecessor orphan→BFH plan for a `heading-deletion` change.
  * Runs OUTSIDE the transaction. Returns null (leave as-is, no data loss) unless
- * the dirty fragment is a HEADED section at layout index 0 (no predecessor) with
- * NO descendants — the case the predecessor-merge path can't handle. Reparenting
- * a demoted first heading's children to top level has no primitive yet, so a
- * section with descendants is left untouched (its identity still resolves, so the
- * ingress acceptance gate never fatals on it).
+ * the dirty fragment is a HEADED section at layout index 0 (no predecessor) —
+ * the case the predecessor-merge path can't handle.
+ *
+ *  - LEAF (no descendants): orphan body → BFH (or dissolve when empty), delete
+ *    the demoted headed identity.
+ *  - NESTED (has descendants, option B): reflect via
+ *    `collapseHeadingReparentingToBfh` — orphan body under BFH (or dissolved
+ *    when empty), former children reparented to top level KEEPING their
+ *    section-file ids, demoted identity removed. `reparentChildren` is set so
+ *    the reflection takes that path; the live side is identical to the leaf
+ *    case (seed BFH — or not, when dissolving — + clear the demoted key; child
+ *    fragments keep their keys and are untouched).
  */
 export async function computeStructuralOrphanToBfhPlan(
   liveFragments: LiveFragmentStringsStore,
@@ -455,25 +482,29 @@ export async function computeStructuralOrphanToBfhPlan(
   const removed = layout[0];
   if (removed.headingPath.length === 0) return null;
 
-  // Descendants would be orphaned by a subtree delete (data loss) — defer that
-  // shape rather than corrupt it. Predecessor merge handles children via
-  // `deleteHeadingKeepingChildren`; there is no reparent-to-top-level primitive
-  // for the no-predecessor case yet.
+  // Detect descendants: a demoted first section with children reparents them to
+  // top level (option B) rather than deleting the subtree. `collapseHeading-
+  // ReparentingToBfh` (via `collapseParentHeading`) requires a proposal + a
+  // readable sub-skeleton parent; with no proposal there can be no descendants,
+  // so the leaf path is correct.
+  let reparentChildren = false;
   if (currentProposalId) {
     const { ProposalReader } = await import("../storage/proposal-reader.js");
     try {
       const paths = await ProposalReader.open(currentProposalId, "inprogress").listHeadingPaths(docPath);
       const target = removed.headingPath;
-      const hasChildren = paths.some(
+      reparentChildren = paths.some(
         (p) => p.length > target.length && target.every((seg, i) => seg === p[i]),
       );
-      if (hasChildren) return null;
     } catch {
       // No readable layout → treat as leaf (nothing to reparent).
     }
   }
 
   const orphanBody = change.orphanedBody;
+  // An empty/whitespace orphan dissolves BFH in BOTH shapes: leaf (no BFH is
+  // created at all) and nested (the reflection removes the collapse's
+  // auto-created merge target), so no phantom empty preamble ever survives.
   const dissolveBfh = orphanBody.trim() === "";
   return {
     removeKey: dirtyKey,
@@ -482,6 +513,7 @@ export async function computeStructuralOrphanToBfhPlan(
     bfhTarget: buildFragmentContent(orphanBody, 0, ""),
     orphanBody,
     dissolveBfh,
+    reparentChildren,
     affectedKeys: dissolveBfh
       ? [dirtyKey]
       : [BEFORE_FIRST_HEADING_KEY, dirtyKey],
@@ -527,6 +559,33 @@ export async function reflectOrphanToBfhIntoProposal(
 ): Promise<void> {
   const { ProposalEditor } = await import("../storage/proposal-editor.js");
   const editor = ProposalEditor.open(proposalId, "inprogress");
+  const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
+
+  // Nested (option B): one collapse folds the orphan under BFH, reparents the
+  // former children to top level keeping their ids, and removes the demoted
+  // headed identity. Claim the written entries (reparented children + BFH) at
+  // their NEW paths (grow-only union); the demoted heading rides the id-based
+  // delete overlay recorded by `collapseHeadingReparentingToBfh`.
+  if (plan.reparentChildren) {
+    const result = await editor.collapseHeadingReparentingToBfh(
+      docPath,
+      plan.removedHeadingPath,
+      plan.orphanBody,
+    );
+    let add = manifestDeltaFromResult(docPath, result).add;
+    if (plan.dissolveBfh) {
+      // The collapse auto-creates BFH as its reparent merge target; an
+      // empty/whitespace orphan must not leave that empty preamble behind —
+      // delete it and never claim the `[]` path in the manifest.
+      await editor.deleteSection(docPath, []);
+      add = add.filter((section) => section.heading_path.length > 0);
+    }
+    await unionCurrentProposalSections(proposalId, add);
+    return;
+  }
+
+  // Leaf: write the orphan as the BFH preamble body (unless dissolving an empty
+  // orphan), then delete the demoted headed section.
   if (!plan.dissolveBfh) {
     const result = await editor.writeSection(
       docPath,
@@ -534,7 +593,6 @@ export async function reflectOrphanToBfhIntoProposal(
       "",
       sectionWriteInputFromBody(plan.orphanBody),
     );
-    const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
     await unionCurrentProposalSections(proposalId, manifestDeltaFromResult(docPath, result).add);
   }
   // Delete the demoted headed section. Its canonical section-file id enters the

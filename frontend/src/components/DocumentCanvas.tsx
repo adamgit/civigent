@@ -1,7 +1,5 @@
 import React from "react";
 import { DocumentSectionRenderer } from "./DocumentSectionRenderer";
-import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
-import type { CrdtTransport } from "../services/crdt-transport";
 import type { CrdtConnectionState } from "../services/crdt-provider";
 import type { MilkdownEditorHandle } from "./MilkdownEditor";
 import type {
@@ -16,7 +14,6 @@ import { sectionHeadingKey } from "../types/shared.js";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import type { LocalEditOriginSink } from "../status/sessionAuthorship";
 import { SummaryWhoChangedThisSection } from "./SummaryWhoChangedThisSection.js";
-import { useSectionEditabilityMap, usePublishPaused } from "../hooks/useFragmentStoreHooks";
 
 export interface DocumentCanvasProps {
   sections: DocumentSection[];
@@ -32,14 +29,17 @@ export interface DocumentCanvasProps {
   recentlyChangedByLabel: Map<string, unknown>;
   injectedByLabel: Map<string, string>;
   dragOverSectionIndex: number | null;
-  store: BrowserFragmentReplicaStore | null;
-  transport: CrdtTransport | null;
+  /** Live-replica-backed block gate (single live editability authority). */
+  isSectionBlocked: (fragmentKey: string) => boolean;
+  /** Live publish-pause flag from the replica view. */
+  publishPaused: boolean;
   crdtSynced: boolean;
   crdtState: CrdtConnectionState;
   transferService: SectionTransferService | null;
   readyEditors: Set<string>;
-  /** Write-only session-authorship port, passed straight through to each section
-   *  renderer. The canvas neither reads nor stores it. */
+  livePaintMarkdown?: (section: DocumentSection) => string;
+  getLiveBinding?: (fragmentKey: string) => import("../services/live-section-replica").LiveEditorBinding | undefined;
+  sectionUncommitted?: (fragmentKey: string) => boolean;
   localEditSink: LocalEditOriginSink;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
   onStartEditing: (index: number, coords: { x: number; y: number }) => void | Promise<void>;
@@ -67,12 +67,15 @@ export function DocumentCanvas({
   recentlyChangedByLabel,
   injectedByLabel,
   dragOverSectionIndex,
-  store,
-  transport,
+  isSectionBlocked,
+  publishPaused,
   crdtSynced,
   crdtState,
   transferService,
   readyEditors,
+  livePaintMarkdown,
+  getLiveBinding,
+  sectionUncommitted,
   localEditSink,
   mouseDownPosRef,
   onStartEditing,
@@ -85,14 +88,6 @@ export function DocumentCanvas({
   onCursorExit,
   onCrossSectionDrop,
 }: DocumentCanvasProps) {
-  // Three independent signals drive editor availability (spec 05 §"Section
-  // block-state events" + §"DocSession publish pause messages"):
-  //   1. proposal FSM lock conflict (proposalConflictReason / locked)
-  //   2. CRDT block-state (blocked → read-only, gone → unmounted)
-  //   3. publication pause (freeze all editors)
-  // Agent write-policy `canWrite` is NEVER used as a human lock (Area O/Q).
-  const editabilityMap = useSectionEditabilityMap(store);
-  const publishPaused = usePublishPaused(store);
   return (
     <>
       {!sectionsLoading ? sections.map((section, i) => {
@@ -103,18 +98,14 @@ export function DocumentCanvas({
         const lockedInProposalMode = proposalMode && isInProposal && proposalConflictReason !== null;
         const fk = getSectionFragmentKey(section);
         const sectionLabel = headingPathToLabel(section.heading_path);
-        // CRDT server-driven block-state for this fragment.
-        const editability = editabilityMap.get(fk) ?? "editable";
-        const crdtBlocked = editability === "blocked";
-        const crdtGone = editability === "gone";
-        // A `gone` section is unmounted/removed from the canvas entirely.
-        if (crdtGone) return null;
+        // Live rows come FROM the replica topology, so a gone section never
+        // renders at all; blocked is the replica's live block set.
+        const crdtBlocked = isSectionBlocked(fk);
         const mountAllowed = proposalMode
           ? (canEditProposalContent && isInProposal && shouldMountEditor(i, focusedSectionIndex))
           : (!crdtBlocked && shouldMountEditor(i, focusedSectionIndex));
         return (
           <div key={fk} className="flex items-stretch">
-            {/* Left gutter — who changed this section */}
             <div className="w-[200px] min-w-[100px] shrink relative flex items-stretch justify-end pt-1">
               <SummaryWhoChangedThisSection
                 editorId={section.last_editor?.id}
@@ -122,10 +113,10 @@ export function DocumentCanvas({
                 secondsAgo={section.last_editor?.seconds_ago}
                 writerType={section.last_editor?.type}
                 sectionIndex={i}
+                uncommittedChanges={sectionUncommitted?.(fk) ?? false}
               />
             </div>
 
-            {/* Center — section content */}
             <div className="flex-1 min-w-[700px] bg-canvas-bg border-x border-[rgba(0,0,0,0.06)] px-14">
               <DocumentSectionRenderer
                 section={section}
@@ -142,8 +133,6 @@ export function DocumentCanvas({
                 injectedByWriter={injectedByLabel.get(sectionLabel) ?? null}
                 hasRemotePresence={false}
                 dragOverSectionIndex={dragOverSectionIndex}
-                store={store}
-                transport={transport}
                 crdtSynced={crdtSynced}
                 crdtState={crdtState}
                 transferService={transferService}
@@ -151,6 +140,8 @@ export function DocumentCanvas({
                 canEditProposalContent={canEditProposalContent}
                 proposalScopeMutationInFlight={proposalScopeMutationInFlight}
                 isReady={readyEditors.has(fk)}
+                livePaintMarkdown={livePaintMarkdown}
+                getLiveBinding={getLiveBinding}
                 localEditSink={localEditSink}
                 mouseDownPosRef={mouseDownPosRef}
                 onStartEditing={onStartEditing}
@@ -169,7 +160,6 @@ export function DocumentCanvas({
               />
             </div>
 
-            {/* Right gutter — reserves space for the fixed section nav (min 140). */}
             <div className="w-[200px] min-w-[140px] shrink" />
           </div>
         );
@@ -177,4 +167,3 @@ export function DocumentCanvas({
     </>
   );
 }
-

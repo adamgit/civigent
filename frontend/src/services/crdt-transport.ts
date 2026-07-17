@@ -66,6 +66,14 @@ export interface CrdtTransportOptions {
   onPublishPauseStart?: () => void;
   /** DocSession publish pause ended — editors may unfreeze. */
   onPublishPauseEnd?: () => void;
+  /** Raw authoritative live-section frame (opcode + payload) — routed into a
+   *  `LiveSectionReplica`. */
+  onLiveSectionFrame?: (opcode: number, payload: Uint8Array) => void;
+  /** Shared Y.Doc to sync into (single-replica promotion reuses the replica's
+   *  doc so observer → editor does not mint a new empty document). Omit to mint. */
+  doc?: Y.Doc;
+  /** Shared awareness paired with `doc` (cursors). Omit to mint. */
+  awareness?: Awareness;
 }
 
 export class CrdtTransport {
@@ -78,7 +86,9 @@ export class CrdtTransport {
 
   constructor(docPath: string, opts: CrdtTransportOptions = {}) {
     this.opts = opts;
-    const doc = new Y.Doc();
+    // Reuse the replica's shared doc when provided (single-replica promotion),
+    // else mint one (legacy standalone-editor path).
+    const doc = opts.doc ?? new Y.Doc();
     this.provider = new CrdtProvider(
       doc,
       docPath,
@@ -125,10 +135,14 @@ export class CrdtTransport {
           this.store?.setPublishPaused(false);
           this.opts.onPublishPauseEnd?.();
         },
+        onLiveSectionFrame: (opcode, payload) => {
+          this.opts.onLiveSectionFrame?.(opcode, payload);
+        },
       },
       {
         clientInstanceId: opts.clientInstanceId,
         initialTransitionRequest: opts.initialTransitionRequest,
+        awareness: opts.awareness,
       },
     );
     this.doc = doc;

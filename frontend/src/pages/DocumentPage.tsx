@@ -15,15 +15,12 @@ import DocumentDiagnostics from "../components/DocumentDiagnostics";
 import { OverwriteMarkdownModal } from "../components/OverwriteMarkdownModal";
 import { SectionEditRejectedModal } from "../components/SectionEditRejectedModal";
 import { useCrossSectionCopy } from "../hooks/useCrossSectionCopy";
-import { useViewingPresence } from "../hooks/useViewingPresence";
 import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
-import { useInitialObserverGuard } from "../hooks/useInitialObserverGuard";
 import { useDocumentActivity } from "../hooks/useDocumentActivity";
 import { DocumentActivityIndicator } from "../components/DocumentActivityIndicator";
 import { DocumentSectionNav, type DocumentSectionNavItem } from "../components/DocumentSectionNav";
 import { useSectionViewportVisibility } from "../hooks/useTopViewportSection";
 import { DocumentResourceModel } from "../models/document-resource-model";
-import type { Awareness } from "y-protocols/awareness";
 import {
   sectionHeadingKey,
   type DocStructureNode,
@@ -38,11 +35,22 @@ import {
   isDocumentEffectivelyEmpty,
   mergeSectionsWithProposalOverlay,
   LOADING_REVEAL_DELAY_MS,
-  BEFORE_FIRST_HEADING_KEY,
 } from "./document-page-utils";
 import { useDocumentSessionController } from "../hooks/useDocumentSessionController";
+import { useEditorWindowEviction } from "../hooks/useEditorRegistry";
+import { useLiveSectionReplica } from "../hooks/useLiveSectionReplica";
+import type { LiveEditorBinding } from "../services/live-section-replica";
+import { SectionId, type WorkspaceSectionLockSignal } from "../types/live-sections";
+import {
+  deriveWorkspaceBootstrap,
+  deriveWorkspaceSectionLockSignals,
+  seedMarkdownFor,
+  lockSignalFor,
+  topologyToRenderSections,
+  syntheticBeforeFirstHeadingRow,
+} from "./cold-bootstrap";
+import { resolveFocusAfterTopologyChange } from "./resolve-focus-after-topology-change";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
-import { usePublishPaused } from "../hooks/useFragmentStoreHooks";
 import { useDocSaveStatusInputs } from "../hooks/useDocSaveStatusInputs";
 import { resolveTransportStatus } from "../services/section-save-state";
 import {
@@ -51,30 +59,8 @@ import {
   type SessionAuthorshipView,
 } from "../status/sessionAuthorship";
 
-// ─── viewingPresence: small component to call the hook per-section ──
-
-function ViewingPresenceDots({ awareness, sectionKey }: { awareness: Awareness | null; sectionKey: string }) {
-  const viewers = useViewingPresence(awareness, sectionKey);
-  if (viewers.length === 0) return null;
-  return (
-    <>
-      {viewers.map((v, idx) => (
-        <span
-          key={`${v.name}-${idx}`}
-          title={v.name}
-          className="inline-block w-[7px] h-[7px] rounded-full border border-white/80"
-          style={{ backgroundColor: v.color }}
-        />
-      ))}
-    </>
-  );
-}
-
-// ─── Component ───────────────────────────────────────────────────
-
 interface DocumentPageProps {
   docPathOverride?: string | null;
-  /** Optional control rendered to the right of the document title on the paper. */
   titleAccessory?: ReactNode;
 }
 
@@ -89,11 +75,7 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     return routeDocPath ? decodeURIComponent(routeDocPath) : null;
   }, [docPathOverride, params]);
 
-  // ── Section data ─────────────────────────────────────────
   const [sections, setSections] = useState<DocumentSection[]>([]);
-  // View-model overlay: equals `sections` except for the empty-doc edit case
-  // where one synthetic BFH row is exposed so click-to-edit, focus restoration,
-  // editor registry, and DocumentCanvas all agree on a real item at index 0.
   const [displaySections, setDisplaySections] = useState<DocumentSection[]>([]);
   const [sectionsLoading, setSectionsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -109,14 +91,12 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
   const [loadDurationMs, setLoadDurationMs] = useState<number | null>(null);
   const loadStartedAtRef = useRef<number | null>(null);
 
-  // ── Replacement notice state ─────────────────────────────
   const [replacementNotice, setReplacementNotice] = useState<DocumentReplacementNoticePayload | null>(null);
   const handleDocumentReplacementNotice = useCallback(
     (payload: DocumentReplacementNoticePayload) => setReplacementNotice(payload),
     [],
   );
 
-  // ── Metadata state ───────────────────────────────────────
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const sectionsContainerRef = useRef<HTMLDivElement>(null);
@@ -124,7 +104,6 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
   const paperRef = useRef<HTMLDivElement>(null);
   const resourceModel = useMemo(() => new DocumentResourceModel(), []);
 
-  // ── Load sections ────────────────────────────────────────
   const loadSections = useCallback(async (docPath: string): Promise<DocumentSection[]> => {
     loadStartedAtRef.current = Date.now();
     setLoadDurationMs(null);
@@ -145,18 +124,70 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     }
   }, [resourceModel]);
 
-  // ── CRDT hook ─────────────────────────────────────────────
+  const handleLiveSessionEnded = useCallback(() => {
+    if (decodedDocPath) void loadSections(decodedDocPath);
+  }, [decodedDocPath, loadSections]);
+  const handleSuperseded = useCallback(() => {
+    setStatusMessage("Editing moved to another tab. This tab is now read-only.");
+  }, []);
+  const liveReplica = useLiveSectionReplica({
+    docPath: decodedDocPath,
+    onSessionEnded: handleLiveSessionEnded,
+    // 4022 restore / 4024 force-rebuild: the socket reconnects immediately;
+    // reseed canonical so cold previews reflect the replaced content.
+    onSessionReinit: handleLiveSessionEnded,
+    onDocumentReplacementNotice: handleDocumentReplacementNotice,
+    onSuperseded: handleSuperseded,
+  });
+  const liveReplicaReadyRef = useRef(false);
+  useEffect(() => { liveReplicaReadyRef.current = liveReplica.hasAuthoritativeBootstrap; }, [liveReplica.hasAuthoritativeBootstrap]);
+
+  const [focusedSectionId, setFocusedSectionId] = useState<SectionId | null>(null);
+  const prevTopologyRef = useRef<readonly import("../types/live-sections").LiveSectionRef[]>([]);
+  useEffect(() => {
+    if (!liveReplica.hasAuthoritativeBootstrap) { prevTopologyRef.current = []; return; }
+    const prev = prevTopologyRef.current;
+    const next = liveReplica.topology;
+    if (prev === next) return;
+    prevTopologyRef.current = next;
+    setFocusedSectionId((cur) => resolveFocusAfterTopologyChange(prev, next, cur));
+  }, [liveReplica.hasAuthoritativeBootstrap, liveReplica.topology]);
+
+  const workspaceSeeds = useMemo(() => deriveWorkspaceBootstrap(sections), [sections]);
+  const sectionLockSignals = useMemo(() => deriveWorkspaceSectionLockSignals(sections), [sections]);
+  const sectionLockSignalsRef = useRef<WorkspaceSectionLockSignal[]>([]);
+  useEffect(() => { sectionLockSignalsRef.current = sectionLockSignals; }, [sectionLockSignals]);
+
+  const livePaintMarkdown = useCallback(
+    (section: DocumentSection): string => {
+      const id = SectionId.brand(getSectionFragmentKey(section));
+      const seed = seedMarkdownFor(workspaceSeeds, id) ?? section.content;
+      return liveReplica.paintMarkdown(id, seed);
+    },
+    [liveReplica, workspaceSeeds],
+  );
+
+  const getLiveBinding = useCallback(
+    (fragmentKey: string): LiveEditorBinding | undefined => {
+      const replica = liveReplica.replica;
+      if (!liveReplica.hasAuthoritativeBootstrap || !replica) return undefined;
+      return replica.requireLiveSection(SectionId.brand(fragmentKey))?.createEditorBinding();
+    },
+    [liveReplica],
+  );
+
+  const getLiveMarkdown = useCallback(
+    (fragmentKey: string): string | undefined => {
+      const replica = liveReplica.replica;
+      if (!liveReplica.hasAuthoritativeBootstrap || !replica) return undefined;
+      return replica.requireLiveSection(SectionId.brand(fragmentKey))?.readMarkdown();
+    },
+    [liveReplica],
+  );
+
   const {
-    clientInstanceId,
     focusedSectionIndex,
     setFocusedSectionIndex,
-    store,
-    storeRef,
-    transport,
-    crdtSynced,
-    crdtState,
-    observerState,
-    editingLoading,
     readyEditors,
     setReadyEditors,
     proposalMode,
@@ -174,18 +205,12 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     proposalSectionConflicts,
     proposalOverlayVersion,
     proposalSectionsRef,
-    controllerState,
-    transportRef,
-    presenceRef,
-    controllerStateRef,
-    mountedEditorFragmentKeysRef,
     editorRefs,
     pendingFocusRef,
-    pendingStructureRefocusRef,
-    focusedSectionIndexRef,
     mouseDownPosRef,
-    stopEditing,
-    startEditing,
+    isSectionBlocked,
+    canFocusSection,
+    publishViewingSection,
     startManualPublish,
     acquireProposalLocks,
     commitActiveProposal,
@@ -197,48 +222,24 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     handleProposalSectionChange,
     handleCursorExit,
     setEditorRef,
-    setViewingSection,
-    requestMode,
-    stopObserver,
   } = useDocumentSessionController({
     decodedDocPath,
     sections: displaySections,
-    setSections,
     setError,
-    setStatusMessage,
     loadSections,
-    onDocumentReplacementNotice: handleDocumentReplacementNotice,
+    liveReplica,
   });
+  const clientInstanceId = liveReplica.clientInstanceId;
 
-  // Ref for displayed sections (used by transferService and other stable callbacks)
   const sectionsRef = useRef<DocumentSection[]>([]);
 
-  // Keep `displaySections` in sync: normally mirrors `sections`; when the server
-  // doc is empty and the page is in editor mode with CRDT synced, expose a
-  // single synthetic BFH row so the editor can mount at index 0 before the
-  // real section materializes on disk via the staged-store bootstrap path.
-  const syntheticBfhSections = useMemo<DocumentSection[]>(() => [{
-    heading: "",
-    heading_path: [],
-    depth: 0,
-    content: "",
-    agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
-    crdt_session_active: true,
-    section_length_warning: false,
-    word_count: 0,
-    fragment_key: BEFORE_FIRST_HEADING_KEY,
-    section_file: "",
-  }], []);
-  const isEditingMode = controllerState.requestedMode === "editor";
+  const syntheticBfhSections = useMemo<DocumentSection[]>(() => [syntheticBeforeFirstHeadingRow()], []);
+  const isEditingMode = liveReplica.mode === "editor";
   useEffect(() => {
     let next: DocumentSection[];
     if (sections.length > 0) {
       next = sections;
     } else if (isEditingMode) {
-      // Editor mode on an empty server doc: expose the synthetic BFH row so
-      // click-to-edit has something to focus. CRDT sync is not gated on —
-      // the editor mounts optimistically and local Y.Doc writes buffer until
-      // the transport reaches synced state.
       next = syntheticBfhSections;
     } else {
       next = sections;
@@ -247,15 +248,19 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
   }, [sections, isEditingMode, syntheticBfhSections]);
 
   const renderSections = useMemo(() => {
-    if (!(proposalMode && activeProposalStatus === "inprogress")) {
-      return displaySections;
+    if (proposalMode && activeProposalStatus === "inprogress") {
+      return mergeSectionsWithProposalOverlay(
+        displaySections,
+        decodedDocPath,
+        selectedProposalSectionKeys,
+        proposalSectionsRef.current,
+      );
     }
-    return mergeSectionsWithProposalOverlay(
-      displaySections,
-      decodedDocPath,
-      selectedProposalSectionKeys,
-      proposalSectionsRef.current,
-    );
+    if (liveReplica.hasAuthoritativeBootstrap) {
+      const prevByKey = new Map(sections.map((s) => [getSectionFragmentKey(s), s]));
+      return topologyToRenderSections(liveReplica.topology, workspaceSeeds, prevByKey);
+    }
+    return displaySections;
   }, [
     proposalMode,
     activeProposalStatus,
@@ -263,14 +268,28 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     decodedDocPath,
     selectedProposalSectionKeys,
     proposalOverlayVersion,
+    liveReplica,
+    workspaceSeeds,
+    sections,
   ]);
 
   useEffect(() => {
     sectionsRef.current = renderSections;
   }, [renderSections]);
 
-  // ── Injected sections state (proposal injection visual affordance) ─
-  // Separate from recentlyChangedSections — different visual, different trigger.
+  const effectiveFocusedIndex = useMemo(() => {
+    if (!liveReplica.hasAuthoritativeBootstrap) return focusedSectionIndex;
+    if (focusedSectionId === null) return null;
+    const key = SectionId.text(focusedSectionId);
+    const idx = renderSections.findIndex((s) => getSectionFragmentKey(s) === key);
+    return idx >= 0 ? idx : null;
+  }, [liveReplica.hasAuthoritativeBootstrap, focusedSectionId, focusedSectionIndex, renderSections]);
+
+  // Evict ready editors outside the mount window around the focused RENDER
+  // index — a derived projection of (renderSections, focusedSectionId), never
+  // stored focus state.
+  useEditorWindowEviction(renderSections, effectiveFocusedIndex, setReadyEditors);
+
   const [injectedSections, setInjectedSections] = useState<
     Map<string, { writerDisplayName: string; injectedAtMs: number; sectionLabel: string }>
   >(new Map());
@@ -286,8 +305,6 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
       }
       return next;
     });
-    // Clear each entry after 5 seconds — only if injectedAtMs still matches
-    // (rapid successive injections don't cancel each other).
     for (const hp of headingPaths) {
       const key = sectionHeadingKey(hp);
       setTimeout(() => {
@@ -302,7 +319,6 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     }
   }, []);
 
-  // Derive injectedByLabel: Map<sectionLabel, writerDisplayName>
   const injectedByLabel = useMemo(() => {
     const map = new Map<string, string>();
     for (const { sectionLabel, writerDisplayName } of injectedSections.values()) {
@@ -311,12 +327,6 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     return map;
   }, [injectedSections]);
 
-  // ── Section-edit rejection modal state ────────────────────
-  // Latest origin-only `section:edit-rejected` event for this tab. The modal
-  // stays open until the user explicitly dismisses it — the shared Y.Doc
-  // correction already restored valid content, so keeping the editor usable
-  // behind the modal is safe (spec: interruptive-but-non-blocking rejection
-  // UI). Nested typing avoids a hard dep on the shared-types facade here.
   const [sectionEditRejection, setSectionEditRejection] = useState<
     import("../types/shared").SectionEditRejectedEvent | null
   >(null);
@@ -330,22 +340,16 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     setSectionEditRejection(null);
   }, []);
 
-  // ── WebSocket hook ────────────────────────────────────────
   const {
     recentlyChangedSections,
     recentlyChangedByLabel,
     agentReadingIndicators,
     pendingProposalIndicatorsRef,
+    coldPendingByFragmentKey,
   } = useDocumentWebSocket({
     decodedDocPath,
     clientInstanceId,
-    sectionsRef,
-    setSections,
-    transportRef,
-    focusedSectionIndexRef,
-    mountedEditorFragmentKeysRef,
-    pendingStructureRefocusRef,
-    storeRef,
+    liveReplicaReadyRef,
     setStructureTree,
     loadSections,
     setError,
@@ -354,19 +358,24 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     onSectionEditRejected,
   });
 
-  // Derived
+  const sectionUncommitted = useCallback(
+    (fragmentKey: string): boolean => {
+      const replica = liveReplica.replica;
+      if (liveReplica.hasAuthoritativeBootstrap && replica) {
+        return replica.isPending(SectionId.brand(fragmentKey));
+      }
+      // Cold hint path: app-WS section:pending/settled while no live authority.
+      return coldPendingByFragmentKey.has(fragmentKey);
+    },
+    [liveReplica, coldPendingByFragmentKey],
+  );
+
   const isEditing = isEditingMode;
-  // Connection banner for every non-live transport phase — editor state while
-  // editing, observer state while viewing (null when live / no banner needed).
-  const crdtBanner = connectionBannerInfo(isEditing, crdtState, observerState);
-  const focusedHeadingPath = focusedSectionIndex !== null && renderSections[focusedSectionIndex]
-    ? renderSections[focusedSectionIndex].heading_path
+  const crdtBanner = connectionBannerInfo(isEditing, liveReplica.editorState, liveReplica.observerState);
+  const focusedHeadingPath = effectiveFocusedIndex !== null && renderSections[effectiveFocusedIndex]
+    ? renderSections[effectiveFocusedIndex].heading_path
     : null;
 
-  // ── Section navigation overlay (right-gutter index) ──────
-  // Derived entirely from the live render list — the same structure the page
-  // renders/edits when CRDT is active. Empty-heading (before-first-heading) rows
-  // are omitted; tick indent scales off ATX heading level from section content.
   const navItems = useMemo<DocumentSectionNavItem[]>(
     () =>
       renderSections
@@ -374,8 +383,6 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
         .map((s) => ({
           fragmentKey: getSectionFragmentKey(s),
           heading: s.heading,
-          // ATX level from the heading line (## → 2), not outline path length —
-          // path length collapses H1/H2 roots to the same indent.
           depth: /^#{1,6}/.exec(s.content)?.[0].length ?? Math.max(1, s.heading_path.length),
           headingPath: s.heading_path,
         })),
@@ -386,8 +393,8 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     renderSections.length,
   );
   const navEditingFragmentKey =
-    isEditing && focusedSectionIndex !== null && renderSections[focusedSectionIndex]
-      ? getSectionFragmentKey(renderSections[focusedSectionIndex])
+    isEditing && effectiveFocusedIndex !== null && renderSections[effectiveFocusedIndex]
+      ? getSectionFragmentKey(renderSections[effectiveFocusedIndex])
       : null;
   const handleNavigateToSection = useCallback((fragmentKey: string) => {
     const container = scrollContainerRef.current;
@@ -408,27 +415,23 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     scrollContainerRef.current?.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
 
-  // ── Cross-section drag/drop service ──────────────────────
   const transferServiceRef = useRef<SectionTransferService | null>(null);
-  const activeTransport = transportRef.current;
+  const activeTransport = liveReplica.editorTransport;
   if (activeTransport && !transferServiceRef.current) {
     transferServiceRef.current = new SectionTransferService({
       transport: activeTransport,
       getSections: () => sectionsRef.current.map(s => ({
         heading_path: s.heading_path,
         fragment_key: getSectionFragmentKey(s),
-        // Proposal FSM lock conflict (read-API `locked?`). CRDT block-state is
-        // read from the store editability map by the transfer service, not here.
-        locked: !!s.locked,
-        blockState: storeRef.current?.getSectionEditabilityForKey(getSectionFragmentKey(s)) === "blocked",
+        locked:
+          lockSignalFor(sectionLockSignalsRef.current, SectionId.brand(getSectionFragmentKey(s)))
+            ?.locked ?? !!s.locked,
+        blockState: isSectionBlocked(getSectionFragmentKey(s)),
       })),
       getProposalIndicators: () => pendingProposalIndicatorsRef.current.map(p => ({
         sectionKey: p.sectionKey,
         writerDisplayName: p.writerDisplayName,
       })),
-      // WS-6: resolve the live editor view for a fragment key (editorRefs is keyed
-      // by fragment key) so the move can capture/restore the moved section's caret
-      // across the backend re-seed.
       getEditorViewForFragment: (fragmentKey) => {
         return editorRefs.current.get(fragmentKey)?.getView() ?? null;
       },
@@ -454,21 +457,18 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     getSectionContent: (idx) => sectionsRef.current[idx]?.content ?? null,
   });
 
-  // ── Cross-section copy (clean markdown clipboard) ────────
   useCrossSectionCopy({
     containerRef: sectionsContainerRef,
     sections,
     editorRefs,
-    store,
+    getLiveMarkdown,
   });
 
-  // ── Recent doc tracking ──────────────────────────────────
   useEffect(() => {
     if (!decodedDocPath) return;
     rememberRecentDoc(decodedDocPath);
   }, [decodedDocPath]);
 
-  // ── Fetch lightweight structure metadata (skeleton only, no git) ──
   useEffect(() => {
     if (!decodedDocPath) return;
     let cancelled = false;
@@ -476,11 +476,10 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     resourceModel.loadStructure(decodedDocPath).then((structure) => {
       if (cancelled) return;
       setStructureTree(structure);
-    }).catch(() => { /* non-fatal background fetch */ });
+    }).catch(() => {});
     return () => { cancelled = true; };
   }, [decodedDocPath, resourceModel]);
 
-  // ── Delayed loading reveal (suppress flicker on fast loads) ──
   useEffect(() => {
     if (!sectionsLoading) {
       setShowLoading(false);
@@ -490,54 +489,45 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     return () => clearTimeout(timer);
   }, [sectionsLoading]);
 
-  useInitialObserverGuard({ decodedDocPath, loadSections, requestMode, stopObserver, controllerStateRef });
-
-  // Recently-changed sections are seeded live from `content:committed`
-  // WebSocket events via `useDocumentWebSocket`. There is no page-load
-  // history fetch — a fresh visit to a document starts with an empty
-  // "recently changed" indicator and fills in as edits arrive.
-
-  // ── Transport failure while editing → silently return to read view ──
-  // A genuine transport failure drops the editor back to a canonical read view;
-  // restore (4022) / admin-rebuild (4024) reconnect inside the provider and
-  // never reach "disconnected" here.
+  // Initial canonical load. The live replica connects its observer socket on
+  // mount by itself — there is no separate observer to start here.
   useEffect(() => {
-    if (
-      crdtState === "disconnected"
-      && controllerState.requestedMode === "editor"
-      && !editingLoading
-    ) {
-      stopEditing();
+    if (!decodedDocPath) return;
+    void loadSections(decodedDocPath);
+  }, [decodedDocPath, loadSections]);
+
+  // Editor socket permanently rejected while editing → drop back to observer
+  // and reseed canonical content.
+  useEffect(() => {
+    if (liveReplica.mode === "editor" && liveReplica.editorState === "disconnected") {
+      void liveReplica.demoteToObserver();
+      // Editing session is over: clear focus so mounted editors tear down
+      // (same visible outcome as the legacy stop-editing path).
+      setFocusedSectionId(null);
+      setFocusedSectionIndex(null);
       if (decodedDocPath) {
-        loadSections(decodedDocPath);
+        void loadSections(decodedDocPath);
       }
     }
-  }, [crdtState, controllerState.requestedMode, editingLoading, stopEditing, decodedDocPath, loadSections]);
+  }, [liveReplica, decodedDocPath, loadSections, setFocusedSectionIndex]);
 
-  // ── Derived ──────────────────────────────────────────────
   const docTitle = decodedDocPath ? getDocDisplayName(decodedDocPath) : "Untitled";
 
-  // Document-level publication-pause flag — drives the topbar status and the
-  // editing banner.
-  const publishPaused = usePublishPaused(store);
-  // One session-authorship ledger per editing mount: records which fragments
-  // THIS editor instance dirtied this session. Not a singleton, not on the
-  // store, not in localStorage — it dies on unmount/refresh, so work stranded
-  // from a previous session correctly reads as inbound. Handed down only as the
-  // two segregated ports: the write-only sink to the section editors, the
-  // read-only view to the status hook.
+  const publishPaused = liveReplica.publishPaused;
   const authorshipLedger = useMemo(() => new EphemeralSessionAuthorshipLedger(), []);
   const localEditSink: LocalEditOriginSink = authorshipLedger;
   const authorshipView: SessionAuthorshipView = authorshipLedger;
-  // Honest save-status inputs for the topbar and activity pill, with YOUR work
-  // split from inbound/remote activity (session-authored pending edits + sticky
-  // session flag) so a stranger's or stranded commit never reads as your save.
-  const saveStatus = useDocSaveStatusInputs(store, isEditing, authorshipView);
-  // Single authoritative save-state model, shared with the topbar (same
-  // `resolveTransportStatus`). The activity pill is a presentation adapter over
-  // it — never a second model derived from raw `publishPaused` + `hasLocalEdits`.
+  const saveStatus = useDocSaveStatusInputs(
+    {
+      allReceived: liveReplica.allReceived,
+      pendingSectionKeys: liveReplica.replica?.getPendingSectionKeys() ?? [],
+      backendError: liveReplica.transportError,
+    },
+    isEditing,
+    authorshipView,
+  );
   const transportStatus = resolveTransportStatus(
-    crdtState,
+    liveReplica.editorState,
     publishPaused,
     isEditing,
     saveStatus.allReceived,
@@ -546,19 +536,53 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     saveStatus.hadLocalEdits,
     saveStatus.backendError,
   );
-  // Presentation-only activity state: turns the publish-pause freeze into a
-  // "Saving… → Saved" (local) or "Updating… → Up to date" (inbound) affordance —
-  // but only reaches "Saved" when the model actually confirms the landing.
   const documentActivity = useDocumentActivity(transportStatus);
 
-  // ── B3: Stable section callbacks (extracted from sections.map) ───
-  const handleFocusSection = useCallback((idx: number, _headingPath: string[], coords: { x: number; y: number }) => {
-    setFocusedSectionIndex(idx);
-    pendingFocusRef.current = { index: idx, position: "start", coords };
-    if (presenceRef.current) {
-      setViewingSection(idx);
+  // Set focus + pending caret target for the row at RENDER index `idx`. Live:
+  // the stored focus identity is the SectionId ONLY (no legacy index write);
+  // cold: the index store in useSectionFocus. The caret target and presence
+  // broadcast are fragment-identity-keyed on both paths.
+  const applyFocusToRow = useCallback((idx: number, coords?: { x: number; y: number }) => {
+    const row = sectionsRef.current[idx];
+    const fk = row ? getSectionFragmentKey(row) : null;
+    if (liveReplica.hasAuthoritativeBootstrap) {
+      if (!fk) return;
+      setFocusedSectionId(SectionId.brand(fk));
+    } else {
+      setFocusedSectionIndex(idx);
     }
-  }, [setFocusedSectionIndex, setViewingSection, presenceRef]);
+    if (fk) {
+      pendingFocusRef.current = { fragmentKey: fk, position: "start", coords };
+      publishViewingSection(fk);
+    }
+  }, [liveReplica.hasAuthoritativeBootstrap, setFocusedSectionIndex, pendingFocusRef, publishViewingSection]);
+
+  const handleFocusSection = useCallback((idx: number, _headingPath: string[], coords: { x: number; y: number }) => {
+    applyFocusToRow(idx, coords);
+  }, [applyFocusToRow]);
+
+  // Click-to-edit: promote the live replica to editor mode. From a cold page
+  // this opens the editor socket, the server creates/attaches the DocSession,
+  // and the authoritative live-sections bootstrap follows on the same socket.
+  const handleStartEditing = useCallback(async (idx: number, coords?: { x: number; y: number }) => {
+    await liveReplica.promoteToEditor();
+    applyFocusToRow(idx, coords);
+  }, [liveReplica, applyFocusToRow]);
+
+  // Cross-section caret navigation. Live: resolve the neighbor in the RENDERED
+  // topology rows and move the SectionId focus; cold: the index-based handler.
+  const handleSectionCursorExit = useCallback((idx: number, direction: "up" | "down") => {
+    if (!liveReplica.hasAuthoritativeBootstrap) {
+      handleCursorExit(idx, direction);
+      return;
+    }
+    const target = sectionsRef.current[direction === "up" ? idx - 1 : idx + 1];
+    if (!target || !canFocusSection(target)) return;
+    const fk = getSectionFragmentKey(target);
+    setFocusedSectionId(SectionId.brand(fk));
+    pendingFocusRef.current = { fragmentKey: fk, position: direction === "up" ? "end" : "start" };
+    publishViewingSection(fk);
+  }, [liveReplica.hasAuthoritativeBootstrap, handleCursorExit, canFocusSection, pendingFocusRef, publishViewingSection]);
 
   const handleEditorReady = useCallback((fk: string) => {
     setReadyEditors(prev => {
@@ -620,7 +644,7 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
   }
 
   return (
-    <SectionHoverProvider activeSectionIndex={focusedSectionIndex}>
+    <SectionHoverProvider activeSectionIndex={effectiveFocusedIndex}>
     <DocumentActivityIndicator activity={documentActivity} />
     <div className="relative flex flex-col h-full" style={{ background: "var(--color-page-bg)" }}>
       <div className="relative shrink-0">
@@ -632,7 +656,7 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
           onToggleDiagnostics={() => setShowDiagnostics((v) => !v)}
           showOverwrite={showOverwrite}
           onToggleOverwrite={() => setShowOverwrite((v) => !v)}
-          crdtState={crdtState}
+          crdtState={liveReplica.editorState}
           publishPaused={publishPaused}
           isEditing={isEditing}
           allReceived={saveStatus.allReceived}
@@ -822,7 +846,7 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
                       handleFocusSection(0, [], { x: e.clientX, y: e.clientY });
                       return;
                     }
-                    void startEditing(0, { x: e.clientX, y: e.clientY });
+                    void handleStartEditing(0, { x: e.clientX, y: e.clientY });
                   }}
                 >
                   Document is empty.
@@ -835,7 +859,7 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
           <DocumentCanvas
             sections={renderSections}
             sectionsLoading={sectionsLoading}
-            focusedSectionIndex={focusedSectionIndex}
+            focusedSectionIndex={effectiveFocusedIndex}
             proposalMode={proposalMode}
             canEditProposalScope={canEditProposalScope}
             canEditProposalContent={activeProposalStatus === "inprogress"}
@@ -846,22 +870,25 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
             recentlyChangedByLabel={recentlyChangedByLabel}
             injectedByLabel={injectedByLabel}
             dragOverSectionIndex={dragOverSectionIndex}
-            store={store}
-            transport={transport}
-            crdtSynced={crdtSynced}
-            crdtState={crdtState}
+            isSectionBlocked={isSectionBlocked}
+            publishPaused={publishPaused}
+            crdtSynced={liveReplica.hasAuthoritativeBootstrap}
+            crdtState={liveReplica.editorState}
             transferService={transferServiceRef.current}
             readyEditors={readyEditors}
+            livePaintMarkdown={livePaintMarkdown}
+            getLiveBinding={getLiveBinding}
+            sectionUncommitted={sectionUncommitted}
             localEditSink={localEditSink}
             mouseDownPosRef={mouseDownPosRef}
-            onStartEditing={startEditing}
+            onStartEditing={handleStartEditing}
             onFocusSection={handleFocusSection}
             onSetEditorRef={setEditorRef}
             onEditorReady={handleEditorReady}
             onEditorUnready={handleEditorUnready}
             onProposalSectionChange={handleProposalSectionChange}
             onToggleProposalSection={toggleProposalSection}
-            onCursorExit={handleCursorExit}
+            onCursorExit={handleSectionCursorExit}
             onCrossSectionDrop={handleCrossSectionDrop}
           />
 

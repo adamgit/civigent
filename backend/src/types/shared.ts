@@ -129,6 +129,9 @@ export type {
 } from "../../../sharedlibs/shared-types/src/index.js";
 
 export {
+  WireLiveSectionRef,
+  WirePendingSection,
+  WireLiveSectionsState,
   AclAction,
   BuiltinRoleName,
   RoleName,

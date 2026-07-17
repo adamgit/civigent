@@ -191,6 +191,9 @@ function decodeProposalFileBase(obj: JsonObject, label: string, status: Proposal
   }
   const docSessionId = optionalString(obj, "docSessionId", label);
   if (docSessionId !== undefined) base.docSessionId = docSessionId;
+  // A legacy `agent_session_id` field (removed task 708 — MCP session identity is
+  // transport state, never proposal persistence) is deliberately NOT decoded:
+  // old files still read fine and the field is dropped at this boundary.
   return base;
 }
 

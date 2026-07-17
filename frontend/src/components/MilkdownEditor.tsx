@@ -25,10 +25,13 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
   type Ref,
 } from "react";
+import type * as Y from "yjs";
+import type { Awareness } from "y-protocols/awareness";
 import { useNavigate } from "react-router-dom";
 import { Crepe, CrepeFeature } from "@milkdown/crepe";
 import { editorViewCtx } from "@milkdown/core";
@@ -82,6 +85,19 @@ function buildCollabCursor(user: { name?: string; color?: string }): HTMLElement
 }
 import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 import type { CrdtTransport } from "../services/crdt-transport";
+import type { LiveEditorBinding } from "../services/live-section-replica";
+
+/**
+ * The minimal live-fragment source the editor's CRDT attach needs: the shared
+ * Y.Doc, its Awareness, and a non-creating gone-check. Both a legacy
+ * `BrowserFragmentReplicaStore` and an opaque replica `LiveEditorBinding` (via a
+ * small adapter) satisfy this, so `attachCrdt` binds identically from either.
+ */
+interface EditorFragmentSource {
+  readonly doc: Y.Doc;
+  readonly awareness: Awareness;
+  getSectionEditabilityForKey(fragmentKey: string): "editable" | "blocked" | "gone";
+}
 
 // ─────────────────────────────────────────────────────────
 // Public types
@@ -102,25 +118,19 @@ export interface MilkdownEditorHandle {
   getView(): import("@milkdown/prose/view").EditorView | null;
 }
 
-export interface MilkdownEditorProps {
-  /** Initial markdown content (used only when no store). */
-  markdown: string;
+export interface MilkdownEditorCommonProps {
   /** Called when the document content changes (debounced). */
   onChange?: (markdown: string) => void;
   /** Called when the selection moves to a different heading context. */
   onHeadingPathChange?: (headingPath: string[]) => void;
   /** Toggle read-only mode. */
   readOnly?: boolean;
-  /** Fragment replica store for collaborative editing. When set, editor binds to store.doc. */
-  store?: BrowserFragmentReplicaStore | null;
   /** CRDT transport handle (retained for callers that pass it through; the
    *  editor binds directly to `store.doc` via y-prosemirror and issues no wire
    *  calls). */
   transport?: CrdtTransport | null;
   /** Whether the CRDT transport has completed initial sync (Y.Doc has content). */
   crdtSynced?: boolean;
-  /** Y.XmlFragment key within the Y.Doc to bind to (e.g. "section::Overview"). */
-  fragmentKey?: string;
   /** User's display name for cursor presence. */
   userName?: string;
   /** User's cursor color (CSS color string). */
@@ -143,10 +153,43 @@ export interface MilkdownEditorProps {
   onReady?: () => void;
   /** Called when the editor is being destroyed (cleanup). */
   onUnready?: () => void;
-  /** When true, editor starts empty and waits for CRDT sync to populate content.
-   *  Prevents phantom edits from REST→CRDT normalization delta on mount. */
-  expectsCrdt?: boolean;
 }
+
+// ─── Mutually exclusive live-binding vs cold-seed props ──────────────
+//
+// A LIVE editor binds to a shared Y.Doc fragment (`store` + `fragmentKey`) and is
+// NEVER given a cold `markdown` seed — a stale seed leaking into a live editor is
+// the poisoning bug this split forbids at the type level. A COLD / proposal-overlay
+// editor is seeded with `markdown` and does not bind live CRDT authority. The two
+// shapes are mutually exclusive; a caller cannot pass both.
+
+export interface MilkdownEditorColdProps extends MilkdownEditorCommonProps {
+  /** Cold / proposal-overlay mode: no live CRDT binding is the authority. */
+  expectsCrdt?: false;
+  /** Initial markdown seed (cold display / proposal overlay content). */
+  markdown: string;
+  /** Proposal overlay may still pass a (null) store; it is not a live authority here. */
+  store?: BrowserFragmentReplicaStore | null;
+  fragmentKey?: string;
+  /** A cold editor never binds a live replica fragment — mutually exclusive. */
+  binding?: never;
+}
+
+export interface MilkdownEditorLiveProps extends MilkdownEditorCommonProps {
+  /** Live CRDT mode: bind to the shared Y.Doc fragment; no cold markdown seed. */
+  expectsCrdt: true;
+  /** Fragment replica store for collaborative editing (editor binds to store.doc).
+   *  May be null transiently before the live session/store exists — the editor
+   *  simply shows an empty fragment then (never a cold markdown seed). */
+  store: BrowserFragmentReplicaStore | null;
+  binding?: LiveEditorBinding;
+  /** Y.XmlFragment key within the Y.Doc to bind to (e.g. "section::Overview"). */
+  fragmentKey: string;
+  /** A live editor is NEVER seeded with cold markdown — mutually exclusive. */
+  markdown?: never;
+}
+
+export type MilkdownEditorProps = MilkdownEditorColdProps | MilkdownEditorLiveProps;
 
 // ─── Default cursor colors (assigned by hashing name) ────
 
@@ -173,11 +216,11 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 ) {
   const navigate = useNavigate();
   const {
-    markdown,
+    markdown = "",
     onChange,
     onHeadingPathChange,
     readOnly = false,
-    store,
+    store = null,
     transport,
     crdtSynced = false,
     fragmentKey = "prosemirror",
@@ -190,7 +233,26 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     onReady,
     onUnready,
     expectsCrdt = false,
+    binding,
   } = props;
+
+  const effectiveStore = useMemo<EditorFragmentSource | null>(() => {
+    if (binding) {
+      return {
+        doc: binding.doc,
+        awareness: binding.awareness,
+        getSectionEditabilityForKey: () => "editable" as const,
+      };
+    }
+    return store;
+    // Key on the STABLE underlying doc/awareness/key (the binding object is minted
+    // fresh per call, but its shared doc is stable) so Effect B does not thrash.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [binding?.doc, binding?.awareness, binding?.fragmentKey, store]);
+  const effectiveFragmentKey = binding ? binding.fragmentKey : fragmentKey;
+  // A replica binding is already synced (the bootstrap materialized the fragment),
+  // so it attaches immediately — there is no separate transport `crdtSynced` gate.
+  const effectiveCrdtSynced = binding ? true : crdtSynced;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const controllerRef = useRef<EditorLifecycleController | null>(null);
@@ -207,10 +269,10 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   const firstSyncFallbackRafRef = useRef<number | null>(null);
 
   // Refs for async callbacks that need current prop values
-  const storeRef = useRef(store);
-  storeRef.current = store;
-  const crdtSyncedRef = useRef(crdtSynced);
-  crdtSyncedRef.current = crdtSynced;
+  const storeRef = useRef<EditorFragmentSource | null>(effectiveStore);
+  storeRef.current = effectiveStore;
+  const crdtSyncedRef = useRef(effectiveCrdtSynced);
+  crdtSyncedRef.current = effectiveCrdtSynced;
 
   // Keep callback refs stable to avoid re-creating Crepe on every render.
   const onChangeRef = useRef(onChange);
@@ -333,7 +395,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   function attachCrdt(
     ctrl: EditorLifecycleController,
     crepe: Crepe,
-    replicaStore: BrowserFragmentReplicaStore,
+    replicaStore: EditorFragmentSource,
     fk: string,
   ): void {
     // Belt-and-braces re-bind guard (spec 05 §"Section block-state events"):
@@ -474,7 +536,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     const container = containerRef.current;
     if (!container) return;
 
-    const ctrl = new EditorLifecycleController(fragmentKey);
+    const ctrl = new EditorLifecycleController(effectiveFragmentKey);
     controllerRef.current = ctrl;
     ctrl.send("start_create");
 
@@ -534,7 +596,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 
     // ── Drag-source tracking ─────────────────────────────
 
-    const fragmentKeyCapture = fragmentKey;
+    const fragmentKeyCapture = effectiveFragmentKey;
     crepe.editor.use($prose(() => new Plugin({
       props: {
         handleDOMEvents: {
@@ -733,7 +795,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     };
     // markdown intentionally excluded — only used as initial value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fragmentKey]);
+  }, [effectiveFragmentKey]);
 
   // ── Effect B: Store change (deps: [store]) ──
   // Sends crdt_provider_set or crdt_provider_removed to controller.
@@ -742,7 +804,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     const ctrl = controllerRef.current;
     if (!ctrl) return;
 
-    if (store) {
+    if (effectiveStore) {
       // Only send if controller is in a state that accepts this event
       if (ctrl.state === "created") {
         ctrl.send("crdt_provider_set");
@@ -751,20 +813,20 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 
     return () => {
       const c = controllerRef.current;
-      if (c && store && (c.state === "awaiting_sync" || c.state === "attached" || c.state === "ready")) {
+      if (c && effectiveStore && (c.state === "awaiting_sync" || c.state === "attached" || c.state === "ready")) {
         detachCrdt(c);
         c.send("crdt_provider_removed");
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store]);
+  }, [effectiveStore]);
 
   // ── Effect C: crdtSynced gate (deps: [crdtSynced]) ────
   // When crdtSynced transitions to true, triggers CRDT attachment.
 
   useEffect(() => {
     const ctrl = controllerRef.current;
-    if (!ctrl || !crdtSynced || !store) return;
+    if (!ctrl || !effectiveCrdtSynced || !effectiveStore) return;
     if (ctrl.state !== "awaiting_sync") return;
 
     const crepe = ctrl.getCrepe();
@@ -774,9 +836,9 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     // Now in "attaching" — perform the actual attachment. attachCrdt sends
     // "attach_done" → state is "attached"; markReady is deferred to the
     // first-sync latch (fires on the first ySync content tx, or fallback).
-    attachCrdt(ctrl, crepe, store, fragmentKey);
+    attachCrdt(ctrl, crepe, effectiveStore, effectiveFragmentKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [crdtSynced]);
+  }, [effectiveCrdtSynced]);
 
   // ── Read-only toggling ─────────────────────────────────
 

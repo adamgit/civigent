@@ -74,8 +74,8 @@ function renderCanvas(
         recentlyChangedByLabel={new Map()}
         injectedByLabel={new Map()}
         dragOverSectionIndex={null}
-        store={store}
-        transport={null}
+        isSectionBlocked={() => false}
+        publishPaused={false}
         crdtSynced={true}
         crdtState="connected"
         transferService={null}
@@ -140,8 +140,8 @@ describe("DocumentCanvas fragment-key readiness identity (duplicate-render fix)"
           recentlyChangedByLabel={new Map()}
           injectedByLabel={new Map()}
           dragOverSectionIndex={null}
-          store={store}
-          transport={null}
+        isSectionBlocked={() => false}
+        publishPaused={false}
           crdtSynced={true}
           crdtState="connected"
           transferService={null}

@@ -3,8 +3,9 @@
  *
  * Tier-3 agents are exempt from the single-draft limit per the spec — they may
  * have multiple simultaneous drafts. This test exercises the replace=true convenience
- * which auto-withdraws one existing draft (whichever findDraftProposalByWriter returns
- * first) before creating the new proposal.
+ * which auto-withdraws the most recent draft remembered by this session's
+ * in-memory state (proposals persist no session identity — task 708) before
+ * creating the new proposal.
  *
  * Flow:
  * 1. create_proposal as contentpilot → draft P1, accepted
@@ -158,6 +159,14 @@ describe("US-5: replace stale draft with replace=true", () => {
     const P3 = data4.proposal_id;
     expect(P3).not.toBe(P1);
     expect(P3).not.toBe(P2);
+
+    // replace=true withdrew one prior draft → the response surfaces that fact so
+    // the agent discards the dead id (Area M). The withdrawn id is one of P1/P2,
+    // and the prose names both the dead id and the new id to use.
+    expect([P1, P2]).toContain(data4.withdrawn_proposal_id);
+    expect(data4.message).toContain(data4.withdrawn_proposal_id);
+    expect(data4.message).toContain(P3);
+    expect(data4.message.toLowerCase()).toContain("withdrawn");
 
     // ── Step 5: verify exactly one of P1/P2 is now withdrawn ──
     const readP1 = await callMcpTool("read_proposal", { proposal_id: P1 });

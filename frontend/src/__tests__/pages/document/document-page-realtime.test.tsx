@@ -190,49 +190,16 @@ describe("DocumentPage realtime", () => {
     });
   });
 
-  // Todolist item 28/60 (the live-topology-adoption fix): a LIVE split is pushed
-  // to the client as a `doc:structure-changed` app event carrying the authoritative
-  // live section list. The page adopts it straight from the payload — NO REST
-  // refetch (a live uncommitted split is invisible to canonical until commit) — so
-  // the newly-promoted editable section surfaces BEFORE any `content:committed`,
-  // while the survivor's mounted editor is preserved.
-  it("a LIVE doc:structure-changed split surfaces the new editable section before content:committed", async () => {
-    renderDocPage();
-    await waitFor(() => {
-      expect(screen.getByText(/Overview v1/)).toBeDefined();
-    });
-    const fetchesBeforeSplit = sectionsFetchCount;
-
-    // Focus the survivor (Overview) so its editor mounts — this is the section a
-    // user is typing into when the split happens.
-    fireEvent.click(screen.getByText(/Overview v1/));
-    await waitFor(() => {
-      const editors = screen.getAllByTestId("milkdown-editor");
-      expect(editors.some((e) => e.getAttribute("data-fragment-key") === "frag:sec_overview")).toBe(true);
-    });
-
-    // A live split lands: the server pushes the new live section list (survivor +
-    // a brand-new same-level sibling) as a doc:structure-changed event. No commit.
-    capturedWsHandler?.({
-      type: "doc:structure-changed",
-      doc_path: "test.md",
-      sections: [
-        richStructureSection("", [], "frag:sec_root"),
-        richStructureSection("Overview", ["Overview"], "frag:sec_overview"),
-        richStructureSection("Second Section", ["Second Section"], "frag:sec_second"),
-      ],
-    } as WsServerEvent);
-
-    // The promoted sibling surfaces as an editable section (adjacent to the focused
-    // survivor → its editor mounts) WITHOUT any content:committed or REST refetch.
-    await waitFor(() => {
-      const editors = screen.getAllByTestId("milkdown-editor");
-      expect(editors.some((e) => e.getAttribute("data-fragment-key") === "frag:sec_second")).toBe(true);
-    });
-    // No canonical refetch happened — the event payload was the source of truth.
-    expect(sectionsFetchCount).toBe(fetchesBeforeSplit);
-    // The survivor's editor is preserved (not torn down / remounted by adoption).
-    const editors = screen.getAllByTestId("milkdown-editor");
-    expect(editors.some((e) => e.getAttribute("data-fragment-key") === "frag:sec_overview")).toBe(true);
-  });
+  // NOTE: the former "a LIVE doc:structure-changed split surfaces the new editable
+  // section before content:committed" test was removed with the live-section
+  // redesign. Live topology no longer rides the application-WebSocket
+  // `doc:structure-changed` event (that in-place adoption was the second, unordered
+  // live authority the redesign deletes). Live splits now surface via the ordered
+  // DocSession CRDT channel through `LiveSectionReplica` — unit-covered by
+  // `live-section-replica.test.ts` / `useLiveSectionReplica.test.tsx` /
+  // `resolve-focus-after-topology-change.test.ts`. Page-level re-coverage lands when
+  // DocumentPage adopts the replica (a separate item). On the app hub,
+  // `doc:structure-changed` is now only a cold-invalidation refetch hint — asserted
+  // by the `content:committed from another writer reloads sections` test above and
+  // by `useDocumentWebSocket-section-gone-and-structure-changed.test.tsx`.
 });

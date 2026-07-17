@@ -8,17 +8,18 @@
  *
  *  (1) Mixed update: ONE inbound client update touches a FREE section and a
  *      COMPETING-LOCKED section together. The free section must win
- *      (materialized, content kept), the locked section must lose (reverted,
- *      `section:blocked` emitted), and the DocSession proposal must claim ONLY
- *      the won section.
+ *      (materialized, content kept), the locked section must lose (reverted and
+ *      present in the live `blocked_section_ids`), and the DocSession proposal
+ *      must claim ONLY the won section.
  *  (2) Ordering across the lane: a lock acquired BETWEEN two serialized edits
  *      flips the outcome — the earlier edit (pre-lock) wins and stays, the later
  *      edit to the now-locked section is blocked. The earlier won content is not
  *      clobbered by the later refusal.
  *
- * All assertions are on the OBSERVABLE surface (live fragment content, emitted
- * `section:blocked` events, the proposal's claimed sections) — never on private
- * actor/queue internals.
+ * All assertions are on the OBSERVABLE surface (live fragment content, the live
+ * `blocked_section_ids` pushed on the ordered CRDT channel — editability
+ * authority moved there off the removed app-WS `section:blocked` event — and the
+ * proposal's claimed sections) — never on private actor/queue internals.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -27,6 +28,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { processArbitratedClientUpdate, setCrdtEventHandler } from "../../ws/crdt-ws-coordinator.js";
+import { joinLiveRecipient } from "../helpers/live-recipient.js";
 import { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
 import type { FragmentContent, SectionBody } from "../../storage/section-formatting.js";
@@ -34,7 +36,6 @@ import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { createProposal, transitionToInProgress, readProposal } from "../../storage/proposal-repository.js";
 import { SectionRef } from "../../domain/section-ref.js";
-import type { WsServerEvent } from "../../types/shared.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 const OVERVIEW_KEY = "section::overview";
@@ -71,16 +72,16 @@ async function lockSection(headingPath: string[]): Promise<string> {
 
 describe("live-edit race ordering against competing locks", () => {
   let ctx: TempDataRootContext;
-  let events: WsServerEvent[];
+  const disposers: Array<() => void> = [];
 
   beforeEach(async () => {
     ctx = await createTempDataRoot();
     await createSampleDocument(ctx.rootDir);
-    events = [];
-    setCrdtEventHandler((e) => events.push(e));
+    setCrdtEventHandler(() => undefined);
   });
 
   afterEach(async () => {
+    while (disposers.length) disposers.pop()!();
     destroyAllSessions();
     vi.useRealTimers();
     await ctx.cleanup();
@@ -88,6 +89,8 @@ describe("live-edit race ordering against competing locks", () => {
 
   it("(1) mixed update: free section wins, competing-locked section reverts, only the won section is claimed", async () => {
     const session = await openSession();
+    const live = await joinLiveRecipient(session);
+    disposers.push(live.dispose);
     await lockSection(["Timeline"]); // Timeline is exclusively held by a competing proposal.
 
     const update = buildClientUpdate(session, {
@@ -104,12 +107,11 @@ describe("live-edit race ordering against competing locks", () => {
     expect(timelineAfter).not.toContain("alice tries to edit locked timeline");
     expect(timelineAfter).toContain("Q1: Planning. Q2: Execution. Q3: Review.");
 
-    // section:blocked emitted for Timeline ONLY (not Overview).
-    const blockedKeys = events
-      .filter((e) => e.type === "section:blocked")
-      .map((e) => (e as { fragment_key: string }).fragment_key);
-    expect(blockedKeys).toContain(TIMELINE_KEY);
-    expect(blockedKeys).not.toContain(OVERVIEW_KEY);
+    // The live blocked set (refreshed on the ordered CRDT channel) holds Timeline
+    // ONLY — Overview was won by (and claimed to) the session's own proposal.
+    const blockedIds = live.latestState().blocked_section_ids;
+    expect(blockedIds).toContain(TIMELINE_KEY);
+    expect(blockedIds).not.toContain(OVERVIEW_KEY);
 
     // The DocSession proposal claims ONLY the won section (Overview), never the
     // blocked Timeline.
@@ -122,6 +124,8 @@ describe("live-edit race ordering against competing locks", () => {
 
   it("(2) ordering: a lock taken between two edits blocks only the later edit; the earlier won edit survives", async () => {
     const session = await openSession();
+    const live = await joinLiveRecipient(session);
+    disposers.push(live.dispose);
 
     // Edit 1 (pre-lock): freely edit Timeline — it wins.
     await session.enqueue(() =>
@@ -136,7 +140,7 @@ describe("live-edit race ordering against competing locks", () => {
     expect(session.liveFragments.readFragmentString(TIMELINE_KEY) as string).toContain(
       "timeline won before any lock",
     );
-    events.length = 0;
+    live.clear();
 
     // A competing proposal now locks Overview (a section Alice has NOT yet touched).
     await lockSection(["Overview"]);
@@ -159,10 +163,9 @@ describe("live-edit race ordering against competing locks", () => {
     expect(session.liveFragments.readFragmentString(TIMELINE_KEY) as string).toContain(
       "timeline won before any lock",
     );
-    const blockedKeys = events
-      .filter((e) => e.type === "section:blocked")
-      .map((e) => (e as { fragment_key: string }).fragment_key);
-    expect(blockedKeys).toEqual([OVERVIEW_KEY]);
+    // Only the now-locked Overview is blocked; the earlier-won Timeline (claimed
+    // by the session's own proposal) is not.
+    expect(live.latestState().blocked_section_ids).toEqual([OVERVIEW_KEY]);
 
     // The proposal still claims the earlier won Timeline and never the blocked Overview.
     const proposal = await readProposal(session.generator.getCurrentProposalId()!);

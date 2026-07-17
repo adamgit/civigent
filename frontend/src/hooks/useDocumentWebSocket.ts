@@ -24,11 +24,8 @@ import {
   type PendingProposalIndicator,
   normalizeDocPath,
   headingPathToLabel,
-  adoptFreshSectionLayout,
   HIGHLIGHT_DURATION_MS,
 } from "../pages/document-page-utils";
-import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
-import type { CrdtTransport } from "../services/crdt-transport";
 
 // ─── Hook parameters ─────────────────────────────────────────────
 
@@ -40,15 +37,9 @@ export interface UseDocumentWebSocketParams {
    * (`section:edit-rejected`) route only to this tab.
    */
   clientInstanceId: string;
-  sectionsRef: React.MutableRefObject<DocumentSection[]>;
-  setSections: React.Dispatch<React.SetStateAction<DocumentSection[]>>;
-  transportRef: React.MutableRefObject<CrdtTransport | null>;
-  focusedSectionIndexRef: React.MutableRefObject<number | null>;
-  /** Fragment keys of currently mounted Milkdown editors — used to exclude CRDT-bound
-   *  sections from the REST refresh on content:committed without positional index coupling. */
-  mountedEditorFragmentKeysRef: React.MutableRefObject<Set<string>>;
-  pendingStructureRefocusRef: React.MutableRefObject<string[] | null>;
-  storeRef: React.MutableRefObject<BrowserFragmentReplicaStore | null>;
+  /** True while the LiveSectionReplica holds an authoritative bootstrap. While
+   *  ready, live topology/body events on this JSON socket are hints only. */
+  liveReplicaReadyRef: React.MutableRefObject<boolean>;
   setStructureTree: React.Dispatch<React.SetStateAction<DocStructureNode[] | null>>;
   loadSections: (docPath: string) => Promise<DocumentSection[]>;
   setError: (e: string | null) => void;
@@ -74,6 +65,10 @@ export interface UseDocumentWebSocketReturn {
   pendingProposalIndicators: PendingProposalIndicator[];
   pendingProposalIndicatorsRef: React.MutableRefObject<PendingProposalIndicator[]>;
   proposalsBySectionKey: Map<string, PendingProposalIndicator[]>;
+  /** Cold hint (no live authority yet): fragment keys with a pending writer,
+   *  from app-WS `section:pending`/`section:settled`. Ignored while the live
+   *  replica is ready — live pending comes from the replica. */
+  coldPendingByFragmentKey: Map<string, { writerId: string; writerDisplayName: string }>;
 }
 
 import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
@@ -83,13 +78,7 @@ import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 export function useDocumentWebSocket({
   decodedDocPath,
   clientInstanceId,
-  sectionsRef,
-  setSections,
-  transportRef,
-  focusedSectionIndexRef,
-  mountedEditorFragmentKeysRef,
-  pendingStructureRefocusRef,
-  storeRef,
+  liveReplicaReadyRef,
   setStructureTree,
   loadSections,
   setError,
@@ -110,6 +99,11 @@ export function useDocumentWebSocket({
   const pendingProposalIndicatorsRef = useRef<PendingProposalIndicator[]>([]);
 
   const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
+
+  // Cold pending hints (no live authority yet) keyed by fragment key.
+  const [coldPendingByFragmentKey, setColdPendingByFragmentKey] = useState<
+    Map<string, { writerId: string; writerDisplayName: string }>
+  >(new Map());
 
   const clearProposalIndicators = useCallback((proposalId: string) => {
     setPendingProposalIndicators((prev) =>
@@ -165,10 +159,6 @@ export function useDocumentWebSocket({
           return Array.from(next.values());
         });
 
-        // `content:committed` is a canonical-refresh hint (spec 06 §"Refresh
-        // Strategy"); the REST refresh below adopts fresh server topology while
-        // preserving mounted editor content by fragment_key.
-
         // Clear draft proposal indicators for committed sections
         const committedSectionKeys = new Set(
           committed.sections.map((s) => sectionHeadingKey(s.heading_path)),
@@ -177,26 +167,8 @@ export function useDocumentWebSocket({
           prev.filter((ind) => !committedSectionKeys.has(ind.sectionKey)),
         );
 
-        // Refresh sections to pick up new content
-        if (!transportRef.current) {
-          // No active CRDT session — full reload is safe
+        if (!liveReplicaReadyRef.current) {
           loadSections(decodedDocPath);
-        } else {
-          // CRDT session active: adopt fresh server topology even while editors are
-          // mounted. Identity/order comes from the server list; `.content` stays a
-          // cold seed (live display authority is the Y.Doc fragment). Matched by
-          // opaque fragment_key — never positional index or heading text.
-          apiClient.getWorkspaceDocumentSections(decodedDocPath).then((resp) => {
-            setSections((prev) =>
-              adoptFreshSectionLayout({
-                prev,
-                fresh: resp.sections,
-                focusedSectionIndexRef,
-              }),
-            );
-          }).catch((err) => {
-            setError(`Failed to refresh sections after commit: ${err instanceof Error ? err.message : String(err)}`);
-          });
         }
         return;
       }
@@ -218,25 +190,11 @@ export function useDocumentWebSocket({
         return;
       }
 
-      // ── section:blocked | section:unblocked | section:gone ──
-      // Per-section CRDT block-state (spec 05 §"Section block-state events").
-      // These ride the JSON application WebSocket and keep the browser mount Set
-      // in lockstep with server reality. Routed into the replica store, which
-      // owns the per-section editability map. (Provider does NOT handle these —
-      // exactly one path; see crdt-provider.ts header.)
       if (
         event.type === "section:blocked" ||
         event.type === "section:unblocked" ||
         event.type === "section:gone"
       ) {
-        const blockState = event as SectionBlockStateEvent;
-        if (normalizeDocPath(blockState.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-        const store = storeRef.current;
-        if (store) {
-          if (blockState.type === "section:blocked") store.setSectionBlocked(blockState.fragment_key);
-          else if (blockState.type === "section:unblocked") store.setSectionUnblocked(blockState.fragment_key);
-          else store.setSectionGone(blockState.fragment_key);
-        }
         return;
       }
 
@@ -253,24 +211,24 @@ export function useDocumentWebSocket({
         return;
       }
 
-      // ── section:pending | section:settled ──
-      // Guarantee B: a section gained (or settled) uncommitted edits in a live
-      // DocSession inprogress proposal. Routed into the replica store, which owns
-      // the per-section pending map (keyed by fragment_key, like block-state).
       if (event.type === "section:pending" || event.type === "section:settled") {
         const pendingState = event as SectionPendingStateEvent;
         if (normalizeDocPath(pendingState.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-        const store = storeRef.current;
-        if (store) {
+        // While the live replica is authoritative, live pending comes from the
+        // CRDT `pending_sections` state — this JSON event is a cold hint only.
+        if (liveReplicaReadyRef.current) return;
+        setColdPendingByFragmentKey((prev) => {
+          const next = new Map(prev);
           if (pendingState.type === "section:pending") {
-            store.setSectionPending(pendingState.fragment_key, {
+            next.set(pendingState.fragment_key, {
               writerId: pendingState.writer_id ?? "",
               writerDisplayName: pendingState.writer_display_name ?? "",
             });
           } else {
-            store.setSectionSettled(pendingState.fragment_key);
+            next.delete(pendingState.fragment_key);
           }
-        }
+          return next;
+        });
         return;
       }
 
@@ -283,26 +241,11 @@ export function useDocumentWebSocket({
         return;
       }
 
-      // ── doc:structure-changed ──
-      // The authoritative section list changed during a session (split / merge /
-      // rename / level-change / relocate / reorder) OR canonical structure changed
-      // via a REST op with no session. The event carries the FULL server-authored
-      // section list (same shape as GET …/sections) — adopt it straight from the
-      // PAYLOAD, NOT a REST refetch: a live uncommitted split is invisible to
-      // canonical until commit, so only the event carries it. The shared adopter
-      // preserves mounted editors' live content by fragment_key; new sections mount
-      // on their fragment_key (body fills from the live Y.Doc binary channel, which
-      // is unordered w.r.t. this event); gone sections (merge/delete) unmount.
       if (event.type === "doc:structure-changed") {
         const structureChanged = event as DocStructureChangedEvent;
         if (normalizeDocPath(structureChanged.doc_path) !== normalizeDocPath(decodedDocPath)) return;
-        setSections((prev) =>
-          adoptFreshSectionLayout({
-            prev,
-            fresh: structureChanged.sections,
-            focusedSectionIndexRef,
-          }),
-        );
+        if (liveReplicaReadyRef.current) return;
+        loadSections(decodedDocPath);
         return;
       }
 
@@ -414,5 +357,6 @@ export function useDocumentWebSocket({
     pendingProposalIndicators,
     pendingProposalIndicatorsRef,
     proposalsBySectionKey,
+    coldPendingByFragmentKey,
   };
 }

@@ -1,10 +1,12 @@
 /**
  * Block-state / publication-pause flow test:
- *   store editability + publishPaused → DocumentCanvas → DocumentSectionRenderer.
+ *   live-replica editability (`isSectionBlocked`) + `publishPaused` →
+ *   DocumentCanvas → DocumentSectionRenderer. There is no legacy store — the
+ *   LiveSectionReplica is the only live editability/pause authority.
  *
  * Asserts the three independent signals from spec 05-ydoc-lifecycle:
- *   - section:blocked → read-only (editor not mounted; click-to-edit gated)
- *   - section:gone    → section unmounted/removed from the canvas
+ *   - blocked → read-only (editor not mounted; click-to-edit gated)
+ *   - gone    → the row is absent from the replica topology, so it never renders
  *   - publication pause → focused editor frozen (read-only)
  */
 
@@ -34,7 +36,6 @@ vi.mock("../../components/MilkdownEditor", async () => {
 });
 
 import { DocumentCanvas } from "../../components/DocumentCanvas";
-import { BrowserFragmentReplicaStore } from "../../services/browser-fragment-replica-store";
 import { SectionHoverProvider } from "../../contexts/SectionHoverContext";
 import type { DocumentSection } from "../../pages/document-page-utils";
 import type { CrdtConnectionState } from "../../services/crdt-provider";
@@ -55,7 +56,7 @@ function makeSection(file: string, heading: string): DocumentSection {
 }
 
 function renderCanvas(
-  store: BrowserFragmentReplicaStore,
+  live: { blocked?: Set<string>; publishPaused?: boolean },
   sections: DocumentSection[],
   focusedSectionIndex: number | null,
   crdtState: CrdtConnectionState = "connected",
@@ -76,8 +77,8 @@ function renderCanvas(
         recentlyChangedByLabel={new Map()}
         injectedByLabel={new Map()}
         dragOverSectionIndex={null}
-        store={store}
-        transport={null}
+        isSectionBlocked={(fk) => live.blocked?.has(fk) ?? false}
+        publishPaused={live.publishPaused ?? false}
         crdtSynced={true}
         crdtState={crdtState}
         transferService={null}
@@ -99,50 +100,41 @@ function renderCanvas(
 }
 
 describe("DocumentCanvas block-state / publication-pause flow", () => {
-  let doc: Y.Doc;
-  let awareness: Awareness;
-  let store: BrowserFragmentReplicaStore;
   let sections: DocumentSection[];
 
   beforeEach(() => {
-    doc = new Y.Doc();
-    awareness = new Awareness(doc);
-    store = new BrowserFragmentReplicaStore(doc, awareness);
     sections = [makeSection("a", "Alpha"), makeSection("b", "Beta")];
   });
 
   afterEach(() => {
     cleanup();
-    awareness.destroy();
-    doc.destroy();
   });
 
   it("a blocked, focused section does NOT mount an editor (read-only)", () => {
-    store.setSectionBlocked("section::a");
-    renderCanvas(store, sections, 0);
+    renderCanvas({ blocked: new Set(["section::a"]) }, sections, 0);
     // Blocked section: no editor mounted for it.
     expect(screen.queryByTestId("editor-section::a")).toBeNull();
     // The static prose preview is still rendered.
     expect(screen.getByText(/Alpha body/)).toBeDefined();
   });
 
-  it("a gone section is removed from the canvas entirely", () => {
-    store.setSectionGone("section::a");
-    renderCanvas(store, sections, null);
+  it("a gone section is removed from the canvas entirely (absent from topology rows)", () => {
+    // Gone means the fragment dropped out of the replica topology — the page
+    // renders rows FROM the topology, so the row simply never reaches the canvas.
+    renderCanvas({}, sections.filter((s) => s.fragment_key !== "section::a"), null);
     expect(screen.queryByText(/Alpha body/)).toBeNull();
     // The surviving section is still rendered.
     expect(screen.getByText(/Beta body/)).toBeDefined();
   });
 
   it("publication pause freezes the focused editor (readOnly=true)", () => {
-    store.setPublishPaused(true);
-    renderCanvas(store, sections, 0);
+    renderCanvas({ publishPaused: true }, sections, 0);
     const editor = screen.getByTestId("editor-section::a");
     expect(editor.getAttribute("data-readonly")).toBe("true");
   });
 
   it("an editable, focused section mounts a writable editor", () => {
-    renderCanvas(store, sections, 0);
+    renderCanvas({}, sections, 0);
     const editor = screen.getByTestId("editor-section::a");
     expect(editor.getAttribute("data-readonly")).toBe("false");
   });
@@ -154,21 +146,21 @@ describe("DocumentCanvas block-state / publication-pause flow", () => {
   // focused editor read-only AND surface a "editing paused" label.
 
   it("a focused section while CONNECTING is read-only and shows the paused label", () => {
-    renderCanvas(store, sections, 0, "connecting");
+    renderCanvas({}, sections, 0, "connecting");
     const editor = screen.getByTestId("editor-section::a");
     expect(editor.getAttribute("data-readonly")).toBe("true");
     expect(screen.getByText(/Connecting — editing paused/)).toBeDefined();
   });
 
   it("a focused section while RECONNECTING is read-only and shows the paused label", () => {
-    renderCanvas(store, sections, 0, "reconnecting");
+    renderCanvas({}, sections, 0, "reconnecting");
     const editor = screen.getByTestId("editor-section::a");
     expect(editor.getAttribute("data-readonly")).toBe("true");
     expect(screen.getByText(/Reconnecting — editing paused/)).toBeDefined();
   });
 
   it("a focused section while OFFLINE (error) is read-only and shows the paused label", () => {
-    renderCanvas(store, sections, 0, "error");
+    renderCanvas({}, sections, 0, "error");
     const editor = screen.getByTestId("editor-section::a");
     expect(editor.getAttribute("data-readonly")).toBe("true");
     expect(screen.getByText(/Offline — editing paused/)).toBeDefined();
@@ -177,13 +169,13 @@ describe("DocumentCanvas block-state / publication-pause flow", () => {
   it("a degraded NEIGHBOR (mounted but not focused) falls back to static prose, not a live editor", () => {
     // focus section a (index 0); section b (index 1) is an eagerly-mounted
     // neighbor. While degraded it must NOT mount a live editor.
-    renderCanvas(store, sections, 0, "reconnecting");
+    renderCanvas({}, sections, 0, "reconnecting");
     expect(screen.queryByTestId("editor-section::b")).toBeNull();
     expect(screen.getByText(/Beta body/)).toBeDefined();
   });
 
   it("the focused editor is writable again once the socket is live", () => {
-    renderCanvas(store, sections, 0, "connected");
+    renderCanvas({}, sections, 0, "connected");
     expect(screen.getByTestId("editor-section::a").getAttribute("data-readonly")).toBe("false");
   });
 });

@@ -1,10 +1,14 @@
 /**
  * Live heading-deletion (including Milkdown demotion-to-paragraph shape):
  *   1) the orphan body must merge into the predecessor section at quiescence;
- *   2) the merge must emit `section:gone` for the removed fragment so clients
- *      unmount before they can write the cleared-but-still-in-share key.
+ *   2) the merge must remove the deleted fragment from the live topology carried
+ *      on the ordered CRDT structural update frame, so clients unmount before
+ *      they can write the cleared-but-still-in-share key.
  *
- * (2) is the known gap today — live merge only emits `doc:structure-changed`.
+ * The redesign moved removal authority off the app-WS `section:gone` event: a
+ * section leaves by dropping out of the `LiveSectionsUpdateFrame` topology (the
+ * Yjs clear + the new topology arrive as ONE frame — clients never see half the
+ * fact). Force-off is part of observing that frame.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -19,11 +23,11 @@ import {
   resetCoordinatorPublishStateForTest,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
+import { joinLiveRecipient } from "../helpers/live-recipient.js";
 import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
 import { getBackendSchema } from "../../crdt/ydoc-fragments.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
-import type { WsServerEvent } from "../../types/shared.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 const OVERVIEW_KEY = "section::overview";
@@ -106,23 +110,27 @@ describe("live heading-deletion merge + section:gone", () => {
     expect(layout.some((e) => e.heading === "Overview")).toBe(true);
   });
 
-  it("live heading-deletion merge emits section:gone for the removed fragment", async () => {
+  it("live heading-deletion merge drops the removed fragment from the CRDT topology frame", async () => {
     vi.useFakeTimers();
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "editor-sock").dispose);
 
-    const events: WsServerEvent[] = [];
-    setCrdtEventHandler((event) => {
-      events.push(event);
-    });
+    const live = await joinLiveRecipient(session);
+    disposers.push(live.dispose);
+    // The bootstrap topology carries Timeline before the merge.
+    expect(live.bootstrap().state.topology.map((t) => t.fragment_key)).toContain(TIMELINE_KEY);
 
     await demoteTimelineAndQuiesce(session);
 
-    const gone = events.filter((e) => e.type === "section:gone");
-    expect(gone.length).toBeGreaterThanOrEqual(1);
-    const timelineGone = gone.find((e) => e.fragment_key === TIMELINE_KEY);
-    expect(timelineGone).toBeDefined();
-    expect(timelineGone!.doc_path).toBe(SAMPLE_DOC_PATH);
-    expect(timelineGone!.heading_path).toEqual(["Timeline"]);
+    // The structural update frame carries BOTH the Yjs update and the fresh topology…
+    const structural = live.updates().filter((u) => u.state !== undefined);
+    expect(structural.length).toBeGreaterThanOrEqual(1);
+    expect(structural[structural.length - 1].yjs_update).toBeDefined();
+    // …and Timeline has left the live topology (removal = dropping out of the frame).
+    const finalTopology = live.latestState().topology;
+    expect(finalTopology.map((t) => t.fragment_key)).not.toContain(TIMELINE_KEY);
+    expect(finalTopology.some((t) => t.heading_path.at(-1) === "Timeline")).toBe(false);
+    // The predecessor survives.
+    expect(finalTopology.some((t) => t.heading_path.at(-1) === "Overview")).toBe(true);
   });
 });

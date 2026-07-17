@@ -3,8 +3,6 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Link } from "react-router-dom";
 import { MilkdownEditor, type MilkdownEditorHandle } from "./MilkdownEditor";
-import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
-import type { CrdtTransport } from "../services/crdt-transport";
 import type { CrdtConnectionState } from "../services/crdt-provider";
 import { isCrdtDegraded, crdtBannerInfo } from "../services/crdt-connection-ux";
 import type { DocumentSection } from "../pages/document-page-utils";
@@ -13,7 +11,7 @@ import { resolveWriterId } from "../services/api-client";
 import type { LocalEditOriginSink } from "../status/sessionAuthorship";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import { useSectionHover } from "../contexts/sectionHoverUtils";
-import { useDisplaySectionMarkdown } from "../hooks/useDisplaySectionMarkdown";
+import { coldSeedMarkdown } from "../services/display-section-markdown";
 import { rewriteMarkdownDocHref } from "../app/docsRouteUtils";
 
 export interface DocumentSectionRendererProps {
@@ -24,32 +22,22 @@ export interface DocumentSectionRendererProps {
   hasEditor: boolean;
   isInProposal: boolean;
   proposalConflictReason: string | null;
-  /** Proposal FSM lock conflict (another proposal owns this section). NOT
-   *  CRDT block-state and NOT agent write-policy. */
   isLockedByOtherHuman: boolean;
-  /** CRDT server-driven block-state: section:blocked → read-only. */
   crdtBlocked: boolean;
-  /** DocSession publication pause active → editor frozen. */
   publishPaused: boolean;
   highlightLabel: string | null;
   injectedByWriter: string | null;
   hasRemotePresence: boolean;
   dragOverSectionIndex: number | null;
-  store: BrowserFragmentReplicaStore | null;
-  transport: CrdtTransport | null;
   crdtSynced: boolean;
-  /** CRDT transport connection state. `reconnecting`/`error` mean the socket is
-   *  down: the section keeps showing its (in-memory) content but goes read-only
-   *  + faded rather than being blanked. */
   crdtState: CrdtConnectionState;
   transferService: SectionTransferService | null;
   proposalMode: boolean;
   canEditProposalContent: boolean;
   proposalScopeMutationInFlight: boolean;
   isReady: boolean;
-  /** Write-only port: records that THIS session locally authored an edit to this
-   *  fragment, so the save-status ladder can tell your work from inbound activity.
-   *  Typed as the sink only — this component can write, never read or serialize. */
+  livePaintMarkdown?: (section: DocumentSection) => string;
+  getLiveBinding?: (fragmentKey: string) => import("../services/live-section-replica").LiveEditorBinding | undefined;
   localEditSink: LocalEditOriginSink;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
   onStartEditing: (index: number, coords: { x: number; y: number }) => void;
@@ -118,8 +106,6 @@ export function DocumentSectionRenderer({
   injectedByWriter,
   hasRemotePresence,
   dragOverSectionIndex,
-  store,
-  transport,
   crdtSynced,
   crdtState,
   transferService,
@@ -127,6 +113,8 @@ export function DocumentSectionRenderer({
   canEditProposalContent,
   proposalScopeMutationInFlight,
   isReady,
+  livePaintMarkdown,
+  getLiveBinding,
   localEditSink,
   mouseDownPosRef,
   onStartEditing,
@@ -140,29 +128,9 @@ export function DocumentSectionRenderer({
   onCrossSectionDrop,
 }: DocumentSectionRendererProps) {
   const { setHoveredSection } = useSectionHover();
-  // BUG1 display authority: static paint surfaces (degraded neighbour,
-  // pre-ready underlayer, unfocused static preview) must show the LIVE fragment
-  // text, not a reconstructed `# Heading` that can linger in `section.content`
-  // after the fragment already demoted to body. The reactive selector reads the
-  // fragment when it exists in the shared doc (non-creating `share.has`) and
-  // re-renders these non-ySync surfaces when it changes, falling back to the
-  // cold `section.content` seed otherwise. Proposal mode has no live CRDT
-  // authority (the editor binds no store), so we gate the store to null there
-  // and keep painting the proposal overlay content verbatim.
-  const displayStore = proposalMode ? null : store;
-  const displayMarkdown = useDisplaySectionMarkdown(section, displayStore);
-  // Unavailable-for-human-edit: a proposal FSM lock conflict OR a CRDT
-  // block-state. (Publication pause does not remove the section, it only
-  // freezes the live editor — handled via the `readOnly` prop below.)
+  const displayMarkdown =
+    !proposalMode && livePaintMarkdown ? livePaintMarkdown(section) : coldSeedMarkdown(section);
   const unavailableForEdit = isLockedByOtherHuman || crdtBlocked;
-  // Transport is not live (first-connect `connecting`, dropped `reconnecting`,
-  // or hard `error`/`disconnected`). The Y.Doc still holds all content in memory,
-  // so we keep rendering the section — we do NOT blank it. Offline keystrokes
-  // would be silently dropped by `sendRaw` (and an unsynced editor isn't typeable
-  // anyway), so the live editor is forced read-only + faded while degraded and
-  // eagerly-mounted neighbors fall back to faded static content. Every non-live
-  // phase is covered — see crdt-connection-ux.ts (the `connecting` flash on a
-  // healthy connect is sub-second; a hung/dead server stays here).
   const crdtDegraded = isCrdtDegraded(crdtState);
   const crdtPaused = crdtBannerInfo(crdtState);
   const markdownComponents = {
@@ -230,7 +198,6 @@ export function DocumentSectionRenderer({
         void onStartEditing(i, { x: e.clientX, y: e.clientY });
       }}
     >
-      {/* Injection attribution — fading right-gutter message when a proposal injected this section */}
       {injectedByWriter ? (
         <span className="section-injected-msg">
           Updated by {injectedByWriter}
@@ -266,20 +233,14 @@ export function DocumentSectionRenderer({
         </div>
       ) : null}
 
-      {/* Remote presence indicator */}
       {hasRemotePresence ? (
         <span className="text-[10px] text-blue-600">
           Someone else is editing
         </span>
       ) : null}
 
-      {/* Section body: editor or static preview */}
       {hasEditor ? (
         crdtDegraded && !isFocused ? (
-          // Degraded neighbor: this editor was eagerly mounted (focused ±1) but
-          // is not the one being edited. Edits can't be synced while the socket
-          // is not live, so fall back to faded static content rather than a live
-          // editor.
           <div className="doc-prose opacity-50">
             <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
               {displayMarkdown}
@@ -287,9 +248,6 @@ export function DocumentSectionRenderer({
           </div>
         ) : (
           <>
-            {/* Degraded focused section: editing is paused until the socket is
-                live again. `crdtPaused` is non-null for every non-live phase
-                (connecting / reconnecting / offline), each with its own label. */}
             {crdtPaused ? (
               <p
                 className={`text-[10px] font-medium mb-1 ${
@@ -300,7 +258,6 @@ export function DocumentSectionRenderer({
               </p>
             ) : null}
             <div className={`relative${crdtDegraded ? " opacity-50" : ""}`}>
-              {/* ReactMarkdown underlayer — shown until editor is ready, then unmounted */}
               {!isReady && (
                 <div className="doc-prose">
                   <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
@@ -308,7 +265,6 @@ export function DocumentSectionRenderer({
                   </ReactMarkdown>
                 </div>
               )}
-              {/* MilkdownEditor overlay — absolute until ready, then back in flow */}
               <div
                 className={isReady ? "" : "absolute inset-0"}
                 onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
@@ -322,26 +278,44 @@ export function DocumentSectionRenderer({
                   }
                 }}
               >
-                <MilkdownEditor
-                  ref={(handle) => onSetEditorRef(fk, handle)}
-                  markdown={section.content}
-                  store={proposalMode ? null : store}
-                  transport={proposalMode ? null : transport}
-                  crdtSynced={crdtSynced}
-                  fragmentKey={fk}
-                  userName={resolveWriterId()}
-                  readOnly={!isFocused || unavailableForEdit || publishPaused || crdtDegraded || (proposalMode && !canEditProposalContent)}
-                  expectsCrdt={!proposalMode}
-                  onChange={proposalMode && canEditProposalContent && onProposalSectionChange
-                    ? (md) => onProposalSectionChange(i, md)
-                    : undefined}
-                  canDrop={transferService ? () => transferService.canDrop(fk) : undefined}
-                  onCursorExit={(direction) => onCursorExit(i, direction)}
-                  onCrossSectionDrop={(transfer) => onCrossSectionDrop(section, transfer)}
-                  onLocalEdit={() => localEditSink.recordLocalEdit(fk)}
-                  onReady={() => onEditorReady(fk)}
-                  onUnready={onEditorUnready ? () => onEditorUnready(fk) : undefined}
-                />
+                {proposalMode ? (
+                  <MilkdownEditor
+                    ref={(handle) => onSetEditorRef(fk, handle)}
+                    markdown={section.content}
+                    store={null}
+                    transport={null}
+                    crdtSynced={crdtSynced}
+                    fragmentKey={fk}
+                    userName={resolveWriterId()}
+                    readOnly={!isFocused || unavailableForEdit || publishPaused || crdtDegraded || !canEditProposalContent}
+                    onChange={canEditProposalContent && onProposalSectionChange
+                      ? (md) => onProposalSectionChange(i, md)
+                      : undefined}
+                    canDrop={transferService ? () => transferService.canDrop(fk) : undefined}
+                    onCursorExit={(direction) => onCursorExit(i, direction)}
+                    onCrossSectionDrop={(transfer) => onCrossSectionDrop(section, transfer)}
+                    onLocalEdit={() => localEditSink.recordLocalEdit(fk)}
+                    onReady={() => onEditorReady(fk)}
+                    onUnready={onEditorUnready ? () => onEditorUnready(fk) : undefined}
+                  />
+                ) : (
+                  <MilkdownEditor
+                    ref={(handle) => onSetEditorRef(fk, handle)}
+                    store={null}
+                    binding={getLiveBinding?.(fk)}
+                    crdtSynced={crdtSynced}
+                    fragmentKey={fk}
+                    userName={resolveWriterId()}
+                    readOnly={!isFocused || unavailableForEdit || publishPaused || crdtDegraded}
+                    expectsCrdt
+                    canDrop={transferService ? () => transferService.canDrop(fk) : undefined}
+                    onCursorExit={(direction) => onCursorExit(i, direction)}
+                    onCrossSectionDrop={(transfer) => onCrossSectionDrop(section, transfer)}
+                    onLocalEdit={() => localEditSink.recordLocalEdit(fk)}
+                    onReady={() => onEditorReady(fk)}
+                    onUnready={onEditorUnready ? () => onEditorUnready(fk) : undefined}
+                  />
+                )}
               </div>
             </div>
           </>

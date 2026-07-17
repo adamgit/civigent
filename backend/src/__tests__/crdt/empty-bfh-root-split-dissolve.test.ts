@@ -17,13 +17,13 @@ import {
   resetCoordinatorPublishStateForTest,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
+import { joinLiveRecipient } from "../helpers/live-recipient.js";
 import { BEFORE_FIRST_HEADING_KEY } from "../../crdt/ydoc-fragments.js";
 import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
 import { getHeadSha, gitExec } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
-import type { WsServerEvent } from "../../types/shared.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 const DOC_PATH = "/ops/bfh-root-split.md";
@@ -112,27 +112,33 @@ describe("empty BFH root-split dissolve", () => {
     expect(proposalHeadingPaths.some((p) => p.length === 1 && p[0] === "Heading")).toBe(true);
   });
 
-  it("dissolve emits section:gone for the removed BFH fragment", async () => {
+  it("dissolve drops BFH from the CRDT topology frame (one structural update: Yjs + topology)", async () => {
     await createBfhOnlyDoc(ctx.rootDir, "");
     vi.useFakeTimers();
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(DOC_PATH, "editor-sock").dispose);
 
-    const events: WsServerEvent[] = [];
-    setCrdtEventHandler((event) => {
-      events.push(event);
-    });
+    const live = await joinLiveRecipient(session);
+    disposers.push(live.dispose);
+    // Before the split the bootstrap topology is just the empty BFH.
+    expect(live.bootstrap().state.topology.map((t) => t.fragment_key)).toContain(BEFORE_FIRST_HEADING_KEY);
 
     await typeIntoBfhAndQuiesce(session, "## Heading");
 
-    const gone = events.filter((e) => e.type === "section:gone");
-    const bfhGone = gone.find((e) => e.fragment_key === BEFORE_FIRST_HEADING_KEY);
-    expect(bfhGone).toBeDefined();
-    expect(bfhGone!.doc_path).toBe(DOC_PATH);
-    expect(bfhGone!.heading_path).toEqual([]);
-    // `doc:structure-changed` still fires alongside `section:gone` — the two
-    // events feed different frontend paths and are both required by 05/06.
-    expect(events.some((e) => e.type === "doc:structure-changed")).toBe(true);
+    // The removal + promotion arrive as ONE structural update frame carrying both
+    // the Yjs update and the fresh topology (never half the fact).
+    const structural = live.updates().filter((u) => u.state !== undefined);
+    expect(structural.length).toBeGreaterThanOrEqual(1);
+    expect(structural[structural.length - 1].yjs_update).toBeDefined();
+
+    const finalTopology = live.latestState().topology;
+    // BFH left the live topology (dissolve = dropping out of the frame)…
+    expect(finalTopology.map((t) => t.fragment_key)).not.toContain(BEFORE_FIRST_HEADING_KEY);
+    expect(finalTopology.some((t) => t.heading_path.length === 0)).toBe(false);
+    // …and the promoted heading is present with its OWN (non-BFH) fragment key.
+    const heading = finalTopology.find((t) => t.heading_path.at(-1) === "Heading");
+    expect(heading).toBeDefined();
+    expect(heading!.fragment_key).not.toBe(BEFORE_FIRST_HEADING_KEY);
   });
 
   it("non-empty preamble keeps BFH after root-split", async () => {

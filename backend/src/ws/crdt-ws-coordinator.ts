@@ -66,14 +66,15 @@ import {
 import { getHeadSha } from "../storage/git-repo.js";
 import { getDataRoot } from "../storage/data-root.js";
 import { resolveLiveSectionLayout, buildLiveSeedContentMap } from "../crdt/live-section-layout.js";
+import { buildWireLiveSectionsState } from "../crdt/live-sections-wire-state.js";
 import { BEFORE_FIRST_HEADING_KEY } from "../crdt/ydoc-fragments.js";
 import { checkProposalLocks } from "../domain/proposal-fsm-locks.js";
-import { emitContentCommittedEventsByDoc, emitLiveStructureChanged as emitLiveStructureChangedEvent, emitSectionEditRejected } from "../api/application/events.js";
+import { emitContentCommittedEventsByDoc, emitSectionEditRejected } from "../api/application/events.js";
 import type { PublishTriggerDecision, PublishResult } from "../crdt/crdt-proposal-generator.js";
 import type { SectionRefReceipt } from "../storage/canonical-store.js";
 import type { PublishPauseResult } from "../crdt/docsession-publish-pause.js";
 import { SectionRef } from "../domain/section-ref.js";
-import type { WsServerEvent } from "../types/shared.js";
+import type { WsServerEvent, WirePendingSection } from "../types/shared.js";
 import type { ClientInstanceId, RemoteParticipant, ModeTransitionRequest, ModeTransitionResult, ProposalId } from "../types/shared.js";
 import { parseJson } from "../types/shared.js";
 import {
@@ -91,6 +92,9 @@ import {
   decodeModeTransitionRequest,
   encodeDocPublishPauseStart,
   encodeDocPublishPauseEnd,
+  encodeLiveSectionsBootstrap,
+  encodeLiveSectionsUpdate,
+  type LiveSectionsUpdateFrame,
   decodeMessage,
   parseCrdtUrl,
   WS_CLOSE_SESSION_ENDED,
@@ -116,6 +120,15 @@ import { handleProcessFatal } from "../runtime/fatal-handler.js";
 
 const docSockets = new Map<string, Set<CoordinatorSocket>>();
 const participants = new Map<ClientInstanceId, RemoteParticipant>();
+
+/**
+ * Sockets that have received an actor-captured `LiveSectionsBootstrapFrame` for
+ * a document and may therefore receive ordered `LiveSectionsUpdateFrame`s. A
+ * socket is added ONLY inside its bootstrap lane command (register-then-send,
+ * atomic against other lane commands), so it can never receive an update frame
+ * before its bootstrap. Cleared on socket removal.
+ */
+const liveSectionRecipients = new Map<string, Set<CoordinatorSocket>>();
 
 
 
@@ -177,6 +190,72 @@ export function joinAndNotify(session: DocSession, socket: CoordinatorSocket, st
   if (notification) sendToSocket(socket, encodeDocumentReplacementNotice(notification));
   joinSession(session, (msg) => socket.send(msg), (event) => { if (onWsEvent) onWsEvent(event); });
   st.joined = true;
+  sendLiveSectionsBootstrap(session, socket);
+}
+
+/**
+ * Actor-ordered live-section bootstrap. Enqueued on the session lane so it runs
+ * AFTER all previously-queued accepted edits / structural ops have drained: it
+ * then captures the full Y.Doc update and the current live-section control state
+ * as ONE consistent post-command snapshot, registers the socket as a live
+ * recipient, and sends the bootstrap frame — all before the lane advances to the
+ * next command. Because registration happens inside the lane immediately before
+ * the send, no mutation (and no update frame) can slip between the captured
+ * baseline and the recipient's continuation cursor.
+ */
+function sendLiveSectionsBootstrap(session: DocSession, socket: CoordinatorSocket): void {
+  void session.enqueue(async () => {
+    if (socket.readyState !== WebSocket.OPEN || session.state !== "active") return;
+    const state = await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath));
+    const yjsUpdate = Y.encodeStateAsUpdate(session.ydoc);
+    let recipients = liveSectionRecipients.get(session.docPath);
+    if (!recipients) {
+      recipients = new Set();
+      liveSectionRecipients.set(session.docPath, recipients);
+    }
+    recipients.add(socket);
+    sendToSocket(
+      socket,
+      encodeLiveSectionsBootstrap({
+        doc_session_id: session.docSessionId,
+        state,
+        yjs_update: yjsUpdate,
+      }),
+    );
+  });
+}
+
+/**
+ * Send an ordered `LiveSectionsUpdateFrame` to every bootstrapped live recipient
+ * of a document. Call from lane commands (content/structural broadcast points)
+ * so the frame follows the recipient's bootstrap in FIFO order. Current
+ * app-provider clients ignore the 0x15 opcode; the future `LiveSectionReplica`
+ * consumes it.
+ */
+function broadcastLiveSectionsUpdate(docPath: string, frame: LiveSectionsUpdateFrame): void {
+  const recipients = liveSectionRecipients.get(docPath);
+  if (!recipients || recipients.size === 0) return;
+  const bytes = encodeLiveSectionsUpdate(frame);
+  for (const s of recipients) {
+    if (s.readyState === WebSocket.OPEN) s.send(bytes);
+  }
+}
+
+/**
+ * Push a state-only `LiveSectionsUpdateFrame` refreshing the live editable set
+ * (and pending/pause mirror) for a document that has an active DocSession. Used
+ * by external editability triggers — proposal FSM lock/unlock transitions — so a
+ * live session's `blocked_section_ids` stay fresh on the ordered CRDT channel
+ * now that app-WS `section:blocked|unblocked` is no longer a live authority.
+ * No-op when there is no live session (cold pages read blocked from workspace
+ * REST). Runs on the actor lane so the snapshot is consistent.
+ */
+export async function refreshLiveSectionsState(docPath: string): Promise<void> {
+  const session = lookupDocSession(docPath);
+  if (!session) return;
+  await session.enqueue(async () => {
+    broadcastLiveSectionsUpdate(docPath, { state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath)) });
+  });
 }
 
 function addSocket(docPath: string, socket: CoordinatorSocket): void {
@@ -189,6 +268,11 @@ function addSocket(docPath: string, socket: CoordinatorSocket): void {
 }
 
 function removeSocket(docPath: string, socket: CoordinatorSocket): void {
+  const recipients = liveSectionRecipients.get(docPath);
+  if (recipients) {
+    recipients.delete(socket);
+    if (recipients.size === 0) liveSectionRecipients.delete(docPath);
+  }
   const sockets = docSockets.get(docPath);
   if (!sockets) return;
   sockets.delete(socket);
@@ -463,21 +547,20 @@ export function setCrdtPrivateEventHandler(
 
 
 
+/**
+ * Live section authority (topology + editability) is carried on the ordered
+ * DocSession CRDT channel, NOT the application WebSocket. This delivers the
+ * current Y.Doc state and the resulting live-section `state` as ONE ordered
+ * `LiveSectionsUpdateFrame` to bootstrapped live recipients, so a structural
+ * change is never observed as half a fact. The old `doc:structure-changed`
+ * app-WS emission (with `prependHeadings` body assembly + last-editor stamping)
+ * is removed — the app WebSocket is no longer a live section authority.
+ */
 async function emitLiveStructureChanged(session: DocSession): Promise<void> {
-  
-  
-  
-  
-  
-  const owner = session.generator.getWriterIdentity();
-  const identity =
-    session.holders.get(owner.id)?.identity ?? session.contributors.get(owner.id) ?? owner;
-  await emitLiveStructureChangedEvent(
-    onWsEvent ?? undefined,
-    session.docPath,
-    session.generator.getCurrentProposalId(),
-    identity,
-  );
+  broadcastLiveSectionsUpdate(session.docPath, {
+    yjs_update: Y.encodeStateAsUpdate(session.ydoc),
+    state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath)),
+  });
 }
 
 
@@ -639,18 +722,27 @@ async function finalizeAndEnd(session: DocSession, ready: boolean): Promise<Publ
             .map((e) => e.fragmentKey),
         );
       }
-      const stillPending = new Set<string>();
-      for (const fragmentKey of announced) {
+      const stillPending = new Map<string, PendingWriterInfo>();
+      let settledAny = false;
+      for (const [fragmentKey, info] of announced) {
         if (landedFragmentKeys.has(fragmentKey)) {
+          settledAny = true;
           onWsEvent({ type: "section:settled", doc_path: session.docPath, fragment_key: fragmentKey });
         } else {
-          stillPending.add(fragmentKey);
+          stillPending.set(fragmentKey, info);
         }
       }
       if (stillPending.size > 0) {
         pendingFragmentsByDoc.set(session.docPath, stillPending);
       } else {
         pendingFragmentsByDoc.delete(session.docPath);
+      }
+      // Mirror the pending change onto the ordered CRDT channel so bootstrapped live
+      // replicas drop the settled fragments from `pending_sections` in FIFO order.
+      if (settledAny) {
+        broadcastLiveSectionsUpdate(session.docPath, {
+          state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath)),
+        });
       }
     } else {
       pendingFragmentsByDoc.delete(session.docPath);
@@ -962,9 +1054,10 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
         // No predecessor to merge into: the demoted section is the document's
         // first section. Its orphan body settles under the before-first-heading
         // (BFH) preamble via a DEDICATED path (create/register BFH, delete the old
-        // headed identity), with empty-BFH dissolve when the orphan is empty. A
-        // null plan here means the shape is not the no-predecessor hole (has
-        // descendants / not first) — leave it (identity still resolves).
+        // headed identity), with empty-BFH dissolve when the orphan is empty. When
+        // the demoted first section has descendants, that path reparents them to
+        // top level keeping their ids (option B). A null plan here means the shape
+        // is not the no-predecessor hole (not first) — leave it.
         const bfhPlan = await computeStructuralOrphanToBfhPlan(
           session.liveFragments,
           session.docPath,
@@ -1058,36 +1151,20 @@ async function runQuiescenceCommand(session: DocSession): Promise<void> {
 
     broadcastToAll(session.docPath, encodeUpdate(Y.encodeStateAsUpdate(session.ydoc)));
 
-
+    // Deliver the structural Yjs update AND the resulting live topology/editability
+    // as ONE ordered live-section frame (via emitLiveStructureChanged) so a
+    // `LiveSectionReplica` never observes half the structural fact. Live existence
+    // now leaves via the frame's topology dropping the removed key — the old
+    // app-WS `section:gone` per-removed-fragment emission is removed (app WS is no
+    // longer a live authority; force-off is part of observing the frame).
     await emitLiveStructureChanged(session);
-    // Live structural removals (heading-deletion merges and empty-BFH
-    // root-split dissolves) must emit `section:gone` for each removed
-    // fragment, matching REST canonical delete. Without this the browser
-    // can keep a writable binding to a cleared-but-still-in-`ydoc.share`
-    // key and later touch a fragment with no layout identity — the
-    // acceptance-gate "no layout identity" throw. Emitted in addition to
-    // `doc:structure-changed` because the two events feed different frontend
-    // paths: structure-changed reconciles the section list, `section:gone`
-    // drives per-fragment detach/unmount via the block-state store (spec 05
-    // §"Section block-state events"). See the sibling REST path in
-    // `api/routes/sections.ts`.
     // Tombstone every removed key so a late ("ghost") client write into the
     // still-in-`share` emptied slot is handled as an expected delete-under-you at
-    // ingress (revert + force-off) instead of the acceptance-gate corruption
-    // fatal — this closes the demote→navigate consecutive-H1 crash (F6). Done
-    // regardless of `onWsEvent` so the gate protection holds in headless runs.
+    // ingress (revert) instead of the acceptance-gate corruption fatal — this
+    // closes the demote→navigate consecutive-H1 crash (F6). Independent of any
+    // app-WS emission, so the gate protection holds in headless runs.
     for (const removed of removedFragments) {
       session.removedFragmentTombstones.set(removed.fragmentKey, removed.headingPath);
-    }
-    if (onWsEvent) {
-      for (const removed of removedFragments) {
-        onWsEvent({
-          type: "section:gone",
-          doc_path: session.docPath,
-          fragment_key: removed.fragmentKey,
-          heading_path: removed.headingPath,
-        });
-      }
     }
   }
 
@@ -1456,7 +1533,26 @@ function buildProposalLockRejectionGroup(
 
 
 
-const pendingFragmentsByDoc = new Map<string, Set<string>>();
+/** A live pending-writer session against one fragment: identity retained so the
+ *  ordered CRDT `pending_sections` frame can carry `writer_id`/`writer_display_name`
+ *  (the who-changed badge surfaces presence only, never the name — but the wire type
+ *  carries identity for any future consumer). */
+interface PendingWriterInfo {
+  writerId: string;
+  writerDisplayName: string;
+}
+const pendingFragmentsByDoc = new Map<string, Map<string, PendingWriterInfo>>();
+
+/** The doc's live pending-writer set as `WirePendingSection[]` for the wire state. */
+function pendingSectionsForDoc(docPath: string): WirePendingSection[] {
+  const pending = pendingFragmentsByDoc.get(docPath);
+  if (!pending) return [];
+  return Array.from(pending.entries()).map(([fragment_key, info]) => ({
+    fragment_key,
+    writer_id: info.writerId,
+    writer_display_name: info.writerDisplayName,
+  }));
+}
 
 /**
  * CRDT live-edit acceptance gate.
@@ -1535,18 +1631,14 @@ export async function processArbitratedClientUpdate(
       rejectedFragmentKeys,
       SERVER_NORMALIZATION_ORIGIN,
     );
-    if (onWsEvent) {
-      for (const group of acceptance.rejectionGroups) {
-        if (group.reasonCode !== "proposal-lock-conflict") continue;
-        for (const affected of group.affectedFragments) {
-          onWsEvent({
-            type: "section:blocked",
-            doc_path: docPath,
-            fragment_key: affected.fragmentKey,
-            heading_path: affected.headingPath,
-          });
-        }
-      }
+    // A live edit that hit a proposal-lock conflict means the section is (still)
+    // in the blocked editable set. Editability is live authority: refresh it on
+    // the ordered CRDT channel with a state-only frame rather than the removed
+    // app-WS `section:blocked` broadcast. `buildWireLiveSectionsState` recomputes
+    // `blocked_section_ids` from the lock index, so the conflicted section is
+    // included. Origin-only `section:edit-rejected` (below) still rides the app WS.
+    if (acceptance.rejectionGroups.some((g) => g.reasonCode === "proposal-lock-conflict")) {
+      broadcastLiveSectionsUpdate(docPath, { state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath)) });
     }
     // Emit `section:edit-rejected` for every non-lock rejection group. This is
     // an origin-only app event: it goes ONLY to the tab whose edit was
@@ -1595,16 +1687,13 @@ export async function processArbitratedClientUpdate(
       acceptance.removedTargetFragmentKeys,
       SERVER_NORMALIZATION_ORIGIN,
     );
+    // Complete the delete of a tombstoned (quiescence-removed) key a client
+    // raced a ghost write into: clear + unregister the leftover slot. No app-WS
+    // `section:gone` is re-emitted — the section already left live topology in
+    // the quiescence structural frame, and the beforeSV-anchored content frame
+    // below carries the corrected (empty) state. App WS is not a live authority.
     for (const fragmentKey of acceptance.removedTargetFragmentKeys) {
       session.liveFragments.unregisterFragmentKey(fragmentKey);
-      if (onWsEvent) {
-        onWsEvent({
-          type: "section:gone",
-          doc_path: docPath,
-          fragment_key: fragmentKey,
-          heading_path: session.removedFragmentTombstones.get(fragmentKey) ?? [],
-        });
-      }
     }
   }
 
@@ -1617,6 +1706,14 @@ export async function processArbitratedClientUpdate(
 
 
   broadcastToAll(docPath, encodeUpdate(Y.encodeStateAsUpdate(session.ydoc, beforeSV)));
+
+  // Mirror the accepted content delta onto the ordered live-section channel as a
+  // content-only update frame (no `state`: an ordinary edit is topology-neutral
+  // until quiescence, which is where a structural frame carrying fresh `state`
+  // is sent). Same `beforeSV`-anchored delta as the raw broadcast above.
+  broadcastLiveSectionsUpdate(docPath, {
+    yjs_update: Y.encodeStateAsUpdate(session.ydoc, beforeSV),
+  });
 
   
   
@@ -1664,21 +1761,31 @@ export async function processArbitratedClientUpdate(
     
     
     
-    if (onWsEvent) {
-      const announced = pendingFragmentsByDoc.get(docPath) ?? new Set<string>();
-      const editor = session.holders.get(writerId)?.identity;
-      for (const fragmentKey of materializeKeys) {
-        if (announced.has(fragmentKey)) continue;
-        announced.add(fragmentKey);
-        onWsEvent({
-          type: "section:pending",
-          doc_path: docPath,
-          fragment_key: fragmentKey,
-          writer_id: writerId,
-          writer_display_name: editor?.displayName ?? writerId,
-        });
-      }
-      pendingFragmentsByDoc.set(docPath, announced);
+    const announced = pendingFragmentsByDoc.get(docPath) ?? new Map<string, PendingWriterInfo>();
+    const editor = session.holders.get(writerId)?.identity;
+    const writerDisplayName = editor?.displayName ?? writerId;
+    let addedAny = false;
+    for (const fragmentKey of materializeKeys) {
+      if (announced.has(fragmentKey)) continue;
+      announced.set(fragmentKey, { writerId, writerDisplayName });
+      addedAny = true;
+      // Legacy app-WS pending hint (origin/cold consumers). Live replicas ignore it
+      // while ready and read pending from the ordered `pending_sections` frame below.
+      onWsEvent?.({
+        type: "section:pending",
+        doc_path: docPath,
+        fragment_key: fragmentKey,
+        writer_id: writerId,
+        writer_display_name: writerDisplayName,
+      });
+    }
+    pendingFragmentsByDoc.set(docPath, announced);
+    // Mirror the new pending set onto the ordered CRDT channel so bootstrapped live
+    // replicas see `pending_sections` grow in FIFO order after the structural frame.
+    if (addedAny) {
+      broadcastLiveSectionsUpdate(docPath, {
+        state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(docPath)),
+      });
     }
   }
 }

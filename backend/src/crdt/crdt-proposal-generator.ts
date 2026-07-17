@@ -521,7 +521,7 @@ export class CRDTProposalGenerator {
   /** Union one engine write result into the running aggregate delta. */
   private accumulateDelta(delta: MaterializeDelta, result: UpsertSectionFromMarkdownDetailedResult): void {
     delta.writtenEntries.push(...result.writtenEntries);
-    delta.removedEntries.push(...result.removedEntries);
+    delta.removedEntries.push(...result.removedContentEntries);
     delta.fragmentKeyRemaps.push(...result.fragmentKeyRemaps);
     delta.structureChanges.push(...result.structureChanges);
     delta.liveReloadEntries.push(...result.liveReloadEntries);

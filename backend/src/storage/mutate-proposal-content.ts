@@ -123,7 +123,7 @@ export async function mutateProposalContent(
       // — NOT just the requested heading path.
       const touched: FlatEntry[] = [
         ...writeResult.writtenEntries,
-        ...writeResult.removedEntries,
+        ...writeResult.removedContentEntries,
         ...writeResult.structureChanges.flatMap((c) => [c.oldEntry, ...c.newEntries]),
       ];
       affected = flatEntriesToSections(operation.docPath, touched);

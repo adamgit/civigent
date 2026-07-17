@@ -45,17 +45,27 @@ Read a section from a proposal:
 
 ### Quick write (2 calls):
 
-1. `{{tool:createProposal}}` — provide `intent` (string) and `sections` (array of `{doc_path, heading_path, content, justification?}`). Content is written immediately into the proposal.
+1. `{{tool:createProposal}}` — provide `intent` (string) and `sections` (non-empty array of `{doc_path, heading_path, content, justification?}`). Content is written immediately into the proposal. Keep this call small when possible — very large tool-call JSON is a common client-side failure mode.
 2. `{{tool:publishProposal}}` — runs the publish gates and either publishes (returns `committed_head`) or reports that the proposal cannot be published yet, with a per-target indication of which sections are unavailable and a human-readable explanation of why.
 
-### Incremental write (3+ calls):
+### Incremental write (preferred for large content):
 
-1. `{{tool:createProposal}}` — create the proposal (can include initial content or not).
-2. `{{tool:writeProposalSection}}` — add or update section content within your proposal. Repeat as needed.
+1. `{{tool:createProposal}}` — create a draft with `intent` and at least one section (a small first section is fine).
+2. `{{tool:writeProposalSection}}` — add or update section content within that same draft. Repeat as needed. Prefer this over packing a huge body into `create_proposal`.
 3. `{{tool:readProposalSection}}` or `{{tool:readProposal}}` — inspect the proposal content you just wrote.
 4. `{{tool:publishProposal}}` — same as above.
 
 Use `{{tool:withdrawProposal}}` to withdraw a proposal you no longer need.
+
+### Drafts and `replace` (dangerous footgun)
+
+Prefer **one live draft** and extend it with `{{tool:writeProposalSection}}`. Do **not** set `replace: true` to update section content — that is what `write_proposal_section` is for.
+
+`replace: true` on `{{tool:createProposal}}` permanently withdraws an existing draft, then creates a **new** proposal with a **new** `proposal_id`. After a successful replace:
+
+- Discard the old proposal ID immediately.
+- Use **only** the new `proposal_id` from the create response for every later write/publish.
+- Writing to the withdrawn ID fails with a terminal-state error; that is not a server outage. Call `{{tool:myProposals}}` with `status: "draft"` to recover the active draft ID if you lost track.
 
 ### When `{{tool:publishProposal}}` cannot publish
 

@@ -8,9 +8,10 @@ interface Props {
   secondsAgo: number | undefined;
   writerType: string | undefined;
   sectionIndex: number;
+  uncommittedChanges?: boolean;
 }
 
-export function SummaryWhoChangedThisSection({ editorId, editorName, secondsAgo, writerType, sectionIndex }: Props) {
+export function SummaryWhoChangedThisSection({ editorId, editorName, secondsAgo, writerType, sectionIndex, uncommittedChanges = false }: Props) {
   const { hoveredSection, activeSectionIndex } = useSectionHover();
   const isVisible = hoveredSection === sectionIndex || activeSectionIndex === sectionIndex;
   const ageLabel = useAgeDisplay(secondsAgo);
@@ -19,14 +20,34 @@ export function SummaryWhoChangedThisSection({ editorId, editorName, secondsAgo,
 
   const hasAnyAttribution = editorId !== undefined || editorName !== undefined || writerType !== undefined;
 
+  if (uncommittedChanges) {
+    return (
+      <div className="section-who-changed-anchor">
+        <div className="section-who-changed">
+          <div className="section-who-changed-name text-text-muted italic">Uncommitted changes here</div>
+          {hasAnyAttribution ? (
+            <div className="section-who-changed-meta">
+              <div className="section-who-changed-type-line">
+                <span
+                  className={`inline-block px-1.5 py-px rounded text-[10px] font-semibold ${
+                    writerType === "human" ? "badge-human" : writerType === "agent" ? "badge-ai" : "text-error border border-current"
+                  }`}
+                >
+                  {writerType === "human" ? "HUMAN" : writerType === "agent" ? "AI" : "UNKNOWN"}
+                </span>
+              </div>
+              {ageLabel ? <div className="section-who-changed-age text-text-muted">{ageLabel}</div> : null}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
   const isHuman = writerType === "human";
   const isAgent = writerType === "agent";
   const isUnknown = !isHuman && !isAgent;
 
-  // Degraded rendering contract:
-  // - missing writerType → visible UNKNOWN badge
-  // - missing display name but known writer id → stable fallback label from id
-  // - missing both name and id → visible attribution error state
   let displayName: string;
   if (editorId !== undefined && editorId === resolveWriterId()) {
     displayName = "[me]";
@@ -47,11 +68,6 @@ export function SummaryWhoChangedThisSection({ editorId, editorName, secondsAgo,
     <div className="section-who-changed-anchor">
       <div className="section-who-changed">
         <div className={`section-who-changed-name ${isUnknown ? "text-error" : "text-text-primary"}`}>{displayName}</div>
-        {/* `.section-who-changed-meta` is `display: contents`, so the badge and age
-            below are hoisted to direct flex children of `.section-who-changed` for
-            column-wrap. Badge is BEFORE age in source order (per the todolist);
-            CSS `order` on the badge keeps the tall visual stack name / age / badge.
-            See styles.css for the spill-order trade-off. */}
         <div className="section-who-changed-meta">
           <div className="section-who-changed-type-line">
             <span

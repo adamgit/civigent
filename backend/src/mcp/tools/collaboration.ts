@@ -29,7 +29,6 @@ import {
   listDraftProposals,
   listCommittedProposals,
   listWithdrawnProposals,
-  findDraftProposalByWriter,
   transitionToWithdrawn,
   isProposalMutable,
   isCrdtOwnedProposal,
@@ -42,6 +41,11 @@ import {
 } from "../../storage/commit-pipeline.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
+import {
+  rememberSessionDraft,
+  forgetSessionDraft,
+  takeCurrentSessionDraft,
+} from "../session-drafts.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
 import type { HumanInvolvementPolicyResult } from "../../types/shared.js";
@@ -298,11 +302,19 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
 
   // Draft limit: tier-3 agents (collaboration tools) may have multiple drafts.
   // replace=true auto-withdraws the most recent existing draft for convenience.
+  // Capture the withdrawn id so the response can make the ID switch unmissable —
+  // weak models keep the old id in working memory otherwise (Area M footgun).
   const replaceFlag = args.replace as boolean | undefined;
+  let withdrawnProposalId: string | null = null;
   if (replaceFlag) {
-    const existing = await findDraftProposalByWriter(writer.id);
+    // Session-LOCAL affinity: only withdraw the most recent draft remembered by
+    // THIS session's in-memory state — never another concurrent conversation's
+    // draft under the same agent credential, and never a draft this session's
+    // memory no longer knows about (after TTL/restart, use explicit proposal_id).
+    const existing = await takeCurrentSessionDraft(ctx.session, writer.id);
     if (existing) {
       await transitionToWithdrawn(existing.id, "auto-withdrawn by replace flag");
+      withdrawnProposalId = existing.id;
     }
   }
 
@@ -315,6 +327,7 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
       justification: s.justification,
     })),
   );
+  rememberSessionDraft(ctx.session, mcpProposalId);
 
   // Write section content AND derive the manifest from the REAL parser-expanded
   // write result through the single manifest-owning boundary (Claim 3): when a
@@ -354,18 +367,32 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
     });
   }
 
+  // When replace=true actually withdrew a prior draft, make the ID switch
+  // unmissable: the old id is permanently dead and ONLY the new id may be used.
+  // Omitted entirely when no prior draft existed (do not claim a withdrawal).
+  const withdrawalNote = withdrawnProposalId
+    ? `Your previous draft ${withdrawnProposalId} was permanently withdrawn by replace: true — discard that id. ` +
+      `Only proposal_id ${mcpProposalId} may be used for further write_proposal_section / publish_proposal calls.`
+    : null;
+
   if (!policyResult.canWrite) {
-    return jsonBlockedToolResult(policyResult.message, {
-      proposal_id: mcpProposalId,
-      status: "draft",
-      agent_write_policy: agentWritePolicyToolBody(policyResult),
-    });
+    return jsonBlockedToolResult(
+      withdrawalNote ? `${policyResult.message} ${withdrawalNote}` : policyResult.message,
+      {
+        proposal_id: mcpProposalId,
+        status: "draft",
+        agent_write_policy: agentWritePolicyToolBody(policyResult),
+        ...(withdrawnProposalId ? { withdrawn_proposal_id: withdrawnProposalId } : {}),
+      },
+    );
   }
   return jsonToolResult({
     proposal_id: mcpProposalId,
     status: "draft",
     outcome: "accepted",
     agent_write_policy: agentWritePolicyToolBody(policyResult),
+    ...(withdrawnProposalId ? { withdrawn_proposal_id: withdrawnProposalId } : {}),
+    ...(withdrawalNote ? { message: withdrawalNote } : {}),
   });
 };
 
@@ -400,6 +427,7 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
       const sections = proposal.sections;
 
       const committedHead = await commitProposalToCanonical(proposalId, committedMetadata);
+      forgetSessionDraft(ctx.session, proposalId);
 
       if (ctx.writer.type === "agent") {
         const { agentEventLog } = await import("../agent-event-log.js");
@@ -466,6 +494,7 @@ const withdrawProposalHandler: ToolHandler = async (args, ctx) => {
     }
 
     await transitionToWithdrawn(proposalId, reason);
+    forgetSessionDraft(ctx.session, proposalId);
 
     return jsonToolResult({
       proposal_id: proposalId,
@@ -523,8 +552,11 @@ const myProposalsHandler: ToolHandler = async (args, ctx) => {
     : status === "withdrawn"
     ? await listWithdrawnProposals()
     : await listAllProposals();
-  // Filter to this writer's own proposals AND hide CRDT-owned (DocSession
-  // live-edit) proposals — those are system artefacts, never agent-authored.
+  // Writer-scoped list: every proposal authored under this credential,
+  // regardless of which MCP session created it (proposals carry no session
+  // identity — task 708). CRDT-owned (DocSession live-edit) proposals stay
+  // hidden. `list_proposals` remains workspace-wide; publish/withdraw-by-id
+  // stay writer-only.
   const mine = all.filter((p) => p.writer.id === ctx.writer.id && !isCrdtOwnedProposal(p));
   return jsonToolResult({ proposals: mine });
 };
@@ -825,7 +857,12 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
     "createProposal",
     {
       name: "create_proposal",
-      description: "Create a new proposal with intent and section changes. The proposal starts in draft status. Use publish_proposal to publish it.",
+      description:
+        "Create a new proposal with intent and section changes. The proposal starts in draft status. " +
+        "For large edits, prefer a SMALL create_proposal (one or a few sections) followed by repeated " +
+        "write_proposal_section calls on the returned proposal_id, rather than one create_proposal " +
+        "carrying a giant sections payload — big tool-call JSON is error-prone and hard to retry. " +
+        "When the draft is complete, call publish_proposal with the returned proposal_id to publish it.",
       inputSchema: {
         type: "object",
         properties: {
@@ -844,7 +881,20 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
             },
             description: "Sections to create or overwrite",
           },
-          replace: { type: "boolean", description: "Auto-withdraw an existing draft proposal if one exists" },
+          replace: {
+            type: "boolean",
+            description:
+              "When true, creates a NEW proposal with a NEW proposal_id and PERMANENTLY withdraws the " +
+              "most recent draft this session created, as remembered by the server's IN-MEMORY session " +
+              "state — you must discard the withdrawn id. That memory is session-local convenience only: " +
+              "it is lost when the session expires, is deleted, or the server restarts, after which " +
+              "replace withdraws nothing and prior drafts must be managed explicitly by proposal_id " +
+              "(write_proposal_section / publish_proposal / withdraw_proposal — drafts always survive " +
+              "session loss). A draft created by another session or another agent is never touched. " +
+              "Do NOT use replace to update section content: to change an existing draft, " +
+              "call write_proposal_section on its proposal_id instead. Omit or false is the normal path " +
+              "(creates an additional draft without withdrawing anything).",
+          },
         },
         required: ["intent", "sections"],
       },
@@ -924,7 +974,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
     "myProposals",
     {
       name: "my_proposals",
-      description: "List your own proposals, optionally filtered by status. Preferred way to check your proposal state.",
+      description: "List every proposal authored under your credential (from any session, past or present), optionally filtered by status. Preferred way to check your proposal state.",
       inputSchema: {
         type: "object",
         properties: {

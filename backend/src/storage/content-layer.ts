@@ -343,13 +343,19 @@ export interface SectionDiscoveryEntry {
 
 export interface UpsertSectionFromMarkdownDetailedResult {
   writtenEntries: FlatEntry[];
-  removedEntries: FlatEntry[];
+  removedContentEntries: FlatEntry[];
   fragmentKeyRemaps: StructuralMutationPlan["fragmentKeyRemaps"];
   liveReloadEntries: FlatEntry[];
   structureChanges: Array<{
     oldEntry: FlatEntry;
     newEntries: FlatEntry[];
   }>;
+  /**
+   * Removed entries including structural sub-skeleton nodes. Most callers need
+   * only `removedContentEntries`; identity-based delete recording also needs a
+   * collapsed parent's sub-skeleton id.
+   */
+  removedStructuralEntries?: FlatEntry[];
 }
 
 import { getParser } from "./markdown-parser.js";
@@ -1308,7 +1314,7 @@ export class ProposalShadowContentLayer {
     if ((currentBody as string) === (newBody as string)) {
       return {
         writtenEntries: [],
-        removedEntries: [],
+        removedContentEntries: [],
         fragmentKeyRemaps: [],
         liveReloadEntries: [],
         structureChanges: [],
@@ -1318,7 +1324,7 @@ export class ProposalShadowContentLayer {
     await this.writeOverlayBodyFile(ref.docPath, entry, newBody);
     return {
       writtenEntries: [flatEntryFromContentEntry(entry)],
-      removedEntries: [],
+      removedContentEntries: [],
       fragmentKeyRemaps: [],
       liveReloadEntries: [flatEntryFromContentEntry(entry)],
       structureChanges: [],
@@ -1375,7 +1381,7 @@ export class ProposalShadowContentLayer {
     if (skeleton.findStructuralNodeByHeadingPath([headed[0].heading])) {
       return {
         writtenEntries: [],
-        removedEntries: [],
+        removedContentEntries: [],
         fragmentKeyRemaps: [],
         liveReloadEntries: [],
         structureChanges: [],
@@ -1420,7 +1426,7 @@ export class ProposalShadowContentLayer {
     const writtenEntries = [...addedNonSub, flatEntryFromContentEntry(bfhEntry)];
     return {
       writtenEntries,
-      removedEntries: [],
+      removedContentEntries: [],
       fragmentKeyRemaps: [],
       liveReloadEntries: writtenEntries,
       structureChanges: [{
@@ -1587,7 +1593,7 @@ export class ProposalShadowContentLayer {
         );
         return {
           writtenEntries: [flatEntryFromContentEntry(entry)],
-          removedEntries: [],
+          removedContentEntries: [],
           fragmentKeyRemaps: [],
           liveReloadEntries: [flatEntryFromContentEntry(entry)],
           structureChanges: [],
@@ -1610,7 +1616,7 @@ export class ProposalShadowContentLayer {
       );
       return {
         writtenEntries: [flatEntryFromContentEntry(newEntry)],
-        removedEntries: [],
+        removedContentEntries: [],
         fragmentKeyRemaps: [],
         liveReloadEntries: [flatEntryFromContentEntry(newEntry)],
         structureChanges: [{
@@ -1650,7 +1656,7 @@ export class ProposalShadowContentLayer {
     ) {
       return {
         writtenEntries: [],
-        removedEntries: [],
+        removedContentEntries: [],
         fragmentKeyRemaps: [],
         liveReloadEntries: [],
         structureChanges: [],
@@ -1717,7 +1723,7 @@ export class ProposalShadowContentLayer {
 
         return {
           writtenEntries,
-          removedEntries: [],
+          removedContentEntries: [],
           fragmentKeyRemaps: [],
           liveReloadEntries,
           structureChanges: [],
@@ -2111,7 +2117,7 @@ export class ProposalShadowContentLayer {
       writtenEntries: deletion.mergeTargetWasCreated || (orphanBody as string).trim()
         ? [deletion.mergeTarget]
         : [],
-      removedEntries: deletion.removed.filter((e) => !e.isSubSkeleton),
+      removedContentEntries: deletion.removed.filter((e) => !e.isSubSkeleton),
       fragmentKeyRemaps: deletion.fragmentKeyRemaps,
       liveReloadEntries: deletion.mergeTargetWasCreated || (orphanBody as string).trim()
         ? [deletion.mergeTarget]
@@ -2243,7 +2249,8 @@ export class ProposalShadowContentLayer {
 
     return {
       writtenEntries,
-      removedEntries: collapse.removed.filter((e) => !e.isSubSkeleton),
+      removedContentEntries: collapse.removed.filter((e) => !e.isSubSkeleton),
+      removedStructuralEntries: collapse.removed,
       fragmentKeyRemaps: collapse.fragmentKeyRemaps,
       liveReloadEntries,
       structureChanges: [{
@@ -2251,6 +2258,26 @@ export class ProposalShadowContentLayer {
         newEntries: [],
       }],
     };
+  }
+
+  /**
+   * Public no-predecessor demotion primitive (WS-2, nested first-section →
+   * BFH): delete a sub-skeleton PARENT heading that has NO preceding sibling,
+   * moving its orphan body under an auto-created before-first-heading (BFH)
+   * preamble and reparenting its descendants to top level KEEPING their
+   * section-file ids (their live fragment keys / cursors survive). This is the
+   * no-predecessor companion to `removeHeadingPreservingChildren`, which throws
+   * when the target has no preceding sibling. Leaf (no-descendant) first
+   * sections use the orphan→BFH leaf path instead; this method requires a
+   * sub-skeleton parent (the underlying `collapseParentHeading` asserts it).
+   */
+  async collapseParentHeadingToBfh(
+    docPath: string,
+    headingPath: string[],
+    orphanBody: SectionBody,
+  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+    const skeleton = await this.getWritableSkeleton(docPath);
+    return this.collapseParentAndAbsorbOrphanBody(skeleton, headingPath, orphanBody);
   }
 
   // (item 121) The private ensureAncestorHeadings(skeleton, headingPath)
@@ -3089,7 +3116,7 @@ export class ProposalShadowContentLayer {
     }
     return {
       writtenEntries,
-      removedEntries: plan.removed.filter((e) => !e.isSubSkeleton),
+      removedContentEntries: plan.removed.filter((e) => !e.isSubSkeleton),
       fragmentKeyRemaps: plan.fragmentKeyRemaps,
       liveReloadEntries,
       structureChanges: [{

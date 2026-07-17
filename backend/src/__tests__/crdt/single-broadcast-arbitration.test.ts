@@ -32,6 +32,7 @@ import {
   registerFakeEditorSocketForTest,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
+import { joinLiveRecipient } from "../helpers/live-recipient.js";
 import { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
 import type { FragmentContent, SectionBody } from "../../storage/section-formatting.js";
@@ -127,6 +128,8 @@ describe("C3: YJS_UPDATE propagation is a single server-applied-delta broadcast"
     const session = await openSession();
     await lockSectionWithCompetingProposal(["Overview"]); // Overview is competing-locked
 
+    const live = await joinLiveRecipient(session);
+    disposers.push(live.dispose);
     const { senderSocket, senderState, peerStore, peerFrameCount } = setupSenderAndPeer(session);
 
     const blocked = buildFragmentContent("BLOCKED EDIT BY ALICE" as SectionBody, 2, "Overview");
@@ -142,9 +145,9 @@ describe("C3: YJS_UPDATE propagation is a single server-applied-delta broadcast"
     expect(peerOverview).not.toContain("BLOCKED EDIT BY ALICE");
     expect(peerOverview).toContain("The overview covers our strategic goals.");
 
-    // section:blocked was emitted for the competing-locked fragment.
-    expect(events.some((e) => e.type === "section:blocked"
-      && (e as { fragment_key?: string }).fragment_key === OVERVIEW_KEY)).toBe(true);
+    // The competing-locked fragment is in the live blocked set refreshed on the
+    // ordered CRDT channel (editability authority moved off app-WS section:blocked).
+    expect(live.latestState().blocked_section_ids).toContain(OVERVIEW_KEY);
   });
 
   it("(2) a mixed update: peer receives the WON fragment but NOT the blocked one", async () => {

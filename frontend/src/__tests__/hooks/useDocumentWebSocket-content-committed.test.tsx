@@ -1,22 +1,21 @@
 /**
- * `content:committed` topology refresh (spec 06 §Refresh Strategy; spec 05
- * §Proposal Publication).
+ * `content:committed` handling under the live-section redesign
+ * (new-frontend-live-document-design.md; spec 06 §Refresh Strategy).
  *
- * When a CRDT session is active, a `content:committed` canonical-refresh hint must
- * adopt the FRESH server topology (splits, merges, renames, inserts, deletes are
- * reflected even while editors are mounted). Matching is by opaque fragment_key —
- * never positional index or heading text.
+ * `content:committed` may ONLY refresh cold seeds or separately-tracked metadata —
+ * it must NEVER reinstall live body or topology over the ordered CRDT authority:
  *
- * `.content` is NOT display authority while live (BUG1/F3): an EXISTING key keeps
- * its prior `.content` as a cold seed (mounted or not — the live Y.Doc fragment,
- * read via the reactive selector, is what the UI paints), and the fresh server
- * `.content` is ignored for it (it may be a reconstructed/lying payload — a
- * separate P1 server concern). A BRAND-NEW key takes the fresh `.content` as its
- * bootstrap seed until its live fragment exists. With no CRDT session, a full
- * reload is delegated to `loadSections`.
+ *   - With a live replica bootstrap (`liveReplicaReadyRef.current`): body and
+ *     topology are owned by the `LiveSectionReplica`. The commit
+ *     event does NOT refetch `getWorkspaceDocumentSections`, does NOT adopt fresh
+ *     topology (splits/merges/inserts), does NOT reconcile focus, and cannot
+ *     surface a refresh error — there is no body refetch on the live path. It only
+ *     drives the commit highlight + clears proposal indicators. Forking REST
+ *     `.content`/topology over live authority is exactly the bug this removes.
+ *   - With no live session: a full cold reload is delegated to `loadSections`.
  *
- * These assert visible state outcomes (resulting topology + seeded content +
- * surfaced errors), not which refresh code path ran.
+ * These assert visible state outcomes (section state left untouched while live;
+ * fresh content only on the cold path), not which code path ran.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -101,15 +100,12 @@ function buildParams(
   });
   const setError = vi.fn();
   const focusedSectionIndexRef = ref<number | null>(opts.focusedSectionIndex ?? null);
+  void setSections;
+  void opts.mountedFragmentKeys;
   const params: UseDocumentWebSocketParams = {
     decodedDocPath: "test.md",
-    sectionsRef: ref(initial),
-    setSections: setSections as unknown as UseDocumentWebSocketParams["setSections"],
-    transportRef: ref(opts.crdtActive ? ({} as never) : null),
-    focusedSectionIndexRef,
-    mountedEditorFragmentKeysRef: ref(new Set(opts.mountedFragmentKeys)),
-    pendingStructureRefocusRef: ref<string[] | null>(null),
-    storeRef: ref(null),
+    clientInstanceId: "test-tab",
+    liveReplicaReadyRef: ref(opts.crdtActive),
     setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],
     loadSections,
     setError,
@@ -144,15 +140,16 @@ describe("content:committed topology refresh (spec 06)", () => {
     vi.clearAllMocks();
   });
 
-  it("keeps every existing key's content as a cold seed (fresh payload ignored for existing keys)", async () => {
+  it("leaves existing section state untouched while live (body/topology owned by the replica)", async () => {
     const initial = [
       makeSection({ heading: "Overview", heading_path: ["Overview"], fragment_key: "frag:sec_overview", content: "SEED overview (live editor)\n" }),
       makeSection({ heading: "Timeline", heading_path: ["Timeline"], fragment_key: "frag:sec_timeline", content: "SEED timeline\n" }),
     ];
-    const { params, holder } = buildParams(initial, {
+    const { params, holder, loadSections } = buildParams(initial, {
       crdtActive: true,
       mountedFragmentKeys: ["frag:sec_overview"],
     });
+    // A "lying" fresh payload — it must never be fetched/adopted on the live path.
     getDocumentSectionsImpl = async () => ({
       sections: [
         makeSection({ heading: "Overview", heading_path: ["Overview"], fragment_key: "frag:sec_overview", content: "FRESH overview (must be ignored)\n" }),
@@ -167,23 +164,24 @@ describe("content:committed topology refresh (spec 06)", () => {
     ]);
     await settle();
 
+    // No cold reload happened while live; both keys keep their prior seed and the
+    // topology is exactly what it was (the CRDT replica, not this event, owns it).
+    expect(loadSections).not.toHaveBeenCalled();
     const overview = holder.sections.find((s) => s.fragment_key === "frag:sec_overview");
     const timeline = holder.sections.find((s) => s.fragment_key === "frag:sec_timeline");
-    // Both existing keys keep their prior seed — the fresh server `.content` is
-    // ignored (display authority is the live fragment). Mount state is irrelevant;
-    // Overview is mounted, Timeline is not, and both keep their seed.
     expect(overview!.content).toBe("SEED overview (live editor)\n");
     expect(timeline!.content).toBe("SEED timeline\n");
-    // Topology matches fresh server topology, by fragment_key.
     expect(fragKeys(holder.sections)).toEqual(["frag:sec_overview", "frag:sec_timeline"]);
   });
 
-  it("adopts an inserted promoted split section while a neighboring editor stays mounted", async () => {
-    // Survivor "Overview" has a mounted editor; server splits out a promoted child.
+  it("does NOT adopt an inserted split section from the commit event while live", async () => {
+    // Survivor "Overview" has a mounted editor; the server's canonical refetch WOULD
+    // report a promoted child — but the live path must not fetch or adopt it (the
+    // split reaches the client on the ordered CRDT topology frame instead).
     const initial = [
       makeSection({ heading: "Overview", heading_path: ["Overview"], fragment_key: "frag:sec_overview", content: "LIVE survivor body\n" }),
     ];
-    const { params, holder } = buildParams(initial, {
+    const { params, holder, loadSections } = buildParams(initial, {
       crdtActive: true,
       mountedFragmentKeys: ["frag:sec_overview"],
     });
@@ -198,24 +196,20 @@ describe("content:committed topology refresh (spec 06)", () => {
     emitCommitted([{ doc_path: "test.md", heading_path: ["Overview"] }]);
     await settle();
 
-    // Old count was NOT kept — the promoted section is now present.
-    expect(holder.sections).toHaveLength(2);
-    expect(fragKeys(holder.sections)).toEqual(["frag:sec_overview", "frag:sec_sub"]);
-    const sub = holder.sections.find((s) => s.fragment_key === "frag:sec_sub");
-    expect(sub!.content).toBe("promoted child body\n");
-    // The mounted survivor's live content is not clobbered.
-    const survivor = holder.sections.find((s) => s.fragment_key === "frag:sec_overview");
-    expect(survivor!.content).toBe("LIVE survivor body\n");
+    // The commit event did not fork REST topology over the live replica: no reload,
+    // no new section, survivor body untouched.
+    expect(loadSections).not.toHaveBeenCalled();
+    expect(holder.sections).toHaveLength(1);
+    expect(fragKeys(holder.sections)).toEqual(["frag:sec_overview"]);
+    expect(holder.sections[0].content).toBe("LIVE survivor body\n");
   });
 
-  it("drops a section whose fragment_key is absent from the fresh response, even if it had a mounted editor", async () => {
+  it("does NOT drop a merged-away key from the commit event while live", async () => {
     const initial = [
       makeSection({ heading: "Keep", heading_path: ["Keep"], fragment_key: "frag:sec_keep", content: "keep\n" }),
       makeSection({ heading: "Folded", heading_path: ["Folded"], fragment_key: "frag:sec_folded", content: "LIVE folded\n" }),
     ];
-    // The folded section had a mounted editor — it must STILL be dropped because the
-    // server no longer reports its fragment_key (merged away).
-    const { params, holder } = buildParams(initial, {
+    const { params, holder, loadSections } = buildParams(initial, {
       crdtActive: true,
       mountedFragmentKeys: ["frag:sec_folded"],
     });
@@ -229,22 +223,23 @@ describe("content:committed topology refresh (spec 06)", () => {
     emitCommitted([{ doc_path: "test.md", heading_path: ["Keep"] }]);
     await settle();
 
-    expect(fragKeys(holder.sections)).toEqual(["frag:sec_keep"]);
-    expect(holder.sections.find((s) => s.fragment_key === "frag:sec_folded")).toBeUndefined();
+    // Removal is owned by the CRDT topology frame (the key dropping out of it), not
+    // by this app event — the live path leaves the section list alone.
+    expect(loadSections).not.toHaveBeenCalled();
+    expect(fragKeys(holder.sections)).toEqual(["frag:sec_keep", "frag:sec_folded"]);
   });
 
-  it("reconciles focus by fragment identity across a topology change", async () => {
+  it("does NOT reconcile focus from the commit event while live", async () => {
     const initial = [
       makeSection({ heading: "Intro", heading_path: ["Intro"], fragment_key: "frag:sec_intro", content: "intro\n" }),
       makeSection({ heading: "Focused", heading_path: ["Focused"], fragment_key: "frag:sec_focused", content: "focused\n" }),
     ];
     // Focus is on index 1 ("Focused").
-    const { params, holder, focusedSectionIndexRef } = buildParams(initial, {
+    const { params, focusedSectionIndexRef } = buildParams(initial, {
       crdtActive: true,
       mountedFragmentKeys: [],
       focusedSectionIndex: 1,
     });
-    // Server inserts a new section at the top → Focused moves to index 2.
     getDocumentSectionsImpl = async () => ({
       sections: [
         makeSection({ heading: "New", heading_path: ["New"], fragment_key: "frag:sec_new", section_file: "sec_new.md", content: "new\n" }),
@@ -257,39 +252,15 @@ describe("content:committed topology refresh (spec 06)", () => {
     emitCommitted([{ doc_path: "test.md", heading_path: ["New"] }]);
     await settle();
 
-    expect(holder.sections[focusedSectionIndexRef.current!].fragment_key).toBe("frag:sec_focused");
-    expect(focusedSectionIndexRef.current).toBe(2);
+    // Focus reconciliation is `resolveFocusAfterTopologyChange` on the replica
+    // topology path — the commit event must not move focus.
+    expect(focusedSectionIndexRef.current).toBe(1);
   });
 
-  it("hands focus to the surviving predecessor when the focused fragment is removed", async () => {
-    const initial = [
-      makeSection({ heading: "Stay", heading_path: ["Stay"], fragment_key: "frag:sec_stay", content: "stay\n" }),
-      makeSection({ heading: "Gone", heading_path: ["Gone"], fragment_key: "frag:sec_gone", content: "gone\n" }),
-    ];
-    const { params, focusedSectionIndexRef, holder } = buildParams(initial, {
-      crdtActive: true,
-      mountedFragmentKeys: [],
-      focusedSectionIndex: 1,
-    });
-    getDocumentSectionsImpl = async () => ({
-      sections: [
-        makeSection({ heading: "Stay", heading_path: ["Stay"], fragment_key: "frag:sec_stay", content: "stay\n" }),
-      ],
-    });
-
-    renderHook(() => useDocumentWebSocket(params), { wrapper });
-    emitCommitted([{ doc_path: "test.md", heading_path: ["Stay"] }]);
-    await settle();
-
-    // The focused "Gone" fragment (index 1) was removed; focus is forced off it
-    // onto its surviving predecessor "Stay" (index 0), never left on the dead key.
-    expect(focusedSectionIndexRef.current).toBe(0);
-    expect(holder.sections[focusedSectionIndexRef.current!].fragment_key).toBe("frag:sec_stay");
-  });
-
-  it("surfaces an error when the post-commit refresh fetch fails", async () => {
+  it("does NOT surface a refresh error while live (there is no body refetch on the live path)", async () => {
     const initial = [makeSection({})];
-    const { params, setError } = buildParams(initial, { crdtActive: true, mountedFragmentKeys: ["frag:sec_overview"] });
+    const { params, setError, loadSections } = buildParams(initial, { crdtActive: true, mountedFragmentKeys: ["frag:sec_overview"] });
+    // If the live path erroneously refetched, this would throw and surface an error.
     getDocumentSectionsImpl = async () => {
       throw new Error("refresh boom");
     };
@@ -298,7 +269,9 @@ describe("content:committed topology refresh (spec 06)", () => {
     emitCommitted([{ doc_path: "test.md", heading_path: ["Overview"] }]);
     await settle();
 
-    expect(setError).toHaveBeenCalledWith(expect.stringContaining("refresh boom"));
+    // No fetch on the live path → no error surfaced.
+    expect(loadSections).not.toHaveBeenCalled();
+    expect(setError).not.toHaveBeenCalled();
   });
 
   it("delegates to a full reload when no CRDT session is active", async () => {

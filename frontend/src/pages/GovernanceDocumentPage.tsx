@@ -30,11 +30,22 @@ import {
   mergeSectionsWithProposalOverlay,
   shouldMountEditor,
   LOADING_REVEAL_DELAY_MS,
-  BEFORE_FIRST_HEADING_KEY,
 } from "./document-page-utils";
 import { useDocumentSessionController } from "../hooks/useDocumentSessionController";
+import { useEditorWindowEviction } from "../hooks/useEditorRegistry";
+import { useLiveSectionReplica } from "../hooks/useLiveSectionReplica";
+import type { LiveEditorBinding } from "../services/live-section-replica";
+import { SectionId } from "../types/live-sections";
+import {
+  deriveWorkspaceBootstrap,
+  deriveWorkspaceSectionLockSignals,
+  seedMarkdownFor,
+  lockSignalFor,
+  topologyToRenderSections,
+  syntheticBeforeFirstHeadingRow,
+} from "./cold-bootstrap";
+import { resolveFocusAfterTopologyChange } from "./resolve-focus-after-topology-change";
 import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
-import { useInitialObserverGuard } from "../hooks/useInitialObserverGuard";
 import { useGovernanceData } from "../hooks/useGovernanceData";
 import { useBlameData } from "../hooks/useBlameData";
 import { buildSectionAuthorshipTargets } from "../models/section-authorship-model";
@@ -42,7 +53,6 @@ import { GovernanceLeftGutter } from "../components/GovernanceLeftGutter";
 import { GovernanceRightGutter } from "../components/GovernanceRightGutter";
 import { AttributionOverlay } from "../components/AttributionOverlay";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
-import { usePublishPaused, useSectionEditabilityMap } from "../hooks/useFragmentStoreHooks";
 import { useDocSaveStatusInputs } from "../hooks/useDocSaveStatusInputs";
 import { resolveTransportStatus } from "../services/section-save-state";
 import {
@@ -113,18 +123,83 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
     }
   }, [resourceModel]);
 
-  // ── CRDT hook ─────────────────────────────────────────────
+  // ── Live-section replica (cold-seed / ready-gate / session-end handoff) ──
+  // Shared live-page bootstrap path (task 325): one page-owned `LiveSectionReplica`
+  // seam. It opens the CRDT observer socket and becomes `ready` only after an
+  // actor-captured bootstrap; on `4021` session_ended it drops live authority and
+  // the page refetches cold seeds + signals.
+  const handleLiveSessionEnded = useCallback(() => {
+    if (decodedDocPath) void loadSections(decodedDocPath);
+  }, [decodedDocPath, loadSections]);
+  const handleSuperseded = useCallback(() => {
+    setStatusMessage("Editing moved to another tab. This tab is now read-only.");
+  }, []);
+  const liveReplica = useLiveSectionReplica({
+    docPath: decodedDocPath,
+    onSessionEnded: handleLiveSessionEnded,
+    // 4022 restore / 4024 force-rebuild: the socket reconnects immediately;
+    // reseed canonical so cold previews reflect the replaced content.
+    onSessionReinit: handleLiveSessionEnded,
+    onSuperseded: handleSuperseded,
+  });
+  const liveReplicaReadyRef = useRef(false);
+  useEffect(() => { liveReplicaReadyRef.current = liveReplica.hasAuthoritativeBootstrap; }, [liveReplica.hasAuthoritativeBootstrap]);
+
+  // Live focus as SectionId (task 377) — same rules as DocumentPage.
+  const [focusedSectionId, setFocusedSectionId] = useState<SectionId | null>(null);
+  const prevTopologyRef = useRef<readonly import("../types/live-sections").LiveSectionRef[]>([]);
+  useEffect(() => {
+    if (!liveReplica.hasAuthoritativeBootstrap) { prevTopologyRef.current = []; return; }
+    const prev = prevTopologyRef.current;
+    const next = liveReplica.topology;
+    if (prev === next) return;
+    prevTopologyRef.current = next;
+    setFocusedSectionId((cur) => resolveFocusAfterTopologyChange(prev, next, cur));
+  }, [liveReplica.hasAuthoritativeBootstrap, liveReplica.topology]);
+
+  // Page-local COLD bootstrap: body-free seeds + proposal-FSM lock signals from
+  // the REST section list (locks are the ONLY REST-derived per-section signal).
+  // Page-local ONLY; superseded once the replica is ready.
+  const workspaceSeeds = useMemo(() => deriveWorkspaceBootstrap(sections), [sections]);
+  const sectionLockSignals = useMemo(() => deriveWorkspaceSectionLockSignals(sections), [sections]);
+  const sectionLockSignalsRef = useRef(sectionLockSignals);
+  useEffect(() => { sectionLockSignalsRef.current = sectionLockSignals; }, [sectionLockSignals]);
+
+  // The SINGLE paint source: the replica's `paintMarkdown` returns the live fragment
+  // once bootstrapped and the cold seed otherwise. Always defined (the ready-gate is
+  // inside `paintMarkdown`), so there is no separate store-backed cold selector.
+  const livePaintMarkdown = useCallback(
+    (section: DocumentSection): string => {
+      const id = SectionId.brand(getSectionFragmentKey(section));
+      const seed = seedMarkdownFor(workspaceSeeds, id) ?? section.content;
+      return liveReplica.paintMarkdown(id, seed);
+    },
+    [liveReplica, workspaceSeeds],
+  );
+
+  const getLiveBinding = useCallback(
+    (fragmentKey: string): LiveEditorBinding | undefined => {
+      const replica = liveReplica.replica;
+      if (!liveReplica.hasAuthoritativeBootstrap || !replica) return undefined;
+      return replica.requireLiveSection(SectionId.brand(fragmentKey))?.createEditorBinding();
+    },
+    [liveReplica],
+  );
+
+  // Live body reader for non-editor consumers (cross-section copy, task 410).
+  const getLiveMarkdown = useCallback(
+    (fragmentKey: string): string | undefined => {
+      const replica = liveReplica.replica;
+      if (!liveReplica.hasAuthoritativeBootstrap || !replica) return undefined;
+      return replica.requireLiveSection(SectionId.brand(fragmentKey))?.readMarkdown();
+    },
+    [liveReplica],
+  );
+
+  // ── Session controller (focus / registry / proposal drafting) ─────
   const {
-    clientInstanceId,
     focusedSectionIndex,
     setFocusedSectionIndex,
-    store,
-    storeRef,
-    transport,
-    crdtSynced,
-    crdtState,
-    observerState,
-    editingLoading,
     readyEditors,
     setReadyEditors,
     proposalMode,
@@ -141,41 +216,32 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
     selectedProposalSectionKeys,
     proposalSectionConflicts,
     proposalOverlayVersion,
-    controllerState,
-    transportRef,
-    presenceRef,
-    controllerStateRef,
-    mountedEditorFragmentKeysRef,
     editorRefs,
     pendingFocusRef,
-    pendingStructureRefocusRef,
-    focusedSectionIndexRef,
     proposalSectionsRef,
     mouseDownPosRef,
-    startEditing,
+    isSectionBlocked,
+    canFocusSection,
+    publishViewingSection,
     startManualPublish,
     acquireProposalLocks,
     commitActiveProposal,
     cancelActiveProposal,
     applyProposalSectionAvailabilityEvent,
     updateProposalIntent,
-    stopEditing,
     removeProposalSection,
     toggleProposalSection,
     handleProposalSectionChange,
     handleCursorExit,
     setEditorRef,
-    setViewingSection,
-    requestMode,
-    stopObserver,
   } = useDocumentSessionController({
     decodedDocPath,
     sections: displaySections,
-    setSections,
     setError,
-    setStatusMessage,
     loadSections,
+    liveReplica,
   });
+  const clientInstanceId = liveReplica.clientInstanceId;
 
   // Ref for displayed sections (used by transferService and other stable callbacks)
   const sectionsRef = useRef<DocumentSection[]>([]);
@@ -184,19 +250,9 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
   // doc is empty and the page is in editor mode, expose a single synthetic BFH
   // row so the editor can mount at index 0 before the real section materializes
   // on disk via the staged-store bootstrap path.
-  const syntheticBfhSections = useMemo<DocumentSection[]>(() => [{
-    heading: "",
-    heading_path: [],
-    depth: 0,
-    content: "",
-    agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
-    crdt_session_active: true,
-    section_length_warning: false,
-    word_count: 0,
-    fragment_key: BEFORE_FIRST_HEADING_KEY,
-    section_file: "",
-  }], []);
-  const isEditingMode = controllerState.requestedMode === "editor";
+  // Synthetic empty-doc BFH row from the reserved-constant seed (task 391).
+  const syntheticBfhSections = useMemo<DocumentSection[]>(() => [syntheticBeforeFirstHeadingRow()], []);
+  const isEditingMode = liveReplica.mode === "editor";
   useEffect(() => {
     let next: DocumentSection[];
     if (sections.length > 0) {
@@ -210,15 +266,19 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
   }, [sections, isEditingMode, syntheticBfhSections]);
 
   const renderSections = useMemo(() => {
-    if (!(proposalMode && activeProposalStatus === "inprogress")) {
-      return displaySections;
+    if (proposalMode && activeProposalStatus === "inprogress") {
+      return mergeSectionsWithProposalOverlay(
+        displaySections,
+        decodedDocPath,
+        selectedProposalSectionKeys,
+        proposalSectionsRef.current,
+      );
     }
-    return mergeSectionsWithProposalOverlay(
-      displaySections,
-      decodedDocPath,
-      selectedProposalSectionKeys,
-      proposalSectionsRef.current,
-    );
+    if (liveReplica.hasAuthoritativeBootstrap) {
+      const prevByKey = new Map(sections.map((s) => [getSectionFragmentKey(s), s]));
+      return topologyToRenderSections(liveReplica.topology, workspaceSeeds, prevByKey);
+    }
+    return displaySections;
   }, [
     proposalMode,
     activeProposalStatus,
@@ -226,11 +286,29 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
     decodedDocPath,
     selectedProposalSectionKeys,
     proposalOverlayVersion,
+    liveReplica,
+    workspaceSeeds,
+    sections,
   ]);
 
   useEffect(() => {
     sectionsRef.current = renderSections;
   }, [renderSections]);
+
+  // Render index for the focused section — SectionId focus in the live path
+  // (task 377), controller index otherwise.
+  const effectiveFocusedIndex = useMemo(() => {
+    if (!liveReplica.hasAuthoritativeBootstrap) return focusedSectionIndex;
+    if (focusedSectionId === null) return null;
+    const key = SectionId.text(focusedSectionId);
+    const idx = renderSections.findIndex((s) => getSectionFragmentKey(s) === key);
+    return idx >= 0 ? idx : null;
+  }, [liveReplica.hasAuthoritativeBootstrap, focusedSectionId, focusedSectionIndex, renderSections]);
+
+  // Evict ready editors outside the mount window around the focused RENDER
+  // index — a derived projection of (renderSections, focusedSectionId), never
+  // stored focus state.
+  useEditorWindowEviction(renderSections, effectiveFocusedIndex, setReadyEditors);
 
   // ── WebSocket hook ────────────────────────────────────────
   const {
@@ -241,13 +319,7 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
   } = useDocumentWebSocket({
     decodedDocPath,
     clientInstanceId,
-    sectionsRef,
-    setSections,
-    transportRef,
-    focusedSectionIndexRef,
-    mountedEditorFragmentKeysRef,
-    pendingStructureRefocusRef,
-    storeRef,
+    liveReplicaReadyRef,
     setStructureTree,
     loadSections,
     setError,
@@ -256,20 +328,24 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
 
   // Derived
   const isEditing = isEditingMode;
-  const focusedHeadingPath = focusedSectionIndex !== null && renderSections[focusedSectionIndex]
-    ? renderSections[focusedSectionIndex].heading_path
+  const focusedHeadingPath = effectiveFocusedIndex !== null && renderSections[effectiveFocusedIndex]
+    ? renderSections[effectiveFocusedIndex].heading_path
     : null;
 
   // ── Cross-section drag/drop service ──────────────────────
   const transferServiceRef = useRef<SectionTransferService | null>(null);
-  const activeTransport = transportRef.current;
+  const activeTransport = liveReplica.editorTransport;
   if (activeTransport && !transferServiceRef.current) {
     transferServiceRef.current = new SectionTransferService({
       transport: activeTransport,
       getSections: () => sectionsRef.current.map(s => ({
         heading_path: s.heading_path,
         fragment_key: getSectionFragmentKey(s),
-        locked: !!s.locked,
+        // Proposal FSM lock from the page-local cold-signal model (task 325),
+        // falling back to the row `locked?` for rows with no cold signal.
+        locked:
+          lockSignalFor(sectionLockSignalsRef.current, SectionId.brand(getSectionFragmentKey(s)))
+            ?.locked ?? !!s.locked,
       })),
       getProposalIndicators: () => pendingProposalIndicatorsRef.current.map(p => ({
         sectionKey: p.sectionKey,
@@ -302,7 +378,7 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
     containerRef: sectionsContainerRef,
     sections,
     editorRefs,
-    store,
+    getLiveMarkdown,
   });
 
   // ── Recent doc tracking ──────────────────────────────────
@@ -333,35 +409,41 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
     return () => clearTimeout(timer);
   }, [sectionsLoading]);
 
-  useInitialObserverGuard({ decodedDocPath, loadSections, requestMode, stopObserver, controllerStateRef });
+  // Initial canonical load. The live replica connects its observer socket on
+  // mount by itself — there is no separate observer to start here.
+  useEffect(() => {
+    if (!decodedDocPath) return;
+    void loadSections(decodedDocPath);
+  }, [decodedDocPath, loadSections]);
 
   // Recently-changed sections are seeded live from `content:committed`
   // WebSocket events via `useDocumentWebSocket`. There is no page-load
   // history fetch.
 
-  // ── Handle idle timeout ──────────────────────────────────
+  // Editor socket permanently rejected while editing → drop back to observer
+  // and reseed canonical content.
   useEffect(() => {
-    if (
-      crdtState === "disconnected"
-      && controllerState.requestedMode === "editor"
-      && !editingLoading
-    ) {
-      stopEditing();
+    if (liveReplica.mode === "editor" && liveReplica.editorState === "disconnected") {
+      void liveReplica.demoteToObserver();
+      // Editing session is over: clear focus so mounted editors tear down
+      // (same visible outcome as the legacy stop-editing path).
+      setFocusedSectionId(null);
+      setFocusedSectionIndex(null);
       if (decodedDocPath) {
-        loadSections(decodedDocPath);
+        void loadSections(decodedDocPath);
       }
     }
-  }, [crdtState, controllerState.requestedMode, editingLoading, stopEditing, decodedDocPath, loadSections]);
+  }, [liveReplica, decodedDocPath, loadSections, setFocusedSectionIndex]);
 
   // ── Derived ──────────────────────────────────────────────
   const docTitle = decodedDocPath ? getDocDisplayName(decodedDocPath) : "Untitled";
   // Connection banner for every non-live transport phase — editor state while
   // editing, observer state while viewing (null when live / no banner needed).
-  const crdtBanner = connectionBannerInfo(isEditing, crdtState, observerState);
+  const crdtBanner = connectionBannerInfo(isEditing, liveReplica.editorState, liveReplica.observerState);
 
   // Document-level publication-pause flag — drives the topbar status and the
   // editing banner.
-  const publishPaused = usePublishPaused(store);
+  const publishPaused = liveReplica.publishPaused;
   // One session-authorship ledger per editing mount (see DocumentPage): dies on
   // unmount/refresh so stranded work reads as inbound. Handed down only as the
   // two segregated ports.
@@ -370,12 +452,20 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
   const authorshipView: SessionAuthorshipView = authorshipLedger;
   // Honest save-status inputs with YOUR work split from inbound/remote activity
   // (shared with DocumentPage via the same hook).
-  const saveStatus = useDocSaveStatusInputs(store, isEditing, authorshipView);
+  const saveStatus = useDocSaveStatusInputs(
+    {
+      allReceived: liveReplica.allReceived,
+      pendingSectionKeys: liveReplica.replica?.getPendingSectionKeys() ?? [],
+      backendError: liveReplica.transportError,
+    },
+    isEditing,
+    authorshipView,
+  );
   // Single authoritative save-state model, shared with the topbar. The activity
   // pill is a presentation adapter over it (same as DocumentPage), never a second
   // model derived from raw `publishPaused` + `hasLocalEdits`.
   const transportStatus = resolveTransportStatus(
-    crdtState,
+    liveReplica.editorState,
     publishPaused,
     isEditing,
     saveStatus.allReceived,
@@ -387,17 +477,30 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
   // Presentation-only activity pill: "Saving… → Saved" (local) or
   // "Updating… → Up to date" (inbound) — "Saved" only once the model confirms.
   const documentActivity = useDocumentActivity(transportStatus);
-  // Per-section CRDT block-state (spec 05 §"Section block-state events").
-  const editabilityMap = useSectionEditabilityMap(store);
 
   // ── Governance data (left + right gutters) ─────────────────
   const { leftGutterSections, rightGutterGroups } = useGovernanceData(sections);
 
   // ── Attribution overlay (blame) ──────────────────────────
   const [showAttribution, setShowAttribution] = useState(false);
+  // Canonical `section_file` (git blame target) keyed by fragment identity. Built
+  // from the REST `/sections` canonical read — NOT the body-free live topology, which
+  // drops the field. Blame resolves the target through this on demand (task 418).
+  const canonicalSectionFileByKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of sections) {
+      const fk = getSectionFragmentKey(s);
+      if (s.section_file && s.section_file.trim().length > 0) map.set(fk, s.section_file);
+    }
+    return map;
+  }, [sections]);
   const authorshipTargets = useMemo(
-    () => buildSectionAuthorshipTargets(renderSections),
-    [renderSections],
+    () =>
+      buildSectionAuthorshipTargets(renderSections, {
+        resolveSectionFile: (fk) => canonicalSectionFileByKey.get(fk),
+        resolveBody: (fk) => getLiveMarkdown(fk),
+      }),
+    [renderSections, canonicalSectionFileByKey, getLiveMarkdown],
   );
   const blameMap = useBlameData(
     decodedDocPath ?? "",
@@ -405,14 +508,52 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
     showAttribution && !sectionsLoading,
   );
 
+  // Set focus + pending caret target for the row at RENDER index `idx`. Live:
+  // the stored focus identity is the SectionId ONLY (no legacy index write);
+  // cold: the index store in useSectionFocus. The caret target and presence
+  // broadcast are fragment-identity-keyed on both paths.
+  const applyFocusToRow = useCallback((idx: number, coords?: { x: number; y: number }) => {
+    const row = sectionsRef.current[idx];
+    const fk = row ? getSectionFragmentKey(row) : null;
+    if (liveReplica.hasAuthoritativeBootstrap) {
+      if (!fk) return;
+      setFocusedSectionId(SectionId.brand(fk));
+    } else {
+      setFocusedSectionIndex(idx);
+    }
+    if (fk) {
+      pendingFocusRef.current = { fragmentKey: fk, position: "start", coords };
+      publishViewingSection(fk);
+    }
+  }, [liveReplica.hasAuthoritativeBootstrap, setFocusedSectionIndex, pendingFocusRef, publishViewingSection]);
+
   // ── B3: Stable section callbacks (extracted from sections.map) ───
   const handleFocusSection = useCallback((idx: number, _headingPath: string[], coords: { x: number; y: number }) => {
-    setFocusedSectionIndex(idx);
-    pendingFocusRef.current = { index: idx, position: "start", coords };
-    if (presenceRef.current) {
-      setViewingSection(idx);
+    applyFocusToRow(idx, coords);
+  }, [applyFocusToRow]);
+
+  // Click-to-edit: promote the live replica to editor mode. From a cold page
+  // this opens the editor socket, the server creates/attaches the DocSession,
+  // and the authoritative live-sections bootstrap follows on the same socket.
+  const handleStartEditing = useCallback(async (idx: number, coords?: { x: number; y: number }) => {
+    await liveReplica.promoteToEditor();
+    applyFocusToRow(idx, coords);
+  }, [liveReplica, applyFocusToRow]);
+
+  // Cross-section caret navigation. Live: resolve the neighbor in the RENDERED
+  // topology rows and move the SectionId focus; cold: the index-based handler.
+  const handleSectionCursorExit = useCallback((idx: number, direction: "up" | "down") => {
+    if (!liveReplica.hasAuthoritativeBootstrap) {
+      handleCursorExit(idx, direction);
+      return;
     }
-  }, [setFocusedSectionIndex, setViewingSection, presenceRef, pendingFocusRef]);
+    const target = sectionsRef.current[direction === "up" ? idx - 1 : idx + 1];
+    if (!target || !canFocusSection(target)) return;
+    const fk = getSectionFragmentKey(target);
+    setFocusedSectionId(SectionId.brand(fk));
+    pendingFocusRef.current = { fragmentKey: fk, position: direction === "up" ? "end" : "start" };
+    publishViewingSection(fk);
+  }, [liveReplica.hasAuthoritativeBootstrap, handleCursorExit, canFocusSection, pendingFocusRef, publishViewingSection]);
 
   const handleEditorReady = useCallback((fk: string) => {
     setReadyEditors(prev => {
@@ -474,7 +615,7 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
   }
 
   return (
-    <SectionHoverProvider activeSectionIndex={focusedSectionIndex}>
+    <SectionHoverProvider activeSectionIndex={effectiveFocusedIndex}>
     <DocumentActivityIndicator activity={documentActivity} />
     <div className="relative flex flex-col h-full" style={{ background: "var(--color-page-bg)" }}>
       <div className="relative shrink-0">
@@ -486,7 +627,7 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
           onToggleDiagnostics={() => setShowDiagnostics((v) => !v)}
           showOverwrite={showOverwrite}
           onToggleOverwrite={() => setShowOverwrite((v) => !v)}
-          crdtState={crdtState}
+          crdtState={liveReplica.editorState}
           publishPaused={publishPaused}
           isEditing={isEditing}
           allReceived={saveStatus.allReceived}
@@ -593,7 +734,7 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
                     }
                     return;
                   }
-                  void startEditing(0, { x: e.clientX, y: e.clientY });
+                  void handleStartEditing(0, { x: e.clientX, y: e.clientY });
                 }}
               >
                 Document is empty.
@@ -608,12 +749,9 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
               const lockedInProposalMode = proposalMode && isInProposal && proposalConflictReason !== null;
               const fk = getSectionFragmentKey(section);
               const sectionLabel = headingPathToLabel(section.heading_path);
-              const editability = editabilityMap.get(fk) ?? "editable";
-              const crdtBlocked = editability === "blocked";
-              const crdtGone = editability === "gone";
-
-              // gone → unmounted/removed from the canvas entirely.
-              if (crdtGone) return null;
+              // Live rows come FROM the replica topology, so a gone section
+              // never renders at all; blocked is the replica's live block set.
+              const crdtBlocked = isSectionBlocked(fk);
 
               const authorshipTarget = showAttribution ? authorshipTargets[i] : undefined;
               const blameEntry = authorshipTarget ? blameMap.get(authorshipTarget.key) : undefined;
@@ -649,11 +787,11 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
                       section={section}
                       index={i}
                       fragmentKey={fk}
-                      isFocused={focusedSectionIndex === i}
+                      isFocused={effectiveFocusedIndex === i}
                       hasEditor={
                         proposalMode
-                          ? (activeProposalStatus === "inprogress" && isInProposal && shouldMountEditor(i, focusedSectionIndex))
-                          : (!crdtBlocked && shouldMountEditor(i, focusedSectionIndex))
+                          ? (activeProposalStatus === "inprogress" && isInProposal && shouldMountEditor(i, effectiveFocusedIndex))
+                          : (!crdtBlocked && shouldMountEditor(i, effectiveFocusedIndex))
                       }
                       isInProposal={isInProposal}
                       proposalConflictReason={proposalConflictReason}
@@ -664,18 +802,18 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
                       injectedByWriter={null}
                       hasRemotePresence={false}
                       dragOverSectionIndex={dragOverSectionIndex}
-                      store={store}
-                      transport={transport}
-                      crdtSynced={crdtSynced}
-                      crdtState={crdtState}
+                      crdtSynced={liveReplica.hasAuthoritativeBootstrap}
+                      crdtState={liveReplica.editorState}
                       transferService={transferServiceRef.current}
                       proposalMode={proposalMode}
                       canEditProposalContent={activeProposalStatus === "inprogress"}
                       proposalScopeMutationInFlight={proposalScopeMutationInFlight}
                       isReady={readyEditors.has(fk)}
+                      livePaintMarkdown={livePaintMarkdown}
+                      getLiveBinding={getLiveBinding}
                       localEditSink={localEditSink}
                       mouseDownPosRef={mouseDownPosRef}
-                      onStartEditing={startEditing}
+                      onStartEditing={handleStartEditing}
                       onFocusSection={handleFocusSection}
                       onSetEditorRef={setEditorRef}
                       onEditorReady={handleEditorReady}
@@ -686,7 +824,7 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
                           ? () => toggleProposalSection(section)
                           : undefined
                       }
-                      onCursorExit={handleCursorExit}
+                      onCursorExit={handleSectionCursorExit}
                       onCrossSectionDrop={handleCrossSectionDrop}
                     />
                   ) : null}

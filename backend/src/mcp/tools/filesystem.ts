@@ -16,9 +16,10 @@ import { getHeadSha } from "../../storage/git-repo.js";
 import { readDocumentStructure, flattenStructureToHeadingPaths } from "../../storage/heading-resolver.js";
 import {
   createTransientProposal,
-  findDraftProposalByWriter,
+  demoteTransientProposalToDraft,
   transitionToWithdrawn,
 } from "../../storage/proposal-repository.js";
+import { rememberSessionDraft, takeCurrentSessionDraft } from "../session-drafts.js";
 import { resolveDocPathUnderContent, InvalidDocPathError } from "../../storage/path-utils.js";
 import { applyUnifiedDiff, DiffParseError, DiffApplyError } from "../../storage/diff-parser.js";
 import { access } from "node:fs/promises";
@@ -165,8 +166,9 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
     return makeToolErrorResult(`Source document not found: ${source}`);
   }
 
-  // Auto-withdraw any existing pending proposal
-  const existing = await findDraftProposalByWriter(writer.id);
+  // Auto-withdraw this session's remembered draft (session-local memory only —
+  // another session's draft under the same credential is never touched).
+  const existing = await takeCurrentSessionDraft(ctx.session, writer.id);
   if (existing) {
     await transitionToWithdrawn(existing.id, "auto-withdrawn by move");
   }
@@ -177,6 +179,7 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
   const { id: moveProposalId } = await createTransientProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     intent,
+    undefined,
   );
 
   // Rename the document inside the proposal through the single manifest-owning
@@ -231,6 +234,10 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
       status: "committed",
     });
   } else {
+    // Blocked: park the transient as a durable draft (pending/ is discarded on
+    // restart) and remember it so this session's next write auto-withdraws it.
+    await demoteTransientProposalToDraft(moveProposalId);
+    rememberSessionDraft(ctx.session, moveProposalId);
     return jsonBlockedToolResult(policyResult.message, {
       success: false,
       proposal_id: moveProposalId,
@@ -325,8 +332,9 @@ async function writeDocumentViaProposal(
     }
   }
 
-  // Check for existing pending proposal and auto-withdraw
-  const existing = await findDraftProposalByWriter(writer.id);
+  // Auto-withdraw this session's remembered draft (session-local memory only —
+  // another session's draft under the same credential is never touched).
+  const existing = await takeCurrentSessionDraft(ctx.session, writer.id);
   if (existing) {
     await transitionToWithdrawn(existing.id, "auto-withdrawn by new write");
   }
@@ -335,6 +343,7 @@ async function writeDocumentViaProposal(
   const { id: writeProposalId } = await createTransientProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     intent,
+    undefined,
   );
 
   // Write each whole-document payload + derive the manifest from the normalized
@@ -404,7 +413,11 @@ async function writeDocumentViaProposal(
       status: "committed",
     });
   } else {
-    // Blocked — hoist the policy's prose explanation to a top-level message
+    // Blocked: park the transient as a durable draft (pending/ is discarded on
+    // restart) and remember it so this session's next write auto-withdraws it.
+    await demoteTransientProposalToDraft(writeProposalId);
+    rememberSessionDraft(ctx.session, writeProposalId);
+    // Hoist the policy's prose explanation to a top-level message
     // (Area M: top-level prose + per-target prose, no codes/enums).
     return jsonBlockedToolResult(policyResult.message, {
       success: false,
@@ -449,8 +462,9 @@ async function deleteDocumentViaProposal(
   // the DocSession actor's publish-or-abort / invalidation policy (Areas B/C/F),
   // not by blocking the staged proposal write.
 
-  // Auto-withdraw any existing pending proposal by this writer
-  const existing = await findDraftProposalByWriter(writer.id);
+  // Auto-withdraw this session's remembered draft (session-local memory only —
+  // another session's draft under the same credential is never touched).
+  const existing = await takeCurrentSessionDraft(ctx.session, writer.id);
   if (existing) {
     await transitionToWithdrawn(existing.id, "auto-withdrawn by new delete");
   }
@@ -459,6 +473,7 @@ async function deleteDocumentViaProposal(
   const { id: delProposalId } = await createTransientProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     `Delete document: ${docPath}`,
+    undefined,
   );
 
   // Tombstone the document + derive the manifest from the real canonical heading
@@ -509,6 +524,10 @@ async function deleteDocumentViaProposal(
       status: "committed",
     });
   } else {
+    // Blocked: park the transient as a durable draft (pending/ is discarded on
+    // restart) and remember it so this session's next write auto-withdraws it.
+    await demoteTransientProposalToDraft(delProposalId);
+    rememberSessionDraft(ctx.session, delProposalId);
     return jsonBlockedToolResult(policyResult.message, {
       success: false,
       proposal_id: delProposalId,

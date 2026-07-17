@@ -5,33 +5,25 @@
  * readyEditors eviction effect (which depends on focusedSectionIndex) lives in
  * the composition layer to avoid a circular dependency.
  *
- * Block-state / publish-pause awareness (Area N):
- *   - `mountEligible(index)` excludes sections the server marked `"blocked"` or
- *     `"gone"` (spec 05 §"Section block-state events").
- *   - When a publication pause is active, the provider's quiescence barrier
- *     (registered here) freezes editors and resolves once local Yjs transaction
- *     production has settled, before the provider sends `doc_publish_ready`
- *     (spec 05 §"DocSession publish pause messages"). The provider is the single
- *     owner of the barrier; this registry only supplies the freeze/settle hook.
+ * Block-state awareness (Area N): `mountEligible(index)` excludes sections the
+ * live replica marks blocked (spec 05 §"Section block-state events"). The
+ * publish-pause quiescence barrier is owned by `useLiveSectionReplica`, the
+ * single live transport owner.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type React from "react";
 import { type MilkdownEditorHandle } from "../components/MilkdownEditor";
 import {
   type DocumentSection,
   getSectionFragmentKey,
+  shouldMountEditor,
 } from "../pages/document-page-utils";
-import type {
-  BrowserFragmentReplicaStore,
-  SectionEditability,
-} from "../services/browser-fragment-replica-store";
-import type { PublishPauseBarrier } from "../services/crdt-provider";
-import type { CrdtTransport } from "../services/crdt-transport";
 
 export interface UseEditorRegistryParams {
   sections: DocumentSection[];
-  store: BrowserFragmentReplicaStore | null;
-  transport: CrdtTransport | null;
+  /** Live-replica-backed gate: true when this fragment is blocked for editing. */
+  isSectionBlocked: (fragmentKey: string) => boolean;
 }
 
 export interface UseEditorRegistryReturn {
@@ -42,40 +34,58 @@ export interface UseEditorRegistryReturn {
   editorRefs: React.MutableRefObject<Map<string, MilkdownEditorHandle>>;
   mountedEditorFragmentKeysRef: React.MutableRefObject<Set<string>>;
   setEditorRef: (fragmentKey: string, handle: MilkdownEditorHandle | null) => void;
-  /** True when section `index` may be mounted (not blocked, not gone). */
+  /** True when section `index` may be mounted (not blocked). */
   mountEligible: (index: number) => boolean;
 }
 
-/** Two animation frames — enough for React to commit the readOnly flip onto
- *  every mounted editor before we declare the client quiescent. */
-function settleQuiescence(): Promise<void> {
-  return new Promise<void>((resolve) => {
-    if (typeof requestAnimationFrame !== "function") {
-      setTimeout(resolve, 0);
-      return;
-    }
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-  });
+/**
+ * Evict ready editors that fall outside the mount window around the focused
+ * RENDER index (a pure per-render projection — never stored focus authority).
+ * readyEditors is keyed by fragment_key, so prune by whether each ready
+ * fragment key's CURRENT index (resolved against the rendered rows) is still
+ * inside the window; a structural shift that moves a ready fragment out of the
+ * window evicts it correctly.
+ */
+export function useEditorWindowEviction(
+  renderSections: DocumentSection[],
+  focusedRenderIndex: number | null,
+  setReadyEditors: React.Dispatch<React.SetStateAction<Set<string>>>,
+): void {
+  useEffect(() => {
+    setReadyEditors((prev) => {
+      if (prev.size === 0) return prev;
+      if (focusedRenderIndex === null) return new Set();
+      const windowKeys = new Set<string>();
+      renderSections.forEach((s, idx) => {
+        if (shouldMountEditor(idx, focusedRenderIndex)) {
+          windowKeys.add(getSectionFragmentKey(s));
+        }
+      });
+      let changed = false;
+      const next = new Set<string>();
+      for (const fk of prev) {
+        if (windowKeys.has(fk)) next.add(fk);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [focusedRenderIndex, renderSections, setReadyEditors]);
 }
 
 export function useEditorRegistry({
   sections,
-  store,
-  transport,
+  isSectionBlocked,
 }: UseEditorRegistryParams): UseEditorRegistryReturn {
   const [readyEditors, setReadyEditors] = useState<Set<string>>(new Set());
   const editorRefs = useRef<Map<string, MilkdownEditorHandle>>(new Map());
   const mountedEditorFragmentKeysRef = useRef<Set<string>>(new Set());
   const sectionsRef = useRef<DocumentSection[]>([]);
-  const storeRef = useRef<BrowserFragmentReplicaStore | null>(store);
+  const isSectionBlockedRef = useRef(isSectionBlocked);
+  isSectionBlockedRef.current = isSectionBlocked;
 
   useEffect(() => {
     sectionsRef.current = sections;
   }, [sections]);
-
-  useEffect(() => {
-    storeRef.current = store;
-  }, [store]);
 
   const setEditorRef = useCallback((fragmentKey: string, handle: MilkdownEditorHandle | null) => {
     if (handle) {
@@ -91,26 +101,8 @@ export function useEditorRegistry({
   const mountEligible = useCallback((index: number): boolean => {
     const s = sectionsRef.current[index];
     if (!s) return false;
-    const editability: SectionEditability =
-      storeRef.current?.getSectionEditabilityForKey(getSectionFragmentKey(s)) ?? "editable";
-    return editability === "editable";
+    return !isSectionBlockedRef.current(getSectionFragmentKey(s));
   }, []);
-
-  // Register the publish-pause quiescence barrier with the provider. The
-  // store's `publishPaused` flag (set by the transport on pause_start) already
-  // drives editors read-only; freeze() only needs to wait for that flip to
-  // commit before the provider sends `doc_publish_ready`.
-  useEffect(() => {
-    if (!transport) return;
-    const barrier: PublishPauseBarrier = {
-      freeze: () => settleQuiescence(),
-      unfreeze: () => { /* store flag flip re-enables editors */ },
-    };
-    transport.setPublishPauseBarrier(barrier);
-    return () => {
-      transport.setPublishPauseBarrier(null);
-    };
-  }, [transport]);
 
   return {
     readyEditors,

@@ -67,6 +67,8 @@ const MSG_MODE_TRANSITION_RESULT = 0x0D;
 const MSG_DOC_PUBLISH_PAUSE_START = 0x10;
 const MSG_DOC_PUBLISH_READY = 0x11;
 const MSG_DOC_PUBLISH_PAUSE_END = 0x12;
+const MSG_LIVE_SECTIONS_BOOTSTRAP = 0x14;
+const MSG_LIVE_SECTIONS_UPDATE = 0x15;
 // 0x13 (was MSG_SECTION_MOVE_REQUEST) is RESERVED/UNUSED: the live cross-section
 // move moved off the CRDT binary channel onto a REST control-plane endpoint
 // (claim-review 03 / Option E).
@@ -128,6 +130,9 @@ export interface CrdtProviderEvents {
   onPublishPauseStart?: () => void;
   /** Server ended the publish attempt (commit or abort) — editors may unfreeze. */
   onPublishPauseEnd?: () => void;
+  /** Raw authoritative live-section frame (opcode + payload) — routed into a
+   *  `LiveSectionReplica` via `routeLiveSectionFrame`. */
+  onLiveSectionFrame?: (opcode: number, payload: Uint8Array) => void;
 }
 
 // ─── Provider ──────────────────────────────────────────────────────
@@ -172,14 +177,19 @@ export class CrdtProvider {
   private publishReadySent = false;
   private barrier: PublishPauseBarrier | null = null;
 
+  /** True when this provider created its own awareness (destroy owns its lifetime).
+   *  A replica-owned awareness passed in must outlive the provider. */
+  private readonly ownsAwareness: boolean;
+
   constructor(
     doc: Y.Doc,
     docPath: string,
     events: CrdtProviderEvents = {},
-    opts?: { clientInstanceId?: ClientInstanceId; initialTransitionRequest?: ModeTransitionRequest },
+    opts?: { clientInstanceId?: ClientInstanceId; initialTransitionRequest?: ModeTransitionRequest; awareness?: Awareness },
   ) {
     this.doc = doc;
-    this.awareness = new Awareness(doc);
+    this.awareness = opts?.awareness ?? new Awareness(doc);
+    this.ownsAwareness = opts?.awareness === undefined;
     this.events = events;
     this.docPath = docPath;
     this.clientInstanceId = opts?.clientInstanceId ?? randomUuid();
@@ -278,10 +288,13 @@ export class CrdtProvider {
       this.awareness.off("update", this.awarenessUpdateHandler);
       this.awarenessUpdateHandler = null;
     }
-    // Mute awareness events during destruction.
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
-    this.awareness.emit = () => {};
-    this.awareness.destroy();
+    // Only tear down awareness we created; a replica-owned awareness outlives us.
+    if (this.ownsAwareness) {
+      // Mute awareness events during destruction.
+      // eslint-disable-next-line @typescript-eslint/no-empty-function
+      this.awareness.emit = () => {};
+      this.awareness.destroy();
+    }
   }
 
   // ─── Publish-pause quiescence barrier ──────────────────────────
@@ -578,6 +591,11 @@ export class CrdtProvider {
       }
       case MSG_DOC_PUBLISH_PAUSE_END: {
         this.handlePublishPauseEnd();
+        break;
+      }
+      case MSG_LIVE_SECTIONS_BOOTSTRAP:
+      case MSG_LIVE_SECTIONS_UPDATE: {
+        this.events.onLiveSectionFrame?.(msgType, payload);
         break;
       }
       default:

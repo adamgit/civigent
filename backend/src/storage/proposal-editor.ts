@@ -216,6 +216,41 @@ export class ProposalEditor extends ProposalReader {
   }
 
   /**
+   * No-predecessor demotion (WS-2, nested first-section → BFH): delete a
+   * sub-skeleton PARENT heading that is the document's FIRST section (no
+   * preceding sibling), folding its orphan body under an auto-created BFH
+   * preamble and reparenting its descendants to top level KEEPING their
+   * section-file ids (live fragment keys / cursors survive). This is the
+   * no-predecessor companion to `deleteHeadingKeepingChildren`
+   * (`removeHeadingPreservingChildren`), which throws when the target has no
+   * preceding sibling. Records only the demoted heading's OWN removed ids
+   * (body-holder absorbed into BFH); reparented descendants reappear as written
+   * entries and must NOT be recorded as deleted or the merge would drop them.
+   */
+  async collapseHeadingReparentingToBfh(
+    docPath: string,
+    headingPath: string[],
+    orphanBody: SectionBody,
+  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+    const result = await this.shadow.collapseParentHeadingToBfh(docPath, headingPath, orphanBody);
+    // Identity-based delete detection (D3): only ids removed and NOT re-written
+    // are genuine deletes. Reparented descendants (and the created BFH) appear in
+    // `writtenEntries` under their preserved / new ids; the demoted parent's OWN
+    // sub-skeleton + body-holder ids are removed with no re-add → they are the
+    // delete signal. Use `removedStructuralEntries` (sub-skeletons INCLUDED):
+    // the effective-layout merge keys a sub-skeleton parent's canonical node by
+    // its sub-skeleton id, so recording only the body-holder would re-splice the
+    // demoted parent back into the live layout.
+    const writtenIds = new Set(result.writtenEntries.map((e) => e.sectionFile));
+    const removedForDelete = result.removedStructuralEntries ?? result.removedContentEntries;
+    const deletedIds = removedForDelete
+      .filter((e) => !writtenIds.has(e.sectionFile))
+      .map((e) => e.sectionFile);
+    await recordDeletedSectionFiles(this.proposalId, docPath, deletedIds);
+    return result;
+  }
+
+  /**
    * Id-preserving in-place retitle/re-level + body rewrite (WS-2 rename /
    * level-change reflection). Keeps the section-file id so the live fragment key
    * stays valid. Returns the resulting content entry.

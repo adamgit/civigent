@@ -1,73 +1,101 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { jsonResponse } from "../../helpers/fetch-mocks";
-import type { WsServerEvent } from "../../../types/shared";
-
 /**
- * E5 (todolist): a LIVE split surfaces a new editable section WITHOUT a
- * `content:committed`, AND the survivor's content is preserved (not vanished) —
- * the direct regression for the "edited section vanishes" symptom.
+ * E5 (restored for the redesign): a LIVE split surfaces a new editable section on
+ * the PAGE via the `LiveSectionReplica` ordered topology — WITHOUT a
+ * `content:committed`, WITHOUT an app-WS `doc:structure-changed` adopt, and WITHOUT
+ * a REST `/sections` refetch. The survivor's live body is preserved (the direct
+ * regression for the "edited section vanishes" symptom) and the survivor is painted
+ * from the live fragment, never the poisoned REST seed.
  *
- * The live-topology-adoption fix pushes the new live section list as a
- * `doc:structure-changed` app event. The page adopts it straight from the payload
- * (no REST refetch — a live uncommitted split is invisible to canonical until
- * commit). The survivor's mounted editor keeps its live content by `fragment_key`;
- * the promoted sibling mounts as a new editable section. The Y.Doc binary delta
- * (which carries the new fragment's body) is unordered w.r.t. this event — the
- * section mounts on its fragment_key regardless and the body fills when the delta
- * lands; here the editor is mocked, so we assert surfacing + survivor preservation.
+ * This is the page-level contract (todolist: "CI locks page wiring, not only hook
+ * unit tests"). The pre-redesign version asserted the OPPOSITE mechanism (adopt the
+ * new section straight off the app-WS `doc:structure-changed` payload); that path is
+ * deleted by the redesign, so this rewrite drives the split purely through replica
+ * topology + paint.
  */
 
-/** Build the rich, SERVER-AUTHORED section shape `doc:structure-changed` carries
- *  (identical to GET …/sections). The real backend builds this from the proposal
- *  layout; the client never synthesizes these fields, so the test payload must be
- *  fully populated too. */
-function richStructureSection(heading: string, headingPath: string[], fragmentKey: string, content = "") {
-  return {
-    heading,
-    heading_path: headingPath,
-    depth: headingPath.length,
-    content,
-    agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
-    crdt_session_active: true,
-    section_length_warning: false,
-    word_count: 0,
-    fragment_key: fragmentKey,
-    section_file: `${fragmentKey.replace(/^frag:/, "")}.md`,
-  };
-}
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import * as Y from "yjs";
+import { jsonResponse } from "../../helpers/fetch-mocks";
+import { SectionId, type LiveSectionRef } from "../../../types/live-sections";
+import type { WsServerEvent } from "../../../types/shared";
 
-let capturedWsHandler: ((event: WsServerEvent) => void) | null = null;
+type WsEventHandler = (event: WsServerEvent) => void;
+let capturedWsHandler: WsEventHandler | null = null;
 
-vi.mock("../../../services/crdt-provider", () => ({
-  CrdtProvider: class {
-    _opts: Record<string, unknown>;
-    constructor(_doc: unknown, _docPath: string, opts: Record<string, unknown>) {
-      this._opts = opts;
-    }
-    state = "connected";
-    awareness = {
-      getLocalState: () => ({ user: {} }),
-      setLocalStateField: vi.fn(),
+const sharedDoc = new Y.Doc();
+let replicaReady = false;
+let replicaTopology: LiveSectionRef[] = [];
+const promoteToEditor = vi.fn(async () => {});
+const demoteToObserver = vi.fn(async () => {});
+
+const ALPHA_SURVIVOR_BODY = "ALPHA_SURVIVOR_LIVE_BODY";
+const BETA_SPLIT_BODY = "BETA_SPLIT_LIVE_BODY";
+const POISONED_SEED = "POISONED_REST_SEED_MUST_NOT_PAINT";
+
+const paintMarkdown = vi.fn((id: SectionId, seed: string) => {
+  if (!replicaReady) return seed;
+  const key = SectionId.text(id);
+  if (key === "section::alpha") return `# Alpha\n\n${ALPHA_SURVIVOR_BODY}\n`;
+  if (key === "section::beta") return `# Beta\n\n${BETA_SPLIT_BODY}\n`;
+  return seed;
+});
+
+const useLiveSectionReplicaMock = vi.fn(
+  (params: { docPath: string | null; onSessionEnded?: () => void }) => {
+    void params;
+    return {
+      hasAuthoritativeBootstrap: replicaReady,
+      replica: replicaReady
+        ? {
+            hasAuthoritativeBootstrap: true,
+            getTopology: () => replicaTopology,
+            isPending: () => false,
+            isBlocked: () => false,
+            getPendingSectionKeys: () => [],
+            isPublishPauseMirrorActive: () => false,
+            requireLiveSection: (id: SectionId) => ({
+              id,
+              readMarkdown: () => paintMarkdown(id, ""),
+              isEditable: () => true,
+              createEditorBinding: () => ({
+                doc: sharedDoc,
+                awareness: { clientID: 1 },
+                fragmentKey: SectionId.text(id),
+              }),
+            }),
+          }
+        : null,
+      topology: replicaTopology,
+      mode: "observer" as const,
+      clientInstanceId: "test-tab",
+      editorState: "disconnected" as const,
+      observerState: "connected" as const,
+      publishPaused: false,
+      allReceived: true,
+      transportError: null,
+      awareness: null,
+      editorTransport: null,
+      paintMarkdown,
+      promoteToEditor,
+      demoteToObserver,
     };
-    connect = () => {
-      (this._opts?.onStateChange as ((s: string) => void) | undefined)?.("connected");
-      (this._opts?.onSynced as (() => void) | undefined)?.();
-    };
-    disconnect = vi.fn();
-    destroy = vi.fn();
-    focusSection = vi.fn();
-    setPublishPauseBarrier = vi.fn();
-    get isPublishPaused() { return false; }
   },
+);
+
+vi.mock("../../../hooks/useLiveSectionReplica", () => ({
+  useLiveSectionReplica: (params: { docPath: string | null; onSessionEnded?: () => void }) =>
+    useLiveSectionReplicaMock(params),
 }));
 
 vi.mock("../../../services/ws-client", () => ({
   KnowledgeStoreWsClient: class {
     connect = vi.fn();
     disconnect = vi.fn();
-    onEvent = (handler: (event: WsServerEvent) => void) => { capturedWsHandler = handler; };
+    onEvent = (handler: WsEventHandler) => {
+      capturedWsHandler = handler;
+    };
     subscribe = vi.fn();
     unsubscribe = vi.fn();
     focusDocument = vi.fn();
@@ -75,17 +103,30 @@ vi.mock("../../../services/ws-client", () => ({
   },
 }));
 
-// Editor mock renders BOTH its fragment key (to identify which sections mounted)
-// and its markdown (to prove the survivor's live content is preserved).
+vi.mock("../../../services/crdt-provider", () => ({
+  CrdtProvider: class {
+    connect = vi.fn();
+    disconnect = vi.fn();
+    destroy = vi.fn();
+    focusSection = vi.fn();
+    setPublishPauseBarrier = vi.fn();
+    get isPublishPaused() {
+      return false;
+    }
+  },
+}));
+
 vi.mock("../../../components/MilkdownEditor", async () => {
   const React = await import("react");
   return {
     MilkdownEditor: React.forwardRef(
-      (props: { fragmentKey?: string; markdown?: string; onReady?: () => void }, _ref: unknown) => {
-        React.useEffect(() => { props.onReady?.(); }, []);
+      (props: { fragmentKey?: string; onReady?: () => void }, _ref: unknown) => {
+        React.useEffect(() => {
+          props.onReady?.();
+        }, []);
         return (
           <div data-testid="milkdown-editor" data-fragment-key={props.fragmentKey}>
-            {props.markdown}
+            Editor:{props.fragmentKey}
           </div>
         );
       },
@@ -96,56 +137,72 @@ vi.mock("../../../components/MilkdownEditor", async () => {
 vi.mock("../../../components/ProposalPanel", () => ({
   ProposalPanel: () => <div data-testid="proposal-panel">ProposalPanel</div>,
 }));
-vi.mock("../../../services/recent-docs", () => ({ rememberRecentDoc: vi.fn() }));
+
+vi.mock("../../../services/recent-docs", () => ({
+  rememberRecentDoc: vi.fn(),
+}));
+
 vi.mock("../../../services/document-visit-history", () => ({
   getLastDocumentVisitAt: () => null,
   markDocumentVisitedNow: vi.fn(),
 }));
+
 vi.mock("../../../services/api-client", async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
-  return { ...orig, resolveWriterId: () => "test-user" };
+  return {
+    ...orig,
+    resolveWriterId: () => "test-user",
+  };
 });
 
 import { DocumentPage } from "../../../pages/DocumentPage";
 
-let sectionsFetchCount = 0;
+// Only Alpha exists in the canonical REST snapshot; its content carries a poisoned
+// seed that must never reach paint once the live replica is authoritative. Beta
+// exists ONLY on the live topology (an uncommitted split — invisible to canonical).
+const sectionsResponse = {
+  sections: [
+    {
+      heading: "Alpha",
+      heading_path: ["Alpha"],
+      depth: 1,
+      content: `# Alpha\n${POISONED_SEED}\n`,
+      humanInvolvement_score: 0,
+      crdt_session_active: true,
+      section_length_warning: false,
+      word_count: 2,
+      fragment_key: "section::alpha",
+      section_file: "sec_alpha.md",
+    },
+  ],
+};
 
-function renderDocPage() {
-  return render(
-    <MemoryRouter initialEntries={["/docs/test.md"]}>
+function docTree() {
+  return (
+    <MemoryRouter initialEntries={["/docs/e5.md"]}>
       <Routes>
-        <Route path="/docs/*" element={<DocumentPage docPathOverride="test.md" />} />
+        <Route path="/docs/*" element={<DocumentPage docPathOverride="e5.md" />} />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
 }
 
-describe("E5: live split surfaces a new editable section without content:committed", () => {
+describe("E5: live split surfaces the new section on the page via replica topology", () => {
   beforeEach(() => {
     capturedWsHandler = null;
-    sectionsFetchCount = 0;
+    replicaReady = false;
+    replicaTopology = [];
+    promoteToEditor.mockClear();
+    demoteToObserver.mockClear();
+    paintMarkdown.mockClear();
+    useLiveSectionReplicaMock.mockClear();
+
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
       const urlStr = String(url);
-      if (urlStr.includes("/sections")) {
-        sectionsFetchCount += 1;
-        return jsonResponse({
-          sections: [
-            {
-              heading: "Overview",
-              heading_path: ["Overview"],
-              depth: 1,
-              content: "# Overview\nSurvivor body text.\n",
-              humanInvolvement_score: 0,
-              crdt_session_active: false,
-              section_length_warning: false,
-              word_count: 3,
-              fragment_key: "frag:sec_overview",
-              section_file: "sec_overview.md",
-            },
-          ],
-        });
+      if (urlStr.includes("/sections")) return jsonResponse(sectionsResponse);
+      if (urlStr.includes("/structure")) {
+        return jsonResponse({ structure: [{ heading: "Alpha", level: 1, children: [] }] });
       }
-      if (urlStr.includes("/structure")) return jsonResponse({ structure: [] });
       return jsonResponse({});
     });
   });
@@ -156,44 +213,43 @@ describe("E5: live split surfaces a new editable section without content:committ
     localStorage.clear();
   });
 
-  it("mounts the promoted section and preserves the survivor's content", async () => {
-    renderDocPage();
-    await waitFor(() => {
-      expect(screen.getByText(/Survivor body text/)).toBeDefined();
-    });
+  it("surfaces the split section AND preserves the survivor's live body, with no REST refetch and no app-WS adopt", async () => {
+    // Start ready with a single live section (Alpha), painted from the live fragment.
+    replicaReady = true;
+    replicaTopology = [{ id: SectionId.brand("section::alpha"), headingPath: ["Alpha"] }];
+    const { rerender } = render(docTree());
 
-    // The author is editing the survivor → its editor mounts with the live body.
-    fireEvent.click(screen.getByText(/Survivor body text/));
     await waitFor(() => {
-      const editors = screen.getAllByTestId("milkdown-editor");
-      expect(editors.some((e) => e.getAttribute("data-fragment-key") === "frag:sec_overview")).toBe(true);
+      expect(screen.getByText(new RegExp(ALPHA_SURVIVOR_BODY))).toBeDefined();
     });
-    const fetchesBeforeSplit = sectionsFetchCount;
+    // The survivor paints from the live fragment — never the poisoned REST seed.
+    expect(screen.queryByText(new RegExp(POISONED_SEED))).toBeNull();
 
-    // A live split lands as a doc:structure-changed event: the survivor (now
-    // shrunk on the server) plus a brand-new promoted sibling. No commit, no REST.
-    capturedWsHandler?.({
-      type: "doc:structure-changed",
-      doc_path: "test.md",
-      sections: [
-        // The survivor carries its authoritative (now-trimmed) body — the real
-        // server builds this from the proposal layout; the client never invents it.
-        richStructureSection("Overview", ["Overview"], "frag:sec_overview", "# Overview\nSurvivor body text.\n"),
-        richStructureSection("Promoted", ["Promoted"], "frag:sec_promoted"),
-      ],
-    } as WsServerEvent);
+    // Baseline the fetch mock: any /sections call AFTER this point would be a
+    // canonical refetch, which a live uncommitted split must NOT trigger.
+    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockClear();
 
-    // The promoted sibling surfaces as a new editable section…
+    // LIVE split: Beta appears on the ordered CRDT topology only. No content:committed,
+    // no app-WS doc:structure-changed — we never invoke capturedWsHandler.
+    replicaTopology = [
+      { id: SectionId.brand("section::alpha"), headingPath: ["Alpha"] },
+      { id: SectionId.brand("section::beta"), headingPath: ["Beta"] },
+    ];
+    rerender(docTree());
+
+    // The new section surfaces on the page via replica topology + paint.
     await waitFor(() => {
-      const editors = screen.getAllByTestId("milkdown-editor");
-      expect(editors.some((e) => e.getAttribute("data-fragment-key") === "frag:sec_promoted")).toBe(true);
+      expect(screen.getByText(new RegExp(BETA_SPLIT_BODY))).toBeDefined();
     });
-    // …the survivor's live content is PRESERVED (the vanish-guard) — it neither
-    // disappeared nor was blanked by the adoption…
-    expect(screen.getByText(/Survivor body text/)).toBeDefined();
-    const editors = screen.getAllByTestId("milkdown-editor");
-    expect(editors.some((e) => e.getAttribute("data-fragment-key") === "frag:sec_overview")).toBe(true);
-    // …and no canonical refetch occurred — the event payload was the source.
-    expect(sectionsFetchCount).toBe(fetchesBeforeSplit);
+    // The survivor did NOT vanish and still shows its live body.
+    expect(screen.getByText(new RegExp(ALPHA_SURVIVOR_BODY))).toBeDefined();
+    expect(screen.queryByText(new RegExp(POISONED_SEED))).toBeNull();
+
+    // The split surfaced purely from the replica — no canonical /sections refetch.
+    const sectionRefetches = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("/sections"),
+    );
+    expect(sectionRefetches).toHaveLength(0);
   });
 });

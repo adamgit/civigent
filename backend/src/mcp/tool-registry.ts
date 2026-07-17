@@ -37,6 +37,16 @@ export interface McpSession {
   sessionId?: string;
   /** Intent label set by plan_changes, consumed by next write */
   pendingIntent?: string;
+  /**
+   * Draft proposal ids created through THIS session, oldest → newest. Session-
+   * LOCAL memory only (never persisted onto proposals): it backs the implicit
+   * draft conveniences — Tier 3 `replace` and Tier 1/2 auto-withdraw — so
+   * parallel MCP conversations under one agent credential never withdraw each
+   * other's drafts. Lost with the session (TTL / DELETE / restart); the
+   * proposals themselves survive and stay reachable by explicit `proposal_id`
+   * and writer-scoped listing. Manage via `mcp/session-drafts.ts`.
+   */
+  draftIds?: string[];
 }
 
 // ─── Tool handler type ───────────────────────────────────

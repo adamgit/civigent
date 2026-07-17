@@ -42,6 +42,24 @@
  *   0x10 DOC_PUBLISH_PAUSE_START    — Server → Client: DocSession publish pause begun; freeze editors
  *   0x11 DOC_PUBLISH_READY          — Client → Server: editors frozen / no more Yjs txns (ordered ack)
  *   0x12 DOC_PUBLISH_PAUSE_END      — Server → Client: publish attempt ended; editors may unfreeze
+ *   0x14 LIVE_SECTIONS_BOOTSTRAP    — Server → Client: actor-captured live-section baseline
+ *                                     (doc_session_id + full JSON state + trailing Yjs update)
+ *   0x15 LIVE_SECTIONS_UPDATE       — Server → Client: ordered live-section update
+ *                                     (optional Yjs update and/or full idempotent JSON state)
+ *
+ * The live-section frames (0x14/0x15) are the authoritative live section
+ * interpretation channel (topology/existence, editability, pending, pause
+ * mirror) that REPLACES the unordered application-WS `doc:structure-changed` /
+ * `section:blocked|unblocked|gone` for live correctness. They EXTEND this
+ * catalog — every message type above stays in force on the same socket. Body
+ * text is never in the JSON portion; live bodies ride the trailing Yjs update,
+ * and a structural change that touches fragments AND topology is delivered as
+ * ONE frame (Yjs update + resulting `state` together) so a client never observes
+ * half the structural fact. These frames must NOT be used as the publish-pause
+ * handshake: the freeze/ready/end opcodes (0x10/0x11/0x12) stay authoritative
+ * and `WireLiveSectionsState.publish_pause_join_mirror` is a join/UI mirror only. Scope is
+ * live section authority ONLY — not the hub catalog, not `content:committed`
+ * body reinstall, not `section:edit-rejected` (those stay on the app WS).
  *
  * Opcode 0x08 (legacy STRUCTURE_WILL_CHANGE) is permanently reserved-removed
  * and MUST NEVER be defined here: the new design does not expose live
@@ -74,8 +92,9 @@ import type {
   ModeTransitionRequest,
   ModeTransitionResult,
   RequestedMode,
+  WireLiveSectionsState,
 } from "../types/shared.js";
-import { expectJsonObject } from "../types/shared.js";
+import { expectJsonObject, parseJson, WireLiveSectionsState as WireLiveSectionsStateCodec } from "../types/shared.js";
 
 // ─── Message type constants ──────────────────────────────────────
 
@@ -108,6 +127,14 @@ export const MSG_MODE_TRANSITION_RESULT = 0x0D;
 export const MSG_DOC_PUBLISH_PAUSE_START = 0x10;
 export const MSG_DOC_PUBLISH_READY = 0x11;
 export const MSG_DOC_PUBLISH_PAUSE_END = 0x12;
+
+// ─── Live-section frames (authoritative live section interpretation) ──
+// Server → client only. These EXTEND the catalog; they do not replace any
+// message type above. 0x13 is reserved-removed (live cross-section move went to
+// REST); the next free opcodes are used.
+
+export const MSG_LIVE_SECTIONS_BOOTSTRAP = 0x14;
+export const MSG_LIVE_SECTIONS_UPDATE = 0x15;
 
 // ─── Cross-section move — REMOVED from the binary protocol ───────
 // Opcode 0x13 is RESERVED/UNUSED (do not reassign). The live cross-section move
@@ -274,6 +301,120 @@ export function encodeDocPublishReady(): Uint8Array {
 /** Server → client: the publish attempt ended (committed or aborted); editors may unfreeze. */
 export function encodeDocPublishPauseEnd(): Uint8Array {
   return new Uint8Array([MSG_DOC_PUBLISH_PAUSE_END]);
+}
+
+// ─── Live-section frame interfaces + codec ───────────────────────
+//
+// A live-section frame carries a JSON header (a small, complete, idempotent
+// snapshot of non-body state) and, for fragment changes, a trailing binary Yjs
+// update. Body text is NEVER in the JSON. Envelope layout:
+//
+//   [opcode][json_len:uint32 BE][json bytes][yjs_update bytes...]
+//
+// The trailing bytes after the JSON header are the Yjs update. Presence is
+// explicit: the bootstrap always carries one; the update carries one iff its
+// JSON header sets `has_yjs_update: true` (so a zero-length update is
+// unambiguous against "no update"). The JSON header is UTF-8.
+
+/**
+ * Actor-captured live-section baseline sent to a joining recipient. `state` is
+ * the complete non-body snapshot; `yjs_update` is the full Y.Doc update whose
+ * fragments back every id in `state.topology`.
+ */
+export interface LiveSectionsBootstrapFrame {
+  doc_session_id: string;
+  state: WireLiveSectionsState;
+  yjs_update: Uint8Array;
+}
+
+/**
+ * An ordered live-section update. `yjs_update` is present for fragment changes;
+ * `state` is present whenever topology/editability/pending/pause-mirror changed.
+ * A structural change delivers BOTH together in one frame so a client never
+ * observes half the structural fact. A content-only edit may carry only
+ * `yjs_update`; a lock/pending-only change may carry only `state`. This is NOT
+ * the publish-pause handshake (opcodes 0x10/0x11/0x12 stay authoritative).
+ */
+export interface LiveSectionsUpdateFrame {
+  yjs_update?: Uint8Array;
+  state?: WireLiveSectionsState;
+}
+
+function encodeJsonHeaderFrame(opcode: number, header: unknown, trailing: Uint8Array): Uint8Array {
+  const json = new TextEncoder().encode(JSON.stringify(header));
+  const buf = new Uint8Array(1 + 4 + json.length + trailing.length);
+  buf[0] = opcode;
+  buf[1] = (json.length >>> 24) & 0xff;
+  buf[2] = (json.length >>> 16) & 0xff;
+  buf[3] = (json.length >>> 8) & 0xff;
+  buf[4] = json.length & 0xff;
+  buf.set(json, 5);
+  buf.set(trailing, 5 + json.length);
+  return buf;
+}
+
+/** Split a JSON-header frame payload (opcode already stripped) into header + trailing. */
+function splitJsonHeaderPayload(payload: Uint8Array, label: string): { header: JsonObject; trailing: Uint8Array } {
+  if (payload.length < 4) {
+    throw new Error(`${label} frame truncated: missing 4-byte JSON length prefix`);
+  }
+  const jsonLen = ((payload[0] << 24) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) >>> 0;
+  if (payload.length < 4 + jsonLen) {
+    throw new Error(`${label} frame truncated: JSON length ${jsonLen} exceeds payload`);
+  }
+  const jsonBytes = payload.subarray(4, 4 + jsonLen);
+  const header = expectJsonObject(parseJson(new TextDecoder().decode(jsonBytes)), `${label} header`);
+  // Copy the trailing update out of the shared frame buffer so callers own it.
+  return { header, trailing: payload.slice(4 + jsonLen) };
+}
+
+/** Server → client: encode the actor-captured live-section bootstrap frame. */
+export function encodeLiveSectionsBootstrap(frame: LiveSectionsBootstrapFrame): Uint8Array {
+  return encodeJsonHeaderFrame(
+    MSG_LIVE_SECTIONS_BOOTSTRAP,
+    { doc_session_id: frame.doc_session_id, state: frame.state },
+    frame.yjs_update,
+  );
+}
+
+/** Decode a `MSG_LIVE_SECTIONS_BOOTSTRAP` payload (opcode stripped). Fail-loud on malformed input. */
+export function decodeLiveSectionsBootstrap(payload: Uint8Array): LiveSectionsBootstrapFrame {
+  const { header, trailing } = splitJsonHeaderPayload(payload, "LiveSectionsBootstrap");
+  const docSessionId = header["doc_session_id"];
+  if (typeof docSessionId !== "string") {
+    throw new Error(`LiveSectionsBootstrap.doc_session_id must be a string, got ${JSON.stringify(docSessionId)}`);
+  }
+  return {
+    doc_session_id: docSessionId,
+    state: WireLiveSectionsStateCodec.parse(header["state"], "LiveSectionsBootstrap.state"),
+    yjs_update: trailing,
+  };
+}
+
+/** Server → client: encode an ordered live-section update frame. */
+export function encodeLiveSectionsUpdate(frame: LiveSectionsUpdateFrame): Uint8Array {
+  const hasYjs = frame.yjs_update !== undefined;
+  return encodeJsonHeaderFrame(
+    MSG_LIVE_SECTIONS_UPDATE,
+    { has_yjs_update: hasYjs, state: frame.state ?? null },
+    hasYjs ? frame.yjs_update! : new Uint8Array(0),
+  );
+}
+
+/** Decode a `MSG_LIVE_SECTIONS_UPDATE` payload (opcode stripped). Fail-loud on malformed input. */
+export function decodeLiveSectionsUpdate(payload: Uint8Array): LiveSectionsUpdateFrame {
+  const { header, trailing } = splitJsonHeaderPayload(payload, "LiveSectionsUpdate");
+  const hasYjs = header["has_yjs_update"];
+  if (typeof hasYjs !== "boolean") {
+    throw new Error(`LiveSectionsUpdate.has_yjs_update must be a boolean, got ${JSON.stringify(hasYjs)}`);
+  }
+  const stateRaw = header["state"];
+  const frame: LiveSectionsUpdateFrame = {};
+  if (hasYjs) frame.yjs_update = trailing;
+  if (stateRaw !== null && stateRaw !== undefined) {
+    frame.state = WireLiveSectionsStateCodec.parse(stateRaw, "LiveSectionsUpdate.state");
+  }
+  return frame;
 }
 
 /** Parse the message type and payload from a raw binary frame. Returns null for empty frames. */

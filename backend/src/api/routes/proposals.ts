@@ -57,6 +57,7 @@ import {
   emitSectionBlockState,
   groupSectionsByDocPath,
 } from "../application/events.js";
+import { refreshLiveSectionsState } from "../../ws/crdt-ws-coordinator.js";
 
 export function registerProposalRoutes(
   router: Router,
@@ -404,6 +405,9 @@ export function registerProposalRoutes(
           acquiredProposal.sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
         )) {
           await emitSectionBlockState(onWsEvent, docPath, headingPaths, "section:blocked");
+          // Editability is live authority: refresh the live session's blocked set
+          // on the ordered CRDT channel (app-WS `section:blocked` is cold-only now).
+          await refreshLiveSectionsState(docPath);
         }
       }
 
@@ -460,6 +464,7 @@ export function registerProposalRoutes(
       // it held are now committed-and-free → emit `section:unblocked`.
       for (const [docPath, headingPaths] of groupSectionsByDocPath(result.sections)) {
         await emitSectionBlockState(onWsEvent, docPath, headingPaths, "section:unblocked");
+        await refreshLiveSectionsState(docPath);
       }
 
       const response: CommitProposalResponse = {
@@ -502,6 +507,7 @@ export function registerProposalRoutes(
       // one). Any sections it locked return to editable → emit `section:unblocked`.
       for (const [docPath, headingPaths] of groupSectionsByDocPath(result.sections)) {
         await emitSectionBlockState(onWsEvent, docPath, headingPaths, "section:unblocked");
+        await refreshLiveSectionsState(docPath);
       }
 
       const response: WithdrawProposalResponse = {

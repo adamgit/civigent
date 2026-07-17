@@ -26,7 +26,7 @@
  * removed/added pair to the caller. The on-disk body is updated, so a casual
  * read-back looks fine — but the section's storage identity has been silently
  * re-minted, which churns the CRDT fragment key, invalidates any caller that
- * cached the entry, and produces a `removedEntries` payload that downstream
+ * cached the entry, and produces a `removedContentEntries` payload that downstream
  * code (live-document sessions, fragment stores, proposal tracking) will act
  * on as if the section was deleted.
  *
@@ -37,7 +37,7 @@
  *   1. The skeleton's `sectionFile` for that heading path is unchanged.
  *   2. The skeleton's `level` and `heading` for that path are unchanged.
  *   3. The on-disk body bytes match the new content.
- *   4. The detailed result reports no `removedEntries`, no `fragmentKeyRemaps`,
+ *   4. The detailed result reports no `removedContentEntries`, no `fragmentKeyRemaps`,
  *      no `structureChanges`, and lists the targeted entry as the sole
  *      `writtenEntries` member.
  */
@@ -146,7 +146,7 @@ describe("upsertSection body-only must preserve section identity", () => {
       "Updated overview body.",
     );
 
-    expect(result.removedEntries).toEqual([]);
+    expect(result.removedContentEntries).toEqual([]);
     expect(result.fragmentKeyRemaps).toEqual([]);
     expect(result.structureChanges).toEqual([]);
     expect(result.writtenEntries.map((e) => e.headingPath)).toEqual([["Overview"]]);
@@ -176,7 +176,7 @@ describe("upsertSection body-only must preserve section identity", () => {
       "Updated subsection body.",
     );
 
-    expect(result.removedEntries).toEqual([]);
+    expect(result.removedContentEntries).toEqual([]);
     expect(result.fragmentKeyRemaps).toEqual([]);
     expect(result.structureChanges).toEqual([]);
     expect(result.writtenEntries.map((e) => e.headingPath)).toEqual([["Subsection"]]);
@@ -206,7 +206,7 @@ describe("upsertSection body-only must preserve section identity", () => {
       "Updated deep body.",
     );
 
-    expect(result.removedEntries).toEqual([]);
+    expect(result.removedContentEntries).toEqual([]);
     expect(result.fragmentKeyRemaps).toEqual([]);
     expect(result.structureChanges).toEqual([]);
     expect(result.writtenEntries.map((e) => e.headingPath)).toEqual([["Deep"]]);

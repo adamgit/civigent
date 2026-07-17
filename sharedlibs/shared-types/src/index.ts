@@ -155,6 +155,143 @@ export interface DocumentSessionControllerState {
   pendingTransition: ModeTransitionRequest | null;
 }
 
+// ─── Live Section Wire State (DocSession CRDT live-section channel) ──
+//
+// The JSON, body-free live-section control state carried alongside Yjs updates
+// on the ordered DocSession CRDT socket (the live-section-replica redesign).
+// This is the authoritative live section interpretation — topology/existence,
+// editability, pending-writer state, and the publish-pause *mirror* — and it
+// REPLACES the unordered application-WebSocket `doc:structure-changed` /
+// `section:blocked|unblocked|gone` as the live-correctness mechanism.
+//
+// Body text is NEVER represented here; live bodies exist only in the Yjs update
+// that rides the same frame. The binary frame envelope (opcodes + length-prefix
+// + trailing `yjs_update`) lives in the CRDT codec (`crdt-ws-frames.ts` on the
+// backend, mirrored in the frontend provider); these are only the JSON shapes it
+// carries, kept here so both ends agree on one contract.
+
+/** Body-free live topology reference: opaque `fragment_key` + heading path only. */
+export interface WireLiveSectionRef {
+  /** Opaque backend-owned CRDT fragment identity; branded to `SectionId` on the client. */
+  fragment_key: string;
+  heading_path: readonly string[];
+}
+
+/** A live pending-writer session against one section (drives "wants to modify" UI). */
+export interface WirePendingSection {
+  fragment_key: string;
+  writer_id: string;
+  writer_display_name: string;
+}
+
+/**
+ * Complete, small, idempotent snapshot of non-body live section state. Sent in a
+ * bootstrap frame and re-sent in full (never as an unreplayable delta) whenever
+ * topology / editability / pending / pause-mirror changes.
+ */
+export interface WireLiveSectionsState {
+  /** Ordered, body-free section topology (identity + heading path). */
+  topology: readonly WireLiveSectionRef[];
+  /**
+   * The single editable-set representation: fragment keys currently blocked
+   * (locked / removed / globally paused). Unifies the old declared-`locked` vs
+   * emitted-`blocked` drift and is seeded in the bootstrap so a lock predating
+   * connection can never be missed.
+   */
+  blocked_section_ids: readonly string[];
+  /** Live pending-writer sessions. */
+  pending_sections: readonly WirePendingSection[];
+  /**
+   * Join-time / UI mirror ONLY. Deliberately NOT a boolean: a boolean invites
+   * "if true, freeze editors", but freezing is owned solely by the pause opcode
+   * handshake (`0x10`/`0x11`/`0x12`). This field is a passive snapshot for joiners
+   * / UI — its type reads as a description of state, never a command:
+   *   - `"not_in_pause"`               — no DocSession publish pause was active.
+   *   - `"pause_active_editors_frozen"` — a pause was active when captured (editors
+   *     are frozen by the opcode machine; this mirror only reflects that for a
+   *     late joiner's UI / `isEditable()`, it does not itself freeze anything).
+   */
+  publish_pause_join_mirror: PublishPauseJoinMirror;
+}
+
+/**
+ * Passive join/UI mirror of DocSession publish-pause state. Non-boolean by design
+ * so it cannot be mistaken for a freeze command — the freeze/ready/end opcode
+ * handshake stays the sole authority for the pause machine (spec 10).
+ */
+export type PublishPauseJoinMirror = "not_in_pause" | "pause_active_editors_frozen";
+
+// ── Live section wire-state parsers (fail-loud JSON trust boundary) ──
+// Colocated companion parsers so a frame decoder can validate the JSON portion
+// of a bootstrap/update frame with field-specific prose (no `as`, no coercion).
+
+function wireStringArray(value: JsonValue, label: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array of strings, got ${JSON.stringify(value)}`);
+  }
+  return value.map((element, index) => {
+    if (typeof element !== "string") {
+      throw new Error(`${label}[${index}] must be a string, got ${JSON.stringify(element)}`);
+    }
+    return element;
+  });
+}
+
+export const WireLiveSectionRef = {
+  parse(value: JsonValue, label = "live section ref"): WireLiveSectionRef {
+    const obj = expectJsonObject(value, label);
+    const fragment_key = obj["fragment_key"];
+    if (typeof fragment_key !== "string") {
+      throw new Error(`${label}.fragment_key must be a string, got ${JSON.stringify(fragment_key)}`);
+    }
+    return { fragment_key, heading_path: wireStringArray(obj["heading_path"], `${label}.heading_path`) };
+  },
+};
+
+export const WirePendingSection = {
+  parse(value: JsonValue, label = "pending section"): WirePendingSection {
+    const obj = expectJsonObject(value, label);
+    const req = (key: string): string => {
+      const v = obj[key];
+      if (typeof v !== "string") {
+        throw new Error(`${label}.${key} must be a string, got ${JSON.stringify(v)}`);
+      }
+      return v;
+    };
+    return {
+      fragment_key: req("fragment_key"),
+      writer_id: req("writer_id"),
+      writer_display_name: req("writer_display_name"),
+    };
+  },
+};
+
+export const WireLiveSectionsState = {
+  parse(value: JsonValue, label = "live sections state"): WireLiveSectionsState {
+    const obj = expectJsonObject(value, label);
+    const topologyRaw = obj["topology"];
+    if (!Array.isArray(topologyRaw)) {
+      throw new Error(`${label}.topology must be an array, got ${JSON.stringify(topologyRaw)}`);
+    }
+    const pendingRaw = obj["pending_sections"];
+    if (!Array.isArray(pendingRaw)) {
+      throw new Error(`${label}.pending_sections must be an array, got ${JSON.stringify(pendingRaw)}`);
+    }
+    const pauseMirror = obj["publish_pause_join_mirror"];
+    if (pauseMirror !== "not_in_pause" && pauseMirror !== "pause_active_editors_frozen") {
+      throw new Error(
+        `${label}.publish_pause_join_mirror must be "not_in_pause" | "pause_active_editors_frozen", got ${JSON.stringify(pauseMirror)}`,
+      );
+    }
+    return {
+      topology: topologyRaw.map((el, i) => WireLiveSectionRef.parse(el, `${label}.topology[${i}]`)),
+      blocked_section_ids: wireStringArray(obj["blocked_section_ids"], `${label}.blocked_section_ids`),
+      pending_sections: pendingRaw.map((el, i) => WirePendingSection.parse(el, `${label}.pending_sections[${i}]`)),
+      publish_pause_join_mirror: pauseMirror,
+    };
+  },
+};
+
 export interface SectionTargetRef {
   doc_path: string;
   heading_path: string[];

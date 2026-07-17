@@ -8,7 +8,7 @@
 import { useEffect } from "react";
 import { proseMirrorNodeToMarkdown } from "@ks/milkdown-serializer";
 import type { MilkdownEditorHandle } from "../components/MilkdownEditor";
-import { displaySectionMarkdown, type DisplayStore } from "../services/display-section-markdown";
+import { coldSeedMarkdown } from "../services/display-section-markdown";
 
 export interface CrossSectionCopyOptions {
   /** Ref to the container div that wraps all section elements. */
@@ -23,11 +23,14 @@ export interface CrossSectionCopyOptions {
   }>;
   /** Map from section `fragment_key` → editor handle ref. */
   editorRefs: React.RefObject<Map<string, MilkdownEditorHandle>>;
-  /** Live CRDT store (null when no session). When present, the copy fallback for
-   *  an unmounted section reads the live fragment via `displaySectionMarkdown`
-   *  instead of the React `section.content` string — which after a demotion can
-   *  still carry a reconstructed `# Heading` the live fragment no longer has. */
-  store: DisplayStore | null;
+  /**
+   * Live-replica body reader. When the `LiveSectionReplica` is authoritative it
+   * returns `requireLiveSection(id)?.readMarkdown()` for a fragment key (`undefined`
+   * when cold / not in topology). The unmounted-section copy fallback uses THIS as the
+   * live authority — after bootstrap the replica body, otherwise the cold seed. There
+   * is no store-backed live-fragment understudy (that dual-authority path is retired).
+   */
+  getLiveMarkdown?: (fragmentKey: string) => string | undefined;
 }
 
 /**
@@ -97,7 +100,7 @@ export function useCrossSectionCopy({
   containerRef,
   sections,
   editorRefs,
-  store,
+  getLiveMarkdown,
 }: CrossSectionCopyOptions): void {
   useEffect(() => {
     const container = containerRef.current;
@@ -134,10 +137,11 @@ export function useCrossSectionCopy({
         const editors = editorRefs.current;
         const handle = editors?.get(section.fragment_key);
 
-        // Non-editor fallback = live fragment (heading+body) when the store has
-        // it, else the cold `section.content` seed. Never the raw React string,
-        // which can hold a stale reconstructed heading after a demotion.
-        const fallback = displaySectionMarkdown(section, store);
+        // Non-editor fallback: the LIVE authority when available — the replica body
+        // (`getLiveMarkdown`) after bootstrap — else the cold seed. No store-backed
+        // live-fragment understudy (retired); the seed is the only cold source.
+        const fallback =
+          getLiveMarkdown?.(section.fragment_key) ?? coldSeedMarkdown(section);
         if (isFirst && handle) {
           // Partial: from selection start to end of this section's editor
           // Note: the fragment/section content already includes the heading
@@ -173,5 +177,5 @@ export function useCrossSectionCopy({
 
     container.addEventListener("copy", handleCopy);
     return () => container.removeEventListener("copy", handleCopy);
-  }, [containerRef, sections, editorRefs, store]);
+  }, [containerRef, sections, editorRefs, getLiveMarkdown]);
 }

@@ -27,7 +27,7 @@ describe("section upsert runtime result contract", () => {
     );
 
     expect(result.writtenEntries.map((entry) => entry.headingPath)).toEqual([["Overview"]]);
-    expect(result.removedEntries).toEqual([]);
+    expect(result.removedContentEntries).toEqual([]);
     expect(result.fragmentKeyRemaps).toEqual([]);
     expect(result.liveReloadEntries.map((entry) => entry.headingPath)).toEqual([["Overview"]]);
     expect(result.structureChanges).toEqual([]);
@@ -41,7 +41,7 @@ describe("section upsert runtime result contract", () => {
       "Overview body after heading deletion.",
     );
 
-    expect(result.removedEntries.map((entry) => entry.headingPath)).toEqual([["Overview"]]);
+    expect(result.removedContentEntries.map((entry) => entry.headingPath)).toEqual([["Overview"]]);
     expect(result.liveReloadEntries.map((entry) => entry.headingPath)).toEqual([[]]);
     expect(result.structureChanges[0]?.oldEntry.headingPath).toEqual(["Overview"]);
     expect(result.structureChanges[0]?.newEntries).toEqual([]);
@@ -68,7 +68,7 @@ describe("section upsert runtime result contract", () => {
       { contentIsFullMarkdown: true },
     );
 
-    expect(result.removedEntries.map((entry) => entry.headingPath)).toEqual([["Overview"]]);
+    expect(result.removedContentEntries.map((entry) => entry.headingPath)).toEqual([["Overview"]]);
     expect(result.writtenEntries.map((entry) => entry.headingPath)).toEqual([
       ["Overview"],
       ["Follow Up"],

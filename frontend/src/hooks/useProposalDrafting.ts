@@ -1,7 +1,10 @@
 /**
  * useProposalDrafting — proposal mode enter/exit/save, debounced saves.
  *
- * Extracted from useDocumentCrdt. Receives useSessionMode outputs as params.
+ * Extracted from useDocumentCrdt. Proposal drafting is the separate
+ * cold/proposal authority — it never routes draft bodies through the live
+ * replica; it only asks the page to leave live editing when a proposal
+ * session starts.
  */
 
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -11,7 +14,6 @@ import {
   type ProposalSectionAvailabilityEntry,
   sectionGlobalKey,
   type ProposalDTO,
-  type RequestedMode,
 } from "../types/shared.js";
 import type { DocumentSection } from "../pages/document-page-utils";
 
@@ -21,7 +23,8 @@ export interface UseProposalDraftingParams {
   setError: (e: string | null) => void;
   loadSections: (docPath: string) => Promise<DocumentSection[]>;
   setFocusedSectionIndex: React.Dispatch<React.SetStateAction<number | null>>;
-  requestMode: (mode: RequestedMode) => Promise<void>;
+  /** Drop the tab back to live-observer (no-op when already observing). */
+  leaveLiveEditing: () => Promise<void>;
 }
 
 export interface UseProposalDraftingReturn {
@@ -87,7 +90,7 @@ export function useProposalDrafting({
   setError,
   loadSections,
   setFocusedSectionIndex,
-  requestMode,
+  leaveLiveEditing,
 }: UseProposalDraftingParams): UseProposalDraftingReturn {
   const [proposalMode, setProposalMode] = useState(false);
   const [activeProposalId, setActiveProposalId] = useState<string | null>(null);
@@ -214,7 +217,7 @@ export function useProposalDrafting({
 
   const enterProposalMode = useCallback(async (proposalId: string) => {
     setPanelError(null);
-    await requestMode("none");
+    await leaveLiveEditing();
     setProposalMode(true);
     setActiveProposalId(proposalId);
     activeProposalIdRef.current = proposalId;
@@ -232,7 +235,7 @@ export function useProposalDrafting({
       setPanelError(message);
       setError(message);
     }
-  }, [refreshActiveProposal, requestMode, setFocusedSectionIndex, setError]);
+  }, [refreshActiveProposal, leaveLiveEditing, setFocusedSectionIndex, setError]);
 
   const startManualPublish = useCallback(async () => {
     if (creatingProposal) return;
@@ -268,11 +271,10 @@ export function useProposalDrafting({
     setProposalSectionConflicts(new Map());
     setProposalOverlayVersion((prev) => prev + 1);
     setPanelError(null);
-    await requestMode("observer");
     if (decodedDocPath) {
       await loadSections(decodedDocPath);
     }
-  }, [decodedDocPath, loadSections, requestMode]);
+  }, [decodedDocPath, loadSections]);
 
   const saveProposalSections = useCallback(() => {
     if (proposalSaveTimerRef.current) {

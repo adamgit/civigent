@@ -44,13 +44,8 @@ const wrapper = ({ children }: { children: React.ReactNode }) =>
 function buildParams(): UseDocumentWebSocketParams {
   return {
     decodedDocPath: "test.md",
-    sectionsRef: ref<DocumentSection[]>([]),
-    setSections: vi.fn() as unknown as UseDocumentWebSocketParams["setSections"],
-    transportRef: ref(null),
-    focusedSectionIndexRef: ref<number | null>(null),
-    mountedEditorFragmentKeysRef: ref(new Set<string>()),
-    pendingStructureRefocusRef: ref<string[] | null>(null),
-    storeRef: ref(null),
+    clientInstanceId: "client-1",
+    liveReplicaReadyRef: ref(false),
     setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],
     loadSections: vi.fn(async () => []),
     setError: vi.fn(),

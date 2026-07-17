@@ -7,12 +7,14 @@
  *
  *  (a) competing-proposal-wins: a SEPARATE proposal holds an exclusive
  *      (`inprogress`) lock on section X → a live edit to X is NOT materialized
- *      into the DocSession proposal AND `section:blocked` is emitted for X.
- *  (b) live-edit-wins: no competing claim → the live edit IS materialized
- *      (current behaviour preserved).
+ *      into the DocSession proposal AND X is in the live `blocked_section_ids`
+ *      pushed on the ordered CRDT channel (the redesign moved editability
+ *      authority off the app-WS `section:blocked` event onto that state frame).
+ *  (b) live-edit-wins: no competing claim → the live edit IS materialized and X
+ *      is not blocked (current behaviour preserved).
  *
  * The tests fail if the arbitration is reverted: without it, the blocked edit
- * would be materialized (no `section:blocked`, a current proposal would exist).
+ * would be materialized (X unblocked, a current proposal would exist).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -24,13 +26,13 @@ import {
   processArbitratedClientUpdate,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
+import { joinLiveRecipient } from "../helpers/live-recipient.js";
 import { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
 import type { FragmentContent, SectionBody } from "../../storage/section-formatting.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { createProposal, transitionToInProgress } from "../../storage/proposal-repository.js";
-import type { WsServerEvent } from "../../types/shared.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 const OVERVIEW_KEY = "section::overview";
@@ -69,23 +71,25 @@ async function lockSectionWithCompetingProposal(headingPath: string[]): Promise<
 
 describe("MW-6: DocSession race arbitration", () => {
   let ctx: TempDataRootContext;
-  let events: WsServerEvent[];
+  const disposers: Array<() => void> = [];
 
   beforeEach(async () => {
     ctx = await createTempDataRoot();
     await createSampleDocument(ctx.rootDir);
-    events = [];
-    setCrdtEventHandler((e) => events.push(e));
+    setCrdtEventHandler(() => undefined);
   });
 
   afterEach(async () => {
+    while (disposers.length) disposers.pop()!();
     destroyAllSessions();
     vi.useRealTimers();
     await ctx.cleanup();
   });
 
-  it("(a) competing proposal wins: live edit to X is NOT materialized + section:blocked emitted", async () => {
+  it("(a) competing proposal wins: live edit to X is NOT materialized + X is in live blocked_section_ids", async () => {
     const session = await openSession();
+    const live = await joinLiveRecipient(session);
+    disposers.push(live.dispose);
     // A competing proposal exclusively locks Overview.
     await lockSectionWithCompetingProposal(["Overview"]);
 
@@ -100,15 +104,19 @@ describe("MW-6: DocSession race arbitration", () => {
     const after = session.liveFragments.readFragmentString(OVERVIEW_KEY) as string;
     expect(after).not.toContain("alice attempts to edit overview");
     expect(after).toContain("The overview covers our strategic goals.");
-    // A section:blocked event was emitted for Overview's fragment.
-    const blocked = events.filter((e) => e.type === "section:blocked");
-    const overview = blocked.find((e) => (e as { fragment_key: string }).fragment_key === OVERVIEW_KEY);
-    expect(overview).toBeDefined();
-    expect((overview as { heading_path?: string[] }).heading_path).toEqual(["Overview"]);
+    // The blocked editable set was refreshed on the ordered CRDT channel as a
+    // state-only update frame; Overview's fragment is in it.
+    const stateFrames = live.updates().filter((u) => u.state !== undefined);
+    expect(stateFrames.length).toBeGreaterThanOrEqual(1);
+    expect(live.latestState().blocked_section_ids).toContain(OVERVIEW_KEY);
+    // The section is still in live topology (blocked ≠ gone).
+    expect(live.latestState().topology.map((t) => t.fragment_key)).toContain(OVERVIEW_KEY);
   });
 
-  it("(b) live edit wins: no competing claim → the edit IS materialized", async () => {
+  it("(b) live edit wins: no competing claim → the edit IS materialized and X is not blocked", async () => {
     const session = await openSession();
+    const live = await joinLiveRecipient(session);
+    disposers.push(live.dispose);
 
     const edited = buildFragmentContent("alice freely edits overview" as SectionBody, 2, "Overview");
     const update = buildClientUpdateForOverview(session, edited);
@@ -119,24 +127,26 @@ describe("MW-6: DocSession race arbitration", () => {
     expect(session.generator.hasCurrentProposal()).toBe(true);
     const after = session.liveFragments.readFragmentString(OVERVIEW_KEY) as string;
     expect(after).toContain("alice freely edits overview");
-    // No section:blocked emitted in the unblocked case.
-    expect(events.filter((e) => e.type === "section:blocked")).toHaveLength(0);
+    // Overview is never in the blocked set (the session's own proposal is excluded).
+    expect(live.latestState().blocked_section_ids).not.toContain(OVERVIEW_KEY);
   });
 
   it("(b2) the live session's OWN proposal does not block its own edits", async () => {
     const session = await openSession();
+    const live = await joinLiveRecipient(session);
+    disposers.push(live.dispose);
     // First edit materializes the DocSession's own inprogress proposal (which now
     // holds a claim on Overview). A second edit to the SAME section must still win.
     const first = buildFragmentContent("first edit" as SectionBody, 2, "Overview");
     await session.enqueue(() => processArbitratedClientUpdate(session, WRITER.id, buildClientUpdateForOverview(session, first)));
     expect(session.generator.hasCurrentProposal()).toBe(true);
-    events.length = 0;
 
     const second = buildFragmentContent("second edit by same author" as SectionBody, 2, "Overview");
     await session.enqueue(() => processArbitratedClientUpdate(session, WRITER.id, buildClientUpdateForOverview(session, second)));
 
     const after = session.liveFragments.readFragmentString(OVERVIEW_KEY) as string;
     expect(after).toContain("second edit by same author");
-    expect(events.filter((e) => e.type === "section:blocked")).toHaveLength(0);
+    // The section is never blocked against its own author across both edits.
+    expect(live.latestState().blocked_section_ids).not.toContain(OVERVIEW_KEY);
   });
 });

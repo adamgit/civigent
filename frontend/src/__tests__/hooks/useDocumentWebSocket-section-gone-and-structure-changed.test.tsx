@@ -1,24 +1,23 @@
 /**
- * `section:gone` and `doc:structure-changed` detach flow (spec 05
- * §"Section block-state events" and spec 06 §"Refresh Strategy").
+ * `section:gone` and `doc:structure-changed` are NO LONGER live authorities in
+ * `useDocumentWebSocket` (live-section redesign, new-frontend-live-document-design.md).
  *
- * The origin client's Milkdown editor must become non-writable — and its CRDT
- * binding torn down — as soon as the server says a section is gone or drops
- * its fragment_key from the authoritative section list. Yjs cannot delete
- * top-level XmlFragments from `ydoc.share`, so a still-mounted ySyncPlugin
- * would otherwise echo further keystrokes into a fragment the server has
- * already unregistered (post-merge) — which then hits the acceptance-gate
- * "no layout identity" throw on ingress.
+ * Live topology / existence / editability now arrive on the ordered DocSession
+ * CRDT channel via `LiveSectionReplica` (bootstrap + update frames). The
+ * application-WebSocket `section:blocked|unblocked|gone` and `doc:structure-changed`
+ * events are therefore demoted:
  *
- * These assert the two hand-offs:
- *   (1) `section:gone` → `store.getSectionEditabilityForKey === "gone"`;
- *   (2) `doc:structure-changed` dropping a fragment_key produces a sections
- *       list that omits that key — even if focus was on it (focus reconciles
- *       to null and the section is no longer rendered → editor unmounts).
+ *   (1) `section:gone` (and blocked/unblocked) is NOT routed into the live replica
+ *       store — the hook ignores it as a live authority. Removal reaches the
+ *       replica by the section's fragment_key dropping out of the CRDT topology
+ *       frame (covered by the replica tests), not from this unordered app event.
+ *   (2) `doc:structure-changed` is a COLD-invalidation HINT only: a page with no
+ *       live replica refetches the workspace section seeds (`loadSections`). It
+ *       does NOT adopt live topology/body in place, and does NOT perform focus
+ *       reconciliation (that is `resolveFocusAfterTopologyChange` on the replica
+ *       topology path — see `resolve-focus-after-topology-change.test.ts`).
  *
- * The DocumentCanvas render guard (`if (crdtGone) return null;`) is already
- * covered by `document-canvas-blockstate.test.tsx`; these tests cover the WS
- * event → state hand-off that feeds it.
+ * Both are still gated by `doc_path` so a foreign document's event is ignored.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -82,6 +81,7 @@ function buildParams(
   params: UseDocumentWebSocketParams;
   holder: { sections: DocumentSection[] };
   focusedSectionIndexRef: React.MutableRefObject<number | null>;
+  loadSections: ReturnType<typeof vi.fn>;
 } {
   const holder = { sections: initial };
   const setSections = vi.fn((updater: unknown) => {
@@ -90,21 +90,16 @@ function buildParams(
       : (updater as DocumentSection[]);
   });
   const focusedSectionIndexRef = ref<number | null>(opts.focusedSectionIndex ?? null);
+  const loadSections = vi.fn(async () => []);
   const params: UseDocumentWebSocketParams = {
     decodedDocPath: "test.md",
     clientInstanceId: "client-1",
-    sectionsRef: ref(initial),
-    setSections: setSections as unknown as UseDocumentWebSocketParams["setSections"],
-    transportRef: ref(null),
-    focusedSectionIndexRef,
-    mountedEditorFragmentKeysRef: ref(new Set(opts.mountedFragmentKeys ?? [])),
-    pendingStructureRefocusRef: ref<string[] | null>(null),
-    storeRef: ref(opts.store),
+    liveReplicaReadyRef: ref(opts.store !== null),
     setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],
-    loadSections: vi.fn(async () => []),
+    loadSections: loadSections as unknown as UseDocumentWebSocketParams["loadSections"],
     setError: vi.fn(),
   };
-  return { params, holder, focusedSectionIndexRef };
+  return { params, holder, focusedSectionIndexRef, loadSections };
 }
 
 function emit(event: Record<string, unknown>): void {
@@ -113,7 +108,7 @@ function emit(event: Record<string, unknown>): void {
 
 const fragKeys = (sections: DocumentSection[]) => sections.map(getSectionFragmentKey);
 
-describe("section:gone WS delivery (spec 05 §Section block-state events)", () => {
+describe("section:gone WS delivery is no longer a live authority", () => {
   let doc: Y.Doc;
   let awareness: Awareness;
   let store: BrowserFragmentReplicaStore;
@@ -131,7 +126,7 @@ describe("section:gone WS delivery (spec 05 §Section block-state events)", () =
     doc.destroy();
   });
 
-  it("routes a matching-doc `section:gone` into the replica store", () => {
+  it("does NOT route a matching-doc `section:gone` into the replica store", () => {
     const initial = [makeSection({ fragment_key: "frag:sec_overview" })];
     const { params } = buildParams(initial, { store });
     renderHook(() => useDocumentWebSocket(params), { wrapper });
@@ -145,10 +140,12 @@ describe("section:gone WS delivery (spec 05 §Section block-state events)", () =
       heading_path: ["Overview"],
     });
 
-    expect(store.getSectionEditabilityForKey("frag:sec_overview")).toBe("gone");
+    // The app-WS event is ignored: editability follows the CRDT topology frame,
+    // not this unordered event. The store is untouched.
+    expect(store.getSectionEditabilityForKey("frag:sec_overview")).toBe("editable");
   });
 
-  it("ignores a `section:gone` for a different doc_path", () => {
+  it("ignores a `section:gone` for a different doc_path (still untouched)", () => {
     const initial = [makeSection({ fragment_key: "frag:sec_overview" })];
     const { params } = buildParams(initial, { store });
     renderHook(() => useDocumentWebSocket(params), { wrapper });
@@ -164,16 +161,16 @@ describe("section:gone WS delivery (spec 05 §Section block-state events)", () =
   });
 });
 
-describe("doc:structure-changed dropping a fragment_key (spec 06 §Refresh Strategy)", () => {
+describe("doc:structure-changed is a cold-invalidation refetch hint (spec 06 §Refresh Strategy)", () => {
   beforeEach(() => { capturedWsHandler = null; });
   afterEach(() => { vi.clearAllMocks(); });
 
-  it("adopts a fresh layout that omits a merged-away fragment_key", () => {
+  it("refetches the workspace section seeds (loadSections) instead of adopting live topology in place", () => {
     const initial = [
       makeSection({ heading: "Overview", heading_path: ["Overview"], fragment_key: "frag:sec_overview", content: "overview\n" }),
       makeSection({ heading: "Timeline", heading_path: ["Timeline"], fragment_key: "frag:sec_timeline", content: "timeline\n" }),
     ];
-    const { params, holder } = buildParams(initial, { store: null });
+    const { params, holder, loadSections } = buildParams(initial, { store: null });
     renderHook(() => useDocumentWebSocket(params), { wrapper });
 
     emit({
@@ -184,17 +181,20 @@ describe("doc:structure-changed dropping a fragment_key (spec 06 §Refresh Strat
       ],
     });
 
-    expect(fragKeys(holder.sections)).toEqual(["frag:sec_overview"]);
-    expect(holder.sections.find((s) => s.fragment_key === "frag:sec_timeline")).toBeUndefined();
+    // Cold-invalidation: the hook triggers a workspace-seed refetch for this doc…
+    expect(loadSections).toHaveBeenCalledWith("test.md");
+    // …and does NOT adopt the app-hub `sections` payload into live state in place
+    // (no dropping keys off the current list from the unordered app event).
+    expect(fragKeys(holder.sections)).toEqual(["frag:sec_overview", "frag:sec_timeline"]);
   });
 
-  it("forces focus onto the merge survivor when the focused fragment is dropped by the structure change", () => {
+  it("does not perform focus reconciliation from the app event (that is the replica's job)", () => {
     const initial = [
       makeSection({ heading: "Overview", heading_path: ["Overview"], fragment_key: "frag:sec_overview", content: "overview\n" }),
       makeSection({ heading: "Timeline", heading_path: ["Timeline"], fragment_key: "frag:sec_timeline", content: "timeline\n" }),
     ];
-    // Focus is on Timeline (index 1) — the one the server merges away into Overview.
-    const { params, holder, focusedSectionIndexRef } = buildParams(initial, {
+    // Focus is on Timeline (index 1).
+    const { params, focusedSectionIndexRef, loadSections } = buildParams(initial, {
       store: null,
       focusedSectionIndex: 1,
     });
@@ -208,53 +208,24 @@ describe("doc:structure-changed dropping a fragment_key (spec 06 §Refresh Strat
       ],
     });
 
-    // Observing the delete forces focus OFF the removed Timeline key onto its
-    // surviving predecessor Overview (index 0) — never left on the dead key, and
-    // not cleared to null (which would drop the caret entirely).
-    expect(focusedSectionIndexRef.current).toBe(0);
-    expect(holder.sections[focusedSectionIndexRef.current!].fragment_key).toBe("frag:sec_overview");
-    // And the dropped fragment_key is no longer in the list to render.
-    expect(holder.sections.find((s) => s.fragment_key === "frag:sec_timeline")).toBeUndefined();
+    // The cold refetch fired; focus is left to the replica topology path
+    // (`resolveFocusAfterTopologyChange`), NOT mutated by this hook.
+    expect(loadSections).toHaveBeenCalledWith("test.md");
+    expect(focusedSectionIndexRef.current).toBe(1);
   });
 
-  it("drops a fragment_key from the layout even when its editor was mounted", () => {
-    // The merged-away section had a mounted editor. adoptFreshSectionLayout keeps
-    // `content` (as a cold seed) only for keys STILL PRESENT in `fresh`; a
-    // fragment absent from `fresh` is unconditionally dropped — mounted or not —
-    // which is what forces the editor to unmount at the next render.
-    const initial = [
-      makeSection({ heading: "Keep", heading_path: ["Keep"], fragment_key: "frag:sec_keep", content: "keep\n" }),
-      makeSection({ heading: "Folded", heading_path: ["Folded"], fragment_key: "frag:sec_folded", content: "LIVE folded body\n" }),
-    ];
-    const { params, holder } = buildParams(initial, {
-      store: null,
-      mountedFragmentKeys: ["frag:sec_folded"],
-    });
-    renderHook(() => useDocumentWebSocket(params), { wrapper });
-
-    emit({
-      type: "doc:structure-changed",
-      doc_path: "test.md",
-      sections: [
-        makeSection({ heading: "Keep", heading_path: ["Keep"], fragment_key: "frag:sec_keep", content: "keep\n" }),
-      ],
-    });
-
-    expect(fragKeys(holder.sections)).toEqual(["frag:sec_keep"]);
-    expect(holder.sections.find((s) => s.fragment_key === "frag:sec_folded")).toBeUndefined();
-  });
-
-  it("ignores a `doc:structure-changed` for a different doc_path", () => {
+  it("ignores a `doc:structure-changed` for a different doc_path (no refetch)", () => {
     const initial = [makeSection({ fragment_key: "frag:sec_overview" })];
-    const { params, holder } = buildParams(initial, { store: null });
+    const { params, holder, loadSections } = buildParams(initial, { store: null });
     renderHook(() => useDocumentWebSocket(params), { wrapper });
 
     emit({
       type: "doc:structure-changed",
       doc_path: "other.md",
-      sections: [], // would drop everything if not gated by doc_path
+      sections: [], // would drop everything if it were adopted in place
     });
 
+    expect(loadSections).not.toHaveBeenCalled();
     expect(fragKeys(holder.sections)).toEqual(["frag:sec_overview"]);
   });
 });

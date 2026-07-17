@@ -173,32 +173,15 @@ export function emitDocStructureChanged(
 
 
 
-export async function emitLiveStructureChanged(
-  emit: ((event: WsServerEvent) => void) | undefined,
-  docPath: string,
-  currentProposalId: string | null,
-  liveEditor?: Pick<WriterIdentity, "id" | "type" | "displayName">,
-): Promise<void> {
-  if (!emit) return;
-  const { readProposalSectionList, readCanonicalSectionList, readLiveSectionList } = await import("./sections.js");
-  const { lookupDocSession } = await import("../../crdt/ydoc-lifecycle.js");
-  // Spec 06 §Browser freshness: while a DocSession is live, `content` is the live
-  // fragment markdown (same bytes the shared doc shows), NOT a `prependHeadings`
-  // reconstruction from the topology-lagging proposal/canonical skeleton — so a
-  // demotion-before-quiescence ships the live body-only text. Topology still comes
-  // from the reader (this does not move merge/delete earlier than quiescence).
-  // With no session (cold structural change), keep the reconstructing cold read.
-  const session = lookupDocSession(docPath);
-  const { response } = session
-    ? await readLiveSectionList(docPath, currentProposalId, session.liveFragments)
-    : currentProposalId
-      ? await readProposalSectionList(currentProposalId, docPath)
-      : await readCanonicalSectionList(docPath);
-  const sections = liveEditor
-    ? response.sections.map((s) => overrideUnknownLastEditorWithLiveWriter(s, liveEditor))
-    : response.sections;
-  emitDocStructureChanged(emit, docPath, sections);
-}
+// `emitLiveStructureChanged` (app-WS `doc:structure-changed` assembly with live
+// fragment-body reconstruction + `overrideUnknownLastEditorWithLiveWriter`
+// last-editor stamping) has been REMOVED: live section authority (topology,
+// body, editability) is carried on the ordered DocSession CRDT channel as
+// `LiveSectionsBootstrapFrame` / `LiveSectionsUpdateFrame` (see
+// `crdt-ws-coordinator.ts` `emitLiveStructureChanged` → `broadcastLiveSectionsUpdate`).
+// The app WebSocket is no longer a live authority; `emitDocStructureChanged` /
+// `emitCanonicalStructureChanged` remain for COLD (no live session) structural
+// notifications only.
 
 
 
@@ -210,26 +193,6 @@ export async function emitLiveStructureChanged(
 
 
 
-
-function overrideUnknownLastEditorWithLiveWriter<T extends StructureSections[number]>(
-  section: T,
-  liveEditor: Pick<WriterIdentity, "id" | "type" | "displayName">,
-): T {
-  const editor = section.last_editor;
-  const isUnknownSentinel =
-    !!editor && editor.id === "unknown" && editor.name === "unknown" && editor.timestampMs === 0;
-  if (!isUnknownSentinel) return section;
-  return {
-    ...section,
-    last_editor: {
-      id: liveEditor.id,
-      name: liveEditor.displayName,
-      type: liveEditor.type,
-      timestampMs: Date.now(),
-      seconds_ago: 0,
-    },
-  };
-}
 
 
 

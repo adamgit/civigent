@@ -37,6 +37,8 @@ const MSG_YJS_UPDATE = 2;
 const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0B;
 const MSG_MODE_TRANSITION_REQUEST = 0x0C;
 const MSG_MODE_TRANSITION_RESULT = 0x0D;
+const MSG_LIVE_SECTIONS_BOOTSTRAP = 0x14;
+const MSG_LIVE_SECTIONS_UPDATE = 0x15;
 
 /** Debounce interval for onChange callbacks (ms). */
 const CHANGE_DEBOUNCE_MS = 100;
@@ -66,6 +68,10 @@ export interface ObserverCrdtProviderEvents {
   /** Fired once, after onSynced on the post-replacement reconnection, with the replacement notice. */
   onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
   onModeTransitionResult?: (result: ModeTransitionResult) => void;
+  /** Raw authoritative live-section frame (opcode + payload) — routed into a
+   *  `LiveSectionReplica` via `routeLiveSectionFrame`. Correctness-critical live
+   *  topology/editability/body arrive here, not on the application WebSocket. */
+  onLiveSectionFrame?: (opcode: number, payload: Uint8Array) => void;
   /** Fired when a protocol-level error occurs (e.g. malformed JSON payload).
    *  The connection is terminated after this callback. */
   onError?: (reason: string) => void;
@@ -96,12 +102,19 @@ export class ObserverCrdtProvider {
   private readonly docPath: string;
   private initialTransitionRequest: ModeTransitionRequest | null = null;
 
+  /** True when the Y.Doc is externally owned (by a LiveSectionReplica). Such a
+   *  doc must NOT be destroyed by this provider — the replica owns its lifetime. */
+  private readonly ownsDoc: boolean;
+
   constructor(
     docPath: string,
     events: ObserverCrdtProviderEvents = {},
-    opts?: { clientInstanceId?: ClientInstanceId; initialTransitionRequest?: ModeTransitionRequest },
+    opts?: { clientInstanceId?: ClientInstanceId; initialTransitionRequest?: ModeTransitionRequest; doc?: Y.Doc },
   ) {
-    this.doc = new Y.Doc();
+    // A replica-owned doc may be passed in so the socket syncs INTO the replica's
+    // single shared Y.Doc; otherwise the provider mints its own (legacy path).
+    this.doc = opts?.doc ?? new Y.Doc();
+    this.ownsDoc = opts?.doc === undefined;
     this.events = events;
     this.docPath = docPath;
     this.clientInstanceId = opts?.clientInstanceId ?? randomUuid();
@@ -140,7 +153,9 @@ export class ObserverCrdtProvider {
       clearTimeout(this.changeDebounceTimer);
       this.changeDebounceTimer = null;
     }
-    this.doc.destroy();
+    // Only destroy the Y.Doc if this provider minted it. A replica-owned doc
+    // outlives the provider (observer → editor promotion reuses it).
+    if (this.ownsDoc) this.doc.destroy();
   }
 
   // ─── Internal ─────────────────────────────────────────
@@ -275,6 +290,13 @@ export class ObserverCrdtProvider {
           return;
         }
         this.events.onModeTransitionResult?.(result);
+        break;
+      }
+      case MSG_LIVE_SECTIONS_BOOTSTRAP:
+      case MSG_LIVE_SECTIONS_UPDATE: {
+        // Authoritative live section state — hand the raw frame to the page so it
+        // routes it into the LiveSectionReplica. Not a legacy doc mutation path.
+        this.events.onLiveSectionFrame?.(msgType, payload);
         break;
       }
     }

@@ -1,72 +1,99 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { jsonResponse } from "../../helpers/fetch-mocks";
-import type { WsServerEvent } from "../../../types/shared";
-
 /**
- * E6 (todolist): cross-client silent-vanish guard. Another writer's split arrives
- * as a live `doc:structure-changed` event at a client that is NOT itself editing
- * the split section (a passive peer). The guard: the current client must NOT lose
- * content with no replacement — the survivor keeps its body AND the promoted
- * section appears. Never a section that vanishes with nothing in its place.
+ * E6 (restored for the redesign): a section that is present on the live replica
+ * topology must NOT silently vanish because a lagging / cross-client app-WS
+ * `doc:structure-changed` payload omits it. In the redesign the ordered CRDT frame
+ * is the SOLE authority for live existence (todolist 357/05): while the replica is
+ * ready, hub structure payloads are non-authoritative and must not drop or rewrite
+ * a live section. A section only disappears when the replica TOPOLOGY drops it.
  *
- * The fix delivers the new live section list to EVERY subscribed socket (the
- * server emits `doc:structure-changed` after broadcasting the Y.Doc delta), so a
- * peer's split reaches this client through the same event — origin-agnostic. Here
- * the peer is passive (no editor mounted), so sections render as static previews;
- * we assert the survivor's preview content survives and a new section preview is
- * added (no REST refetch — the payload is the source).
+ * The pre-redesign version guarded against silent vanish under the app-WS adopt
+ * path; this rewrite asserts the redesign page contract: hub payload is inert while
+ * ready, and a genuine CRDT-frame removal is what unmounts the section.
  */
 
-/** Build the rich, SERVER-AUTHORED section shape `doc:structure-changed` carries
- *  (identical to GET …/sections). The client never synthesizes these fields, so the
- *  test payload must be fully populated too. */
-function richStructureSection(heading: string, headingPath: string[], fragmentKey: string, content = "") {
-  return {
-    heading,
-    heading_path: headingPath,
-    depth: headingPath.length,
-    content,
-    agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
-    crdt_session_active: true,
-    section_length_warning: false,
-    word_count: 0,
-    fragment_key: fragmentKey,
-    section_file: `${fragmentKey.replace(/^frag:/, "")}.md`,
-  };
-}
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor, cleanup, act } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import * as Y from "yjs";
+import { jsonResponse } from "../../helpers/fetch-mocks";
+import { SectionId, type LiveSectionRef } from "../../../types/live-sections";
+import type { WsServerEvent } from "../../../types/shared";
 
-let capturedWsHandler: ((event: WsServerEvent) => void) | null = null;
+type WsEventHandler = (event: WsServerEvent) => void;
+let capturedWsHandler: WsEventHandler | null = null;
 
-vi.mock("../../../services/crdt-provider", () => ({
-  CrdtProvider: class {
-    _opts: Record<string, unknown>;
-    constructor(_doc: unknown, _docPath: string, opts: Record<string, unknown>) {
-      this._opts = opts;
-    }
-    state = "connected";
-    awareness = {
-      getLocalState: () => ({ user: {} }),
-      setLocalStateField: vi.fn(),
+const sharedDoc = new Y.Doc();
+let replicaReady = false;
+let replicaTopology: LiveSectionRef[] = [];
+const promoteToEditor = vi.fn(async () => {});
+const demoteToObserver = vi.fn(async () => {});
+
+const ALPHA_BODY = "ALPHA_LIVE_BODY";
+const BETA_BODY = "BETA_LIVE_BODY";
+const HUB_ADOPTED_BODY = "HUB_ADOPTED_BODY_MUST_NOT_PAINT";
+
+const paintMarkdown = vi.fn((id: SectionId, seed: string) => {
+  if (!replicaReady) return seed;
+  const key = SectionId.text(id);
+  if (key === "section::alpha") return `# Alpha\n\n${ALPHA_BODY}\n`;
+  if (key === "section::beta") return `# Beta\n\n${BETA_BODY}\n`;
+  return seed;
+});
+
+const useLiveSectionReplicaMock = vi.fn(
+  (params: { docPath: string | null; onSessionEnded?: () => void }) => {
+    void params;
+    return {
+      hasAuthoritativeBootstrap: replicaReady,
+      replica: replicaReady
+        ? {
+            hasAuthoritativeBootstrap: true,
+            getTopology: () => replicaTopology,
+            isPending: () => false,
+            isBlocked: () => false,
+            getPendingSectionKeys: () => [],
+            isPublishPauseMirrorActive: () => false,
+            requireLiveSection: (id: SectionId) => ({
+              id,
+              readMarkdown: () => paintMarkdown(id, ""),
+              isEditable: () => true,
+              createEditorBinding: () => ({
+                doc: sharedDoc,
+                awareness: { clientID: 1 },
+                fragmentKey: SectionId.text(id),
+              }),
+            }),
+          }
+        : null,
+      topology: replicaTopology,
+      mode: "observer" as const,
+      clientInstanceId: "test-tab",
+      editorState: "disconnected" as const,
+      observerState: "connected" as const,
+      publishPaused: false,
+      allReceived: true,
+      transportError: null,
+      awareness: null,
+      editorTransport: null,
+      paintMarkdown,
+      promoteToEditor,
+      demoteToObserver,
     };
-    connect = () => {
-      (this._opts?.onStateChange as ((s: string) => void) | undefined)?.("connected");
-      (this._opts?.onSynced as (() => void) | undefined)?.();
-    };
-    disconnect = vi.fn();
-    destroy = vi.fn();
-    focusSection = vi.fn();
-    setPublishPauseBarrier = vi.fn();
-    get isPublishPaused() { return false; }
   },
+);
+
+vi.mock("../../../hooks/useLiveSectionReplica", () => ({
+  useLiveSectionReplica: (params: { docPath: string | null; onSessionEnded?: () => void }) =>
+    useLiveSectionReplicaMock(params),
 }));
 
 vi.mock("../../../services/ws-client", () => ({
   KnowledgeStoreWsClient: class {
     connect = vi.fn();
     disconnect = vi.fn();
-    onEvent = (handler: (event: WsServerEvent) => void) => { capturedWsHandler = handler; };
+    onEvent = (handler: WsEventHandler) => {
+      capturedWsHandler = handler;
+    };
     subscribe = vi.fn();
     unsubscribe = vi.fn();
     focusDocument = vi.fn();
@@ -74,15 +101,30 @@ vi.mock("../../../services/ws-client", () => ({
   },
 }));
 
+vi.mock("../../../services/crdt-provider", () => ({
+  CrdtProvider: class {
+    connect = vi.fn();
+    disconnect = vi.fn();
+    destroy = vi.fn();
+    focusSection = vi.fn();
+    setPublishPauseBarrier = vi.fn();
+    get isPublishPaused() {
+      return false;
+    }
+  },
+}));
+
 vi.mock("../../../components/MilkdownEditor", async () => {
   const React = await import("react");
   return {
     MilkdownEditor: React.forwardRef(
-      (props: { fragmentKey?: string; markdown?: string; onReady?: () => void }, _ref: unknown) => {
-        React.useEffect(() => { props.onReady?.(); }, []);
+      (props: { fragmentKey?: string; onReady?: () => void }, _ref: unknown) => {
+        React.useEffect(() => {
+          props.onReady?.();
+        }, []);
         return (
           <div data-testid="milkdown-editor" data-fragment-key={props.fragmentKey}>
-            {props.markdown}
+            Editor:{props.fragmentKey}
           </div>
         );
       },
@@ -93,56 +135,88 @@ vi.mock("../../../components/MilkdownEditor", async () => {
 vi.mock("../../../components/ProposalPanel", () => ({
   ProposalPanel: () => <div data-testid="proposal-panel">ProposalPanel</div>,
 }));
-vi.mock("../../../services/recent-docs", () => ({ rememberRecentDoc: vi.fn() }));
+
+vi.mock("../../../services/recent-docs", () => ({
+  rememberRecentDoc: vi.fn(),
+}));
+
 vi.mock("../../../services/document-visit-history", () => ({
   getLastDocumentVisitAt: () => null,
   markDocumentVisitedNow: vi.fn(),
 }));
+
 vi.mock("../../../services/api-client", async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
-  return { ...orig, resolveWriterId: () => "test-user" };
+  return {
+    ...orig,
+    resolveWriterId: () => "test-user",
+  };
 });
 
 import { DocumentPage } from "../../../pages/DocumentPage";
 
-let sectionsFetchCount = 0;
+// REST snapshot carries both sections (canonical), but live existence is the
+// replica topology's job while ready.
+const sectionsResponse = {
+  sections: [
+    {
+      heading: "Alpha",
+      heading_path: ["Alpha"],
+      depth: 1,
+      content: "# Alpha\nseed alpha\n",
+      humanInvolvement_score: 0,
+      crdt_session_active: true,
+      section_length_warning: false,
+      word_count: 2,
+      fragment_key: "section::alpha",
+      section_file: "sec_alpha.md",
+    },
+    {
+      heading: "Beta",
+      heading_path: ["Beta"],
+      depth: 1,
+      content: "# Beta\nseed beta\n",
+      humanInvolvement_score: 0,
+      crdt_session_active: true,
+      section_length_warning: false,
+      word_count: 2,
+      fragment_key: "section::beta",
+      section_file: "sec_beta.md",
+    },
+  ],
+};
 
-function renderDocPage() {
-  return render(
-    <MemoryRouter initialEntries={["/docs/test.md"]}>
+function docTree() {
+  return (
+    <MemoryRouter initialEntries={["/docs/e6.md"]}>
       <Routes>
-        <Route path="/docs/*" element={<DocumentPage docPathOverride="test.md" />} />
+        <Route path="/docs/*" element={<DocumentPage docPathOverride="e6.md" />} />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
 }
 
-describe("E6: cross-client split must not silently vanish the current client's content", () => {
+describe("E6: cross-client silent-vanish guard — hub payload cannot drop a live section", () => {
   beforeEach(() => {
     capturedWsHandler = null;
-    sectionsFetchCount = 0;
+    replicaReady = false;
+    replicaTopology = [];
+    promoteToEditor.mockClear();
+    demoteToObserver.mockClear();
+    paintMarkdown.mockClear();
+    useLiveSectionReplicaMock.mockClear();
+
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
       const urlStr = String(url);
-      if (urlStr.includes("/sections")) {
-        sectionsFetchCount += 1;
+      if (urlStr.includes("/sections")) return jsonResponse(sectionsResponse);
+      if (urlStr.includes("/structure")) {
         return jsonResponse({
-          sections: [
-            {
-              heading: "Overview",
-              heading_path: ["Overview"],
-              depth: 1,
-              content: "# Overview\nPeer-visible body.\n",
-              humanInvolvement_score: 0,
-              crdt_session_active: false,
-              section_length_warning: false,
-              word_count: 2,
-              fragment_key: "frag:sec_overview",
-              section_file: "sec_overview.md",
-            },
+          structure: [
+            { heading: "Alpha", level: 1, children: [] },
+            { heading: "Beta", level: 1, children: [] },
           ],
         });
       }
-      if (urlStr.includes("/structure")) return jsonResponse({ structure: [] });
       return jsonResponse({});
     });
   });
@@ -153,37 +227,57 @@ describe("E6: cross-client split must not silently vanish the current client's c
     localStorage.clear();
   });
 
-  it("retains content and surfaces the replacement section on an inbound split", async () => {
-    const { container } = renderDocPage();
-    // Passive peer: not editing — the section renders as a static preview.
-    await waitFor(() => {
-      expect(screen.getByText(/Peer-visible body/)).toBeDefined();
-    });
-    const previewsBefore = container.querySelectorAll(".doc-prose").length;
-    expect(previewsBefore).toBe(1);
-    const fetchesBeforeSplit = sectionsFetchCount;
+  it("a lagging hub structure payload omitting Beta does NOT vanish it; only the CRDT topology can", async () => {
+    // Ready with both sections live.
+    replicaReady = true;
+    replicaTopology = [
+      { id: SectionId.brand("section::alpha"), headingPath: ["Alpha"] },
+      { id: SectionId.brand("section::beta"), headingPath: ["Beta"] },
+    ];
+    const { rerender } = render(docTree());
 
-    // Another writer's split arrives as a doc:structure-changed event: the survivor
-    // plus a brand-new promoted sibling. This client did not cause it.
-    capturedWsHandler?.({
-      type: "doc:structure-changed",
-      doc_path: "test.md",
-      sections: [
-        // The survivor carries its authoritative body — the real server builds this
-        // from canonical/proposal; the client never invents section metadata.
-        richStructureSection("Overview", ["Overview"], "frag:sec_overview", "# Overview\nPeer-visible body.\n"),
-        richStructureSection("Promoted", ["Promoted"], "frag:sec_promoted"),
-      ],
-    } as WsServerEvent);
-
-    // The replacement section appears (preview count grows) — never a vanish with
-    // nothing in its place…
     await waitFor(() => {
-      expect(container.querySelectorAll(".doc-prose").length).toBe(2);
+      expect(screen.getByText(new RegExp(ALPHA_BODY))).toBeDefined();
     });
-    // …the survivor's content is retained (not silently lost)…
-    expect(screen.getByText(/Peer-visible body/)).toBeDefined();
-    // …and no canonical refetch occurred — the event payload was the source.
-    expect(sectionsFetchCount).toBe(fetchesBeforeSplit);
+    expect(screen.getByText(new RegExp(BETA_BODY))).toBeDefined();
+
+    // A cross-client / lagging hub doc:structure-changed that DROPS Beta and rewrites
+    // Alpha's body. While the replica is authoritative this is non-authoritative and
+    // must be ignored — Beta must not silently vanish; Alpha must not adopt hub body.
+    act(() => {
+      capturedWsHandler?.({
+        type: "doc:structure-changed",
+        doc_path: "e6.md",
+        sections: [
+          {
+            heading: "Alpha",
+            heading_path: ["Alpha"],
+            depth: 1,
+            content: `# Alpha\n${HUB_ADOPTED_BODY}\n`,
+            agentWritePolicy: { canWrite: true, message: "ok" },
+            crdt_session_active: true,
+            section_length_warning: false,
+            word_count: 1,
+            fragment_key: "section::alpha",
+            section_file: "sec_alpha.md",
+          },
+        ],
+      } as unknown as WsServerEvent);
+    });
+
+    // Guard: Beta survives, Alpha keeps its live body, hub body never paints.
+    expect(screen.getByText(new RegExp(BETA_BODY))).toBeDefined();
+    expect(screen.getByText(new RegExp(ALPHA_BODY))).toBeDefined();
+    expect(screen.queryByText(new RegExp(HUB_ADOPTED_BODY))).toBeNull();
+
+    // Only a genuine ordered CRDT frame removes Beta: the replica topology drops it.
+    replicaTopology = [{ id: SectionId.brand("section::alpha"), headingPath: ["Alpha"] }];
+    rerender(docTree());
+
+    await waitFor(() => {
+      expect(screen.queryByText(new RegExp(BETA_BODY))).toBeNull();
+    });
+    // Alpha (still in topology) remains — the removal was surgical, not a wipe.
+    expect(screen.getByText(new RegExp(ALPHA_BODY))).toBeDefined();
   });
 });

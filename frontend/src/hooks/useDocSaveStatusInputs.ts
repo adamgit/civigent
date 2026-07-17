@@ -27,9 +27,17 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import type { BrowserFragmentReplicaStore } from "../services/browser-fragment-replica-store";
 import type { SessionAuthorshipView } from "../status/sessionAuthorship";
-import { useReceiptAllReceived, usePendingSections, useError } from "./useFragmentStoreHooks";
+
+/** Raw live inputs, read from the LiveSectionReplica view (single authority). */
+export interface DocSaveStatusRawInputs {
+  /** Guarantee A watermark: every local edit acknowledged received. */
+  allReceived: boolean;
+  /** Fragment keys with uncommitted (pending) live edits. */
+  pendingSectionKeys: readonly string[];
+  /** Server-reported durable failure (null when clean). */
+  backendError: string | null;
+}
 
 export interface DocSaveStatusInputs {
   /** Guarantee A: every local edit acknowledged received by the server. */
@@ -51,14 +59,12 @@ export interface DocSaveStatusInputs {
 }
 
 export function useDocSaveStatusInputs(
-  store: BrowserFragmentReplicaStore | null,
+  raw: DocSaveStatusRawInputs,
   isEditing: boolean,
   authorship: SessionAuthorshipView,
 ): DocSaveStatusInputs {
-  const allReceived = useReceiptAllReceived(store);
-  const pendingSections = usePendingSections(store);
-  const backendError = useError(store);
-  const pendingKeys = useMemo(() => [...pendingSections.keys()], [pendingSections]);
+  const { allReceived, backendError } = raw;
+  const pendingKeys = raw.pendingSectionKeys;
 
   // The intersection of server-truth pending and session authorship — the only
   // place it is computed, purely for rendering. `pendingSections` is the reactive

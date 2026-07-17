@@ -1,17 +1,17 @@
 import type { DocumentSection } from "../pages/document-page-utils";
 
 export interface SectionAuthorshipTarget {
-  /** UI lookup key. Uses fragment identity because several UI maps are section-instance keyed. */
   key: string;
-  /** Backend-owned canonical section file id, used only as the blame API target. */
   sectionFile: string;
-  /** Heading rendered outside the body-only attribution overlay. */
   heading: string | null;
-  /** Body-only markdown whose lines must align 1:1 with section-file blame. */
   bodyContent: string;
-  /** Re-fetch blame when the rendered body changes under the same section file. */
   revisionKey: string;
   validationError?: string;
+}
+
+export interface AuthorshipSourceOverrides {
+  resolveSectionFile?: (fragmentKey: string) => string | undefined;
+  resolveBody?: (fragmentKey: string) => string | undefined;
 }
 
 function trimTrailingNewlines(raw: string): string {
@@ -32,8 +32,8 @@ function stripHeadingFromSectionFragment(
     return { bodyContent: fragment };
   }
 
-  const heading = section.heading || section.heading_path[section.heading_path.length - 1] || "";
-  const expectedHeadingLine = `${"#".repeat(section.depth)} ${heading}`;
+  const heading = section.heading_path[section.heading_path.length - 1] || "";
+  const expectedHeadingLine = `${"#".repeat(Math.max(1, section.heading_path.length))} ${heading}`;
   const lines = fragment.length > 0 ? fragment.split("\n") : [];
 
   if (lines[0] !== expectedHeadingLine) {
@@ -54,10 +54,14 @@ function stripHeadingFromSectionFragment(
   return { bodyContent: trimTrailingNewlines(lines.slice(bodyStart).join("\n")) };
 }
 
-export function buildSectionAuthorshipTargets(sections: DocumentSection[]): SectionAuthorshipTarget[] {
+export function buildSectionAuthorshipTargets(
+  sections: DocumentSection[],
+  overrides: AuthorshipSourceOverrides = {},
+): SectionAuthorshipTarget[] {
   return sections.map((section, index) => {
     const errors: string[] = [];
-    const sectionFile = section.section_file;
+    const resolvedSectionFile = overrides.resolveSectionFile?.(section.fragment_key);
+    const sectionFile = (resolvedSectionFile ?? section.section_file) || "";
     if (sectionFile.trim().length === 0) {
       errors.push(`Cannot show authorship for ${sectionLabel(section)}: section_file is missing.`);
     }
@@ -65,7 +69,10 @@ export function buildSectionAuthorshipTargets(sections: DocumentSection[]): Sect
       errors.push(`Cannot show authorship for ${sectionLabel(section)}: fragment_key is missing.`);
     }
 
-    const stripped = stripHeadingFromSectionFragment(section);
+    const resolvedBody = overrides.resolveBody?.(section.fragment_key);
+    const bodySource: DocumentSection =
+      resolvedBody !== undefined ? { ...section, content: resolvedBody } : section;
+    const stripped = stripHeadingFromSectionFragment(bodySource);
     if (stripped.validationError) {
       errors.push(stripped.validationError);
     }

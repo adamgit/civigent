@@ -31,6 +31,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { processArbitratedClientUpdate, setCrdtEventHandler } from "../../ws/crdt-ws-coordinator.js";
+import { joinLiveRecipient } from "../helpers/live-recipient.js";
 import { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
 import type { FragmentContent, SectionBody } from "../../storage/section-formatting.js";
@@ -114,6 +115,7 @@ async function addEmptyNotesSection(dataRoot: string): Promise<void> {
 describe("no-op client update does not create a proposal", () => {
   let ctx: TempDataRootContext;
   let events: WsServerEvent[];
+  const disposers: Array<() => void> = [];
 
   beforeEach(async () => {
     ctx = await createTempDataRoot();
@@ -123,6 +125,7 @@ describe("no-op client update does not create a proposal", () => {
   });
 
   afterEach(async () => {
+    while (disposers.length) disposers.pop()!();
     destroyAllSessions();
     vi.useRealTimers();
     await ctx.cleanup();
@@ -167,6 +170,8 @@ describe("no-op client update does not create a proposal", () => {
   it("(d) a blocked key + a no-op key in one update: blocked reverted, no-op dropped, no proposal", async () => {
     await lockSectionWithCompetingProposal(["Timeline"]);
     const session = await openSession();
+    const live = await joinLiveRecipient(session);
+    disposers.push(live.dispose);
 
     const overviewSame = session.liveFragments.readFragmentString(OVERVIEW_KEY);
     const timelineEdit = buildFragmentContent((SAMPLE_SECTIONS.timeline + " blocked attempt") as SectionBody, 2, "Timeline");
@@ -176,8 +181,9 @@ describe("no-op client update does not create a proposal", () => {
     ]));
     await session.enqueue(() => processArbitratedClientUpdate(session, WRITER.id, update));
 
-    // Blocked Timeline emitted + reverted to its pre-edit content.
-    expect(events.some((e) => e.type === "section:blocked" && e.fragment_key === TIMELINE_KEY)).toBe(true);
+    // Blocked Timeline is in the live blocked set (ordered CRDT channel) + reverted
+    // to its pre-edit content.
+    expect(live.latestState().blocked_section_ids).toContain(TIMELINE_KEY);
     expect(session.liveFragments.readFragmentString(TIMELINE_KEY)).toBe(
       buildFragmentContent(SAMPLE_SECTIONS.timeline as SectionBody, 2, "Timeline"),
     );

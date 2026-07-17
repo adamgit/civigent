@@ -59,7 +59,7 @@ export function getSectionFragmentKey(section: DocumentSection): string {
  * is only ever called while a live CRDT session is active (the cold, no-session
  * refresh path uses a full `loadSections` reload instead). While a session is
  * live, the display authority for an existing section is its Y.Doc fragment —
- * read reactively via `useDisplaySectionMarkdown` — NOT the `.content` string on
+ * painted via `useLiveSectionReplica().paintMarkdown` — NOT the `.content` string on
  * these rows. So for a key that already existed in `prev`, we take order,
  * fragment key, heading/level/path identity and all other structural meta from
  * `fresh`, but keep the previous `.content` as a cold seed/fallback and never

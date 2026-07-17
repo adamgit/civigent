@@ -16,10 +16,12 @@
  *
  * It additionally asserts the client surfaces the new split section LIVE
  * (pre-commit): because the binary channel is FIFO per socket, the split Y.Doc
- * broadcast reaches the client BEFORE the `doc_publish_pause_start` frame, so at
+ * broadcast AND the ordered `LiveSectionsUpdateFrame` (0x15) carrying the fresh
+ * topology both reach the client BEFORE the `doc_publish_pause_start` frame, so at
  * the instant the client runs its barrier and acks, its real Y.Doc already carries
- * the promoted "Second Section" fragment — and the `doc:structure-changed`
- * app-event the frontend adopts is captured strictly before `content:committed`.
+ * the promoted "Second Section" fragment and its adopted live topology already
+ * lists it — strictly before `content:committed`. (The old `doc:structure-changed`
+ * app-event is gone; live topology authority is the CRDT frame now.)
  *
  * Harness note (assumptions.md 2026-06-24): the literal frontend `CrdtProvider`
  * class is browser-coupled (`window.location` at construction, the `apiClient` /
@@ -61,9 +63,13 @@ import {
   MSG_DOC_PUBLISH_PAUSE_START,
   MSG_DOC_PUBLISH_READY,
   MSG_DOC_PUBLISH_PAUSE_END,
+  MSG_LIVE_SECTIONS_BOOTSTRAP,
+  MSG_LIVE_SECTIONS_UPDATE,
+  decodeLiveSectionsBootstrap,
+  decodeLiveSectionsUpdate,
 } from "../../ws/crdt-ws-frames.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
-import type { WsServerEvent, DocStructureChangedEvent, ModeTransitionResult } from "../../types/shared.js";
+import type { WsServerEvent, WireLiveSectionsState, ModeTransitionResult } from "../../types/shared.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 const OVERVIEW_KEY = "section::overview";
@@ -108,6 +114,12 @@ class TestCrdtClient {
   /** Snapshot at the instant the client ran its barrier on pause-start: did its
    *  real Y.Doc already carry the live split section (pre-commit)? */
   sawSplitSectionAtPauseStart: boolean | null = null;
+  /** The most recent live-section topology (heading paths) delivered on the
+   *  ordered CRDT channel via a bootstrap/update frame carrying `state`. */
+  liveTopology: string[][] = [];
+  /** Snapshot: at pause-start, had the ordered CRDT structural frame already
+   *  delivered the promoted "Second Section" into the live topology? */
+  sawSplitInLiveTopologyAtPauseStart: boolean | null = null;
 
   constructor(port: number, token: string) {
     const encoded = SAMPLE_DOC_PATH.replace(/^\//, "");
@@ -184,10 +196,29 @@ class TestCrdtClient {
         this.pauseEndCount += 1;
         break;
       }
+      case MSG_LIVE_SECTIONS_BOOTSTRAP: {
+        this.adoptLiveState(decodeLiveSectionsBootstrap(payload).state);
+        break;
+      }
+      case MSG_LIVE_SECTIONS_UPDATE: {
+        const frame = decodeLiveSectionsUpdate(payload);
+        if (frame.state) this.adoptLiveState(frame.state);
+        break;
+      }
       case MSG_AWARENESS:
       default:
         break;
     }
+  }
+
+  /** Adopt the body-free live topology from an ordered CRDT frame (the redesign's
+   *  replacement for the removed `doc:structure-changed` app-event). */
+  private adoptLiveState(state: WireLiveSectionsState): void {
+    this.liveTopology = state.topology.map((t) => [...t.heading_path]);
+  }
+
+  private liveTopologyHasHeading(text: string): boolean {
+    return this.liveTopology.some((path) => path.at(-1) === text);
   }
 
   /** The publish-pause auto-ack barrier — a faithful copy of
@@ -201,6 +232,10 @@ class TestCrdtClient {
     // Pre-commit liveness: by FIFO ordering the split Y.Doc broadcast already
     // arrived, so the client's real Y.Doc should already carry "Second Section".
     this.sawSplitSectionAtPauseStart = this.hasSectionHeading("Second Section");
+    // Same FIFO guarantee for the ordered CRDT structural frame: the 0x15 update
+    // frame carrying the fresh topology is sent immediately after the Y.Doc
+    // broadcast (one structural fact), both strictly before the pause-start frame.
+    this.sawSplitInLiveTopologyAtPauseStart = this.liveTopologyHasHeading("Second Section");
 
     const send = (): void => {
       if (!this.publishPaused || this.publishReadySent) return;
@@ -328,26 +363,15 @@ describe("E7: true WS round-trip with client auto-ack (integration)", () => {
       expect(client.sawSplitSectionAtPauseStart).toBe(true);
       expect(client.hasSectionHeading("Second Section")).toBe(true);
 
-      // ── The doc:structure-changed app-event (what the frontend adopts) was
-      //    emitted BEFORE content:committed, and lists the promoted sibling. ──
-      const structureEvents = captured.filter(
-        (c): c is { order: number; event: DocStructureChangedEvent } =>
-          c.event.type === "doc:structure-changed",
-      );
-      expect(structureEvents.length).toBeGreaterThan(0);
-      const splitStructure = structureEvents.find((c) =>
-        c.event.sections.some((s) => SectionRef.headingKey(s.heading_path) === SectionRef.headingKey(["Second Section"])),
-      );
-      expect(splitStructure).toBeDefined();
-      const firstCommitted = captured.find((c) => c.event.type === "content:committed")!;
-      expect(splitStructure!.order).toBeLessThan(firstCommitted.order);
-
-      // The promoted sibling carries server-authoritative metadata (no fabrication).
-      const second = splitStructure!.event.sections.find(
-        (s) => SectionRef.headingKey(s.heading_path) === SectionRef.headingKey(["Second Section"]),
-      )!;
-      expect(second.heading).toBe("Second Section");
-      expect(second.fragment_key.length).toBeGreaterThan(0);
+      // ── The ordered CRDT structural frame (what the LiveSectionReplica adopts,
+      //    the redesign's replacement for the removed `doc:structure-changed`
+      //    app-event) had already delivered the promoted sibling into the live
+      //    topology at pause-start — i.e. strictly before commit. ──
+      expect(client.sawSplitInLiveTopologyAtPauseStart).toBe(true);
+      // The final live topology carries "Second Section" with its own fragment key.
+      const second = client.liveTopology.find((path) => path.at(-1) === "Second Section");
+      expect(second).toBeDefined();
+      expect(SectionRef.headingKey(second!)).toBe(SectionRef.headingKey(["Second Section"]));
 
       // ── The auto-ack actually drove the commit to canonical. ──
       expect(session!.generator.hasCurrentProposal()).toBe(false);

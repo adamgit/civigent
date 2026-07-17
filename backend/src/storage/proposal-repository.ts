@@ -926,6 +926,30 @@ export async function rollbackCommittingToDraft(id: ProposalId): Promise<AnyProp
 }
 
 /**
+ * Demote a `pending` transient proposal to `draft` after the agent write policy
+ * declined its immediate commit. A blocked Tier 1/2 write is returned to the
+ * agent as a durable draft it can retry or withdraw by `proposal_id`; leaving it
+ * in `pending/` would make it startup-recovery debris (pending is discarded on
+ * restart) despite the tool having reported `status: "draft"`.
+ */
+export async function demoteTransientProposalToDraft(id: ProposalId): Promise<AnyProposal> {
+  const proposal = await readProposal(id);
+  if (proposal.status !== "pending") {
+    throw new InvalidProposalStateError(
+      `Cannot demote proposal ${id} to draft: status is ${proposal.status}, expected pending.`,
+    );
+  }
+
+  // Pure directory rename — no metadata change needed
+  const fromDir = proposalDir("pending", id);
+  const toDir = proposalDir("draft", id);
+  await mkdir(statusDir("draft"), { recursive: true });
+  await rename(fromDir, toDir);
+
+  return { ...proposal, status: "draft" };
+}
+
+/**
  * Return a `committing` proposal to `inprogress` after a runtime publish failure.
  *
  * Per spec 02 "Why `committing` as a transient guard state", a human / DocSession
