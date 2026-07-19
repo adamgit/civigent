@@ -8,10 +8,12 @@
  *
  * The redesign retires the store-backed display understudy entirely: the single
  * display authority is `useLiveSectionReplica().paintMarkdown(id, seed)` — the live
- * fragment (`requireLiveSection(id).readMarkdown()`) once the replica has an
- * authoritative bootstrap, the cold seed ONLY while not bootstrapped / off-topology.
- * So once the live fragment exists the poisoned seed can never reach paint. The local
- * `paint()` helper below mirrors that hook logic exactly.
+ * fragment (`getLiveSection(id).readMarkdown()`) once the replica has an
+ * authoritative bootstrap, the cold seed ONLY while not bootstrapped. Once ready,
+ * painting an id that is not in the live topology is a CALLER BUG and throws —
+ * returning the seed there would resurrect pre-live REST text for a section a
+ * split/merge/delete already removed. The local `paint()` helper below mirrors
+ * that hook logic exactly.
  */
 
 import { describe, it, expect } from "vitest";
@@ -34,17 +36,18 @@ function writeFragment(doc: Y.Doc, key: string, markdown: string): void {
 
 /**
  * The redesign display authority, exactly as `useLiveSectionReplica().paintMarkdown`
- * implements it: live fragment once bootstrapped + in topology, the cold seed
- * otherwise. Never the store-backed understudy (retired).
+ * implements it: cold seed only while not bootstrapped; live fragment once
+ * bootstrapped + in topology; ready + off-topology throws (seed resurrection is
+ * illegal after live authority exists). Never the store-backed understudy (retired).
  */
 function paint(
   replica: ReturnType<typeof createLiveSectionReplica>,
   id: SectionId,
   seed: string,
 ): string {
-  if (!replica.hasAuthoritativeBootstrap) return seed;
-  const handle = replica.requireLiveSection(id);
-  return handle ? handle.readMarkdown() : seed;
+  if (!replica.isCurrentlyLiveAuthority) return seed;
+  // getLiveSection throws for an off-topology id — seed resurrection is illegal.
+  return replica.getLiveSection(id).readMarkdown();
 }
 
 /** A bootstrap doc carrying the CORRECT post-split fragments. */
@@ -70,7 +73,7 @@ function state(): WireLiveSectionsState {
 describe("click-to-edit after consecutive-H1 split: the poisoned seed cannot paint", () => {
   it("paints the survivor's live fragment, NOT the poisoned multi-H1 seed", () => {
     const replica = createLiveSectionReplica();
-    replica.applyBootstrap({ docSessionId: "s", state: state(), yjsUpdate: postSplitUpdate() });
+    replica.bindToDocSession({ docSessionId: "s", state: state(), yjsUpdate: postSplitUpdate() });
 
     // Paint the survivor with the POISONED pre-split seed passed as the cold seed:
     // once bootstrapped the seed is ignored and the live fragment wins.
@@ -86,12 +89,14 @@ describe("click-to-edit after consecutive-H1 split: the poisoned seed cannot pai
     expect(paintedHeading2).not.toContain("# heading 1");
   });
 
-  it("off-topology after a split falls back to the cold seed (only when there is no live fragment)", () => {
-    // Bootstrap with ONLY the survivor in topology; a not-yet-present key paints its seed.
+  it("off-topology after ready THROWS — the cold seed is never resurrected", () => {
+    // Bootstrap with ONLY the survivor in topology; painting a removed/unknown
+    // key once live authority exists is a caller bug and must fail loud, not
+    // silently paint pre-live REST text.
     const doc = new Y.Doc();
     writeFragment(doc, SEC_1, "# heading 1\n\nsurvivor body");
     const replica = createLiveSectionReplica();
-    replica.applyBootstrap({
+    replica.bindToDocSession({
       docSessionId: "s",
       state: {
         topology: [{ fragment_key: SEC_1, heading_path: ["heading 1"] }],
@@ -104,14 +109,17 @@ describe("click-to-edit after consecutive-H1 split: the poisoned seed cannot pai
 
     // SEC_1 is live → fragment wins over the poisoned seed.
     expect(paint(replica, SectionId.brand(SEC_1), MULTI_H1)).not.toContain("# heading 2");
-    // SEC_2 is NOT in topology → the cold seed is the only available text.
-    expect(paint(replica, SectionId.brand(SEC_2), "# heading 2\n")).toBe("# heading 2\n");
+    // SEC_2 is NOT in topology → painting it is illegal after ready; the seed
+    // must NOT come back.
+    expect(() => paint(replica, SectionId.brand(SEC_2), "# heading 2\n")).toThrow(
+      /not in the live topology/,
+    );
   });
 
   it("before any bootstrap (cold) the seed is the only available paint", () => {
     // Pre-live / no-session: the replica is not authoritative, so paint the seed verbatim.
     const replica = createLiveSectionReplica();
-    expect(replica.hasAuthoritativeBootstrap).toBe(false);
+    expect(replica.isCurrentlyLiveAuthority).toBe(false);
     expect(paint(replica, SectionId.brand(SEC_1), "# heading 1\n")).toBe("# heading 1\n");
   });
 });

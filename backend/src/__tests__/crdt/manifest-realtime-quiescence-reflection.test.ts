@@ -29,6 +29,7 @@ import { acquireDocSession, destroyAllSessions, type DocSession } from "../../cr
 import {
   armQuiescenceTimer,
   registerFakeEditorSocketForTest,
+  requestDocSessionPublish,
   resetCoordinatorPublishStateForTest,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
@@ -39,7 +40,7 @@ import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import {
   readProposal,
-  getOrCreateInProgressProposalForDocSession,
+  getOrCreateInProgressProposalForAdoptionId,
   updateCurrentProposalSections,
 } from "../../storage/proposal-repository.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
@@ -47,7 +48,7 @@ import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { readSection } from "../../storage/section-reader.js";
 import { reflectMergeIntoProposal } from "../../crdt/structural-appliers.js";
 import type { StructuralMergePlan } from "../../crdt/structural-appliers.js";
-import type { DocSessionId } from "../../types/shared.js";
+import { ProposalAdoptionId } from "../../types/shared.js";
 import { SectionRef } from "../../domain/section-ref.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
@@ -197,14 +198,18 @@ describe("real-time proposal-manifest reflection at quiescence (publish deferred
       session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
       await session.generator.materializeEdit({ touchedFragmentKeys: [OVERVIEW_KEY] });
 
-      // Quiesce → off-lane pause (the manifest reflects the split but nothing has
-      // committed yet, exactly as the deferred-publish tests above assert).
+      // Quiesce → normalization only (the manifest reflects the split but nothing
+      // has committed and no pause has started).
       await fireQuiescence(session);
+      expect(session.publishPause.isActive()).toBe(false);
 
-      // Now ack the pause to drive the real commit, and assert CANONICAL content —
-      // not just the in-progress proposal manifest. The promoted sibling section
-      // and the survivor's retained body must both reach canonical.
+      // Drive the publish explicitly, then ack the pause to drive the real commit,
+      // and assert CANONICAL content — not just the in-progress proposal manifest.
+      // The promoted sibling section and the survivor's retained body must both
+      // reach canonical.
+      const publishPromise = requestDocSessionPublish(SAMPLE_DOC_PATH);
       await ackPauseAndCommit(session, "editor-sock");
+      await publishPromise;
       expect(session.generator.hasCurrentProposal()).toBe(false);
 
       expect(await readSection(SAMPLE_DOC_PATH, ["Second Section"])).toContain("brand new sibling body");
@@ -293,8 +298,8 @@ describe("real-time proposal-manifest reflection at quiescence (publish deferred
     // descendant is never re-inherited and the deleted `Beta` heading stays
     // claimed-but-absent).
     const docPath = "/test/keep-children.md";
-    const created = await getOrCreateInProgressProposalForDocSession({
-      docSessionId: "ds-keep-children" as DocSessionId,
+    const created = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId: ProposalAdoptionId.fromStoredValue("ds-keep-children"),
       docPath,
       writer: WRITER,
     });

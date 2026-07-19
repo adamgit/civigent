@@ -5,7 +5,7 @@ import type { GovernanceSectionControl } from "../../components/GovernanceLeftGu
 
 function genericSection(overrides: Partial<GovernanceSectionControl> = {}): GovernanceSectionControl {
   return {
-    sectionIndex: 0,
+    fragmentKey: "frag:sec_overview",
     heading: "Overview",
     canWrite: true,
     message: "Agents can currently write to this section.",
@@ -63,14 +63,14 @@ describe("GovernanceLeftGutter", () => {
       <GovernanceLeftGutter
         onRestrictAgents={onRestrictAgents}
         sections={[genericSection({
-          sectionIndex: 2,
+          fragmentKey: "frag:sec_auto",
           humanInvolvement: { involvementScore: 5, agentTier: "auto", gates: [] },
         })]}
       />,
     );
     const btn = screen.getByText("Override: restrict agents");
     fireEvent.click(btn);
-    expect(onRestrictAgents).toHaveBeenCalledWith(2);
+    expect(onRestrictAgents).toHaveBeenCalledWith("frag:sec_auto");
   });
 
   it("does not render the restrict-agents affordance for the generic (no-details) path", () => {

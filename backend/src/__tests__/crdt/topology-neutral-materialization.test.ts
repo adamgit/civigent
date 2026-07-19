@@ -20,7 +20,7 @@ import { join, dirname } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
-import { armQuiescenceTimer } from "../../ws/crdt-ws-coordinator.js";
+import { armQuiescenceTimer, requestDocSessionPublish } from "../../ws/crdt-ws-coordinator.js";
 import { BEFORE_FIRST_HEADING_KEY } from "../../crdt/ydoc-fragments.js";
 import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
@@ -74,12 +74,11 @@ describe("topology-neutral materialization (priority-0 heading-in-body bug)", ()
     await ctx.cleanup();
   });
 
-  it("(item 10) per-edit materialize of a headed section is verbatim — embedded heading creates no section", async () => {
+  it("(item 10) per-edit materialize of a section-split does not create sections or write under the pre-split address", async () => {
     await createSampleDocument(ctx.rootDir);
     const baseHead = await getHeadSha(getDataRoot());
     const session = await acquireDocSession(SAMPLE_DOC_PATH, WRITER.id, baseHead, WRITER, "sock-1");
 
-    // Author types an embedded sub-heading into the Overview fragment.
     const dirty = "## Overview\n\nbase overview body\n\n### Sub\n\nsub body text" as FragmentContent;
     session.liveFragments.replaceFragmentString(OVERVIEW_KEY, dirty);
     session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
@@ -87,16 +86,13 @@ describe("topology-neutral materialization (priority-0 heading-in-body bug)", ()
     const proposalId = await session.generator.materializeEdit({ touchedFragmentKeys: [OVERVIEW_KEY] });
     const reader = ProposalReader.open(proposalId, "inprogress");
 
-    // NO `Sub` section was created on the keystroke materialize.
     const headingPaths = await reader.listHeadingPaths(SAMPLE_DOC_PATH);
     const headed = headingPaths.filter((p) => p.length > 0);
     expect(headed).toEqual([["Overview"], ["Timeline"]]);
 
-    // Overview body holds the literal `### Sub` text verbatim.
     const overviewBody = await reader.readSection(SAMPLE_DOC_PATH, ["Overview"]);
-    expect(overviewBody).toContain("### Sub");
-    expect(overviewBody).toContain("base overview body");
-    expect(overviewBody).toContain("sub body text");
+    expect(overviewBody).not.toContain("### Sub");
+    expect(overviewBody).not.toContain("sub body text");
   });
 
   it("(item 11) BFH embedded heading is promoted EXACTLY once at quiescence", async () => {
@@ -112,9 +108,12 @@ describe("topology-neutral materialization (priority-0 heading-in-body bug)", ()
     session.fragmentLastActivity.set(BEFORE_FIRST_HEADING_KEY, Date.now());
     await session.generator.materializeEdit({ touchedFragmentKeys: [BEFORE_FIRST_HEADING_KEY] });
 
-    // Quiescence normalizes the settled embedded heading and (no live editor
-    // sockets attached) autonomously publishes the settled frontier to canonical.
+    // Quiescence normalizes the settled embedded heading (no publish); the
+    // explicit publish (no live editor sockets attached → inline) commits it.
     await fireQuiescence(session);
+    expect(session.generator.hasCurrentProposal()).toBe(true);
+    await requestDocSessionPublish(BFH_DOC_PATH);
+    await drainLane(session);
 
     // Exactly one headed section `h3 added`, no partial/duplicate headings.
     const layout = await resolveLiveSectionLayout(BFH_DOC_PATH, null);
@@ -141,8 +140,11 @@ describe("topology-neutral materialization (priority-0 heading-in-body bug)", ()
     session.fragmentLastActivity.set(BEFORE_FIRST_HEADING_KEY, Date.now());
     await session.generator.materializeEdit({ touchedFragmentKeys: [BEFORE_FIRST_HEADING_KEY] });
 
-    // Quiescence normalizes + autonomously publishes to canonical (no editors).
+    // Quiescence normalizes only; the explicit publish commits to canonical.
     await fireQuiescence(session);
+    expect(session.generator.hasCurrentProposal()).toBe(true);
+    await requestDocSessionPublish(BFH_DOC_PATH);
+    await drainLane(session);
     expect(session.generator.hasCurrentProposal()).toBe(false); // published
 
     // Canonical now holds exactly one heading and the preamble as BFH body.
@@ -195,8 +197,10 @@ describe("topology-neutral materialization (priority-0 heading-in-body bug)", ()
       await session.generator.materializeEdit({ touchedFragmentKeys: [BEFORE_FIRST_HEADING_KEY] });
     }
 
-    // Normalization fires only once, at the end, then autonomously publishes.
+    // Normalization fires only once, at the end; the explicit publish commits.
     await fireQuiescence(session);
+    await requestDocSessionPublish(BFH_DOC_PATH);
+    await drainLane(session);
 
     const canonicalLayout = await resolveLiveSectionLayout(BFH_DOC_PATH, null);
     const headings = canonicalLayout.map((e) => e.heading).filter(Boolean);

@@ -398,15 +398,10 @@ export function registerProposalRoutes(
           acquiredProposal.intent,
           acquiredProposal.sections,
         );
-        // MW-5: a competing proposal just acquired an exclusive FSM lock
-        // (draft → inprogress). Every section it now owns is read-only for any
-        // live editor — emit `section:blocked` keyed by fragment_key/heading_path.
         for (const [docPath, headingPaths] of groupSectionsByDocPath(
           acquiredProposal.sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
         )) {
           await emitSectionBlockState(onWsEvent, docPath, headingPaths, "section:blocked");
-          // Editability is live authority: refresh the live session's blocked set
-          // on the ordered CRDT channel (app-WS `section:blocked` is cold-only now).
           await refreshLiveSectionsState(docPath);
         }
       }
@@ -460,8 +455,6 @@ export function registerProposalRoutes(
 
       emitContentCommittedEventsByDoc(onWsEvent, writer, [writer.id], result.committedHead, result.sections);
 
-      // MW-5: committing releases the proposal's exclusive FSM lock. The sections
-      // it held are now committed-and-free → emit `section:unblocked`.
       for (const [docPath, headingPaths] of groupSectionsByDocPath(result.sections)) {
         await emitSectionBlockState(onWsEvent, docPath, headingPaths, "section:unblocked");
         await refreshLiveSectionsState(docPath);
@@ -503,8 +496,6 @@ export function registerProposalRoutes(
 
       emitProposalWithdrawnEventsByDoc(onWsEvent, result.proposalId, result.sections);
 
-      // MW-5: withdrawing releases the proposal's exclusive FSM lock (if it held
-      // one). Any sections it locked return to editable → emit `section:unblocked`.
       for (const [docPath, headingPaths] of groupSectionsByDocPath(result.sections)) {
         await emitSectionBlockState(onWsEvent, docPath, headingPaths, "section:unblocked");
         await refreshLiveSectionsState(docPath);

@@ -27,7 +27,7 @@ type BadgeProps = ComponentProps<typeof SummaryWhoChangedThisSection> & {
 
 function renderBadge(props: BadgeProps) {
   return render(
-    <SectionHoverProvider activeSectionIndex={0}>
+    <SectionHoverProvider activeFragmentKey="section::alpha">
       <SummaryWhoChangedThisSection {...props} />
     </SectionHoverProvider>,
   );
@@ -44,7 +44,7 @@ describe("SummaryWhoChangedThisSection canonical vs uncommitted overlay", () => 
       editorName: "Alice",
       secondsAgo: 5,
       writerType: "human",
-      sectionIndex: 0,
+      fragmentKey: "section::alpha",
       uncommittedChanges: false,
     });
 
@@ -52,13 +52,13 @@ describe("SummaryWhoChangedThisSection canonical vs uncommitted overlay", () => 
     expect(screen.queryByText(/uncommitted changes here/i)).toBeNull();
 
     rerender(
-      <SectionHoverProvider activeSectionIndex={0}>
+      <SectionHoverProvider activeFragmentKey="section::alpha">
         <SummaryWhoChangedThisSection
           editorId="alice"
           editorName="Alice"
           secondsAgo={5}
           writerType="human"
-          sectionIndex={0}
+          fragmentKey="section::alpha"
           {...{ uncommittedChanges: true }}
         />
       </SectionHoverProvider>,

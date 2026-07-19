@@ -11,8 +11,8 @@
  *
  *   - `YDocLifecycleManager` (module-level functions + `sessions` map): live
  *     session lookup, acquire de-dup / in-flight promise, holder/refcount,
- *     sync/join ordering (`joinSession`), replacement invalidation, `docSessionId`,
- *     rekey, observer holder add/remove, pending-replacement-notice.
+ *     replacement invalidation, `docSessionId`, rekey, observer holder
+ *     add/remove, pending-replacement-notice.
  *
  *   - `DocSession` actor lane: a single-threaded ordered command stream owning one
  *     live document (spec 10 §DocSession actor ownership). All commands that can
@@ -31,11 +31,11 @@
 
 import * as Y from "yjs";
 import { getContentRoot } from "../storage/data-root.js";
-import type {
-  WriterIdentity,
-  WsServerEvent,
-  DocumentReplacementNoticePayload,
+import {
+  type WriterIdentity,
+  type DocumentReplacementNoticePayload,
   DocSessionId,
+  ProposalAdoptionId,
 } from "../types/shared.js";
 import { LiveFragmentStringsStore } from "./live-fragment-strings-store.js";
 import {
@@ -49,7 +49,10 @@ import {
   CRDTProposalGenerator,
   type LiveDocumentSource,
   type LiveSectionSnapshot,
+  type LiveSectionsSnapshotResult,
+  type AwaitingStructuralReconciliationSection,
 } from "./crdt-proposal-generator.js";
+import { classifyStructuralChange } from "./structural-change.js";
 import { DocSessionPublishPause } from "./docsession-publish-pause.js";
 
 // ─── Session state machine ───────────────────────────────────────
@@ -103,6 +106,7 @@ export interface DocSession {
   /** Last edit timestamp per live fragment key. Read by the quiescence command
    *  in the WS coordinator (MW-1b/MW-2) to decide when a fragment has settled. */
   fragmentLastActivity: Map<string, number>;
+  dirtyFragmentKeys: Set<string>;
   /**
    * Fragment keys that a quiescence structural normalization REMOVED this session
    * (heading-deletion merge, empty-BFH dissolve, no-predecessor→BFH), mapped to
@@ -122,8 +126,8 @@ export interface DocSession {
   /** All writers who produced at least one edit during this session;
    *  used to build the git co-author list at commit time. */
   contributors: Map<string, WriterIdentity>;
-  /** Explicit identity boundary for this live Y.Doc lifetime. */
-  docSessionId: DocSessionId;
+  proposalAdoptionId: ProposalAdoptionId;
+  liveYDocId: DocSessionId;
   /** The boundary component owning live↔canonical proposal materialization. */
   generator: CRDTProposalGenerator;
   /** Per-DocSession publish-pause FSM (never global). */
@@ -174,7 +178,7 @@ export function lookupDocSession(docPath: string): DocSession | undefined {
 }
 
 export function getDocSessionId(docPath: string): DocSessionId | null {
-  return sessions.get(docPath)?.docSessionId ?? null;
+  return sessions.get(docPath)?.liveYDocId ?? null;
 }
 
 export function getAllSessions(): Map<string, DocSession> {
@@ -231,14 +235,39 @@ interface LiveDocumentSourceDeps {
 
 function makeLiveDocumentSource(deps: LiveDocumentSourceDeps): LiveDocumentSource {
   return {
-    async snapshotSections(): Promise<LiveSectionSnapshot[]> {
+    async snapshotSections(): Promise<LiveSectionsSnapshotResult> {
       const { resolveLiveSectionLayout } = await import("./live-section-layout.js");
       const layout = await resolveLiveSectionLayout(deps.docPath, deps.getCurrentProposalId());
-      const snapshots: LiveSectionSnapshot[] = [];
+      const sections: LiveSectionSnapshot[] = [];
+      const awaitingStructuralReconciliation: AwaitingStructuralReconciliationSection[] = [];
       for (const entry of layout) {
         const fragment = deps.liveFragments.readFragmentString(entry.fragmentKey);
+        if (entry.headingPath.length === 0) {
+          sections.push({
+            headingPath: [...entry.headingPath],
+            heading: entry.heading,
+            level: entry.level,
+            body: stripHeadingFromFragment(fragment, 0),
+            fragmentKey: entry.fragmentKey,
+          });
+          continue;
+        }
+        const change = classifyStructuralChange(fragment, {
+          headingPath: entry.headingPath,
+          heading: entry.heading,
+          level: entry.level,
+        });
+        if (change.kind !== "clean") {
+          awaitingStructuralReconciliation.push({
+            fragmentKey: entry.fragmentKey,
+            headingPath: [...entry.headingPath],
+            heading: entry.heading,
+            level: entry.level,
+          });
+          continue;
+        }
         const body = stripHeadingFromFragment(fragment, entry.level);
-        snapshots.push({
+        sections.push({
           headingPath: [...entry.headingPath],
           heading: entry.heading,
           level: entry.level,
@@ -246,7 +275,7 @@ function makeLiveDocumentSource(deps: LiveDocumentSourceDeps): LiveDocumentSourc
           fragmentKey: entry.fragmentKey,
         });
       }
-      return snapshots;
+      return { sections, awaitingStructuralReconciliation };
     },
     contributingWriterIds(): Iterable<string> {
       return deps.contributors.keys();
@@ -324,7 +353,7 @@ async function constructDocSession(
   // Durable in-flight state, if any, lives in the existing `inprogress` proposal
   // content tree. Source the skeleton + bodies from there when present; else
   // canonical only. (C1) When such a proposal exists we ADOPT it — reusing its
-  // `docSessionId` so the generator's lazy `ensureCurrentProposal` lookup
+  // `proposalAdoptionId` so the generator's lazy `ensureCurrentProposal` lookup
   // resolves to the SAME proposal rather than forking a second one on the first
   // edit after restart/remount (spec 10 §One active proposal per DocSession).
   const inProgressMatches = await listInProgressProposalsForDoc(docPath);
@@ -346,11 +375,13 @@ async function constructDocSession(
     ? proposalContentRoot(existingInProgress.id, "inprogress")
     : canonicalRoot;
 
-  // (C1) Adopt the existing proposal's DocSession identity when present. Fall
+  // (C1) Adopt the existing proposal's adoption identity when present. Fall
   // back to a fresh id only when there is no proposal to adopt, or — defensively
-  // — when a legacy proposal is missing its `docSessionId` (in which case the
-  // explicit `initialProposalId` below still binds the generator to it).
-  const docSessionId = existingInProgress?.docSessionId ?? crypto.randomUUID();
+  // — when a legacy proposal is missing its `proposalAdoptionId` (in which case
+  // the explicit `initialProposalId` below still binds the generator to it).
+  const proposalAdoptionId = existingInProgress?.proposalAdoptionId
+    ?? ProposalAdoptionId.create();
+  const liveYDocId = DocSessionId.create();
 
   // Manifest-overlay (U3 / D5): seed via the SAME merge as every other proposal
   // read — current canonical overlaid by the adopted proposal's structural changes.
@@ -399,7 +430,7 @@ async function constructDocSession(
 
   const generator: CRDTProposalGenerator = new CRDTProposalGenerator({
     docPath,
-    docSessionId,
+    proposalAdoptionId,
     writer: { id: writerId, type: "human", displayName: writerId },
     // The source reads `getCurrentProposalId` lazily; `generator` is assigned by
     // the time any snapshot runs, so referencing it here is safe (it is never
@@ -411,8 +442,8 @@ async function constructDocSession(
       getCurrentProposalId: () => generator.getCurrentProposalId(),
     }),
     // (C1) Bind the generator to the adopted proposal explicitly, so first-edit
-    // materialization targets it even if the docSessionId keying ever changes
-    // (and as the sole binding for a legacy proposal lacking a docSessionId).
+    // materialization targets it even if the adoption-id keying ever changes
+    // (and as the sole binding for a legacy proposal lacking a `proposalAdoptionId`).
     initialProposalId: existingInProgress?.id,
   });
 
@@ -424,13 +455,15 @@ async function constructDocSession(
     holders: new Map(),
     observerSocketIds: new Set(),
     fragmentLastActivity: new Map(),
+    dirtyFragmentKeys: new Set(),
     removedFragmentTombstones: new Map(),
     lastActivityAt: Date.now(),
     createdAt: Date.now(),
     baseHead,
     lastWriterId: writerId,
     contributors,
-    docSessionId,
+    proposalAdoptionId,
+    liveYDocId,
     generator,
     publishPause: new DocSessionPublishPause(),
     enqueue,
@@ -554,6 +587,7 @@ export function noteFragmentActivity(
 ): void {
   const now = Date.now();
   session.fragmentLastActivity.set(fragmentKey, now);
+  session.dirtyFragmentKeys.add(fragmentKey);
   session.lastWriterId = writerId;
   session.lastActivityAt = now;
   session.contributors.set(writerId, session.holders.get(writerId)?.identity ?? {
@@ -567,50 +601,6 @@ export function updateActivity(docPath: string): void {
   const session = sessions.get(docPath);
   if (!session) return;
   session.lastActivityAt = Date.now();
-}
-
-// ─── Join (atomic sync) ──────────────────────────────────────────
-
-/** MSG_SYNC_STEP_1 byte value — must match crdt-ws-frames.ts. */
-const MSG_SYNC_STEP_1_BYTE = 0x00;
-/** MSG_SYNC_STEP_2 byte value — must match crdt-ws-frames.ts. */
-const MSG_SYNC_STEP_2_BYTE = 0x01;
-
-/**
- * Perform the atomic join sequence for a socket connecting to a session:
- *   1. Send SYNC_STEP_2 with the full Y.Doc state so the client receives all
- *      current content immediately (critical for pre-connected observers whose
- *      SYNC_STEP_1 was dropped because no session existed at the time). This
- *      is the sole authoritative bootstrap of client state — the backend
- *      DocSession Y.Doc is the source of truth.
- *   2. Send SYNC_STEP_1 (server's state vector) so the client can complete its
- *      Yjs sync protocol round-trip. The client's SYNC_STEP_2 reply is IGNORED
- *      as a document mutation by the coordinator (offline client document
- *      content is unsupported in this architecture); any client edits must
- *      enter the DocSession via MSG_YJS_UPDATE so they pass through
- *      `processArbitratedClientUpdate` (acceptance gate + materialization).
- *
- * `emitPresenceEvent` is retained as a no-op-friendly hook for the coordinator's
- * join ordering; presence replay was removed with the focus protocol.
- */
-export function joinSession(
-  session: DocSession,
-  sendRaw: (msg: Uint8Array) => void,
-  _emitPresenceEvent: (event: WsServerEvent) => void,
-): void {
-  assertState(session, ["active"]);
-
-  const fullUpdate = Y.encodeStateAsUpdate(session.ydoc);
-  const syncStep2 = new Uint8Array(1 + fullUpdate.length);
-  syncStep2[0] = MSG_SYNC_STEP_2_BYTE;
-  syncStep2.set(fullUpdate, 1);
-  sendRaw(syncStep2);
-
-  const sv = Y.encodeStateVector(session.ydoc);
-  const syncStep1 = new Uint8Array(1 + sv.length);
-  syncStep1[0] = MSG_SYNC_STEP_1_BYTE;
-  syncStep1.set(sv, 1);
-  sendRaw(syncStep1);
 }
 
 // ─── Observer socket tracking (NOT holders) ──────────────────────

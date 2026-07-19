@@ -16,6 +16,7 @@ import { acquireDocSession, destroyAllSessions, type DocSession } from "../../cr
 import {
   armQuiescenceTimer,
   registerFakeEditorSocketForTest,
+  requestDocSessionPublish,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
@@ -96,8 +97,17 @@ describe("autonomous publish synthesizes the audit-log commit description", () =
     );
     await drainLane(session);
 
+    expect(session.publishPause.isActive()).toBe(false);
+    expect(session.generator.hasCurrentProposal()).toBe(true);
+
+    const publishPromise = requestDocSessionPublish(SAMPLE_DOC_PATH);
+    for (let i = 0; i < 50 && !session.publishPause.isActive(); i++) {
+      await vi.advanceTimersByTimeAsync(1);
+    }
+
     // Off-lane path: ack the pause to drive the editor-ack commit.
     await ackPauseAndCommit(session, EDITOR_SOCKET);
+    await publishPromise;
     expect(session.generator.hasCurrentProposal()).toBe(false);
 
     const message = await gitExec(["log", "-1", "--format=%B"], getDataRoot());

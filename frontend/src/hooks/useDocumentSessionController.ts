@@ -1,41 +1,28 @@
-/**
- * useDocumentSessionController — composition layer for a document page's
- * NON-transport session state: focus, editor registry, and proposal drafting.
- *
- * The live transport (observer/editor sockets, Y.Doc, awareness, publish
- * pause, connection state) is owned exclusively by `useLiveSectionReplica`;
- * this hook only READS the live replica view for editability/pause gates and
- * presence. Proposal drafting remains the separate cold/proposal authority.
- */
-
 import { useCallback, useEffect, useMemo } from "react";
 import type React from "react";
-import {
-  getSectionFragmentKey,
-  type DocumentSection,
-} from "../pages/document-page-utils";
+import type { WorkspaceSectionDto } from "../pages/document-page-utils";
 import type { ProposalDTO } from "../types/shared.js";
 import type { ProposalSectionAvailabilityEvent } from "../types/shared.js";
 import type { MilkdownEditorHandle } from "../components/MilkdownEditor";
 import { LocalPresence } from "../services/local-presence";
-import { SectionId } from "../types/live-sections";
+import { SectionId, type RenderSectionRef } from "../types/live-sections";
 import type { LiveSectionReplicaView } from "./useLiveSectionReplica";
-import { useSectionFocus, type PendingEditorFocus } from "./useSectionFocus";
+import { useSectionFocus, type PendingFragmentCaretTarget } from "./useSectionFocus";
 import { useEditorRegistry } from "./useEditorRegistry";
 import { useProposalDrafting } from "./useProposalDrafting";
 
 export interface UseDocumentSessionControllerParams {
   decodedDocPath: string | null;
-  sections: DocumentSection[];
+  sections: readonly RenderSectionRef[];
+  workspaceSections: WorkspaceSectionDto[];
   setError: (e: string | null) => void;
-  loadSections: (docPath: string) => Promise<DocumentSection[]>;
-  /** The single live transport owner's view (read-only here). */
+  loadSections: (docPath: string) => Promise<WorkspaceSectionDto[]>;
   liveReplica: LiveSectionReplicaView;
 }
 
 export interface UseDocumentSessionControllerReturn {
-  focusedSectionIndex: number | null;
-  setFocusedSectionIndex: React.Dispatch<React.SetStateAction<number | null>>;
+  bootstrapFocusedSectionIndex: number | null;
+  setBootstrapFocusedSectionIndex: React.Dispatch<React.SetStateAction<number | null>>;
   readyEditors: Set<string>;
   setReadyEditors: React.Dispatch<React.SetStateAction<Set<string>>>;
   proposalMode: boolean;
@@ -54,11 +41,8 @@ export interface UseDocumentSessionControllerReturn {
   proposalSectionConflicts: Map<string, string>;
   proposalOverlayVersion: number;
 
-  mountedEditorFragmentKeysRef: React.MutableRefObject<Set<string>>;
   editorRefs: React.MutableRefObject<Map<string, MilkdownEditorHandle>>;
-  pendingFocusRef: React.MutableRefObject<PendingEditorFocus | null>;
-  pendingStructureRefocusRef: React.MutableRefObject<string[] | null>;
-  focusedSectionIndexRef: React.MutableRefObject<number | null>;
+  pendingCaretTargetRef: React.MutableRefObject<PendingFragmentCaretTarget | null>;
   proposalSectionsRef: React.MutableRefObject<Map<string, { doc_path: string; heading_path: string[]; content: string }>>;
   proposalSaveTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
@@ -68,7 +52,7 @@ export interface UseDocumentSessionControllerReturn {
   /** Live-replica-backed block gate for a fragment key. */
   isSectionBlocked: (fragmentKey: string) => boolean;
   /** Live-replica-backed focus gate (blocked / publish pause). */
-  canFocusSection: (section: DocumentSection | undefined) => boolean;
+  canFocusSection: (section: RenderSectionRef | undefined) => boolean;
   /** Broadcast the viewed fragment on the shared awareness (presence). */
   publishViewingSection: (fragmentKey: string) => void;
 
@@ -80,13 +64,12 @@ export interface UseDocumentSessionControllerReturn {
   cancelActiveProposal: () => Promise<void>;
   applyProposalSectionAvailabilityEvent: (event: ProposalSectionAvailabilityEvent) => void;
   updateProposalIntent: (nextIntent: string) => void;
-  toggleProposalSection: (section: DocumentSection) => Promise<void>;
+  toggleProposalSection: (target: RenderSectionRef) => Promise<void>;
   removeProposalSection: (docPath: string, headingPath: string[]) => Promise<void>;
-  handleProposalSectionChange: (sectionIndex: number, markdown: string) => void;
+  handleProposalSectionChange: (headingPath: readonly string[], markdown: string) => void;
   handleCursorExit: (sectionIndex: number, direction: "up" | "down") => void;
   setEditorRef: (fragmentKey: string, handle: MilkdownEditorHandle | null) => void;
-  mountEligible: (index: number) => boolean;
-  setViewingSection: (sectionIndex: number) => void;
+  setRetargetCaretTarget: (target: Extract<PendingFragmentCaretTarget, { position: "retarget" }>) => void;
 }
 
 export function useDocumentSessionController(
@@ -101,24 +84,21 @@ export function useDocumentSessionController(
 
   const isSectionBlocked = useCallback((fragmentKey: string): boolean => {
     const replica = liveReplica.replica;
-    if (!replica || !replica.hasAuthoritativeBootstrap) return false;
+    if (!replica || !replica.isCurrentlyLiveAuthority) return false;
     return replica.isBlocked(SectionId.brand(fragmentKey));
   }, [liveReplica.replica]);
 
-  const canFocusSection = useCallback((section: DocumentSection | undefined): boolean => {
+  const canFocusSection = useCallback((section: RenderSectionRef | undefined): boolean => {
     if (liveReplica.publishPaused) return false;
     if (!section) return true; // empty-doc bootstrap (synthetic BFH)
-    return !isSectionBlocked(getSectionFragmentKey(section));
+    return !isSectionBlocked(SectionId.text(section.id));
   }, [liveReplica.publishPaused, isSectionBlocked]);
 
   const publishViewingSection = useCallback((fragmentKey: string) => {
     presence?.setViewingSection(fragmentKey);
   }, [presence]);
 
-  const registry = useEditorRegistry({
-    sections: params.sections,
-    isSectionBlocked,
-  });
+  const registry = useEditorRegistry();
 
   const focus = useSectionFocus({
     sections: params.sections,
@@ -133,10 +113,10 @@ export function useDocumentSessionController(
 
   const proposal = useProposalDrafting({
     decodedDocPath: params.decodedDocPath,
-    sections: params.sections,
+    workspaceBaselineSections: params.workspaceSections,
     setError: params.setError,
     loadSections: params.loadSections,
-    setFocusedSectionIndex: focus.setFocusedSectionIndex,
+    setBootstrapFocusedSectionIndex: focus.setBootstrapFocusedSectionIndex,
     leaveLiveEditing: liveReplica.demoteToObserver,
   });
 
@@ -149,8 +129,8 @@ export function useDocumentSessionController(
   }, [proposal.proposalSaveTimerRef]);
 
   return {
-    focusedSectionIndex: focus.focusedSectionIndex,
-    setFocusedSectionIndex: focus.setFocusedSectionIndex,
+    bootstrapFocusedSectionIndex: focus.bootstrapFocusedSectionIndex,
+    setBootstrapFocusedSectionIndex: focus.setBootstrapFocusedSectionIndex,
     readyEditors: registry.readyEditors,
     setReadyEditors: registry.setReadyEditors,
     proposalMode: proposal.proposalMode,
@@ -168,11 +148,8 @@ export function useDocumentSessionController(
     selectedProposalSectionKeys: proposal.selectedProposalSectionKeys,
     proposalSectionConflicts: proposal.proposalSectionConflicts,
     proposalOverlayVersion: proposal.proposalOverlayVersion,
-    mountedEditorFragmentKeysRef: registry.mountedEditorFragmentKeysRef,
     editorRefs: registry.editorRefs,
-    pendingFocusRef: focus.pendingFocusRef,
-    pendingStructureRefocusRef: focus.pendingStructureRefocusRef,
-    focusedSectionIndexRef: focus.focusedSectionIndexRef,
+    pendingCaretTargetRef: focus.pendingCaretTargetRef,
     proposalSectionsRef: proposal.proposalSectionsRef,
     proposalSaveTimerRef: proposal.proposalSaveTimerRef,
     mouseDownPosRef: focus.mouseDownPosRef,
@@ -193,7 +170,6 @@ export function useDocumentSessionController(
     handleProposalSectionChange: proposal.handleProposalSectionChange,
     handleCursorExit: focus.handleCursorExit,
     setEditorRef: registry.setEditorRef,
-    mountEligible: registry.mountEligible,
-    setViewingSection: focus.setViewingSection,
+    setRetargetCaretTarget: focus.setRetargetCaretTarget,
   };
 }

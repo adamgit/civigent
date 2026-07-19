@@ -7,9 +7,7 @@
  *   1. Exactly one ObserverCrdtProvider is constructed per page mount (the
  *      replica's), and click-to-edit replaces it with exactly one editor
  *      transport bound to the SAME Y.Doc — never a second observer/editor pair.
- *   2. BrowserFragmentReplicaStore is never constructed by a live page: live
- *      body/editability/pending are readable only from the LiveSectionReplica.
- *   3. Live editability comes from the replica: a replica-blocked section does
+ *   2. Live editability comes from the replica: a replica-blocked section does
  *      not mount an editor.
  */
 
@@ -23,7 +21,6 @@ import type { WsServerEvent } from "../../../types/shared";
 
 const observerConstructions: Array<{ doc: unknown; destroy: ReturnType<typeof vi.fn> }> = [];
 const editorProviderConstructions: Array<{ doc: unknown }> = [];
-const storeConstructions: unknown[] = [];
 
 vi.mock("../../../services/observer-crdt-provider", async () => {
   const Y = await import("yjs");
@@ -58,17 +55,6 @@ vi.mock("../../../services/crdt-provider", () => ({
   },
 }));
 
-vi.mock("../../../services/browser-fragment-replica-store", () => ({
-  BrowserFragmentReplicaStore: class {
-    constructor() {
-      storeConstructions.push(this);
-      throw new Error(
-        "BrowserFragmentReplicaStore must not be constructed on a live document page — LiveSectionReplica is the only live authority.",
-      );
-    }
-  },
-}));
-
 vi.mock("../../../services/ws-client", () => ({
   KnowledgeStoreWsClient: class {
     connect = vi.fn();
@@ -85,9 +71,10 @@ vi.mock("../../../components/MilkdownEditor", async () => {
   const React = await import("react");
   return {
     MilkdownEditor: React.forwardRef(
-      (props: { fragmentKey?: string; onReady?: () => void }, _ref: unknown) => {
+      (props: { binding?: { fragmentKey?: string }; onReady?: () => void }, _ref: unknown) => {
+        const fk = props.binding?.fragmentKey;
         React.useEffect(() => { props.onReady?.(); }, []);
-        return <div data-testid="milkdown-editor" data-fragment-key={props.fragmentKey}>Editor</div>;
+        return <div data-testid="milkdown-editor" data-fragment-key={fk}>Editor</div>;
       },
     ),
   };
@@ -109,8 +96,6 @@ const overviewSection = {
   content: "# Overview\nOverview content.\n",
   humanInvolvement_score: 0,
   crdt_session_active: false,
-  section_length_warning: false,
-  word_count: 2,
   fragment_key: "frag:sec_overview",
   section_file: "sec_overview.md",
 };
@@ -129,7 +114,6 @@ describe("single live transport owner", () => {
   beforeEach(() => {
     observerConstructions.length = 0;
     editorProviderConstructions.length = 0;
-    storeConstructions.length = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
       const urlStr = String(url);
       if (urlStr.includes("/sections")) return jsonResponse({ sections: [overviewSection] });
@@ -144,16 +128,15 @@ describe("single live transport owner", () => {
     localStorage.clear();
   });
 
-  it("mounts exactly ONE observer connection and never a BrowserFragmentReplicaStore", async () => {
+  it("mounts exactly ONE observer connection", async () => {
     renderDocPage();
     await waitFor(() => expect(screen.getByText("Overview content.")).toBeDefined());
 
     expect(observerConstructions).toHaveLength(1);
     expect(editorProviderConstructions).toHaveLength(0);
-    expect(storeConstructions).toHaveLength(0);
   });
 
-  it("click-to-edit promotes on the SAME Y.Doc: observer destroyed, one editor transport, still no store", async () => {
+  it("click-to-edit promotes on the SAME Y.Doc: observer destroyed, one editor transport", async () => {
     renderDocPage();
     await waitFor(() => expect(screen.getByText("Overview content.")).toBeDefined());
     const observer = observerConstructions[0];
@@ -166,6 +149,5 @@ describe("single live transport owner", () => {
     expect(observer.destroy).toHaveBeenCalled();
     expect(observerConstructions).toHaveLength(1);
     expect(editorProviderConstructions[0].doc).toBe(observer.doc);
-    expect(storeConstructions).toHaveLength(0);
   });
 });

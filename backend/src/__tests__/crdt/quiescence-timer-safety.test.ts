@@ -31,7 +31,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions } from "../../crdt/ydoc-lifecycle.js";
-import { armQuiescenceTimer, publishOnLastEditorDisconnect } from "../../ws/crdt-ws-coordinator.js";
+import { armQuiescenceTimer, publishOnLastEditorDisconnect, requestDocSessionPublish } from "../../ws/crdt-ws-coordinator.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
 import type { SectionBody } from "../../storage/section-formatting.js";
 import { getHeadSha } from "../../storage/git-repo.js";
@@ -97,17 +97,23 @@ describe("quiescence-timer safety", () => {
     expect(await readSection(SAMPLE_DOC_PATH, ["Overview"])).toBe(SAMPLE_SECTIONS.overview);
   });
 
-  it("a settled edit publishes exactly once — a second quiescence fire with no new work is a no-op", async () => {
+  it("a settled edit commits only via an explicit publish — quiescence fires never commit, before or after", async () => {
     vi.useFakeTimers();
     const session = await openSession();
 
     editOverview(session, "settled body");
     const proposalId = await session.generator.materializeEdit();
 
+    // A quiet quiescence fire normalizes only — the edit stays inprogress.
     armQuiescenceTimer(session);
     await vi.advanceTimersByTimeAsync(threshold(session) + 50);
     await drainLane(session);
+    expect((await readProposal(proposalId)).status).toBe("inprogress");
+    expect(session.generator.hasCurrentProposal()).toBe(true);
 
+    const outcome = await requestDocSessionPublish(SAMPLE_DOC_PATH);
+    await drainLane(session);
+    expect(outcome.outcome).toBe("committed");
     expect((await readProposal(proposalId)).status).toBe("committed");
     expect(session.generator.hasCurrentProposal()).toBe(false);
 
@@ -141,9 +147,16 @@ describe("quiescence-timer safety", () => {
     await drainLane(session);
     expect(session.generator.hasCurrentProposal()).toBe(true);
 
-    // Now let the full post-burst window elapse → exactly one publish.
+    // The full post-burst window elapses: the fire normalizes but never
+    // publishes — the proposal stays inprogress until an explicit publish.
     await vi.advanceTimersByTimeAsync(t + 50);
     await drainLane(session);
+    expect(session.publishPause.isActive()).toBe(false);
+    expect(session.generator.hasCurrentProposal()).toBe(true);
+
+    const outcome = await requestDocSessionPublish(SAMPLE_DOC_PATH);
+    await drainLane(session);
+    expect(outcome.outcome).toBe("committed");
     expect(session.generator.hasCurrentProposal()).toBe(false);
   });
 
@@ -213,7 +226,7 @@ describe("quiescence-timer safety", () => {
   // freezes work this attachment never touched. "Nothing happened" must not read
   // the same as "something happened and settled".
 
-  it("does not publish before one quiescence threshold has elapsed since the last edit", async () => {
+  it("does not publish from the quiescence window at all — before or after the threshold", async () => {
     vi.useFakeTimers();
     const session = await openSession();
 
@@ -226,9 +239,16 @@ describe("quiescence-timer safety", () => {
     await drainLane(session);
     expect((await readProposal(proposalId)).status).toBe("inprogress");
 
-    // Cross the window — now it may publish.
+    // Cross the window — the fire normalizes, but a quiet gap while the author
+    // may still be sitting in the section is NOT a settled dirty frontier.
     await vi.advanceTimersByTimeAsync(10);
     await drainLane(session);
+    expect(session.publishPause.isActive()).toBe(false);
+    expect((await readProposal(proposalId)).status).toBe("inprogress");
+
+    const outcome = await requestDocSessionPublish(SAMPLE_DOC_PATH);
+    await drainLane(session);
+    expect(outcome.outcome).toBe("committed");
     expect((await readProposal(proposalId)).status).toBe("committed");
   });
 
@@ -266,20 +286,25 @@ describe("quiescence-timer safety", () => {
     destroyAllSessions();
 
     const sessionB = await openSession("sock-B");
-    expect(sessionB.docSessionId).toBe(sessionA.docSessionId);
+    expect(sessionB.proposalAdoptionId).toBe(sessionA.proposalAdoptionId);
 
     // A's leftover timer must be inert against B's adopted-but-untouched work.
     await vi.advanceTimersByTimeAsync(threshold(sessionB) + 50);
     await drainLane(sessionB);
     expect((await readProposal(proposalId)).status).toBe("inprogress");
 
-    // ...but a real edit in B's OWN attachment still publishes on quiescence —
-    // the fix must cancel the stale timer, NOT disable autonomous publish.
+    // ...but a real edit in B's OWN attachment still publishes — via the explicit
+    // publish path (the quiet timer alone never commits).
     editOverview(sessionB, "B's real edit");
     await sessionB.generator.materializeEdit();
     armQuiescenceTimer(sessionB);
     await vi.advanceTimersByTimeAsync(threshold(sessionB) + 50);
     await drainLane(sessionB);
+    expect((await readProposal(proposalId)).status).toBe("inprogress");
+
+    const outcome = await requestDocSessionPublish(SAMPLE_DOC_PATH);
+    await drainLane(sessionB);
+    expect(outcome.outcome).toBe("committed");
     expect((await readProposal(proposalId)).status).toBe("committed");
   });
 

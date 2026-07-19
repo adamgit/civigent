@@ -18,7 +18,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions } from "../../crdt/ydoc-lifecycle.js";
-import { armQuiescenceTimer } from "../../ws/crdt-ws-coordinator.js";
+import { armQuiescenceTimer, requestDocSessionPublish } from "../../ws/crdt-ws-coordinator.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
 import type { SectionBody } from "../../storage/section-formatting.js";
 import { getHeadSha } from "../../storage/git-repo.js";
@@ -74,12 +74,18 @@ describe("live edits materialize into proposal content; canonical unchanged unti
     // Canonical is UNCHANGED — the edit has not been published.
     expect(await readSection(SAMPLE_DOC_PATH, ["Overview"])).toBe(SAMPLE_SECTIONS.overview);
 
-    // Publish (quiesce) — only now does canonical absorb the live edit.
+    // Quiesce — normalization only; canonical still unchanged (no autonomous publish).
     armQuiescenceTimer(session);
     await vi.advanceTimersByTimeAsync(
       session.generator.publishTriggerPolicy.quiescenceThresholdMs + 50,
     );
     await drainLane(session);
+    expect(await readSection(SAMPLE_DOC_PATH, ["Overview"])).toBe(SAMPLE_SECTIONS.overview);
+
+    // Publish explicitly — only now does canonical absorb the live edit.
+    const outcome = await requestDocSessionPublish(SAMPLE_DOC_PATH);
+    await drainLane(session);
+    expect(outcome.outcome).toBe("committed");
 
     expect(await readSection(SAMPLE_DOC_PATH, ["Overview"])).toContain("live drafted overview");
   });

@@ -28,6 +28,7 @@ import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
 import { getBackendSchema } from "../../crdt/ydoc-fragments.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
+import { decodeMessage, MSG_LIVE_SECTIONS_UPDATE, MSG_YJS_UPDATE } from "../../ws/crdt-ws-frames.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 const OVERVIEW_KEY = "section::overview";
@@ -131,6 +132,31 @@ describe("live heading-deletion merge + section:gone", () => {
     expect(finalTopology.map((t) => t.fragment_key)).not.toContain(TIMELINE_KEY);
     expect(finalTopology.some((t) => t.heading_path.at(-1) === "Timeline")).toBe(false);
     // The predecessor survives.
+    expect(finalTopology.some((t) => t.heading_path.at(-1) === "Overview")).toBe(true);
+  });
+
+  it("structural heading-deletion merge has no raw YJS_UPDATE before the live-section frame", async () => {
+    vi.useFakeTimers();
+    const session = await openSession();
+    disposers.push(registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "editor-sock").dispose);
+
+    const live = await joinLiveRecipient(session);
+    disposers.push(live.dispose);
+    expect(live.bootstrap().state.topology.map((t) => t.fragment_key)).toContain(TIMELINE_KEY);
+    live.clear();
+
+    await demoteTimelineAndQuiesce(session);
+
+    const frameTypes = live.raw
+      .map((frame) => decodeMessage(frame)?.type)
+      .filter((type): type is number => type !== undefined);
+    expect(frameTypes).toContain(MSG_LIVE_SECTIONS_UPDATE);
+    expect(frameTypes).not.toContain(MSG_YJS_UPDATE);
+
+    const structural = live.updates().filter((u) => u.yjs_update !== undefined && u.state !== undefined);
+    expect(structural.length).toBeGreaterThanOrEqual(1);
+    const finalTopology = structural[structural.length - 1].state!.topology;
+    expect(finalTopology.map((t) => t.fragment_key)).not.toContain(TIMELINE_KEY);
     expect(finalTopology.some((t) => t.heading_path.at(-1) === "Overview")).toBe(true);
   });
 });

@@ -28,6 +28,7 @@ import { acquireDocSession, destroyAllSessions, type DocSession } from "../../cr
 import {
   armQuiescenceTimer,
   registerFakeEditorSocketForTest,
+  requestDocSessionPublish,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
@@ -116,17 +117,26 @@ describe("autonomous publish lifecycle (spec 10 §One active proposal per DocSes
     // Canonical is still the original body (publish has not happened).
     expect(await readSection(SAMPLE_DOC_PATH, ["Overview"])).toBe(SAMPLE_SECTIONS.overview);
 
-    // Go quiet → settled-dirty-frontier autonomous publish fires the OFF-lane pause.
+    // Go quiet → the timer normalizes only; no autonomous publish starts.
     armQuiescenceTimer(session);
     await vi.advanceTimersByTimeAsync(
       session.generator.publishTriggerPolicy.quiescenceThresholdMs + 50,
     );
     await drainLane(session);
+    expect(session.publishPause.isActive()).toBe(false);
+    expect(session.generator.hasCurrentProposal()).toBe(true);
+
+    // Drive the publish explicitly → the OFF-lane pause with a required editor.
+    const publishPromise = requestDocSessionPublish(SAMPLE_DOC_PATH);
+    for (let i = 0; i < 50 && !session.publishPause.isActive(); i++) {
+      await vi.advanceTimersByTimeAsync(1);
+    }
 
     // Off-lane path: the pause is active and the proposal is still in flight (no
     // inline commit) — the reference must NOT clear until the editor acks and the
     // commit succeeds. Ack now to drive the real editor-ack commit.
     await ackPauseAndCommit(session, EDITOR_SOCKET);
+    await publishPromise;
 
     // (1) The live proposal transitioned to committed.
     expect((await readProposal(firstProposalId)).status).toBe("committed");

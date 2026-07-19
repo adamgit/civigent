@@ -1,10 +1,10 @@
 /**
- * Unit tests for CrdtTransport wiring onto BrowserFragmentReplicaStore.
+ * Unit tests for CrdtTransport.
  *
  * Covers:
- *   - Transport routes connection/sync/error onto store mutation methods
- *   - DocSession publish-pause frames route to store.setPublishPaused(...)
- *   - one-way dependency: store never references the transport/provider
+ *   - Transport surfaces connection/bootstrap/error through its option callbacks
+ *   - DocSession publish-pause frames route to the pause callbacks and the
+ *     doc_publish_ready ack
  *
  * The legacy SESSION_OVERLAY_IMPORTED / STRUCTURE_WILL_CHANGE / receipt
  * plumbing is removed (spec 05 §4 > Removed message types). Section block-state
@@ -13,12 +13,12 @@
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import * as Y from "yjs";
-import { Awareness } from "y-protocols/awareness";
-import { CrdtTransport } from "../../services/crdt-transport.js";
-import { BrowserFragmentReplicaStore } from "../../services/browser-fragment-replica-store.js";
+import { CrdtTransport, type CrdtTransportOptions } from "../../services/crdt-transport.js";
+import type { CrdtConnectionState } from "../../services/crdt-provider.js";
 
 // Protocol message types (must match crdt-provider.ts / crdt-ws-frames.ts)
 const MSG_SYNC_STEP_2 = 0x01;
+const MSG_LIVE_SECTIONS_BOOTSTRAP = 0x14;
 const MSG_DOC_PUBLISH_PAUSE_START = 0x10;
 const MSG_DOC_PUBLISH_READY = 0x11;
 const MSG_DOC_PUBLISH_PAUSE_END = 0x12;
@@ -98,6 +98,26 @@ function buildSyncStep2(doc?: Y.Doc): Uint8Array {
   return msg;
 }
 
+/** The sole join body fill — flips the provider's bootstrapApplied flag. */
+function buildLiveSectionsBootstrap(doc?: Y.Doc): Uint8Array {
+  const d = doc ?? new Y.Doc();
+  const update = Y.encodeStateAsUpdate(d);
+  const header = new TextEncoder().encode(JSON.stringify({
+    doc_session_id: "sess-test",
+    state: { topology: [], blocked_section_ids: [], pending_sections: [], publish_pause_join_mirror: "not_in_pause" },
+  }));
+  const msg = new Uint8Array(1 + 4 + header.length + update.length);
+  msg[0] = MSG_LIVE_SECTIONS_BOOTSTRAP;
+  msg[1] = (header.length >>> 24) & 0xff;
+  msg[2] = (header.length >>> 16) & 0xff;
+  msg[3] = (header.length >>> 8) & 0xff;
+  msg[4] = header.length & 0xff;
+  msg.set(header, 5);
+  msg.set(update, 5 + header.length);
+  if (!doc) d.destroy();
+  return msg;
+}
+
 beforeEach(() => {
   StubWebSocket.lastInstance = null;
   if (!globalThis.crypto?.randomUUID) {
@@ -119,86 +139,64 @@ afterAll(() => {
 
 describe("CrdtTransport", () => {
   let transport: CrdtTransport;
-  let store: BrowserFragmentReplicaStore;
+
+  function makeTransport(opts: CrdtTransportOptions = {}): CrdtTransport {
+    transport = new CrdtTransport("/test/doc.md", opts);
+    return transport;
+  }
 
   function connectAndSync(): StubWebSocket {
     transport.connect();
     const ws = StubWebSocket.lastInstance!;
     ws.open();
-    ws.receiveServerMessage(buildSyncStep2());
+    ws.receiveServerMessage(buildLiveSectionsBootstrap());
     return ws;
   }
-
-  beforeEach(() => {
-    transport = new CrdtTransport("/test/doc.md");
-    store = new BrowserFragmentReplicaStore(transport.doc, transport.awareness);
-    transport.attachStore(store);
-  });
 
   afterEach(() => {
     transport.destroy();
   });
 
   describe("connection state routing", () => {
-    it("onStateChange routes to store.setConnectionState", () => {
+    it("surfaces connection state through onStateChange and transport.state", () => {
+      const states: CrdtConnectionState[] = [];
+      makeTransport({ onStateChange: (s) => states.push(s) });
       transport.connect();
-      expect(store.getConnectionState()).toBe("connecting");
+      expect(transport.state).toBe("connecting");
       const ws = StubWebSocket.lastInstance!;
       ws.open();
-      expect(store.getConnectionState()).toBe("connected");
+      expect(transport.state).toBe("connected");
+      expect(states).toEqual(["connecting", "connected"]);
     });
 
-    it("onSynced routes to store.setSynced(true)", () => {
-      expect(store.getSynced()).toBe(false);
-      connectAndSync();
-      expect(store.getSynced()).toBe(true);
+    it("fires onBootstrapApplied once the live-sections bootstrap applies", () => {
+      const onBootstrapApplied = vi.fn();
+      makeTransport({ onBootstrapApplied });
+      transport.connect();
+      const ws = StubWebSocket.lastInstance!;
+      ws.open();
+      expect(onBootstrapApplied).not.toHaveBeenCalled();
+      ws.receiveServerMessage(buildLiveSectionsBootstrap());
+      expect(onBootstrapApplied).toHaveBeenCalledTimes(1);
     });
 
-    it("onError routes to store.setError", () => {
+    it("surfaces close reasons through onError", () => {
+      const onError = vi.fn();
+      makeTransport({ onError });
       transport.connect();
       const ws = StubWebSocket.lastInstance!;
       ws.readyState = StubWebSocket.CLOSED;
       ws.onclose?.(new CloseEvent("close", { code: 4010, reason: "Invalid URL" }));
-      expect(store.getError()).toBe("Invalid URL");
-    });
-
-    it("one-way dependency: store never references transport/provider", () => {
-      const testDoc = new Y.Doc();
-      const testAwareness = new Awareness(testDoc);
-      const isolatedStore = new BrowserFragmentReplicaStore(testDoc, testAwareness);
-      expect((isolatedStore as any).transport).toBeUndefined();
-      expect((isolatedStore as any).provider).toBeUndefined();
-      testAwareness.destroy();
-      testDoc.destroy();
+      expect(onError).toHaveBeenCalledWith("Invalid URL");
     });
   });
 
   describe("DocSession publish-pause routing", () => {
-    it("doc_publish_pause_start sets store.publishPaused = true", () => {
-      const ws = connectAndSync();
-      expect(store.getPublishPaused()).toBe(false);
-      ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_START]));
-      expect(store.getPublishPaused()).toBe(true);
-    });
-
-    it("doc_publish_pause_end clears store.publishPaused", () => {
-      const ws = connectAndSync();
-      ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_START]));
-      expect(store.getPublishPaused()).toBe(true);
-      ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_END]));
-      expect(store.getPublishPaused()).toBe(false);
-    });
-
     it("invokes the onPublishPauseStart/End passthroughs", () => {
       const onStart = vi.fn();
       const onEnd = vi.fn();
-      const t2 = new CrdtTransport("/test/doc2.md", {
-        onPublishPauseStart: onStart,
-        onPublishPauseEnd: onEnd,
-      });
-      const s2 = new BrowserFragmentReplicaStore(t2.doc, t2.awareness);
-      t2.attachStore(s2);
-      t2.connect();
+      makeTransport({ onPublishPauseStart: onStart, onPublishPauseEnd: onEnd });
+      transport.connect();
       const ws = StubWebSocket.lastInstance!;
       ws.open();
       ws.receiveServerMessage(buildSyncStep2());
@@ -206,10 +204,10 @@ describe("CrdtTransport", () => {
       ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_END]));
       expect(onStart).toHaveBeenCalledTimes(1);
       expect(onEnd).toHaveBeenCalledTimes(1);
-      t2.destroy();
     });
 
     it("sends doc_publish_ready exactly once after pause_start (no editor barrier)", () => {
+      makeTransport();
       const ws = connectAndSync();
       ws.sentMessages.length = 0;
       ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_START]));

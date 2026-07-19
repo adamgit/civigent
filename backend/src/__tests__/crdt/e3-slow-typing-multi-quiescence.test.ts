@@ -27,6 +27,7 @@ import { acquireDocSession, destroyAllSessions, type DocSession } from "../../cr
 import {
   handleMessageForTest,
   registerFakeEditorSocketForTest,
+  requestDocSessionPublish,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
 import { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
@@ -57,12 +58,13 @@ function buildClientUpdate(session: DocSession, key: string, content: FragmentCo
   return update;
 }
 
-/** Quiesce, then ack the off-lane pause and pump until the commit clears the proposal. */
+/** Quiesce (normalize only), then drive an explicit publish, ack the off-lane
+ *  pause, and pump until the commit clears the proposal. */
 async function quiesceAndCommit(session: DocSession, socketId: string): Promise<void> {
   await vi.advanceTimersByTimeAsync(session.generator.publishTriggerPolicy.quiescenceThresholdMs + 50);
   await session.enqueue(() => undefined);
-  // The off-lane publish establishes the pause one microtask after the quiescence
-  // command returns; the split path lengthens that chain, so pump until it is up.
+  expect(session.publishPause.isActive()).toBe(false);
+  void requestDocSessionPublish(session.docPath);
   for (let i = 0; i < 200 && !session.publishPause.isActive(); i++) {
     await vi.advanceTimersByTimeAsync(1);
     await session.enqueue(() => undefined);

@@ -2,23 +2,23 @@ import React from "react";
 import { DocumentSectionRenderer } from "./DocumentSectionRenderer";
 import type { CrdtConnectionState } from "../services/crdt-provider";
 import type { MilkdownEditorHandle } from "./MilkdownEditor";
-import type {
-  DocumentSection,
-} from "../pages/document-page-utils";
+import type { WorkspaceSectionDto } from "../pages/document-page-utils";
 import {
-  getSectionFragmentKey,
   headingPathToLabel,
-  shouldMountEditor,
+  shouldMountEditorForFragment,
 } from "../pages/document-page-utils";
+import { SectionId, type RenderSectionRef } from "../types/live-sections";
 import { sectionHeadingKey } from "../types/shared.js";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import type { LocalEditOriginSink } from "../status/sessionAuthorship";
 import { SummaryWhoChangedThisSection } from "./SummaryWhoChangedThisSection.js";
 
+export type SectionLastEditor = NonNullable<WorkspaceSectionDto["last_editor"]>;
+
 export interface DocumentCanvasProps {
-  sections: DocumentSection[];
+  sections: readonly RenderSectionRef[];
   sectionsLoading: boolean;
-  focusedSectionIndex: number | null;
+  focusedFragmentKey: string | null;
   proposalMode: boolean;
   canEditProposalScope: boolean;
   canEditProposalContent: boolean;
@@ -28,35 +28,33 @@ export interface DocumentCanvasProps {
   decodedDocPath: string | null;
   recentlyChangedByLabel: Map<string, unknown>;
   injectedByLabel: Map<string, string>;
-  dragOverSectionIndex: number | null;
-  /** Live-replica-backed block gate (single live editability authority). */
+  dragOverFragmentKey: string | null;
   isSectionBlocked: (fragmentKey: string) => boolean;
-  /** Live publish-pause flag from the replica view. */
   publishPaused: boolean;
-  crdtSynced: boolean;
   crdtState: CrdtConnectionState;
   transferService: SectionTransferService | null;
   readyEditors: Set<string>;
-  livePaintMarkdown?: (section: DocumentSection) => string;
+  getDisplayMarkdown: (section: RenderSectionRef) => string;
   getLiveBinding?: (fragmentKey: string) => import("../services/live-section-replica").LiveEditorBinding | undefined;
+  getLastEditor?: (fragmentKey: string) => SectionLastEditor | undefined;
   sectionUncommitted?: (fragmentKey: string) => boolean;
   localEditSink: LocalEditOriginSink;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
-  onStartEditing: (index: number, coords: { x: number; y: number }) => void | Promise<void>;
-  onFocusSection: (index: number, headingPath: string[], coords: { x: number; y: number }) => void;
+  onStartEditing: (fragmentKey: string, coords: { x: number; y: number }) => void | Promise<void>;
+  onFocusSection: (fragmentKey: string, headingPath: string[], coords: { x: number; y: number }) => void;
   onSetEditorRef: (fragmentKey: string, handle: MilkdownEditorHandle | null) => void;
   onEditorReady: (fragmentKey: string) => void;
   onEditorUnready: (fragmentKey: string) => void;
-  onProposalSectionChange?: (index: number, markdown: string) => void;
-  onToggleProposalSection?: (section: DocumentSection) => void | Promise<void>;
-  onCursorExit: (index: number, direction: "up" | "down") => void;
-  onCrossSectionDrop: (section: DocumentSection, transfer: SectionTransfer) => void;
+  onProposalSectionChange?: (headingPath: readonly string[], markdown: string) => void;
+  onToggleProposalSection?: (target: RenderSectionRef) => void | Promise<void>;
+  onCursorExit: (fragmentKey: string, direction: "up" | "down") => void;
+  onCrossSectionDrop: (target: RenderSectionRef, transfer: SectionTransfer) => void;
 }
 
 export function DocumentCanvas({
   sections,
   sectionsLoading,
-  focusedSectionIndex,
+  focusedFragmentKey,
   proposalMode,
   canEditProposalScope,
   canEditProposalContent,
@@ -66,15 +64,15 @@ export function DocumentCanvas({
   decodedDocPath,
   recentlyChangedByLabel,
   injectedByLabel,
-  dragOverSectionIndex,
+  dragOverFragmentKey,
   isSectionBlocked,
   publishPaused,
-  crdtSynced,
   crdtState,
   transferService,
   readyEditors,
-  livePaintMarkdown,
+  getDisplayMarkdown,
   getLiveBinding,
+  getLastEditor,
   sectionUncommitted,
   localEditSink,
   mouseDownPosRef,
@@ -88,31 +86,33 @@ export function DocumentCanvas({
   onCursorExit,
   onCrossSectionDrop,
 }: DocumentCanvasProps) {
+  const orderedFragmentKeys = sections.map((s) => SectionId.text(s.id));
   return (
     <>
-      {!sectionsLoading ? sections.map((section, i) => {
-        const sectionKey = sectionHeadingKey(section.heading_path);
+      {!sectionsLoading ? sections.map((section) => {
+        const headingPath = [...section.headingPath];
+        const sectionKey = sectionHeadingKey(headingPath);
         const proposalKey = decodedDocPath ? `${decodedDocPath}::${sectionKey}` : null;
         const isInProposal = !!(proposalMode && proposalKey && selectedProposalSectionKeys.has(proposalKey));
         const proposalConflictReason = proposalKey ? (proposalSectionConflicts.get(proposalKey) ?? null) : null;
         const lockedInProposalMode = proposalMode && isInProposal && proposalConflictReason !== null;
-        const fk = getSectionFragmentKey(section);
-        const sectionLabel = headingPathToLabel(section.heading_path);
-        // Live rows come FROM the replica topology, so a gone section never
-        // renders at all; blocked is the replica's live block set.
+        const fk = SectionId.text(section.id);
+        const sectionLabel = headingPathToLabel(headingPath);
         const crdtBlocked = isSectionBlocked(fk);
+        const inMountWindow = shouldMountEditorForFragment(fk, focusedFragmentKey, orderedFragmentKeys);
         const mountAllowed = proposalMode
-          ? (canEditProposalContent && isInProposal && shouldMountEditor(i, focusedSectionIndex))
-          : (!crdtBlocked && shouldMountEditor(i, focusedSectionIndex));
+          ? (canEditProposalContent && isInProposal && inMountWindow)
+          : (!crdtBlocked && inMountWindow);
+        const lastEditor = getLastEditor?.(fk);
         return (
           <div key={fk} className="flex items-stretch">
             <div className="w-[200px] min-w-[100px] shrink relative flex items-stretch justify-end pt-1">
               <SummaryWhoChangedThisSection
-                editorId={section.last_editor?.id}
-                editorName={section.last_editor?.name}
-                secondsAgo={section.last_editor?.seconds_ago}
-                writerType={section.last_editor?.type}
-                sectionIndex={i}
+                editorId={lastEditor?.id}
+                editorName={lastEditor?.name}
+                secondsAgo={lastEditor?.seconds_ago}
+                writerType={lastEditor?.type}
+                fragmentKey={fk}
                 uncommittedChanges={sectionUncommitted?.(fk) ?? false}
               />
             </div>
@@ -120,9 +120,8 @@ export function DocumentCanvas({
             <div className="flex-1 min-w-[700px] bg-canvas-bg border-x border-[rgba(0,0,0,0.06)] px-14">
               <DocumentSectionRenderer
                 section={section}
-                index={i}
                 fragmentKey={fk}
-                isFocused={focusedSectionIndex === i}
+                isFocused={focusedFragmentKey === fk}
                 hasEditor={mountAllowed}
                 isInProposal={isInProposal}
                 proposalConflictReason={proposalConflictReason}
@@ -132,15 +131,14 @@ export function DocumentCanvas({
                 highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
                 injectedByWriter={injectedByLabel.get(sectionLabel) ?? null}
                 hasRemotePresence={false}
-                dragOverSectionIndex={dragOverSectionIndex}
-                crdtSynced={crdtSynced}
+                dragOverFragmentKey={dragOverFragmentKey}
                 crdtState={crdtState}
                 transferService={transferService}
                 proposalMode={proposalMode}
                 canEditProposalContent={canEditProposalContent}
                 proposalScopeMutationInFlight={proposalScopeMutationInFlight}
                 isReady={readyEditors.has(fk)}
-                livePaintMarkdown={livePaintMarkdown}
+                getDisplayMarkdown={getDisplayMarkdown}
                 getLiveBinding={getLiveBinding}
                 localEditSink={localEditSink}
                 mouseDownPosRef={mouseDownPosRef}

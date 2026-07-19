@@ -16,7 +16,6 @@ export type {
   ClientInstanceId,
   RequestedMode,
   AttachmentState,
-  DocSessionId,
   RemoteParticipant,
   ModeTransitionRequest,
   ModeTransitionResult,
@@ -129,6 +128,8 @@ export type {
 } from "../../../sharedlibs/shared-types/src/index.js";
 
 export {
+  DocSessionId,
+  ProposalAdoptionId,
   WireLiveSectionRef,
   WirePendingSection,
   WireLiveSectionsState,

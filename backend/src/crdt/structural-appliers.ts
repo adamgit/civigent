@@ -747,29 +747,20 @@ export async function reflectHeadingEditIntoProposal(
   plan: StructuralHeadingEditPlan,
   kind: StructuralChange["kind"],
 ): Promise<void> {
-  // heading-relocated: same identity, only the body order changed — the live
-  // materialize already captured the combined body; nothing structural to do.
-  if (kind === "heading-relocated") return;
-
   const { ProposalEditor } = await import("../storage/proposal-editor.js");
   const editor = ProposalEditor.open(proposalId, "inprogress");
-  // Rename AND level-change both go through the id-preserving in-place retitle so
-  // the section-file id (and thus the live fragment key) is preserved — a
-  // re-keying renameSection/moveSection would diverge the proposal from the
-  // identity-preserved live fragment. The corrected stripped body is written too
-  // (materialize may have left a wrong-level heading embedded in the body).
   const body = bodyFromFragmentStrippingLeadingHeading(plan.target);
-  const newEntry = await editor.retitleSection(docPath, plan.fromHeadingPath, plan.newHeading, plan.newLevel, body);
-
-  // Identity-based delete detection (D6): the manifest is now GROW-ONLY — no
-  // path-remap on rename. Deletes ride the id-based `deleted_section_files` set,
-  // not a manifest path-claim, so a renamed ancestor no longer needs its
-  // descendants' delete-claims re-pathed (the merge keys deletes by stable
-  // section-file id, which the id-preserving retitle keeps). CLAIM the renamed
-  // section at its NEW path (grow-only union) so locks/audit cover it; the section
-  // keeps its id, so the merge tracks it by id regardless of which path is claimed.
-  // Stale old-path claims left in the manifest are harmless extra claims.
   const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
+
+  if (kind === "heading-relocated") {
+    await editor.materializeSectionBody(docPath, plan.fromHeadingPath, body);
+    await unionCurrentProposalSections(proposalId, [
+      { doc_path: docPath, heading_path: [...plan.fromHeadingPath] },
+    ]);
+    return;
+  }
+
+  const newEntry = await editor.retitleSection(docPath, plan.fromHeadingPath, plan.newHeading, plan.newLevel, body);
   await unionCurrentProposalSections(proposalId, [
     { doc_path: docPath, heading_path: [...newEntry.headingPath] },
   ]);

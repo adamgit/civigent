@@ -37,23 +37,31 @@ const paintMarkdown = vi.fn((id: SectionId, seed: string) => {
   const key = SectionId.text(id);
   if (key === "section::alpha") return `# Alpha\n\n${ALPHA_BODY}\n`;
   if (key === "section::beta") return `# Beta\n\n${BETA_BODY}\n`;
-  return seed;
+  // Mirrors the real hook: after ready, off-topology paint is a caller bug.
+  throw new Error(`paintMarkdown: section "${key}" is not in the live topology; seed paint is illegal after the replica is ready.`);
 });
 
 const useLiveSectionReplicaMock = vi.fn(
   (params: { docPath: string | null; onSessionEnded?: () => void }) => {
     void params;
     return {
-      hasAuthoritativeBootstrap: replicaReady,
+      isCurrentlyLiveAuthority: replicaReady,
+      replicaGeneration: 1,
       replica: replicaReady
         ? {
-            hasAuthoritativeBootstrap: true,
+            isCurrentlyLiveAuthority: true,
             getTopology: () => replicaTopology,
             isPending: () => false,
             isBlocked: () => false,
             getPendingSectionKeys: () => [],
             isPublishPauseMirrorActive: () => false,
-            requireLiveSection: (id: SectionId) => ({
+            findInTopology: (id: SectionId) => ({
+              id,
+              readMarkdown: () => paintMarkdown(id, ""),
+              isEditable: () => true,
+              createEditorBinding: () => { throw new Error("findInTopology must not produce a binding in tests"); },
+            }),
+            getLiveSection: (id: SectionId) => ({
               id,
               readMarkdown: () => paintMarkdown(id, ""),
               isEditable: () => true,
@@ -118,13 +126,14 @@ vi.mock("../../../components/MilkdownEditor", async () => {
   const React = await import("react");
   return {
     MilkdownEditor: React.forwardRef(
-      (props: { fragmentKey?: string; onReady?: () => void }, _ref: unknown) => {
+      (props: { binding?: { fragmentKey?: string }; onReady?: () => void }, _ref: unknown) => {
+        const fk = props.binding?.fragmentKey;
         React.useEffect(() => {
           props.onReady?.();
         }, []);
         return (
-          <div data-testid="milkdown-editor" data-fragment-key={props.fragmentKey}>
-            Editor:{props.fragmentKey}
+          <div data-testid="milkdown-editor" data-fragment-key={fk}>
+            Editor:{fk}
           </div>
         );
       },
@@ -166,8 +175,6 @@ const sectionsResponse = {
       content: "# Alpha\nseed alpha\n",
       humanInvolvement_score: 0,
       crdt_session_active: true,
-      section_length_warning: false,
-      word_count: 2,
       fragment_key: "section::alpha",
       section_file: "sec_alpha.md",
     },
@@ -178,8 +185,6 @@ const sectionsResponse = {
       content: "# Beta\nseed beta\n",
       humanInvolvement_score: 0,
       crdt_session_active: true,
-      section_length_warning: false,
-      word_count: 2,
       fragment_key: "section::beta",
       section_file: "sec_beta.md",
     },
@@ -256,8 +261,6 @@ describe("E6: cross-client silent-vanish guard — hub payload cannot drop a liv
             content: `# Alpha\n${HUB_ADOPTED_BODY}\n`,
             agentWritePolicy: { canWrite: true, message: "ok" },
             crdt_session_active: true,
-            section_length_warning: false,
-            word_count: 1,
             fragment_key: "section::alpha",
             section_file: "sec_alpha.md",
           },

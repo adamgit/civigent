@@ -15,7 +15,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions } from "../../crdt/ydoc-lifecycle.js";
-import { armQuiescenceTimer } from "../../ws/crdt-ws-coordinator.js";
+import { armQuiescenceTimer, requestDocSessionPublish } from "../../ws/crdt-ws-coordinator.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
 import type { SectionBody } from "../../storage/section-formatting.js";
 import { getHeadSha } from "../../storage/git-repo.js";
@@ -80,8 +80,15 @@ describe("autonomous publish runtime failure (spec 10 §Publish failure handling
       .spyOn(CanonicalStore.prototype, "absorbChangedSections")
       .mockRejectedValue(new Error("disk on fire during absorb"));
 
-    // Autonomous publish fires and fails.
+    // The quiet timer normalizes only — no autonomous publish, so the failure
+    // is driven through the explicit publish path.
     await quiesce(session);
+    expect(session.publishPause.isActive()).toBe(false);
+    expect(absorbSpy).not.toHaveBeenCalled();
+
+    const outcome = await requestDocSessionPublish(SAMPLE_DOC_PATH);
+    await drainLane(session);
+    expect(outcome.outcome).toBe("failed");
     expect(absorbSpy).toHaveBeenCalled();
 
     // Returned to inprogress — NOT draft, NOT stuck in committing.
@@ -101,7 +108,7 @@ describe("autonomous publish runtime failure (spec 10 §Publish failure handling
     expect(afterFailureId).toBe(proposalId);
 
     const inProgressForSession = (await listInProgressProposals()).filter(
-      (p) => p.docSessionId === session.generator.docSessionId,
+      (p) => p.proposalAdoptionId === session.generator.proposalAdoptionId,
     );
     expect(inProgressForSession).toHaveLength(1);
     expect(inProgressForSession[0]!.id).toBe(proposalId);

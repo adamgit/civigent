@@ -18,12 +18,6 @@ import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import type { WsServerEvent, AttributionWriterType, SectionAgentWritePolicySummary } from "../../types/shared.js";
 import { resolveAuthenticatedWriter } from "../../auth/context.js";
 
-const SECTION_LENGTH_WARNING_THRESHOLD = 2000; // words
-
-function countWords(content: string): number {
-  return content.split(/\s+/).filter(Boolean).length;
-}
-
 export interface SectionInvolvementMeta {
   /**
    * Section-level agent-write-policy summary (spec 12). Replaces the old
@@ -32,9 +26,7 @@ export interface SectionInvolvementMeta {
    */
   agentWritePolicy: SectionAgentWritePolicySummary;
   crdt_session_active: boolean;
-  section_length_warning: boolean;
-  word_count: number;
-  last_editor?: { id: string; name: string; timestampMs: number; type: AttributionWriterType; seconds_ago: number };
+  last_editor: { id: string; name: string; timestampMs: number; type: AttributionWriterType; seconds_ago: number } | null;
 }
 
 /**
@@ -47,15 +39,16 @@ export interface SectionInvolvementMeta {
  * human-proposal-lock prefetch is gone — those concerns moved to the FSM-lock
  * subsystem (Area F) and are no longer part of the section read-API summary.
  *
+ * Body content is not required: word-count / length-warning metadata was removed
+ * as unused, and agent-write-policy / last-editor are derived from commit info.
+ *
  * @param docPath - the document path
  * @param headingPaths - all heading paths to evaluate
- * @param bulkContent - pre-loaded section content (keyed by headingPath.join(">>"))
  * @returns Map keyed by headingKey → section metadata
  */
 export async function buildSectionInvolvementMeta(
   docPath: string,
   headingPaths: string[][],
-  bulkContent: Map<string, string>,
 ): Promise<Map<string, SectionInvolvementMeta>> {
   const [gitCommitInfo, canonicalPaths] = await Promise.all([
     readDocSectionCommitInfo(docPath),
@@ -76,7 +69,6 @@ export async function buildSectionInvolvementMeta(
 
   for (const headingPath of headingPaths) {
     const headingKey = SectionRef.headingKey(headingPath);
-    const content = bulkContent.get(headingKey) ?? "";
     const commitInfo = commitByHeading.get(headingKey);
 
     // O(1): derive the summary from the already-resolved per-section commit
@@ -86,30 +78,19 @@ export async function buildSectionInvolvementMeta(
       new SectionRef(docPath, headingPath),
       commitInfo ?? null,
     );
-    const wordCount = countWords(content);
-    const lengthWarning = wordCount > SECTION_LENGTH_WARNING_THRESHOLD;
-
     const nowMs = Date.now();
     result.set(headingKey, {
       agentWritePolicy,
       crdt_session_active: crdtSessionActive,
-      section_length_warning: lengthWarning,
-      word_count: wordCount,
       last_editor: commitInfo
         ? {
-            id: commitInfo.writerId,
-            name: commitInfo.authorName,
-            timestampMs: commitInfo.timestampMs,
-            type: commitInfo.writerType,
-            seconds_ago: Math.max(0, (nowMs - commitInfo.timestampMs) / 1000),
-          }
-        : {
-            id: "unknown",
-            name: "unknown",
-            timestampMs: 0,
-              type: "unknown",
-            seconds_ago: 0,
-          },
+          id: commitInfo.writerId,
+          name: commitInfo.authorName,
+          timestampMs: commitInfo.timestampMs,
+          type: commitInfo.writerType,
+          seconds_ago: Math.max(0, (nowMs - commitInfo.timestampMs) / 1000),
+        }
+        : null,
     });
   }
 

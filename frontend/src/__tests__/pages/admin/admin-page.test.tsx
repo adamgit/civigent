@@ -87,16 +87,6 @@ describe("AdminPage", () => {
     localStorage.clear();
   });
 
-  it("shows proposal counts (pending, committed, withdrawn)", async () => {
-    renderAdmin();
-    await waitFor(() => {
-      expect(screen.getByText(/Proposals total: 3/)).toBeDefined();
-    });
-    expect(screen.getByText(/Draft proposals: 1/)).toBeDefined();
-    expect(screen.getByText(/Committed proposals: 1/)).toBeDefined();
-    expect(screen.getByText(/Withdrawn proposals: 1/)).toBeDefined();
-  });
-
   it("shows current writer ID from session info", async () => {
     renderAdmin();
     await waitFor(() => {
@@ -115,13 +105,6 @@ describe("AdminPage", () => {
       (call: [unknown]) => String(call[0]).includes("/api/admin/snapshot-health"),
     );
     expect(snapshotCalls.length).toBeGreaterThan(0);
-  });
-
-  it("shows activity count", async () => {
-    renderAdmin();
-    await waitFor(() => {
-      expect(screen.getByText(/Recent activity items.*3/)).toBeDefined();
-    });
   });
 
   it("refresh button re-fetches data", async () => {

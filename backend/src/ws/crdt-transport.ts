@@ -41,8 +41,8 @@ export interface CrdtSocketState {
   /** UUID assigned at socket creation; never changes. Used to identify this specific
    *  socket within the per-user HolderEntry socket-id sets. */
   socketId: string;
-  /** True after joinSession has been called for this socket. Used to prevent
-   *  double-join in the pre-connected observer loop. */
+  /** True after joinAndNotify has run for this socket (live-sections bootstrap
+   *  enqueued). Used to prevent double-join in the pre-connected observer loop. */
   joined: boolean;
   /** Receipt watermark (Guarantee A): count of YJS_UPDATE frames processed from
    *  this socket so far. Incremented after each update's lane command resolves;

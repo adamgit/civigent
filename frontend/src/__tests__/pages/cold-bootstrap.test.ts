@@ -4,9 +4,9 @@
  * Verifies that the content-bearing REST section list is split into body-free
  * seeds + LOCK-ONLY workspace signals (locks are the only per-section signal
  * the `/sections` DTO carries — live pending is the replica's), that the
- * `SectionId` brand is the sole minting boundary,
- * and that the ready-gate paint selector serves seeds while cold and delegates to
- * the live reader once ready (with no seed fallback after ready).
+ * `SectionId` brand is the sole minting boundary. (The ready-gate paint rule
+ * itself lives in `useLiveSectionReplica.paintMarkdown` and is tested there —
+ * there is deliberately no second paint helper.)
  */
 
 import { describe, it, expect } from "vitest";
@@ -15,10 +15,9 @@ import {
   deriveWorkspaceSectionLockSignals,
   seedMarkdownFor,
   lockSignalFor,
-  resolvePaintMarkdown,
 } from "../../pages/cold-bootstrap";
 import { SectionId } from "../../types/live-sections";
-import type { DocumentSection } from "../../pages/document-page-utils";
+import type { WorkspaceSectionDto } from "../../pages/document-page-utils";
 
 function section(partial: {
   heading: string;
@@ -26,7 +25,7 @@ function section(partial: {
   fragment_key: string;
   content?: string;
   locked?: boolean;
-}): DocumentSection {
+}): WorkspaceSectionDto {
   return {
     heading: partial.heading,
     heading_path: partial.heading_path,
@@ -34,8 +33,6 @@ function section(partial: {
     content: partial.content ?? "",
     agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
     crdt_session_active: true,
-    section_length_warning: false,
-    word_count: 0,
     fragment_key: partial.fragment_key,
     section_file: `${partial.fragment_key.replace(/^section::/, "")}.md`,
     ...(partial.locked !== undefined ? { locked: partial.locked } : {}),
@@ -113,45 +110,5 @@ describe("seedMarkdownFor / lockSignalFor lookups", () => {
     expect(seedMarkdownFor(boot, SectionId.brand("section::missing"))).toBeUndefined();
     expect(lockSignalFor(deriveWorkspaceSectionLockSignals([intro]), SectionId.brand("section::missing")))
       .toBeUndefined();
-  });
-});
-
-describe("resolvePaintMarkdown — ready gate", () => {
-  const boot = deriveWorkspaceBootstrap([intro]);
-  const id = SectionId.brand("section::intro");
-
-  it("paints the cold seed while not ready and never calls the live reader", () => {
-    let liveReads = 0;
-    const out = resolvePaintMarkdown({
-      hasAuthoritativeBootstrap: false,
-      id,
-      bootstrap: boot,
-      readLiveMarkdown: () => {
-        liveReads += 1;
-        return "LIVE";
-      },
-    });
-    expect(out).toBe("# Intro\n\nhello");
-    expect(liveReads).toBe(0);
-  });
-
-  it("delegates to the live reader once ready — no seed fallback", () => {
-    const out = resolvePaintMarkdown({
-      hasAuthoritativeBootstrap: true,
-      id,
-      bootstrap: boot,
-      readLiveMarkdown: () => "LIVE BODY",
-    });
-    expect(out).toBe("LIVE BODY");
-  });
-
-  it("cold paint of an unknown id is empty string, not a crash", () => {
-    const out = resolvePaintMarkdown({
-      hasAuthoritativeBootstrap: false,
-      id: SectionId.brand("section::unknown"),
-      bootstrap: boot,
-      readLiveMarkdown: () => "LIVE",
-    });
-    expect(out).toBe("");
   });
 });

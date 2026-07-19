@@ -1,25 +1,22 @@
 /**
- * C3 — YJS_UPDATE propagation must be a SINGLE server-applied-delta broadcast.
+ * C3 — accepted/arbitrated content propagation must be a SINGLE server-applied
+ * delta on the live-section channel.
  *
  * Before C3 the `MSG_YJS_UPDATE` handler ran TWO propagation paths: (1) inside
  * `processArbitratedClientUpdate`, a conditional full-state broadcast on revert;
  * and (2) an unconditional raw-bytes relay of the client payload to the other
  * sockets. The spec mandates ONE mechanism: the server applies the change and the
  * resulting update IS the broadcast (spec 05 §Fragment Injection / §Structural
- * Normalization). The raw relay is the dumb y-websocket relay, valid only when the
- * server never rejects an edit — but arbitration DOES reject (revert) edits.
+ * Normalization).
  *
- * These tests drive the REAL binary-frame handler with two connected sockets
- * (sender + peer; the peer's outbound frames are applied to a replica Y.Doc) and
- * assert that the peer:
+ * Content fan-out for live recipients is the ordered `LiveSectionsUpdateFrame`
+ * (`yjs_update`). These tests drive the REAL binary-frame handler with two
+ * connected sockets (sender + bootstrapped peer) and assert that the peer:
  *  (1) converges to server truth when an edit is blocked (the blocked edit is
- *      absent from the peer), receiving EXACTLY ONE server-applied YJS_UPDATE
+ *      absent from the peer), receiving EXACTLY ONE content-carrying live-section
  *      frame (no second raw relay); and
  *  (2) in a mixed update (one frame touching a WON fragment X and a BLOCKED
  *      fragment Y) receives X but NOT Y.
- *
- * The single-frame assertion is the load-bearing C3 property: under the old
- * dual-broadcast code the peer received TWO frames (correction + raw relay).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -29,6 +26,7 @@ import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import {
   handleMessageForTest,
+  joinAndNotify,
   registerFakeEditorSocketForTest,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
@@ -36,7 +34,12 @@ import { joinLiveRecipient } from "../helpers/live-recipient.js";
 import { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
 import type { FragmentContent, SectionBody } from "../../storage/section-formatting.js";
-import { encodeUpdate, decodeMessage, MSG_YJS_UPDATE } from "../../ws/crdt-ws-frames.js";
+import {
+  encodeUpdate,
+  decodeMessage,
+  decodeLiveSectionsUpdate,
+  MSG_LIVE_SECTIONS_UPDATE,
+} from "../../ws/crdt-ws-frames.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { createProposal, transitionToInProgress } from "../../storage/proposal-repository.js";
@@ -71,7 +74,7 @@ async function lockSectionWithCompetingProposal(headingPath: string[]): Promise<
   expect((await transitionToInProgress(id)).acquired).toBe(true);
 }
 
-describe("C3: YJS_UPDATE propagation is a single server-applied-delta broadcast", () => {
+describe("C3: content propagation is a single server-applied live-section delta", () => {
   let ctx: TempDataRootContext;
   let events: WsServerEvent[];
   const disposers: Array<() => void> = [];
@@ -90,29 +93,33 @@ describe("C3: YJS_UPDATE propagation is a single server-applied-delta broadcast"
     await ctx.cleanup();
   });
 
-  /** Register sender + peer sockets; the peer applies received YJS_UPDATE frames to a replica. */
-  function setupSenderAndPeer(session: DocSession): {
+  /** Register sender + bootstrapped peer; peer applies live-section `yjs_update` only. */
+  async function setupSenderAndPeer(session: DocSession): Promise<{
     senderSocket: import("ws").WebSocket;
     senderState: import("../../ws/crdt-transport.js").CrdtSocketState;
     peer: Y.Doc;
     peerStore: LiveFragmentStringsStore;
-    peerFrameCount: () => number;
-  } {
+    peerContentFrameCount: () => number;
+  }> {
     const peer = new Y.Doc();
     Y.applyUpdate(peer, Y.encodeStateAsUpdate(session.ydoc));
     const peerStore = new LiveFragmentStringsStore(peer, session.liveFragments.getFragmentKeys(), SAMPLE_DOC_PATH);
 
-    let frames = 0;
+    let contentFrames = 0;
     const applyToPeer = (data: Uint8Array) => {
       const decoded = decodeMessage(data);
-      if (decoded?.type === MSG_YJS_UPDATE) {
-        frames++;
-        Y.applyUpdate(peer, decoded.payload);
-      }
+      if (decoded?.type !== MSG_LIVE_SECTIONS_UPDATE) return;
+      const frame = decodeLiveSectionsUpdate(decoded.payload);
+      if (!frame.yjs_update) return;
+      contentFrames++;
+      Y.applyUpdate(peer, frame.yjs_update);
     };
 
     const sender = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "sock-A");
     const peerReg = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "sock-B", applyToPeer);
+    peerReg.state.joined = false;
+    joinAndNotify(session, peerReg.socket, peerReg.state);
+    await session.enqueue(() => undefined);
     disposers.push(sender.dispose, peerReg.dispose);
 
     return {
@@ -120,7 +127,7 @@ describe("C3: YJS_UPDATE propagation is a single server-applied-delta broadcast"
       senderState: sender.state,
       peer,
       peerStore,
-      peerFrameCount: () => frames,
+      peerContentFrameCount: () => contentFrames,
     };
   }
 
@@ -130,15 +137,15 @@ describe("C3: YJS_UPDATE propagation is a single server-applied-delta broadcast"
 
     const live = await joinLiveRecipient(session);
     disposers.push(live.dispose);
-    const { senderSocket, senderState, peerStore, peerFrameCount } = setupSenderAndPeer(session);
+    const { senderSocket, senderState, peerStore, peerContentFrameCount } = await setupSenderAndPeer(session);
 
     const blocked = buildFragmentContent("BLOCKED EDIT BY ALICE" as SectionBody, 2, "Overview");
     const frame = Buffer.from(encodeUpdate(buildClientUpdate(session, [[OVERVIEW_KEY, blocked]])));
     await handleMessageForTest(senderSocket, senderState, frame);
 
-    // The peer received EXACTLY ONE server-applied delta (the old dual-broadcast
-    // code sent two: a correction AND the raw client relay).
-    expect(peerFrameCount()).toBe(1);
+    // The peer received EXACTLY ONE server-applied content frame on the live-section
+    // channel (the old dual-broadcast code sent two: a correction AND the raw relay).
+    expect(peerContentFrameCount()).toBe(1);
 
     // The peer converged to server truth: the blocked edit is absent.
     const peerOverview = peerStore.readFragmentString(OVERVIEW_KEY) as string;
@@ -154,7 +161,7 @@ describe("C3: YJS_UPDATE propagation is a single server-applied-delta broadcast"
     const session = await openSession();
     await lockSectionWithCompetingProposal(["Overview"]); // Overview blocked; Timeline free
 
-    const { senderSocket, senderState, peerStore, peerFrameCount } = setupSenderAndPeer(session);
+    const { senderSocket, senderState, peerStore, peerContentFrameCount } = await setupSenderAndPeer(session);
 
     // One update touches BOTH a blocked fragment (Overview) and a won one (Timeline).
     const frame = Buffer.from(encodeUpdate(buildClientUpdate(session, [
@@ -163,7 +170,7 @@ describe("C3: YJS_UPDATE propagation is a single server-applied-delta broadcast"
     ])));
     await handleMessageForTest(senderSocket, senderState, frame);
 
-    expect(peerFrameCount()).toBe(1);
+    expect(peerContentFrameCount()).toBe(1);
 
     // The peer received the won Timeline edit but NOT the blocked Overview edit.
     const peerTimeline = peerStore.readFragmentString(TIMELINE_KEY) as string;

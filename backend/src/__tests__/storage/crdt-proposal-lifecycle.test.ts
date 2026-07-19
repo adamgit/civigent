@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
-  getOrCreateInProgressProposalForDocSession,
-  findInProgressProposalForDocSession,
+  getOrCreateInProgressProposalForAdoptionId,
+  findInProgressProposalByAdoptionId,
   findInProgressProposalForDoc,
   updateCurrentProposalSections,
   unionCurrentProposalSections,
@@ -14,7 +14,7 @@ import {
 } from "../../storage/proposal-repository.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
-import type { WriterIdentity, DocSessionId } from "../../types/shared.js";
+import { ProposalAdoptionId, type WriterIdentity } from "../../types/shared.js";
 
 const writer: WriterIdentity = { id: "user-alice", type: "human", displayName: "Alice" };
 
@@ -30,9 +30,9 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
   });
 
   it("lazily creates one inprogress proposal keyed by DocSession identity", async () => {
-    const docSessionId = crypto.randomUUID() as DocSessionId;
-    const { id, contentRoot, proposal } = await getOrCreateInProgressProposalForDocSession({
-      docSessionId,
+    const proposalAdoptionId = ProposalAdoptionId.create();
+    const { id, contentRoot, proposal } = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId,
       docPath: "guide.md",
       writer,
     });
@@ -40,46 +40,46 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
     expect(id).toBeTruthy();
     expect(contentRoot).toContain("inprogress");
     expect(proposal.status).toBe("inprogress");
-    expect(proposal.docSessionId).toBe(docSessionId);
+    expect(proposal.proposalAdoptionId).toBe(proposalAdoptionId);
 
-    const found = await findInProgressProposalForDocSession(docSessionId);
+    const found = await findInProgressProposalByAdoptionId(proposalAdoptionId);
     expect(found?.id).toBe(id);
   });
 
   it("enforces one active proposal per DocSession (returns existing)", async () => {
-    const docSessionId = crypto.randomUUID() as DocSessionId;
-    const first = await getOrCreateInProgressProposalForDocSession({
-      docSessionId,
+    const proposalAdoptionId = ProposalAdoptionId.create();
+    const first = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId,
       docPath: "guide.md",
       writer,
     });
-    const second = await getOrCreateInProgressProposalForDocSession({
-      docSessionId,
+    const second = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId,
       docPath: "guide.md",
       writer,
     });
     expect(second.id).toBe(first.id);
     const inProgress = await listInProgressProposals();
-    expect(inProgress.filter((p) => p.docSessionId === docSessionId)).toHaveLength(1);
+    expect(inProgress.filter((p) => p.proposalAdoptionId === proposalAdoptionId)).toHaveLength(1);
   });
 
   it("looks up the inprogress proposal by doc path", async () => {
-    const docSessionId = crypto.randomUUID() as DocSessionId;
-    await getOrCreateInProgressProposalForDocSession({
-      docSessionId,
+    const proposalAdoptionId = ProposalAdoptionId.create();
+    await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId,
       docPath: "guide.md",
       writer,
       sections: [{ doc_path: "guide.md", heading_path: ["Intro"] }],
     });
     const byDoc = await findInProgressProposalForDoc("guide.md");
-    expect(byDoc?.docSessionId).toBe(docSessionId);
+    expect(byDoc?.proposalAdoptionId).toBe(proposalAdoptionId);
     expect(await findInProgressProposalForDoc("nonexistent.md")).toBeNull();
   });
 
   it("updates the current-proposal section manifest, keeping targets in sync", async () => {
-    const docSessionId = crypto.randomUUID() as DocSessionId;
-    const { id } = await getOrCreateInProgressProposalForDocSession({
-      docSessionId,
+    const proposalAdoptionId = ProposalAdoptionId.create();
+    const { id } = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId,
       docPath: "guide.md",
       writer,
     });
@@ -98,9 +98,9 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
   });
 
   it("unionCurrentProposalSections grows the manifest monotonically — grow-only, never shrinks (C4/D6)", async () => {
-    const docSessionId = crypto.randomUUID() as DocSessionId;
-    const { id } = await getOrCreateInProgressProposalForDocSession({
-      docSessionId,
+    const proposalAdoptionId = ProposalAdoptionId.create();
+    const { id } = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId,
       docPath: "guide.md",
       writer,
     });
@@ -133,9 +133,9 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
   });
 
   it("returns a committing proposal to inprogress on runtime publish failure (not draft)", async () => {
-    const docSessionId = crypto.randomUUID() as DocSessionId;
-    const { id } = await getOrCreateInProgressProposalForDocSession({
-      docSessionId,
+    const proposalAdoptionId = ProposalAdoptionId.create();
+    const { id } = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId,
       docPath: "guide.md",
       writer,
     });
@@ -152,13 +152,13 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
     const root = await locateProposalContentRoot(id);
     expect(root).toContain("inprogress");
     // still owned by the same DocSession
-    expect((await findInProgressProposalForDocSession(docSessionId))?.id).toBe(id);
+    expect((await findInProgressProposalByAdoptionId(proposalAdoptionId))?.id).toBe(id);
   });
 
   it("rollbackCommittingProposal dispatches docsession owner to inprogress", async () => {
-    const docSessionId = crypto.randomUUID() as DocSessionId;
-    const { id } = await getOrCreateInProgressProposalForDocSession({
-      docSessionId,
+    const proposalAdoptionId = ProposalAdoptionId.create();
+    const { id } = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId,
       docPath: "guide.md",
       writer,
     });

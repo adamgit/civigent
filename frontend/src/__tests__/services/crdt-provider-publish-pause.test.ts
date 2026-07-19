@@ -7,7 +7,8 @@
  *     after the client has stopped producing Yjs transactions — coordinated via
  *     the provider-owned PublishPauseBarrier the editor registry sets.
  *   - Editors unfreeze only on doc_publish_pause_end.
- *   - A pause_end without a prior pause_start is a no-op guard.
+ *   - A pause_end without a prior pause_start still notifies (mid-pause joiner
+ *     recovery) without ever sending doc_publish_ready.
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
@@ -172,17 +173,21 @@ describe("CrdtProvider publish-pause quiescence barrier", () => {
     provider.destroy();
   });
 
-  it("pause_end without a prior pause_start is a no-op", () => {
+  it("pause_end without a prior pause_start still notifies (mid-pause joiner recovery) and never sends ready", () => {
     const doc = new Y.Doc();
-    const provider = new CrdtProvider(doc, "/test/doc.md");
+    const onPublishPauseEnd = vi.fn();
+    const provider = new CrdtProvider(doc, "/test/doc.md", { onPublishPauseEnd });
     const ws = connect(provider);
 
     const unfreeze = vi.fn();
     provider.setPublishPauseBarrier({ freeze: () => Promise.resolve(), unfreeze });
 
+    const sentBefore = ws.sentMessages.length;
     ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_END]));
-    expect(unfreeze).not.toHaveBeenCalled();
+    expect(unfreeze).toHaveBeenCalledTimes(1);
+    expect(onPublishPauseEnd).toHaveBeenCalledTimes(1);
     expect(provider.isPublishPaused).toBe(false);
+    expect(ws.sentMessages.length).toBe(sentBefore);
 
     provider.destroy();
   });

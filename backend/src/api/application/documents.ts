@@ -178,12 +178,11 @@ export async function readCanonicalDocument(docPath: string): Promise<{ response
   const structure = await readDocumentStructure(docPath);
   const headingPaths = flattenStructureToHeadingPaths(structure);
 
-  // Canonical-only read (MW-7): section metadata (word counts, length warnings,
-  // agent-write-policy) is fed from canonical body content. No session/live
-  // overlay is consulted; proposal content is read only on the explicit
-  // proposal endpoint via ProposalReader.
-  const bulkContent = await CanonicalReader.open().readAllSections(docPath);
-  const involvementMeta = await buildSectionInvolvementMeta(docPath, headingPaths, bulkContent);
+  // Canonical-only read (MW-7): section metadata (agent-write-policy,
+  // last-editor, session liveness) comes from commit/session state — not from
+  // a body read. No session/live overlay is consulted; proposal content is read
+  // only on the explicit proposal endpoint via ProposalReader.
+  const involvementMeta = await buildSectionInvolvementMeta(docPath, headingPaths);
 
   const sectionsMeta: SectionMeta[] = [];
   for (const headingPath of headingPaths) {
@@ -194,8 +193,6 @@ export async function readCanonicalDocument(docPath: string): Promise<{ response
       heading_path: headingPath,
       agentWritePolicy: meta.agentWritePolicy,
       crdt_session_active: meta.crdt_session_active,
-      section_length_warning: meta.section_length_warning,
-      word_count: meta.word_count,
     });
   }
 

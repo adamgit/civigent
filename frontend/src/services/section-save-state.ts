@@ -30,7 +30,7 @@
  * genuinely unsaved / failed / blocked / degraded states.
  */
 
-import type { CrdtConnectionState } from "./browser-fragment-replica-store";
+import type { CrdtConnectionState } from "./crdt-provider";
 
 export type DocTransportStatus =
   | "idle"             // not editing, or clean with no local edits this session — nothing to report

@@ -23,6 +23,7 @@ import { acquireDocSession, destroyAllSessions, type DocSession } from "../../cr
 import {
   handleMessageForTest,
   registerFakeEditorSocketForTest,
+  requestDocSessionPublish,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
 import { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
@@ -112,12 +113,16 @@ describe("E1: sibling-split autonomous publish end-to-end (real editor socket)",
     const proposalId = session.generator.getCurrentProposalId()!;
     expect(proposalId).toBeTruthy();
 
-    // Quiesce → structural normalization (split) + off-lane settled-frontier publish.
+    // Quiesce → structural normalization (split) only; no autonomous publish starts.
     await vi.advanceTimersByTimeAsync(session.generator.publishTriggerPolicy.quiescenceThresholdMs + 50);
     await session.enqueue(() => undefined);
+    expect(session.publishPause.isActive()).toBe(false);
+    expect(session.generator.hasCurrentProposal()).toBe(true);
 
-    // The publish entered the OFF-lane pause (an editor must ack) — drive the commit.
+    // Drive the publish explicitly → the OFF-lane pause (an editor must ack) — commit.
+    const publishPromise = requestDocSessionPublish(SAMPLE_DOC_PATH);
     await ackPauseAndCommit(session, EDITOR_SOCKET);
+    await publishPromise;
     expect(session.generator.hasCurrentProposal()).toBe(false);
 
     // CANONICAL gained the promoted sibling and the survivor kept its body.

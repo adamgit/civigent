@@ -7,13 +7,13 @@ interface Props {
   editorName: string | undefined;
   secondsAgo: number | undefined;
   writerType: string | undefined;
-  sectionIndex: number;
+  fragmentKey: string;
   uncommittedChanges?: boolean;
 }
 
-export function SummaryWhoChangedThisSection({ editorId, editorName, secondsAgo, writerType, sectionIndex, uncommittedChanges = false }: Props) {
-  const { hoveredSection, activeSectionIndex } = useSectionHover();
-  const isVisible = hoveredSection === sectionIndex || activeSectionIndex === sectionIndex;
+export function SummaryWhoChangedThisSection({ editorId, editorName, secondsAgo, writerType, fragmentKey, uncommittedChanges = false }: Props) {
+  const { hoveredFragmentKey, activeFragmentKey } = useSectionHover();
+  const isVisible = hoveredFragmentKey === fragmentKey || activeFragmentKey === fragmentKey;
   const ageLabel = useAgeDisplay(secondsAgo);
 
   if (!isVisible) return null;

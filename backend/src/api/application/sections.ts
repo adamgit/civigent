@@ -82,13 +82,6 @@ export async function readCanonicalSectionList(docPath: string): Promise<ReadSec
   return buildSectionListResponse(docPath, CanonicalReader.open(), undefined);
 }
 
-/**
- * Open the reader for a human WORKING-COPY read. A live DocSession continuously
- * materializes its edits into its own `inprogress` proposal, and ProposalReader
- * already resolves proposal-content-first with canonical fallback — so a
- * workspace read is just a reader selection: the in-progress proposal if one
- * exists for the doc, else canonical. No live-fragment assembly.
- */
 export async function openWorkspaceReader(docPath: string): Promise<CanonicalReader | ProposalReader> {
   const inProgress = await findInProgressProposalForDoc(docPath);
   if (inProgress) {
@@ -97,18 +90,6 @@ export async function openWorkspaceReader(docPath: string): Promise<CanonicalRea
   return CanonicalReader.open();
 }
 
-/**
- * Section list for the human working copy. Reuses the canonical builder; unlike
- * the canonical read it does NOT emit `agent:reading` (the route omits the
- * broadcast — workspace reads are human-facing).
- *
- * Spec 06 §Browser freshness: the workspace during a live session IS live
- * DocSession state. When a DocSession is active, section `content` is the live
- * fragment markdown (same bytes the shared doc shows) rather than a
- * `prependHeadings` reconstruction from the topology-lagging proposal/canonical
- * skeleton. Topology/order/identity still come from the reader (unchanged), so
- * this is display-authority only.
- */
 export async function readWorkspaceSectionList(docPath: string): Promise<ReadSectionListResult> {
   const session = lookupDocSession(docPath);
   return buildSectionListResponse(
@@ -119,23 +100,6 @@ export async function readWorkspaceSectionList(docPath: string): Promise<ReadSec
   );
 }
 
-/**
- * Live section list for a document with an ACTIVE DocSession. Topology reader is
- * the session's `inprogress` proposal when one exists (else canonical), and
- * section `content` is the live Y.Doc fragment markdown (no `prependHeadings`).
- * Used by `emitLiveStructureChanged` so the `doc:structure-changed` payload's
- * `content` matches the shared doc during demotion-before-quiescence.
- */
-export async function readLiveSectionList(
-  docPath: string,
-  currentProposalId: string | null,
-  liveFragments: LiveFragmentStringsStore,
-): Promise<ReadSectionListResult> {
-  const reader = currentProposalId
-    ? ProposalReader.open(currentProposalId, "inprogress")
-    : CanonicalReader.open();
-  return buildSectionListResponse(docPath, reader, currentProposalId ?? undefined, liveFragments);
-}
 
 
 
@@ -177,19 +141,6 @@ export async function readProposalAllSections(
   return { documents };
 }
 
-/**
- * Live-only section content: the current markdown of each section's live Y.Doc
- * fragment (the same bytes the shared doc shows), keyed by heading key. Used
- * instead of `prependHeadings` while a DocSession is active so that
- * demotion-before-quiescence ships the live body-only text — NOT a `# Heading`
- * reconstructed from the (topology-lagging) proposal/canonical skeleton.
- *
- * Topology/identity still come from the reader's `getSectionList` above (so this
- * is display-authority only — it does NOT move merge/delete earlier than
- * quiescence). `readFragmentString` is sourced directly from Yjs state, so it is
- * always current; it is the same read `snapshotSections` uses for
- * materialization.
- */
 function buildLiveSectionContent(
   sectionList: Array<{ headingPath: string[]; sectionFile: string }>,
   liveFragments: LiveFragmentStringsStore,
@@ -216,13 +167,11 @@ async function buildSectionListResponse(
     sectionList.map((s) => [SectionRef.headingKey(s.headingPath), s.sectionFile]),
   );
 
-  // Live path: content from the shared Y.Doc fragments (no `prependHeadings`).
-  // Cold path: reconstruct heading+body from the reader's body-only storage.
   const bulkContent = liveFragments
     ? buildLiveSectionContent(sectionList, liveFragments)
     : prependHeadings(sectionList, await sectionReader.readAllSections(docPath));
 
-  const involvementMeta = await buildSectionInvolvementMeta(docPath, headingPaths, bulkContent);
+  const involvementMeta = await buildSectionInvolvementMeta(docPath, headingPaths);
 
   const blockedHeadingKeys = new Set<string>();
   {
@@ -244,7 +193,7 @@ async function buildSectionListResponse(
     const meta = involvementMeta.get(headingKey);
     if (!meta) continue;
 
-    const blocked = blockedHeadingKeys.has(headingKey);
+    const locked = blockedHeadingKeys.has(headingKey);
 
     sections.push({
       heading: headingPath[headingPath.length - 1] ?? "",
@@ -253,15 +202,13 @@ async function buildSectionListResponse(
       content,
       agentWritePolicy: meta.agentWritePolicy,
       crdt_session_active: meta.crdt_session_active,
-      section_length_warning: meta.section_length_warning,
-      word_count: meta.word_count,
       section_file: sectionFileByKey.get(headingKey) ?? "",
       fragment_key: fragmentKeyFromSectionFile(
         sectionFileByKey.get(headingKey) ?? "",
         headingPath.length === 0,
       ),
       last_editor: meta.last_editor,
-      ...(blocked ? { blocked: true } : {}),
+      ...(locked ? { locked: true } : {}),
     });
   }
 

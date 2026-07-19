@@ -23,7 +23,7 @@ import { renderHook } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import React from "react";
 import type { WsServerEvent } from "../../types/shared";
-import type { DocumentSection } from "../../pages/document-page-utils";
+import type { WorkspaceSectionDto } from "../../pages/document-page-utils";
 import { getSectionFragmentKey } from "../../pages/document-page-utils";
 
 type WsEventHandler = (event: WsServerEvent) => void;
@@ -43,7 +43,7 @@ vi.mock("../../services/ws-client", () => ({
   },
 }));
 
-let getDocumentSectionsImpl: (docPath: string) => Promise<{ sections: DocumentSection[] }>;
+let getDocumentSectionsImpl: (docPath: string) => Promise<{ sections: WorkspaceSectionDto[] }>;
 
 vi.mock("../../services/api-client", () => ({
   apiClient: {
@@ -54,7 +54,7 @@ vi.mock("../../services/api-client", () => ({
 
 import { useDocumentWebSocket, type UseDocumentWebSocketParams } from "../../hooks/useDocumentWebSocket";
 
-function makeSection(overrides: Partial<DocumentSection>): DocumentSection {
+function makeSection(overrides: Partial<WorkspaceSectionDto>): WorkspaceSectionDto {
   return {
     heading: "Overview",
     heading_path: ["Overview"],
@@ -62,8 +62,6 @@ function makeSection(overrides: Partial<DocumentSection>): DocumentSection {
     content: "# Overview\n",
     agentWritePolicy: { canWrite: true, message: "ok" },
     crdt_session_active: false,
-    section_length_warning: false,
-    word_count: 2,
     fragment_key: "frag:sec_overview",
     section_file: "sec_overview.md",
     ...overrides,
@@ -78,18 +76,18 @@ const wrapper = ({ children }: { children: React.ReactNode }) =>
   React.createElement(MemoryRouter, null, children);
 
 function buildParams(
-  initial: DocumentSection[],
+  initial: WorkspaceSectionDto[],
   opts: { crdtActive: boolean; mountedFragmentKeys: string[]; focusedSectionIndex?: number | null },
 ): {
   params: UseDocumentWebSocketParams;
-  holder: { sections: DocumentSection[] };
+  holder: { sections: WorkspaceSectionDto[] };
   loadSections: ReturnType<typeof vi.fn>;
   setError: ReturnType<typeof vi.fn>;
   focusedSectionIndexRef: React.MutableRefObject<number | null>;
 } {
   const holder = { sections: initial };
   const setSections = vi.fn((updater: unknown) => {
-    holder.sections = typeof updater === "function" ? (updater as (p: DocumentSection[]) => DocumentSection[])(holder.sections) : (updater as DocumentSection[]);
+    holder.sections = typeof updater === "function" ? (updater as (p: WorkspaceSectionDto[]) => WorkspaceSectionDto[])(holder.sections) : (updater as WorkspaceSectionDto[]);
   });
   // The no-CRDT branch delegates the refresh to loadSections; simulate the real
   // DocumentPage by having it adopt the fresh server sections into state.
@@ -130,7 +128,7 @@ async function settle(): Promise<void> {
   await Promise.resolve();
 }
 
-const fragKeys = (sections: DocumentSection[]) => sections.map(getSectionFragmentKey);
+const fragKeys = (sections: WorkspaceSectionDto[]) => sections.map(getSectionFragmentKey);
 
 describe("content:committed topology refresh (spec 06)", () => {
   beforeEach(() => {

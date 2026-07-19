@@ -4,10 +4,26 @@ import { fragmentToMarkdown } from "./fragment-to-markdown";
 import { SectionId, type LiveSectionRef } from "../types/live-sections";
 import type { WireLiveSectionsState } from "../types/shared";
 
+/** Yjs transaction origin stamped on every server-delivered apply (bootstrap
+ *  and update frames). Lets transport-level waiters (e.g. the live-move caret
+ *  restore) recognize server fan-out on the shared doc without the provider
+ *  ever applying content itself. */
+export const LIVE_SECTION_SERVER_APPLY_ORIGIN: unique symbol = Symbol("live-section-server-apply");
+
+declare const LiveEditorBindingBrand: unique symbol;
+
 export interface LiveEditorBinding {
+  readonly [LiveEditorBindingBrand]: "LiveEditorBinding";
+}
+
+export interface LiveEditorAttachFields {
   readonly doc: Y.Doc;
   readonly awareness: Awareness;
   readonly fragmentKey: string;
+}
+
+export function unwrapLiveEditorBindingForMilkdown(binding: LiveEditorBinding): LiveEditorAttachFields {
+  return binding as unknown as LiveEditorAttachFields;
 }
 
 export interface LiveSectionHandle {
@@ -17,12 +33,30 @@ export interface LiveSectionHandle {
   createEditorBinding(): LiveEditorBinding;
 }
 
+/**
+ * The full public replica contract. Lifecycle:
+ *
+ *   unbound → bound+currently-live → bound+invalidated → mint a new replica
+ *
+ * One replica holds exactly one DocSession Y.Doc history. After session end
+ * the object is permanently invalid for any other session id.
+ */
 export interface LiveSectionReplica {
-  readonly hasAuthoritativeBootstrap: boolean;
+  /** DocSession whose Y.Doc history this replica holds. Set by
+   *  `bindToDocSession`; never changes; survives invalidation. null until
+   *  first bind. */
+  readonly boundDocSessionId: string | null;
+  /** True only while this bound replica may be used as live display/edit authority. */
+  readonly isCurrentlyLiveAuthority: boolean;
+
   subscribe(listener: () => void): () => void;
   getTopology(): readonly LiveSectionRef[];
-  lookupInTopology(sectionId: SectionId): LiveSectionHandle | undefined;
-  requireLiveSection(sectionId: SectionId): LiveSectionHandle | undefined;
+  /** Topology membership only — safe before live authority; never implies
+   *  editable/live paint. The only soft-miss section accessor. */
+  findInTopology(sectionId: SectionId): LiveSectionHandle | undefined;
+  /** Throws unless currently live authority, id is in topology, and the
+   *  fragment exists. Never returns undefined. */
+  getLiveSection(sectionId: SectionId): LiveSectionHandle;
   isPending(sectionId: SectionId): boolean;
   /** True when the server marked this section blocked (lock/contention). */
   isBlocked(sectionId: SectionId): boolean;
@@ -30,7 +64,20 @@ export interface LiveSectionReplica {
   getPendingSectionKeys(): readonly string[];
   /** True while the join-mirror or a live pause has editors frozen. */
   isPublishPauseMirrorActive(): boolean;
-  setLocalWriteCapability(enabled: boolean): void;
+  clearPublishPauseMirror(): void;
+  /** Observer/editor UI write switch (not auth). */
+  setEditingEnabled(enabled: boolean): void;
+
+  /** Only legal when `boundDocSessionId === null`. Binds permanently and
+   *  becomes currently live. */
+  bindToDocSession(bootstrap: LiveBootstrapInput): void;
+  /** Only legal when `bootstrap.docSessionId === boundDocSessionId`.
+   *  Same-session reconnect. */
+  mergeSameSessionBootstrap(bootstrap: LiveBootstrapInput): void;
+  /** Ingest a live-sections update frame (yjs and/or state). Does not grant
+   *  live authority. */
+  ingestUpdate(input: LiveUpdateInput): void;
+  destroy(): void;
 }
 
 export interface LiveBootstrapInput {
@@ -44,14 +91,14 @@ export interface LiveUpdateInput {
   state?: WireLiveSectionsState;
 }
 
-export class LiveSectionReplicaImpl implements LiveSectionReplica {
+class LiveSectionReplicaImpl implements LiveSectionReplica {
   private readonly doc: Y.Doc;
   private readonly awareness: Awareness;
-  private readonly origin: symbol = Symbol("live-section-replica");
+  private readonly origin: symbol = LIVE_SECTION_SERVER_APPLY_ORIGIN;
 
-  private _ready = false;
+  private currentlyLiveAuthority = false;
   private editingEnabled = false;
-  private docSessionId: string | null = null;
+  private _boundDocSessionId: string | null = null;
 
   private topology: readonly LiveSectionRef[] = [];
   private topologyIds = new Set<SectionId>();
@@ -67,8 +114,12 @@ export class LiveSectionReplicaImpl implements LiveSectionReplica {
     this.awareness = awareness ?? new Awareness(this.doc);
   }
 
-  get hasAuthoritativeBootstrap(): boolean {
-    return this._ready;
+  get isCurrentlyLiveAuthority(): boolean {
+    return this.currentlyLiveAuthority;
+  }
+
+  get boundDocSessionId(): string | null {
+    return this._boundDocSessionId;
   }
 
   subscribe = (listener: () => void): (() => void) => {
@@ -83,18 +134,22 @@ export class LiveSectionReplicaImpl implements LiveSectionReplica {
     return this.topology;
   }
 
-  lookupInTopology(sectionId: SectionId): LiveSectionHandle | undefined {
+  findInTopology(sectionId: SectionId): LiveSectionHandle | undefined {
     if (!this.topologyIds.has(sectionId)) return undefined;
     return this.makeHandle(sectionId);
   }
 
-  requireLiveSection(sectionId: SectionId): LiveSectionHandle | undefined {
-    if (!this._ready) {
+  getLiveSection(sectionId: SectionId): LiveSectionHandle {
+    if (!this.currentlyLiveAuthority) {
       throw new Error(
-        "LiveSectionReplica.requireLiveSection called before an authoritative bootstrap (hasAuthoritativeBootstrap === false).",
+        "LiveSectionReplica.getLiveSection called while not currently live authority.",
       );
     }
-    if (!this.topologyIds.has(sectionId)) return undefined;
+    if (!this.topologyIds.has(sectionId)) {
+      throw new Error(
+        `getLiveSection: section "${SectionId.text(sectionId)}" is not in the live topology.`,
+      );
+    }
     if (!this.doc.share.has(SectionId.text(sectionId))) {
       throw new Error(
         `LiveSectionReplica invariant: topology id "${SectionId.text(sectionId)}" has no fragment in the shared doc.`,
@@ -121,45 +176,46 @@ export class LiveSectionReplicaImpl implements LiveSectionReplica {
     return this.editorsFrozenByPauseMirror;
   }
 
-  setLocalWriteCapability(enabled: boolean): void {
+  clearPublishPauseMirror(): void {
+    if (!this.editorsFrozenByPauseMirror) return;
+    this.editorsFrozenByPauseMirror = false;
+    this.notify();
+  }
+
+  setEditingEnabled(enabled: boolean): void {
     if (this.editingEnabled === enabled) return;
     this.editingEnabled = enabled;
     this.notify();
   }
 
-  applyBootstrap(input: LiveBootstrapInput): void {
+  bindToDocSession(bootstrap: LiveBootstrapInput): void {
     if (this.destroyed) return;
-    this.docSessionId = input.docSessionId;
-    Y.applyUpdate(this.doc, input.yjsUpdate, this.origin);
-    this.adoptState(input.state);
-    for (const ref of this.topology) {
-      if (!this.doc.share.has(SectionId.text(ref.id))) {
-        throw new Error(
-          `LiveSectionReplica bootstrap incomplete: topology id "${SectionId.text(ref.id)}" has no fragment.`,
-        );
-      }
+    if (this._boundDocSessionId !== null) {
+      throw new Error(
+        `LiveSectionReplica.bindToDocSession: already bound (to "${this._boundDocSessionId}").`,
+      );
     }
-    this._ready = true;
-    this.notify();
+    this._boundDocSessionId = bootstrap.docSessionId;
+    this.adoptBootstrap(bootstrap);
   }
 
-  applyUpdate(input: LiveUpdateInput): void {
+  mergeSameSessionBootstrap(bootstrap: LiveBootstrapInput): void {
+    if (this.destroyed) return;
+    if (this._boundDocSessionId === null) {
+      throw new Error("LiveSectionReplica.mergeSameSessionBootstrap: not bound.");
+    }
+    if (this._boundDocSessionId !== bootstrap.docSessionId) {
+      throw new Error(
+        `LiveSectionReplica.mergeSameSessionBootstrap: session mismatch (bound to "${this._boundDocSessionId}", got "${bootstrap.docSessionId}").`,
+      );
+    }
+    this.adoptBootstrap(bootstrap);
+  }
+
+  ingestUpdate(input: LiveUpdateInput): void {
     if (this.destroyed) return;
     if (input.yjsUpdate) Y.applyUpdate(this.doc, input.yjsUpdate, this.origin);
     if (input.state) this.adoptState(input.state);
-    this.notify();
-  }
-
-  resetForSessionEnd(): void {
-    if (this.destroyed) return;
-    this._ready = false;
-    this.editingEnabled = false;
-    this.docSessionId = null;
-    this.topology = [];
-    this.topologyIds = new Set();
-    this.blocked = new Set();
-    this.pending = new Map();
-    this.editorsFrozenByPauseMirror = false;
     this.notify();
   }
 
@@ -168,6 +224,20 @@ export class LiveSectionReplicaImpl implements LiveSectionReplica {
     this.listeners.clear();
     this.awareness.destroy();
     this.doc.destroy();
+  }
+
+  private adoptBootstrap(bootstrap: LiveBootstrapInput): void {
+    Y.applyUpdate(this.doc, bootstrap.yjsUpdate, this.origin);
+    this.adoptState(bootstrap.state);
+    for (const ref of this.topology) {
+      if (!this.doc.share.has(SectionId.text(ref.id))) {
+        throw new Error(
+          `LiveSectionReplica bootstrap incomplete: topology id "${SectionId.text(ref.id)}" has no fragment.`,
+        );
+      }
+    }
+    this.currentlyLiveAuthority = true;
+    this.notify();
   }
 
   private adoptState(state: WireLiveSectionsState): void {
@@ -192,7 +262,9 @@ export class LiveSectionReplicaImpl implements LiveSectionReplica {
       id,
       readMarkdown: () => fragmentToMarkdown(this.doc, key) ?? "",
       isEditable: () => this.editingEnabled && !this.blocked.has(id) && !this.editorsFrozenByPauseMirror,
-      createEditorBinding: () => ({ doc: this.doc, awareness: this.awareness, fragmentKey: key }),
+      createEditorBinding: () =>
+        // The runtime shape is LiveEditorAttachFields; the public type hides it.
+        ({ doc: this.doc, awareness: this.awareness, fragmentKey: key }) as unknown as LiveEditorBinding,
     };
   }
 
@@ -202,6 +274,6 @@ export class LiveSectionReplicaImpl implements LiveSectionReplica {
   }
 }
 
-export function createLiveSectionReplica(doc?: Y.Doc, awareness?: Awareness): LiveSectionReplicaImpl {
+export function createLiveSectionReplica(doc?: Y.Doc, awareness?: Awareness): LiveSectionReplica {
   return new LiveSectionReplicaImpl(doc, awareness);
 }

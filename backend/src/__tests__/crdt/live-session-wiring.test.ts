@@ -26,6 +26,7 @@ import {
 import {
   armQuiescenceTimer,
   applyCommittedCanonicalToLiveSession,
+  requestDocSessionPublish,
 } from "../../ws/crdt-ws-coordinator.js";
 import { buildFragmentContent, EMPTY_BODY } from "../../storage/section-formatting.js";
 import type { FragmentContent, SectionBody } from "../../storage/section-formatting.js";
@@ -94,7 +95,7 @@ describe("live-editing pipeline wiring (MW-1b/2/3)", () => {
     expect(overview?.level).toBe(4);
   });
 
-  it("MW-1b: autonomously publishes once the document goes quiet", async () => {
+  it("MW-1b: quiet quiescence normalizes without publishing; explicit publish commits", async () => {
     vi.useFakeTimers();
     const session = await openSession();
 
@@ -108,7 +109,13 @@ describe("live-editing pipeline wiring (MW-1b/2/3)", () => {
     await vi.advanceTimersByTimeAsync(session.generator.publishTriggerPolicy.quiescenceThresholdMs + 50);
     await drainLane(session);
 
-    // Settled-dirty-frontier publish cleared the current-proposal reference.
+    // The quiet timer alone is NOT a settled dirty frontier: no publish, no pause.
+    expect(session.publishPause.isActive()).toBe(false);
+    expect(session.generator.hasCurrentProposal()).toBe(true);
+
+    const outcome = await requestDocSessionPublish(SAMPLE_DOC_PATH);
+    await drainLane(session);
+    expect(outcome.outcome).toBe("committed");
     expect(session.generator.hasCurrentProposal()).toBe(false);
   });
 

@@ -49,8 +49,8 @@ describe("synthetic BFH identity", () => {
       pending_sections: [],
       publish_pause_join_mirror: "not_in_pause",
     };
-    replica.applyBootstrap({ docSessionId: "s", state: bfhState, yjsUpdate: Y.encodeStateAsUpdate(bfhDoc) });
-    expect(replica.requireLiveSection(BEFORE_FIRST_HEADING_SECTION_ID)).toBeDefined();
+    replica.bindToDocSession({ docSessionId: "s", state: bfhState, yjsUpdate: Y.encodeStateAsUpdate(bfhDoc) });
+    expect(replica.getLiveSection(BEFORE_FIRST_HEADING_SECTION_ID)).toBeDefined();
 
     // Root-split: a new headed fragment materializes; BFH leaves topology.
     const splitDoc = new Y.Doc();
@@ -58,14 +58,14 @@ describe("synthetic BFH identity", () => {
     splitDoc.transact(() =>
       updateYFragment(splitDoc, frag, markdownToProseMirrorNode("# Alpha\n\nbody"), { mapping: new Map(), isOMark: new Map() }),
     );
-    replica.applyUpdate({
+    replica.ingestUpdate({
       yjsUpdate: Y.encodeStateAsUpdate(splitDoc),
       state: { ...bfhState, topology: [{ fragment_key: HEADED, heading_path: ["Alpha"] }] },
     });
 
     // BFH is gone; the heading is a NEW id, not the BFH constant re-keyed.
-    expect(replica.requireLiveSection(BEFORE_FIRST_HEADING_SECTION_ID)).toBeUndefined();
-    const headed = replica.requireLiveSection(SectionId.brand(HEADED));
+    expect(replica.findInTopology(BEFORE_FIRST_HEADING_SECTION_ID)).toBeUndefined();
+    const headed = replica.getLiveSection(SectionId.brand(HEADED));
     expect(headed).toBeDefined();
     expect(SectionId.text(headed!.id)).toBe(HEADED);
     expect(SectionId.text(headed!.id)).not.toBe(BEFORE_FIRST_HEADING_KEY);

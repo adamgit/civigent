@@ -1,6 +1,7 @@
 /** Decodes an on-disk proposal `meta.json` into a typed domain object. */
 import {
   expectJsonObject,
+  ProposalAdoptionId,
   sectionsToTargets,
   TERMINAL_PROPOSAL_STATUSES,
   type JsonObject,
@@ -189,8 +190,11 @@ function decodeProposalFileBase(obj: JsonObject, label: string, status: Proposal
   } else if (missingTargets && !TERMINAL_PROPOSAL_STATUSES.has(status)) {
     base.degraded = ["missing-targets"];
   }
-  const docSessionId = optionalString(obj, "docSessionId", label);
-  if (docSessionId !== undefined) base.docSessionId = docSessionId;
+  const proposalAdoptionId = optionalString(obj, "proposalAdoptionId", label)
+    ?? optionalString(obj, "docSessionId", label);
+  if (proposalAdoptionId !== undefined) {
+    base.proposalAdoptionId = ProposalAdoptionId.fromStoredValue(proposalAdoptionId);
+  }
   // A legacy `agent_session_id` field (removed task 708 — MCP session identity is
   // transport state, never proposal persistence) is deliberately NOT decoded:
   // old files still read fine and the field is dropped at this boundary.

@@ -10,7 +10,8 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { DocumentSection } from "../../pages/document-page-utils";
+import type { WorkspaceSectionDto } from "../../pages/document-page-utils";
+import { dtoToRenderRef } from "../../pages/cold-bootstrap";
 
 const api = vi.hoisted(() => ({
   submitProposal: vi.fn(),
@@ -28,7 +29,7 @@ vi.mock("../../services/api-client", () => ({
 
 import { useProposalDrafting, type UseProposalDraftingParams } from "../../hooks/useProposalDrafting";
 
-function section(headingPath: string[], content: string): DocumentSection {
+function section(headingPath: string[], content: string): WorkspaceSectionDto {
   return {
     heading: headingPath[headingPath.length - 1] ?? "",
     heading_path: headingPath,
@@ -36,20 +37,18 @@ function section(headingPath: string[], content: string): DocumentSection {
     content,
     agentWritePolicy: { canWrite: true, message: "ok" },
     crdt_session_active: false,
-    section_length_warning: false,
-    word_count: 2,
     fragment_key: `frag:${headingPath.join("/") || "root"}`,
     section_file: "f.md",
   };
 }
 
-function params(sections: DocumentSection[]): UseProposalDraftingParams {
+function params(sections: WorkspaceSectionDto[]): UseProposalDraftingParams {
   return {
     decodedDocPath: "test.md",
-    sections,
+    workspaceBaselineSections: sections,
     setError: vi.fn(),
     loadSections: vi.fn(async () => sections),
-    setFocusedSectionIndex: vi.fn(),
+    setBootstrapFocusedSectionIndex: vi.fn(),
     leaveLiveEditing: vi.fn(async () => {}),
   };
 }
@@ -84,7 +83,7 @@ describe("manual proposal mode (spec 11)", () => {
     await act(async () => { await result.current.startManualPublish(); });
 
     await act(async () => {
-      await result.current.toggleProposalSection(overview);
+      await result.current.toggleProposalSection(dtoToRenderRef(overview));
     });
 
     expect(api.updateProposalManifest).toHaveBeenCalledWith("p1", {
@@ -133,7 +132,7 @@ describe("manual proposal mode (spec 11)", () => {
     await act(async () => { await result.current.startManualPublish(); });
 
     // Select the one section.
-    await act(async () => { await result.current.toggleProposalSection(overview); });
+    await act(async () => { await result.current.toggleProposalSection(dtoToRenderRef(overview)); });
     expect(result.current.selectedProposalSectionKeys.size).toBe(1);
 
     api.updateProposalManifest.mockClear();
@@ -175,7 +174,7 @@ describe("manual proposal mode (spec 11)", () => {
     api.replaceProposalSections.mockClear();
 
     // Attempting to change scope while inprogress is refused.
-    await act(async () => { await result.current.toggleProposalSection(timeline); });
+    await act(async () => { await result.current.toggleProposalSection(dtoToRenderRef(timeline)); });
     expect(result.current.panelError).toMatch(/scope is locked once proposal is inprogress/i);
     expect(api.updateProposalManifest).not.toHaveBeenCalled();
     expect(api.replaceProposalSections).not.toHaveBeenCalled();

@@ -26,11 +26,6 @@
 
 import type { CrdtTransport } from "./crdt-transport.js";
 import { apiClient } from "./api-client.js";
-import {
-  captureCaretOffsets,
-  restoreCaretOffsets,
-  type CaretEditorView,
-} from "./caret-recovery.js";
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -137,14 +132,6 @@ export interface SectionTransferDeps {
   getPresenceIndicators?: () => Array<{ sectionKey: string; writerDisplayName: string }>;
   /** @deprecated See {@link SectionTransferDeps.getPresenceIndicators}. */
   getProposalIndicators?: () => Array<{ sectionKey: string; writerDisplayName: string }>;
-  /**
-   * WS-6: resolve the live ProseMirror editor view for a fragment key, so the
-   * moved section's caret can be captured before the backend re-seeds the live
-   * fragments and restored (by content offset) after the server-applied update
-   * lands. Optional — when absent, the move proceeds without caret recovery
-   * (still 100% data-correct).
-   */
-  getEditorViewForFragment?: (fragmentKey: string) => CaretEditorView | null;
 }
 
 // ─── Service ─────────────────────────────────────────────
@@ -209,9 +196,9 @@ export class SectionTransferService {
    * the REST response is the ack/refusal channel only.
    *
    * The structural reorder is backend-owned (Y.js has no `moveTo` between top-level
-   * types). Caret recovery for the moved section is best-effort/deferred ("100%
-   * correct data" is the accepted bar): the re-seed resets caret position, restored
-   * by content offset once the fan-out lands.
+   * types). A sibling reorder is topology-only: the fragments (and any mounted
+   * editor bound to them, including its native ProseMirror selection) are untouched,
+   * so no caret capture/restore is needed.
    */
   async execute(transfer: SectionTransfer): Promise<TransferResult> {
     if (this._executing) {
@@ -243,15 +230,9 @@ export class SectionTransferService {
         return { success: false, error: "Transfer aborted", sourceModified: false, targetModified: false };
       }
 
-      // WS-6: capture the caret in the moved section BEFORE the backend re-seeds
-      // its live fragment (the re-seed re-mints structs, so a RelativePosition
-      // can't survive — we recover by content offset on the stable fragment key).
-      const sourceView = this.deps.getEditorViewForFragment?.(transfer.sourceFragmentKey) ?? null;
-      const capturedCaret = captureCaretOffsets(sourceView);
-
-      // ORDERING BARRIER (claim-review 03): a live move re-seeds EVERY live
-      // fragment from the proposal layout, so the requester's in-flight keystrokes
-      // MUST be materialized first or they are clobbered. The REST channel does not
+      // ORDERING BARRIER (claim-review 03): the move materializes the source and
+      // target fragments into the proposal before reordering, so the requester's
+      // in-flight keystrokes MUST be materialized first. The REST channel does not
       // inherit the binary path's FIFO ordering for free, so flush + await our
       // edits' materialization (client-side quiescence) before issuing the move.
       await this.deps.transport.flushAndAwaitSync();
@@ -267,16 +248,6 @@ export class SectionTransferService {
         // Apply-time refusal (publish-pause race, section deleted mid-drag, …) —
         // render the backend's prose VERBATIM. Section order is unchanged.
         return { success: false, error: result.message, sourceModified: false, targetModified: false };
-      }
-
-      // WS-6: restore the caret once the server-applied re-seed lands as the WS
-      // fan-out update (not on a fixed macrotask). The moved section keeps its
-      // fragment key (the reorder preserves the section-file id).
-      if (capturedCaret) {
-        this.deps.transport.onceRemoteUpdate(() => {
-          const view = this.deps.getEditorViewForFragment?.(transfer.sourceFragmentKey) ?? null;
-          restoreCaretOffsets(view, capturedCaret);
-        });
       }
 
       // The backend reorder moved the section atomically; no separate source

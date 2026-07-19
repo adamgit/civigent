@@ -266,7 +266,7 @@ export class MultiSectionContentError extends Error {}
  * `moveSubtree` primitive; not a global skeleton invariant.
  */
 export class DuplicateSiblingHeadingError extends Error {
-  readonly operation: "rename" | "move";
+  readonly operation: "rename" | "move" | "rewrite";
   readonly docPath: string;
   readonly parentHeadingPath: readonly string[];
   readonly proposedHeading: string;
@@ -274,7 +274,7 @@ export class DuplicateSiblingHeadingError extends Error {
   readonly conflictingSectionFile: string;
   readonly targetSectionFile: string;
   constructor(args: {
-    operation: "rename" | "move";
+    operation: "rename" | "move" | "rewrite";
     docPath: string;
     parentHeadingPath: readonly string[];
     proposedHeading: string;
@@ -285,7 +285,11 @@ export class DuplicateSiblingHeadingError extends Error {
     const parentLabel = args.parentHeadingPath.length === 0
       ? "the document root"
       : `[${args.parentHeadingPath.join(" > ")}]`;
-    const verb = args.operation === "move" ? "move" : "rename";
+    const verb = args.operation === "move"
+      ? "move"
+      : args.operation === "rewrite"
+        ? "rewrite"
+        : "rename";
     const destinationLabel = args.operation === "move" ? "destination" : "sibling list";
     super(
       `Cannot ${verb} section: ${destinationLabel} under ${parentLabel} already ` +
@@ -310,7 +314,7 @@ export class DuplicateSiblingHeadingError extends Error {
 function assertNoDuplicateSiblingHeadingCollision(
   siblings: readonly SkeletonNode[],
   args: {
-    operation: "rename" | "move";
+    operation: "rename" | "move" | "rewrite";
     docPath: string;
     parentHeadingPath: readonly string[];
     targetSectionFile: string;
@@ -3023,6 +3027,17 @@ export class ProposalShadowContentLayer {
         throw staleHeadingPath(docPath, headingPath, "cannot rewrite");
       }
       const oldNode = siblings[idx];
+      for (const root of replacementRoots) {
+        if (root.heading === "") continue;
+        assertNoDuplicateSiblingHeadingCollision(siblings, {
+          operation: "rewrite",
+          docPath,
+          parentHeadingPath: parentPath,
+          targetSectionFile: oldNode.sectionFile,
+          proposedHeading: root.heading,
+          proposedLevel: root.level,
+        });
+      }
       const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
       const removed = ctx.flattenNode(oldNode, parentPath, parentSkeletonPath);
       ctx.addBodyHoldersToParents(replacementRoots);

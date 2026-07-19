@@ -24,12 +24,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import React from "react";
-import * as Y from "yjs";
-import { Awareness } from "y-protocols/awareness";
 import type { WsServerEvent } from "../../types/shared";
-import type { DocumentSection } from "../../pages/document-page-utils";
+import type { WorkspaceSectionDto } from "../../pages/document-page-utils";
 import { getSectionFragmentKey } from "../../pages/document-page-utils";
-import { BrowserFragmentReplicaStore } from "../../services/browser-fragment-replica-store";
 
 type WsEventHandler = (event: WsServerEvent) => void;
 let capturedWsHandler: WsEventHandler | null = null;
@@ -58,7 +55,7 @@ function ref<T>(v: T): React.MutableRefObject<T> { return { current: v }; }
 const wrapper = ({ children }: { children: React.ReactNode }) =>
   React.createElement(MemoryRouter, null, children);
 
-function makeSection(overrides: Partial<DocumentSection>): DocumentSection {
+function makeSection(overrides: Partial<WorkspaceSectionDto>): WorkspaceSectionDto {
   return {
     heading: "Overview",
     heading_path: ["Overview"],
@@ -66,8 +63,6 @@ function makeSection(overrides: Partial<DocumentSection>): DocumentSection {
     content: "# Overview\n",
     agentWritePolicy: { canWrite: true, message: "ok" },
     crdt_session_active: false,
-    section_length_warning: false,
-    word_count: 2,
     fragment_key: "frag:sec_overview",
     section_file: "sec_overview.md",
     ...overrides,
@@ -75,26 +70,26 @@ function makeSection(overrides: Partial<DocumentSection>): DocumentSection {
 }
 
 function buildParams(
-  initial: DocumentSection[],
-  opts: { store: BrowserFragmentReplicaStore | null; mountedFragmentKeys?: string[]; focusedSectionIndex?: number | null },
+  initial: WorkspaceSectionDto[],
+  opts: { liveReplicaReady: boolean; mountedFragmentKeys?: string[]; focusedSectionIndex?: number | null },
 ): {
   params: UseDocumentWebSocketParams;
-  holder: { sections: DocumentSection[] };
+  holder: { sections: WorkspaceSectionDto[] };
   focusedSectionIndexRef: React.MutableRefObject<number | null>;
   loadSections: ReturnType<typeof vi.fn>;
 } {
   const holder = { sections: initial };
   const setSections = vi.fn((updater: unknown) => {
     holder.sections = typeof updater === "function"
-      ? (updater as (p: DocumentSection[]) => DocumentSection[])(holder.sections)
-      : (updater as DocumentSection[]);
+      ? (updater as (p: WorkspaceSectionDto[]) => WorkspaceSectionDto[])(holder.sections)
+      : (updater as WorkspaceSectionDto[]);
   });
   const focusedSectionIndexRef = ref<number | null>(opts.focusedSectionIndex ?? null);
   const loadSections = vi.fn(async () => []);
   const params: UseDocumentWebSocketParams = {
     decodedDocPath: "test.md",
     clientInstanceId: "client-1",
-    liveReplicaReadyRef: ref(opts.store !== null),
+    liveReplicaReadyRef: ref(opts.liveReplicaReady),
     setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],
     loadSections: loadSections as unknown as UseDocumentWebSocketParams["loadSections"],
     setError: vi.fn(),
@@ -106,32 +101,16 @@ function emit(event: Record<string, unknown>): void {
   act(() => { capturedWsHandler?.(event as unknown as WsServerEvent); });
 }
 
-const fragKeys = (sections: DocumentSection[]) => sections.map(getSectionFragmentKey);
+const fragKeys = (sections: WorkspaceSectionDto[]) => sections.map(getSectionFragmentKey);
 
 describe("section:gone WS delivery is no longer a live authority", () => {
-  let doc: Y.Doc;
-  let awareness: Awareness;
-  let store: BrowserFragmentReplicaStore;
+  beforeEach(() => { capturedWsHandler = null; });
+  afterEach(() => { vi.clearAllMocks(); });
 
-  beforeEach(() => {
-    capturedWsHandler = null;
-    doc = new Y.Doc();
-    awareness = new Awareness(doc);
-    store = new BrowserFragmentReplicaStore(doc, awareness);
-  });
-
-  afterEach(() => {
-    vi.clearAllMocks();
-    awareness.destroy();
-    doc.destroy();
-  });
-
-  it("does NOT route a matching-doc `section:gone` into the replica store", () => {
+  it("leaves the section list and refetch untouched for a matching-doc `section:gone`", () => {
     const initial = [makeSection({ fragment_key: "frag:sec_overview" })];
-    const { params } = buildParams(initial, { store });
+    const { params, holder, loadSections } = buildParams(initial, { liveReplicaReady: true });
     renderHook(() => useDocumentWebSocket(params), { wrapper });
-
-    expect(store.getSectionEditabilityForKey("frag:sec_overview")).toBe("editable");
 
     emit({
       type: "section:gone",
@@ -140,14 +119,15 @@ describe("section:gone WS delivery is no longer a live authority", () => {
       heading_path: ["Overview"],
     });
 
-    // The app-WS event is ignored: editability follows the CRDT topology frame,
-    // not this unordered event. The store is untouched.
-    expect(store.getSectionEditabilityForKey("frag:sec_overview")).toBe("editable");
+    // The app-WS event is ignored: editability/removal follow the CRDT topology
+    // frame, not this unordered event. No refetch, no in-place list mutation.
+    expect(loadSections).not.toHaveBeenCalled();
+    expect(fragKeys(holder.sections)).toEqual(["frag:sec_overview"]);
   });
 
   it("ignores a `section:gone` for a different doc_path (still untouched)", () => {
     const initial = [makeSection({ fragment_key: "frag:sec_overview" })];
-    const { params } = buildParams(initial, { store });
+    const { params, holder, loadSections } = buildParams(initial, { liveReplicaReady: true });
     renderHook(() => useDocumentWebSocket(params), { wrapper });
 
     emit({
@@ -157,7 +137,8 @@ describe("section:gone WS delivery is no longer a live authority", () => {
       heading_path: ["Overview"],
     });
 
-    expect(store.getSectionEditabilityForKey("frag:sec_overview")).toBe("editable");
+    expect(loadSections).not.toHaveBeenCalled();
+    expect(fragKeys(holder.sections)).toEqual(["frag:sec_overview"]);
   });
 });
 
@@ -170,7 +151,7 @@ describe("doc:structure-changed is a cold-invalidation refetch hint (spec 06 §R
       makeSection({ heading: "Overview", heading_path: ["Overview"], fragment_key: "frag:sec_overview", content: "overview\n" }),
       makeSection({ heading: "Timeline", heading_path: ["Timeline"], fragment_key: "frag:sec_timeline", content: "timeline\n" }),
     ];
-    const { params, holder, loadSections } = buildParams(initial, { store: null });
+    const { params, holder, loadSections } = buildParams(initial, { liveReplicaReady: false });
     renderHook(() => useDocumentWebSocket(params), { wrapper });
 
     emit({
@@ -195,7 +176,7 @@ describe("doc:structure-changed is a cold-invalidation refetch hint (spec 06 §R
     ];
     // Focus is on Timeline (index 1).
     const { params, focusedSectionIndexRef, loadSections } = buildParams(initial, {
-      store: null,
+      liveReplicaReady: false,
       focusedSectionIndex: 1,
     });
     renderHook(() => useDocumentWebSocket(params), { wrapper });
@@ -216,7 +197,7 @@ describe("doc:structure-changed is a cold-invalidation refetch hint (spec 06 §R
 
   it("ignores a `doc:structure-changed` for a different doc_path (no refetch)", () => {
     const initial = [makeSection({ fragment_key: "frag:sec_overview" })];
-    const { params, holder, loadSections } = buildParams(initial, { store: null });
+    const { params, holder, loadSections } = buildParams(initial, { liveReplicaReady: false });
     renderHook(() => useDocumentWebSocket(params), { wrapper });
 
     emit({

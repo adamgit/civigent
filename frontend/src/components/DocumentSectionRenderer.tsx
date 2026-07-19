@@ -5,18 +5,16 @@ import { Link } from "react-router-dom";
 import { MilkdownEditor, type MilkdownEditorHandle } from "./MilkdownEditor";
 import type { CrdtConnectionState } from "../services/crdt-provider";
 import { isCrdtDegraded, crdtBannerInfo } from "../services/crdt-connection-ux";
-import type { DocumentSection } from "../pages/document-page-utils";
 import { headingPathToLabel } from "../pages/document-page-utils";
+import type { RenderSectionRef } from "../types/live-sections";
 import { resolveWriterId } from "../services/api-client";
 import type { LocalEditOriginSink } from "../status/sessionAuthorship";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import { useSectionHover } from "../contexts/sectionHoverUtils";
-import { coldSeedMarkdown } from "../services/display-section-markdown";
 import { rewriteMarkdownDocHref } from "../app/docsRouteUtils";
 
 export interface DocumentSectionRendererProps {
-  section: DocumentSection;
-  index: number;
+  section: RenderSectionRef;
   fragmentKey: string;
   isFocused: boolean;
   hasEditor: boolean;
@@ -28,27 +26,26 @@ export interface DocumentSectionRendererProps {
   highlightLabel: string | null;
   injectedByWriter: string | null;
   hasRemotePresence: boolean;
-  dragOverSectionIndex: number | null;
-  crdtSynced: boolean;
+  dragOverFragmentKey: string | null;
   crdtState: CrdtConnectionState;
   transferService: SectionTransferService | null;
   proposalMode: boolean;
   canEditProposalContent: boolean;
   proposalScopeMutationInFlight: boolean;
   isReady: boolean;
-  livePaintMarkdown?: (section: DocumentSection) => string;
+  getDisplayMarkdown: (section: RenderSectionRef) => string;
   getLiveBinding?: (fragmentKey: string) => import("../services/live-section-replica").LiveEditorBinding | undefined;
   localEditSink: LocalEditOriginSink;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
-  onStartEditing: (index: number, coords: { x: number; y: number }) => void;
-  onFocusSection: (index: number, headingPath: string[], coords: { x: number; y: number }) => void;
+  onStartEditing: (fragmentKey: string, coords: { x: number; y: number }) => void;
+  onFocusSection: (fragmentKey: string, headingPath: string[], coords: { x: number; y: number }) => void;
   onSetEditorRef: (fragmentKey: string, handle: MilkdownEditorHandle | null) => void;
   onEditorReady: (fragmentKey: string) => void;
   onEditorUnready?: (fragmentKey: string) => void;
-  onProposalSectionChange?: (index: number, markdown: string) => void;
+  onProposalSectionChange?: (headingPath: readonly string[], markdown: string) => void;
   onToggleProposalSection?: () => void;
-  onCursorExit: (index: number, direction: "up" | "down") => void;
-  onCrossSectionDrop: (section: DocumentSection, transfer: SectionTransfer) => void;
+  onCursorExit: (fragmentKey: string, direction: "up" | "down") => void;
+  onCrossSectionDrop: (target: RenderSectionRef, transfer: SectionTransfer) => void;
 }
 
 function playFlyToProposalPanelAnimation(fromX: number, fromY: number): void {
@@ -93,7 +90,6 @@ function playFlyToProposalPanelAnimation(fromX: number, fromY: number): void {
 
 export function DocumentSectionRenderer({
   section,
-  index: i,
   fragmentKey: fk,
   isFocused,
   hasEditor,
@@ -105,15 +101,14 @@ export function DocumentSectionRenderer({
   highlightLabel,
   injectedByWriter,
   hasRemotePresence,
-  dragOverSectionIndex,
-  crdtSynced,
+  dragOverFragmentKey,
   crdtState,
   transferService,
   proposalMode,
   canEditProposalContent,
   proposalScopeMutationInFlight,
   isReady,
-  livePaintMarkdown,
+  getDisplayMarkdown,
   getLiveBinding,
   localEditSink,
   mouseDownPosRef,
@@ -127,10 +122,12 @@ export function DocumentSectionRenderer({
   onCursorExit,
   onCrossSectionDrop,
 }: DocumentSectionRendererProps) {
-  const { setHoveredSection } = useSectionHover();
-  const displayMarkdown =
-    !proposalMode && livePaintMarkdown ? livePaintMarkdown(section) : coldSeedMarkdown(section);
+  const { setHoveredFragmentKey } = useSectionHover();
+  const headingPath = [...section.headingPath];
+  const displayMarkdown = getDisplayMarkdown(section);
   const unavailableForEdit = isLockedByOtherHuman || crdtBlocked;
+  const liveBinding = !proposalMode && hasEditor ? getLiveBinding?.(fk) : undefined;
+  const mountEditor = hasEditor && (proposalMode || liveBinding !== undefined);
   const crdtDegraded = isCrdtDegraded(crdtState);
   const crdtPaused = crdtBannerInfo(crdtState);
   const markdownComponents = {
@@ -154,9 +151,9 @@ export function DocumentSectionRenderer({
   return (
     <div
       key={fk}
-      data-section-index={i}
+      data-document-section=""
       data-fragment-key={fk}
-      data-heading-path={JSON.stringify(section.heading_path)}
+      data-heading-path={JSON.stringify(headingPath)}
       className={`relative mx-[-16px] px-[16px] rounded-md border-l-[2.5px] transition-all group ${
         unavailableForEdit
           ? `bg-amber-50/50 border-l-amber-400 opacity-75`
@@ -171,9 +168,9 @@ export function DocumentSectionRenderer({
           : hasRemotePresence
           ? `cursor-pointer hover:bg-section-hover border-l-blue-400`
           : `cursor-pointer hover:bg-section-hover border-l-transparent`
-      }${dragOverSectionIndex === i ? " section-drop-target" : ""}${injectedByWriter ? " section-injected-flash" : ""}`}
-      onMouseEnter={() => setHoveredSection(i)}
-      onMouseLeave={() => setHoveredSection(null)}
+      }${dragOverFragmentKey === fk ? " section-drop-target" : ""}${injectedByWriter ? " section-injected-flash" : ""}`}
+      onMouseEnter={() => setHoveredFragmentKey(fk)}
+      onMouseLeave={() => setHoveredFragmentKey(null)}
       onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
       onClick={unavailableForEdit || publishPaused ? undefined : hasEditor ? undefined : (e) => {
         if (e.shiftKey || e.button !== 0 || e.defaultPrevented) return;
@@ -192,10 +189,10 @@ export function DocumentSectionRenderer({
           if (!isInProposal) {
             return;
           }
-          onFocusSection(i, section.heading_path, { x: e.clientX, y: e.clientY });
+          onFocusSection(fk, headingPath, { x: e.clientX, y: e.clientY });
           return;
         }
-        void onStartEditing(i, { x: e.clientX, y: e.clientY });
+        void onStartEditing(fk, { x: e.clientX, y: e.clientY });
       }}
     >
       {injectedByWriter ? (
@@ -239,7 +236,7 @@ export function DocumentSectionRenderer({
         </span>
       ) : null}
 
-      {hasEditor ? (
+      {mountEditor ? (
         crdtDegraded && !isFocused ? (
           <div className="doc-prose opacity-50">
             <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
@@ -274,48 +271,41 @@ export function DocumentSectionRenderer({
                   const down = mouseDownPosRef.current;
                   if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
                   if (!isFocused) {
-                    onFocusSection(i, section.heading_path, { x: e.clientX, y: e.clientY });
+                    onFocusSection(fk, headingPath, { x: e.clientX, y: e.clientY });
                   }
                 }}
               >
                 {proposalMode ? (
                   <MilkdownEditor
                     ref={(handle) => onSetEditorRef(fk, handle)}
-                    markdown={section.content}
-                    store={null}
-                    transport={null}
-                    crdtSynced={crdtSynced}
-                    fragmentKey={fk}
+                    markdown={displayMarkdown}
                     userName={resolveWriterId()}
                     readOnly={!isFocused || unavailableForEdit || publishPaused || crdtDegraded || !canEditProposalContent}
                     onChange={canEditProposalContent && onProposalSectionChange
-                      ? (md) => onProposalSectionChange(i, md)
+                      ? (md) => onProposalSectionChange(section.headingPath, md)
                       : undefined}
                     canDrop={transferService ? () => transferService.canDrop(fk) : undefined}
-                    onCursorExit={(direction) => onCursorExit(i, direction)}
+                    onCursorExit={(direction) => onCursorExit(fk, direction)}
                     onCrossSectionDrop={(transfer) => onCrossSectionDrop(section, transfer)}
                     onLocalEdit={() => localEditSink.recordLocalEdit(fk)}
                     onReady={() => onEditorReady(fk)}
                     onUnready={onEditorUnready ? () => onEditorUnready(fk) : undefined}
                   />
-                ) : (
+                ) : liveBinding ? (
                   <MilkdownEditor
                     ref={(handle) => onSetEditorRef(fk, handle)}
-                    store={null}
-                    binding={getLiveBinding?.(fk)}
-                    crdtSynced={crdtSynced}
-                    fragmentKey={fk}
+                    binding={liveBinding}
                     userName={resolveWriterId()}
                     readOnly={!isFocused || unavailableForEdit || publishPaused || crdtDegraded}
                     expectsCrdt
                     canDrop={transferService ? () => transferService.canDrop(fk) : undefined}
-                    onCursorExit={(direction) => onCursorExit(i, direction)}
+                    onCursorExit={(direction) => onCursorExit(fk, direction)}
                     onCrossSectionDrop={(transfer) => onCrossSectionDrop(section, transfer)}
                     onLocalEdit={() => localEditSink.recordLocalEdit(fk)}
                     onReady={() => onEditorReady(fk)}
                     onUnready={onEditorUnready ? () => onEditorUnready(fk) : undefined}
                   />
-                )}
+                ) : null /* unreachable: mountEditor requires liveBinding on the live path */}
               </div>
             </div>
           </>

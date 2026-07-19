@@ -1,16 +1,3 @@
-/**
- * ObserverCrdtProvider — Read-only Y.Doc sync via /ws/crdt/<docPath>.
- *
- * Lightweight variant of CrdtProvider for non-editing viewers.
- * Receives Y.Doc updates but never sends YJS_UPDATE. No Awareness, no dirty
- * tracking.
- *
- * Binary protocol (subset of backend/src/ws/crdt-ws-frames.ts):
- *   0x00 SYNC_STEP_1     — State vector (bidirectional for initial sync)
- *   0x01 SYNC_STEP_2     — State diff (bidirectional for initial sync)
- *   0x02 YJS_UPDATE       — Incremental Y.js update (server → client only)
- */
-
 import * as Y from "yjs";
 import type {
   DocumentReplacementNoticePayload,
@@ -29,19 +16,15 @@ import {
 import { encodeDocPathForWs } from "../utils/path-encoding";
 import { randomUuid } from "../utils/random-uuid";
 
-// ─── Protocol constants (must match backend/src/ws/crdt-ws-frames.ts) ───
-
-const MSG_SYNC_STEP_1 = 0;
 const MSG_SYNC_STEP_2 = 1;
-const MSG_YJS_UPDATE = 2;
+const MSG_AWARENESS = 3;
 const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0B;
 const MSG_MODE_TRANSITION_REQUEST = 0x0C;
 const MSG_MODE_TRANSITION_RESULT = 0x0D;
+const MSG_DOC_PUBLISH_PAUSE_START = 0x10;
+const MSG_DOC_PUBLISH_PAUSE_END = 0x12;
 const MSG_LIVE_SECTIONS_BOOTSTRAP = 0x14;
 const MSG_LIVE_SECTIONS_UPDATE = 0x15;
-
-/** Debounce interval for onChange callbacks (ms). */
-const CHANGE_DEBOUNCE_MS = 100;
 
 // ─── Connection states ─────────────────────────────────────────────
 
@@ -53,24 +36,16 @@ export type ObserverConnectionState =
 
 export interface ObserverCrdtProviderEvents {
   onStateChange?: (state: ObserverConnectionState) => void;
-  /** Fired exactly once when the initial SYNC_STEP_2 completes and the Y.Doc is
-   *  fully populated. Use this for the first render rather than onChange so that
-   *  fragmentToMarkdown is never called against an empty/incomplete doc. */
-  onSynced?: () => void;
-  /** Fired (debounced ~100ms) when the Y.Doc is updated by an editor.
-   *  Only fires after the initial sync has completed (synced === true). */
-  onChange?: () => void;
+  onBootstrapApplied?: () => void;
   /** Editing session ended — observer should fall back to REST content. */
   onSessionEnded?: () => void;
   /** Fired when the server closes this socket with code 4022 (document replaced).
    *  The provider reconnects immediately (backoff reset). */
   onSessionReinit?: () => void;
-  /** Fired once, after onSynced on the post-replacement reconnection, with the replacement notice. */
+  /** Fired once on the post-replacement reconnection, after the live-sections
+   *  bootstrap has applied (never before the doc is filled), with the notice. */
   onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
   onModeTransitionResult?: (result: ModeTransitionResult) => void;
-  /** Raw authoritative live-section frame (opcode + payload) — routed into a
-   *  `LiveSectionReplica` via `routeLiveSectionFrame`. Correctness-critical live
-   *  topology/editability/body arrive here, not on the application WebSocket. */
   onLiveSectionFrame?: (opcode: number, payload: Uint8Array) => void;
   /** Fired when a protocol-level error occurs (e.g. malformed JSON payload).
    *  The connection is terminated after this callback. */
@@ -82,10 +57,10 @@ export interface ObserverCrdtProviderEvents {
 export class ObserverCrdtProvider {
   readonly doc: Y.Doc;
 
-  private _synced: boolean = false;
-  /** True once SYNC_STEP_2 has been received and applied. Safe to call
-   *  fragmentToMarkdown only when this is true. */
-  get synced(): boolean { return this._synced; }
+  private _bootstrapApplied: boolean = false;
+  /** True once the first live-sections bootstrap of this connection has been
+   *  applied by the replica. Safe to call fragmentToMarkdown only when true. */
+  get bootstrapApplied(): boolean { return this._bootstrapApplied; }
 
   private ws: WebSocket | null = null;
   private _state: ObserverConnectionState = "disconnected";
@@ -96,7 +71,6 @@ export class ObserverCrdtProvider {
   private readonly maxReconnectDelayMs = 15000;
   private reconnectAttempts = 0;
   private destroyed = false;
-  private changeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingDocumentReplacementNotice: DocumentReplacementNoticePayload | null = null;
   private readonly clientInstanceId: ClientInstanceId;
   private readonly docPath: string;
@@ -149,10 +123,6 @@ export class ObserverCrdtProvider {
   destroy(): void {
     this.destroyed = true;
     this.disconnect();
-    if (this.changeDebounceTimer) {
-      clearTimeout(this.changeDebounceTimer);
-      this.changeDebounceTimer = null;
-    }
     // Only destroy the Y.Doc if this provider minted it. A replica-owned doc
     // outlives the provider (observer → editor promotion reuses it).
     if (this.ownsDoc) this.doc.destroy();
@@ -177,15 +147,12 @@ export class ObserverCrdtProvider {
     }
 
     this.ws.onopen = () => {
-      // Reset sync state and pending notification on every new connection.
-      this._synced = false;
+      // Reset bootstrap-applied state and pending notification on every new connection.
+      this._bootstrapApplied = false;
       this.pendingDocumentReplacementNotice = null;
       this.reconnectAttempts = 0;
       this.setState("connected");
       this.sendModeTransitionRequest();
-      // Send sync step 1 so server can respond with current Y.Doc state
-      const stateVector = Y.encodeStateVector(this.doc);
-      this.sendRaw(MSG_SYNC_STEP_1, stateVector);
     };
 
     this.ws.onmessage = (event: MessageEvent) => {
@@ -245,31 +212,14 @@ export class ObserverCrdtProvider {
     const payload = data.subarray(1);
 
     switch (msgType) {
-      case MSG_SYNC_STEP_1: {
-        // Server sends its state vector asking what we have. Observers are strictly
-        // receive-only replicas — never contribute state back. joinSession already
-        // sends SYNC_STEP_2 (full Y.Doc) proactively, so no response is needed.
-        break;
-      }
       case MSG_SYNC_STEP_2: {
         Y.applyUpdate(this.doc, payload);
-        if (!this._synced) {
-          this._synced = true;
-          this.events.onSynced?.();
-        }
-        if (this.pendingDocumentReplacementNotice) {
-          const n = this.pendingDocumentReplacementNotice;
-          this.pendingDocumentReplacementNotice = null;
-          this.events.onDocumentReplacementNotice?.(n);
-        }
-        this.scheduleOnChange();
         break;
       }
-      case MSG_YJS_UPDATE: {
-        Y.applyUpdate(this.doc, payload);
-        this.scheduleOnChange();
+      case MSG_AWARENESS:
+      case MSG_DOC_PUBLISH_PAUSE_START:
+      case MSG_DOC_PUBLISH_PAUSE_END:
         break;
-      }
       case MSG_DOCUMENT_REPLACEMENT_NOTICE: {
         const json = new TextDecoder().decode(payload);
         try {
@@ -292,12 +242,29 @@ export class ObserverCrdtProvider {
         this.events.onModeTransitionResult?.(result);
         break;
       }
-      case MSG_LIVE_SECTIONS_BOOTSTRAP:
+      case MSG_LIVE_SECTIONS_BOOTSTRAP: {
+        this.events.onLiveSectionFrame?.(msgType, payload);
+        if (this.destroyed) break;
+        if (!this._bootstrapApplied) {
+          this._bootstrapApplied = true;
+          this.events.onBootstrapApplied?.();
+        }
+        if (this.pendingDocumentReplacementNotice) {
+          const n = this.pendingDocumentReplacementNotice;
+          this.pendingDocumentReplacementNotice = null;
+          this.events.onDocumentReplacementNotice?.(n);
+        }
+        break;
+      }
       case MSG_LIVE_SECTIONS_UPDATE: {
-        // Authoritative live section state — hand the raw frame to the page so it
-        // routes it into the LiveSectionReplica. Not a legacy doc mutation path.
         this.events.onLiveSectionFrame?.(msgType, payload);
         break;
+      }
+      default: {
+        this.closeWithProtocolError(
+          `Unexpected CRDT opcode 0x${msgType.toString(16)}`,
+        );
+        return;
       }
     }
   }
@@ -311,15 +278,6 @@ export class ObserverCrdtProvider {
       this.ws = null;
     }
     this.scheduleReconnect();
-  }
-
-  private scheduleOnChange(): void {
-    if (!this._synced) return;
-    if (this.changeDebounceTimer) return;
-    this.changeDebounceTimer = setTimeout(() => {
-      this.changeDebounceTimer = null;
-      this.events.onChange?.();
-    }, CHANGE_DEBOUNCE_MS);
   }
 
   private sendRaw(msgType: number, payload: Uint8Array): void {

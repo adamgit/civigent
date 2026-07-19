@@ -45,6 +45,7 @@ import {
   rememberSessionDraft,
   forgetSessionDraft,
   takeCurrentSessionDraft,
+  listSessionCreatedProposals,
 } from "../session-drafts.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
@@ -545,19 +546,20 @@ const myProposalsHandler: ToolHandler = async (args, ctx) => {
     return makeToolErrorResult(`Invalid status filter. Must be one of: ${validStatuses.join(", ")}`);
   }
 
-  const all = status === "draft"
-    ? await listDraftProposals()
-    : status === "committed"
-    ? await listCommittedProposals()
-    : status === "withdrawn"
-    ? await listWithdrawnProposals()
-    : await listAllProposals();
-  // Writer-scoped list: every proposal authored under this credential,
-  // regardless of which MCP session created it (proposals carry no session
-  // identity — task 708). CRDT-owned (DocSession live-edit) proposals stay
-  // hidden. `list_proposals` remains workspace-wide; publish/withdraw-by-id
-  // stay writer-only.
-  const mine = all.filter((p) => p.writer.id === ctx.writer.id && !isCrdtOwnedProposal(p));
+  // Session-local focus list: only proposals THIS MCP session created, from
+  // in-memory session state (task 858) — parallel conversations under one
+  // agent credential never see each other's focus list, and proposals carry no
+  // session identity. Status comes live from storage, so a remembered draft
+  // published/withdrawn from anywhere still filters correctly. After TTL /
+  // DELETE / restart the memory is empty and this returns [] — the proposals
+  // survive on disk, reachable via `list_proposals` or explicit `proposal_id`.
+  const remembered = await listSessionCreatedProposals(ctx.session);
+  const mine = remembered.filter(
+    (p) =>
+      p.writer.id === ctx.writer.id
+      && !isCrdtOwnedProposal(p)
+      && (!status || p.status === status),
+  );
   return jsonToolResult({ proposals: mine });
 };
 
@@ -974,7 +976,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
     "myProposals",
     {
       name: "my_proposals",
-      description: "List every proposal authored under your credential (from any session, past or present), optionally filtered by status. Preferred way to check your proposal state.",
+      description: "List the proposals created in THIS session (your current conversation), optionally filtered by status. Preferred way to check the state of proposals you are working on. Session-local: proposals from other or past sessions are not listed, and after session expiry/teardown this list is empty — those proposals still exist and remain reachable via list_proposals or an explicit proposal_id.",
       inputSchema: {
         type: "object",
         properties: {

@@ -1,46 +1,35 @@
-/**
- * useSectionFocus — focus index, pending/deferred focus, structure refocus.
- *
- * Focus is local-only: the local focus-index / neighbor `handleCursorExit`
- * (ArrowUp/ArrowDown) and the viewing-presence broadcast (spec §"Cross-Section
- * Cursor Movement"). Focus into a blocked section, or while a publication
- * pause is active, is refused — both facts come from the live replica via the
- * `canFocusSection` callback (single live authority).
- */
-
 import { useCallback, useEffect, useRef, useState } from "react";
-import { sectionHeadingKey } from "../types/shared.js";
 import { type MilkdownEditorHandle } from "../components/MilkdownEditor";
-import { type DocumentSection, getSectionFragmentKey } from "../pages/document-page-utils";
+import { SectionId, type RenderSectionRef } from "../types/live-sections";
+import { resolveRetargetPmPos, type RetargetCaretPlacement } from "../pages/caret-recovery";
 
 export interface UseSectionFocusParams {
-  sections: DocumentSection[];
-  /** Live-replica-backed gate: false for blocked sections / during a publish pause. */
-  canFocusSection: (section: DocumentSection | undefined) => boolean;
-  /** Broadcast which fragment this client is viewing (awareness presence). */
+  sections: readonly RenderSectionRef[];
+  canFocusSection: (section: RenderSectionRef | undefined) => boolean;
   publishViewingSection: (fragmentKey: string) => void;
   readyEditors: Set<string>;
   editorRefs: React.MutableRefObject<Map<string, MilkdownEditorHandle>>;
 }
 
-export interface PendingEditorFocus {
-  /** Fragment identity of the editor that should take the caret when ready. */
-  fragmentKey: string;
-  position: "start" | "end";
-  coords?: { x: number; y: number };
-}
+export type PendingFragmentCaretTarget =
+  | {
+      fragmentKey: string;
+      position: "start" | "end";
+      coords?: { x: number; y: number };
+    }
+  | {
+      fragmentKey: string;
+      position: "retarget";
+      placement: RetargetCaretPlacement;
+    };
 
 export interface UseSectionFocusReturn {
-  /** COLD-path stored focus. The live path stores focus as `SectionId` on the
-   *  page and never writes it back here. */
-  focusedSectionIndex: number | null;
-  setFocusedSectionIndex: React.Dispatch<React.SetStateAction<number | null>>;
-  pendingFocusRef: React.MutableRefObject<PendingEditorFocus | null>;
-  pendingStructureRefocusRef: React.MutableRefObject<string[] | null>;
-  focusedSectionIndexRef: React.MutableRefObject<number | null>;
+  bootstrapFocusedSectionIndex: number | null;
+  setBootstrapFocusedSectionIndex: React.Dispatch<React.SetStateAction<number | null>>;
+  pendingCaretTargetRef: React.MutableRefObject<PendingFragmentCaretTarget | null>;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
   handleCursorExit: (sectionIndex: number, direction: "up" | "down") => void;
-  setViewingSection: (sectionIndex: number) => void;
+  setRetargetCaretTarget: (target: Extract<PendingFragmentCaretTarget, { position: "retarget" }>) => void;
 }
 
 export function useSectionFocus({
@@ -50,26 +39,31 @@ export function useSectionFocus({
   readyEditors,
   editorRefs,
 }: UseSectionFocusParams): UseSectionFocusReturn {
-  const [focusedSectionIndex, setFocusedSectionIndex] = useState<number | null>(null);
-  const pendingFocusRef = useRef<PendingEditorFocus | null>(null);
-  const pendingStructureRefocusRef = useRef<string[] | null>(null);
-  const focusedSectionIndexRef = useRef<number | null>(null);
+  const [bootstrapFocusedSectionIndex, setBootstrapFocusedSectionIndex] = useState<number | null>(null);
+  const pendingCaretTargetRef = useRef<PendingFragmentCaretTarget | null>(null);
   const mouseDownPosRef = useRef<{ x: number; y: number } | null>(null);
+  const [caretTargetVersion, setCaretTargetVersion] = useState(0);
 
-  // Sync ref + clear stale pendingFocus when editing stops
   useEffect(() => {
-    if (focusedSectionIndex === null) pendingFocusRef.current = null;
-    focusedSectionIndexRef.current = focusedSectionIndex;
-  }, [focusedSectionIndex]);
+    if (bootstrapFocusedSectionIndex === null && pendingCaretTargetRef.current?.position !== "retarget") {
+      pendingCaretTargetRef.current = null;
+    }
+  }, [bootstrapFocusedSectionIndex]);
 
-  // viewingPresence: broadcast which section this client is viewing on focus change
-  const setViewingSection = useCallback((sectionIndex: number) => {
+  const setRetargetCaretTarget = useCallback(
+    (target: Extract<PendingFragmentCaretTarget, { position: "retarget" }>) => {
+      pendingCaretTargetRef.current = target;
+      setCaretTargetVersion((v) => v + 1);
+    },
+    [],
+  );
+
+  const publishViewingSectionAtIndex = useCallback((sectionIndex: number) => {
     const section = sections[sectionIndex];
     if (!section) return;
-    publishViewingSection(getSectionFragmentKey(section));
+    publishViewingSection(SectionId.text(section.id));
   }, [sections, publishViewingSection]);
 
-  // Cross-section cursor navigation
   const handleCursorExit = useCallback((sectionIndex: number, direction: "up" | "down") => {
     const targetIndex = direction === "up" ? sectionIndex - 1 : sectionIndex + 1;
     if (targetIndex < 0 || targetIndex >= sections.length) return;
@@ -77,74 +71,47 @@ export function useSectionFocus({
     const targetSection = sections[targetIndex];
     if (!canFocusSection(targetSection)) return;
 
-    setFocusedSectionIndex(targetIndex);
-    pendingFocusRef.current = {
-      fragmentKey: getSectionFragmentKey(targetSection),
+    setBootstrapFocusedSectionIndex(targetIndex);
+    pendingCaretTargetRef.current = {
+      fragmentKey: SectionId.text(targetSection.id),
       position: direction === "up" ? "end" : "start",
     };
-    setViewingSection(targetIndex);
-  }, [sections, setViewingSection, canFocusSection]);
+    publishViewingSectionAtIndex(targetIndex);
+  }, [sections, publishViewingSectionAtIndex, canFocusSection]);
 
-  // Focus editor after it is ready AND visible. The pending target, readiness,
-  // and refs are ALL keyed by fragment identity — a structural index shift
-  // between click and editor-ready cannot land the caret in the wrong section.
   useEffect(() => {
-    if (!pendingFocusRef.current) return;
-    const { fragmentKey, position, coords } = pendingFocusRef.current;
-    if (!readyEditors.has(fragmentKey)) return;
+    if (!pendingCaretTargetRef.current) return;
+    const target = pendingCaretTargetRef.current;
+    if (!readyEditors.has(target.fragmentKey)) return;
 
     const raf = requestAnimationFrame(() => {
-      const handle = editorRefs.current.get(fragmentKey);
+      const handle = editorRefs.current.get(target.fragmentKey);
       if (handle) {
-        if (coords) {
-          handle.focusAtCoords(coords.x, coords.y);
+        if (target.position === "retarget") {
+          const view = handle.getView();
+          if (view) {
+            handle.focusAtPos(resolveRetargetPmPos(view.state.doc, target.placement));
+          } else {
+            handle.focus("start");
+          }
+        } else if (target.coords) {
+          handle.focusAtCoords(target.coords.x, target.coords.y);
         } else {
-          handle.focus(position);
+          handle.focus(target.position);
         }
       }
-      pendingFocusRef.current = null;
+      pendingCaretTargetRef.current = null;
     });
 
     return () => cancelAnimationFrame(raf);
-  }, [focusedSectionIndex, readyEditors, editorRefs]);
-
-  // Reconcile the React focus STATE after a structural shift: the mount-window /
-  // eviction effects are keyed off the state, so sync it to the reconciled ref on
-  // every sections change. No-op when focus did not move.
-  useEffect(() => {
-    const reconciled = focusedSectionIndexRef.current;
-    setFocusedSectionIndex((prev) => (prev === reconciled ? prev : reconciled));
-  }, [sections]);
-
-  // Restore focus after a sections refresh re-fetches sections
-  useEffect(() => {
-    const refocusPath = pendingStructureRefocusRef.current;
-    if (!refocusPath) return;
-    pendingStructureRefocusRef.current = null;
-
-    const exactIdx = sections.findIndex(
-      (s) => sectionHeadingKey(s.heading_path) === sectionHeadingKey(refocusPath),
-    );
-
-    if (exactIdx >= 0 && canFocusSection(sections[exactIdx])) {
-      setFocusedSectionIndex(exactIdx);
-      pendingFocusRef.current = {
-        fragmentKey: getSectionFragmentKey(sections[exactIdx]),
-        position: "end",
-      };
-    } else {
-      setFocusedSectionIndex(null);
-    }
-  }, [sections, canFocusSection]);
+  }, [bootstrapFocusedSectionIndex, caretTargetVersion, readyEditors, editorRefs]);
 
   return {
-    focusedSectionIndex,
-    setFocusedSectionIndex,
-    pendingFocusRef,
-    pendingStructureRefocusRef,
-    focusedSectionIndexRef,
+    bootstrapFocusedSectionIndex,
+    setBootstrapFocusedSectionIndex,
+    pendingCaretTargetRef,
     mouseDownPosRef,
     handleCursorExit,
-    setViewingSection,
+    setRetargetCaretTarget,
   };
 }

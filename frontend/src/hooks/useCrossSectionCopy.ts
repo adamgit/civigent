@@ -3,43 +3,59 @@
  * section editors and writes clean markdown to the clipboard.
  *
  * Single-section selections are left to Milkdown's native copy handler.
+ *
+ * Selected DOM wrappers resolve to sections by FRAGMENT IDENTITY: each real
+ * document section wrapper carries `data-document-section` + `data-fragment-key`,
+ * and the hook joins those keys against the caller's current render rows. There
+ * is deliberately NO positional (`data-section-index` → `sections[index]`) join —
+ * after live topology diverges from a cold array, position is not identity.
  */
 
 import { useEffect } from "react";
 import { proseMirrorNodeToMarkdown } from "@ks/milkdown-serializer";
 import type { MilkdownEditorHandle } from "../components/MilkdownEditor";
-import { coldSeedMarkdown } from "../services/display-section-markdown";
+
+export interface CrossSectionCopySection {
+  fragment_key: string;
+  /**
+   * The section's CURRENT display markdown, as the page paints it: proposal
+   * overlay body while drafting, live replica body when live editing is
+   * authoritative, else the cold/canonical seed. The page's display selector
+   * encodes that precedence; this hook copies what the user sees.
+   */
+  displayMarkdown: string;
+}
 
 export interface CrossSectionCopyOptions {
   /** Ref to the container div that wraps all section elements. */
   containerRef: React.RefObject<HTMLDivElement | null>;
-  /** Current sections data (heading_path, content, depth, etc.). */
-  sections: Array<{
-    heading_path: string[];
-    content: string;
-    depth: number;
-    heading: string;
-    fragment_key: string;
-  }>;
+  /** Current render rows with their display markdown, keyed by fragment_key. */
+  displayRows: ReadonlyArray<CrossSectionCopySection>;
   /** Map from section `fragment_key` → editor handle ref. */
   editorRefs: React.RefObject<Map<string, MilkdownEditorHandle>>;
   /**
-   * Live-replica body reader. When the `LiveSectionReplica` is authoritative it
-   * returns `requireLiveSection(id)?.readMarkdown()` for a fragment key (`undefined`
-   * when cold / not in topology). The unmounted-section copy fallback uses THIS as the
-   * live authority — after bootstrap the replica body, otherwise the cold seed. There
-   * is no store-backed live-fragment understudy (that dual-authority path is retired).
+   * Live-replica body reader — fallback ONLY for a wrapper whose fragment key
+   * has no row in `displayRows` (e.g. transient structural drift between DOM
+   * and render state). The row's display markdown wins when present.
    */
   getLiveMarkdown?: (fragmentKey: string) => string | undefined;
 }
 
+/** The selector for REAL document section wrappers (never arbitrary descendants
+ *  that happen to expose a fragment key). */
+const SECTION_WRAPPER_SELECTOR = "[data-document-section][data-fragment-key]";
+
 /**
- * Find the closest ancestor (or self) with a `data-section-index` attribute.
+ * Find the closest ancestor (or self) that is a document section wrapper.
  */
 function findSectionContainer(node: Node): HTMLElement | null {
   let el: Node | null = node;
   while (el) {
-    if (el instanceof HTMLElement && el.dataset.sectionIndex !== undefined) {
+    if (
+      el instanceof HTMLElement
+      && el.hasAttribute("data-document-section")
+      && el.dataset.fragmentKey !== undefined
+    ) {
       return el;
     }
     el = el.parentElement;
@@ -48,7 +64,7 @@ function findSectionContainer(node: Node): HTMLElement | null {
 }
 
 /**
- * Collect all section container elements intersected by the given range,
+ * Collect all section wrapper elements intersected by the given range,
  * in document order.
  */
 function collectIntersectedSections(
@@ -56,7 +72,7 @@ function collectIntersectedSections(
   range: Range,
 ): HTMLElement[] {
   const result: HTMLElement[] = [];
-  const children = container.querySelectorAll<HTMLElement>("[data-section-index]");
+  const children = container.querySelectorAll<HTMLElement>(SECTION_WRAPPER_SELECTOR);
   for (const child of children) {
     if (range.intersectsNode(child)) {
       result.push(child);
@@ -98,7 +114,7 @@ function extractPartialMarkdown(
 
 export function useCrossSectionCopy({
   containerRef,
-  sections,
+  displayRows,
   editorRefs,
   getLiveMarkdown,
 }: CrossSectionCopyOptions): void {
@@ -124,29 +140,28 @@ export function useCrossSectionCopy({
       const intersected = collectIntersectedSections(container!, range);
       if (intersected.length < 2) return;
 
+      // Join wrappers to rows by fragment identity ONLY.
+      const rowByFragmentKey = new Map(displayRows.map((s) => [s.fragment_key, s]));
+
       const markdownParts: string[] = [];
 
       for (let i = 0; i < intersected.length; i++) {
         const el = intersected[i];
-        const sectionIndex = parseInt(el.dataset.sectionIndex!, 10);
-        const section = sections[sectionIndex];
-        if (!section) continue;
+        const fragmentKey = el.dataset.fragmentKey!;
+        const row = rowByFragmentKey.get(fragmentKey);
+
+        // Full-section body: the row's display markdown (page-selected authority:
+        // overlay / live / seed); live reader only for a row-less wrapper.
+        const fallback = row?.displayMarkdown ?? getLiveMarkdown?.(fragmentKey);
+        if (fallback === undefined) continue;
 
         const isFirst = i === 0;
         const isLast = i === intersected.length - 1;
-        const editors = editorRefs.current;
-        const handle = editors?.get(section.fragment_key);
+        const handle = editorRefs.current?.get(fragmentKey);
 
-        // Non-editor fallback: the LIVE authority when available — the replica body
-        // (`getLiveMarkdown`) after bootstrap — else the cold seed. No store-backed
-        // live-fragment understudy (retired); the seed is the only cold source.
-        const fallback =
-          getLiveMarkdown?.(section.fragment_key) ?? coldSeedMarkdown(section);
         if (isFirst && handle) {
-          // Partial: from selection start to end of this section's editor
-          // Note: the fragment/section content already includes the heading
-          // (prepended by backend, and the ProseMirror doc also contains it), so
-          // we do NOT add a headingPrefix.
+          // Partial: from selection start to end of this section's editor.
+          // The fragment content already includes the heading, so no prefix.
           const partial = extractPartialMarkdown(
             handle,
             range.startContainer,
@@ -177,5 +192,5 @@ export function useCrossSectionCopy({
 
     container.addEventListener("copy", handleCopy);
     return () => container.removeEventListener("copy", handleCopy);
-  }, [containerRef, sections, editorRefs, getLiveMarkdown]);
+  }, [containerRef, displayRows, editorRefs, getLiveMarkdown]);
 }

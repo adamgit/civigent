@@ -18,7 +18,7 @@ import {
   type SectionPendingStateEvent,
 } from "../types/shared.js";
 import {
-  type DocumentSection,
+  type WorkspaceSectionDto,
   type RecentlyChangedSectionEntry,
   type AgentReadingIndicator,
   type PendingProposalIndicator,
@@ -41,7 +41,7 @@ export interface UseDocumentWebSocketParams {
    *  ready, live topology/body events on this JSON socket are hints only. */
   liveReplicaReadyRef: React.MutableRefObject<boolean>;
   setStructureTree: React.Dispatch<React.SetStateAction<DocStructureNode[] | null>>;
-  loadSections: (docPath: string) => Promise<DocumentSection[]>;
+  loadSections: (docPath: string) => Promise<WorkspaceSectionDto[]>;
   setError: (e: string | null) => void;
   onSectionsInjectedByProposal?: (headingPaths: string[][], writerDisplayName: string) => void;
   onProposalSectionAvailability?: (event: ProposalSectionAvailabilityEvent) => void;
@@ -52,6 +52,14 @@ export interface UseDocumentWebSocketParams {
    * into generic error state, the topbar save status, or inline notices.
    */
   onSectionEditRejected?: (event: SectionEditRejectedEvent) => void;
+  /**
+   * Called whenever a proposal/lock lifecycle fact changed (`content:committed`,
+   * `proposal:draft`, `proposal:inprogress`, `proposal:withdrawn`) so pages can
+   * refresh section-keyed proposal/lock METADATA while the live replica is
+   * ready. Deliberately not `loadSections` — the live path must never adopt
+   * REST bodies/topology; implementations refresh meta maps only.
+   */
+  onProposalMetaChanged?: () => void;
 }
 
 // ─── Hook return type ─────────────────────────────────────────────
@@ -65,6 +73,8 @@ export interface UseDocumentWebSocketReturn {
   pendingProposalIndicators: PendingProposalIndicator[];
   pendingProposalIndicatorsRef: React.MutableRefObject<PendingProposalIndicator[]>;
   proposalsBySectionKey: Map<string, PendingProposalIndicator[]>;
+  /** Section-keyed (heading-path key) in-progress proposal facts. */
+  inProgressProposalsBySectionKey: Map<string, PendingProposalIndicator>;
   /** Cold hint (no live authority yet): fragment keys with a pending writer,
    *  from app-WS `section:pending`/`section:settled`. Ignored while the live
    *  replica is ready — live pending comes from the replica. */
@@ -85,6 +95,7 @@ export function useDocumentWebSocket({
   onSectionsInjectedByProposal,
   onProposalSectionAvailability,
   onSectionEditRejected,
+  onProposalMetaChanged,
 }: UseDocumentWebSocketParams): UseDocumentWebSocketReturn {
   const navigate = useNavigate();
 
@@ -98,6 +109,12 @@ export function useDocumentWebSocket({
   const [pendingProposalIndicators, setPendingProposalIndicators] = useState<PendingProposalIndicator[]>([]);
   const pendingProposalIndicatorsRef = useRef<PendingProposalIndicator[]>([]);
 
+  // ── In-progress proposal indicators (governance gutters) ──
+  // Same shape/keying as the draft indicators, sourced from the
+  // `proposal:inprogress` lifecycle event; cleared when the proposal resolves
+  // (commit of its sections) or is withdrawn.
+  const [inProgressProposalIndicators, setInProgressProposalIndicators] = useState<PendingProposalIndicator[]>([]);
+
   const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
 
   // Cold pending hints (no live authority yet) keyed by fragment key.
@@ -109,6 +126,29 @@ export function useDocumentWebSocket({
     setPendingProposalIndicators((prev) =>
       prev.filter((indicator) => indicator.proposalId !== proposalId),
     );
+  }, []);
+
+  const clearInProgressIndicators = useCallback((proposalId: string) => {
+    setInProgressProposalIndicators((prev) =>
+      prev.filter((indicator) => indicator.proposalId !== proposalId),
+    );
+  }, []);
+
+  const replaceInProgressIndicators = useCallback((event: ProposalInProgressEvent) => {
+    const sectionKeys = new Set(event.heading_paths.map((headingPath) => sectionHeadingKey(headingPath)));
+    setInProgressProposalIndicators((prev) => {
+      const retained = prev.filter((indicator) => indicator.proposalId !== event.proposal_id);
+      const next = [...retained];
+      for (const sectionKey of sectionKeys) {
+        next.push({
+          proposalId: event.proposal_id,
+          sectionKey,
+          writerDisplayName: event.writer_display_name,
+          intent: event.intent,
+        });
+      }
+      return next;
+    });
   }, []);
 
   const replaceDraftProposalIndicators = useCallback((draftEvent: ProposalDraftEvent) => {
@@ -159,17 +199,21 @@ export function useDocumentWebSocket({
           return Array.from(next.values());
         });
 
-        // Clear draft proposal indicators for committed sections
+        // Clear draft + in-progress proposal indicators for committed sections
         const committedSectionKeys = new Set(
           committed.sections.map((s) => sectionHeadingKey(s.heading_path)),
         );
         setPendingProposalIndicators((prev) =>
           prev.filter((ind) => !committedSectionKeys.has(ind.sectionKey)),
         );
+        setInProgressProposalIndicators((prev) =>
+          prev.filter((ind) => !committedSectionKeys.has(ind.sectionKey)),
+        );
 
         if (!liveReplicaReadyRef.current) {
           loadSections(decodedDocPath);
         }
+        onProposalMetaChanged?.();
         return;
       }
 
@@ -254,6 +298,9 @@ export function useDocumentWebSocket({
         const created = event as ProposalDraftEvent;
         if (normalizeDocPath(created.doc_path) !== normalizeDocPath(decodedDocPath)) return;
         replaceDraftProposalIndicators(created);
+        // A proposal back in draft (e.g. lock loss demotion) is no longer in progress.
+        clearInProgressIndicators(created.proposal_id);
+        onProposalMetaChanged?.();
         return;
       }
 
@@ -262,6 +309,8 @@ export function useDocumentWebSocket({
         const withdrawn = event as ProposalWithdrawnEvent;
         if (normalizeDocPath(withdrawn.doc_path) !== normalizeDocPath(decodedDocPath)) return;
         clearProposalIndicators(withdrawn.proposal_id);
+        clearInProgressIndicators(withdrawn.proposal_id);
+        onProposalMetaChanged?.();
         return;
       }
 
@@ -270,6 +319,8 @@ export function useDocumentWebSocket({
         const inprogress = event as ProposalInProgressEvent;
         if (normalizeDocPath(inprogress.doc_path) !== normalizeDocPath(decodedDocPath)) return;
         clearProposalIndicators(inprogress.proposal_id);
+        replaceInProgressIndicators(inprogress);
+        onProposalMetaChanged?.();
         return;
       }
 
@@ -292,11 +343,14 @@ export function useDocumentWebSocket({
     };
   }, [
     clearProposalIndicators,
+    clearInProgressIndicators,
     decodedDocPath,
     loadSections,
     navigate,
     onProposalSectionAvailability,
+    onProposalMetaChanged,
     replaceDraftProposalIndicators,
+    replaceInProgressIndicators,
     setError,
     wsClient,
   ]);
@@ -348,6 +402,16 @@ export function useDocumentWebSocket({
     return map;
   }, [pendingProposalIndicators]);
 
+  // Section-keyed in-progress proposal lookup (heading-path key — the FSM holds
+  // one in-progress proposal per section, so a single fact per key).
+  const inProgressProposalsBySectionKey = useMemo(() => {
+    const map = new Map<string, PendingProposalIndicator>();
+    for (const indicator of inProgressProposalIndicators) {
+      map.set(indicator.sectionKey, indicator);
+    }
+    return map;
+  }, [inProgressProposalIndicators]);
+
   return {
     wsClient,
     recentlyChangedSections,
@@ -357,6 +421,7 @@ export function useDocumentWebSocket({
     pendingProposalIndicators,
     pendingProposalIndicatorsRef,
     proposalsBySectionKey,
+    inProgressProposalsBySectionKey,
     coldPendingByFragmentKey,
   };
 }

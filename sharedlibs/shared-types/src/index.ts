@@ -86,8 +86,29 @@ export type RequestedMode = "none" | "observer" | "editor";
 /** Attachment state of a participant relative to a live DocSession. */
 export type AttachmentState = "detached" | "waiting_for_session" | "attached_to_session";
 
+declare const __docSessionId: unique symbol;
+
 /** Explicit identity of one live backend DocSession. */
-export type DocSessionId = string;
+export type DocSessionId = string & { readonly [__docSessionId]: true };
+
+export const DocSessionId = {
+  create(): DocSessionId {
+    return crypto.randomUUID() as DocSessionId;
+  },
+};
+
+declare const __proposalAdoptionId: unique symbol;
+
+export type ProposalAdoptionId = string & { readonly [__proposalAdoptionId]: true };
+
+export const ProposalAdoptionId = {
+  create(): ProposalAdoptionId {
+    return crypto.randomUUID() as ProposalAdoptionId;
+  },
+  fromStoredValue(value: string): ProposalAdoptionId {
+    return value as ProposalAdoptionId;
+  },
+};
 
 /**
  * Explicit focus target for the one section currently edited by this tab.
@@ -155,22 +176,6 @@ export interface DocumentSessionControllerState {
   pendingTransition: ModeTransitionRequest | null;
 }
 
-// ─── Live Section Wire State (DocSession CRDT live-section channel) ──
-//
-// The JSON, body-free live-section control state carried alongside Yjs updates
-// on the ordered DocSession CRDT socket (the live-section-replica redesign).
-// This is the authoritative live section interpretation — topology/existence,
-// editability, pending-writer state, and the publish-pause *mirror* — and it
-// REPLACES the unordered application-WebSocket `doc:structure-changed` /
-// `section:blocked|unblocked|gone` as the live-correctness mechanism.
-//
-// Body text is NEVER represented here; live bodies exist only in the Yjs update
-// that rides the same frame. The binary frame envelope (opcodes + length-prefix
-// + trailing `yjs_update`) lives in the CRDT codec (`crdt-ws-frames.ts` on the
-// backend, mirrored in the frontend provider); these are only the JSON shapes it
-// carries, kept here so both ends agree on one contract.
-
-/** Body-free live topology reference: opaque `fragment_key` + heading path only. */
 export interface WireLiveSectionRef {
   /** Opaque backend-owned CRDT fragment identity; branded to `SectionId` on the client. */
   fragment_key: string;
@@ -192,12 +197,6 @@ export interface WirePendingSection {
 export interface WireLiveSectionsState {
   /** Ordered, body-free section topology (identity + heading path). */
   topology: readonly WireLiveSectionRef[];
-  /**
-   * The single editable-set representation: fragment keys currently blocked
-   * (locked / removed / globally paused). Unifies the old declared-`locked` vs
-   * emitted-`blocked` drift and is seeded in the bootstrap so a lock predating
-   * connection can never be missed.
-   */
   blocked_section_ids: readonly string[];
   /** Live pending-writer sessions. */
   pending_sections: readonly WirePendingSection[];
@@ -717,14 +716,14 @@ export interface ProposalFileBase {
   deleted_section_files?: DeletedSectionFileRef[];
   created_at: string;
   /**
-   * Owning DocSession identity for CRDT-materialized live-edit proposals
+   * Durable adoption identity for CRDT-materialized live-edit proposals
    * (Area B). Present only on proposals created lazily by a DocSession's
    * live-edit materialization; absent for human draft→inprogress and agent
    * proposals. Used to enforce one-active-`inprogress`-proposal-per-DocSession
-   * (Invariant 7) and to look the proposal up by session identity. NOTE: the
+   * (Invariant 7) and to look the proposal up by adoption identity. NOTE: the
    * derived `status` is still never stored.
    */
-  docSessionId?: DocSessionId;
+  proposalAdoptionId?: ProposalAdoptionId;
 }
 
 /** Committed proposal meta.json — adds terminal commit fields (both required). */
@@ -1016,8 +1015,6 @@ export interface SectionMeta {
   heading_path: string[];
   agentWritePolicy: SectionAgentWritePolicySummary;
   crdt_session_active: boolean;
-  section_length_warning: boolean;
-  word_count: number;
 }
 
 export interface GetDocumentResponse {
@@ -1036,13 +1033,11 @@ export interface GetDocumentSectionsResponse {
     content: string;
     agentWritePolicy: SectionAgentWritePolicySummary;
     crdt_session_active: boolean;
-    section_length_warning: boolean;
-    word_count: number;
     /** Opaque backend-owned CRDT fragment identity. */
     fragment_key: string;
     /** Section filename (e.g. "sec_abc123def.md"). Useful for UI metadata. */
     section_file: string;
-    last_editor?: { id: string; name: string; timestampMs: number; type: AttributionWriterType; seconds_ago: number };
+    last_editor: { id: string; name: string; timestampMs: number; type: AttributionWriterType; seconds_ago: number } | null;
     /** True when a proposal FSM lock currently locks this section (lock/conflict naming, spec 12 §Event/API). */
     locked?: boolean;
   }>;

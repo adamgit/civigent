@@ -3,17 +3,16 @@
  *
  * Client A has the document mounted; client B types a same-level (`##`) sibling
  * heading into a section. At quiescence the server splits the section
- * structurally and fans the new live topology out to EVERY socket (spec 05
- * §Structural Normalization: "the YJS_UPDATE delta produced by the server IS the
- * broadcast"; structural changes arrive as ordinary YJS_UPDATE deltas, not a
- * removed `doc:structure-changed` event).
+ * structurally and fans the result out as ONE ordered `LiveSectionsUpdateFrame`
+ * carrying BOTH the structural Yjs update and the fresh body-free topology
+ * state — there is no raw `MSG_YJS_UPDATE` precursor for structural changes.
+ * Body-only accepted edits likewise travel only as live-section `yjs_update`
+ * frames (not raw `MSG_YJS_UPDATE`).
  *
  * Asserts the cross-client adoption that the live-split fix must guarantee: A's
  * Y.Doc receives the NEW sibling fragment AND the survivor shrinks (the moved-out
- * body is gone from A's copy of the survivor) — purely from the live broadcast,
- * with NO commit / `content:committed` required. The live-topology signal in the
- * current design is the YJS_UPDATE delta itself; this is the seam where an
- * explicit topology event would also be asserted if the fix introduces one.
+ * body is gone from A's copy of the survivor) — purely from the live-section
+ * structural frame, with NO commit / `content:committed` required.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -23,12 +22,19 @@ import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import {
   handleMessageForTest,
+  joinAndNotify,
   registerFakeEditorSocketForTest,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
 import { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
 import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
-import { encodeUpdate, decodeMessage, MSG_YJS_UPDATE } from "../../ws/crdt-ws-frames.js";
+import {
+  encodeUpdate,
+  decodeMessage,
+  decodeLiveSectionsUpdate,
+  MSG_YJS_UPDATE,
+  MSG_LIVE_SECTIONS_UPDATE,
+} from "../../ws/crdt-ws-frames.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
@@ -73,18 +79,26 @@ describe("E4: cross-client live split adoption (backend portion)", () => {
     vi.useFakeTimers();
     const session = await openSession();
 
-    // Client A: mounted. A replica Y.Doc tracks exactly the YJS_UPDATE frames the
-    // server fans out to A's socket.
+    // Client A: mounted. Replica applies `yjs_update` from ordered live-section
+    // frames only (body-only and structural alike).
     const peerA = new Y.Doc();
     Y.applyUpdate(peerA, Y.encodeStateAsUpdate(session.ydoc));
-    let framesToA = 0;
+    let structuralFramesToA = 0;
+    const quiescenceFrameTypes: number[] = [];
     const a = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "sock-A", (data) => {
       const decoded = decodeMessage(data);
-      if (decoded?.type === MSG_YJS_UPDATE) {
-        framesToA += 1;
-        Y.applyUpdate(peerA, decoded.payload);
+      if (decoded) quiescenceFrameTypes.push(decoded.type);
+      if (decoded?.type === MSG_LIVE_SECTIONS_UPDATE) {
+        const frame = decodeLiveSectionsUpdate(decoded.payload);
+        if (frame.yjs_update) Y.applyUpdate(peerA, frame.yjs_update);
+        if (frame.state !== undefined) structuralFramesToA += 1;
       }
     });
+    // Bootstrap A onto the live-section channel so it receives ordered frames
+    // (real joined sockets are always bootstrapped before structural updates).
+    a.state.joined = false;
+    joinAndNotify(session, a.socket, a.state);
+    await session.enqueue(() => undefined);
     // Client B: the editor whose keystrokes split the section.
     const b = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "sock-B");
     disposers.push(a.dispose, b.dispose);
@@ -97,13 +111,19 @@ describe("E4: cross-client live split adoption (backend portion)", () => {
       b.state,
       Buffer.from(encodeUpdate(buildClientUpdate(session, OVERVIEW_KEY, dirty))),
     );
+    // Discard body-only edit fan-out; the structural contract is about the
+    // quiescence split that follows.
+    quiescenceFrameTypes.length = 0;
 
     // Quiesce → the server splits the section live and broadcasts the new topology.
     await vi.advanceTimersByTimeAsync(session.generator.publishTriggerPolicy.quiescenceThresholdMs + 50);
     await session.enqueue(() => undefined);
 
-    // The live-topology signal reached A as YJS_UPDATE delta(s) (no commit needed).
-    expect(framesToA).toBeGreaterThan(0);
+    // The structural split reached A as a live-section frame carrying state (no
+    // commit needed), and the quiescence action sent no raw structural Yjs frame.
+    expect(structuralFramesToA).toBeGreaterThan(0);
+    expect(quiescenceFrameTypes).toContain(MSG_LIVE_SECTIONS_UPDATE);
+    expect(quiescenceFrameTypes).not.toContain(MSG_YJS_UPDATE);
 
     // Resolve the post-split layout to learn the new sibling's fragment key.
     const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, session.generator.getCurrentProposalId());

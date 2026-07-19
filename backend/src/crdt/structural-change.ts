@@ -103,6 +103,17 @@ function toDescriptor(section: ParsedSection): SubsectionDescriptor {
   };
 }
 
+export function liveFragmentLeadingHeadingMatchesIdentity(
+  fragment: FragmentContent,
+  identity: Pick<AuthoritativeSectionIdentity, "heading" | "level">,
+): boolean {
+  if (identity.level === 0) return true;
+  const firstLine = fragment.split("\n")[0] ?? "";
+  const prefix = `${"#".repeat(identity.level)} `;
+  if (!firstLine.startsWith(prefix)) return false;
+  return headingsEqual(firstLine.slice(prefix.length), identity.heading);
+}
+
 /**
  * Is the fragment already in its canonical structural form for `identity`?
  * Ported from `FragmentStore.isStructurallyClean` (`a866723:...:804`).

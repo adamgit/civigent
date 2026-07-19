@@ -1,7 +1,8 @@
 import { useMemo } from "react";
-import type { DocumentSection } from "../pages/document-page-utils";
+import type { WorkspaceSectionDto } from "../pages/document-page-utils";
 import type {
   GovernanceSectionControl,
+  GovernanceInProgressProposal,
   HumanInvolvementSectionDetails,
   AgentTier,
   GateRule,
@@ -95,54 +96,106 @@ function formatRelativeTime(timestampMs: number): string {
 
 // ─── Hook ────────────────────────────────────────────────────────
 
+export type { GovernanceInProgressProposal } from "../components/GovernanceLeftGutter";
+
+export interface UseGovernanceDataOptions {
+  /** The CENTER column's ordered section identity list (fragment keys): live
+   *  topology order when the replica is ready, workspace REST order when cold.
+   *  When provided, gutter rows iterate exactly this list — REST metadata is
+   *  looked up by fragment key, never joined by array position. */
+  orderedFragmentKeys?: readonly string[];
+  /** Section-keyed in-progress proposal facts (see the page's lookup). */
+  inProgressByFragmentKey?: ReadonlyMap<string, GovernanceInProgressProposal>;
+}
+
 export function useGovernanceData(
-  sections: DocumentSection[],
+  sections: WorkspaceSectionDto[],
+  opts?: UseGovernanceDataOptions,
 ): {
   leftGutterSections: GovernanceSectionControl[];
   rightGutterGroups: SectionAuditGroup[];
 } {
+  const orderedFragmentKeys = opts?.orderedFragmentKeys;
+  const inProgressByFragmentKey = opts?.inProgressByFragmentKey;
   return useMemo(() => {
-    const leftGutterSections: GovernanceSectionControl[] = sections.map(
-      (section, i) => {
-        const policy = section.agentWritePolicy;
-        const canWrite = policy?.canWrite ?? true;
-        const message = policy?.message ?? FALLBACK_POLICY_MESSAGE;
-        const humanInvolvement = deriveHumanInvolvementDetails(
-          policy?.humanInvolvement?.score,
-        );
-        const heading = section.heading_path.length > 0
-          ? section.heading_path[section.heading_path.length - 1]
-          : "";
-
-        const lastEditor = section.last_editor;
-        const rawLastEditorType = lastEditor?.type as string | undefined;
-        const lastEditorKind = rawLastEditorType === "human"
-          ? "Human"
-          : rawLastEditorType === "agent"
-            ? "Agent"
-            : `UNKNOWN(${rawLastEditorType ?? "(missing)"})`;
-        const lastEditorNote = lastEditor
-          ? `${lastEditor.name} [${lastEditorKind}] edited ${formatRelativeTime(lastEditor.timestampMs)}`
-          : "";
-
+    const buildControl = (
+      fragmentKey: string,
+      section: WorkspaceSectionDto | undefined,
+    ): GovernanceSectionControl => {
+      const inProgressProposal = inProgressByFragmentKey?.get(fragmentKey) ?? false;
+      if (!section) {
+        // A key the center shows but REST metadata does not know yet (e.g. a
+        // section minted live this session). Its identity IS the fragment key;
+        // only the REST-sourced metadata is absent.
         return {
-          sectionIndex: i,
-          heading,
-          canWrite,
-          message,
-          lastEditorNote,
-          humanInvolvement,
+          fragmentKey,
+          heading: "",
+          canWrite: true,
+          message: FALLBACK_POLICY_MESSAGE,
+          lastEditorNote: "",
+          humanInvolvement: undefined,
+          inProgressProposal,
         };
-      },
-    );
+      }
+      const policy = section.agentWritePolicy;
+      const canWrite = policy?.canWrite ?? true;
+      const message = policy?.message ?? FALLBACK_POLICY_MESSAGE;
+      const humanInvolvement = deriveHumanInvolvementDetails(
+        policy?.humanInvolvement?.score,
+      );
+      const heading = section.heading_path.length > 0
+        ? section.heading_path[section.heading_path.length - 1]
+        : "";
 
-    const rightGutterGroups: SectionAuditGroup[] = sections.map(
-      (_, i) => ({
-        sectionIndex: i,
+      const lastEditor = section.last_editor;
+      const rawLastEditorType = lastEditor?.type as string | undefined;
+      const lastEditorKind = rawLastEditorType === "human"
+        ? "Human"
+        : rawLastEditorType === "agent"
+          ? "Agent"
+          : `UNKNOWN(${rawLastEditorType ?? "(missing)"})`;
+      const lastEditorNote = lastEditor
+        ? `${lastEditor.name} [${lastEditorKind}] edited ${formatRelativeTime(lastEditor.timestampMs)}`
+        : "";
+
+      return {
+        fragmentKey,
+        heading,
+        canWrite,
+        message,
+        lastEditorNote,
+        humanInvolvement,
+        inProgressProposal,
+      };
+    };
+
+    // One ordered identity list shared with the center column: when the caller
+    // supplies the center's order (live topology when ready, cold REST order
+    // otherwise), REST metadata is looked up by fragment key — never joined by
+    // array position — and sections the center no longer shows drop out.
+    // Without a supplied order, the REST rows themselves are the list.
+    let leftGutterSections: GovernanceSectionControl[];
+    let rightGutterGroups: SectionAuditGroup[];
+    if (orderedFragmentKeys) {
+      const byFragmentKey = new Map<string, WorkspaceSectionDto>();
+      for (const section of sections) byFragmentKey.set(section.fragment_key, section);
+      leftGutterSections = orderedFragmentKeys.map(
+        (fragmentKey) => buildControl(fragmentKey, byFragmentKey.get(fragmentKey)),
+      );
+      rightGutterGroups = orderedFragmentKeys.map((fragmentKey) => ({
+        fragmentKey,
         entries: [],
-      }),
-    );
+        inProgressProposal: inProgressByFragmentKey?.get(fragmentKey) ?? false,
+      }));
+    } else {
+      leftGutterSections = sections.map((s) => buildControl(s.fragment_key, s));
+      rightGutterGroups = sections.map((s) => ({
+        fragmentKey: s.fragment_key,
+        entries: [],
+        inProgressProposal: inProgressByFragmentKey?.get(s.fragment_key) ?? false,
+      }));
+    }
 
     return { leftGutterSections, rightGutterGroups };
-  }, [sections]);
+  }, [sections, orderedFragmentKeys, inProgressByFragmentKey]);
 }

@@ -1,4 +1,4 @@
-import type { DocumentSection } from "../pages/document-page-utils";
+import { SectionId, type RenderSectionRef } from "../types/live-sections";
 
 export interface SectionAuthorshipTarget {
   key: string;
@@ -18,22 +18,23 @@ function trimTrailingNewlines(raw: string): string {
   return raw.replace(/\n+$/, "");
 }
 
-function sectionLabel(section: DocumentSection): string {
-  return section.heading_path.length > 0
-    ? section.heading_path.join(" > ")
+function sectionLabel(headingPath: readonly string[]): string {
+  return headingPath.length > 0
+    ? headingPath.join(" > ")
     : "(before first heading)";
 }
 
 function stripHeadingFromSectionFragment(
-  section: DocumentSection,
+  headingPath: readonly string[],
+  content: string,
 ): { bodyContent: string; validationError?: string } {
-  const fragment = trimTrailingNewlines(section.content);
-  if (section.heading_path.length === 0) {
+  const fragment = trimTrailingNewlines(content);
+  if (headingPath.length === 0) {
     return { bodyContent: fragment };
   }
 
-  const heading = section.heading_path[section.heading_path.length - 1] || "";
-  const expectedHeadingLine = `${"#".repeat(Math.max(1, section.heading_path.length))} ${heading}`;
+  const heading = headingPath[headingPath.length - 1] || "";
+  const expectedHeadingLine = `${"#".repeat(Math.max(1, headingPath.length))} ${heading}`;
   const lines = fragment.length > 0 ? fragment.split("\n") : [];
 
   if (lines[0] !== expectedHeadingLine) {
@@ -41,7 +42,7 @@ function stripHeadingFromSectionFragment(
     return {
       bodyContent: "",
       validationError:
-        `Cannot show authorship for ${sectionLabel(section)}: section fragment heading did not match its metadata ` +
+        `Cannot show authorship for ${sectionLabel(headingPath)}: section fragment heading did not match its metadata ` +
         `(expected "${expectedHeadingLine}", got "${actual}").`,
     };
   }
@@ -55,37 +56,36 @@ function stripHeadingFromSectionFragment(
 }
 
 export function buildSectionAuthorshipTargets(
-  sections: DocumentSection[],
+  sections: readonly RenderSectionRef[],
   overrides: AuthorshipSourceOverrides = {},
 ): SectionAuthorshipTarget[] {
   return sections.map((section, index) => {
+    const headingPath = [...section.headingPath];
+    const fragmentKey = SectionId.text(section.id);
     const errors: string[] = [];
-    const resolvedSectionFile = overrides.resolveSectionFile?.(section.fragment_key);
-    const sectionFile = (resolvedSectionFile ?? section.section_file) || "";
+    const sectionFile = overrides.resolveSectionFile?.(fragmentKey) ?? "";
     if (sectionFile.trim().length === 0) {
-      errors.push(`Cannot show authorship for ${sectionLabel(section)}: section_file is missing.`);
+      errors.push(`Cannot show authorship for ${sectionLabel(headingPath)}: section_file is missing.`);
     }
-    if (section.fragment_key.trim().length === 0) {
-      errors.push(`Cannot show authorship for ${sectionLabel(section)}: fragment_key is missing.`);
+    if (fragmentKey.trim().length === 0) {
+      errors.push(`Cannot show authorship for ${sectionLabel(headingPath)}: fragment_key is missing.`);
     }
 
-    const resolvedBody = overrides.resolveBody?.(section.fragment_key);
-    const bodySource: DocumentSection =
-      resolvedBody !== undefined ? { ...section, content: resolvedBody } : section;
-    const stripped = stripHeadingFromSectionFragment(bodySource);
+    const body = overrides.resolveBody?.(fragmentKey) ?? "";
+    const stripped = stripHeadingFromSectionFragment(headingPath, body);
     if (stripped.validationError) {
       errors.push(stripped.validationError);
     }
 
-    const key = section.fragment_key.trim().length > 0
-      ? section.fragment_key
+    const key = fragmentKey.trim().length > 0
+      ? fragmentKey
       : `invalid-section-${index}`;
 
     return {
       key,
       sectionFile,
-      heading: section.heading_path.length > 0
-        ? section.heading_path[section.heading_path.length - 1]
+      heading: headingPath.length > 0
+        ? headingPath[headingPath.length - 1]
         : null,
       bodyContent: stripped.bodyContent,
       revisionKey: stripped.bodyContent,

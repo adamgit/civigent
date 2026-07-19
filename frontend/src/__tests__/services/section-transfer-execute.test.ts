@@ -43,13 +43,11 @@ const callOrder: string[] = [];
 
 function makeService(opts: { state?: string; sections?: SectionInfo[] }) {
   const flushAndAwaitSync = vi.fn().mockImplementation(async () => { callOrder.push("flush"); });
-  const onceRemoteUpdate = vi.fn();
   const sendSectionMove = vi.fn(); // must NEVER be called (method is deleted in prod)
   const transport = {
     state: opts.state ?? "connected",
     documentPath: "/ops/strategy.md",
     flushAndAwaitSync,
-    onceRemoteUpdate,
     sendSectionMove,
   } as unknown as CrdtTransport & { sendSectionMove: ReturnType<typeof vi.fn> };
   const service = new SectionTransferService({
@@ -59,7 +57,7 @@ function makeService(opts: { state?: string; sections?: SectionInfo[] }) {
       { heading_path: ["Timeline"], fragment_key: "section::timeline" },
     ],
   });
-  return { service, flushAndAwaitSync, onceRemoteUpdate, sendSectionMove };
+  return { service, flushAndAwaitSync, sendSectionMove };
 }
 
 describe("Option E: SectionTransferService.execute() drives a REST live move", () => {
@@ -70,7 +68,7 @@ describe("Option E: SectionTransferService.execute() drives a REST live move", (
   });
 
   it("flushes the barrier BEFORE the move, calls liveMoveSection(before), and resolves success on 200", async () => {
-    const { service, flushAndAwaitSync, onceRemoteUpdate, sendSectionMove } = makeService({});
+    const { service, flushAndAwaitSync, sendSectionMove } = makeService({});
 
     const result = await service.execute(makeTransfer());
 
@@ -87,8 +85,6 @@ describe("Option E: SectionTransferService.execute() drives a REST live move", (
     expect(sendSectionMove).not.toHaveBeenCalled(); // never the deleted binary path
     expect(result.success).toBe(true);
     expect(result.error).toBeUndefined();
-    // Caret recovery is armed off the WS fan-out (no editor view here → still armed).
-    expect(onceRemoteUpdate).not.toHaveBeenCalled(); // no captured caret without an editor view
   });
 
   it("renders the backend's 409 prose refusal verbatim", async () => {

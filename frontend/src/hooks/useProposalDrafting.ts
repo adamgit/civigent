@@ -15,15 +15,15 @@ import {
   sectionGlobalKey,
   type ProposalDTO,
 } from "../types/shared.js";
-import type { DocumentSection } from "../pages/document-page-utils";
+import type { WorkspaceSectionDto } from "../pages/document-page-utils";
+import type { RenderSectionRef } from "../types/live-sections";
 
 export interface UseProposalDraftingParams {
   decodedDocPath: string | null;
-  sections: DocumentSection[];
+  workspaceBaselineSections: WorkspaceSectionDto[];
   setError: (e: string | null) => void;
-  loadSections: (docPath: string) => Promise<DocumentSection[]>;
-  setFocusedSectionIndex: React.Dispatch<React.SetStateAction<number | null>>;
-  /** Drop the tab back to live-observer (no-op when already observing). */
+  loadSections: (docPath: string) => Promise<WorkspaceSectionDto[]>;
+  setBootstrapFocusedSectionIndex: React.Dispatch<React.SetStateAction<number | null>>;
   leaveLiveEditing: () => Promise<void>;
 }
 
@@ -53,12 +53,12 @@ export interface UseProposalDraftingReturn {
   cancelActiveProposal: () => Promise<void>;
   applyProposalSectionAvailabilityEvent: (event: ProposalSectionAvailabilityEvent) => void;
   updateProposalIntent: (nextIntent: string) => void;
-  toggleProposalSection: (section: DocumentSection) => Promise<void>;
+  toggleProposalSection: (target: RenderSectionRef) => Promise<void>;
   removeProposalSection: (docPath: string, headingPath: string[]) => Promise<void>;
-  handleProposalSectionChange: (sectionIndex: number, markdown: string) => void;
+  handleProposalSectionChange: (headingPath: readonly string[], markdown: string) => void;
 }
 
-function headingPathEquals(a: string[], b: string[]): boolean {
+function headingPathEquals(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) {
     if (a[i] !== b[i]) return false;
@@ -86,10 +86,10 @@ function availabilityEntryMessage(entry: ProposalSectionAvailabilityEntry): stri
 
 export function useProposalDrafting({
   decodedDocPath,
-  sections,
+  workspaceBaselineSections,
   setError,
   loadSections,
-  setFocusedSectionIndex,
+  setBootstrapFocusedSectionIndex,
   leaveLiveEditing,
 }: UseProposalDraftingParams): UseProposalDraftingReturn {
   const [proposalMode, setProposalMode] = useState(false);
@@ -111,11 +111,11 @@ export function useProposalDrafting({
   const proposalIntentRef = useRef("");
   const mutationQueueRef = useRef<Promise<void>>(Promise.resolve());
 
-  const resolveFallbackContent = useCallback((docPath: string, headingPath: string[]): string => {
+  const resolveWorkspaceBaselineContent = useCallback((docPath: string, headingPath: string[]): string => {
     if (docPath !== decodedDocPath) return "";
-    const section = sections.find((candidate) => headingPathEquals(candidate.heading_path, headingPath));
+    const section = workspaceBaselineSections.find((candidate) => headingPathEquals(candidate.heading_path, headingPath));
     return section?.content ?? "";
-  }, [decodedDocPath, sections]);
+  }, [decodedDocPath, workspaceBaselineSections]);
 
   const syncProposalFromServer = useCallback((proposal: ProposalDTO | null) => {
     if (!proposal || !Array.isArray(proposal.sections)) {
@@ -146,7 +146,7 @@ export function useProposalDrafting({
       const existing = proposalSectionsRef.current.get(key);
       const content = typeof section.content === "string"
         ? section.content
-        : (existing?.content ?? resolveFallbackContent(section.doc_path, section.heading_path));
+        : (existing?.content ?? resolveWorkspaceBaselineContent(section.doc_path, section.heading_path));
 
       nextDraftSections.set(key, {
         doc_path: section.doc_path,
@@ -175,7 +175,7 @@ export function useProposalDrafting({
     proposalSectionsRef.current = nextDraftSections;
     setProposalSectionConflicts(nextConflicts);
     setProposalOverlayVersion((prev) => prev + 1);
-  }, [resolveFallbackContent]);
+  }, [resolveWorkspaceBaselineContent]);
 
   const runQueuedMutation = useCallback((task: () => Promise<void>): Promise<void> => {
     const run = mutationQueueRef.current.then(task, task);
@@ -225,7 +225,7 @@ export function useProposalDrafting({
     setActiveProposalStatus(null);
     setProposalIntent("");
     proposalIntentRef.current = "";
-    setFocusedSectionIndex(null);
+    setBootstrapFocusedSectionIndex(null);
     setProposalSectionConflicts(new Map());
     proposalSectionsRef.current.clear();
     try {
@@ -235,7 +235,7 @@ export function useProposalDrafting({
       setPanelError(message);
       setError(message);
     }
-  }, [refreshActiveProposal, leaveLiveEditing, setFocusedSectionIndex, setError]);
+  }, [refreshActiveProposal, leaveLiveEditing, setBootstrapFocusedSectionIndex, setError]);
 
   const startManualPublish = useCallback(async () => {
     if (creatingProposal) return;
@@ -319,7 +319,7 @@ export function useProposalDrafting({
     });
   }, []);
 
-  const toggleProposalSection = useCallback(async (section: DocumentSection) => {
+  const toggleProposalSection = useCallback(async (target: RenderSectionRef) => {
     if (!decodedDocPath || !activeProposalIdRef.current) return;
     if (activeProposalStatus !== "draft") {
       setPanelError("Section scope is locked once proposal is inprogress.");
@@ -327,26 +327,27 @@ export function useProposalDrafting({
     }
     setPanelError(null);
     setProposalScopeMutationInFlight(true);
-    const key = sectionGlobalKey(decodedDocPath, section.heading_path);
+    const headingPath = [...target.headingPath];
+    const key = sectionGlobalKey(decodedDocPath, headingPath);
     try {
       const nextSections = new Map(proposalSectionsRef.current);
       if (nextSections.has(key)) {
         nextSections.delete(key);
       } else {
-        let baselineContent = section.content;
+        let baselineContent = resolveWorkspaceBaselineContent(decodedDocPath, headingPath);
         const proposalView = await apiClient.getProposalDocumentSections(
           activeProposalIdRef.current,
           decodedDocPath,
         );
         const matched = proposalView.sections.find((candidate) =>
-          headingPathEquals(candidate.heading_path, section.heading_path)
+          headingPathEquals(candidate.heading_path, headingPath)
         );
         if (matched) {
           baselineContent = matched.content;
         }
         nextSections.set(key, {
           doc_path: decodedDocPath,
-          heading_path: [...section.heading_path],
+          heading_path: headingPath,
           content: baselineContent,
         });
       }
@@ -358,7 +359,7 @@ export function useProposalDrafting({
     } finally {
       setProposalScopeMutationInFlight(false);
     }
-  }, [activeProposalStatus, decodedDocPath, persistProposalSections, setError]);
+  }, [activeProposalStatus, decodedDocPath, persistProposalSections, resolveWorkspaceBaselineContent, setError]);
 
   const removeProposalSection = useCallback(async (docPath: string, headingPath: string[]) => {
     if (activeProposalStatus !== "draft") {
@@ -382,22 +383,21 @@ export function useProposalDrafting({
     }
   }, [activeProposalStatus, persistProposalSections, setError]);
 
-  const handleProposalSectionChange = useCallback((sectionIndex: number, markdown: string) => {
+  const handleProposalSectionChange = useCallback((headingPath: readonly string[], markdown: string) => {
     if (activeProposalStatus !== "inprogress") return;
-    const section = sections[sectionIndex];
-    if (!section || !decodedDocPath) return;
-    const key = sectionGlobalKey(decodedDocPath, section.heading_path);
+    if (!decodedDocPath) return;
+    const key = sectionGlobalKey(decodedDocPath, [...headingPath]);
     if (!proposalSectionsRef.current.has(key)) {
       return;
     }
     proposalSectionsRef.current.set(key, {
       doc_path: decodedDocPath,
-      heading_path: section.heading_path,
+      heading_path: [...headingPath],
       content: markdown,
     });
     setProposalOverlayVersion((prev) => prev + 1);
     saveProposalSections();
-  }, [activeProposalStatus, sections, decodedDocPath, saveProposalSections]);
+  }, [activeProposalStatus, decodedDocPath, saveProposalSections]);
 
   const acquireProposalLocks = useCallback(async () => {
     const proposalId = activeProposalIdRef.current;

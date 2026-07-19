@@ -6,16 +6,18 @@ import {
   type LiveDocumentSource,
 } from "../../crdt/crdt-proposal-generator.js";
 import { BEFORE_FIRST_HEADING_KEY } from "../../crdt/ydoc-fragments.js";
-import type { WriterIdentity, DocSessionId } from "../../types/shared.js";
+import { ProposalAdoptionId, type WriterIdentity } from "../../types/shared.js";
 
 const writer: WriterIdentity = { id: "user-alice", type: "human", displayName: "Alice" };
 
-const emptySource: LiveDocumentSource = { snapshotSections: () => [] };
+const emptySource: LiveDocumentSource = {
+  snapshotSections: () => ({ sections: [], awaitingStructuralReconciliation: [] }),
+};
 
 function makeGenerator(): CRDTProposalGenerator {
   return new CRDTProposalGenerator({
     docPath: "guide.md",
-    docSessionId: crypto.randomUUID() as DocSessionId,
+    proposalAdoptionId: ProposalAdoptionId.create(),
     writer,
     source: emptySource,
   });

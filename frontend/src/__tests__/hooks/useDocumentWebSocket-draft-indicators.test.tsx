@@ -12,8 +12,6 @@ import { renderHook, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import React from "react";
 import { sectionHeadingKey, type WsServerEvent } from "../../types/shared";
-import type { DocumentSection } from "../../pages/document-page-utils";
-
 type WsEventHandler = (event: WsServerEvent) => void;
 let capturedWsHandler: WsEventHandler | null = null;
 

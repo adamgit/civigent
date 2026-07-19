@@ -2,12 +2,14 @@
  * SectionActivityContext — tracks which section is hovered and/or actively edited.
  *
  * Scoped to pages that embed DocumentSectionRenderer (DocumentPage,
- * GovernanceDocumentPage). Not app-wide.
+ * GovernanceDocumentPage). Not app-wide. Identity is the opaque FRAGMENT KEY —
+ * render positions are never used as hover/active identity, so attribution and
+ * gutter highlighting follow the same section across reorders.
  *
  * Usage:
- *   - Wrap your section-rendering page with <SectionHoverProvider activeSectionIndex={focusedSectionIndex}>
- *   - In section renderers: const { setHoveredSection } = useSectionHover()
- *   - In gutter components: const { hoveredSection, activeSectionIndex } = useSectionHover()
+ *   - Wrap your section-rendering page with <SectionHoverProvider activeFragmentKey={focusedFragmentKey}>
+ *   - In section renderers: const { setHoveredFragmentKey } = useSectionHover()
+ *   - In gutter components: const { hoveredFragmentKey, activeFragmentKey } = useSectionHover()
  */
 
 import { createContext, useCallback, useMemo, useState } from "react";
@@ -18,18 +20,18 @@ export const SectionHoverContext = createContext<SectionHoverContextValue | null
 
 interface SectionHoverProviderProps {
   children: ReactNode;
-  /** Current actively-edited section index, fed from focusedSectionIndex in useDocumentCrdt. */
-  activeSectionIndex?: number | null;
+  /** Fragment key of the currently focused/edited section (page focus identity). */
+  activeFragmentKey?: string | null;
 }
 
-export function SectionHoverProvider({ children, activeSectionIndex = null }: SectionHoverProviderProps) {
-  const [hoveredSection, setHoveredSectionState] = useState<number | null>(null);
-  const setHoveredSection = useCallback((index: number | null) => {
-    setHoveredSectionState(index);
+export function SectionHoverProvider({ children, activeFragmentKey = null }: SectionHoverProviderProps) {
+  const [hoveredFragmentKey, setHoveredFragmentKeyState] = useState<string | null>(null);
+  const setHoveredFragmentKey = useCallback((fragmentKey: string | null) => {
+    setHoveredFragmentKeyState(fragmentKey);
   }, []);
   const value = useMemo(
-    () => ({ hoveredSection, activeSectionIndex, setHoveredSection }),
-    [hoveredSection, activeSectionIndex, setHoveredSection],
+    () => ({ hoveredFragmentKey, activeFragmentKey, setHoveredFragmentKey }),
+    [hoveredFragmentKey, activeFragmentKey, setHoveredFragmentKey],
   );
   return (
     <SectionHoverContext.Provider value={value}>

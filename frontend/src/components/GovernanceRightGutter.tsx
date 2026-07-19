@@ -33,8 +33,11 @@ export interface AuditEntry {
 }
 
 export interface SectionAuditGroup {
-  sectionIndex: number;
+  /** Canonical section identity (opaque fragment key) — never a position. */
+  fragmentKey: string;
   entries: AuditEntry[];
+  /** Same section-keyed fact as the left gutter, for row chrome only. */
+  inProgressProposal: false | import("./GovernanceLeftGutter").GovernanceInProgressProposal;
 }
 
 export interface GovernanceRightGutterProps {
@@ -101,7 +104,18 @@ export function GovernanceRightGutter({ sectionGroups }: GovernanceRightGutterPr
     <div className="gov-gutter gov-gutter-right">
       <div className="gov-gutter-header">Audit trail</div>
       {sectionGroups.map((group) => (
-        <div key={group.sectionIndex}>
+        <div key={group.fragmentKey}>
+          {group.inProgressProposal ? (
+            <div className="gov-inprogress-badge" data-testid="gov-inprogress-proposal-chrome">
+              <span>✎</span>
+              <span>
+                Proposal in progress
+                {group.inProgressProposal.writerDisplayName
+                  ? ` — ${group.inProgressProposal.writerDisplayName}`
+                  : ""}
+              </span>
+            </div>
+          ) : null}
           {group.entries.length === 0 ? (
             <div className="gov-audit-empty">No changes recorded yet</div>
           ) : (

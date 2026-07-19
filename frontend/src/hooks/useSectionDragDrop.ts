@@ -5,6 +5,12 @@
  * Handles dragover (canDrop check), drop (build transfer + execute),
  * and cleanup (dragleave/dragend).
  *
+ * Identity is FRAGMENT-KEY-NATIVE end to end: targets/sources resolve from the
+ * `data-fragment-key` on the nearest `data-document-section` wrapper, drag
+ * state (drag-over highlight, static drag source) is stored as fragment keys,
+ * and the option readers are keyed by fragment key. Positional indices are
+ * never read from the DOM or stored as drag state.
+ *
  * Supports two drag-source scenarios:
  *   1. Editor → static: dragSourceInfo is set by MilkdownEditor's ProseMirror plugin.
  *      Content is moved (deleted from source editor after write to target).
@@ -16,7 +22,7 @@
  * a mounted editor (static rendered HTML).
  */
 
-import { useEffect, useState, useCallback, type RefObject } from "react";
+import { useEffect, useState, useCallback, useRef, type RefObject } from "react";
 import { dragSourceInfo } from "../components/MilkdownEditor";
 import { proseMirrorNodeToMarkdown } from "@ks/milkdown-serializer";
 import { domPosToMarkdownOffset } from "../services/drop-position";
@@ -27,40 +33,51 @@ import {
   type TransferResult,
 } from "../services/section-transfer";
 
+/** Real document section wrappers only (see DocumentSectionRenderer). */
+const SECTION_WRAPPER_SELECTOR = "[data-document-section][data-fragment-key]";
+
+function wrapperFragmentKey(target: EventTarget | null): { el: HTMLElement; fragmentKey: string } | null {
+  const el = (target as HTMLElement)?.closest?.(SECTION_WRAPPER_SELECTOR);
+  if (!(el instanceof HTMLElement)) return null;
+  const fragmentKey = el.dataset.fragmentKey;
+  if (!fragmentKey) return null;
+  return { el, fragmentKey };
+}
+
 export interface UseSectionDragDropOptions {
   containerRef: RefObject<HTMLDivElement | null>;
   transferService: SectionTransferService | null;
-  /** Map section index → fragment key for looking up drop targets. */
-  getFragmentKey: (sectionIndex: number) => string | null;
-  /** Map section index → heading path. */
-  getHeadingPath: (sectionIndex: number) => string[] | null;
-  /** Whether a section index has a mounted editor (skip — ProseMirror handles it). */
-  hasEditor: (sectionIndex: number) => boolean;
-  /** Map section index → section markdown content (for insertion offset). */
-  getSectionContent?: (sectionIndex: number) => string | null;
+  /** Fragment key → heading path (null when the key is not a current row). */
+  getHeadingPath: (fragmentKey: string) => string[] | null;
+  /** Whether a fragment has a mounted editor (skip — ProseMirror handles it). */
+  hasEditor: (fragmentKey: string) => boolean;
+  /** Fragment key → the section's display markdown (for insertion offset). */
+  getSectionContent?: (fragmentKey: string) => string | null;
   onTransferComplete?: (result: TransferResult) => void;
 }
 
 export interface UseSectionDragDropResult {
-  dragOverSectionIndex: number | null;
+  /** Fragment key of the section currently dragged over (highlight target). */
+  dragOverFragmentKey: string | null;
 }
 
 export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionDragDropResult {
   const {
     containerRef,
     transferService,
-    getFragmentKey,
     getHeadingPath,
     hasEditor,
     getSectionContent,
     onTransferComplete,
   } = opts;
 
-  const [dragOverSectionIndex, setDragOverSectionIndex] = useState<number | null>(null);
-  // Track static drag source (section index) captured at dragstart
-  const staticDragSourceRef = { current: null as number | null };
+  const [dragOverFragmentKey, setDragOverFragmentKey] = useState<string | null>(null);
+  // Static drag source (fragment key) captured at dragstart. Real refs: the
+  // drag-over state update re-renders the page mid-drag, and drag state must
+  // survive that re-render.
+  const staticDragSourceRef = useRef<string | null>(null);
   // Drop-position indicator element
-  const dropIndicatorRef = { current: null as HTMLDivElement | null };
+  const dropIndicatorRef = useRef<HTMLDivElement | null>(null);
 
   const removeDropIndicator = useCallback(() => {
     if (dropIndicatorRef.current) {
@@ -70,11 +87,10 @@ export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionD
   }, []);
 
   const handleDragStart = useCallback((e: DragEvent) => {
-    const sectionEl = (e.target as HTMLElement)?.closest?.("[data-section-index]");
-    if (!sectionEl) return;
-    const idx = Number(sectionEl.getAttribute("data-section-index"));
-    if (!isNaN(idx) && !hasEditor(idx)) {
-      staticDragSourceRef.current = idx;
+    const hit = wrapperFragmentKey(e.target);
+    if (!hit) return;
+    if (!hasEditor(hit.fragmentKey)) {
+      staticDragSourceRef.current = hit.fragmentKey;
     }
   }, [hasEditor]);
 
@@ -85,44 +101,37 @@ export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionD
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed && !dragSourceInfo) return;
 
-    const sectionEl = (e.target as HTMLElement)?.closest?.("[data-section-index]");
-    if (!sectionEl) return;
-
-    const idx = Number(sectionEl.getAttribute("data-section-index"));
-    if (isNaN(idx)) return;
+    const hit = wrapperFragmentKey(e.target);
+    if (!hit) return;
+    const { el: sectionEl, fragmentKey: fk } = hit;
 
     // Skip sections with mounted editors — ProseMirror handles them
-    if (hasEditor(idx)) return;
-
-    const fk = getFragmentKey(idx);
-    if (!fk) return;
+    if (hasEditor(fk)) return;
 
     const verdict = transferService.canDrop(fk);
     if (applyDragOverVerdict(e, verdict, !!dragSourceInfo)) {
-      setDragOverSectionIndex(idx);
+      setDragOverFragmentKey(fk);
 
       // Position drop indicator
-      if (sectionEl instanceof HTMLElement) {
-        const range = document.caretRangeFromPoint?.(e.clientX, e.clientY) ?? null;
-        if (range) {
-          const rect = range.getBoundingClientRect();
-          const containerRect = sectionEl.getBoundingClientRect();
-          if (!dropIndicatorRef.current) {
-            const div = document.createElement("div");
-            div.style.cssText = "position:absolute;left:0;right:0;height:2px;background:#3b82f6;pointer-events:none;z-index:50;transition:top 0.05s ease-out";
-            sectionEl.style.position = "relative";
-            sectionEl.appendChild(div);
-            dropIndicatorRef.current = div;
-          }
-          dropIndicatorRef.current.style.top = `${rect.top - containerRect.top}px`;
-          if (dropIndicatorRef.current.parentElement !== sectionEl) {
-            sectionEl.style.position = "relative";
-            sectionEl.appendChild(dropIndicatorRef.current);
-          }
+      const range = document.caretRangeFromPoint?.(e.clientX, e.clientY) ?? null;
+      if (range) {
+        const rect = range.getBoundingClientRect();
+        const containerRect = sectionEl.getBoundingClientRect();
+        if (!dropIndicatorRef.current) {
+          const div = document.createElement("div");
+          div.style.cssText = "position:absolute;left:0;right:0;height:2px;background:#3b82f6;pointer-events:none;z-index:50;transition:top 0.05s ease-out";
+          sectionEl.style.position = "relative";
+          sectionEl.appendChild(div);
+          dropIndicatorRef.current = div;
+        }
+        dropIndicatorRef.current.style.top = `${rect.top - containerRect.top}px`;
+        if (dropIndicatorRef.current.parentElement !== sectionEl) {
+          sectionEl.style.position = "relative";
+          sectionEl.appendChild(dropIndicatorRef.current);
         }
       }
     }
-  }, [transferService, getFragmentKey, hasEditor]);
+  }, [transferService, hasEditor]);
 
   const handleDrop = useCallback(async (e: DragEvent) => {
     if (!transferService) return;
@@ -131,20 +140,17 @@ export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionD
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed && !dragSourceInfo) return;
 
-    const sectionEl = (e.target as HTMLElement)?.closest?.("[data-section-index]");
-    if (!sectionEl) return;
-
-    const idx = Number(sectionEl.getAttribute("data-section-index"));
-    if (isNaN(idx)) return;
-    if (hasEditor(idx)) return;
+    const hit = wrapperFragmentKey(e.target);
+    if (!hit) return;
+    const { el: sectionEl, fragmentKey: fk } = hit;
+    if (hasEditor(fk)) return;
 
     e.preventDefault();
-    setDragOverSectionIndex(null);
+    setDragOverFragmentKey(null);
     removeDropIndicator();
 
-    const fk = getFragmentKey(idx);
-    const hp = getHeadingPath(idx);
-    if (!fk || !hp) return;
+    const hp = getHeadingPath(fk);
+    if (!hp) return;
 
     const plainText = e.dataTransfer?.getData("text/plain") ?? "";
 
@@ -152,7 +158,7 @@ export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionD
 
     // Source is null when dragging from a static (non-editor) section —
     // no ProseMirror dragstart handler exists to set dragSourceInfo.
-    // For static sources, resolve fragmentKey from the captured section index.
+    // For static sources, the fragment key was captured at dragstart.
     let deleteSourceCallback: (() => void) | undefined;
     let sourceFragmentKey = "";
     let sourceSliceRange: { from: number; to: number } | null = null;
@@ -160,8 +166,7 @@ export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionD
     let markdown = "";
 
     if (!source && staticDragSourceRef.current !== null) {
-      // Static drag — resolve source fragment key from captured section index
-      sourceFragmentKey = getFragmentKey(staticDragSourceRef.current) ?? "";
+      sourceFragmentKey = staticDragSourceRef.current;
     }
     staticDragSourceRef.current = null;
 
@@ -186,25 +191,17 @@ export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionD
       markdown = plainText;
     }
 
-    // Resolve source heading path from fragment key by scanning sections
-    let sourceHeadingPath: string[] = [];
-    if (sourceFragmentKey) {
-      for (let si = 0; ; si++) {
-        const sfk = getFragmentKey(si);
-        if (sfk === null) break;
-        if (sfk === sourceFragmentKey) {
-          sourceHeadingPath = getHeadingPath(si) ?? [];
-          break;
-        }
-      }
-    }
+    // Source heading path resolves by fragment-key lookup.
+    const sourceHeadingPath: string[] = sourceFragmentKey
+      ? (getHeadingPath(sourceFragmentKey) ?? [])
+      : [];
 
     // Compute insertion offset from drop position for static targets
     let insertionOffset: number | undefined;
-    const sectionContent = getSectionContent?.(idx);
+    const sectionContent = getSectionContent?.(fk);
     if (sectionContent && e.clientX && e.clientY) {
       const range = document.caretRangeFromPoint?.(e.clientX, e.clientY) ?? null;
-      if (range && sectionEl instanceof HTMLElement) {
+      if (range) {
         insertionOffset = domPosToMarkdownOffset(sectionEl, range, sectionContent);
       }
     }
@@ -223,19 +220,19 @@ export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionD
 
     const result = await transferService.execute(transfer);
     onTransferComplete?.(result);
-  }, [transferService, getFragmentKey, getHeadingPath, hasEditor, getSectionContent, removeDropIndicator, onTransferComplete]);
+  }, [transferService, getHeadingPath, hasEditor, getSectionContent, removeDropIndicator, onTransferComplete]);
 
   const handleDragLeave = useCallback((e: DragEvent) => {
     // Only clear if leaving the section entirely (not entering a child)
     const related = e.relatedTarget as HTMLElement | null;
-    const sectionEl = (e.target as HTMLElement)?.closest?.("[data-section-index]");
-    if (sectionEl && related && sectionEl.contains(related)) return;
-    setDragOverSectionIndex(null);
+    const hit = wrapperFragmentKey(e.target);
+    if (hit && related && hit.el.contains(related)) return;
+    setDragOverFragmentKey(null);
     removeDropIndicator();
   }, [removeDropIndicator]);
 
   const handleDragEnd = useCallback(() => {
-    setDragOverSectionIndex(null);
+    setDragOverFragmentKey(null);
     removeDropIndicator();
   }, [removeDropIndicator]);
 
@@ -264,5 +261,5 @@ export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionD
     };
   }, [containerRef, handleDragStart, handleDragOver, handleDrop, handleDragLeave, handleDragEnd]);
 
-  return { dragOverSectionIndex };
+  return { dragOverFragmentKey };
 }

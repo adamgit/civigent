@@ -20,11 +20,11 @@ vi.mock("../../components/MilkdownEditor", async () => {
   const React = await import("react");
   return {
     MilkdownEditor: React.forwardRef(
-      (props: { fragmentKey?: string; readOnly?: boolean; onReady?: () => void }, _ref: unknown) => {
+      (props: { binding?: { fragmentKey?: string }; readOnly?: boolean; onReady?: () => void }, _ref: unknown) => {
         React.useEffect(() => { props.onReady?.(); }, []);
         return (
           <div
-            data-testid={`editor-${props.fragmentKey}`}
+            data-testid={`editor-${props.binding?.fragmentKey}`}
             data-readonly={String(!!props.readOnly)}
           >
             editor
@@ -37,36 +37,47 @@ vi.mock("../../components/MilkdownEditor", async () => {
 
 import { DocumentCanvas } from "../../components/DocumentCanvas";
 import { SectionHoverProvider } from "../../contexts/SectionHoverContext";
-import type { DocumentSection } from "../../pages/document-page-utils";
+import { SectionId, type RenderSectionRef } from "../../types/live-sections";
 import type { CrdtConnectionState } from "../../services/crdt-provider";
 
-function makeSection(file: string, heading: string): DocumentSection {
+// Body-free render rows: identity + heading path only; the display body comes
+// from the page's `getDisplayMarkdown` selector (stubbed below as "<Heading> body").
+function makeSection(file: string, heading: string): RenderSectionRef {
   return {
-    heading,
-    heading_path: [heading],
-    depth: 1,
-    content: `${heading} body`,
-    agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
-    crdt_session_active: true,
-    section_length_warning: false,
-    word_count: 2,
-    fragment_key: `section::${file}`,
-    section_file: `${file}.md`,
-  } as DocumentSection;
+    id: SectionId.brand(`section::${file}`),
+    headingPath: [heading],
+  };
 }
+
+function displayMarkdown(ref: RenderSectionRef): string {
+  return `${ref.headingPath[ref.headingPath.length - 1] ?? ""} body`;
+}
+
+// A live editor may only mount with a real LiveEditorBinding (mount gate);
+// tests fake the opaque capability by casting the internal attach shape,
+// mirroring what getLiveSection(...).createEditorBinding() mints.
+const sharedDoc = new Y.Doc();
+const sharedAwareness = new Awareness(sharedDoc);
+const getLiveBinding = (fk: string) =>
+  ({ doc: sharedDoc, awareness: sharedAwareness, fragmentKey: fk }) as unknown as
+    import("../../services/live-section-replica").LiveEditorBinding;
 
 function renderCanvas(
   live: { blocked?: Set<string>; publishPaused?: boolean },
-  sections: DocumentSection[],
+  sections: RenderSectionRef[],
   focusedSectionIndex: number | null,
   crdtState: CrdtConnectionState = "connected",
 ) {
+  const focusedFragmentKey =
+    focusedSectionIndex !== null && sections[focusedSectionIndex]
+      ? SectionId.text(sections[focusedSectionIndex].id)
+      : null;
   return render(
-    <SectionHoverProvider activeSectionIndex={focusedSectionIndex}>
+    <SectionHoverProvider activeFragmentKey={focusedFragmentKey}>
       <DocumentCanvas
         sections={sections}
         sectionsLoading={false}
-        focusedSectionIndex={focusedSectionIndex}
+        focusedFragmentKey={focusedFragmentKey}
         proposalMode={false}
         canEditProposalScope={false}
         canEditProposalContent={false}
@@ -76,15 +87,16 @@ function renderCanvas(
         decodedDocPath="/test/doc.md"
         recentlyChangedByLabel={new Map()}
         injectedByLabel={new Map()}
-        dragOverSectionIndex={null}
+        dragOverFragmentKey={null}
         isSectionBlocked={(fk) => live.blocked?.has(fk) ?? false}
         publishPaused={live.publishPaused ?? false}
-        crdtSynced={true}
         crdtState={crdtState}
         transferService={null}
         readyEditors={focusedSectionIndex !== null && sections[focusedSectionIndex]
-          ? new Set([sections[focusedSectionIndex].fragment_key])
+          ? new Set([SectionId.text(sections[focusedSectionIndex].id)])
           : new Set<string>()}
+        getDisplayMarkdown={displayMarkdown}
+        getLiveBinding={getLiveBinding}
         localEditSink={{ recordLocalEdit: () => {} }}
         mouseDownPosRef={{ current: null }}
         onStartEditing={() => {}}
@@ -100,7 +112,7 @@ function renderCanvas(
 }
 
 describe("DocumentCanvas block-state / publication-pause flow", () => {
-  let sections: DocumentSection[];
+  let sections: RenderSectionRef[];
 
   beforeEach(() => {
     sections = [makeSection("a", "Alpha"), makeSection("b", "Beta")];
@@ -121,7 +133,7 @@ describe("DocumentCanvas block-state / publication-pause flow", () => {
   it("a gone section is removed from the canvas entirely (absent from topology rows)", () => {
     // Gone means the fragment dropped out of the replica topology — the page
     // renders rows FROM the topology, so the row simply never reaches the canvas.
-    renderCanvas({}, sections.filter((s) => s.fragment_key !== "section::a"), null);
+    renderCanvas({}, sections.filter((s) => SectionId.text(s.id) !== "section::a"), null);
     expect(screen.queryByText(/Alpha body/)).toBeNull();
     // The surviving section is still rendered.
     expect(screen.getByText(/Beta body/)).toBeDefined();

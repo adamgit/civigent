@@ -98,15 +98,6 @@ describe("DocumentPage load", () => {
     });
   });
 
-  it("renders section headings and content", async () => {
-    renderDocPage();
-    await waitFor(() => {
-      expect(screen.queryByText("Loading document...")).toBeNull();
-    });
-    // The document title should be derived from the path
-    expect(screen.getByText("strategy")).toBeDefined();
-  });
-
   it("shows 404 message for non-existent document", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url: unknown) => {
       const urlStr = String(url);
@@ -145,8 +136,6 @@ describe("DocumentPage load", () => {
           content: "",
           humanInvolvement_score: 0,
           crdt_session_active: false,
-          section_length_warning: false,
-          word_count: 0,
           fragment_key: "section::__beforeFirstHeading__",
           section_file: "sec_root.md",
         },

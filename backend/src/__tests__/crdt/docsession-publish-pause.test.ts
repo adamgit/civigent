@@ -5,20 +5,23 @@ import {
   type LiveDocumentSource,
 } from "../../crdt/crdt-proposal-generator.js";
 import {
-  findInProgressProposalForDocSession,
+  findInProgressProposalByAdoptionId,
   listInProgressProposals,
   locateProposalContentRoot,
 } from "../../storage/proposal-repository.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
-import type { WriterIdentity, DocSessionId } from "../../types/shared.js";
+import { ProposalAdoptionId, type WriterIdentity } from "../../types/shared.js";
 
 const writer: WriterIdentity = { id: "user-alice", type: "human", displayName: "Alice" };
 
 function source(): LiveDocumentSource {
   return {
-    snapshotSections: () => [
-      { headingPath: ["Intro"], heading: "Intro", level: 1, body: "content" },
-    ],
+    snapshotSections: () => ({
+      sections: [
+        { headingPath: ["Intro"], heading: "Intro", level: 1, body: "content", fragmentKey: "section::intro" },
+      ],
+      awaitingStructuralReconciliation: [],
+    }),
   };
 }
 
@@ -105,10 +108,10 @@ describe("CRDTProposalGenerator publish (final materialization + commit)", () =>
   });
 
   it("commit success clears the current-proposal reference", async () => {
-    const docSessionId = crypto.randomUUID() as DocSessionId;
+    const proposalAdoptionId = ProposalAdoptionId.create();
     const gen = new CRDTProposalGenerator({
       docPath: "guide.md",
-      docSessionId,
+      proposalAdoptionId,
       writer,
       source: source(),
     });
@@ -122,14 +125,14 @@ describe("CRDTProposalGenerator publish (final materialization + commit)", () =>
     expect(gen.getCurrentProposalId()).toBeNull();
 
     // No inprogress proposal remains for the session (it advanced to committed).
-    const remaining = await findInProgressProposalForDocSession(docSessionId);
+    const remaining = await findInProgressProposalByAdoptionId(proposalAdoptionId);
     expect(remaining).toBeNull();
   });
 
   it("finalizeAndPublish is a no-op when there is no current proposal", async () => {
     const gen = new CRDTProposalGenerator({
       docPath: "guide.md",
-      docSessionId: crypto.randomUUID() as DocSessionId,
+      proposalAdoptionId: ProposalAdoptionId.create(),
       writer,
       source: source(),
     });
@@ -138,10 +141,10 @@ describe("CRDTProposalGenerator publish (final materialization + commit)", () =>
   });
 
   it("commit failure returns the proposal to inprogress and keeps it as current", async () => {
-    const docSessionId = crypto.randomUUID() as DocSessionId;
+    const proposalAdoptionId = ProposalAdoptionId.create();
     const gen = new CRDTProposalGenerator({
       docPath: "guide.md",
-      docSessionId,
+      proposalAdoptionId,
       writer,
       source: source(),
     });
@@ -168,7 +171,7 @@ describe("CRDTProposalGenerator publish (final materialization + commit)", () =>
     // Generator keeps the same proposal as current (spec 10 §Publish failure).
     expect(gen.getCurrentProposalId()).toBe(proposalId);
     // The proposal is back at inprogress (not draft, not committing).
-    const stillInProgress = await findInProgressProposalForDocSession(docSessionId);
+    const stillInProgress = await findInProgressProposalByAdoptionId(proposalAdoptionId);
     expect(stillInProgress).not.toBeNull();
     expect(stillInProgress!.id).toBe(proposalId);
     // its content root is the inprogress location
@@ -179,7 +182,7 @@ describe("CRDTProposalGenerator publish (final materialization + commit)", () =>
   it("evaluatePublishTrigger applies the rule-ordered policy", async () => {
     const gen = new CRDTProposalGenerator({
       docPath: "guide.md",
-      docSessionId: crypto.randomUUID() as DocSessionId,
+      proposalAdoptionId: ProposalAdoptionId.create(),
       writer,
       source: source(),
     });

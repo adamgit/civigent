@@ -47,8 +47,18 @@ export interface HumanInvolvementSectionDetails {
 
 // ─── Generic governance section control ──────────────────────────
 
+/** The in-progress-proposal fact for one section, joined by fragment identity.
+ *  Only fields the source signal actually carries are present — missing
+ *  fields stay absent rather than being invented. */
+export interface GovernanceInProgressProposal {
+  proposalId?: string;
+  writerDisplayName?: string;
+  intent?: string;
+}
+
 export interface GovernanceSectionControl {
-  sectionIndex: number;
+  /** Canonical section identity (opaque fragment key) — never a position. */
+  fragmentKey: string;
   heading: string;
   /** Generic decision: may agents currently write here under the active policy? */
   canWrite: boolean;
@@ -58,6 +68,8 @@ export interface GovernanceSectionControl {
   lastEditorNote: string;
   /** Present only when the human-involvement compatibility policy is selected. */
   humanInvolvement?: HumanInvolvementSectionDetails;
+  /** `false` when no in-progress proposal covers this section. */
+  inProgressProposal: false | GovernanceInProgressProposal;
 }
 
 export interface GovernanceLeftGutterProps {
@@ -66,7 +78,7 @@ export interface GovernanceLeftGutterProps {
    * Human-involvement-policy override affordance. Only rendered when a section
    * carries `humanInvolvement` details and is in the `auto` tier.
    */
-  onRestrictAgents?: (sectionIndex: number) => void;
+  onRestrictAgents?: (fragmentKey: string) => void;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────
@@ -78,6 +90,25 @@ const TIER_CONFIG: Record<AgentTier, { cssClass: string; icon: string; label: st
 };
 
 // ─── Sub-components ──────────────────────────────────────────────
+
+/** Badge for a section currently under an in-progress proposal. Renders the
+ *  fact always; writer/intent lines only when the source signal carried them. */
+function InProgressProposalBadge({ fact }: { fact: GovernanceInProgressProposal }) {
+  return (
+    <div data-testid="gov-inprogress-proposal">
+      <div className="gov-inprogress-badge">
+        <span>✎</span>
+        <span>Proposal in progress</span>
+      </div>
+      {fact.writerDisplayName ? (
+        <div className="gov-inprogress-detail">{fact.writerDisplayName}</div>
+      ) : null}
+      {fact.intent ? (
+        <div className="gov-inprogress-detail">&ldquo;{fact.intent}&rdquo;</div>
+      ) : null}
+    </div>
+  );
+}
 
 function InvolvementBar({ score }: { score: number }) {
   // 0% = green (low human involvement), 100% = red (high human involvement)
@@ -109,11 +140,11 @@ function InvolvementBar({ score }: { score: number }) {
  * `humanInvolvement` details are present.
  */
 function HumanInvolvementDetailsBlock({
-  details, sectionIndex, onRestrictAgents,
+  details, fragmentKey, onRestrictAgents,
 }: {
   details: HumanInvolvementSectionDetails;
-  sectionIndex: number;
-  onRestrictAgents?: (sectionIndex: number) => void;
+  fragmentKey: string;
+  onRestrictAgents?: (fragmentKey: string) => void;
 }) {
   const cfg = TIER_CONFIG[details.agentTier];
   return (
@@ -135,7 +166,7 @@ function HumanInvolvementDetailsBlock({
       )}
       {details.tierTransitionNote && <div className="gov-decay-note">{details.tierTransitionNote}</div>}
       {details.agentTier === "auto" && onRestrictAgents && (
-        <button className="gov-override-btn" onClick={() => onRestrictAgents(sectionIndex)}>
+        <button className="gov-override-btn" onClick={() => onRestrictAgents(fragmentKey)}>
           Override: restrict agents
         </button>
       )}
@@ -144,14 +175,14 @@ function HumanInvolvementDetailsBlock({
 }
 
 function AgentPermissionsBlock({
-  canWrite, message, lastEditorNote, humanInvolvement, sectionIndex, onRestrictAgents,
+  canWrite, message, lastEditorNote, humanInvolvement, fragmentKey, onRestrictAgents,
 }: {
   canWrite: boolean;
   message: string;
   lastEditorNote: string;
   humanInvolvement?: HumanInvolvementSectionDetails;
-  sectionIndex: number;
-  onRestrictAgents?: (sectionIndex: number) => void;
+  fragmentKey: string;
+  onRestrictAgents?: (fragmentKey: string) => void;
 }) {
   return (
     <div className="gov-agent-permissions-block">
@@ -170,7 +201,7 @@ function AgentPermissionsBlock({
       {humanInvolvement ? (
         <HumanInvolvementDetailsBlock
           details={humanInvolvement}
-          sectionIndex={sectionIndex}
+          fragmentKey={fragmentKey}
           onRestrictAgents={onRestrictAgents}
         />
       ) : null}
@@ -181,17 +212,17 @@ function AgentPermissionsBlock({
 // ─── Main component ──────────────────────────────────────────────
 
 export function GovernanceLeftGutter({ sections, onRestrictAgents }: GovernanceLeftGutterProps) {
-  const { hoveredSection, activeSectionIndex } = useSectionHover();
+  const { hoveredFragmentKey, activeFragmentKey } = useSectionHover();
   return (
     <div className="gov-gutter gov-gutter-left">
       <div className="gov-gutter-header">Control &amp; agent policy</div>
-      {sections.map((section) => {
+      {sections.map((section, position) => {
         const isHighlighted =
-          hoveredSection === section.sectionIndex ||
-          activeSectionIndex === section.sectionIndex;
+          hoveredFragmentKey === section.fragmentKey ||
+          activeFragmentKey === section.fragmentKey;
         return (
         <div
-          key={section.sectionIndex}
+          key={section.fragmentKey}
           className="gov-section-control"
           style={isHighlighted ? {
             background: "var(--gov-paper)",
@@ -202,15 +233,18 @@ export function GovernanceLeftGutter({ sections, onRestrictAgents }: GovernanceL
           } : undefined}
         >
           <div className="gov-section-number">
-            &sect; {section.sectionIndex + 1}
+            &sect; {position + 1}
             {section.heading ? ` — ${section.heading}` : ""}
           </div>
+          {section.inProgressProposal ? (
+            <InProgressProposalBadge fact={section.inProgressProposal} />
+          ) : null}
           <AgentPermissionsBlock
             canWrite={section.canWrite}
             message={section.message}
             lastEditorNote={section.lastEditorNote}
             humanInvolvement={section.humanInvolvement}
-            sectionIndex={section.sectionIndex}
+            fragmentKey={section.fragmentKey}
             onRestrictAgents={onRestrictAgents}
           />
         </div>

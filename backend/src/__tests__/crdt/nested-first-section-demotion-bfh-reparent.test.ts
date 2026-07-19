@@ -19,6 +19,7 @@ import { acquireDocSession, destroyAllSessions, type DocSession } from "../../cr
 import {
   armQuiescenceTimer,
   registerFakeEditorSocketForTest,
+  requestDocSessionPublish,
   resetCoordinatorPublishStateForTest,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
@@ -283,7 +284,7 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
   it("12: publish after empty nested demotion reconstructs the settled outline (no Intro, no BFH, levels preserved)", async () => {
     await createNestedFirstDoc(ctx.rootDir, "");
     vi.useFakeTimers();
-    // No editor socket: the autonomous publish at quiescence runs inline.
+    // No editor socket: the explicit publish runs inline.
     const session = await openSession();
 
     const layout = await resolveLiveSectionLayout(DOC, null);
@@ -293,8 +294,14 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     session.fragmentLastActivity.set(intro.fragmentKey, Date.now());
     await session.generator.materializeEdit({ touchedFragmentKeys: [intro.fragmentKey] });
     await fireQuiescence(session);
+    expect(session.publishPause.isActive()).toBe(false);
+    expect(session.generator.hasCurrentProposal()).toBe(true);
 
-    // The autonomous publish committed the settled outline to canonical:
+    const outcome = await requestDocSessionPublish(DOC);
+    await session.enqueue(() => undefined);
+    expect(outcome.outcome).toBe("committed");
+
+    // The explicit publish committed the settled outline to canonical:
     // Intro and BFH are gone, children sit at top level at their AUTHORED
     // levels, bodies intact. Assert the VISIBLE outline (body-holder nodes are
     // a structural detail the flattener drops).

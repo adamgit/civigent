@@ -10,7 +10,7 @@
  * would miss:
  *
  *  - the SAME DocSession instance / Y.Doc survives the external commit (same
- *    `docSessionId`, same `ydoc` object reference, still `active`);
+ *    `proposalAdoptionId`, same `ydoc` object reference, still `active`);
  *  - a LOCAL uncommitted edit on a DIFFERENT section is PRESERVED across the
  *    external commit — a full reseed/reset would have wiped it.
  */
@@ -62,7 +62,7 @@ describe("external commit updates the active live Y.Doc without a session reset"
 
   it("applies the external commit in place and preserves a local uncommitted edit on another section", async () => {
     const session = await openSession();
-    const docSessionIdBefore = session.docSessionId;
+    const proposalAdoptionIdBefore = session.proposalAdoptionId;
     const ydocBefore = session.ydoc;
 
     // Alice has a LOCAL, uncommitted edit on Timeline (in this DocSession only).
@@ -95,7 +95,7 @@ describe("external commit updates the active live Y.Doc without a session reset"
     // The SAME session/Y.Doc is still live (no reset/replacement).
     const sameSession = lookupDocSession(SAMPLE_DOC_PATH);
     expect(sameSession).toBe(session);
-    expect(sameSession?.docSessionId).toBe(docSessionIdBefore);
+    expect(sameSession?.proposalAdoptionId).toBe(proposalAdoptionIdBefore);
     expect(sameSession?.ydoc).toBe(ydocBefore);
     expect(sameSession?.state).toBe("active");
 

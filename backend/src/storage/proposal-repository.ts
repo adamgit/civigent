@@ -20,9 +20,9 @@ import type {
   AnyProposalFile,
   CommittedProposalFile,
   DeletedSectionFileRef,
-  DocSessionId,
   InProgressProposal,
   InProgressProposalFile,
+  ProposalAdoptionId,
   ProposalFileBase,
   ProposalId,
   ProposalLockResult,
@@ -67,16 +67,16 @@ export function isProposalMutable(proposal: AnyProposal): boolean {
 /**
  * Returns true if the proposal is CRDT-owned — i.e. a live-edit proposal
  * lazily materialized by a DocSession actor (Area B/F), keyed on its owning
- * `docSessionId`. These are SYSTEM artefacts mutated internally by the
+ * `proposalAdoptionId`. These are SYSTEM artefacts mutated internally by the
  * DocSession actor (spec 10 "One active proposal per DocSession"), NOT
- * agent-authored proposals. The `docSessionId` discriminator is required: a
+ * agent-authored proposals. The `proposalAdoptionId` discriminator is required: a
  * human `draft→inprogress` lock proposal also has status `inprogress` but
- * carries no `docSessionId`, and is a real authored proposal that must remain
+ * carries no `proposalAdoptionId`, and is a real authored proposal that must remain
  * visible. Agent-facing MCP listings/reads must hide CRDT-owned proposals so
  * they are not a live-state side channel.
  */
 export function isCrdtOwnedProposal(proposal: AnyProposal): boolean {
-  return proposal.docSessionId !== undefined;
+  return proposal.proposalAdoptionId !== undefined;
 }
 
 export const PROPOSAL_STATUSES = [
@@ -1005,22 +1005,22 @@ export async function rollbackCommittingProposal(
 // owns exactly one `inprogress` proposal as live edits materialize. They are
 // DELIBERATELY distinct from — and NOT gated by — the human `draft -> inprogress`
 // lock acquisition above (Invariant 3): a DocSession-owned `inprogress` proposal
-// is created directly, keyed on the passed-in DocSession identity (Area B owns
-// the DocSession identity/actor lane; Area F keys on the id string).
+// is created directly, keyed on the passed-in proposal-adoption identity (Area B
+// owns the adoption identity/actor lane; Area F keys on the id string).
 //
 // One-active-`inprogress`-proposal-per-DocSession is enforced at create time
 // (Invariant 7).
 
 /**
- * Find the single CRDT-owned `inprogress` proposal for a DocSession, if one
- * has been materialized. Returns null before the session's first live edit.
+ * Find the single CRDT-owned `inprogress` proposal for a proposal-adoption id,
+ * if one has been materialized. Returns null before the session's first live edit.
  */
-export async function findInProgressProposalForDocSession(
-  docSessionId: DocSessionId,
+export async function findInProgressProposalByAdoptionId(
+  proposalAdoptionId: ProposalAdoptionId,
 ): Promise<InProgressProposal | null> {
   const inProgress = await listInProgressProposals();
   const match = inProgress.find(
-    (proposal) => proposal.docSessionId === docSessionId,
+    (proposal) => proposal.proposalAdoptionId === proposalAdoptionId,
   );
   return match !== undefined && match.status === "inprogress" ? match : null;
 }
@@ -1050,7 +1050,7 @@ export async function listInProgressProposalsForDoc(
   return inProgress.filter(
     (proposal): proposal is InProgressProposal =>
       proposal.status === "inprogress"
-      && proposal.docSessionId !== undefined
+      && proposal.proposalAdoptionId !== undefined
       && proposal.sections.some((section) => section.doc_path === docPath),
   );
 }
@@ -1063,14 +1063,14 @@ export async function listInProgressProposalsForDoc(
  * Enforces one active proposal per DocSession (Invariant 7): if the session
  * already owns an `inprogress` proposal, that one is returned unchanged.
  */
-export async function getOrCreateInProgressProposalForDocSession(input: {
-  docSessionId: DocSessionId;
+export async function getOrCreateInProgressProposalForAdoptionId(input: {
+  proposalAdoptionId: ProposalAdoptionId;
   docPath: string;
   writer: WriterIdentity;
   intent?: string;
   sections?: ProposalSection[];
 }): Promise<CreateProposalResult & { proposal: InProgressProposal }> {
-  const existing = await findInProgressProposalForDocSession(input.docSessionId);
+  const existing = await findInProgressProposalByAdoptionId(input.proposalAdoptionId);
   if (existing) {
     return {
       id: existing.id,
@@ -1090,7 +1090,7 @@ export async function getOrCreateInProgressProposalForDocSession(input: {
     sections,
     targets,
     created_at: now,
-    docSessionId: input.docSessionId,
+    proposalAdoptionId: input.proposalAdoptionId,
   };
 
   const contentRoot = proposalContentRoot(id, "inprogress");

@@ -9,15 +9,17 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import * as Y from "yjs";
 import { CrdtProvider } from "../../services/crdt-provider";
+import { LIVE_SECTION_SERVER_APPLY_ORIGIN } from "../../services/live-section-replica";
 import type { DocumentReplacementNoticePayload } from "../../types/shared";
 
 // Protocol constants (must match crdt-provider.ts / crdt-ws-frames.ts)
-const MSG_SYNC_STEP_2 = 0x01;
 const MSG_REMOVED_STRUCTURE_WILL_CHANGE = 8; // permanently reserved-removed
 const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0b;
+const MSG_LIVE_SECTIONS_BOOTSTRAP = 0x14;
 const MSG_DOC_PUBLISH_PAUSE_START = 0x10;
 const MSG_DOC_PUBLISH_READY = 0x11;
 const MSG_DOC_PUBLISH_PAUSE_END = 0x12;
+const MSG_YJS_UPDATE = 0x02;
 
 // ─── StubWebSocket ──────────────────────────────────────────────
 // Minimal WebSocket stub so CrdtProvider's `new WebSocket(url)` works.
@@ -124,11 +126,21 @@ function encodeDocumentReplacementNotice(payload: DocumentReplacementNoticePaylo
   return msg;
 }
 
-function buildSyncStep2FromDoc(sourceDoc: Y.Doc): Uint8Array {
+/** The sole join body fill — releases the buffered replacement notice. */
+function buildLiveSectionsBootstrapFromDoc(sourceDoc: Y.Doc): Uint8Array {
   const update = Y.encodeStateAsUpdate(sourceDoc);
-  const msg = new Uint8Array(1 + update.length);
-  msg[0] = MSG_SYNC_STEP_2;
-  msg.set(update, 1);
+  const header = new TextEncoder().encode(JSON.stringify({
+    doc_session_id: "sess-test",
+    state: { topology: [], blocked_section_ids: [], pending_sections: [], publish_pause_join_mirror: "not_in_pause" },
+  }));
+  const msg = new Uint8Array(1 + 4 + header.length + update.length);
+  msg[0] = MSG_LIVE_SECTIONS_BOOTSTRAP;
+  msg[1] = (header.length >>> 24) & 0xff;
+  msg[2] = (header.length >>> 16) & 0xff;
+  msg[3] = (header.length >>> 8) & 0xff;
+  msg[4] = header.length & 0xff;
+  msg.set(header, 5);
+  msg.set(update, 5 + header.length);
   return msg;
 }
 
@@ -165,16 +177,19 @@ describe("A12: Frontend Wire Protocol Invariants", () => {
     expect(events).toEqual(["start", "end"]);
     expect(provider.isPublishPaused).toBe(false);
 
-    // A pause_end without a prior pause_start is a no-op guard.
+    // A pause_end without a prior pause_start still notifies (mid-pause joiner
+    // recovery: a bootstrap-mirror-only freeze can only be cleared by this
+    // callback) — but it never produces another doc_publish_ready ack.
     ws.receiveServerMessage(new Uint8Array([MSG_DOC_PUBLISH_PAUSE_END]));
-    expect(events).toEqual(["start", "end"]);
+    expect(events).toEqual(["start", "end", "end"]);
+    expect(ws.sentMessages.filter((m) => m[0] === MSG_DOC_PUBLISH_READY).length).toBe(1);
 
     provider.destroy();
   });
 
   // ── A12.2 ─────────────────────────────────────────────────────────
 
-  it("A12.2: removed STRUCTURE_WILL_CHANGE messages do not dispatch frontend callbacks", () => {
+  it("A12.2: removed STRUCTURE_WILL_CHANGE messages fail loud", () => {
     const errors: string[] = [];
     const doc = new Y.Doc();
     const provider = new CrdtProvider(doc, "/test/doc.md", {
@@ -185,8 +200,8 @@ describe("A12: Frontend Wire Protocol Invariants", () => {
 
     ws.receiveServerMessage(encodeRemovedStructureWillChange());
 
-    expect(errors).toEqual([]);
-    expect(provider.state).toBe("connected");
+    expect(errors.some((e) => e.includes("Unexpected CRDT opcode 0x8"))).toBe(true);
+    expect(ws.closeCallCount).toBeGreaterThan(0);
 
     provider.destroy();
   });
@@ -197,7 +212,7 @@ describe("A12: Frontend Wire Protocol Invariants", () => {
     const receivedPayloads: DocumentReplacementNoticePayload[] = [];
     const doc = new Y.Doc();
     const provider = new CrdtProvider(doc, "/test/doc.md", {
-      onSynced: () => {},
+      onBootstrapApplied: () => {},
       onDocumentReplacementNotice: (payload) => {
         receivedPayloads.push(payload);
       },
@@ -209,13 +224,14 @@ describe("A12: Frontend Wire Protocol Invariants", () => {
       message: "document was restored to an earlier version",
     };
 
-    // DOCUMENT_REPLACEMENT_NOTICE is buffered until SYNC_STEP_2 arrives
+    // DOCUMENT_REPLACEMENT_NOTICE is buffered until the live-sections
+    // bootstrap (the sole join body fill) has applied
     ws.receiveServerMessage(encodeDocumentReplacementNotice(restorePayload));
     expect(receivedPayloads).toHaveLength(0); // Not delivered yet
 
-    // Deliver SYNC_STEP_2 — triggers pending notice delivery
+    // Deliver the bootstrap — triggers pending notice delivery
     const sourceDoc = new Y.Doc();
-    ws.receiveServerMessage(buildSyncStep2FromDoc(sourceDoc));
+    ws.receiveServerMessage(buildLiveSectionsBootstrapFromDoc(sourceDoc));
 
     expect(receivedPayloads).toHaveLength(1);
     expect(receivedPayloads[0].message).toBe("document was restored to an earlier version");
@@ -224,15 +240,39 @@ describe("A12: Frontend Wire Protocol Invariants", () => {
       message: "admin overwrote this document",
     };
 
-    // Need a fresh connection for the second test since synced is already true
-    // and pendingDocumentReplacementNotice was consumed. Simulate by sending another
-    // notice — on an already-synced provider, SYNC_STEP_2 won't re-trigger
-    // onSynced, but it will consume pendingDocumentReplacementNotice.
+    // On an already-bootstrapped provider, a further bootstrap won't re-trigger
+    // onBootstrapApplied, but it still consumes a newly buffered notice.
     ws.receiveServerMessage(encodeDocumentReplacementNotice(secondPayload));
-    ws.receiveServerMessage(buildSyncStep2FromDoc(sourceDoc));
+    ws.receiveServerMessage(buildLiveSectionsBootstrapFromDoc(sourceDoc));
 
     expect(receivedPayloads).toHaveLength(2);
     expect(receivedPayloads[1].message).toBe("admin overwrote this document");
+
+    provider.destroy();
+  });
+
+  // ── A12.4 ─────────────────────────────────────────────────────────
+
+  it("A12.4: replica-applied server updates are NOT relayed as local MSG_YJS_UPDATE; local edits still are", () => {
+    const doc = new Y.Doc();
+    const provider = new CrdtProvider(doc, "/test/doc.md", {});
+    const ws = connectProvider(provider);
+    ws.sentMessages.length = 0;
+
+    // A live-section frame applied by the replica (server-apply origin) must
+    // never re-enter MSG_YJS_UPDATE ingress as a client edit.
+    const serverDoc = new Y.Doc();
+    serverDoc.getXmlFragment("section::alpha");
+    serverDoc.getMap("meta").set("k", "server");
+    const serverUpdate = Y.encodeStateAsUpdate(serverDoc);
+    Y.applyUpdate(doc, serverUpdate, LIVE_SECTION_SERVER_APPLY_ORIGIN);
+    expect(ws.sentMessages.filter((m) => m[0] === MSG_YJS_UPDATE)).toHaveLength(0);
+
+    // A plain local transaction is still broadcast.
+    doc.transact(() => {
+      doc.getMap("meta").set("k2", "local");
+    });
+    expect(ws.sentMessages.filter((m) => m[0] === MSG_YJS_UPDATE)).toHaveLength(1);
 
     provider.destroy();
   });

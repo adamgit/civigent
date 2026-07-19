@@ -29,7 +29,7 @@
  */
 
 import * as Y from "yjs";
-import type { WriterIdentity, DocSessionId, ProposalId } from "../types/shared.js";
+import type { WriterIdentity, ProposalAdoptionId, ProposalId } from "../types/shared.js";
 import type {
   ProposalSection,
   InProgressProposal,
@@ -37,8 +37,8 @@ import type {
 } from "../types/shared.js";
 import { ProposalEditor } from "../storage/proposal-editor.js";
 import {
-  getOrCreateInProgressProposalForDocSession,
-  findInProgressProposalForDocSession,
+  getOrCreateInProgressProposalForAdoptionId,
+  findInProgressProposalByAdoptionId,
   updateCurrentProposalSections,
   unionCurrentProposalSections,
   rollbackCommittingProposal,
@@ -48,7 +48,7 @@ import type { AbsorbResult } from "../storage/canonical-store.js";
 import type { UpsertSectionFromMarkdownDetailedResult } from "../storage/content-layer.js";
 import type { FlatEntry } from "../storage/document-skeleton.js";
 import { SectionRef } from "../domain/section-ref.js";
-import { type SectionBody } from "../storage/section-formatting.js";
+import { EMPTY_BODY, type SectionBody } from "../storage/section-formatting.js";
 import { synthesizeCommitDescription } from "../storage/commit-description.js";
 
 /**
@@ -102,21 +102,46 @@ export interface MaterializeDelta {
   liveReloadEntries: FlatEntry[];
 }
 
+export interface AwaitingStructuralReconciliationSection {
+  fragmentKey: string;
+  headingPath: string[];
+  heading: string;
+  level: number;
+}
+
+export interface LiveSectionsSnapshotResult {
+  sections: LiveSectionSnapshot[];
+  awaitingStructuralReconciliation: AwaitingStructuralReconciliationSection[];
+}
+
+export class LiveSnapshotIdentityInvariantError extends Error {
+  readonly dirtyFragmentKeys: readonly string[];
+
+  constructor(docPath: string, dirtyFragmentKeys: readonly string[]) {
+    super(
+      `Live snapshot identity invariant failed for ${docPath}: fragment(s) ` +
+        `${dirtyFragmentKeys.join(", ")} still disagree with their layout address; ` +
+        `refusing to mint SectionBody or publish.`,
+    );
+    this.name = "LiveSnapshotIdentityInvariantError";
+    this.dirtyFragmentKeys = dirtyFragmentKeys;
+  }
+}
+
 /**
  * The live-document view the generator materializes from. Supplied by the
  * DocSession actor so the generator stays decoupled from the Y.Doc fragment
  * adapter. `snapshotSections` must reflect the *current, settled* live tree.
  */
 export interface LiveDocumentSource {
-  /** Ordered current sections of the live document, root-to-leaf in doc order. */
-  snapshotSections(): Promise<LiveSectionSnapshot[]> | LiveSectionSnapshot[];
+  snapshotSections(): Promise<LiveSectionsSnapshotResult> | LiveSectionsSnapshotResult;
   /** Writer ids that have contributed live edits, for co-author attribution. */
   contributingWriterIds?(): Iterable<string>;
 }
 
 export interface CRDTProposalGeneratorOptions {
   docPath: string;
-  docSessionId: DocSessionId;
+  proposalAdoptionId: ProposalAdoptionId;
   /** Identity recorded as the proposal writer (the DocSession owner). */
   writer: WriterIdentity;
   /** The live-document materialization source owned by the DocSession actor. */
@@ -259,7 +284,7 @@ export interface PublishResult {
 
 export class CRDTProposalGenerator {
   readonly docPath: string;
-  readonly docSessionId: DocSessionId;
+  readonly proposalAdoptionId: ProposalAdoptionId;
   private readonly writer: WriterIdentity;
   private readonly source: LiveDocumentSource;
   private readonly buildCommittedMetadata?: (proposal: InProgressProposal) => HumanInvolvementCommittedProposalMetadata;
@@ -292,7 +317,7 @@ export class CRDTProposalGenerator {
 
   constructor(opts: CRDTProposalGeneratorOptions) {
     this.docPath = opts.docPath;
-    this.docSessionId = opts.docSessionId;
+    this.proposalAdoptionId = opts.proposalAdoptionId;
     this.writer = opts.writer;
     this.source = opts.source;
     this.buildCommittedMetadata = opts.buildCommittedMetadata;
@@ -427,13 +452,22 @@ export class CRDTProposalGenerator {
   async ensureCurrentProposal(): Promise<ProposalId> {
     if (this.boundProposalId !== null) return this.boundProposalId;
 
-    const created = await getOrCreateInProgressProposalForDocSession({
-      docSessionId: this.docSessionId,
+    const created = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId: this.proposalAdoptionId,
       docPath: this.docPath,
       writer: this.writer,
     });
     this.boundProposalId = created.id;
     return created.id;
+  }
+
+  async ensureAuthoredProposalClaiming(sections: ProposalSection[]): Promise<ProposalId> {
+    const proposalId = await this.ensureCurrentProposal();
+    this.authoredProposalId = proposalId;
+    if (sections.length > 0) {
+      await unionCurrentProposalSections(proposalId, this.dedupSections(sections));
+    }
+    return proposalId;
   }
 
   /**
@@ -449,22 +483,36 @@ export class CRDTProposalGenerator {
     proposalId: ProposalId,
     scope?: MaterializeScope,
   ): Promise<MaterializeDelta> {
-    const sections = await this.source.snapshotSections();
+    const snapshot = await this.source.snapshotSections();
     const editor = ProposalEditor.open(proposalId, "inprogress");
 
-    // Narrow the WRITE LOOP to the touched fragments for the per-edit path; the
-    // snapshot itself stays whole-document (reads are cheap, identity is needed).
+    const awaitingByKey = new Map(
+      snapshot.awaitingStructuralReconciliation.map((entry) => [entry.fragmentKey, entry]),
+    );
+    const deferredAsSnapshots: LiveSectionSnapshot[] = snapshot.awaitingStructuralReconciliation.map(
+      (entry) => ({
+        headingPath: [...entry.headingPath],
+        heading: entry.heading,
+        level: entry.level,
+        body: EMPTY_BODY,
+        fragmentKey: entry.fragmentKey,
+      }),
+    );
     const toWrite = scope
-      ? sections.filter((s) => scope.touchedFragmentKeys.includes(s.fragmentKey))
-      : sections;
+      ? snapshot.sections.filter((s) => scope.touchedFragmentKeys.includes(s.fragmentKey))
+      : snapshot.sections;
+    const deferredTouched = scope
+      ? scope.touchedFragmentKeys
+          .map((key) => awaitingByKey.get(key))
+          .filter((entry): entry is AwaitingStructuralReconciliationSection => entry !== undefined)
+      : snapshot.awaitingStructuralReconciliation;
 
-    // A scope naming fragments that map to NO live section is an untargetable edit
-    // (e.g. the empty-document BFH before any section exists): materializing it
-    // would silently produce an empty proposal that later publishes as canonical
-    // data loss. Fail loud instead. Guard only fires for a NON-empty scope — a
-    // manifest-scoped publish of a delete-only proposal legitimately has an empty
-    // `touchedFragmentKeys` (its claims are all claimed-but-absent deletes).
-    if (scope && scope.touchedFragmentKeys.length > 0 && toWrite.length === 0) {
+    if (
+      scope &&
+      scope.touchedFragmentKeys.length > 0 &&
+      toWrite.length === 0 &&
+      deferredTouched.length === 0
+    ) {
       throw new Error(
         `Scoped materialization for ${this.docPath} touched ${scope.touchedFragmentKeys.length} ` +
           `fragment(s) (${scope.touchedFragmentKeys.join(", ")}) but none map to a live section — ` +
@@ -480,19 +528,6 @@ export class CRDTProposalGenerator {
       liveReloadEntries: [],
     };
 
-    // Materialize each (in-scope) live section into the proposal content tree
-    // through the TOPOLOGY-NEUTRAL verbatim body write — uniformly for EVERY
-    // section, with NO per-edit structural classification and NO BFH special
-    // case. The section body is stored exactly as authored (id-preserving); any
-    // embedded heading syntax stays literal body text. This is the per-edit
-    // (keystroke-rate) contract: no intermediate editor state becomes a
-    // persistent section. Promotion of a settled embedded heading into a real
-    // section is done ONCE, at quiescence normalization
-    // (`normalizeQuiescedStructure` → split reflection), not here.
-    //
-    // ProposalEditor atomically auto-creates the document and the section's
-    // structural slot (incl. a missing BFH) without parsing. Aggregate the
-    // authoritative engine delta across the loop.
     for (const section of toWrite) {
       const result = await editor.materializeSectionBody(
         this.docPath,
@@ -502,18 +537,23 @@ export class CRDTProposalGenerator {
       this.accumulateDelta(delta, result);
     }
 
-    // NOTE: the item also asks to require "at least one materialized write/delta",
-    // but a verbatim body write is idempotent — it returns an EMPTY delta when the
-    // body already matches the overlay (content-layer `writeSectionBodyVerbatim`).
-    // The manifest-scoped FINALIZE path (`finalizeAndPublish`) re-materializes every
-    // already-staged claimed section at publish, so an empty aggregate delta with a
-    // NON-empty scope is the normal, correct publish case. A delta-empty throw here
-    // would break every ordinary publish, so the anti-data-loss guarantee is carried
-    // solely by the `toWrite.length === 0` check above (scope maps to a live section).
     if (scope) {
-      await this.growProposalManifest(proposalId, delta, toWrite);
+      const claimSections: LiveSectionSnapshot[] = [
+        ...toWrite,
+        ...deferredTouched.map((entry) => ({
+          headingPath: [...entry.headingPath],
+          heading: entry.heading,
+          level: entry.level,
+          body: EMPTY_BODY,
+          fragmentKey: entry.fragmentKey,
+        })),
+      ];
+      await this.growProposalManifest(proposalId, delta, claimSections);
     } else {
-      await this.replaceProposalManifest(proposalId, sections);
+      await this.replaceProposalManifest(proposalId, [
+        ...snapshot.sections,
+        ...deferredAsSnapshots,
+      ]);
     }
     return delta;
   }
@@ -717,7 +757,7 @@ export class CRDTProposalGenerator {
     // exactly what this session created / edited / deleted — claimed-but-absent for
     // deletes). The audit-log description reflects what was CHANGED this session
     // (spec 10 §Commit-description synthesis), not every section in the document.
-    const editedProposal = await findInProgressProposalForDocSession(this.docSessionId);
+    const editedProposal = await findInProgressProposalByAdoptionId(this.proposalAdoptionId);
     const changedSections = (editedProposal?.sections ?? []).map((s) => ({ headingPath: s.heading_path }));
 
     // Final materialization is MANIFEST-SCOPED (U4), not whole-document: flush the
@@ -730,19 +770,24 @@ export class CRDTProposalGenerator {
     const claimedHeadingKeys = new Set(
       (editedProposal?.sections ?? []).map((s) => SectionRef.headingKey(s.heading_path)),
     );
-    const liveSections = await this.source.snapshotSections();
-    const touchedFragmentKeys = liveSections
+    const liveSnapshot = await this.source.snapshotSections();
+    const dirtyClaimedKeys = liveSnapshot.awaitingStructuralReconciliation
+      .filter((entry) => claimedHeadingKeys.has(SectionRef.headingKey(entry.headingPath)))
+      .map((entry) => entry.fragmentKey);
+    if (dirtyClaimedKeys.length > 0) {
+      throw new LiveSnapshotIdentityInvariantError(this.docPath, dirtyClaimedKeys);
+    }
+    const touchedFragmentKeys = liveSnapshot.sections
       .filter((s) => claimedHeadingKeys.has(SectionRef.headingKey(s.headingPath)))
       .map((s) => s.fragmentKey);
     try {
       await this.materializeIntoProposal(proposalId, { touchedFragmentKeys });
     } catch (error) {
-      // Abort before `committing` — keep the existing inprogress proposal as the
-      // current proposal and resume editing (spec 10 §Publish failure handling).
+      if (error instanceof LiveSnapshotIdentityInvariantError) throw error;
       return { status: "failed-returned-to-inprogress", proposalId, error };
     }
 
-    const proposal = await findInProgressProposalForDocSession(this.docSessionId);
+    const proposal = await findInProgressProposalByAdoptionId(this.proposalAdoptionId);
     if (!proposal) {
       // The proposal vanished from under us (e.g. concurrent admin op). Treat as
       // a no-op publish rather than committing stale state.

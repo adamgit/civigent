@@ -14,10 +14,8 @@
  * the preview renders beneath the absolute-positioned editor.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
-import * as Y from "yjs";
-import { Awareness } from "y-protocols/awareness";
 
 // Mock MilkdownEditor so a mounted editor is observable and never renders the
 // section body itself (so any "<heading> body" text comes from the underlayer).
@@ -25,45 +23,51 @@ vi.mock("../../components/MilkdownEditor", async () => {
   const React = await import("react");
   return {
     MilkdownEditor: React.forwardRef(
-      (props: { fragmentKey?: string }, _ref: unknown) => (
-        <div data-testid={`editor-${props.fragmentKey}`}>editor</div>
+      (props: { binding?: { fragmentKey?: string } }, _ref: unknown) => (
+        <div data-testid={`editor-${props.binding?.fragmentKey}`}>editor</div>
       ),
     ),
   };
 });
 
+import * as Y from "yjs";
+import { Awareness } from "y-protocols/awareness";
 import { DocumentCanvas } from "../../components/DocumentCanvas";
-import { BrowserFragmentReplicaStore } from "../../services/browser-fragment-replica-store";
 import { SectionHoverProvider } from "../../contexts/SectionHoverContext";
-import type { DocumentSection } from "../../pages/document-page-utils";
+import { SectionId, type RenderSectionRef } from "../../types/live-sections";
 
-function makeSection(file: string, heading: string): DocumentSection {
+function makeSection(file: string, heading: string): RenderSectionRef {
   return {
-    heading,
-    heading_path: [heading],
-    depth: 1,
-    content: `${heading} body`,
-    agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
-    crdt_session_active: true,
-    section_length_warning: false,
-    word_count: 2,
-    fragment_key: `section::${file}`,
-    section_file: `${file}.md`,
-  } as DocumentSection;
+    id: SectionId.brand(`section::${file}`),
+    headingPath: [heading],
+  };
 }
 
+function displayMarkdown(ref: RenderSectionRef): string {
+  return `${ref.headingPath[ref.headingPath.length - 1] ?? ""} body`;
+}
+
+// Mount gate: live editors require a LiveEditorBinding; tests fake the opaque
+// capability by casting the internal attach shape.
+const sharedDoc = new Y.Doc();
+const sharedAwareness = new Awareness(sharedDoc);
+const getLiveBinding = (fk: string) =>
+  ({ doc: sharedDoc, awareness: sharedAwareness, fragmentKey: fk }) as unknown as
+    import("../../services/live-section-replica").LiveEditorBinding;
+
 function renderCanvas(
-  store: BrowserFragmentReplicaStore,
-  sections: DocumentSection[],
+  sections: RenderSectionRef[],
   focusedSectionIndex: number,
   readyEditors: Set<string>,
 ) {
+  const focusedFragmentKey =
+    sections[focusedSectionIndex] ? SectionId.text(sections[focusedSectionIndex].id) : null;
   return render(
-    <SectionHoverProvider activeSectionIndex={focusedSectionIndex}>
+    <SectionHoverProvider activeFragmentKey={focusedFragmentKey}>
       <DocumentCanvas
         sections={sections}
         sectionsLoading={false}
-        focusedSectionIndex={focusedSectionIndex}
+        focusedFragmentKey={focusedFragmentKey}
         proposalMode={false}
         canEditProposalScope={false}
         canEditProposalContent={false}
@@ -73,13 +77,14 @@ function renderCanvas(
         decodedDocPath="/test/doc.md"
         recentlyChangedByLabel={new Map()}
         injectedByLabel={new Map()}
-        dragOverSectionIndex={null}
+        dragOverFragmentKey={null}
         isSectionBlocked={() => false}
         publishPaused={false}
-        crdtSynced={true}
         crdtState="connected"
         transferService={null}
         readyEditors={readyEditors}
+        getDisplayMarkdown={displayMarkdown}
+        getLiveBinding={getLiveBinding}
         localEditSink={{ recordLocalEdit: () => {} }}
         mouseDownPosRef={{ current: null }}
         onStartEditing={() => {}}
@@ -95,27 +100,15 @@ function renderCanvas(
 }
 
 describe("DocumentCanvas fragment-key readiness identity (duplicate-render fix)", () => {
-  let doc: Y.Doc;
-  let awareness: Awareness;
-  let store: BrowserFragmentReplicaStore;
-
-  beforeEach(() => {
-    doc = new Y.Doc();
-    awareness = new Awareness(doc);
-    store = new BrowserFragmentReplicaStore(doc, awareness);
-  });
-
   afterEach(() => {
     cleanup();
-    awareness.destroy();
-    doc.destroy();
   });
 
   it("a ready section keeps isReady (no static underlayer) after a structural index shift", () => {
     // Before the split: [Alpha (focused), Beta]; both editors are ready.
     const before = [makeSection("a", "Alpha"), makeSection("b", "Beta")];
     const ready = new Set<string>(["section::a", "section::b"]);
-    const { rerender } = renderCanvas(store, before, 0, ready);
+    const { rerender } = renderCanvas(before, 0, ready);
 
     // Alpha's editor is mounted and ready → no static "Alpha body" underlayer.
     expect(screen.getByTestId("editor-section::a")).toBeDefined();
@@ -125,11 +118,11 @@ describe("DocumentCanvas fragment-key readiness identity (duplicate-render fix)"
     // 1 → 2. Focus follows Alpha by identity to its new index (state reconcile).
     const after = [makeSection("x", "Inserted"), makeSection("a", "Alpha"), makeSection("b", "Beta")];
     rerender(
-      <SectionHoverProvider activeSectionIndex={1}>
+      <SectionHoverProvider activeFragmentKey="section::a">
         <DocumentCanvas
           sections={after}
           sectionsLoading={false}
-          focusedSectionIndex={1}
+          focusedFragmentKey="section::a"
           proposalMode={false}
           canEditProposalScope={false}
           canEditProposalContent={false}
@@ -139,13 +132,14 @@ describe("DocumentCanvas fragment-key readiness identity (duplicate-render fix)"
           decodedDocPath="/test/doc.md"
           recentlyChangedByLabel={new Map()}
           injectedByLabel={new Map()}
-          dragOverSectionIndex={null}
+          dragOverFragmentKey={null}
         isSectionBlocked={() => false}
         publishPaused={false}
-          crdtSynced={true}
           crdtState="connected"
           transferService={null}
           readyEditors={ready}
+          getDisplayMarkdown={displayMarkdown}
+          getLiveBinding={getLiveBinding}
           localEditSink={{ recordLocalEdit: () => {} }}
           mouseDownPosRef={{ current: null }}
           onStartEditing={() => {}}

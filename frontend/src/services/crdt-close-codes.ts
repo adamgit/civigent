@@ -12,6 +12,8 @@ export const WS_CLOSE_AUTHORIZATION_FAILED = 4013;
 export const WS_CLOSE_YDOC_INIT_FAILED = 4014;
 export const WS_CLOSE_SESSION_ENDED = 4021;
 export const WS_CLOSE_DOCUMENT_REPLACED = 4022;
+export const WS_CLOSE_REASON_DOCUMENT_REPLACED = "document_replaced";
+export const WS_CLOSE_REASON_STALE_DOC_SESSION = "stale_doc_session";
 export const WS_CLOSE_SUPERSEDED = 4023;
 /** Admin force-rebuild invalidation; reconnect immediately and reseed from new canonical. */
 export const WS_CLOSE_ADMIN_REBUILD = 4024;

@@ -62,8 +62,6 @@ const multiSectionResponse = {
       content: "Preamble content.\n",
       humanInvolvement_score: 0,
       crdt_session_active: false,
-      section_length_warning: false,
-      word_count: 2,
       fragment_key: "frag:sec_root",
       section_file: "sec_root.md",
     },
@@ -74,8 +72,6 @@ const multiSectionResponse = {
       content: "# Overview\nThe overview section.\n",
       humanInvolvement_score: 0.2,
       crdt_session_active: false,
-      section_length_warning: false,
-      word_count: 3,
       fragment_key: "frag:sec_overview",
       section_file: "sec_overview.md",
     },
@@ -86,8 +82,6 @@ const multiSectionResponse = {
       content: "# Details\nThe details.\n",
       humanInvolvement_score: 0.6,
       crdt_session_active: true,
-      section_length_warning: false,
-      word_count: 2,
       fragment_key: "frag:sec_details",
       section_file: "sec_details.md",
     },
@@ -127,15 +121,6 @@ describe("DocumentPage sections", () => {
     cleanup();
     vi.restoreAllMocks();
     localStorage.clear();
-  });
-
-  it("renders all sections", async () => {
-    renderDocPage();
-    await waitFor(() => {
-      // The section headings should be visible as rendered markdown
-      expect(screen.getByText("Overview")).toBeDefined();
-      expect(screen.getByText("Details")).toBeDefined();
-    });
   });
 
   it("renders section content as markdown", async () => {

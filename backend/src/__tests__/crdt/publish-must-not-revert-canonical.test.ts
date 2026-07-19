@@ -23,7 +23,7 @@ import {
   destroyAllSessions,
 } from "../../crdt/ydoc-lifecycle.js";
 import {
-  getOrCreateInProgressProposalForDocSession,
+  getOrCreateInProgressProposalForAdoptionId,
   updateCurrentProposalSections,
   createTransientProposal,
 } from "../../storage/proposal-repository.js";
@@ -34,6 +34,7 @@ import { ContentLayer } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot, getContentRoot } from "../../storage/data-root.js";
+import { ProposalAdoptionId } from "../../types/shared.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 
@@ -52,9 +53,9 @@ describe("data-loss regression: DocSession publish must not revert canonical to 
 
   it("does NOT delete a section that was committed to canonical after the in-flight proposal was opened", async () => {
     // 1. A live session opened an inprogress proposal and staged an Overview edit.
-    const docSessionId = crypto.randomUUID();
-    const inflight = await getOrCreateInProgressProposalForDocSession({
-      docSessionId,
+    const proposalAdoptionId = ProposalAdoptionId.create();
+    const inflight = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId,
       docPath: SAMPLE_DOC_PATH,
       writer: WRITER,
     });

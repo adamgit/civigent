@@ -1,28 +1,3 @@
-/**
- * CrdtTransport — facade over CrdtProvider that routes wire events onto
- * a BrowserFragmentReplicaStore.
- *
- * The transport adapts CrdtProvider's event callbacks onto store mutation
- * methods so the transport layer is React-free and the dependency flows
- * transport → store (one-way).
- *
- * Lifecycle:
- *   1. `new CrdtTransport(docPath, opts)` — creates an internal CrdtProvider
- *      (which in turn creates the Y.Doc and Awareness). Exposed as readonly
- *      fields so the caller can hand them to BrowserFragmentReplicaStore.
- *   2. `attachStore(store)` — wires events to store mutation methods.
- *      Must be called before `connect()`.
- *   3. `connect()` — opens the WebSocket and begins protocol exchange.
- *   4. `destroy()` — tears down the provider and destroys the Y.Doc +
- *      Awareness. The store is unaffected (its own `destroy()` is the
- *      caller's responsibility).
- *
- * The transport relays DocSession publication-pause state to the store.
- * Per-section block-state (`section:blocked|unblocked|gone`) rides the JSON
- * application WebSocket, not this binary channel — it is routed into the store
- * by `useDocumentWebSocket.ts`, not here.
- */
-
 import * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 import type {
@@ -36,29 +11,31 @@ import {
   type CrdtConnectionState,
   type PublishPauseBarrier,
 } from "./crdt-provider";
-import type { BrowserFragmentReplicaStore } from "./browser-fragment-replica-store";
 
 export interface CrdtTransportOptions {
   clientInstanceId?: ClientInstanceId;
   initialTransitionRequest?: ModeTransitionRequest;
-  /** Connection-state passthrough, mirroring `store.setConnectionState`. */
+  /** Connection-state passthrough. */
   onStateChange?: (state: CrdtConnectionState) => void;
-  /** Fired on first successful sync, mirroring `store.setSynced(true)`. */
-  onSynced?: () => void;
-  /** Error passthrough, mirroring `store.setError`. */
+  /** Fired once the live-sections bootstrap has applied. */
+  onBootstrapApplied?: () => void;
+  /** Error passthrough. */
   onError?: (reason: string) => void;
   /** Fired when a local Y.Doc update is produced. */
   onLocalUpdate?: (modifiedFragmentKeys: string[]) => void;
-  /** Receipt watermark changed (Guarantee A) — mirrors `store.setReceiptAllReceived`. */
+  /** Receipt watermark changed (Guarantee A). */
   onReceiptChange?: (summary: { allReceived: boolean; pendingFragmentKeys: string[] }) => void;
-  /** Called when the server initiates a document-replacement reconnection (4022). */
-  onSessionReinit?: () => void;
-  /** Called when the server initiates an admin force-rebuild reconnection (4024). */
+  /** Called on document replacement (4022) with the server close reason
+   *  (`document_replaced` | `stale_doc_session`). The provider does not
+   *  reconnect; the consumer must replace the live pipeline in the mode the
+   *  reason selects. */
+  onSessionReinit?: (reason: string) => void;
+  /** Called on admin force-rebuild (4024). Same replacement semantics as 4022. */
   onForceRebuild?: () => void;
   /** Called when the server closes this editor socket with 4023 because a newer
    *  same-writer editor tab superseded this one. Not a reconnect. */
   onSuperseded?: () => void;
-  /** Delivered once after onSynced on the post-replacement reconnect. */
+  /** Delivered once after onBootstrapApplied on the post-replacement reconnect. */
   onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
   /** Server-authoritative result for this tab's requested CRDT mode transition. */
   onModeTransitionResult?: (result: ModeTransitionResult) => void;
@@ -81,7 +58,6 @@ export class CrdtTransport {
   readonly awareness: Awareness;
 
   private provider: CrdtProvider;
-  private store: BrowserFragmentReplicaStore | null = null;
   private readonly opts: CrdtTransportOptions;
 
   constructor(docPath: string, opts: CrdtTransportOptions = {}) {
@@ -94,26 +70,22 @@ export class CrdtTransport {
       docPath,
       {
         onStateChange: (state) => {
-          this.store?.setConnectionState(state);
           this.opts.onStateChange?.(state);
         },
-        onSynced: () => {
-          this.store?.setSynced(true);
-          this.opts.onSynced?.();
+        onBootstrapApplied: () => {
+          this.opts.onBootstrapApplied?.();
         },
         onError: (reason) => {
-          this.store?.setError(reason);
           this.opts.onError?.(reason);
         },
         onLocalUpdate: (modifiedFragmentKeys) => {
           this.opts.onLocalUpdate?.(modifiedFragmentKeys);
         },
         onReceiptChange: (summary) => {
-          this.store?.setReceiptAllReceived(summary.allReceived);
           this.opts.onReceiptChange?.(summary);
         },
-        onSessionReinit: () => {
-          this.opts.onSessionReinit?.();
+        onSessionReinit: (reason) => {
+          this.opts.onSessionReinit?.(reason);
         },
         onForceRebuild: () => {
           this.opts.onForceRebuild?.();
@@ -128,11 +100,9 @@ export class CrdtTransport {
           this.opts.onModeTransitionResult?.(result);
         },
         onPublishPauseStart: () => {
-          this.store?.setPublishPaused(true);
           this.opts.onPublishPauseStart?.();
         },
         onPublishPauseEnd: () => {
-          this.store?.setPublishPaused(false);
           this.opts.onPublishPauseEnd?.();
         },
         onLiveSectionFrame: (opcode, payload) => {
@@ -147,15 +117,6 @@ export class CrdtTransport {
     );
     this.doc = doc;
     this.awareness = this.provider.awareness;
-  }
-
-  /**
-   * Wire transport events to the store. Must be called before `connect()`;
-   * calling it after the socket is open is allowed but will miss any events
-   * that already fired.
-   */
-  attachStore(store: BrowserFragmentReplicaStore): void {
-    this.store = store;
   }
 
   connect(): void {
@@ -176,7 +137,6 @@ export class CrdtTransport {
 
   destroy(): void {
     this.provider.destroy();
-    this.store = null;
   }
 
   /** Register the editor-freeze barrier used by the publish-pause quiescence
@@ -187,9 +147,5 @@ export class CrdtTransport {
 
   flushAndAwaitSync(timeoutMs?: number): Promise<void> {
     return this.provider.flushAndAwaitSync(timeoutMs);
-  }
-
-  onceRemoteUpdate(cb: () => void, timeoutMs?: number): void {
-    this.provider.onceRemoteUpdate(cb, timeoutMs);
   }
 }

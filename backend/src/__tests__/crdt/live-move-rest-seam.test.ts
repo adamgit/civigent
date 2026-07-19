@@ -20,6 +20,8 @@ import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { createProposal, transitionToInProgress } from "../../storage/proposal-repository.js";
+import { joinLiveRecipient } from "../helpers/live-recipient.js";
+import { decodeMessage, MSG_YJS_UPDATE } from "../../ws/crdt-ws-frames.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 
@@ -61,6 +63,9 @@ describe("Option E: requestDocSessionMove REST control-plane seam", () => {
     const session = await openSession();
     expect(await liveHeadingOrder(session)).toEqual(["Overview", "Timeline"]);
 
+    const live = await joinLiveRecipient(session);
+    live.clear();
+
     const result = await requestDocSessionMove(SAMPLE_DOC_PATH, {
       sourceHeadingPath: ["Timeline"],
       targetHeadingPath: ["Overview"],
@@ -69,6 +74,25 @@ describe("Option E: requestDocSessionMove REST control-plane seam", () => {
     expect(result.ok).toBe(true);
     expect(result.message).toBeUndefined();
     expect(await liveHeadingOrder(session)).toEqual(["Timeline", "Overview"]);
+
+    // Structural fan-out contract: a pure sibling reorder is TOPOLOGY-ONLY.
+    // It arrives as ONE state-only live-section frame carrying the reordered
+    // topology and NO yjs_update (fragments are untouched — reseeding them
+    // would destroy mounted editors' Yjs structures), with no raw
+    // MSG_YJS_UPDATE precursor.
+    const frameTypes = live.raw
+      .map((frame) => decodeMessage(frame)?.type)
+      .filter((type): type is number => type !== undefined);
+    expect(frameTypes).not.toContain(MSG_YJS_UPDATE);
+    const moveFrames = live.updates();
+    expect(moveFrames.length).toBe(1);
+    expect(moveFrames[0].yjs_update).toBeUndefined();
+    expect(moveFrames[0].state).toBeDefined();
+    const topology = moveFrames[0].state!.topology;
+    const topLevel = topology.filter((t) => t.heading_path.length === 1).map((t) => t.heading_path[0]);
+    expect(topLevel).toEqual(["Timeline", "Overview"]);
+
+    live.dispose();
   });
 
   it("refuses with prose and leaves order UNCHANGED when a competing proposal locks the target (route → 409)", async () => {

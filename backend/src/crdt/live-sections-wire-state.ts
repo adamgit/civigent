@@ -68,14 +68,6 @@ export async function buildWireLiveSectionsState(
   };
 }
 
-/**
- * The editable-set blocked ids: fragment keys whose section is currently held by
- * a BLOCKING proposal FSM lock owned by *another* proposal (the session's own
- * `inprogress` proposal is excluded, matching the section-list `blocked` rule).
- * This unifies the old declared-`locked` vs emitted-`blocked` drift into one
- * representation, seeded from the authoritative lock index rather than replayed
- * from unordered `section:blocked`/`unblocked` events.
- */
 async function resolveBlockedFragmentKeys(
   session: DocSession,
   layout: Awaited<ReturnType<typeof resolveLiveSectionLayout>>,

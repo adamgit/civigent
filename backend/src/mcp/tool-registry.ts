@@ -47,6 +47,17 @@ export interface McpSession {
    * and writer-scoped listing. Manage via `mcp/session-drafts.ts`.
    */
   draftIds?: string[];
+  /**
+   * Every proposal id this session created, oldest → newest, regardless of the
+   * proposal's current status (draft, committed, withdrawn). Backs the
+   * session-local `my_proposals` focus list (task 858): ids are never removed
+   * on publish/withdraw (status is read live from storage when listing), only
+   * pruned when a proposal no longer resolves. Session-LOCAL memory only —
+   * never persisted onto proposals; lost with the session (TTL / DELETE /
+   * restart), after which `my_proposals` is empty while the proposals survive.
+   * Manage via `mcp/session-drafts.ts`.
+   */
+  createdProposalIds?: string[];
 }
 
 // ─── Tool handler type ───────────────────────────────────

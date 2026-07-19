@@ -2,12 +2,22 @@ import type {
   DocStructureNode,
   GetDocumentSectionsResponse,
 } from "../types/shared.js";
-import { sectionGlobalKey } from "../types/shared.js";
+// Type-only (erased at runtime): live-sections imports BEFORE_FIRST_HEADING_KEY
+// from this module, so a value import here would be a cycle.
+import type { RenderSectionRef } from "../types/live-sections";
 import { relativeTime } from "../utils/relativeTime";
 
 // ─── Helper types ────────────────────────────────────────────────
 
-export type DocumentSection = GetDocumentSectionsResponse["sections"][number];
+/**
+ * The content-bearing workspace REST section row, exactly as `/sections`
+ * returns it. For REST LOADERS and cold-bootstrap derivation ONLY — never the
+ * live/render currency. Live topology and page render rows use the body-free
+ * identities in `types/live-sections.ts` (`LiveSectionRef` / `RenderSectionRef`);
+ * bodies come from the explicit authorities (cold seed / live replica /
+ * proposal map), not from this DTO riding along on render state.
+ */
+export type WorkspaceSectionDto = GetDocumentSectionsResponse["sections"][number];
 
 export interface RecentlyChangedSectionEntry {
   key: string;
@@ -43,131 +53,8 @@ export function headingPathToLabel(path: string[]): string {
 }
 
 /** Read the opaque backend-owned fragment key for a section. */
-export function getSectionFragmentKey(section: DocumentSection): string {
+export function getSectionFragmentKey(section: WorkspaceSectionDto): string {
   return section.fragment_key;
-}
-
-/**
- * Adopt a fresh authoritative section layout into the page's section list,
- * reconciling against the previous list by opaque `fragment_key` (never positional
- * index or heading text). Shared by BOTH topology sources:
- *  - the `content:committed` REST refresh (fresh = `GET …/sections`), and
- *  - the live `doc:structure-changed` event (fresh = the event's `sections`, which
- *    is already the SAME server-authored shape — adopted verbatim, no mapping).
- *
- * Adoption is an identity/order operation, NOT a display-content operation. It
- * is only ever called while a live CRDT session is active (the cold, no-session
- * refresh path uses a full `loadSections` reload instead). While a session is
- * live, the display authority for an existing section is its Y.Doc fragment —
- * painted via `useLiveSectionReplica().paintMarkdown` — NOT the `.content` string on
- * these rows. So for a key that already existed in `prev`, we take order,
- * fragment key, heading/level/path identity and all other structural meta from
- * `fresh`, but keep the previous `.content` as a cold seed/fallback and never
- * install `fresh.content`: after a demotion, `fresh.content` can be a
- * reconstructed `# Heading` (server `prependHeadings`) that no longer matches the
- * live fragment. (Whether the live payload's `.content` lies is a separate P1
- * server concern — we do not sanitize it here; we simply stop treating adopted
- * or preserved `.content` as live display text.) A brand-new key that only
- * appears in `fresh` keeps `fresh.content` as its bootstrap seed until its live
- * fragment exists.
- *
- * Focus is reconciled by fragment identity: it follows the focused fragment to
- * its NEW index, or clears if that fragment no longer exists.
- * `focusedSectionIndexRef` is mutated in place to the reconciled index.
- */
-export function adoptFreshSectionLayout(params: {
-  prev: DocumentSection[];
-  fresh: DocumentSection[];
-  focusedSectionIndexRef: { current: number | null };
-}): DocumentSection[] {
-  const { prev, fresh, focusedSectionIndexRef } = params;
-  const prevByFragmentKey = new Map(prev.map((s) => [getSectionFragmentKey(s), s]));
-  const nextSections = fresh.map((freshSection) => {
-    const fk = getSectionFragmentKey(freshSection);
-    const prevSection = prevByFragmentKey.get(fk);
-    // Existing live key: identity/order/meta from fresh, but `.content` is cold
-    // seed/fallback only — keep the last-known seed, never the (possibly
-    // reconstructed) fresh.content. Live display comes from the fragment.
-    if (prevSection) return { ...freshSection, content: prevSection.content };
-    // New key: no prior seed — fresh.content is the cold bootstrap seed until
-    // the live fragment arrives.
-    return freshSection;
-  });
-  // Reconcile focus by fragment identity: keep focus on the focused fragment's NEW
-  // index, or clear it if that fragment no longer exists. Special case: when the
-  // dropped focused fragment is the bootstrap BFH (dissolved after empty-preamble
-  // root-split), hand focus to the first headed section in the fresh layout so
-  // the caret follows the promoted heading instead of landing on an invisible row.
-  const focusedIndex = focusedSectionIndexRef.current;
-  if (focusedIndex !== null && focusedIndex >= 0 && focusedIndex < prev.length) {
-    const focusedFk = getSectionFragmentKey(prev[focusedIndex]);
-    const newIndex = nextSections.findIndex((s) => getSectionFragmentKey(s) === focusedFk);
-    if (newIndex >= 0) {
-      focusedSectionIndexRef.current = newIndex;
-    } else if (focusedFk === BEFORE_FIRST_HEADING_KEY) {
-      const firstHeaded = nextSections.findIndex((s) => s.heading_path.length > 0);
-      focusedSectionIndexRef.current = firstHeaded >= 0 ? firstHeaded : null;
-    } else if (focusedIndex === 0) {
-      // The document's FIRST section (which had no predecessor) was removed at
-      // quiescence: a no-predecessor heading-deletion folds its body into BFH, or
-      // dissolves BFH when the body is empty. Hand focus to the new leading
-      // section — BFH if it was created, else the first remaining section — so the
-      // caret is never left on the removed headed key. (A non-first section that
-      // vanishes, e.g. a predecessor merge or delete, keeps the null-clear below;
-      // the merge-survivor handoff is a separate item.)
-      const bfhIndex = nextSections.findIndex(
-        (s) => getSectionFragmentKey(s) === BEFORE_FIRST_HEADING_KEY,
-      );
-      focusedSectionIndexRef.current =
-        bfhIndex >= 0 ? bfhIndex : nextSections.length > 0 ? 0 : null;
-    } else {
-      // A non-first focused fragment was removed at quiescence (heading-deletion
-      // merge into its predecessor, or a delete). Observing that delete forces the
-      // caret OFF the removed key onto the merge survivor — its predecessor — if
-      // that predecessor is still present, else the section that now occupies the
-      // removed slot, else null. Never leave focus on a removed key. Order-
-      // independent w.r.t. section:gone vs the Yjs binary clear: driven purely by
-      // the adopted fresh layout.
-      const predecessorFk = getSectionFragmentKey(prev[focusedIndex - 1]);
-      const predecessorIndex = nextSections.findIndex(
-        (s) => getSectionFragmentKey(s) === predecessorFk,
-      );
-      if (predecessorIndex >= 0) {
-        focusedSectionIndexRef.current = predecessorIndex;
-      } else if (nextSections.length > 0) {
-        focusedSectionIndexRef.current = Math.min(focusedIndex, nextSections.length - 1);
-      } else {
-        focusedSectionIndexRef.current = null;
-      }
-    }
-  }
-  return nextSections;
-}
-
-export function mergeSectionsWithProposalOverlay(
-  sections: DocumentSection[],
-  decodedDocPath: string | null,
-  selectedProposalSectionKeys: Set<string>,
-  proposalSections: Map<string, { doc_path: string; heading_path: string[]; content: string }>,
-): DocumentSection[] {
-  if (!decodedDocPath) return sections;
-  if (selectedProposalSectionKeys.size === 0) return sections;
-
-  let changed = false;
-  const merged = sections.map((section) => {
-    const key = sectionGlobalKey(decodedDocPath, section.heading_path);
-    if (!selectedProposalSectionKeys.has(key)) return section;
-    const overlay = proposalSections.get(key);
-    if (!overlay) return section;
-    if (overlay.content === section.content) return section;
-    changed = true;
-    return {
-      ...section,
-      content: overlay.content,
-    };
-  });
-
-  return changed ? merged : sections;
 }
 
 export function formatRelativeAgeFromMs(changedAtMs: number): string {
@@ -192,10 +79,23 @@ export function headingText(headingPath: string[]): string {
   return headingPath[headingPath.length - 1];
 }
 
-/** Returns true if section at index i should have an editor mounted. */
-export function shouldMountEditor(i: number, focusedIndex: number | null): boolean {
-  if (focusedIndex === null) return false;
-  return Math.abs(i - focusedIndex) <= 1;
+/**
+ * Identity-aware lazy editor mount window: a fragment mounts an editor when its
+ * CURRENT position in the ordered render rows is within one row of the focused
+ * fragment's current position. Positions are derived here from the ordered
+ * fragment keys per call — never stored focus state.
+ */
+export function shouldMountEditorForFragment(
+  fragmentKey: string,
+  focusedFragmentKey: string | null,
+  orderedFragmentKeys: readonly string[],
+): boolean {
+  if (focusedFragmentKey === null) return false;
+  const focusedPos = orderedFragmentKeys.indexOf(focusedFragmentKey);
+  if (focusedPos < 0) return false;
+  const rowPos = orderedFragmentKeys.indexOf(fragmentKey);
+  if (rowPos < 0) return false;
+  return Math.abs(rowPos - focusedPos) <= 1;
 }
 
 /** Recursively count all nodes in a DocStructureNode tree. */
@@ -248,17 +148,14 @@ export const HIGHLIGHT_DURATION_MS = 3000;
  */
 export const BEFORE_FIRST_HEADING_KEY = "section::__beforeFirstHeading__";
 
-/**
- * True when the document has no visible content: either no sections, or just a
- * single before-first-heading (BFH) section with empty/whitespace-only content.
- * After the last named section is deleted the server still returns a BFH row,
- * so `sections.length === 0` alone misses that case.
- */
-export function isDocumentEffectivelyEmpty(sections: DocumentSection[]): boolean {
-  if (sections.length === 0) return true;
-  if (sections.length === 1) {
-    const only = sections[0];
-    if (only.heading_path.length === 0 && only.content.trim() === "") return true;
+export function isDocumentEffectivelyEmpty(
+  rows: readonly RenderSectionRef[],
+  readBody: (row: RenderSectionRef) => string,
+): boolean {
+  if (rows.length === 0) return true;
+  if (rows.length === 1) {
+    const only = rows[0];
+    if (only.headingPath.length === 0 && readBody(only).trim() === "") return true;
   }
   return false;
 }

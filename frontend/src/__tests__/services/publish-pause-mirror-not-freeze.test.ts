@@ -53,7 +53,7 @@ describe("publish-pause join mirror vs freeze opcodes", () => {
     const onPublishPauseEnd = vi.fn();
 
     const replica = createLiveSectionReplica();
-    replica.applyBootstrap({
+    replica.bindToDocSession({
       docSessionId: "s",
       state: {
         topology: [{ fragment_key: ALPHA, heading_path: ["Alpha"] }],
@@ -90,8 +90,8 @@ describe("publish-pause join mirror vs freeze opcodes", () => {
     // The mirror's ONLY legitimate effect: it contributes to `isEditable()`. Even
     // with local write capability enabled, a "pause_active_editors_frozen" mirror
     // renders the section non-editable — purely a passive reflection, no barrier.
-    replica.setLocalWriteCapability(true);
-    expect(replica.requireLiveSection(SectionId.brand(ALPHA))!.isEditable()).toBe(false);
+    replica.setEditingEnabled(true);
+    expect(replica.getLiveSection(SectionId.brand(ALPHA))!.isEditable()).toBe(false);
     // Lifting the mirror (a fresh state frame) restores editability, still no barrier.
     routeLiveSectionFrame(
       MSG_LIVE_SECTIONS_UPDATE,
@@ -106,7 +106,7 @@ describe("publish-pause join mirror vs freeze opcodes", () => {
       }),
       replica,
     );
-    expect(replica.requireLiveSection(SectionId.brand(ALPHA))!.isEditable()).toBe(true);
+    expect(replica.getLiveSection(SectionId.brand(ALPHA))!.isEditable()).toBe(true);
     expect(freeze).not.toHaveBeenCalled();
     expect(unfreeze).not.toHaveBeenCalled();
 

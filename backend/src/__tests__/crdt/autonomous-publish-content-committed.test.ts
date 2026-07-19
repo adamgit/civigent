@@ -125,7 +125,7 @@ describe("Claim 1: CRDT autonomous publish emits content:committed", () => {
     expect(event.contributor_ids).toContain(WRITER.id);
   });
 
-  it("emits content:committed on quiescence (settled-dirty-frontier) publish via the off-lane editor ack", async () => {
+  it("quiet quiescence does not publish; explicit publish via the off-lane editor ack emits content:committed", async () => {
     vi.useFakeTimers();
     const session = await openSession();
     // A live editor socket is attached, so the settled-dirty-frontier publish goes
@@ -148,10 +148,17 @@ describe("Claim 1: CRDT autonomous publish emits content:committed", () => {
     await vi.advanceTimersByTimeAsync(session.generator.publishTriggerPolicy.quiescenceThresholdMs + 50);
     await drainLane(session);
 
+    // Normalization ≠ publish: the quiet timer alone starts no pause and commits nothing.
+    expect(session.publishPause.isActive()).toBe(false);
+    expect(session.generator.hasCurrentProposal()).toBe(true);
+    expect(wsEvents.filter((e) => e.type === "content:committed").length).toBe(0);
+
+    const publishPromise = requestDocSessionPublish(SAMPLE_DOC_PATH);
+
     // The publish entered the OFF-lane pause (it did NOT commit inline) — ack it.
     await ackPauseAndCommit(session, EDITOR_SOCKET);
+    await publishPromise;
 
-    // Settled-dirty-frontier publish cleared the current-proposal reference.
     expect(session.generator.hasCurrentProposal()).toBe(false);
 
     const commitEvents = wsEvents.filter((e) => e.type === "content:committed");

@@ -72,21 +72,19 @@ describe("parallel MCP sessions under one agent credential", () => {
     expect(rA.proposal.status).toBe("draft");
   });
 
-  it("my_proposals is writer-scoped: drafts survive session boundaries", async () => {
+  it("my_proposals is session-local: session A does not list session B's drafts", async () => {
     const pA = ok(await call(agent, "list-A", "create_proposal", { intent: "list A", ...overview("la.\n") })).proposal_id;
     const pB = ok(await call(agent, "list-B", "create_proposal", { intent: "list B", ...timeline("lb.\n") })).proposal_id;
 
-    // my_proposals lists everything the WRITER authored — proposals carry no
-    // session identity, so both sessions (and any future session under the same
-    // credential) see both drafts. Isolation applies to implicit auto-withdraw,
-    // not to visibility of your own durable proposals.
+    // Focus list is this MCP session's remembered proposals only — not every
+    // draft under the shared agent credential.
     const idsA = ok(await call(agent, "list-A", "my_proposals", { status: "draft" })).proposals.map((p: any) => p.id);
     const idsB = ok(await call(agent, "list-B", "my_proposals", { status: "draft" })).proposals.map((p: any) => p.id);
 
     expect(idsA).toContain(pA);
-    expect(idsA).toContain(pB);
-    expect(idsB).toContain(pA);
+    expect(idsA).not.toContain(pB);
     expect(idsB).toContain(pB);
+    expect(idsB).not.toContain(pA);
 
     // No persisted session identity on any proposal.
     const rA = ok(await call(agent, "list-B", "read_proposal", { proposal_id: pA }));
@@ -122,7 +120,7 @@ describe("parallel MCP sessions under one agent credential", () => {
     const rAlpha = ok(await call(alpha, SHARED, "read_proposal", { proposal_id: pAlpha }));
     expect(rAlpha.proposal.status).toBe("draft");
 
-    // Alpha's my_proposals (writer-scoped) never lists Beta's proposals.
+    // Alpha's my_proposals never lists Beta's proposals.
     const alphaIds = ok(await call(alpha, SHARED, "my_proposals", { status: "draft" })).proposals.map((p: any) => p.id);
     expect(alphaIds).toContain(pAlpha);
     expect(alphaIds).not.toContain(pBeta);
@@ -136,8 +134,13 @@ describe("parallel MCP sessions under one agent credential", () => {
       .delete("/mcp/tier3")
       .set({ Authorization: agent, "Mcp-Session-Id": "del-sess" });
 
-    // Same presented id after teardown → fresh empty memory: replace has no
-    // remembered draft to withdraw (no recovery persistence recreates affinity).
+    // Same presented id after teardown → fresh empty memory: focus list and
+    // replace affinity are gone (no recovery persistence recreates them).
+    const idsAfter = ok(await call(agent, "del-sess", "my_proposals", { status: "draft" })).proposals.map(
+      (p: any) => p.id,
+    );
+    expect(idsAfter).not.toContain(pD);
+
     const after = ok(await call(agent, "del-sess", "create_proposal", { intent: "post-delete replace", replace: true, ...timeline("pd2.\n") }));
     expect(after.withdrawn_proposal_id).toBeUndefined();
 
@@ -146,6 +149,34 @@ describe("parallel MCP sessions under one agent credential", () => {
     expect(rD.proposal.status).toBe("draft");
     const wd = ok(await call(agent, "del-sess", "withdraw_proposal", { proposal_id: pD }));
     expect(wd.status).toBe("withdrawn");
+  });
+
+  it("publish/withdraw keep the id in the session focus list with live status", async () => {
+    const S = "status-sess";
+    const pPub = ok(await call(agent, S, "create_proposal", { intent: "to commit", ...overview("sp.\n") })).proposal_id;
+    const pWd = ok(await call(agent, S, "create_proposal", { intent: "to withdraw", ...timeline("sw.\n") })).proposal_id;
+
+    expect(ok(await call(agent, S, "publish_proposal", { proposal_id: pPub })).status).toBe("committed");
+    expect(ok(await call(agent, S, "withdraw_proposal", { proposal_id: pWd })).status).toBe("withdrawn");
+
+    // Both stay on the session-created list; my_proposals reads status live
+    // from storage, so the terminal states filter correctly.
+    const committed = ok(await call(agent, S, "my_proposals", { status: "committed" })).proposals.map((p: any) => p.id);
+    const withdrawn = ok(await call(agent, S, "my_proposals", { status: "withdrawn" })).proposals.map((p: any) => p.id);
+    const drafts = ok(await call(agent, S, "my_proposals", { status: "draft" })).proposals.map((p: any) => p.id);
+    expect(committed).toContain(pPub);
+    expect(withdrawn).toContain(pWd);
+    expect(drafts).not.toContain(pPub);
+    expect(drafts).not.toContain(pWd);
+
+    // Publish/withdraw removed both ids from the replace affinity: a
+    // replace=true create finds no live draft to auto-withdraw...
+    const rep = ok(await call(agent, S, "create_proposal", { intent: "post-terminal replace", replace: true, ...overview("sr.\n") }));
+    expect(rep.withdrawn_proposal_id).toBeUndefined();
+
+    // ...and the new draft joins both lists (focus + affinity).
+    const drafts2 = ok(await call(agent, S, "my_proposals", { status: "draft" })).proposals.map((p: any) => p.id);
+    expect(drafts2).toContain(rep.proposal_id);
   });
 
   it("explicit publish by id works from a different session of the same writer", async () => {

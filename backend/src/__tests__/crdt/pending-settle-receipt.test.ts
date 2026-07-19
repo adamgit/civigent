@@ -74,10 +74,13 @@ async function drainLane(session: DocSession): Promise<void> {
   await session.enqueue(() => undefined);
 }
 
-/** Arm quiescence and advance past the threshold so the inline publish fires. */
-async function fireQuiescence(session: DocSession): Promise<void> {
+/** Arm quiescence (normalize only), then drive the inline publish explicitly. */
+async function quiesceThenPublish(session: DocSession): Promise<void> {
   armQuiescenceTimer(session);
   await vi.advanceTimersByTimeAsync(session.generator.publishTriggerPolicy.quiescenceThresholdMs + 50);
+  await drainLane(session);
+  expect(session.publishPause.isActive()).toBe(false);
+  await requestDocSessionPublish(session.docPath);
   await drainLane(session);
 }
 
@@ -117,7 +120,7 @@ describe("pending-fragment settle receipts", () => {
     expect(pendingKeys(events)).toContain(OVERVIEW_KEY);
     expect(session.generator.hasCurrentProposal()).toBe(true);
 
-    await fireQuiescence(session);
+    await quiesceThenPublish(session);
 
     // Covered by the publish and body changed → settled + canonical updated.
     expect(settledKeys(events)).toContain(OVERVIEW_KEY);
@@ -136,7 +139,7 @@ describe("pending-fragment settle receipts", () => {
     // The proposal manifest still claims Overview (grow-only), so the publish covers it.
     expect(session.generator.hasCurrentProposal()).toBe(true);
 
-    await fireQuiescence(session);
+    await quiesceThenPublish(session);
 
     // No body diff (canonical unchanged) yet the fragment is covered → it settles.
     expect(settledKeys(events)).toContain(OVERVIEW_KEY);

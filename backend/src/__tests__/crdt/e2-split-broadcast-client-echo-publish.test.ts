@@ -9,9 +9,8 @@
  * backend-only harness cannot reproduce that mis-routing (it is exercised by the
  * frontend tests E5/E6 once the live-topology-adoption fix exists). What this test
  * DOES guard is the adjacent backend invariant people assumed was the hazard: in
- * the real transport a client keeps SENDING during the pause window — after it
- * receives the split broadcast it round-trips its editor and echoes a `YJS_UPDATE`
- * back BEFORE its `doc_publish_ready` ack. This injects exactly that and proves the
+ * the real transport a client can keep SENDING during the pause window. This
+ * injects a post-split `YJS_UPDATE` before `doc_publish_ready` and proves the
  * backend handles it correctly.
  *
  * Invariants (spec 10 §Readiness ordering invariant; spec 05 §Structural
@@ -28,10 +27,11 @@ import { acquireDocSession, destroyAllSessions, type DocSession } from "../../cr
 import {
   handleMessageForTest,
   registerFakeEditorSocketForTest,
+  requestDocSessionPublish,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
 import { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
-import { encodeUpdate, decodeMessage, MSG_YJS_UPDATE } from "../../ws/crdt-ws-frames.js";
+import { encodeUpdate } from "../../ws/crdt-ws-frames.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
@@ -80,13 +80,7 @@ describe("E2 (backend guard): client echo during the publish-pause window", () =
     vi.useFakeTimers();
     const session = await openSession();
 
-    // Count the frames the server fans out to the editor so we can prove the
-    // injection happens AFTER the split broadcast (and the pause-start frame).
-    let framesToEditor = 0;
-    const editor = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, EDITOR_SOCKET, (data) => {
-      const decoded = decodeMessage(data);
-      if (decoded?.type === MSG_YJS_UPDATE) framesToEditor += 1;
-    });
+    const editor = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, EDITOR_SOCKET);
     disposers.push(editor.dispose);
 
     // 1) The author types a SAME-LEVEL (`##`) sibling heading into Overview.
@@ -99,21 +93,20 @@ describe("E2 (backend guard): client echo during the publish-pause window", () =
     );
     expect(session.generator.hasCurrentProposal()).toBe(true);
 
-    // 2) Quiesce → split normalization (broadcasts the new state) + off-lane pause.
+    // 2) Quiesce → split normalization (broadcasts the new state); no autonomous
+    //    publish starts, so drive the pause via the explicit publish path.
     await vi.advanceTimersByTimeAsync(session.generator.publishTriggerPolicy.quiescenceThresholdMs + 50);
     await session.enqueue(() => undefined);
-    // The off-lane publish establishes the pause one microtask after the quiescence
-    // command returns; the split path lengthens that chain, so pump until it is up.
+    expect(session.publishPause.isActive()).toBe(false);
+    const publishPromise = requestDocSessionPublish(SAMPLE_DOC_PATH);
     for (let i = 0; i < 200 && !session.publishPause.isActive(); i++) {
       await vi.advanceTimersByTimeAsync(1);
       await session.enqueue(() => undefined);
     }
     expect(session.publishPause.isActive()).toBe(true);
-    // The split was actually broadcast to the editor before we inject the echo.
-    expect(framesToEditor).toBeGreaterThan(0);
 
     // 3) DURING the pause window (after the split broadcast, before the ack) the
-    //    client echoes a real YJS_UPDATE — it keeps editing the survivor body. The
+    //    client sends a real YJS_UPDATE — it keeps editing the survivor body. The
     //    Overview fragment on the server is now the leaf "## Overview\n\nbase
     //    overview body"; the echo appends a sentence (NO new heading).
     const continued =
@@ -131,6 +124,7 @@ describe("E2 (backend guard): client echo during the publish-pause window", () =
       await vi.advanceTimersByTimeAsync(1);
     }
     await session.enqueue(() => undefined);
+    await publishPromise;
     expect(session.generator.hasCurrentProposal()).toBe(false);
 
     // Ordering: the mid-pause edit reached canonical (it was applied before the

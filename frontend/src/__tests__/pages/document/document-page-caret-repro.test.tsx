@@ -95,9 +95,10 @@ vi.mock("../../../components/MilkdownEditor", async () => {
   const React = await import("react");
   return {
     MilkdownEditor: React.forwardRef(
-      (props: { fragmentKey?: string; onReady?: () => void }, _ref: unknown) => {
+      (props: { binding?: { fragmentKey?: string }; onReady?: () => void }, _ref: unknown) => {
+        const fk = props.binding?.fragmentKey;
         React.useEffect(() => { props.onReady?.(); }, []);
-        return <div data-testid="milkdown-editor" data-fragment-key={props.fragmentKey}>Editor</div>;
+        return <div data-testid="milkdown-editor" data-fragment-key={fk}>Editor</div>;
       },
     ),
   };
@@ -115,6 +116,7 @@ vi.mock("../../../services/api-client", async (importOriginal) => {
 });
 
 import { DocumentPage } from "../../../pages/DocumentPage";
+import { liveBootstrapFrame, MSG_LIVE_SECTIONS_BOOTSTRAP_OPCODE } from "../../helpers/live-bootstrap";
 
 const overviewSection = {
   heading: "Overview",
@@ -123,8 +125,6 @@ const overviewSection = {
   content: "# Overview\nOverview content.\n",
   humanInvolvement_score: 0,
   crdt_session_active: false,
-  section_length_warning: false,
-  word_count: 2,
   fragment_key: "frag:sec_overview",
   section_file: "sec_overview.md",
 };
@@ -150,6 +150,21 @@ function renderDocPage(strict = false) {
     </MemoryRouter>
   );
   return render(strict ? <StrictMode>{tree}</StrictMode> : tree);
+}
+
+/** Make the page's replica currently live authority (mount gate: live editors
+ *  require a binding, which only exists once a bootstrap has bound the replica). */
+async function deliverLiveBootstrap(obs: CapturedObserver): Promise<void> {
+  await act(async () => {
+    obs.events.onLiveSectionFrame?.(
+      MSG_LIVE_SECTIONS_BOOTSTRAP_OPCODE,
+      liveBootstrapFrame("OBS-SESSION", [{
+        fragmentKey: "frag:sec_overview",
+        headingPath: ["Overview"],
+        markdown: "# Overview\nOverview content.\n",
+      }]),
+    );
+  });
 }
 
 function editorCount(): number {
@@ -192,6 +207,7 @@ describe("caret vanishes on initial open — reproduction harness", () => {
     await act(async () => {
       obs.events.onModeTransitionResult?.(accepted("OBS-SESSION", "observer", obs.cid!));
     });
+    await deliverLiveBootstrap(obs);
 
     // Click to edit.
     fireEvent.click(screen.getByText("Overview content."));
@@ -201,7 +217,7 @@ describe("caret vanishes on initial open — reproduction harness", () => {
     const ep = editorProviders[0];
     await act(async () => {
       ep.opts.onStateChange?.("connected");
-      ep.opts.onSynced?.();
+      ep.opts.onBootstrapApplied?.();
       ep.opts.onModeTransitionResult?.(accepted("EDIT-SESSION", "editor", ep.cid!));
     });
 
@@ -218,6 +234,7 @@ describe("caret vanishes on initial open — reproduction harness", () => {
     await waitFor(() => expect(screen.getByText("Overview content.")).toBeDefined());
     await waitFor(() => expect(observers.length).toBeGreaterThan(0));
     const obs = observers[0];
+    await deliverLiveBootstrap(obs);
 
     // FAST CLICK: user clicks to edit before the observer's transition result lands.
     fireEvent.click(screen.getByText("Overview content."));
@@ -225,7 +242,7 @@ describe("caret vanishes on initial open — reproduction harness", () => {
     const ep = editorProviders[0];
     await act(async () => {
       ep.opts.onStateChange?.("connected");
-      ep.opts.onSynced?.();
+      ep.opts.onBootstrapApplied?.();
       ep.opts.onModeTransitionResult?.(accepted("EDIT-SESSION", "editor", ep.cid!));
     });
     await waitFor(() => expect(editorCount()).toBeGreaterThan(0));
@@ -253,13 +270,14 @@ describe("caret vanishes on initial open — reproduction harness", () => {
     await act(async () => {
       observers[0].events.onModeTransitionResult?.(accepted("OBS-SESSION", "observer", observers[0].cid!));
     });
+    await deliverLiveBootstrap(observers[0]);
 
     fireEvent.click(screen.getByText("Overview content."));
     await waitFor(() => expect(editorProviders.length).toBeGreaterThan(0));
     const ep = editorProviders[0];
     await act(async () => {
       ep.opts.onStateChange?.("connected");
-      ep.opts.onSynced?.();
+      ep.opts.onBootstrapApplied?.();
       ep.opts.onModeTransitionResult?.(accepted("EDIT-SESSION", "editor", ep.cid!));
     });
     await waitFor(() => expect(editorCount()).toBeGreaterThan(0));
@@ -288,6 +306,7 @@ describe("caret vanishes on initial open — reproduction harness", () => {
     await act(async () => {
       obs.events.onModeTransitionResult?.(accepted("OBS-SESSION", "observer", obs.cid!));
     });
+    await deliverLiveBootstrap(obs);
 
     fireEvent.click(screen.getByText("Overview content."));
     await waitFor(() => expect(editorProviders.length).toBeGreaterThan(0));
@@ -295,7 +314,7 @@ describe("caret vanishes on initial open — reproduction harness", () => {
     const ep = lastEditor();
     await act(async () => {
       ep.opts.onStateChange?.("connected");
-      ep.opts.onSynced?.();
+      ep.opts.onBootstrapApplied?.();
       ep.opts.onModeTransitionResult?.(accepted("EDIT-SESSION", "editor", ep.cid!));
     });
 

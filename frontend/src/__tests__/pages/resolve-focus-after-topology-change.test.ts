@@ -65,6 +65,29 @@ describe("resolveFocusAfterTopologyChange", () => {
     expect(resolveFocusAfterTopologyChange([A], [A], SectionId.brand("section::ghost"))).toBeNull();
   });
 
+  it("caretOwningId present in next beats 'id still present' (promoted-region split)", () => {
+    // Split promoted B out of A; the author's caret text moved to B. Even though
+    // survivor A is still present, focus must follow the caret-owning fragment.
+    expect(resolveFocusAfterTopologyChange([A, C], [A, B, C], A.id, B.id)).toBe(B.id);
+  });
+
+  it("caretOwningId not in next → today's rules apply (keep-if-present)", () => {
+    expect(resolveFocusAfterTopologyChange([A, B], [A], A.id, SectionId.brand("section::ghost"))).toBe(A.id);
+  });
+
+  it("no caretOwningId → keep-if-present exactly as before", () => {
+    expect(resolveFocusAfterTopologyChange([A, C], [A, B, C], A.id)).toBe(A.id);
+    expect(resolveFocusAfterTopologyChange([A, C], [A, B, C], A.id, null)).toBe(A.id);
+  });
+
+  it("caretOwningId wins even when the previous focus id is gone (BFH dissolve retarget)", () => {
+    // BFH dissolved into promoted B; recovery says the caret landed in B, which
+    // must beat the default first-headed handoff to A.
+    expect(
+      resolveFocusAfterTopologyChange([BFH, A], [A, B], BEFORE_FIRST_HEADING_SECTION_ID, B.id),
+    ).toBe(B.id);
+  });
+
   it("9: nested first-section demotion (parent removed, children reparented) → BFH or first remaining", () => {
     // Intro (first headed) demoted; Child/Grand were under Intro and are now
     // top-level; BFH holds the orphan body. Focus was on Intro → must land on BFH.

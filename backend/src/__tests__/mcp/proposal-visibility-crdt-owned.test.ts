@@ -1,7 +1,7 @@
 /**
  * Area J — proposal-visibility audit.
  *
- * A CRDT-owned (`docSessionId`-bearing) `inprogress`/`committing` proposal is a
+ * A CRDT-owned (`proposalAdoptionId`-bearing) `inprogress`/`committing` proposal is a
  * system artefact materialized by a live DocSession actor (spec 10 "One active
  * proposal per DocSession"), NOT an agent-authored proposal. It must never be a
  * live-state side channel on the agent MCP surface:
@@ -16,7 +16,7 @@ import request from "supertest";
 import { createTestServer, type TestServerContext } from "../helpers/test-server.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { authFor } from "../helpers/auth.js";
-import { getOrCreateInProgressProposalForDocSession } from "../../storage/proposal-repository.js";
+import { getOrCreateInProgressProposalForAdoptionId } from "../../storage/proposal-repository.js";
 import type { WriterIdentity } from "../../types/shared.js";
 
 let ctx: TestServerContext;
@@ -77,10 +77,10 @@ describe("Area J — CRDT-owned proposal visibility on the agent MCP surface", (
     agentDraftId = JSON.parse(draftRes.result.content[0].text).proposal_id;
 
     // A CRDT-owned `inprogress` proposal, as a live DocSession actor would
-    // lazily materialize it (keyed on its owning docSessionId).
+    // lazily materialize it (keyed on its owning proposalAdoptionId).
     const sessionWriter: WriterIdentity = { id: "live-human", type: "human", displayName: "Live Human" };
-    const { id } = await getOrCreateInProgressProposalForDocSession({
-      docSessionId: "docsession-abc",
+    const { id } = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId: "docsession-abc",
       docPath: SAMPLE_DOC_PATH,
       writer: sessionWriter,
       intent: "live edit",

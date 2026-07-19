@@ -22,6 +22,9 @@ import { BEFORE_FIRST_HEADING_SECTION_ID } from "../types/live-sections";
  * id that should hold focus after the topology change (or null).
  *
  * Rules:
+ *   - caretOwningId provided and present     → it wins (caret recovery moved the
+ *                                              author's caret there; "id still
+ *                                              present" must not clobber it);
  *   - focused id still present               → keep it;
  *   - gone, was BFH                          → first headed section, else null;
  *   - gone, was first (no predecessor)       → BFH if present, else first
@@ -33,10 +36,13 @@ export function resolveFocusAfterTopologyChange(
   prev: readonly LiveSectionRef[],
   next: readonly LiveSectionRef[],
   focusedId: SectionId | null,
+  caretOwningId?: SectionId | null,
 ): SectionId | null {
+  const nextIds = new Set(next.map((r) => r.id));
+  if (caretOwningId != null && nextIds.has(caretOwningId)) return caretOwningId;
+
   if (focusedId === null) return null;
 
-  const nextIds = new Set(next.map((r) => r.id));
   // Still present → identity is stable across moves; keep focus, no follow logic.
   if (nextIds.has(focusedId)) return focusedId;
 

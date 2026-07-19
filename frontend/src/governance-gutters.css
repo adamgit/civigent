@@ -330,3 +330,25 @@
   font-style: italic;
   padding: 8px 0;
 }
+
+/* --- In-progress proposal fact (left gutter badge + right gutter chrome) --- */
+
+.gov-inprogress-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: var(--gov-blue-bg);
+  color: var(--gov-blue);
+  margin-top: 6px;
+}
+
+.gov-inprogress-detail {
+  font-size: 10px;
+  color: var(--gov-ink-tertiary);
+  line-height: 1.4;
+  margin-top: 2px;
+}

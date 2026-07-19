@@ -20,8 +20,6 @@ function richStructureSection(heading: string, headingPath: string[], fragmentKe
     content: "",
     agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
     crdt_session_active: true,
-    section_length_warning: false,
-    word_count: 0,
     fragment_key: fragmentKey,
     section_file: `${fragmentKey.replace(/^frag:/, "")}.md`,
   };
@@ -54,7 +52,7 @@ vi.mock("../../../services/crdt-provider", () => ({
     };
     connect = () => {
       (this._opts?.onStateChange as ((s: string) => void) | undefined)?.("connected");
-      (this._opts?.onSynced as (() => void) | undefined)?.();
+      (this._opts?.onBootstrapApplied as (() => void) | undefined)?.();
     };
     disconnect = vi.fn();
     destroy = vi.fn();
@@ -68,11 +66,12 @@ vi.mock("../../../components/MilkdownEditor", async () => {
   const React = await import("react");
   return {
     MilkdownEditor: React.forwardRef(
-      (props: { fragmentKey?: string; onReady?: () => void }, _ref: unknown) => {
+      (props: { binding?: { fragmentKey?: string }; onReady?: () => void }, _ref: unknown) => {
+        const fk = props.binding?.fragmentKey;
         React.useEffect(() => { props.onReady?.(); }, []);
         return (
-          <div data-testid="milkdown-editor" data-fragment-key={props.fragmentKey}>
-            Editor:{props.fragmentKey}
+          <div data-testid="milkdown-editor" data-fragment-key={fk}>
+            Editor:{fk}
           </div>
         );
       },
@@ -133,8 +132,6 @@ describe("DocumentPage realtime", () => {
               content: "Root.\n",
               humanInvolvement_score: 0,
               crdt_session_active: false,
-              section_length_warning: false,
-              word_count: 1,
               fragment_key: "frag:sec_root",
               section_file: "sec_root.md",
             },
@@ -145,8 +142,6 @@ describe("DocumentPage realtime", () => {
               content: `# Overview\nOverview v${sectionsFetchCount}.\n`,
               humanInvolvement_score: 0,
               crdt_session_active: false,
-              section_length_warning: false,
-              word_count: 2,
               fragment_key: "frag:sec_overview",
               section_file: "sec_overview.md",
             },

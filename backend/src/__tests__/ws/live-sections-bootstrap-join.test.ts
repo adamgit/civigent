@@ -18,11 +18,14 @@ import { acquireDocSession, destroyAllSessions, type DocSession } from "../../cr
 import {
   armQuiescenceTimer,
   joinAndNotify,
+  registerFakeEditorSocketForTest,
   registerFakeObserverSocketForTest,
+  requestDocSessionPublish,
   resetCoordinatorPublishStateForTest,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
 import {
+  MSG_SYNC_STEP_2,
   MSG_LIVE_SECTIONS_BOOTSTRAP,
   MSG_LIVE_SECTIONS_UPDATE,
   decodeLiveSectionsBootstrap,
@@ -95,6 +98,11 @@ describe("live-section bootstrap/join on the DocSession CRDT lane", () => {
     joinAndNotify(session, reg.socket, reg.state);
     await session.enqueue(() => undefined); // drain the lane so the bootstrap send lands.
 
+    // Join body fill canary: bootstrap is the sole full-doc baseline. A join-time
+    // MSG_SYNC_STEP_2 would be a second (pre-lane) body authority — forbidden.
+    const syncStep2Count = sent.filter((d) => d[0] === MSG_SYNC_STEP_2).length;
+    expect(syncStep2Count).toBe(0);
+
     const bootstraps = sent
       .map((d) => decodeMessage(d))
       .filter((m): m is { type: number; payload: Uint8Array } => !!m && m.type === MSG_LIVE_SECTIONS_BOOTSTRAP)
@@ -102,7 +110,7 @@ describe("live-section bootstrap/join on the DocSession CRDT lane", () => {
     expect(bootstraps).toHaveLength(1);
     const frame = bootstraps[0];
 
-    expect(frame.doc_session_id).toBe(session.docSessionId);
+    expect(frame.doc_session_id).toBe(session.liveYDocId);
     expect(frame.yjs_update.length).toBeGreaterThan(0);
     expect(frame.state.publish_pause_join_mirror).toBe("not_in_pause");
     expect(frame.state.blocked_section_ids).toEqual([]);
@@ -254,5 +262,46 @@ describe("live-section bootstrap/join on the DocSession CRDT lane", () => {
       session.publishPause.abort();
       await waiter;
     }
+  });
+
+  it("PAUSE END: an aborted pause with nothing settled still broadcasts a not_in_pause state frame", async () => {
+    vi.useFakeTimers();
+    const session = await openSession();
+    setFragmentViaMinimalDiff(session, OVERVIEW_KEY, `## Overview\n\nedited overview body`);
+    session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
+    await session.generator.materializeEdit({ touchedFragmentKeys: [OVERVIEW_KEY] });
+
+    const sent: Uint8Array[] = [];
+    const obs = registerFakeObserverSocketForTest(SAMPLE_DOC_PATH, "obs-cap", undefined, (d) => sent.push(d));
+    disposers.push(obs.dispose);
+    obs.state.joined = false;
+    joinAndNotify(session, obs.socket, obs.state);
+    await session.enqueue(() => undefined);
+    // A required editor socket that never acks → the pause aborts on the
+    // readiness timeout, the no-settle path this frame must still cover.
+    const editor = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "ed-never-acks");
+    disposers.push(editor.dispose);
+
+    const publishPromise = requestDocSessionPublish(SAMPLE_DOC_PATH);
+    for (let i = 0; i < 50 && !session.publishPause.isActive(); i++) {
+      await vi.advanceTimersByTimeAsync(1);
+      await session.enqueue(() => undefined);
+    }
+    expect(session.publishPause.isActive()).toBe(true);
+    sent.length = 0;
+
+    await vi.advanceTimersByTimeAsync(10_050);
+    const outcome = await publishPromise;
+    expect(outcome.outcome).toBe("aborted");
+    await session.enqueue(() => undefined);
+
+    const mirrors = sent
+      .map((d) => decodeMessage(d))
+      .filter((m): m is { type: number; payload: Uint8Array } => !!m && m.type === MSG_LIVE_SECTIONS_UPDATE)
+      .map((m) => decodeLiveSectionsUpdate(m.payload))
+      .filter((u) => u.state !== undefined && u.state !== null)
+      .map((u) => u.state!.publish_pause_join_mirror);
+    expect(mirrors.length).toBeGreaterThan(0);
+    expect(mirrors[mirrors.length - 1]).toBe("not_in_pause");
   });
 });

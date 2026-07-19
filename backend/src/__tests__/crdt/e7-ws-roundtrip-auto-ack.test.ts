@@ -40,6 +40,7 @@ import { createApp } from "../../app.js";
 import { createCrdtWsServer } from "../../ws/crdt-sync.js";
 import {
   setCrdtEventHandler,
+  requestDocSessionPublish,
   resetCoordinatorPublishStateForTest,
 } from "../../ws/crdt-ws-coordinator.js";
 import {
@@ -54,10 +55,10 @@ import { readSection } from "../../storage/section-reader.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { randomUUID } from "node:crypto";
 import {
-  MSG_SYNC_STEP_1,
   MSG_SYNC_STEP_2,
   MSG_YJS_UPDATE,
   MSG_AWARENESS,
+  MSG_UPDATE_ACK,
   MSG_MODE_TRANSITION_REQUEST,
   MSG_MODE_TRANSITION_RESULT,
   MSG_DOC_PUBLISH_PAUSE_START,
@@ -129,7 +130,6 @@ class TestCrdtClient {
     this.ws.binaryType = "arraybuffer";
 
     this.ws.on("open", () => {
-      // Mirror CrdtProvider.onopen: request editor mode, then sync step 1.
       this.sendRaw(MSG_MODE_TRANSITION_REQUEST, new TextEncoder().encode(JSON.stringify({
         requestId: randomUUID(),
         clientInstanceId: this.clientInstanceId,
@@ -137,7 +137,6 @@ class TestCrdtClient {
         requestedMode: "editor",
         editorFocusTarget: null,
       })));
-      this.sendSyncStep1();
     });
 
     this.ws.on("message", (raw: ArrayBuffer | Buffer | Buffer[]) => {
@@ -167,20 +166,12 @@ class TestCrdtClient {
     const type = data[0];
     const payload = data.subarray(1);
     switch (type) {
-      case MSG_SYNC_STEP_1: {
-        const diff = Y.encodeStateAsUpdate(this.doc, payload);
-        this.sendRaw(MSG_SYNC_STEP_2, diff);
-        break;
-      }
       case MSG_SYNC_STEP_2: {
         Y.applyUpdate(this.doc, payload, this);
-        this.synced = true;
         break;
       }
-      case MSG_YJS_UPDATE: {
-        Y.applyUpdate(this.doc, payload, this);
+      case MSG_UPDATE_ACK:
         break;
-      }
       case MSG_MODE_TRANSITION_RESULT: {
         this.modeResult = JSON.parse(new TextDecoder().decode(payload)) as ModeTransitionResult;
         break;
@@ -197,17 +188,22 @@ class TestCrdtClient {
         break;
       }
       case MSG_LIVE_SECTIONS_BOOTSTRAP: {
-        this.adoptLiveState(decodeLiveSectionsBootstrap(payload).state);
+        const frame = decodeLiveSectionsBootstrap(payload);
+        Y.applyUpdate(this.doc, frame.yjs_update, this);
+        this.adoptLiveState(frame.state);
+        this.synced = true;
         break;
       }
       case MSG_LIVE_SECTIONS_UPDATE: {
         const frame = decodeLiveSectionsUpdate(payload);
+        if (frame.yjs_update) Y.applyUpdate(this.doc, frame.yjs_update, this);
         if (frame.state) this.adoptLiveState(frame.state);
         break;
       }
       case MSG_AWARENESS:
-      default:
         break;
+      default:
+        throw new Error(`Unexpected CRDT opcode 0x${type.toString(16)}`);
     }
   }
 
@@ -265,10 +261,6 @@ class TestCrdtClient {
     store.replaceFragmentString(OVERVIEW_KEY, content);
     const update = Y.encodeStateAsUpdate(this.doc, beforeSV);
     this.sendRaw(MSG_YJS_UPDATE, update);
-  }
-
-  private sendSyncStep1(): void {
-    this.sendRaw(MSG_SYNC_STEP_1, Y.encodeStateVector(this.doc));
   }
 
   private sendRaw(type: number, payload: Uint8Array): void {
@@ -347,10 +339,18 @@ describe("E7: true WS round-trip with client auto-ack (integration)", () => {
         "## Overview\n\nbase overview body\n\n## Second Section\n\nbrand new sibling body" as FragmentContent,
       );
 
-      // The full round-trip is now autonomous: quiescence → split normalization
-      // (Y.Doc broadcast + doc:structure-changed) → publish pause → the CLIENT
-      // auto-acks over the wire → commit → content:committed.
+      // Quiescence → split normalization only (Y.Doc broadcast + ordered live
+      // topology frame). The quiet timer does NOT publish: wait for the promoted
+      // sibling to reach the client's live topology, then assert no pause started.
+      await waitFor(() => client.liveTopology.some((path) => path.at(-1) === "Second Section"));
+      expect(client.pauseStartCount).toBe(0);
+      expect(session!.generator.hasCurrentProposal()).toBe(true);
+
+      // Drive the publish explicitly → pause → the CLIENT auto-acks over the wire
+      // → commit → content:committed.
+      const publishPromise = requestDocSessionPublish(SAMPLE_DOC_PATH);
       await waitFor(() => captured.some((c) => c.event.type === "content:committed"));
+      await publishPromise;
       // The pause ended on both sides (the binary pause-end frame reached the client).
       await waitFor(() => client.pauseEndCount === 1);
 

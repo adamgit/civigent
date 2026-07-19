@@ -29,7 +29,7 @@ import {
 } from "../../crdt/ydoc-lifecycle.js";
 import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
 import {
-  getOrCreateInProgressProposalForDocSession,
+  getOrCreateInProgressProposalForAdoptionId,
   updateCurrentProposalSections,
   createTransientProposal,
 } from "../../storage/proposal-repository.js";
@@ -38,6 +38,7 @@ import { mutateProposalContent } from "../../storage/mutate-proposal-content.js"
 import { commitProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
+import { ProposalAdoptionId } from "../../types/shared.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 
@@ -56,8 +57,8 @@ describe("DocSession reseed inherits sections canonical gained after the proposa
 
   it("a reconstructed session's live document contains a section committed to canonical after the proposal opened", async () => {
     // An inprogress proposal that claimed + edited only Overview (durable in-flight state).
-    const created = await getOrCreateInProgressProposalForDocSession({
-      docSessionId: crypto.randomUUID(),
+    const created = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId: ProposalAdoptionId.create(),
       docPath: SAMPLE_DOC_PATH,
       writer: WRITER,
     });

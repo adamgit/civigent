@@ -16,8 +16,10 @@
  *     `heading_path` only — no body, no `section_file`, no `last_editor`);
  *   - it fires from `applyCommittedCanonicalToLiveSession` (a cross-client / agent
  *     commit reshaping an open live doc);
- *   - the frame is delivered AFTER the Y.Doc delta broadcast (peers' fragments
- *     exist first).
+ *   - the frame is the SOLE structural broadcast: no raw `MSG_YJS_UPDATE`
+ *     precursor is sent for structural changes (structural body+topology travel
+ *     as one atomic frame; ordinary body edits are a separate sole-path contract
+ *     on content-only live-section frames).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -117,14 +119,18 @@ function assertBodyFree(state: WireLiveSectionsState): void {
   }
 }
 
-/** The structural update frame must be preceded by at least one Y.Doc delta broadcast. */
-function assertEmittedAfterBroadcast(): void {
+/**
+ * Structural fan-out is the live-section frame ONLY: a raw `MSG_YJS_UPDATE`
+ * sent before the structural frame would let a client observe the Y.Doc
+ * mutation while its topology/editability still describe the old structure.
+ * These scenarios are purely structural, so NO raw Yjs frame may appear before
+ * the first structural `MSG_LIVE_SECTIONS_UPDATE`.
+ */
+function assertNoRawStructuralPrecursor(): void {
   const opcodes = sent.map((d) => decodeMessage(d)).map((m) => m?.type);
-  const firstYdoc = opcodes.indexOf(MSG_YJS_UPDATE);
   const firstUpdate = opcodes.indexOf(MSG_LIVE_SECTIONS_UPDATE);
-  expect(firstYdoc).toBeGreaterThanOrEqual(0);
   expect(firstUpdate).toBeGreaterThanOrEqual(0);
-  expect(firstUpdate).toBeGreaterThan(firstYdoc);
+  expect(opcodes.slice(0, firstUpdate)).not.toContain(MSG_YJS_UPDATE);
 }
 
 function findByHeadingPath(topology: readonly WireLiveSectionRef[], headingPath: string[]) {
@@ -151,7 +157,7 @@ describe("live structural-change emission on the CRDT channel", () => {
     await ctx.cleanup();
   });
 
-  it("SIBLING SPLIT: emits an ordered body-free topology (survivor + promoted sibling) AFTER the Y.Doc broadcast", async () => {
+  it("SIBLING SPLIT: emits an ordered body-free topology (survivor + promoted sibling) as one atomic frame (no raw precursor)", async () => {
     vi.useFakeTimers();
     const session = await openSession();
     await joinLiveRecipient(session, disposers);
@@ -167,7 +173,7 @@ describe("live structural-change emission on the CRDT channel", () => {
 
     const state = lastStructuralState();
     assertBodyFree(state);
-    assertEmittedAfterBroadcast();
+    assertNoRawStructuralPrecursor();
 
     // The survivor and the promoted sibling are both present…
     const overview = findByHeadingPath(state.topology, ["Overview"]);
@@ -186,7 +192,7 @@ describe("live structural-change emission on the CRDT channel", () => {
     expect(second!.fragment_key.length).toBeGreaterThan(0);
   });
 
-  it("MERGE: emits a topology that DROPS the merged-away section AFTER the Y.Doc broadcast", async () => {
+  it("MERGE: emits a topology that DROPS the merged-away section as one atomic frame (no raw precursor)", async () => {
     vi.useFakeTimers();
     const session = await openSession();
     await joinLiveRecipient(session, disposers);
@@ -200,14 +206,14 @@ describe("live structural-change emission on the CRDT channel", () => {
 
     const state = lastStructuralState();
     assertBodyFree(state);
-    assertEmittedAfterBroadcast();
+    assertNoRawStructuralPrecursor();
     // Timeline is gone from the live topology; Overview survives.
     expect(state.topology.map((t) => t.fragment_key)).not.toContain(TIMELINE_KEY);
     expect(findByHeadingPath(state.topology, ["Timeline"])).toBeUndefined();
     expect(findByHeadingPath(state.topology, ["Overview"])).toBeDefined();
   });
 
-  it("RENAME: emits a topology with the renamed heading path AFTER the Y.Doc broadcast", async () => {
+  it("RENAME: emits a topology with the renamed heading path as one atomic frame (no raw precursor)", async () => {
     vi.useFakeTimers();
     const session = await openSession();
     await joinLiveRecipient(session, disposers);
@@ -224,7 +230,7 @@ describe("live structural-change emission on the CRDT channel", () => {
 
     const state = lastStructuralState();
     assertBodyFree(state);
-    assertEmittedAfterBroadcast();
+    assertNoRawStructuralPrecursor();
     const renamed = findByHeadingPath(state.topology, ["Strategic Overview"]);
     expect(renamed).toBeDefined();
     // Rename keeps the fragment identity (heading edit, not delete/create).
@@ -232,7 +238,7 @@ describe("live structural-change emission on the CRDT channel", () => {
     expect(findByHeadingPath(state.topology, ["Overview"])).toBeUndefined();
   });
 
-  it("CROSS-CLIENT: an external canonical commit applied to the live session emits AFTER the Y.Doc broadcast", async () => {
+  it("CROSS-CLIENT: an external canonical commit applied to the live session emits as one atomic frame (no raw precursor)", async () => {
     const session = await openSession();
     await joinLiveRecipient(session, disposers);
 
@@ -256,7 +262,7 @@ describe("live structural-change emission on the CRDT channel", () => {
 
     const state = lastStructuralState();
     assertBodyFree(state);
-    assertEmittedAfterBroadcast();
+    assertNoRawStructuralPrecursor();
     // The live topology still resolves Overview (the external body rides the Yjs update).
     expect(findByHeadingPath(state.topology, ["Overview"])).toBeDefined();
   });

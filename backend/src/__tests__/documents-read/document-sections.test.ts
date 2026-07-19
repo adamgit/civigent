@@ -108,6 +108,55 @@ describe("GET /api/canonical/:doc_path/sections", () => {
     expect(res.body.sections.length).toBeGreaterThan(0);
   });
 
+  it("workspace section list reports FSM locks as locked, not blocked", async () => {
+    const createRes = await request(ctx.app)
+      .post("/api/proposals")
+      .set("Authorization", ctx.humanToken)
+      .send({
+        intent: "Lock Overview for REST contract check",
+        sections: [
+          {
+            doc_path: SAMPLE_DOC_PATH,
+            heading_path: ["Overview"],
+            content: "Proposal-owned overview content.",
+          },
+        ],
+      });
+    expect(createRes.status).toBe(201);
+    const proposalId = createRes.body.proposal_id as string;
+
+    const acquireRes = await request(ctx.app)
+      .post(`/api/proposals/${proposalId}/acquire-locks`)
+      .set("Authorization", ctx.humanToken);
+    expect(acquireRes.status).toBe(200);
+    expect(acquireRes.body.acquired).toBe(true);
+
+    try {
+      const res = await request(ctx.app)
+        .get(`/api/workspace/${SAMPLE_DOC_PATH}/sections`)
+        .set("Authorization", ctx.humanToken);
+
+      expect(res.status).toBe(200);
+      const overview = sectionByHeadingPath(res.body.sections, ["Overview"]) as
+        | (Record<string, unknown> & { heading_path: string[]; content: string })
+        | undefined;
+      const timeline = sectionByHeadingPath(res.body.sections, ["Timeline"]) as
+        | (Record<string, unknown> & { heading_path: string[]; content: string })
+        | undefined;
+
+      expect(overview).toBeDefined();
+      expect(overview?.locked).toBe(true);
+      expect(overview).not.toHaveProperty("blocked");
+      expect(timeline).toBeDefined();
+      expect(timeline?.locked).not.toBe(true);
+    } finally {
+      await request(ctx.app)
+        .post(`/api/proposals/${proposalId}/cancel`)
+        .set("Authorization", ctx.humanToken)
+        .send({ reason: "REST lock contract check complete" });
+    }
+  });
+
   it("keeps existing behavior unchanged without proposal_id", async () => {
     const res = await request(ctx.app)
       .get(`/api/canonical/${SAMPLE_DOC_PATH}/sections`)
@@ -261,7 +310,7 @@ describe("GET /api/canonical/:doc_path/sections", () => {
     expect(res.status).toBe(403);
   });
 
-  it("each section has heading_path, content, agentWritePolicy, word_count", async () => {
+  it("each section has heading_path, content, agentWritePolicy (no unused word-count fields)", async () => {
     const res = await request(ctx.app)
       .get(`/api/canonical/${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
@@ -270,10 +319,13 @@ describe("GET /api/canonical/:doc_path/sections", () => {
     for (const section of res.body.sections) {
       expect(section).toHaveProperty("heading_path");
       expect(section).toHaveProperty("content");
-      expect(section).toHaveProperty("word_count");
       // humanInvolvement_score retired → section-level agentWritePolicy summary
       expect(section).toHaveProperty("agentWritePolicy");
       expect(typeof section.agentWritePolicy.canWrite).toBe("boolean");
+      // word_count / section_length_warning had no consumer and were removed
+      // from the section-list DTO entirely.
+      expect(section).not.toHaveProperty("word_count");
+      expect(section).not.toHaveProperty("section_length_warning");
     }
   });
 

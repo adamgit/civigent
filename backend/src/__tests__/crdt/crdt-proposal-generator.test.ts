@@ -5,21 +5,21 @@ import {
   type LiveSectionSnapshot,
 } from "../../crdt/crdt-proposal-generator.js";
 import {
-  findInProgressProposalForDocSession,
+  findInProgressProposalByAdoptionId,
   listInProgressProposals,
   readProposal,
 } from "../../storage/proposal-repository.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
-import type { WriterIdentity, DocSessionId } from "../../types/shared.js";
+import { ProposalAdoptionId, type WriterIdentity } from "../../types/shared.js";
 
 const writer: WriterIdentity = { id: "user-alice", type: "human", displayName: "Alice" };
 
 function makeSource(sections: LiveSectionSnapshot[]): LiveDocumentSource {
   let current = sections;
   return {
-    snapshotSections: () => current,
+    snapshotSections: () => ({ sections: current, awaitingStructuralReconciliation: [] }),
     // helper to mutate from the test
     // @ts-expect-error test-only setter
     _set: (next: LiveSectionSnapshot[]) => { current = next; },
@@ -40,7 +40,7 @@ describe("CRDTProposalGenerator", () => {
   it("has no side-effects for a session with zero edits", async () => {
     const gen = new CRDTProposalGenerator({
       docPath: "guide.md",
-      docSessionId: crypto.randomUUID() as DocSessionId,
+      proposalAdoptionId: ProposalAdoptionId.create(),
       writer,
       source: makeSource([]),
     });
@@ -53,10 +53,10 @@ describe("CRDTProposalGenerator", () => {
   });
 
   it("lazily creates one inprogress proposal on the first materialized edit", async () => {
-    const docSessionId = crypto.randomUUID() as DocSessionId;
+    const proposalAdoptionId = ProposalAdoptionId.create();
     const gen = new CRDTProposalGenerator({
       docPath: "guide.md",
-      docSessionId,
+      proposalAdoptionId,
       writer,
       source: makeSource([
         { headingPath: ["Intro"], heading: "Intro", level: 1, body: "Hello world." },
@@ -67,10 +67,10 @@ describe("CRDTProposalGenerator", () => {
     expect(proposalId).toBeTruthy();
     expect(gen.getCurrentProposalId()).toBe(proposalId);
 
-    const proposal = await findInProgressProposalForDocSession(docSessionId);
+    const proposal = await findInProgressProposalByAdoptionId(proposalAdoptionId);
     expect(proposal).not.toBeNull();
     expect(proposal!.id).toBe(proposalId);
-    expect(proposal!.docSessionId).toBe(docSessionId);
+    expect(proposal!.proposalAdoptionId).toBe(proposalAdoptionId);
 
     // Content was materialized through ProposalEditor.
     const reader = ProposalReader.open(proposalId, "inprogress");
@@ -79,13 +79,13 @@ describe("CRDTProposalGenerator", () => {
   });
 
   it("materializes subsequent edits into the SAME proposal", async () => {
-    const docSessionId = crypto.randomUUID() as DocSessionId;
+    const proposalAdoptionId = ProposalAdoptionId.create();
     const source = makeSource([
       { headingPath: ["Intro"], heading: "Intro", level: 1, body: "First." },
     ]);
     const gen = new CRDTProposalGenerator({
       docPath: "guide.md",
-      docSessionId,
+      proposalAdoptionId,
       writer,
       source,
     });
@@ -109,10 +109,10 @@ describe("CRDTProposalGenerator", () => {
   });
 
   it("enforces one active proposal per DocSession", async () => {
-    const docSessionId = crypto.randomUUID() as DocSessionId;
+    const proposalAdoptionId = ProposalAdoptionId.create();
     const genA = new CRDTProposalGenerator({
       docPath: "guide.md",
-      docSessionId,
+      proposalAdoptionId,
       writer,
       source: makeSource([{ headingPath: ["A"], heading: "A", level: 1, body: "a" }]),
     });
@@ -120,7 +120,7 @@ describe("CRDTProposalGenerator", () => {
     // same proposal (repository helper keys on DocSession identity).
     const genB = new CRDTProposalGenerator({
       docPath: "guide.md",
-      docSessionId,
+      proposalAdoptionId,
       writer,
       source: makeSource([{ headingPath: ["A"], heading: "A", level: 1, body: "a" }]),
     });
@@ -134,13 +134,13 @@ describe("CRDTProposalGenerator", () => {
   });
 
   it("updates the current-proposal section manifest as the live tree grows", async () => {
-    const docSessionId = crypto.randomUUID() as DocSessionId;
+    const proposalAdoptionId = ProposalAdoptionId.create();
     const source = makeSource([
       { headingPath: ["Intro"], heading: "Intro", level: 1, body: "x" },
     ]);
     const gen = new CRDTProposalGenerator({
       docPath: "guide.md",
-      docSessionId,
+      proposalAdoptionId,
       writer,
       source,
     });

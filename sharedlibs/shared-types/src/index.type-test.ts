@@ -201,8 +201,6 @@ const sectionMeta: SectionMeta = {
   heading_path: ["A"],
   agentWritePolicy: sectionSummary,
   crdt_session_active: false,
-  section_length_warning: false,
-  word_count: 10,
 };
 
 const docSections: GetDocumentSectionsResponse = {
@@ -215,10 +213,9 @@ const docSections: GetDocumentSectionsResponse = {
       content: "body",
       agentWritePolicy: sectionSummary,
       crdt_session_active: false,
-      section_length_warning: false,
-      word_count: 1,
       fragment_key: "frag",
       section_file: "sec_abc.md",
+      last_editor: null,
       locked: false,
     },
   ],

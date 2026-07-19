@@ -15,13 +15,13 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import {
   createProposal,
   createTransientProposal,
-  getOrCreateInProgressProposalForDocSession,
+  getOrCreateInProgressProposalForAdoptionId,
   transitionToInProgress,
   transitionToCommitting,
   readProposal,
 } from "../../storage/proposal-repository.js";
 import { ProposalLockConflictError } from "../../domain/proposal-fsm-locks.js";
-import type { WriterIdentity, DocSessionId } from "../../types/shared.js";
+import { ProposalAdoptionId, type WriterIdentity } from "../../types/shared.js";
 
 const DOC = "doc.md";
 const HUMAN_A: WriterIdentity = { type: "human", id: "human-a", displayName: "Alice" };
@@ -84,8 +84,8 @@ describe("Claim 4: transitionToCommitting enforces the exclusive-claim lock gate
   });
 
   it("(d) a CRDT-owned inprogress -> committing SUCCEEDS through self-exclusion", async () => {
-    const { id } = await getOrCreateInProgressProposalForDocSession({
-      docSessionId: "docsession-1" as DocSessionId,
+    const { id } = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId: ProposalAdoptionId.fromStoredValue("docsession-1"),
       docPath: DOC,
       writer: DOCSESSION_WRITER,
       intent: "live edit",

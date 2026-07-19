@@ -1,29 +1,3 @@
-/**
- * v4 Custom Yjs WebSocket provider — per-document connection.
- *
- * The server at /ws/crdt/<docPath> uses a binary protocol (must match
- * backend/src/ws/crdt-ws-frames.ts):
- *
- *   0x00 (SYNC_STEP_1)               + Y.encodeStateVector()
- *   0x01 (SYNC_STEP_2)               + Y.encodeStateAsUpdate(doc, stateVector)
- *   0x02 (YJS_UPDATE)                + incremental update bytes
- *   0x03 (AWARENESS)                 + encoded awareness update (opaque relay)
- *   0x0B (DOCUMENT_REPLACEMENT_NOTICE) + JSON (server → client reconnect notice)
- *   0x0C (MODE_TRANSITION_REQUEST)   + JSON (client → server)
- *   0x0D (MODE_TRANSITION_RESULT)    + JSON (server → client)
- *   0x10 (DOC_PUBLISH_PAUSE_START)   + empty (server → client: freeze editors)
- *   0x11 (DOC_PUBLISH_READY)         + empty (client → server: ordered ready ack)
- *   0x12 (DOC_PUBLISH_PAUSE_END)     + empty (server → client: editors may unfreeze)
- *
- * One connection per document.
- *
- * The DocSession publish-pause control messages ride this same ordered editor
- * channel as Yjs updates; processing a `doc_publish_ready` ack proves earlier
- * Yjs updates from this socket have already reached the DocSession actor.
- * Section block-state events (`section:blocked|unblocked|gone`) travel on the
- * JSON application WebSocket, NOT here (see useDocumentWebSocket.ts).
- */
-
 import * as Y from "yjs";
 import {
   Awareness,
@@ -47,6 +21,7 @@ import {
   WS_CLOSE_YDOC_INIT_FAILED,
 } from "./crdt-close-codes";
 import { apiClient } from "./api-client";
+import { LIVE_SECTION_SERVER_APPLY_ORIGIN } from "./live-section-replica";
 import { encodeDocPathForWs } from "../utils/path-encoding";
 import { randomUuid } from "../utils/random-uuid";
 
@@ -56,10 +31,6 @@ const MSG_SYNC_STEP_1 = 0;
 const MSG_SYNC_STEP_2 = 1;
 const MSG_YJS_UPDATE = 2;
 const MSG_AWARENESS = 3;
-// Server → client receipt watermark (Guarantee A): `[MSG_UPDATE_ACK][count:uint32 BE]`.
-// `count` is how many YJS_UPDATE frames the server has processed from THIS socket.
-// We count our own sent updates independently; FIFO ordering keeps the two
-// counters aligned, so no sequence number rides the YJS_UPDATE frame.
 const MSG_UPDATE_ACK = 4;
 const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0B;
 const MSG_MODE_TRANSITION_REQUEST = 0x0C;
@@ -69,9 +40,6 @@ const MSG_DOC_PUBLISH_READY = 0x11;
 const MSG_DOC_PUBLISH_PAUSE_END = 0x12;
 const MSG_LIVE_SECTIONS_BOOTSTRAP = 0x14;
 const MSG_LIVE_SECTIONS_UPDATE = 0x15;
-// 0x13 (was MSG_SECTION_MOVE_REQUEST) is RESERVED/UNUSED: the live cross-section
-// move moved off the CRDT binary channel onto a REST control-plane endpoint
-// (claim-review 03 / Option E).
 
 // ─── Connection states ─────────────────────────────────────────────
 
@@ -100,7 +68,7 @@ export interface PublishPauseBarrier {
 
 export interface CrdtProviderEvents {
   onStateChange?: (state: CrdtConnectionState) => void;
-  onSynced?: () => void;
+  onBootstrapApplied?: () => void;
   onError?: (reason: string) => void;
   /** Fired when a local Y.Doc update is sent to the server (user keystroke).
    *  Receives the set of fragment keys (shared type names) that were modified. */
@@ -111,10 +79,15 @@ export interface CrdtProviderEvents {
    *  local update (sent), each `MSG_UPDATE_ACK` (received), and on (re)connect. */
   onReceiptChange?: (summary: { allReceived: boolean; pendingFragmentKeys: string[] }) => void;
   /** Fired when the server closes this socket with code 4022 (document replaced).
-   *  The provider reconnects immediately (backoff reset). */
-  onSessionReinit?: () => void;
+   *  The provider does NOT reconnect: its Y.Doc holds the replaced session's
+   *  history, so the consumer must replace the whole live pipeline (fresh
+   *  Y.Doc + socket) instead. `reason` is the server 4022 close reason
+   *  (`document_replaced` for normal replacement, `stale_doc_session` for a
+   *  stale-session rejection) and selects the safe rejoin mode. */
+  onSessionReinit?: (reason: string) => void;
   /** Fired when the server closes this socket with the admin force-rebuild code
-   *  (4024). Behaves like 4022: reconnect immediately, reseed canonical. */
+   *  (4024). Behaves like 4022: no reconnect; the consumer replaces the
+   *  live pipeline. */
   onForceRebuild?: () => void;
   /** Fired when the server closes this editor socket with 4023 because the same
    *  writer opened a newer editor tab that took over. This is an intentional
@@ -122,7 +95,8 @@ export interface CrdtProviderEvents {
    *  reconnect and will not surface `onError`. The consumer should drop this
    *  session back to read/observer mode. */
   onSuperseded?: () => void;
-  /** Fired once, after onSynced on the post-replacement reconnection, with the replacement notice. */
+  /** Fired once on the post-replacement reconnection, after the live-sections
+   *  bootstrap has applied (never before the doc is filled), with the notice. */
   onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
   /** Server-authoritative result for this tab's requested CRDT mode transition. */
   onModeTransitionResult?: (result: ModeTransitionResult) => void;
@@ -150,12 +124,7 @@ export class CrdtProvider {
   private readonly maxReconnectDelayMs = 15000;
   private reconnectAttempts = 0;
   private destroyed = false;
-  private synced = false;
-  // ─── Receipt watermark (Guarantee A) ───
-  // Count of YJS_UPDATE frames we have sent on the CURRENT connection, and the
-  // highest count the server has acknowledged processing. Reset on every new
-  // connection (the server's per-socket counter resets too). A fragment is
-  // "received" once the seq stamped on its latest local edit is ≤ ackedUpdateCount.
+  private bootstrapApplied = false;
   private sentUpdateCount = 0;
   private ackedUpdateCount = 0;
   private lastSentSeqByFragment = new Map<string, number>();
@@ -164,7 +133,7 @@ export class CrdtProvider {
   private lastTouchedFragments = new Set<string>();
   private reverseMap = new Map<object, string>();
   private lastShareSize = 0;
-  private afterTxnHandler: ((txn: Y.Transaction) => void) | null = null;
+  private trackChangedFragmentKeysAfterTransaction: ((txn: Y.Transaction) => void) | null = null;
   private pendingDocumentReplacementNotice: DocumentReplacementNoticePayload | null = null;
   private readonly clientInstanceId: ClientInstanceId;
   private readonly docPath: string;
@@ -200,9 +169,8 @@ export class CrdtProvider {
     const encodedPath = encodeDocPathForWs(docPath);
     this.url = `${protocol}//${window.location.host}/ws/crdt/${encodedPath}?clientInstanceId=${encodeURIComponent(this.clientInstanceId)}`;
 
-    // Track which fragments are modified per transaction (same pattern as backend).
-    this.afterTxnHandler = (txn: Y.Transaction) => {
-      if (txn.origin === this) return;
+    this.trackChangedFragmentKeysAfterTransaction = (txn: Y.Transaction) => {
+      if (txn.origin === this || txn.origin === LIVE_SECTION_SERVER_APPLY_ORIGIN) return;
       if (doc.share.size !== this.lastShareSize) {
         this.reverseMap = new Map();
         for (const [name, shared] of doc.share) {
@@ -217,14 +185,11 @@ export class CrdtProvider {
         if (name) this.lastTouchedFragments.add(name);
       }
     };
-    doc.on("afterTransaction", this.afterTxnHandler);
+    doc.on("afterTransaction", this.trackChangedFragmentKeysAfterTransaction);
 
     // Listen for local Y.Doc changes to broadcast.
     this.updateHandler = (update: Uint8Array, origin: unknown) => {
-      if (origin === this) return;
-      // Receipt watermark: this is one YJS_UPDATE frame — stamp it with the next
-      // sequence number and record that seq against every fragment it touched, so
-      // a later MSG_UPDATE_ACK ≥ seq proves those sections are received.
+      if (origin === this || origin === LIVE_SECTION_SERVER_APPLY_ORIGIN) return;
       this.sentUpdateCount += 1;
       this.sendUpdate(update);
       const touched = [...this.lastTouchedFragments];
@@ -276,9 +241,9 @@ export class CrdtProvider {
     this.destroyed = true;
     this.disconnect();
     this.barrier = null;
-    if (this.afterTxnHandler) {
-      this.doc.off("afterTransaction", this.afterTxnHandler);
-      this.afterTxnHandler = null;
+    if (this.trackChangedFragmentKeysAfterTransaction) {
+      this.doc.off("afterTransaction", this.trackChangedFragmentKeysAfterTransaction);
+      this.trackChangedFragmentKeysAfterTransaction = null;
     }
     if (this.updateHandler) {
       this.doc.off("update", this.updateHandler);
@@ -350,29 +315,6 @@ export class CrdtProvider {
     });
   }
 
-  /**
-   * Fire `cb` once, on the NEXT remote Y.Doc update (the server fan-out, `origin
-   * === this`). Used by the live-move caret recovery: after the REST 200 ack, the
-   * reorder's re-seed lands as a remote update — restore the caret then. A
-   * `timeoutMs` fallback fires `cb` anyway so caret restore is never stranded.
-   */
-  onceRemoteUpdate(cb: () => void, timeoutMs = 2000): void {
-    let fired = false;
-    const fire = () => {
-      if (fired) return;
-      fired = true;
-      clearTimeout(timer);
-      this.doc.off("update", onUpdate);
-      cb();
-    };
-    const onUpdate = (_update: Uint8Array, origin: unknown) => {
-      if (origin !== this) return;
-      fire();
-    };
-    const timer = setTimeout(fire, timeoutMs);
-    this.doc.on("update", onUpdate);
-  }
-
   // ─── Internal ─────────────────────────────────────────
 
   private setState(state: CrdtConnectionState): void {
@@ -393,8 +335,8 @@ export class CrdtProvider {
     }
 
     this.ws.onopen = () => {
-      // Reset sync state and pending notification on every new connection.
-      this.synced = false;
+      // Reset bootstrap-applied state and pending notification on every new connection.
+      this.bootstrapApplied = false;
       // Receipt watermark resets per connection — the server's per-socket counter
       // starts at 0 for this new socket. Post-reconnect edits re-sync via the sync
       // protocol; the connection-state indicator covers the resync window.
@@ -406,9 +348,6 @@ export class CrdtProvider {
       this.reconnectAttempts = 0;
       this.setState("connected");
       this.sendModeTransitionRequest();
-      this.sendSyncStep1();
-
-      // Broadcast local awareness state on connect.
       const encoded = encodeAwarenessUpdate(this.awareness, [
         this.doc.clientID,
       ]);
@@ -422,22 +361,30 @@ export class CrdtProvider {
 
     this.ws.onclose = (event: CloseEvent) => {
       this.ws = null;
-      this.synced = false;
+      this.bootstrapApplied = false;
 
       if (event.code === WS_CLOSE_DOCUMENT_REPLACED) {
-        // Document replaced (restore) — reconnect immediately (no backoff).
+        // Document replaced (restore) — do NOT reconnect this provider. Its
+        // Y.Doc holds the replaced session's history; reconnecting it would
+        // open a window where local keystrokes send old-history-anchored
+        // updates before the replacement bootstrap lands. The consumer
+        // (useLiveSectionReplica) tears this pipeline down and rejoins with a
+        // fresh Y.Doc on this event.
+        this.clearReconnectTimer();
         this.reconnectAttempts = 0;
-        this.events.onSessionReinit?.();
-        this.openWebSocket();
+        this.setState("disconnected");
+        this.events.onSessionReinit?.(event.reason);
         return;
       }
 
       if (event.code === WS_CLOSE_ADMIN_REBUILD) {
-        // Admin force-rebuild — behaves like 4022: reconnect immediately,
-        // reseed canonical. (Spec 05 §4 > Close codes.)
+        // Admin force-rebuild — behaves like 4022: no reconnect of this
+        // provider; the consumer replaces the whole live pipeline.
+        // (Spec 05 §4 > Close codes.)
+        this.clearReconnectTimer();
         this.reconnectAttempts = 0;
+        this.setState("disconnected");
         this.events.onForceRebuild?.();
-        this.openWebSocket();
         return;
       }
 
@@ -506,36 +453,8 @@ export class CrdtProvider {
     const payload = data.subarray(1);
 
     switch (msgType) {
-      case MSG_SYNC_STEP_1: {
-        // Server requests our state — reply with sync step 2. The server
-        // IGNORES this reply as a document mutation (the backend Y.Doc is
-        // authoritative and does not accept offline client content via the
-        // sync protocol); we still send it to complete the Yjs sync round-trip
-        // so `flushAndAwaitSync()` can use the returning SYNC_STEP_2 as an
-        // ordering barrier. Real client edits must go out as MSG_YJS_UPDATE.
-        const stateVector = payload;
-        const diff = Y.encodeStateAsUpdate(this.doc, stateVector);
-        this.sendRaw(MSG_SYNC_STEP_2, diff);
-        break;
-      }
       case MSG_SYNC_STEP_2: {
-        // Server sends the authoritative state diff — apply it. This is how
-        // clients bootstrap FROM the backend Y.Doc; the reverse direction
-        // (client-to-server SYNC_STEP_2) is intentionally not a write path.
         Y.applyUpdate(this.doc, payload, this);
-        if (!this.synced) {
-          this.synced = true;
-          this.events.onSynced?.();
-        }
-        if (this.pendingDocumentReplacementNotice) {
-          const n = this.pendingDocumentReplacementNotice;
-          this.pendingDocumentReplacementNotice = null;
-          this.events.onDocumentReplacementNotice?.(n);
-        }
-        // Resolve any pending live-move ordering barrier: a SYNC_STEP_2 means the
-        // server processed our earlier (FIFO) YJS_UPDATE frames — its per-socket
-        // message chain awaits each update's materialization before handling the
-        // later SYNC_STEP_1 we sent — so our in-flight edits are now materialized.
         if (this.syncRoundtripResolvers.length > 0) {
           const resolvers = this.syncRoundtripResolvers;
           this.syncRoundtripResolvers = [];
@@ -543,13 +462,7 @@ export class CrdtProvider {
         }
         break;
       }
-      case MSG_YJS_UPDATE: {
-        Y.applyUpdate(this.doc, payload, this);
-        break;
-      }
       case MSG_UPDATE_ACK: {
-        // Receipt watermark: the server has processed `count` of our YJS_UPDATE
-        // frames. `count` is a uint32 big-endian following the opcode.
         if (payload.length >= 4) {
           const count = ((payload[0] << 24) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) >>> 0;
           if (count > this.ackedUpdateCount) {
@@ -593,14 +506,30 @@ export class CrdtProvider {
         this.handlePublishPauseEnd();
         break;
       }
-      case MSG_LIVE_SECTIONS_BOOTSTRAP:
+      case MSG_LIVE_SECTIONS_BOOTSTRAP: {
+        this.events.onLiveSectionFrame?.(msgType, payload);
+        if (this.destroyed) break;
+        if (!this.bootstrapApplied) {
+          this.bootstrapApplied = true;
+          this.events.onBootstrapApplied?.();
+        }
+        if (this.pendingDocumentReplacementNotice) {
+          const n = this.pendingDocumentReplacementNotice;
+          this.pendingDocumentReplacementNotice = null;
+          this.events.onDocumentReplacementNotice?.(n);
+        }
+        break;
+      }
       case MSG_LIVE_SECTIONS_UPDATE: {
         this.events.onLiveSectionFrame?.(msgType, payload);
         break;
       }
-      default:
-        // Unknown message type — ignore.
-        break;
+      default: {
+        this.closeWithProtocolError(
+          `Unexpected CRDT opcode 0x${msgType.toString(16)}`,
+        );
+        return;
+      }
     }
   }
 
@@ -633,11 +562,13 @@ export class CrdtProvider {
   }
 
   /**
-   * doc_publish_pause_end: unfreeze editors. Guarded so a pause_end without a
-   * prior pause_start is a no-op (spec 05 §4 > DocSession publish pause).
+   * doc_publish_pause_end: unfreeze editors. Always notifies — a mid-pause
+   * joiner never saw pause_start (its freeze came from the bootstrap join
+   * mirror), yet the server broadcasts pause_end to every socket, and that
+   * notification is the only way the UI can clear a mirror-only freeze.
+   * No doc_publish_ready is ever sent from here.
    */
   private handlePublishPauseEnd(): void {
-    if (!this.publishPaused) return; // no active pause — no-op guard
     this.publishPaused = false;
     this.publishReadySent = false;
     this.barrier?.unfreeze();

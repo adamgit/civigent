@@ -23,7 +23,7 @@ import {
   destroyAllSessions,
 } from "../../crdt/ydoc-lifecycle.js";
 import {
-  getOrCreateInProgressProposalForDocSession,
+  getOrCreateInProgressProposalForAdoptionId,
   updateCurrentProposalSections,
   findInProgressProposalForDoc,
   listInProgressProposalsForDoc,
@@ -32,6 +32,7 @@ import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
+import { ProposalAdoptionId } from "../../types/shared.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 const OVERVIEW_KEY = "section::overview";
@@ -54,9 +55,9 @@ describe("MW-4: acquire reseeds the live Y.Doc from an existing inprogress propo
   it("a fresh acquire after a restart reflects the inprogress proposal's in-flight content", async () => {
     // Stage an inprogress proposal whose Overview body diverges from canonical,
     // simulating in-flight live work that was materialized but not yet published.
-    const docSessionId = crypto.randomUUID();
-    const created = await getOrCreateInProgressProposalForDocSession({
-      docSessionId,
+    const proposalAdoptionId = ProposalAdoptionId.create();
+    const created = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId,
       docPath: SAMPLE_DOC_PATH,
       writer: WRITER,
     });
@@ -113,9 +114,9 @@ describe("C1: acquire adopts the existing inprogress proposal identity", () => {
   it("a restart re-acquire adopts the existing proposal id and does NOT fork a second one on first edit", async () => {
     // Stage an inprogress proposal for the doc (with in-flight content), as a
     // prior live session would have left behind.
-    const docSessionId = crypto.randomUUID();
-    const created = await getOrCreateInProgressProposalForDocSession({
-      docSessionId,
+    const proposalAdoptionId = ProposalAdoptionId.create();
+    const created = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId,
       docPath: SAMPLE_DOC_PATH,
       writer: WRITER,
     });

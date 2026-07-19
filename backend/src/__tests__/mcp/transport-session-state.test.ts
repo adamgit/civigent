@@ -36,8 +36,8 @@ describe("MCP transport session state", () => {
   });
 
   afterEach(async () => {
-    await activityLog.flush("transport-shared-session", "delete-writer-A");
-    await activityLog.flush("transport-shared-session", "delete-writer-B");
+    await activityLog.flushSessionActivityBestEffort("transport-shared-session", "delete-writer-A");
+    await activityLog.flushSessionActivityBestEffort("transport-shared-session", "delete-writer-B");
     await ctx.cleanup();
   });
 
@@ -127,7 +127,7 @@ describe("MCP transport session state", () => {
     // No deletion or flush ran — the buffer is untouched.
     expect(activityLog.has(sessionId, "unauth-delete-writer")).toBe(true);
 
-    await activityLog.flush(sessionId, "unauth-delete-writer");
+    await activityLog.flushSessionActivityBestEffort(sessionId, "unauth-delete-writer");
   });
 
   it("deleting one writer's session does not flush another writer's activity buffer", async () => {
@@ -146,7 +146,7 @@ describe("MCP transport session state", () => {
     expect(activityLog.has(sessionId, "delete-writer-A")).toBe(false);
     expect(activityLog.has(sessionId, "delete-writer-B")).toBe(true);
 
-    await activityLog.flush(sessionId, "delete-writer-B");
+    await activityLog.flushSessionActivityBestEffort(sessionId, "delete-writer-B");
     expect(activityLog.has(sessionId, "delete-writer-B")).toBe(false);
   });
 });

@@ -61,7 +61,7 @@ function DegradedBanner({ defects, terminal }: { defects: ProposalDefect[]; term
 
 /**
  * Decoded domain truth for the proposal: the authoritative `targets` claim set,
- * the identity-based `deleted_section_files` set, and the owning `docSessionId`.
+ * the identity-based `deleted_section_files` set, and the owning `proposalAdoptionId`.
  * These are decoded fields off the DTO — NOT a reconstruction of on-disk bytes.
  */
 function ProposalTruthPanel({ proposal }: { proposal: ProposalDTO }) {
@@ -112,8 +112,8 @@ function ProposalTruthPanel({ proposal }: { proposal: ProposalDTO }) {
         </>
       ) : null}
 
-      {proposal.docSessionId ? (
-        <p>DocSession: <code>{proposal.docSessionId}</code></p>
+      {proposal.proposalAdoptionId ? (
+        <p>Proposal adoption ID: <code>{proposal.proposalAdoptionId}</code></p>
       ) : null}
     </div>
   );

@@ -76,22 +76,20 @@ describe("frontend live-section frame decode + routing", () => {
     expect(stateOnly.state).toEqual(STATE);
   });
 
-  it("routes a bootstrap frame into a replica, applied fully before notify", () => {
+  it("does NOT apply a bootstrap frame — bootstrap dispatch is owned by the hook (bind/merge/replace)", () => {
     const replica = createLiveSectionReplica();
-    let sawReady = false;
-    replica.subscribe(() => {
-      // Notification observes the fully-applied bootstrap.
-      sawReady = replica.hasAuthoritativeBootstrap && replica.getTopology().length === 1;
-    });
+    const payload = frameBody({ doc_session_id: "s", state: STATE }, seedUpdate());
 
-    const handled = routeLiveSectionFrame(
-      MSG_LIVE_SECTIONS_BOOTSTRAP,
-      frameBody({ doc_session_id: "s", state: STATE }, seedUpdate()),
-      replica,
-    );
-    expect(handled).toBe(true);
-    expect(sawReady).toBe(true);
-    expect(replica.requireLiveSection(SectionId.brand(ALPHA))!.readMarkdown()).toContain("body");
+    const handled = routeLiveSectionFrame(MSG_LIVE_SECTIONS_BOOTSTRAP, payload, replica);
+    expect(handled).toBe(false);
+    expect(replica.isCurrentlyLiveAuthority).toBe(false);
+    expect(replica.boundDocSessionId).toBeNull();
+
+    // The hook's dispatch decodes and binds explicitly; the decoded frame is
+    // complete (fully applied before notify).
+    replica.bindToDocSession(decodeLiveSectionsBootstrap(payload));
+    expect(replica.isCurrentlyLiveAuthority).toBe(true);
+    expect(replica.getLiveSection(SectionId.brand(ALPHA)).readMarkdown()).toContain("body");
   });
 
   it("returns false for a non-live-section opcode (caller falls through)", () => {

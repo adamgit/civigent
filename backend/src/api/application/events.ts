@@ -173,25 +173,6 @@ export function emitDocStructureChanged(
 
 
 
-// `emitLiveStructureChanged` (app-WS `doc:structure-changed` assembly with live
-// fragment-body reconstruction + `overrideUnknownLastEditorWithLiveWriter`
-// last-editor stamping) has been REMOVED: live section authority (topology,
-// body, editability) is carried on the ordered DocSession CRDT channel as
-// `LiveSectionsBootstrapFrame` / `LiveSectionsUpdateFrame` (see
-// `crdt-ws-coordinator.ts` `emitLiveStructureChanged` → `broadcastLiveSectionsUpdate`).
-// The app WebSocket is no longer a live authority; `emitDocStructureChanged` /
-// `emitCanonicalStructureChanged` remain for COLD (no live session) structural
-// notifications only.
-
-
-
-
-
-
-
-
-
-
 
 
 

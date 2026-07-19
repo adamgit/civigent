@@ -1,6 +1,6 @@
 import type { DocStructureNode } from "../types/shared.js";
 import { apiClient } from "../services/api-client";
-import type { DocumentSection } from "../pages/document-page-utils";
+import type { WorkspaceSectionDto } from "../pages/document-page-utils";
 
 /**
  * REST-backed resource model for document-level operations.
@@ -15,13 +15,13 @@ import type { DocumentSection } from "../pages/document-page-utils";
 export class DocumentResourceModel {
   private lastDocPath: string | null = null;
 
-  async loadSections(docPath: string): Promise<DocumentSection[]> {
+  async loadSections(docPath: string): Promise<WorkspaceSectionDto[]> {
     const response = await apiClient.getWorkspaceDocumentSections(docPath);
     this.lastDocPath = docPath;
     return response.sections;
   }
 
-  async reloadSections(): Promise<DocumentSection[]> {
+  async reloadSections(): Promise<WorkspaceSectionDto[]> {
     if (!this.lastDocPath) return [];
     return this.loadSections(this.lastDocPath);
   }

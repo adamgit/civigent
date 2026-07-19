@@ -152,24 +152,27 @@ Every new connection starts with `requestedMode: "none"` and `attachmentState: "
 | `ModeTransitionResult` | Backend → frontend ack/reject (discriminated union `success \| rejected`) |
 | `DocumentSessionControllerState` | Frontend-only single source of truth for this tab's CRDT state |
 
-**Binary message types** (the binary CRDT *editor channel* frame codec, `ws/crdt-ws-frames.ts`). The legacy session-overlay / focus / pulse / mutate / receipt / idle-timeout opcodes are removed; the DocSession publish-pause control messages ride this same ordered editor channel as Yjs updates.
+**Binary message types** (the binary CRDT *editor channel* frame codec, `ws/crdt-ws-frames.ts`). The DocSession publish-pause control messages ride this same ordered editor channel as Yjs updates. Illegal direction or unknown/reserved opcodes must fail loud.
 
 | Code | Name | Direction | Purpose |
 |------|------|-----------|---------|
-| 0x00 | SYNC_STEP_1 | Bidirectional | Y.js sync initiation |
-| 0x01 | SYNC_STEP_2 | Server→Client | Y.js sync response (editors may also send) |
-| 0x02 | YJS_UPDATE | Bidirectional | Y.js incremental update (editor→server and server→all). Structural normalization is delivered as a normal YJS_UPDATE delta. |
+| 0x00 | SYNC_STEP_1 | Client→Server | Post-bootstrap ordering barrier request (state vector). Never sent at socket open; never a join body fill. |
+| 0x01 | SYNC_STEP_2 | Server→Client (barrier response); Client→Server ignored | Diff response to a client `SYNC_STEP_1`. Never a join body fill. Inbound client→server is a non-mutating no-op. |
+| 0x02 | YJS_UPDATE | Client→Server only | Sole client→server document mutation path. Server→client is illegal. |
 | 0x03 | AWARENESS | Bidirectional | Presence/cursor data |
+| 0x04 | UPDATE_ACK | Server→Client | Receipt watermark: count of `YJS_UPDATE` frames processed from that socket |
 | 0x0B | DOCUMENT_REPLACEMENT_NOTICE | Server→Client | Reconnect notice delivered after restore/overwrite |
 | 0x0C | MODE_TRANSITION_REQUEST | Client→Server | Request mode transition |
 | 0x0D | MODE_TRANSITION_RESULT | Server→Client | Mode transition ack/reject |
 | 0x10 | DOC_PUBLISH_PAUSE_START | Server→Client | DocSession publish pause begun; freeze editors |
 | 0x11 | DOC_PUBLISH_READY | Client→Server | Editors frozen / no more Yjs txns (ordered ack) |
 | 0x12 | DOC_PUBLISH_PAUSE_END | Server→Client | Publish attempt ended (commit or abort); editors may unfreeze |
+| 0x14 | LIVE_SECTIONS_BOOTSTRAP | Server→Client | Sole join body fill: DocSession id, full live-section state, and full Y.Doc update |
+| 0x15 | LIVE_SECTIONS_UPDATE | Server→Client | Sole server→client content/state fan-out. May carry `yjs_update` and/or full idempotent JSON state; structural changes deliver both in one frame. |
 
-Opcode `0x08` (legacy `STRUCTURE_WILL_CHANGE`) is permanently reserved-removed and must never be redefined — the design does not expose live fragment-key remaps as a client contract.
+Opcodes `0x08` (legacy `STRUCTURE_WILL_CHANGE`) and `0x13` (legacy live cross-section move) are permanently reserved-removed and must never be redefined.
 
-**Section block-state events are NOT binary frames.** `section:blocked` / `section:unblocked` / `section:gone` travel on the JSON application WebSocket as server events (they keep the frontend's per-section editability — `editable | blocked | gone` — aligned with server reality). They derive from proposal lock-acquisition events and canonical structural changes (rename/delete commits).
+**Live section authority is on the CRDT channel.** While a DocSession is active, topology, editability (`blocked_section_ids`), pending-writer state, publish-pause join mirror, and section bodies travel on `0x14`/`0x15`. App-WS `section:blocked` / `section:unblocked` / `section:gone` and live `doc:structure-changed` are not the live authority.
 
 **Application-level close codes** (`ws/crdt-ws-frames.ts`):
 
@@ -303,7 +306,7 @@ Live CRDT edits are materialized by `CRDTProposalGenerator` into the DocSession'
 
 ### Structural normalization (event-driven, owned by CRDTProposalGenerator)
 
-Resolving embedded headings, heading deletions, and heading-level changes within a section is owned by `CRDTProposalGenerator`. The trigger is per-section CRDT-activity quiescence detected by its observation surface — **not** a 60s timer, focus change, or session-end. The mutation runs inside a single identity-preserving `Y.transact` (splits keep the original fragment as one half; merges extend the survivor; cross-section moves use capture-and-recover on the cursor). The atomicity guarantees peers/observers see only pre- or post-state; the resulting `YJS_UPDATE` delta is the broadcast — there is no `STRUCTURE_WILL_CHANGE` warning protocol.
+Resolving embedded headings, heading deletions, and heading-level changes within a section is owned by `CRDTProposalGenerator`. The trigger is per-section CRDT-activity quiescence detected by its observation surface — **not** a 60s timer, focus change, or session-end. The mutation runs inside a single identity-preserving `Y.transact` (splits keep the original fragment as one half; merges extend the survivor; cross-section moves use capture-and-recover on the cursor). Structural fan-out is a single ordered `LIVE_SECTIONS_UPDATE` frame carrying both the Yjs update and the resulting live topology/editability state; there is no preceding raw `YJS_UPDATE` and no `STRUCTURE_WILL_CHANGE` warning protocol.
 
 ### Publish (PublishTriggerPolicy → DocSession publish pause → commit)
 

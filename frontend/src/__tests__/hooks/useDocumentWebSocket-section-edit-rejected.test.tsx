@@ -18,7 +18,7 @@ import type {
   SectionEditRejectedEvent,
   WsServerEvent,
 } from "../../types/shared";
-import type { DocumentSection } from "../../pages/document-page-utils";
+import type { WorkspaceSectionDto } from "../../pages/document-page-utils";
 
 type WsEventHandler = (event: WsServerEvent) => void;
 let capturedWsHandler: WsEventHandler | null = null;
@@ -42,7 +42,7 @@ vi.mock("../../services/ws-client", () => ({
 
 vi.mock("../../services/api-client", () => ({
   apiClient: {
-    getWorkspaceDocumentSections: async () => ({ sections: [] as DocumentSection[] }),
+    getWorkspaceDocumentSections: async () => ({ sections: [] as WorkspaceSectionDto[] }),
   },
   resolveWriterId: () => "test-user",
 }));

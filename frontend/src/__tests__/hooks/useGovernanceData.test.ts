@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { useGovernanceData } from "../../hooks/useGovernanceData";
-import type { DocumentSection } from "../../pages/document-page-utils";
+import type { WorkspaceSectionDto } from "../../pages/document-page-utils";
 
-function makeSection(overrides: Partial<DocumentSection>): DocumentSection {
+function makeSection(overrides: Partial<WorkspaceSectionDto>): WorkspaceSectionDto {
   return {
     heading: "Overview",
     heading_path: ["Overview"],
@@ -11,8 +11,6 @@ function makeSection(overrides: Partial<DocumentSection>): DocumentSection {
     content: "# Overview\n",
     agentWritePolicy: { canWrite: true, message: "Agents can currently write to Overview." },
     crdt_session_active: false,
-    section_length_warning: false,
-    word_count: 2,
     fragment_key: "frag:sec_overview",
     section_file: "sec_overview.md",
     ...overrides,
@@ -58,7 +56,7 @@ describe("useGovernanceData", () => {
 
   it("falls back to a generic line only when a section carries no policy summary at all", () => {
     const sections = [
-      makeSection({ agentWritePolicy: undefined as unknown as DocumentSection["agentWritePolicy"] }),
+      makeSection({ agentWritePolicy: undefined as unknown as WorkspaceSectionDto["agentWritePolicy"] }),
     ];
     const { result } = renderHook(() => useGovernanceData(sections));
     const control = result.current.leftGutterSections[0];
@@ -107,11 +105,96 @@ describe("useGovernanceData", () => {
     expect(control.lastEditorNote).toMatch(/Human/);
   });
 
-  it("produces one rightGutterGroup per section", () => {
-    const sections = [makeSection({}), makeSection({ heading: "Goals", heading_path: ["Goals"] })];
+  it("produces one rightGutterGroup per section, keyed by fragment identity", () => {
+    const sections = [
+      makeSection({}),
+      makeSection({ heading: "Goals", heading_path: ["Goals"], fragment_key: "frag:sec_goals" }),
+    ];
     const { result } = renderHook(() => useGovernanceData(sections));
     expect(result.current.rightGutterGroups).toHaveLength(2);
-    expect(result.current.rightGutterGroups[0]).toEqual({ sectionIndex: 0, entries: [] });
-    expect(result.current.rightGutterGroups[1]).toEqual({ sectionIndex: 1, entries: [] });
+    expect(result.current.rightGutterGroups[0]).toEqual({ fragmentKey: "frag:sec_overview", entries: [], inProgressProposal: false });
+    expect(result.current.rightGutterGroups[1]).toEqual({ fragmentKey: "frag:sec_goals", entries: [], inProgressProposal: false });
+  });
+
+  it("keys canonical governance rows by fragment identity rather than positional index", () => {
+    const canonicalSections = [
+      makeSection({
+        heading: "Canonical Overview",
+        heading_path: ["Canonical Overview"],
+        fragment_key: "section::canonical-overview",
+        agentWritePolicy: { canWrite: false, message: "Canonical overview is blocked." },
+      }),
+      makeSection({
+        heading: "Canonical Timeline",
+        heading_path: ["Canonical Timeline"],
+        fragment_key: "section::canonical-timeline",
+        agentWritePolicy: { canWrite: true, message: "Canonical timeline is open." },
+      }),
+    ];
+
+    const { result } = renderHook(() => useGovernanceData(canonicalSections));
+
+    expect(result.current.leftGutterSections.map((section) => (
+      section as typeof section & { fragmentKey?: string }
+    ).fragmentKey)).toEqual([
+      "section::canonical-overview",
+      "section::canonical-timeline",
+    ]);
+    expect(result.current.rightGutterGroups.map((group) => (
+      group as typeof group & { fragmentKey?: string }
+    ).fragmentKey)).toEqual([
+      "section::canonical-overview",
+      "section::canonical-timeline",
+    ]);
+    expect(result.current.leftGutterSections[0]).not.toHaveProperty("sectionIndex");
+    expect(result.current.rightGutterGroups[0]).not.toHaveProperty("sectionIndex");
+  });
+
+  it("joins in-progress proposal flag by fragment identity, not REST array position", () => {
+    // REST meta order: A then B.
+    const restSections = [
+      makeSection({
+        heading: "Alpha",
+        heading_path: ["Alpha"],
+        fragment_key: "section::alpha",
+      }),
+      makeSection({
+        heading: "Beta",
+        heading_path: ["Beta"],
+        fragment_key: "section::beta",
+      }),
+    ];
+    // Live center order is reversed; only Alpha is under an in-progress proposal.
+    const orderedFragmentKeys = ["section::beta", "section::alpha"];
+    const inProgressByFragmentKey = new Map<string, { proposalId: string }>([
+      ["section::alpha", { proposalId: "p1" }],
+    ]);
+
+    type GovernanceJoinOpts = {
+      orderedFragmentKeys: string[];
+      inProgressByFragmentKey: Map<string, { proposalId: string }>;
+    };
+    type LeftRow = {
+      fragmentKey: string;
+      inProgressProposal?: false | { proposalId?: string } | null;
+    };
+    const joinAware = useGovernanceData as unknown as (
+      sections: WorkspaceSectionDto[],
+      opts: GovernanceJoinOpts,
+    ) => { leftGutterSections: LeftRow[] };
+
+    const { result } = renderHook(() =>
+      joinAware(restSections, { orderedFragmentKeys, inProgressByFragmentKey }),
+    );
+
+    expect(result.current.leftGutterSections.map((row) => row.fragmentKey)).toEqual([
+      "section::beta",
+      "section::alpha",
+    ]);
+    const byKey = new Map(
+      result.current.leftGutterSections.map((row) => [row.fragmentKey, row]),
+    );
+    expect(byKey.get("section::alpha")?.inProgressProposal).toBeTruthy();
+    expect(byKey.get("section::beta")?.inProgressProposal).toBeFalsy();
   });
 });

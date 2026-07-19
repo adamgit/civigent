@@ -242,6 +242,7 @@ describe("A8: Canonical Store (absorb) Invariants", () => {
     expect(result).not.toHaveProperty("clientRemap");
     expect(result).not.toHaveProperty("sessionId");
     expect(result).not.toHaveProperty("docSessionId");
+    expect(result).not.toHaveProperty("proposalAdoptionId");
 
     // Section receipts carry only docPath + headingPath (no fragment keys, no
     // session-overlay mappings).

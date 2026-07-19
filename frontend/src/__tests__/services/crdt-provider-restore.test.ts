@@ -8,6 +8,7 @@ import { WS_CLOSE_DOCUMENT_REPLACED, WS_CLOSE_ADMIN_REBUILD, WS_CLOSE_SUPERSEDED
 const MSG_SYNC_STEP_1 = 0x00;
 const MSG_SYNC_STEP_2 = 0x01;
 const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0b;
+const MSG_LIVE_SECTIONS_BOOTSTRAP = 0x14;
 
 // ─── StubWebSocket ──────────────────────────────────────────────
 // Replaces globalThis.WebSocket so CrdtProvider's `new WebSocket(url)` returns
@@ -114,39 +115,59 @@ function buildSyncStep2FromDoc(sourceDoc: Y.Doc): Uint8Array {
   return msg;
 }
 
+/** Build a MSG_LIVE_SECTIONS_BOOTSTRAP frame — the sole join body fill that
+ *  releases bootstrapApplied/buffered-notice on the provider. */
+function buildLiveSectionsBootstrapFromDoc(sourceDoc: Y.Doc): Uint8Array {
+  const update = Y.encodeStateAsUpdate(sourceDoc);
+  const header = new TextEncoder().encode(JSON.stringify({
+    doc_session_id: "sess-test",
+    state: { topology: [], blocked_section_ids: [], pending_sections: [], publish_pause_join_mirror: "not_in_pause" },
+  }));
+  const msg = new Uint8Array(1 + 4 + header.length + update.length);
+  msg[0] = MSG_LIVE_SECTIONS_BOOTSTRAP;
+  msg[1] = (header.length >>> 24) & 0xff;
+  msg[2] = (header.length >>> 16) & 0xff;
+  msg[3] = (header.length >>> 8) & 0xff;
+  msg[4] = header.length & 0xff;
+  msg.set(header, 5);
+  msg.set(update, 5 + header.length);
+  return msg;
+}
+
 const VALID_NOTICE_PAYLOAD: DocumentReplacementNoticePayload = {
   message: "document was restored to an earlier version",
 };
 
 describe("CrdtProvider document replacement notice handling", () => {
-  it("notice-before-sync ordering: onDocumentReplacementNotice fires on SYNC_STEP_2 receipt", () => {
+  it("notice-before-bootstrap ordering: onDocumentReplacementNotice fires once the live-sections bootstrap applies", () => {
     const onRestore = vi.fn();
-    const onSynced = vi.fn();
+    const onBootstrapApplied = vi.fn();
     const doc = new Y.Doc();
-    const provider = new CrdtProvider(doc, "/test/doc.md", { onSynced, onDocumentReplacementNotice: onRestore });
+    const provider = new CrdtProvider(doc, "/test/doc.md", { onBootstrapApplied, onDocumentReplacementNotice: onRestore });
 
     provider.connect();
     const ws = StubWebSocket.lastInstance!;
     ws.open();
 
-    // Server sends MSG_DOCUMENT_REPLACEMENT_NOTICE first, then MSG_SYNC_STEP_2
+    // Server sends MSG_DOCUMENT_REPLACEMENT_NOTICE first, then the bootstrap
     ws.receiveServerMessage(buildDocumentReplacementNotice(VALID_NOTICE_PAYLOAD));
+    expect(onRestore).not.toHaveBeenCalled();
     const sourceDoc = new Y.Doc();
     sourceDoc.getMap("test").set("k", "v");
-    ws.receiveServerMessage(buildSyncStep2FromDoc(sourceDoc));
+    ws.receiveServerMessage(buildLiveSectionsBootstrapFromDoc(sourceDoc));
 
-    expect(onSynced).toHaveBeenCalledTimes(1);
+    expect(onBootstrapApplied).toHaveBeenCalledTimes(1);
     expect(onRestore).toHaveBeenCalledTimes(1);
     expect(onRestore).toHaveBeenCalledWith(VALID_NOTICE_PAYLOAD);
 
     provider.destroy();
   });
 
-  it("onSynced fires before onDocumentReplacementNotice when both trigger on same SYNC_STEP_2", () => {
+  it("onBootstrapApplied fires before onDocumentReplacementNotice when both trigger on the same bootstrap", () => {
     const log: string[] = [];
     const doc = new Y.Doc();
     const provider = new CrdtProvider(doc, "/test/doc.md", {
-      onSynced: () => log.push("synced"),
+      onBootstrapApplied: () => log.push("bootstrapApplied"),
       onDocumentReplacementNotice: () => log.push("noticed"),
     });
 
@@ -156,48 +177,72 @@ describe("CrdtProvider document replacement notice handling", () => {
 
     ws.receiveServerMessage(buildDocumentReplacementNotice(VALID_NOTICE_PAYLOAD));
     const sourceDoc = new Y.Doc();
-    ws.receiveServerMessage(buildSyncStep2FromDoc(sourceDoc));
+    ws.receiveServerMessage(buildLiveSectionsBootstrapFromDoc(sourceDoc));
 
-    expect(log).toEqual(["synced", "noticed"]);
+    expect(log).toEqual(["bootstrapApplied", "noticed"]);
     provider.destroy();
   });
 
-  it("normal sync without notice: onSynced fires, onDocumentReplacementNotice does NOT fire", () => {
+  it("a later barrier SYNC_STEP_2 does NOT release a buffered notice (bootstrap-only release)", () => {
     const onRestore = vi.fn();
-    const onSynced = vi.fn();
+    const onBootstrapApplied = vi.fn();
     const doc = new Y.Doc();
-    const provider = new CrdtProvider(doc, "/test/doc.md", { onSynced, onDocumentReplacementNotice: onRestore });
+    const provider = new CrdtProvider(doc, "/test/doc.md", { onBootstrapApplied, onDocumentReplacementNotice: onRestore });
+
+    provider.connect();
+    const ws = StubWebSocket.lastInstance!;
+    ws.open();
+
+    ws.receiveServerMessage(buildDocumentReplacementNotice(VALID_NOTICE_PAYLOAD));
+    const sourceDoc = new Y.Doc();
+    ws.receiveServerMessage(buildSyncStep2FromDoc(sourceDoc));
+
+    // A barrier diff is not the join body fill — the notice stays buffered.
+    expect(onBootstrapApplied).not.toHaveBeenCalled();
+    expect(onRestore).not.toHaveBeenCalled();
+
+    ws.receiveServerMessage(buildLiveSectionsBootstrapFromDoc(sourceDoc));
+    expect(onBootstrapApplied).toHaveBeenCalledTimes(1);
+    expect(onRestore).toHaveBeenCalledTimes(1);
+    provider.destroy();
+  });
+
+  it("normal bootstrap without notice: onBootstrapApplied fires, onDocumentReplacementNotice does NOT fire", () => {
+    const onRestore = vi.fn();
+    const onBootstrapApplied = vi.fn();
+    const doc = new Y.Doc();
+    const provider = new CrdtProvider(doc, "/test/doc.md", { onBootstrapApplied, onDocumentReplacementNotice: onRestore });
 
     provider.connect();
     const ws = StubWebSocket.lastInstance!;
     ws.open();
 
     const sourceDoc = new Y.Doc();
-    ws.receiveServerMessage(buildSyncStep2FromDoc(sourceDoc));
+    ws.receiveServerMessage(buildLiveSectionsBootstrapFromDoc(sourceDoc));
 
-    expect(onSynced).toHaveBeenCalledTimes(1);
+    expect(onBootstrapApplied).toHaveBeenCalledTimes(1);
     expect(onRestore).not.toHaveBeenCalled();
     provider.destroy();
   });
 
-  it("multiple SYNC_STEP_2 messages: onSynced fires exactly once", () => {
-    const onSynced = vi.fn();
+  it("multiple bootstrap frames: onBootstrapApplied fires exactly once", () => {
+    const onBootstrapApplied = vi.fn();
     const doc = new Y.Doc();
-    const provider = new CrdtProvider(doc, "/test/doc.md", { onSynced });
+    const provider = new CrdtProvider(doc, "/test/doc.md", { onBootstrapApplied });
 
     provider.connect();
     const ws = StubWebSocket.lastInstance!;
     ws.open();
 
     const sourceDoc = new Y.Doc();
-    ws.receiveServerMessage(buildSyncStep2FromDoc(sourceDoc));
-    ws.receiveServerMessage(buildSyncStep2FromDoc(sourceDoc));
+    ws.receiveServerMessage(buildLiveSectionsBootstrapFromDoc(sourceDoc));
+    ws.receiveServerMessage(buildLiveSectionsBootstrapFromDoc(sourceDoc));
 
-    expect(onSynced).toHaveBeenCalledTimes(1);
+    expect(onBootstrapApplied).toHaveBeenCalledTimes(1);
     provider.destroy();
   });
 
-  it("pendingDocumentReplacementNotice is reset on reconnect", () => {
+  it("pendingDocumentReplacementNotice is reset on a new connection", () => {
     const onRestore = vi.fn();
     const doc = new Y.Doc();
     const provider = new CrdtProvider(doc, "/test/doc.md", { onDocumentReplacementNotice: onRestore });
@@ -206,29 +251,26 @@ describe("CrdtProvider document replacement notice handling", () => {
     const ws1 = StubWebSocket.lastInstance!;
     ws1.open();
 
-    // Receive a notice on the first connection (but no SYNC_STEP_2 yet)
+    // Receive a notice on the first connection (but no bootstrap yet)
     ws1.receiveServerMessage(buildDocumentReplacementNotice(VALID_NOTICE_PAYLOAD));
 
-    // Server sends close code 4022 — provider auto-reconnects
-    if (ws1.onclose) {
-      ws1.onclose(new CloseEvent("close", { code: WS_CLOSE_DOCUMENT_REPLACED }));
-    }
-
-    // Provider opens a new WebSocket
+    // Reconnect via the consumer path (disconnect + connect).
+    provider.disconnect();
+    provider.connect();
     const ws2 = StubWebSocket.lastInstance!;
     expect(ws2).not.toBe(ws1);
     ws2.open();
 
-    // Send SYNC_STEP_2 on the NEW connection — onDocumentReplacementNotice should NOT fire
+    // Bootstrap on the NEW connection — onDocumentReplacementNotice should NOT fire
     // because pendingDocumentReplacementNotice was cleared in onopen.
     const sourceDoc = new Y.Doc();
-    ws2.receiveServerMessage(buildSyncStep2FromDoc(sourceDoc));
+    ws2.receiveServerMessage(buildLiveSectionsBootstrapFromDoc(sourceDoc));
 
     expect(onRestore).not.toHaveBeenCalled();
     provider.destroy();
   });
 
-  it("admin force-rebuild (4024) fires onForceRebuild and reconnects immediately, like 4022", () => {
+  it("admin force-rebuild (4024) fires onForceRebuild and does NOT reconnect the old doc, like 4022", () => {
     const onForceRebuild = vi.fn();
     const onSessionReinit = vi.fn();
     const doc = new Y.Doc();
@@ -241,16 +283,17 @@ describe("CrdtProvider document replacement notice handling", () => {
     // Server sends the admin force-rebuild close code.
     ws1.onclose?.(new CloseEvent("close", { code: WS_CLOSE_ADMIN_REBUILD }));
 
-    // Behaves like 4022: a new WebSocket is opened immediately (no backoff),
-    // and onForceRebuild fires (not the restore-specific onSessionReinit).
-    const ws2 = StubWebSocket.lastInstance!;
-    expect(ws2).not.toBe(ws1);
+    // Behaves like 4022: NO new WebSocket is opened against the old Y.Doc —
+    // the consumer replaces the whole live pipeline. onForceRebuild fires
+    // (not the restore-specific onSessionReinit).
+    expect(StubWebSocket.lastInstance).toBe(ws1);
     expect(onForceRebuild).toHaveBeenCalledTimes(1);
     expect(onSessionReinit).not.toHaveBeenCalled();
+    expect(provider.state).toBe("disconnected");
     provider.destroy();
   });
 
-  it("restore (4022) fires onSessionReinit and reconnects immediately", () => {
+  it("restore (4022) fires onSessionReinit and does NOT reconnect the old doc", () => {
     const onSessionReinit = vi.fn();
     const doc = new Y.Doc();
     const provider = new CrdtProvider(doc, "/test/doc.md", { onSessionReinit });
@@ -260,9 +303,10 @@ describe("CrdtProvider document replacement notice handling", () => {
     ws1.open();
     ws1.onclose?.(new CloseEvent("close", { code: WS_CLOSE_DOCUMENT_REPLACED }));
 
-    const ws2 = StubWebSocket.lastInstance!;
-    expect(ws2).not.toBe(ws1);
+    // No reconnect: the old Y.Doc must never regain a socket after replacement.
+    expect(StubWebSocket.lastInstance).toBe(ws1);
     expect(onSessionReinit).toHaveBeenCalledTimes(1);
+    expect(provider.state).toBe("disconnected");
     provider.destroy();
   });
 

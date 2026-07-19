@@ -100,13 +100,9 @@ function cleanExpiredSessions(): void {
   for (const [key, entry] of sessions) {
     if (now - entry.lastUsed > SESSION_TTL_MS) {
       sessions.delete(key);
-      // Fire-and-forget: flush activity log for the expired compound session. No
-      // proposal is touched — this is monitoring cleanup only.
       const sid = entry.session.sessionId;
       if (sid) {
-        activityLog.flush(sid, entry.writer.id).catch(() => {
-          /* flush is a best-effort appendFile — no caller to propagate to, no console/logger available in this process. Accepted trade-off: if disk write fails, session activity data is silently lost. */
-        });
+        void activityLog.flushSessionActivityBestEffort(sid, entry.writer.id);
       }
     }
   }
@@ -214,12 +210,7 @@ export function createMcpRouter(options: McpTransportOptions): express.Router {
     if (incoming.kind === "present") {
       const sessionId = incoming.sessionId;
       sessions.delete(sessionKey(writer.id, sessionId));
-      try {
-        await activityLog.flush(sessionId, writer.id);
-      } catch {
-        // Best-effort monitoring write — a disk failure must not hang the
-        // response (there is no error middleware behind this async handler).
-      }
+      await activityLog.flushSessionActivityBestEffort(sessionId, writer.id);
     }
     res.status(204).end();
   });

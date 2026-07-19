@@ -17,6 +17,7 @@ import type { WriterIdentity } from "../../types/shared.js";
 const MSG_SYNC_STEP_1 = 0x00;
 const MSG_SYNC_STEP_2 = 0x01;
 const MSG_DOCUMENT_REPLACEMENT_NOTICE = 0x0b;
+const MSG_LIVE_SECTIONS_BOOTSTRAP = 0x14;
 
 const WRITER_A: WriterIdentity = { id: "writer-a", type: "human", displayName: "Writer A" };
 
@@ -79,7 +80,7 @@ describe("joinAndNotify message ordering", () => {
     await ctx.cleanup();
   });
 
-  it("when a replacement notice is pending, MSG_DOCUMENT_REPLACEMENT_NOTICE (0x0B) is sent BEFORE SYNC_STEP_2 (0x01)", async () => {
+  it("when a replacement notice is pending, MSG_DOCUMENT_REPLACEMENT_NOTICE (0x0B) is sent BEFORE the live-sections bootstrap (0x14)", async () => {
     await invalidateSessionForReplacement(DOC_RESTORE_ORDER, {
       message: "document was restored to an earlier version",
     });
@@ -91,30 +92,34 @@ describe("joinAndNotify message ordering", () => {
 
     try {
       joinAndNotify(session, socket, st);
+      await session.enqueue(() => undefined); // drain the lane so the bootstrap send lands
 
       const restoreIdx = sent.findIndex((m) => m[0] === MSG_DOCUMENT_REPLACEMENT_NOTICE);
-      const syncStep2Idx = sent.findIndex((m) => m[0] === MSG_SYNC_STEP_2);
+      const bootstrapIdx = sent.findIndex((m) => m[0] === MSG_LIVE_SECTIONS_BOOTSTRAP);
 
       expect(restoreIdx).toBeGreaterThanOrEqual(0);
-      expect(syncStep2Idx).toBeGreaterThanOrEqual(0);
-      // EXPECTED TO FAIL pre-fix: currently restoreIdx > syncStep2Idx
-      expect(restoreIdx).toBeLessThan(syncStep2Idx);
+      expect(bootstrapIdx).toBeGreaterThanOrEqual(0);
+      expect(restoreIdx).toBeLessThan(bootstrapIdx);
     } finally {
       await releaseDocSession(DOC_RESTORE_ORDER, WRITER_A.id, "sock-test");
     }
   });
 
-  it("when no replacement notice is pending, only SYNC_STEP_2 and SYNC_STEP_1 are sent", async () => {
+  it("when no replacement notice is pending, the live-sections bootstrap is the ONLY join message — no join-time SYNC_STEP_2/SYNC_STEP_1", async () => {
     const session = await acquireDocSession(DOC_NO_NOTIFY, WRITER_A.id, baseHead, WRITER_A, "sock-test");
     const { socket, sent } = createMockSocket();
     const st = createSocketState(DOC_NO_NOTIFY, WRITER_A.id);
 
     try {
       joinAndNotify(session, socket, st);
+      await session.enqueue(() => undefined); // drain the lane so the bootstrap send lands
 
-      expect(sent.length).toBe(2);
-      expect(sent[0][0]).toBe(MSG_SYNC_STEP_2);
-      expect(sent[1][0]).toBe(MSG_SYNC_STEP_1);
+      expect(sent.length).toBe(1);
+      expect(sent[0][0]).toBe(MSG_LIVE_SECTIONS_BOOTSTRAP);
+      // Join body fill contract: a join-time full-doc SYNC_STEP_2 (or the
+      // SYNC_STEP_1 that solicited it) would be a second join body authority.
+      expect(sent.find((m) => m[0] === MSG_SYNC_STEP_2)).toBeUndefined();
+      expect(sent.find((m) => m[0] === MSG_SYNC_STEP_1)).toBeUndefined();
       expect(sent.find((m) => m[0] === MSG_DOCUMENT_REPLACEMENT_NOTICE)).toBeUndefined();
     } finally {
       await releaseDocSession(DOC_NO_NOTIFY, WRITER_A.id, "sock-test");
@@ -128,11 +133,13 @@ describe("joinAndNotify message ordering", () => {
 
     try {
       joinAndNotify(session, socket, st);
+      await session.enqueue(() => undefined); // drain the lane so the bootstrap send lands
       const firstCallCount = sent.length;
       expect(firstCallCount).toBeGreaterThan(0);
       expect(st.joined).toBe(true);
 
       joinAndNotify(session, socket, st);
+      await session.enqueue(() => undefined);
       expect(sent.length).toBe(firstCallCount);
     } finally {
       await releaseDocSession(DOC_DOUBLE_CALL, WRITER_A.id, "sock-test");

@@ -14,22 +14,35 @@ import { renderHook } from "@testing-library/react";
 import { useCrossSectionCopy } from "../../hooks/useCrossSectionCopy";
 
 const sections = [
-  { heading_path: ["Overview"], heading: "Overview", depth: 1, content: "## Overview\n\nOverview body.", fragment_key: "section::overview" },
-  { heading_path: ["Timeline"], heading: "Timeline", depth: 1, content: "## Timeline\n\nTimeline body.", fragment_key: "section::timeline" },
+  { heading_path: ["Overview"], heading: "Overview", depth: 1, displayMarkdown: "## Overview\n\nOverview body.", fragment_key: "section::overview" },
+  { heading_path: ["Timeline"], heading: "Timeline", depth: 1, displayMarkdown: "## Timeline\n\nTimeline body.", fragment_key: "section::timeline" },
 ];
 
 let container: HTMLDivElement;
 let s0: HTMLDivElement;
 let s1: HTMLDivElement;
 
-function setupDom() {
+function setupDom(
+  rows: Array<{
+    text: string;
+    sectionIndex?: string;
+    fragmentKey?: string;
+    documentSection?: boolean;
+  }> = [
+    { text: "Overview body", fragmentKey: "section::overview", documentSection: true },
+    { text: "Timeline body", fragmentKey: "section::timeline", documentSection: true },
+  ],
+) {
   container = document.createElement("div");
-  s0 = document.createElement("div");
-  s0.dataset.sectionIndex = "0";
-  s0.textContent = "Overview body";
-  s1 = document.createElement("div");
-  s1.dataset.sectionIndex = "1";
-  s1.textContent = "Timeline body";
+  const elements = rows.map((row) => {
+    const el = document.createElement("div");
+    if (row.sectionIndex !== undefined) el.dataset.sectionIndex = row.sectionIndex;
+    if (row.fragmentKey !== undefined) el.dataset.fragmentKey = row.fragmentKey;
+    if (row.documentSection) el.setAttribute("data-document-section", "");
+    el.textContent = row.text;
+    return el;
+  });
+  [s0, s1] = elements as [HTMLDivElement, HTMLDivElement];
   container.append(s0, s1);
   document.body.append(container);
 }
@@ -61,7 +74,7 @@ describe("cross-section copy (spec 05)", () => {
   it("copies clean markdown when the selection spans multiple sections", () => {
     const containerRef = { current: container };
     const editorRefs = { current: new Map() }; // no live editors → full section content used
-    renderHook(() => useCrossSectionCopy({ containerRef, sections, editorRefs }));
+    renderHook(() => useCrossSectionCopy({ containerRef, displayRows: sections, editorRefs }));
 
     selectRange(s0.firstChild!, 0, s1.firstChild!, (s1.firstChild as Text).length);
     const { prevented, setData } = dispatchCopy();
@@ -76,7 +89,7 @@ describe("cross-section copy (spec 05)", () => {
   it("defers to Milkdown's built-in clipboard for an intra-section selection", () => {
     const containerRef = { current: container };
     const editorRefs = { current: new Map() };
-    renderHook(() => useCrossSectionCopy({ containerRef, sections, editorRefs }));
+    renderHook(() => useCrossSectionCopy({ containerRef, displayRows: sections, editorRefs }));
 
     // Selection entirely within section 0.
     selectRange(s0.firstChild!, 0, s0.firstChild!, 4);
@@ -84,5 +97,85 @@ describe("cross-section copy (spec 05)", () => {
 
     expect(prevented).toBe(false);
     expect(setData).not.toHaveBeenCalled();
+  });
+
+  it("copies by wrapper fragment identity when live render order differs from cold section order", () => {
+    document.body.innerHTML = "";
+    setupDom([
+      {
+        text: "Timeline body",
+        sectionIndex: "0",
+        fragmentKey: "section::timeline",
+        documentSection: true,
+      },
+      {
+        text: "Overview body",
+        sectionIndex: "1",
+        fragmentKey: "section::overview",
+        documentSection: true,
+      },
+    ]);
+    const containerRef = { current: container };
+    const editorRefs = { current: new Map() };
+    renderHook(() => useCrossSectionCopy({ containerRef, displayRows: sections, editorRefs }));
+
+    selectRange(s0.firstChild!, 0, s1.firstChild!, (s1.firstChild as Text).length);
+    const { prevented, setData } = dispatchCopy();
+
+    expect(prevented).toBe(true);
+    expect(setData).toHaveBeenCalledWith(
+      "text/plain",
+      "## Timeline\n\nTimeline body.\n\n## Overview\n\nOverview body.",
+    );
+  });
+
+  it("uses proposal overlay markdown ahead of canonical live markdown for copied proposal sections", () => {
+    document.body.innerHTML = "";
+    setupDom([
+      {
+        text: "Overview proposal body",
+        sectionIndex: "0",
+        fragmentKey: "section::overview",
+        documentSection: true,
+      },
+      {
+        text: "Timeline proposal body",
+        sectionIndex: "1",
+        fragmentKey: "section::timeline",
+        documentSection: true,
+      },
+    ]);
+    const proposalRenderSections = [
+      {
+        ...sections[0],
+        displayMarkdown: "## Overview\n\nProposal overlay overview.",
+      },
+      {
+        ...sections[1],
+        displayMarkdown: "## Timeline\n\nProposal overlay timeline.",
+      },
+    ];
+    const getLiveMarkdown = (fragmentKey: string): string | undefined => {
+      if (fragmentKey === "section::overview") return "## Overview\n\nCanonical live overview.";
+      if (fragmentKey === "section::timeline") return "## Timeline\n\nCanonical live timeline.";
+      return undefined;
+    };
+    const containerRef = { current: container };
+    const editorRefs = { current: new Map() };
+    renderHook(() => useCrossSectionCopy({
+      containerRef,
+      displayRows: proposalRenderSections,
+      editorRefs,
+      getLiveMarkdown,
+    }));
+
+    selectRange(s0.firstChild!, 0, s1.firstChild!, (s1.firstChild as Text).length);
+    const { prevented, setData } = dispatchCopy();
+
+    expect(prevented).toBe(true);
+    expect(setData).toHaveBeenCalledWith(
+      "text/plain",
+      "## Overview\n\nProposal overlay overview.\n\n## Timeline\n\nProposal overlay timeline.",
+    );
   });
 });

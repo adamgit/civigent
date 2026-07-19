@@ -6,9 +6,8 @@
  * by `CrdtTransport` and exposed readonly as `transport.awareness`. The semantics
  * of presence — i.e. that a user's local state carries a `viewingSections` field —
  * are an application/collaboration concern that belongs here, not on the
- * connection facade (`CrdtTransport`) nor on the document replica
- * (`BrowserFragmentReplicaStore`). Consumers write presence through this object
- * and never touch `awareness.setLocalStateField` directly.
+ * connection facade (`CrdtTransport`). Consumers write presence through this
+ * object and never touch `awareness.setLocalStateField` directly.
  */
 
 import type { Awareness } from "y-protocols/awareness";

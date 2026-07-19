@@ -62,6 +62,8 @@ function compoundActivityKey(agentId: string, sessionId: string): string {
 
 export class ActivityLog {
   private sessions = new Map<string, InFlightSession>();
+  /** Tail of the in-flight flush chain per compound key (serializes flushes). */
+  private flushTails = new Map<string, Promise<void>>();
 
   /**
    * Record an action for the given `(agentId, sessionId)` MCP session.
@@ -97,16 +99,37 @@ export class ActivityLog {
 
   /**
    * Flush the `(agentId, sessionId)` session to the JSONL file and remove it from
-   * memory. No-op (memory only) if the session has no recorded actions. NEVER
-   * touches proposals — dropping this buffer is monitoring cleanup, not lifecycle.
+   * memory. No-op if the session has no recorded actions. The buffer is taken
+   * from the map before the write awaits, so a `record()` racing an in-flight
+   * flush lands in a fresh buffer (picked up by the next flush) instead of being
+   * wiped; flushes for one compound key are serialized so overlapping calls
+   * cannot write duplicate envelopes. NEVER touches proposals — dropping this
+   * buffer is monitoring cleanup, not lifecycle.
    */
-  async flush(sessionId: string, agentId: string): Promise<void> {
+  async flushSessionActivityBestEffort(sessionId: string, agentId: string): Promise<void> {
     const key = compoundActivityKey(agentId, sessionId);
+    // Serialize per compound key: an overlapping flush waits for the in-flight
+    // one instead of snapshotting the same buffer (duplicate JSONL envelopes).
+    const prev = this.flushTails.get(key) ?? Promise.resolve();
+    const run = prev.then(() => this.flushBuffer(key, sessionId));
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.flushTails.set(key, tail);
+    void tail.then(() => {
+      if (this.flushTails.get(key) === tail) this.flushTails.delete(key);
+    });
+    return tail;
+  }
+
+  private async flushBuffer(key: string, sessionId: string): Promise<void> {
+    // TAKE the buffer synchronously, before any await yields: a concurrent
+    // record() then starts a fresh buffer instead of appending into a snapshot
+    // that would be discarded when this flush completes.
     const session = this.sessions.get(key);
-    if (!session || session.actions.length === 0) {
-      this.sessions.delete(key);
-      return;
-    }
+    this.sessions.delete(key);
+    if (!session || session.actions.length === 0) return;
 
     const record: SessionRecord = {
       session_id: sessionId,
@@ -122,10 +145,12 @@ export class ActivityLog {
 
     // The monitoring dir may not exist yet on a fresh data root; a missing dir
     // must not reject the flush (the DELETE-session route awaits it).
+    // A failed append DROPS the taken actions by design: this buffer is
+    // monitoring-only, never durable application state, so it is not restored
+    // or retried. Actions recorded while this flush was in flight stay in the
+    // fresh buffer and flush later.
     await mkdir(getMonitoringRoot(), { recursive: true });
     await appendFile(getActivityLogPath(), line, "utf-8");
-
-    this.sessions.delete(key);
   }
 
   /**

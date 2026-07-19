@@ -22,7 +22,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import {
-  getOrCreateInProgressProposalForDocSession,
+  getOrCreateInProgressProposalForAdoptionId,
   updateCurrentProposalSections,
   createTransientProposal,
 } from "../../storage/proposal-repository.js";
@@ -30,6 +30,7 @@ import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 import { commitProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { ProposalAdoptionId } from "../../types/shared.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 
@@ -47,8 +48,8 @@ describe("proposal effective structure inherits sections canonical gained after 
 
   it("a section committed by another proposal after this proposal opened appears in this proposal's read", async () => {
     // This proposal claims + edits only Overview.
-    const created = await getOrCreateInProgressProposalForDocSession({
-      docSessionId: crypto.randomUUID(),
+    const created = await getOrCreateInProgressProposalForAdoptionId({
+      proposalAdoptionId: ProposalAdoptionId.create(),
       docPath: SAMPLE_DOC_PATH,
       writer: WRITER,
     });
