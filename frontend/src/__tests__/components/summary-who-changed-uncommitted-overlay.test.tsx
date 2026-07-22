@@ -1,8 +1,8 @@
 /**
- * Badge: canonical last editor vs “Uncommitted changes here”.
+ * Badge: canonical last editor vs “Draft edits here”.
  *
  * Person = last committed/canonical attribution. When the section is in the
- * live pending/uncommitted set, replace the person line with uncommitted copy —
+ * live pending/uncommitted set, replace the person line with the draft copy —
  * never a live writer / awareness name.
  */
 
@@ -49,7 +49,7 @@ describe("SummaryWhoChangedThisSection canonical vs uncommitted overlay", () => 
     });
 
     expect(screen.getByText("Alice")).toBeDefined();
-    expect(screen.queryByText(/uncommitted changes here/i)).toBeNull();
+    expect(screen.queryByText(/draft edits here/i)).toBeNull();
 
     rerender(
       <SectionHoverProvider activeFragmentKey="section::alpha">
@@ -64,7 +64,7 @@ describe("SummaryWhoChangedThisSection canonical vs uncommitted overlay", () => 
       </SectionHoverProvider>,
     );
 
-    expect(screen.getByText(/uncommitted changes here/i)).toBeDefined();
+    expect(screen.getByText(/draft edits here/i)).toBeDefined();
     expect(screen.queryByText("Alice")).toBeNull();
     // Never show a live/pending writer identity as the person line.
     expect(screen.queryByText(/Hub Writer|Replica Writer|live writer/i)).toBeNull();

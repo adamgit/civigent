@@ -11,13 +11,14 @@
  *  - a refusal (competing FSM lock) → `{ ok:false, message }`, order UNCHANGED.
  */
 
+import { join } from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { requestDocSessionMove } from "../../ws/crdt-ws-coordinator.js";
 import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
-import { getHeadSha } from "../../storage/git-repo.js";
+import { getHeadSha, gitExec } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { createProposal, transitionToInProgress } from "../../storage/proposal-repository.js";
 import { joinLiveRecipient } from "../helpers/live-recipient.js";
@@ -33,6 +34,33 @@ async function openSession(): Promise<DocSession> {
 async function liveHeadingOrder(session: DocSession): Promise<string[]> {
   const layout = await resolveLiveSectionLayout(session.docPath, session.generator.getCurrentProposalId());
   return layout.filter((e) => e.headingPath.length === 1).map((e) => e.heading);
+}
+
+
+const NESTED_DOC_PATH = "/ops/nested.md";
+
+/**
+ * A document with a real nested section, so a NON-SIBLING move request can be
+ * built from heading paths that genuinely resolve in the live layout (the
+ * sibling precondition is checked after layout membership).
+ */
+async function createNestedDocument(dataRoot: string): Promise<void> {
+  const { ProposalShadowContentLayer } = await import("../../storage/content-layer.js");
+  const { SectionRef } = await import("../../domain/section-ref.js");
+  const contentDir = join(dataRoot, "content");
+  // Overlay root === canonical root, so these writes land directly in canonical.
+  const layer = new ProposalShadowContentLayer(contentDir, contentDir);
+  await layer.upsertSection(new SectionRef(NESTED_DOC_PATH, ["Alpha"]), "Alpha", "alpha body" as never);
+  await layer.upsertSection(
+    new SectionRef(NESTED_DOC_PATH, ["Alpha", "Alpha Child"]), "Alpha Child", "alpha child body" as never,
+  );
+  await layer.upsertSection(new SectionRef(NESTED_DOC_PATH, ["Beta"]), "Beta", "beta body" as never);
+  await gitExec(["add", "content/"], dataRoot);
+  await gitExec([
+    "-c", "user.name=Test", "-c", "user.email=test@test.local",
+    "commit", "-m", "add nested doc", "--allow-empty",
+    "--trailer", "Writer-Type: agent",
+  ], dataRoot);
 }
 
 describe("Option E: requestDocSessionMove REST control-plane seam", () => {
@@ -114,5 +142,26 @@ describe("Option E: requestDocSessionMove REST control-plane seam", () => {
     expect(result.message).toMatch(/locked/i);
     // Section order unchanged on refusal.
     expect(await liveHeadingOrder(session)).toEqual(["Overview", "Timeline"]);
+  });
+
+  it("refuses a NON-SIBLING (reparenting) move with prose and claims no proposal", async () => {
+    await createNestedDocument(ctx.rootDir);
+    const baseHead = await getHeadSha(getDataRoot());
+    const session = await acquireDocSession(NESTED_DOC_PATH, WRITER.id, baseHead, WRITER, "sock-n");
+
+    // Both paths resolve in the live layout, so this is a genuine reparenting
+    // request — previously it reached `reorderSection` and was flattened by a
+    // bare `catch {}` AFTER `materializeEdit` had already claimed a proposal.
+    const result = await requestDocSessionMove(NESTED_DOC_PATH, {
+      sourceHeadingPath: ["Alpha", "Alpha Child"],
+      targetHeadingPath: ["Beta"],
+      position: "before",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/sibling/i);
+    // Refused BEFORE materialization: no proposal was created or claimed.
+    expect(session.generator.getCurrentProposalId()).toBeNull();
+    expect(session.generator.hasAuthoredEdit()).toBe(false);
   });
 });

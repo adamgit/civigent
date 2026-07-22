@@ -211,6 +211,15 @@ export interface WireLiveSectionsState {
    *     late joiner's UI / `isEditable()`, it does not itself freeze anything).
    */
   publish_pause_join_mirror: PublishPauseJoinMirror;
+  /**
+   * The publish-trigger EVALUATION output for the document — the single object the
+   * backend runtime uses to decide publishing (`shouldPublish` + `rule`) and the UI
+   * uses to explain "what's holding it" (`blockers`). Produced by the one evaluator
+   * (`PublishTriggerPolicy.evaluate`) from the one signals input, so the two consumers
+   * cannot disagree. Optional/additive for rollout: absent parses (older senders); a
+   * present-but-malformed value fails loud.
+   */
+  publish_decision?: WirePublishDecision;
 }
 
 /**
@@ -219,6 +228,88 @@ export interface WireLiveSectionsState {
  * handshake stays the sole authority for the pause machine (spec 10).
  */
 export type PublishPauseJoinMirror = "not_in_pause" | "pause_active_editors_frozen";
+
+/** The rule that fired in a publish-trigger evaluation. Mirrors the backend `PublishTriggerPolicy` ladder. */
+export type PublishTriggerRule =
+  | "forced-canonical-op"
+  | "last-editor-left"
+  | "settled-dirty-frontier"
+  | "none";
+
+/**
+ * A single gate currently blocking publish, emitted by the evaluator (`evaluate()`)
+ * from the SAME signals that decide `shouldPublish` — one kind per settled-dirty-frontier
+ * gate. The blocker list IS the decision: publish fires (settled) exactly when it is
+ * empty. Nothing recomputes these; the UI prose is a pure projection of them.
+ */
+export type PublishBlocker =
+  | { kind: "inboundUpdatesPending" }
+  | { kind: "activeEditingInProgress" }
+  | { kind: "structureSettling" }
+  | { kind: "editorInChangedSection" }
+  | { kind: "recentChangesApplying" };
+
+/**
+ * The single publish-trigger evaluation output. `shouldPublish` + `rule` drive the
+ * backend runtime publish decision; `blockers` is the same evaluation's structured
+ * "what's holding it" for the UI. One object, two consumers — they cannot disagree.
+ */
+export interface PublishTriggerDecision {
+  shouldPublish: boolean;
+  rule: PublishTriggerRule;
+  blockers: PublishBlocker[];
+}
+
+/**
+ * Wire alias for {@link PublishTriggerDecision}. The frame field is typed
+ * `WirePublishDecision` and validated through the `WirePublishDecision.parse` boundary.
+ */
+export type WirePublishDecision = PublishTriggerDecision;
+
+/** Rendered prose for a {@link PublishTriggerDecision}: one headline plus one line per blocker. */
+export interface PublishDecisionProse {
+  headline: string;
+  blockers: string[];
+}
+
+function publishDecisionHeadline(decision: PublishTriggerDecision): string {
+  if (decision.shouldPublish) return "Publishing your changes now…";
+  if (decision.blockers.length > 0) return "Saved as a draft — it'll publish automatically once this settles";
+  return "Nothing to publish right now";
+}
+
+function describePublishBlocker(blocker: PublishBlocker): string {
+  switch (blocker.kind) {
+    case "inboundUpdatesPending":
+      return "Catching up on the latest changes from the server";
+    case "activeEditingInProgress":
+      return "This section is still being edited";
+    case "structureSettling":
+      return "Heading changes are being applied";
+    case "editorInChangedSection":
+      return "It'll finish publishing once editing in this section stops";
+    case "recentChangesApplying":
+      return "Recent changes to this section are still being applied";
+    default: {
+      const exhaustive: never = blocker;
+      throw new Error(`Unknown publish blocker: ${JSON.stringify(exhaustive)}`);
+    }
+  }
+}
+
+/**
+ * Total prose function over a {@link PublishTriggerDecision}. It reads only the
+ * evaluator's output — it recomputes nothing. The exhaustive `switch` over
+ * `PublishBlocker.kind` (with a `never` default) is the compile-time drift guard:
+ * a new blocker kind without a line fails to compile, so prose can never silently
+ * fall behind the algorithm.
+ */
+export function describePublishDecision(decision: PublishTriggerDecision): PublishDecisionProse {
+  return {
+    headline: publishDecisionHeadline(decision),
+    blockers: decision.blockers.map(describePublishBlocker),
+  };
+}
 
 // ── Live section wire-state parsers (fail-loud JSON trust boundary) ──
 // Colocated companion parsers so a frame decoder can validate the JSON portion
@@ -265,6 +356,52 @@ export const WirePendingSection = {
   },
 };
 
+const PUBLISH_RULES: readonly PublishTriggerRule[] = [
+  "forced-canonical-op",
+  "last-editor-left",
+  "settled-dirty-frontier",
+  "none",
+];
+
+const PUBLISH_BLOCKER_KINDS: readonly PublishBlocker["kind"][] = [
+  "inboundUpdatesPending",
+  "activeEditingInProgress",
+  "structureSettling",
+  "editorInChangedSection",
+  "recentChangesApplying",
+];
+
+function parsePublishBlocker(value: JsonValue, label: string): PublishBlocker {
+  const obj = expectJsonObject(value, label);
+  const kind = obj["kind"];
+  if (typeof kind !== "string" || !PUBLISH_BLOCKER_KINDS.some((k) => k === kind)) {
+    throw new Error(
+      `${label}.kind must be one of ${PUBLISH_BLOCKER_KINDS.join(", ")}, got ${JSON.stringify(kind)}`,
+    );
+  }
+  return { kind: kind as PublishBlocker["kind"] };
+}
+
+export const WirePublishDecision = {
+  parse(value: JsonValue, label = "publish decision"): PublishTriggerDecision {
+    const obj = expectJsonObject(value, label);
+    const shouldPublish = obj["shouldPublish"];
+    if (typeof shouldPublish !== "boolean") {
+      throw new Error(`${label}.shouldPublish must be a boolean, got ${JSON.stringify(shouldPublish)}`);
+    }
+    const rule = obj["rule"];
+    if (typeof rule !== "string" || !PUBLISH_RULES.some((r) => r === rule)) {
+      throw new Error(`${label}.rule must be one of ${PUBLISH_RULES.join(", ")}, got ${JSON.stringify(rule)}`);
+    }
+    const blockersRaw = obj["blockers"];
+    if (!Array.isArray(blockersRaw)) {
+      throw new Error(`${label}.blockers must be an array, got ${JSON.stringify(blockersRaw)}`);
+    }
+    const blockers = blockersRaw.map((el, i) => parsePublishBlocker(el, `${label}.blockers[${i}]`));
+    return { shouldPublish, rule: rule as PublishTriggerRule, blockers };
+  },
+};
+
 export const WireLiveSectionsState = {
   parse(value: JsonValue, label = "live sections state"): WireLiveSectionsState {
     const obj = expectJsonObject(value, label);
@@ -282,12 +419,17 @@ export const WireLiveSectionsState = {
         `${label}.publish_pause_join_mirror must be "not_in_pause" | "pause_active_editors_frozen", got ${JSON.stringify(pauseMirror)}`,
       );
     }
-    return {
+    const state: WireLiveSectionsState = {
       topology: topologyRaw.map((el, i) => WireLiveSectionRef.parse(el, `${label}.topology[${i}]`)),
       blocked_section_ids: wireStringArray(obj["blocked_section_ids"], `${label}.blocked_section_ids`),
       pending_sections: pendingRaw.map((el, i) => WirePendingSection.parse(el, `${label}.pending_sections[${i}]`)),
       publish_pause_join_mirror: pauseMirror,
     };
+    const publishDecisionRaw = obj["publish_decision"];
+    if (publishDecisionRaw !== null && publishDecisionRaw !== undefined) {
+      state.publish_decision = WirePublishDecision.parse(publishDecisionRaw, `${label}.publish_decision`);
+    }
+    return state;
   },
 };
 

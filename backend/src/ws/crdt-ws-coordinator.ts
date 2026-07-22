@@ -66,16 +66,18 @@ import { getHeadSha } from "../storage/git-repo.js";
 import { getDataRoot } from "../storage/data-root.js";
 import { resolveLiveSectionLayout, type LiveSectionLayoutEntry } from "../crdt/live-section-layout.js";
 import { buildWireLiveSectionsState } from "../crdt/live-sections-wire-state.js";
+import { buildQuiescencePublishSignals } from "../crdt/publish-trigger-signals.js";
 import { BEFORE_FIRST_HEADING_KEY } from "../crdt/ydoc-fragments.js";
 import { checkProposalLocks } from "../domain/proposal-fsm-locks.js";
 import { emitContentCommittedEventsByDoc, emitSectionEditRejected } from "../api/application/events.js";
-import type { PublishTriggerDecision, PublishTriggerSignals, PublishResult } from "../crdt/crdt-proposal-generator.js";
+import { LiveSnapshotIdentityInvariantError } from "../crdt/crdt-proposal-generator.js";
+import type { PublishTriggerDecision, PublishResult } from "../crdt/crdt-proposal-generator.js";
 import type { SectionRefReceipt } from "../storage/canonical-store.js";
 import type { PublishPauseResult } from "../crdt/docsession-publish-pause.js";
 import { SectionRef } from "../domain/section-ref.js";
 import type { WsServerEvent, WirePendingSection } from "../types/shared.js";
 import type { ClientInstanceId, DocSessionId, RemoteParticipant, ModeTransitionRequest, ModeTransitionResult, ProposalId } from "../types/shared.js";
-import { parseJson, sectionTargetToHeadingPath } from "../types/shared.js";
+import { parseJson } from "../types/shared.js";
 import {
   MSG_SYNC_STEP_1,
   MSG_SYNC_STEP_2,
@@ -195,7 +197,7 @@ export function joinAndNotify(session: DocSession, socket: CoordinatorSocket, st
 function sendLiveSectionsBootstrap(session: DocSession, socket: CoordinatorSocket): void {
   void session.enqueue(async () => {
     if (socket.readyState !== WebSocket.OPEN || session.state !== "active") return;
-    const state = await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath));
+    const state = await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath), activeEditorSocketStates(session.docPath));
     const yjsUpdate = Y.encodeStateAsUpdate(session.ydoc);
     let recipients = liveSectionRecipients.get(session.docPath);
     if (!recipients) {
@@ -227,7 +229,7 @@ export async function refreshLiveSectionsState(docPath: string): Promise<void> {
   const session = lookupDocSession(docPath);
   if (!session) return;
   await session.enqueue(async () => {
-    broadcastLiveSectionsUpdate(docPath, { state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath)) });
+    broadcastLiveSectionsUpdate(docPath, { state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath), activeEditorSocketStates(session.docPath)) });
   });
 }
 
@@ -523,13 +525,13 @@ export function setCrdtPrivateEventHandler(
 async function emitLiveSectionsUpdateFrame(session: DocSession): Promise<void> {
   broadcastLiveSectionsUpdate(session.docPath, {
     yjs_update: Y.encodeStateAsUpdate(session.ydoc),
-    state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath)),
+    state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath), activeEditorSocketStates(session.docPath)),
   });
 }
 
 async function emitTopologyOnlyLiveSectionsUpdateFrame(session: DocSession): Promise<void> {
   broadcastLiveSectionsUpdate(session.docPath, {
-    state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath)),
+    state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath), activeEditorSocketStates(session.docPath)),
   });
 }
 
@@ -570,6 +572,13 @@ export interface PublishAttemptOutcome {
    * section ref is covered here settled, including the edit-then-revert case.
    */
   absorbedSectionRefs?: SectionRefReceipt[];
+  /**
+   * The originating error for a `failed` outcome, carried verbatim so the
+   * fire-and-forget publish paths can route the FULL error (with its real stack)
+   * to the process-fatal boundary. `message` alone is a lossy summary and must
+   * never be the only surviving record of a failure.
+   */
+  error?: unknown;
 }
 
 
@@ -590,9 +599,16 @@ const publishChains = new Map<string, Promise<PublishAttemptOutcome>>();
  * (CLAUDE.md error policy: an error is never allowed to be hidden).
  */
 function surfacePublishOutcome(docPath: string, outcome: PublishAttemptOutcome): void {
-  if (outcome.outcome === "failed" || outcome.outcome === "aborted") {
-    console.error(`[publish:${docPath}] ${outcome.outcome}: ${outcome.message}`);
-  }
+  if (outcome.outcome !== "failed" && outcome.outcome !== "aborted") return;
+  // Route to the process-boundary fatal policy rather than a bare console write:
+  // under `crash` the operator's chosen policy stops the process, under `report`
+  // the sticky FatalReport reaches every connected client. `outcome.error` carries
+  // the original error (real stack) where one exists; an aborted publish has no
+  // underlying error, so the outcome message becomes the fatal.
+  handleProcessFatal(
+    outcome.error ?? new Error(`[publish:${docPath}] ${outcome.outcome}: ${outcome.message}`),
+    "unhandledRejection",
+  );
 }
 
 function describeError(error: unknown): string {
@@ -615,6 +631,7 @@ function mapPublishResultToOutcome(result: PublishResult): PublishAttemptOutcome
       return {
         outcome: "failed",
         message: `Publish failed; proposal ${result.proposalId ?? ""} was returned to inprogress${result.error ? `: ${describeError(result.error)}` : "."}`,
+        error: result.error,
       };
   }
 }
@@ -628,23 +645,26 @@ async function finalizeAndEnd(session: DocSession, ready: boolean): Promise<Publ
   let outcome: PublishAttemptOutcome;
   try {
     if (ready) {
+      await settleLiveStructure(session);
       outcome = mapPublishResultToOutcome(await session.generator.finalizeAndPublish());
     } else {
       outcome = { outcome: "aborted", message: "Publish aborted: editors did not acknowledge readiness in time." };
     }
   } catch (error) {
-    // Never hide a publish failure. This is the autonomous (fire-and-forget)
-    // publish path, so there is no caller to rethrow to — surface the FULL error
-    // (with stack) loudly; the outcome still carries the message onward.
-    console.error(`[publish:${session.docPath}] finalize/publish threw`, error);
-    outcome = { outcome: "failed", message: `Publish failed: ${describeError(error)}` };
+    // The live snapshot still disagrees with its layout address after the settle
+    // pass above, so the claimed content cannot be addressed into the proposal.
+    // This MUST propagate: swallowing it into a `failed` outcome lets the caller
+    // continue to `releaseDocSession` and destroy the Y.Doc holding the only copy
+    // of that content. Throwing aborts the teardown and preserves it.
+    if (error instanceof LiveSnapshotIdentityInvariantError) throw error;
+    outcome = { outcome: "failed", message: `Publish failed: ${describeError(error)}`, error };
   } finally {
     session.publishPause.end();
     broadcastToAll(session.docPath, encodeDocPublishPauseEnd());
   }
 
   broadcastLiveSectionsUpdate(session.docPath, {
-    state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath)),
+    state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath), activeEditorSocketStates(session.docPath)),
   });
   
   
@@ -716,7 +736,7 @@ async function finalizeAndEnd(session: DocSession, ready: boolean): Promise<Publ
       // replicas drop the settled fragments from `pending_sections` in FIFO order.
       if (settledAny) {
         broadcastLiveSectionsUpdate(session.docPath, {
-          state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath)),
+          state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath), activeEditorSocketStates(session.docPath)),
         });
       }
     } else {
@@ -915,6 +935,31 @@ interface QuiescedStructureNormalizationResult {
   removedFragments: Array<{ fragmentKey: string; headingPath: string[] }>;
 }
 
+/**
+ * Drive live structure to a settled state and fan the result out.
+ *
+ * A structurally-dirty fragment's content lives ONLY in the in-memory Y.Doc: the
+ * ingress path claims it in the proposal manifest without writing a body, and
+ * `snapshotSections` excludes it from the materializable set. Until this pass
+ * runs, that content is not durable and the proposal skeleton still carries the
+ * PRE-transition section identities.
+ *
+ * Every operation that is about to read or reorder proposal identity must settle
+ * first — the quiescence timer is an optimization, not the only trigger. Returns
+ * whether anything was applied (callers that fold it into publish signals need
+ * to know); the layout must be re-resolved afterwards when it did.
+ */
+async function settleLiveStructure(session: DocSession): Promise<boolean> {
+  if (!session.generator.hasCurrentProposal()) return false;
+  const settled = await normalizeQuiescedStructure(session);
+  if (!settled.applied) return false;
+  for (const removed of settled.removedFragments) {
+    session.removedFragmentTombstones.set(removed.fragmentKey, removed.headingPath);
+  }
+  await emitLiveSectionsUpdateFrame(session);
+  return true;
+}
+
 async function normalizeQuiescedStructure(session: DocSession): Promise<QuiescedStructureNormalizationResult> {
   // Coordinator-driven quiescence normalization is only reachable through
   // `runQuiescenceCommand` after `hasCurrentProposal()` — the first-edit
@@ -1103,62 +1148,6 @@ function activeEditorSocketStates(docPath: string): CrdtSocketState[] {
   return states;
 }
 
-export function buildQuiescencePublishSignals(
-  session: DocSession,
-  layout: LiveSectionLayoutEntry[],
-  editorStates: Pick<CrdtSocketState, "editorFocusTarget">[],
-  observed: {
-    allFragmentsQuiescent: boolean;
-    structuralApplyInThisCommand: boolean;
-    nowMs: number;
-  },
-): Omit<PublishTriggerSignals, "hasCurrentProposal"> {
-  const dirty = session.dirtyFragmentKeys;
-  const policy = session.generator.publishTriggerPolicy;
-
-  const dirtyAndAdjacent = new Set<string>(dirty);
-  layout.forEach((entry, i) => {
-    if (!dirty.has(entry.fragmentKey)) return;
-    if (i > 0) dirtyAndAdjacent.add(layout[i - 1].fragmentKey);
-    if (i + 1 < layout.length) dirtyAndAdjacent.add(layout[i + 1].fragmentKey);
-  });
-  let noCollaboratorMutatingChangedSet = true;
-  for (const key of dirtyAndAdjacent) {
-    const last = session.fragmentLastActivity.get(key);
-    if (last !== undefined && !policy.isFragmentQuiescent(last, observed.nowMs)) {
-      noCollaboratorMutatingChangedSet = false;
-      break;
-    }
-  }
-
-  const fragmentKeyByHeading = new Map<string, string>();
-  for (const entry of layout) {
-    fragmentKeyByHeading.set(SectionRef.headingKey(entry.headingPath), entry.fragmentKey);
-  }
-  let usersLeftChangedSections = true;
-  for (const st of editorStates) {
-    if (!st.editorFocusTarget) continue;
-    const focusKey = fragmentKeyByHeading.get(
-      SectionRef.headingKey(sectionTargetToHeadingPath(st.editorFocusTarget)),
-    );
-    if (focusKey !== undefined && dirty.has(focusKey)) {
-      usersLeftChangedSections = false;
-      break;
-    }
-  }
-
-  return {
-    forcedCanonicalOperation: false,
-    lastEditorLeft: false,
-    allInboundUpdatesProcessed: true,
-    noBurstOrCompositionInProgress: false,
-    noTopologyChangeInFlight:
-      observed.allFragmentsQuiescent && !observed.structuralApplyInThisCommand,
-    usersLeftChangedSections,
-    noCollaboratorMutatingChangedSet,
-  };
-}
-
 async function runQuiescenceCommand(session: DocSession): Promise<void> {
   if (session.state !== "active") return;
   const policy = session.generator.publishTriggerPolicy;
@@ -1190,19 +1179,7 @@ async function runQuiescenceCommand(session: DocSession): Promise<void> {
   
   
   
-  let appliedAnyStructural = false;
-  let removedFragments: Array<{ fragmentKey: string; headingPath: string[] }> = [];
-  if (session.generator.hasCurrentProposal() && !anyStillActive) {
-    const result = await normalizeQuiescedStructure(session);
-    appliedAnyStructural = result.applied;
-    removedFragments = result.removedFragments;
-  }
-  if (appliedAnyStructural) {
-    await emitLiveSectionsUpdateFrame(session);
-    for (const removed of removedFragments) {
-      session.removedFragmentTombstones.set(removed.fragmentKey, removed.headingPath);
-    }
-  }
+  const appliedAnyStructural = anyStillActive ? false : await settleLiveStructure(session);
 
   // AUTONOMOUS-publish gate. Unlike the last-editor leave-path and explicit
   // PublishNow (which may flush an adopted proposal), the quiescence timer may
@@ -1235,7 +1212,10 @@ async function runQuiescenceCommand(session: DocSession): Promise<void> {
     } else {
       void runPublishAttempt(session).then(
         (outcome) => surfacePublishOutcome(session.docPath, outcome),
-        (err) => console.error(`[publish:${session.docPath}] autonomous publish threw`, err),
+        (err) => {
+          if (err instanceof LiveSnapshotIdentityInvariantError) throw err;
+          handleProcessFatal(err, "unhandledRejection");
+        },
       );
     }
   }
@@ -1639,7 +1619,7 @@ export async function processArbitratedClientUpdate(
       SERVER_NORMALIZATION_ORIGIN,
     );
     if (acceptance.rejectionGroups.some((g) => g.reasonCode === "proposal-lock-conflict")) {
-      broadcastLiveSectionsUpdate(docPath, { state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath)) });
+      broadcastLiveSectionsUpdate(docPath, { state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath), activeEditorSocketStates(session.docPath)) });
     }
     if (origin.clientInstanceId !== null && onWsPrivateEvent) {
       for (const group of acceptance.rejectionGroups) {
@@ -1800,7 +1780,7 @@ export async function processArbitratedClientUpdate(
     // replicas see `pending_sections` grow in FIFO order after the structural frame.
     if (addedAny) {
       broadcastLiveSectionsUpdate(docPath, {
-        state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(docPath)),
+        state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(docPath), activeEditorSocketStates(docPath)),
       });
     }
   }
@@ -1872,10 +1852,15 @@ export async function moveLiveSection(
   }
 
   const docPath = session.docPath;
-  const ownProposalId = session.generator.getCurrentProposalId();
 
-  
-  
+  // Settle any in-flight structural transition BEFORE resolving the layout. A
+  // reorder rewrites proposal identity, so it must address the POST-transition
+  // skeleton: reordering while a rename/split/merge is still un-normalized
+  // splices stale identities. Settling first (rather than refusing the move)
+  // also makes the reorder addresses the ones the author is actually looking at.
+  await settleLiveStructure(session);
+
+  const ownProposalId = session.generator.getCurrentProposalId();
   const layout = await resolveLiveSectionLayout(docPath, ownProposalId);
   const byHeadingKey = new Map(layout.map((e) => [SectionRef.headingKey(e.headingPath), e]));
   const sourceKey = SectionRef.headingKey(req.sourceHeadingPath);
@@ -1885,6 +1870,20 @@ export async function moveLiveSection(
   }
   if (!byHeadingKey.has(targetKey)) {
     return { ok: false, message: "The section you tried to move next to is no longer available." };
+  }
+
+  // Sibling precondition, checked here rather than discovered as a throw out of
+  // `reorderSection`. Mirrors the engine's own parent comparison exactly. Ordered
+  // after the layout-membership checks (a stale path deserves the more accurate
+  // "no longer available") but ABOVE `materializeEdit`, so a reparenting request
+  // cannot create or claim a proposal for a move that was never legal.
+  const sourceParentPath = req.sourceHeadingPath.slice(0, -1);
+  const targetParentPath = req.targetHeadingPath.slice(0, -1);
+  if (
+    sourceParentPath.length !== targetParentPath.length ||
+    !sourceParentPath.every((p, i) => p === targetParentPath[i])
+  ) {
+    return { ok: false, message: "Sections can only be reordered among siblings that share the same parent." };
   }
 
   
@@ -1910,12 +1909,12 @@ export async function moveLiveSection(
   });
 
   
+  // Every user-rejectable precondition (BFH, layout membership, sibling parent,
+  // proposal locks) is checked above, so anything `reorderSection` throws now is
+  // layout/skeleton drift or an I/O failure — a genuine defect. It propagates with
+  // its full stack rather than being flattened into an `{ ok: false }` message.
   const editor = ProposalEditor.open(proposalId, "inprogress");
-  try {
-    await editor.reorderSection(docPath, req.sourceHeadingPath, req.targetHeadingPath, req.position);
-  } catch {
-    return { ok: false, message: "That move isn't possible — the sections aren't siblings or no longer exist." };
-  }
+  await editor.reorderSection(docPath, req.sourceHeadingPath, req.targetHeadingPath, req.position);
 
   
   
@@ -2395,7 +2394,7 @@ export async function publishOnLastEditorDisconnect(
   remainingEditorCount: number,
 ): Promise<PublishTriggerDecision> {
   if (remainingEditorCount > 0 || !session.generator.hasCurrentProposal()) {
-    return { shouldPublish: false, rule: "none" };
+    return { shouldPublish: false, rule: "none", blockers: [] };
   }
   const decision = session.generator.evaluatePublishTrigger({
     forcedCanonicalOperation: false,

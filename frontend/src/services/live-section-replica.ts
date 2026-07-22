@@ -2,7 +2,7 @@ import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness";
 import { fragmentToMarkdown } from "./fragment-to-markdown";
 import { SectionId, type LiveSectionRef } from "../types/live-sections";
-import type { WireLiveSectionsState } from "../types/shared";
+import type { WireLiveSectionsState, PublishTriggerDecision } from "../types/shared";
 
 /** Yjs transaction origin stamped on every server-delivered apply (bootstrap
  *  and update frames). Lets transport-level waiters (e.g. the live-move caret
@@ -65,6 +65,8 @@ export interface LiveSectionReplica {
   /** True while the join-mirror or a live pause has editors frozen. */
   isPublishPauseMirrorActive(): boolean;
   clearPublishPauseMirror(): void;
+  /** Latest publish-trigger decision for the doc (the evaluator's output), or null if none received. */
+  getPublishDecision(): PublishTriggerDecision | null;
   /** Observer/editor UI write switch (not auth). */
   setEditingEnabled(enabled: boolean): void;
 
@@ -105,6 +107,7 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
   private blocked = new Set<SectionId>();
   private pending = new Map<SectionId, { writerId: string; writerDisplayName: string }>();
   private editorsFrozenByPauseMirror = false;
+  private publishDecision: PublishTriggerDecision | null = null;
 
   private readonly listeners = new Set<() => void>();
   private destroyed = false;
@@ -170,6 +173,10 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
     return [...this.pending.keys()]
       .filter((id) => this.topologyIds.has(id))
       .map((id) => SectionId.text(id));
+  }
+
+  getPublishDecision(): PublishTriggerDecision | null {
+    return this.publishDecision;
   }
 
   isPublishPauseMirrorActive(): boolean {
@@ -254,6 +261,7 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
       ]),
     );
     this.editorsFrozenByPauseMirror = state.publish_pause_join_mirror === "pause_active_editors_frozen";
+    this.publishDecision = state.publish_decision ?? null;
   }
 
   private makeHandle(id: SectionId): LiveSectionHandle {

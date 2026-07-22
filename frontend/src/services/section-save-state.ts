@@ -26,8 +26,8 @@
  * files live on disk in the backend data root) and is a load-bearing checkpoint
  * short of canonical publication. It is NOT an "unsaved" warning state — it
  * gets its own between-yellow-and-green color and a label that names the fact
- * ("Saved to proposal — not yet published"). Warning colors are reserved for
- * genuinely unsaved / failed / blocked / degraded states.
+ * ("Saved · Draft" — Saved owns the green, Draft owns the pending-ness). Warning
+ * colors are reserved for genuinely unsaved / failed / blocked / degraded states.
  */
 
 import type { CrdtConnectionState } from "./crdt-provider";
@@ -58,7 +58,7 @@ export const TRANSPORT_STATUS_META: Record<DocTransportStatus, DocTransportStatu
   upToDate:        { label: "Up to date",                          dotClass: "bg-green-500" },
   // Between-yellow-and-green: durable proposal save is not an amber warning. Lime
   // reads as "on the way to green" without collapsing to the "clean" green.
-  savedToProposal: { label: "Saved to proposal — not yet published", dotClass: "bg-lime-500" },
+  savedToProposal: { label: "Saved · Draft", dotClass: "bg-lime-500" },
   // True unsaved / in-flight: amber conveys "your work is still at risk here".
   syncing:         { label: "Syncing…",                            dotClass: `bg-amber-400 ${PULSE}` },
   saving:          { label: "Saving…",                             dotClass: `bg-blue-400 ${PULSE}` },

@@ -37,6 +37,8 @@ export interface DocumentCanvasProps {
   getDisplayMarkdown: (section: RenderSectionRef) => string;
   getLiveBinding?: (fragmentKey: string) => import("../services/live-section-replica").LiveEditorBinding | undefined;
   getLastEditor?: (fragmentKey: string) => SectionLastEditor | undefined;
+  getActiveEditors?: (fragmentKey: string) => string[];
+  publishDecision?: import("../types/shared").PublishTriggerDecision | null;
   sectionUncommitted?: (fragmentKey: string) => boolean;
   localEditSink: LocalEditOriginSink;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
@@ -73,6 +75,8 @@ export function DocumentCanvas({
   getDisplayMarkdown,
   getLiveBinding,
   getLastEditor,
+  getActiveEditors,
+  publishDecision = null,
   sectionUncommitted,
   localEditSink,
   mouseDownPosRef,
@@ -104,6 +108,7 @@ export function DocumentCanvas({
           ? (canEditProposalContent && isInProposal && inMountWindow)
           : (!crdtBlocked && inMountWindow);
         const lastEditor = getLastEditor?.(fk);
+        const activeEditorIds = getActiveEditors?.(fk) ?? [];
         return (
           <div key={fk} className="flex items-stretch">
             <div className="w-[200px] min-w-[100px] shrink relative flex items-stretch justify-end pt-1">
@@ -113,6 +118,8 @@ export function DocumentCanvas({
                 secondsAgo={lastEditor?.seconds_ago}
                 writerType={lastEditor?.type}
                 fragmentKey={fk}
+                activeEditorIds={activeEditorIds}
+                publishDecision={publishDecision}
                 uncommittedChanges={sectionUncommitted?.(fk) ?? false}
               />
             </div>

@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 import type { CrdtConnectionState } from "../services/crdt-provider";
 import { resolveTransportStatus, TRANSPORT_STATUS_META } from "../services/section-save-state";
+import { PublishRequirementsHover } from "./PublishRequirementsHover";
+import type { PublishTriggerDecision } from "../types/shared";
 
 interface DocumentTopbarProps {
   /** Canonical document path — used to resolve the parent-folder back link. */
@@ -32,6 +34,8 @@ interface DocumentTopbarProps {
    *  publish). Surfaced as an explicit `error` rung that must not collapse into
    *  the pending / saved / up-to-date labels. `null` when clean. */
   backendError: string | null;
+  /** Live honest publish-status projection for the document, driving the pill hover. */
+  publishDecision?: PublishTriggerDecision | null;
 }
 
 /** Route for the parent folder's details page, or `/docs` for root-level docs. */
@@ -80,6 +84,7 @@ export function DocumentTopbar({
   hasInboundActivity,
   hadLocalEdits,
   backendError,
+  publishDecision = null,
 }: DocumentTopbarProps) {
   // The topbar shows a single coarse transport/save status derived from the live
   // connection state, the receipt watermark, the writer-filtered local-edit
@@ -98,6 +103,14 @@ export function DocumentTopbar({
   );
   const meta = TRANSPORT_STATUS_META[status];
   const [menuOpen, setMenuOpen] = useState(false);
+  const [statusHoverOpen, setStatusHoverOpen] = useState(false);
+  const otherStates = useMemo(
+    () =>
+      (Object.keys(TRANSPORT_STATUS_META) as (keyof typeof TRANSPORT_STATUS_META)[])
+        .filter((key) => key !== status && TRANSPORT_STATUS_META[key].label.length > 0)
+        .map((key) => ({ key, ...TRANSPORT_STATUS_META[key] })),
+    [status],
+  );
   const menuRef = useRef<HTMLDivElement>(null);
   const menuActive = showDiagnostics || !!showOverwrite;
   const backTo = useMemo(() => parentFolderRoute(docPath), [docPath]);
@@ -191,11 +204,42 @@ export function DocumentTopbar({
         ) : null}
       </div>
 
-      {/* Coarse transport/publish status indicator (no per-section popup) */}
+      {/* Coarse transport/publish status indicator; hover explains the detail. */}
       {meta.label ? (
-        <div className="flex items-center gap-[5px]">
+        <div
+          className="relative flex items-center gap-[5px] cursor-help"
+          data-testid="transport-status-pill"
+          tabIndex={0}
+          aria-label={`Document status: ${meta.label}`}
+          onMouseEnter={() => setStatusHoverOpen(true)}
+          onMouseLeave={() => setStatusHoverOpen(false)}
+          onFocus={() => setStatusHoverOpen(true)}
+          onBlur={() => setStatusHoverOpen(false)}
+        >
           <div className={`w-[7px] h-[7px] rounded-full ${meta.dotClass}`} />
           <span className="text-[11px] text-text-muted">{meta.label}</span>
+          {statusHoverOpen ? (
+            <PublishRequirementsHover
+              decision={publishDecision}
+              what={`This is the whole document's status right now: “${meta.label}”.`}
+              why="Saved means your work reached the server; Draft means it's saved but not yet published to the shared document. The status below shows what's left before it publishes."
+              extra={
+                otherStates.length > 0 ? (
+                  <div className="publish-requirements-section">
+                    <div className="publish-requirements-heading">Other states you might see</div>
+                    <ul className="publish-requirements-other-states">
+                      {otherStates.map((s) => (
+                        <li key={s.key} className="flex items-center gap-1.5">
+                          <span className={`inline-block w-[7px] h-[7px] rounded-full ${s.dotClass}`} />
+                          <span>{s.label}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null
+              }
+            />
+          ) : null}
         </div>
       ) : null}
     </header>

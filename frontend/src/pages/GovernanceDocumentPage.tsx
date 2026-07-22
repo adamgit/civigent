@@ -699,6 +699,7 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
           hasInboundActivity={saveStatus.hasInboundActivity}
           hadLocalEdits={saveStatus.hadLocalEdits}
           backendError={saveStatus.backendError}
+          publishDecision={liveReplica.replica?.getPublishDecision() ?? null}
         />
 
         {/* Document-level connection banner overlays the content so transient

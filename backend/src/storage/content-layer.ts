@@ -3373,7 +3373,7 @@ export class ProposalShadowContentLayer {
       // skeleton files). The migrated leaf-parent body holder carries the
       // captured pre-migration body; everything else starts empty.
       const migratedBhKey = migratedBhHeadingPath !== null
-        ? migratedBhHeadingPath.join(" ")
+        ? migratedBhHeadingPath.join("\u0000")
         : null;
       const bodyWrites: StructuralMutationPlan["bodyWrites"] = [];
       const seenBodyPaths = new Set<string>();
@@ -3385,7 +3385,7 @@ export class ProposalShadowContentLayer {
           migratedBhKey !== null
           && e.level === 0
           && e.heading === ""
-          && e.headingPath.join(" ") === migratedBhKey;
+          && e.headingPath.join("\u0000") === migratedBhKey;
         bodyWrites.push({
           absolutePath: e.absolutePath,
           content: isMigratedBh ? (leafParentBody as unknown as string) : "",

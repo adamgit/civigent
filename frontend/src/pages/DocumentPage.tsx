@@ -41,6 +41,7 @@ import {
 import { useDocumentSessionController } from "../hooks/useDocumentSessionController";
 import { useEditorWindowEviction } from "../hooks/useEditorRegistry";
 import { useLiveSectionReplica } from "../hooks/useLiveSectionReplica";
+import { useActiveEditors } from "../hooks/useActiveEditors";
 import type { LiveEditorBinding } from "../services/live-section-replica";
 import {
   SectionId,
@@ -190,6 +191,9 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     (fragmentKey: string) => lastEditorByKey.get(fragmentKey),
     [lastEditorByKey],
   );
+
+  const getActiveEditors = useActiveEditors(liveReplica.awareness, liveReplica.isCurrentlyLiveAuthority);
+  const publishDecision = liveReplica.replica?.getPublishDecision() ?? null;
 
   const getLiveBinding = useCallback(
     (fragmentKey: string): LiveEditorBinding | undefined => {
@@ -685,6 +689,7 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
           hasInboundActivity={saveStatus.hasInboundActivity}
           hadLocalEdits={saveStatus.hadLocalEdits}
           backendError={saveStatus.backendError}
+          publishDecision={publishDecision}
         />
 
         {/* Document-level connection banner overlays the content so transient
@@ -908,6 +913,8 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
             getDisplayMarkdown={getDisplayMarkdown}
             getLiveBinding={getLiveBinding}
             getLastEditor={getLastEditor}
+            getActiveEditors={getActiveEditors}
+            publishDecision={publishDecision}
             sectionUncommitted={sectionUncommitted}
             localEditSink={localEditSink}
             mouseDownPosRef={mouseDownPosRef}

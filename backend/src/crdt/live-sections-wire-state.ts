@@ -17,6 +17,10 @@
 import type { WireLiveSectionsState, WireLiveSectionRef, WirePendingSection } from "../types/shared.js";
 import type { DocSession } from "./ydoc-lifecycle.js";
 import { resolveLiveSectionLayout } from "./live-section-layout.js";
+import {
+  buildCurrentPublishSignals,
+  type EditorFocusState,
+} from "./publish-trigger-signals.js";
 
 /**
  * Capture the current live-section control state for a DocSession. Call INSIDE
@@ -33,6 +37,7 @@ import { resolveLiveSectionLayout } from "./live-section-layout.js";
 export async function buildWireLiveSectionsState(
   session: DocSession,
   pendingSections: readonly WirePendingSection[] = [],
+  editorFocusStates: readonly EditorFocusState[] = [],
 ): Promise<WireLiveSectionsState> {
   const currentProposalId = session.generator.getCurrentProposalId();
   const layout = await resolveLiveSectionLayout(session.docPath, currentProposalId);
@@ -65,6 +70,11 @@ export async function buildWireLiveSectionsState(
     publish_pause_join_mirror: session.publishPause.isActive()
       ? "pause_active_editors_frozen"
       : "not_in_pause",
+    // The ONE evaluator, run on the current signals — the UI renders the exact
+    // decision the runtime would make for this state (single source of truth).
+    publish_decision: session.generator.publishTriggerPolicy.evaluate(
+      buildCurrentPublishSignals(session, layout, editorFocusStates, Date.now()),
+    ),
   };
 }
 

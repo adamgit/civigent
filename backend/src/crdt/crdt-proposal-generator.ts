@@ -29,7 +29,7 @@
  */
 
 import * as Y from "yjs";
-import type { WriterIdentity, ProposalAdoptionId, ProposalId } from "../types/shared.js";
+import type { WriterIdentity, ProposalAdoptionId, ProposalId, PublishTriggerDecision, PublishBlocker } from "../types/shared.js";
 import type {
   ProposalSection,
   InProgressProposal,
@@ -202,10 +202,26 @@ export interface PublishTriggerSignals {
   noCollaboratorMutatingChangedSet: boolean;
 }
 
-/** The publish-trigger decision and the rule that fired (for audit/telemetry). */
-export interface PublishTriggerDecision {
-  shouldPublish: boolean;
-  rule: "forced-canonical-op" | "last-editor-left" | "settled-dirty-frontier" | "none";
+/**
+ * The publish-trigger decision — the single evaluation output. Defined in shared
+ * so the frontend prose can consume the exact object the backend runtime decides on.
+ * Re-exported here because this module owns the evaluator that produces it.
+ */
+export type { PublishTriggerDecision, PublishBlocker } from "../types/shared.js";
+
+/**
+ * The settled-dirty-frontier gates, as blockers. The list IS the decision: publish
+ * fires (settled) exactly when it is empty. Derived here, in the evaluator, so the
+ * runtime `shouldPublish` and the UI's "what's holding it" cannot disagree.
+ */
+function settledDirtyFrontierBlockers(signals: PublishTriggerSignals): PublishBlocker[] {
+  const blockers: PublishBlocker[] = [];
+  if (!signals.allInboundUpdatesProcessed) blockers.push({ kind: "inboundUpdatesPending" });
+  if (!signals.noBurstOrCompositionInProgress) blockers.push({ kind: "activeEditingInProgress" });
+  if (!signals.noTopologyChangeInFlight) blockers.push({ kind: "structureSettling" });
+  if (!signals.usersLeftChangedSections) blockers.push({ kind: "editorInChangedSection" });
+  if (!signals.noCollaboratorMutatingChangedSet) blockers.push({ kind: "recentChangesApplying" });
+  return blockers;
 }
 
 /**
@@ -252,24 +268,19 @@ export class PublishTriggerPolicy {
    */
   evaluate(signals: PublishTriggerSignals): PublishTriggerDecision {
     if (signals.forcedCanonicalOperation) {
-      return { shouldPublish: true, rule: "forced-canonical-op" };
+      return { shouldPublish: true, rule: "forced-canonical-op", blockers: [] };
     }
     if (!signals.hasCurrentProposal) {
-      return { shouldPublish: false, rule: "none" };
+      return { shouldPublish: false, rule: "none", blockers: [] };
     }
     if (signals.lastEditorLeft) {
-      return { shouldPublish: true, rule: "last-editor-left" };
+      return { shouldPublish: true, rule: "last-editor-left", blockers: [] };
     }
-    const settled =
-      signals.allInboundUpdatesProcessed
-      && signals.noBurstOrCompositionInProgress
-      && signals.noTopologyChangeInFlight
-      && signals.usersLeftChangedSections
-      && signals.noCollaboratorMutatingChangedSet;
-    if (settled) {
-      return { shouldPublish: true, rule: "settled-dirty-frontier" };
+    const blockers = settledDirtyFrontierBlockers(signals);
+    if (blockers.length === 0) {
+      return { shouldPublish: true, rule: "settled-dirty-frontier", blockers: [] };
     }
-    return { shouldPublish: false, rule: "none" };
+    return { shouldPublish: false, rule: "none", blockers };
   }
 }
 

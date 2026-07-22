@@ -123,12 +123,18 @@ export type {
   BlameLineAttribution,
   BlameResponse,
   DocumentReplacementNoticePayload,
+  PublishTriggerDecision,
+  PublishBlocker,
+  PublishTriggerRule,
+  PublishDecisionProse,
   JsonObject,
   JsonValue,
 } from "../../../sharedlibs/shared-types/src/index.js";
 
 export {
   DocSessionId,
+  WirePublishDecision,
+  describePublishDecision,
   ProposalAdoptionId,
   WireLiveSectionRef,
   WirePendingSection,

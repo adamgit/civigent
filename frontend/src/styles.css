@@ -200,6 +200,92 @@ a {
   white-space: nowrap;
 }
 
+.section-who-changed-info {
+  margin-left: 4px;
+  font-style: normal;
+  opacity: 0.7;
+}
+
+.publish-requirements-hover {
+  position: fixed;
+  z-index: 50;
+  width: 280px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  background: var(--color-canvas-bg, #fff);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+  text-align: left;
+  cursor: default;
+}
+
+.publish-requirements-section {
+  margin-bottom: 8px;
+}
+
+.publish-requirements-heading {
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+  margin-bottom: 2px;
+}
+
+.publish-requirements-checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.publish-requirement-met {
+  color: var(--color-text-muted);
+}
+
+.publish-requirement-pending {
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+.publish-status-headline {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+.publish-requirements-reasons {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.publish-requirement-reason {
+  color: var(--color-text-muted);
+}
+
+.publish-requirements-reassure {
+  margin: 0;
+}
+
+.publish-requirements-other-states {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
 .section-who-changed-type-line {
   /* `order: 1` restores the tall single-column visual to name / age / badge
    * (today's look) regardless of source order. Consequence: the badge is last in
