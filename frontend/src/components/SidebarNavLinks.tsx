@@ -117,7 +117,7 @@ function SidebarSearch() {
   );
 }
 
-function AdminFlyout() {
+function AdminFlyout({ onOpenWsDiagnostics }: { onOpenWsDiagnostics?: () => void }) {
   return (
     <div className="relative group/admin">
       <Link to="/admin" className={linkClass}>
@@ -143,6 +143,19 @@ function AdminFlyout() {
               {item.label}
             </Link>
           ))}
+          {onOpenWsDiagnostics ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={onOpenWsDiagnostics}
+              className={`${linkClass} w-full text-left bg-transparent border-none cursor-pointer font-[family-name:var(--font-ui)]`}
+            >
+              <span className="text-[10px] w-4 text-center opacity-50 font-mono" aria-hidden="true">
+                &gt;_
+              </span>
+              WS Diagnostics
+            </button>
+          ) : null}
         </div>
       </div>
     </div>
@@ -153,13 +166,15 @@ export type SidebarNavLinksVariant = "primary" | "footer";
 
 interface SidebarNavLinksProps {
   variant: SidebarNavLinksVariant;
+  /** Opens the WS diagnostics console (Admin flyout action). Only used for `footer`. */
+  onOpenWsDiagnostics?: () => void;
 }
 
 /**
  * Movable sidebar link groups. `primary` sits under the Civigent header;
  * `footer` sits at the bottom of the nav (above the version line).
  */
-export function SidebarNavLinks({ variant }: SidebarNavLinksProps) {
+export function SidebarNavLinks({ variant, onOpenWsDiagnostics }: SidebarNavLinksProps) {
   if (variant === "primary") {
     return (
       <nav className="px-2 pt-1 pb-2 flex flex-col gap-px border-b border-sidebar-border" aria-label="Primary">
@@ -176,7 +191,7 @@ export function SidebarNavLinks({ variant }: SidebarNavLinksProps) {
       <NavLink to="/history" icon={<>&#128336;</>}>
         Audit Log
       </NavLink>
-      <AdminFlyout />
+      <AdminFlyout onOpenWsDiagnostics={onOpenWsDiagnostics} />
       <NavLink to="/help" icon={<>&#10067;</>}>
         Help & FAQ
       </NavLink>

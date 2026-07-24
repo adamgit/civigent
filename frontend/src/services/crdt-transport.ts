@@ -46,6 +46,9 @@ export interface CrdtTransportOptions {
   /** Raw authoritative live-section frame (opcode + payload) — routed into a
    *  `LiveSectionReplica`. */
   onLiveSectionFrame?: (opcode: number, payload: Uint8Array) => void;
+  /** Fired after a MSG_SYNC_STEP_2 update is applied to the shared Y.Doc, so a
+   *  passively-watching viewer can repaint its ReactMarkdown body. */
+  onDocUpdated?: () => void;
   /** Shared Y.Doc to sync into (single-replica promotion reuses the replica's
    *  doc so observer → editor does not mint a new empty document). Omit to mint. */
   doc?: Y.Doc;
@@ -107,6 +110,9 @@ export class CrdtTransport {
         },
         onLiveSectionFrame: (opcode, payload) => {
           this.opts.onLiveSectionFrame?.(opcode, payload);
+        },
+        onDocUpdated: () => {
+          this.opts.onDocUpdated?.();
         },
       },
       {

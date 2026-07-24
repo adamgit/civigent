@@ -36,7 +36,7 @@ function renderAppLayout() {
   return render(<RouterProvider router={router} />);
 }
 
-describe("AppLayout sidebar WS Diagnostics toggle", () => {
+describe("AppLayout Admin menu WS Diagnostics", () => {
   let fetchMock: InstalledFetchMock;
 
   beforeEach(() => {
@@ -58,22 +58,18 @@ describe("AppLayout sidebar WS Diagnostics toggle", () => {
     vi.restoreAllMocks();
   });
 
-  it("toggles the WsDiagnosticsConsole on button click and closes it again", async () => {
+  it("opens from the Admin flyout and closes via the console Close button", async () => {
     renderAppLayout();
 
     const openBtn = await waitFor(() =>
-      screen.getByRole("button", { name: /open ws diagnostics console/i }),
+      screen.getByRole("menuitem", { name: /ws diagnostics/i }),
     );
     expect(screen.queryByTestId("ws-diagnostics-console")).toBeNull();
 
     fireEvent.click(openBtn);
     expect(screen.getByTestId("ws-diagnostics-console")).toBeDefined();
 
-    const closeToggle = screen.getByRole("button", {
-      name: /close ws diagnostics console/i,
-      pressed: true,
-    });
-    fireEvent.click(closeToggle);
+    fireEvent.click(screen.getByRole("button", { name: /close ws diagnostics console/i }));
     expect(screen.queryByTestId("ws-diagnostics-console")).toBeNull();
   });
 });

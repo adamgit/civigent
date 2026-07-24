@@ -228,6 +228,10 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       docPathArg,
       {
         onLiveSectionFrame: (opcode, payload) => handleLiveSectionFrame(docPathArg, opcode, payload),
+        // Inbound SYNC_STEP_2 applied to the shared doc: re-render so a passive
+        // viewer (no mounted Milkdown) re-reads paintMarkdown and repaints its
+        // ReactMarkdown body. (0x14/0x15 already forceRender via the replica.)
+        onDocUpdated: () => { forceRender(); },
         onStateChange: (state) => {
           observerStateRef.current = state;
           forceRender();
@@ -260,6 +264,8 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       awareness: awarenessRef.current!,
       clientInstanceId: clientInstanceIdRef.current,
       onLiveSectionFrame: (opcode, payload) => handleLiveSectionFrame(docPathArg, opcode, payload),
+      // Same passive-repaint hook on the editor socket (see startObserver).
+      onDocUpdated: () => { forceRender(); },
       onStateChange: (state) => {
         editorStateRef.current = state;
         forceRender();

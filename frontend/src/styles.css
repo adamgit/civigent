@@ -67,7 +67,8 @@
   --font-mono: "JetBrains Mono", monospace;
 
   /* Sizing */
-  --spacing-sidebar-w: 232px;
+  /* (sidebar width is now content-driven via `.sidebar` in the SIDEBAR LAYOUT
+     section — no fixed width token.) */
   --spacing-topbar-h: 46px;
   --spacing-footer-h: 26px;
 }
@@ -99,6 +100,11 @@ a {
 .sidebar-scroll {
   scrollbar-width: thin;
   scrollbar-color: var(--color-accent) transparent;
+  /* Cap long labels inside the 30vw sidebar without clipping the Admin flyout
+   * (flyout escapes from the aside, which must stay overflow:visible). */
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 .sidebar-scroll::-webkit-scrollbar {
   width: 4px;
@@ -109,6 +115,123 @@ a {
 .sidebar-scroll::-webkit-scrollbar-thumb {
   background: var(--color-accent);
   border-radius: 4px;
+}
+
+/* ===== SIDEBAR LAYOUT (width + auto-hide hover reveal) =====
+ * The left column is a two-part structure:
+ *   .sidebar-shell   — the in-flow flex item that RESERVES width in the layout row.
+ *   .sidebar-hotedge — a thin left hit-strip, only meaningful in autohide mode.
+ *   .sidebar (aside) — the actual sidebar content; sizes to its content, capped 30vw.
+ *
+ * Modes are driven by data-sidebar-mode on the layout root (set in AppLayout):
+ *   "expanded" (default) — shell width = aside used width; aside in normal flow.
+ *   "autohide"           — shell collapses to the hotedge; aside is taken out of
+ *                          flow (position: fixed) and slid off-screen until hovered.
+ * The autohide rules live under the S3 block further below. */
+
+/* Expanded (default) — shell is a flex row child that sizes to its content and
+ * does not grow. max-width + min-width:0 are required on the shell AND the aside:
+ * flex items default to min-width:auto (content min), which otherwise ignores the
+ * 30vw cap and lets long tree labels push the column open. */
+.sidebar-shell {
+  display: flex;
+  flex: 0 0 auto;
+  height: 100%;
+  max-width: 30vw;
+  min-width: 0;
+}
+
+/* The aside sizes to its content and caps at 30vw. No min-width floor.
+ * overflow stays visible so the Admin `left-full` flyout can escape — do NOT add
+ * overflow-x: hidden here. Long labels are clipped inside `.sidebar-scroll` instead.
+ * Background / border / column flex stay on the Tailwind classes on <aside>. */
+.sidebar {
+  box-sizing: border-box;
+  width: max-content;
+  /* Definite vw cap (not max-width:100%) — percentage would be circular against a
+   * content-sized shell and the browser would ignore the constraint. */
+  max-width: 30vw;
+  min-width: 0;
+  height: 100%;
+}
+
+/* Flex column children must be allowed to shrink below content size or the
+ * 30vw cap never wins against long tree labels. */
+.sidebar > * {
+  min-width: 0;
+}
+
+/* Hotedge contributes NO layout width in expanded mode (width: 0 + clip). It only
+ * becomes a visible/hoverable strip in autohide mode (S3 block). */
+.sidebar-hotedge {
+  width: 0;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+/* --- Autohide / hover-reveal (taskbar-style) --------------------------------
+ * When the layout root is data-sidebar-mode="autohide":
+ *  - the shell's in-flow width collapses to the hotedge only (~7px), because the
+ *    aside is taken out of flow, so main goes nearly full-bleed;
+ *  - the hotedge becomes the full-height hoverable strip at that width;
+ *  - the aside is position: fixed at the left edge, above main, slid off-screen
+ *    by default and slid in on hover with a SHORT (150ms) transition.
+ * Reveal is gated by data-sidebar-hover-reveal="on". After clicking collapse, AppLayout
+ * sets that to "off" until pointer leaves the shell — otherwise :hover (pointer still
+ * on the toggle) and :focus-within would immediately slide the sidebar back in.
+ * Do NOT use :focus-within for reveal. */
+[data-sidebar-mode="autohide"] .sidebar-shell {
+  max-width: none; /* in-flow width is just the hotedge */
+}
+
+[data-sidebar-mode="autohide"] .sidebar-hotedge {
+  position: relative;
+  width: 14px;
+  height: 100vh;
+  overflow: visible;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-sidebar-bg);
+  border-right: 1px solid var(--color-sidebar-border);
+  box-shadow: 1px 0 0 rgba(0, 0, 0, 0.04);
+}
+
+/* Centered chevron so the reveal strip reads as a control, not a hairline. */
+[data-sidebar-mode="autohide"] .sidebar-hotedge::after {
+  content: "›";
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--color-sidebar-text);
+  pointer-events: none;
+}
+
+[data-sidebar-mode="autohide"] .sidebar {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 40; /* above main content */
+  width: max-content;
+  max-width: 30vw; /* shell max-width is cleared in autohide; cap on the overlay */
+  transform: translateX(-100%);
+  transition: transform 150ms ease;
+  box-shadow: 2px 0 12px rgba(0, 0, 0, 0.12);
+  /* pointer-events none while off-screen so a leftover hover over the translated
+   * box cannot keep the shell :hover stuck open after collapse */
+  pointer-events: none;
+}
+
+[data-sidebar-mode="autohide"][data-sidebar-hover-reveal="on"] .sidebar-shell:hover .sidebar {
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-sidebar-mode="autohide"] .sidebar {
+    transition: none;
+  }
 }
 
 /* ===== DRAG/DROP INDICATORS ===== */
@@ -448,6 +571,46 @@ a {
 .doc-prose a:hover {
   color: var(--color-accent);
 }
+
+/* External / mailto affordances — view (.doc-prose) and editor (.ProseMirror).
+ * Internal wiki paths (/…/*.md, /docs/…) do not match these selectors. */
+.doc-prose a[href^="http://" i]::after,
+.doc-prose a[href^="https://" i]::after,
+.milkdown .ProseMirror a[href^="http://" i]::after,
+.milkdown .ProseMirror a[href^="https://" i]::after,
+.doc-prose a[href^="mailto:" i]::after,
+.milkdown .ProseMirror a[href^="mailto:" i]::after {
+  content: "";
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  margin-left: 0.22em;
+  vertical-align: 0.08em;
+  background-color: currentColor;
+  opacity: 0.72;
+  pointer-events: none;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+.doc-prose a[href^="http://" i]::after,
+.doc-prose a[href^="https://" i]::after,
+.milkdown .ProseMirror a[href^="http://" i]::after,
+.milkdown .ProseMirror a[href^="https://" i]::after {
+  /* External-link: square + outbound arrow */
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='black'%3E%3Cpath d='M6.5 3a.75.75 0 0 0 0 1.5h3.19L4.22 9.97a.75.75 0 1 0 1.06 1.06l5.47-5.47V8.5a.75.75 0 0 0 1.5 0v-5A.75.75 0 0 0 11.5 3h-5Z'/%3E%3Cpath d='M3.5 5.75A.75.75 0 0 0 2.75 5H2A1.75 1.75 0 0 0 .25 6.75v7A1.75 1.75 0 0 0 2 15.5h7A1.75 1.75 0 0 0 10.75 13.75V13a.75.75 0 0 0-1.5 0v.75a.25.25 0 0 1-.25.25H2a.25.25 0 0 1-.25-.25v-7A.25.25 0 0 1 2 6.5h.75a.75.75 0 0 0 .75-.75Z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='black'%3E%3Cpath d='M6.5 3a.75.75 0 0 0 0 1.5h3.19L4.22 9.97a.75.75 0 1 0 1.06 1.06l5.47-5.47V8.5a.75.75 0 0 0 1.5 0v-5A.75.75 0 0 0 11.5 3h-5Z'/%3E%3Cpath d='M3.5 5.75A.75.75 0 0 0 2.75 5H2A1.75 1.75 0 0 0 .25 6.75v7A1.75 1.75 0 0 0 2 15.5h7A1.75 1.75 0 0 0 10.75 13.75V13a.75.75 0 0 0-1.5 0v.75a.25.25 0 0 1-.25.25H2a.25.25 0 0 1-.25-.25v-7A.25.25 0 0 1 2 6.5h.75a.75.75 0 0 0 .75-.75Z'/%3E%3C/svg%3E");
+}
+.doc-prose a[href^="mailto:" i]::after,
+.milkdown .ProseMirror a[href^="mailto:" i]::after {
+  /* Envelope */
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='black'%3E%3Cpath d='M1.75 3A1.75 1.75 0 0 0 0 4.75v6.5C0 12.216.784 13 1.75 13h12.5A1.75 1.75 0 0 0 16 11.25v-6.5A1.75 1.75 0 0 0 14.25 3H1.75ZM1.5 4.75a.25.25 0 0 1 .25-.25h12.5a.25.25 0 0 1 .25.25v.348L8.353 9.147a.75.75 0 0 1-.706 0L1.5 5.098V4.75Zm0 1.933 5.646 3.527a2.25 2.25 0 0 0 2.208 0L15 6.683v4.567a.25.25 0 0 1-.25.25H1.75a.25.25 0 0 1-.25-.25V6.683Z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='black'%3E%3Cpath d='M1.75 3A1.75 1.75 0 0 0 0 4.75v6.5C0 12.216.784 13 1.75 13h12.5A1.75 1.75 0 0 0 16 11.25v-6.5A1.75 1.75 0 0 0 14.25 3H1.75ZM1.5 4.75a.25.25 0 0 1 .25-.25h12.5a.25.25 0 0 1 .25.25v.348L8.353 9.147a.75.75 0 0 1-.706 0L1.5 5.098V4.75Zm0 1.933 5.646 3.527a2.25 2.25 0 0 0 2.208 0L15 6.683v4.567a.25.25 0 0 1-.25.25H1.75a.25.25 0 0 1-.25-.25V6.683Z'/%3E%3C/svg%3E");
+}
+
 .doc-prose table {
   border-collapse: collapse;
   margin-bottom: 12px;

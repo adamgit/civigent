@@ -107,6 +107,11 @@ export interface CrdtProviderEvents {
   /** Raw authoritative live-section frame (opcode + payload) — routed into a
    *  `LiveSectionReplica` via `routeLiveSectionFrame`. */
   onLiveSectionFrame?: (opcode: number, payload: Uint8Array) => void;
+  /** Fired after a MSG_SYNC_STEP_2 update is applied to the shared Y.Doc, so a
+   *  passively-watching viewer (no mounted Milkdown) can re-read `paintMarkdown`
+   *  and repaint. NOT a general doc.on("update") — only this inbound-sync opcode
+   *  fires it, so local keystrokes don't trigger a repaint. */
+  onDocUpdated?: () => void;
 }
 
 // ─── Provider ──────────────────────────────────────────────────────
@@ -460,6 +465,7 @@ export class CrdtProvider {
           this.syncRoundtripResolvers = [];
           for (const r of resolvers) r();
         }
+        this.events.onDocUpdated?.();
         break;
       }
       case MSG_UPDATE_ACK: {

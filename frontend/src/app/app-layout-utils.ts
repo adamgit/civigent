@@ -1,4 +1,5 @@
 export const DOC_BADGES_STORAGE_KEY = "ks_doc_badges";
+export const SIDEBAR_AUTOHIDE_STORAGE_KEY = "ks_sidebar_autohide";
 
 const BUILD_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -57,6 +58,48 @@ export function writeBadgeDocPaths(paths: Set<string>): void {
     localStorage.setItem(DOC_BADGES_STORAGE_KEY, JSON.stringify(Array.from(paths)));
   } catch {
     // Ignore storage write failures in constrained environments.
+  }
+}
+
+function parseSidebarAutoHideFlag(raw: string | null): boolean | null {
+  if (raw === "1") return true;
+  if (raw === "0") return false;
+  return null;
+}
+
+/**
+ * Per-tab preference (sessionStorage) first; otherwise last-writer seed from
+ * localStorage. When seeding from localStorage, claim it into sessionStorage
+ * so this tab keeps its own value across remounts / back-forward.
+ */
+export function readSidebarAutoHide(): boolean {
+  try {
+    const fromSession = parseSidebarAutoHideFlag(sessionStorage.getItem(SIDEBAR_AUTOHIDE_STORAGE_KEY));
+    if (fromSession !== null) return fromSession;
+
+    const fromLocal = parseSidebarAutoHideFlag(localStorage.getItem(SIDEBAR_AUTOHIDE_STORAGE_KEY));
+    if (fromLocal !== null) {
+      sessionStorage.setItem(SIDEBAR_AUTOHIDE_STORAGE_KEY, fromLocal ? "1" : "0");
+      return fromLocal;
+    }
+  } catch {
+    // Ignore storage access failures in constrained environments.
+  }
+  return false;
+}
+
+/** Persist for this tab (session) and as the seed for new tabs (local). */
+export function writeSidebarAutoHide(value: boolean): void {
+  const flag = value ? "1" : "0";
+  try {
+    sessionStorage.setItem(SIDEBAR_AUTOHIDE_STORAGE_KEY, flag);
+  } catch {
+    // Ignore sessionStorage failures in constrained environments.
+  }
+  try {
+    localStorage.setItem(SIDEBAR_AUTOHIDE_STORAGE_KEY, flag);
+  } catch {
+    // Ignore localStorage failures in constrained environments.
   }
 }
 

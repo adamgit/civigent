@@ -173,7 +173,7 @@ export function DocumentSectionRenderer({
       onMouseLeave={() => setHoveredFragmentKey(null)}
       onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
       onClick={unavailableForEdit || publishPaused ? undefined : hasEditor ? undefined : (e) => {
-        if (e.shiftKey || e.button !== 0 || e.defaultPrevented) return;
+        if (e.shiftKey || e.ctrlKey || e.metaKey || e.button !== 0 || e.defaultPrevented) return;
         if (window.getSelection()?.isCollapsed === false) return;
         const down = mouseDownPosRef.current;
         if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
@@ -266,7 +266,7 @@ export function DocumentSectionRenderer({
                 className={isReady ? "" : "absolute inset-0"}
                 onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
                 onClick={(e) => {
-                  if (e.shiftKey || e.button !== 0 || e.defaultPrevented) return;
+                  if (e.shiftKey || e.ctrlKey || e.metaKey || e.button !== 0 || e.defaultPrevented) return;
                   if (window.getSelection()?.isCollapsed === false) return;
                   const down = mouseDownPosRef.current;
                   if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;

@@ -12,7 +12,7 @@ import { CurrentUserProvider } from "../contexts/CurrentUserContext";
 import { SidebarIdentity } from "../components/SidebarIdentity";
 import type { DocumentTreeEntry, AuthUser } from "../types/shared.js";
 import { stripLeadingSlashForRoute } from "./docsRouteUtils";
-import { DOC_BADGES_STORAGE_KEY, formatBuildDate, toCanonicalDocPath, readBadgeDocPaths, writeBadgeDocPaths, parseRouteDocPath, classifyWsEvent } from "./app-layout-utils";
+import { DOC_BADGES_STORAGE_KEY, formatBuildDate, toCanonicalDocPath, readBadgeDocPaths, writeBadgeDocPaths, readSidebarAutoHide, writeSidebarAutoHide, parseRouteDocPath, classifyWsEvent } from "./app-layout-utils";
 import { recordWsDiag } from "../services/ws-diagnostics";
 import { computeBrowserTabTitle } from "./browser-tab-title";
 
@@ -52,6 +52,31 @@ export interface AppLayoutOutletContext {
   refreshTree: () => Promise<void>;
 }
 
+/** Left-rail panel glyph (VS Code / Notion style). Filled rail when pinned; empty when auto-hide. */
+function SidebarPanelIcon({ autoHide }: { autoHide: boolean }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+      <rect
+        x="1.75"
+        y="2.25"
+        width="14.5"
+        height="13.5"
+        rx="2"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M7 2.25V15.75"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      {autoHide ? null : (
+        <rect x="2.5" y="3" width="4" height="12" rx="0.5" fill="currentColor" />
+      )}
+    </svg>
+  );
+}
+
 export function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -77,6 +102,14 @@ export function AppLayout() {
   const [windowFocused, setWindowFocused] = useState(() => document.hasFocus());
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
   const [wsDiagOpen, setWsDiagOpen] = useState(false);
+  // One-click sidebar autohide (taskbar-style hover reveal). Persisted per tab
+  // via sessionStorage, with localStorage as the seed for new tabs (last writer
+  // wins). Clicking the header toggle is the only way in/out; hover only reveals
+  // while already in autohide. hoverRevealArmed stays false after collapse until
+  // the pointer leaves the shell — otherwise :hover on the toggle immediately
+  // re-opens it.
+  const [sidebarAutoHide, setSidebarAutoHide] = useState(readSidebarAutoHide);
+  const [hoverRevealArmed, setHoverRevealArmed] = useState(true);
   const [rootImporting, setRootImporting] = useState(false);
   const [rootImportError, setRootImportError] = useState<string | null>(null);
   const rootImportInputRef = useRef<HTMLInputElement>(null);
@@ -561,24 +594,54 @@ export function AppLayout() {
 
   return (
     <CurrentUserProvider currentUser={currentUser}>
-    <div className="flex h-screen">
-      {/* Sidebar */}
-      <aside className="w-[--spacing-sidebar-w] min-w-[--spacing-sidebar-w] bg-sidebar-bg border-r border-sidebar-border flex flex-col select-none overflow-visible">
-        {/* Sidebar header */}
-        <div className="px-3.5 pt-3.5 pb-2.5 flex items-center justify-between gap-2">
-          <span className="text-xs font-semibold text-sidebar-heading uppercase tracking-wide">
-            <a href="/">Civigent</a>
-          </span>
+    <div
+      className="flex h-screen"
+      data-sidebar-mode={sidebarAutoHide ? "autohide" : "expanded"}
+      data-sidebar-hover-reveal={hoverRevealArmed ? "on" : "off"}
+    >
+      {/* Sidebar shell — reserves the in-flow width for the left column. In
+          expanded mode this is the aside's own content width (capped 30vw); in
+          autohide mode it collapses to the hotedge and the aside slides over. */}
+      <div
+        className="sidebar-shell"
+        onMouseLeave={() => {
+          if (sidebarAutoHide) setHoverRevealArmed(true);
+        }}
+      >
+        {/* Thin left hit-strip; only visible/hoverable in autohide mode. */}
+        <div className="sidebar-hotedge" aria-hidden="true" />
+        {/* Sidebar — width now comes from the `.sidebar` CSS (max-content, 30vw
+            cap); visuals stay on the Tailwind classes below. */}
+        <aside className="sidebar bg-sidebar-bg border-r border-sidebar-border flex flex-col select-none overflow-visible min-w-0">
+        {/* Sidebar header — toggle leads the brand (Notion/VS Code pattern), not a ghost chevron by ws>_. */}
+        <div className="px-2.5 pt-3 pb-2.5 flex items-center gap-1.5 min-w-0">
           <button
             type="button"
-            onClick={() => setWsDiagOpen((v) => !v)}
-            aria-label={wsDiagOpen ? "Close WS Diagnostics Console" : "Open WS Diagnostics Console"}
-            title="WS Diagnostics Console"
-            aria-pressed={wsDiagOpen}
-            className="text-[10px] font-mono text-sidebar-heading/70 hover:text-sidebar-text-hover bg-transparent border border-sidebar-border rounded px-1.5 py-0.5 cursor-pointer leading-none"
+            onClick={(e) => {
+              setSidebarAutoHide((v) => {
+                const next = !v;
+                // Entering autohide: disarm hover reveal until pointer leaves the
+                // shell, or the sidebar stays open under the click.
+                setHoverRevealArmed(!next);
+                writeSidebarAutoHide(next);
+                return next;
+              });
+              e.currentTarget.blur();
+            }}
+            aria-label={sidebarAutoHide ? "Pin sidebar open" : "Hide sidebar"}
+            title={sidebarAutoHide ? "Pin sidebar open" : "Hide sidebar"}
+            aria-pressed={sidebarAutoHide}
+            className={`sidebar-toggle-btn shrink-0 flex items-center justify-center w-7 h-7 rounded cursor-pointer border-none transition-colors ${
+              sidebarAutoHide
+                ? "bg-white/55 text-sidebar-active-text"
+                : "bg-transparent text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover"
+            }`}
           >
-            ws&gt;_
+            <SidebarPanelIcon autoHide={sidebarAutoHide} />
           </button>
+          <span className="text-xs font-semibold text-sidebar-heading uppercase tracking-wide truncate min-w-0">
+            <a href="/">Civigent</a>
+          </span>
         </div>
 
         {/* Primary nav links (movable component) */}
@@ -709,7 +772,10 @@ export function AppLayout() {
         </div>
 
         {/* Footer nav links (movable component) */}
-        <SidebarNavLinks variant="footer" />
+        <SidebarNavLinks
+          variant="footer"
+          onOpenWsDiagnostics={() => setWsDiagOpen(true)}
+        />
 
         <SidebarIdentity />
 
@@ -722,7 +788,8 @@ export function AppLayout() {
             v{__APP_VERSION__} &middot; {buildDate.shortLabel}
           </span>
         </div>
-      </aside>
+        </aside>
+      </div>
 
       {/* Main area */}
       <div className="flex-1 flex flex-col min-w-0">

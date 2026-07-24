@@ -66,6 +66,7 @@ import {
   type LocalEditOriginSink,
   type SessionAuthorshipView,
 } from "../status/sessionAuthorship";
+import { copyTextToClipboard } from "../utils/copy-text";
 
 interface DocumentPageProps {
   docPathOverride?: string | null;
@@ -90,6 +91,8 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [pathCopied, setPathCopied] = useState(false);
+  const pathCopiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [showOverwrite, setShowOverwrite] = useState(false);
@@ -504,6 +507,14 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
   }, [decodedDocPath]);
 
   useEffect(() => {
+    return () => {
+      if (pathCopiedTimeoutRef.current) {
+        clearTimeout(pathCopiedTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!decodedDocPath) return;
     let cancelled = false;
     setStructureTree(null);
@@ -801,7 +812,37 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
                   </form>
                 ) : (
                   <>
-                    <span>{decodedDocPath ?? ""}</span>
+                    <span className="inline-flex items-center gap-1 min-w-0">
+                      <span className="truncate">{decodedDocPath ?? ""}</span>
+                      {decodedDocPath ? (
+                        <button
+                          type="button"
+                          className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded text-text-muted hover:text-text-primary hover:bg-[rgba(0,0,0,0.04)]"
+                          title={pathCopied ? "Copied" : "Copy path"}
+                          aria-label={pathCopied ? "Path copied" : "Copy document path"}
+                          onClick={async () => {
+                            const didCopy = await copyTextToClipboard(decodedDocPath);
+                            if (!didCopy) return;
+                            setPathCopied(true);
+                            if (pathCopiedTimeoutRef.current) {
+                              clearTimeout(pathCopiedTimeoutRef.current);
+                            }
+                            pathCopiedTimeoutRef.current = setTimeout(() => setPathCopied(false), 1500);
+                          }}
+                        >
+                          {pathCopied ? (
+                            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                              <path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          ) : (
+                            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                              <rect x="5.5" y="5.5" width="8" height="8" rx="1.25" stroke="currentColor" strokeWidth="1.25" />
+                              <path d="M10.5 5.5V4.25C10.5 3.56 9.94 3 9.25 3H4.25C3.56 3 3 3.56 3 4.25V9.25C3 9.94 3.56 10.5 4.25 10.5H5.5" stroke="currentColor" strokeWidth="1.25" />
+                            </svg>
+                          )}
+                        </button>
+                      ) : null}
+                    </span>
                     <button
                       className="text-xs text-accent-primary hover:underline ml-1"
                       onClick={() => { setRenameValue(decodedDocPath ?? ""); setRenaming(true); }}
