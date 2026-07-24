@@ -317,8 +317,12 @@ export async function acquireDocSession(
   // Slow path: construct the live Y.Doc by reseeding from canonical + any
   // existing `inprogress` proposal for this document (spec 05 §Y.Doc
   // Construction / §Crash Recovery). NO sessions/ overlay, NO raw fragments.
+  if (!identity) {
+    throw new Error(`acquireDocSession requires writerIdentity for initial holder "${writerId}" on doc "${docPath}".`);
+  }
+  const initialIdentity = identity;
   const creationPromise = (async (): Promise<DocSession> => {
-    const session = await constructDocSession(docPath, writerId, baseHead);
+    const session = await constructDocSession(docPath, writerId, baseHead, initialIdentity);
     sessions.set(docPath, session);
     return session;
   })();
@@ -326,11 +330,8 @@ export async function acquireDocSession(
   sessionPromises.set(docPath, creationPromise);
 
   const session = await creationPromise;
-  if (!identity) {
-    throw new Error(`acquireDocSession requires writerIdentity for initial holder "${writerId}" on doc "${docPath}".`);
-  }
   session.holders.set(writerId, {
-    identity,
+    identity: initialIdentity,
     editorSocketIds: new Set(socketId ? [socketId] : []),
   });
   session.lastActivityAt = Date.now();
@@ -343,6 +344,7 @@ async function constructDocSession(
   docPath: string,
   writerId: string,
   baseHead: string,
+  writerIdentity: WriterIdentity,
 ): Promise<DocSession> {
   const { DocumentSkeletonInternal } = await import("../storage/document-skeleton.js");
   const { listInProgressProposalsForDoc } = await import("../storage/proposal-repository.js");
@@ -431,7 +433,7 @@ async function constructDocSession(
   const generator: CRDTProposalGenerator = new CRDTProposalGenerator({
     docPath,
     proposalAdoptionId,
-    writer: { id: writerId, type: "human", displayName: writerId },
+    writer: writerIdentity,
     // The source reads `getCurrentProposalId` lazily; `generator` is assigned by
     // the time any snapshot runs, so referencing it here is safe (it is never
     // invoked during construction).
@@ -590,9 +592,23 @@ export function noteFragmentActivity(
   session.dirtyFragmentKeys.add(fragmentKey);
   session.lastWriterId = writerId;
   session.lastActivityAt = now;
-  session.contributors.set(writerId, session.holders.get(writerId)?.identity ?? {
-    id: writerId, type: "human", displayName: writerId,
-  });
+
+  const holderIdentity = session.holders.get(writerId)?.identity;
+  const existingContributor = session.contributors.get(writerId);
+  const generatorWriter = session.generator.getWriterIdentity();
+  const generatorIdentity = generatorWriter.id === writerId ? generatorWriter : undefined;
+  const resolved =
+    holderIdentity ??
+    existingContributor ??
+    generatorIdentity ??
+    { id: writerId, type: "human" as const, displayName: writerId };
+
+  // Never replace an existing real display name with a forged placeholder.
+  const isPlaceholder = (w: WriterIdentity) => w.displayName === writerId;
+  if (existingContributor && isPlaceholder(resolved) && !isPlaceholder(existingContributor)) {
+    return;
+  }
+  session.contributors.set(writerId, resolved);
 }
 
 // ─── Activity ────────────────────────────────────────────────────

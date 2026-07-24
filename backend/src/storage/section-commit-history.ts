@@ -61,7 +61,7 @@ export async function readDocSectionCommitInfo(
     [
       "-c", `safe.directory=${dataRoot}`,
       "log",
-      "--format=COMMIT_%at_%H%x00%an%x00%ae%x00%(trailers:key=Writer,valueonly,separator=%x2c)%x00%(trailers:key=Writer-Type,valueonly,separator=%x2c)",
+      "--format=COMMIT_%at_%H%x00%an%x00%ae%x00%(trailers:key=Writer,valueonly,separator=%x2c)%x00%(trailers:key=Writer-Type,valueonly,separator=%x2c)%x00%(trailers:key=Writer-Display-Name,valueonly,separator=%x2c)",
       "--name-only",
       "--",
       relSectionsDir + "/",
@@ -81,17 +81,18 @@ export async function readDocSectionCommitInfo(
     for await (const line of rl) {
       if (line.startsWith("COMMIT_")) {
         // Format:
-        // COMMIT_<unix-seconds>_<sha>\0<author-name>\0<author-email>\0<Writer trailer>\0<Writer-Type trailer>
+        // COMMIT_<unix-seconds>_<sha>\0<author-name>\0<author-email>\0<Writer>\0<Writer-Type>\0<Writer-Display-Name>
         const payload = line.slice("COMMIT_".length);
         const tsSep = payload.indexOf("_");
         currentTs = parseInt(payload.slice(0, tsSep), 10) * 1000;
         const fields = payload.slice(tsSep + 1).split("\0");
         currentSha = fields[0] ?? "";
-        currentAuthor = fields[1] ?? "";
+        const authorFromGit = fields[1] ?? "";
         const writerTrailer = (fields[3] ?? "").trim();
         const writerTypeTrailer = (fields[4] ?? "").trim().toLowerCase();
+        const displayNameTrailer = (fields[5] ?? "").trim();
         // Multi-valued trailers (comma-joined by git separator=%x2c) are malformed —
-        // our commit code writes exactly one Writer and one Writer-Type per commit.
+        // our commit code writes exactly one of each trailer per commit.
         // Treat comma-containing values as integrity errors → "unknown".
         currentWriterId = (writerTrailer && !writerTrailer.includes(",")) ? writerTrailer : "unknown";
         if (writerTypeTrailer === "agent" || writerTypeTrailer === "human") {
@@ -99,6 +100,10 @@ export async function readDocSectionCommitInfo(
         } else {
           currentWriterType = "unknown";
         }
+        currentAuthor =
+          displayNameTrailer && !displayNameTrailer.includes(",")
+            ? displayNameTrailer
+            : authorFromGit;
       } else if (line.trim()) {
         // File path — keep only first occurrence (most recent commit)
         if (!result.has(line)) {

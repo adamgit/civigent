@@ -138,7 +138,7 @@ export function registerAuthRoutes(router: Router): void {
       }
 
       const callbackUrl = new URL(req.originalUrl, getOidcPublicUrl());
-      let claims: { issuer: string; subject: string; email?: string; name?: string };
+      let claims: Awaited<ReturnType<typeof redeemOidcCode>>;
       try {
         claims = await redeemOidcCode(callbackUrl, String(state), stored.nonce);
       } catch (err) {
@@ -146,7 +146,7 @@ export function registerAuthRoutes(router: Router): void {
         return;
       }
 
-      const identity = buildOidcIdentity(claims.issuer, claims.subject, claims.email, claims.name);
+      const identity = buildOidcIdentity(claims);
       const { access_token, refresh_token } = issueTokenPair(identity);
       setAuthCookies(req, res, access_token, refresh_token);
       res.redirect(302, stored.returnTo);

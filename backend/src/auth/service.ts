@@ -65,18 +65,41 @@ function providerAllowedInMode(provider: LoginInput["provider"], mode: RuntimeAu
   return false;
 }
 
+export interface OidcIdentityClaims {
+  issuer: string;
+  subject: string;
+  email?: string;
+  name?: string;
+  givenName?: string;
+  familyName?: string;
+  preferredUsername?: string;
+}
+
+function resolveOidcDisplayName(claims: OidcIdentityClaims): string {
+  const name = normalizeNonEmpty(claims.name);
+  if (name) return name;
+
+  const given = normalizeNonEmpty(claims.givenName);
+  const family = normalizeNonEmpty(claims.familyName);
+  if (given && family) return `${given} ${family}`;
+  if (given) return given;
+  if (family) return family;
+
+  return (
+    normalizeNonEmpty(claims.preferredUsername) ??
+    normalizeNonEmpty(claims.email) ??
+    claims.subject
+  );
+}
+
 /**
  * Build an AuthenticatedWriter identity from OIDC token claims.
  * The deterministic UUID seed is "issuer|subject" — stable across sessions.
  */
-export function buildOidcIdentity(
-  issuer: string,
-  subject: string,
-  email?: string,
-  name?: string,
-): AuthenticatedWriter {
-  const id = `human-${deterministicUuid(`${issuer}|${subject}`)}`;
-  const displayName = name ?? email ?? subject;
+export function buildOidcIdentity(claims: OidcIdentityClaims): AuthenticatedWriter {
+  const id = `human-${deterministicUuid(`${claims.issuer}|${claims.subject}`)}`;
+  const displayName = resolveOidcDisplayName(claims);
+  const email = normalizeNonEmpty(claims.email);
   return {
     id,
     type: "human",

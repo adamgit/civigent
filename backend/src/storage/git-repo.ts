@@ -130,7 +130,7 @@ export async function gitLogRecent(
   const skip = opts.offset ?? 0;
   const args = [
     "log",
-    `--format=${COMMIT_DELIM}%H%x00%an%x00%ae%x00%(trailers:key=Writer-Type,valueonly,separator=%x2c)%x00%aI%x00%s`,
+    `--format=${COMMIT_DELIM}%H%x00%an%x00%ae%x00%(trailers:key=Writer-Type,valueonly,separator=%x2c)%x00%(trailers:key=Writer-Display-Name,valueonly,separator=%x2c)%x00%aI%x00%s`,
     "--name-only",
     `-n`, String(limit),
     `--skip`, String(skip),
@@ -161,18 +161,24 @@ export async function gitLogRecent(
     const lines = block.split("\n").filter(Boolean);
     if (lines.length === 0) continue;
     const parts = lines[0].split("\0");
-    if (parts.length < 6) continue;
+    if (parts.length < 7) continue;
     const rawWriterType = (parts[3] ?? "").trim().toLowerCase();
     // Multi-valued trailers (comma-joined) are malformed — treat as "unknown"
     const writerType: AttributionWriterType =
       rawWriterType === "agent" || rawWriterType === "human" ? rawWriterType : "unknown";
+    const displayNameTrailer = (parts[4] ?? "").trim();
+    const authorFromGit = parts[1] ?? "";
+    const authorName =
+      displayNameTrailer && !displayNameTrailer.includes(",")
+        ? displayNameTrailer
+        : authorFromGit;
     entries.push({
       sha: parts[0],
-      author_name: parts[1],
+      author_name: authorName,
       author_email: parts[2],
       writer_type: writerType,
-      timestamp_iso: parts[4],
-      message: parts[5],
+      timestamp_iso: parts[5],
+      message: parts[6],
       changed_files: lines.slice(1),
     });
   }

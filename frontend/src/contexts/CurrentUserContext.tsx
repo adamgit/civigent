@@ -1,8 +1,8 @@
 /**
  * CurrentUserContext — provides the authenticated user identity app-wide.
  *
- * Placed in AppLayout so every page (including SharedPageHeader) can access
- * the current user without depending on router outlet context.
+ * Placed in AppLayout around the full layout (sidebar + main) so sidebar
+ * identity and page consumers can access the current user.
  */
 
 import { createContext, useContext } from "react";

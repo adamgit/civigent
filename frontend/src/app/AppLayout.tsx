@@ -9,6 +9,7 @@ import { SystemFatalScreen } from "../components/SystemFatalScreen";
 import { WsDiagnosticsConsole } from "../components/WsDiagnosticsConsole";
 import { rememberRecentDoc } from "../services/recent-docs";
 import { CurrentUserProvider } from "../contexts/CurrentUserContext";
+import { SidebarIdentity } from "../components/SidebarIdentity";
 import type { DocumentTreeEntry, AuthUser } from "../types/shared.js";
 import { stripLeadingSlashForRoute } from "./docsRouteUtils";
 import { DOC_BADGES_STORAGE_KEY, formatBuildDate, toCanonicalDocPath, readBadgeDocPaths, writeBadgeDocPaths, parseRouteDocPath, classifyWsEvent } from "./app-layout-utils";
@@ -559,6 +560,7 @@ export function AppLayout() {
   }
 
   return (
+    <CurrentUserProvider currentUser={currentUser}>
     <div className="flex h-screen">
       {/* Sidebar */}
       <aside className="w-[--spacing-sidebar-w] min-w-[--spacing-sidebar-w] bg-sidebar-bg border-r border-sidebar-border flex flex-col select-none overflow-visible">
@@ -709,6 +711,8 @@ export function AppLayout() {
         {/* Footer nav links (movable component) */}
         <SidebarNavLinks variant="footer" />
 
+        <SidebarIdentity />
+
         {/* Version footer */}
         <div className="px-3.5 py-2 border-t border-sidebar-border">
           <span
@@ -756,29 +760,27 @@ export function AppLayout() {
               ))}
             </div>
           ) : null}
-          <CurrentUserProvider currentUser={currentUser}>
-            {systemStarting ? (
-              <div className="flex flex-col items-center justify-center h-full gap-4 text-text-faint">
-                <div className="flex gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse" />
-                  <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse [animation-delay:300ms]" />
-                  <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse [animation-delay:600ms]" />
-                </div>
-                <p className="text-sm">The system is starting up. This page will refresh automatically.</p>
+          {systemStarting ? (
+            <div className="flex flex-col items-center justify-center h-full gap-4 text-text-faint">
+              <div className="flex gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse" />
+                <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse [animation-delay:300ms]" />
+                <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse [animation-delay:600ms]" />
               </div>
-            ) : (
-              <Outlet
-                context={{
-                  entries,
-                  treeLoading: loadingTree,
-                  treeSyncing: syncingTree,
-                  treeError,
-                  createDoc,
-                  refreshTree: () => loadTree({ background: true }),
-                } satisfies AppLayoutOutletContext}
-              />
-            )}
-          </CurrentUserProvider>
+              <p className="text-sm">The system is starting up. This page will refresh automatically.</p>
+            </div>
+          ) : (
+            <Outlet
+              context={{
+                entries,
+                treeLoading: loadingTree,
+                treeSyncing: syncingTree,
+                treeError,
+                createDoc,
+                refreshTree: () => loadTree({ background: true }),
+              } satisfies AppLayoutOutletContext}
+            />
+          )}
         </main>
         {/* Publish mirror intentionally hidden while the unpublished-changes UX is redesigned.
             Users are misusing the current flow, so we are disabling this entry point until
@@ -786,5 +788,6 @@ export function AppLayout() {
       </div>
       <WsDiagnosticsConsole open={wsDiagOpen} onClose={() => setWsDiagOpen(false)} />
     </div>
+    </CurrentUserProvider>
   );
 }

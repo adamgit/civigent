@@ -109,6 +109,7 @@ function buildPublishCommitMessage(
     `Proposal: ${proposal.id}`,
     `Writer: ${proposal.writer.id}`,
     `Writer-Type: ${proposal.writer.type}`,
+    `Writer-Display-Name: ${proposal.writer.displayName}`,
   ];
   if (options.restoreTargetSha) {
     trailers.push(`Restore-Target: ${options.restoreTargetSha}`);
