@@ -1350,3 +1350,90 @@ a {
     opacity: 0;
   }
 }
+
+/* ── Document paper header + sticky compact bar ───────────────────
+ * Full header stays in document flow. The compact bar is position:fixed
+ * to the canvas scrollport (geometry from JS) with opacity/translate
+ * driven 1:1 from scroll progress — no CSS transitions. */
+.doc-paper-header__meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  min-width: 0;
+}
+
+.doc-paper-sticky-header {
+  position: fixed;
+  z-index: 20;
+  box-sizing: border-box;
+  display: block;
+  margin: 0;
+  /* Match paper horizontal padding (Tailwind px-14). */
+  padding: 0.65rem 3.5rem 0.55rem;
+  background: var(--color-canvas-bg);
+  border: none;
+  border-bottom: 1px solid #eae7e2;
+  border-radius: 0;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  /* opacity / transform / box-shadow set inline from scroll progress */
+  will-change: opacity, transform;
+}
+.doc-paper-sticky-header:disabled {
+  cursor: default;
+}
+.doc-paper-sticky-header:hover:not(:disabled) {
+  background: #faf8f5;
+}
+.doc-paper-sticky-header__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.75rem;
+  min-width: 0;
+}
+.doc-paper-sticky-header__title {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--color-text-primary);
+  min-width: 0;
+}
+
+/* Narrative presence activity (replaces the absolute badge strip in the UI). */
+.doc-presence-activity {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.45rem;
+  min-width: 0;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--color-text-secondary);
+}
+.doc-presence-activity__sep {
+  color: var(--color-text-faint);
+  user-select: none;
+}
+.doc-presence-activity__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.doc-presence-activity__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.doc-presence-activity__text {
+  min-width: 0;
+}

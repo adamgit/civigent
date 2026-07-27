@@ -76,11 +76,11 @@ import { DocPath } from "../types/shared";
 
 interface GovernanceDocumentPageProps {
   docPathOverride?: string | null;
-  /** Optional control rendered to the right of the document title on the paper. */
-  titleAccessory?: ReactNode;
+  /** Rendered in DocumentTopbar before History (e.g. view-mode toggle). */
+  toolbarAccessory?: ReactNode;
 }
 
-export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: GovernanceDocumentPageProps = {}) {
+export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: GovernanceDocumentPageProps = {}) {
   const params = useParams();
   const decodedDocPath = useMemo(() => {
     if (typeof docPathOverride === "string" && docPathOverride.length > 0) {
@@ -702,6 +702,7 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
       <div className="relative shrink-0">
         <DocumentTopbar
           docPath={decodedDocPath}
+          toolbarAccessory={toolbarAccessory}
           showHistory={showHistory}
           onToggleHistory={() => setShowHistory((v) => !v)}
           showDiagnostics={showDiagnostics}
@@ -779,12 +780,9 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
             ref={sectionsContainerRef}
             className="bg-canvas-bg shadow-[0_1px_4px_rgba(0,0,0,0.04),0_6px_24px_rgba(0,0,0,0.025)] rounded-sm px-14 pt-12 pb-16 relative min-h-[calc(100vh-200px)]"
           >
-            <div className="flex items-center justify-between gap-4 mb-1">
-              <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight tracking-tight min-w-0">
-                {docTitle}
-              </h1>
-              {titleAccessory}
-            </div>
+            <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight tracking-tight min-w-0 mb-1">
+              {docTitle}
+            </h1>
             <div className="text-xs text-text-muted mb-7 pb-5 border-b border-[#eae7e2] flex items-center justify-between gap-4">
               <span>{decodedDocPath ?? ""}</span>
               <button

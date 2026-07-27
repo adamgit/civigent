@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { CrdtConnectionState } from "../services/crdt-provider";
 import { resolveTransportStatus, TRANSPORT_STATUS_META } from "../services/section-save-state";
@@ -8,6 +8,11 @@ import type { PublishTriggerDecision } from "../types/shared";
 interface DocumentTopbarProps {
   /** Canonical document path — used to resolve the parent-folder back link. */
   docPath: string | null;
+  /**
+   * Optional control rendered just before History (e.g. Standard/Governance/Agent
+   * view toggle). Keeps page-specific chrome out of the paper header.
+   */
+  toolbarAccessory?: ReactNode;
   showHistory: boolean;
   onToggleHistory: () => void;
   showDiagnostics: boolean;
@@ -69,6 +74,7 @@ function ClockIcon() {
 
 export function DocumentTopbar({
   docPath,
+  toolbarAccessory,
   showHistory,
   onToggleHistory,
   showDiagnostics,
@@ -137,6 +143,8 @@ export function DocumentTopbar({
       </Link>
 
       <div className="flex-1" />
+
+      {toolbarAccessory}
 
       {/* Version history toggle */}
       <button

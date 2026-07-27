@@ -47,7 +47,8 @@ import { useLiveSectionReplica } from "../hooks/useLiveSectionReplica";
 import { useActiveEditors } from "../hooks/useActiveEditors";
 import { useDocumentPresenceModel } from "../presence/useDocumentPresenceModel";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
-import { DocumentPresenceStrip } from "../components/DocumentPresenceStrip";
+import { DocumentPaperHeader } from "../components/DocumentPaperHeader";
+import { DocumentPaperStickyHeader } from "../components/DocumentPaperStickyHeader";
 import { resolveWriterId } from "../services/api-client";
 import type { LiveEditorBinding } from "../services/live-section-replica";
 import {
@@ -78,10 +79,11 @@ import { DocPath } from "../types/shared";
 
 interface DocumentPageProps {
   docPathOverride?: string | null;
-  titleAccessory?: ReactNode;
+  /** Rendered in DocumentTopbar before History (e.g. view-mode toggle). */
+  toolbarAccessory?: ReactNode;
 }
 
-export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPageProps = {}) {
+export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPageProps = {}) {
   const params = useParams();
   const navigate = useNavigate();
   const decodedDocPath = useMemo(() => {
@@ -101,6 +103,7 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [pathCopied, setPathCopied] = useState(false);
   const pathCopiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const paperHeaderRef = useRef<HTMLDivElement>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [showOverwrite, setShowOverwrite] = useState(false);
@@ -417,9 +420,9 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     onSectionEditRejected,
   });
 
-  // Document presence strip model (P11). One hook + one mount site keeps the
-  // whole feature trivially removable. Fed the server's complete
-  // `document:activity` snapshot plus the authenticated local user.
+  // Document presence model — shared by the narrative activity line in both
+  // paper headers. Fed the server's complete `document:activity` snapshot
+  // plus the authenticated local user.
   const currentUser = useCurrentUser();
   const presenceModel = useDocumentPresenceModel({
     activity: documentActivitySnapshot,
@@ -715,10 +718,20 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
   return (
     <SectionHoverProvider activeFragmentKey={focusedFragmentKey}>
     <DocumentActivityIndicator activity={documentActivity} />
-    <div className="relative flex flex-col h-full" style={{ background: "var(--color-page-bg)" }}>
+    <div className="relative flex flex-col h-full min-h-0" style={{ background: "var(--color-page-bg)" }}>
+      <DocumentPaperStickyHeader
+        title={docTitle}
+        presenceModel={presenceModel}
+        currentUserId={currentUser?.id ?? null}
+        documentActivity={documentActivitySnapshot}
+        scrollContainerRef={scrollContainerRef}
+        paperHeaderRef={paperHeaderRef}
+        paperRef={paperRef}
+      />
       <div className="relative shrink-0">
         <DocumentTopbar
           docPath={decodedDocPath}
+          toolbarAccessory={toolbarAccessory}
           showHistory={showHistory}
           onToggleHistory={() => setShowHistory((v) => !v)}
           showDiagnostics={showDiagnostics}
@@ -799,10 +812,10 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
         />
       )}
 
-      {/* Canvas scroll area */}
+      {/* Canvas scroll area — min-h-0 so THIS is the scrollport sticky math uses */}
       <div
         ref={scrollContainerRef}
-        className="flex-1 overflow-auto canvas-scroll px-5 pt-8 pb-24"
+        className="flex-1 min-h-0 overflow-auto canvas-scroll px-5 pt-8 pb-24"
         style={{ background: "var(--color-page-bg)" }}
       >
         <div ref={sectionsContainerRef} className="mx-auto" style={{ maxWidth: "1400px" }}>
@@ -810,101 +823,54 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
           {/* Header row */}
           <div className="flex">
             <div className="w-[200px] min-w-[100px] shrink" />
-            <div ref={paperRef} className="flex-1 min-w-[700px] bg-canvas-bg border border-b-0 border-[rgba(0,0,0,0.06)] rounded-t-sm px-14 pt-12 relative">
-              {/* Presence strip: absolute, zero-height, in the blank space above the title (P11) */}
-              <DocumentPresenceStrip model={presenceModel} />
-              {/* Document title + optional view-mode toggle */}
-              <div className="flex items-center justify-between gap-4 mb-1">
-                <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight tracking-tight min-w-0">
-                  {docTitle}
-                </h1>
-                {titleAccessory}
-              </div>
-              <div className="text-xs text-text-muted mb-7 pb-5 border-b border-[#eae7e2] flex items-center gap-2">
-                {renaming ? (
-                  <form
-                    className="flex items-center gap-1.5 flex-1"
-                    onSubmit={async (e) => {
-                      e.preventDefault();
-                      if (!decodedDocPath || !renameValue.trim()) return;
-                      setRenameError(null);
-                      try {
-                        await resourceModel.renameDocument(decodedDocPath, renameValue.trim());
-                        setRenaming(false);
-                      } catch (err) {
-                        setRenameError(err instanceof Error ? err.message : String(err));
-                      }
-                    }}
-                  >
-                    <input
-                      className="flex-1 text-xs border border-border-default rounded px-1.5 py-0.5 bg-canvas-bg text-text-primary"
-                      value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
-                      autoFocus
-                    />
-                    <button type="submit" className="text-xs text-accent-primary hover:underline">Save</button>
-                    <button type="button" className="text-xs text-text-muted hover:underline" onClick={() => { setRenaming(false); setRenameError(null); }}>Cancel</button>
-                    {renameError && <span className="text-xs text-red-600">{renameError}</span>}
-                  </form>
-                ) : (
-                  <>
-                    <span className="inline-flex items-center gap-1 min-w-0">
-                      <span className="truncate">{decodedDocPath ?? ""}</span>
-                      {decodedDocPath ? (
-                        <button
-                          type="button"
-                          className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded text-text-muted hover:text-text-primary hover:bg-[rgba(0,0,0,0.04)]"
-                          title={pathCopied ? "Copied" : "Copy path"}
-                          aria-label={pathCopied ? "Path copied" : "Copy document path"}
-                          onClick={async () => {
-                            const didCopy = await copyTextToClipboard(decodedDocPath);
-                            if (!didCopy) return;
-                            setPathCopied(true);
-                            if (pathCopiedTimeoutRef.current) {
-                              clearTimeout(pathCopiedTimeoutRef.current);
-                            }
-                            pathCopiedTimeoutRef.current = setTimeout(() => setPathCopied(false), 1500);
-                          }}
-                        >
-                          {pathCopied ? (
-                            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                              <path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                          ) : (
-                            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                              <rect x="5.5" y="5.5" width="8" height="8" rx="1.25" stroke="currentColor" strokeWidth="1.25" />
-                              <path d="M10.5 5.5V4.25C10.5 3.56 9.94 3 9.25 3H4.25C3.56 3 3 3.56 3 4.25V9.25C3 9.94 3.56 10.5 4.25 10.5H5.5" stroke="currentColor" strokeWidth="1.25" />
-                            </svg>
-                          )}
-                        </button>
-                      ) : null}
-                    </span>
-                    <button
-                      className="text-xs text-accent-primary hover:underline ml-1"
-                      onClick={() => { setRenameValue(decodedDocPath ?? ""); setRenaming(true); }}
-                    >
-                      Rename
-                    </button>
-                    <button
-                      className="text-xs text-red-600 hover:underline ml-1"
-                      onClick={async () => {
-                        if (!decodedDocPath) return;
-                        if (!window.confirm("Delete this document? This cannot be undone.")) return;
-                        setDeleteError(null);
-                        try {
-                          await resourceModel.deleteDocument(decodedDocPath);
-                          navigate("/");
-                        } catch (err) {
-                          setDeleteError(err instanceof Error ? err.message : String(err));
-                        }
-                      }}
-                    >
-                      Delete
-                    </button>
-                    {deleteError && <span className="text-xs text-red-600 ml-1">{deleteError}</span>}
-                  </>
-                )}
-              </div>
+            <div ref={paperRef} className="flex-1 min-w-[700px] bg-canvas-bg border border-b-0 border-[rgba(0,0,0,0.06)] rounded-t-sm px-14 pt-8 relative">
+              <DocumentPaperHeader
+                title={docTitle}
+                docPath={decodedDocPath}
+                presenceModel={presenceModel}
+                currentUserId={currentUser?.id ?? null}
+                documentActivity={documentActivitySnapshot}
+                renaming={renaming}
+                renameValue={renameValue}
+                renameError={renameError}
+                pathCopied={pathCopied}
+                deleteError={deleteError}
+                rootRef={paperHeaderRef}
+                onRenameValueChange={setRenameValue}
+                onStartRename={() => { setRenameValue(decodedDocPath ?? ""); setRenaming(true); }}
+                onCancelRename={() => { setRenaming(false); setRenameError(null); }}
+                onSubmitRename={async () => {
+                  if (!decodedDocPath || !renameValue.trim()) return;
+                  setRenameError(null);
+                  try {
+                    await resourceModel.renameDocument(decodedDocPath, renameValue.trim());
+                    setRenaming(false);
+                  } catch (err) {
+                    setRenameError(err instanceof Error ? err.message : String(err));
+                  }
+                }}
+                onCopyPath={async () => {
+                  if (!decodedDocPath) return;
+                  const didCopy = await copyTextToClipboard(decodedDocPath);
+                  if (!didCopy) return;
+                  setPathCopied(true);
+                  if (pathCopiedTimeoutRef.current) {
+                    clearTimeout(pathCopiedTimeoutRef.current);
+                  }
+                  pathCopiedTimeoutRef.current = setTimeout(() => setPathCopied(false), 1500);
+                }}
+                onDelete={async () => {
+                  if (!decodedDocPath) return;
+                  if (!window.confirm("Delete this document? This cannot be undone.")) return;
+                  setDeleteError(null);
+                  try {
+                    await resourceModel.deleteDocument(decodedDocPath);
+                    navigate("/");
+                  } catch (err) {
+                    setDeleteError(err instanceof Error ? err.message : String(err));
+                  }
+                }}
+              />
 
               {/* Shared-draft banner — only when a live inprogress proposal is
                   bound to this document (FP7). Retained across an aborted/failed

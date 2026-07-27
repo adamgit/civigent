@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useParams } from "react-router-dom";
 import { apiClient } from "../services/api-client";
 import { DocumentCanvas } from "../components/DocumentCanvas";
+import DocumentDiagnostics from "../components/DocumentDiagnostics";
+import { DocumentHistory } from "../components/DocumentHistory";
 import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
+import { DocumentTopbar } from "../components/DocumentTopbar";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
 import {
   EphemeralSessionAuthorshipLedger,
@@ -25,7 +28,8 @@ import { DocPath } from "../types/shared";
 
 interface AgentDocumentPageProps {
   docPathOverride?: string | null;
-  titleAccessory?: ReactNode;
+  /** Rendered in DocumentTopbar before History (e.g. view-mode toggle). */
+  toolbarAccessory?: ReactNode;
 }
 
 /**
@@ -39,7 +43,7 @@ interface AgentDocumentPageProps {
  * REST surface directly and renders the exact same cold ReactMarkdown path the
  * standard page uses when there is no live authority.
  */
-export function AgentDocumentPage({ docPathOverride, titleAccessory }: AgentDocumentPageProps = {}) {
+export function AgentDocumentPage({ docPathOverride, toolbarAccessory }: AgentDocumentPageProps = {}) {
   const params = useParams();
   const decodedDocPath = useMemo(() => {
     if (typeof docPathOverride === "string" && docPathOverride.length > 0) {
@@ -54,6 +58,23 @@ export function AgentDocumentPage({ docPathOverride, titleAccessory }: AgentDocu
   const [error, setError] = useState<string | null>(null);
   const [structureTree, setStructureTree] = useState<DocStructureNode[] | null>(null);
   const [showLoading, setShowLoading] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+
+  const loadCanonicalSections = useCallback((docPath: string) => {
+    setSectionsLoading(true);
+    setError(null);
+    return apiClient.getCanonicalDocumentSections(docPath).then(
+      (response) => {
+        setSections(response.sections);
+        setSectionsLoading(false);
+      },
+      (err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        setSectionsLoading(false);
+      },
+    );
+  }, []);
 
   // A5: load committed canonical sections directly over REST on doc change.
   useEffect(() => {
@@ -127,23 +148,68 @@ export function AgentDocumentPage({ docPathOverride, titleAccessory }: AgentDocu
 
   return (
     <SectionHoverProvider activeFragmentKey={null}>
-      <div className="agent-doc-view relative flex flex-col h-full" style={{ background: "var(--color-page-bg)" }}>
+      <div className="agent-doc-view relative flex flex-col h-full min-h-0" style={{ background: "var(--color-page-bg)" }}>
+        <div className="relative shrink-0">
+          <DocumentTopbar
+            docPath={decodedDocPath}
+            toolbarAccessory={toolbarAccessory}
+            showHistory={showHistory}
+            onToggleHistory={() => setShowHistory((v) => !v)}
+            showDiagnostics={showDiagnostics}
+            onToggleDiagnostics={() => setShowDiagnostics((v) => !v)}
+            // Read-only canonical view: no live CRDT / save semantics to report.
+            crdtState="connected"
+            publishPaused={false}
+            isEditing={false}
+            allReceived={true}
+            hasLocalUncommittedEdits={false}
+            hasInboundActivity={false}
+            hadLocalEdits={false}
+            backendError={null}
+          />
+        </div>
+
+        {showHistory && decodedDocPath ? (
+          <div className="border-b border-[#eae7e2] bg-canvas-bg">
+            <div className="max-w-[700px] mx-auto">
+              <div className="flex items-center justify-between px-4 py-2 border-b border-[#f5f2ed]">
+                <span className="text-xs font-bold text-text-primary">Version History</span>
+                <button
+                  type="button"
+                  onClick={() => setShowHistory(false)}
+                  className="text-[11px] text-text-muted hover:text-text-primary"
+                >
+                  Close
+                </button>
+              </div>
+              <DocumentHistory
+                docPath={decodedDocPath}
+                onRestored={() => {
+                  setShowHistory(false);
+                  void loadCanonicalSections(decodedDocPath);
+                }}
+              />
+            </div>
+          </div>
+        ) : null}
+
+        {showDiagnostics && decodedDocPath ? (
+          <DocumentDiagnostics docPath={decodedDocPath} onClose={() => setShowDiagnostics(false)} />
+        ) : null}
+
         <div
-          className="flex-1 overflow-auto canvas-scroll px-5 pt-8 pb-24"
+          className="flex-1 min-h-0 overflow-auto canvas-scroll px-5 pt-8 pb-24"
           style={{ background: "var(--color-page-bg)" }}
         >
           <div className="mx-auto" style={{ maxWidth: "1400px" }}>
 
-            {/* Header row — title + optional view-mode toggle (A9) */}
+            {/* Header row */}
             <div className="flex">
               <div className="w-[200px] min-w-[100px] shrink" />
-              <div className="flex-1 min-w-[700px] bg-canvas-bg border border-b-0 border-[rgba(0,0,0,0.06)] rounded-t-sm px-14 pt-12 relative">
-                <div className="flex items-center justify-between gap-4 mb-1">
-                  <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight tracking-tight min-w-0">
-                    {docTitle}
-                  </h1>
-                  {titleAccessory}
-                </div>
+              <div className="flex-1 min-w-[700px] bg-canvas-bg border border-b-0 border-[rgba(0,0,0,0.06)] rounded-t-sm px-14 pt-8 relative">
+                <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight tracking-tight min-w-0 mb-1">
+                  {docTitle}
+                </h1>
                 <div className="text-xs text-text-muted mb-7 pb-5 border-b border-[#eae7e2] flex items-center gap-2">
                   <span className="truncate">{decodedDocPath ?? ""}</span>
                 </div>

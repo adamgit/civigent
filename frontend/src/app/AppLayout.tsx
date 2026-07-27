@@ -775,10 +775,11 @@ export function AppLayout() {
         </aside>
       </div>
 
-      {/* Main area */}
-      <div className="flex-1 flex flex-col min-w-0">
+      {/* Main area — min-h-0 so flex children can own their own scrollports
+          (e.g. DocumentPage canvas) instead of forcing this column to grow. */}
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {/* Content */}
-        <main className="flex-1 overflow-y-auto canvas-scroll">
+        <main className="flex-1 min-h-0 overflow-y-auto canvas-scroll">
           {/* Authoritative session check failed (500 / network / malformed) — a
               visible degraded state so the initial load never fails silently. */}
           {sessionError ? (

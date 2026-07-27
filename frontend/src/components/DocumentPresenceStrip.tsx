@@ -1,11 +1,12 @@
 /**
  * DocumentPresenceStrip (P10) — pure render of the discrete
- * {@link DocumentPresenceModel}. Humans left, agents right; within a side, every
- * badge renders (an actor may appear in both the presence and write lanes, and
- * both show). The strip is absolute-positioned inside the paper header's existing
- * `position: relative` context and has zero layout height, so the title/path do
- * not move when it mounts, updates, or unmounts (see `.presence-strip` in
- * styles.css).
+ * {@link DocumentPresenceModel} as initial-badge circles.
+ *
+ * DISCONNECTED from the document page (kept for a possible design revert).
+ * The live UI uses {@link DocumentPresenceActivity} instead — same model,
+ * narrative chips rather than avatar badges. Absolute-positioned inside the
+ * paper header's `position: relative` context with zero layout height (see
+ * `.presence-strip` in styles.css).
  *
  * No timers, no opacity math here — the `recent` fade is CSS, restarted by keying
  * each badge on its opaque `fadeKey` (a changed key remounts the element, replaying

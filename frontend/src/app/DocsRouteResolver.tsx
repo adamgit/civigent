@@ -13,11 +13,17 @@ import type { AppLayoutOutletContext } from "./AppLayout";
 export type DocViewMode = "standard" | "governance" | "agent";
 
 export function ViewModeToggle({ viewMode, onChange }: { viewMode: DocViewMode; onChange: (mode: DocViewMode) => void }) {
+  // Compact segmented control sized for the 46px document topbar.
   return (
-    <div className="flex items-center gap-0.5 bg-[#f5f2ed] rounded p-0.5 text-[11px] shrink-0">
+    <div
+      className="flex items-center gap-px bg-[#f5f2ed] rounded p-px text-[10px] leading-none shrink-0"
+      role="group"
+      aria-label="Document view mode"
+    >
       <button
+        type="button"
         onClick={() => onChange("standard")}
-        className={`px-2 py-0.5 rounded transition-all ${
+        className={`px-1.5 py-[3px] rounded-sm transition-all ${
           viewMode === "standard"
             ? "bg-white text-text-primary shadow-sm font-medium"
             : "text-text-muted hover:text-text-primary"
@@ -26,8 +32,9 @@ export function ViewModeToggle({ viewMode, onChange }: { viewMode: DocViewMode; 
         Standard
       </button>
       <button
+        type="button"
         onClick={() => onChange("governance")}
-        className={`px-2 py-0.5 rounded transition-all ${
+        className={`px-1.5 py-[3px] rounded-sm transition-all ${
           viewMode === "governance"
             ? "bg-white text-text-primary shadow-sm font-medium"
             : "text-text-muted hover:text-text-primary"
@@ -36,8 +43,9 @@ export function ViewModeToggle({ viewMode, onChange }: { viewMode: DocViewMode; 
         Governance
       </button>
       <button
+        type="button"
         onClick={() => onChange("agent")}
-        className={`px-2 py-0.5 rounded transition-all ${
+        className={`px-1.5 py-[3px] rounded-sm transition-all ${
           viewMode === "agent"
             ? "bg-white text-text-primary shadow-sm font-medium"
             : "text-text-muted hover:text-text-primary"
@@ -104,7 +112,7 @@ export function DocsRouteResolver() {
     return <GovernanceDocumentPage key={resolved.docPath} docPathOverride={resolved.docPath} />;
   }
 
-  const titleAccessory: ReactNode = (
+  const toolbarAccessory: ReactNode = (
     <ViewModeToggle viewMode={viewMode} onChange={setViewMode} />
   );
 
@@ -113,7 +121,7 @@ export function DocsRouteResolver() {
       <GovernanceDocumentPage
         key={resolved.docPath}
         docPathOverride={resolved.docPath}
-        titleAccessory={titleAccessory}
+        toolbarAccessory={toolbarAccessory}
       />
     );
   }
@@ -123,7 +131,7 @@ export function DocsRouteResolver() {
       <AgentDocumentPage
         key={resolved.docPath}
         docPathOverride={resolved.docPath}
-        titleAccessory={titleAccessory}
+        toolbarAccessory={toolbarAccessory}
       />
     );
   }
@@ -132,7 +140,7 @@ export function DocsRouteResolver() {
     <DocumentPage
       key={resolved.docPath}
       docPathOverride={resolved.docPath}
-      titleAccessory={titleAccessory}
+      toolbarAccessory={toolbarAccessory}
     />
   );
 }
