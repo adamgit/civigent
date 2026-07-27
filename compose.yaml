@@ -9,6 +9,11 @@ services:
       - /app/node_modules
       - ./dev-data:/app/data
       - ./snapshots:/snapshots
+      # Private Git remote backup — host dir must exist (may be empty until you enable the feature).
+      # See docs/backup-restore.md. SSH key / known_hosts files live under this mount.
+      - ./backup-secrets:/run/secrets/civigent_backup:ro
+      # ssh-agent socket (unused unless KS_BACKUP_GIT_AUTH_MODE=ssh-agent). Falls back to /dev/null.
+      - ${SSH_AUTH_SOCK:-/dev/null}:/run/civigent/ssh_auth_sock
     ports:
       - "3000:3000"
     environment:
@@ -34,13 +39,17 @@ services:
       - KS_OIDC_DISPLAY_NAME=${KS_OIDC_DISPLAY_NAME:-}
       - KS_AGENT_AUTH_POLICY=${KS_AGENT_AUTH_POLICY:-}
       - KS_AGENT_ANON_SALT=${KS_AGENT_ANON_SALT:-}
-      # Private Git remote backup — see docs/backup-restore.md for volume mounts.
-      # When KS_BACKUP_GIT_REMOTE is unset the feature is off.
+      # Private Git remote backup — operator sets only REMOTE + AUTH_MODE in .env.
+      # In-container credential paths are fixed here (not operator config).
       - KS_BACKUP_GIT_REMOTE=${KS_BACKUP_GIT_REMOTE:-}
       - KS_BACKUP_GIT_AUTH_MODE=${KS_BACKUP_GIT_AUTH_MODE:-}
-      - KS_BACKUP_SSH_KEY_PATH=${KS_BACKUP_SSH_KEY_PATH:-}
-      - KS_BACKUP_KNOWN_HOSTS_PATH=${KS_BACKUP_KNOWN_HOSTS_PATH:-}
-      - SSH_AUTH_SOCK=${SSH_AUTH_SOCK:-}
+      - KS_BACKUP_SSH_KEY_PATH=/run/secrets/civigent_backup/civigent_backup_ssh_key
+      # known_hosts pinning is opt-in: leave KS_BACKUP_KNOWN_HOSTS_ENABLED unset/empty
+      # to keep the path unset; any non-empty value (conventionally "true") sets the
+      # fixed path. Note compose `:+` treats "false" as set — omit the var to disable.
+      - KS_BACKUP_KNOWN_HOSTS_PATH=${KS_BACKUP_KNOWN_HOSTS_ENABLED:+/run/secrets/civigent_backup/civigent_backup_known_hosts}
+      # Set only when the host has an agent socket (ssh-agent mode).
+      - SSH_AUTH_SOCK=${SSH_AUTH_SOCK:+/run/civigent/ssh_auth_sock}
 
   frontend:
     build:

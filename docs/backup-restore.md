@@ -48,7 +48,7 @@ If files fail (e.g., duplicate headings), the summary includes error details per
 
 ## Private Git remote backup (optional)
 
-Civigent can push canonical published content history and durable auth/RBAC state to a private Git remote. The admin page at `/admin/git-backup` runs and monitors the backup. Restore only runs on a virgin target — this is a whole-instance clone, not a two-way sync.
+Civigent can push canonical published content history and durable auth/RBAC state to a private Git remote. The admin page at `/admin/git-backup` runs and monitors the backup on one half of the page, and shows operator setup/use instructions on the other. Restore only runs on a virgin target — this is a whole-instance clone, not a two-way sync.
 
 ### What the backup covers
 
@@ -61,46 +61,46 @@ Civigent can push canonical published content history and durable auth/RBAC stat
 - **Companion deployment secrets** — `KS_AUTH_SECRET`, `KS_AGENT_ANON_SALT`, and OIDC configuration live outside the data root and must be copied separately (see [Companion secrets](#companion-secrets-to-copy-separately-when-migrating))
 - **Snapshot cache** (`./snapshots/`) — derived, regenerated on demand
 
+### How credentials are wired (compose owns the paths)
+
+`compose.yaml` already:
+
+- mounts `./backup-secrets` → `/run/secrets/civigent_backup`
+- mounts `${SSH_AUTH_SOCK:-/dev/null}` → `/run/civigent/ssh_auth_sock`
+- sets the in-container paths the app reads (do **not** put these in `.env`):
+  - `KS_BACKUP_SSH_KEY_PATH=/run/secrets/civigent_backup/civigent_backup_ssh_key` (always set)
+  - `KS_BACKUP_KNOWN_HOSTS_PATH=/run/secrets/civigent_backup/civigent_backup_known_hosts` — set **only** when you opt into host-key pinning with `KS_BACKUP_KNOWN_HOSTS_ENABLED` (non-empty, conventionally `true`) in `.env`; otherwise the path stays unset and no known_hosts file is claimed
+  - `SSH_AUTH_SOCK=/run/civigent/ssh_auth_sock` only when the host has `SSH_AUTH_SOCK`
+
+Operator `.env` only sets the remote URL, the auth mode, and (optionally) `KS_BACKUP_KNOWN_HOSTS_ENABLED=true`. To disable pinning, **omit** `KS_BACKUP_KNOWN_HOSTS_ENABLED` — do not set it to `false`; compose `:+` substitution treats any non-empty value as enabled.
+
 ### Set up SSH-key credentials (recommended)
 
-The default documented path for quickstart and Docker deployments.
-
-1. In your quickstart working folder (next to `wiki-data/` and `snapshots/`), create a `backup-secrets/` folder to hold the credentials, and drop a deploy key or machine-user SSH key into it:
+1. In your deploy working folder (next to `wiki-data/` and `snapshots/`), create a dedicated deploy key. Do **not** copy a personal laptop key out of `~/.ssh/`:
 
     ```bash
     mkdir -p backup-secrets
-    cp ~/.ssh/id_ed25519 backup-secrets/
+    ssh-keygen -t ed25519 -f backup-secrets/civigent_backup_ssh_key -N "" -C "civigent-backup"
     ```
 
-    Grant this key access to your private backup repository (deploy key on GitHub, machine-user on GitLab, etc.).
+    Add the public half (`backup-secrets/civigent_backup_ssh_key.pub`) to your private backup repository as a deploy key / machine-user SSH key with write access.
 
-2. Pin the remote host key so strict host-key checking still applies:
+2. Optionally pin the forge's SSH host key so the container can verify who it is talking to. To enable pinning, set `KS_BACKUP_KNOWN_HOSTS_ENABLED=true` in `.env` and write the forge's **published** host keys into `backup-secrets/civigent_backup_known_hosts` (OpenSSH `known_hosts` format, one line per key). Prefer the forge's own documentation for those keys; if you use `ssh-keyscan`, verify the fingerprints against that documentation before trusting the file.
 
-    ```bash
-    ssh-keyscan github.com > backup-secrets/known_hosts
-    ```
+    Pinning is off by default — with `KS_BACKUP_KNOWN_HOSTS_ENABLED` omitted, the admin page shows an advisory warning, but backup availability itself is governed by the remote reachability check. To turn pinning off later, remove the variable from `.env` (do not set it to `false`).
 
-    Replace `github.com` with your forge host if different. The `known_hosts` file is optional — the admin page shows a warning when it is absent, but backup availability itself is governed by the remote reachability check.
-
-3. In your `.env` file, add:
+3. In your `.env` file, set only:
 
     ```env
-    KS_BACKUP_GIT_REMOTE=git@github.com:your-org/civigent-data-backup.git
+    KS_BACKUP_GIT_REMOTE=git@<forge-host>:<owner>/<repo>.git
     KS_BACKUP_GIT_AUTH_MODE=ssh-key
-    KS_BACKUP_SSH_KEY_PATH=/run/secrets/civigent_backup_ssh_key
-    KS_BACKUP_KNOWN_HOSTS_PATH=/run/secrets/civigent_backup_known_hosts
+    # optional, only with the pinning file from step 2 in place:
+    # KS_BACKUP_KNOWN_HOSTS_ENABLED=true
     ```
 
-4. In your `quickstart/compose.yaml`, add these two lines to the existing `volumes:` list under `services.backend`:
+    Do not set `KS_BACKUP_SSH_KEY_PATH`, `KS_BACKUP_KNOWN_HOSTS_PATH`, or `SSH_AUTH_SOCK` in `.env`. The admin page at `/admin/git-backup` builds these two lines from a remote URL you type in.
 
-    ```yaml
-          - ./backup-secrets/id_ed25519:/run/secrets/civigent_backup_ssh_key:ro
-          - ./backup-secrets/known_hosts:/run/secrets/civigent_backup_known_hosts:ro
-    ```
-
-    Do not overwrite the existing volume lines — add these alongside `./wiki-data:/app/data` and the snapshot mount.
-
-5. Restart the container:
+4. Restart the container:
 
     ```bash
     docker compose down && docker compose up -d
@@ -110,20 +110,14 @@ The default documented path for quickstart and Docker deployments.
 
 For deployments that already manage Git credentials through `ssh-agent`. Convenient on Linux servers; can be more fragile on Docker Desktop for macOS/Windows.
 
-1. In your `.env` file, add:
+1. In your `.env` file, set only:
 
     ```env
-    KS_BACKUP_GIT_REMOTE=git@github.com:your-org/civigent-data-backup.git
+    KS_BACKUP_GIT_REMOTE=git@<forge-host>:<owner>/<repo>.git
     KS_BACKUP_GIT_AUTH_MODE=ssh-agent
     ```
 
-    `SSH_AUTH_SOCK` is already an environment variable in your host shell (managed by OpenSSH) — do not overwrite it in `.env`. It is passed through unchanged by the compose file.
-
-2. In your `quickstart/compose.yaml`, add this line to `services.backend.volumes` to expose the host agent socket to the container:
-
-    ```yaml
-          - ${SSH_AUTH_SOCK}:${SSH_AUTH_SOCK}
-    ```
+2. Ensure the host has `SSH_AUTH_SOCK` set in the environment when you run `docker compose` (OpenSSH sets this). Do not put `SSH_AUTH_SOCK` in `.env`.
 
 3. Restart the container:
 
@@ -131,7 +125,7 @@ For deployments that already manage Git credentials through `ssh-agent`. Conveni
     docker compose down && docker compose up -d
     ```
 
-Strict host-key checking still applies in ssh-agent mode. A mounted `known_hosts` is recommended — follow step 2 of the SSH-key section above and add `KS_BACKUP_KNOWN_HOSTS_PATH` + the `backup-secrets/known_hosts` volume line the same way.
+Host-key pinning works the same way in ssh-agent mode and is recommended: set `KS_BACKUP_KNOWN_HOSTS_ENABLED=true` and place `backup-secrets/civigent_backup_known_hosts` — same as step 2 of the SSH-key section. Compose points the app at the file only when that flag is set.
 
 ### Running a backup
 
@@ -147,11 +141,7 @@ Open `/admin/git-backup` in the web UI. The page shows:
 
 When feature state is `configured` and the reachability + atomic-push checks are green, click **Run quiet-state backup**. The backup runs under a process-wide lockdown: every live editor is disconnected for the duration and readiness returns automatically after the push completes.
 
-If active proposals exist, the page shows the completeness warning:
-
-> Live proposals in progress or pending — this export will not include unpublished proposal work.
-
-Backup still runs. Confirm the warning to proceed.
+If active proposals exist, the page shows the completeness warning and **blocks** backup until every outstanding proposal is committed or withdrawn. There is no acknowledgement override — unpublished proposal work is never part of this export.
 
 ### Verifying a backup
 
@@ -187,7 +177,7 @@ If you copy these environment values to the target machine alongside the backup,
     rm -rf wiki-data && mkdir wiki-data
     ```
 
-2. Configure the same backup env vars and volume mounts on the target as on the source (`.env` file + `quickstart/compose.yaml` additions from the setup steps above).
+2. On the target, set the same two `.env` lines (`KS_BACKUP_GIT_REMOTE`, `KS_BACKUP_GIT_AUTH_MODE`) and copy the same `./backup-secrets/` files (setup steps above). Credential paths and volume mounts are already in `compose.yaml`.
 
 3. Start the container:
 

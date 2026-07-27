@@ -195,6 +195,8 @@ export function buildGitSshCommand(config: ConfiguredGitBackup): string {
   if (config.knownHostsPath !== null) {
     parts.push("-o", `UserKnownHostsFile=${shellQuote(config.knownHostsPath)}`);
     parts.push("-o", "StrictHostKeyChecking=yes");
+  } else {
+    parts.push("-o", "StrictHostKeyChecking=no");
   }
   return parts.join(" ");
 }

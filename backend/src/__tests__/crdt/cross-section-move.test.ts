@@ -29,6 +29,8 @@ import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { createProposal, transitionToInProgress } from "../../storage/proposal-repository.js";
+import { BEFORE_FIRST_HEADING_KEY } from "../../crdt/ydoc-fragments.js";
+import type { FragmentContent } from "../../storage/section-formatting.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 
@@ -165,5 +167,66 @@ describe("MW-10: cross-section move", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/locked by an in-progress proposal/i);
     expect(await liveHeadingOrder(session)).toEqual(["Overview", "Timeline"]);
+  });
+
+  it("(4a) refused while the move source has an unreconciled structural change (heading level)", async () => {
+    const session = await openSession();
+    session.liveFragments.replaceFragmentString(
+      "section::overview",
+      "# Overview\n\nThe overview covers our strategic goals." as FragmentContent,
+    );
+    session.fragmentLastActivity.set("section::overview", Date.now());
+
+    const result = await session.enqueue(() =>
+      moveLiveSection(session, {
+        sourceHeadingPath: ["Timeline"],
+        targetHeadingPath: ["Overview"],
+        position: "before",
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/still settling/i);
+    expect(session.generator.getCurrentProposalId()).toBeNull();
+    expect(await liveHeadingOrder(session)).toEqual(["Overview", "Timeline"]);
+  });
+
+  it("(4b) refused when an unreconciled structural change exists elsewhere in the layout (pending root-split in BFH)", async () => {
+    const session = await openSession();
+    session.liveFragments.replaceFragmentString(
+      BEFORE_FIRST_HEADING_KEY,
+      "This is the strategy document preamble.\n\n# Injected\n\nSeed body." as FragmentContent,
+    );
+    session.fragmentLastActivity.set(BEFORE_FIRST_HEADING_KEY, Date.now());
+
+    const result = await session.enqueue(() =>
+      moveLiveSection(session, {
+        sourceHeadingPath: ["Timeline"],
+        targetHeadingPath: ["Overview"],
+        position: "before",
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/still settling/i);
+    expect(session.generator.getCurrentProposalId()).toBeNull();
+    expect(await liveHeadingOrder(session)).toEqual(["Overview", "Timeline"]);
+  });
+
+  it("(4c) body-only pending edits do not block the move (control)", async () => {
+    const session = await openSession();
+    session.liveFragments.replaceFragmentString(
+      "section::overview",
+      "## Overview\n\nEdited body, still structurally clean." as FragmentContent,
+    );
+    session.fragmentLastActivity.set("section::overview", Date.now());
+
+    const result = await session.enqueue(() =>
+      moveLiveSection(session, {
+        sourceHeadingPath: ["Timeline"],
+        targetHeadingPath: ["Overview"],
+        position: "before",
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(await liveHeadingOrder(session)).toEqual(["Timeline", "Overview"]);
   });
 });

@@ -1942,6 +1942,25 @@ export async function moveLiveSection(
 
   const ownProposalId = session.generator.getCurrentProposalId();
   const layout = await resolveLiveSectionLayout(docPath, ownProposalId);
+
+  const settlingRefusal = {
+    ok: false,
+    message: "The document structure is still settling from a recent edit — wait a moment and try the move again.",
+  };
+  for (const fragmentKey of session.liveFragments.getFragmentKeys()) {
+    const identity = layout.find((e) => e.fragmentKey === fragmentKey);
+    if (!identity) {
+      const content = session.liveFragments.readFragmentString(fragmentKey);
+      const hasActivity = session.fragmentLastActivity.has(fragmentKey);
+      if (!hasActivity && content.trim() === "") continue;
+      return settlingRefusal;
+    }
+    const change = classifyStructuralChange(session.liveFragments.readFragmentString(fragmentKey), identity);
+    if (change.kind !== "clean") {
+      return settlingRefusal;
+    }
+  }
+
   const byHeadingKey = new Map(layout.map((e) => [SectionRef.headingKey(e.headingPath), e]));
   const sourceKey = SectionRef.headingKey(req.sourceHeadingPath);
   const targetKey = SectionRef.headingKey(req.targetHeadingPath);

@@ -119,9 +119,7 @@ Civigent can push canonical published content history and durable auth/RBAC stat
 
 Proposal directories and companion deployment secrets (`KS_AUTH_SECRET`, `KS_AGENT_ANON_SALT`, OIDC config) are deliberately excluded from the backup contract.
 
-For wiring instructions (SSH-key vs ssh-agent, `backup-secrets/` folder layout, `.env` and `quickstart/compose.yaml` additions), see [Backup, Restore, and Import](backup-restore.md).
-
-The env-var reference table for the five `KS_BACKUP_*` / `SSH_AUTH_SOCK` variables lives in the [Environment variable reference](#git-remote-backup-optional) below.
+Operator `.env` only sets `KS_BACKUP_GIT_REMOTE`, `KS_BACKUP_GIT_AUTH_MODE`, and optionally `KS_BACKUP_KNOWN_HOSTS_ENABLED`. Put the SSH key (and, when pinning is enabled, the `known_hosts` file) under `./backup-secrets/`; `compose.yaml` mounts that folder and sets the in-container paths. Full wiring: [Backup, Restore, and Import](backup-restore.md).
 
 ---
 
@@ -157,15 +155,30 @@ The env-var reference table for the five `KS_BACKUP_*` / `SSH_AUTH_SOCK` variabl
 
 ### Git remote backup (optional)
 
-Wiring instructions and the recommended `backup-secrets/` folder layout live in [Backup, Restore, and Import — Private Git remote backup](backup-restore.md#private-git-remote-backup-optional).
+Wiring and `backup-secrets/` layout: [Backup, Restore, and Import — Private Git remote backup](backup-restore.md#private-git-remote-backup-optional).
+
+**Operator `.env` (set these):**
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `KS_BACKUP_GIT_REMOTE` | SSH URL of the private backup repository. When unset, the Git remote backup feature is not configured. | (unset — feature disabled) |
-| `KS_BACKUP_GIT_AUTH_MODE` | Credential channel: `ssh-key` (mounted private key) or `ssh-agent` (host agent socket). Required when `KS_BACKUP_GIT_REMOTE` is set. | (unset — required with the remote) |
-| `KS_BACKUP_SSH_KEY_PATH` | In-container path to the mounted read-only private key file. Required when `KS_BACKUP_GIT_AUTH_MODE=ssh-key`. | (unset — required for `ssh-key` mode) |
-| `KS_BACKUP_KNOWN_HOSTS_PATH` | In-container path to a `known_hosts` file used for strict host-key checking. Optional; admin page shows a warning when unset but backup availability is not blocked. | (unset — advisory warning shown) |
-| `SSH_AUTH_SOCK` | Standard OpenSSH agent socket path (not a Civigent-prefixed variable — set by the host shell). Required when `KS_BACKUP_GIT_AUTH_MODE=ssh-agent`. | (host-managed) |
+| `KS_BACKUP_GIT_REMOTE` | SSH URL of the private backup repository. When unset, the feature is off. | (unset — feature disabled) |
+| `KS_BACKUP_GIT_AUTH_MODE` | `ssh-key` or `ssh-agent`. Required when `KS_BACKUP_GIT_REMOTE` is set. | (unset — required with the remote) |
+| `KS_BACKUP_KNOWN_HOSTS_ENABLED` | Opt into host-key pinning: any non-empty value (conventionally `true`) makes compose set the fixed `KS_BACKUP_KNOWN_HOSTS_PATH`; also place `./backup-secrets/civigent_backup_known_hosts`. To disable, omit the variable — do not set `false` (compose `:+` treats it as enabled). | (unset — pinning off) |
+
+**Host files for `ssh-key` mode** (conventional paths; not env vars):
+
+| Host path | Role |
+|-----------|------|
+| `./backup-secrets/civigent_backup_ssh_key` | Dedicated deploy private key |
+| `./backup-secrets/civigent_backup_known_hosts` | Pinned forge host keys, required only with `KS_BACKUP_KNOWN_HOSTS_ENABLED` |
+
+**Set by `compose.yaml` (do not put in `.env`):**
+
+| Variable | Value set by compose |
+|----------|----------------------|
+| `KS_BACKUP_SSH_KEY_PATH` | `/run/secrets/civigent_backup/civigent_backup_ssh_key` (always set) |
+| `KS_BACKUP_KNOWN_HOSTS_PATH` | `/run/secrets/civigent_backup/civigent_backup_known_hosts` only when `KS_BACKUP_KNOWN_HOSTS_ENABLED` is set; otherwise unset |
+| `SSH_AUTH_SOCK` | `/run/civigent/ssh_auth_sock` when the host has `SSH_AUTH_SOCK`; otherwise unset |
 
 ---
 

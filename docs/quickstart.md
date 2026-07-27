@@ -34,13 +34,13 @@ Create a sub-folder to hold your Civigent data:
 * e.g. Windows ```bash md my-wiki```
 * e.g. Mac/Linux ```bash mkdir my-wiki```
 
-Before first start, manually create the two host folders that `compose.yaml` bind-mounts into the container:
+Before first start, manually create the host folders that `compose.yaml` bind-mounts into the container:
 
 ```bash
-mkdir -p wiki-data snapshots
+mkdir -p wiki-data snapshots backup-secrets
 ```
 
-On plain Docker/Linux bind mounts, both `wiki-data/` and `snapshots/` must already exist and must be writable by the container process. If the Snapshots page shows a permission error or you see `EACCES`, fix the host-folder ownership/permissions before retrying.
+On plain Docker/Linux bind mounts, `wiki-data/` and `snapshots/` must already exist and must be writable by the container process. `backup-secrets/` may stay empty until you enable private Git remote backup. If the Snapshots page shows a permission error or you see `EACCES`, fix the host-folder ownership/permissions before retrying.
 
 
 ## Step 2: Configure your personal account
@@ -165,12 +165,23 @@ my-wiki/
 ├── compose.yaml
 ├── .env
 ├── snapshots/              ← assembled markdown cache (derived, do not back up)
+├── backup-secrets/         ← optional; private Git remote backup credentials (see below)
 └── wiki-data/              ← your knowledge store (back this up)
     ├── content/            ← documents (skeletons + sections)
     ├── proposals/          ← work audit trail (auto-managed)
     ├── drafts/             ← in-progress work (auto-managed, ephemeral)
     └── .git/               ← version history
 ```
+
+### Optional: private Git remote backup
+
+`compose.yaml` mounts `./backup-secrets` into the container and owns the in-container credential paths. To enable backup:
+
+1. Put a dedicated SSH key at `backup-secrets/civigent_backup_ssh_key`
+2. In `.env`, set only `KS_BACKUP_GIT_REMOTE` and `KS_BACKUP_GIT_AUTH_MODE=ssh-key` (do not set path variables)
+3. Optional host-key pinning: add `backup-secrets/civigent_backup_known_hosts` and set `KS_BACKUP_KNOWN_HOSTS_ENABLED=true` in `.env` (omit the variable to leave pinning off)
+
+Full steps: [Backup, Restore, and Import](backup-restore.md). The admin page at `/admin/git-backup` builds those two `.env` lines from your SSH remote URL.
 
 ---
 
@@ -180,3 +191,4 @@ my-wiki/
 - [Editing Guide](editing-guide.md) — detailed guide to the editing experience
 - [Configuration Reference](configuration.md) — customize involvement presets, enable snapshots, and more
 - [Agent Management](agent-management.md) — set up persistent agent identities and manage access
+- [Backup, Restore, and Import](backup-restore.md) — private Git remote backup and virgin-target restore

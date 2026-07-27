@@ -258,7 +258,7 @@ describe("known_hosts warning + GIT_SSH_COMMAND", () => {
     expect(cmd).toContain("StrictHostKeyChecking=yes");
   });
 
-  it("omits UserKnownHostsFile when known_hosts is not set", () => {
+  it("disables host-key checking (StrictHostKeyChecking=no, no UserKnownHostsFile) when known_hosts is not set", () => {
     const config: ConfiguredGitBackup = {
       state: "configured",
       remoteUrl: "git@example.com:org/data.git",
@@ -269,7 +269,9 @@ describe("known_hosts warning + GIT_SSH_COMMAND", () => {
     };
     const cmd = buildGitSshCommand(config);
     expect(cmd).not.toContain("UserKnownHostsFile");
-    expect(cmd).not.toContain("StrictHostKeyChecking");
+    expect(cmd).toContain("StrictHostKeyChecking=no");
+    expect(cmd).not.toContain("StrictHostKeyChecking=yes");
+    expect(cmd).not.toContain("accept-new");
   });
 
   // buildGitSshCommand builds a shell-string GIT_SSH_COMMAND. Paths flow

@@ -202,7 +202,7 @@ See [Architecture Overview — Data directory structure](architecture.md#data-di
 For first-time import of existing markdown files, private Git remote backup, and whole-instance restore onto a virgin target, see [Backup, Restore, and Import](backup-restore.md). That guide covers:
 
 - `IMPORT_CONTENT_FROM` — first-time import from a host directory of markdown files
-- `KS_BACKUP_*` env vars, `backup-secrets/` folder, and `quickstart/compose.yaml` additions for the private Git remote backup
+- `KS_BACKUP_GIT_REMOTE` / `KS_BACKUP_GIT_AUTH_MODE` in `.env` (plus optional `KS_BACKUP_KNOWN_HOSTS_ENABLED=true` for host-key pinning), with the key — and, when pinning, the `known_hosts` file — under `./backup-secrets/` (`compose.yaml` mounts the folder and owns in-container credential paths)
 - Restore onto a virgin target and the companion secrets (`KS_AUTH_SECRET`, `KS_AGENT_ANON_SALT`, OIDC) that must be copied separately
 
 Backup and restore both run under a full-process lockdown that fences off new HTTP requests, WebSocket upgrades, and MCP tool calls for the duration. Git credentials never touch Civigent data, auth state, browser storage, or backup refs — the SSH key file, agent socket, and `known_hosts` file are all supplied by the deployment environment.
