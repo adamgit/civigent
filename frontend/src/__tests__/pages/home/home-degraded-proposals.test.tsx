@@ -63,7 +63,10 @@ describe("HomePage degraded-proposal alert", () => {
       const url = String(input);
       if (url.includes("/api/activity")) return jsonResponse({ items: [] });
       if (url.includes("/api/proposals/degraded")) {
-        return jsonResponse({ proposals: [degradedProposal("p1"), degradedProposal("p2")] });
+        return jsonResponse({
+          proposals: [degradedProposal("p1"), degradedProposal("p2")],
+          undecodable: [],
+        });
       }
       return jsonResponse({});
     });
@@ -80,7 +83,9 @@ describe("HomePage degraded-proposal alert", () => {
     fetchMock = installFetchMock(async (input) => {
       const url = String(input);
       if (url.includes("/api/activity")) return jsonResponse({ items: [] });
-      if (url.includes("/api/proposals/degraded")) return jsonResponse({ proposals: [] });
+      if (url.includes("/api/proposals/degraded")) {
+        return jsonResponse({ proposals: [], undecodable: [] });
+      }
       return jsonResponse({});
     });
 

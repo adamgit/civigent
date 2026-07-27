@@ -48,7 +48,10 @@ import { useActiveEditors } from "../hooks/useActiveEditors";
 import { useDocumentPresenceModel } from "../presence/useDocumentPresenceModel";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { DocumentPaperHeader } from "../components/DocumentPaperHeader";
-import { DocumentPaperStickyHeader } from "../components/DocumentPaperStickyHeader";
+import {
+  DocumentPaperStickyHeader,
+  docPaperSectionScrollOffsetPx,
+} from "../components/DocumentPaperStickyHeader";
 import { resolveWriterId } from "../services/api-client";
 import type { LiveEditorBinding } from "../services/live-section-replica";
 import {
@@ -480,7 +483,10 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
     if (!target) return;
     const top =
       container.scrollTop + (target.getBoundingClientRect().top - container.getBoundingClientRect().top);
-    container.scrollTo({ top: Math.max(0, top - 8), behavior: "smooth" });
+    container.scrollTo({
+      top: Math.max(0, top - docPaperSectionScrollOffsetPx()),
+      behavior: "smooth",
+    });
   }, []);
   const handleNavigateToTop = useCallback(() => {
     scrollContainerRef.current?.scrollTo({ top: 0, behavior: "smooth" });

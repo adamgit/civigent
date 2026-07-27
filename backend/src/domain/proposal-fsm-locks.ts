@@ -93,9 +93,11 @@ export async function checkProposalLocks(
     };
   }
 
+  const claimScope = [...new Set(input.targets.map((target) => target.doc_path))];
   const index = await ProposalFsmLockIndex.build({
     statuses: BLOCKING_LOCK_STATUSES,
     excludeProposalId: input.proposalId,
+    claimScope,
   });
 
   const conflicts = index

@@ -166,6 +166,7 @@ describe("proposal-fsm-locks / proposal-fsm-lock-index", () => {
     const index = await ProposalFsmLockIndex.build({
       statuses: BLOCKING_LOCK_STATUSES,
       excludeProposalId: holder.id,
+      claimScope: [DOC],
     });
     expect(index.holderFor(target(["Overview"]))).toBeNull();
   });

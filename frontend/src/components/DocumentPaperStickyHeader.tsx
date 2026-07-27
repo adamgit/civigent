@@ -16,6 +16,21 @@ import type { DocumentActivityEvent } from "../types/shared.js";
 import type { DocumentPresenceModel } from "../presence/document-presence-model";
 import { DocumentPresenceActivity } from "./DocumentPresenceActivity";
 
+/** Extra clearance below the sticky bar when scrolling a section into view. */
+export const DOC_PAPER_SECTION_SCROLL_GAP_PX = 8;
+
+const DOC_PAPER_STICKY_HEADER_SELECTOR = ".doc-paper-sticky-header";
+
+/**
+ * Offset to keep a scrolled-to section clear of the pinned paper header.
+ * Uses the live sticky bar height when mounted (including wrap), plus
+ * {@link DOC_PAPER_SECTION_SCROLL_GAP_PX}.
+ */
+export function docPaperSectionScrollOffsetPx(): number {
+  const sticky = document.querySelector<HTMLElement>(DOC_PAPER_STICKY_HEADER_SELECTOR);
+  return (sticky?.offsetHeight ?? 0) + DOC_PAPER_SECTION_SCROLL_GAP_PX;
+}
+
 interface StickyGeometry {
   top: number;
   left: number;
@@ -98,7 +113,9 @@ export function DocumentPaperStickyHeader({
     };
   }, [scrollContainerRef, paperHeaderRef, paperRef]);
 
-  if (!geometry || progress <= 0) return null;
+  // Stay mounted once geometry is known (even at progress 0) so section
+  // scroll-into-view can measure the bar height before it pins.
+  if (!geometry) return null;
 
   const clamped = Math.min(1, Math.max(0, progress));
   const interactive = clamped > 0.5;

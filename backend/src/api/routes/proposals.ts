@@ -152,8 +152,7 @@ export function registerProposalRoutes(
   // :id param route. Scans only the degradable statuses (never full history).
   router.get("/proposals/degraded", async (_req, res, next) => {
     try {
-      const proposals = await listDegradedProposalsUseCase();
-      const response: ListProposalsResponse = { proposals };
+      const response = await listDegradedProposalsUseCase();
       res.json(response);
     } catch (error) {
       next(error);

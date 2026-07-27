@@ -137,6 +137,7 @@ async function resolveBlockedFragmentKeys(
   const lockIndex = await ProposalFsmLockIndex.build({
     statuses: BLOCKING_LOCK_STATUSES,
     excludeProposalId: currentProposalId ?? undefined,
+    claimScope: [session.docPath],
   });
   const blocked: string[] = [];
   for (const entry of layout) {

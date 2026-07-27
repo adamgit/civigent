@@ -59,7 +59,7 @@ describe("DocumentsTreeNav", () => {
     expect(screen.getByText("readme.md")).toBeDefined();
   });
 
-  it("click directory toggles expansion", () => {
+  it("click directory icon toggles expansion", () => {
     render(
       <MemoryRouter>
         <DocumentsTreeNav entries={nestedEntries} />
@@ -69,12 +69,12 @@ describe("DocumentsTreeNav", () => {
     // Directory starts collapsed — children not visible
     expect(screen.queryByText("/strategy.md")).toBeNull();
 
-    // Click to expand
-    fireEvent.click(screen.getByText(/ops\//));
+    // Click folder icon to expand
+    fireEvent.click(screen.getByRole("button", { name: "Expand ops" }));
     expect(screen.getByText("strategy.md")).toBeDefined();
 
-    // Click to collapse
-    fireEvent.click(screen.getByText(/ops\//));
+    // Click folder icon to collapse
+    fireEvent.click(screen.getByRole("button", { name: "Collapse ops" }));
     expect(screen.queryByText("/strategy.md")).toBeNull();
   });
 
@@ -98,12 +98,12 @@ describe("DocumentsTreeNav", () => {
     );
 
     // Expand ops/
-    fireEvent.click(screen.getByText(/ops\//));
+    fireEvent.click(screen.getByRole("button", { name: "Expand ops" }));
     expect(screen.getByText("strategy.md")).toBeDefined();
     expect(screen.getByText(/team\//)).toBeDefined();
 
     // Expand ops/team/
-    fireEvent.click(screen.getByText(/team\//));
+    fireEvent.click(screen.getByRole("button", { name: "Expand team" }));
     expect(screen.getByText("roles.md")).toBeDefined();
   });
 
@@ -136,8 +136,8 @@ describe("DocumentsTreeNav", () => {
       </MemoryRouter>,
     );
 
-    // Expand directory
-    fireEvent.click(screen.getByText(/ops\//));
+    // Expand directory via folder icon
+    fireEvent.click(screen.getByRole("button", { name: "Expand ops" }));
 
     // Check localStorage
     const stored = JSON.parse(localStorage.getItem("test_expanded") || "[]");

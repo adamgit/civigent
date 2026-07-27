@@ -14,7 +14,17 @@ import {
   sectionGlobalKey,
   sectionsToTargets,
 } from "../types/shared.js";
-import { decodeProposal, decodeActiveProposal, decodeInProgressProposal, readLandedCommittedHead } from "./proposal-file-decoder.js";
+import {
+  decodeProposal,
+  decodeActiveProposal,
+  decodeInProgressProposal,
+  proposalJsonAdoptionId,
+  proposalJsonClaimsAnyDoc,
+  proposalJsonIdOrNull,
+  proposalJsonWriterId,
+  rawClaimedDocPathsFromProposalJson,
+  readLandedCommittedHead,
+} from "./proposal-file-decoder.js";
 import {
   getProposalsDraftRoot,
   getProposalsPendingRoot,
@@ -32,14 +42,17 @@ import type {
   DeletedSectionFileRef,
   InProgressProposal,
   InProgressProposalFile,
+  ListDegradedProposalsResponse,
   ProposalAdoptionId,
   ProposalFileBase,
   ProposalId,
   ProposalLockResult,
+  ProposalReportingUndecodableEntry,
   ProposalSection,
   ProposalStatus,
   ProposalTargetRef,
   HumanInvolvementCommittedProposalMetadata,
+  UndecodableProposalRef,
   WithdrawnProposalFile,
   WriterIdentity,
 } from "../types/shared.js";
@@ -455,9 +468,19 @@ export async function listAllProposals(): Promise<AnyProposal[]> {
   return listProposalsByStatuses(ALL_STATUSES);
 }
 
+export type ListActiveProposalsOptions = {
+  claimScope?: readonly DocPath[];
+};
+
 export async function listActiveProposalsByStatuses(
   statuses: readonly ActiveProposalStatus[],
+  options?: ListActiveProposalsOptions,
 ): Promise<ActiveProposal[]> {
+  const claimScope = options?.claimScope;
+  if (claimScope !== undefined && claimScope.length === 0) {
+    return [];
+  }
+
   const proposals: ActiveProposal[] = [];
 
   for (const currentStatus of statuses) {
@@ -468,6 +491,18 @@ export async function listActiveProposalsByStatuses(
       }
       const metaPath = path.join(statusDir(currentStatus), entry.name, "meta.json");
       if (!(await pathExists(metaPath))) continue;
+      if (claimScope !== undefined) {
+        const raw = parseJson(await readFile(metaPath, "utf8"));
+        const claims = proposalJsonClaimsAnyDoc(raw, claimScope);
+        if (claims === null) {
+          throw new Error(
+            `Cannot determine claimed documents for active proposal meta at ${metaPath}`,
+          );
+        }
+        if (!claims) continue;
+        proposals.push(decodeActiveProposal(raw, currentStatus));
+        continue;
+      }
       proposals.push(await readActiveProposalFile(metaPath, currentStatus));
     }
   }
@@ -480,20 +515,83 @@ export async function listActiveProposals(): Promise<ActiveProposal[]> {
   return listActiveProposalsByStatuses(["draft", "inprogress", "committing"]);
 }
 
+function errorDefectMessage(error: unknown): string {
+  if (error instanceof Error && error.message.length > 0) return error.message;
+  return String(error);
+}
+
 /**
- * The proposals an admin needs to tend to: those still carrying a `degraded`
- * marker. Scans every status a `degraded` marker can appear in: the non-terminal
- * (degradable) statuses carry `missing-targets`, and terminal `committed` carries
- * `empty-committed` — a committed zero-claim record is terminal corruption and
- * must surface for audit/recovery investigation, not stay hidden. Only `withdrawn`
- * is skipped: the decoder never tags a withdrawn proposal, so scanning that
- * history would be a needless full-history decode. This is the focused query
- * behind the home-page alert.
+ * Enumerate proposal metas for triage: decoded entries succeed; decode failures
+ * become `undecodable` records instead of throwing. Not for locks/commits.
  */
-export async function listDegradedProposals(): Promise<AnyProposal[]> {
+export async function listProposalsReportingUndecodable(
+  statuses: readonly ProposalStatus[],
+): Promise<ProposalReportingUndecodableEntry[]> {
+  const entries: ProposalReportingUndecodableEntry[] = [];
+
+  for (const currentStatus of statuses) {
+    const dirents = await readDirentsIfExists(statusDir(currentStatus));
+    for (const dirent of dirents) {
+      if (!dirent.isDirectory()) continue;
+      const metaPath = path.join(statusDir(currentStatus), dirent.name, "meta.json");
+      if (!(await pathExists(metaPath))) continue;
+
+      let raw;
+      try {
+        raw = parseJson(await readFile(metaPath, "utf8"));
+      } catch (error) {
+        entries.push({
+          kind: "undecodable",
+          id: dirent.name,
+          status: currentStatus,
+          defect: errorDefectMessage(error),
+          raw_doc_paths: [],
+        });
+        continue;
+      }
+
+      try {
+        entries.push({ kind: "decoded", proposal: decodeProposal(raw, currentStatus) });
+      } catch (error) {
+        entries.push({
+          kind: "undecodable",
+          id: proposalJsonIdOrNull(raw) ?? dirent.name,
+          status: currentStatus,
+          defect: errorDefectMessage(error),
+          raw_doc_paths: rawClaimedDocPathsFromProposalJson(raw) ?? [],
+        });
+      }
+    }
+  }
+
+  return entries;
+}
+
+/**
+ * The proposals an admin needs to tend to: decoded entries still carrying a
+ * `degraded` marker, plus metas that fail strict decode. Uses
+ * {@link listProposalsReportingUndecodable}. Skips `withdrawn`.
+ */
+export async function listDegradedProposals(): Promise<ListDegradedProposalsResponse> {
   const scannedStatuses = ALL_STATUSES.filter((s) => s !== "withdrawn");
-  const proposals = await listProposalsByStatuses(scannedStatuses);
-  return proposals.filter((p) => p.degraded !== undefined && p.degraded.length > 0);
+  const entries = await listProposalsReportingUndecodable(scannedStatuses);
+  const proposals: AnyProposal[] = [];
+  const undecodable: UndecodableProposalRef[] = [];
+  for (const entry of entries) {
+    if (entry.kind === "undecodable") {
+      undecodable.push({
+        id: entry.id,
+        status: entry.status,
+        defect: entry.defect,
+        raw_doc_paths: entry.raw_doc_paths,
+      });
+      continue;
+    }
+    if (entry.proposal.degraded !== undefined && entry.proposal.degraded.length > 0) {
+      proposals.push(entry.proposal);
+    }
+  }
+  return { proposals, undecodable };
 }
 
 export async function listDraftProposals(): Promise<ActiveProposal[]> {
@@ -502,7 +600,7 @@ export async function listDraftProposals(): Promise<ActiveProposal[]> {
 
 export async function readAgentDraftOwnersForDocument(docPath: DocPath): Promise<WriterIdentity[]> {
   const claimedDocPath = DocPath.parse(docPath);
-  const drafts = await listDraftProposals();
+  const drafts = await listActiveProposalsByStatuses(["draft"], { claimScope: [claimedDocPath] });
   const ownersByWriterId = new Map<string, WriterIdentity>();
   for (const proposal of drafts) {
     if (proposal.writer.type !== "agent") continue;
@@ -536,13 +634,31 @@ export async function listWithdrawnProposals(): Promise<AnyProposal[]> {
 }
 
 export async function findDraftProposalByWriter(writerId: string): Promise<AnyProposal | null> {
-  const drafts = await listDraftProposals();
-  return drafts.find((p) => p.writer.id === writerId) ?? null;
+  const matches: ActiveProposal[] = [];
+  const entries = await readDirentsIfExists(statusDir("draft"));
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const metaPath = path.join(statusDir("draft"), entry.name, "meta.json");
+    if (!(await pathExists(metaPath))) continue;
+    const raw = parseJson(await readFile(metaPath, "utf8"));
+    if (proposalJsonWriterId(raw) !== writerId) continue;
+    matches.push(decodeActiveProposal(raw, "draft"));
+  }
+  matches.sort(compareProposalsNewestFirst);
+  return matches[0] ?? null;
 }
 
 export async function countDraftsByWriter(writerId: string): Promise<number> {
-  const drafts = await listDraftProposals();
-  return drafts.filter((p) => p.writer.id === writerId).length;
+  let count = 0;
+  const entries = await readDirentsIfExists(statusDir("draft"));
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const metaPath = path.join(statusDir("draft"), entry.name, "meta.json");
+    if (!(await pathExists(metaPath))) continue;
+    const raw = parseJson(await readFile(metaPath, "utf8"));
+    if (proposalJsonWriterId(raw) === writerId) count += 1;
+  }
+  return count;
 }
 
 export interface UpdateProposalResult {
@@ -1081,11 +1197,18 @@ export async function rollbackCommittingProposal(
 export async function findInProgressProposalByAdoptionId(
   proposalAdoptionId: ProposalAdoptionId,
 ): Promise<InProgressProposal | null> {
-  const inProgress = await listInProgressProposals();
-  const match = inProgress.find(
-    (proposal) => proposal.proposalAdoptionId === proposalAdoptionId,
-  );
-  return match !== undefined && match.status === "inprogress" ? match : null;
+  const adoptionKey = String(proposalAdoptionId);
+  const entries = await readDirentsIfExists(statusDir("inprogress"));
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const metaPath = path.join(statusDir("inprogress"), entry.name, "meta.json");
+    if (!(await pathExists(metaPath))) continue;
+    const raw = parseJson(await readFile(metaPath, "utf8"));
+    if (proposalJsonAdoptionId(raw) !== adoptionKey) continue;
+    const proposal = decodeActiveProposal(raw, "inprogress");
+    return proposal.status === "inprogress" ? proposal : null;
+  }
+  return null;
 }
 
 /**
@@ -1109,7 +1232,9 @@ export async function findInProgressProposalForDoc(
 export async function listInProgressProposalsForDoc(
   docPath: DocPath,
 ): Promise<InProgressProposal[]> {
-  const inProgress = await listInProgressProposals();
+  const inProgress = await listActiveProposalsByStatuses(["inprogress"], {
+    claimScope: [DocPath.parse(docPath)],
+  });
   return inProgress.filter(
     (proposal): proposal is InProgressProposal =>
       proposal.status === "inprogress"

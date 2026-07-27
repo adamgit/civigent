@@ -324,6 +324,9 @@ export function DocumentsTreeNav({
             const childEntries = Array.isArray(node.children) ? node.children : [];
             const hasChildren = childEntries.length > 0;
             const isSelectedFolder = selectedFolderPath === node.path;
+            const emptyFolderClass = !hasChildren && !isSelectedFolder
+              ? "text-sidebar-text/40 hover:bg-white/45 hover:text-sidebar-text/55"
+              : null;
             return (
               <div key={node.path}>
                 <div
@@ -333,7 +336,8 @@ export function DocumentsTreeNav({
                   className={`group flex items-center gap-[7px] w-full min-w-0 px-1.5 py-[5px] rounded-[5px] text-[13px] bg-transparent border-none font-[family-name:var(--font-ui)] text-left cursor-pointer transition-all ${
                     isSelectedFolder
                       ? "bg-sidebar-active-bg text-sidebar-active-text font-medium"
-                      : "text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover"
+                      : emptyFolderClass
+                        ?? "text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover"
                   }`}
                   style={{ paddingLeft }}
                   onClick={() => toggleDirectory(node.path)}
@@ -341,22 +345,36 @@ export function DocumentsTreeNav({
                 >
                   <button
                     type="button"
-                    title={`Open ${getDisplayName(node.path)} folder page`}
-                    aria-label={`Open ${getDisplayName(node.path)} folder page`}
+                    title={isExpanded ? `Collapse ${getDisplayName(node.path)}` : `Expand ${getDisplayName(node.path)}`}
+                    aria-label={isExpanded ? `Collapse ${getDisplayName(node.path)}` : `Expand ${getDisplayName(node.path)}`}
+                    aria-expanded={isExpanded}
                     className={`w-4 shrink-0 p-0 text-center bg-transparent border-none cursor-pointer transition-colors ${
                       isSelectedFolder
                         ? "text-sidebar-active-text"
-                        : "text-sidebar-text/55 group-hover:text-sidebar-text-hover hover:text-accent"
+                        : hasChildren
+                          ? "text-sidebar-text/55 group-hover:text-sidebar-text-hover hover:text-accent"
+                          : "text-sidebar-text/35 group-hover:text-sidebar-text/55 hover:text-accent"
                     }`}
                     onClick={(event) => {
                       event.stopPropagation();
-                      navigate(`/docs/${stripLeadingSlashForRoute(DocPath.parse(node.path))}`);
+                      toggleDirectory(node.path);
                     }}
                   >
                     &#128193;
                   </button>
                   <span className="flex items-center gap-0.5 min-w-0 flex-1">
-                    <span className="truncate">{getDisplayName(node.path)}/</span>
+                    <button
+                      type="button"
+                      title={`Open ${getDisplayName(node.path)} folder page`}
+                      aria-label={`Open ${getDisplayName(node.path)} folder page`}
+                      className="truncate min-w-0 p-0 text-left bg-transparent border-none cursor-pointer font-inherit text-inherit hover:text-accent"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        navigate(`/docs${node.path}`);
+                      }}
+                    >
+                      {getDisplayName(node.path)}/
+                    </button>
                     <button
                       type="button"
                       className={`shrink-0 inline-flex items-center justify-center w-4 h-4 rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ${
@@ -391,14 +409,6 @@ export function DocumentsTreeNav({
                     </button>
                   </span>
                   <span className="ml-auto flex items-center gap-1 shrink-0">
-                    {!isExpanded ? (
-                      <span
-                        aria-hidden="true"
-                        className={`h-2 w-2 rounded-full border border-sidebar-marker ${
-                          hasChildren ? "bg-sidebar-marker" : "bg-transparent"
-                        }`}
-                      />
-                    ) : null}
                     {dirActionButtons(node.path, true)}
                   </span>
                 </div>

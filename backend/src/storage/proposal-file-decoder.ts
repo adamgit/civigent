@@ -381,3 +381,83 @@ export function decodeProposalId(value: JsonValue): ProposalId {
   const obj = expectJsonObject(value, "proposal meta.json");
   return requireString(obj, "id", "proposal meta.json");
 }
+
+function collectRawDocPathsFromClaimArray(
+  value: JsonValue | undefined,
+  out: string[],
+): boolean {
+  if (value === undefined) return true;
+  if (!isJsonArray(value)) return false;
+  for (const element of value) {
+    try {
+      const obj = expectJsonObject(element, "proposal claim entry");
+      const docPath = obj["doc_path"];
+      if (typeof docPath === "string") out.push(docPath);
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function rawClaimedDocPathsFromProposalJson(value: JsonValue): string[] | null {
+  let obj: JsonObject;
+  try {
+    obj = expectJsonObject(value, "proposal meta.json");
+  } catch {
+    return null;
+  }
+  const out: string[] = [];
+  if (!collectRawDocPathsFromClaimArray(obj["sections"], out)) return null;
+  if (!collectRawDocPathsFromClaimArray(obj["targets"], out)) return null;
+  if (!collectRawDocPathsFromClaimArray(obj["deleted_section_files"], out)) return null;
+  return out;
+}
+
+function rawDocPathClaimsAnyOf(raw: string, docPaths: readonly DocPath[]): boolean {
+  for (const docPath of docPaths) {
+    if (raw === docPath) return true;
+    if (DocPath.coerce(raw) === docPath) return true;
+  }
+  return false;
+}
+
+export function proposalJsonClaimsAnyDoc(
+  value: JsonValue,
+  docPaths: readonly DocPath[],
+): boolean | null {
+  const rawPaths = rawClaimedDocPathsFromProposalJson(value);
+  if (rawPaths === null) return null;
+  return rawPaths.some((raw) => rawDocPathClaimsAnyOf(raw, docPaths));
+}
+
+export function proposalJsonWriterId(value: JsonValue): string | null {
+  try {
+    const obj = expectJsonObject(value, "proposal meta.json");
+    const writer = expectJsonObject(obj["writer"], "proposal meta.json.writer");
+    const id = writer["id"];
+    return typeof id === "string" ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+export function proposalJsonAdoptionId(value: JsonValue): string | null {
+  try {
+    const obj = expectJsonObject(value, "proposal meta.json");
+    const adoptionId = obj["proposalAdoptionId"] ?? obj["docSessionId"];
+    return typeof adoptionId === "string" ? adoptionId : null;
+  } catch {
+    return null;
+  }
+}
+
+export function proposalJsonIdOrNull(value: JsonValue): string | null {
+  try {
+    const obj = expectJsonObject(value, "proposal meta.json");
+    const id = obj["id"];
+    return typeof id === "string" ? id : null;
+  } catch {
+    return null;
+  }
+}

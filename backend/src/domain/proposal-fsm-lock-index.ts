@@ -23,6 +23,7 @@ import { SectionRef } from "./section-ref.js";
 import { listActiveProposalsByStatuses } from "../storage/proposal-repository.js";
 import type {
   ActiveProposalStatus,
+  DocPath,
   ProposalStatus,
   ProposalTargetRef,
   WriterIdentity,
@@ -40,6 +41,7 @@ export interface BuildLockIndexOptions {
   statuses: readonly ActiveProposalStatus[];
   /** Proposal id to exclude from the index (self-exclusion). */
   excludeProposalId?: string;
+  claimScope: readonly DocPath[];
 }
 
 /**
@@ -71,7 +73,9 @@ export class ProposalFsmLockIndex {
     const sectionHolders = new Map<string, ProposalLockHolder>();
     const documentHolders = new Map<string, ProposalLockHolder>();
     const sectionHoldersByDoc = new Map<string, ProposalLockHolder>();
-    const proposals = await listActiveProposalsByStatuses(options.statuses);
+    const proposals = await listActiveProposalsByStatuses(options.statuses, {
+      claimScope: options.claimScope,
+    });
 
     for (const proposal of proposals) {
       if (options.excludeProposalId && proposal.id === options.excludeProposalId) continue;

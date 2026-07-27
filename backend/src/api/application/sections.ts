@@ -180,6 +180,7 @@ async function buildSectionListResponse(
     const lockIndex = await ProposalFsmLockIndex.build({
       statuses: BLOCKING_LOCK_STATUSES,
       excludeProposalId,
+      claimScope: [docPath],
     });
     for (const headingPath of headingPaths) {
       if (lockIndex.holderFor({ kind: "section", doc_path: docPath, heading_path: headingPath })) {

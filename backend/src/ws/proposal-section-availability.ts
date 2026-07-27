@@ -6,8 +6,7 @@ import type {
 } from "../types/shared.js";
 import { asSectionTarget } from "../types/shared.js";
 import {
-  listDraftProposals,
-  listInProgressProposals,
+  listActiveProposalsByStatuses,
   readActiveProposal,
 } from "../storage/proposal-repository.js";
 import { checkProposalLocks } from "../domain/proposal-fsm-locks.js";
@@ -92,10 +91,9 @@ export async function buildProposalSectionAvailabilityEvent(
 export async function buildProposalSectionAvailabilityEventsForDoc(
   docPath: DocPath,
 ): Promise<ProposalSectionAvailabilityEvent[]> {
-  const candidates = [
-    ...(await listDraftProposals()),
-    ...(await listInProgressProposals()),
-  ].filter((proposal) =>
+  const candidates = (
+    await listActiveProposalsByStatuses(["draft", "inprogress"], { claimScope: [docPath] })
+  ).filter((proposal) =>
     proposal.writer.type === "human"
     && isHumanEditableProposalStatus(proposal.status)
     && proposal.sections.some((section) => section.doc_path === docPath),

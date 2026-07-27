@@ -1757,6 +1757,34 @@ export interface ListProposalsResponse {
   proposals: AnyProposal[];
 }
 
+/** One proposal meta that failed strict decode during a reporting list. */
+export interface UndecodableProposalRef {
+  id: string;
+  status: ProposalStatus;
+  defect: string;
+  raw_doc_paths: string[];
+}
+
+/**
+ * Result of listing proposals for triage surfaces that must survive corrupt meta.
+ * `proposals` are decoded entries that carry a `degraded` marker; `undecodable`
+ * are files that could not be revived at all.
+ */
+export interface ListDegradedProposalsResponse {
+  proposals: AnyProposal[];
+  undecodable: UndecodableProposalRef[];
+}
+
+export type ProposalReportingUndecodableEntry =
+  | { kind: "decoded"; proposal: AnyProposal }
+  | {
+      kind: "undecodable";
+      id: string;
+      status: ProposalStatus;
+      defect: string;
+      raw_doc_paths: string[];
+    };
+
 // ─── Activity ──────────────────────────────────────────────────────
 
 export interface ActivityItem {

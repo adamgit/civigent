@@ -27,6 +27,7 @@ import type {
   GetProposalSectionsResponse,
   GetDocumentsTreeResponse,
   GetHeatmapResponse,
+  ListDegradedProposalsResponse,
   ListProposalsResponse,
   AnyProposal,
   AuthMethod,
@@ -877,8 +878,8 @@ export const apiClient = {
    * The degraded (quarantined) proposals only — server-side filtered to the
    * degradable statuses, so the home-page alert never decodes full history.
    */
-  async listDegradedProposals(): Promise<ListProposalsResponse> {
-    return requestJson<ListProposalsResponse>("/api/proposals/degraded");
+  async listDegradedProposals(): Promise<ListDegradedProposalsResponse> {
+    return requestJson<ListDegradedProposalsResponse>("/api/proposals/degraded");
   },
 
   /**

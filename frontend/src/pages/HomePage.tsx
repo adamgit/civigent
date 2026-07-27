@@ -51,8 +51,7 @@ export function HomePage() {
       .listDegradedProposals()
       .then((res) => {
         if (!cancelled) {
-          // Endpoint already filters to degraded proposals — just count them.
-          setDegradedCount(res.proposals.length);
+          setDegradedCount(res.proposals.length + res.undecodable.length);
           setDegradedError(null);
         }
       })

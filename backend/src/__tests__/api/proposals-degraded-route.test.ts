@@ -111,5 +111,6 @@ describe("GET /api/proposals/degraded — empty-committed surface", () => {
 
     // Every returned proposal genuinely carries a degraded marker.
     expect(proposals.every((p) => (p.degraded ?? []).length > 0)).toBe(true);
+    expect(res.body.undecodable).toEqual([]);
   });
 });

@@ -108,11 +108,12 @@ describe("degraded proposal quarantine + autofix", () => {
     );
 
     const degraded = await listDegradedProposals();
-    const ids = degraded.map((p) => p.id);
+    const ids = degraded.proposals.map((p) => p.id);
     expect(ids).toContain(draft.id);
     expect(ids).not.toContain(healthy.id);
     expect(ids).not.toContain(committedId);
-    expect(degraded.every((p) => (p.degraded ?? []).length > 0)).toBe(true);
+    expect(degraded.proposals.every((p) => (p.degraded ?? []).length > 0)).toBe(true);
+    expect(degraded.undecodable).toEqual([]);
   });
 
   it("autofix on a non-degraded proposal is a 409 no-op", async () => {
