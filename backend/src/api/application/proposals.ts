@@ -19,13 +19,7 @@ import {
   readActiveProposal,
   readProposal,
   readProposalWithContent,
-  listAllProposals,
-  listDraftProposals,
-  listPendingProposals,
-  listInProgressProposals,
-  listCommittingProposals,
-  listCommittedProposals,
-  listWithdrawnProposals,
+  listProposalsToleratingUndecodable,
   listDegradedProposals,
   findDraftProposalByWriter,
   declareReservedProposalSectionsFromRequest,
@@ -50,27 +44,17 @@ export { ProposalNotFoundError, InvalidProposalStateError, isProposalStatus };
 export type ProposalWriter = Pick<WriterIdentity, "id" | "type" | "displayName" | "email">;
 
 export async function listProposalsForStatusFilter(status?: ProposalStatus) {
-  if (!status) return listAllProposals();
-  switch (status) {
-    case "draft":
-      return listDraftProposals();
-    case "pending":
-      return listPendingProposals();
-    case "inprogress":
-      return listInProgressProposals();
-    case "committing":
-      return listCommittingProposals();
-    case "committed":
-      return listCommittedProposals();
-    case "withdrawn":
-      return listWithdrawnProposals();
-  }
-  return listAllProposals();
+  const statuses = status ? ([status] as const) : undefined;
+  return listProposalsToleratingUndecodable(statuses);
 }
 
 export async function listMyProposals(writerId: string, status?: ProposalStatus) {
-  const all = await listProposalsForStatusFilter(status);
-  return all.filter((p) => p.writer.id === writerId);
+  const { proposals } = await listProposalsForStatusFilter(status);
+  return {
+    proposals: proposals.filter((p) => p.writer.id === writerId),
+    // Undecodable metas have no trusted writer identity; omit from "my" lists.
+    undecodable: [],
+  };
 }
 
 /** The degraded (quarantined) proposals an admin must tend to — scans only the

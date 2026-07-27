@@ -60,7 +60,7 @@ import {
   lookupAgentKey,
 } from "../../auth/agent-keys.js";
 import {
-  listAllProposals,
+  listProposalsToleratingUndecodable,
   readActiveProposal,
   rewriteProposalMeta,
   ProposalNotFoundError,
@@ -225,7 +225,7 @@ export async function rotateAgent(agentId: string) {
 export async function getAgentsSummary() {
   const { agentEventLog } = await import("../../mcp/agent-event-log.js");
   const registeredAgents = (await readAgentKeysSkipErrors()).map((e) => ({ id: e.agentId, displayName: e.displayName }));
-  const allProposals = await listAllProposals();
+  const { proposals: allProposals } = await listProposalsToleratingUndecodable();
   const agents = agentEventLog.buildFullSummary(registeredAgents, allProposals);
   const config = getAdminConfig();
   const preset = HUMAN_INVOLVEMENT_PRESETS[config.humanInvolvement_preset];

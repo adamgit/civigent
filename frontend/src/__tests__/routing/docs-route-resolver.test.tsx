@@ -65,6 +65,8 @@ describe("DocsRouteResolver component", () => {
       treeError: null,
       createDoc: vi.fn().mockResolvedValue(undefined),
       refreshTree: vi.fn().mockResolvedValue(undefined),
+      sidebarAutoHide: false,
+      setSidebarAutoHide: vi.fn(),
       ...overrides,
     };
   }

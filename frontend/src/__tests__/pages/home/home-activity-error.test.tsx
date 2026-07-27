@@ -14,6 +14,8 @@ const outletContext: AppLayoutOutletContext = {
   treeError: null,
   createDoc: vi.fn(async () => {}),
   refreshTree: vi.fn(async () => {}),
+  sidebarAutoHide: false,
+  setSidebarAutoHide: vi.fn(),
 };
 
 function renderHome() {

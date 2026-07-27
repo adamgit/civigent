@@ -468,6 +468,35 @@ export async function listAllProposals(): Promise<AnyProposal[]> {
   return listProposalsByStatuses(ALL_STATUSES);
 }
 
+/**
+ * List proposals for UI/agent listing surfaces: decode failures become
+ * `undecodable` entries instead of failing the whole list. Prefer this over
+ * {@link listProposalsByStatuses} / {@link listAllProposals} whenever the caller
+ * is enumerating for display rather than acting on a single proposal.
+ */
+export async function listProposalsToleratingUndecodable(
+  statuses: readonly ProposalStatus[] = ALL_STATUSES,
+): Promise<{ proposals: AnyProposal[]; undecodable: UndecodableProposalRef[] }> {
+  const entries = await listProposalsReportingUndecodable(statuses);
+  const proposals: AnyProposal[] = [];
+  const undecodable: UndecodableProposalRef[] = [];
+  for (const entry of entries) {
+    if (entry.kind === "undecodable") {
+      undecodable.push({
+        id: entry.id,
+        status: entry.status,
+        defect: entry.defect,
+        raw_doc_paths: entry.raw_doc_paths,
+      });
+      continue;
+    }
+    proposals.push(entry.proposal);
+  }
+  proposals.sort(compareProposalsNewestFirst);
+  undecodable.sort((a, b) => a.id.localeCompare(b.id));
+  return { proposals, undecodable };
+}
+
 export type ListActiveProposalsOptions = {
   claimScope?: readonly DocPath[];
 };

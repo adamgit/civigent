@@ -51,6 +51,10 @@ export interface AppLayoutOutletContext {
   treeError: string | null;
   createDoc: (path: string) => Promise<void>;
   refreshTree: () => Promise<void>;
+  /** True when the sidebar auto-hides (Focus mode). */
+  sidebarAutoHide: boolean;
+  /** Set Focus (`true`) or Browse (`false`) mode; persists and syncs the header toggle. */
+  setSidebarAutoHide: (autoHide: boolean) => void;
 }
 
 /** Left-rail panel glyph (VS Code / Notion style). Filled rail when pinned; empty when auto-hide. */
@@ -105,12 +109,19 @@ export function AppLayout() {
   const [wsDiagOpen, setWsDiagOpen] = useState(false);
   // One-click sidebar autohide (taskbar-style hover reveal). Persisted per tab
   // via sessionStorage, with localStorage as the seed for new tabs (last writer
-  // wins). Clicking the header toggle is the only way in/out; hover only reveals
-  // while already in autohide. hoverRevealArmed stays false after collapse until
-  // the pointer leaves the shell — otherwise :hover on the toggle immediately
-  // re-opens it.
-  const [sidebarAutoHide, setSidebarAutoHide] = useState(readSidebarAutoHide);
+  // wins). Header toggle and HomePage Focus/Browse share setSidebarAutoHide;
+  // hover only reveals while already in autohide. hoverRevealArmed stays false
+  // after collapse until the pointer leaves the shell — otherwise :hover on the
+  // toggle immediately re-opens it.
+  const [sidebarAutoHide, setSidebarAutoHideState] = useState(readSidebarAutoHide);
   const [hoverRevealArmed, setHoverRevealArmed] = useState(true);
+  const setSidebarAutoHide = useCallback((autoHide: boolean) => {
+    // Entering autohide: disarm hover reveal until pointer leaves the shell,
+    // or the sidebar stays open under the click that collapsed it.
+    setHoverRevealArmed(!autoHide);
+    writeSidebarAutoHide(autoHide);
+    setSidebarAutoHideState(autoHide);
+  }, []);
   const [rootImporting, setRootImporting] = useState(false);
   const [rootImportError, setRootImportError] = useState<string | null>(null);
   const rootImportInputRef = useRef<HTMLInputElement>(null);
@@ -602,35 +613,31 @@ export function AppLayout() {
         {/* Sidebar — width now comes from the `.sidebar` CSS (max-content, 30vw
             cap); visuals stay on the Tailwind classes below. */}
         <aside className="sidebar bg-sidebar-bg border-r border-sidebar-border flex flex-col select-none overflow-visible min-w-0">
-        {/* Sidebar header — toggle leads the brand (Notion/VS Code pattern), not a ghost chevron by ws>_. */}
+        {/* Sidebar header — brand left; layout toggle on the trailing edge with a text label. */}
         <div className="px-2.5 pt-3 pb-2.5 flex items-center gap-1.5 min-w-0">
+          <span className="text-xs font-semibold text-sidebar-heading uppercase tracking-wide truncate min-w-0">
+            <a href="/">Civigent</a>
+          </span>
           <button
             type="button"
             onClick={(e) => {
-              setSidebarAutoHide((v) => {
-                const next = !v;
-                // Entering autohide: disarm hover reveal until pointer leaves the
-                // shell, or the sidebar stays open under the click.
-                setHoverRevealArmed(!next);
-                writeSidebarAutoHide(next);
-                return next;
-              });
+              setSidebarAutoHide(!sidebarAutoHide);
               e.currentTarget.blur();
             }}
             aria-label={sidebarAutoHide ? "Pin sidebar open" : "Hide sidebar"}
             title={sidebarAutoHide ? "Pin sidebar open" : "Hide sidebar"}
             aria-pressed={sidebarAutoHide}
-            className={`sidebar-toggle-btn shrink-0 flex items-center justify-center w-7 h-7 rounded cursor-pointer border-none transition-colors ${
+            className={`sidebar-toggle-btn ml-auto shrink-0 flex items-center gap-1.5 h-7 px-1.5 rounded cursor-pointer border-none transition-colors ${
               sidebarAutoHide
                 ? "bg-white/55 text-sidebar-active-text"
                 : "bg-transparent text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover"
             }`}
           >
             <SidebarPanelIcon autoHide={sidebarAutoHide} />
+            <span className="text-[11px] font-medium whitespace-nowrap leading-none">
+              {sidebarAutoHide ? "Pin sidebar" : "Hide sidebar"}
+            </span>
           </button>
-          <span className="text-xs font-semibold text-sidebar-heading uppercase tracking-wide truncate min-w-0">
-            <a href="/">Civigent</a>
-          </span>
         </div>
 
         {/* Primary nav links (movable component) */}
@@ -835,6 +842,8 @@ export function AppLayout() {
                 treeError,
                 createDoc,
                 refreshTree: () => loadTree({ background: true }),
+                sidebarAutoHide,
+                setSidebarAutoHide,
               } satisfies AppLayoutOutletContext}
             />
           )}

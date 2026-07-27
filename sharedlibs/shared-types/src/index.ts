@@ -1753,8 +1753,14 @@ export interface ReadProposalResponse {
   proposal: ProposalDTO;
 }
 
+/**
+ * Result of listing proposals for UI/agent surfaces that must survive corrupt meta.
+ * `proposals` are successfully decoded; `undecodable` are files that failed strict
+ * decode (e.g. invalid document path) and are reported instead of failing the list.
+ */
 export interface ListProposalsResponse {
   proposals: AnyProposal[];
+  undecodable: UndecodableProposalRef[];
 }
 
 /** One proposal meta that failed strict decode during a reporting list. */

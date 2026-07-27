@@ -119,8 +119,8 @@ export function registerProposalRoutes(
         return;
       }
       const statusFilter = isProposalStatus(statusFilterRaw) ? statusFilterRaw : undefined;
-      const proposals = await listProposalsForStatusFilter(statusFilter);
-      const response: ListProposalsResponse = { proposals };
+      const { proposals, undecodable } = await listProposalsForStatusFilter(statusFilter);
+      const response: ListProposalsResponse = { proposals, undecodable };
       res.json(response);
     } catch (error) {
       next(error);
@@ -139,8 +139,8 @@ export function registerProposalRoutes(
         return;
       }
       const statusFilter = isProposalStatus(statusFilterRaw) ? statusFilterRaw : undefined;
-      const myProposals = await listMyProposals(writer.id, statusFilter);
-      const response: ListProposalsResponse = { proposals: myProposals };
+      const { proposals, undecodable } = await listMyProposals(writer.id, statusFilter);
+      const response: ListProposalsResponse = { proposals, undecodable };
       res.json(response);
     } catch (error) {
       next(error);

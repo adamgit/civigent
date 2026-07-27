@@ -27,10 +27,7 @@ import {
   createProposal,
   readProposal,
   readProposalWithContent,
-  listAllProposals,
-  listDraftProposals,
-  listCommittedProposals,
-  listWithdrawnProposals,
+  listProposalsToleratingUndecodable,
   transitionToWithdrawn,
   isProposalMutable,
   isCrdtOwnedProposal,
@@ -51,7 +48,7 @@ import {
 } from "../session-drafts.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { InvalidDocPathError } from "../../storage/path-utils.js";
-import type { DocPath, HumanInvolvementPolicyResult } from "../../types/shared.js";
+import type { DocPath, HumanInvolvementPolicyResult, ProposalStatus } from "../../types/shared.js";
 import { buildFragmentContent, fragmentFromBodyHolder, sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
 import { checkDocPermission } from "../../auth/acl.js";
 import { emitCatalogMutationEvents, summarizeProposalCatalogMutations } from "../catalog-events.js";
@@ -544,17 +541,17 @@ const listProposalsHandler: ToolHandler = async (args) => {
     return makeToolErrorResult(`Invalid status filter. Must be one of: ${validStatuses.join(", ")}`);
   }
 
-  const all = status === "draft"
-    ? await listDraftProposals()
-    : status === "committed"
-    ? await listCommittedProposals()
-    : status === "withdrawn"
-    ? await listWithdrawnProposals()
-    : await listAllProposals();
+  const statuses: ProposalStatus[] | undefined =
+    status === "draft" || status === "committed" || status === "withdrawn"
+      ? [status]
+      : undefined;
+  const { proposals: listed } = await listProposalsToleratingUndecodable(statuses);
   // Hide CRDT-owned (DocSession live-edit) proposals from the agent surface:
   // they are system artefacts, not agent-authored proposals, and must not be a
   // live-state side channel (spec 10 "One active proposal per DocSession").
-  const proposals = all.filter((p) => !isCrdtOwnedProposal(p));
+  // Undecodable metas are omitted here — agents cannot act on them; admins see
+  // them via GET /api/proposals and /api/proposals/degraded.
+  const proposals = listed.filter((p) => !isCrdtOwnedProposal(p));
   return jsonToolResult({ proposals });
 };
 

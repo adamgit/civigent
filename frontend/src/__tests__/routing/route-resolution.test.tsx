@@ -60,6 +60,8 @@ vi.mock("../../app/AppLayout", () => {
     treeError: null,
     createDoc: async () => {},
     refreshTree: async () => {},
+    sidebarAutoHide: false,
+    setSidebarAutoHide: () => {},
   };
   return {
     AppLayout: () => <Outlet context={outletContext} />,

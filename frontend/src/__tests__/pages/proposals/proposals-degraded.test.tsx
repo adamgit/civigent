@@ -73,20 +73,22 @@ describe("ProposalsPage degraded highlight + autofix", () => {
 
     renderProposals();
 
-    // The degraded row renders with its highlight + autofix button.
+    // Banner + degraded row both surface the defect with autofix affordances.
     await waitFor(() => {
+      expect(screen.getByTestId("proposals-admin-review-banner")).toBeTruthy();
       expect(screen.getByTestId("proposal-row-degraded")).toBeTruthy();
     });
-    const button = screen.getByRole("button", { name: /Autofix missing-targets/i });
-    expect(button).toBeTruthy();
+    const buttons = screen.getAllByRole("button", { name: /Autofix missing-targets/i });
+    expect(buttons.length).toBeGreaterThanOrEqual(1);
     // The healthy proposal is not degraded.
     expect(screen.getByTestId("proposal-row")).toBeTruthy();
 
-    fireEvent.click(button);
+    fireEvent.click(buttons[0]!);
 
-    // After autofix the row is no longer degraded.
+    // After autofix the banner and degraded row clear together.
     await waitFor(() => {
       expect(screen.queryByTestId("proposal-row-degraded")).toBeNull();
+      expect(screen.queryByTestId("proposals-admin-review-banner")).toBeNull();
     });
     expect(autofixCalled).toBe(true);
     expect(screen.queryByRole("button", { name: /Autofix missing-targets/i })).toBeNull();

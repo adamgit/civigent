@@ -23,7 +23,7 @@ function avatarColor(name: string): { bg: string; fg: string } {
 }
 
 export function HomePage() {
-  const { createDoc } = useOutletContext<AppLayoutOutletContext>();
+  const { createDoc, sidebarAutoHide, setSidebarAutoHide } = useOutletContext<AppLayoutOutletContext>();
   const [newDocPath, setNewDocPath] = useState("");
   const [creatingDoc, setCreatingDoc] = useState(false);
   const [newDocError, setNewDocError] = useState<string | null>(null);
@@ -128,6 +128,67 @@ export function HomePage() {
             Real-time collaborative editing with built-in AI agent coordination.
           </p>
         </div>
+
+        {/* Workspace layout — Focus vs Browse; synced with the sidebar toggle */}
+        <section
+          aria-label="Workspace layout"
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 0,
+            marginBottom: "1.75rem",
+            borderRadius: 12,
+            border: "1px solid var(--color-footer-border)",
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setSidebarAutoHide(true)}
+            aria-pressed={sidebarAutoHide}
+            style={{
+              textAlign: "left",
+              cursor: "pointer",
+              border: "none",
+              borderRight: "1px solid var(--color-footer-border)",
+              borderRadius: "11px 0 0 11px",
+              padding: "16px 18px",
+              background: sidebarAutoHide ? "var(--color-accent-light)" : "var(--color-sidebar-bg)",
+              color: sidebarAutoHide ? "var(--color-accent-text)" : "var(--color-text-secondary)",
+              boxShadow: sidebarAutoHide ? "inset 0 0 0 2px var(--color-accent)" : "none",
+              transition: "background 150ms ease, color 150ms ease, box-shadow 150ms ease",
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, color: sidebarAutoHide ? "var(--color-accent-text)" : "var(--color-text-primary)" }}>
+              Focus mode
+            </div>
+            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.45 }}>
+              Hide the sidebar for more room to read and write. Hover the left edge of the window when you need the document tree again.
+            </p>
+          </button>
+          <button
+            type="button"
+            onClick={() => setSidebarAutoHide(false)}
+            aria-pressed={!sidebarAutoHide}
+            style={{
+              textAlign: "left",
+              cursor: "pointer",
+              border: "none",
+              borderRadius: "0 11px 11px 0",
+              padding: "16px 18px",
+              background: !sidebarAutoHide ? "var(--color-agent2-light)" : "var(--color-sidebar-bg)",
+              color: !sidebarAutoHide ? "#8a5520" : "var(--color-text-secondary)",
+              boxShadow: !sidebarAutoHide ? "inset 0 0 0 2px var(--color-agent2)" : "none",
+              transition: "background 150ms ease, color 150ms ease, box-shadow 150ms ease",
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, color: !sidebarAutoHide ? "#8a5520" : "var(--color-text-primary)" }}>
+              Browse mode
+            </div>
+            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.45 }}>
+              Keep the sidebar open so you can jump between documents. Use this when you are exploring or moving around often.
+            </p>
+          </button>
+        </section>
 
         {/* Create new doc */}
         <form
