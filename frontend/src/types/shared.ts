@@ -42,6 +42,8 @@ export type {
   RuntimeMemoryHighWaterMark,
   RuntimeMemoryProcess,
   GetAdminRuntimeMemoryResponse,
+  ContentIntegrityFailure,
+  RunAdminContentIntegrityScanResponse,
   GitBackupAuthMode,
   GitBackupFeatureState,
   GitBackupQuietState,

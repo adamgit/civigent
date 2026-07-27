@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { SectionTransferService, type SectionTransfer } from "../services/section-transfer";
 import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
 import { rememberRecentDoc } from "../services/recent-docs";
@@ -9,6 +9,7 @@ import { DocumentConnectionBanner } from "../components/DocumentConnectionBanner
 import { useDocumentActivity } from "../hooks/useDocumentActivity";
 import { DocumentActivityIndicator } from "../components/DocumentActivityIndicator";
 import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
+import { DocumentLoadErrorView } from "../components/DocumentLoadErrorView";
 import { DocumentSectionRenderer } from "../components/DocumentSectionRenderer";
 import { SharedDraftBanner } from "../components/SharedDraftBanner";
 import { useForcePublish } from "../hooks/useForcePublish";
@@ -665,34 +666,10 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
 
   // ── Render ───────────────────────────────────────────────
 
-  // Document-not-found / error: show a non-document page instead of the white paper
+  // Document-not-found / error: show a non-document page instead of the white paper.
+  // Non-404 failures must show the backend message (incl. stack) — never a generic substitute.
   if (!sectionsLoading && error) {
-    return (
-      <div className="flex flex-col h-full" style={{ background: "var(--color-page-bg)" }}>
-        <div className="px-4 pt-4">
-          <Link
-            to="/docs"
-            className="inline-flex items-center gap-1.5 text-sm text-text-muted hover:text-text-primary transition-colors"
-          >
-            <span className="text-[15px]">&#8592;</span> Back to documents
-          </Link>
-        </div>
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center max-w-md px-6">
-            <div className="text-5xl mb-5 opacity-30">&#128196;</div>
-            <h2 className="text-lg font-semibold text-text-primary mb-2">
-              Document not found
-            </h2>
-            <p className="text-sm text-text-muted leading-relaxed">
-              This document doesn&apos;t exist, may have been deleted, or you don&apos;t have access to it.
-            </p>
-            <p className="text-xs text-text-muted mt-4 opacity-60 break-all">
-              {decodedDocPath}
-            </p>
-          </div>
-        </div>
-      </div>
-    );
+    return <DocumentLoadErrorView docPath={decodedDocPath} error={error} />;
   }
 
   return (
@@ -837,7 +814,11 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
 
             {/* Status / error */}
             {statusMessage ? <p className="text-xs text-status-green mb-2">{statusMessage}</p> : null}
-            {error ? <p className="text-xs text-status-red mb-2">Error: {error}</p> : null}
+            {error ? (
+              <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono">
+                {error}
+              </pre>
+            ) : null}
 
             {/* Loading state */}
             {showLoading ? <DocumentLoadingSkeleton structureTree={structureTree} /> : null}

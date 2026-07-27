@@ -45,6 +45,7 @@ import {
   readGitRestoreStatus,
   runGitBackupRestore,
   GitBackupOperationError,
+  scanContentIntegrity,
 } from "../application/admin.js";
 
 export function registerAdminRoutes(router: Router): void {
@@ -356,6 +357,17 @@ export function registerAdminRoutes(router: Router): void {
       const admin = await requireAdmin(req, res);
       if (!admin) return;
       res.json(getRuntimeMemory());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ─── Content integrity scan (on-demand, in-memory) ────
+  router.post("/admin/content-integrity-scan", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      res.json(await scanContentIntegrity());
     } catch (error) {
       next(error);
     }

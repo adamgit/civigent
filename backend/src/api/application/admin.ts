@@ -7,13 +7,16 @@ import { HUMAN_INVOLVEMENT_PRESETS, RoleName } from "../../types/shared.js";
 import type {
   AclSnapshot,
   AdminConfig,
+  ContentIntegrityFailure,
   CreateCustomRoleRequest,
+  DocumentTreeEntry,
   GetActivityResponse,
   GetAdminGitBackupStatusResponse,
   GetAdminGitRestoreStatusResponse,
   GetAdminRuntimeMemoryResponse,
   GetAdminSnapshotHealthResponse,
   GetAdminSnapshotHistoryResponse,
+  RunAdminContentIntegrityScanResponse,
   RunAdminGitBackupResponse,
   RunAdminGitRestoreResponse,
   SetAclDefaultsRequest,
@@ -74,6 +77,7 @@ import {
 } from "../../storage/heading-resolver.js";
 import { readDocSectionCommitInfo, type SectionCommitInfo } from "../../storage/section-commit-history.js";
 import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
+import { ContentLayer } from "../../storage/content-layer.js";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { SectionRef } from "../../domain/section-ref.js";
@@ -339,6 +343,62 @@ export async function getHeatmap(): Promise<GetHeatmapResponse> {
     humanInvolvement_midpoint_seconds: preset.midpoint_seconds,
     humanInvolvement_steepness: preset.steepness,
     sections,
+  };
+}
+
+// ─── Canonical content integrity scan ───────────────────
+
+function flattenDocumentTreePaths(entries: DocumentTreeEntry[]): DocPath[] {
+  const docPaths: DocPath[] = [];
+  const walk = (nodes: DocumentTreeEntry[]): void => {
+    for (const node of nodes) {
+      if (node.type === "file") {
+        docPaths.push(DocPath.parse(node.path));
+        continue;
+      }
+      walk(node.children ?? []);
+    }
+  };
+  walk(entries);
+  return docPaths;
+}
+
+function formatScanError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.stack || error.message;
+  }
+  return String(error);
+}
+
+/**
+ * Walk every canonical document skeleton and attempt `readAllSections` — the
+ * same assembly path the document page uses. Failures (missing body files,
+ * corrupt skeletons, etc.) are collected with full stacks. Nothing is written.
+ */
+export async function scanContentIntegrity(): Promise<RunAdminContentIntegrityScanResponse> {
+  const started = Date.now();
+  const tree = await readDocumentsTree("/", true);
+  const docPaths = flattenDocumentTreePaths(tree);
+  const layer = new ContentLayer(getContentRoot());
+  const failures: ContentIntegrityFailure[] = [];
+
+  for (const docPath of docPaths) {
+    try {
+      await layer.readAllSections(docPath);
+    } catch (error) {
+      failures.push({
+        doc_path: docPath,
+        error: formatScanError(error),
+      });
+    }
+  }
+
+  return {
+    scanned_count: docPaths.length,
+    ok_count: docPaths.length - failures.length,
+    failure_count: failures.length,
+    duration_ms: Date.now() - started,
+    failures,
   };
 }
 

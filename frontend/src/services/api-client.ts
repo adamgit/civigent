@@ -18,6 +18,7 @@ import type {
   GetAdminRuntimeMemoryResponse,
   GetAdminSnapshotHealthResponse,
   GetAdminSnapshotHistoryResponse,
+  RunAdminContentIntegrityScanResponse,
   RunAdminGitBackupResponse,
   RunAdminGitRestoreResponse,
   VerifyAdminGitBackupResponse,
@@ -499,6 +500,12 @@ export const apiClient = {
 
   async getAdminRuntimeMemory(): Promise<GetAdminRuntimeMemoryResponse> {
     return requestJson<GetAdminRuntimeMemoryResponse>("/api/admin/runtime-memory");
+  },
+
+  async runAdminContentIntegrityScan(): Promise<RunAdminContentIntegrityScanResponse> {
+    return requestJson<RunAdminContentIntegrityScanResponse>("/api/admin/content-integrity-scan", {
+      method: "POST",
+    });
   },
 
   async getAdminGitBackupStatus(): Promise<GetAdminGitBackupStatusResponse> {

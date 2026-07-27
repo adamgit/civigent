@@ -214,8 +214,12 @@ export function AgentDocumentPage({ docPathOverride, toolbarAccessory }: AgentDo
                   <span className="truncate">{decodedDocPath ?? ""}</span>
                 </div>
 
-                {/* A10: load error */}
-                {error ? <p className="text-xs text-status-red mb-2">Error: {error}</p> : null}
+                {/* A10: load error — full message/stack, never truncated */}
+                {error ? (
+                  <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono">
+                    {error}
+                  </pre>
+                ) : null}
 
                 {/* Loading skeleton (A6) */}
                 {showLoading ? <DocumentLoadingSkeleton structureTree={structureTree} /> : null}

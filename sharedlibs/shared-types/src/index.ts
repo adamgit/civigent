@@ -1877,6 +1877,27 @@ export interface GetAdminRuntimeMemoryResponse {
   samples: RuntimeMemorySample[];
 }
 
+/**
+ * One document that failed an on-demand canonical integrity scan.
+ * `error` carries the full message (and stack when available) — never stripped.
+ */
+export interface ContentIntegrityFailure {
+  doc_path: string;
+  error: string;
+}
+
+/**
+ * Result of POST /api/admin/content-integrity-scan.
+ * Computed entirely in memory; nothing is persisted.
+ */
+export interface RunAdminContentIntegrityScanResponse {
+  scanned_count: number;
+  ok_count: number;
+  failure_count: number;
+  duration_ms: number;
+  failures: ContentIntegrityFailure[];
+}
+
 // ─── Git Backup ────────────────────────────────────────────────────
 //
 // Private Git remote backup and restore of durable whole-instance state.

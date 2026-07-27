@@ -1774,17 +1774,11 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * (e.g., h1 with h2 children, two h1 siblings each with their own h2)
    * land at the correct depth instead of being flattened.
    *
-   * This is the dedicated normalization/recovery operation for callers that
-   * used to invoke the deleted `addSectionsFromBeforeFirstHeadingSplit(...)`
-   * primitive. Two known call sites (item 123):
-   *
-   *   - StagedSectionsStore.normalizeRootSplit: a heading was typed inside the
-   *     BFH fragment, splitting the BFH content into preamble + new sibling
-   *     sections. The BFH itself stays at the front of `roots` (untouched
-   *     by this method) and the parser-derived sections are appended after.
-   *
-   *   - acquireDocSession crash-recovery flow: appends a "Recovered edits"
-   *     section so orphaned body content surfaces in the doc.
+   * Dedicated structural append for callers that need to add newly parsed
+   * top-level sections after the existing roots (e.g. a heading typed inside
+   * the BFH fragment: preamble stays as BFH; parser-derived siblings are
+   * appended after). There is no crash-recovery / "Recovered edits" call site —
+   * startup recovery no longer writes recovery appendices into documents.
    *
    * Algorithm:
    *   1. Walk `parsedSections` in document order. For each section, mint a

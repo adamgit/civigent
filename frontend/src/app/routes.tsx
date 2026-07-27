@@ -21,6 +21,7 @@ import { ImportsPage } from "../pages/ImportsPage";
 import { SnapshotsPage } from "../pages/SnapshotsPage";
 import { AgentMcpLogsPage } from "../pages/AgentMcpLogsPage";
 import { RuntimeMemoryPage } from "../pages/RuntimeMemoryPage";
+import { ContentIntegrityPage } from "../pages/ContentIntegrityPage";
 import { GitBackupPage } from "../pages/GitBackupPage";
 import { SearchTextPage } from "../pages/SearchTextPage";
 import type { RouteObject } from "react-router-dom";
@@ -42,6 +43,7 @@ export const routeConfig: RouteObject[] = [
       { path: "admin/snapshots", element: <SnapshotsPage /> },
       { path: "admin/agent-mcp-logs", element: <AgentMcpLogsPage /> },
       { path: "admin/runtime-memory", element: <RuntimeMemoryPage /> },
+      { path: "admin/content-integrity", element: <ContentIntegrityPage /> },
       { path: "admin/git-backup", element: <GitBackupPage /> },
       { path: "history", element: <GitHistoryPage /> },
       { path: "agent-simulator", element: <AgentSimulatorPage /> },

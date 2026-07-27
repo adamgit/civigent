@@ -23,6 +23,7 @@ const ADMIN_LINKS: Array<{ to: string; icon: ReactNode; label: string }> = [
   { to: "/admin/snapshots", icon: <>&#128247;</>, label: "Snapshots" },
   { to: "/admin/git-backup", icon: <>&#128190;</>, label: "Git Backup" },
   { to: "/admin/runtime-memory", icon: <>&#128200;</>, label: "Runtime Memory" },
+  { to: "/admin/content-integrity", icon: <>&#128269;</>, label: "Content Integrity" },
 ];
 
 function SidebarSearch() {

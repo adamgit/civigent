@@ -62,6 +62,9 @@ function titleForNonDocsRoute(pathname: string): string {
   if (pathname === "/admin/runtime-memory") {
     return `${PREFIX}Runtime Memory`;
   }
+  if (pathname === "/admin/content-integrity") {
+    return `${PREFIX}Content Integrity`;
+  }
   if (pathname === "/admin/git-backup") {
     return `${PREFIX}Git Backup`;
   }

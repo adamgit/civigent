@@ -43,7 +43,7 @@ export const userFeatures = [
     "Drag sections to reorder them or move content between sections — a colored border previews the drop target, and drops are blocked if someone else is editing there",
   "Version history panel lists past versions of a document with author, timestamp, and message — click any version to preview its full text or restore the document to that point",
   "Restoring a previous version goes through the same proposal system as any other change — locked sections are respected and nothing is silently overwritten",
-  "If the server crashes while you're editing, your work reappears automatically as a 'Recovered edits' section at the bottom of the document, ready to review and relocate",
+  "If the server restarts while you're editing, your unpublished work comes back from the in-progress proposal automatically — no merge dialogs and no machine-generated 'Recovered edits' section to clean up",
   "Switch between Standard and Governance view using a toggle in the toolbar — or admins can force Governance mode for everyone",
   "Governance view adds a left column showing each section's human-involvement score, agent permission tier (Blocked, Gated, or Auto), and a checklist of what agents can and can't do",
   "Governance view adds a right column with a chronological audit trail per section — who changed it, when, human or agent, and any justification provided",
