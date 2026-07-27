@@ -10,6 +10,7 @@ import type {
   CommittedProposalDomain,
   SectionTargetRef,
 } from "../types/shared.js";
+import { DocPath } from "../types/shared.js";
 
 async function readCommittedProposals(): Promise<CommittedProposalDomain[]> {
   const proposals = await listCommittedProposals();
@@ -31,10 +32,15 @@ export async function readActivity(limit: number, days: number): Promise<Activit
     const age = now - new Date(proposal.created_at).getTime();
     if (age > maxAgeMs) continue;
 
-    const sections: SectionTargetRef[] = proposal.sections.map((s) => ({
-      doc_path: s.stored_doc_path,
-      heading_path: s.heading_path,
-    }));
+    const sections: SectionTargetRef[] = [];
+    for (const s of proposal.sections) {
+      const docPath = DocPath.coerce(s.stored_doc_path);
+      if (!docPath) continue;
+      sections.push({
+        doc_path: docPath,
+        heading_path: s.heading_path,
+      });
+    }
 
     items.push({
       id: proposal.id,

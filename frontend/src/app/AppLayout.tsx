@@ -130,7 +130,12 @@ export function AppLayout() {
     }
     const kind: TreeRowFlashKind = writerType === "agent" ? "agent" : "human";
     const expiresAt = Date.now() + TREE_ROW_FLASH_DURATION_MS;
-    const flashedDocPaths = docPaths.map((docPath) => DocPath.parse(docPath));
+    const flashedDocPaths = docPaths
+      .map((docPath) => DocPath.coerce(docPath))
+      .filter((docPath): docPath is DocPath => docPath != null);
+    if (flashedDocPaths.length === 0) {
+      return;
+    }
     setTreeRowFlashes((previous) => {
       const next = new Map(previous);
       for (const docPath of flashedDocPaths) {

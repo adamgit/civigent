@@ -82,6 +82,22 @@ export const DocPath = {
     return raw as DocPath;
   },
 
+  tryParse(raw: string): DocPath | null {
+    return satisfiesDocPathLaw(raw) ? (raw as DocPath) : null;
+  },
+
+  /**
+   * Parse a path, or recover legacy accidental leading double-slashes
+   * (old Express `"/" + :docPath(*)` normalizer + URL-encoded leading slash).
+   * Returns null when the value cannot be made into a lawful DocPath.
+   */
+  coerce(raw: string): DocPath | null {
+    const direct = DocPath.tryParse(raw);
+    if (direct) return direct;
+    const collapsed = `/${raw.replace(/^\/+/, "").split("/").filter(Boolean).join("/")}`;
+    return DocPath.tryParse(collapsed);
+  },
+
   fromSlashStrippedUrlSegment(slashStrippedSegment: string): DocPath {
     return DocPath.parse(`/${slashStrippedSegment}`);
   },

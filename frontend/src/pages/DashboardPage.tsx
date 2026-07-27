@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { headingPathToLabel } from "./document-page-utils";
-import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
+import { docsRouteForStoredPath } from "../app/docsRouteUtils";
 import { ActivityTabStrip } from "../components/ActivityTabStrip";
 import { ContentPanel } from "../components/ContentPanel";
 import { ActivityFeedItem } from "../components/ActivityFeedItem";
@@ -14,7 +14,6 @@ import { writerInitials } from "../utils/writerInitials";
 import { classifyWriterType } from "../utils/classifyWriterType";
 import { readNumberSetting } from "../utils/numberSettings";
 import { lastEditTimeByDoc, agentItemsAfterUserEdit, sortActivityNewestFirst } from "../services/activity-grouping";
-import { DocPath } from "../types/shared";
 
 function writerTypeToLabel(writerType: string | undefined): { variant: "green" | "yellow" | "agent" | "muted" | "accent"; label: string } {
   switch (writerType) {
@@ -144,12 +143,19 @@ export function DashboardPage() {
                         <>
                           <strong>{item.writer_display_name}</strong>{" "}
                           {item.intent || "committed changes"} in{" "}
-                          {docPaths.map((dp, i) => (
-                            <span key={dp}>
-                              {i > 0 && ", "}
-                              <Link to={`/docs/${stripLeadingSlashForRoute(DocPath.parse(dp))}`} className="text-[#2d7a8a] hover:underline">{dp}</Link>
-                            </span>
-                          ))}
+                          {docPaths.map((dp, i) => {
+                            const href = docsRouteForStoredPath(dp);
+                            return (
+                              <span key={dp}>
+                                {i > 0 && ", "}
+                                {href ? (
+                                  <Link to={href} className="text-[#2d7a8a] hover:underline">{dp}</Link>
+                                ) : (
+                                  <span>{dp}</span>
+                                )}
+                              </span>
+                            );
+                          })}
                         </>
                       }
                       timestamp={item.timestamp}

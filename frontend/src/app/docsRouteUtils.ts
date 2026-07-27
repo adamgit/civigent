@@ -36,6 +36,17 @@ export function stripLeadingSlashForRoute(docPath: DocPath): string {
 }
 
 /**
+ * Build a `/docs/...` app route for a stored/legacy path without throwing.
+ * Returns null when the value cannot be coerced into a lawful DocPath.
+ */
+export function docsRouteForStoredPath(rawPath: string | undefined | null): string | null {
+  if (rawPath == null || rawPath.length === 0) return null;
+  const docPath = DocPath.coerce(rawPath);
+  if (!docPath) return null;
+  return `/docs/${encodeDocPath(docPath)}`;
+}
+
+/**
  * Translate a markdown href that points at a root-absolute wiki doc path into
  * the app's `/docs/...` browser route. Non-doc hrefs are left alone by
  * returning null so callers can preserve normal link behavior.
@@ -60,5 +71,6 @@ export function rewriteMarkdownDocHref(href: string): string | null {
     return null;
   }
 
-  return `/docs/${stripLeadingSlashForRoute(DocPath.parse(encodeDocPath(decodedPath)))}${suffix}`;
+  const route = docsRouteForStoredPath(decodedPath);
+  return route ? `${route}${suffix}` : null;
 }
