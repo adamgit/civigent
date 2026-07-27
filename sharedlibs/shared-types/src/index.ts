@@ -48,7 +48,53 @@ export interface WriterIdentity {
 
 // ─── Section References ────────────────────────────────────────────
 
-export type DocPath = string;
+declare const __docPath: unique symbol;
+
+export type DocPath = string & { readonly [__docPath]: true };
+
+export class InvalidDocPathError extends Error {}
+
+function satisfiesDocPathLaw(raw: string): boolean {
+  if (
+    !raw.startsWith("/") ||
+    raw.startsWith("//") ||
+    raw.includes("\\") ||
+    raw.includes("//") ||
+    raw.endsWith("/") ||
+    !raw.endsWith(".md")
+  ) {
+    return false;
+  }
+  const segments = raw.slice(1).split("/");
+  for (const segment of segments) {
+    if (segment.length === 0 || segment === "." || segment === "..") {
+      return false;
+    }
+  }
+  return true;
+}
+
+export const DocPath = {
+  parse(raw: string): DocPath {
+    if (!satisfiesDocPathLaw(raw)) {
+      throw new InvalidDocPathError(`Invalid document path: ${JSON.stringify(raw)}`);
+    }
+    return raw as DocPath;
+  },
+
+  fromSlashStrippedUrlSegment(slashStrippedSegment: string): DocPath {
+    return DocPath.parse(`/${slashStrippedSegment}`);
+  },
+
+  isDocPath(raw: string): raw is DocPath {
+    return satisfiesDocPathLaw(raw);
+  },
+
+  isSlashStrippedUrlSegmentOfDocPath(slashStrippedSegment: string): boolean {
+    return satisfiesDocPathLaw(`/${slashStrippedSegment}`);
+  },
+};
+
 export type HeadingPath = string[];
 export type ProposalId = string;
 
@@ -220,6 +266,44 @@ export interface WireLiveSectionsState {
    * present-but-malformed value fails loud.
    */
   publish_decision?: WirePublishDecision;
+  /**
+   * The id of the `inprogress` DocSession proposal currently bound to this live
+   * document, or `null` when no proposal is bound (a live session with no
+   * in-flight change-set). Drives the shared-draft banner's presence and the
+   * force-publish action target. Optional/additive for rollout (absent parses
+   * to `null` for older senders).
+   */
+  bound_proposal_id?: string | null;
+  /**
+   * The bound proposal's manifest claim set for THIS document — one entry per
+   * claimed section, carrying its heading path (for display labels) and, when the
+   * claim still maps into the current topology, its `fragment_key`. This is the
+   * exact set finalization publishes, sourced from the `inprogress` proposal
+   * manifest (NOT inferred from `pending_sections`, canonical diffs, or a REST
+   * poll). Its length is the authoritative "N changed sections" count. Absent /
+   * empty when no proposal is bound.
+   */
+  bound_proposal_claimed_sections?: readonly WireClaimedSection[];
+  /**
+   * Fragment keys of sections that currently have an ATTACHED EDITOR focused on
+   * them — each open editor socket's focus target projected onto the live topology
+   * (observers and invalid/unmapped targets excluded). Distinct from
+   * `pending_sections` (which is pending-writer state); the UI unions the two,
+   * deduped, to derive the "actively edited" count. Absent / empty when no editor
+   * is focused on a mapped section.
+   */
+  editor_focus_section_ids?: readonly string[];
+}
+
+/**
+ * One claimed section in a bound proposal's manifest, for live UI display. The
+ * `heading_path` is always present (display label + identity for lock/audit); the
+ * `fragment_key` is present only when the claim maps into the current live
+ * topology (absent for a claimed-but-absent delete claim).
+ */
+export interface WireClaimedSection {
+  heading_path: readonly string[];
+  fragment_key?: string;
 }
 
 /**
@@ -338,6 +422,21 @@ export const WireLiveSectionRef = {
   },
 };
 
+export const WireClaimedSection = {
+  parse(value: JsonValue, label = "claimed section"): WireClaimedSection {
+    const obj = expectJsonObject(value, label);
+    const heading_path = wireStringArray(obj["heading_path"], `${label}.heading_path`);
+    const fragment_key = obj["fragment_key"];
+    if (fragment_key !== null && fragment_key !== undefined) {
+      if (typeof fragment_key !== "string") {
+        throw new Error(`${label}.fragment_key must be a string when present, got ${JSON.stringify(fragment_key)}`);
+      }
+      return { heading_path, fragment_key };
+    }
+    return { heading_path };
+  },
+};
+
 export const WirePendingSection = {
   parse(value: JsonValue, label = "pending section"): WirePendingSection {
     const obj = expectJsonObject(value, label);
@@ -429,6 +528,26 @@ export const WireLiveSectionsState = {
     if (publishDecisionRaw !== null && publishDecisionRaw !== undefined) {
       state.publish_decision = WirePublishDecision.parse(publishDecisionRaw, `${label}.publish_decision`);
     }
+    const boundProposalRaw = obj["bound_proposal_id"];
+    if (boundProposalRaw !== null && boundProposalRaw !== undefined) {
+      if (typeof boundProposalRaw !== "string") {
+        throw new Error(`${label}.bound_proposal_id must be a string or null, got ${JSON.stringify(boundProposalRaw)}`);
+      }
+      state.bound_proposal_id = boundProposalRaw;
+    }
+    const claimedRaw = obj["bound_proposal_claimed_sections"];
+    if (claimedRaw !== null && claimedRaw !== undefined) {
+      if (!Array.isArray(claimedRaw)) {
+        throw new Error(`${label}.bound_proposal_claimed_sections must be an array, got ${JSON.stringify(claimedRaw)}`);
+      }
+      state.bound_proposal_claimed_sections = claimedRaw.map((el, i) =>
+        WireClaimedSection.parse(el, `${label}.bound_proposal_claimed_sections[${i}]`),
+      );
+    }
+    const focusRaw = obj["editor_focus_section_ids"];
+    if (focusRaw !== null && focusRaw !== undefined) {
+      state.editor_focus_section_ids = wireStringArray(focusRaw, `${label}.editor_focus_section_ids`);
+    }
     return state;
   },
 };
@@ -455,13 +574,13 @@ export interface SectionTargetRef {
  */
 export interface ProposalSectionTargetRef {
   kind: "section";
-  doc_path: string;
+  doc_path: DocPath;
   heading_path: string[];
 }
 
 export interface DocumentTargetRef {
   kind: "document";
-  doc_path: string;
+  doc_path: DocPath;
 }
 
 export type ProposalTargetRef = ProposalSectionTargetRef | DocumentTargetRef;
@@ -472,12 +591,12 @@ export type ProposalTargetRef = ProposalSectionTargetRef | DocumentTargetRef;
 
 /** Wrap a section ref as a tagged section target. */
 export function asSectionTarget(ref: SectionTargetRef): ProposalSectionTargetRef {
-  return { kind: "section", doc_path: ref.doc_path, heading_path: [...ref.heading_path] };
+  return { kind: "section", doc_path: DocPath.parse(ref.doc_path), heading_path: [...ref.heading_path] };
 }
 
 /** Build a document target for a document path. */
 export function documentTargetRef(docPath: string): DocumentTargetRef {
-  return { kind: "document", doc_path: docPath };
+  return { kind: "document", doc_path: DocPath.parse(docPath) };
 }
 
 /** Map a section view (`ProposalSection` / `SectionTargetRef`) list to section targets. */
@@ -503,19 +622,20 @@ export function targetToSectionRef(target: ProposalTargetRef): SectionTargetRef 
  * Stable key for a proposal target. Document and section targets live in
  * separate key namespaces so a document key never collides with a section key.
  */
-export function proposalTargetKey(target: ProposalTargetRef): string {
+export function proposalTargetKey(target: ProposalTargetRef | StoredHistoryProposalTargetRef): string {
   return target.kind === "document"
-    ? "doc::" + target.doc_path
-    : sectionGlobalKey(target.doc_path, target.heading_path);
+    ? "doc::" + proposalTargetDocPathForDisplay(target)
+    : sectionGlobalKey(proposalTargetDocPathForDisplay(target), target.heading_path);
 }
 
 /** Human-readable label for a proposal target (display/prose). */
-export function proposalTargetLabel(target: ProposalTargetRef): string {
-  if (target.kind === "document") return `${target.doc_path} (whole document)`;
+export function proposalTargetLabel(target: ProposalTargetRef | StoredHistoryProposalTargetRef): string {
+  const docPath = proposalTargetDocPathForDisplay(target);
+  if (target.kind === "document") return `${docPath} (whole document)`;
   const heading = target.heading_path.length > 0
     ? target.heading_path.join(" > ")
     : "(document intro)";
-  return `${target.doc_path} :: ${heading}`;
+  return `${docPath} :: ${heading}`;
 }
 
 /** Structural equality of two proposal targets. */
@@ -822,10 +942,31 @@ export type ProposalDefect = "missing-targets" | "empty-committed";
 // ── Storage layer (what is stored in meta.json on disk) ────────────
 
 /** Base fields present in every proposal meta.json file regardless of lifecycle state. */
-export interface ProposalFileBase {
+export interface ProposalFileIdentityFields {
   id: ProposalId;
   writer: WriterIdentity;
   intent: string;
+  /**
+   * Non-empty when this proposal was read leniently despite a detected defect
+   * (see {@link ProposalDefect}). Absent on healthy proposals. A degraded
+   * proposal is quarantined: it may be read and surfaced to admins, but the
+   * storage/lock layer refuses to let it acquire locks or commit until an admin
+   * autofix clears the marker. Never written by normal creation paths.
+   */
+  degraded?: ProposalDefect[];
+  created_at: string;
+  /**
+   * Durable adoption identity for CRDT-materialized live-edit proposals
+   * (Area B). Present only on proposals created lazily by a DocSession's
+   * live-edit materialization; absent for human draft→inprogress and agent
+   * proposals. Used to enforce one-active-`inprogress`-proposal-per-DocSession
+   * (Invariant 7) and to look the proposal up by adoption identity. NOTE: the
+   * derived `status` is still never stored.
+   */
+  proposalAdoptionId?: ProposalAdoptionId;
+}
+
+export interface ProposalFileBase extends ProposalFileIdentityFields {
   /**
    * Section content/evaluation view (with per-section `justification`). This is
    * the semantic content unit set; it is NOT the authoritative lock/audit claim
@@ -841,14 +982,6 @@ export interface ProposalFileBase {
    */
   targets: ProposalTargetRef[];
   /**
-   * Non-empty when this proposal was read leniently despite a detected defect
-   * (see {@link ProposalDefect}). Absent on healthy proposals. A degraded
-   * proposal is quarantined: it may be read and surfaced to admins, but the
-   * storage/lock layer refuses to let it acquire locks or commit until an admin
-   * autofix clears the marker. Never written by normal creation paths.
-   */
-  degraded?: ProposalDefect[];
-  /**
    * Canonical section-file ids this proposal has deleted (identity-based delete
    * detection). Grow-only; absent on older on-disk proposals (decodes to `[]`).
    * The manifest merge keys delete-vs-inherit on this id set, NOT on a heading
@@ -856,16 +989,38 @@ export interface ProposalFileBase {
    * `sections`/`targets` still carry the deleted path for lock/audit.
    */
   deleted_section_files?: DeletedSectionFileRef[];
-  created_at: string;
-  /**
-   * Durable adoption identity for CRDT-materialized live-edit proposals
-   * (Area B). Present only on proposals created lazily by a DocSession's
-   * live-edit materialization; absent for human draft→inprogress and agent
-   * proposals. Used to enforce one-active-`inprogress`-proposal-per-DocSession
-   * (Invariant 7) and to look the proposal up by adoption identity. NOTE: the
-   * derived `status` is still never stored.
-   */
-  proposalAdoptionId?: ProposalAdoptionId;
+}
+
+export interface StoredHistoryProposalSection {
+  stored_doc_path: string;
+  heading_path: string[];
+  justification?: string;
+}
+
+export interface StoredHistoryProposalSectionTargetRef {
+  kind: "section";
+  stored_doc_path: string;
+  heading_path: string[];
+}
+
+export interface StoredHistoryDocumentTargetRef {
+  kind: "document";
+  stored_doc_path: string;
+}
+
+export type StoredHistoryProposalTargetRef =
+  | StoredHistoryProposalSectionTargetRef
+  | StoredHistoryDocumentTargetRef;
+
+export interface StoredHistoryDeletedSectionFileRef {
+  stored_doc_path: string;
+  section_file: string;
+}
+
+export interface StoredHistoryProposalFileBase extends ProposalFileIdentityFields {
+  sections: StoredHistoryProposalSection[];
+  targets: StoredHistoryProposalTargetRef[];
+  deleted_section_files?: StoredHistoryDeletedSectionFileRef[];
 }
 
 /** Committed proposal meta.json — adds terminal commit fields (both required). */
@@ -916,17 +1071,75 @@ export interface InProgressProposal extends InProgressProposalFile {
 }
 
 /** Committed proposal with required terminal fields. */
-export interface CommittedProposalDomain extends CommittedProposalFile {
+export interface CommittedProposalDomain extends StoredHistoryProposalFileBase {
+  committed_head: string;
+  humanInvolvement_at_commit: HumanInvolvementCommittedProposalMetadata;
   status: "committed";
 }
 
 /** Withdrawn proposal with optional reason. */
-export interface WithdrawnProposalDomain extends WithdrawnProposalFile {
+export interface WithdrawnProposalDomain extends StoredHistoryProposalFileBase {
+  withdrawal_reason?: string;
   status: "withdrawn";
 }
 
 /** Discriminated union of all proposal domain states. */
 export type AnyProposal = DraftProposal | InProgressProposal | CommittedProposalDomain | WithdrawnProposalDomain;
+
+export type ActiveProposalStatus = "draft" | "pending" | "committing" | "inprogress";
+
+export type ActiveProposal = DraftProposal | InProgressProposal;
+
+export function isActiveProposal(proposal: AnyProposal): proposal is ActiveProposal {
+  return proposal.status !== "committed" && proposal.status !== "withdrawn";
+}
+
+export function docPathFromStoredHistoryProposalPath(storedDocPath: string): DocPath {
+  return DocPath.parse(storedDocPath);
+}
+
+export function proposalSectionDocPathForDisplay(
+  section: ProposalSection | StoredHistoryProposalSection,
+): string {
+  return "doc_path" in section ? section.doc_path : section.stored_doc_path;
+}
+
+export function proposalTargetDocPathForDisplay(
+  target: ProposalTargetRef | StoredHistoryProposalTargetRef,
+): string {
+  return "doc_path" in target ? target.doc_path : target.stored_doc_path;
+}
+
+export function proposalDeletedSectionFileDocPathForDisplay(
+  ref: DeletedSectionFileRef | StoredHistoryDeletedSectionFileRef,
+): string {
+  return "doc_path" in ref ? ref.doc_path : ref.stored_doc_path;
+}
+
+export function proposalSectionsParsedForLiveUse(proposal: AnyProposal): ProposalSection[] {
+  if (isActiveProposal(proposal)) return proposal.sections;
+  return proposal.sections.map((section) => {
+    const parsed: ProposalSection = {
+      doc_path: docPathFromStoredHistoryProposalPath(section.stored_doc_path),
+      heading_path: [...section.heading_path],
+    };
+    if (section.justification !== undefined) parsed.justification = section.justification;
+    return parsed;
+  });
+}
+
+export function proposalTargetsParsedForLiveUse(proposal: AnyProposal): ProposalTargetRef[] {
+  if (isActiveProposal(proposal)) return proposal.targets;
+  return proposal.targets.map((target) =>
+    target.kind === "section"
+      ? {
+          kind: "section",
+          doc_path: docPathFromStoredHistoryProposalPath(target.stored_doc_path),
+          heading_path: [...target.heading_path],
+        }
+      : { kind: "document", doc_path: docPathFromStoredHistoryProposalPath(target.stored_doc_path) },
+  );
+}
 
 // ── DTO layer (enriched for API responses) ────────────────────────
 
@@ -955,7 +1168,7 @@ export type ProposalDTO = DraftProposalDTO | InProgressProposalDTO | CommittedPr
 // ── Proposal sub-types ────────────────────────────────────────────
 
 export interface ProposalSection {
-  doc_path: string;
+  doc_path: DocPath;
   heading_path: string[];
   justification?: string;
 }
@@ -969,7 +1182,7 @@ export interface ProposalSection {
  * (for lock/audit); this set is the SOLE delete signal the merge reads.
  */
 export interface DeletedSectionFileRef {
-  doc_path: string;
+  doc_path: DocPath;
   section_file: string;
 }
 
@@ -1211,7 +1424,7 @@ export type ProposalOutcome = "accepted" | "blocked";
 export interface CreateProposalRequest {
   intent: string;
   sections: Array<{
-    doc_path: string;
+    doc_path: DocPath;
     heading_path: string[];
     content: string;
     justification?: string;
@@ -1237,7 +1450,7 @@ export interface CreateProposalResponse {
 export interface UpdateProposalManifestRequest {
   intent?: string;
   targets: Array<{
-    doc_path: string;
+    doc_path: DocPath;
     heading_path: string[];
     justification?: string;
   }>;
@@ -1250,7 +1463,7 @@ export interface UpdateProposalManifestRequest {
  */
 export interface ReplaceProposalSectionsRequest {
   sections: Array<{
-    doc_path: string;
+    doc_path: DocPath;
     heading_path: string[];
     content: string;
   }>;
@@ -1287,7 +1500,7 @@ export interface GetProposalSectionsResponse {
 // boundary and do not apply human/agent policy (the use cases still do that).
 
 type ProposalSectionInput = {
-  doc_path: string;
+  doc_path: DocPath;
   heading_path: string[];
   content: string;
   justification?: string;
@@ -1299,6 +1512,10 @@ function jsonRequireString(obj: JsonObject, key: string, label: string): string 
     throw new Error(`${label}.${key} must be a string, got ${JSON.stringify(value)}`);
   }
   return value;
+}
+
+function jsonRequireDocPath(obj: JsonObject, key: string, label: string): DocPath {
+  return DocPath.parse(jsonRequireString(obj, key, label));
 }
 
 function jsonOptionalString(obj: JsonObject, key: string, label: string): string | undefined {
@@ -1326,7 +1543,7 @@ function jsonRequireStringArray(obj: JsonObject, key: string, label: string): st
 function parseProposalSectionInput(value: JsonValue, label: string): ProposalSectionInput {
   const obj = expectJsonObject(value, label);
   const section: ProposalSectionInput = {
-    doc_path: jsonRequireString(obj, "doc_path", label),
+    doc_path: jsonRequireDocPath(obj, "doc_path", label),
     heading_path: jsonRequireStringArray(obj, "heading_path", label),
     content: jsonRequireString(obj, "content", label),
   };
@@ -1355,7 +1572,7 @@ export const CreateProposalRequest = {
 };
 
 type ProposalTargetInput = {
-  doc_path: string;
+  doc_path: DocPath;
   heading_path: string[];
   justification?: string;
 };
@@ -1363,7 +1580,7 @@ type ProposalTargetInput = {
 function parseProposalTargetInput(value: JsonValue, label: string): ProposalTargetInput {
   const obj = expectJsonObject(value, label);
   const target: ProposalTargetInput = {
-    doc_path: jsonRequireString(obj, "doc_path", label),
+    doc_path: jsonRequireDocPath(obj, "doc_path", label),
     heading_path: jsonRequireStringArray(obj, "heading_path", label),
   };
   const justification = jsonOptionalString(obj, "justification", label);
@@ -1393,7 +1610,7 @@ export const UpdateProposalManifestRequest = {
 };
 
 type ProposalSectionContentInput = {
-  doc_path: string;
+  doc_path: DocPath;
   heading_path: string[];
   content: string;
 };
@@ -1401,7 +1618,7 @@ type ProposalSectionContentInput = {
 function parseProposalSectionContentInput(value: JsonValue, label: string): ProposalSectionContentInput {
   const obj = expectJsonObject(value, label);
   return {
-    doc_path: jsonRequireString(obj, "doc_path", label),
+    doc_path: jsonRequireDocPath(obj, "doc_path", label),
     heading_path: jsonRequireStringArray(obj, "heading_path", label),
     content: jsonRequireString(obj, "content", label),
   };
@@ -2064,6 +2281,28 @@ export interface SystemFatalEvent {
   report: FatalReport;
 }
 
+export interface DocumentActivityHumanEntry {
+  writer: WriterIdentity;
+  page_open: boolean;
+  editor_attached: boolean;
+  last_write_seconds_ago?: number;
+  last_editor_detach_seconds_ago?: number;
+}
+
+export interface DocumentActivityAgentEntry {
+  writer: WriterIdentity;
+  has_draft: boolean;
+  last_read_seconds_ago?: number;
+  last_commit_seconds_ago?: number;
+}
+
+export interface DocumentActivityEvent {
+  type: "document:activity";
+  doc_path: string;
+  humans: DocumentActivityHumanEntry[];
+  agents: DocumentActivityAgentEntry[];
+}
+
 export type WsServerEvent =
   | ContentCommittedEvent
   | WriterDirtyStateChangedEvent
@@ -2081,7 +2320,8 @@ export type WsServerEvent =
   | SectionPendingStateEvent
   | SectionEditRejectedEvent
   | CatalogChangedEvent
-  | SystemFatalEvent;
+  | SystemFatalEvent
+  | DocumentActivityEvent;
 
 // ─── WebSocket Client Messages ─────────────────────────────────────
 //

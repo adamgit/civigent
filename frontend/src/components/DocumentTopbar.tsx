@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 import type { CrdtConnectionState } from "../services/crdt-provider";
 import { resolveTransportStatus, TRANSPORT_STATUS_META } from "../services/section-save-state";
 import { PublishRequirementsHover } from "./PublishRequirementsHover";
@@ -44,8 +43,8 @@ export function parentFolderRoute(docPath: string | null): string {
   const normalized = docPath.replace(/\/+$/, "");
   const lastSlash = normalized.lastIndexOf("/");
   if (lastSlash <= 0) return "/docs";
-  const parent = normalized.slice(0, lastSlash);
-  return `/docs/${stripLeadingSlashForRoute(parent)}`;
+  const parentFolderPath = normalized.slice(0, lastSlash);
+  return `/docs${parentFolderPath}`;
 }
 
 function ClockIcon() {

@@ -3,6 +3,8 @@ import { promisify } from "node:util";
 import path from "node:path";
 import { access } from "node:fs/promises";
 import { getContentGitPrefix } from "./data-root.js";
+import { docPathToContentRelativeFsPath } from "./path-utils.js";
+import { DocPath } from "../types/shared.js";
 import { parseSkeletonToEntries } from "./document-skeleton.js";
 import type { AttributionWriterType } from "../types/shared.js";
 import { bodyFromGit, bodyToDisk, buildFragmentContent, assembleFragments, fragmentFromBodyHolder, type FragmentContent } from "./section-formatting.js";
@@ -384,8 +386,8 @@ export async function assembleDocumentAtCommit(
   docPath: string,
 ): Promise<{ content: string; missingSections: string[] }> {
   const { DocumentNotFoundError } = await import("./content-layer.js");
-  const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-  const skeletonGitPath = `${getContentGitPrefix()}/${normalized}`;
+  const contentRelativeFsPath = docPathToContentRelativeFsPath(DocPath.parse(docPath));
+  const skeletonGitPath = `${getContentGitPrefix()}/${contentRelativeFsPath}`;
 
   const skeletonContent = await gitShowFileOrNull(dataRoot, sha, skeletonGitPath);
   if (skeletonContent === null) {

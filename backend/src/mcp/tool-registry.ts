@@ -83,11 +83,12 @@ interface RegisteredTool {
 export class ToolRegistry {
   private tools = new Map<string, RegisteredTool>();
   /**
-   * Wire names that have been renamed/removed. A call to one of these returns a
-   * migration message (not an unknown-tool error) so an agent holding a stale tool
-   * list learns to refresh rather than seeing a hard failure.
+   * Wire names that have been renamed/removed, mapped to the migration message
+   * returned on `tools/call`. A call to one of these returns that message (not an
+   * unknown-tool error) so an agent holding a stale tool list learns what to use
+   * instead rather than seeing a hard failure.
    */
-  private deprecatedNames = new Set<string>();
+  private deprecatedMessages = new Map<string, string>();
 
   /**
    * Register a tool with a stable `key`, its schema definition, and handler.
@@ -113,19 +114,40 @@ export class ToolRegistry {
   }
 
   /**
-   * Mark one or more wire names as deprecated (renamed/removed). A `tools/call`
-   * for a deprecated name is answered with a migration message rather than an
+   * Mark a wire name as deprecated (renamed/removed). A `tools/call` for a
+   * deprecated name is answered with a migration message rather than an
    * unknown-tool error. See `server.ts` `handleToolCall`.
+   *
+   * Pass `message` when the agent should be steered to a specific replacement;
+   * omit it for the generic "refresh your tool list" guidance.
    */
-  deprecate(...names: string[]): void {
-    for (const name of names) this.deprecatedNames.add(name);
+  deprecate(name: string, message?: string): void {
+    this.deprecatedMessages.set(
+      name,
+      message ??
+        `The tool "${name}" has been renamed or removed. Refresh your tool list ` +
+          `(tools/list) and re-fetch the latest skill.md / cursor-rule.md to get the current ` +
+          `tool name, then retry with that name.`,
+    );
   }
 
   /**
    * Whether the given wire name is a deprecated (renamed/removed) tool name.
    */
   isDeprecated(name: string): boolean {
-    return this.deprecatedNames.has(name);
+    return this.deprecatedMessages.has(name);
+  }
+
+  /**
+   * Migration message for a deprecated wire name. Only valid when
+   * `isDeprecated(name)` is true.
+   */
+  deprecationMessage(name: string): string {
+    const message = this.deprecatedMessages.get(name);
+    if (message === undefined) {
+      throw new Error(`deprecationMessage called for non-deprecated tool "${name}"`);
+    }
+    return message;
   }
 
   /**

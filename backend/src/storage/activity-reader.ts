@@ -32,7 +32,7 @@ export async function readActivity(limit: number, days: number): Promise<Activit
     if (age > maxAgeMs) continue;
 
     const sections: SectionTargetRef[] = proposal.sections.map((s) => ({
-      doc_path: s.doc_path,
+      doc_path: s.stored_doc_path,
       heading_path: s.heading_path,
     }));
 

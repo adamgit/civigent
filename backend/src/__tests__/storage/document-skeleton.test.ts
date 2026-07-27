@@ -67,9 +67,9 @@ describe("DocumentSkeleton", () => {
     // than the deleted skeleton.persistInternal() primitive — this is the
     // sanctioned path for materializing a live-empty doc in the overlay.
     const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
-    await overlay.createDocument("new-doc.md");
-    const skeleton = await DocumentSkeleton.fromDisk("new-doc.md", ctx.contentDir, ctx.contentDir);
-    expect(skeleton.docPath).toBe("new-doc.md");
+    await overlay.createDocument("/new-doc.md");
+    const skeleton = await DocumentSkeleton.fromDisk("/new-doc.md", ctx.contentDir, ctx.contentDir);
+    expect(skeleton.docPath).toBe("/new-doc.md");
     expect(skeleton.areSkeletonRootsEmpty).toBe(true);
     const flat = collectFlat(skeleton);
     expect(flat).toHaveLength(0);
@@ -80,15 +80,15 @@ describe("DocumentSkeleton", () => {
     // structural primitive — caller-facing mutation belongs on the storage
     // layer, not on DocumentSkeletonInternal.
     const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
-    await overlay.createDocument("persist-test.md");
+    await overlay.createDocument("/persist-test.md");
     await overlay.upsertSection(
-      new SectionRef("persist-test.md", ["Persisted"]),
+      new SectionRef("/persist-test.md", ["Persisted"]),
       "Persisted",
       "",
     );
 
     const reloaded = await DocumentSkeleton.fromDisk(
-      "persist-test.md",
+      "/persist-test.md",
       ctx.contentDir,
       ctx.contentDir,
     );
@@ -100,7 +100,7 @@ describe("DocumentSkeleton", () => {
 
 // ─── Phase 1: expect() and expectByFileId() tests ─────────────
 
-const NESTED_DOC_PATH = "test/nested-doc.md";
+const NESTED_DOC_PATH = "/test/nested-doc.md";
 
 /**
  * Creates a document with sub-skeleton structure on disk:
@@ -268,7 +268,7 @@ describe("DocumentSkeleton.expect([]) — root with children", () => {
 
   it("resolve([]) follows through to root child body file when root has children (fixed)", async () => {
     // Create a document where the root node itself has children
-    const docPath = "test/root-with-children.md";
+    const docPath = "/test/root-with-children.md";
     const contentRoot = ctx.contentDir;
     const skeletonPath = join(contentRoot, docPath);
     const sectionsDir = `${skeletonPath}.sections`;
@@ -380,7 +380,7 @@ describe("DocumentSkeleton.expectByFileId('__beforeFirstHeading__') — BFH with
   });
 
   it("resolveByFileId('__beforeFirstHeading__') when BFH has children follows through to body (fixed)", async () => {
-    const docPath = "test/root-children-fileid.md";
+    const docPath = "/test/root-children-fileid.md";
     const skeletonPath = join(ctx.contentDir, docPath);
     const sectionsDir = `${skeletonPath}.sections`;
     await mkdir(sectionsDir, { recursive: true });

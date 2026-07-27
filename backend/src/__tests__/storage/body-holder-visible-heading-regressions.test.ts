@@ -8,7 +8,7 @@ import { SectionRef } from "../../domain/section-ref.js";
 import { createProposal } from "../../storage/proposal-repository.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 
-const DOC_PATH = "test/body-holder-visible-heading.md";
+const DOC_PATH = "/test/body-holder-visible-heading.md";
 
 async function createNestedDocument(dataRoot: string): Promise<void> {
   const contentRoot = join(dataRoot, "content");
@@ -125,18 +125,18 @@ describe("body-holder visible heading regressions", () => {
     const { contentRoot } = await createProposal(
       writer,
       "Body-holder fallback regression",
-      [{ doc_path: `/${DOC_PATH}`, heading_path: ["Introduction"] }],
+      [{ doc_path: DOC_PATH, heading_path: ["Introduction"] }],
     );
     const overlay = new ProposalShadowContentLayer(contentRoot, ctx.contentDir, async () => new Set<string>());
 
     await overlay.upsertSection(
-      new SectionRef(`/${DOC_PATH}`, ["Introduction"]),
+      new SectionRef(DOC_PATH, ["Introduction"]),
       "Introduction",
       "## Introduction\n\nUpdated introduction via proposal.",
       { contentIsFullMarkdown: true },
     );
 
-    const sections = await overlay.readAllSections(`/${DOC_PATH}`);
+    const sections = await overlay.readAllSections(DOC_PATH);
     expect(sections.get("Introduction")).toBe("Updated introduction via proposal.");
     expect(sections.get("Details")).toBe("Details body.");
   });

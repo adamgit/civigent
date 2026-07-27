@@ -19,7 +19,7 @@ import {
 import type { WriterIdentity, ProposalTargetRef } from "../../types/shared.js";
 import { sectionTargetsOf } from "../../types/shared.js";
 
-const DOC = "doc.md";
+const DOC = "/doc.md";
 
 const HUMAN_A: WriterIdentity = { type: "human", id: "human-a", displayName: "Alice" };
 const HUMAN_B: WriterIdentity = { type: "human", id: "human-b", displayName: "Bob" };

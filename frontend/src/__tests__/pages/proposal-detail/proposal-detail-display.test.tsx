@@ -12,17 +12,17 @@ const pendingProposal: DraftProposalDTO = {
   status: "draft",
   sections: [
     {
-      doc_path: "ops/strategy.md",
+      doc_path: "/ops/strategy.md",
       heading_path: ["Overview"],
     },
     {
-      doc_path: "ops/strategy.md",
+      doc_path: "/ops/strategy.md",
       heading_path: ["Goals"],
     },
   ],
   targets: [
-    { kind: "section", doc_path: "ops/strategy.md", heading_path: ["Overview"] },
-    { kind: "section", doc_path: "ops/strategy.md", heading_path: ["Goals"] },
+    { kind: "section", doc_path: "/ops/strategy.md", heading_path: ["Overview"] },
+    { kind: "section", doc_path: "/ops/strategy.md", heading_path: ["Goals"] },
   ],
   created_at: "2026-01-01T00:00:00.000Z",
   agentWritePolicy: {
@@ -31,13 +31,13 @@ const pendingProposal: DraftProposalDTO = {
     details: { aggregateImpact: 0.5, aggregateThreshold: 0.8 },
     targets: [
       {
-        target: { kind: "section", doc_path: "ops/strategy.md", heading_path: ["Overview"] },
+        target: { kind: "section", doc_path: "/ops/strategy.md", heading_path: ["Overview"] },
         canWrite: true,
         message: "Agents may write to this section.",
         details: { score: 0.35, blockedReason: null, justification: null },
       },
       {
-        target: { kind: "section", doc_path: "ops/strategy.md", heading_path: ["Goals"] },
+        target: { kind: "section", doc_path: "/ops/strategy.md", heading_path: ["Goals"] },
         canWrite: false,
         message: "Recent human activity makes this section off-limits to agents.",
         details: { score: 0.65, blockedReason: "aggregate_impact", justification: null },
@@ -52,10 +52,10 @@ const committedProposal: CommittedProposalDomain = {
   intent: "Improve overview clarity",
   status: "committed",
   sections: [
-    { doc_path: "ops/strategy.md", heading_path: ["Overview"] },
+    { doc_path: "/ops/strategy.md", heading_path: ["Overview"] },
   ],
   targets: [
-    { kind: "section", doc_path: "ops/strategy.md", heading_path: ["Overview"] },
+    { kind: "section", doc_path: "/ops/strategy.md", heading_path: ["Overview"] },
   ],
   created_at: "2026-01-01T00:00:00.000Z",
   committed_head: "abc123def",
@@ -67,8 +67,8 @@ const missingTargetsProposal: CommittedProposalDomain = {
   writer: { id: "agent-1", type: "agent", displayName: "Agent Alpha" },
   intent: "Legacy proposal",
   status: "committed",
-  sections: [{ doc_path: "ops/strategy.md", heading_path: ["Overview"] }],
-  targets: [{ kind: "section", doc_path: "ops/strategy.md", heading_path: ["Overview"] }],
+  sections: [{ doc_path: "/ops/strategy.md", heading_path: ["Overview"] }],
+  targets: [{ kind: "section", doc_path: "/ops/strategy.md", heading_path: ["Overview"] }],
   created_at: "2026-01-01T00:00:00.000Z",
   committed_head: "abc123def",
   humanInvolvement_at_commit: {},

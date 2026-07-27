@@ -33,6 +33,7 @@ import type { StructuralChange } from "./structural-change.js";
 import type { ProposalId, ProposalSection } from "../types/shared.js";
 import type { UpsertSectionFromMarkdownDetailedResult } from "../storage/content-layer.js";
 import type { FlatEntry } from "../storage/document-skeleton.js";
+import type { DocPath } from "../types/shared.js";
 
 /**
  * Build the manifest add/remove for a write result, MIRRORING the per-edit
@@ -44,7 +45,7 @@ import type { FlatEntry } from "../storage/document-skeleton.js";
  * would over-claim unedited inherited sections).
  */
 function manifestDeltaFromResult(
-  docPath: string,
+  docPath: DocPath,
   result: UpsertSectionFromMarkdownDetailedResult,
 ): { add: ProposalSection[]; remove: ProposalSection[] } {
   const add = result.writtenEntries
@@ -156,7 +157,7 @@ function indexOfNthHeading(ydoc: Y.Doc, fragmentKey: string, n: number): number 
 export async function computeStructuralSplitPlan(
   liveFragments: LiveFragmentStringsStore,
   ydoc: Y.Doc,
-  docPath: string,
+  docPath: DocPath,
   currentProposalId: ProposalId | null,
   dirtyKey: string,
   change: Extract<StructuralChange, { kind: "root-split" | "section-split" }>,
@@ -262,7 +263,7 @@ export interface StructuralMergePlan {
  */
 export async function computeStructuralMergePlan(
   liveFragments: LiveFragmentStringsStore,
-  docPath: string,
+  docPath: DocPath,
   currentProposalId: ProposalId | null,
   dirtyKey: string,
   change: Extract<StructuralChange, { kind: "heading-deletion" }>,
@@ -324,7 +325,7 @@ export function applyStructuralMergePlan(
  */
 export async function reflectMergeIntoProposal(
   proposalId: ProposalId,
-  docPath: string,
+  docPath: DocPath,
   plan: StructuralMergePlan,
 ): Promise<void> {
   const { ProposalEditor } = await import("../storage/proposal-editor.js");
@@ -468,7 +469,7 @@ export interface StructuralOrphanToBfhPlan {
  */
 export async function computeStructuralOrphanToBfhPlan(
   liveFragments: LiveFragmentStringsStore,
-  docPath: string,
+  docPath: DocPath,
   currentProposalId: ProposalId | null,
   dirtyKey: string,
   change: Extract<StructuralChange, { kind: "heading-deletion" }>,
@@ -554,7 +555,7 @@ export function applyStructuralOrphanToBfhPlan(
  */
 export async function reflectOrphanToBfhIntoProposal(
   proposalId: ProposalId,
-  docPath: string,
+  docPath: DocPath,
   plan: StructuralOrphanToBfhPlan,
 ): Promise<void> {
   const { ProposalEditor } = await import("../storage/proposal-editor.js");
@@ -629,7 +630,7 @@ export async function reflectOrphanToBfhIntoProposal(
  */
 export async function reflectSplitIntoProposal(
   proposalId: ProposalId,
-  docPath: string,
+  docPath: DocPath,
   fragmentMarkdown: string,
   identity: { headingPath: readonly string[]; heading: string },
 ): Promise<void> {
@@ -743,7 +744,7 @@ export function applyStructuralHeadingEditPlan(
  */
 export async function reflectHeadingEditIntoProposal(
   proposalId: ProposalId,
-  docPath: string,
+  docPath: DocPath,
   plan: StructuralHeadingEditPlan,
   kind: StructuralChange["kind"],
 ): Promise<void> {

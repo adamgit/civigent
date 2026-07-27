@@ -4,9 +4,17 @@ import { readFile, writeFile, rename, mkdir, rm } from "node:fs/promises";
 import { pathExists, readDirentsIfExists } from "./fs-primitives.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { mintProposalManifest, unionDeletedSectionFiles, type ProposalManifest } from "./proposal-manifest.js";
-import { normalizeDocPath } from "./path-utils.js";
-import { parseJson, sectionGlobalKey, sectionsToTargets } from "../types/shared.js";
-import { decodeProposal, decodeInProgressProposal, readLandedCommittedHead } from "./proposal-file-decoder.js";
+import {
+  DocPath,
+  isActiveProposal,
+  parseJson,
+  proposalDeletedSectionFileDocPathForDisplay,
+  proposalSectionsParsedForLiveUse,
+  proposalTargetsParsedForLiveUse,
+  sectionGlobalKey,
+  sectionsToTargets,
+} from "../types/shared.js";
+import { decodeProposal, decodeActiveProposal, decodeInProgressProposal, readLandedCommittedHead } from "./proposal-file-decoder.js";
 import {
   getProposalsDraftRoot,
   getProposalsPendingRoot,
@@ -17,6 +25,8 @@ import {
 } from "./data-root.js";
 import type {
   AnyProposal,
+  ActiveProposal,
+  ActiveProposalStatus,
   AnyProposalFile,
   CommittedProposalFile,
   DeletedSectionFileRef,
@@ -58,7 +68,7 @@ export class ProposalIntegrityError extends Error {
  * Draft proposals are always mutable. Human proposals in inprogress are also mutable
  * (they hold section locks and can continue editing before final commit).
  */
-export function isProposalMutable(proposal: AnyProposal): boolean {
+export function isProposalMutable(proposal: AnyProposal): proposal is ActiveProposal {
   if (proposal.status === "draft") return true;
   if (proposal.status === "inprogress" && proposal.writer.type === "human") return true;
   return false;
@@ -148,6 +158,11 @@ async function readProposalFile(filePath: string, status: ProposalStatus): Promi
   return decodeProposal(parseJson(content), status);
 }
 
+async function readActiveProposalFile(filePath: string, status: ActiveProposalStatus): Promise<ActiveProposal> {
+  const content = await readFile(filePath, "utf8");
+  return decodeActiveProposal(parseJson(content), status);
+}
+
 /**
  * Lifecycle states where a proposal's `targets` becomes the permanent,
  * load-bearing lock/audit claim — the COMMIT boundary. The restored
@@ -199,7 +214,7 @@ async function locateProposal(id: ProposalId): Promise<{ status: ProposalStatus;
  * dropping the directory-derived `status` (which is NEVER stored in `meta.json`).
  * Returns a fresh object; the input is not mutated.
  */
-function proposalToFile(proposal: AnyProposal): AnyProposalFile {
+function proposalToFile(proposal: ActiveProposal): ProposalFileBase {
   const { status: _status, ...file } = proposal;
   return file;
 }
@@ -286,6 +301,16 @@ export async function readProposal(id: ProposalId): Promise<AnyProposal> {
   throw new ProposalNotFoundError(`Proposal not found: ${id}`);
 }
 
+export async function readActiveProposal(id: ProposalId): Promise<ActiveProposal> {
+  const proposal = await readProposal(id);
+  if (!isActiveProposal(proposal)) {
+    throw new InvalidProposalStateError(
+      `Proposal ${id} is in terminal status ${proposal.status}; its stored document paths are historical record and cannot be used as live identity.`,
+    );
+  }
+  return proposal;
+}
+
 /**
  * Record canonical section-file ids this proposal has DELETED (identity-based
  * delete detection). Appends + dedupes into the grow-only `deleted_section_files`
@@ -297,7 +322,7 @@ export async function readProposal(id: ProposalId): Promise<AnyProposal> {
  */
 export async function recordDeletedSectionFiles(
   proposalId: ProposalId,
-  docPath: string,
+  docPath: DocPath,
   sectionFiles: string[],
 ): Promise<void> {
   if (sectionFiles.length === 0) return;
@@ -307,13 +332,13 @@ export async function recordDeletedSectionFiles(
       `Cannot record deleted section files for ${proposalId}: status is ${status}, expected draft, pending, or inprogress.`,
     );
   }
-  const current = await readProposalFile(filePath, status);
-  const normalized = normalizeDocPath(docPath);
+  const current = await readActiveProposalFile(filePath, status);
+  const claimedDocPath = DocPath.parse(docPath);
   const added: DeletedSectionFileRef[] = sectionFiles.map((section_file) => ({
-    doc_path: normalized,
+    doc_path: claimedDocPath,
     section_file,
   }));
-  const updated: AnyProposalFile = {
+  const updated: ProposalFileBase = {
     ...proposalToFile(current),
     deleted_section_files: unionDeletedSectionFiles(current.deleted_section_files ?? [], added),
   };
@@ -328,13 +353,15 @@ export async function recordDeletedSectionFiles(
  */
 export async function loadDeletedSectionFiles(
   proposalId: ProposalId,
-  docPath: string,
+  docPath: DocPath,
 ): Promise<Set<string>> {
   const proposal = await readProposal(proposalId);
-  const target = normalizeDocPath(docPath);
+  const target = DocPath.parse(docPath);
   const ids = new Set<string>();
   for (const ref of proposal.deleted_section_files ?? []) {
-    if (normalizeDocPath(ref.doc_path) === target) ids.add(ref.section_file);
+    if (proposalDeletedSectionFileDocPathForDisplay(ref) === target) {
+      ids.add(ref.section_file);
+    }
   }
   return ids;
 }
@@ -348,7 +375,7 @@ export async function loadDeletedSectionFiles(
  * {@link writeJsonFile}, so the commit-boundary degraded guard still applies — a
  * repair that fails to clear the marker is rejected rather than persisted.
  */
-export async function rewriteProposalMeta(id: ProposalId, repaired: AnyProposal): Promise<AnyProposal> {
+export async function rewriteProposalMeta(id: ProposalId, repaired: ActiveProposal): Promise<AnyProposal> {
   const { status, filePath } = await locateProposal(id);
   if (repaired.status !== status) {
     throw new InvalidProposalStateError(
@@ -384,7 +411,7 @@ export async function readProposalWithContent(id: ProposalId): Promise<{ proposa
   const reader = ProposalReader.open(id, proposal.status);
 
   const sectionContent = new Map<string, string>();
-  for (const section of proposal.sections) {
+  for (const section of proposalSectionsParsedForLiveUse(proposal)) {
     const ref = SectionRef.fromTarget(section);
     try {
       const body = await reader.readSection(ref.docPath, ref.headingPath);
@@ -428,8 +455,29 @@ export async function listAllProposals(): Promise<AnyProposal[]> {
   return listProposalsByStatuses(ALL_STATUSES);
 }
 
-export async function listActiveProposals(): Promise<AnyProposal[]> {
-  return listProposalsByStatuses(["draft", "inprogress", "committing"]);
+export async function listActiveProposalsByStatuses(
+  statuses: readonly ActiveProposalStatus[],
+): Promise<ActiveProposal[]> {
+  const proposals: ActiveProposal[] = [];
+
+  for (const currentStatus of statuses) {
+    const entries = await readDirentsIfExists(statusDir(currentStatus));
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const metaPath = path.join(statusDir(currentStatus), entry.name, "meta.json");
+      if (!(await pathExists(metaPath))) continue;
+      proposals.push(await readActiveProposalFile(metaPath, currentStatus));
+    }
+  }
+
+  proposals.sort(compareProposalsNewestFirst);
+  return proposals;
+}
+
+export async function listActiveProposals(): Promise<ActiveProposal[]> {
+  return listActiveProposalsByStatuses(["draft", "inprogress", "committing"]);
 }
 
 /**
@@ -448,20 +496,35 @@ export async function listDegradedProposals(): Promise<AnyProposal[]> {
   return proposals.filter((p) => p.degraded !== undefined && p.degraded.length > 0);
 }
 
-export async function listDraftProposals(): Promise<AnyProposal[]> {
-  return listProposalsByStatuses(["draft"]);
+export async function listDraftProposals(): Promise<ActiveProposal[]> {
+  return listActiveProposalsByStatuses(["draft"]);
+}
+
+export async function readAgentDraftOwnersForDocument(docPath: DocPath): Promise<WriterIdentity[]> {
+  const claimedDocPath = DocPath.parse(docPath);
+  const drafts = await listDraftProposals();
+  const ownersByWriterId = new Map<string, WriterIdentity>();
+  for (const proposal of drafts) {
+    if (proposal.writer.type !== "agent") continue;
+    if (ownersByWriterId.has(proposal.writer.id)) continue;
+    const targetsDocument = proposal.targets.some(
+      (target) => target.doc_path === claimedDocPath,
+    );
+    if (targetsDocument) ownersByWriterId.set(proposal.writer.id, proposal.writer);
+  }
+  return [...ownersByWriterId.values()];
 }
 
 export async function listPendingProposals(): Promise<AnyProposal[]> {
   return listProposalsByStatuses(["pending"]);
 }
 
-export async function listInProgressProposals(): Promise<AnyProposal[]> {
-  return listProposalsByStatuses(["inprogress"]);
+export async function listInProgressProposals(): Promise<ActiveProposal[]> {
+  return listActiveProposalsByStatuses(["inprogress"]);
 }
 
-export async function listCommittingProposals(): Promise<AnyProposal[]> {
-  return listProposalsByStatuses(["committing"]);
+export async function listCommittingProposals(): Promise<ActiveProposal[]> {
+  return listActiveProposalsByStatuses(["committing"]);
 }
 
 export async function listCommittedProposals(): Promise<AnyProposal[]> {
@@ -483,7 +546,7 @@ export async function countDraftsByWriter(writerId: string): Promise<number> {
 }
 
 export interface UpdateProposalResult {
-  proposal: AnyProposal;
+  proposal: ActiveProposal;
   contentRoot: string;
 }
 
@@ -552,8 +615,8 @@ async function writeProposalSectionsFile(
     );
   }
   // Immutable update: build a fresh file object from the decoded current proposal.
-  const current = await readProposalFile(filePath, status);
-  const file: AnyProposalFile = {
+  const current = await readActiveProposalFile(filePath, status);
+  const file: ProposalFileBase = {
     ...proposalToFile(current),
     sections: [...manifest.sections],
     targets: [...manifest.targets],
@@ -586,7 +649,7 @@ async function writeProposalSectionsFile(
     await rm(backupRoot, { recursive: true, force: true });
   }
   // Re-decode for the typed return (also round-trip-validates the written file).
-  return { proposal: await readProposalFile(filePath, status), contentRoot };
+  return { proposal: await readActiveProposalFile(filePath, status), contentRoot };
 }
 
 // ─── Lock acquisition (draft → inprogress) ────────────────────────
@@ -671,8 +734,8 @@ export async function transitionToInProgress(id: ProposalId): Promise<LockAcquis
 
 // ─── Standard state transitions ────────────────────────────────────
 
-export async function transitionToCommitting(id: ProposalId): Promise<AnyProposal> {
-  const proposal = await readProposal(id);
+export async function transitionToCommitting(id: ProposalId): Promise<ActiveProposal> {
+  const proposal = await readActiveProposal(id);
 
   // Human proposals must go through inprogress (lock acquisition) before committing.
   // "pending" is always allowed: transient proposals (import, restore, etc.) start there.
@@ -805,7 +868,7 @@ export async function transitionToCommitted(
   committedHead: string,
   committedMetadata: HumanInvolvementCommittedProposalMetadata,
 ): Promise<AnyProposal> {
-  const proposal = await readProposal(id);
+  const proposal = await readActiveProposal(id);
   if (proposal.status !== "committing") {
     throw new InvalidProposalStateError(
       `Cannot transition proposal ${id} to committed: status is ${proposal.status}, expected committing.`,
@@ -825,7 +888,7 @@ export async function transitionToCommitted(
   await mkdir(statusDir("committed"), { recursive: true });
   await rename(fromDir, toDir);
 
-  return { ...file, status: "committed" };
+  return readProposalFile(proposalPath("committed", id), "committed");
 }
 
 /**
@@ -873,7 +936,7 @@ export async function transitionToWithdrawn(
   id: ProposalId,
   reason?: string,
 ): Promise<AnyProposal> {
-  const proposal = await readProposal(id);
+  const proposal = await readActiveProposal(id);
   if (proposal.status !== "draft" && proposal.status !== "pending" && proposal.status !== "inprogress") {
     throw new InvalidProposalStateError(
       `Cannot withdraw proposal ${id}: status is ${proposal.status}, expected draft, pending, or inprogress.`,
@@ -895,7 +958,7 @@ export async function transitionToWithdrawn(
     const { agentEventLog } = await import("../mcp/agent-event-log.js");
     agentEventLog.append(proposal.writer, { kind: "proposal_withdrawn", proposalId: id });
   }
-  return { ...file, status: "withdrawn" };
+  return readProposalFile(proposalPath("withdrawn", id), "withdrawn");
 }
 
 /**
@@ -1030,7 +1093,7 @@ export async function findInProgressProposalByAdoptionId(
  * Convenience lookup for the live-edit boundary; a DocSession owns one document.
  */
 export async function findInProgressProposalForDoc(
-  docPath: string,
+  docPath: DocPath,
 ): Promise<InProgressProposal | null> {
   const matches = await listInProgressProposalsForDoc(docPath);
   return matches[0] ?? null;
@@ -1044,7 +1107,7 @@ export async function findInProgressProposalForDoc(
  * multiple-proposal state.
  */
 export async function listInProgressProposalsForDoc(
-  docPath: string,
+  docPath: DocPath,
 ): Promise<InProgressProposal[]> {
   const inProgress = await listInProgressProposals();
   return inProgress.filter(
@@ -1065,7 +1128,7 @@ export async function listInProgressProposalsForDoc(
  */
 export async function getOrCreateInProgressProposalForAdoptionId(input: {
   proposalAdoptionId: ProposalAdoptionId;
-  docPath: string;
+  docPath: DocPath;
   writer: WriterIdentity;
   intent?: string;
   sections?: ProposalSection[];

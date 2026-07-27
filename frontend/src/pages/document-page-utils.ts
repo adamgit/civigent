@@ -6,6 +6,7 @@ import type {
 // from this module, so a value import here would be a cycle.
 import type { RenderSectionRef } from "../types/live-sections";
 import { relativeTime } from "../utils/relativeTime";
+import type { DocPath } from "../types/shared";
 
 // ─── Helper types ────────────────────────────────────────────────
 
@@ -24,10 +25,16 @@ export interface RecentlyChangedSectionEntry {
   label: string;
   changedAtMs: number;
   changedByName: string;
+  /** Committer's canonical id (write-lane badge identity). */
+  changedById: string;
+  /** Committer kind — drives the write-lane badge's human/agent styling. */
+  changedByType: import("../types/shared").WriterType;
 }
 
 export interface AgentReadingIndicator {
   key: string;
+  /** Reading agent's canonical id (presence-lane badge identity). */
+  actorId: string;
   actorDisplayName: string;
   labels: string[];
   expiresAt: number;
@@ -42,12 +49,6 @@ export interface PendingProposalIndicator {
 
 // ─── Pure helper functions ───────────────────────────────────────
 
-export function normalizeDocPath(path: string): string {
-  // Canonical form: trim, collapse runs of slashes, ensure exactly one leading `/`.
-  const trimmed = path.trim().replace(/\/+/g, "/");
-  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-}
-
 export function headingPathToLabel(path: string[]): string {
   return path.length === 0 ? "(before first heading)" : path.join(" > ");
 }
@@ -61,9 +62,9 @@ export function formatRelativeAgeFromMs(changedAtMs: number): string {
   return relativeTime(changedAtMs);
 }
 
-export function getDocDisplayName(path: string): string {
-  const parts = path.split("/").filter(Boolean);
-  const filename = parts[parts.length - 1] || path;
+export function getDocDisplayName(docPath: DocPath): string {
+  const parts = docPath.split("/").filter(Boolean);
+  const filename = parts[parts.length - 1] || docPath;
   return filename.replace(/\.md$/, "");
 }
 

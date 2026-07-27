@@ -12,19 +12,18 @@
  * Also provides equality checks and heading-path matching.
  */
 
-import { sectionHeadingKey, sectionGlobalKey, type SectionTargetRef } from "../types/shared.js";
-import { normalizeDocPath } from "../storage/path-utils.js";
+import { DocPath, sectionHeadingKey, sectionGlobalKey, type SectionTargetRef } from "../types/shared.js";
 
 function normalizeHeadingPath(headingPath: string[]): string[] {
   return headingPath.map((segment) => segment.trim());
 }
 
 export class SectionRef {
-  readonly docPath: string;
+  readonly docPath: DocPath;
   readonly headingPath: string[];
 
   constructor(docPath: string, headingPath: string[]) {
-    this.docPath = normalizeDocPath(docPath);
+    this.docPath = DocPath.parse(docPath);
     this.headingPath = normalizeHeadingPath(headingPath);
   }
 

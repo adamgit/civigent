@@ -6,6 +6,7 @@ import { ContentLayer, SectionNotFoundError } from "./content-layer.js";
 import { DocumentSkeleton } from "./document-skeleton.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { isBodyHolderShape } from "./section-shape.js";
+import type { DocPath } from "../types/shared.js";
 
 export class HeadingNotFoundError extends Error {}
 
@@ -14,7 +15,7 @@ export class HeadingNotFoundError extends Error {}
  * Delegates to ContentLayer for all skeleton parsing.
  */
 export async function resolveHeadingPath(
-  docPath: string,
+  docPath: DocPath,
   headingPath: string[]
 ): Promise<string> {
   const contentRoot = getContentRoot();
@@ -34,7 +35,7 @@ export async function resolveHeadingPath(
  * Returns { path, level } where level is the markdown heading depth (1-6), or 0 for root.
  */
 export async function resolveHeadingPathWithLevel(
-  docPath: string,
+  docPath: DocPath,
   headingPath: string[],
 ): Promise<{ path: string; level: number }> {
   const contentRoot = getContentRoot();
@@ -55,7 +56,7 @@ export async function resolveHeadingPathWithLevel(
  */
 export async function resolveHeadingPathUnderRoot(
   rootContentDir: string,
-  docPath: string,
+  docPath: DocPath,
   headingPath: string[]
 ): Promise<string> {
   if (headingPath.length === 0) {
@@ -74,7 +75,7 @@ export async function resolveHeadingPathUnderRoot(
  * Build the full document structure tree from canonical content.
  * Delegates to ContentLayer which uses DocumentSkeleton internally.
  */
-export async function readDocumentStructure(docPath: string): Promise<DocStructureNode[]> {
+export async function readDocumentStructure(docPath: DocPath): Promise<DocStructureNode[]> {
   const layer = new ContentLayer(getContentRoot());
   return layer.getDocumentStructure(docPath);
 }
@@ -177,7 +178,7 @@ export interface ResolvedSection {
  */
 export async function resolveAllSectionPaths(
   rootDir: string,
-  docPath: string,
+  docPath: DocPath,
 ): Promise<Map<string, ResolvedSection>> {
   let skeleton: DocumentSkeleton;
   try {

@@ -29,9 +29,9 @@ describe("legacy committed proposal without targets", () => {
   it("decodes by deriving section targets from sections", () => {
     const decoded = decodeProposal(LEGACY_COMMITTED_META, "committed");
     expect(decoded.targets).toEqual([
-      { kind: "section", doc_path: "/notes.md", heading_path: ["Overview"] },
+      { kind: "section", stored_doc_path: "/notes.md", heading_path: ["Overview"] },
     ]);
-    expect(decoded.sections).toEqual([{ doc_path: "/notes.md", heading_path: ["Overview"] }]);
+    expect(decoded.sections).toEqual([{ stored_doc_path: "/notes.md", heading_path: ["Overview"] }]);
   });
 
   it("does NOT tag a terminal (committed) legacy proposal degraded — terminal is never quarantined", () => {

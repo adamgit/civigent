@@ -5,8 +5,8 @@ import { DocumentsTreeNav } from "../../components/DocumentsTreeNav";
 import type { DocumentTreeEntry } from "../../types/shared";
 
 const fileEntries: DocumentTreeEntry[] = [
-  { name: "readme.md", path: "readme.md", type: "file", children: [] },
-  { name: "guide.md", path: "guide.md", type: "file", children: [] },
+  { name: "readme.md", path: "/readme.md", type: "file", children: [] },
+  { name: "guide.md", path: "/guide.md", type: "file", children: [] },
 ];
 
 const nestedEntries: DocumentTreeEntry[] = [
@@ -15,18 +15,18 @@ const nestedEntries: DocumentTreeEntry[] = [
     path: "ops",
     type: "directory",
     children: [
-      { name: "strategy.md", path: "ops/strategy.md", type: "file", children: [] },
+      { name: "strategy.md", path: "/ops/strategy.md", type: "file", children: [] },
       {
         name: "team",
         path: "ops/team",
         type: "directory",
         children: [
-          { name: "roles.md", path: "ops/team/roles.md", type: "file", children: [] },
+          { name: "roles.md", path: "/ops/team/roles.md", type: "file", children: [] },
         ],
       },
     ],
   },
-  { name: "readme.md", path: "readme.md", type: "file", children: [] },
+  { name: "readme.md", path: "/readme.md", type: "file", children: [] },
 ];
 
 describe("DocumentsTreeNav", () => {
@@ -67,7 +67,7 @@ describe("DocumentsTreeNav", () => {
     );
 
     // Directory starts collapsed — children not visible
-    expect(screen.queryByText("strategy.md")).toBeNull();
+    expect(screen.queryByText("/strategy.md")).toBeNull();
 
     // Click to expand
     fireEvent.click(screen.getByText(/ops\//));
@@ -75,7 +75,7 @@ describe("DocumentsTreeNav", () => {
 
     // Click to collapse
     fireEvent.click(screen.getByText(/ops\//));
-    expect(screen.queryByText("strategy.md")).toBeNull();
+    expect(screen.queryByText("/strategy.md")).toBeNull();
   });
 
   it("click file triggers onDocumentOpen callback", () => {
@@ -87,7 +87,7 @@ describe("DocumentsTreeNav", () => {
     );
 
     fireEvent.click(screen.getByText("readme.md"));
-    expect(onDocumentOpen).toHaveBeenCalledWith("readme.md");
+    expect(onDocumentOpen).toHaveBeenCalledWith("/readme.md");
   });
 
   it("nested directories render recursively", () => {
@@ -122,7 +122,7 @@ describe("DocumentsTreeNav", () => {
   it("badge shown on badged document paths", () => {
     render(
       <MemoryRouter>
-        <DocumentsTreeNav entries={fileEntries} badgedDocPaths={["readme.md"]} />
+        <DocumentsTreeNav entries={fileEntries} badgedDocPaths={["/readme.md"]} />
       </MemoryRouter>,
     );
 

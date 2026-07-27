@@ -9,6 +9,7 @@ import {
   sendApiError,
   requireAdmin,
   getMCPPublicURL,
+  docPathParamOf,
 } from "./middleware.js";
 import { getToolKeyCatalog } from "../application/setup.js";
 import {
@@ -269,7 +270,7 @@ export function registerAdminRoutes(router: Router): void {
         sendApiError(res, 400, parsed.message);
         return;
       }
-      await setDocAclEntry(req.params.docPath, parsed.value);
+      await setDocAclEntry(docPathParamOf(req), parsed.value);
       res.json({ ok: true });
     } catch (error) {
       next(error);
@@ -280,7 +281,7 @@ export function registerAdminRoutes(router: Router): void {
     try {
       const admin = await requireAdmin(req, res);
       if (!admin) return;
-      await removeDocAclEntry(req.params.docPath);
+      await removeDocAclEntry(docPathParamOf(req));
       res.json({ ok: true });
     } catch (error) {
       next(error);

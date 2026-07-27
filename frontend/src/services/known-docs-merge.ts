@@ -1,4 +1,5 @@
 import type { ActivityItem, AnyProposal } from "../types/shared.js";
+import { proposalSectionDocPathForDisplay } from "../types/shared.js";
 
 /**
  * Trims whitespace, drops empty entries, dedupes, and preserves first-seen order.
@@ -26,7 +27,9 @@ export function mergeKnownDocPaths(
   proposals: AnyProposal[],
 ): string[] {
   const fromActivity = activityItems.flatMap((item) => item.sections.map((s) => s.doc_path));
-  const fromProposals = proposals.flatMap((proposal) => proposal.sections.map((s) => s.doc_path));
+  const fromProposals = proposals.flatMap((proposal) =>
+    proposal.sections.map((s) => proposalSectionDocPathForDisplay(s)),
+  );
   return uniquePreserveOrder([...localDocs, ...fromActivity, ...fromProposals]);
 }
 

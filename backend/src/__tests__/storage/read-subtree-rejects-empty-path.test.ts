@@ -15,7 +15,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
  */
 describe("ContentLayer.readSubtree — empty headingPath rejection", () => {
   let ctx: TempDataRootContext;
-  const DOC = "subtree-reject.md";
+  const DOC = "/subtree-reject.md";
 
   beforeAll(async () => {
     ctx = await createTempDataRoot();

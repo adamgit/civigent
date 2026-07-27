@@ -1,6 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { gitExec } from "../../storage/git-repo.js";
+import { docPathToContentRelativeFsPath } from "../../storage/path-utils.js";
+import { DocPath } from "../../types/shared.js";
 
 export const SAMPLE_DOC_PATH = "/ops/strategy.md";
 export const SAMPLE_DOC_PATH_2 = "/eng/architecture.md";
@@ -30,7 +32,7 @@ export async function createSampleDocument(
   docPath: string = SAMPLE_DOC_PATH,
 ): Promise<{ headingPaths: string[][] }> {
   const contentRoot = join(dataRoot, "content");
-  const diskRelative = docPath.replace(/^\//, "");
+  const diskRelative = docPathToContentRelativeFsPath(DocPath.parse(docPath));
   const skeletonPath = join(contentRoot, diskRelative);
   const sectionsDir = `${skeletonPath}.sections`;
 
@@ -87,7 +89,7 @@ export async function createSampleDocument2(
 ): Promise<{ headingPaths: string[][] }> {
   const contentRoot = join(dataRoot, "content");
   const docPath = SAMPLE_DOC_PATH_2;
-  const diskRelative = docPath.replace(/^\//, "");
+  const diskRelative = docPathToContentRelativeFsPath(DocPath.parse(docPath));
   const skeletonPath = join(contentRoot, diskRelative);
   const sectionsDir = `${skeletonPath}.sections`;
 
@@ -145,7 +147,7 @@ export async function createHumanCommit(
   hoursAgo: number,
 ): Promise<void> {
   const contentRoot = join(dataRoot, "content");
-  const diskRelative = docPath.replace(/^\//, "");
+  const diskRelative = docPathToContentRelativeFsPath(DocPath.parse(docPath));
   const sectionsDir = `${join(contentRoot, diskRelative)}.sections`;
 
   await mkdir(sectionsDir, { recursive: true });

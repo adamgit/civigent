@@ -20,7 +20,7 @@ import type { WriterIdentity } from "../../types/shared.js";
  * git-recency / decay inputs.
  */
 
-const DOC = "doc.md";
+const DOC = "/doc.md";
 const HUMAN_A: WriterIdentity = { type: "human", id: "human-a", displayName: "Alice" };
 const HUMAN_B: WriterIdentity = { type: "human", id: "human-b", displayName: "Bob" };
 

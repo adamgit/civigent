@@ -1,39 +1,37 @@
 import { encodeDocPath } from "../utils/path-encoding";
+import { DocPath } from "../types/shared";
 
 export type DocsRouteMode = "view";
 
 export interface ResolvedDocsRoute {
   mode: DocsRouteMode;
-  docPath: string | null;
+  docPath: DocPath | null;
+  folderPath: string | null;
 }
 
-function normalizeSplatPath(routeSplat: string | undefined): string {
+function decodeSlashStrippedRouteSegment(routeSplat: string | undefined): string {
   if (!routeSplat) {
     return "";
   }
-  // Decode, strip trailing slashes only, then ensure exactly one leading slash.
-  const decoded = decodeURIComponent(routeSplat).replace(/\/+$/g, "");
-  if (!decoded) return "";
-  return decoded.startsWith("/") ? decoded : `/${decoded}`;
+  return decodeURIComponent(routeSplat).replace(/\/+$/g, "").replace(/^\/+/, "");
 }
 
 export function resolveDocsSubroute(routeSplat: string | undefined): ResolvedDocsRoute {
-  const normalized = normalizeSplatPath(routeSplat);
-  if (normalized.length === 0) {
-    return { mode: "view", docPath: null };
+  const slashStrippedSegment = decodeSlashStrippedRouteSegment(routeSplat);
+  if (slashStrippedSegment.length === 0) {
+    return { mode: "view", docPath: null, folderPath: null };
   }
-  return { mode: "view", docPath: normalized };
+  if (DocPath.isSlashStrippedUrlSegmentOfDocPath(slashStrippedSegment)) {
+    return {
+      mode: "view",
+      docPath: DocPath.fromSlashStrippedUrlSegment(slashStrippedSegment),
+      folderPath: null,
+    };
+  }
+  return { mode: "view", docPath: null, folderPath: `/${slashStrippedSegment}` };
 }
 
-/**
- * Strip the leading slash from a canonical doc path for embedding in a
- * `/docs/...` browser route URL. The route prefix already provides the
- * leading segment, so the doc path portion must not start with `/`.
- *
- * This is ONLY for route URL construction — do not use it as a general
- * doc-path normalizer.
- */
-export function stripLeadingSlashForRoute(docPath: string): string {
+export function stripLeadingSlashForRoute(docPath: DocPath): string {
   return docPath.replace(/^\/+/, "");
 }
 
@@ -62,5 +60,5 @@ export function rewriteMarkdownDocHref(href: string): string | null {
     return null;
   }
 
-  return `/docs/${stripLeadingSlashForRoute(encodeDocPath(decodedPath))}${suffix}`;
+  return `/docs/${stripLeadingSlashForRoute(DocPath.parse(encodeDocPath(decodedPath)))}${suffix}`;
 }

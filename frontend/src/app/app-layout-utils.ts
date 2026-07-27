@@ -1,4 +1,4 @@
-export const DOC_BADGES_STORAGE_KEY = "ks_doc_badges";
+import { DocPath } from "../types/shared";
 export const SIDEBAR_AUTOHIDE_STORAGE_KEY = "ks_sidebar_autohide";
 
 const BUILD_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -23,42 +23,6 @@ export function formatBuildDate(raw: string): { shortLabel: string; longLabel: s
     shortLabel: `${day}/${month} ${hours}:${minutes}`,
     longLabel: `${day} ${month} ${year} - ${hours}:${minutes}`,
   };
-}
-
-export function toCanonicalDocPath(path: string): string {
-  const trimmed = path.trim();
-  if (!trimmed) {
-    return "/";
-  }
-  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-}
-
-export function readBadgeDocPaths(): Set<string> {
-  try {
-    const raw = localStorage.getItem(DOC_BADGES_STORAGE_KEY);
-    if (!raw) {
-      return new Set<string>();
-    }
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) {
-      return new Set<string>();
-    }
-    return new Set(
-      parsed
-        .filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
-        .map((entry) => toCanonicalDocPath(entry)),
-    );
-  } catch {
-    return new Set<string>();
-  }
-}
-
-export function writeBadgeDocPaths(paths: Set<string>): void {
-  try {
-    localStorage.setItem(DOC_BADGES_STORAGE_KEY, JSON.stringify(Array.from(paths)));
-  } catch {
-    // Ignore storage write failures in constrained environments.
-  }
 }
 
 function parseSidebarAutoHideFlag(raw: string | null): boolean | null {
@@ -161,7 +125,10 @@ export function classifyWsEvent(
     return noop;
   }
 
-  const committedDocPath = toCanonicalDocPath(event.doc_path ?? "");
+  const committedDocPath = event.doc_path;
+  if (committedDocPath === undefined || !DocPath.isDocPath(committedDocPath)) {
+    return noop;
+  }
 
   if (event.writer_type !== "agent") {
     return { refreshTree: true, addBadge: null, showToast: null };
@@ -182,17 +149,23 @@ export function classifyWsEvent(
   };
 }
 
-export function parseRouteDocPath(pathname: string): string | null {
+export function parseRouteDocPath(pathname: string): DocPath | null {
   if (!pathname.startsWith("/docs/")) {
     return null;
   }
-  const encodedPath = pathname.slice("/docs/".length);
+  let encodedPath = pathname.slice("/docs/".length);
+  for (const suffix of ["/edit", "/reconcile"]) {
+    if (encodedPath.endsWith(suffix)) {
+      encodedPath = encodedPath.slice(0, -suffix.length);
+      break;
+    }
+  }
   if (!encodedPath) {
     return null;
   }
-  try {
-    return toCanonicalDocPath(decodeURIComponent(encodedPath));
-  } catch {
-    return toCanonicalDocPath(encodedPath);
+  const decodedSegment = decodeURIComponent(encodedPath);
+  if (!DocPath.isSlashStrippedUrlSegmentOfDocPath(decodedSegment)) {
+    return null;
   }
+  return DocPath.fromSlashStrippedUrlSegment(decodedSegment);
 }

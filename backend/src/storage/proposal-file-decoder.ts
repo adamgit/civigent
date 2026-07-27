@@ -1,5 +1,6 @@
 /** Decodes an on-disk proposal `meta.json` into a typed domain object. */
 import {
+  DocPath,
   expectJsonObject,
   ProposalAdoptionId,
   sectionsToTargets,
@@ -8,15 +9,22 @@ import {
   type JsonValue,
 } from "../types/shared.js";
 import type {
+  ActiveProposal,
+  ActiveProposalStatus,
   AnyProposal,
   DeletedSectionFileRef,
   HumanInvolvementCommittedProposalMetadata,
   InProgressProposal,
   ProposalFileBase,
+  ProposalFileIdentityFields,
   ProposalId,
   ProposalSection,
   ProposalStatus,
   ProposalTargetRef,
+  StoredHistoryDeletedSectionFileRef,
+  StoredHistoryProposalFileBase,
+  StoredHistoryProposalSection,
+  StoredHistoryProposalTargetRef,
   WriterIdentity,
   WriterType,
 } from "../types/shared.js";
@@ -85,10 +93,14 @@ function decodeWriterIdentity(value: JsonValue, label: string): WriterIdentity {
   return writer;
 }
 
+function requireDocPath(obj: JsonObject, key: string, label: string): DocPath {
+  return DocPath.parse(requireString(obj, key, label));
+}
+
 function decodeProposalSection(value: JsonValue, label: string): ProposalSection {
   const obj = expectJsonObject(value, label);
   const section: ProposalSection = {
-    doc_path: requireString(obj, "doc_path", label),
+    doc_path: requireDocPath(obj, "doc_path", label),
     heading_path: requireStringArray(obj["heading_path"], `${label}.heading_path`),
   };
   const justification = optionalString(obj, "justification", label);
@@ -106,9 +118,78 @@ function decodeProposalSections(value: JsonValue, label: string): ProposalSectio
 function decodeDeletedSectionFileRef(value: JsonValue, label: string): DeletedSectionFileRef {
   const obj = expectJsonObject(value, label);
   return {
-    doc_path: requireString(obj, "doc_path", label),
+    doc_path: requireDocPath(obj, "doc_path", label),
     section_file: requireString(obj, "section_file", label),
   };
+}
+
+function decodeStoredHistoryProposalSection(value: JsonValue, label: string): StoredHistoryProposalSection {
+  const obj = expectJsonObject(value, label);
+  const section: StoredHistoryProposalSection = {
+    stored_doc_path: requireString(obj, "doc_path", label),
+    heading_path: requireStringArray(obj["heading_path"], `${label}.heading_path`),
+  };
+  const justification = optionalString(obj, "justification", label);
+  if (justification !== undefined) section.justification = justification;
+  return section;
+}
+
+function decodeStoredHistoryProposalSections(value: JsonValue, label: string): StoredHistoryProposalSection[] {
+  if (!isJsonArray(value)) {
+    throw new Error(`${label} must be an array, got ${JSON.stringify(value)}`);
+  }
+  return value.map((element, index) => decodeStoredHistoryProposalSection(element, `${label}[${index}]`));
+}
+
+function decodeStoredHistoryProposalTargetRef(value: JsonValue, label: string): StoredHistoryProposalTargetRef {
+  const obj = expectJsonObject(value, label);
+  const kind = obj["kind"];
+  if (kind === "section") {
+    return {
+      kind: "section",
+      stored_doc_path: requireString(obj, "doc_path", label),
+      heading_path: requireStringArray(obj["heading_path"], `${label}.heading_path`),
+    };
+  }
+  if (kind === "document") {
+    return {
+      kind: "document",
+      stored_doc_path: requireString(obj, "doc_path", label),
+    };
+  }
+  throw new Error(`${label}.kind must be "section" or "document", got ${JSON.stringify(kind)}`);
+}
+
+function decodeStoredHistoryProposalTargets(value: JsonValue, label: string): StoredHistoryProposalTargetRef[] {
+  if (!isJsonArray(value)) {
+    throw new Error(`${label} must be an array, got ${JSON.stringify(value)}`);
+  }
+  return value.map((element, index) => decodeStoredHistoryProposalTargetRef(element, `${label}[${index}]`));
+}
+
+function decodeStoredHistoryDeletedSectionFiles(obj: JsonObject, label: string): StoredHistoryDeletedSectionFileRef[] {
+  if (!("deleted_section_files" in obj)) return [];
+  const value = obj["deleted_section_files"];
+  if (!isJsonArray(value)) {
+    throw new Error(`${label}.deleted_section_files must be an array, got ${JSON.stringify(value)}`);
+  }
+  return value.map((element, index) => {
+    const entry = expectJsonObject(element, `${label}.deleted_section_files[${index}]`);
+    return {
+      stored_doc_path: requireString(entry, "doc_path", `${label}.deleted_section_files[${index}]`),
+      section_file: requireString(entry, "section_file", `${label}.deleted_section_files[${index}]`),
+    };
+  });
+}
+
+function sectionsToStoredHistoryTargets(
+  sections: StoredHistoryProposalSection[],
+): StoredHistoryProposalTargetRef[] {
+  return sections.map((section) => ({
+    kind: "section",
+    stored_doc_path: section.stored_doc_path,
+    heading_path: [...section.heading_path],
+  }));
 }
 
 /**
@@ -133,14 +214,14 @@ function decodeProposalTargetRef(value: JsonValue, label: string): ProposalTarge
   if (kind === "section") {
     return {
       kind: "section",
-      doc_path: requireString(obj, "doc_path", label),
+      doc_path: requireDocPath(obj, "doc_path", label),
       heading_path: requireStringArray(obj["heading_path"], `${label}.heading_path`),
     };
   }
   if (kind === "document") {
     return {
       kind: "document",
-      doc_path: requireString(obj, "doc_path", label),
+      doc_path: requireDocPath(obj, "doc_path", label),
     };
   }
   throw new Error(`${label}.kind must be "section" or "document", got ${JSON.stringify(kind)}`);
@@ -171,33 +252,55 @@ function decodeHumanInvolvementCommittedMetadata(
 
 // ─── Base + per-status decoders ────────────────────────────────────────
 
+function decodeProposalFileIdentityFields(obj: JsonObject, label: string): ProposalFileIdentityFields {
+  const identity: ProposalFileIdentityFields = {
+    id: requireString(obj, "id", label),
+    writer: decodeWriterIdentity(obj["writer"], `${label}.writer`),
+    intent: requireString(obj, "intent", label),
+    created_at: requireString(obj, "created_at", label),
+  };
+  const proposalAdoptionId = optionalString(obj, "proposalAdoptionId", label)
+    ?? optionalString(obj, "docSessionId", label);
+  if (proposalAdoptionId !== undefined) {
+    identity.proposalAdoptionId = ProposalAdoptionId.fromStoredValue(proposalAdoptionId);
+  }
+  // A legacy `agent_session_id` field (removed task 708 — MCP session identity is
+  // transport state, never proposal persistence) is deliberately NOT decoded:
+  // old files still read fine and the field is dropped at this boundary.
+  return identity;
+}
+
 function decodeProposalFileBase(obj: JsonObject, label: string, status: ProposalStatus): ProposalFileBase {
   const sections = decodeProposalSections(obj["sections"], `${label}.sections`);
   const missingTargets = !("targets" in obj);
   const base: ProposalFileBase = {
-    id: requireString(obj, "id", label),
-    writer: decodeWriterIdentity(obj["writer"], `${label}.writer`),
-    intent: requireString(obj, "intent", label),
+    ...decodeProposalFileIdentityFields(obj, label),
     sections,
     targets: missingTargets
       ? sectionsToTargets(sections)
       : decodeProposalTargets(obj["targets"], `${label}.targets`),
     deleted_section_files: decodeDeletedSectionFiles(obj, label),
-    created_at: requireString(obj, "created_at", label),
+  };
+  if (missingTargets && !TERMINAL_PROPOSAL_STATUSES.has(status)) {
+    base.degraded = ["missing-targets"];
+  }
+  return base;
+}
+
+function decodeStoredHistoryProposalFileBase(obj: JsonObject, label: string, status: ProposalStatus): StoredHistoryProposalFileBase {
+  const sections = decodeStoredHistoryProposalSections(obj["sections"], `${label}.sections`);
+  const missingTargets = !("targets" in obj);
+  const base: StoredHistoryProposalFileBase = {
+    ...decodeProposalFileIdentityFields(obj, label),
+    sections,
+    targets: missingTargets
+      ? sectionsToStoredHistoryTargets(sections)
+      : decodeStoredHistoryProposalTargets(obj["targets"], `${label}.targets`),
+    deleted_section_files: decodeStoredHistoryDeletedSectionFiles(obj, label),
   };
   if (status === "committed" && base.sections.length === 0 && base.targets.length === 0) {
     base.degraded = ["empty-committed"];
-  } else if (missingTargets && !TERMINAL_PROPOSAL_STATUSES.has(status)) {
-    base.degraded = ["missing-targets"];
   }
-  const proposalAdoptionId = optionalString(obj, "proposalAdoptionId", label)
-    ?? optionalString(obj, "docSessionId", label);
-  if (proposalAdoptionId !== undefined) {
-    base.proposalAdoptionId = ProposalAdoptionId.fromStoredValue(proposalAdoptionId);
-  }
-  // A legacy `agent_session_id` field (removed task 708 — MCP session identity is
-  // transport state, never proposal persistence) is deliberately NOT decoded:
-  // old files still read fine and the field is dropped at this boundary.
   return base;
 }
 
@@ -209,7 +312,6 @@ function decodeProposalFileBase(obj: JsonObject, label: string, status: Proposal
 export function decodeProposal(value: JsonValue, status: ProposalStatus): AnyProposal {
   const label = "proposal meta.json";
   const obj = expectJsonObject(value, label);
-  const base = decodeProposalFileBase(obj, label, status);
 
   switch (status) {
     case "draft":
@@ -218,12 +320,12 @@ export function decodeProposal(value: JsonValue, status: ProposalStatus): AnyPro
       // committing carries the previous proposal's metadata moved by directory
       // rename; landed-commit recovery metadata (committed_head) is read locally
       // by the recovery path, never folded into the normal domain object.
-      return { ...base, status };
+      return { ...decodeProposalFileBase(obj, label, status), status };
     case "inprogress":
-      return { ...base, status };
+      return { ...decodeProposalFileBase(obj, label, status), status };
     case "committed":
       return {
-        ...base,
+        ...decodeStoredHistoryProposalFileBase(obj, label, status),
         committed_head: requireString(obj, "committed_head", label),
         humanInvolvement_at_commit: decodeHumanInvolvementCommittedMetadata(
           obj["humanInvolvement_at_commit"],
@@ -232,12 +334,20 @@ export function decodeProposal(value: JsonValue, status: ProposalStatus): AnyPro
         status,
       };
     case "withdrawn": {
+      const base = decodeStoredHistoryProposalFileBase(obj, label, status);
       const reason = optionalString(obj, "withdrawal_reason", label);
       return reason !== undefined
         ? { ...base, status, withdrawal_reason: reason }
         : { ...base, status };
     }
   }
+}
+
+export function decodeActiveProposal(value: JsonValue, status: ActiveProposalStatus): ActiveProposal {
+  const label = "proposal meta.json";
+  const obj = expectJsonObject(value, label);
+  const base = decodeProposalFileBase(obj, label, status);
+  return status === "inprogress" ? { ...base, status } : { ...base, status };
 }
 
 /**

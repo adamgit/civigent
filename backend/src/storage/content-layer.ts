@@ -26,7 +26,7 @@ import {
   type SkeletonNode,
   type StructuralMutationPlan,
 } from "./document-skeleton.js";
-import { normalizeDocPath } from "./path-utils.js";
+import { docPathToContentRelativeFsPath } from "./path-utils.js";
 import { pathExists } from "./fs-primitives.js";
 import { staleHeadingPath } from "./skeleton-errors.js";
 // ParsedDocument was previously imported here for the document-replacement
@@ -36,6 +36,7 @@ import { staleHeadingPath } from "./skeleton-errors.js";
 // upsert path via `getParser()` (markdown-parser.js) and through the
 // `ProposalShadowContentLayer.rewriteSubtreeFromParsedMarkdown(...)` machinery.
 import type { DocStructureNode } from "../types/shared.js";
+import { DocPath } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
 import { bodyFromDisk, bodyFromParser, stripHeadingFromFragment, buildFragmentContent, assembleFragments, fragmentFromBodyHolder, stripLeadingNewlines, appendToBody, fragmentFromExternalContent, type SectionBody, type FragmentContent, type SectionBodyWithPotentialSubsections } from "./section-formatting.js";
@@ -77,9 +78,8 @@ async function writeBodyFile(entry: ContentEntry | FlatEntry, content: string): 
   await writeFile(entry.absolutePath, normalized, "utf8");
 }
 
-function resolveDocSkeletonPath(contentRoot: string, docPath: string): string {
-  const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-  return path.resolve(contentRoot, ...normalized.split("/"));
+function resolveDocSkeletonPath(contentRoot: string, docPath: DocPath): string {
+  return path.resolve(contentRoot, ...docPathToContentRelativeFsPath(DocPath.parse(docPath)).split("/"));
 }
 
 function flatEntryFromContentEntry(entry: ContentEntry): FlatEntry {
@@ -215,7 +215,7 @@ function buildRewriteReplacementRoots(
 }
 
 function buildBodyWritesForRewrite(
-  docPath: string,
+  docPath: DocPath,
   added: FlatEntry[],
   bodyByResultingHeadingPath: Map<string, string>,
 ): StructuralMutationPlan["bodyWrites"] {
@@ -267,7 +267,7 @@ export class MultiSectionContentError extends Error {}
  */
 export class DuplicateSiblingHeadingError extends Error {
   readonly operation: "rename" | "move" | "rewrite";
-  readonly docPath: string;
+  readonly docPath: DocPath;
   readonly parentHeadingPath: readonly string[];
   readonly proposedHeading: string;
   readonly proposedLevel: number;
@@ -275,7 +275,7 @@ export class DuplicateSiblingHeadingError extends Error {
   readonly targetSectionFile: string;
   constructor(args: {
     operation: "rename" | "move" | "rewrite";
-    docPath: string;
+    docPath: DocPath;
     parentHeadingPath: readonly string[];
     proposedHeading: string;
     proposedLevel: number;
@@ -315,7 +315,7 @@ function assertNoDuplicateSiblingHeadingCollision(
   siblings: readonly SkeletonNode[],
   args: {
     operation: "rename" | "move" | "rewrite";
-    docPath: string;
+    docPath: DocPath;
     parentHeadingPath: readonly string[];
     targetSectionFile: string;
     proposedHeading: string;
@@ -376,7 +376,7 @@ export class ContentLayer {
    * Return the document's structural tree as DocStructureNode[].
    * Suitable for API responses that describe document outline.
    */
-  async getDocumentStructure(docPath: string): Promise<DocStructureNode[]> {
+  async getDocumentStructure(docPath: DocPath): Promise<DocStructureNode[]> {
     const skeleton = await this.readSkeleton(docPath);
     return skeleton.structure;
   }
@@ -386,7 +386,7 @@ export class ContentLayer {
    * Suitable for callers that need to enumerate sections without
    * access to the raw DocumentSkeleton.
    */
-  async getSectionList(docPath: string): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>> {
+  async getSectionList(docPath: DocPath): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>> {
     const skeleton = await this.readSkeleton(docPath);
     const sections: Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }> = [];
     skeleton.forEachVisibleSection((heading, level, sectionFile, headingPath) => {
@@ -406,7 +406,7 @@ export class ContentLayer {
    * single-root helper `listSkeletonEntriesAtRoot` — not the overlay-aware
    * `fromDisk` factory.
    */
-  async listCanonicalEntries(docPath: string): Promise<FlatEntry[]> {
+  async listCanonicalEntries(docPath: DocPath): Promise<FlatEntry[]> {
     const entries = await listSkeletonEntriesAtRoot(docPath, this.contentRoot);
     return entries ?? [];
   }
@@ -415,7 +415,7 @@ export class ContentLayer {
    * Return discovery rows for real sections only (no structural/sub-skeleton nodes).
    * Includes the canonical absolute body-file path and body file size in bytes.
    */
-  async getSectionDiscoveryList(docPath: string): Promise<SectionDiscoveryEntry[]> {
+  async getSectionDiscoveryList(docPath: DocPath): Promise<SectionDiscoveryEntry[]> {
     const skeleton = await this.readSkeleton(docPath);
     const baseEntries: Array<{ heading: string; headingPath: string[]; absolutePath: string }> = [];
     // forEachVisibleSection folds parent heading metadata onto nested body-holders
@@ -455,7 +455,7 @@ export class ContentLayer {
   /**
    * Read the canonical DocumentSkeleton for a document.
    */
-  private async readSkeleton(docPath: string): Promise<DocumentSkeleton> {
+  private async readSkeleton(docPath: DocPath): Promise<DocumentSkeleton> {
     if (!(await skeletonFileExists(docPath, this.contentRoot))) {
       throw new DocumentNotFoundError(`No skeleton found for document: ${docPath}`);
     }
@@ -465,7 +465,7 @@ export class ContentLayer {
   /**
    * Return all heading paths for a document.
    */
-  async listHeadingPaths(docPath: string): Promise<string[][]> {
+  async listHeadingPaths(docPath: DocPath): Promise<string[][]> {
     const skeleton = await this.readSkeleton(docPath);
     const paths: string[][] = [];
     skeleton.forEachSection((_h, _l, _sf, headingPath) => {
@@ -478,14 +478,14 @@ export class ContentLayer {
    * Return the absolute path to the `.sections/` directory for a document.
    * Pure path computation — no disk read.
    */
-  sectionsDirectory(docPath: string): string {
+  sectionsDirectory(docPath: DocPath): string {
     return DocumentSkeleton.sectionsDir(docPath, this.contentRoot);
   }
 
   /**
    * Resolve a heading path to the absolute file path for its section body file.
    */
-  async resolveSectionPath(docPath: string, headingPath: string[]): Promise<string> {
+  async resolveSectionPath(docPath: DocPath, headingPath: string[]): Promise<string> {
     const skeleton = await this.readSkeleton(docPath);
     try {
       return skeleton.requireContentEntryByHeadingPath(headingPath).absolutePath;
@@ -497,7 +497,7 @@ export class ContentLayer {
   /**
    * Resolve a heading path to its absolute file path and heading level.
    */
-  async resolveSectionPathWithLevel(docPath: string, headingPath: string[]): Promise<{ absolutePath: string; level: number }> {
+  async resolveSectionPathWithLevel(docPath: DocPath, headingPath: string[]): Promise<{ absolutePath: string; level: number }> {
     const skeleton = await this.readSkeleton(docPath);
     try {
       const entry = skeleton.requireContentEntryByHeadingPath(headingPath);
@@ -510,7 +510,7 @@ export class ContentLayer {
   /**
    * Resolve a section file ID (e.g. "sec_abc123def") to its entry.
    */
-  async resolveSectionFileId(docPath: string, sectionFileId: string): Promise<{ absolutePath: string; headingPath: string[]; level: number }> {
+  async resolveSectionFileId(docPath: DocPath, sectionFileId: string): Promise<{ absolutePath: string; headingPath: string[]; level: number }> {
     const skeleton = await this.readSkeleton(docPath);
     try {
       const entry = skeleton.requireEntryBySectionFileId(sectionFileId);
@@ -554,7 +554,7 @@ export class ContentLayer {
    * `readSection(ref(docPath, []))`.
    */
   async readSubtree(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
   ): Promise<Array<{ headingPath: string[]; heading: string; level: number; bodyContent: string }>> {
     if (headingPath.length === 0) {
@@ -671,7 +671,7 @@ export class ContentLayer {
    *
    * Returns Map keyed by headingKey (e.g. "Heading A>>Sub B").
    */
-  async readAllSections(docPath: string): Promise<Map<string, SectionBody>> {
+  async readAllSections(docPath: DocPath): Promise<Map<string, SectionBody>> {
     const skeleton = await this.readSkeleton(docPath);
     const result = new Map<string, SectionBody>();
     const readTasks: Array<Promise<void>> = [];
@@ -704,7 +704,7 @@ export class ContentLayer {
    * Reads all non-sub-skeleton entries from the skeleton in document order
    * and concatenates their body content.
    */
-  async readAssembledDocument(docPath: string): Promise<string> {
+  async readAssembledDocument(docPath: DocPath): Promise<string> {
     const skeleton = await this.readSkeleton(docPath);
 
     // Collect body sections via the visible-section visitor (sync), then read files (async).
@@ -783,12 +783,12 @@ export class ProposalShadowContentLayer {
    * and direct test constructions, where the merge degrades to "inherit all,
    * delete none" (strictly non-destructive).
    */
-  private readonly deletedSectionFilesProvider?: (docPath: string) => Promise<ReadonlySet<string> | undefined>;
+  private readonly deletedSectionFilesProvider?: (docPath: DocPath) => Promise<ReadonlySet<string> | undefined>;
 
   constructor(
     overlayRoot: string,
     canonicalRoot: string,
-    deletedSectionFilesProvider?: (docPath: string) => Promise<ReadonlySet<string> | undefined>,
+    deletedSectionFilesProvider?: (docPath: DocPath) => Promise<ReadonlySet<string> | undefined>,
   ) {
     this.overlayRoot = overlayRoot;
     this.canonicalRoot = canonicalRoot;
@@ -798,7 +798,7 @@ export class ProposalShadowContentLayer {
   /**
    * True only for a live document. Missing and tombstoned documents return false.
    */
-  async documentExists(docPath: string): Promise<boolean> {
+  async documentExists(docPath: DocPath): Promise<boolean> {
     return (await this.getDocumentState(docPath)) === "live";
   }
 
@@ -815,7 +815,7 @@ export class ProposalShadowContentLayer {
    * primitives (`tombstoneFileExists` / `skeletonFileExists`). There is no
    * cache, no fast path, and no in-process memoization to second-guess.
    */
-  async getDocumentState(docPath: string): Promise<ProposalDocumentState> {
+  async getDocumentState(docPath: DocPath): Promise<ProposalDocumentState> {
     if (this.overlayRoot !== this.canonicalRoot && (await tombstoneFileExists(docPath, this.overlayRoot))) {
       return "tombstone";
     }
@@ -844,7 +844,7 @@ export class ProposalShadowContentLayer {
    * methods that need a writable skeleton fresh-load via
    * `mutableFromDisk(...)`.
    */
-  async createDocument(docPath: string): Promise<void> {
+  async createDocument(docPath: DocPath): Promise<void> {
     const state = await this.getDocumentState(docPath);
     if (state === "live") {
       throw new Error(`Cannot create document "${docPath}" — it already exists.`);
@@ -870,7 +870,7 @@ export class ProposalShadowContentLayer {
    * materialization is NOT performed: the only sanctioned path for materializing
    * a missing document is `createDocument(...)`.
    */
-  private async getWritableSkeleton(docPath: string): Promise<DocumentSkeletonInternal> {
+  private async getWritableSkeleton(docPath: DocPath): Promise<DocumentSkeletonInternal> {
     const state = await this.getDocumentState(docPath);
     if (state === "tombstone") {
       throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this proposal.`);
@@ -890,7 +890,7 @@ export class ProposalShadowContentLayer {
    * so `writeTree` suppresses placeholders that would shadow non-empty canonical
    * bodies. Pure load — no writes.
    */
-  private async loadWritableSkeleton(docPath: string): Promise<DocumentSkeletonInternal> {
+  private async loadWritableSkeleton(docPath: DocPath): Promise<DocumentSkeletonInternal> {
     const structureRoot = (await skeletonFileExists(docPath, this.overlayRoot))
       ? this.overlayRoot
       : this.canonicalRoot;
@@ -915,7 +915,7 @@ export class ProposalShadowContentLayer {
     return pathExists(path.join(this.canonicalRoot, rel));
   }
 
-  private async readSkeleton(docPath: string): Promise<DocumentSkeleton> {
+  private async readSkeleton(docPath: DocPath): Promise<DocumentSkeleton> {
     const state = await this.getDocumentState(docPath);
     if (state === "tombstone") {
       throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this proposal.`);
@@ -937,7 +937,7 @@ export class ProposalShadowContentLayer {
    * Return the document's structural tree as DocStructureNode[].
    * Uses proposal-then-canonical skeleton loading.
    */
-  async getDocumentStructure(docPath: string): Promise<DocStructureNode[]> {
+  async getDocumentStructure(docPath: DocPath): Promise<DocStructureNode[]> {
     const skeleton = await this.readSkeleton(docPath);
     return skeleton.structure;
   }
@@ -946,7 +946,7 @@ export class ProposalShadowContentLayer {
    * Resolve a section file ID to its entry.
    * Uses proposal-then-canonical skeleton loading.
    */
-  async resolveSectionFileId(docPath: string, sectionFileId: string): Promise<{ absolutePath: string; headingPath: string[]; level: number; heading: string }> {
+  async resolveSectionFileId(docPath: DocPath, sectionFileId: string): Promise<{ absolutePath: string; headingPath: string[]; level: number; heading: string }> {
     const skeleton = await this.readSkeleton(docPath);
     try {
       const entry = skeleton.requireEntryBySectionFileId(sectionFileId);
@@ -960,7 +960,7 @@ export class ProposalShadowContentLayer {
    * Resolve a heading path to the absolute file path for its section body file.
    * Uses proposal-then-canonical skeleton loading.
    */
-  async resolveSectionPath(docPath: string, headingPath: string[]): Promise<string> {
+  async resolveSectionPath(docPath: DocPath, headingPath: string[]): Promise<string> {
     const skeleton = await this.readSkeleton(docPath);
     try {
       return skeleton.requireContentEntryByHeadingPath(headingPath).absolutePath;
@@ -973,7 +973,7 @@ export class ProposalShadowContentLayer {
    * Resolve a heading path to its absolute file path and heading level.
    * Uses proposal-then-canonical skeleton loading.
    */
-  async resolveSectionPathWithLevel(docPath: string, headingPath: string[]): Promise<{ absolutePath: string; level: number }> {
+  async resolveSectionPathWithLevel(docPath: DocPath, headingPath: string[]): Promise<{ absolutePath: string; level: number }> {
     const skeleton = await this.readSkeleton(docPath);
     try {
       const entry = skeleton.requireContentEntryByHeadingPath(headingPath);
@@ -986,7 +986,7 @@ export class ProposalShadowContentLayer {
   /**
    * Return all heading paths for a document.
    */
-  async listHeadingPaths(docPath: string): Promise<string[][]> {
+  async listHeadingPaths(docPath: DocPath): Promise<string[][]> {
     const skeleton = await this.readSkeleton(docPath);
     const paths: string[][] = [];
     skeleton.forEachSection((_h, _l, _sf, headingPath) => {
@@ -999,7 +999,7 @@ export class ProposalShadowContentLayer {
    * Return the absolute path to the `.sections/` directory for a document.
    * Pure path computation — no disk read.
    */
-  sectionsDirectory(docPath: string): string {
+  sectionsDirectory(docPath: DocPath): string {
     return DocumentSkeleton.sectionsDir(docPath, this.overlayRoot);
   }
 
@@ -1017,7 +1017,7 @@ export class ProposalShadowContentLayer {
    * gone. Per item 191 there is no class-level skeleton cache; nothing
    * to invalidate.
    */
-  async tombstoneDocument(docPath: string): Promise<string[][]> {
+  async tombstoneDocument(docPath: DocPath): Promise<string[][]> {
     const skeleton = await DocumentSkeleton.fromSingleRoot(docPath, this.canonicalRoot);
     const paths: string[][] = [];
     skeleton.forEachSection((_h, _l, _sf, headingPath) => {
@@ -1054,8 +1054,8 @@ export class ProposalShadowContentLayer {
    * is owned by `mutateProposalContent`'s `rename_document` case.
    */
   async renameDocument(
-    sourceDocPath: string,
-    destinationDocPath: string,
+    sourceDocPath: DocPath,
+    destinationDocPath: DocPath,
   ): Promise<void> {
     // item 55: strict source state.
     const sourceState = await this.getDocumentState(sourceDocPath);
@@ -1126,7 +1126,7 @@ export class ProposalShadowContentLayer {
   }
 
   async getSectionList(
-    docPath: string,
+    docPath: DocPath,
   ): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>> {
     const skeleton = await this.readSkeleton(docPath);
     const sections: Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }> = [];
@@ -1143,7 +1143,7 @@ export class ProposalShadowContentLayer {
    * (intentional vs structural-placeholder distinction is enforced at the
    * write site in `DocumentSkeletonInternal.writeTree`, not here).
    */
-  async readAllSections(docPath: string): Promise<Map<string, SectionBody>> {
+  async readAllSections(docPath: DocPath): Promise<Map<string, SectionBody>> {
     const skeleton = await this.readSkeleton(docPath);
     const result = new Map<string, SectionBody>();
     const readTasks: Array<Promise<void>> = [];
@@ -1350,7 +1350,7 @@ export class ProposalShadowContentLayer {
    * proposal layout is a no-op once the BFH body and roots already match.
    */
   async splitBeforeFirstHeadingPromotingHeadings(
-    docPath: string,
+    docPath: DocPath,
     bfhFragmentMarkdown: string,
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
     const parsed = getParser().parseDocumentMarkdown(bfhFragmentMarkdown);
@@ -1823,7 +1823,7 @@ export class ProposalShadowContentLayer {
    * with no dependency on canonical body fallback. Manifest derivation is the
    * caller's `listHeadingPaths(...)` readback.
    */
-  async createDocumentFromMarkdown(docPath: string, markdown: string): Promise<void> {
+  async createDocumentFromMarkdown(docPath: DocPath, markdown: string): Promise<void> {
     await this.createDocument(docPath);
     const parsedSections = getParser().parseDocumentMarkdown(markdown);
     await this.writeFreshDocumentFromParsedMarkdown(docPath, parsedSections);
@@ -1844,7 +1844,7 @@ export class ProposalShadowContentLayer {
    * directly old→new inside one `applyStructuralMutationTransaction`. Section IDs
    * are freshly minted (item 70).
    */
-  async replaceDocumentFromMarkdown(docPath: string, markdown: string): Promise<void> {
+  async replaceDocumentFromMarkdown(docPath: DocPath, markdown: string): Promise<void> {
     const state = await this.getDocumentState(docPath);
     if (state !== "live") {
       throw new DocumentNotFoundError(
@@ -1872,7 +1872,7 @@ export class ProposalShadowContentLayer {
    * invalidates any live session separately (item 73).
    */
   private async replaceWholeDocumentFromParsedMarkdown(
-    docPath: string,
+    docPath: DocPath,
     parsedSections: ReadonlyArray<ParsedMarkdownRewriteSection>,
   ): Promise<void> {
     const skeleton = await this.getWritableSkeleton(docPath);
@@ -1943,7 +1943,7 @@ export class ProposalShadowContentLayer {
    * section-target list via `listHeadingPaths(...)`.
    */
   async upsertDocumentFromMarkdown(
-    docPath: string,
+    docPath: DocPath,
     markdown: string,
   ): Promise<void> {
     const state = await this.getDocumentState(docPath);
@@ -2025,7 +2025,7 @@ export class ProposalShadowContentLayer {
    */
   private async requireEffectiveSectionBody(
     proposalBodyPath: string,
-    docPath: string,
+    docPath: DocPath,
     sectionLabel: string,
   ): Promise<string> {
     const content = await this.readEffectiveSectionBody(proposalBodyPath);
@@ -2055,7 +2055,7 @@ export class ProposalShadowContentLayer {
    * This is the proposal write implementation's own operation — it runs only on
    * write paths, never on reads.
    */
-  private async ensureProposalSkeletonForWrite(docPath: string): Promise<void> {
+  private async ensureProposalSkeletonForWrite(docPath: DocPath): Promise<void> {
     if (this.overlayRoot === this.canonicalRoot) return;
     if (await skeletonFileExists(docPath, this.overlayRoot)) return;
 
@@ -2076,7 +2076,7 @@ export class ProposalShadowContentLayer {
    * no path to write a body for an unresolved/arbitrary heading.
    */
   private async writeOverlayBodyFile(
-    docPath: string,
+    docPath: DocPath,
     entry: ContentEntry | FlatEntry,
     content: string,
   ): Promise<void> {
@@ -2276,7 +2276,7 @@ export class ProposalShadowContentLayer {
    * sub-skeleton parent (the underlying `collapseParentHeading` asserts it).
    */
   async collapseParentHeadingToBfh(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
     orphanBody: SectionBody,
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
@@ -2310,7 +2310,7 @@ export class ProposalShadowContentLayer {
    * Whole-document removal is a separate operation (tombstoneDocumentExplicit
    * below) and never takes a heading path.
    */
-  async deleteSubtree(docPath: string, headingPath: string[]): Promise<FlatEntry[]> {
+  async deleteSubtree(docPath: DocPath, headingPath: string[]): Promise<FlatEntry[]> {
     const skeleton = await this.getWritableSkeleton(docPath);
     const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
       // BFH deletion: locate the level-0 root node (heading="") and remove it.
@@ -2364,7 +2364,7 @@ export class ProposalShadowContentLayer {
    * transaction plan.
    */
   async renameHeading(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
     newHeading: string,
   ): Promise<ContentEntry> {
@@ -2469,7 +2469,7 @@ export class ProposalShadowContentLayer {
 
   private async retitleSubSkeletonParentInPlace(
     skeleton: DocumentSkeletonInternal,
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
     newHeading: string,
     newLevel: number,
@@ -2534,7 +2534,7 @@ export class ProposalShadowContentLayer {
    * without re-deriving the whole proposal.
    */
   async removeHeadingPreservingChildren(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
   ): Promise<{ removed: FlatEntry[]; added: FlatEntry[] }> {
     if (headingPath.length === 0) {
@@ -2685,7 +2685,7 @@ export class ProposalShadowContentLayer {
    * sub-skeleton-parent targets. Returns the resulting content entry.
    */
   async retitleSectionInPlace(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
     newHeading: string,
     newLevel: number,
@@ -2731,7 +2731,7 @@ export class ProposalShadowContentLayer {
    * state. Body content for every descendant is preserved.
    */
   async moveSubtree(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
     newParentPath: string[],
     newLevel: number,
@@ -2867,7 +2867,7 @@ export class ProposalShadowContentLayer {
    * transaction (which flushes the reordered skeleton to the overlay).
    */
   async reorderSiblingSection(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
     targetHeadingPath: string[],
     position: "before" | "after",
@@ -2952,7 +2952,7 @@ export class ProposalShadowContentLayer {
    * resolved, no extra body read happens, no extra bodyWrite is emitted.
    */
   private async rewriteSubtreeFromParsedMarkdown(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
     parsedSections: ReadonlyArray<ParsedMarkdownRewriteSection>,
     options?: { leadingOrphanBody?: SectionBody },
@@ -3148,7 +3148,7 @@ export class ProposalShadowContentLayer {
    * for that).
    */
   private async writeFreshDocumentFromParsedMarkdown(
-    docPath: string,
+    docPath: DocPath,
     parsedSections: ReadonlyArray<ParsedMarkdownRewriteSection>,
   ): Promise<void> {
     const skeleton = await this.getWritableSkeleton(docPath);
@@ -3220,7 +3220,7 @@ export class ProposalShadowContentLayer {
    * This is the explicit named operation that callers previously emulated
    * by looping has()/expect()/insertSectionUnder(...) inline.
    */
-  private async materializeAncestorHeadings(docPath: string, headingPath: string[]): Promise<FlatEntry[]> {
+  private async materializeAncestorHeadings(docPath: DocPath, headingPath: string[]): Promise<FlatEntry[]> {
     const skeleton = await this.getWritableSkeleton(docPath);
     const created: FlatEntry[] = [];
 
@@ -3422,7 +3422,7 @@ export class ProposalShadowContentLayer {
    * its sections directory. Per item 191 there is no class-level
    * skeleton cache to invalidate.
    */
-  async tombstoneDocumentExplicit(docPath: string): Promise<void> {
+  async tombstoneDocumentExplicit(docPath: DocPath): Promise<void> {
     // Proposal deletion MEANING: remove the proposal skeleton + its sections tree,
     // then drop the single-root tombstone marker via the DS storage primitive.
     const overlaySkeletonPath = resolveSkeletonPath(docPath, this.overlayRoot);

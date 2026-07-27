@@ -33,7 +33,7 @@ describe("classifyWsEvent", () => {
 
   it("content:committed by human triggers refresh only", () => {
     const result = classifyWsEvent(
-      { type: "content:committed", doc_path: "doc.md", writer_type: "human", writer_display_name: "Alice" },
+      { type: "content:committed", doc_path: "/doc.md", writer_type: "human", writer_display_name: "Alice" },
       "/other.md",
       true,
     );
@@ -44,7 +44,7 @@ describe("classifyWsEvent", () => {
 
   it("agent commit on same doc while tab active: no badge, no toast", () => {
     const result = classifyWsEvent(
-      { type: "content:committed", doc_path: "doc.md", writer_type: "agent", writer_display_name: "Bot" },
+      { type: "content:committed", doc_path: "/doc.md", writer_type: "agent", writer_display_name: "Bot" },
       "/doc.md",
       true,
     );
@@ -55,7 +55,7 @@ describe("classifyWsEvent", () => {
 
   it("agent commit on different doc while tab active: badge + toast", () => {
     const result = classifyWsEvent(
-      { type: "content:committed", doc_path: "other.md", writer_type: "agent", writer_display_name: "Bot" },
+      { type: "content:committed", doc_path: "/other.md", writer_type: "agent", writer_display_name: "Bot" },
       "/doc.md",
       true,
     );
@@ -69,7 +69,7 @@ describe("classifyWsEvent", () => {
 
   it("agent commit while tab inactive: badge, no toast", () => {
     const result = classifyWsEvent(
-      { type: "content:committed", doc_path: "other.md", writer_type: "agent", writer_display_name: "Bot" },
+      { type: "content:committed", doc_path: "/other.md", writer_type: "agent", writer_display_name: "Bot" },
       "/doc.md",
       false,
     );
@@ -90,16 +90,32 @@ describe("classifyWsEvent", () => {
   // section-availability events are pass-through no-ops (they are doc-page
   // concerns, not tree/badge/toast triggers) — they must never throw or be
   // dropped in a way that breaks delivery to other consumers.
-  it.each(["section:blocked", "section:unblocked", "section:gone", "content:committed"] as const)(
+  it.each(["section:blocked", "section:unblocked", "section:gone"] as const)(
     "%s is classified without throwing and is not mishandled at the layout layer",
     (type) => {
       expect(() => classifyWsEvent({ type }, "/doc.md", true)).not.toThrow();
     },
   );
 
+  it("content:committed is classified without throwing and is not mishandled at the layout layer", () => {
+    expect(() =>
+      classifyWsEvent({ type: "content:committed", doc_path: "/doc.md" }, "/doc.md", true),
+    ).not.toThrow();
+  });
+
+  it("content:committed with no doc_path is a no-op and does not throw", () => {
+    let result: ReturnType<typeof classifyWsEvent> | undefined;
+    expect(() => {
+      result = classifyWsEvent({ type: "content:committed" }, "/doc.md", true);
+    }).not.toThrow();
+    expect(result?.refreshTree).toBe(false);
+    expect(result?.addBadge).toBeNull();
+    expect(result?.showToast).toBeNull();
+  });
+
   it("section:* events are layout-level no-ops (not tree/badge/toast triggers)", () => {
     for (const type of ["section:blocked", "section:unblocked", "section:gone"]) {
-      const result = classifyWsEvent({ type, doc_path: "doc.md" }, "/doc.md", true);
+      const result = classifyWsEvent({ type, doc_path: "/doc.md" }, "/doc.md", true);
       expect(result.refreshTree).toBe(false);
       expect(result.addBadge).toBeNull();
       expect(result.showToast).toBeNull();
@@ -108,7 +124,7 @@ describe("classifyWsEvent", () => {
 
   it("removed dirty-persistence triggers are no-ops at the layout layer", () => {
     for (const type of ["writer:dirty-state-changed", "session:status-changed"]) {
-      const result = classifyWsEvent({ type, doc_path: "doc.md" }, "/doc.md", true);
+      const result = classifyWsEvent({ type, doc_path: "/doc.md" }, "/doc.md", true);
       expect(result.refreshTree).toBe(false);
       expect(result.addBadge).toBeNull();
       expect(result.showToast).toBeNull();
@@ -120,7 +136,7 @@ describe("classifyWsEvent", () => {
     // add a badge, or emit a toast — the document page owns the rejection
     // explanation via SectionEditRejectedModal. AppLayout classification
     // silently ignores it.
-    const result = classifyWsEvent({ type: "section:edit-rejected", doc_path: "doc.md" }, "/doc.md", true);
+    const result = classifyWsEvent({ type: "section:edit-rejected", doc_path: "/doc.md" }, "/doc.md", true);
     expect(result.refreshTree).toBe(false);
     expect(result.addBadge).toBeNull();
     expect(result.showToast).toBeNull();

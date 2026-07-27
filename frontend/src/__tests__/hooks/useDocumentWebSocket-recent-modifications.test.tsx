@@ -41,7 +41,7 @@ const wrapper = ({ children }: { children: React.ReactNode }) =>
 
 function buildParams(): UseDocumentWebSocketParams {
   return {
-    decodedDocPath: "test.md",
+    decodedDocPath: "/test.md",
     clientInstanceId: "client-1",
     liveReplicaReadyRef: ref(false),
     setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],
@@ -63,12 +63,12 @@ describe("recent-modification attribution from committed data (spec 06)", () => 
 
     emit({
       type: "content:committed",
-      doc_path: "test.md",
+      doc_path: "/test.md",
       writer_display_name: "Dana",
       writer_type: "human",
       sections: [
-        { doc_path: "test.md", heading_path: ["Overview"] },
-        { doc_path: "test.md", heading_path: [] },
+        { doc_path: "/test.md", heading_path: ["Overview"] },
+        { doc_path: "/test.md", heading_path: [] },
       ],
       commit_sha: "sha1",
     });
@@ -83,18 +83,18 @@ describe("recent-modification attribution from committed data (spec 06)", () => 
 
     emit({
       type: "content:committed",
-      doc_path: "test.md",
+      doc_path: "/test.md",
       writer_display_name: "Dana",
       writer_type: "human",
-      sections: [{ doc_path: "test.md", heading_path: ["Overview"] }],
+      sections: [{ doc_path: "/test.md", heading_path: ["Overview"] }],
       commit_sha: "sha1",
     });
     emit({
       type: "content:committed",
-      doc_path: "test.md",
+      doc_path: "/test.md",
       writer_display_name: "Evan",
       writer_type: "agent",
-      sections: [{ doc_path: "test.md", heading_path: ["Timeline"] }],
+      sections: [{ doc_path: "/test.md", heading_path: ["Timeline"] }],
       commit_sha: "sha2",
     });
 

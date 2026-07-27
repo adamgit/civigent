@@ -14,7 +14,9 @@
  * agentWritePolicy, section_file, last_editor) is sourced elsewhere.
  */
 
-import type { WireLiveSectionsState, WireLiveSectionRef, WirePendingSection } from "../types/shared.js";
+import type { WireLiveSectionsState, WireLiveSectionRef, WirePendingSection, WireClaimedSection, ProposalSectionTargetRef } from "../types/shared.js";
+import { sectionTargetToHeadingPath } from "../types/shared.js";
+import { SectionRef } from "../domain/section-ref.js";
 import type { DocSession } from "./ydoc-lifecycle.js";
 import { resolveLiveSectionLayout } from "./live-section-layout.js";
 import {
@@ -49,6 +51,50 @@ export async function buildWireLiveSectionsState(
 
   const blocked_section_ids = await resolveBlockedFragmentKeys(session, layout, currentProposalId);
 
+  // Heading-key → fragment-key projection for the current topology. Reused to
+  // resolve both the manifest claim set (FP5) and the editor focus set (FP6).
+  const fragmentKeyByHeading = new Map<string, string>();
+  for (const entry of layout) {
+    fragmentKeyByHeading.set(SectionRef.headingKey(entry.headingPath), entry.fragmentKey);
+  }
+
+  // Bound-proposal claim set for the shared-draft banner (FP4/FP5): every section
+  // target this in-flight proposal has claimed for THIS document — the exact set
+  // finalization publishes. Sourced from the same manifest the publish path uses
+  // (NOT inferred from pending state / canonical diffs), so the banner count and
+  // the publish result cannot disagree. Each claim carries its heading path (for
+  // display) and, when it still maps into the current topology, its fragment key.
+  let bound_proposal_claimed_sections: WireClaimedSection[] = [];
+  if (currentProposalId) {
+    const { readActiveProposal } = await import("../storage/proposal-repository.js");
+    const proposal = await readActiveProposal(currentProposalId);
+    bound_proposal_claimed_sections = proposal.targets
+      .filter((t): t is ProposalSectionTargetRef => t.kind === "section" && t.doc_path === session.docPath)
+      .map((t) => {
+        const headingPath = [...t.heading_path];
+        const fragmentKey = fragmentKeyByHeading.get(SectionRef.headingKey(headingPath));
+        return fragmentKey !== undefined
+          ? { heading_path: headingPath, fragment_key: fragmentKey }
+          : { heading_path: headingPath };
+      });
+  }
+
+  // Editor-focus projection (FP6): each ATTACHED editor's focus target mapped onto
+  // the current topology. Observers (null focus target) and targets that don't map
+  // to a live fragment are excluded. Deduped so two editors on the same section
+  // count once. Distinct from pending-writer state — the UI unions the two.
+  const editor_focus_section_ids = [
+    ...new Set(
+      editorFocusStates
+        .map((st) =>
+          st.editorFocusTarget
+            ? fragmentKeyByHeading.get(SectionRef.headingKey(sectionTargetToHeadingPath(st.editorFocusTarget)))
+            : undefined,
+        )
+        .filter((k): k is string => k !== undefined),
+    ),
+  ];
+
   // Live pending-writer set for THIS doc, sourced by the coordinator and filtered to
   // fragments still in the topology (a merged-away pending fragment must not leak).
   const topologyKeys = new Set(topology.map((t) => t.fragment_key));
@@ -75,6 +121,9 @@ export async function buildWireLiveSectionsState(
     publish_decision: session.generator.publishTriggerPolicy.evaluate(
       buildCurrentPublishSignals(session, layout, editorFocusStates, Date.now()),
     ),
+    bound_proposal_id: currentProposalId,
+    bound_proposal_claimed_sections,
+    editor_focus_section_ids,
   };
 }
 

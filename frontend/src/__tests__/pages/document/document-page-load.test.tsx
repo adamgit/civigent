@@ -7,6 +7,12 @@ import { sampleSections } from "../../helpers/sample-data";
 // --- Mocks ---
 
 vi.mock("../../../services/ws-client", () => ({
+  getAppWsTransportInfo: (() => {
+    const snapshot = { kind: null, fallbackReason: null };
+    return () => snapshot;
+  })(),
+  subscribeAppWsTransport: () => () => {},
+  describeAppWsBroadcastFallback: () => "",
   KnowledgeStoreWsClient: class {
     connect = vi.fn();
     disconnect = vi.fn();
@@ -54,7 +60,7 @@ vi.mock("../../../services/api-client", async (importOriginal) => {
 
 import { DocumentPage } from "../../../pages/DocumentPage";
 
-function renderDocPage(docPath = "ops/strategy.md") {
+function renderDocPage(docPath = "/ops/strategy.md") {
   return render(
     <MemoryRouter initialEntries={[`/docs/${docPath}`]}>
       <Routes>
@@ -67,7 +73,7 @@ function renderDocPage(docPath = "ops/strategy.md") {
 const sectionResponse = {
   sections: sampleSections.map((s, i) => ({
     ...s,
-    section_file: i === 0 ? "sec_root.md" : `sec_${s.heading_path[0]?.toLowerCase() || "root"}.md`,
+    section_file: i === 0 ? "/sec_root.md" : `sec_${s.heading_path[0]?.toLowerCase() || "root"}.md`,
   })),
 };
 
@@ -110,16 +116,16 @@ describe("DocumentPage load", () => {
       return jsonResponse({});
     });
 
-    renderDocPage("nonexistent.md");
+    renderDocPage("/nonexistent.md");
     await waitFor(() => {
       expect(screen.getByText("Document not found")).toBeDefined();
     });
   });
 
   it("displays doc path in header", async () => {
-    renderDocPage("ops/strategy.md");
+    renderDocPage("/ops/strategy.md");
     await waitFor(() => {
-      expect(screen.getAllByText("ops/strategy.md").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("/ops/strategy.md").length).toBeGreaterThan(0);
     });
   });
 
@@ -137,7 +143,7 @@ describe("DocumentPage load", () => {
           humanInvolvement_score: 0,
           crdt_session_active: false,
           fragment_key: "section::__beforeFirstHeading__",
-          section_file: "sec_root.md",
+          section_file: "/sec_root.md",
         },
       ],
     };
@@ -152,7 +158,7 @@ describe("DocumentPage load", () => {
       return jsonResponse({});
     });
 
-    renderDocPage("ops/empty.md");
+    renderDocPage("/ops/empty.md");
     await waitFor(() => {
       expect(screen.getByText("Document is empty.")).toBeDefined();
     });

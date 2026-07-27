@@ -46,9 +46,11 @@ import {
 } from "./document-skeleton.js";
 import type { SectionBody } from "./section-formatting.js";
 import { gitExec, getHeadSha } from "./git-repo.js";
+import { docPathFromContentRelativeFsPath, docPathToContentRelativeFsPath } from "./path-utils.js";
+import { DocPath } from "../types/shared.js";
 
 export interface SectionRefReceipt {
-  docPath: string;
+  docPath: DocPath;
   headingPath: string[];
 }
 
@@ -79,7 +81,7 @@ export interface SectionRefReceipt {
  */
 export interface AbsorbResult {
   commitSha: string;
-  rewrittenDocumentPaths: string[];
+  rewrittenDocumentPaths: DocPath[];
   absorbedSectionRefs: SectionRefReceipt[];
   changedSections: SectionRefReceipt[];
 }
@@ -138,7 +140,7 @@ export class CanonicalStore {
        */
       deletedSectionFilesByDoc?: ReadonlyMap<string, ReadonlySet<string>>;
       /** Transitional alias for older callers. */
-      docPaths?: string[];
+      docPaths?: DocPath[];
       /**
        * When true, a totally-empty absorb (no rewritten documents AND no
        * absorbed/changed sections) is permitted — this is reserved for explicitly
@@ -171,7 +173,7 @@ export class CanonicalStore {
       // doc). Such ops are whole-document (restore / import / document
       // delete/rename, or a DocSession whole-document publish), so they ALSO take
       // the wholesale replacement path (Step 5d), NOT the section-scoped merge.
-      const explicitScope = (opts?.documentPathsToRewrite ?? opts?.docPaths)?.map(normalizeDocPath);
+      const explicitScope = (opts?.documentPathsToRewrite ?? opts?.docPaths)?.map(DocPath.parse);
       const documentTargetSet = new Set(explicitScope ?? []);
       // Without an explicit scope, derive the affected set from the proposal
       // MANIFEST (`absorbedSectionRefs`) unioned with the staging-skeleton walk.
@@ -180,7 +182,7 @@ export class CanonicalStore {
       // the diff would report zero changed sections even though copyPass overlaid
       // the edited body onto canonical.
       const affectedDocPaths = explicitScope ?? [
-        ...absorbedSectionRefs.map((ref) => normalizeDocPath(ref.docPath)),
+        ...absorbedSectionRefs.map((ref) => DocPath.parse(ref.docPath)),
         ...await this.discoverDocPathsInStaging(stagingRoot),
       ];
       const rewrittenDocumentPaths = [...new Set(affectedDocPaths)];
@@ -214,7 +216,7 @@ export class CanonicalStore {
       // Skipped for whole-document targets (Step 5d, wholesale replacement) and for
       // docs with no manifest claim (direct absorb callers / legacy staging).
       const deletedSectionFilesByDoc = opts?.deletedSectionFilesByDoc;
-      const claimedDocPaths = new Set(absorbedSectionRefs.map((ref) => normalizeDocPath(ref.docPath)));
+      const claimedDocPaths = new Set(absorbedSectionRefs.map((ref) => DocPath.parse(ref.docPath)));
       for (const docPath of claimedDocPaths) {
         if (documentTargetSet.has(docPath)) continue; // whole-doc op → wholesale
         const deletedIds = deletedSectionFilesByDoc?.get(docPath) ?? new Set<string>();
@@ -280,10 +282,10 @@ export class CanonicalStore {
    * skeleton; its parent-relative path (without `.md`-tombstone suffix) is
    * the affected docPath.
    */
-  private async discoverDocPathsInStaging(stagingRoot: string): Promise<string[]> {
+  private async discoverDocPathsInStaging(stagingRoot: string): Promise<DocPath[]> {
     const allEntries = await readDirentsIfExists(stagingRoot, { recursive: true });
 
-    const docPaths: string[] = [];
+    const docPaths: DocPath[] = [];
     for (const entry of allEntries) {
       if (entry.isDirectory()) continue;
       if (!entry.name.endsWith(".md") && !entry.name.endsWith(TOMBSTONE_SUFFIX)) continue;
@@ -295,10 +297,10 @@ export class CanonicalStore {
         if (parts[i].endsWith(".sections")) { insideSections = true; break; }
       }
       if (insideSections) continue;
-      const docPath = relPath.endsWith(TOMBSTONE_SUFFIX)
+      const contentRelativeFsPath = relPath.endsWith(TOMBSTONE_SUFFIX)
         ? relPath.slice(0, -TOMBSTONE_SUFFIX.length)
         : relPath;
-      docPaths.push(docPath);
+      docPaths.push(docPathFromContentRelativeFsPath(contentRelativeFsPath));
     }
     return docPaths;
   }
@@ -309,7 +311,7 @@ export class CanonicalStore {
    * exist in canonical (new docs) contribute an empty sub-map so every
    * section in the after-snapshot is reported as changed.
    */
-  private async snapshotDocPaths(docPaths: string[]): Promise<Map<string, SectionBody>> {
+  private async snapshotDocPaths(docPaths: DocPath[]): Promise<Map<string, SectionBody>> {
     const snapshot = new Map<string, SectionBody>();
     for (const dp of docPaths) {
       try {
@@ -325,7 +327,7 @@ export class CanonicalStore {
     return snapshot;
   }
 
-  private async deletionPass(stagingRoot: string, diag: (msg: string) => void, docPaths?: string[]): Promise<void> {
+  private async deletionPass(stagingRoot: string, diag: (msg: string) => void, docPaths?: DocPath[]): Promise<void> {
     // Walk stagingRoot for all .md files not inside a .sections/ directory.
     // An absent staging root is an empty staging root — nothing to delete.
     const allEntries = await readDirentsIfExists(stagingRoot, { recursive: true });
@@ -349,7 +351,7 @@ export class CanonicalStore {
       const relDocPath = isTombstone ? relPath.slice(0, -TOMBSTONE_SUFFIX.length) : relPath;
 
       // docPaths filter: only process documents in the list
-      if (docPaths && !docPaths.some(dp => dp.replace(/\\/g, "/").replace(/^\/+/, "") === relDocPath)) continue;
+      if (docPaths && !docPaths.some((dp) => dp === docPathFromContentRelativeFsPath(relDocPath))) continue;
 
       const stagingSkeletonPath = fullSrc;
       const canonicalSkeletonPath = path.join(this.canonicalRoot, relDocPath);
@@ -557,7 +559,7 @@ export class CanonicalStore {
    */
   private async rewriteStagingSkeletonToMerge(
     stagingRoot: string,
-    docPath: string,
+    docPath: DocPath,
     deletedSectionFiles: ReadonlySet<string>,
     diag: (msg: string) => void,
   ): Promise<void> {
@@ -580,7 +582,7 @@ export class CanonicalStore {
     diag(`${docPath}: staging skeleton rewritten to canonical⊕overlay merge`);
   }
 
-  private async copyPass(stagingRoot: string, diag: (msg: string) => void, docPaths?: string[]): Promise<void> {
+  private async copyPass(stagingRoot: string, diag: (msg: string) => void, docPaths?: DocPath[]): Promise<void> {
     // An absent staging root is an empty staging root — nothing to copy.
     const allEntries = await readDirentsIfExists(stagingRoot, { recursive: true });
 
@@ -593,9 +595,9 @@ export class CanonicalStore {
 
       // docPaths filter: only copy files belonging to documents in the list
       if (docPaths) {
-        const matches = docPaths.some(dp => {
-          const ndp = dp.replace(/\\/g, "/").replace(/^\/+/, "");
-          return relPath === ndp || relPath.startsWith(ndp + ".sections/");
+        const matches = docPaths.some((dp) => {
+          const contentRelativeFsPath = docPathToContentRelativeFsPath(dp);
+          return relPath === contentRelativeFsPath || relPath.startsWith(contentRelativeFsPath + ".sections/");
         });
         if (!matches) continue;
       }
@@ -613,20 +615,16 @@ function dedupeSectionRefReceipts(sectionRefs: SectionRefReceipt[]): SectionRefR
   const seen = new Set<string>();
   const deduped: SectionRefReceipt[] = [];
   for (const ref of sectionRefs) {
-    const normalizedDocPath = normalizeDocPath(ref.docPath);
-    const key = `${normalizedDocPath}\0${ref.headingPath.join(">>")}`;
+    const documentPath = DocPath.parse(ref.docPath);
+    const key = `${documentPath}\0${ref.headingPath.join(">>")}`;
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push({
-      docPath: normalizedDocPath,
+      docPath: documentPath,
       headingPath: [...ref.headingPath],
     });
   }
   return deduped;
-}
-
-function normalizeDocPath(docPath: string): string {
-  return docPath.replace(/\\/g, "/").replace(/^\/+/, "");
 }
 
 /**
@@ -637,15 +635,15 @@ function normalizeDocPath(docPath: string): string {
 function diffSnapshots(
   before: Map<string, SectionBody>,
   after: Map<string, SectionBody>,
-): Array<{ docPath: string; headingPath: string[] }> {
-  const changed: Array<{ docPath: string; headingPath: string[] }> = [];
+): Array<{ docPath: DocPath; headingPath: string[] }> {
+  const changed: Array<{ docPath: DocPath; headingPath: string[] }> = [];
   const allKeys = new Set<string>([...before.keys(), ...after.keys()]);
   for (const combined of allKeys) {
     const beforeBody = before.get(combined) ?? null;
     const afterBody = after.get(combined) ?? null;
     if (beforeBody === afterBody) continue;
     const sep = combined.indexOf("\0");
-    const docPath = combined.slice(0, sep);
+    const docPath = DocPath.parse(combined.slice(0, sep));
     const headingKey = combined.slice(sep + 1);
     const headingPath = headingKey === "" ? [] : headingKey.split(">>");
     changed.push({ docPath, headingPath });

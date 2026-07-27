@@ -19,7 +19,7 @@ import { SectionRef } from "../../domain/section-ref.js";
 import type { ProposalTargetRef } from "../../types/shared.js";
 
 const writer = { id: "restore-claims-human", type: "human" as const, displayName: "Restorer", email: "r@test.local" };
-const docPath = "restore-claims.md";
+const docPath = "/restore-claims.md";
 
 function sectionKeys(targets: ProposalTargetRef[]): string[] {
   return targets

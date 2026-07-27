@@ -21,7 +21,9 @@ import { SectionRef } from "../domain/section-ref.js";
 import { getContentRoot, getDataRoot } from "./data-root.js";
 import { resolveHeadingPath } from "./heading-resolver.js";
 import { ContentLayer } from "./content-layer.js";
-import type { AttributionWriterType } from "../types/shared.js";
+import { pathExists } from "./fs-primitives.js";
+import type { AttributionWriterType, WriterIdentity } from "../types/shared.js";
+import type { DocPath } from "../types/shared.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -46,7 +48,7 @@ export interface SectionCommitInfo {
  * @returns Map keyed by file path relative to dataRoot
  */
 export async function readDocSectionCommitInfo(
-  docPath: string,
+  docPath: DocPath,
 ): Promise<Map<string, SectionCommitInfo>> {
   const dataRoot = getDataRoot();
   const contentRoot = getContentRoot();
@@ -55,6 +57,11 @@ export async function readDocSectionCommitInfo(
   const relSectionsDir = path.relative(dataRoot, sectionsDir);
 
   const result = new Map<string, SectionCommitInfo>();
+
+  // A document with no sections directory has no per-section commit history;
+  // skip the git spawn entirely (also covers a data root that does not exist,
+  // where spawning with that cwd would fail at the process level).
+  if (!(await pathExists(sectionsDir))) return result;
 
   const proc = spawn(
     "git",
@@ -68,6 +75,13 @@ export async function readDocSectionCommitInfo(
     ],
     { cwd: dataRoot, stdio: ["ignore", "pipe", "ignore"] },
   );
+
+  // Capture spawn-level failure (e.g. git missing) immediately — an unhandled
+  // ChildProcess "error" event would crash the process instead of rejecting.
+  let spawnError: Error | null = null;
+  proc.on("error", (err) => {
+    spawnError = err instanceof Error ? err : new Error(String(err));
+  });
 
   const rl = readline.createInterface({ input: proc.stdout! });
 
@@ -124,11 +138,46 @@ export async function readDocSectionCommitInfo(
   // Wait for process to exit; SIGTERM from our kill() is OK
   await new Promise<void>((resolve) => {
     proc.on("close", () => resolve());
+    proc.on("error", () => resolve());
     // If already exited, 'close' fires immediately
     if (proc.exitCode !== null || proc.signalCode !== null) resolve();
   });
 
+  if (spawnError) {
+    throw new Error(
+      `git log spawn failed for "${relSectionsDir}": ${(spawnError as Error).message}`,
+      { cause: spawnError },
+    );
+  }
+
   return result;
+}
+
+const RECENT_AGENT_COMMIT_RETENTION_MS = 60_000;
+
+export interface RecentAgentDocumentCommit {
+  writer: WriterIdentity;
+  lastCommitSecondsAgo: number;
+}
+
+export async function readRecentAgentCommitsForDocument(
+  docPath: DocPath,
+): Promise<RecentAgentDocumentCommit[]> {
+  const commitInfoByFile = await readDocSectionCommitInfo(docPath);
+  const nowMs = Date.now();
+  const newestByWriterId = new Map<string, { info: SectionCommitInfo }>();
+  for (const info of commitInfoByFile.values()) {
+    if (info.writerType !== "agent") continue;
+    if (nowMs - info.timestampMs > RECENT_AGENT_COMMIT_RETENTION_MS) continue;
+    const existing = newestByWriterId.get(info.writerId);
+    if (!existing || info.timestampMs > existing.info.timestampMs) {
+      newestByWriterId.set(info.writerId, { info });
+    }
+  }
+  return [...newestByWriterId.values()].map(({ info }) => ({
+    writer: { id: info.writerId, type: "agent", displayName: info.authorName },
+    lastCommitSecondsAgo: Math.max(0, Math.floor((nowMs - info.timestampMs) / 1000)),
+  }));
 }
 
 // ─── Batch map lookup ────────────────────────────────────────────

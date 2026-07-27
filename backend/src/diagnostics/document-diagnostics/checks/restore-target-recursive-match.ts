@@ -15,8 +15,8 @@ export async function runRestoreTargetRecursiveMatchCheck(ctx: DocumentDiagnosti
         "-50",
         "--format=%H%x00%(trailers:key=Restore-Target,valueonly)",
         "--",
-        `${ctx.contentGitPrefix}/${ctx.normalizedDocPath}`,
-        `${ctx.contentGitPrefix}/${ctx.normalizedDocPath}.sections`,
+        `${ctx.contentGitPrefix}/${ctx.contentRelativeFsPath}`,
+        `${ctx.contentGitPrefix}/${ctx.contentRelativeFsPath}.sections`,
       ],
       ctx.dataRoot,
     );

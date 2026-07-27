@@ -27,6 +27,8 @@ import {
 import { ProposalReader } from "./proposal-reader.js";
 import { proposalContentRoot, recordDeletedSectionFiles } from "./proposal-repository.js";
 import { getContentRoot, getDataRoot, getContentGitPrefix } from "./data-root.js";
+import { docPathToContentRelativeFsPath } from "./path-utils.js";
+import { DocPath } from "../types/shared.js";
 import { resolveSkeletonPath } from "./document-skeleton.js";
 import { gitShowFile, extractHistoricalTree } from "./git-repo.js";
 import { ContentLayer } from "./content-layer.js";
@@ -73,7 +75,7 @@ export class ProposalEditor extends ProposalReader {
    * before-first-heading root section, i.e. `headingPath === []`).
    */
   async writeSection(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
     heading: string,
     content: SectionBodyWithPotentialSubsections,
@@ -96,7 +98,7 @@ export class ProposalEditor extends ProposalReader {
    * embedded headings into real sections.
    */
   async materializeSectionBody(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
     body: SectionBody,
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
@@ -112,7 +114,7 @@ export class ProposalEditor extends ProposalReader {
    * Idempotent: a no-op once the heading is already promoted.
    */
   async splitBeforeFirstHeading(
-    docPath: string,
+    docPath: DocPath,
     bfhFragmentMarkdown: string,
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
     return this.shadow.splitBeforeFirstHeadingPromotingHeadings(docPath, bfhFragmentMarkdown);
@@ -127,7 +129,7 @@ export class ProposalEditor extends ProposalReader {
    * Callers that need the resulting section manifest read it back via
    * `listHeadingPaths(...)` after this resolves.
    */
-  async writeDocumentFromMarkdown(docPath: string, markdown: string): Promise<void> {
+  async writeDocumentFromMarkdown(docPath: DocPath, markdown: string): Promise<void> {
     await this.shadow.upsertDocumentFromMarkdown(docPath, markdown);
   }
 
@@ -139,7 +141,7 @@ export class ProposalEditor extends ProposalReader {
    * `writeSection`, so markdown structural-expansion semantics are preserved.
    */
   async createSection(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
     heading: string,
     initialContent: SectionBodyWithPotentialSubsections = sectionWriteInputFromExternal(""),
@@ -149,7 +151,7 @@ export class ProposalEditor extends ProposalReader {
 
   /** Move a subtree under a new parent at a specified level. */
   async moveSection(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
     newParentPath: string[],
     newLevel: number,
@@ -163,7 +165,7 @@ export class ProposalEditor extends ProposalReader {
    * rewrite). Used by the live cross-section drag/drop reorder (MW-10).
    */
   async reorderSection(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
     targetHeadingPath: string[],
     position: "before" | "after",
@@ -173,7 +175,7 @@ export class ProposalEditor extends ProposalReader {
 
   /** Rename a heading in place, preserving descendants and body content. */
   async renameSection(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
     newHeading: string,
   ): Promise<ContentEntry> {
@@ -181,7 +183,7 @@ export class ProposalEditor extends ProposalReader {
   }
 
   /** Delete a subtree (target section plus all descendants). */
-  async deleteSection(docPath: string, headingPath: string[]): Promise<FlatEntry[]> {
+  async deleteSection(docPath: DocPath, headingPath: string[]): Promise<FlatEntry[]> {
     const removed = await this.shadow.deleteSubtree(docPath, headingPath);
     // Identity-based delete detection (D3): record the deleted canonical
     // section-file ids so the manifest merge drops them by id, not by heading
@@ -198,7 +200,7 @@ export class ProposalEditor extends ProposalReader {
    * cursors survive). See `ProposalShadowContentLayer.removeHeadingPreservingChildren`.
    */
   async deleteHeadingKeepingChildren(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
   ): Promise<{ removed: FlatEntry[]; added: FlatEntry[] }> {
     const result = await this.shadow.removeHeadingPreservingChildren(docPath, headingPath);
@@ -228,7 +230,7 @@ export class ProposalEditor extends ProposalReader {
    * entries and must NOT be recorded as deleted or the merge would drop them.
    */
   async collapseHeadingReparentingToBfh(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
     orphanBody: SectionBody,
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
@@ -256,7 +258,7 @@ export class ProposalEditor extends ProposalReader {
    * stays valid. Returns the resulting content entry.
    */
   async retitleSection(
-    docPath: string,
+    docPath: DocPath,
     headingPath: string[],
     newHeading: string,
     newLevel: number,
@@ -270,7 +272,7 @@ export class ProposalEditor extends ProposalReader {
   /**
    * Create a fresh empty document in the proposal.
    */
-  async createDocument(docPath: string): Promise<void> {
+  async createDocument(docPath: DocPath): Promise<void> {
     await this.shadow.createDocument(docPath);
   }
 
@@ -280,7 +282,7 @@ export class ProposalEditor extends ProposalReader {
    * storage format is never exposed. Returns the canonical heading paths that
    * will go away when the proposal commits (for building proposal metadata).
    */
-  async deleteDocument(docPath: string): Promise<string[][]> {
+  async deleteDocument(docPath: DocPath): Promise<string[][]> {
     return this.shadow.tombstoneDocument(docPath);
   }
 
@@ -289,7 +291,7 @@ export class ProposalEditor extends ProposalReader {
    * path inside the proposal, then tombstone the source path. Represented
    * internally as an old-path tombstone plus a new-path skeleton/bodies.
    */
-  async renameDocument(sourceDocPath: string, destinationDocPath: string): Promise<void> {
+  async renameDocument(sourceDocPath: DocPath, destinationDocPath: DocPath): Promise<void> {
     await this.shadow.renameDocument(sourceDocPath, destinationDocPath);
   }
 
@@ -310,15 +312,15 @@ export class ProposalEditor extends ProposalReader {
    * so restore goes through the proposal facade.
    */
   async replayDocumentFromGitCommit(
-    docPath: string,
+    docPath: DocPath,
     targetSha: string,
   ): Promise<{ restoredHeadingPaths: string[][] }> {
     const dataRoot = getDataRoot();
     const gitPrefix = getContentGitPrefix();
 
-    const normalizedDocPath = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-    const skeletonGitPath = `${gitPrefix}/${normalizedDocPath}`;
-    const sectionsDirGitPrefix = `${gitPrefix}/${normalizedDocPath}.sections/`;
+    const contentRelativeFsPath = docPathToContentRelativeFsPath(DocPath.parse(docPath));
+    const skeletonGitPath = `${gitPrefix}/${contentRelativeFsPath}`;
+    const sectionsDirGitPrefix = `${gitPrefix}/${contentRelativeFsPath}.sections/`;
 
     // Copy skeleton file byte-for-byte from git.
     const skeletonContent = await gitShowFile(dataRoot, targetSha, skeletonGitPath);

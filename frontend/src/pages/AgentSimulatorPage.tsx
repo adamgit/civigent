@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DocStructureNode, AnyProposal } from "../types/shared.js";
+import { proposalSectionDocPathForDisplay } from "../types/shared.js";
 import { apiClient } from "../services/api-client.js";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 
@@ -669,7 +670,7 @@ export function AgentSimulatorPage() {
             {draftProposals.map((p) => {
               const isOwn = p.writer.id === agent.id;
               const sections = p.sections.map((s) =>
-                `${s.doc_path} > ${s.heading_path.join(" > ")}`
+                `${proposalSectionDocPathForDisplay(s)} > ${s.heading_path.join(" > ")}`
               ).join(", ");
               return (
                 <div key={p.id} className="flex items-start gap-2 text-xs p-2 bg-white border border-yellow-200 rounded">

@@ -1,13 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiClient, type DocHistoryVersion } from "../services/api-client";
 import { relativeTime } from "../utils/relativeTime";
+import {
+  describeUnpublishedHistoryRow,
+  type UnpublishedHistoryRow,
+} from "../models/unpublished-history";
 
 interface DocumentHistoryProps {
   docPath: string;
   onRestored?: () => void;
+  /**
+   * When the document has a bound `inprogress` live proposal, its unpublished
+   * change-set is prepended as a grayed, non-restorable row above the committed
+   * versions (FP16/FP17). `null`/absent renders no such row.
+   */
+  unpublishedRow?: UnpublishedHistoryRow | null;
 }
 
-export function DocumentHistory({ docPath, onRestored }: DocumentHistoryProps) {
+export function DocumentHistory({ docPath, onRestored, unpublishedRow = null }: DocumentHistoryProps) {
   const [versions, setVersions] = useState<DocHistoryVersion[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -83,8 +93,33 @@ export function DocumentHistory({ docPath, onRestored }: DocumentHistoryProps) {
     return <div className="p-4 text-sm text-red-600">{error}</div>;
   }
 
+  // FP16/FP17: a grayed, non-restorable row for the document's uncommitted live
+  // proposal. It carries no git SHA and offers no restore/preview — it is an
+  // in-flight change-set, not a canonical version.
+  const unpublishedRowElement = unpublishedRow ? (
+    <div className="border-b border-[#f5f2ed] opacity-60" data-testid="unpublished-history-row">
+      <div className="px-4 py-3">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-xs font-bold text-text-primary">Unpublished</span>
+          <span className="text-[11px] text-text-muted italic">not yet committed</span>
+        </div>
+        <div className="text-[13px] text-text-primary mb-1">
+          {describeUnpublishedHistoryRow(unpublishedRow)}
+        </div>
+        <div className="text-[11px] text-text-muted">
+          Live draft — publish it from the shared-draft banner to add it to history.
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   if (versions.length === 0) {
-    return <div className="p-4 text-sm text-text-muted">No version history available.</div>;
+    return (
+      <div className="overflow-y-auto max-h-[70vh]">
+        {unpublishedRowElement}
+        <div className="p-4 text-sm text-text-muted">No version history available.</div>
+      </div>
+    );
   }
 
   return (
@@ -94,6 +129,7 @@ export function DocumentHistory({ docPath, onRestored }: DocumentHistoryProps) {
           {restoreResult}
         </div>
       )}
+      {unpublishedRowElement}
       {versions.map((v) => (
         <div key={v.sha} className="border-b border-[#f5f2ed]">
           <div className="px-4 py-3">

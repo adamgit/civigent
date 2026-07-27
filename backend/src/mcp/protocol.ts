@@ -11,6 +11,8 @@
 import {
   parseJson,
   expectJsonObject,
+  DocPath,
+  InvalidDocPathError,
   type JsonObject,
   type JsonValue,
 } from "../types/shared.js";
@@ -257,6 +259,19 @@ export function makeToolResult(text: string, isError?: boolean): McpToolCallResu
 
 export function makeToolErrorResult(message: string): McpToolCallResult {
   return makeToolResult(message, true);
+}
+
+export function parseToolArgumentDocPath(
+  rawDocPathArgument: string,
+): { docPath: DocPath } | { errorResult: McpToolCallResult } {
+  try {
+    return { docPath: DocPath.parse(rawDocPathArgument) };
+  } catch (error) {
+    if (error instanceof InvalidDocPathError) {
+      return { errorResult: makeToolErrorResult(`Invalid document path: ${error.message}`) };
+    }
+    throw error;
+  }
 }
 
 // ─── Message validation ──────────────────────────────────

@@ -8,7 +8,9 @@ import type {
 import { apiClient } from "../services/api-client.js";
 
 import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
+import { parseRouteDocPath } from "../app/app-layout-utils";
 import { copyTextToClipboard } from "../utils/copy-text";
+import { DocPath } from "../types/shared";
 
 function findScrollParent(el: HTMLElement): HTMLElement | null {
   let parent = el.parentElement;
@@ -18,38 +20,6 @@ function findScrollParent(el: HTMLElement): HTMLElement | null {
     parent = parent.parentElement;
   }
   return null;
-}
-
-function toCanonicalDocPath(path: string): string {
-  const trimmed = path.trim();
-  if (!trimmed) {
-    return "/";
-  }
-  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-}
-
-function parseRouteDocPath(pathname: string): string | null {
-  if (!pathname.startsWith("/docs/")) {
-    return null;
-  }
-  let encodedPath = pathname.slice("/docs/".length);
-  if (!encodedPath) {
-    return null;
-  }
-  for (const suffix of ["/edit", "/reconcile"]) {
-    if (encodedPath.endsWith(suffix)) {
-      encodedPath = encodedPath.slice(0, -suffix.length);
-      break;
-    }
-  }
-  if (!encodedPath) {
-    return null;
-  }
-  try {
-    return toCanonicalDocPath(decodeURIComponent(encodedPath));
-  } catch {
-    return toCanonicalDocPath(encodedPath);
-  }
 }
 
 function readExpandedState(storageKey: string): Set<string> {
@@ -380,7 +350,7 @@ export function DocumentsTreeNav({
                     }`}
                     onClick={(event) => {
                       event.stopPropagation();
-                      navigate(`/docs/${stripLeadingSlashForRoute(node.path)}`);
+                      navigate(`/docs/${stripLeadingSlashForRoute(DocPath.parse(node.path))}`);
                     }}
                   >
                     &#128193;
@@ -460,7 +430,7 @@ export function DocumentsTreeNav({
             <Link
               key={node.path}
               ref={isSelected ? selectedScrollRef : undefined}
-              to={`/docs/${stripLeadingSlashForRoute(node.path)}`}
+              to={`/docs/${stripLeadingSlashForRoute(DocPath.parse(node.path))}`}
               onClick={handleClick}
               data-testid={isSelected ? `tree-node-selected-${node.path}` : undefined}
               className={`flex items-center gap-[7px] min-w-0 px-1.5 py-[5px] rounded-[5px] text-[13px] cursor-pointer transition-all relative ${

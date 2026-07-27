@@ -10,6 +10,10 @@ import { useDocumentActivity } from "../hooks/useDocumentActivity";
 import { DocumentActivityIndicator } from "../components/DocumentActivityIndicator";
 import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
 import { DocumentSectionRenderer } from "../components/DocumentSectionRenderer";
+import { SharedDraftBanner } from "../components/SharedDraftBanner";
+import { useForcePublish } from "../hooks/useForcePublish";
+import { DocumentHistory } from "../components/DocumentHistory";
+import { buildUnpublishedHistoryRow } from "../models/unpublished-history";
 import { connectionBannerInfo } from "../services/crdt-connection-ux";
 import { DocumentFooter } from "../components/DocumentFooter";
 import DocumentDiagnostics from "../components/DocumentDiagnostics";
@@ -66,6 +70,7 @@ import {
   type SessionAuthorshipView,
 } from "../status/sessionAuthorship";
 import "../governance-gutters.css";
+import { DocPath } from "../types/shared";
 
 // ─── Component ───────────────────────────────────────────────────
 
@@ -469,7 +474,7 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
   }, [liveReplica, decodedDocPath, loadSections, setBootstrapFocusedSectionIndex]);
 
   // ── Derived ──────────────────────────────────────────────
-  const docTitle = decodedDocPath ? getDocDisplayName(decodedDocPath) : "Untitled";
+  const docTitle = decodedDocPath ? getDocDisplayName(DocPath.parse(decodedDocPath)) : "Untitled";
   // Connection banner for every non-live transport phase — editor state while
   // editing, observer state while viewing (null when live / no banner needed).
   const crdtBanner = connectionBannerInfo(isEditing, liveReplica.editorState, liveReplica.observerState);
@@ -477,6 +482,18 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
   // Document-level publication-pause flag — drives the topbar status and the
   // editing banner.
   const publishPaused = liveReplica.publishPaused;
+
+  // Shared-draft banner inputs (FP11) — identical derivation to DocumentPage,
+  // sourced from the one live replica (no second source of authority).
+  const boundProposalId = liveReplica.isCurrentlyLiveAuthority
+    ? (liveReplica.replica?.getBoundProposalId() ?? null)
+    : null;
+  const changedSectionCount = liveReplica.replica?.getChangedSectionCount() ?? 0;
+  const activelyEditedCount = liveReplica.replica?.getActivelyEditedSectionKeys().length ?? 0;
+  const { forcePublishing, lastOutcome: forcePublishOutcome, forcePublish } = useForcePublish(decodedDocPath);
+  const unpublishedHistoryRow = boundProposalId
+    ? buildUnpublishedHistoryRow(boundProposalId, liveReplica.replica?.getClaimedSections() ?? [])
+    : null;
   // One session-authorship ledger per editing mount (see DocumentPage): dies on
   // unmount/refresh so stranded work reads as inbound. Handed down only as the
   // two segregated ports.
@@ -707,6 +724,32 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
         <DocumentConnectionBanner banner={crdtBanner} />
       </div>
 
+      {/* Version history panel — includes the grayed unpublished live-proposal
+          row at the top (FP18). */}
+      {showHistory && decodedDocPath && (
+        <div className="border-b border-[#eae7e2] bg-canvas-bg">
+          <div className="max-w-[700px] mx-auto">
+            <div className="flex items-center justify-between px-4 py-2 border-b border-[#f5f2ed]">
+              <span className="text-xs font-bold text-text-primary">Version History</span>
+              <button
+                onClick={() => setShowHistory(false)}
+                className="text-[11px] text-text-muted hover:text-text-primary"
+              >
+                Close
+              </button>
+            </div>
+            <DocumentHistory
+              docPath={decodedDocPath}
+              unpublishedRow={unpublishedHistoryRow}
+              onRestored={() => {
+                setShowHistory(false);
+                if (decodedDocPath) void loadSections(decodedDocPath);
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Diagnostics modal */}
       {showDiagnostics && decodedDocPath && (
         <DocumentDiagnostics docPath={decodedDocPath} onClose={() => setShowDiagnostics(false)} />
@@ -755,6 +798,21 @@ export function GovernanceDocumentPage({ docPathOverride, titleAccessory }: Gove
                 {showAttribution ? "Hide authorship" : "Show authorship"}
               </button>
             </div>
+
+            {/* Shared-draft banner — only when a live inprogress proposal is
+                bound to this document (FP11). */}
+            {boundProposalId ? (
+              <div className="mb-4">
+                <SharedDraftBanner
+                  changedSectionCount={changedSectionCount}
+                  activelyEditedCount={activelyEditedCount}
+                  forcePublishing={forcePublishing}
+                  pauseActive={publishPaused}
+                  lastOutcome={forcePublishOutcome}
+                  onForcePublish={forcePublish}
+                />
+              </div>
+            ) : null}
 
             {/* Agent reading indicators */}
             {agentReadingIndicators.length > 0 ? (

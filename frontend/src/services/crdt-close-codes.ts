@@ -5,6 +5,7 @@
  * (4020 is unused/reserved: there is no idle timer in this architecture.)
  */
 
+export const WS_CLOSE_UPGRADE_FAILED = 1011;
 export const WS_CLOSE_AUTH_REQUIRED = 4001;
 export const WS_CLOSE_INVALID_URL = 4010;
 export const WS_CLOSE_AUTH_FAILED = 4011;

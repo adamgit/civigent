@@ -23,7 +23,7 @@ import {
   DocumentAssemblyError,
   DocumentNotFoundError,
 } from "../../storage/document-reader.js";
-import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
+import { InvalidDocPathError, docPathToContentRelativeFsPath, resolveDocPathUnderContent } from "../../storage/path-utils.js";
 import {
   createTransientProposal,
 } from "../../storage/proposal-repository.js";
@@ -39,7 +39,7 @@ import {
   countEditorSockets,
   invalidateSessionForReplacement,
 } from "../../crdt/ydoc-lifecycle.js";
-import { requestDocSessionPublish } from "../../ws/crdt-ws-coordinator.js";
+import { requestDocSessionPublish, type PublishAttemptOutcome } from "../../ws/crdt-ws-coordinator.js";
 import {
   readDocumentsTree,
   DocumentsTreePathNotFoundError,
@@ -54,6 +54,7 @@ import {
 } from "../../storage/discovery.js";
 import { getDocReadPermission } from "../../auth/acl.js";
 import { RoleName } from "../../types/shared.js";
+import { DocPath } from "../../types/shared.js";
 import type { AuthenticatedWriter } from "../../auth/context.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
 import { openWorkspaceReader } from "./sections.js";
@@ -104,7 +105,7 @@ export async function readTree(basePath: string, isAuthenticated: boolean): Prom
 
 // ─── Structure ──────────────────────────────────────────
 
-export async function readCanonicalStructure(docPath: string): Promise<{ response: ReadDocStructureResponse; headingPaths: string[][] }> {
+export async function readCanonicalStructure(docPath: DocPath): Promise<{ response: ReadDocStructureResponse; headingPaths: string[][] }> {
   // Canonical (committed) structure read: reads canonical content directly, never
   // a session/live overlay. The agent-facing surface. Proposal-preview structure
   // reads go through ProposalReader on an explicit proposal endpoint.
@@ -115,7 +116,7 @@ export async function readCanonicalStructure(docPath: string): Promise<{ respons
   };
 }
 
-export async function readWorkspaceStructure(docPath: string): Promise<{ response: ReadDocStructureResponse; headingPaths: string[][] }> {
+export async function readWorkspaceStructure(docPath: DocPath): Promise<{ response: ReadDocStructureResponse; headingPaths: string[][] }> {
   // Working-copy structure read: resolves the in-progress proposal (if any) for
   // the doc, else canonical — the same reader selection as workspace section
   // reads (see openWorkspaceReader). No live-fragment assembly.
@@ -129,13 +130,13 @@ export async function readWorkspaceStructure(docPath: string): Promise<{ respons
 
 // ─── History / preview ──────────────────────────────────
 
-export async function getHistory(docPath: string, limit: number, offset: number) {
+export async function getHistory(docPath: DocPath, limit: number, offset: number) {
   const dataRoot = getDataRoot();
   const entries = await gitLogRecent(dataRoot, { limit, offset, docPath });
   return { doc_path: docPath, versions: entries };
 }
 
-export async function getHistoryPreview(docPath: string, sha: string): Promise<{ doc_path: string; sha: string; content: string; corrupt: boolean; missingSections: string[] }> {
+export async function getHistoryPreview(docPath: DocPath, sha: string): Promise<{ doc_path: string; sha: string; content: string; corrupt: boolean; missingSections: string[] }> {
   const { assembleDocumentAtCommit } = await import("../../storage/git-repo.js");
   const dataRoot = getDataRoot();
   const { content, missingSections } = await assembleDocumentAtCommit(dataRoot, sha, docPath);
@@ -147,14 +148,14 @@ export async function getHistoryPreview(docPath: string, sha: string): Promise<{
 
 // ─── Diagnostics ────────────────────────────────────────
 
-export async function getDiagnostics(docPath: string) {
+export async function getDiagnostics(docPath: DocPath) {
   const { buildDocumentDiagnostics } = await import("../../diagnostics/document-diagnostics/build-document-diagnostics.js");
   return buildDocumentDiagnostics(docPath);
 }
 
 // ─── Blame ──────────────────────────────────────────────
 
-export async function getBlame(docPath: string, sectionFile: string) {
+export async function getBlame(docPath: DocPath, sectionFile: string) {
   const contentRoot = getContentRoot();
   const { absolutePath: sectionFilePath } = await new ContentLayer(contentRoot).resolveSectionFileId(docPath, sectionFile);
 
@@ -172,7 +173,7 @@ export async function getBlame(docPath: string, sectionFile: string) {
 
 // ─── Full document read (catch-all GET) ─────────────────
 
-export async function readCanonicalDocument(docPath: string): Promise<{ response: GetDocumentResponse; headingPaths: string[][] }> {
+export async function readCanonicalDocument(docPath: DocPath): Promise<{ response: GetDocumentResponse; headingPaths: string[][] }> {
   const assembled = await readAssembledDocument(docPath);
 
   const structure = await readDocumentStructure(docPath);
@@ -252,7 +253,7 @@ export async function buildExport(browsePath: string): Promise<ExportResult> {
   for (const docPath of filePaths) {
     try {
       const assembled = await readAssembledDocument(docPath);
-      const zipPath = docPath.replace(/^\/+/, "");
+      const zipPath = docPathToContentRelativeFsPath(DocPath.parse(docPath));
       zipFile.addBuffer(Buffer.from(assembled, "utf8"), zipPath);
     } catch (assemblyError) {
       const msg = assemblyError instanceof Error
@@ -327,7 +328,23 @@ function assertHandoffSucceeded(publish: { outcome: string; message?: string }):
   );
 }
 
-export async function restoreDocument(docPath: string, sha: string, writer: DocumentWriter): Promise<{ committedSha: string }> {
+/**
+ * User-initiated force publish of a document's live in-flight edits.
+ *
+ * Unlike the autonomous publish triggers (quiescence, last-editor-disconnect),
+ * this is a REQUEST/RESPONSE call: `requestDocSessionPublish` returns the
+ * `PublishAttemptOutcome` directly and does NOT route `aborted`/`failed` through
+ * `surfacePublishOutcome` (the process-fatal boundary). Those outcomes are a
+ * normal user-facing result here — the caller has a UI to show them — so we
+ * return the outcome verbatim (FP2) rather than treating a non-success as a
+ * server error. `noop` (no live session / no in-flight proposal) is likewise a
+ * legitimate outcome, not a failure.
+ */
+export async function forcePublishDocument(docPath: DocPath): Promise<PublishAttemptOutcome> {
+  return requestDocSessionPublish(docPath);
+}
+
+export async function restoreDocument(docPath: DocPath, sha: string, writer: DocumentWriter): Promise<{ committedSha: string }> {
   // Inherit Writer-Type from the target commit so blame attribution reflects
   // the original author, not who clicked the restore button.
   const { getCommitWriterType } = await import("../../storage/git-repo.js");
@@ -357,7 +374,7 @@ export async function restoreDocument(docPath: string, sha: string, writer: Docu
 
 export class DocumentDoesNotExistError extends Error {}
 
-export async function overwriteDocument(docPath: string, markdown: string, admin: DocumentWriter): Promise<{ committedSha: string }> {
+export async function overwriteDocument(docPath: DocPath, markdown: string, admin: DocumentWriter): Promise<{ committedSha: string }> {
   const contentRoot = getContentRoot();
   const resolvedPath = resolveDocPathUnderContent(contentRoot, docPath);
   try {
@@ -395,7 +412,7 @@ export interface RenameDocumentResult {
   result: StructuralCommitResult;
 }
 
-export async function renameDocument(docPath: string, newPath: string, writer: DocumentWriter): Promise<StructuralCommitResult> {
+export async function renameDocument(docPath: DocPath, newPath: DocPath, writer: DocumentWriter): Promise<StructuralCommitResult> {
   const docSession = lookupDocSession(docPath);
   if (docSession && countEditorSockets(docSession) > 0) {
     throw new ActiveSessionConflictError("Cannot rename document with active editing session.");
@@ -416,7 +433,7 @@ export async function renameDocument(docPath: string, newPath: string, writer: D
 export class DocumentAlreadyExistsError extends Error {}
 export class DocumentPendingDeletionError extends Error {}
 
-export async function createDocument(docPath: string, writer: DocumentWriter): Promise<StructuralCommitResult> {
+export async function createDocument(docPath: DocPath, writer: DocumentWriter): Promise<StructuralCommitResult> {
   const contentRoot = getContentRoot();
   // Validate the doc path (throws InvalidDocPathError on traversal/.md failures).
   resolveDocPathUnderContent(contentRoot, docPath);
@@ -443,7 +460,7 @@ export async function createDocument(docPath: string, writer: DocumentWriter): P
 export class DocumentNotFoundForDeleteError extends Error {}
 export class UncommittedSessionFilesError extends Error {}
 
-export async function deleteDocument(docPath: string, writer: DocumentWriter): Promise<StructuralCommitResult> {
+export async function deleteDocument(docPath: DocPath, writer: DocumentWriter): Promise<StructuralCommitResult> {
   const contentRoot = getContentRoot();
   const resolvedPath = resolveDocPathUnderContent(contentRoot, docPath);
 

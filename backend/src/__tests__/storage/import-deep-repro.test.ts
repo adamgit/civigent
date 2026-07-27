@@ -62,7 +62,7 @@ describe("deeply nested import repro", () => {
       "",
     ].join("\n");
 
-    const docPath = "import7/competitive-analysis-plan.md";
+    const docPath = "/import7/competitive-analysis-plan.md";
 
     const { id } = await importFilesToProposal(
       [{ docPath, content: markdown }],
@@ -87,7 +87,7 @@ describe("deeply nested import repro", () => {
 
   it("many files with deep nesting imported at once", async () => {
     const files = Array.from({ length: 20 }, (_, i) => ({
-      docPath: `import-bulk/doc-${i}.md`,
+      docPath: `/import-bulk/doc-${i}.md`,
       content: [
         `# Document ${i}`,
         "",
@@ -149,7 +149,7 @@ describe("deeply nested import repro", () => {
       "",
     ].join("\n");
 
-    const docPath = "reimport-test/report.md";
+    const docPath = "/reimport-test/report.md";
 
     const { id: firstId } = await importFilesToProposal(
       [{ docPath, content: markdown }],

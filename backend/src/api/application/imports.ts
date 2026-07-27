@@ -1,6 +1,7 @@
 import path from "node:path";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import type { WriterIdentity } from "../../types/shared.js";
+import { proposalSectionsParsedForLiveUse } from "../../types/shared.js";
 import {
   createStagingFolder,
   listStagingFolders,
@@ -142,7 +143,7 @@ export async function commitImport(importId: string, writer: ImportWriter, descr
   return {
     proposalId: importProposalId,
     committedHead,
-    sections: freshProposal.sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+    sections: proposalSectionsParsedForLiveUse(freshProposal).map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
     diagnostics: importDiagnostics,
   };
 }

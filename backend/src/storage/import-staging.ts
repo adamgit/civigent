@@ -14,6 +14,7 @@ import { readDirentsIfExists } from "./fs-primitives.js";
 import { getImportStagingRoot } from "./data-root.js";
 import { parseDocumentMarkdown } from "./markdown-sections.js";
 import type { ImportFile } from "./import-service.js";
+import { docPathFromContentRelativeFsPath } from "./path-utils.js";
 
 export { getImportStagingRoot } from "./data-root.js";
 
@@ -162,7 +163,7 @@ export async function readStagingFiles(importId: string): Promise<ImportFile[]> 
       if (!relPath.toLowerCase().endsWith(".md")) continue;
 
       const content = await readFile(path.join(root, relPath), "utf8");
-      results.push({ docPath: relPath, content });
+      results.push({ docPath: docPathFromContentRelativeFsPath(relPath), content });
     }
   };
 

@@ -51,7 +51,7 @@ async function createDoc(dataRoot: string, bodies: Record<string, string>): Prom
     ].join("\n"),
     "utf8",
   );
-  for (const name of ["sec_alpha.md", "sec_beta.md", "sec_gamma.md"]) {
+  for (const name of ["/sec_alpha.md", "/sec_beta.md", "/sec_gamma.md"]) {
     await writeFile(join(sectionsDir, name), bodies[name] ?? "", "utf8");
   }
   await gitExec(["add", "content/"], dataRoot);
@@ -107,7 +107,7 @@ describe("no-predecessor heading-deletion → BFH at quiescence", () => {
   });
 
   it("demoting the first headed section moves its body under BFH and removes the headed identity", async () => {
-    await createDoc(ctx.rootDir, { "sec_alpha.md": "Alpha body\n", "sec_beta.md": "Beta body\n" });
+    await createDoc(ctx.rootDir, { "/sec_alpha.md": "Alpha body\n", "/sec_beta.md": "Beta body\n" });
     vi.useFakeTimers();
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(DOC, "editor-sock").dispose);
@@ -141,7 +141,7 @@ describe("no-predecessor heading-deletion → BFH at quiescence", () => {
   });
 
   it("still merges into the predecessor when one exists (Beta → Alpha)", async () => {
-    await createDoc(ctx.rootDir, { "sec_alpha.md": "Alpha body\n", "sec_beta.md": "Beta body\n" });
+    await createDoc(ctx.rootDir, { "/sec_alpha.md": "Alpha body\n", "/sec_beta.md": "Beta body\n" });
     vi.useFakeTimers();
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(DOC, "editor-sock").dispose);

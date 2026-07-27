@@ -6,7 +6,7 @@ import { DocumentSkeleton, type FlatEntry } from "../../storage/document-skeleto
 import { parseDocumentMarkdown } from "../../storage/markdown-sections.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 
-const DOC = "test/fresh.md";
+const DOC = "/test/fresh.md";
 
 function collectFlat(skeleton: DocumentSkeleton): FlatEntry[] {
   const entries: FlatEntry[] = [];

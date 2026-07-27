@@ -166,34 +166,9 @@ function ensureSocket(): void {
 
   socket.addEventListener("message", (raw) => {
     const rawData = String(raw.data);
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(rawData);
-      if (isPrivateEnvelope(parsed)) {
-        const inner = parsed.event as Record<string, unknown> | null | undefined;
-        const type = typeof inner?.type === "string" ? inner.type : "(untyped)";
-        const docPath = typeof inner?.doc_path === "string" ? (inner.doc_path as string) : undefined;
-        diagnostics.capture({
-          source: "worker-incoming",
-          type: `private:${type}`,
-          summary: docPath ? `doc=${docPath} target=${parsed.target_client_instance_id}` : `target=${parsed.target_client_instance_id}`,
-          docPath,
-          payload: parsed,
-        });
-        forwardPrivateEnvelope(parsed);
-        return;
-      }
-      const serverEvent = parsed;
-      const eventRec = serverEvent as Record<string, unknown>;
-      const type = typeof eventRec.type === "string" ? eventRec.type : "(untyped)";
-      const docPath = typeof eventRec.doc_path === "string" ? eventRec.doc_path : undefined;
-      diagnostics.capture({
-        source: "worker-incoming",
-        type,
-        summary: docPath ? `doc=${docPath}` : "",
-        docPath,
-        payload: serverEvent,
-      });
-      broadcastServerEvent(serverEvent);
+      parsed = JSON.parse(rawData);
     } catch {
       diagnostics.capture({
         source: "worker-incoming",
@@ -201,7 +176,34 @@ function ensureSocket(): void {
         summary: `len=${rawData.length}`,
         payload: rawData,
       });
+      return;
     }
+    if (isPrivateEnvelope(parsed)) {
+      const inner = parsed.event as Record<string, unknown> | null | undefined;
+      const type = typeof inner?.type === "string" ? inner.type : "(untyped)";
+      const docPath = typeof inner?.doc_path === "string" ? (inner.doc_path as string) : undefined;
+      diagnostics.capture({
+        source: "worker-incoming",
+        type: `private:${type}`,
+        summary: docPath ? `doc=${docPath} target=${parsed.target_client_instance_id}` : `target=${parsed.target_client_instance_id}`,
+        docPath,
+        payload: parsed,
+      });
+      forwardPrivateEnvelope(parsed);
+      return;
+    }
+    const serverEvent = parsed;
+    const eventRec = serverEvent as Record<string, unknown>;
+    const type = typeof eventRec.type === "string" ? eventRec.type : "(untyped)";
+    const docPath = typeof eventRec.doc_path === "string" ? eventRec.doc_path : undefined;
+    diagnostics.capture({
+      source: "worker-incoming",
+      type,
+      summary: docPath ? `doc=${docPath}` : "",
+      docPath,
+      payload: serverEvent,
+    });
+    broadcastServerEvent(serverEvent);
   });
 
   socket.addEventListener("close", (event) => {
@@ -351,18 +353,28 @@ workerScope.onconnect = (connectEvent) => {
     }
     if (message.type === "tab_state") {
       tabPorts.set(message.tabId, port);
-      const priorInstanceId = tabStates.get(message.tabId)?.clientInstanceId ?? null;
+      const priorTabState = tabStates.get(message.tabId);
+      const priorInstanceId = priorTabState?.clientInstanceId ?? null;
       const nextInstanceId =
         typeof message.state.clientInstanceId === "string" && message.state.clientInstanceId.length > 0
           ? message.state.clientInstanceId
           : priorInstanceId;
+      const nextSubscriptions = Array.isArray(message.state.subscriptions) ? message.state.subscriptions : [];
       tabStates.set(message.tabId, {
-        subscriptions: Array.isArray(message.state.subscriptions) ? message.state.subscriptions : [],
+        subscriptions: nextSubscriptions,
         focusedDocPath: message.state.focusedDocPath ?? null,
         focusedSection: message.state.focusedSection ?? null,
         clientInstanceId: nextInstanceId,
         updatedAt: Date.now(),
       });
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const priorTabSubscriptions = new Set(priorTabState?.subscriptions ?? []);
+        for (const path of nextSubscriptions) {
+          if (!priorTabSubscriptions.has(path) && appliedSubscriptions.has(path)) {
+            sendWs({ subscribe: path });
+          }
+        }
+      }
       // Forward the client-instance id to the hub via an `identify` message so
       // the backend's private routing knows to target this leader socket for
       // the given clientInstanceId. Only sent when the id changes to avoid

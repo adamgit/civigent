@@ -115,7 +115,11 @@ const server = createServer((req, res) => {
 
 server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => {
   if (!proxy) {
-    socket.destroy();
+    socket.end(
+      "HTTP/1.1 503 Service Unavailable\r\n" +
+      "Retry-After: 2\r\n" +
+      "Connection: close\r\n\r\n",
+    );
     return;
   }
   proxy.ws(req, socket, head);

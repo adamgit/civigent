@@ -16,6 +16,13 @@ export interface LiveEditorBinding {
   readonly [LiveEditorBindingBrand]: "LiveEditorBinding";
 }
 
+/** One section a bound proposal has claimed — its heading path (always) and, when
+ *  the claim still maps into the current live topology, its fragment key. */
+export interface ClaimedSection {
+  readonly headingPath: readonly string[];
+  readonly fragmentKey?: string;
+}
+
 export interface LiveEditorAttachFields {
   readonly doc: Y.Doc;
   readonly awareness: Awareness;
@@ -67,6 +74,17 @@ export interface LiveSectionReplica {
   clearPublishPauseMirror(): void;
   /** Latest publish-trigger decision for the doc (the evaluator's output), or null if none received. */
   getPublishDecision(): PublishTriggerDecision | null;
+  /** The `inprogress` proposal bound to this live document, or null when none is bound. */
+  getBoundProposalId(): string | null;
+  /** The bound proposal's claimed sections for this doc — the manifest set finalization publishes. */
+  getClaimedSections(): readonly ClaimedSection[];
+  /** Changed-section count = size of the bound proposal's claim set. */
+  getChangedSectionCount(): number;
+  /**
+   * Fragment keys of sections actively being edited right now — the deduped UNION
+   * of pending-writer sections and attached-editor focus sections (FP7).
+   */
+  getActivelyEditedSectionKeys(): readonly string[];
   /** Observer/editor UI write switch (not auth). */
   setEditingEnabled(enabled: boolean): void;
 
@@ -108,6 +126,9 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
   private pending = new Map<SectionId, { writerId: string; writerDisplayName: string }>();
   private editorsFrozenByPauseMirror = false;
   private publishDecision: PublishTriggerDecision | null = null;
+  private _boundProposalId: string | null = null;
+  private _claimedSections: readonly ClaimedSection[] = [];
+  private _editorFocusSectionIds: readonly string[] = [];
 
   private readonly listeners = new Set<() => void>();
   private destroyed = false;
@@ -177,6 +198,31 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
 
   getPublishDecision(): PublishTriggerDecision | null {
     return this.publishDecision;
+  }
+
+  getBoundProposalId(): string | null {
+    return this._boundProposalId;
+  }
+
+  getClaimedSections(): readonly ClaimedSection[] {
+    return this._claimedSections;
+  }
+
+  getChangedSectionCount(): number {
+    return this._claimedSections.length;
+  }
+
+  getActivelyEditedSectionKeys(): readonly string[] {
+    // Union of pending-writer sections and attached-editor focus sections,
+    // deduped and filtered to fragments still in the topology (FP7).
+    const keys = new Set<string>();
+    for (const id of this.pending.keys()) {
+      if (this.topologyIds.has(id)) keys.add(SectionId.text(id));
+    }
+    for (const fk of this._editorFocusSectionIds) {
+      if (this.topologyIds.has(SectionId.brand(fk))) keys.add(fk);
+    }
+    return [...keys];
   }
 
   isPublishPauseMirrorActive(): boolean {
@@ -262,6 +308,12 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
     );
     this.editorsFrozenByPauseMirror = state.publish_pause_join_mirror === "pause_active_editors_frozen";
     this.publishDecision = state.publish_decision ?? null;
+    this._boundProposalId = state.bound_proposal_id ?? null;
+    this._claimedSections = (state.bound_proposal_claimed_sections ?? []).map((c) => ({
+      headingPath: [...c.heading_path],
+      fragmentKey: c.fragment_key,
+    }));
+    this._editorFocusSectionIds = [...(state.editor_focus_section_ids ?? [])];
   }
 
   private makeHandle(id: SectionId): LiveSectionHandle {

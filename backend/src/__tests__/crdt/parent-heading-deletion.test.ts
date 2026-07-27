@@ -28,7 +28,7 @@ import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 
 const WRITER = { id: "editor-test", type: "human" as const, displayName: "Editor", email: "e@test.local" };
-const DOC = "doc.md";
+const DOC = "/doc.md";
 
 interface Built {
   proposalId: string;

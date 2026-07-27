@@ -27,6 +27,7 @@ import { SectionRef } from "../domain/section-ref.js";
 import { resolveLiveSectionLayout, type LiveSectionLayoutEntry } from "./live-section-layout.js";
 import type { LiveFragmentStringsStore } from "./live-fragment-strings-store.js";
 import type { ProposalId } from "../types/shared.js";
+import type { DocPath } from "../types/shared.js";
 
 /** A precomputed live-fragment delta: write `content` into `fragmentKey`. */
 export interface FragmentStringDelta {
@@ -61,7 +62,7 @@ export function applyFragmentStringDelta(
  */
 export async function computeCanonicalToLiveDeltas(
   liveFragments: LiveFragmentStringsStore,
-  docPath: string,
+  docPath: DocPath,
   currentProposalId: ProposalId | null,
   changedHeadingPaths: readonly string[][],
 ): Promise<{ deltas: FragmentStringDelta[]; fragmentKeys: string[] }> {

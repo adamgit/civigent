@@ -12,9 +12,10 @@ import { CurrentUserProvider } from "../contexts/CurrentUserContext";
 import { SidebarIdentity } from "../components/SidebarIdentity";
 import type { DocumentTreeEntry, AuthUser } from "../types/shared.js";
 import { stripLeadingSlashForRoute } from "./docsRouteUtils";
-import { DOC_BADGES_STORAGE_KEY, formatBuildDate, toCanonicalDocPath, readBadgeDocPaths, writeBadgeDocPaths, readSidebarAutoHide, writeSidebarAutoHide, parseRouteDocPath, classifyWsEvent } from "./app-layout-utils";
+import { formatBuildDate, readSidebarAutoHide, writeSidebarAutoHide, parseRouteDocPath, classifyWsEvent } from "./app-layout-utils";
 import { recordWsDiag } from "../services/ws-diagnostics";
 import { computeBrowserTabTitle } from "./browser-tab-title";
+import { DocPath } from "../types/shared";
 
 function flattenTreeDocPaths(entries: DocumentTreeEntry[]): string[] {
   const out: string[] = [];
@@ -94,7 +95,7 @@ export function AppLayout() {
   // failed (500 / network / malformed) — distinct from a normal signed-out, so
   // the initial load never fails silently. Cleared on the next clean read.
   const [sessionError, setSessionError] = useState<string | null>(null);
-  const [docBadges, setDocBadges] = useState<Set<string>>(() => readBadgeDocPaths());
+  const [docBadges, setDocBadges] = useState<Set<string>>(() => new Set());
   const [treeRowFlashes, setTreeRowFlashes] = useState<Map<string, TreeRowFlashEntry>>(new Map());
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
   const [systemStarting, setSystemStarting] = useState(false);
@@ -129,11 +130,11 @@ export function AppLayout() {
     }
     const kind: TreeRowFlashKind = writerType === "agent" ? "agent" : "human";
     const expiresAt = Date.now() + TREE_ROW_FLASH_DURATION_MS;
+    const flashedDocPaths = docPaths.map((docPath) => DocPath.parse(docPath));
     setTreeRowFlashes((previous) => {
       const next = new Map(previous);
-      for (const docPath of docPaths) {
-        const normalized = toCanonicalDocPath(docPath);
-        next.set(normalized, { kind, expiresAt });
+      for (const docPath of flashedDocPaths) {
+        next.set(docPath, { kind, expiresAt });
       }
       return next;
     });
@@ -200,7 +201,7 @@ export function AppLayout() {
     const docPath = path.endsWith(".md") ? path : `${path}.md`;
     await apiClient.createDocument(docPath);
     loadTree({ background: true }).catch(() => { /* non-fatal refresh */ });
-    navigate(`/docs/${stripLeadingSlashForRoute(docPath)}`);
+    navigate(`/docs/${stripLeadingSlashForRoute(DocPath.parse(docPath))}`);
   }, [navigate]);
 
   const openCreateDocInFolder = useCallback((folderPath: string) => {
@@ -443,23 +444,6 @@ export function AppLayout() {
       channel!.close();
     };
   }, [revalidateSession, location.pathname, navigate]);
-
-  useEffect(() => {
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key !== DOC_BADGES_STORAGE_KEY) {
-        return;
-      }
-      setDocBadges(readBadgeDocPaths());
-    };
-    window.addEventListener("storage", handleStorage);
-    return () => {
-      window.removeEventListener("storage", handleStorage);
-    };
-  }, []);
-
-  useEffect(() => {
-    writeBadgeDocPaths(docBadges);
-  }, [docBadges]);
 
   useEffect(() => {
     if (!focusedDocPath) {
@@ -817,7 +801,7 @@ export function AppLayout() {
                 >
                   {toast.text}{" "}
                   <Link
-                    to={`/docs/${stripLeadingSlashForRoute(toast.docPath)}`}
+                    to={`/docs/${stripLeadingSlashForRoute(DocPath.parse(toast.docPath))}`}
                     onClick={() => setToasts([])}
                     className="font-medium underline"
                   >

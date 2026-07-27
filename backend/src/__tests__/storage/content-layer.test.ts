@@ -15,7 +15,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
  */
 describe("writeSection heading-stripping invariant", () => {
   let ctx: TempDataRootContext;
-  const DOC = "strip-test.md";
+  const DOC = "/strip-test.md";
 
   beforeAll(async () => {
     ctx = await createTempDataRoot();

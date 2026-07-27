@@ -110,7 +110,7 @@ describe("CRDTProposalGenerator publish (final materialization + commit)", () =>
   it("commit success clears the current-proposal reference", async () => {
     const proposalAdoptionId = ProposalAdoptionId.create();
     const gen = new CRDTProposalGenerator({
-      docPath: "guide.md",
+      docPath: "/guide.md",
       proposalAdoptionId,
       writer,
       source: source(),
@@ -131,7 +131,7 @@ describe("CRDTProposalGenerator publish (final materialization + commit)", () =>
 
   it("finalizeAndPublish is a no-op when there is no current proposal", async () => {
     const gen = new CRDTProposalGenerator({
-      docPath: "guide.md",
+      docPath: "/guide.md",
       proposalAdoptionId: ProposalAdoptionId.create(),
       writer,
       source: source(),
@@ -143,7 +143,7 @@ describe("CRDTProposalGenerator publish (final materialization + commit)", () =>
   it("commit failure returns the proposal to inprogress and keeps it as current", async () => {
     const proposalAdoptionId = ProposalAdoptionId.create();
     const gen = new CRDTProposalGenerator({
-      docPath: "guide.md",
+      docPath: "/guide.md",
       proposalAdoptionId,
       writer,
       source: source(),
@@ -181,7 +181,7 @@ describe("CRDTProposalGenerator publish (final materialization + commit)", () =>
 
   it("evaluatePublishTrigger applies the rule-ordered policy", async () => {
     const gen = new CRDTProposalGenerator({
-      docPath: "guide.md",
+      docPath: "/guide.md",
       proposalAdoptionId: ProposalAdoptionId.create(),
       writer,
       source: source(),

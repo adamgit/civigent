@@ -63,7 +63,7 @@ function makeSection(overrides: Partial<WorkspaceSectionDto>): WorkspaceSectionD
     agentWritePolicy: { canWrite: true, message: "ok" },
     crdt_session_active: false,
     fragment_key: "frag:sec_overview",
-    section_file: "sec_overview.md",
+    section_file: "/sec_overview.md",
     ...overrides,
   };
 }
@@ -101,7 +101,7 @@ function buildParams(
   void setSections;
   void opts.mountedFragmentKeys;
   const params: UseDocumentWebSocketParams = {
-    decodedDocPath: "test.md",
+    decodedDocPath: "/test.md",
     clientInstanceId: "test-tab",
     liveReplicaReadyRef: ref(opts.crdtActive),
     setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],
@@ -114,7 +114,7 @@ function buildParams(
 function emitCommitted(sections: Array<{ doc_path: string; heading_path: string[] }>): void {
   capturedWsHandler?.({
     type: "content:committed",
-    doc_path: "test.md",
+    doc_path: "/test.md",
     writer_display_name: "Collaborator",
     writer_type: "human",
     sections,
@@ -157,8 +157,8 @@ describe("content:committed topology refresh (spec 06)", () => {
 
     renderHook(() => useDocumentWebSocket(params), { wrapper });
     emitCommitted([
-      { doc_path: "test.md", heading_path: ["Overview"] },
-      { doc_path: "test.md", heading_path: ["Timeline"] },
+      { doc_path: "/test.md", heading_path: ["Overview"] },
+      { doc_path: "/test.md", heading_path: ["Timeline"] },
     ]);
     await settle();
 
@@ -186,12 +186,12 @@ describe("content:committed topology refresh (spec 06)", () => {
     getDocumentSectionsImpl = async () => ({
       sections: [
         makeSection({ heading: "Overview", heading_path: ["Overview"], fragment_key: "frag:sec_overview", content: "FRESH trimmed survivor\n" }),
-        makeSection({ heading: "Sub", heading_path: ["Overview", "Sub"], depth: 2, fragment_key: "frag:sec_sub", section_file: "sec_sub.md", content: "promoted child body\n" }),
+        makeSection({ heading: "Sub", heading_path: ["Overview", "Sub"], depth: 2, fragment_key: "frag:sec_sub", section_file: "/sec_sub.md", content: "promoted child body\n" }),
       ],
     });
 
     renderHook(() => useDocumentWebSocket(params), { wrapper });
-    emitCommitted([{ doc_path: "test.md", heading_path: ["Overview"] }]);
+    emitCommitted([{ doc_path: "/test.md", heading_path: ["Overview"] }]);
     await settle();
 
     // The commit event did not fork REST topology over the live replica: no reload,
@@ -218,7 +218,7 @@ describe("content:committed topology refresh (spec 06)", () => {
     });
 
     renderHook(() => useDocumentWebSocket(params), { wrapper });
-    emitCommitted([{ doc_path: "test.md", heading_path: ["Keep"] }]);
+    emitCommitted([{ doc_path: "/test.md", heading_path: ["Keep"] }]);
     await settle();
 
     // Removal is owned by the CRDT topology frame (the key dropping out of it), not
@@ -240,14 +240,14 @@ describe("content:committed topology refresh (spec 06)", () => {
     });
     getDocumentSectionsImpl = async () => ({
       sections: [
-        makeSection({ heading: "New", heading_path: ["New"], fragment_key: "frag:sec_new", section_file: "sec_new.md", content: "new\n" }),
+        makeSection({ heading: "New", heading_path: ["New"], fragment_key: "frag:sec_new", section_file: "/sec_new.md", content: "new\n" }),
         makeSection({ heading: "Intro", heading_path: ["Intro"], fragment_key: "frag:sec_intro", content: "intro\n" }),
         makeSection({ heading: "Focused", heading_path: ["Focused"], fragment_key: "frag:sec_focused", content: "focused\n" }),
       ],
     });
 
     renderHook(() => useDocumentWebSocket(params), { wrapper });
-    emitCommitted([{ doc_path: "test.md", heading_path: ["New"] }]);
+    emitCommitted([{ doc_path: "/test.md", heading_path: ["New"] }]);
     await settle();
 
     // Focus reconciliation is `resolveFocusAfterTopologyChange` on the replica
@@ -264,7 +264,7 @@ describe("content:committed topology refresh (spec 06)", () => {
     };
 
     renderHook(() => useDocumentWebSocket(params), { wrapper });
-    emitCommitted([{ doc_path: "test.md", heading_path: ["Overview"] }]);
+    emitCommitted([{ doc_path: "/test.md", heading_path: ["Overview"] }]);
     await settle();
 
     // No fetch on the live path → no error surfaced.
@@ -278,7 +278,7 @@ describe("content:committed topology refresh (spec 06)", () => {
     getDocumentSectionsImpl = async () => ({ sections: [makeSection({ content: "FRESH full reload\n" })] });
 
     renderHook(() => useDocumentWebSocket(params), { wrapper });
-    emitCommitted([{ doc_path: "test.md", heading_path: ["Overview"] }]);
+    emitCommitted([{ doc_path: "/test.md", heading_path: ["Overview"] }]);
     await settle();
 
     // Visible outcome: sections reflect fresh server content.

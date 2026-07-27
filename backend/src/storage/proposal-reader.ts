@@ -24,6 +24,7 @@ import { SectionRef } from "../domain/section-ref.js";
 import type { DocStructureNode } from "../types/shared.js";
 import type { ProposalId, ProposalStatus } from "../types/shared.js";
 import type { SectionBody } from "./section-formatting.js";
+import type { DocPath } from "../types/shared.js";
 import type {
   ProposalDocumentState,
   ProposalSectionReadResult,
@@ -79,12 +80,12 @@ export class ProposalReader {
    * Resolve the effective document state inside this proposal: tombstone
    * (pending deletion) is checked first, then live, then missing.
    */
-  async getDocumentState(docPath: string): Promise<ProposalDocumentState> {
+  async getDocumentState(docPath: DocPath): Promise<ProposalDocumentState> {
     return this.shadow.getDocumentState(docPath);
   }
 
   /** True only when the document is effectively live in this proposal. */
-  async documentExists(docPath: string): Promise<boolean> {
+  async documentExists(docPath: DocPath): Promise<boolean> {
     return this.shadow.documentExists(docPath);
   }
 
@@ -92,7 +93,7 @@ export class ProposalReader {
    * Effective state of a single section: tombstoned doc -> "tombstone";
    * missing doc or absent heading path -> "missing"; otherwise "live".
    */
-  async getSectionState(docPath: string, headingPath: string[]): Promise<ProposalDocumentState> {
+  async getSectionState(docPath: DocPath, headingPath: string[]): Promise<ProposalDocumentState> {
     const docState = await this.getDocumentState(docPath);
     if (docState !== "live") return docState;
     const paths = await this.shadow.listHeadingPaths(docPath);
@@ -106,7 +107,7 @@ export class ProposalReader {
    * Effective structural outline of a document through `DocumentSkeleton`.
    * Throws `DocumentNotFoundError` if the document is missing or tombstoned.
    */
-  async getDocumentStructure(docPath: string): Promise<DocStructureNode[]> {
+  async getDocumentStructure(docPath: DocPath): Promise<DocStructureNode[]> {
     return this.shadow.getDocumentStructure(docPath);
   }
 
@@ -114,7 +115,7 @@ export class ProposalReader {
    * Effective heading paths for a document, in document order.
    * Throws `DocumentNotFoundError` if the document is missing or tombstoned.
    */
-  async listHeadingPaths(docPath: string): Promise<string[][]> {
+  async listHeadingPaths(docPath: DocPath): Promise<string[][]> {
     return this.shadow.listHeadingPaths(docPath);
   }
 
@@ -124,7 +125,7 @@ export class ProposalReader {
    * level/heading to render a fragment.
    */
   async getSectionList(
-    docPath: string,
+    docPath: DocPath,
   ): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>> {
     return this.shadow.getSectionList(docPath);
   }
@@ -133,7 +134,7 @@ export class ProposalReader {
    * Discovery rows for real sections only (heading, heading path, body size).
    * Delegates through the proposal content engine's structure reads.
    */
-  async getSectionDiscoveryList(docPath: string): Promise<SectionDiscoveryEntry[]> {
+  async getSectionDiscoveryList(docPath: DocPath): Promise<SectionDiscoveryEntry[]> {
     // The proposal content engine has no discovery-list method; build it from
     // the section list. Body sizes are not part of the facade contract for
     // proposals, so we expose 0 — callers needing sizes read the section.
@@ -152,7 +153,7 @@ export class ProposalReader {
    * Read the effective body content of a section at a heading path.
    * Throws `DocumentNotFoundError` / `SectionNotFoundError` from the engine.
    */
-  async readSection(docPath: string, headingPath: string[]): Promise<SectionBody> {
+  async readSection(docPath: DocPath, headingPath: string[]): Promise<SectionBody> {
     return this.shadow.readSection(new SectionRef(docPath, headingPath));
   }
 
@@ -163,7 +164,7 @@ export class ProposalReader {
    *
    * Throws `DocumentNotFoundError` for a missing or tombstoned document.
    */
-  async readDocument(docPath: string): Promise<ProposalSectionReadResult[]> {
+  async readDocument(docPath: DocPath): Promise<ProposalSectionReadResult[]> {
     const state = await this.getDocumentState(docPath);
     if (state !== "live") {
       throw new DocumentNotFoundError(
@@ -184,7 +185,7 @@ export class ProposalReader {
   /**
    * Read all effective section bodies for a document, keyed by heading key.
    */
-  async readAllSections(docPath: string): Promise<Map<string, SectionBody>> {
+  async readAllSections(docPath: DocPath): Promise<Map<string, SectionBody>> {
     return this.shadow.readAllSections(docPath);
   }
 }

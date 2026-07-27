@@ -56,7 +56,7 @@ async function createConsecutiveH1Doc(dataRoot: string): Promise<void> {
     ].join("\n"),
     "utf8",
   );
-  for (const name of ["sec_alpha.md", "sec_beta.md", "sec_gamma.md", "sec_delta.md"]) {
+  for (const name of ["/sec_alpha.md", "/sec_beta.md", "/sec_gamma.md", "/sec_delta.md"]) {
     await writeFile(join(sectionsDir, name), "", "utf8");
   }
   await gitExec(["add", "content/"], dataRoot);

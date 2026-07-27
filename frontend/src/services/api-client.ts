@@ -217,6 +217,18 @@ export interface SearchTextResponse {
   failures?: DiscoveryFailure[];
 }
 
+/**
+ * User-facing result of a force-publish request — the JSON projection of the
+ * backend `PublishAttemptOutcome` (`ws/crdt-ws-coordinator.ts`). `noop` means
+ * there was no live in-flight proposal to publish; `aborted`/`failed` are
+ * legitimate (non-error) results the UI surfaces, not HTTP failures.
+ */
+export interface ForcePublishOutcome {
+  outcome: "committed" | "noop" | "aborted" | "failed";
+  message?: string;
+  commitSha?: string;
+}
+
 interface GetDocumentsTreeOptions {
   path?: string;
   recursive?: boolean;
@@ -731,6 +743,13 @@ export const apiClient = {
     return requestJson<GetDocumentSectionsResponse>(`/api/workspace/${encoded}/sections`);
   },
 
+  // Committed (canonical) section list + content — the exact surface agents see
+  // via REST. Read-only; no proposal/workspace/CRDT overlay.
+  async getCanonicalDocumentSections(docPath: string): Promise<GetDocumentSectionsResponse> {
+    const encoded = encodeDocPath(docPath);
+    return requestJson<GetDocumentSectionsResponse>(`/api/canonical/${encoded}/sections`);
+  },
+
   // Effective proposal-scoped section list + content for a single document
   // (proposal-content-first with canonical fallback) via `ProposalReader`.
   async getProposalDocumentSections(
@@ -944,6 +963,18 @@ export const apiClient = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sha }),
+    });
+  },
+
+  // User-initiated force publish of a document's live in-flight edits. Returns
+  // the publish outcome verbatim — a `noop`/`aborted`/`failed` outcome is a
+  // normal 200 result the caller renders, not a thrown error.
+  async forcePublishDocument(docPath: string): Promise<ForcePublishOutcome> {
+    const encoded = encodeDocPath(docPath);
+    return requestJson<ForcePublishOutcome>(`/api/workspace/${encoded}/force-publish`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
     });
   },
 

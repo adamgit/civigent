@@ -7,6 +7,7 @@ import type {
 import {
   sendApiError,
   requireDocReadPermission,
+  docPathParamOf,
 } from "./middleware.js";
 import {
   readCanonicalStructure,
@@ -38,7 +39,7 @@ export function registerCanonicalRoutes(
   // GET /canonical/:docPath/structure
   router.get("/canonical/:docPath(*)/structure", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
       const { response, headingPaths } = await readCanonicalStructure(docPath);
@@ -57,7 +58,7 @@ export function registerCanonicalRoutes(
   // GET /canonical/:docPath/history
   router.get("/canonical/:docPath(*)/history", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
       const limit = boundedIntParam(req.query.limit, "limit", { fallback: 30, min: 1, max: 100 });
@@ -75,7 +76,8 @@ export function registerCanonicalRoutes(
   // GET /canonical/:docPath/history/:sha/preview
   router.get("/canonical/:docPath(*)/history/:sha/preview", async (req, res, next) => {
     try {
-      const { docPath, sha } = req.params;
+      const docPath = docPathParamOf(req);
+      const { sha } = req.params;
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
       if (!isValidSha(sha)) {
@@ -95,7 +97,7 @@ export function registerCanonicalRoutes(
   // GET /canonical/:docPath/blame/:sectionFile
   router.get("/canonical/:docPath(*)/blame/:sectionFile", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
       const response = await getBlame(docPath, req.params.sectionFile);
@@ -119,7 +121,7 @@ export function registerCanonicalCatchAllRoutes(
   // GET /canonical/:docPath — read assembled committed document
   router.get("/canonical/:docPath(*)", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const accessResult = await requireDocReadPermission(req, res, docPath);
       if (!accessResult) return;
       const { response, headingPaths } = await readCanonicalDocument(docPath);

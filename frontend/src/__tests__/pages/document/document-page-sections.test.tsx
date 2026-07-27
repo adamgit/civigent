@@ -6,6 +6,12 @@ import { jsonResponse } from "../../helpers/fetch-mocks";
 // --- Mocks ---
 
 vi.mock("../../../services/ws-client", () => ({
+  getAppWsTransportInfo: (() => {
+    const snapshot = { kind: null, fallbackReason: null };
+    return () => snapshot;
+  })(),
+  subscribeAppWsTransport: () => () => {},
+  describeAppWsBroadcastFallback: () => "",
   KnowledgeStoreWsClient: class {
     connect = vi.fn();
     disconnect = vi.fn();
@@ -63,7 +69,7 @@ const multiSectionResponse = {
       humanInvolvement_score: 0,
       crdt_session_active: false,
       fragment_key: "frag:sec_root",
-      section_file: "sec_root.md",
+      section_file: "/sec_root.md",
     },
     {
       heading: "Overview",
@@ -73,7 +79,7 @@ const multiSectionResponse = {
       humanInvolvement_score: 0.2,
       crdt_session_active: false,
       fragment_key: "frag:sec_overview",
-      section_file: "sec_overview.md",
+      section_file: "/sec_overview.md",
     },
     {
       heading: "Details",
@@ -83,12 +89,12 @@ const multiSectionResponse = {
       humanInvolvement_score: 0.6,
       crdt_session_active: true,
       fragment_key: "frag:sec_details",
-      section_file: "sec_details.md",
+      section_file: "/sec_details.md",
     },
   ],
 };
 
-function renderDocPage(docPath = "ops/strategy.md") {
+function renderDocPage(docPath = "/ops/strategy.md") {
   return render(
     <MemoryRouter initialEntries={[`/docs/${docPath}`]}>
       <Routes>

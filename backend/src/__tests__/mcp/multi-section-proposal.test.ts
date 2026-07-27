@@ -154,12 +154,12 @@ describe("multi-heading auto-split in proposals", () => {
     const summaryData = JSON.parse(readSummary.result.content[0].text);
     expect(summaryData.content).toContain("New summary section.");
 
-    // Verify the doc structure contains all headings
-    const structRes = await callMcpTool("read_doc_structure", {
+    // Verify the doc section inventory contains all headings
+    const sectionsRes = await callMcpTool("list_sections", {
       path: SAMPLE_DOC_PATH,
     });
-    const structData = JSON.parse(structRes.result.content[0].text);
-    const headings = structData.structure.map((n: any) => n.heading);
+    const sectionsData = JSON.parse(sectionsRes.result.content[0].text);
+    const headings = sectionsData.sections.map((row: { heading: string }) => row.heading);
     expect(headings).toContain("Overview");
     expect(headings).toContain("Details");
     expect(headings).toContain("Summary");

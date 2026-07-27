@@ -14,6 +14,7 @@ import { ProposalEditor } from "./proposal-editor.js";
 import { createTransientProposal, unsafeReplaceProposalManifestForRecoveryOnly, readProposal } from "./proposal-repository.js";
 import { documentTargetRef } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
+import type { DocPath } from "../types/shared.js";
 
 export class RestoreValidationError extends Error {}
 
@@ -31,7 +32,7 @@ export interface RestoreResult {
  * replay, not a re-import.
  */
 export async function createRestoreProposal(
-  docPath: string,
+  docPath: DocPath,
   targetSha: string,
   writer: WriterIdentity,
 ): Promise<RestoreResult> {

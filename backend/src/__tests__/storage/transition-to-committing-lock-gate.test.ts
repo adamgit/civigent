@@ -23,7 +23,7 @@ import {
 import { ProposalLockConflictError } from "../../domain/proposal-fsm-locks.js";
 import { ProposalAdoptionId, type WriterIdentity } from "../../types/shared.js";
 
-const DOC = "doc.md";
+const DOC = "/doc.md";
 const HUMAN_A: WriterIdentity = { type: "human", id: "human-a", displayName: "Alice" };
 const HUMAN_B: WriterIdentity = { type: "human", id: "human-b", displayName: "Bob" };
 const AGENT: WriterIdentity = { type: "agent", id: "agent-1", displayName: "Agent One" };

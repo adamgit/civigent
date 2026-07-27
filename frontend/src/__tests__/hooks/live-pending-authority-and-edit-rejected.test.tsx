@@ -52,7 +52,7 @@ function buildParams(
   onSectionEditRejected: (e: SectionEditRejectedEvent) => void,
 ): UseDocumentWebSocketParams {
   return {
-    decodedDocPath: "test.md",
+    decodedDocPath: "/test.md",
     clientInstanceId: "client-1",
     liveReplicaReadyRef: ref(liveReady),
     setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],
@@ -83,7 +83,7 @@ describe("live pending authority + edit-rejected", () => {
     act(() => {
       capturedWsHandler?.({
         type: "section:pending",
-        doc_path: "test.md",
+        doc_path: "/test.md",
         fragment_key: FRAG,
         writer_id: "hub-writer",
         writer_display_name: "Hub Writer",
@@ -94,7 +94,7 @@ describe("live pending authority + edit-rejected", () => {
 
     const rejection: SectionEditRejectedEvent = {
       type: "section:edit-rejected",
-      doc_path: "test.md",
+      doc_path: "/test.md",
       rejected_by: "server",
       affected_fragments: [{ fragment_key: FRAG, heading_path: ["Alpha"], heading: "Alpha" }],
       reason_code: "duplicate-sibling-heading",
@@ -121,7 +121,7 @@ describe("live pending authority + edit-rejected", () => {
     act(() => {
       capturedWsHandler?.({
         type: "section:pending",
-        doc_path: "test.md",
+        doc_path: "/test.md",
         fragment_key: FRAG,
         writer_id: "w1",
         writer_display_name: "Writer One",
@@ -135,7 +135,7 @@ describe("live pending authority + edit-rejected", () => {
     act(() => {
       capturedWsHandler?.({
         type: "section:settled",
-        doc_path: "test.md",
+        doc_path: "/test.md",
         fragment_key: FRAG,
       } as unknown as WsServerEvent);
     });

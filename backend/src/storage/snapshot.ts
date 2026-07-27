@@ -2,7 +2,8 @@ import path from "node:path";
 import { constants as fsConstants } from "node:fs";
 import { access, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { getContentRoot, getDataRoot, getSnapshotRoot } from "./data-root.js";
-import { normalizeDocPath } from "./path-utils.js";
+import { docPathFromContentRelativeFsPath, docPathToContentRelativeFsPath } from "./path-utils.js";
+import { DocPath } from "../types/shared.js";
 import { DocumentNotFoundError } from "./content-layer.js";
 import { ContentLayer } from "./content-layer.js";
 import { getAdminConfig } from "../admin-config.js";
@@ -58,10 +59,12 @@ async function countMdFiles(dir: string): Promise<number> {
   return entries.filter((f) => f.endsWith(".md")).length;
 }
 
-async function listAllDocPaths(): Promise<string[]> {
+async function listAllDocPaths(): Promise<DocPath[]> {
   const entries = await readdirRecursive(getContentRoot());
   // Content root stores docs as .md files; exclude section files inside .sections/ dirs
-  return entries.filter((f) => f.endsWith(".md") && !f.includes(".sections" + path.sep) && !f.includes(".sections/"));
+  return entries
+    .filter((f) => f.endsWith(".md") && !f.includes(".sections" + path.sep) && !f.includes(".sections/"))
+    .map((contentRelativeFsPath) => docPathFromContentRelativeFsPath(contentRelativeFsPath.replace(/\\/g, "/")));
 }
 
 async function countCommitsSinceLastSnapshot(): Promise<number | null> {
@@ -84,13 +87,10 @@ function pushHistory(record: SnapshotRunRecord): void {
   }
 }
 
-function normalizeDocPaths(docPaths: string[]): string[] {
-  const unique = new Set<string>();
+function uniqueDocPathsOf(docPaths: DocPath[]): DocPath[] {
+  const unique = new Set<DocPath>();
   for (const docPath of docPaths) {
-    const normalized = normalizeDocPath(docPath);
-    if (normalized) {
-      unique.add(normalized);
-    }
+    unique.add(DocPath.parse(docPath));
   }
   return [...unique];
 }
@@ -132,7 +132,7 @@ async function assertSnapshotRootWritable(): Promise<string> {
 }
 
 interface SnapshotDocFailure {
-  docPath: string;
+  docPath: DocPath;
   error: string;
 }
 
@@ -162,27 +162,21 @@ async function recordSnapshotRun(batchDocCount: number, failures: SnapshotDocFai
   });
 }
 
-export async function regenerateSnapshotsForDocs(docPaths: string[]): Promise<RegenerateResult> {
+export async function regenerateSnapshotsForDocs(docPaths: DocPath[]): Promise<RegenerateResult> {
   if (!isSnapshotGenerationEnabled()) {
     throw new SnapshotGenerationDisabledError();
   }
 
   const snapshotRoot = await assertSnapshotRootWritable();
-  const uniqueDocPaths = new Set<string>();
-  for (const docPath of docPaths) {
-    const normalized = normalizeDocPath(docPath);
-    if (normalized) {
-      uniqueDocPaths.add(normalized);
-    }
-  }
+  const uniqueDocPaths = uniqueDocPathsOf(docPaths);
 
   const failures: SnapshotDocFailure[] = [];
 
-  for (const normalizedDocPath of uniqueDocPaths) {
-    const snapshotPath = path.join(snapshotRoot, normalizedDocPath);
+  for (const documentPath of uniqueDocPaths) {
+    const snapshotPath = path.join(snapshotRoot, docPathToContentRelativeFsPath(documentPath));
     try {
       const layer = new ContentLayer(getContentRoot());
-      const assembled = await layer.readAssembledDocument(normalizedDocPath);
+      const assembled = await layer.readAssembledDocument(documentPath);
       await mkdir(path.dirname(snapshotPath), { recursive: true });
       await writeFile(snapshotPath, assembled, "utf8");
     } catch (error) {
@@ -192,7 +186,7 @@ export async function regenerateSnapshotsForDocs(docPaths: string[]): Promise<Re
       }
       // Record and continue — one bad doc must not block the rest
       failures.push({
-        docPath: normalizedDocPath,
+        docPath: documentPath,
         error: error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error),
       });
     }
@@ -201,11 +195,11 @@ export async function regenerateSnapshotsForDocs(docPaths: string[]): Promise<Re
   return { failures };
 }
 
-export function scheduleSnapshotRegeneration(docPaths: string[]): void {
+export function scheduleSnapshotRegeneration(docPaths: DocPath[]): void {
   if (!isSnapshotGenerationEnabled()) {
     return;
   }
-  const normalizedDocPaths = normalizeDocPaths(docPaths);
+  const normalizedDocPaths = uniqueDocPathsOf(docPaths);
   if (normalizedDocPaths.length === 0) {
     return;
   }

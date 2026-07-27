@@ -8,9 +8,23 @@ import type {
   HumanInvolvementPolicyResult,
   HumanInvolvementTargetDetails,
 } from "../types/shared.js";
-import { proposalTargetKey, proposalTargetLabel } from "../types/shared.js";
+import {
+  proposalDeletedSectionFileDocPathForDisplay,
+  proposalSectionDocPathForDisplay,
+  proposalTargetDocPathForDisplay,
+  proposalTargetKey,
+  proposalTargetLabel,
+} from "../types/shared.js";
 import { headingPathToLabel } from "./document-page-utils";
 import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
+import { DocPath } from "../types/shared";
+
+function DocumentLinkWhenDisplayPathIsLiveDocPath({ displayPath }: { displayPath: string }) {
+  if (!DocPath.isDocPath(displayPath)) {
+    return <>{displayPath}</>;
+  }
+  return <Link to={`/docs/${stripLeadingSlashForRoute(displayPath)}`}>{displayPath}</Link>;
+}
 
 function involvementColor(score: number): string {
   if (score >= 0.8) return "#1e40af";
@@ -88,7 +102,7 @@ function ProposalTruthPanel({ proposal }: { proposal: ProposalDTO }) {
               <tr key={`${proposalTargetKey(target)}-${idx}`}>
                 <td style={{ padding: "0.3rem" }}>{target.kind}</td>
                 <td style={{ padding: "0.3rem" }}>
-                  <Link to={`/docs/${stripLeadingSlashForRoute(target.doc_path)}`}>{target.doc_path}</Link>
+                  <DocumentLinkWhenDisplayPathIsLiveDocPath displayPath={proposalTargetDocPathForDisplay(target)} />
                 </td>
                 <td style={{ padding: "0.3rem" }}>{proposalTargetLabel(target)}</td>
               </tr>
@@ -103,9 +117,9 @@ function ProposalTruthPanel({ proposal }: { proposal: ProposalDTO }) {
           <p>Canonical section-file ids this proposal has deleted (identity-based delete detection).</p>
           <ul>
             {deletedSectionFiles.map((ref, idx) => (
-              <li key={`${ref.doc_path}-${ref.section_file}-${idx}`}>
+              <li key={`${proposalDeletedSectionFileDocPathForDisplay(ref)}-${ref.section_file}-${idx}`}>
                 <code>{ref.section_file}</code> in{" "}
-                <Link to={`/docs/${stripLeadingSlashForRoute(ref.doc_path)}`}>{ref.doc_path}</Link>
+                <DocumentLinkWhenDisplayPathIsLiveDocPath displayPath={proposalDeletedSectionFileDocPathForDisplay(ref)} />
               </li>
             ))}
           </ul>
@@ -208,7 +222,7 @@ export function ProposalDetailPage() {
   // Affected documents derive from the authoritative `targets` claim set (not
   // `sections`), so document-level targets with no sections are still surfaced.
   const affectedDocs = proposal
-    ? Array.from(new Set(proposal.targets.map((t) => t.doc_path)))
+    ? Array.from(new Set(proposal.targets.map((t) => proposalTargetDocPathForDisplay(t))))
     : [];
 
   return (
@@ -248,9 +262,10 @@ export function ProposalDetailPage() {
               </thead>
               <tbody>
                 {proposal.sections.map((section, idx) => {
+                  const sectionDocPath = proposalSectionDocPathForDisplay(section);
                   const target = agentWritePolicy?.targets.find(
                     (t) => t.target.kind === "section"
-                      && t.target.doc_path === section.doc_path
+                      && t.target.doc_path === sectionDocPath
                       && JSON.stringify(t.target.heading_path) === JSON.stringify(section.heading_path)
                   );
                   const details: HumanInvolvementTargetDetails | undefined = target?.details;
@@ -258,9 +273,9 @@ export function ProposalDetailPage() {
                   // canWrite drives styling/branching; prose `message` is the explanation (Area M).
                   const canWrite = target ? target.canWrite : true;
                   return (
-                    <tr key={`${section.doc_path}-${section.heading_path.join("/")}-${idx}`}>
+                    <tr key={`${sectionDocPath}-${section.heading_path.join("/")}-${idx}`}>
                       <td style={{ padding: "0.3rem" }}>
-                        <Link to={`/docs/${stripLeadingSlashForRoute(section.doc_path)}`}>{section.doc_path}</Link>
+                        <DocumentLinkWhenDisplayPathIsLiveDocPath displayPath={sectionDocPath} />
                       </td>
                       <td style={{ padding: "0.3rem" }}>{headingPathToLabel(section.heading_path)}</td>
                       {hasHumanInvolvementScores ? (
@@ -322,7 +337,7 @@ export function ProposalDetailPage() {
             <ul>
               {affectedDocs.map((docPath) => (
                 <li key={docPath}>
-                  <Link to={`/docs/${stripLeadingSlashForRoute(docPath)}`}>{docPath}</Link>
+                  <DocumentLinkWhenDisplayPathIsLiveDocPath displayPath={docPath} />
                 </li>
               ))}
             </ul>

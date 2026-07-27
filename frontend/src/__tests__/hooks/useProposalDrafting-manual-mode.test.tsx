@@ -44,7 +44,7 @@ function section(headingPath: string[], content: string): WorkspaceSectionDto {
 
 function params(sections: WorkspaceSectionDto[]): UseProposalDraftingParams {
   return {
-    decodedDocPath: "test.md",
+    decodedDocPath: "/test.md",
     workspaceBaselineSections: sections,
     setError: vi.fn(),
     loadSections: vi.fn(async () => sections),
@@ -88,10 +88,10 @@ describe("manual proposal mode (spec 11)", () => {
 
     expect(api.updateProposalManifest).toHaveBeenCalledWith("p1", {
       intent: "",
-      targets: [{ doc_path: "test.md", heading_path: ["Overview"] }],
+      targets: [{ doc_path: "/test.md", heading_path: ["Overview"] }],
     });
     expect(api.replaceProposalSections).toHaveBeenCalledWith("p1", {
-      sections: [{ doc_path: "test.md", heading_path: ["Overview"], content: "Overview body.\n" }],
+      sections: [{ doc_path: "/test.md", heading_path: ["Overview"], content: "Overview body.\n" }],
     });
   });
 
@@ -124,7 +124,7 @@ describe("manual proposal mode (spec 11)", () => {
           id: "p1",
           status: "draft",
           intent: "",
-          sections: [{ doc_path: "test.md", heading_path: ["Overview"], content: "Overview body.\n" }],
+          sections: [{ doc_path: "/test.md", heading_path: ["Overview"], content: "Overview body.\n" }],
         },
       })
       .mockResolvedValue({ proposal: { id: "p1", status: "draft", intent: "", sections: [] } });
@@ -139,7 +139,7 @@ describe("manual proposal mode (spec 11)", () => {
     api.replaceProposalSections.mockClear();
 
     // Remove that same (only) section — the last one.
-    await act(async () => { await result.current.removeProposalSection("test.md", ["Overview"]); });
+    await act(async () => { await result.current.removeProposalSection("/test.md", ["Overview"]); });
 
     // The empty draft scope is persisted as targets: [] (not blocked, not corruption).
     expect(api.replaceProposalSections).toHaveBeenCalledWith("p1", { sections: [] });
@@ -166,7 +166,7 @@ describe("manual proposal mode (spec 11)", () => {
     await act(async () => { await result.current.startManualPublish(); });
 
     // Acquire locks → refresh returns inprogress → scope becomes fixed.
-    api.getProposal.mockResolvedValue({ proposal: { id: "p1", status: "inprogress", intent: "Do it", sections: [{ doc_path: "test.md", heading_path: ["Overview"], content: "x" }] } });
+    api.getProposal.mockResolvedValue({ proposal: { id: "p1", status: "inprogress", intent: "Do it", sections: [{ doc_path: "/test.md", heading_path: ["Overview"], content: "x" }] } });
     await act(async () => { await result.current.acquireProposalLocks(); });
     expect(result.current.activeProposalStatus).toBe("inprogress");
 

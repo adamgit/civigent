@@ -19,7 +19,7 @@ import { gitExec } from "../../storage/git-repo.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import * as Y from "yjs";
 
-const NESTED_DOC_PATH = "test/nested-doc.md";
+const NESTED_DOC_PATH = "/test/nested-doc.md";
 
 /**
  * Creates a document with sub-skeleton structure on disk:

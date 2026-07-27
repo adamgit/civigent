@@ -14,6 +14,8 @@ import path from "node:path";
 import { writeFile, mkdir } from "node:fs/promises";
 import { readFileIfExists } from "./fs-primitives.js";
 import { getContentRoot } from "./data-root.js";
+import { docPathToContentRelativeFsPath } from "./path-utils.js";
+import { DocPath } from "../types/shared.js";
 import {
   type FlatEntry,
   serializeSkeletonEntries,
@@ -85,7 +87,7 @@ export class ParsedDocument {
    * Return the proposal section manifest for this document: one entry per
    * section in document order, ready for use as a section target list.
    */
-  sectionTargets(docPath: string): Array<{ doc_path: string; heading_path: string[] }> {
+  sectionTargets(docPath: DocPath): Array<{ doc_path: string; heading_path: string[] }> {
     return this.sections.map(s => ({ doc_path: docPath, heading_path: s.headingPath }));
   }
 }
@@ -105,7 +107,7 @@ export class ParsedDocument {
  * @returns ApplyResult describing what changed
  */
 export async function applyDocumentMarkdownToDraft(
-  docPath: string,
+  docPath: DocPath,
   markdown: string,
   draftRoot: string,
 ): Promise<ApplyResult> {
@@ -131,8 +133,8 @@ export async function applyDocumentMarkdownToDraft(
   }));
 
   // Build the draft skeleton path
-  const normalized = docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-  const draftSkeletonPath = path.resolve(draftRoot, ...normalized.split("/"));
+  const contentRelativeFsPath = docPathToContentRelativeFsPath(DocPath.parse(docPath));
+  const draftSkeletonPath = path.resolve(draftRoot, ...contentRelativeFsPath.split("/"));
   const draftSectionsDir = `${draftSkeletonPath}.sections`;
 
   // Track consumed canonical entries for position-based rename matching

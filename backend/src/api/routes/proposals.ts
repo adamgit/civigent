@@ -21,6 +21,7 @@ import {
   requireAuthenticatedWriter,
   requireDocReadPermission,
   checkWritePermission,
+  docPathParamOf,
 } from "./middleware.js";
 import {
   isProposalStatus,
@@ -95,7 +96,7 @@ export function registerProposalRoutes(
       const replaceFlag = req.query.replace === "true";
       const outcome = await createProposalUseCase(writer, body, replaceFlag);
 
-      emitProposalDraftEventsByDoc(onWsEvent, outcome.proposalId, writer, outcome.intent, outcome.draftSections);
+      emitProposalDraftEventsByDoc(onWsEvent, outcome.proposalId, writer, outcome.intent, outcome.draftTargets);
 
       const response: CreateProposalResponse = {
         proposal_id: outcome.proposalId,
@@ -195,12 +196,12 @@ export function registerProposalRoutes(
       }
 
       // If the proposal no longer targets some docs, clear stale doc-local indicators there.
-      emitProposalWithdrawnEventsByDoc(onWsEvent, result.updated.id, result.removedSections);
+      emitProposalWithdrawnEventsByDoc(onWsEvent, result.updated.id, result.removedTargets);
 
       if (result.eventStatus === "inprogress") {
-        emitProposalInProgressEventsByDoc(onWsEvent, result.updated.id, writer, result.intent, result.eventSections);
+        emitProposalInProgressEventsByDoc(onWsEvent, result.updated.id, writer, result.intent, result.eventTargets);
       } else {
-        emitProposalDraftEventsByDoc(onWsEvent, result.updated.id, writer, result.intent, result.eventSections);
+        emitProposalDraftEventsByDoc(onWsEvent, result.updated.id, writer, result.intent, result.eventTargets);
       }
 
       if (result.isHuman) {
@@ -263,7 +264,7 @@ export function registerProposalRoutes(
   // canonical fallback).
   router.get("/proposals/:id/documents/:docPath(*)/sections", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
 
@@ -346,7 +347,7 @@ export function registerProposalRoutes(
       const result = await writeProposalDocumentSectionsUseCase(
         req.params.id,
         writer,
-        req.params.docPath,
+        docPathParamOf(req),
         parsed.value,
       );
       if (!result.ok) {
@@ -396,7 +397,7 @@ export function registerProposalRoutes(
           acquiredProposal.id,
           acquiredProposal.writer,
           acquiredProposal.intent,
-          acquiredProposal.sections,
+          acquiredProposal.targets,
         );
         for (const [docPath, headingPaths] of groupSectionsByDocPath(
           acquiredProposal.sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
@@ -453,7 +454,7 @@ export function registerProposalRoutes(
         return;
       }
 
-      emitContentCommittedEventsByDoc(onWsEvent, writer, [writer.id], result.committedHead, result.sections);
+      emitContentCommittedEventsByDoc(onWsEvent, writer, [writer.id], result.committedHead, result.targets);
 
       for (const [docPath, headingPaths] of groupSectionsByDocPath(result.sections)) {
         await emitSectionBlockState(onWsEvent, docPath, headingPaths, "section:unblocked");
@@ -494,7 +495,7 @@ export function registerProposalRoutes(
         return;
       }
 
-      emitProposalWithdrawnEventsByDoc(onWsEvent, result.proposalId, result.sections);
+      emitProposalWithdrawnEventsByDoc(onWsEvent, result.proposalId, result.targets);
 
       for (const [docPath, headingPaths] of groupSectionsByDocPath(result.sections)) {
         await emitSectionBlockState(onWsEvent, docPath, headingPaths, "section:unblocked");

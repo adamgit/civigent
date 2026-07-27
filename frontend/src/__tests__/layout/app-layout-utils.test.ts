@@ -1,34 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import {
-  toCanonicalDocPath,
   parseRouteDocPath,
-  readBadgeDocPaths,
-  writeBadgeDocPaths,
   formatBuildDate,
-  DOC_BADGES_STORAGE_KEY,
 } from "../../app/app-layout-utils";
-
-describe("toCanonicalDocPath", () => {
-  it("returns / for empty string", () => {
-    expect(toCanonicalDocPath("")).toBe("/");
-  });
-
-  it("returns / for whitespace-only string", () => {
-    expect(toCanonicalDocPath("   ")).toBe("/");
-  });
-
-  it("prepends / when missing", () => {
-    expect(toCanonicalDocPath("docs/readme.md")).toBe("/docs/readme.md");
-  });
-
-  it("keeps existing leading slash", () => {
-    expect(toCanonicalDocPath("/docs/readme.md")).toBe("/docs/readme.md");
-  });
-
-  it("trims surrounding whitespace", () => {
-    expect(toCanonicalDocPath("  docs/foo.md  ")).toBe("/docs/foo.md");
-  });
-});
 
 describe("parseRouteDocPath", () => {
   it("returns canonical path for valid /docs/ route", () => {
@@ -53,54 +27,6 @@ describe("parseRouteDocPath", () => {
 
   it("handles nested paths", () => {
     expect(parseRouteDocPath("/docs/ops/strategy.md")).toBe("/ops/strategy.md");
-  });
-});
-
-describe("readBadgeDocPaths / writeBadgeDocPaths", () => {
-  beforeEach(() => {
-    localStorage.clear();
-  });
-
-  it("returns empty set when storage is empty", () => {
-    expect(readBadgeDocPaths().size).toBe(0);
-  });
-
-  it("reads valid array from storage", () => {
-    localStorage.setItem(DOC_BADGES_STORAGE_KEY, JSON.stringify(["/a.md", "/b.md"]));
-    const result = readBadgeDocPaths();
-    expect(result.has("/a.md")).toBe(true);
-    expect(result.has("/b.md")).toBe(true);
-    expect(result.size).toBe(2);
-  });
-
-  it("returns empty set for corrupted JSON", () => {
-    localStorage.setItem(DOC_BADGES_STORAGE_KEY, "not-json{{{");
-    expect(readBadgeDocPaths().size).toBe(0);
-  });
-
-  it("returns empty set for non-array JSON", () => {
-    localStorage.setItem(DOC_BADGES_STORAGE_KEY, JSON.stringify({ a: 1 }));
-    expect(readBadgeDocPaths().size).toBe(0);
-  });
-
-  it("filters out non-string entries", () => {
-    localStorage.setItem(DOC_BADGES_STORAGE_KEY, JSON.stringify(["/a.md", 42, null, "/b.md"]));
-    const result = readBadgeDocPaths();
-    expect(result.size).toBe(2);
-    expect(result.has("/a.md")).toBe(true);
-    expect(result.has("/b.md")).toBe(true);
-  });
-
-  it("filters out empty string entries", () => {
-    localStorage.setItem(DOC_BADGES_STORAGE_KEY, JSON.stringify(["/a.md", "", "/b.md"]));
-    expect(readBadgeDocPaths().size).toBe(2);
-  });
-
-  it("round-trips through write then read", () => {
-    const paths = new Set(["/docs/one.md", "/docs/two.md"]);
-    writeBadgeDocPaths(paths);
-    const result = readBadgeDocPaths();
-    expect(result).toEqual(paths);
   });
 });
 

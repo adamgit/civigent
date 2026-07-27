@@ -7,7 +7,7 @@
  * Singleton instance exported for use by MCP tool dispatch and proposal lifecycle.
  */
 
-import type { WriterIdentity, AgentConnectionStatus, AgentActivitySummary, AgentProposalSnapshot, AnyProposal, ProposalStatus } from "../types/shared.js";
+import type { WriterIdentity, AgentConnectionStatus, AgentActivitySummary, AgentProposalSnapshot, ActiveProposal, AnyProposal, CommittedProposalDomain, ProposalStatus, WithdrawnProposalDomain } from "../types/shared.js";
 
 // ─── Event types ─────────────────────────────────────────────────
 
@@ -157,25 +157,25 @@ export class AgentEventLog {
       const agentProposals = allProposals.filter(p => p.writer.id === id);
 
       const pending: AgentProposalSnapshot[] = agentProposals
-        .filter(p => p.status === "draft")
+        .filter((p): p is ActiveProposal => p.status === "draft")
         .map(p => ({
           id: p.id,
           intent: p.intent,
           status: p.status,
           created_at: p.created_at,
-          doc_paths: [...new Set(p.sections.map(s => s.doc_path))],
+          doc_paths: [...new Set(p.sections.map(s => s.doc_path as string))],
           section_count: p.sections.length,
         }));
 
       const recent: AgentProposalSnapshot[] = agentProposals
-        .filter(p => p.status === "committed" || p.status === "withdrawn")
+        .filter((p): p is CommittedProposalDomain | WithdrawnProposalDomain => p.status === "committed" || p.status === "withdrawn")
         .slice(0, 10)
         .map(p => ({
           id: p.id,
           intent: p.intent,
           status: p.status,
           created_at: p.created_at,
-          doc_paths: [...new Set(p.sections.map(s => s.doc_path))],
+          doc_paths: [...new Set(p.sections.map(s => s.stored_doc_path))],
           section_count: p.sections.length,
         }));
 

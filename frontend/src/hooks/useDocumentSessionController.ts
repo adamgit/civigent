@@ -5,6 +5,8 @@ import type { ProposalDTO } from "../types/shared.js";
 import type { ProposalSectionAvailabilityEvent } from "../types/shared.js";
 import type { MilkdownEditorHandle } from "../components/MilkdownEditor";
 import { LocalPresence } from "../services/local-presence";
+import { resolveWriterId } from "../services/api-client";
+import { deriveFillColor } from "../presence/document-presence-identity";
 import { SectionId, type RenderSectionRef } from "../types/live-sections";
 import type { LiveSectionReplicaView } from "./useLiveSectionReplica";
 import { useSectionFocus, type PendingFragmentCaretTarget } from "./useSectionFocus";
@@ -81,6 +83,26 @@ export function useDocumentSessionController(
     () => (liveReplica.awareness ? new LocalPresence(liveReplica.awareness) : null),
     [liveReplica.awareness],
   );
+
+  // P20 — broadcast page-open presence as soon as we join the live session, so
+  // this client appears in the shared presence strip's `present` floor even with
+  // no editor attached. Uses the same identity the editor broadcasts
+  // (`resolveWriterId()` + a deterministic color) so an idle viewer and the same
+  // person once editing dedupe to ONE badge that rises `present → active`.
+  useEffect(() => {
+    if (!presence) return;
+    const name = resolveWriterId();
+    presence.setPageOpen(name, deriveFillColor(name));
+  }, [presence]);
+
+  // P21 — settle `active → present` when this client leaves editor mode. Focus
+  // only ever SETS `viewingSections`; without this an observer would keep the
+  // editing marker (and read as `active`) until disconnect. In observer mode we
+  // clear it so the badge falls back to the page-open `present` floor.
+  useEffect(() => {
+    if (!presence) return;
+    if (liveReplica.mode !== "editor") presence.clearViewingSection();
+  }, [presence, liveReplica.mode]);
 
   const isSectionBlocked = useCallback((fragmentKey: string): boolean => {
     const replica = liveReplica.replica;

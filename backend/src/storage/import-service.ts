@@ -8,7 +8,7 @@
 
 import { createTransientProposal } from "./proposal-repository.js";
 import { mutateProposalContent } from "./mutate-proposal-content.js";
-import type { ProposalId, WriterIdentity } from "../types/shared.js";
+import type { DocPath, ProposalId, WriterIdentity } from "../types/shared.js";
 
 export class ImportValidationError extends Error {
   constructor(message: string) {
@@ -18,7 +18,7 @@ export class ImportValidationError extends Error {
 }
 
 export interface ImportFile {
-  docPath: string;
+  docPath: DocPath;
   content: string;
 }
 

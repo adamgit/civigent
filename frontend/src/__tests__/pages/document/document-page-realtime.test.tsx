@@ -26,6 +26,12 @@ function richStructureSection(heading: string, headingPath: string[], fragmentKe
 }
 
 vi.mock("../../../services/ws-client", () => ({
+  getAppWsTransportInfo: (() => {
+    const snapshot = { kind: null, fallbackReason: null };
+    return () => snapshot;
+  })(),
+  subscribeAppWsTransport: () => () => {},
+  describeAppWsBroadcastFallback: () => "",
   KnowledgeStoreWsClient: class {
     connect = vi.fn();
     disconnect = vi.fn();
@@ -108,7 +114,7 @@ function renderDocPage() {
   return render(
     <MemoryRouter initialEntries={["/docs/test.md"]}>
       <Routes>
-        <Route path="/docs/*" element={<DocumentPage docPathOverride="test.md" />} />
+        <Route path="/docs/*" element={<DocumentPage docPathOverride="/test.md" />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -133,7 +139,7 @@ describe("DocumentPage realtime", () => {
               humanInvolvement_score: 0,
               crdt_session_active: false,
               fragment_key: "frag:sec_root",
-              section_file: "sec_root.md",
+              section_file: "/sec_root.md",
             },
             {
               heading: "Overview",
@@ -143,7 +149,7 @@ describe("DocumentPage realtime", () => {
               humanInvolvement_score: 0,
               crdt_session_active: false,
               fragment_key: "frag:sec_overview",
-              section_file: "sec_overview.md",
+              section_file: "/sec_overview.md",
             },
           ],
         });
@@ -172,10 +178,10 @@ describe("DocumentPage realtime", () => {
     act(() => {
       capturedWsHandler?.({
         type: "content:committed",
-        doc_path: "test.md",
+        doc_path: "/test.md",
         writer_display_name: "Agent",
         writer_type: "agent",
-        sections: [{ doc_path: "test.md", heading_path: ["Overview"] }],
+        sections: [{ doc_path: "/test.md", heading_path: ["Overview"] }],
         commit_sha: "abc123",
       } as WsServerEvent);
     });

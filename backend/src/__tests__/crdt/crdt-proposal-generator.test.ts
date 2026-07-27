@@ -39,7 +39,7 @@ describe("CRDTProposalGenerator", () => {
 
   it("has no side-effects for a session with zero edits", async () => {
     const gen = new CRDTProposalGenerator({
-      docPath: "guide.md",
+      docPath: "/guide.md",
       proposalAdoptionId: ProposalAdoptionId.create(),
       writer,
       source: makeSource([]),
@@ -55,7 +55,7 @@ describe("CRDTProposalGenerator", () => {
   it("lazily creates one inprogress proposal on the first materialized edit", async () => {
     const proposalAdoptionId = ProposalAdoptionId.create();
     const gen = new CRDTProposalGenerator({
-      docPath: "guide.md",
+      docPath: "/guide.md",
       proposalAdoptionId,
       writer,
       source: makeSource([
@@ -74,7 +74,7 @@ describe("CRDTProposalGenerator", () => {
 
     // Content was materialized through ProposalEditor.
     const reader = ProposalReader.open(proposalId, "inprogress");
-    const body = await reader.readSection("guide.md", ["Intro"]);
+    const body = await reader.readSection("/guide.md", ["Intro"]);
     expect(body).toContain("Hello world.");
   });
 
@@ -84,7 +84,7 @@ describe("CRDTProposalGenerator", () => {
       { headingPath: ["Intro"], heading: "Intro", level: 1, body: "First." },
     ]);
     const gen = new CRDTProposalGenerator({
-      docPath: "guide.md",
+      docPath: "/guide.md",
       proposalAdoptionId,
       writer,
       source,
@@ -104,14 +104,14 @@ describe("CRDTProposalGenerator", () => {
     expect(inProgress).toHaveLength(1);
 
     const reader = ProposalReader.open(first, "inprogress");
-    expect(await reader.readSection("guide.md", ["Intro"])).toContain("Updated.");
-    expect(await reader.readSection("guide.md", ["Details"])).toContain("More.");
+    expect(await reader.readSection("/guide.md", ["Intro"])).toContain("Updated.");
+    expect(await reader.readSection("/guide.md", ["Details"])).toContain("More.");
   });
 
   it("enforces one active proposal per DocSession", async () => {
     const proposalAdoptionId = ProposalAdoptionId.create();
     const genA = new CRDTProposalGenerator({
-      docPath: "guide.md",
+      docPath: "/guide.md",
       proposalAdoptionId,
       writer,
       source: makeSource([{ headingPath: ["A"], heading: "A", level: 1, body: "a" }]),
@@ -119,7 +119,7 @@ describe("CRDTProposalGenerator", () => {
     // A second generator bound to the SAME DocSession identity must resolve the
     // same proposal (repository helper keys on DocSession identity).
     const genB = new CRDTProposalGenerator({
-      docPath: "guide.md",
+      docPath: "/guide.md",
       proposalAdoptionId,
       writer,
       source: makeSource([{ headingPath: ["A"], heading: "A", level: 1, body: "a" }]),
@@ -139,7 +139,7 @@ describe("CRDTProposalGenerator", () => {
       { headingPath: ["Intro"], heading: "Intro", level: 1, body: "x" },
     ]);
     const gen = new CRDTProposalGenerator({
-      docPath: "guide.md",
+      docPath: "/guide.md",
       proposalAdoptionId,
       writer,
       source,

@@ -7,6 +7,7 @@ import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 import { apiClient } from "../services/api-client";
 import type { DocumentTreeEntry } from "../types/shared.js";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
+import { DocPath } from "../types/shared";
 
 interface FolderPageProps {
   folderPath: string;
@@ -31,10 +32,10 @@ function ensureMarkdownSuffix(path: string): string {
   return path.toLowerCase().endsWith(".md") ? path : `${path}.md`;
 }
 
-function buildDocPath(folderPath: string, name: string): string {
+function buildDocPath(folderPath: string, name: string): DocPath {
   const trimmedName = name.trim().replace(/^\/+/, "");
   const baseFolder = folderPath === "/" ? "" : folderPath.replace(/\/+$/, "");
-  return ensureMarkdownSuffix(`${baseFolder}/${trimmedName}`.replace(/\/{2,}/g, "/"));
+  return DocPath.parse(ensureMarkdownSuffix(`${baseFolder}/${trimmedName}`.replace(/\/{2,}/g, "/")));
 }
 
 function findFolderEntry(entries: DocumentTreeEntry[], folderPath: string): DocumentTreeEntry | null {
@@ -196,7 +197,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                             <button
                               type="button"
                               className="cursor-pointer border-none bg-transparent p-0 text-left text-accent-text hover:underline"
-                              onClick={() => navigate(`/docs/${stripLeadingSlashForRoute(path)}`)}
+                              onClick={() => navigate(`/docs/${stripLeadingSlashForRoute(DocPath.parse(path))}`)}
                             >
                               {getDisplayName(path)}
                             </button>
@@ -216,7 +217,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                             <button
                               type="button"
                               className="cursor-pointer border-none bg-transparent p-0 text-left text-accent-text hover:underline"
-                              onClick={() => navigate(`/docs/${stripLeadingSlashForRoute(path)}`)}
+                              onClick={() => navigate(`/docs/${stripLeadingSlashForRoute(DocPath.parse(path))}`)}
                             >
                               {getDisplayName(path)}
                             </button>

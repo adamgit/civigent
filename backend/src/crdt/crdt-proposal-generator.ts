@@ -50,6 +50,7 @@ import type { FlatEntry } from "../storage/document-skeleton.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { EMPTY_BODY, type SectionBody } from "../storage/section-formatting.js";
 import { synthesizeCommitDescription } from "../storage/commit-description.js";
+import type { DocPath } from "../types/shared.js";
 
 /**
  * One materialized section of the live document, as observed from the live Y.Doc
@@ -117,7 +118,7 @@ export interface LiveSectionsSnapshotResult {
 export class LiveSnapshotIdentityInvariantError extends Error {
   readonly dirtyFragmentKeys: readonly string[];
 
-  constructor(docPath: string, dirtyFragmentKeys: readonly string[]) {
+  constructor(docPath: DocPath, dirtyFragmentKeys: readonly string[]) {
     super(
       `Live snapshot identity invariant failed for ${docPath}: fragment(s) ` +
         `${dirtyFragmentKeys.join(", ")} still disagree with their layout address; ` +
@@ -140,7 +141,7 @@ export interface LiveDocumentSource {
 }
 
 export interface CRDTProposalGeneratorOptions {
-  docPath: string;
+  docPath: DocPath;
   proposalAdoptionId: ProposalAdoptionId;
   /** Identity recorded as the proposal writer (the DocSession owner). */
   writer: WriterIdentity;
@@ -294,7 +295,7 @@ export interface PublishResult {
 }
 
 export class CRDTProposalGenerator {
-  readonly docPath: string;
+  readonly docPath: DocPath;
   readonly proposalAdoptionId: ProposalAdoptionId;
   private readonly writer: WriterIdentity;
   private readonly source: LiveDocumentSource;

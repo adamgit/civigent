@@ -1,5 +1,6 @@
 import { type NextFunction, type Request, type Response, type Router } from "express";
 import type { HumanInvolvementPolicyResult } from "../../types/shared.js";
+import { DocPath } from "../../types/shared.js";
 import { isSystemReady } from "../../startup-state.js";
 import {
   resolveAuthenticatedWriter,
@@ -89,12 +90,13 @@ export async function requireDocWritePermission(
 
 // ─── Request-pipeline middleware installers ─────────────
 
-/**
- * Restore the leading slash that Express strips from `:docPath(*)` params.
- */
-export function installDocPathParamNormalizer(router: Router): void {
-  router.param("docPath", (req, _res, next, value) => {
-    req.params.docPath = "/" + value;
+export function docPathParamOf(req: Request): DocPath {
+  return DocPath.parse(req.params.docPath);
+}
+
+export function installSlashStrippedDocPathParamParser(router: Router): void {
+  router.param("docPath", (req, _res, next, slashStrippedSegment) => {
+    req.params.docPath = DocPath.fromSlashStrippedUrlSegment(slashStrippedSegment);
     next();
   });
 }

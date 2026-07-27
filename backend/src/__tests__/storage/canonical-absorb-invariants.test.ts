@@ -14,11 +14,13 @@ import { CanonicalStore } from "../../storage/canonical-store.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { parseSkeletonToEntries, serializeSkeletonEntries } from "../../storage/document-skeleton.js";
+import { docPathToContentRelativeFsPath } from "../../storage/path-utils.js";
+import { DocPath } from "../../types/shared.js";
 
 const AUTHOR = { name: "Absorb Test", email: "absorb@test.local" };
 
 function toDiskRelative(docPath: string): string {
-  return docPath.replace(/^\/+/, "");
+  return docPathToContentRelativeFsPath(DocPath.parse(docPath));
 }
 
 async function copyDirectoryRecursive(srcDir: string, destDir: string): Promise<void> {

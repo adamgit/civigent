@@ -45,7 +45,7 @@ const wrapper = ({ children }: { children: React.ReactNode }) =>
 
 function buildParams(): UseDocumentWebSocketParams {
   return {
-    decodedDocPath: "test.md",
+    decodedDocPath: "/test.md",
     clientInstanceId: "client-1",
     liveReplicaReadyRef: ref(false),
     setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],
@@ -74,7 +74,7 @@ describe("draft proposal indicators (spec 02 §3 events)", () => {
     emit({
       type: "proposal:draft",
       proposal_id: "p1",
-      doc_path: "test.md",
+      doc_path: "/test.md",
       heading_paths: [["Overview"], ["Timeline"]],
       writer_id: "alice",
       writer_display_name: "Alice",
@@ -97,7 +97,7 @@ describe("draft proposal indicators (spec 02 §3 events)", () => {
     emit({
       type: "proposal:draft",
       proposal_id: "p1",
-      doc_path: "test.md",
+      doc_path: "/test.md",
       heading_paths: [["Overview"]],
       writer_id: "alice",
       writer_display_name: "Alice",
@@ -108,7 +108,7 @@ describe("draft proposal indicators (spec 02 §3 events)", () => {
     emit({
       type: "proposal:withdrawn",
       proposal_id: "p1",
-      doc_path: "test.md",
+      doc_path: "/test.md",
       heading_paths: [["Overview"]],
     });
     expect(result.current.pendingProposalIndicators).toHaveLength(0);
@@ -119,7 +119,7 @@ describe("draft proposal indicators (spec 02 §3 events)", () => {
     emit({
       type: "proposal:draft",
       proposal_id: "p2",
-      doc_path: "test.md",
+      doc_path: "/test.md",
       heading_paths: [["Overview"]],
       writer_id: "bob",
       writer_display_name: "Bob",
@@ -129,10 +129,10 @@ describe("draft proposal indicators (spec 02 §3 events)", () => {
 
     emit({
       type: "content:committed",
-      doc_path: "test.md",
+      doc_path: "/test.md",
       writer_display_name: "Bob",
       writer_type: "human",
-      sections: [{ doc_path: "test.md", heading_path: ["Overview"] }],
+      sections: [{ doc_path: "/test.md", heading_path: ["Overview"] }],
       commit_sha: "abc",
     });
     expect(result.current.pendingProposalIndicators).toHaveLength(0);

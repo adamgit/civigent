@@ -97,7 +97,7 @@ describe("MCP write_file attribution", () => {
     expect(writeData.status).toBe("committed");
 
     const sectionsRes = await request(ctx.app)
-      .get(`/api/canonical/${encodeURIComponent(docPath)}/sections`)
+      .get(`/api/canonical/${encodeURIComponent(docPath.slice(1))}/sections`)
       .set("Authorization", ctx.agentToken);
 
     expect(sectionsRes.status).toBe(200);

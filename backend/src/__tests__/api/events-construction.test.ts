@@ -28,24 +28,28 @@ describe("application/events.ts construction", () => {
       writer,
       "intent text",
       [
-        { doc_path: "/a.md", heading_path: ["X"] },
-        { doc_path: "/a.md", heading_path: ["Y"] },
-        { doc_path: "/b.md", heading_path: ["Z"] },
+        { kind: "section", doc_path: "/a.md", heading_path: ["X"] },
+        { kind: "section", doc_path: "/a.md", heading_path: ["Y"] },
+        { kind: "section", doc_path: "/b.md", heading_path: ["Z"] },
+        { kind: "document", doc_path: "/c.md" },
       ],
     );
-    expect(events).toHaveLength(2);
+    expect(events).toHaveLength(3);
     const a = events.find((e) => (e as { doc_path: string }).doc_path === "/a.md") as Extract<WsServerEvent, { type: "proposal:draft" }>;
     expect(a.type).toBe("proposal:draft");
     expect(a.proposal_id).toBe("p1");
     expect(a.heading_paths).toEqual([["X"], ["Y"]]);
     expect(a.writer_id).toBe("w1");
     expect(a.intent).toBe("intent text");
+    // A document-only target still yields an event for its doc, with no heading paths.
+    const c = events.find((e) => (e as { doc_path: string }).doc_path === "/c.md") as Extract<WsServerEvent, { type: "proposal:draft" }>;
+    expect(c.heading_paths).toEqual([]);
   });
 
   it("constructs proposal:inprogress events", () => {
     const events: WsServerEvent[] = [];
     emitProposalInProgressEventsByDoc((e) => events.push(e), "p2", writer, "i", [
-      { doc_path: "/a.md", heading_path: ["X"] },
+      { kind: "section", doc_path: "/a.md", heading_path: ["X"] },
     ]);
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe("proposal:inprogress");
@@ -54,7 +58,7 @@ describe("application/events.ts construction", () => {
   it("constructs proposal:withdrawn events", () => {
     const events: WsServerEvent[] = [];
     emitProposalWithdrawnEventsByDoc((e) => events.push(e), "p3", [
-      { doc_path: "/a.md", heading_path: ["X"] },
+      { kind: "section", doc_path: "/a.md", heading_path: ["X"] },
     ]);
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe("proposal:withdrawn");
@@ -68,7 +72,7 @@ describe("application/events.ts construction", () => {
       writer,
       ["w1"],
       "abc123",
-      [{ doc_path: "/a.md", heading_path: ["X"] }],
+      [{ kind: "section", doc_path: "/a.md", heading_path: ["X"] }],
     );
     expect(events).toHaveLength(1);
     const e = events[0] as Extract<WsServerEvent, { type: "content:committed" }>;
@@ -78,12 +82,12 @@ describe("application/events.ts construction", () => {
     expect(e.sections).toEqual([{ doc_path: "/a.md", heading_path: ["X"] }]);
   });
 
-  it("emits nothing when sections are empty or emit callback is undefined", () => {
+  it("emits nothing when targets are empty or emit callback is undefined", () => {
     const events: WsServerEvent[] = [];
     emitProposalDraftEventsByDoc((e) => events.push(e), "p", writer, "i", []);
     expect(events).toHaveLength(0);
     expect(() => emitProposalDraftEventsByDoc(undefined, "p", writer, "i", [
-      { doc_path: "/a.md", heading_path: ["X"] },
+      { kind: "section", doc_path: "/a.md", heading_path: ["X"] },
     ])).not.toThrow();
   });
 });

@@ -34,6 +34,12 @@ vi.mock("../../../services/crdt-provider", () => ({
 }));
 
 vi.mock("../../../services/ws-client", () => ({
+  getAppWsTransportInfo: (() => {
+    const snapshot = { kind: null, fallbackReason: null };
+    return () => snapshot;
+  })(),
+  subscribeAppWsTransport: () => () => {},
+  describeAppWsBroadcastFallback: () => "",
   KnowledgeStoreWsClient: class {
     connect = vi.fn();
     disconnect = vi.fn();
@@ -93,10 +99,10 @@ import { act } from "@testing-library/react";
 import { liveBootstrapFrame, MSG_LIVE_SECTIONS_BOOTSTRAP_OPCODE } from "../../helpers/live-bootstrap";
 
 const SECTIONS = [
-  { heading: "", heading_path: [] as string[], content: "Root body.\n", fragment_key: "frag:sec_root", section_file: "sec_root.md" },
-  { heading: "Overview", heading_path: ["Overview"], content: "# Overview\nOverview body.\n", fragment_key: "frag:sec_overview", section_file: "sec_overview.md" },
-  { heading: "Details", heading_path: ["Details"], content: "# Details\nDetails body.\n", fragment_key: "frag:sec_details", section_file: "sec_details.md" },
-  { heading: "Appendix", heading_path: ["Appendix"], content: "# Appendix\nAppendix body.\n", fragment_key: "frag:sec_appendix", section_file: "sec_appendix.md" },
+  { heading: "", heading_path: [] as string[], content: "Root body.\n", fragment_key: "frag:sec_root", section_file: "/sec_root.md" },
+  { heading: "Overview", heading_path: ["Overview"], content: "# Overview\nOverview body.\n", fragment_key: "frag:sec_overview", section_file: "/sec_overview.md" },
+  { heading: "Details", heading_path: ["Details"], content: "# Details\nDetails body.\n", fragment_key: "frag:sec_details", section_file: "/sec_details.md" },
+  { heading: "Appendix", heading_path: ["Appendix"], content: "# Appendix\nAppendix body.\n", fragment_key: "frag:sec_appendix", section_file: "/sec_appendix.md" },
 ].map((s) => ({
   ...s,
   depth: s.heading_path.length,
@@ -129,7 +135,7 @@ function renderDocPage() {
   return render(
     <MemoryRouter initialEntries={["/docs/test.md"]}>
       <Routes>
-        <Route path="/docs/*" element={<DocumentPage docPathOverride="test.md" />} />
+        <Route path="/docs/*" element={<DocumentPage docPathOverride="/test.md" />} />
       </Routes>
     </MemoryRouter>,
   );

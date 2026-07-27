@@ -31,7 +31,7 @@ function normalizeBrowsePath(rawPath?: string): string {
   return normalized;
 }
 
-function toRelativeFromRoot(normalizedPath: string): string {
+export function browseFolderPathToContentRelativeFsPath(normalizedPath: string): string {
   if (normalizedPath === "/") {
     return "";
   }
@@ -92,7 +92,7 @@ async function buildEntries(currentPath: string, absolutePath: string, recursive
 export async function readDocumentsTree(rawPath?: string, recursive?: boolean): Promise<DocumentTreeEntry[]> {
   const contentRoot = getContentRoot();
   const normalizedPath = normalizeBrowsePath(rawPath);
-  const relative = toRelativeFromRoot(normalizedPath);
+  const relative = browseFolderPathToContentRelativeFsPath(normalizedPath);
   const targetDir = assertChildPath(contentRoot, path.join(contentRoot, relative));
 
   if (!(await directoryExists(targetDir))) {

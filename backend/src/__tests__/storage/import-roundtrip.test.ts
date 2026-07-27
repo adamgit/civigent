@@ -46,7 +46,7 @@ describe("import → commit → read round-trip", () => {
       "",
     ].join("\n");
 
-    const docPath = "import-test.md";
+    const docPath = "/import-test.md";
 
     // Import
     const { id } = await importFilesToProposal(
@@ -84,7 +84,7 @@ describe("import → commit → read round-trip", () => {
       "",
     ].join("\n");
 
-    const docPath = "nested-import.md";
+    const docPath = "/nested-import.md";
 
     const { id } = await importFilesToProposal(
       [{ docPath, content: markdown }],
@@ -130,7 +130,7 @@ describe("import → commit → read round-trip", () => {
       "",
     ].join("\n");
 
-    const docPath = "readable-import.md";
+    const docPath = "/readable-import.md";
 
     const { id } = await importFilesToProposal(
       [{ docPath, content: markdown }],
@@ -163,7 +163,7 @@ describe("import → commit → read round-trip", () => {
       "",
     ].join("\n");
 
-    const docPath = "code-block-import.md";
+    const docPath = "/code-block-import.md";
 
     const { id } = await importFilesToProposal(
       [{ docPath, content: markdown }],
@@ -196,7 +196,7 @@ describe("import → commit → read round-trip", () => {
 
   it("import failure leaves canonical clean — no orphaned skeletons", async () => {
     const contentRoot = getContentRoot();
-    const docPath = "should-not-exist.md";
+    const docPath = "/should-not-exist.md";
 
     // Attempt import with empty files — should fail or produce nothing
     try {

@@ -37,14 +37,14 @@ describe("document-reader", () => {
   });
 
   it("readAssembledDocument throws DocumentNotFoundError for missing doc", async () => {
-    await expect(readAssembledDocument("nonexistent/missing.md")).rejects.toThrow(
+    await expect(readAssembledDocument("/nonexistent/missing.md")).rejects.toThrow(
       DocumentNotFoundError,
     );
   });
 
   it("DocumentNotFoundError is an instance of Error", async () => {
     try {
-      await readAssembledDocument("nonexistent/missing.md");
+      await readAssembledDocument("/nonexistent/missing.md");
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
       expect(err).toBeInstanceOf(DocumentNotFoundError);

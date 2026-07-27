@@ -2,17 +2,19 @@
  * Tier 3 MCP tools — collaboration surface with explicit proposals.
  *
  * Tools: list_documents, list_sections, search_text,
- *        read_doc, read_doc_structure, read_published_section, read_proposal_section,
+ *        read_doc, read_published_section, read_proposal_section,
  *        create_proposal, publish_proposal, withdraw_proposal,
  *        list_proposals, read_proposal, write_proposal_section
+ *
+ * Temporarily deprecated (not registered): read_doc_structure → use list_sections.
  */
 
 import type { ToolRegistry, ToolHandler } from "../tool-registry.js";
 import { jsonToolResult, jsonBlockedToolResult } from "../tool-registry.js";
-import { makeToolErrorResult } from "../protocol.js";
+import { makeToolErrorResult, parseToolArgumentDocPath } from "../protocol.js";
 import { readAssembledDocument, DocumentNotFoundError } from "../../storage/document-reader.js";
 import { readSectionWithHeading, SectionNotFoundError } from "../../storage/section-reader.js";
-import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
+import { getDataRoot } from "../../storage/data-root.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 import { getHeadSha } from "../../storage/git-repo.js";
@@ -48,11 +50,12 @@ import {
   listSessionCreatedProposals,
 } from "../session-drafts.js";
 import { SectionRef } from "../../domain/section-ref.js";
-import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
-import type { HumanInvolvementPolicyResult } from "../../types/shared.js";
+import { InvalidDocPathError } from "../../storage/path-utils.js";
+import type { DocPath, HumanInvolvementPolicyResult } from "../../types/shared.js";
 import { buildFragmentContent, fragmentFromBodyHolder, sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
 import { checkDocPermission } from "../../auth/acl.js";
 import { emitCatalogMutationEvents, summarizeProposalCatalogMutations } from "../catalog-events.js";
+import { emitProposalDraftEventsByDoc, emitContentCommittedEventsByDoc } from "../../api/application/events.js";
 import {
   listReadableDocuments,
   listReadableSections,
@@ -89,6 +92,31 @@ const listSectionsHandler: ToolHandler = async (args, ctx) => {
   const pathScope = args.path as string | undefined;
   try {
     const { rows, failures } = await listReadableSections(ctx.writer, pathScope);
+
+    // Broadcast agent:reading per document whose section inventory was returned
+    // (same signal REST GET /canonical/.../sections emits). Folder/root scopes
+    // fan out one event per touched document.
+    if (ctx.writer.type === "agent" && ctx.emitEvent) {
+      const headingPathsByDoc = new Map<string, string[][]>();
+      for (const row of rows) {
+        let headingPaths = headingPathsByDoc.get(row.doc_path);
+        if (!headingPaths) {
+          headingPaths = [];
+          headingPathsByDoc.set(row.doc_path, headingPaths);
+        }
+        headingPaths.push(row.heading_path);
+      }
+      for (const [docPath, headingPaths] of headingPathsByDoc) {
+        ctx.emitEvent({
+          type: "agent:reading",
+          actor_id: ctx.writer.id,
+          actor_display_name: ctx.writer.displayName,
+          doc_path: docPath,
+          heading_paths: headingPaths,
+        });
+      }
+    }
+
     // Surface per-row read failures explicitly (claim-review 04) — never drop them.
     return jsonToolResult({ sections: rows, ...(failures.length > 0 ? { failures } : {}) });
   } catch (error) {
@@ -143,8 +171,12 @@ const searchTextHandler: ToolHandler = async (args, ctx) => {
 // ─── read_doc ────────────────────────────────────────────
 
 const readDocHandler: ToolHandler = async (args, ctx) => {
-  const docPath = args.path as string | undefined;
-  if (!docPath) return makeToolErrorResult("Missing required parameter: path");
+  const rawDocPath = args.path as string | undefined;
+  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: path");
+
+  const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
+  if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
+  const docPath = parsedDocPath.docPath;
 
   const readOk = await checkDocPermission(ctx.writer, docPath, "read");
   if (!readOk) return makeToolErrorResult(`Permission denied: you do not have read access to "${docPath}".`);
@@ -180,47 +212,53 @@ const readDocHandler: ToolHandler = async (args, ctx) => {
   }
 };
 
-// ─── read_doc_structure ──────────────────────────────────
-
-const readDocStructureHandler: ToolHandler = async (args, ctx) => {
-  const docPath = args.path as string | undefined;
-  if (!docPath) return makeToolErrorResult("Missing required parameter: path");
-
-  const structReadOk = await checkDocPermission(ctx.writer, docPath, "read");
-  if (!structReadOk) return makeToolErrorResult(`Permission denied: you do not have read access to "${docPath}".`);
-
-  try {
-    const structure = await readDocumentStructure(docPath);
-
-    // Broadcast agent:reading
-    if (ctx.writer.type === "agent" && ctx.emitEvent) {
-      const headingPaths = flattenStructureToHeadingPaths(structure);
-      ctx.emitEvent({
-        type: "agent:reading",
-        actor_id: ctx.writer.id,
-        actor_display_name: ctx.writer.displayName,
-        doc_path: docPath,
-        heading_paths: headingPaths,
-      });
-    }
-
-    return jsonToolResult({ doc_path: docPath, structure });
-  } catch (error) {
-    if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-      return makeToolErrorResult(`Document not found: ${docPath}`);
-    }
-    throw error;
-  }
-};
+// ─── read_doc_structure (temporarily disabled on MCP surface) ──
+// Production trial: keep the handler for quick restore; agents should use
+// list_sections. Wire name is registered via registry.deprecate(...).
+//
+// const readDocStructureHandler: ToolHandler = async (args, ctx) => {
+//   const docPath = args.path as string | undefined;
+//   if (!docPath) return makeToolErrorResult("Missing required parameter: path");
+//
+//   const structReadOk = await checkDocPermission(ctx.writer, docPath, "read");
+//   if (!structReadOk) return makeToolErrorResult(`Permission denied: you do not have read access to "${docPath}".`);
+//
+//   try {
+//     const structure = await readDocumentStructure(docPath);
+//
+//     // Broadcast agent:reading
+//     if (ctx.writer.type === "agent" && ctx.emitEvent) {
+//       const headingPaths = flattenStructureToHeadingPaths(structure);
+//       ctx.emitEvent({
+//         type: "agent:reading",
+//         actor_id: ctx.writer.id,
+//         actor_display_name: ctx.writer.displayName,
+//         doc_path: docPath,
+//         heading_paths: headingPaths,
+//       });
+//     }
+//
+//     return jsonToolResult({ doc_path: docPath, structure });
+//   } catch (error) {
+//     if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
+//       return makeToolErrorResult(`Document not found: ${docPath}`);
+//     }
+//     throw error;
+//   }
+// };
 
 // ─── read_published_section ──────────────────────────────
 
 const readPublishedSectionHandler: ToolHandler = async (args, ctx) => {
-  const docPath = args.doc_path as string | undefined;
+  const rawDocPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
 
-  if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
+  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath)) return makeToolErrorResult("Missing required parameter: heading_path (array of strings)");
+
+  const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
+  if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
+  const docPath = parsedDocPath.docPath;
 
   const secReadOk = await checkDocPermission(ctx.writer, docPath, "read");
   if (!secReadOk) return makeToolErrorResult(`Permission denied: you do not have read access to "${docPath}".`);
@@ -261,7 +299,7 @@ const readPublishedSectionHandler: ToolHandler = async (args, ctx) => {
 
 const createProposalHandler: ToolHandler = async (args, ctx) => {
   const intent = args.intent as string | undefined;
-  const sections = args.sections as Array<{
+  const rawSections = args.sections as Array<{
     doc_path: string;
     heading_path: string[];
     content: string;
@@ -269,14 +307,23 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
   }> | undefined;
 
   if (!intent) return makeToolErrorResult("Missing required parameter: intent");
-  if (!Array.isArray(sections) || sections.length === 0) {
+  if (!Array.isArray(rawSections) || rawSections.length === 0) {
     return makeToolErrorResult("Missing required parameter: sections (non-empty array)");
   }
 
-  for (const s of sections) {
+  const sections: Array<{
+    doc_path: DocPath;
+    heading_path: string[];
+    content: string;
+    justification?: string;
+  }> = [];
+  for (const s of rawSections) {
     if (!s.doc_path || !Array.isArray(s.heading_path) || typeof s.content !== "string") {
       return makeToolErrorResult("Each section must have doc_path (string), heading_path (string[]), and content (string)");
     }
+    const parsedSectionDocPath = parseToolArgumentDocPath(s.doc_path);
+    if ("errorResult" in parsedSectionDocPath) return parsedSectionDocPath.errorResult;
+    sections.push({ ...s, doc_path: parsedSectionDocPath.docPath });
   }
 
   // Check write permission for all target documents
@@ -284,19 +331,6 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
   for (const dp of targetDocs) {
     const wpOk = await checkDocPermission(ctx.writer, dp, "write");
     if (!wpOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${dp}".`);
-  }
-
-  // Validate all doc_paths before any state is created
-  const validationRoot = getContentRoot();
-  for (const s of sections) {
-    try {
-      resolveDocPathUnderContent(validationRoot, s.doc_path);
-    } catch (error) {
-      if (error instanceof InvalidDocPathError) {
-        return makeToolErrorResult(`Invalid doc_path "${s.doc_path}": ${error.message}`);
-      }
-      throw error;
-    }
   }
 
   const writer = ctx.writer;
@@ -353,20 +387,13 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
   const policyResult = await evaluateAgentWritePolicy(mcpProposalId);
 
   // Broadcast proposal:draft so frontends can show the active draft indicator
-  if (ctx.emitEvent && policyResult.targets.length > 0) {
-    ctx.emitEvent({
-      type: "proposal:draft",
-      proposal_id: mcpProposalId,
-      doc_path: policyResult.targets[0].target.doc_path,
-      heading_paths: policyResult.targets
-        .map((t) => t.target)
-        .filter((tt) => tt.kind === "section")
-        .map((tt) => (tt as { heading_path: string[] }).heading_path),
-      writer_id: writer.id,
-      writer_display_name: writer.displayName,
-      intent,
-    });
-  }
+  emitProposalDraftEventsByDoc(
+    ctx.emitEvent,
+    mcpProposalId,
+    writer,
+    intent,
+    policyResult.targets.map((t) => t.target),
+  );
 
   // When replace=true actually withdrew a prior draft, make the ID switch
   // unmissable: the old id is permanently dead and ONLY the new id may be used.
@@ -425,7 +452,6 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
     if (policyResult.canWrite) {
       const catalogMutations = await summarizeProposalCatalogMutations(proposal);
       const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
-      const sections = proposal.sections;
 
       const committedHead = await commitProposalToCanonical(proposalId, committedMetadata);
       forgetSessionDraft(ctx.session, proposalId);
@@ -436,17 +462,13 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
       }
 
       if (ctx.emitEvent) {
-        ctx.emitEvent({
-          type: "content:committed",
-          doc_path: sections[0]?.doc_path ?? catalogMutations.renamed?.newPath ?? catalogMutations.createdDocPaths[0] ?? "",
-          sections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
-          commit_sha: committedHead,
-          writer_id: ctx.writer.id,
-          writer_display_name: ctx.writer.displayName,
-          writer_type: ctx.writer.type,
-          contributor_ids: [ctx.writer.id],
-          seconds_ago: 0,
-        });
+        emitContentCommittedEventsByDoc(
+          ctx.emitEvent,
+          ctx.writer,
+          [ctx.writer.id],
+          committedHead,
+          proposal.targets,
+        );
         emitCatalogMutationEvents(ctx.emitEvent, catalogMutations, ctx.writer, committedHead);
       }
 
@@ -581,7 +603,7 @@ const readProposalHandler: ToolHandler = async (args) => {
       return makeToolErrorResult(
         `Proposal ${proposalId} is owned by a live editing session and is not readable through the agent proposal surface. `
           + `Its content reflects in-flight collaborative edits that are managed by the live document session, not an authored proposal. `
-          + `To see what is currently published, read the document directly with read_doc, read_doc_structure, or read_published_section. `
+          + `To see what is currently published, read the document directly with read_doc, list_sections, or read_published_section. `
           + `To track or author your own proposals, use my_proposals, list_proposals, or create_proposal.`,
       );
     }
@@ -619,12 +641,16 @@ const readProposalHandler: ToolHandler = async (args) => {
 
 const readProposalSectionHandler: ToolHandler = async (args) => {
   const proposalId = args.proposal_id as string | undefined;
-  const docPath = args.doc_path as string | undefined;
+  const rawDocPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
 
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
-  if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
+  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath)) return makeToolErrorResult("Missing required parameter: heading_path (array of strings)");
+
+  const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
+  if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
+  const docPath = parsedDocPath.docPath;
 
   try {
     const proposal = await readProposal(proposalId);
@@ -670,28 +696,22 @@ const readProposalSectionHandler: ToolHandler = async (args) => {
 
 const writeProposalSectionHandler: ToolHandler = async (args, ctx) => {
   const proposalId = args.proposal_id as string | undefined;
-  const docPath = args.doc_path as string | undefined;
+  const rawDocPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
   const content = args.content as string | undefined;
   const justification = args.justification as string | undefined;
 
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
-  if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
+  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath)) return makeToolErrorResult("Missing required parameter: heading_path");
   if (content === undefined) return makeToolErrorResult("Missing required parameter: content");
 
+  const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
+  if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
+  const docPath = parsedDocPath.docPath;
+
   const wsOk = await checkDocPermission(ctx.writer, docPath, "write");
   if (!wsOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
-
-  // Validate doc_path before any state is created
-  try {
-    resolveDocPathUnderContent(getContentRoot(), docPath);
-  } catch (error) {
-    if (error instanceof InvalidDocPathError) {
-      return makeToolErrorResult(`Invalid doc_path "${docPath}": ${error.message}`);
-    }
-    throw error;
-  }
 
   try {
     const proposal = await readProposal(proposalId);
@@ -717,18 +737,7 @@ const writeProposalSectionHandler: ToolHandler = async (args, ctx) => {
       justification,
     });
 
-    const broadcastProposal = updated;
-    if (ctx.emitEvent && broadcastProposal.sections.length > 0) {
-      ctx.emitEvent({
-        type: "proposal:draft",
-        proposal_id: broadcastProposal.id,
-        doc_path: broadcastProposal.sections[0].doc_path,
-        heading_paths: broadcastProposal.sections.map((s) => s.heading_path),
-        writer_id: ctx.writer.id,
-        writer_display_name: ctx.writer.displayName,
-        intent: broadcastProposal.intent,
-      });
-    }
+    emitProposalDraftEventsByDoc(ctx.emitEvent, updated.id, ctx.writer, updated.intent, updated.targets);
 
     const policyResult = await evaluateAgentWritePolicy(proposalId);
 
@@ -818,21 +827,23 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
     readDocHandler,
   );
 
-  registry.register(
-    "readDocStructure",
-    {
-      name: "read_doc_structure",
-      description: "Read the heading structure of a document without fetching body content. Useful for understanding document organization before reading specific sections.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Document path" },
-        },
-        required: ["path"],
-      },
-    },
-    readDocStructureHandler,
-  );
+  // Temporarily disabled on the MCP surface (production trial): agents should use
+  // list_sections instead. Handler kept above so we can restore registration quickly.
+  // registry.register(
+  //   "readDocStructure",
+  //   {
+  //     name: "read_doc_structure",
+  //     description: "Read the heading structure of a document without fetching body content. Useful for understanding document organization before reading specific sections.",
+  //     inputSchema: {
+  //       type: "object",
+  //       properties: {
+  //         path: { type: "string", description: "Document path" },
+  //       },
+  //       required: ["path"],
+  //     },
+  //   },
+  //   readDocStructureHandler,
+  // );
 
   registry.register(
     "readPublishedSection",
@@ -1025,7 +1036,18 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
     readProposalSectionHandler,
   );
 
-  // Renamed wire names — a call to one returns a migration message, not an
-  // unknown-tool error. `commit_proposal` was renamed to `publish_proposal`.
+  // Renamed/removed wire names — a call to one returns a migration message, not
+  // an unknown-tool error.
+  // `commit_proposal` was renamed to `publish_proposal`.
   registry.deprecate("commit_proposal");
+  // `read_doc_structure` is temporarily off the live surface; steer callers to
+  // list_sections (production trial — restore registration above to re-enable).
+  registry.deprecate(
+    "read_doc_structure",
+    'The tool "read_doc_structure" has been removed. Use list_sections instead ' +
+      "(pass a document path to list that document's sections, or a folder/root " +
+      "path to inventory sections across documents). Refresh your tool list " +
+      "(tools/list) and re-fetch the latest skill.md / cursor-rule.md if your " +
+      "client still advertises read_doc_structure.",
+  );
 }

@@ -7,6 +7,7 @@ vi.mock("../../storage/proposal-repository.js", async (importOriginal) => {
   return {
     ...real,
     readProposal: vi.fn(),
+    readActiveProposal: vi.fn(),
     transitionToCommitting: vi.fn().mockResolvedValue(undefined),
     transitionToCommitted: vi.fn().mockResolvedValue(undefined),
     rollbackCommittingProposal: vi.fn().mockResolvedValue(undefined),
@@ -29,11 +30,11 @@ describe("Post-commit notify invariants", () => {
   });
 
   it("does not emit websocket events from commit pipeline", async () => {
-    const { readProposal, transitionToCommitting, transitionToCommitted } =
+    const { readActiveProposal, transitionToCommitting, transitionToCommitted } =
       await import("../../storage/proposal-repository.js");
     const { CanonicalStore } = await import("../../storage/canonical-store.js");
 
-    vi.mocked(readProposal).mockResolvedValue({
+    vi.mocked(readActiveProposal).mockResolvedValue({
       id: "test-prop-001",
       intent: "test intent",
       writer: { id: "writer-1", type: "human", displayName: "Writer One" },
@@ -78,11 +79,11 @@ describe("Post-commit notify invariants", () => {
   });
 
   it("keeps restore-target commit metadata without any post-commit websocket branch", async () => {
-    const { readProposal, transitionToCommitting, transitionToCommitted } =
+    const { readActiveProposal, transitionToCommitting, transitionToCommitted } =
       await import("../../storage/proposal-repository.js");
     const { CanonicalStore } = await import("../../storage/canonical-store.js");
 
-    vi.mocked(readProposal).mockResolvedValue({
+    vi.mocked(readActiveProposal).mockResolvedValue({
       id: "test-prop-002",
       intent: "restore",
       writer: { id: "admin", type: "human", displayName: "Admin" },

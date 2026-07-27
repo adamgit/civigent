@@ -7,6 +7,7 @@
  * shared-types build fails. It is included by `tsconfig.json` (`include: src`).
  */
 
+import { DocPath } from "./index.js";
 import type {
   AgentWritePolicyResult,
   AgentWritePolicyTarget,
@@ -36,8 +37,8 @@ import type {
 } from "./index.js";
 
 // ── Shared sample targets ─────────────────────────────────────────
-const target: ProposalTargetRef = { kind: "section", doc_path: "doc.md", heading_path: ["A", "B"] };
-const docTarget: ProposalTargetRef = { kind: "document", doc_path: "doc.md" };
+const target: ProposalTargetRef = { kind: "section", doc_path: DocPath.parse("/doc.md"), heading_path: ["A", "B"] };
+const docTarget: ProposalTargetRef = { kind: "document", doc_path: DocPath.parse("/doc.md") };
 
 // ── Agent write policy: human-involvement compatibility instantiation ──
 const hiTargetDetails: HumanInvolvementTargetDetails = {
@@ -115,8 +116,8 @@ const draftDto: DraftProposalDTO = {
   status: "draft",
   writer: { id: "u1", type: "human", displayName: "Alice" },
   intent: "edit",
-  sections: [{ doc_path: "doc.md", heading_path: ["A"] }],
-  targets: [{ kind: "section", doc_path: "doc.md", heading_path: ["A"] }],
+  sections: [{ doc_path: DocPath.parse("/doc.md"), heading_path: ["A"] }],
+  targets: [{ kind: "section", doc_path: DocPath.parse("/doc.md"), heading_path: ["A"] }],
   created_at: "2026-01-01T00:00:00Z",
   agentWritePolicy: hiResult,
   lockEvaluation: lockResult,
@@ -127,8 +128,8 @@ const inProgressDto: InProgressProposalDTO = {
   status: "inprogress",
   writer: { id: "u1", type: "human", displayName: "Alice" },
   intent: "edit",
-  sections: [{ doc_path: "doc.md", heading_path: ["A"] }],
-  targets: [{ kind: "section", doc_path: "doc.md", heading_path: ["A"] }, docTarget],
+  sections: [{ doc_path: DocPath.parse("/doc.md"), heading_path: ["A"] }],
+  targets: [{ kind: "section", doc_path: DocPath.parse("/doc.md"), heading_path: ["A"] }, docTarget],
   created_at: "2026-01-01T00:00:00Z",
   agentWritePolicy: hiResult,
 };

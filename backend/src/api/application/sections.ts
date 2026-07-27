@@ -3,6 +3,7 @@ import type {
   HumanInvolvementPolicyResult,
   WriterIdentity,
 } from "../../types/shared.js";
+import { proposalSectionsParsedForLiveUse } from "../../types/shared.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { CanonicalReader } from "../../storage/canonical-reader.js";
 import { mutateProposalContent, ProposalSectionNotFoundError } from "../../storage/mutate-proposal-content.js";
@@ -37,6 +38,7 @@ import type { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-
 import type { FragmentContent } from "../../storage/section-formatting.js";
 import { requestDocSessionMove, type MoveSectionResult } from "../../ws/crdt-ws-coordinator.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
+import { DocPath } from "../../types/shared.js";
 
 export { broadcastAgentReading };
 
@@ -69,8 +71,8 @@ export async function verifyProposalForRead(proposalId: string, writerId: string
 
 
 interface SectionListReader {
-  getSectionList(docPath: string): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>>;
-  readAllSections(docPath: string): Promise<Map<string, import("../../storage/section-formatting.js").SectionBody>>;
+  getSectionList(docPath: DocPath): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>>;
+  readAllSections(docPath: DocPath): Promise<Map<string, import("../../storage/section-formatting.js").SectionBody>>;
 }
 
 
@@ -78,11 +80,11 @@ interface SectionListReader {
 
 
 
-export async function readCanonicalSectionList(docPath: string): Promise<ReadSectionListResult> {
+export async function readCanonicalSectionList(docPath: DocPath): Promise<ReadSectionListResult> {
   return buildSectionListResponse(docPath, CanonicalReader.open(), undefined);
 }
 
-export async function openWorkspaceReader(docPath: string): Promise<CanonicalReader | ProposalReader> {
+export async function openWorkspaceReader(docPath: DocPath): Promise<CanonicalReader | ProposalReader> {
   const inProgress = await findInProgressProposalForDoc(docPath);
   if (inProgress) {
     return ProposalReader.open(inProgress.id, "inprogress");
@@ -90,7 +92,7 @@ export async function openWorkspaceReader(docPath: string): Promise<CanonicalRea
   return CanonicalReader.open();
 }
 
-export async function readWorkspaceSectionList(docPath: string): Promise<ReadSectionListResult> {
+export async function readWorkspaceSectionList(docPath: DocPath): Promise<ReadSectionListResult> {
   const session = lookupDocSession(docPath);
   return buildSectionListResponse(
     docPath,
@@ -107,7 +109,7 @@ export async function readWorkspaceSectionList(docPath: string): Promise<ReadSec
 
 
 
-export async function readProposalSectionList(proposalId: string, docPath: string): Promise<ReadSectionListResult> {
+export async function readProposalSectionList(proposalId: string, docPath: DocPath): Promise<ReadSectionListResult> {
   const proposal = await readProposal(proposalId);
   return buildSectionListResponse(docPath, ProposalReader.open(proposal.id, proposal.status), proposalId);
 }
@@ -124,9 +126,9 @@ export async function readProposalAllSections(
   const reader = ProposalReader.open(proposal.id, proposal.status);
 
   
-  const docPaths: string[] = [];
+  const docPaths: DocPath[] = [];
   const seen = new Set<string>();
-  for (const section of proposal.sections) {
+  for (const section of proposalSectionsParsedForLiveUse(proposal)) {
     if (!seen.has(section.doc_path)) {
       seen.add(section.doc_path);
       docPaths.push(section.doc_path);
@@ -155,7 +157,7 @@ function buildLiveSectionContent(
 }
 
 async function buildSectionListResponse(
-  docPath: string,
+  docPath: DocPath,
   sectionReader: SectionListReader,
   excludeProposalId: string | undefined,
   liveFragments?: LiveFragmentStringsStore,
@@ -239,7 +241,7 @@ async function evaluateAndMaybeCommit(
   return { policyResult, committedHead };
 }
 
-export function hasActiveSession(docPath: string): boolean {
+export function hasActiveSession(docPath: DocPath): boolean {
   return lookupDocSession(docPath) !== undefined;
 }
 
@@ -256,7 +258,7 @@ export function hasActiveSession(docPath: string): boolean {
 
 
 export async function liveMoveSectionUseCase(
-  docPath: string,
+  docPath: DocPath,
   sourceHeadingPath: string[],
   targetHeadingPath: string[],
   position: "before" | "after",
@@ -265,7 +267,7 @@ export async function liveMoveSectionUseCase(
 }
 
 export async function deleteSectionUseCase(
-  docPath: string,
+  docPath: DocPath,
   headingPath: string[],
   writer: SectionWriter,
 ): Promise<StructuralMutationResult> {
@@ -289,7 +291,7 @@ export class SectionNotFoundForMoveError extends Error {
 }
 
 export async function moveSectionUseCase(
-  docPath: string,
+  docPath: DocPath,
   headingPath: string[],
   newParentPath: string[],
   writer: SectionWriter,
@@ -320,7 +322,7 @@ export interface RenameSectionResult {
 }
 
 export async function renameSectionUseCase(
-  docPath: string,
+  docPath: DocPath,
   headingPath: string[],
   newHeading: string,
   writer: SectionWriter,

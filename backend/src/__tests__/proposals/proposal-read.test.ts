@@ -85,12 +85,12 @@ describe("GET /api/proposals/:id — read proposal", () => {
     expect(proposal.sections.length).toBeGreaterThan(0);
   });
 
-  it("proposal sections contain doc_path and heading_path", async () => {
+  it("committed proposal sections contain stored_doc_path and heading_path", async () => {
     const res = await request(ctx.app).get(`/api/proposals/${committedProposalId}`);
 
     expect(res.status).toBe(200);
     const section = res.body.proposal.sections[0];
-    expect(section.doc_path).toBe(SAMPLE_DOC_PATH);
+    expect(section.stored_doc_path).toBe(SAMPLE_DOC_PATH);
     expect(section.heading_path).toEqual(["Overview"]);
     expect(typeof section.content).toBe("string");
   });

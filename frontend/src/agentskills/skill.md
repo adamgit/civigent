@@ -34,11 +34,10 @@ Read a section as it currently appears inside a proposal:
 ## Reading & Research
 
 1. **Find documents:** `{{tool:listDocuments}}` returns readable documents in the live wiki.
-2. **Inspect section inventory:** `{{tool:listSections}}` returns section headings and `body_size_bytes` without body text.
+2. **Inspect section inventory:** `{{tool:listSections}}` returns section headings and `body_size_bytes` without body text. Pass a document path for one document, or a folder/root path to inventory across documents.
 3. **Search before reading:** `{{tool:searchText}}` supports `syntax: "literal" | "regexp"` for exact phrases and patterns.
-4. **Understand structure:** `{{tool:readDocStructure}}` shows a document's section tree (headings and nesting).
-5. **Read published content:** `{{tool:readPublishedSection}}` reads a specific section by `doc_path` and `heading_path` (JSON array of strings) from the published/live (canonical) system. It will NOT show proposal-only edits. Use `{{tool:readDoc}}` for an entire document.
-6. **Read proposal content:** `{{tool:readProposalSection}}` reads a specific section from a proposal. `{{tool:readProposal}}` reads the whole proposal and its section content.
+4. **Read published content:** `{{tool:readPublishedSection}}` reads a specific section by `doc_path` and `heading_path` (JSON array of strings) from the published/live (canonical) system. It will NOT show proposal-only edits. Use `{{tool:readDoc}}` for an entire document.
+5. **Read proposal content:** `{{tool:readProposalSection}}` reads a specific section from a proposal. `{{tool:readProposal}}` reads the whole proposal and its section content.
 
 ## Making Changes (Proposal Workflow)
 

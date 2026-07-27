@@ -12,12 +12,12 @@ import {
   type ProposalId,
   type HumanInvolvementPolicyResult,
   type HumanInvolvementCommittedProposalMetadata,
+  type ActiveProposal,
   type AnyProposal,
 } from "../types/shared.js";
 import { AgentWritePolicy } from "../domain/agent-write-policy.js";
 import { getContentRoot, getDataRoot } from "./data-root.js";
-import { normalizeDocPath } from "./path-utils.js";
-import { readProposal } from "./proposal-repository.js";
+import { readActiveProposal, readProposal } from "./proposal-repository.js";
 import {
   transitionToCommitting,
   transitionToCommitted,
@@ -28,6 +28,7 @@ import {
 import { ProposalReader } from "./proposal-reader.js";
 import { isSnapshotGenerationEnabled, scheduleSnapshotRegeneration } from "./snapshot.js";
 import { CanonicalStore, type AbsorbResult } from "./canonical-store.js";
+import type { DocPath, DocumentTargetRef } from "../types/shared.js";
 
 // ─────────────────────────────────────────────────────────────────
 
@@ -88,7 +89,7 @@ export async function evaluateAgentWritePolicy(
  * publication carries the standard single-writer trailers.
  */
 function buildPublishCommitMessage(
-  proposal: AnyProposal,
+  proposal: ActiveProposal,
   options: CommitProposalToCanonicalOptions,
 ): { commitMessage: string; author: { name: string; email: string } } {
   const sectionList = proposal.sections.length > 0
@@ -132,7 +133,7 @@ function buildPublishCommitMessage(
  * deleted `auto-commit.ts`; mirrors `SectionRefReceipt` so `absorbedSectionRefs`
  * / `changedSections` reporting survives.
  */
-function proposalSectionRefs(proposal: AnyProposal): Array<{ docPath: string; headingPath: string[] }> {
+function proposalSectionRefs(proposal: ActiveProposal): Array<{ docPath: DocPath; headingPath: string[] }> {
   return proposal.sections.map((section) => ({
     docPath: section.doc_path,
     headingPath: [...section.heading_path],
@@ -160,7 +161,7 @@ async function absorbCommittingProposalToCanonical(
   // Normal publishes leave it false and FAIL on an empty absorb.
   allowEmptyCommit = false,
 ): Promise<AbsorbResult> {
-  const proposal = await readProposal(proposalId);
+  const proposal = await readActiveProposal(proposalId);
   const dataRoot = getDataRoot();
   // Resolve the proposal content root for publication input through the
   // proposal facade rather than reaching for `proposalContentRoot` directly.
@@ -175,7 +176,7 @@ async function absorbCommittingProposalToCanonical(
   // merge. EVERY other proposal — including a DocSession live publish (U4) — passes
   // none → manifest-scoped merge (current canonical overlaid by the manifest).
   const documentTargetPaths = proposal.targets
-    .filter((t): t is { kind: "document"; doc_path: string } => t.kind === "document")
+    .filter((t): t is DocumentTargetRef => t.kind === "document")
     .map((t) => t.doc_path);
   const wholesaleDocPaths = [...new Set(documentTargetPaths)];
 
@@ -184,7 +185,7 @@ async function absorbCommittingProposalToCanonical(
   // skeleton drops them by stable id (a delete survives ancestor rename/move).
   const deletedSectionFilesByDoc = new Map<string, Set<string>>();
   for (const ref of proposal.deleted_section_files ?? []) {
-    const dp = normalizeDocPath(ref.doc_path);
+    const dp = ref.doc_path;
     if (!deletedSectionFilesByDoc.has(dp)) deletedSectionFilesByDoc.set(dp, new Set<string>());
     deletedSectionFilesByDoc.get(dp)!.add(ref.section_file);
   }

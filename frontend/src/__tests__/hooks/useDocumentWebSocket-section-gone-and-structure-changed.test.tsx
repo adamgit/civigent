@@ -64,7 +64,7 @@ function makeSection(overrides: Partial<WorkspaceSectionDto>): WorkspaceSectionD
     agentWritePolicy: { canWrite: true, message: "ok" },
     crdt_session_active: false,
     fragment_key: "frag:sec_overview",
-    section_file: "sec_overview.md",
+    section_file: "/sec_overview.md",
     ...overrides,
   };
 }
@@ -87,7 +87,7 @@ function buildParams(
   const focusedSectionIndexRef = ref<number | null>(opts.focusedSectionIndex ?? null);
   const loadSections = vi.fn(async () => []);
   const params: UseDocumentWebSocketParams = {
-    decodedDocPath: "test.md",
+    decodedDocPath: "/test.md",
     clientInstanceId: "client-1",
     liveReplicaReadyRef: ref(opts.liveReplicaReady),
     setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],
@@ -114,7 +114,7 @@ describe("section:gone WS delivery is no longer a live authority", () => {
 
     emit({
       type: "section:gone",
-      doc_path: "test.md",
+      doc_path: "/test.md",
       fragment_key: "frag:sec_overview",
       heading_path: ["Overview"],
     });
@@ -132,7 +132,7 @@ describe("section:gone WS delivery is no longer a live authority", () => {
 
     emit({
       type: "section:gone",
-      doc_path: "other.md",
+      doc_path: "/other.md",
       fragment_key: "frag:sec_overview",
       heading_path: ["Overview"],
     });
@@ -156,14 +156,14 @@ describe("doc:structure-changed is a cold-invalidation refetch hint (spec 06 §R
 
     emit({
       type: "doc:structure-changed",
-      doc_path: "test.md",
+      doc_path: "/test.md",
       sections: [
         makeSection({ heading: "Overview", heading_path: ["Overview"], fragment_key: "frag:sec_overview", content: "overview + folded timeline\n" }),
       ],
     });
 
     // Cold-invalidation: the hook triggers a workspace-seed refetch for this doc…
-    expect(loadSections).toHaveBeenCalledWith("test.md");
+    expect(loadSections).toHaveBeenCalledWith("/test.md");
     // …and does NOT adopt the app-hub `sections` payload into live state in place
     // (no dropping keys off the current list from the unordered app event).
     expect(fragKeys(holder.sections)).toEqual(["frag:sec_overview", "frag:sec_timeline"]);
@@ -183,7 +183,7 @@ describe("doc:structure-changed is a cold-invalidation refetch hint (spec 06 §R
 
     emit({
       type: "doc:structure-changed",
-      doc_path: "test.md",
+      doc_path: "/test.md",
       sections: [
         makeSection({ heading: "Overview", heading_path: ["Overview"], fragment_key: "frag:sec_overview", content: "overview + folded timeline\n" }),
       ],
@@ -191,7 +191,7 @@ describe("doc:structure-changed is a cold-invalidation refetch hint (spec 06 §R
 
     // The cold refetch fired; focus is left to the replica topology path
     // (`resolveFocusAfterTopologyChange`), NOT mutated by this hook.
-    expect(loadSections).toHaveBeenCalledWith("test.md");
+    expect(loadSections).toHaveBeenCalledWith("/test.md");
     expect(focusedSectionIndexRef.current).toBe(1);
   });
 
@@ -202,7 +202,7 @@ describe("doc:structure-changed is a cold-invalidation refetch hint (spec 06 §R
 
     emit({
       type: "doc:structure-changed",
-      doc_path: "other.md",
+      doc_path: "/other.md",
       sections: [], // would drop everything if it were adopted in place
     });
 

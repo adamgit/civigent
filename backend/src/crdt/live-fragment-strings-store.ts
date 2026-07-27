@@ -27,6 +27,7 @@ import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
 import { yDocToProsemirrorJSON, prosemirrorJSONToYDoc } from "y-prosemirror";
 import { getBackendSchema } from "./ydoc-fragments.js";
 import { fragmentFromRemark, EMPTY_FRAGMENT, type FragmentContent } from "../storage/section-formatting.js";
+import type { DocPath } from "../types/shared.js";
 
 /**
  * The top-level shared types stored in `Y.Doc.share` and keyed by
@@ -49,7 +50,7 @@ function fragmentToMarkdown(doc: Y.Doc, fragmentKey: string): FragmentContent {
 
 export class LiveFragmentStringsStore {
   readonly ydoc: Y.Doc;
-  readonly docPath: string;
+  readonly docPath: DocPath;
 
   private orderedKeys: string[];
   private readonly fragmentWriterIds = new Map<string, Set<string>>();
@@ -63,7 +64,7 @@ export class LiveFragmentStringsStore {
   private reverseMap = new Map<YSharedType, string>();
   private lastShareSize = 0;
 
-  constructor(ydoc: Y.Doc, orderedKeys: string[], docPath: string) {
+  constructor(ydoc: Y.Doc, orderedKeys: string[], docPath: DocPath) {
     this.ydoc = ydoc;
     this.orderedKeys = [...orderedKeys];
     this.docPath = docPath;

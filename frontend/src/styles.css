@@ -329,6 +329,13 @@ a {
   opacity: 0.7;
 }
 
+/* Agent document view (canonical readonly). Overrides the paper canvas token
+   to a slightly blue-tinged white so the existing `bg-canvas-bg` chrome reads as
+   "what the agents see" with no component API change. */
+.agent-doc-view {
+  --color-canvas-bg: #f4f7fb;
+}
+
 .publish-requirements-hover {
   position: fixed;
   z-index: 50;
@@ -1238,4 +1245,108 @@ a {
   outline: 2px solid var(--color-accent);
   outline-offset: 1px;
   border-radius: 4px;
+}
+
+/* ── Document presence strip (P9) ─────────────────────────────────
+ * Absolute-positioned badge strip in the blank space above the document
+ * title, INSIDE the white paper's existing `position: relative` header.
+ * Zero layout-height impact: the title/path never shift when the strip
+ * mounts, updates, or unmounts. Humans left, agents right.
+ *
+ * Discrete engagement rungs come from React (`engagement`); continuous
+ * opacity lives here. `recent` is a one-shot whole-badge fade whose
+ * duration matches the per-mode TTL in `document-presence-constants.ts` —
+ * keep the two in sync. The fade RESTARTS via a React `key` bound to the
+ * badge's `fadeKey` (element remount replays the animation from 0). */
+.presence-strip {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  pointer-events: none;
+  z-index: 2;
+}
+.presence-strip__side {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.presence-strip__side--agents {
+  justify-content: flex-end;
+}
+
+.presence-badge {
+  pointer-events: auto;
+  box-sizing: border-box;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--presence-badge-border, #999);
+  background: var(--presence-badge-fill, #999);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  cursor: default;
+}
+.presence-badge--human {
+  --presence-badge-border: var(--color-accent);
+}
+.presence-badge--agent {
+  --presence-badge-border: var(--color-agent);
+}
+
+/* Engagement rungs. */
+.presence-badge--active {
+  opacity: 1;
+}
+.presence-badge--present {
+  opacity: 0.55;
+}
+.presence-badge--recent {
+  /* Filled per lane/kind below; forwards-fill holds the end state. */
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+  animation-iteration-count: 1;
+}
+
+/* Presence-lane humans fade fully out over the human recent-edit TTL. (A distinct
+ * "tab open but idle" floor signal is not wired today, so a human who leaves the
+ * live session fades to gone rather than settling to a `present` floor — the
+ * reducer/`present` rung already support a floor when such a signal is added.) */
+.presence-badge--recent.presence-badge--lane-presence.presence-badge--human {
+  animation-name: presence-fade-out;
+  animation-duration: 5s;
+}
+/* Presence-lane agents (read trail) fade fully out — no floor. */
+.presence-badge--recent.presence-badge--lane-presence.presence-badge--agent {
+  animation-name: presence-fade-out;
+  animation-duration: 10s;
+}
+/* Write-lane agent commit trail — longer. */
+.presence-badge--recent.presence-badge--lane-write.presence-badge--agent {
+  animation-name: presence-fade-out;
+  animation-duration: 20s;
+}
+/* Write-lane human commit trail — shorter. */
+.presence-badge--recent.presence-badge--lane-write.presence-badge--human {
+  animation-name: presence-fade-out;
+  animation-duration: 10s;
+}
+
+@keyframes presence-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
 }

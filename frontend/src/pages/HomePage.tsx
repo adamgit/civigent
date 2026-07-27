@@ -7,6 +7,7 @@ import { headingPathToLabel } from "./document-page-utils";
 import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 import { relativeTime } from "../utils/relativeTime";
 import { writerInitials } from "../utils/writerInitials";
+import { DocPath } from "../types/shared";
 
 const AVATAR_COLORS: Array<{ bg: string; fg: string }> = [
   { bg: "var(--color-accent-light)", fg: "var(--color-accent)" },
@@ -353,7 +354,7 @@ export function HomePage() {
                 return (
                   <Link
                     key={item.id}
-                    to={docPaths[0] ? `/docs/${stripLeadingSlashForRoute(docPaths[0])}` : "/docs"}
+                    to={docPaths[0] ? `/docs/${stripLeadingSlashForRoute(DocPath.parse(docPaths[0]))}` : "/docs"}
                     style={{
                       display: "flex",
                       alignItems: "center",
@@ -415,7 +416,7 @@ export function HomePage() {
                 return (
                   <Link
                     key={item.id}
-                    to={docPaths[0] ? `/docs/${stripLeadingSlashForRoute(docPaths[0])}` : "/docs"}
+                    to={docPaths[0] ? `/docs/${stripLeadingSlashForRoute(DocPath.parse(docPaths[0]))}` : "/docs"}
                     style={{
                       display: "flex",
                       alignItems: "center",

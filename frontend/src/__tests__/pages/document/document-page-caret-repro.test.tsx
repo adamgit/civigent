@@ -80,6 +80,12 @@ vi.mock("../../../services/observer-crdt-provider", async () => {
 });
 
 vi.mock("../../../services/ws-client", () => ({
+  getAppWsTransportInfo: (() => {
+    const snapshot = { kind: null, fallbackReason: null };
+    return () => snapshot;
+  })(),
+  subscribeAppWsTransport: () => () => {},
+  describeAppWsBroadcastFallback: () => "",
   KnowledgeStoreWsClient: class {
     connect = vi.fn();
     disconnect = vi.fn();
@@ -126,7 +132,7 @@ const overviewSection = {
   humanInvolvement_score: 0,
   crdt_session_active: false,
   fragment_key: "frag:sec_overview",
-  section_file: "sec_overview.md",
+  section_file: "/sec_overview.md",
 };
 
 function accepted(docSessionId: string, mode: "observer" | "editor", clientInstanceId: string): ModeTransitionResult {
@@ -145,7 +151,7 @@ function renderDocPage(strict = false) {
   const tree = (
     <MemoryRouter initialEntries={["/docs/test.md"]}>
       <Routes>
-        <Route path="/docs/*" element={<DocumentPage docPathOverride="test.md" />} />
+        <Route path="/docs/*" element={<DocumentPage docPathOverride="/test.md" />} />
       </Routes>
     </MemoryRouter>
   );

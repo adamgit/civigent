@@ -1,31 +1,21 @@
 import path from "node:path";
 
-export class InvalidDocPathError extends Error {}
+import { DocPath, InvalidDocPathError } from "../types/shared.js";
 
-/** Normalize a doc path: forward slashes, strip leading slashes. */
-export function normalizeDocPath(docPath: string): string {
-  return docPath.replace(/\\/g, "/").replace(/^\/+/, "");
+export { InvalidDocPathError };
+
+export function docPathToContentRelativeFsPath(docPath: DocPath): string {
+  return docPath.slice(1);
 }
 
-function normalizeDocPathStrict(rawDocPath: string): string {
-  const forwardSlash = rawDocPath.replaceAll("\\", "/").trim();
-  const withoutLeadingSlash = forwardSlash.replace(/^\/+/, "");
-  return path.posix.normalize(withoutLeadingSlash);
+export function docPathFromContentRelativeFsPath(contentRelativeFsPath: string): DocPath {
+  return DocPath.parse(`/${contentRelativeFsPath}`);
 }
 
-export function resolveDocPathUnderContent(contentRoot: string, rawDocPath: string): string {
-  const normalized = normalizeDocPathStrict(rawDocPath);
-  if (!normalized || normalized === "." || normalized === "..") {
-    throw new InvalidDocPathError("Invalid doc path.");
-  }
-  if (normalized.startsWith("../") || normalized.includes("/../")) {
-    throw new InvalidDocPathError("Path traversal is not allowed.");
-  }
-  if (!normalized.endsWith(".md")) {
-    throw new InvalidDocPathError("Document path must end with .md");
-  }
+export function resolveDocPathUnderContent(contentRoot: string, docPath: string): string {
+  const contentRelativeFsPath = docPathToContentRelativeFsPath(DocPath.parse(docPath));
 
-  const resolved = path.resolve(contentRoot, ...normalized.split("/"));
+  const resolved = path.resolve(contentRoot, ...contentRelativeFsPath.split("/"));
   const resolvedContentRoot = path.resolve(contentRoot);
   if (!resolved.startsWith(`${resolvedContentRoot}${path.sep}`) && resolved !== resolvedContentRoot) {
     throw new InvalidDocPathError("Path escapes content root.");

@@ -8,10 +8,11 @@ import { asSectionTarget } from "../types/shared.js";
 import {
   listDraftProposals,
   listInProgressProposals,
-  readProposal,
+  readActiveProposal,
 } from "../storage/proposal-repository.js";
 import { checkProposalLocks } from "../domain/proposal-fsm-locks.js";
 import { SectionRef } from "../domain/section-ref.js";
+import type { DocPath } from "../types/shared.js";
 
 function isHumanEditableProposalStatus(status: string): status is "draft" | "inprogress" {
   return status === "draft" || status === "inprogress";
@@ -30,9 +31,9 @@ function isHumanEditableProposalStatus(status: string): status is "draft" | "inp
  */
 export async function buildProposalSectionAvailabilityEvent(
   proposalId: string,
-  docPath: string,
+  docPath: DocPath,
 ): Promise<ProposalSectionAvailabilityEvent | null> {
-  const proposal = await readProposal(proposalId);
+  const proposal = await readActiveProposal(proposalId);
   if (proposal.writer.type !== "human") return null;
   if (!isHumanEditableProposalStatus(proposal.status)) return null;
 
@@ -89,7 +90,7 @@ export async function buildProposalSectionAvailabilityEvent(
 }
 
 export async function buildProposalSectionAvailabilityEventsForDoc(
-  docPath: string,
+  docPath: DocPath,
 ): Promise<ProposalSectionAvailabilityEvent[]> {
   const candidates = [
     ...(await listDraftProposals()),

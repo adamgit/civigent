@@ -8,6 +8,9 @@ import { DocumentTopbar } from "../components/DocumentTopbar";
 import { DocumentConnectionBanner } from "../components/DocumentConnectionBanner";
 import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
 import { DocumentCanvas } from "../components/DocumentCanvas";
+import { SharedDraftBanner } from "../components/SharedDraftBanner";
+import { useForcePublish } from "../hooks/useForcePublish";
+import { buildUnpublishedHistoryRow } from "../models/unpublished-history";
 import { connectionBannerInfo } from "../services/crdt-connection-ux";
 import { DocumentFooter } from "../components/DocumentFooter";
 import { DocumentHistory } from "../components/DocumentHistory";
@@ -42,6 +45,10 @@ import { useDocumentSessionController } from "../hooks/useDocumentSessionControl
 import { useEditorWindowEviction } from "../hooks/useEditorRegistry";
 import { useLiveSectionReplica } from "../hooks/useLiveSectionReplica";
 import { useActiveEditors } from "../hooks/useActiveEditors";
+import { useDocumentPresenceModel } from "../presence/useDocumentPresenceModel";
+import { useCurrentUser } from "../contexts/CurrentUserContext";
+import { DocumentPresenceStrip } from "../components/DocumentPresenceStrip";
+import { resolveWriterId } from "../services/api-client";
 import type { LiveEditorBinding } from "../services/live-section-replica";
 import {
   SectionId,
@@ -67,6 +74,7 @@ import {
   type SessionAuthorshipView,
 } from "../status/sessionAuthorship";
 import { copyTextToClipboard } from "../utils/copy-text";
+import { DocPath } from "../types/shared";
 
 interface DocumentPageProps {
   docPathOverride?: string | null;
@@ -197,6 +205,20 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
 
   const getActiveEditors = useActiveEditors(liveReplica.awareness, liveReplica.isCurrentlyLiveAuthority);
   const publishDecision = liveReplica.replica?.getPublishDecision() ?? null;
+
+  // Shared-draft banner inputs (FP4-FP6). The bound proposal id, its claimed
+  // changed-section count, and the actively-edited count all come from the ONE
+  // live replica (the server's authoritative wire state) — no second client-side
+  // source of truth. The banner shows only when a proposal is actually bound.
+  const boundProposalId = liveReplica.isCurrentlyLiveAuthority
+    ? (liveReplica.replica?.getBoundProposalId() ?? null)
+    : null;
+  const changedSectionCount = liveReplica.replica?.getChangedSectionCount() ?? 0;
+  const activelyEditedCount = liveReplica.replica?.getActivelyEditedSectionKeys().length ?? 0;
+  // Unpublished-history row built from the ordered live proposal snapshot (FP15).
+  const unpublishedHistoryRow = boundProposalId
+    ? buildUnpublishedHistoryRow(boundProposalId, liveReplica.replica?.getClaimedSections() ?? [])
+    : null;
 
   const getLiveBinding = useCallback(
     (fragmentKey: string): LiveEditorBinding | undefined => {
@@ -382,6 +404,7 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     agentReadingIndicators,
     pendingProposalIndicatorsRef,
     coldPendingByFragmentKey,
+    documentActivity: documentActivitySnapshot,
   } = useDocumentWebSocket({
     decodedDocPath,
     clientInstanceId,
@@ -392,6 +415,15 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     onSectionsInjectedByProposal,
     onProposalSectionAvailability: applyProposalSectionAvailabilityEvent,
     onSectionEditRejected,
+  });
+
+  // Document presence strip model (P11). One hook + one mount site keeps the
+  // whole feature trivially removable. Fed the server's complete
+  // `document:activity` snapshot plus the authenticated local user.
+  const currentUser = useCurrentUser();
+  const presenceModel = useDocumentPresenceModel({
+    activity: documentActivitySnapshot,
+    currentUser,
   });
 
   const sectionUncommitted = useCallback(
@@ -556,9 +588,10 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
     }
   }, [liveReplica, decodedDocPath, loadSections, setBootstrapFocusedSectionIndex]);
 
-  const docTitle = decodedDocPath ? getDocDisplayName(decodedDocPath) : "Untitled";
+  const docTitle = decodedDocPath ? getDocDisplayName(DocPath.parse(decodedDocPath)) : "Untitled";
 
   const publishPaused = liveReplica.publishPaused;
+  const { forcePublishing, lastOutcome: forcePublishOutcome, forcePublish } = useForcePublish(decodedDocPath);
   const authorshipLedger = useMemo(() => new EphemeralSessionAuthorshipLedger(), []);
   const localEditSink: LocalEditOriginSink = authorshipLedger;
   const authorshipView: SessionAuthorshipView = authorshipLedger;
@@ -731,6 +764,7 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
             </div>
             <DocumentHistory
               docPath={decodedDocPath}
+              unpublishedRow={unpublishedHistoryRow}
               onRestored={() => {
                 setShowHistory(false);
                 // Trigger a re-fetch of sections by re-navigating
@@ -777,6 +811,8 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
           <div className="flex">
             <div className="w-[200px] min-w-[100px] shrink" />
             <div ref={paperRef} className="flex-1 min-w-[700px] bg-canvas-bg border border-b-0 border-[rgba(0,0,0,0.06)] rounded-t-sm px-14 pt-12 relative">
+              {/* Presence strip: absolute, zero-height, in the blank space above the title (P11) */}
+              <DocumentPresenceStrip model={presenceModel} />
               {/* Document title + optional view-mode toggle */}
               <div className="flex items-center justify-between gap-4 mb-1">
                 <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight tracking-tight min-w-0">
@@ -869,6 +905,22 @@ export function DocumentPage({ docPathOverride, titleAccessory }: DocumentPagePr
                   </>
                 )}
               </div>
+
+              {/* Shared-draft banner — only when a live inprogress proposal is
+                  bound to this document (FP7). Retained across an aborted/failed
+                  force-publish while the proposal stays in progress. */}
+              {boundProposalId ? (
+                <div className="mb-4">
+                  <SharedDraftBanner
+                    changedSectionCount={changedSectionCount}
+                    activelyEditedCount={activelyEditedCount}
+                    forcePublishing={forcePublishing}
+                    pauseActive={publishPaused}
+                    lastOutcome={forcePublishOutcome}
+                    onForcePublish={forcePublish}
+                  />
+                </div>
+              ) : null}
 
               {/* Agent reading indicators */}
               {agentReadingIndicators.length > 0 ? (

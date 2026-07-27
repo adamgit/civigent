@@ -5,7 +5,7 @@ import { listSkeletonEntriesAtRoot, resolveSkeletonPath } from "../../storage/do
 import { ContentLayer, ProposalShadowContentLayer } from "../../storage/content-layer.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 
-const DOC_PATH = "folder/sample.md";
+const DOC_PATH = "/folder/sample.md";
 
 async function writeSkeleton(root: string, docPath: string, body: string): Promise<void> {
   const skeletonPath = resolveSkeletonPath(docPath, root);

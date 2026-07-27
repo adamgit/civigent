@@ -31,7 +31,7 @@ describe("body holder materialization on leaf-to-sub-skeleton transition", () =>
   });
 
   it("readAllSections succeeds after inserting child under a leaf", async () => {
-    const docPath = "read-all-test.md";
+    const docPath = "/read-all-test.md";
     const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await overlay.createDocument(docPath);
 
@@ -51,7 +51,7 @@ describe("body holder materialization on leaf-to-sub-skeleton transition", () =>
   });
 
   it("skeleton/disk consistency after insert-under-leaf", async () => {
-    const docPath = "disk-consistency-test.md";
+    const docPath = "/disk-consistency-test.md";
     const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await overlay.createDocument(docPath);
 
@@ -78,7 +78,7 @@ describe("body holder materialization on leaf-to-sub-skeleton transition", () =>
   });
 
   it("parent body content preserved when leaf becomes sub-skeleton", async () => {
-    const docPath = "preserve-content-test.md";
+    const docPath = "/preserve-content-test.md";
     const overlay = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
     await overlay.createDocument(docPath);
 

@@ -54,6 +54,7 @@ import {
 } from "./crdt-proposal-generator.js";
 import { classifyStructuralChange } from "./structural-change.js";
 import { DocSessionPublishPause } from "./docsession-publish-pause.js";
+import type { DocPath } from "../types/shared.js";
 
 // ─── Session state machine ───────────────────────────────────────
 
@@ -85,7 +86,7 @@ export interface DocSession {
   ydoc: Y.Doc;
   /** Thin Y.Doc fragment adapter: live fragment string reads/writes. */
   liveFragments: LiveFragmentStringsStore;
-  docPath: string;
+  docPath: DocPath;
   /**
    * EDITOR session holders only, keyed by writerId. Observers never become
    * holders (spec 05 §Observer CRDT Channel: "Observer connections do not call
@@ -159,25 +160,25 @@ interface PendingReplacementNotice {
 const pendingReplacementNotices = new Map<string, PendingReplacementNotice>();
 const REPLACEMENT_NOTICE_TTL_MS = 5 * 60 * 1000;
 
-let _broadcastSessionReplacementInvalidation: ((docPath: string) => void) | null = null;
+let _broadcastSessionReplacementInvalidation: ((docPath: DocPath) => void) | null = null;
 
-export function setBroadcastSessionReplacementInvalidation(cb: (docPath: string) => void): void {
+export function setBroadcastSessionReplacementInvalidation(cb: (docPath: DocPath) => void): void {
   _broadcastSessionReplacementInvalidation = cb;
 }
 
-let _broadcastAdminRebuildInvalidation: ((docPath: string) => void) | null = null;
+let _broadcastAdminRebuildInvalidation: ((docPath: DocPath) => void) | null = null;
 
-export function setBroadcastAdminRebuildInvalidation(cb: (docPath: string) => void): void {
+export function setBroadcastAdminRebuildInvalidation(cb: (docPath: DocPath) => void): void {
   _broadcastAdminRebuildInvalidation = cb;
 }
 
 // ─── Lookup ──────────────────────────────────────────────────────
 
-export function lookupDocSession(docPath: string): DocSession | undefined {
+export function lookupDocSession(docPath: DocPath): DocSession | undefined {
   return sessions.get(docPath);
 }
 
-export function getDocSessionId(docPath: string): DocSessionId | null {
+export function getDocSessionId(docPath: DocPath): DocSessionId | null {
   return sessions.get(docPath)?.liveYDocId ?? null;
 }
 
@@ -189,7 +190,7 @@ export function getAllSessions(): Map<string, DocSession> {
  * Re-key a DocSession from oldPath to newPath. Synchronous — must complete before
  * any async I/O yields.
  */
-export function rekeyDocSession(oldPath: string, newPath: string): void {
+export function rekeyDocSession(oldPath: DocPath, newPath: DocPath): void {
   const session = sessions.get(oldPath);
   if (!session) return;
   sessions.delete(oldPath);
@@ -227,7 +228,7 @@ export function getSessionsForWriter(writerId: string): DocSession[] {
  * references the final `DocSession` holds (so mutations stay visible).
  */
 interface LiveDocumentSourceDeps {
-  docPath: string;
+  docPath: DocPath;
   liveFragments: LiveFragmentStringsStore;
   contributors: Map<string, WriterIdentity>;
   getCurrentProposalId: () => ReturnType<CRDTProposalGenerator["getCurrentProposalId"]>;
@@ -286,7 +287,7 @@ function makeLiveDocumentSource(deps: LiveDocumentSourceDeps): LiveDocumentSourc
 // ─── Session Acquire / Release ───────────────────────────────────
 
 export async function acquireDocSession(
-  docPath: string,
+  docPath: DocPath,
   writerId: string,
   baseHead: string,
   writerIdentity?: WriterIdentity,
@@ -341,7 +342,7 @@ export async function acquireDocSession(
 }
 
 async function constructDocSession(
-  docPath: string,
+  docPath: DocPath,
   writerId: string,
   baseHead: string,
   writerIdentity: WriterIdentity,
@@ -503,7 +504,7 @@ export interface ReleaseResult {
  * I/O is allowed in this method.
  */
 export function removeEditorHolder(
-  docPath: string,
+  docPath: DocPath,
   writerId: string,
   socketId?: string,
 ): { session: DocSession | null; lastEditorDetached: boolean } {
@@ -523,7 +524,7 @@ export function removeEditorHolder(
 }
 
 export async function releaseDocSession(
-  docPath: string,
+  docPath: DocPath,
   writerId: string,
   socketId?: string,
 ): Promise<ReleaseResult> {
@@ -556,11 +557,11 @@ export async function releaseDocSession(
  * Kept as an upward hook so the lower lifecycle layer stays free of any coordinator
  * (timer) import.
  */
-const sessionDiscardListeners = new Set<(docPath: string) => void>();
-export function onSessionDiscard(listener: (docPath: string) => void): void {
+const sessionDiscardListeners = new Set<(docPath: DocPath) => void>();
+export function onSessionDiscard(listener: (docPath: DocPath) => void): void {
   sessionDiscardListeners.add(listener);
 }
-function notifySessionDiscarded(docPath: string): void {
+function notifySessionDiscarded(docPath: DocPath): void {
   for (const listener of sessionDiscardListeners) listener(docPath);
 }
 
@@ -613,7 +614,7 @@ export function noteFragmentActivity(
 
 // ─── Activity ────────────────────────────────────────────────────
 
-export function updateActivity(docPath: string): void {
+export function updateActivity(docPath: DocPath): void {
   const session = sessions.get(docPath);
   if (!session) return;
   session.lastActivityAt = Date.now();
@@ -644,7 +645,7 @@ export function addObserverSocket(session: DocSession, socketId: string): void {
  * (spec 05 §Observer CRDT Channel: "Observer disconnection has no effect on
  * Y.Doc retention policy or commit cadence").
  */
-export function removeObserverSocket(docPath: string, socketId: string): void {
+export function removeObserverSocket(docPath: DocPath, socketId: string): void {
   const session = sessions.get(docPath);
   if (!session) return;
   session.observerSocketIds.delete(socketId);
@@ -679,7 +680,7 @@ export async function flushAndDestroyAll(): Promise<void> {
  * Returns null if no notice exists or if it has expired. Does NOT consume it.
  */
 export function getPendingReplacementNotice(
-  docPath: string,
+  docPath: DocPath,
 ): DocumentReplacementNoticePayload | null {
   const entry = pendingReplacementNotices.get(docPath);
   if (!entry) return null;
@@ -702,7 +703,7 @@ export function getPendingReplacementNotice(
  *   3. Close + discard the in-memory live Y.Doc.
  */
 export async function invalidateSessionForReplacement(
-  docPath: string,
+  docPath: DocPath,
   notice: DocumentReplacementNoticePayload | null,
 ): Promise<void> {
   if (notice) {
@@ -749,7 +750,7 @@ export async function invalidateSessionForReplacement(
  * no reconnect notice and no publish-or-abort handoff — the admin operation has
  * already bypassed live editing.
  */
-export async function invalidateSessionForAdminRebuild(docPath: string): Promise<void> {
+export async function invalidateSessionForAdminRebuild(docPath: DocPath): Promise<void> {
   if (_broadcastAdminRebuildInvalidation) {
     _broadcastAdminRebuildInvalidation(docPath);
   }

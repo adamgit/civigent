@@ -198,7 +198,7 @@ describe("PUT /api/proposals/:id — manifest + staged-content split", () => {
     expect(writeRes.body.proposal).toBeDefined();
 
     const readRes = await request(ctx.app)
-      .get(`/api/proposals/${pendingProposalId}/documents/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/proposals/${pendingProposalId}/documents${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
     expect(readRes.status).toBe(200);
     const overview = readRes.body.sections.find(
@@ -237,7 +237,7 @@ describe("PUT /api/proposals/:id — manifest + staged-content split", () => {
 
   it("writes staged content for a single document via the per-document route", async () => {
     const writeRes = await request(ctx.app)
-      .put(`/api/proposals/${pendingProposalId}/documents/${SAMPLE_DOC_PATH}/sections`)
+      .put(`/api/proposals/${pendingProposalId}/documents${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken)
       .send({
         sections: [
@@ -248,7 +248,7 @@ describe("PUT /api/proposals/:id — manifest + staged-content split", () => {
     expect(writeRes.body.proposal).toBeDefined();
 
     const readRes = await request(ctx.app)
-      .get(`/api/proposals/${pendingProposalId}/documents/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/proposals/${pendingProposalId}/documents${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
     expect(readRes.status).toBe(200);
     const overview = readRes.body.sections.find(
@@ -260,7 +260,7 @@ describe("PUT /api/proposals/:id — manifest + staged-content split", () => {
 
   it("per-document staged-content write returns 404 for a non-existent proposal", async () => {
     const res = await request(ctx.app)
-      .put(`/api/proposals/nonexistent-id-12345/documents/${SAMPLE_DOC_PATH}/sections`)
+      .put(`/api/proposals/nonexistent-id-12345/documents${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken)
       .send({
         sections: [{ heading_path: ["Overview"], content: "nope\n" }],

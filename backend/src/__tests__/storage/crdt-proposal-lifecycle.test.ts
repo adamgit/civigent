@@ -33,7 +33,7 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
     const proposalAdoptionId = ProposalAdoptionId.create();
     const { id, contentRoot, proposal } = await getOrCreateInProgressProposalForAdoptionId({
       proposalAdoptionId,
-      docPath: "guide.md",
+      docPath: "/guide.md",
       writer,
     });
 
@@ -50,12 +50,12 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
     const proposalAdoptionId = ProposalAdoptionId.create();
     const first = await getOrCreateInProgressProposalForAdoptionId({
       proposalAdoptionId,
-      docPath: "guide.md",
+      docPath: "/guide.md",
       writer,
     });
     const second = await getOrCreateInProgressProposalForAdoptionId({
       proposalAdoptionId,
-      docPath: "guide.md",
+      docPath: "/guide.md",
       writer,
     });
     expect(second.id).toBe(first.id);
@@ -67,25 +67,25 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
     const proposalAdoptionId = ProposalAdoptionId.create();
     await getOrCreateInProgressProposalForAdoptionId({
       proposalAdoptionId,
-      docPath: "guide.md",
+      docPath: "/guide.md",
       writer,
-      sections: [{ doc_path: "guide.md", heading_path: ["Intro"] }],
+      sections: [{ doc_path: "/guide.md", heading_path: ["Intro"] }],
     });
-    const byDoc = await findInProgressProposalForDoc("guide.md");
+    const byDoc = await findInProgressProposalForDoc("/guide.md");
     expect(byDoc?.proposalAdoptionId).toBe(proposalAdoptionId);
-    expect(await findInProgressProposalForDoc("nonexistent.md")).toBeNull();
+    expect(await findInProgressProposalForDoc("/nonexistent.md")).toBeNull();
   });
 
   it("updates the current-proposal section manifest, keeping targets in sync", async () => {
     const proposalAdoptionId = ProposalAdoptionId.create();
     const { id } = await getOrCreateInProgressProposalForAdoptionId({
       proposalAdoptionId,
-      docPath: "guide.md",
+      docPath: "/guide.md",
       writer,
     });
     const sections = [
-      { doc_path: "guide.md", heading_path: ["Intro"] },
-      { doc_path: "guide.md", heading_path: ["Intro", "Sub"] },
+      { doc_path: "/guide.md", heading_path: ["Intro"] },
+      { doc_path: "/guide.md", heading_path: ["Intro", "Sub"] },
     ];
     const updated = await updateCurrentProposalSections(id, sections);
     expect(updated.sections.map((s) => SectionRef.headingKey(s.heading_path)).sort()).toEqual(
@@ -101,17 +101,17 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
     const proposalAdoptionId = ProposalAdoptionId.create();
     const { id } = await getOrCreateInProgressProposalForAdoptionId({
       proposalAdoptionId,
-      docPath: "guide.md",
+      docPath: "/guide.md",
       writer,
     });
     const key = (hp: string[]) => SectionRef.headingKey(hp);
 
     // First edit claims only Overview.
-    let p = await unionCurrentProposalSections(id, [{ doc_path: "guide.md", heading_path: ["Overview"] }]);
+    let p = await unionCurrentProposalSections(id, [{ doc_path: "/guide.md", heading_path: ["Overview"] }]);
     expect(p.sections.map((s) => key(s.heading_path))).toEqual([key(["Overview"])]);
 
     // A second edit to a DIFFERENT section grows the claim — Overview is retained.
-    p = await unionCurrentProposalSections(id, [{ doc_path: "guide.md", heading_path: ["Timeline"] }]);
+    p = await unionCurrentProposalSections(id, [{ doc_path: "/guide.md", heading_path: ["Timeline"] }]);
     expect(p.sections.map((s) => key(s.heading_path)).sort()).toEqual(
       [key(["Overview"]), key(["Timeline"])].sort(),
     );
@@ -120,13 +120,13 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
     );
 
     // Re-claiming an already-claimed section is idempotent (no duplicate).
-    p = await unionCurrentProposalSections(id, [{ doc_path: "guide.md", heading_path: ["Overview"] }]);
+    p = await unionCurrentProposalSections(id, [{ doc_path: "/guide.md", heading_path: ["Overview"] }]);
     expect(p.sections).toHaveLength(2);
 
     // D6: the manifest is GROW-ONLY — there is no remove path. A delete does NOT
     // shrink `sections` (it is tracked separately by canonical section-file id in
     // `deleted_section_files`), so re-unioning anything only ever keeps/adds claims.
-    p = await unionCurrentProposalSections(id, [{ doc_path: "guide.md", heading_path: ["Timeline"] }]);
+    p = await unionCurrentProposalSections(id, [{ doc_path: "/guide.md", heading_path: ["Timeline"] }]);
     expect(p.sections.map((s) => key(s.heading_path)).sort()).toEqual(
       [key(["Overview"]), key(["Timeline"])].sort(),
     );
@@ -136,13 +136,13 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
     const proposalAdoptionId = ProposalAdoptionId.create();
     const { id } = await getOrCreateInProgressProposalForAdoptionId({
       proposalAdoptionId,
-      docPath: "guide.md",
+      docPath: "/guide.md",
       writer,
     });
     // A DocSession-owned proposal must carry ≥1 target to reach `committing`
     // (empty live-edit manifests are corruption); give it one so this rollback
     // fixture is a valid proposal.
-    await updateCurrentProposalSections(id, [{ doc_path: "guide.md", heading_path: ["Intro"] }]);
+    await updateCurrentProposalSections(id, [{ doc_path: "/guide.md", heading_path: ["Intro"] }]);
 
     await transitionToCommitting(id);
     expect((await readProposal(id)).status).toBe("committing");
@@ -159,12 +159,12 @@ describe("CRDT-owned proposal lifecycle helpers", () => {
     const proposalAdoptionId = ProposalAdoptionId.create();
     const { id } = await getOrCreateInProgressProposalForAdoptionId({
       proposalAdoptionId,
-      docPath: "guide.md",
+      docPath: "/guide.md",
       writer,
     });
     // Give the DocSession proposal a target so it is a valid (non-empty) proposal
     // eligible to reach `committing`.
-    await updateCurrentProposalSections(id, [{ doc_path: "guide.md", heading_path: ["Intro"] }]);
+    await updateCurrentProposalSections(id, [{ doc_path: "/guide.md", heading_path: ["Intro"] }]);
     await transitionToCommitting(id);
     const recovered = await rollbackCommittingProposal(id, "docsession");
     expect(recovered.status).toBe("inprogress");

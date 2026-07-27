@@ -20,8 +20,9 @@ import { runBodyVsSkeletonHeadingsCheck } from "./checks/body-vs-skeleton-headin
 import { runBackendStateCheck } from "./checks/backend-state.js";
 import { runRestoreTargetRecursiveMatchCheck } from "./checks/restore-target-recursive-match.js";
 import { runRestoreFeasibleCheck } from "./checks/restore-feasible.js";
+import type { DocPath } from "../../types/shared.js";
 
-export async function buildDocumentDiagnostics(docPath: string): Promise<DocDiagnosticsResponse> {
+export async function buildDocumentDiagnostics(docPath: DocPath): Promise<DocDiagnosticsResponse> {
   const ctx = createDocumentDiagnosticsContext(docPath);
 
   await runTopLevelSkeletonParseCheck(ctx);

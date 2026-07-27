@@ -33,11 +33,10 @@ Read a section from a proposal:
 ## Reading & Research
 
 1. **Find documents:** `{{tool:listDocuments}}` returns readable documents in the live wiki.
-2. **Inspect section inventory:** `{{tool:listSections}}` returns section headings and `body_size_bytes` without body text.
+2. **Inspect section inventory:** `{{tool:listSections}}` returns section headings and `body_size_bytes` without body text. Pass a document path for one document, or a folder/root path to inventory across documents.
 3. **Search before reading:** `{{tool:searchText}}` supports `syntax: "literal" | "regexp"` for exact phrases and patterns.
-4. **Understand structure:** `{{tool:readDocStructure}}` shows a document's section tree (headings and nesting).
-5. **Read published content:** `{{tool:readPublishedSection}}` reads a specific section by `doc_path` and `heading_path` (JSON array of strings) from the published/live (canonical) system. It will NOT show proposal-only edits. Use `{{tool:readDoc}}` for an entire document.
-6. **Read proposal content:** `{{tool:readProposalSection}}` reads a specific section from a proposal. `{{tool:readProposal}}` reads the whole proposal and its section content.
+4. **Read published content:** `{{tool:readPublishedSection}}` reads a specific section by `doc_path` and `heading_path` (JSON array of strings) from the published/live (canonical) system. It will NOT show proposal-only edits. Use `{{tool:readDoc}}` for an entire document.
+5. **Read proposal content:** `{{tool:readProposalSection}}` reads a specific section from a proposal. `{{tool:readProposal}}` reads the whole proposal and its section content.
 
 ## Making Changes (Proposal Workflow)
 
@@ -86,7 +85,7 @@ These modify the document tree itself (headings, not body content). **All requir
 
 ## Important Behaviours
 
-- **Always read before writing** — use `{{tool:readPublishedSection}}` or `{{tool:readDocStructure}}` first.
+- **Always read before writing** — use `{{tool:readPublishedSection}}` or `{{tool:listSections}}` first.
 - **Verify proposal content with proposal reads** — after writing to a proposal, use `{{tool:readProposalSection}}` or `{{tool:readProposal}}`. Do not use `{{tool:readPublishedSection}}` for draft verification; it reads the published/live system and will not show your proposal-only edits.
 - **Publish gates** — a target section may be unavailable because another proposal holds an exclusive lock on it, or because agent write-policy does not currently permit agents to write it. This is expected, not an error. Wait and retry later, narrow your scope, or withdraw.
 - **Clear intent** — write descriptive intent in `{{tool:createProposal}}` so reviewers understand your purpose.

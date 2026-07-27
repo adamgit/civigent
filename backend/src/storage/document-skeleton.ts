@@ -49,7 +49,8 @@ import path from "node:path";
 import { writeFile, mkdir, rm } from "node:fs/promises";
 import { pathExists, readFileIfExists } from "./fs-primitives.js";
 import type { DocStructureNode } from "../types/shared.js";
-import { normalizeDocPath } from "./path-utils.js";
+import { DocPath } from "../types/shared.js";
+import { docPathToContentRelativeFsPath } from "./path-utils.js";
 import { staleHeadingPath } from "./skeleton-errors.js";
 import { isBodyHolderShape } from "./section-shape.js";
 
@@ -139,11 +140,11 @@ export const TOMBSTONE_SUFFIX = ".tombstone";
 export type ProposalDocumentState = "missing" | "live" | "tombstone";
 
 
-export function resolveSkeletonPath(docPath: string, contentRoot: string): string {
-  return path.resolve(contentRoot, ...normalizeDocPath(docPath).split("/"));
+export function resolveSkeletonPath(docPath: DocPath, contentRoot: string): string {
+  return path.resolve(contentRoot, ...docPathToContentRelativeFsPath(DocPath.parse(docPath)).split("/"));
 }
 
-export function resolveTombstonePath(docPath: string, overlayRoot: string): string {
+export function resolveTombstonePath(docPath: DocPath, overlayRoot: string): string {
   return resolveSkeletonPath(docPath, overlayRoot) + TOMBSTONE_SUFFIX;
 }
 
@@ -151,7 +152,7 @@ async function fileExists(filePath: string): Promise<boolean> {
   return pathExists(filePath);
 }
 
-export async function skeletonFileExists(docPath: string, contentRoot: string): Promise<boolean> {
+export async function skeletonFileExists(docPath: DocPath, contentRoot: string): Promise<boolean> {
   return fileExists(resolveSkeletonPath(docPath, contentRoot));
 }
 
@@ -161,7 +162,7 @@ export async function skeletonFileExists(docPath: string, contentRoot: string): 
  * with `skeletonFileExists(...)` to resolve effective document state
  * (tombstone-first, then proposal skeleton, then canonical fallback).
  */
-export async function tombstoneFileExists(docPath: string, contentRoot: string): Promise<boolean> {
+export async function tombstoneFileExists(docPath: DocPath, contentRoot: string): Promise<boolean> {
   return fileExists(resolveTombstonePath(docPath, contentRoot));
 }
 
@@ -172,12 +173,12 @@ export async function tombstoneFileExists(docPath: string, contentRoot: string):
  * `.sections` tree and deciding WHEN a document is "deleted" (proposal deletion
  * / rename) is the proposal subsystem's job, which composes this primitive.
  */
-export async function writeTombstoneMarker(docPath: string, contentRoot: string): Promise<void> {
+export async function writeTombstoneMarker(docPath: DocPath, contentRoot: string): Promise<void> {
   const tombstonePath = resolveTombstonePath(docPath, contentRoot);
   await mkdir(path.dirname(tombstonePath), { recursive: true });
   await writeFile(
     tombstonePath,
-    `This file marks file ${normalizeDocPath(docPath)} to be deleted when this proposal is committed\n`,
+    `This file marks file ${DocPath.parse(docPath)} to be deleted when this proposal is committed\n`,
     "utf8",
   );
 }
@@ -188,7 +189,7 @@ export async function writeTombstoneMarker(docPath: string, contentRoot: string)
  * decision of WHEN to clear a tombstone (document create / rename /
  * resurrection) belongs to the proposal subsystem, not here.
  */
-export async function clearTombstoneMarker(docPath: string, contentRoot: string): Promise<void> {
+export async function clearTombstoneMarker(docPath: DocPath, contentRoot: string): Promise<void> {
   await rm(resolveTombstonePath(docPath, contentRoot), { force: true });
 }
 
@@ -323,7 +324,7 @@ export interface CollapseParentResult {
 // ─── DocumentSkeleton (readonly) ────────────────────────────────
 
 export class DocumentSkeleton {
-  readonly docPath: string;
+  readonly docPath: DocPath;
   protected roots: SkeletonNode[];
 
   // `hasBeenWrittenToOverlay`: this specific in-memory instance has successfully
@@ -351,7 +352,7 @@ export class DocumentSkeleton {
   protected _shadowBodyExists?: (bodyFilePath: string) => Promise<boolean>;
 
   protected constructor(
-    docPath: string,
+    docPath: DocPath,
     roots: SkeletonNode[],
     contentRoot: string,
   ) {
@@ -853,7 +854,7 @@ export class DocumentSkeleton {
    * Derive the sections directory path for a given document.
    * This is where all body files and sub-skeletons live on disk.
    */
-  static sectionsDir(docPath: string, contentRoot: string): string {
+  static sectionsDir(docPath: DocPath, contentRoot: string): string {
     return resolveSkeletonPath(docPath, contentRoot) + ".sections";
   }
 
@@ -868,7 +869,7 @@ export class DocumentSkeleton {
    * subsystem composes proposal-root structure, tombstone state, and canonical
    * fallback via the effective-load `fromDisk(...)`.
    */
-  static async fromSingleRoot(docPath: string, contentRoot: string): Promise<DocumentSkeleton> {
+  static async fromSingleRoot(docPath: DocPath, contentRoot: string): Promise<DocumentSkeleton> {
     const nodes = await readTreeRecursive(resolveSkeletonPath(docPath, contentRoot));
     validateNoDuplicateRoots(nodes, docPath);
     return new DocumentSkeleton(docPath, nodes, contentRoot);
@@ -888,7 +889,7 @@ export class DocumentSkeleton {
    * `fromSingleRoot(...)`.
    */
   static async fromDisk(
-    docPath: string,
+    docPath: DocPath,
     overlayRoot: string,
     canonicalRoot: string,
     deletedSectionFiles?: ReadonlySet<string>,
@@ -1907,7 +1908,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * — callers must invoke persistSkeletonTree() to write it.
    */
   static inMemoryEmpty(
-    docPath: string,
+    docPath: DocPath,
     overlayRoot: string,
   ): DocumentSkeletonInternal {
     return new DocumentSkeletonInternal(docPath, [], overlayRoot);
@@ -1944,7 +1945,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    *     "missing") — those decisions stay with the proposal-owned caller.
    */
   static async createEmptySkeletonInRoot(
-    docPath: string,
+    docPath: DocPath,
     contentRoot: string,
   ): Promise<DocumentSkeletonInternal> {
     const skeleton = new DocumentSkeletonInternal(docPath, [], contentRoot);
@@ -1965,7 +1966,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * The proposal subsystem composes the proposal-root-or-canonical decision and
    * passes the result to `fromNodes(...)`; DS itself never chooses between roots.
    */
-  static async loadNodesFromRoot(docPath: string, contentRoot: string): Promise<SkeletonNode[]> {
+  static async loadNodesFromRoot(docPath: DocPath, contentRoot: string): Promise<SkeletonNode[]> {
     const nodes = await readTreeRecursive(resolveSkeletonPath(docPath, contentRoot));
     validateNoDuplicateRoots(nodes, docPath);
     return nodes;
@@ -1981,7 +1982,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * recovery (no policy — recovery writes a self-contained tree).
    */
   static fromNodes(
-    docPath: string,
+    docPath: DocPath,
     nodes: SkeletonNode[],
     contentRoot: string,
     shadowBodyExists?: (bodyFilePath: string) => Promise<boolean>,
@@ -2002,7 +2003,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * effective merge instead of copying a proposal's frozen snapshot wholesale.
    */
   static async persistNodesToRoot(
-    docPath: string,
+    docPath: DocPath,
     nodes: SkeletonNode[],
     root: string,
     shadowBodyExists?: (bodyFilePath: string) => Promise<boolean>,
@@ -2079,7 +2080,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
  * new canonical skeleton instead of copying the proposal's frozen snapshot.
  */
 export async function resolveEffectiveSkeletonNodes(
-  docPath: string,
+  docPath: DocPath,
   overlayRoot: string,
   canonicalRoot: string,
   deletedSectionFiles?: ReadonlySet<string>,
@@ -2088,7 +2089,7 @@ export async function resolveEffectiveSkeletonNodes(
 }
 
 async function buildSkeletonTree(
-  docPath: string,
+  docPath: DocPath,
   overlayRoot: string,
   canonicalRoot: string,
   deletedSectionFiles?: ReadonlySet<string>,
@@ -2284,7 +2285,7 @@ async function readTreeRecursive(skeletonPath: string): Promise<SkeletonNode[]> 
  * has been a historical source of bugs.
  */
 export async function listSkeletonEntriesAtRoot(
-  docPath: string,
+  docPath: DocPath,
   root: string,
 ): Promise<FlatEntry[] | null> {
   const skeletonPath = resolveSkeletonPath(docPath, root);
@@ -2319,7 +2320,7 @@ export async function listSkeletonEntriesAtRoot(
  * data loss on re-normalization. Throws immediately rather than letting the
  * corruption cascade.
  */
-function validateNoDuplicateRoots(nodes: SkeletonNode[], docPath: string): void {
+function validateNoDuplicateRoots(nodes: SkeletonNode[], docPath: DocPath): void {
   const rootCount = nodes.filter(n => isBodyHolderShape(n)).length;
   if (rootCount > 1) {
     throw new Error(
@@ -2369,7 +2370,7 @@ function addBodyHoldersToParents(nodes: SkeletonNode[]): void {
  */
 export interface MutationTransactionContext {
   readonly roots: SkeletonNode[];
-  readonly docPath: string;
+  readonly docPath: DocPath;
   findSiblingList(parentPath: string[]): SkeletonNode[];
   resolveSkeletonPathFor(parentPath: string[]): string;
   flattenNode(node: SkeletonNode, parentPath: string[], parentSkeletonPath: string): FlatEntry[];
@@ -2425,7 +2426,7 @@ export interface StructuralMutationPlan {
  * As more invariants are discovered (e.g. body writes pointing at sub-
  * skeleton paths) they should be added here.
  */
-function validateMutationPlan(plan: StructuralMutationPlan, docPath: string): void {
+function validateMutationPlan(plan: StructuralMutationPlan, docPath: DocPath): void {
   if (!Array.isArray(plan.removed) || !Array.isArray(plan.added)) {
     throw new Error(
       `Skeleton mutation plan validation failed in ${docPath}: ` +

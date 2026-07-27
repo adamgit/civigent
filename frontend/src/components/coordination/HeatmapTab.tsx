@@ -3,6 +3,7 @@ import { sectionGlobalKey, type GetHeatmapResponse, type HeatmapEntry, type AnyP
 import { headingPathToLabel } from "../../pages/document-page-utils";
 import { stripLeadingSlashForRoute } from "../../app/docsRouteUtils";
 import { relativeTime } from "../../utils/relativeTime";
+import { DocPath } from "../../types/shared";
 
 // ─── Human-involvement-policy-specific visuals ───────────────────
 //
@@ -85,7 +86,7 @@ export function HeatmapTab({ heatmap, agentReadings, proposals, loading, error }
         Array.from(docGroups.entries()).map(([docPath, entries]) => (
           <div key={docPath} className="mb-5">
             <h3 className="text-sm font-semibold mb-1">
-              <Link to={`/docs/${stripLeadingSlashForRoute(docPath)}`} className="text-text-primary hover:text-accent-text">{docPath}</Link>
+              <Link to={`/docs/${stripLeadingSlashForRoute(DocPath.parse(docPath))}`} className="text-text-primary hover:text-accent-text">{docPath}</Link>
             </h3>
             <table className="w-full text-xs" style={{ borderCollapse: "collapse" }}>
               <thead>

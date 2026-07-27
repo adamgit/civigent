@@ -7,15 +7,19 @@ import type {
   WsClientMessage,
   WsServerEvent,
   ClientInstanceId,
+  DocumentActivityEvent,
 } from "../types/shared.js";
-import { expectJsonObject, parseJson } from "../types/shared.js";
-import { resolveAuthenticatedWriterFromHeaders } from "../auth/context.js";
-import { getCurrentFatal } from "../runtime/fatal-handler.js";
+import { DocPath, expectJsonObject, parseJson } from "../types/shared.js";
+import { resolveAuthenticatedWriterFromHeaders, type AuthenticatedWriter } from "../auth/context.js";
+import { checkDocPermission } from "../auth/acl.js";
+import { getCurrentFatal, handleProcessFatal } from "../runtime/fatal-handler.js";
+import { sendDocumentActivitySnapshot } from "./document-activity.js";
 
 interface SocketState {
+  writer: AuthenticatedWriter;
   writerId: string;
   writerDisplayName: string;
-  subscriptions: Set<string>;
+  subscriptions: Set<DocPath>;
   // Stable per-tab identity supplied by the client. Used ONLY for private
   // origin-only routing (see `sendPrivate`) — the ordinary broadcast path
   // does not consult this field.
@@ -24,6 +28,7 @@ interface SocketState {
 
 export interface WsHub {
   broadcast(event: WsServerEvent): void;
+  broadcastToDocumentSubscribers(event: DocumentActivityEvent): void;
   /**
    * Deliver an origin-only app event (e.g. `section:edit-rejected`) to the one
    * socket whose `(docPath, clientInstanceId)` matches the target. Silently
@@ -32,7 +37,7 @@ export interface WsHub {
    * every other tab. Never routes by `writer_id`.
    */
   sendPrivate(
-    target: { docPath: string; clientInstanceId: ClientInstanceId },
+    target: { docPath: DocPath; clientInstanceId: ClientInstanceId },
     event: WsServerEvent,
   ): void;
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
@@ -97,17 +102,21 @@ export function createWsHub(): WsHub {
   const wsServer = new WebSocketServer({ noServer: true });
   const socketState = new Map<WebSocket, SocketState>();
 
+  const hasDocumentSubscription = (state: SocketState, docPath: DocPath): boolean =>
+    state.subscriptions.has(docPath);
+
   const broadcastInternal = (event: WsServerEvent) => {
     const encoded = JSON.stringify(event);
+    const eventDocPath = "doc_path" in event ? DocPath.parse(event.doc_path) : null;
     for (const [socket, state] of socketState.entries()) {
       if (socket.readyState !== WebSocket.OPEN) continue;
 
-      if (!("doc_path" in event)) {
+      if (eventDocPath === null) {
         socket.send(encoded);
         continue;
       }
 
-      const explicitlySubscribed = state.subscriptions.has(event.doc_path);
+      const explicitlySubscribed = hasDocumentSubscription(state, eventDocPath);
       const sessionWide = state.subscriptions.size === 0;
       if (!explicitlySubscribed && !sessionWide) continue;
 
@@ -123,9 +132,10 @@ export function createWsHub(): WsHub {
     }
 
     socketState.set(socket, {
+      writer,
       writerId: writer.id,
       writerDisplayName: writer.displayName,
-      subscriptions: new Set<string>(),
+      subscriptions: new Set<DocPath>(),
       clientInstanceId: null,
     });
 
@@ -140,6 +150,13 @@ export function createWsHub(): WsHub {
       socket.send(JSON.stringify(stickyEvent));
     }
 
+    // Read-ACL check + initial activity snapshot make subscribe handling async;
+    // the per-socket chain keeps subscribe/unsubscribe ordering intact.
+    let subscriptionChain: Promise<void> = Promise.resolve();
+    const closeSocketAndReportSubscriptionCommandFailure = (err: unknown): void => {
+      socket.close(1011, "internal error");
+      handleProcessFatal(err, "uncaughtException");
+    };
     socket.on("message", (data) => {
       const state = socketState.get(socket);
       if (!state) return;
@@ -150,17 +167,31 @@ export function createWsHub(): WsHub {
       if (message === null) return;
 
       if (message.action === "subscribe") {
-        state.subscriptions.add(message.doc_path);
         if (message.clientInstanceId !== undefined) {
           state.clientInstanceId = message.clientInstanceId;
         }
+        subscriptionChain = subscriptionChain
+          .then(async () => {
+            const docPath = DocPath.parse(message.doc_path);
+            const canRead = await checkDocPermission(state.writer, docPath, "read");
+            if (!canRead) return;
+            state.subscriptions.add(docPath);
+            await sendDocumentActivitySnapshot(docPath, (event) => {
+              if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event));
+            });
+          })
+          .then(null, closeSocketAndReportSubscriptionCommandFailure);
         return;
       }
       if (message.action === "identify") {
         state.clientInstanceId = message.clientInstanceId;
         return;
       }
-      state.subscriptions.delete(message.doc_path);
+      subscriptionChain = subscriptionChain
+        .then(() => {
+          state.subscriptions.delete(DocPath.parse(message.doc_path));
+        })
+        .then(null, closeSocketAndReportSubscriptionCommandFailure);
     });
 
     socket.on("close", () => {
@@ -169,7 +200,7 @@ export function createWsHub(): WsHub {
   });
 
   const sendPrivateInternal = (
-    target: { docPath: string; clientInstanceId: ClientInstanceId },
+    target: { docPath: DocPath; clientInstanceId: ClientInstanceId },
     event: WsServerEvent,
   ): void => {
     // Wrap the event in a private envelope so the shared-worker layer can
@@ -189,7 +220,7 @@ export function createWsHub(): WsHub {
       // Require an active subscription to the doc so a tab that never opened
       // this document still cannot receive its rejection payload — matching
       // clientInstanceId is necessary but not sufficient.
-      const explicitlySubscribed = state.subscriptions.has(target.docPath);
+      const explicitlySubscribed = hasDocumentSubscription(state, target.docPath);
       const sessionWide = state.subscriptions.size === 0;
       if (!explicitlySubscribed && !sessionWide) continue;
       socket.send(envelope);
@@ -202,6 +233,15 @@ export function createWsHub(): WsHub {
   return {
     broadcast(event: WsServerEvent) {
       broadcastInternal(event);
+    },
+    broadcastToDocumentSubscribers(event: DocumentActivityEvent) {
+      const encoded = JSON.stringify(event);
+      const eventDocPath = DocPath.parse(event.doc_path);
+      for (const [socket, state] of socketState.entries()) {
+        if (socket.readyState !== WebSocket.OPEN) continue;
+        if (!hasDocumentSubscription(state, eventDocPath)) continue;
+        socket.send(encoded);
+      }
     },
     sendPrivate(target, event) {
       sendPrivateInternal(target, event);

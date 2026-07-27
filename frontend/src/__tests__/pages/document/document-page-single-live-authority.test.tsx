@@ -56,6 +56,12 @@ vi.mock("../../../services/crdt-provider", () => ({
 }));
 
 vi.mock("../../../services/ws-client", () => ({
+  getAppWsTransportInfo: (() => {
+    const snapshot = { kind: null, fallbackReason: null };
+    return () => snapshot;
+  })(),
+  subscribeAppWsTransport: () => () => {},
+  describeAppWsBroadcastFallback: () => "",
   KnowledgeStoreWsClient: class {
     connect = vi.fn();
     disconnect = vi.fn();
@@ -97,14 +103,14 @@ const overviewSection = {
   humanInvolvement_score: 0,
   crdt_session_active: false,
   fragment_key: "frag:sec_overview",
-  section_file: "sec_overview.md",
+  section_file: "/sec_overview.md",
 };
 
 function renderDocPage() {
   return render(
     <MemoryRouter initialEntries={["/docs/test.md"]}>
       <Routes>
-        <Route path="/docs/*" element={<DocumentPage docPathOverride="test.md" />} />
+        <Route path="/docs/*" element={<DocumentPage docPathOverride="/test.md" />} />
       </Routes>
     </MemoryRouter>,
   );

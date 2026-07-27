@@ -7,10 +7,16 @@ import type {
   ProposalStatus,
   HumanInvolvementPolicyResult,
   WriterIdentity,
+  ProposalTargetRef,
 } from "../../types/shared.js";
-import { sectionTargetsOf } from "../../types/shared.js";
+import {
+  docPathFromStoredHistoryProposalPath,
+  isActiveProposal,
+  sectionTargetsOf,
+} from "../../types/shared.js";
 import {
   createProposal,
+  readActiveProposal,
   readProposal,
   readProposalWithContent,
   listAllProposals,
@@ -37,6 +43,7 @@ import { AgentWritePolicy, humanBypassPolicyResult } from "../../domain/agent-wr
 import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
 import { SectionRef } from "../../domain/section-ref.js";
+import { DocPath } from "../../types/shared.js";
 
 export { ProposalNotFoundError, InvalidProposalStateError, isProposalStatus };
 
@@ -113,8 +120,8 @@ export function validateCreateProposal(writerType: "human" | "agent", body: Crea
 export interface CreateProposalOutcome {
   proposalId: string;
   intent: string;
-  /** Sections (without content) for event emission. */
-  draftSections: Array<{ doc_path: string; heading_path: string[] }>;
+  /** Authoritative proposal targets for event emission. */
+  draftTargets: ProposalTargetRef[];
   /** null for human (bypass); policy result for agents. */
   agentWritePolicy: HumanInvolvementPolicyResult;
   outcome: "accepted" | "blocked";
@@ -163,10 +170,11 @@ export async function createProposalUseCase(
 
   // Human reservations bypass Agent Write Policy entirely (spec 12).
   if (writer.type === "human") {
+    const created = await readActiveProposal(proposalId);
     return {
       proposalId,
       intent,
-      draftSections: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+      draftTargets: created.targets,
       agentWritePolicy: humanBypassPolicyResult(),
       outcome: "accepted",
     };
@@ -178,7 +186,7 @@ export async function createProposalUseCase(
   return {
     proposalId,
     intent,
-    draftSections: sectionTargetsOf(agentWritePolicy.targets.map((t) => t.target)),
+    draftTargets: agentWritePolicy.targets.map((t) => t.target),
     agentWritePolicy,
     outcome: agentWritePolicy.canWrite ? "accepted" : "blocked",
   };
@@ -192,26 +200,38 @@ export async function readProposalDto(id: string): Promise<ProposalDTO> {
   // `readProposalWithContent` now throws `ProposalIntegrityError` for any claimed
   // section whose body is missing, so every claimed section resolves here — no
   // `?? null` coercion that would hide a missing/corrupt body (claim-review 04).
-  const sectionsWithContent = proposal.sections.map((s) => {
-    const key = SectionRef.fromTarget(s).globalKey;
+  const contentForClaimedSection = (docPath: DocPath, headingPath: string[]): string => {
+    const key = SectionRef.fromTarget({ doc_path: docPath, heading_path: headingPath }).globalKey;
     const content = sectionContent.get(key);
     if (content === undefined) {
       // Unreachable in practice (the reader threw upstream); assert rather than coerce.
       throw new ProposalIntegrityError(proposal.id, key);
     }
-    return { ...s, content };
-  });
+    return content;
+  };
 
-  let dto: ProposalDTO;
   if (proposal.status === "committed" || proposal.status === "withdrawn") {
-    dto = { ...proposal, sections: sectionsWithContent };
-  } else if (proposal.writer.type === "human") {
-    dto = { ...proposal, sections: sectionsWithContent };
-  } else {
-    const agentWritePolicy = await evaluateAgentWritePolicy(proposal.id);
-    dto = { ...proposal, agentWritePolicy, sections: sectionsWithContent };
+    return {
+      ...proposal,
+      sections: proposal.sections.map((s) => ({
+        ...s,
+        content: contentForClaimedSection(
+          docPathFromStoredHistoryProposalPath(s.stored_doc_path),
+          s.heading_path,
+        ),
+      })),
+    };
   }
-  return dto;
+
+  const sectionsWithContent = proposal.sections.map((s) => ({
+    ...s,
+    content: contentForClaimedSection(s.doc_path, s.heading_path),
+  }));
+  if (proposal.writer.type === "human") {
+    return { ...proposal, sections: sectionsWithContent };
+  }
+  const agentWritePolicy = await evaluateAgentWritePolicy(proposal.id);
+  return { ...proposal, agentWritePolicy, sections: sectionsWithContent };
 }
 
 // ─── Modify ─────────────────────────────────────────────
@@ -223,9 +243,9 @@ export type ModifyProposalResult =
   | {
       ok: true;
       updated: AnyProposalResult | (AnyProposalResult & { agentWritePolicy: HumanInvolvementPolicyResult });
-      removedSections: Array<{ doc_path: string; heading_path: string[] }>;
+      removedTargets: ProposalTargetRef[];
       eventStatus: "inprogress" | "draft";
-      eventSections: Array<{ doc_path: string; heading_path: string[] }>;
+      eventTargets: ProposalTargetRef[];
       intent: string;
       isHuman: boolean;
     };
@@ -301,24 +321,24 @@ export async function modifyProposalUseCase(
     body.intent,
   );
 
-  const previousSections = proposal.sections;
-  const updatedSections = updated.sections;
-  const previousDocPaths = new Set(previousSections.map((section) => section.doc_path));
-  const updatedDocPaths = new Set(updatedSections.map((section) => section.doc_path));
+  const previousTargets = proposal.targets;
+  const updatedTargets = updated.targets;
+  const previousDocPaths = new Set(previousTargets.map((target) => target.doc_path));
+  const updatedDocPaths = new Set(updatedTargets.map((target) => target.doc_path));
   const removedDocPaths = new Set(
     [...previousDocPaths].filter((docPath) => !updatedDocPaths.has(docPath)),
   );
-  const removedSections = removedDocPaths.size === 0
+  const removedTargets = removedDocPaths.size === 0
     ? []
-    : previousSections.filter((section) => removedDocPaths.has(section.doc_path));
+    : previousTargets.filter((target) => removedDocPaths.has(target.doc_path));
 
   if (proposal.writer.type === "human") {
     return {
       ok: true,
       updated,
-      removedSections: removedSections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+      removedTargets,
       eventStatus: updated.status === "inprogress" ? "inprogress" : "draft",
-      eventSections: updatedSections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+      eventTargets: updatedTargets,
       intent: updated.intent,
       isHuman: true,
     };
@@ -328,9 +348,9 @@ export async function modifyProposalUseCase(
   return {
     ok: true,
     updated: { ...updated, agentWritePolicy },
-    removedSections: removedSections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+    removedTargets,
     eventStatus: updated.status === "inprogress" ? "inprogress" : "draft",
-    eventSections: updatedSections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+    eventTargets: updatedTargets,
     intent: updated.intent,
     isHuman: false,
   };
@@ -353,7 +373,7 @@ export type StageProposalContentResult =
 async function stageProposalSectionContent(
   proposalId: string,
   writer: ProposalWriter,
-  sections: Array<{ doc_path: string; heading_path: string[]; content: string }>,
+  sections: Array<{ doc_path: DocPath; heading_path: string[]; content: string }>,
 ): Promise<StageProposalContentResult> {
   const proposal = await readProposal(proposalId);
   if (proposal.writer.id !== writer.id) {
@@ -366,12 +386,12 @@ async function stageProposalSectionContent(
   const editor = ProposalEditor.open(proposal.id, proposal.status);
   for (const s of sections) {
     const heading = s.heading_path.length === 0 ? "" : s.heading_path[s.heading_path.length - 1]!;
-    await editor.writeSection(s.doc_path, s.heading_path, heading, sectionWriteInputFromExternal(s.content));
+    await editor.writeSection(DocPath.parse(s.doc_path), s.heading_path, heading, sectionWriteInputFromExternal(s.content));
   }
 
   // Re-read so the response reflects the proposal's current manifest state
   // (unchanged by content writes) consistently with the modify route's `updated`.
-  const updated = await readProposal(proposal.id);
+  const updated = await readActiveProposal(proposal.id);
   if (proposal.writer.type === "human") {
     return { ok: true, proposal: updated, isHuman: true };
   }
@@ -402,7 +422,7 @@ export async function replaceProposalSectionsUseCase(
 export async function writeProposalDocumentSectionsUseCase(
   proposalId: string,
   writer: ProposalWriter,
-  docPath: string,
+  docPath: DocPath,
   body: WriteProposalDocumentSectionsRequest,
 ): Promise<StageProposalContentResult> {
   if (!Array.isArray(body.sections)) {
@@ -460,7 +480,8 @@ export type CommitProposalResult =
       proposalId: string;
       committedHead: string;
       agentWritePolicy: HumanInvolvementPolicyResult;
-      sections: Array<{ doc_path: string; heading_path: string[] }>;
+      sections: Array<{ doc_path: DocPath; heading_path: string[] }>;
+      targets: ProposalTargetRef[];
       writerType: "human" | "agent";
     }
   | { kind: "blocked"; proposalId: string; agentWritePolicy: HumanInvolvementPolicyResult };
@@ -474,14 +495,14 @@ export type CommitProposalResult =
 export async function commitProposalUseCase(
   proposalId: string,
   writer: ProposalWriter,
-  checkWrite: (docPath: string) => Promise<boolean>,
+  checkWrite: (docPath: DocPath) => Promise<boolean>,
 ): Promise<CommitProposalResult> {
   const proposal = await readProposal(proposalId);
   if (proposal.writer.id !== writer.id) {
     return { kind: "error", status: 403, message: "You can only commit your own proposals." };
   }
   const committableStatuses = proposal.writer.type === "human" ? ["inprogress"] : ["draft"];
-  if (!committableStatuses.includes(proposal.status)) {
+  if (!isActiveProposal(proposal) || !committableStatuses.includes(proposal.status)) {
     return { kind: "error", status: 409, message: `Cannot commit proposal in ${proposal.status} state.` };
   }
   if (proposal.writer.type === "human" && proposal.intent.trim().length === 0) {
@@ -508,6 +529,7 @@ export async function commitProposalUseCase(
       committedHead: absorbResult.commitSha,
       agentWritePolicy: humanBypassPolicyResult(),
       sections,
+      targets: proposal.targets,
       writerType: "human",
     };
   }
@@ -524,6 +546,7 @@ export async function commitProposalUseCase(
       committedHead: absorbResult.commitSha,
       agentWritePolicy: policyResult,
       sections,
+      targets: proposal.targets,
       writerType: "agent",
     };
   }
@@ -542,12 +565,12 @@ export async function commitProposalUseCase(
  */
 async function propagateCommitToLiveSessions(
   absorbResult: {
-    changedSections: Array<{ docPath: string; headingPath: string[] }>;
-    rewrittenDocumentPaths: string[];
+    changedSections: Array<{ docPath: DocPath; headingPath: string[] }>;
+    rewrittenDocumentPaths: DocPath[];
   },
   originProposalId: string,
 ): Promise<void> {
-  const byDoc = new Map<string, string[][]>();
+  const byDoc = new Map<DocPath, string[][]>();
   for (const docPath of absorbResult.rewrittenDocumentPaths) {
     if (!byDoc.has(docPath)) byDoc.set(docPath, []);
   }
@@ -564,10 +587,15 @@ async function propagateCommitToLiveSessions(
 
 export type CancelProposalResult =
   | { kind: "error"; status: number; message: string }
-  | { kind: "withdrawn"; proposalId: string; sections: Array<{ doc_path: string; heading_path: string[] }> };
+  | {
+      kind: "withdrawn";
+      proposalId: string;
+      sections: Array<{ doc_path: DocPath; heading_path: string[] }>;
+      targets: ProposalTargetRef[];
+    };
 
 export async function cancelProposalUseCase(proposalId: string, writerId: string, reason?: string): Promise<CancelProposalResult> {
-  const proposal = await readProposal(proposalId);
+  const proposal = await readActiveProposal(proposalId);
   if (proposal.writer.id !== writerId) {
     return { kind: "error", status: 403, message: "You can only withdraw your own proposals." };
   }
@@ -576,5 +604,6 @@ export async function cancelProposalUseCase(proposalId: string, writerId: string
     kind: "withdrawn",
     proposalId: withdrawn.id,
     sections: proposal.sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+    targets: proposal.targets,
   };
 }

@@ -47,7 +47,8 @@ import {
 } from "../storage/section-commit-history.js";
 import { DocumentNotFoundError } from "../storage/content-layer.js";
 import { HeadingNotFoundError } from "../storage/heading-resolver.js";
-import { readProposal } from "../storage/proposal-repository.js";
+import { readActiveProposal } from "../storage/proposal-repository.js";
+import { DocPath } from "../types/shared.js";
 
 /**
  * The interface a single selected policy must implement. Generic over the
@@ -146,7 +147,7 @@ class HumanInvolvementCompatibilityPolicy
   }
 
   async evaluateProposal(proposalId: ProposalId): Promise<HumanInvolvementPolicyResult> {
-    const proposal = await readProposal(proposalId);
+    const proposal = await readActiveProposal(proposalId);
     return this.evaluateSections(proposal.sections);
   }
 
@@ -174,7 +175,7 @@ class HumanInvolvementCompatibilityPolicy
     for (const [docPath] of sectionsByDoc) {
       commitInfoByDoc.set(
         docPath,
-        this.filterToHumanCommits(await readDocSectionCommitInfo(docPath)),
+        this.filterToHumanCommits(await readDocSectionCommitInfo(DocPath.parse(docPath))),
       );
     }
 

@@ -14,11 +14,13 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 import { CanonicalStore } from "../../storage/canonical-store.js";
 import { getHeadSha } from "../../storage/git-repo.js";
+import { docPathToContentRelativeFsPath } from "../../storage/path-utils.js";
+import { DocPath } from "../../types/shared.js";
 
 const AUTHOR = { name: "Absorb Diff Test", email: "absorb-diff@test.local" };
 
 function toDiskRelative(docPath: string): string {
-  return docPath.replace(/^\/+/, "");
+  return docPathToContentRelativeFsPath(DocPath.parse(docPath));
 }
 
 async function copyDirectoryRecursive(srcDir: string, destDir: string): Promise<void> {

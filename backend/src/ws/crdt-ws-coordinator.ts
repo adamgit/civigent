@@ -75,9 +75,9 @@ import type { PublishTriggerDecision, PublishResult } from "../crdt/crdt-proposa
 import type { SectionRefReceipt } from "../storage/canonical-store.js";
 import type { PublishPauseResult } from "../crdt/docsession-publish-pause.js";
 import { SectionRef } from "../domain/section-ref.js";
-import type { WsServerEvent, WirePendingSection } from "../types/shared.js";
+import type { WsServerEvent, WirePendingSection, WriterIdentity } from "../types/shared.js";
 import type { ClientInstanceId, DocSessionId, RemoteParticipant, ModeTransitionRequest, ModeTransitionResult, ProposalId } from "../types/shared.js";
-import { parseJson } from "../types/shared.js";
+import { DocPath, parseJson } from "../types/shared.js";
 import {
   MSG_SYNC_STEP_1,
   MSG_SYNC_STEP_2,
@@ -107,6 +107,7 @@ import {
   WS_CLOSE_AUTHORIZATION_FAILED,
   WS_CLOSE_ADMIN_REBUILD,
   WS_CLOSE_SYSTEM_LOCKDOWN,
+  WS_CLOSE_UPGRADE_FAILED,
 } from "./crdt-ws-frames.js";
 import {
   CrdtSocketState,
@@ -117,6 +118,10 @@ import {
   rejectUpgrade,
 } from "./crdt-transport.js";
 import { handleProcessFatal } from "../runtime/fatal-handler.js";
+import {
+  recordAcceptedHumanDocumentWrite,
+  recordFinalHumanDocumentEditorDetach,
+} from "./human-document-activity.js";
 
 
 
@@ -152,7 +157,7 @@ function setParticipantFromSocketState(state: CrdtSocketState): void {
   participants.set(state.clientInstanceId, {
     clientInstanceId: state.clientInstanceId,
     writerId: state.writerId,
-    docPath: state.docPath,
+    docPath: DocPath.parse(state.docPath),
     clientRole: state.socketRole,
     requestedMode: state.requestedMode,
     attachmentState: state.attachmentState,
@@ -216,7 +221,7 @@ function sendLiveSectionsBootstrap(session: DocSession, socket: CoordinatorSocke
   });
 }
 
-function broadcastLiveSectionsUpdate(docPath: string, frame: LiveSectionsUpdateFrame): void {
+function broadcastLiveSectionsUpdate(docPath: DocPath, frame: LiveSectionsUpdateFrame): void {
   const recipients = liveSectionRecipients.get(docPath);
   if (!recipients || recipients.size === 0) return;
   const bytes = encodeLiveSectionsUpdate(frame);
@@ -225,7 +230,7 @@ function broadcastLiveSectionsUpdate(docPath: string, frame: LiveSectionsUpdateF
   }
 }
 
-export async function refreshLiveSectionsState(docPath: string): Promise<void> {
+export async function refreshLiveSectionsState(docPath: DocPath): Promise<void> {
   const session = lookupDocSession(docPath);
   if (!session) return;
   await session.enqueue(async () => {
@@ -233,7 +238,7 @@ export async function refreshLiveSectionsState(docPath: string): Promise<void> {
   });
 }
 
-function addSocket(docPath: string, socket: CoordinatorSocket): void {
+function addSocket(docPath: DocPath, socket: CoordinatorSocket): void {
   let sockets = docSockets.get(docPath);
   if (!sockets) {
     sockets = new Set();
@@ -242,7 +247,7 @@ function addSocket(docPath: string, socket: CoordinatorSocket): void {
   sockets.add(socket);
 }
 
-function removeSocket(docPath: string, socket: CoordinatorSocket): void {
+function removeSocket(docPath: DocPath, socket: CoordinatorSocket): void {
   const recipients = liveSectionRecipients.get(docPath);
   if (recipients) {
     recipients.delete(socket);
@@ -266,7 +271,7 @@ function removeSocket(docPath: string, socket: CoordinatorSocket): void {
 
 
 export function registerFakeEditorSocketForTest(
-  docPath: string,
+  docPath: DocPath,
   socketId: string,
   onSend?: (data: Uint8Array) => void,
   onClose?: (code: number, reason: string) => void,
@@ -337,7 +342,7 @@ export function resetCoordinatorPublishStateForTest(): void {
 
 
 export function registerFakeObserverSocketForTest(
-  docPath: string,
+  docPath: DocPath,
   socketId: string,
   onClose?: (code: number, reason: string) => void,
   onSend?: (data: Uint8Array) => void,
@@ -380,7 +385,7 @@ export function registerFakeObserverSocketForTest(
 }
 
 
-export function closeObserverSocketsForDocForTest(docPath: string): number {
+export function closeObserverSocketsForDocForTest(docPath: DocPath): number {
   return closeObserverSocketsForDoc(docPath);
 }
 
@@ -389,7 +394,7 @@ export function closeObserverSocketsForDocForTest(docPath: string): number {
 
 
 
-export function broadcastSessionReplacementInvalidation(docPath: string): void {
+export function broadcastSessionReplacementInvalidation(docPath: DocPath): void {
   for (const socket of docSockets.get(docPath) ?? []) {
     if (socket.readyState === WebSocket.OPEN) {
       socket.close(WS_CLOSE_DOCUMENT_REPLACED, WS_CLOSE_REASON_DOCUMENT_REPLACED);
@@ -404,7 +409,7 @@ export function broadcastSessionReplacementInvalidation(docPath: string): void {
 
 
 
-export function broadcastAdminRebuildInvalidation(docPath: string): void {
+export function broadcastAdminRebuildInvalidation(docPath: DocPath): void {
   for (const socket of docSockets.get(docPath) ?? []) {
     if (socket.readyState === WebSocket.OPEN) {
       socket.close(WS_CLOSE_ADMIN_REBUILD, "admin rebuild");
@@ -429,7 +434,7 @@ export function closeAllCrdtSocketsForSystemLockdown(): void {
   }
 }
 
-function broadcastToOthers(docPath: string, sender: CoordinatorSocket, data: Uint8Array): void {
+function broadcastToOthers(docPath: DocPath, sender: CoordinatorSocket, data: Uint8Array): void {
   const sockets = docSockets.get(docPath);
   if (!sockets) return;
   for (const s of sockets) {
@@ -439,7 +444,7 @@ function broadcastToOthers(docPath: string, sender: CoordinatorSocket, data: Uin
   }
 }
 
-export function broadcastToAll(docPath: string, data: Uint8Array): void {
+export function broadcastToAll(docPath: DocPath, data: Uint8Array): void {
   const sockets = docSockets.get(docPath);
   if (!sockets) return;
   for (const s of sockets) {
@@ -450,7 +455,7 @@ export function broadcastToAll(docPath: string, data: Uint8Array): void {
 }
 
 
-function activeEditorSocketIds(docPath: string): string[] {
+function activeEditorSocketIds(docPath: DocPath): string[] {
   const ids: string[] = [];
   for (const socket of docSockets.get(docPath) ?? []) {
     const st = socketState.get(socket);
@@ -459,6 +464,62 @@ function activeEditorSocketIds(docPath: string): string[] {
     }
   }
   return ids;
+}
+
+function hasRemainingAttachedEditorSocket(docPath: DocPath, writerId: string): boolean {
+  for (const socket of docSockets.get(docPath) ?? []) {
+    const st = socketState.get(socket);
+    if (!st || st.writerId !== writerId) continue;
+    if (
+      st.socketRole === "editor" &&
+      st.attachmentState === "attached_to_session" &&
+      socket.readyState === WebSocket.OPEN
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function recordHumanEditorDetachIfFinal(state: CrdtSocketState): void {
+  if (state.writerType !== "human") return;
+  if (hasRemainingAttachedEditorSocket(state.docPath, state.writerId)) return;
+  recordFinalHumanDocumentEditorDetach(state.docPath, {
+    id: state.writerId,
+    type: state.writerType,
+    displayName: state.writerDisplayName,
+  });
+}
+
+export function getOpenHumanDocumentViewers(docPath: DocPath): WriterIdentity[] {
+  const viewersByWriterId = new Map<string, WriterIdentity>();
+  for (const socket of docSockets.get(docPath) ?? []) {
+    const st = socketState.get(socket);
+    if (!st || st.writerType !== "human" || socket.readyState !== WebSocket.OPEN) continue;
+    if (viewersByWriterId.has(st.writerId)) continue;
+    viewersByWriterId.set(st.writerId, {
+      id: st.writerId,
+      type: st.writerType,
+      displayName: st.writerDisplayName,
+    });
+  }
+  return [...viewersByWriterId.values()];
+}
+
+export function getAttachedHumanDocumentEditors(docPath: DocPath): WriterIdentity[] {
+  const editorsByWriterId = new Map<string, WriterIdentity>();
+  for (const socket of docSockets.get(docPath) ?? []) {
+    const st = socketState.get(socket);
+    if (!st || st.writerType !== "human" || socket.readyState !== WebSocket.OPEN) continue;
+    if (st.socketRole !== "editor" || st.attachmentState !== "attached_to_session") continue;
+    if (editorsByWriterId.has(st.writerId)) continue;
+    editorsByWriterId.set(st.writerId, {
+      id: st.writerId,
+      type: st.writerType,
+      displayName: st.writerDisplayName,
+    });
+  }
+  return [...editorsByWriterId.values()];
 }
 
 
@@ -470,7 +531,7 @@ function activeEditorSocketIds(docPath: string): string[] {
 
 
 
-function closeObserverSocketsForDoc(docPath: string): number {
+function closeObserverSocketsForDoc(docPath: DocPath): number {
   let closed = 0;
   for (const socket of docSockets.get(docPath) ?? []) {
     const st = socketState.get(socket);
@@ -490,6 +551,16 @@ export function setCrdtEventHandler(handler: (event: WsServerEvent) => void): vo
   onWsEvent = handler;
 }
 
+let onDocumentActivityChanged: ((docPath: DocPath) => void) | null = null;
+
+export function setDocumentActivityChangedHandler(handler: (docPath: DocPath) => void): void {
+  onDocumentActivityChanged = handler;
+}
+
+function notifyDocumentActivityChanged(docPath: DocPath): void {
+  onDocumentActivityChanged?.(docPath);
+}
+
 /**
  * Origin-only private event handler for the CRDT WebSocket coordinator. Distinct
  * from `onWsEvent` (broadcast) so semantic rejection payloads never accidentally
@@ -497,11 +568,11 @@ export function setCrdtEventHandler(handler: (event: WsServerEvent) => void): vo
  * transports that never wire private routing simply drop these events.
  */
 let onWsPrivateEvent:
-  | ((target: { docPath: string; clientInstanceId: ClientInstanceId }, event: WsServerEvent) => void)
+  | ((target: { docPath: DocPath; clientInstanceId: ClientInstanceId }, event: WsServerEvent) => void)
   | null = null;
 
 export function setCrdtPrivateEventHandler(
-  handler: (target: { docPath: string; clientInstanceId: ClientInstanceId }, event: WsServerEvent) => void,
+  handler: (target: { docPath: DocPath; clientInstanceId: ClientInstanceId }, event: WsServerEvent) => void,
 ): void {
   onWsPrivateEvent = handler;
 }
@@ -598,7 +669,7 @@ const publishChains = new Map<string, Promise<PublishAttemptOutcome>>();
  * user's edits did NOT reach canonical, must NEVER be silently discarded
  * (CLAUDE.md error policy: an error is never allowed to be hidden).
  */
-function surfacePublishOutcome(docPath: string, outcome: PublishAttemptOutcome): void {
+function surfacePublishOutcome(docPath: DocPath, outcome: PublishAttemptOutcome): void {
   if (outcome.outcome !== "failed" && outcome.outcome !== "aborted") return;
   // Route to the process-boundary fatal policy rather than a bare console write:
   // under `crash` the operator's chosen policy stops the process, under `report`
@@ -684,7 +755,11 @@ async function finalizeAndEnd(session: DocSession, ready: boolean): Promise<Publ
       session.generator.getWriterIdentity(),
       session.generator.getContributorIds(),
       outcome.commitSha,
-      (outcome.changedSections ?? []).map((s) => ({ doc_path: s.docPath, heading_path: s.headingPath })),
+      (outcome.changedSections ?? []).map((s) => ({
+        kind: "section" as const,
+        doc_path: s.docPath,
+        heading_path: s.headingPath,
+      })),
     );
     
     
@@ -856,7 +931,7 @@ export function armQuiescenceTimer(session: DocSession): void {
 }
 
 
-export function cancelQuiescenceTimer(docPath: string): void {
+export function cancelQuiescenceTimer(docPath: DocPath): void {
   const existing = quiescenceTimers.get(docPath);
   if (existing) {
     clearTimeout(existing);
@@ -1137,7 +1212,7 @@ export async function normalizeQuiescedStructureForTest(session: DocSession): Pr
   return (await normalizeQuiescedStructure(session)).applied;
 }
 
-function activeEditorSocketStates(docPath: string): CrdtSocketState[] {
+function activeEditorSocketStates(docPath: DocPath): CrdtSocketState[] {
   const states: CrdtSocketState[] = [];
   for (const socket of docSockets.get(docPath) ?? []) {
     const st = socketState.get(socket);
@@ -1237,7 +1312,7 @@ async function runQuiescenceCommand(session: DocSession): Promise<void> {
 
 
 export async function applyCommittedCanonicalToLiveSession(
-  docPath: string,
+  docPath: DocPath,
   changedHeadingPaths: readonly string[][],
   originProposalId: ProposalId | null,
 ): Promise<void> {
@@ -1412,7 +1487,7 @@ async function runLiveEditAcceptanceGate(
   // its first edit can materialize a real BFH section; any OTHER unresolved
   // fragment fails hard, since acknowledging an untargetable edit as durable
   // would be a phantom materialize.
-  const targets: Array<{ kind: "section"; doc_path: string; heading_path: string[] }> = [];
+  const targets: Array<{ kind: "section"; doc_path: DocPath; heading_path: string[] }> = [];
   const fragmentKeyByGlobalIndex: string[] = [];
   for (const fragmentKey of touchedKeys) {
     const headingPath = headingByFragmentKey.get(fragmentKey);
@@ -1557,7 +1632,7 @@ interface PendingWriterInfo {
 const pendingFragmentsByDoc = new Map<string, Map<string, PendingWriterInfo>>();
 
 /** The doc's live pending-writer set as `WirePendingSection[]` for the wire state. */
-function pendingSectionsForDoc(docPath: string): WirePendingSection[] {
+function pendingSectionsForDoc(docPath: DocPath): WirePendingSection[] {
   const pending = pendingFragmentsByDoc.get(docPath);
   if (!pending) return [];
   return Array.from(pending.entries()).map(([fragment_key, info]) => ({
@@ -1714,10 +1789,15 @@ export async function processArbitratedClientUpdate(
     noteFragmentActivity(session, writerId, fragmentKey);
   }
   if (materializeKeys.length > 0) {
+    const acceptedWriterIdentity = session.holders.get(writerId)?.identity;
+    if (acceptedWriterIdentity?.type === "human") {
+      recordAcceptedHumanDocumentWrite(docPath, acceptedWriterIdentity);
+      notifyDocumentActivityChanged(docPath);
+    }
     const layout = await resolveLiveSectionLayout(docPath, session.generator.getCurrentProposalId());
     const layoutByKey = new Map(layout.map((entry) => [entry.fragmentKey, entry]));
     const bodyOnlyKeys: string[] = [];
-    const structuralClaims: Array<{ doc_path: string; heading_path: string[] }> = [];
+    const structuralClaims: Array<{ doc_path: DocPath; heading_path: string[] }> = [];
     let hasStructuralTransition = false;
 
     for (const fragmentKey of materializeKeys) {
@@ -1947,12 +2027,15 @@ async function applyModeTransition(
   if (request.requestedMode === "none") {
     state.requestedMode = request.requestedMode;
     state.editorFocusTarget = request.editorFocusTarget;
+    const wasAttachedEditor = state.socketRole !== "observer" && state.attachmentState === "attached_to_session";
     if (state.socketRole === "observer") {
       removeObserverSocket(state.docPath, state.socketId);
     } else {
       await releaseDocSession(state.docPath, state.writerId, state.socketId);
     }
     state.attachmentState = "detached";
+    if (wasAttachedEditor) recordHumanEditorDetachIfFinal(state);
+    notifyDocumentActivityChanged(state.docPath);
     state.docSessionId = null;
     state.joined = false;
     updateParticipant(state.clientInstanceId, {
@@ -2104,6 +2187,8 @@ async function applyModeTransition(
     clientRole: state.socketRole,
   });
 
+  notifyDocumentActivityChanged(state.docPath);
+
   return {
     kind: "success",
     requestId: request.requestId,
@@ -2235,7 +2320,7 @@ setBroadcastAdminRebuildInvalidation((docPath) => broadcastAdminRebuildInvalidat
 
 
 export interface CrdtWsServer {
-  handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
+  handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): Promise<void>;
 }
 
 export function createCrdtWsServer(): CrdtWsServer {
@@ -2246,6 +2331,7 @@ export function createCrdtWsServer(): CrdtWsServer {
     socketState.set(socket, state);
     setParticipantFromSocketState(state);
     addSocket(state.docPath, socket);
+    notifyDocumentActivityChanged(state.docPath);
 
     let messageChain: Promise<void> = Promise.resolve();
     socket.on("message", (raw) => {
@@ -2310,61 +2396,74 @@ export function createCrdtWsServer(): CrdtWsServer {
           // The quiescence timer is cancelled by the `onSessionDiscard` hook when
           // `releaseDocSession` discards the session — no special-case needed here.
           await releaseDocSession(state.docPath, state.writerId, state.socketId);
+          recordHumanEditorDetachIfFinal(state);
         }
       }
+      notifyDocumentActivityChanged(state.docPath);
     });
   });
 
   return {
     async handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer) {
-      const route = parseCrdtUrl(request.url ?? "", request.headers.host ?? "localhost");
-      if (!route) {
-        rejectUpgrade(wss, request, socket, head, WS_CLOSE_INVALID_URL, `invalid_url: failed to parse ${request.url}`);
-        return;
+      let socketHandedToConnectionHandler = false;
+      try {
+        const route = parseCrdtUrl(request.url ?? "", request.headers.host ?? "localhost");
+        if (!route) {
+          rejectUpgrade(wss, request, socket, head, WS_CLOSE_INVALID_URL, `invalid_url: failed to parse ${request.url}`);
+          return;
+        }
+
+        const resolved = resolveWriterWithExpiry(request.headers);
+        if (!resolved || resolved.writer.type === "agent") {
+          rejectUpgrade(wss, request, socket, head, WS_CLOSE_AUTH_FAILED,
+            `auth_failed: ${!resolved ? "no credentials" : "agents cannot use CRDT"}`);
+          return;
+        }
+        const writer = resolved.writer;
+        const tokenExp = resolved.tokenExp;
+
+        const canRead = await checkDocPermission(writer, route.docPath, "read");
+        if (!canRead) {
+          rejectUpgrade(wss, request, socket, head, WS_CLOSE_AUTHORIZATION_FAILED,
+            "authorization_failed: you do not have read permission for this document");
+          return;
+        }
+        const canWrite = await checkDocPermission(writer, route.docPath, "write");
+
+        const clientInstanceId =
+          new URL(request.url ?? "", `http://${request.headers.host ?? "localhost"}`)
+            .searchParams
+            .get("clientInstanceId") ?? crypto.randomUUID();
+        const state: CrdtSocketState = {
+          clientInstanceId,
+          writerId: writer.id,
+          writerType: writer.type,
+          writerDisplayName: writer.displayName,
+          docPath: route.docPath,
+          socketRole: "observer",
+          requestedMode: "none",
+          attachmentState: "detached",
+          docSessionId: getDocSessionId(route.docPath),
+          editorFocusTarget: null,
+          tokenExp,
+          canRead,
+          canWrite,
+          socketId: crypto.randomUUID(),
+          joined: false,
+        };
+
+        socketHandedToConnectionHandler = true;
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          wss.emit("connection", ws, state);
+        });
+      } catch (err) {
+        if (socketHandedToConnectionHandler) {
+          socket.destroy();
+        } else {
+          rejectUpgrade(wss, request, socket, head, WS_CLOSE_UPGRADE_FAILED, "upgrade_failed");
+        }
+        handleProcessFatal(err, "uncaughtException");
       }
-
-      const resolved = resolveWriterWithExpiry(request.headers);
-      if (!resolved || resolved.writer.type === "agent") {
-        rejectUpgrade(wss, request, socket, head, WS_CLOSE_AUTH_FAILED,
-          `auth_failed: ${!resolved ? "no credentials" : "agents cannot use CRDT"}`);
-        return;
-      }
-      const writer = resolved.writer;
-      const tokenExp = resolved.tokenExp;
-
-      const canRead = await checkDocPermission(writer, route.docPath, "read");
-      if (!canRead) {
-        rejectUpgrade(wss, request, socket, head, WS_CLOSE_AUTHORIZATION_FAILED,
-          "authorization_failed: you do not have read permission for this document");
-        return;
-      }
-      const canWrite = await checkDocPermission(writer, route.docPath, "write");
-
-      const clientInstanceId =
-        new URL(request.url ?? "", `http://${request.headers.host ?? "localhost"}`)
-          .searchParams
-          .get("clientInstanceId") ?? crypto.randomUUID();
-      const state: CrdtSocketState = {
-        clientInstanceId,
-        writerId: writer.id,
-        writerType: writer.type,
-        writerDisplayName: writer.displayName,
-        docPath: route.docPath,
-        socketRole: "observer",
-        requestedMode: "none",
-        attachmentState: "detached",
-        docSessionId: getDocSessionId(route.docPath),
-        editorFocusTarget: null,
-        tokenExp,
-        canRead,
-        canWrite,
-        socketId: crypto.randomUUID(),
-        joined: false,
-      };
-
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit("connection", ws, state);
-      });
     },
   };
 }
@@ -2421,7 +2520,7 @@ export async function publishOnLastEditorDisconnect(
 
 
 
-export async function requestDocSessionPublish(docPath: string): Promise<PublishAttemptOutcome> {
+export async function requestDocSessionPublish(docPath: DocPath): Promise<PublishAttemptOutcome> {
   const session = lookupDocSession(docPath);
   if (!session) return { outcome: "noop", message: "No live session for this document." };
   return runPublishAttempt(session);
@@ -2442,7 +2541,7 @@ export async function requestDocSessionPublish(docPath: string): Promise<Publish
 
 
 export async function requestDocSessionMove(
-  docPath: string,
+  docPath: DocPath,
   req: LiveSectionMoveRequest,
 ): Promise<MoveSectionResult> {
   const session = lookupDocSession(docPath);

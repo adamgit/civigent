@@ -420,17 +420,19 @@ class BroadcastFallbackTransport implements CrossTabTransport {
     });
 
     socket.addEventListener("message", (raw) => {
+      let serverEvent: WsServerEvent;
       try {
-        const serverEvent = JSON.parse(String(raw.data)) as WsServerEvent;
-        this.onEvent?.(serverEvent);
-        this.channel?.postMessage({
-          type: "server_event",
-          tabId: this.tabId,
-          event: serverEvent,
-        } satisfies FallbackServerEventMessage);
+        serverEvent = JSON.parse(String(raw.data)) as WsServerEvent;
       } catch {
         // Ignore malformed transport payloads.
+        return;
       }
+      this.onEvent?.(serverEvent);
+      this.channel?.postMessage({
+        type: "server_event",
+        tabId: this.tabId,
+        event: serverEvent,
+      } satisfies FallbackServerEventMessage);
     });
 
     socket.addEventListener("close", (event) => {
@@ -537,6 +539,16 @@ class BroadcastFallbackTransport implements CrossTabTransport {
   }
 }
 
+/** Steady-state transport for the JSON app WebSocket (`/ws`). */
+export type AppWsTransportKind = "shared-worker" | "broadcast-fallback";
+
+export interface AppWsTransportInfo {
+  /** Null while no session is held, or before the first transport settles. */
+  kind: AppWsTransportKind | null;
+  /** Present only after SharedWorker failed and broadcast fallback was chosen. */
+  fallbackReason: string | null;
+}
+
 class SessionWsManager {
   private readonly tabId = createTabId();
   private transport: CrossTabTransport | null = null;
@@ -549,12 +561,39 @@ class SessionWsManager {
   private heartbeatTimer: number | null = null;
   private fallbackTransitioned = false;
   private clientInstanceId: string | null = null;
+  private transportSnapshot: AppWsTransportInfo = { kind: null, fallbackReason: null };
+  private readonly transportListeners = new Set<() => void>();
 
   addListener(handler: WsEventHandler): () => void {
     this.listeners.add(handler);
     return () => {
       this.listeners.delete(handler);
     };
+  }
+
+  getTransportInfo(): AppWsTransportInfo {
+    // Stable reference until kind/reason change — required by useSyncExternalStore.
+    return this.transportSnapshot;
+  }
+
+  subscribeTransport(listener: () => void): () => void {
+    this.transportListeners.add(listener);
+    return () => {
+      this.transportListeners.delete(listener);
+    };
+  }
+
+  private setTransportInfo(kind: AppWsTransportKind | null, fallbackReason: string | null): void {
+    if (
+      this.transportSnapshot.kind === kind &&
+      this.transportSnapshot.fallbackReason === fallbackReason
+    ) {
+      return;
+    }
+    this.transportSnapshot = { kind, fallbackReason };
+    for (const listener of this.transportListeners) {
+      listener();
+    }
   }
 
   acquire(): void {
@@ -564,6 +603,7 @@ class SessionWsManager {
     }
     this.started = true;
     this.fallbackTransitioned = false;
+    this.setTransportInfo(null, null);
 
     recordWsDiag({
       source: "ws-lifecycle",
@@ -580,6 +620,7 @@ class SessionWsManager {
         if (this.transport !== attempted || !this.started) {
           return;
         }
+        this.setTransportInfo("shared-worker", null);
         recordWsDiag({
           source: "ws-lifecycle",
           type: "session_acquired",
@@ -628,6 +669,9 @@ class SessionWsManager {
 
     const fallback = new BroadcastFallbackTransport(this.tabId);
     this.transport = fallback;
+    // Surface the degraded mode as soon as we abandon SharedWorker — do not wait
+    // for the fallback socket to finish opening (that can stall indefinitely).
+    this.setTransportInfo("broadcast-fallback", reason);
     fallback
       .start((event) => this.handleIncomingEvent(event))
       .then(() => {
@@ -669,6 +713,7 @@ class SessionWsManager {
     }
     this.transport?.stop();
     this.transport = null;
+    this.setTransportInfo(null, null);
     recordWsDiag({
       source: "ws-lifecycle",
       type: "session_released",
@@ -746,7 +791,11 @@ class SessionWsManager {
       payload: event,
     });
     for (const listener of this.listeners) {
-      listener(event);
+      try {
+        listener(event);
+      } catch (err) {
+        queueMicrotask(() => { throw err; });
+      }
     }
   }
 
@@ -779,6 +828,8 @@ class SessionWsManager {
     this.localSubscriptionRefCounts.clear();
     this.focusedDocPath = null;
     this.focusedSection = null;
+    this.setTransportInfo(null, null);
+    this.transportListeners.clear();
   }
 }
 
@@ -797,6 +848,49 @@ export function subscribeWorkerDiagnostics(): void {
 
 export function unsubscribeWorkerDiagnostics(): void {
   getSessionWsManager().unsubscribeWorkerDiagnostics();
+}
+
+/** Current JSON-app-WS transport (SharedWorker vs BroadcastChannel fallback). */
+export function getAppWsTransportInfo(): AppWsTransportInfo {
+  return getSessionWsManager().getTransportInfo();
+}
+
+/** Subscribe to transport-mode changes (for footer / diagnostics UI). */
+export function subscribeAppWsTransport(listener: () => void): () => void {
+  return getSessionWsManager().subscribeTransport(listener);
+}
+
+/**
+ * Human-readable explanation of why SharedWorker was abandoned. Kept next to
+ * the handshake failure strings so the footer tooltip stays aligned with the
+ * real reject reasons in {@link SharedWorkerTransport.start}.
+ */
+export function describeAppWsBroadcastFallback(reason: string | null): string {
+  const detail = (() => {
+    if (!reason) {
+      return "The SharedWorker handshake failed for an unknown reason.";
+    }
+    if (reason === "SharedWorker unavailable") {
+      return "This browser does not expose SharedWorker (unsupported, disabled, or blocked).";
+    }
+    if (reason.startsWith("shared-worker error:")) {
+      return "The SharedWorker script failed to load or crashed while starting.";
+    }
+    if (reason === "shared-worker messageerror") {
+      return "The SharedWorker could not exchange messages with this tab.";
+    }
+    if (reason.includes("register_ack timeout")) {
+      return "The SharedWorker never acknowledged this tab (handshake timed out).";
+    }
+    return `SharedWorker failed to start (${reason}).`;
+  })();
+  return (
+    `${detail} Civigent fell back to a backup: a WebSocket owned by this tab, ` +
+    `coordinated across tabs with BroadcastChannel. Live updates still work, but ` +
+    `this tab can be frozen by the browser when you switch away, which briefly ` +
+    `drops the connection and shows “reconnecting”. Reload the page after fixing ` +
+    `the browser/worker issue to restore the SharedWorker path.`
+  );
 }
 
 /**

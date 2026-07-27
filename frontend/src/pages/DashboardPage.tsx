@@ -14,6 +14,7 @@ import { writerInitials } from "../utils/writerInitials";
 import { classifyWriterType } from "../utils/classifyWriterType";
 import { readNumberSetting } from "../utils/numberSettings";
 import { lastEditTimeByDoc, agentItemsAfterUserEdit, sortActivityNewestFirst } from "../services/activity-grouping";
+import { DocPath } from "../types/shared";
 
 function writerTypeToLabel(writerType: string | undefined): { variant: "green" | "yellow" | "agent" | "muted" | "accent"; label: string } {
   switch (writerType) {
@@ -146,7 +147,7 @@ export function DashboardPage() {
                           {docPaths.map((dp, i) => (
                             <span key={dp}>
                               {i > 0 && ", "}
-                              <Link to={`/docs/${stripLeadingSlashForRoute(dp)}`} className="text-[#2d7a8a] hover:underline">{dp}</Link>
+                              <Link to={`/docs/${stripLeadingSlashForRoute(DocPath.parse(dp))}`} className="text-[#2d7a8a] hover:underline">{dp}</Link>
                             </span>
                           ))}
                         </>

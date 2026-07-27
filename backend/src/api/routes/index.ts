@@ -1,7 +1,7 @@
 import express from "express";
 import type { WsServerEvent } from "../../types/shared.js";
 import {
-  installDocPathParamNormalizer,
+  installSlashStrippedDocPathParamParser,
   installStartupGate,
   installGlobalAuth,
   installCsrfGuard,
@@ -36,9 +36,9 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   const router = express.Router();
   const onWsEvent = options?.onWsEvent;
 
-  // Request pipeline (order matters): docPath normalizer → startup gate →
+  // Request pipeline (order matters): docPath parser → startup gate →
   // global auth → CSRF guard.
-  installDocPathParamNormalizer(router);
+  installSlashStrippedDocPathParamParser(router);
   installStartupGate(router);
   installGlobalAuth(router);
   installCsrfGuard(router);

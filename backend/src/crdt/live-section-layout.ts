@@ -14,6 +14,7 @@ import { BEFORE_FIRST_HEADING_KEY, fragmentKeyFromSectionFile } from "./ydoc-fra
 import { SectionRef } from "../domain/section-ref.js";
 import { buildFragmentContent, EMPTY_BODY, type FragmentContent, type SectionBody } from "../storage/section-formatting.js";
 import type { ProposalId } from "../types/shared.js";
+import type { DocPath } from "../types/shared.js";
 
 export interface LiveSectionLayoutEntry {
   fragmentKey: string;
@@ -32,7 +33,7 @@ function emptyDocumentFirstEditSection(): LiveSectionLayoutEntry {
 }
 
 async function existingEmptyDocumentCanReceiveFirstEdit(
-  docPath: string,
+  docPath: DocPath,
   skeletonRoot: string,
   canonicalRoot: string,
 ): Promise<boolean> {
@@ -74,7 +75,7 @@ function resolvePersistedLiveSectionLayout(
  * otherwise canonical is used.
  */
 export async function resolveLiveSectionLayout(
-  docPath: string,
+  docPath: DocPath,
   currentProposalId: ProposalId | null,
 ): Promise<LiveSectionLayoutEntry[]> {
   const { DocumentSkeletonInternal } = await import("../storage/document-skeleton.js");
@@ -113,7 +114,7 @@ export async function resolveLiveSectionLayout(
  * construct a root-pair content layer themselves.
  */
 export async function readLiveSectionBodies(
-  docPath: string,
+  docPath: DocPath,
   currentProposalId: ProposalId | null,
 ): Promise<Map<string, SectionBody>> {
   if (currentProposalId) {
@@ -133,7 +134,7 @@ export async function readLiveSectionBodies(
  * passing the result to `LiveFragmentStringsStore.replaceFragmentStrings(...)`.
  */
 export async function buildLiveSeedContentMap(
-  docPath: string,
+  docPath: DocPath,
   currentProposalId: ProposalId | null,
 ): Promise<Map<string, FragmentContent>> {
   const [layout, bodies] = await Promise.all([

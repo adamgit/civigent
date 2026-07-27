@@ -58,12 +58,12 @@ import {
 } from "../../auth/agent-keys.js";
 import {
   listAllProposals,
-  readProposal,
+  readActiveProposal,
   rewriteProposalMeta,
   ProposalNotFoundError,
 } from "../../storage/proposal-repository.js";
 import { findProposalDefectDetector } from "../../domain/proposal-defect-detectors.js";
-import type { AnyProposal } from "../../types/shared.js";
+import type { ActiveProposal, AnyProposal } from "../../types/shared.js";
 import path from "node:path";
 import type { GetHeatmapResponse, HeatmapEntry } from "../../types/shared.js";
 import { readDocumentsTree } from "../../storage/documents-tree.js";
@@ -77,6 +77,7 @@ import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { SectionRef } from "../../domain/section-ref.js";
+import { DocPath } from "../../types/shared.js";
 
 export {
   AdminConfigValidationError,
@@ -168,9 +169,9 @@ export async function autofixProposalDefect(
   if (!detector) {
     return { ok: false, status: 404, message: `Unknown proposal defect detector: ${detectorId}.` };
   }
-  let proposal: AnyProposal;
+  let proposal: ActiveProposal;
   try {
-    proposal = await readProposal(id);
+    proposal = await readActiveProposal(id);
   } catch (error) {
     if (error instanceof ProposalNotFoundError) {
       return { ok: false, status: 404, message: `Proposal not found: ${id}.` };
@@ -243,11 +244,11 @@ export async function setAclDefaults(request: SetAclDefaultsRequest): Promise<vo
   await updateDefaults(request);
 }
 
-export async function setDocAclEntry(docPath: string, request: SetDocumentAclRequest): Promise<void> {
+export async function setDocAclEntry(docPath: DocPath, request: SetDocumentAclRequest): Promise<void> {
   await setDocAcl(docPath, request);
 }
 
-export async function removeDocAclEntry(docPath: string): Promise<void> {
+export async function removeDocAclEntry(docPath: DocPath): Promise<void> {
   await removeDocAcl(docPath);
 }
 
@@ -289,7 +290,7 @@ export async function getHeatmap(): Promise<GetHeatmapResponse> {
   const tree = await readDocumentsTree("");
   for (const entry of flattenTree(tree)) {
     if (entry.type !== "file") continue;
-    const docPath = entry.path;
+    const docPath = DocPath.parse(entry.path);
 
     const structure = await readDocumentStructure(docPath);
     const headingPaths = flattenStructureToHeadingPaths(structure);

@@ -14,6 +14,7 @@
 import path from "node:path";
 import { readFile, readdir } from "node:fs/promises";
 import { pathExists, readDirentsIfExists, readFileIfExists } from "./fs-primitives.js";
+import { docPathFromContentRelativeFsPath } from "./path-utils.js";
 import { importFilesToProposal, type ImportFile } from "./import-service.js";
 import { commitProposalToCanonical } from "./commit-pipeline.js";
 import type { WriterIdentity } from "../types/shared.js";
@@ -122,7 +123,7 @@ export async function bootstrapContentSeed(
     try {
       const sourcePath = path.join(sourceRoot, relPath);
       const content = await readFile(sourcePath, "utf8");
-      importFiles.push({ docPath: relPath, content });
+      importFiles.push({ docPath: docPathFromContentRelativeFsPath(normalizeRelPath(relPath)), content });
     } catch (error) {
       summary.failed += 1;
       summary.errors.push(`${relPath}: ${error instanceof Error ? error.message : String(error)}`);

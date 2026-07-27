@@ -22,14 +22,15 @@
  * plus a raw `updateProposalSections(...)` (enforced by the import-boundary test).
  */
 
-import type { AnyProposal, ProposalSection, DocumentTargetRef } from "../types/shared.js";
+import type { ActiveProposal, ProposalSection, DocumentTargetRef } from "../types/shared.js";
 import { documentTargetRef } from "../types/shared.js";
 import type { ContentEntry, FlatEntry } from "./document-skeleton.js";
 import type { ProposalWriteResult, ProposalSubtreeMutationResult } from "./proposal-facade-types.js";
 import { ProposalEditor } from "./proposal-editor.js";
-import { readProposal, updateProposalSections } from "./proposal-repository.js";
+import { readActiveProposal, updateProposalSections } from "./proposal-repository.js";
 import { mintProposalManifest, unionSections, type ProposalManifest } from "./proposal-manifest.js";
 import { sectionWriteInputFromExternal, type SectionBodyWithPotentialSubsections } from "./section-formatting.js";
+import type { DocPath } from "../types/shared.js";
 
 /**
  * The semantic proposal-content operations. Callers pass the operation; this
@@ -37,16 +38,16 @@ import { sectionWriteInputFromExternal, type SectionBodyWithPotentialSubsections
  * maps to exactly one `ProposalEditor` mutation.
  */
 export type ProposalContentOperation =
-  | { kind: "write_section"; docPath: string; headingPath: string[]; heading: string; content: SectionBodyWithPotentialSubsections; contentIsFullMarkdown?: boolean; justification?: string }
-  | { kind: "create_section"; docPath: string; headingPath: string[]; heading: string; content?: SectionBodyWithPotentialSubsections; justification?: string }
-  | { kind: "delete_section"; docPath: string; headingPath: string[] }
-  | { kind: "move_section"; docPath: string; headingPath: string[]; newParentPath: string[] }
-  | { kind: "rename_section"; docPath: string; headingPath: string[]; newHeading: string }
-  | { kind: "write_document_markdown"; files: Array<{ docPath: string; markdown: string }> }
-  | { kind: "create_document"; docPath: string }
-  | { kind: "delete_document"; docPath: string }
-  | { kind: "rename_document"; docPath: string; newPath: string }
-  | { kind: "replay_document"; docPath: string; targetSha: string; extraDeletedSections?: ProposalSection[] };
+  | { kind: "write_section"; docPath: DocPath; headingPath: string[]; heading: string; content: SectionBodyWithPotentialSubsections; contentIsFullMarkdown?: boolean; justification?: string }
+  | { kind: "create_section"; docPath: DocPath; headingPath: string[]; heading: string; content?: SectionBodyWithPotentialSubsections; justification?: string }
+  | { kind: "delete_section"; docPath: DocPath; headingPath: string[] }
+  | { kind: "move_section"; docPath: DocPath; headingPath: string[]; newParentPath: string[] }
+  | { kind: "rename_section"; docPath: DocPath; headingPath: string[]; newHeading: string }
+  | { kind: "write_document_markdown"; files: Array<{ docPath: DocPath; markdown: string }> }
+  | { kind: "create_document"; docPath: DocPath }
+  | { kind: "delete_document"; docPath: DocPath }
+  | { kind: "rename_document"; docPath: DocPath; newPath: DocPath }
+  | { kind: "replay_document"; docPath: DocPath; targetSha: string; extraDeletedSections?: ProposalSection[] };
 
 /**
  * Result of a `mutateProposalContent(...)` call. `proposal` and `manifest` are
@@ -55,7 +56,7 @@ export type ProposalContentOperation =
  */
 export interface MutateProposalContentResult {
   /** The proposal with its freshly-updated `sections` manifest. */
-  proposal: AnyProposal;
+  proposal: ActiveProposal;
   /** The derived, brand-stamped manifest written to `meta.json`. */
   manifest: ProposalManifest;
   /** write_section / create_section: the engine's detailed write result. */
@@ -82,11 +83,11 @@ function samePath(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((seg, i) => seg === b[i]);
 }
 
-function sectionsUnder(docPath: string, headingPaths: string[][]): ProposalSection[] {
+function sectionsUnder(docPath: DocPath, headingPaths: string[][]): ProposalSection[] {
   return headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp }));
 }
 
-function flatEntriesToSections(docPath: string, entries: Array<{ headingPath: string[] }>): ProposalSection[] {
+function flatEntriesToSections(docPath: DocPath, entries: Array<{ headingPath: string[] }>): ProposalSection[] {
   return entries.map((e) => ({ doc_path: docPath, heading_path: e.headingPath }));
 }
 
@@ -101,7 +102,7 @@ export async function mutateProposalContent(
 ): Promise<MutateProposalContentResult> {
   // Fresh disk read: locate the proposal and read its current (cumulative) claim
   // set. Never cached across calls.
-  const proposal = await readProposal(proposalId);
+  const proposal = await readActiveProposal(proposalId);
   const editor = ProposalEditor.open(proposalId, proposal.status);
   const existing = proposal.sections;
 

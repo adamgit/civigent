@@ -5,11 +5,12 @@ import { DocsBrowserPage } from "../pages/DocsBrowserPage";
 import { DocumentPage } from "../pages/DocumentPage";
 import { FolderPage } from "../pages/FolderPage";
 import { GovernanceDocumentPage } from "../pages/GovernanceDocumentPage";
+import { AgentDocumentPage } from "../pages/AgentDocumentPage";
 import type { GovernanceMode } from "../types/shared.js";
 import { resolveDocsSubroute } from "./docsRouteUtils";
 import type { AppLayoutOutletContext } from "./AppLayout";
 
-export type DocViewMode = "standard" | "governance";
+export type DocViewMode = "standard" | "governance" | "agent";
 
 export function ViewModeToggle({ viewMode, onChange }: { viewMode: DocViewMode; onChange: (mode: DocViewMode) => void }) {
   return (
@@ -34,6 +35,16 @@ export function ViewModeToggle({ viewMode, onChange }: { viewMode: DocViewMode; 
       >
         Governance
       </button>
+      <button
+        onClick={() => onChange("agent")}
+        className={`px-2 py-0.5 rounded transition-all ${
+          viewMode === "agent"
+            ? "bg-white text-text-primary shadow-sm font-medium"
+            : "text-text-muted hover:text-text-primary"
+        }`}
+      >
+        Agent
+      </button>
     </div>
   );
 }
@@ -44,8 +55,9 @@ export function DocsRouteResolver() {
   const resolved = useMemo(() => resolveDocsSubroute(params["*"]), [params]);
   const [viewMode, setViewMode] = useState<DocViewMode>("standard");
   const [governanceMode, setGovernanceMode] = useState<GovernanceMode>("available");
+  const routePath = resolved.docPath ?? resolved.folderPath;
   const resolvedEntryType = useMemo(() => {
-    if (!resolved.docPath) {
+    if (!routePath) {
       return null;
     }
     const stack = [...entries];
@@ -54,7 +66,7 @@ export function DocsRouteResolver() {
       if (!node) {
         continue;
       }
-      if (node.path === resolved.docPath) {
+      if (node.path === routePath) {
         return node.type;
       }
       if (node.type === "directory" && Array.isArray(node.children)) {
@@ -62,7 +74,7 @@ export function DocsRouteResolver() {
       }
     }
     return null;
-  }, [entries, resolved.docPath]);
+  }, [entries, routePath]);
 
   // Fetch governance_mode from admin config on mount
   useEffect(() => {
@@ -71,12 +83,12 @@ export function DocsRouteResolver() {
     }).catch(() => { /* non-fatal */ });
   }, []);
 
-  if (!resolved.docPath) {
+  if (routePath === null) {
     return <DocsBrowserPage />;
   }
 
-  if (resolvedEntryType === "directory") {
-    return <FolderPage folderPath={resolved.docPath} />;
+  if (resolved.docPath === null || resolvedEntryType === "directory") {
+    return <FolderPage folderPath={routePath} />;
   }
 
   if (treeLoading && resolvedEntryType === null) {
@@ -99,6 +111,16 @@ export function DocsRouteResolver() {
   if (viewMode === "governance") {
     return (
       <GovernanceDocumentPage
+        key={resolved.docPath}
+        docPathOverride={resolved.docPath}
+        titleAccessory={titleAccessory}
+      />
+    );
+  }
+
+  if (viewMode === "agent") {
+    return (
+      <AgentDocumentPage
         key={resolved.docPath}
         docPathOverride={resolved.docPath}
         titleAccessory={titleAccessory}

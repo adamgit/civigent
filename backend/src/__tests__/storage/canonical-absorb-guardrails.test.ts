@@ -15,6 +15,8 @@ import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { parseSkeletonToEntries, serializeSkeletonEntries } from "../../storage/document-skeleton.js";
 import type { WriterIdentity } from "../../types/shared.js";
+import { docPathToContentRelativeFsPath } from "../../storage/path-utils.js";
+import { DocPath } from "../../types/shared.js";
 
 // Plain (non-session) scratch overlay root under the temp data root. The former
 // `getSessionSectionsContentRoot()` was removed with MW-7; this test only ever
@@ -31,7 +33,7 @@ const writer: WriterIdentity = {
 };
 
 function toDiskRelative(docPath: string): string {
-  return docPath.replace(/^\/+/, "");
+  return docPathToContentRelativeFsPath(DocPath.parse(docPath));
 }
 
 async function copyDirectoryRecursive(srcDir: string, destDir: string): Promise<void> {

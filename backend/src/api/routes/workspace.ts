@@ -11,6 +11,7 @@ import {
   requireDocReadPermission,
   requireDocWritePermission,
   agentWritePolicyRouteBody,
+  docPathParamOf,
 } from "./middleware.js";
 import {
   readTree,
@@ -19,6 +20,7 @@ import {
   restoreDocument,
   RestoreValidationError,
   overwriteDocument,
+  forcePublishDocument,
   renameDocument,
   createDocument,
   deleteDocument,
@@ -36,6 +38,7 @@ import {
   UncommittedSessionFilesError,
 } from "../application/documents.js";
 import { emitCatalogMutationEvents } from "../application/events.js";
+import { DocPath } from "../../types/shared.js";
 import {
   QueryParamError,
   optionalStringParam,
@@ -80,7 +83,7 @@ export function registerWorkspaceRoutes(
   // GET /workspace/:docPath/structure — working-copy structure (no agent:reading)
   router.get("/workspace/:docPath(*)/structure", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
       const { response } = await readWorkspaceStructure(docPath);
@@ -98,7 +101,7 @@ export function registerWorkspaceRoutes(
   // GET /workspace/:docPath/diagnostics — live-crdt-vs-canonical comparison
   router.get("/workspace/:docPath(*)/diagnostics", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const accessResult = await requireDocReadPermission(req, res, docPath);
       if (!accessResult) return;
       res.json(await getDiagnostics(docPath));
@@ -110,7 +113,7 @@ export function registerWorkspaceRoutes(
   // POST /workspace/:docPath/restore
   router.post("/workspace/:docPath(*)/restore", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const writer = await requireDocWritePermission(req, res, docPath);
       if (!writer) return;
       const { sha } = req.body as { sha?: string };
@@ -139,7 +142,7 @@ export function registerWorkspaceRoutes(
   // POST /workspace/:docPath/overwrite (admin-only)
   router.post("/workspace/:docPath(*)/overwrite", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const admin = await requireAdmin(req, res);
       if (!admin) return;
 
@@ -169,10 +172,28 @@ export function registerWorkspaceRoutes(
     }
   });
 
+  // POST /workspace/:docPath/force-publish
+  // User-initiated force publish of the document's live in-flight edits. Returns
+  // the `PublishAttemptOutcome` verbatim (committed / noop / aborted / failed) —
+  // a non-success outcome is a legitimate user-facing result here, not a server
+  // error, so it is delivered as JSON rather than routed to the process-fatal
+  // autonomous path (FP2).
+  router.post("/workspace/:docPath(*)/force-publish", async (req, res, next) => {
+    try {
+      const docPath = docPathParamOf(req);
+      const writer = await requireDocWritePermission(req, res, docPath);
+      if (!writer) return;
+      const outcome = await forcePublishDocument(docPath);
+      res.json(outcome);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // POST /workspace/:docPath/rename
   router.post("/workspace/:docPath(*)/rename", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const writer = await requireDocWritePermission(req, res, docPath);
       if (!writer) return;
       const { new_path: newPath } = req.body as { new_path?: string };
@@ -183,7 +204,7 @@ export function registerWorkspaceRoutes(
 
       let result;
       try {
-        result = await renameDocument(docPath, newPath, writer);
+        result = await renameDocument(docPath, DocPath.parse(newPath), writer);
       } catch (error) {
         if (error instanceof ActiveSessionConflictError) {
           sendApiError(res, 409, error.message);
@@ -235,7 +256,7 @@ export function registerWorkspaceCatchAllRoutes(
   // PUT /workspace/:docPath — create document
   router.put("/workspace/:docPath(*)", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const writer = await requireDocWritePermission(req, res, docPath);
       if (!writer) return;
 
@@ -288,7 +309,7 @@ export function registerWorkspaceCatchAllRoutes(
   // DELETE /workspace/:docPath — delete document
   router.delete("/workspace/:docPath(*)", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const writer = await requireDocWritePermission(req, res, docPath);
       if (!writer) return;
 

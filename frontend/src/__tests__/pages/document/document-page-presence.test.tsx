@@ -10,6 +10,12 @@ type WsEventHandler = (event: WsServerEvent) => void;
 let capturedWsHandler: WsEventHandler | null = null;
 
 vi.mock("../../../services/ws-client", () => ({
+  getAppWsTransportInfo: (() => {
+    const snapshot = { kind: null, fallbackReason: null };
+    return () => snapshot;
+  })(),
+  subscribeAppWsTransport: () => () => {},
+  describeAppWsBroadcastFallback: () => "",
   KnowledgeStoreWsClient: class {
     connect = vi.fn();
     disconnect = vi.fn();
@@ -78,7 +84,7 @@ const sectionsResponse = {
       humanInvolvement_score: 0,
       crdt_session_active: false,
       fragment_key: "frag:sec_root",
-      section_file: "sec_root.md",
+      section_file: "/sec_root.md",
     },
     {
       heading: "Overview",
@@ -88,7 +94,7 @@ const sectionsResponse = {
       humanInvolvement_score: 0,
       crdt_session_active: false,
       fragment_key: "frag:sec_overview",
-      section_file: "sec_overview.md",
+      section_file: "/sec_overview.md",
     },
   ],
 };
@@ -97,7 +103,7 @@ function renderDocPage() {
   return render(
     <MemoryRouter initialEntries={["/docs/test.md"]}>
       <Routes>
-        <Route path="/docs/*" element={<DocumentPage docPathOverride="test.md" />} />
+        <Route path="/docs/*" element={<DocumentPage docPathOverride="/test.md" />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -139,7 +145,7 @@ describe("DocumentPage presence", () => {
         type: "agent:reading",
         actor_id: "agent-1",
         actor_display_name: "Agent Bot",
-        doc_path: "test.md",
+        doc_path: "/test.md",
         heading_paths: [["Overview"]],
       } as WsServerEvent);
     });
@@ -163,7 +169,7 @@ describe("DocumentPage presence", () => {
         type: "agent:reading",
         actor_id: "agent-1",
         actor_display_name: "Agent Bot",
-        doc_path: "test.md",
+        doc_path: "/test.md",
         heading_paths: [["Overview"]],
       } as WsServerEvent);
     });

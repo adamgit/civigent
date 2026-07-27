@@ -18,6 +18,7 @@ import {
   humanBypassPolicyResult,
 } from "../application/imports.js";
 import { emitContentCommittedForSections } from "../application/events.js";
+import { DocPath } from "../../types/shared.js";
 
 // ─── Multipart wire-format parsing (HTTP-layer body handling) ──
 
@@ -189,7 +190,7 @@ export function registerImportRoutes(
       if (result.sections.length > 0) {
         emitContentCommittedForSections(
           onWsEvent,
-          result.sections[0].doc_path,
+          DocPath.parse(result.sections[0].doc_path),
           result.sections,
           result.committedHead,
           writer,

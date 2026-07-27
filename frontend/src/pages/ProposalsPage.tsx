@@ -8,6 +8,7 @@ import { WriterIdentity } from "../components/WriterIdentity";
 import { PageStatusBar } from "../components/PageStatusBar";
 import { apiClient } from "../services/api-client";
 import type { AnyProposal, ProposalStatus } from "../types/shared.js";
+import { proposalSectionDocPathForDisplay } from "../types/shared.js";
 import { headingPathToLabel } from "./document-page-utils";
 import { relativeTime } from "../utils/relativeTime";
 import { filterProposals, STATUS_FILTERS, WRITER_FILTERS } from "../services/proposal-filter";
@@ -208,7 +209,7 @@ export function ProposalsPage() {
                       {(() => {
                         const byDoc = new Map<string, Array<{ heading: string; level: number }>>();
                         for (const s of proposal.sections) {
-                          const docName = s.doc_path;
+                          const docName = proposalSectionDocPathForDisplay(s);
                           const existing = byDoc.get(docName) ?? [];
                           const heading = headingPathToLabel(s.heading_path);
                           const level = s.heading_path.length;

@@ -13,7 +13,7 @@ describe("path-utils", () => {
   });
 
   it("resolveDocPathUnderContent returns absolute path for valid doc path", () => {
-    const result = resolveDocPathUnderContent(contentRoot, "folder/doc.md");
+    const result = resolveDocPathUnderContent(contentRoot, "/folder/doc.md");
     expect(path.isAbsolute(result)).toBe(true);
     expect(result).toBe(path.resolve(contentRoot, "folder", "doc.md"));
     expect(result.startsWith(path.resolve(contentRoot))).toBe(true);
@@ -21,17 +21,23 @@ describe("path-utils", () => {
 
   it("path traversal attempts (../) are rejected with InvalidDocPathError", () => {
     expect(() =>
-      resolveDocPathUnderContent(contentRoot, "../etc/passwd.md"),
+      resolveDocPathUnderContent(contentRoot, "/../etc/passwd.md"),
     ).toThrow(InvalidDocPathError);
 
     expect(() =>
-      resolveDocPathUnderContent(contentRoot, "folder/../../escape.md"),
+      resolveDocPathUnderContent(contentRoot, "/folder/../../escape.md"),
     ).toThrow(InvalidDocPathError);
   });
 
   it("paths must end with .md", () => {
     expect(() =>
-      resolveDocPathUnderContent(contentRoot, "doc.txt"),
+      resolveDocPathUnderContent(contentRoot, "/doc.txt"),
+    ).toThrow(InvalidDocPathError);
+  });
+
+  it("doc paths without a leading slash are rejected with InvalidDocPathError", () => {
+    expect(() =>
+      resolveDocPathUnderContent(contentRoot, "folder/doc.md"),
     ).toThrow(InvalidDocPathError);
   });
 });

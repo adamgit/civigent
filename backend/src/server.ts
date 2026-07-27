@@ -3,6 +3,12 @@ import { readFileSync } from "node:fs";
 import { createApp } from "./app.js";
 import { createWsHub } from "./ws/hub.js";
 import { createCrdtWsServer, setCrdtEventHandler, setCrdtPrivateEventHandler } from "./ws/crdt-sync.js";
+import { setDocumentActivityChangedHandler } from "./ws/crdt-ws-coordinator.js";
+import {
+  broadcastDocumentActivitySnapshot,
+  recordAgentDocumentRead,
+  setDocumentActivityBroadcaster,
+} from "./ws/document-activity.js";
 import { assertDataRootExists, getContentRoot, getDataRoot, getImportRoot, ensureV3Directories } from "./storage/data-root.js";
 import { ensureGitRepoReady } from "./storage/git-repo.js";
 import { detectAndRecoverCrash } from "./storage/crash-recovery.js";
@@ -14,9 +20,10 @@ import { isDevSupervised } from "./runtime/system-state.js";
 import type { WorkerIpcMessage } from "./runtime/system-state.js";
 import { startRuntimeMemorySampler } from "./runtime/memory-stats.js";
 import { getFatalErrorsMode } from "./runtime/fatal-errors-mode.js";
-import { installProcessFatalHandlers, setFatalReportDeliveryHandler } from "./runtime/fatal-handler.js";
+import { handleProcessFatal, installProcessFatalHandlers, setFatalReportDeliveryHandler } from "./runtime/fatal-handler.js";
 import type { WsServerEvent } from "./types/shared.js";
 import { buildProposalSectionAvailabilityEventsForDoc } from "./ws/proposal-section-availability.js";
+import { DocPath } from "./types/shared.js";
 
 const ANSI_BOLD_YELLOW = "\x1b[1;33m";
 const ANSI_RESET = "\x1b[0m";
@@ -53,30 +60,54 @@ const PROPOSAL_AVAILABILITY_TRIGGER_TYPES = new Set<WsServerEvent["type"]>([
   "proposal:withdrawn",
 ]);
 
-function eventDocPath(event: WsServerEvent): string | null {
+function eventDocPath(event: WsServerEvent): DocPath | null {
   if ("doc_path" in event && typeof event.doc_path === "string") {
-    return event.doc_path;
+    return DocPath.parse(event.doc_path);
   }
   return null;
 }
 
-async function emitDerivedProposalSectionAvailability(event: WsServerEvent): Promise<void> {
+async function emitDerivedProposalSectionAvailability(
+  event: WsServerEvent,
+  docPath: DocPath | null,
+): Promise<void> {
   if (!PROPOSAL_AVAILABILITY_TRIGGER_TYPES.has(event.type)) return;
-  const docPath = eventDocPath(event);
   if (!docPath) return;
-  try {
-    const derivedEvents = await buildProposalSectionAvailabilityEventsForDoc(docPath);
-    for (const derivedEvent of derivedEvents) {
-      wsHub.broadcast(derivedEvent);
-    }
-  } catch {
-    // Derived availability updates are best-effort and must never break primary WS delivery.
+  const derivedEvents = await buildProposalSectionAvailabilityEventsForDoc(docPath);
+  for (const derivedEvent of derivedEvents) {
+    wsHub.broadcast(derivedEvent);
+  }
+}
+
+function handleDocumentActivityTriggers(event: WsServerEvent, docPath: DocPath | null): void {
+  if (!docPath) return;
+  if (event.type === "agent:reading") {
+    recordAgentDocumentRead(docPath, {
+      id: event.actor_id,
+      type: "agent",
+      displayName: event.actor_display_name,
+    });
+    void broadcastDocumentActivitySnapshot(docPath);
+    return;
+  }
+  if (event.type === "content:committed" && event.writer_type === "agent") {
+    void broadcastDocumentActivitySnapshot(docPath);
+    return;
+  }
+  if (
+    event.type === "proposal:draft" ||
+    event.type === "proposal:inprogress" ||
+    event.type === "proposal:withdrawn"
+  ) {
+    void broadcastDocumentActivitySnapshot(docPath);
   }
 }
 
 function handleWsEvent(event: WsServerEvent): void {
   wsHub.broadcast(event);
-  void emitDerivedProposalSectionAvailability(event);
+  const docPath = eventDocPath(event);
+  void emitDerivedProposalSectionAvailability(event, docPath);
+  handleDocumentActivityTriggers(event, docPath);
 }
 
 // In KS_FATAL_ERRORS_MODE=report the process stays alive after a fatal; deliver
@@ -89,6 +120,10 @@ setFatalReportDeliveryHandler((report) => {
 
 // Wire up CRDT events so they broadcast through the hub
 setCrdtEventHandler((event) => handleWsEvent(event));
+setDocumentActivityBroadcaster((event) => wsHub.broadcastToDocumentSubscribers(event));
+setDocumentActivityChangedHandler((docPath) => {
+  void broadcastDocumentActivitySnapshot(docPath);
+});
 // Wire up CRDT origin-only private events (section:edit-rejected) so they
 // deliver to a single `(doc_path, clientInstanceId)` tab, not to the ordinary
 // document subscription broadcast.
@@ -102,19 +137,22 @@ const server = createServer(app);
 // Single upgrade dispatcher — routes WebSocket connections by path.
 server.on("upgrade", (request, socket, head) => {
   if (!isSystemReady()) {
-    // Reject WS during startup — write HTTP 503 response directly to socket
-    socket.write(
+    // Reject WS during startup — answer HTTP 503 directly on the socket,
+    // flushed before FIN so the proxy relays it instead of a hang-up.
+    socket.end(
       "HTTP/1.1 503 Service Unavailable\r\n" +
       "Retry-After: 5\r\n" +
       "Connection: close\r\n\r\n",
     );
-    socket.destroy();
     return;
   }
 
   const pathname = new URL(request.url ?? "", `http://${request.headers.host}`).pathname;
   if (pathname.startsWith("/ws/crdt/")) {
-    crdtWs.handleUpgrade(request, socket, head);
+    crdtWs.handleUpgrade(request, socket, head).then(null, (err) => {
+      socket.destroy();
+      handleProcessFatal(err, "uncaughtException");
+    });
   } else if (pathname === "/ws") {
     wsHub.handleUpgrade(request, socket, head);
   } else {

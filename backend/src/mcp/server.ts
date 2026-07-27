@@ -221,16 +221,12 @@ export class McpServer {
     const params = parsed.value;
 
     // A renamed/removed tool name is answered with a migration message, not an
-    // unknown-tool error: an agent holding a stale tool list should learn to
-    // refresh rather than see a hard failure.
+    // unknown-tool error: an agent holding a stale tool list should learn what
+    // to call instead rather than see a hard failure.
     if (this.registry.isDeprecated(params.name)) {
       return makeSuccessResponse(
         req.id,
-        makeToolErrorResult(
-          `The tool "${params.name}" has been renamed or removed. Refresh your tool list ` +
-            `(tools/list) and re-fetch the latest skill.md / cursor-rule.md to get the current ` +
-            `tool name, then retry with that name.`,
-        ),
+        makeToolErrorResult(this.registry.deprecationMessage(params.name)),
       );
     }
 

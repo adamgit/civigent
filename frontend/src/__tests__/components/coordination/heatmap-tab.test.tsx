@@ -6,7 +6,7 @@ import type { GetHeatmapResponse, HeatmapEntry } from "../../../types/shared";
 
 function entry(overrides: Partial<HeatmapEntry>): HeatmapEntry {
   return {
-    doc_path: "ops/strategy.md",
+    doc_path: "/ops/strategy.md",
     heading_path: ["Overview"],
     agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
     crdt_session_active: false,

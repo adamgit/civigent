@@ -52,6 +52,6 @@ describe("import staging persistence across reinitialization (spec 07)", () => {
 
     // And the raw staged content is readable for a subsequent commit.
     const staged = await fresh.readStagingFiles(importId);
-    expect(staged.map((f) => f.docPath).sort()).toEqual(["guide.md", "sub/nested.md"]);
+    expect(staged.map((f) => f.docPath).sort()).toEqual(["/guide.md", "/sub/nested.md"]);
   });
 });

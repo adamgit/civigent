@@ -23,6 +23,7 @@ import { getContentRoot } from "./data-root.js";
 import { SectionRef } from "../domain/section-ref.js";
 import type { DocStructureNode } from "../types/shared.js";
 import type { SectionBody } from "./section-formatting.js";
+import type { DocPath } from "../types/shared.js";
 
 export class CanonicalReader {
   protected readonly canonicalRoot: string;
@@ -52,7 +53,7 @@ export class CanonicalReader {
    * Canonical structural outline of a document as `DocStructureNode[]`.
    * Throws `DocumentNotFoundError` when no canonical skeleton exists.
    */
-  async getDocumentStructure(docPath: string): Promise<DocStructureNode[]> {
+  async getDocumentStructure(docPath: DocPath): Promise<DocStructureNode[]> {
     return this.layer.getDocumentStructure(docPath);
   }
 
@@ -61,25 +62,25 @@ export class CanonicalReader {
    * headingPath) with no body content.
    */
   async getSectionList(
-    docPath: string,
+    docPath: DocPath,
   ): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>> {
     return this.layer.getSectionList(docPath);
   }
 
   /** All canonical heading paths in document order. */
-  async listHeadingPaths(docPath: string): Promise<string[][]> {
+  async listHeadingPaths(docPath: DocPath): Promise<string[][]> {
     return this.layer.listHeadingPaths(docPath);
   }
 
   /** Discovery rows for real canonical sections (heading, heading path, body size). */
-  async getSectionDiscoveryList(docPath: string): Promise<SectionDiscoveryEntry[]> {
+  async getSectionDiscoveryList(docPath: DocPath): Promise<SectionDiscoveryEntry[]> {
     return this.layer.getSectionDiscoveryList(docPath);
   }
 
   // ─── Section content ────────────────────────────────────────────────
 
   /** Read a single canonical section body. */
-  async readSection(docPath: string, headingPath: string[]): Promise<SectionBody> {
+  async readSection(docPath: DocPath, headingPath: string[]): Promise<SectionBody> {
     return this.layer.readSection(new SectionRef(docPath, headingPath));
   }
 
@@ -87,12 +88,12 @@ export class CanonicalReader {
    * Read every canonical section body for a document, keyed by heading key
    * (e.g. "Heading A>>Sub B").
    */
-  async readAllSections(docPath: string): Promise<Map<string, SectionBody>> {
+  async readAllSections(docPath: DocPath): Promise<Map<string, SectionBody>> {
     return this.layer.readAllSections(docPath);
   }
 
   /** Assemble the full canonical document markdown from skeleton + bodies. */
-  async readAssembledDocument(docPath: string): Promise<string> {
+  async readAssembledDocument(docPath: DocPath): Promise<string> {
     return this.layer.readAssembledDocument(docPath);
   }
 }

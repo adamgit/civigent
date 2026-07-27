@@ -14,7 +14,7 @@ import type {
   RequestedMode,
   WireLiveSectionsState,
 } from "../types/shared.js";
-import { expectJsonObject, parseJson, WireLiveSectionsState as WireLiveSectionsStateCodec } from "../types/shared.js";
+import { DocPath, expectJsonObject, parseJson, WireLiveSectionsState as WireLiveSectionsStateCodec } from "../types/shared.js";
 
 export const MSG_SYNC_STEP_1 = 0;
 export const MSG_SYNC_STEP_2 = 1;
@@ -30,6 +30,7 @@ export const MSG_DOC_PUBLISH_PAUSE_END = 0x12;
 export const MSG_LIVE_SECTIONS_BOOTSTRAP = 0x14;
 export const MSG_LIVE_SECTIONS_UPDATE = 0x15;
 
+export const WS_CLOSE_UPGRADE_FAILED = 1011;
 export const WS_CLOSE_AUTH_REQUIRED = 4001;
 export const WS_CLOSE_INVALID_URL = 4010;
 export const WS_CLOSE_AUTH_FAILED = 4011;
@@ -129,7 +130,7 @@ export function decodeModeTransitionRequest(value: JsonValue): ModeTransitionReq
   return {
     requestId: requireStringField(obj, "requestId", label),
     clientInstanceId: requireStringField(obj, "clientInstanceId", label),
-    docPath: requireStringField(obj, "docPath", label),
+    docPath: DocPath.parse(requireStringField(obj, "docPath", label)),
     requestedMode: decodeRequestedMode(obj["requestedMode"], `${label}.requestedMode`),
     editorFocusTarget: decodeEditorFocusTargetOrNull(obj["editorFocusTarget"], `${label}.editorFocusTarget`),
   };
@@ -242,14 +243,14 @@ export function decodeMessage(data: Uint8Array): { type: number; payload: Uint8A
   return { type: data[0], payload: data.subarray(1) };
 }
 
-export function parseCrdtUrl(url: string, host: string): { docPath: string } | null {
+export function parseCrdtUrl(url: string, host: string): { docPath: DocPath } | null {
   const parsed = new URL(url, `http://${host}`);
   const pathname = decodeURIComponent(parsed.pathname);
 
   if (pathname.startsWith(CRDT_PATH_PREFIX)) {
-    const raw = pathname.slice(CRDT_PATH_PREFIX.length).replace(/^\/+|\/+$/g, "");
-    if (!raw) return null;
-    return { docPath: "/" + raw };
+    const slashStrippedSegment = pathname.slice(CRDT_PATH_PREFIX.length).replace(/^\/+|\/+$/g, "");
+    if (!DocPath.isSlashStrippedUrlSegmentOfDocPath(slashStrippedSegment)) return null;
+    return { docPath: DocPath.fromSlashStrippedUrlSegment(slashStrippedSegment) };
   }
 
   return null;

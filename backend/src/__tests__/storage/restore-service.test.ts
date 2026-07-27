@@ -18,7 +18,7 @@ import { SectionRef } from "../../domain/section-ref.js";
 describe("createRestoreProposal — deleted sections in manifest", () => {
   let ctx: TempDataRootContext;
   const writer = { id: "test-human", type: "human" as const, displayName: "Test Human", email: "test@test.local" };
-  const docPath = "restore-test.md";
+  const docPath = "/restore-test.md";
 
   // SHA after the initial commit (fewer sections)
   let v1Sha: string;
@@ -90,7 +90,7 @@ describe("createRestoreProposal — deleted sections in manifest", () => {
 describe("restore recursively deletes stale nested section files", () => {
   let ctx: TempDataRootContext;
   const writer = { id: "restore-nested", type: "human" as const, displayName: "Restore Nested", email: "restore-nested@test.local" };
-  const docPath = "restore-nested-test.md";
+  const docPath = "/restore-nested-test.md";
   let v1Sha: string;
 
   beforeAll(async () => {
@@ -98,7 +98,7 @@ describe("restore recursively deletes stale nested section files", () => {
 
     const skeletonPath = join(ctx.contentDir, docPath);
     const sectionsDir = `${skeletonPath}.sections`;
-    const openQuestionsFile = "open_questions.md";
+    const openQuestionsFile = "/open_questions.md";
     const openQuestionsSectionsDir = join(sectionsDir, `${openQuestionsFile}.sections`);
 
     await mkdir(openQuestionsSectionsDir, { recursive: true });
@@ -154,7 +154,7 @@ describe("restore recursively deletes stale nested section files", () => {
       ctx.contentDir,
       `${docPath}.sections`,
       "open_questions.md.sections",
-      "crew.md",
+      "/crew.md",
     );
 
     await expect(access(staleNestedFile)).rejects.toThrow();

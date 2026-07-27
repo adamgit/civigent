@@ -28,7 +28,7 @@ function collectFlat(skeleton: DocumentSkeleton): FlatEntry[] {
 
 async function createStandardDoc(
   dataRoot: string,
-  docPath: string = "test/standard.md",
+  docPath: string = "/test/standard.md",
 ): Promise<void> {
   const contentRoot = join(dataRoot, "content");
   const skeletonPath = join(contentRoot, docPath);
@@ -63,7 +63,7 @@ async function createStandardDoc(
 
 describe("BUG1 FIXED: upsertDocumentFromMarkdown normalizes multi-section markdown into skeleton + body files", () => {
   let ctx: TempDataRootContext;
-  const docPath = "test/standard.md";
+  const docPath = "/test/standard.md";
 
   beforeAll(async () => {
     ctx = await createTempDataRoot();
@@ -125,7 +125,7 @@ describe("BUG1 FIXED: upsertDocumentFromMarkdown normalizes multi-section markdo
 
 describe("BUG1b FIXED: Overlay upsertSectionFromMarkdown normalizes multi-heading content", () => {
   let ctx: TempDataRootContext;
-  const docPath = "test/standard.md";
+  const docPath = "/test/standard.md";
 
   beforeAll(async () => {
     ctx = await createTempDataRoot();
@@ -164,7 +164,7 @@ describe("BUG1b FIXED: Overlay upsertSectionFromMarkdown normalizes multi-headin
 
 describe("BUG2: Restore path copies historical files verbatim without normalization", () => {
   let ctx: TempDataRootContext;
-  const docPath = "test/standard.md";
+  const docPath = "/test/standard.md";
 
   beforeAll(async () => {
     ctx = await createTempDataRoot();
@@ -203,7 +203,7 @@ describe("BUG2: Restore path copies historical files verbatim without normalizat
     // (simulating what createRestoreProposal does via extractHistoricalTree)
     const { gitShowFile } = await import("../../storage/git-repo.js");
     const historicalContent = await gitShowFile(
-      ctx.rootDir, "HEAD", `content/${docPath}.sections/_root.md`,
+      ctx.rootDir, "HEAD", `content${docPath}.sections/_root.md`,
     );
 
     // The historical content contains the embedded headings
@@ -224,7 +224,7 @@ describe("BUG2: Restore path copies historical files verbatim without normalizat
 
 describe("BUG3: H1 embedded in root body creates impossible parse state", () => {
   let ctx: TempDataRootContext;
-  const docPath = "test/h1-bug.md";
+  const docPath = "/test/h1-bug.md";
 
   beforeAll(async () => {
     ctx = await createTempDataRoot();
@@ -282,7 +282,7 @@ describe("BUG3: H1 embedded in root body creates impossible parse state", () => 
 
 describe("BUG4 FIXED: Duplicate root entries are rejected by invariant", () => {
   let ctx: TempDataRootContext;
-  const docPath = "test/dup-root.md";
+  const docPath = "/test/dup-root.md";
 
   beforeAll(async () => {
     ctx = await createTempDataRoot();

@@ -4,7 +4,8 @@ import { getContentRoot, getContentGitPrefix, getDataRoot } from "../../storage/
 import { assessSkeleton, type SkeletonAssessment } from "../../storage/skeleton-assessment.js";
 import { resolveSkeletonPath, parseSkeletonToEntries, type FlatEntry } from "../../storage/document-skeleton.js";
 import { ContentLayer } from "../../storage/content-layer.js";
-import { normalizeDocPath } from "../../storage/path-utils.js";
+import { docPathToContentRelativeFsPath } from "../../storage/path-utils.js";
+import { DocPath } from "../../types/shared.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { gitExec } from "../../storage/git-repo.js";
 import { SectionRef } from "../../domain/section-ref.js";
@@ -62,11 +63,11 @@ export interface HistoricalRecursiveView {
 }
 
 export interface DocumentDiagnosticsContext {
-  docPath: string;
+  docPath: DocPath;
   dataRoot: string;
   contentRoot: string;
   contentGitPrefix: string;
-  normalizedDocPath: string;
+  contentRelativeFsPath: string;
   canonicalSkeletonPath: string;
   canonicalSectionsDir: string;
   checks: DiagHealthCheck[];
@@ -80,11 +81,11 @@ export interface DocumentDiagnosticsContext {
   pushCheck: (category: string, name: string, pass: boolean, detail?: string) => void;
 }
 
-export function createDocumentDiagnosticsContext(docPath: string): DocumentDiagnosticsContext {
+export function createDocumentDiagnosticsContext(docPath: DocPath): DocumentDiagnosticsContext {
   const dataRoot = getDataRoot();
   const contentRoot = getContentRoot();
   const contentGitPrefix = getContentGitPrefix();
-  const normalizedDocPath = normalizeDocPath(docPath);
+  const contentRelativeFsPath = docPathToContentRelativeFsPath(DocPath.parse(docPath));
   const canonicalSkeletonPath = resolveSkeletonPath(docPath, contentRoot);
   const canonicalSectionsDir = `${canonicalSkeletonPath}.sections`;
   const checks: DiagHealthCheck[] = [];
@@ -94,7 +95,7 @@ export function createDocumentDiagnosticsContext(docPath: string): DocumentDiagn
     dataRoot,
     contentRoot,
     contentGitPrefix,
-    normalizedDocPath,
+    contentRelativeFsPath,
     canonicalSkeletonPath,
     canonicalSectionsDir,
     checks,
@@ -356,7 +357,7 @@ export async function loadHistoricalRecursiveView(
   ctx: DocumentDiagnosticsContext,
   targetSha: string,
 ): Promise<HistoricalRecursiveView | null> {
-  const skeletonGitPath = `${ctx.contentGitPrefix}/${ctx.normalizedDocPath}`;
+  const skeletonGitPath = `${ctx.contentGitPrefix}/${ctx.contentRelativeFsPath}`;
   const rootContent = await gitShowFileOrNullAtSha(ctx, targetSha, skeletonGitPath);
   if (rootContent === null) return null;
 

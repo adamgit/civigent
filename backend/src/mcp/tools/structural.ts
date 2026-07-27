@@ -16,10 +16,9 @@
 
 import type { ToolRegistry, ToolHandler } from "../tool-registry.js";
 import { jsonToolResult } from "../tool-registry.js";
-import { makeToolErrorResult } from "../protocol.js";
-import { getContentRoot } from "../../storage/data-root.js";
+import { makeToolErrorResult, parseToolArgumentDocPath } from "../protocol.js";
 import { DocumentNotFoundError } from "../../storage/document-reader.js";
-import { InvalidDocPathError, resolveDocPathUnderContent } from "../../storage/path-utils.js";
+import { InvalidDocPathError } from "../../storage/path-utils.js";
 import {
   readProposal,
   isProposalMutable,
@@ -33,6 +32,7 @@ import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
 import type { McpToolCallResult } from "../protocol.js";
 import type { AnyProposal } from "../../types/shared.js";
 import { checkDocPermission } from "../../auth/acl.js";
+import { emitProposalDraftEventsByDoc } from "../../api/application/events.js";
 
 // ─── Proposal validation helper ──────────────────────────
 
@@ -77,25 +77,19 @@ function isError(result: unknown): result is McpToolCallResult {
 
 const createSectionHandler: ToolHandler = async (args, ctx) => {
   const proposalId = args.proposal_id as string | undefined;
-  const docPath = args.doc_path as string | undefined;
+  const rawDocPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
   const content = (args.content as string | undefined) ?? "";
 
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
-  if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
+  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath) || headingPath.length === 0) {
     return makeToolErrorResult("Missing required parameter: heading_path (non-empty array)");
   }
 
-  // Validate doc_path before any state is created
-  try {
-    resolveDocPathUnderContent(getContentRoot(), docPath);
-  } catch (error) {
-    if (error instanceof InvalidDocPathError) {
-      return makeToolErrorResult(`Invalid doc_path "${docPath}": ${error.message}`);
-    }
-    throw error;
-  }
+  const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
+  if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
+  const docPath = parsedDocPath.docPath;
 
   const writeOk = await checkDocPermission(ctx.writer, docPath, "write");
   if (!writeOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
@@ -117,17 +111,7 @@ const createSectionHandler: ToolHandler = async (args, ctx) => {
     });
 
     // Broadcast proposal:draft
-    if (ctx.emitEvent && updated.sections.length > 0) {
-      ctx.emitEvent({
-        type: "proposal:draft",
-        proposal_id: updated.id,
-        doc_path: updated.sections[0].doc_path,
-        heading_paths: updated.sections.map((s) => s.heading_path),
-        writer_id: ctx.writer.id,
-        writer_display_name: ctx.writer.displayName,
-        intent: updated.intent,
-      });
-    }
+    emitProposalDraftEventsByDoc(ctx.emitEvent, updated.id, ctx.writer, updated.intent, updated.targets);
 
     const policyResult = await evaluateAgentWritePolicy(proposalId);
 
@@ -150,24 +134,18 @@ const createSectionHandler: ToolHandler = async (args, ctx) => {
 
 const deleteSectionHandler: ToolHandler = async (args, ctx) => {
   const proposalId = args.proposal_id as string | undefined;
-  const docPath = args.doc_path as string | undefined;
+  const rawDocPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
 
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
-  if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
+  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath) || headingPath.length === 0) {
     return makeToolErrorResult("Cannot delete the before-first-heading section. Use document delete to remove the entire document.");
   }
 
-  // Validate doc_path before any state is created
-  try {
-    resolveDocPathUnderContent(getContentRoot(), docPath);
-  } catch (error) {
-    if (error instanceof InvalidDocPathError) {
-      return makeToolErrorResult(`Invalid doc_path "${docPath}": ${error.message}`);
-    }
-    throw error;
-  }
+  const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
+  if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
+  const docPath = parsedDocPath.docPath;
 
   const delWriteOk = await checkDocPermission(ctx.writer, docPath, "write");
   if (!delWriteOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
@@ -184,17 +162,7 @@ const deleteSectionHandler: ToolHandler = async (args, ctx) => {
       headingPath,
     });
 
-    if (ctx.emitEvent && updated.sections.length > 0) {
-      ctx.emitEvent({
-        type: "proposal:draft",
-        proposal_id: updated.id,
-        doc_path: updated.sections[0].doc_path,
-        heading_paths: updated.sections.map((s) => s.heading_path),
-        writer_id: ctx.writer.id,
-        writer_display_name: ctx.writer.displayName,
-        intent: updated.intent,
-      });
-    }
+    emitProposalDraftEventsByDoc(ctx.emitEvent, updated.id, ctx.writer, updated.intent, updated.targets);
 
     const policyResult = await evaluateAgentWritePolicy(proposalId);
 
@@ -217,12 +185,12 @@ const deleteSectionHandler: ToolHandler = async (args, ctx) => {
 
 const moveSectionHandler: ToolHandler = async (args, ctx) => {
   const proposalId = args.proposal_id as string | undefined;
-  const docPath = args.doc_path as string | undefined;
+  const rawDocPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
   const newParentPath = args.new_parent_path as string[] | undefined;
 
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
-  if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
+  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath) || headingPath.length === 0) {
     return makeToolErrorResult("Cannot move the before-first-heading section.");
   }
@@ -230,18 +198,13 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
     return makeToolErrorResult("Missing required parameter: new_parent_path (string[])");
   }
 
+  const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
+  if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
+  const docPath = parsedDocPath.docPath;
+
   const moveWriteOk = await checkDocPermission(ctx.writer, docPath, "write");
   if (!moveWriteOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
 
-  // Validate doc_path before any state is created
-  try {
-    resolveDocPathUnderContent(getContentRoot(), docPath);
-  } catch (error) {
-    if (error instanceof InvalidDocPathError) {
-      return makeToolErrorResult(`Invalid doc_path "${docPath}": ${error.message}`);
-    }
-    throw error;
-  }
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
@@ -264,17 +227,7 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
       throw moveError;
     }
 
-    if (ctx.emitEvent && updated.sections.length > 0) {
-      ctx.emitEvent({
-        type: "proposal:draft",
-        proposal_id: updated.id,
-        doc_path: updated.sections[0].doc_path,
-        heading_paths: updated.sections.map((s) => s.heading_path),
-        writer_id: ctx.writer.id,
-        writer_display_name: ctx.writer.displayName,
-        intent: updated.intent,
-      });
-    }
+    emitProposalDraftEventsByDoc(ctx.emitEvent, updated.id, ctx.writer, updated.intent, updated.targets);
 
     const policyResult = await evaluateAgentWritePolicy(proposalId);
 
@@ -298,29 +251,24 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
 
 const renameSectionHandler: ToolHandler = async (args, ctx) => {
   const proposalId = args.proposal_id as string | undefined;
-  const docPath = args.doc_path as string | undefined;
+  const rawDocPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
   const newHeading = args.new_heading as string | undefined;
 
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
-  if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
+  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath) || headingPath.length === 0) {
     return makeToolErrorResult("Cannot rename the before-first-heading section (it has no heading).");
   }
   if (!newHeading) return makeToolErrorResult("Missing required parameter: new_heading");
 
+  const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
+  if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
+  const docPath = parsedDocPath.docPath;
+
   const renameWriteOk = await checkDocPermission(ctx.writer, docPath, "write");
   if (!renameWriteOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
 
-  // Validate doc_path before any state is created
-  try {
-    resolveDocPathUnderContent(getContentRoot(), docPath);
-  } catch (error) {
-    if (error instanceof InvalidDocPathError) {
-      return makeToolErrorResult(`Invalid doc_path "${docPath}": ${error.message}`);
-    }
-    throw error;
-  }
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
@@ -336,17 +284,7 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
     });
     const newHeadingPath = mutatedHeadingPath ?? [...headingPath.slice(0, -1), newHeading];
 
-    if (ctx.emitEvent && updated.sections.length > 0) {
-      ctx.emitEvent({
-        type: "proposal:draft",
-        proposal_id: updated.id,
-        doc_path: updated.sections[0].doc_path,
-        heading_paths: updated.sections.map((s) => s.heading_path),
-        writer_id: ctx.writer.id,
-        writer_display_name: ctx.writer.displayName,
-        intent: updated.intent,
-      });
-    }
+    emitProposalDraftEventsByDoc(ctx.emitEvent, updated.id, ctx.writer, updated.intent, updated.targets);
 
     const policyResult = await evaluateAgentWritePolicy(proposalId);
 
@@ -370,22 +308,16 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
 
 const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
   const proposalId = args.proposal_id as string | undefined;
-  const docPath = args.path as string | undefined;
+  const rawDocPath = args.path as string | undefined;
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
-  if (!docPath) return makeToolErrorResult("Missing required parameter: path");
+  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: path");
+
+  const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
+  if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
+  const docPath = parsedDocPath.docPath;
 
   const delDocWriteOk = await checkDocPermission(ctx.writer, docPath, "write");
   if (!delDocWriteOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
-
-  // Validate doc_path before any state is created
-  try {
-    resolveDocPathUnderContent(getContentRoot(), docPath);
-  } catch (error) {
-    if (error instanceof InvalidDocPathError) {
-      return makeToolErrorResult(`Invalid path "${docPath}": ${error.message}`);
-    }
-    throw error;
-  }
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
@@ -398,17 +330,7 @@ const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
       docPath,
     });
 
-    if (ctx.emitEvent && updated.sections.length > 0) {
-      ctx.emitEvent({
-        type: "proposal:draft",
-        proposal_id: updated.id,
-        doc_path: docPath,
-        heading_paths: updated.sections.map((s) => s.heading_path),
-        writer_id: ctx.writer.id,
-        writer_display_name: ctx.writer.displayName,
-        intent: updated.intent,
-      });
-    }
+    emitProposalDraftEventsByDoc(ctx.emitEvent, updated.id, ctx.writer, updated.intent, updated.targets);
 
     const policyResult = await evaluateAgentWritePolicy(proposalId);
 
@@ -430,30 +352,24 @@ const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
 
 const renameDocumentHandler: ToolHandler = async (args, ctx) => {
   const proposalId = args.proposal_id as string | undefined;
-  const docPath = args.doc_path as string | undefined;
-  const newPath = args.new_path as string | undefined;
+  const rawDocPath = args.doc_path as string | undefined;
+  const rawNewPath = args.new_path as string | undefined;
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
-  if (!docPath) return makeToolErrorResult("Missing required parameter: doc_path");
-  if (!newPath) return makeToolErrorResult("Missing required parameter: new_path");
+  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
+  if (!rawNewPath) return makeToolErrorResult("Missing required parameter: new_path");
+
+  const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
+  if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
+  const parsedNewPath = parseToolArgumentDocPath(rawNewPath);
+  if ("errorResult" in parsedNewPath) return parsedNewPath.errorResult;
+  const docPath = parsedDocPath.docPath;
+  const newPath = parsedNewPath.docPath;
 
   // Check write permission on both source (delete) and destination (create)
   const srcWriteOk = await checkDocPermission(ctx.writer, docPath, "write");
   if (!srcWriteOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
   const dstWriteOk = await checkDocPermission(ctx.writer, newPath, "write");
   if (!dstWriteOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${newPath}".`);
-
-  // Validate both old and new doc_path before any state is created
-  const renameContentRoot = getContentRoot();
-  for (const [label, p] of [["doc_path", docPath], ["new_path", newPath]] as const) {
-    try {
-      resolveDocPathUnderContent(renameContentRoot, p);
-    } catch (error) {
-      if (error instanceof InvalidDocPathError) {
-        return makeToolErrorResult(`Invalid ${label} "${p}": ${error.message}`);
-      }
-      throw error;
-    }
-  }
 
   const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
   if (isError(validated)) return validated;
@@ -468,17 +384,7 @@ const renameDocumentHandler: ToolHandler = async (args, ctx) => {
       newPath,
     });
 
-    if (ctx.emitEvent && updated.sections.length > 0) {
-      ctx.emitEvent({
-        type: "proposal:draft",
-        proposal_id: updated.id,
-        doc_path: newPath,
-        heading_paths: updated.sections.map((s) => s.heading_path),
-        writer_id: ctx.writer.id,
-        writer_display_name: ctx.writer.displayName,
-        intent: updated.intent,
-      });
-    }
+    emitProposalDraftEventsByDoc(ctx.emitEvent, updated.id, ctx.writer, updated.intent, updated.targets);
 
     const policyResult = await evaluateAgentWritePolicy(proposalId);
 

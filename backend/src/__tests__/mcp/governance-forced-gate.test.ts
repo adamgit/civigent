@@ -30,7 +30,7 @@ let autoSessionId = "";
 const AGENT_ID = "governance-agent";
 const agentToken = authFor(AGENT_ID, "agent");
 
-const FORCED_DOC_PATH = "governance/forced-doc.md";
+const FORCED_DOC_PATH = "/governance/forced-doc.md";
 
 const GOVERNANCE_ENV = "KS_GOVERNANCE_MODE";
 let savedGovernanceMode: string | undefined;

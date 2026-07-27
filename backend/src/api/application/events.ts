@@ -5,10 +5,12 @@ import type {
   SectionEditRejectedEvent,
   SectionEditRejectedReasonCode,
   ClientInstanceId,
+  ProposalTargetRef,
 } from "../../types/shared.js";
 import { emitCatalogMutationEvents, type CatalogMutationSummary } from "../../mcp/catalog-events.js";
 import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
 import { SectionRef } from "../../domain/section-ref.js";
+import { DocPath } from "../../types/shared.js";
 
 
 
@@ -26,9 +28,9 @@ export type { CatalogMutationSummary };
 
 
 export function groupSectionsByDocPath(
-  sections: Array<{ doc_path: string; heading_path: string[] }>,
-): Map<string, string[][]> {
-  const headingPathsByDoc = new Map<string, string[][]>();
+  sections: Array<{ doc_path: DocPath; heading_path: string[] }>,
+): Map<DocPath, string[][]> {
+  const headingPathsByDoc = new Map<DocPath, string[][]>();
   for (const section of sections) {
     if (!headingPathsByDoc.has(section.doc_path)) {
       headingPathsByDoc.set(section.doc_path, []);
@@ -38,15 +40,30 @@ export function groupSectionsByDocPath(
   return headingPathsByDoc;
 }
 
+export function groupProposalTargetsByDocument(
+  targets: ProposalTargetRef[],
+): Map<string, string[][]> {
+  const headingPathsByDoc = new Map<string, string[][]>();
+  for (const target of targets) {
+    let headingPaths = headingPathsByDoc.get(target.doc_path);
+    if (!headingPaths) {
+      headingPaths = [];
+      headingPathsByDoc.set(target.doc_path, headingPaths);
+    }
+    if (target.kind === "section") headingPaths.push(target.heading_path);
+  }
+  return headingPathsByDoc;
+}
+
 export function emitProposalDraftEventsByDoc(
   emit: ((event: WsServerEvent) => void) | undefined,
   proposalId: string,
   writer: Pick<WriterIdentity, "id" | "displayName">,
   intent: string,
-  sections: Array<{ doc_path: string; heading_path: string[] }>,
+  targets: ProposalTargetRef[],
 ): void {
-  if (!emit || sections.length === 0) return;
-  for (const [docPath, headingPaths] of groupSectionsByDocPath(sections)) {
+  if (!emit || targets.length === 0) return;
+  for (const [docPath, headingPaths] of groupProposalTargetsByDocument(targets)) {
     emit({
       type: "proposal:draft",
       proposal_id: proposalId,
@@ -64,10 +81,10 @@ export function emitProposalInProgressEventsByDoc(
   proposalId: string,
   writer: Pick<WriterIdentity, "id" | "displayName">,
   intent: string,
-  sections: Array<{ doc_path: string; heading_path: string[] }>,
+  targets: ProposalTargetRef[],
 ): void {
-  if (!emit || sections.length === 0) return;
-  for (const [docPath, headingPaths] of groupSectionsByDocPath(sections)) {
+  if (!emit || targets.length === 0) return;
+  for (const [docPath, headingPaths] of groupProposalTargetsByDocument(targets)) {
     emit({
       type: "proposal:inprogress",
       proposal_id: proposalId,
@@ -83,10 +100,10 @@ export function emitProposalInProgressEventsByDoc(
 export function emitProposalWithdrawnEventsByDoc(
   emit: ((event: WsServerEvent) => void) | undefined,
   proposalId: string,
-  sections: Array<{ doc_path: string; heading_path: string[] }>,
+  targets: ProposalTargetRef[],
 ): void {
-  if (!emit || sections.length === 0) return;
-  for (const [docPath, headingPaths] of groupSectionsByDocPath(sections)) {
+  if (!emit || targets.length === 0) return;
+  for (const [docPath, headingPaths] of groupProposalTargetsByDocument(targets)) {
     emit({
       type: "proposal:withdrawn",
       proposal_id: proposalId,
@@ -101,10 +118,10 @@ export function emitContentCommittedEventsByDoc(
   writer: Pick<WriterIdentity, "id" | "type" | "displayName">,
   contributorIds: string[],
   commitSha: string,
-  sections: Array<{ doc_path: string; heading_path: string[] }>,
+  targets: ProposalTargetRef[],
 ): void {
-  if (!emit || sections.length === 0) return;
-  for (const [docPath, headingPaths] of groupSectionsByDocPath(sections)) {
+  if (!emit || targets.length === 0) return;
+  for (const [docPath, headingPaths] of groupProposalTargetsByDocument(targets)) {
     emit({
       type: "content:committed",
       doc_path: docPath,
@@ -126,7 +143,7 @@ export function emitContentCommittedEventsByDoc(
 
 export function emitContentCommittedForSections(
   emit: ((event: WsServerEvent) => void) | undefined,
-  docPath: string,
+  docPath: DocPath,
   sections: Array<{ doc_path: string; heading_path: string[] }>,
   commitSha: string,
   writer: Pick<WriterIdentity, "id" | "type" | "displayName">,
@@ -153,7 +170,7 @@ export function emitContentCommittedForSections(
 
 export function emitDocStructureChanged(
   emit: ((event: WsServerEvent) => void) | undefined,
-  docPath: string,
+  docPath: DocPath,
   sections: StructureSections,
 ): void {
   if (!emit) return;
@@ -183,7 +200,7 @@ export function emitDocStructureChanged(
 
 export async function emitCanonicalStructureChanged(
   emit: ((event: WsServerEvent) => void) | undefined,
-  docPath: string,
+  docPath: DocPath,
 ): Promise<void> {
   if (!emit) return;
   const { readCanonicalSectionList } = await import("./sections.js");
@@ -198,7 +215,7 @@ export async function emitCanonicalStructureChanged(
 
 
 export async function resolveSectionFragmentKey(
-  docPath: string,
+  docPath: DocPath,
   headingPath: string[],
   currentProposalId: import("../../types/shared.js").ProposalId | null = null,
 ): Promise<string | null> {
@@ -237,7 +254,7 @@ export async function resolveSectionFragmentKey(
 
 export async function emitSectionBlockState(
   emit: ((event: WsServerEvent) => void) | undefined,
-  docPath: string,
+  docPath: DocPath,
   headingPaths: string[][],
   kind: "section:blocked" | "section:unblocked" | "section:gone",
   currentProposalId: import("../../types/shared.js").ProposalId | null = null,
@@ -311,10 +328,10 @@ export interface SectionEditRejectedGroupInput {
 
 export function emitSectionEditRejected(
   sendPrivate: (
-    target: { docPath: string; clientInstanceId: ClientInstanceId },
+    target: { docPath: DocPath; clientInstanceId: ClientInstanceId },
     event: SectionEditRejectedEvent,
   ) => void,
-  target: { docPath: string; clientInstanceId: ClientInstanceId | null },
+  target: { docPath: DocPath; clientInstanceId: ClientInstanceId | null },
   group: SectionEditRejectedGroupInput,
 ): void {
   if (target.clientInstanceId === null) return;

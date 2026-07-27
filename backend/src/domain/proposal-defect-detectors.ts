@@ -12,7 +12,7 @@
  * authoritative `targets` claim set from `sections` and clears the marker.
  */
 
-import type { AnyProposal, ProposalDefect } from "../types/shared.js";
+import type { ActiveProposal, AnyProposal, ProposalDefect } from "../types/shared.js";
 import { sectionsToTargets } from "../types/shared.js";
 
 export interface ProposalDefectDetector {
@@ -24,14 +24,14 @@ export interface ProposalDefectDetector {
   detect(proposal: AnyProposal): boolean;
   /** Return a repaired copy of the proposal with this defect cleared. Pure — does
    *  not mutate the input or touch disk; the caller persists the result. */
-  fix(proposal: AnyProposal): AnyProposal;
+  fix(proposal: ActiveProposal): ActiveProposal;
 }
 
 /** Drop a single defect from a proposal, returning a fresh proposal whose
  *  `degraded` marker is removed entirely when no defects remain. */
-function clearDefect(proposal: AnyProposal, defect: ProposalDefect): AnyProposal {
+function clearDefect(proposal: ActiveProposal, defect: ProposalDefect): ActiveProposal {
   const remaining = (proposal.degraded ?? []).filter((d) => d !== defect);
-  const fixed: AnyProposal = { ...proposal };
+  const fixed: ActiveProposal = { ...proposal };
   if (remaining.length > 0) {
     fixed.degraded = remaining;
   } else {

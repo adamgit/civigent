@@ -12,12 +12,12 @@ const pendingProposal: DraftProposalDTO = {
   status: "draft",
   sections: [
     {
-      doc_path: "ops/strategy.md",
+      doc_path: "/ops/strategy.md",
       heading_path: ["Overview"],
     },
   ],
   targets: [
-    { kind: "section", doc_path: "ops/strategy.md", heading_path: ["Overview"] },
+    { kind: "section", doc_path: "/ops/strategy.md", heading_path: ["Overview"] },
   ],
   created_at: "2026-01-01T00:00:00.000Z",
 };
@@ -28,10 +28,10 @@ const committedProposal: CommittedProposalDomain = {
   intent: "Improve overview",
   status: "committed",
   sections: [
-    { doc_path: "ops/strategy.md", heading_path: ["Overview"] },
+    { doc_path: "/ops/strategy.md", heading_path: ["Overview"] },
   ],
   targets: [
-    { kind: "section", doc_path: "ops/strategy.md", heading_path: ["Overview"] },
+    { kind: "section", doc_path: "/ops/strategy.md", heading_path: ["Overview"] },
   ],
   created_at: "2026-01-01T00:00:00.000Z",
   committed_head: "abc123",

@@ -17,6 +17,7 @@ import { SectionRef } from "../../domain/section-ref.js";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import type { WsServerEvent, AttributionWriterType, SectionAgentWritePolicySummary } from "../../types/shared.js";
 import { resolveAuthenticatedWriter } from "../../auth/context.js";
+import { DocPath } from "../../types/shared.js";
 
 export interface SectionInvolvementMeta {
   /**
@@ -47,7 +48,7 @@ export interface SectionInvolvementMeta {
  * @returns Map keyed by headingKey → section metadata
  */
 export async function buildSectionInvolvementMeta(
-  docPath: string,
+  docPath: DocPath,
   headingPaths: string[][],
 ): Promise<Map<string, SectionInvolvementMeta>> {
   const [gitCommitInfo, canonicalPaths] = await Promise.all([
@@ -102,7 +103,7 @@ export async function buildSectionInvolvementMeta(
  */
 export function broadcastAgentReading(
   req: Request,
-  docPath: string,
+  docPath: DocPath,
   headingPaths: string[][],
   onWsEvent?: (event: WsServerEvent) => void,
 ): void {

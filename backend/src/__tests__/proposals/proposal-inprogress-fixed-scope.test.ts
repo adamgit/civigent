@@ -54,13 +54,13 @@ describe("inprogress proposal mutability within fixed locked scope (spec 02 §3 
 
   it("allows editing section content inside the locked target while inprogress", async () => {
     const write = await request(ctx.app)
-      .put(`/api/proposals/${proposalId}/documents/${SAMPLE_DOC_PATH}/sections`)
+      .put(`/api/proposals/${proposalId}/documents${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken)
       .send({ sections: [{ heading_path: ["Overview"], content: "Edited while inprogress.\n" }] });
     expect(write.status).toBe(200);
 
     const read = await request(ctx.app)
-      .get(`/api/proposals/${proposalId}/documents/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/proposals/${proposalId}/documents${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
     expect(read.status).toBe(200);
     const overview = read.body.sections.find(

@@ -1,9 +1,10 @@
 import path from "node:path";
 import { access, readdir } from "node:fs/promises";
 import { getContentRoot } from "../storage/data-root.js";
-import { resolveDocPathUnderContent, InvalidDocPathError } from "../storage/path-utils.js";
+import { docPathFromContentRelativeFsPath, resolveDocPathUnderContent, InvalidDocPathError } from "../storage/path-utils.js";
 import { ProposalReader } from "../storage/proposal-reader.js";
-import type { AnyProposal, WriterType, WsServerEvent } from "../types/shared.js";
+import type { ActiveProposal, WriterType, WsServerEvent } from "../types/shared.js";
+import { DocPath } from "../types/shared.js";
 
 const SECTIONS_DIR_SUFFIX = ".sections";
 const TOMBSTONE_SUFFIX = ".tombstone";
@@ -20,7 +21,7 @@ export interface CatalogMutationSummary {
     | null;
 }
 
-export async function canonicalDocumentExists(docPath: string): Promise<boolean> {
+export async function canonicalDocumentExists(docPath: DocPath): Promise<boolean> {
   try {
     const resolvedPath = resolveDocPathUnderContent(getContentRoot(), docPath);
     await access(resolvedPath);
@@ -34,19 +35,17 @@ export async function canonicalDocumentExists(docPath: string): Promise<boolean>
 }
 
 export async function summarizeProposalCatalogMutations(
-  proposal: Pick<AnyProposal, "id" | "status" | "sections">,
+  proposal: Pick<ActiveProposal, "id" | "status" | "sections">,
 ): Promise<CatalogMutationSummary> {
   const reader = ProposalReader.open(proposal.id, proposal.status);
   const overlayDocPaths = await listOverlayDocPaths(reader.proposalContentRoot);
-  const docPaths = Array.from(new Set([
-    ...proposal.sections
-      .map((section) => section.doc_path)
-      .filter((docPath): docPath is string => typeof docPath === "string" && docPath.trim().length > 0),
+  const docPaths = Array.from(new Set<DocPath>([
+    ...proposal.sections.map((section) => section.doc_path),
     ...overlayDocPaths,
   ]));
 
-  const createdDocPaths: string[] = [];
-  const deletedDocPaths: string[] = [];
+  const createdDocPaths: DocPath[] = [];
+  const deletedDocPaths: DocPath[] = [];
 
   for (const docPath of docPaths) {
     const [existsInCanonical, overlayState] = await Promise.all([
@@ -106,13 +105,13 @@ export function emitCatalogMutationEvents(
   });
 }
 
-async function listOverlayDocPaths(root: string): Promise<string[]> {
-  const docPaths = new Set<string>();
+async function listOverlayDocPaths(root: string): Promise<DocPath[]> {
+  const docPaths = new Set<DocPath>();
   await walkOverlayTree(root, "", docPaths);
   return Array.from(docPaths);
 }
 
-async function walkOverlayTree(root: string, relativeDir: string, docPaths: Set<string>): Promise<void> {
+async function walkOverlayTree(root: string, relativeDir: string, docPaths: Set<DocPath>): Promise<void> {
   const absoluteDir = relativeDir ? path.join(root, relativeDir) : root;
   let entries;
   try {
@@ -132,12 +131,12 @@ async function walkOverlayTree(root: string, relativeDir: string, docPaths: Set<
     }
 
     if (entry.name.endsWith(".md")) {
-      docPaths.add(`/${nextRelative}`);
+      docPaths.add(docPathFromContentRelativeFsPath(nextRelative));
       continue;
     }
 
     if (entry.name.endsWith(`.md${TOMBSTONE_SUFFIX}`)) {
-      docPaths.add(`/${nextRelative.slice(0, -TOMBSTONE_SUFFIX.length)}`);
+      docPaths.add(docPathFromContentRelativeFsPath(nextRelative.slice(0, -TOMBSTONE_SUFFIX.length)));
     }
   }
 }

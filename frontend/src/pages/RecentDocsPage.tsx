@@ -8,6 +8,7 @@ import { apiClient } from "../services/api-client";
 import { listRecentDocs, rememberRecentDoc } from "../services/recent-docs";
 import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 import { mergeKnownDocPaths, filterDocsByQuery } from "../services/known-docs-merge";
+import { DocPath } from "../types/shared";
 
 export function RecentDocsPage() {
   const navigate = useNavigate();
@@ -45,7 +46,7 @@ export function RecentDocsPage() {
     const trimmed = docPath.trim();
     if (!trimmed) return;
     rememberRecentDoc(trimmed);
-    navigate(`/docs/${stripLeadingSlashForRoute(trimmed)}`);
+    navigate(`/docs/${stripLeadingSlashForRoute(DocPath.parse(trimmed))}`);
   };
 
   const handleDirectOpen = (event: FormEvent<HTMLFormElement>) => {
@@ -90,7 +91,7 @@ export function RecentDocsPage() {
                     <span className="text-[10.5px] text-[#b8b2a8] shrink-0 w-[60px] text-right">Viewed</span>
                     <div className="flex-1 min-w-0">
                       <Link
-                        to={`/docs/${stripLeadingSlashForRoute(docPath)}`}
+                        to={`/docs/${stripLeadingSlashForRoute(DocPath.parse(docPath))}`}
                         onClick={() => rememberRecentDoc(docPath)}
                         className="text-[13px] font-medium text-text-primary hover:text-[#1d5a66] cursor-pointer"
                       >
@@ -99,14 +100,14 @@ export function RecentDocsPage() {
                     </div>
                     <div className="flex gap-1 shrink-0">
                       <Link
-                        to={`/docs/${stripLeadingSlashForRoute(docPath)}/edit`}
+                        to={`/docs/${stripLeadingSlashForRoute(DocPath.parse(docPath))}/edit`}
                         onClick={() => rememberRecentDoc(docPath)}
                         className="btn-small"
                       >
                         Edit
                       </Link>
                       <Link
-                        to={`/docs/${stripLeadingSlashForRoute(docPath)}/reconcile`}
+                        to={`/docs/${stripLeadingSlashForRoute(DocPath.parse(docPath))}/reconcile`}
                         onClick={() => rememberRecentDoc(docPath)}
                         className="btn-small"
                         style={{ borderColor: "var(--color-agent-border)", color: "var(--color-agent-text)" }}

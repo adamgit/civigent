@@ -23,8 +23,8 @@ import { mutateProposalContent } from "../../storage/mutate-proposal-content.js"
 import { documentTargetRef } from "../../types/shared.js";
 import type { WriterIdentity, ProposalTargetRef } from "../../types/shared.js";
 
-const DOC = "doc.md";
-const OTHER_DOC = "other.md";
+const DOC = "/doc.md";
+const OTHER_DOC = "/other.md";
 
 const HUMAN_A: WriterIdentity = { type: "human", id: "human-a", displayName: "Alice" };
 const HUMAN_B: WriterIdentity = { type: "human", id: "human-b", displayName: "Bob" };

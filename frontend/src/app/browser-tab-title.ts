@@ -1,6 +1,7 @@
 import type { DocumentTreeEntry } from "../types/shared.js";
 import { parseRouteDocPath } from "./app-layout-utils";
 import { getDocDisplayName } from "../pages/document-page-utils";
+import { DocPath } from "../types/shared";
 
 const PREFIX = "[Civigent] ";
 
@@ -117,11 +118,11 @@ export function computeBrowserTabTitle(
       return `${PREFIX}Folder: ${folderSegmentName(docPath)}`;
     }
     if (entryType === "file") {
-      return getDocDisplayName(docPath);
+      return getDocDisplayName(DocPath.parse(docPath));
     }
     const looksLikeMarkdown = docPath.toLowerCase().endsWith(".md");
     if (looksLikeMarkdown) {
-      return getDocDisplayName(docPath);
+      return getDocDisplayName(DocPath.parse(docPath));
     }
     if (treeLoading) {
       return `${PREFIX}Documents`;

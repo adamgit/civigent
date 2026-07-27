@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient, type SearchTextResponse } from "../services/api-client";
+import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
+import { DocPath } from "../types/shared";
 
 function headingPathLabel(headingPath: string[]): string {
   if (headingPath.length === 0) return "(before first heading)";
@@ -337,7 +339,7 @@ export function SearchTextPage() {
             <p style={{ color: "var(--color-text-muted)" }}>No matches found.</p>
           ) : (
             response.matches.map((match, index) => {
-              const docUrl = `/docs/${match.doc_path.replace(/^\/+/, "")}`;
+              const docUrl = `/docs/${stripLeadingSlashForRoute(DocPath.parse(match.doc_path))}`;
               const sectionLabel = headingPathLabel(match.heading_path);
               const documentTitle = documentTitleFromPath(match.doc_path);
               return (

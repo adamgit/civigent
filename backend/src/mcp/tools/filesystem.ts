@@ -7,7 +7,8 @@
 
 import type { ToolRegistry, ToolHandler } from "../tool-registry.js";
 import { jsonToolResult, textToolResult, jsonBlockedToolResult } from "../tool-registry.js";
-import { makeToolErrorResult } from "../protocol.js";
+import { makeToolErrorResult, parseToolArgumentDocPath } from "../protocol.js";
+import type { DocPath } from "../../types/shared.js";
 import { readAssembledDocument, DocumentNotFoundError } from "../../storage/document-reader.js";
 import { readDocumentsTree } from "../../storage/documents-tree.js";
 import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
@@ -33,14 +34,18 @@ import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
 import { checkDocPermission } from "../../auth/acl.js";
 import { canonicalDocumentExists, emitCatalogMutationEvents } from "../catalog-events.js";
+import { emitContentCommittedEventsByDoc } from "../../api/application/events.js";
 
 // ─── read_file ───────────────────────────────────────────
 
 const readFileHandler: ToolHandler = async (args, ctx) => {
-  const filePath = args.path as string | undefined;
-  if (!filePath) {
+  const rawFilePath = args.path as string | undefined;
+  if (!rawFilePath) {
     return makeToolErrorResult("Missing required parameter: path");
   }
+  const parsedFilePath = parseToolArgumentDocPath(rawFilePath);
+  if ("errorResult" in parsedFilePath) return parsedFilePath.errorResult;
+  const filePath = parsedFilePath.docPath;
 
   const readAllowed = await checkDocPermission(ctx.writer, filePath, "read");
   if (!readAllowed) {
@@ -76,11 +81,15 @@ const readFileHandler: ToolHandler = async (args, ctx) => {
 // ─── write_file ──────────────────────────────────────────
 
 const writeFileHandler: ToolHandler = async (args, ctx) => {
-  const filePath = args.path as string | undefined;
+  const rawFilePath = args.path as string | undefined;
   const content = args.content as string | undefined;
 
-  if (!filePath) return makeToolErrorResult("Missing required parameter: path");
+  if (!rawFilePath) return makeToolErrorResult("Missing required parameter: path");
   if (content === undefined) return makeToolErrorResult("Missing required parameter: content");
+
+  const parsedFilePath = parseToolArgumentDocPath(rawFilePath);
+  if ("errorResult" in parsedFilePath) return parsedFilePath.errorResult;
+  const filePath = parsedFilePath.docPath;
 
   return writeDocumentViaProposal(
     [{ path: filePath, content }],
@@ -97,13 +106,17 @@ const writeFilesHandler: ToolHandler = async (args, ctx) => {
     return makeToolErrorResult("Missing required parameter: files (array of {path, content})");
   }
 
+  const parsedFiles: Array<{ path: DocPath; content: string }> = [];
   for (const file of files) {
     if (!file.path || file.content === undefined) {
       return makeToolErrorResult("Each file must have path and content");
     }
+    const parsedFilePath = parseToolArgumentDocPath(file.path);
+    if ("errorResult" in parsedFilePath) return parsedFilePath.errorResult;
+    parsedFiles.push({ path: parsedFilePath.docPath, content: file.content });
   }
 
-  return writeDocumentViaProposal(files, ctx);
+  return writeDocumentViaProposal(parsedFiles, ctx);
 };
 
 // ─── list_directory ──────────────────────────────────────
@@ -125,20 +138,30 @@ const listDirectoryHandler: ToolHandler = async (args) => {
 // ─── delete_file ─────────────────────────────────────────
 
 const deleteFileHandler: ToolHandler = async (args, ctx) => {
-  const filePath = args.path as string | undefined;
-  if (!filePath) return makeToolErrorResult("Missing required parameter: path");
+  const rawFilePath = args.path as string | undefined;
+  if (!rawFilePath) return makeToolErrorResult("Missing required parameter: path");
 
-  return deleteDocumentViaProposal(filePath, ctx);
+  const parsedFilePath = parseToolArgumentDocPath(rawFilePath);
+  if ("errorResult" in parsedFilePath) return parsedFilePath.errorResult;
+
+  return deleteDocumentViaProposal(parsedFilePath.docPath, ctx);
 };
 
 // ─── move_file ───────────────────────────────────────────
 
 const moveFileHandler: ToolHandler = async (args, ctx) => {
-  const source = args.source as string | undefined;
-  const destination = args.destination as string | undefined;
+  const rawSource = args.source as string | undefined;
+  const rawDestination = args.destination as string | undefined;
 
-  if (!source) return makeToolErrorResult("Missing required parameter: source");
-  if (!destination) return makeToolErrorResult("Missing required parameter: destination");
+  if (!rawSource) return makeToolErrorResult("Missing required parameter: source");
+  if (!rawDestination) return makeToolErrorResult("Missing required parameter: destination");
+
+  const parsedSource = parseToolArgumentDocPath(rawSource);
+  if ("errorResult" in parsedSource) return parsedSource.errorResult;
+  const parsedDestination = parseToolArgumentDocPath(rawDestination);
+  if ("errorResult" in parsedDestination) return parsedDestination.errorResult;
+  const source = parsedSource.docPath;
+  const destination = parsedDestination.docPath;
 
   const writer = ctx.writer;
 
@@ -191,7 +214,6 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
     docPath: source,
     newPath: destination,
   });
-  const proposalSections: Array<{ doc_path: string; heading_path: string[] }> = manifest.sections;
 
   // Agent write policy gate
   const policyResult = await evaluateAgentWritePolicy(moveProposalId);
@@ -201,17 +223,7 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
     const committedHead = await commitProposalToCanonical(moveProposalId, committedMetadata);
 
     if (ctx.emitEvent) {
-      ctx.emitEvent({
-        type: "content:committed",
-        doc_path: destination,
-        sections: proposalSections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
-        commit_sha: committedHead,
-        writer_id: writer.id,
-        writer_display_name: writer.displayName,
-        writer_type: writer.type,
-        contributor_ids: [writer.id],
-        seconds_ago: 0,
-      });
+      emitContentCommittedEventsByDoc(ctx.emitEvent, writer, [writer.id], committedHead, manifest.targets);
       emitCatalogMutationEvents(
         ctx.emitEvent,
         {
@@ -256,11 +268,15 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
 // shared auto-proposal path.
 
 const applyPatchHandler: ToolHandler = async (args, ctx) => {
-  const filePath = args.path as string | undefined;
+  const rawFilePath = args.path as string | undefined;
   const diffText = args.diff as string | undefined;
 
-  if (!filePath) return makeToolErrorResult("Missing required parameter: path");
+  if (!rawFilePath) return makeToolErrorResult("Missing required parameter: path");
   if (diffText === undefined) return makeToolErrorResult("Missing required parameter: diff");
+
+  const parsedFilePath = parseToolArgumentDocPath(rawFilePath);
+  if ("errorResult" in parsedFilePath) return parsedFilePath.errorResult;
+  const filePath = parsedFilePath.docPath;
 
   const writeAllowed = await checkDocPermission(ctx.writer, filePath, "write");
   if (!writeAllowed) {
@@ -307,11 +323,11 @@ const planChangesHandler: ToolHandler = async (args, ctx) => {
 // ─── Shared: write via auto-proposal ─────────────────────
 
 async function writeDocumentViaProposal(
-  files: Array<{ path: string; content: string }>,
+  files: Array<{ path: DocPath; content: string }>,
   ctx: import("../tool-registry.js").ToolContext,
 ): Promise<import("../protocol.js").McpToolCallResult> {
   const writer = ctx.writer;
-  const createdDocPaths: string[] = [];
+  const createdDocPaths: DocPath[] = [];
 
   // Check write permission for all target documents
   for (const file of files) {
@@ -368,7 +384,7 @@ async function writeDocumentViaProposal(
     // rewritten doc path (its list may be empty and that is fine — the
     // coordinator re-derives removals from the post-commit effective layout).
     {
-      const byDoc = new Map<string, string[][]>();
+      const byDoc = new Map<DocPath, string[][]>();
       for (const docPath of absorbResult.rewrittenDocumentPaths) {
         if (!byDoc.has(docPath)) byDoc.set(docPath, []);
       }
@@ -383,17 +399,7 @@ async function writeDocumentViaProposal(
 
     // Broadcast content:committed
     if (ctx.emitEvent) {
-      ctx.emitEvent({
-        type: "content:committed",
-        doc_path: allSectionTargets.sections[0]?.doc_path ?? files[0]?.path ?? "",
-        sections: allSectionTargets.sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
-        commit_sha: committedHead,
-        writer_id: writer.id,
-        writer_display_name: writer.displayName,
-        writer_type: writer.type,
-        contributor_ids: [writer.id],
-        seconds_ago: 0,
-      });
+      emitContentCommittedEventsByDoc(ctx.emitEvent, writer, [writer.id], committedHead, allSectionTargets.targets);
       emitCatalogMutationEvents(
         ctx.emitEvent,
         {
@@ -431,7 +437,7 @@ async function writeDocumentViaProposal(
 // ─── Shared: delete document via proposal ────────────────
 
 async function deleteDocumentViaProposal(
-  docPath: string,
+  docPath: DocPath,
   ctx: import("../tool-registry.js").ToolContext,
 ): Promise<import("../protocol.js").McpToolCallResult> {
   const writer = ctx.writer;
@@ -482,7 +488,6 @@ async function deleteDocumentViaProposal(
     kind: "delete_document",
     docPath,
   });
-  const proposalSections: Array<{ doc_path: string; heading_path: string[] }> = manifest.sections;
 
   // Agent write policy gate
   const policyResult = await evaluateAgentWritePolicy(delProposalId);
@@ -492,17 +497,7 @@ async function deleteDocumentViaProposal(
     const committedHead = await commitProposalToCanonical(delProposalId, committedMetadata);
 
     if (ctx.emitEvent) {
-      ctx.emitEvent({
-        type: "content:committed",
-        doc_path: docPath,
-        sections: proposalSections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
-        commit_sha: committedHead,
-        writer_id: writer.id,
-        writer_display_name: writer.displayName,
-        writer_type: writer.type,
-        contributor_ids: [writer.id],
-        seconds_ago: 0,
-      });
+      emitContentCommittedEventsByDoc(ctx.emitEvent, writer, [writer.id], committedHead, manifest.targets);
       emitCatalogMutationEvents(
         ctx.emitEvent,
         {

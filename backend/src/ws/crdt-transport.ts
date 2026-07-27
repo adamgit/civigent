@@ -19,6 +19,7 @@ import type {
   WriterType,
 } from "../types/shared.js";
 import { WS_CLOSE_AUTH_FAILED, WS_CLOSE_REASON_MAX_LENGTH } from "./crdt-ws-frames.js";
+import type { DocPath } from "../types/shared.js";
 
 // ─── Per-socket state ───────────────────────────────────────────
 
@@ -27,7 +28,7 @@ export interface CrdtSocketState {
   writerId: string;
   writerType: WriterType;
   writerDisplayName: string;
-  docPath: string;
+  docPath: DocPath;
   /** Applied server role for this socket. Updated by mode transition FSM. */
   socketRole: ClientRole;
   requestedMode: RequestedMode;

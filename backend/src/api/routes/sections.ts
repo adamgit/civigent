@@ -6,6 +6,7 @@ import {
   requireDocReadPermission,
   requireDocWritePermission,
   agentWritePolicyRouteBody,
+  docPathParamOf,
 } from "./middleware.js";
 import {
   readCanonicalSectionList,
@@ -36,7 +37,7 @@ export function registerSectionRoutes(
   // GET /canonical/:docPath/sections — committed section list (emits agent:reading)
   router.get("/canonical/:docPath(*)/sections", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
 
@@ -61,7 +62,7 @@ export function registerSectionRoutes(
   // GET /workspace/:docPath/sections — working-copy section list (no agent:reading)
   router.get("/workspace/:docPath(*)/sections", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
 
@@ -85,7 +86,7 @@ export function registerSectionRoutes(
   // DELETE /workspace/:docPath/sections/:headingPath
   router.delete("/workspace/:docPath(*)/sections/:headingPath", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const writer = await requireDocWritePermission(req, res, docPath);
       if (!writer) return;
 
@@ -153,7 +154,7 @@ export function registerSectionRoutes(
   
   router.post("/workspace/:docPath(*)/live-move", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const writer = await requireDocWritePermission(req, res, docPath);
       if (!writer) return;
 
@@ -183,7 +184,7 @@ export function registerSectionRoutes(
   
   router.put("/workspace/:docPath(*)/sections/:headingPath/move", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const writer = await requireDocWritePermission(req, res, docPath);
       if (!writer) return;
 
@@ -248,7 +249,7 @@ export function registerSectionRoutes(
   
   router.put("/workspace/:docPath(*)/sections/:headingPath/rename", async (req, res, next) => {
     try {
-      const docPath = req.params.docPath;
+      const docPath = docPathParamOf(req);
       const writer = await requireDocWritePermission(req, res, docPath);
       if (!writer) return;
 

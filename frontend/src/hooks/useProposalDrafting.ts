@@ -15,6 +15,7 @@ import {
   sectionGlobalKey,
   type ProposalDTO,
 } from "../types/shared.js";
+import { DocPath, proposalSectionDocPathForDisplay } from "../types/shared.js";
 import type { WorkspaceSectionDto } from "../pages/document-page-utils";
 import type { RenderSectionRef } from "../types/live-sections";
 
@@ -42,7 +43,7 @@ export interface UseProposalDraftingReturn {
   panelError: string | null;
   selectedProposalSectionKeys: Set<string>;
   proposalSectionConflicts: Map<string, string>;
-  proposalSectionsRef: React.MutableRefObject<Map<string, { doc_path: string; heading_path: string[]; content: string }>>;
+  proposalSectionsRef: React.MutableRefObject<Map<string, { doc_path: DocPath; heading_path: string[]; content: string }>>;
   proposalOverlayVersion: number;
   proposalSaveTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>;
   startManualPublish: () => Promise<void>;
@@ -106,7 +107,7 @@ export function useProposalDrafting({
   const [panelError, setPanelError] = useState<string | null>(null);
   const [proposalSectionConflicts, setProposalSectionConflicts] = useState<Map<string, string>>(new Map());
   const [proposalOverlayVersion, setProposalOverlayVersion] = useState(0);
-  const proposalSectionsRef = useRef<Map<string, { doc_path: string; heading_path: string[]; content: string }>>(new Map());
+  const proposalSectionsRef = useRef<Map<string, { doc_path: DocPath; heading_path: string[]; content: string }>>(new Map());
   const proposalSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const proposalIntentRef = useRef("");
   const mutationQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -134,7 +135,7 @@ export function useProposalDrafting({
     setProposalIntent(proposal.intent);
     proposalIntentRef.current = proposal.intent;
 
-    const nextDraftSections = new Map<string, { doc_path: string; heading_path: string[]; content: string }>();
+    const nextDraftSections = new Map<string, { doc_path: DocPath; heading_path: string[]; content: string }>();
     const nextConflicts = new Map<string, string>();
 
     for (const section of proposal.sections as Array<{
@@ -149,7 +150,7 @@ export function useProposalDrafting({
         : (existing?.content ?? resolveWorkspaceBaselineContent(section.doc_path, section.heading_path));
 
       nextDraftSections.set(key, {
-        doc_path: section.doc_path,
+        doc_path: DocPath.parse(section.doc_path),
         heading_path: [...section.heading_path],
         content,
       });
@@ -193,7 +194,7 @@ export function useProposalDrafting({
   }, [syncProposalFromServer]);
 
   const persistProposalSections = useCallback(async (
-    nextSections: Map<string, { doc_path: string; heading_path: string[]; content: string }>,
+    nextSections: Map<string, { doc_path: DocPath; heading_path: string[]; content: string }>,
   ) => {
     const proposalId = activeProposalIdRef.current;
     if (!proposalId) return;
@@ -346,7 +347,7 @@ export function useProposalDrafting({
           baselineContent = matched.content;
         }
         nextSections.set(key, {
-          doc_path: decodedDocPath,
+          doc_path: DocPath.parse(decodedDocPath),
           heading_path: headingPath,
           content: baselineContent,
         });
@@ -391,7 +392,7 @@ export function useProposalDrafting({
       return;
     }
     proposalSectionsRef.current.set(key, {
-      doc_path: decodedDocPath,
+      doc_path: DocPath.parse(decodedDocPath),
       heading_path: [...headingPath],
       content: markdown,
     });
@@ -458,7 +459,9 @@ export function useProposalDrafting({
   const selectedKeysFromProposal = useMemo(() => {
     if (!activeProposal || !Array.isArray(activeProposal.sections)) return new Set<string>();
     return new Set(
-      activeProposal.sections.map((section) => sectionGlobalKey(section.doc_path, section.heading_path)),
+      activeProposal.sections.map((section) =>
+        sectionGlobalKey(proposalSectionDocPathForDisplay(section), section.heading_path),
+      ),
     );
   }, [activeProposal]);
 

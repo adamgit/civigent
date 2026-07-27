@@ -28,7 +28,7 @@ describe("proposal-store", () => {
     const { id, contentRoot } = await createProposal(
       humanWriter,
       "Fix typos in guide",
-      [{ doc_path: "guide.md", heading_path: ["Intro"], content: "Fixed intro." }],
+      [{ doc_path: "/guide.md", heading_path: ["Intro"], content: "Fixed intro." }],
     );
 
     expect(id).toBeTruthy();
@@ -45,7 +45,7 @@ describe("proposal-store", () => {
     const { id } = await createProposal(
       agentWriter,
       "Auto-edit",
-      [{ doc_path: "doc.md", heading_path: ["Overview"], content: "New overview." }],
+      [{ doc_path: "/doc.md", heading_path: ["Overview"], content: "New overview." }],
     );
 
     const read = await readProposal(id);
@@ -67,7 +67,7 @@ describe("proposal-store", () => {
     await createProposal(
       uniqueWriter,
       "Find me",
-      [{ doc_path: "find.md", heading_path: ["Section"], content: "content" }],
+      [{ doc_path: "/find.md", heading_path: ["Section"], content: "content" }],
     );
 
     const found = await findDraftProposalByWriter("user-unique-finder");
@@ -80,7 +80,7 @@ describe("proposal-store", () => {
     const { id } = await createProposal(
       humanWriter,
       "Withdraw me",
-      [{ doc_path: "doc.md", heading_path: ["Section"], content: "content" }],
+      [{ doc_path: "/doc.md", heading_path: ["Section"], content: "content" }],
     );
 
     const withdrawn = await transitionToWithdrawn(id, "no longer needed");

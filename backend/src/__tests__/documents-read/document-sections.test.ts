@@ -90,7 +90,7 @@ describe("GET /api/canonical/:doc_path/sections", () => {
 
   it("returns sections array", async () => {
     const res = await request(ctx.app)
-      .get(`/api/canonical/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/canonical${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -100,7 +100,7 @@ describe("GET /api/canonical/:doc_path/sections", () => {
 
   it("workspace returns the same section list when no in-progress proposal exists", async () => {
     const res = await request(ctx.app)
-      .get(`/api/workspace/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/workspace${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -133,7 +133,7 @@ describe("GET /api/canonical/:doc_path/sections", () => {
 
     try {
       const res = await request(ctx.app)
-        .get(`/api/workspace/${SAMPLE_DOC_PATH}/sections`)
+        .get(`/api/workspace${SAMPLE_DOC_PATH}/sections`)
         .set("Authorization", ctx.humanToken);
 
       expect(res.status).toBe(200);
@@ -159,7 +159,7 @@ describe("GET /api/canonical/:doc_path/sections", () => {
 
   it("keeps existing behavior unchanged without proposal_id", async () => {
     const res = await request(ctx.app)
-      .get(`/api/canonical/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/canonical${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -185,7 +185,7 @@ describe("GET /api/canonical/:doc_path/sections", () => {
     const proposalId = createRes.body.proposal_id as string;
 
     const res = await request(ctx.app)
-      .get(`/api/proposals/${proposalId}/documents/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/proposals/${proposalId}/documents${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -245,7 +245,7 @@ describe("GET /api/canonical/:doc_path/sections", () => {
     expect(createRes.status).toBe(201);
 
     const res = await request(ctx.app)
-      .get(`/api/canonical/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/canonical${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -275,7 +275,7 @@ describe("GET /api/canonical/:doc_path/sections", () => {
     const proposalId = createRes.body.proposal_id as string;
 
     const res = await request(ctx.app)
-      .get(`/api/proposals/${proposalId}/documents/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/proposals/${proposalId}/documents${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -285,7 +285,7 @@ describe("GET /api/canonical/:doc_path/sections", () => {
 
   it("returns 404 for an invalid proposal id on the proposal section route", async () => {
     const res = await request(ctx.app)
-      .get(`/api/proposals/not-a-real-proposal-id/documents/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/proposals/not-a-real-proposal-id/documents${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(404);
@@ -304,7 +304,7 @@ describe("GET /api/canonical/:doc_path/sections", () => {
     const proposalId = createRes.body.proposal_id as string;
 
     const res = await request(ctx.app)
-      .get(`/api/proposals/${proposalId}/documents/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/proposals/${proposalId}/documents${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(403);
@@ -312,7 +312,7 @@ describe("GET /api/canonical/:doc_path/sections", () => {
 
   it("each section has heading_path, content, agentWritePolicy (no unused word-count fields)", async () => {
     const res = await request(ctx.app)
-      .get(`/api/canonical/${SAMPLE_DOC_PATH}/sections`)
+      .get(`/api/canonical${SAMPLE_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -340,7 +340,7 @@ describe("GET /api/canonical/:doc_path/sections", () => {
 
   it("returns headed content for a parent section whose body lives in a body-holder child", async () => {
     const res = await request(ctx.app)
-      .get(`/api/canonical/${NESTED_DOC_PATH}/sections`)
+      .get(`/api/canonical${NESTED_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);
@@ -384,7 +384,7 @@ describe("GET /api/canonical/:doc_path/sections", () => {
     const proposalId = createRes.body.proposal_id as string;
 
     const res = await request(ctx.app)
-      .get(`/api/proposals/${proposalId}/documents/${NESTED_DOC_PATH}/sections`)
+      .get(`/api/proposals/${proposalId}/documents${NESTED_DOC_PATH}/sections`)
       .set("Authorization", ctx.humanToken);
 
     expect(res.status).toBe(200);

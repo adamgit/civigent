@@ -10,6 +10,7 @@ import type {
   ModeTransitionRequest,
   ModeTransitionResult,
 } from "../types/shared";
+import { DocPath } from "../types/shared";
 import {
   WS_CLOSE_AUTH_REQUIRED,
   WS_CLOSE_AUTH_FAILED,
@@ -24,6 +25,11 @@ import { apiClient } from "./api-client";
 import { LIVE_SECTION_SERVER_APPLY_ORIGIN } from "./live-section-replica";
 import { encodeDocPathForWs } from "../utils/path-encoding";
 import { randomUuid } from "../utils/random-uuid";
+import {
+  ensurePageWsLifecycleInstalled,
+  isPageWsSuspended,
+  subscribePageWsWake,
+} from "./page-ws-lifecycle";
 
 // ─── Protocol constants (must match backend/src/ws/crdt-ws-frames.ts) ───
 
@@ -145,6 +151,10 @@ export class CrdtProvider {
   private initialTransitionRequest: ModeTransitionRequest | null = null;
   /** One-shot resolvers awaiting the NEXT SYNC_STEP_2 (the live-move ordering barrier). */
   private syncRoundtripResolvers: Array<() => void> = [];
+  /** Socket was closed while the tab was frozen/BFCached/hidden — reopen on wake
+   *  without entering the user-visible `reconnecting` / `error` states. */
+  private wakeReconnectPending = false;
+  private readonly cancelPageWake: () => void;
 
   // Publish-pause quiescence barrier state. The provider is the single owner.
   private publishPaused = false;
@@ -173,6 +183,9 @@ export class CrdtProvider {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const encodedPath = encodeDocPathForWs(docPath);
     this.url = `${protocol}//${window.location.host}/ws/crdt/${encodedPath}?clientInstanceId=${encodeURIComponent(this.clientInstanceId)}`;
+
+    ensurePageWsLifecycleInstalled();
+    this.cancelPageWake = subscribePageWsWake(() => this.onPageWake());
 
     this.trackChangedFragmentKeysAfterTransaction = (txn: Y.Transaction) => {
       if (txn.origin === this || txn.origin === LIVE_SECTION_SERVER_APPLY_ORIGIN) return;
@@ -232,6 +245,7 @@ export class CrdtProvider {
 
   /** Disconnect and stop reconnecting. */
   disconnect(): void {
+    this.wakeReconnectPending = false;
     this.clearReconnectTimer();
     if (this.ws) {
       this.ws.onclose = null;
@@ -244,6 +258,7 @@ export class CrdtProvider {
   /** Permanently destroy — disconnect and remove all listeners. */
   destroy(): void {
     this.destroyed = true;
+    this.cancelPageWake();
     this.disconnect();
     this.barrier = null;
     if (this.trackChangedFragmentKeysAfterTransaction) {
@@ -437,6 +452,15 @@ export class CrdtProvider {
         return;
       }
 
+      // Tab freeze / BFCache closes page-owned sockets. Stay quiet and reopen
+      // on wake — the error/reconnect path below would flash the page banner
+      // for what is a sleep-induced close, not a network failure.
+      if (isPageWsSuspended()) {
+        this.wakeReconnectPending = true;
+        this.clearReconnectTimer();
+        return;
+      }
+
       // Connection failure — surface the error, then attempt reconnect.
       this.setState("error");
       const detail = event.reason
@@ -615,7 +639,7 @@ export class CrdtProvider {
     const request: ModeTransitionRequest = this.initialTransitionRequest ?? {
       requestId: randomUuid(),
       clientInstanceId: this.clientInstanceId,
-      docPath: this.docPath,
+      docPath: DocPath.parse(this.docPath),
       requestedMode: "editor",
       editorFocusTarget: null,
     };
@@ -633,6 +657,17 @@ export class CrdtProvider {
       this.ws.close();
       this.ws = null;
     }
+  }
+
+  private onPageWake(): void {
+    if (this.destroyed || !this.wakeReconnectPending) return;
+    this.wakeReconnectPending = false;
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    this.clearReconnectTimer();
+    this.reconnectAttempts = 0;
+    this.openWebSocket();
   }
 
   private scheduleReconnect(): void {

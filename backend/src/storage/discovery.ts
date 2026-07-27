@@ -6,14 +6,16 @@ import { checkDocPermission } from "../auth/acl.js";
 import type { AuthenticatedWriter } from "../auth/context.js";
 import { ContentLayer, DocumentNotFoundError, SectionNotFoundError } from "./content-layer.js";
 import {
+  browseFolderPathToContentRelativeFsPath,
   readDocumentsTree,
   DocumentsTreePathNotFoundError,
   InvalidDocumentsTreePathError,
 } from "./documents-tree.js";
 import { getContentRoot } from "./data-root.js";
-import { InvalidDocPathError, resolveDocPathUnderContent } from "./path-utils.js";
+import { docPathFromContentRelativeFsPath, InvalidDocPathError, resolveDocPathUnderContent } from "./path-utils.js";
 import type { DocumentTreeEntry, JsonValue } from "../types/shared.js";
 import { expectJsonObject, parseJson } from "../types/shared.js";
+import { DocPath } from "../types/shared.js";
 
 export const DISCOVERY_NOT_FOUND_OR_NO_ACCESS_MESSAGE = "Not found or you do not have read access";
 
@@ -108,7 +110,7 @@ interface SearchTextInputNormalized {
 }
 
 interface SearchableSectionFile {
-  docPath: string;
+  docPath: DocPath;
   headingPath: string[];
   absolutePath: string;
 }
@@ -157,12 +159,12 @@ function parseDiscoveryScopePath(rawPath: string | undefined, fieldName: string)
   return { normalized_path: normalizedWithoutTrailingSlash, kind: "folder" };
 }
 
-function flattenDocumentPaths(entries: DocumentTreeEntry[]): string[] {
-  const docPaths: string[] = [];
+function flattenDocumentPaths(entries: DocumentTreeEntry[]): DocPath[] {
+  const docPaths: DocPath[] = [];
   const walk = (nodes: DocumentTreeEntry[]): void => {
     for (const node of nodes) {
       if (node.type === "file") {
-        docPaths.push(node.path);
+        docPaths.push(DocPath.parse(node.path));
         continue;
       }
       walk(node.children ?? []);
@@ -175,7 +177,7 @@ function flattenDocumentPaths(entries: DocumentTreeEntry[]): string[] {
 async function resolveDocScope(
   writer: AuthenticatedWriter | null,
   normalizedDocPath: string,
-): Promise<string[]> {
+): Promise<DocPath[]> {
   const contentRoot = getContentRoot();
   let absoluteDocPath: string;
   try {
@@ -194,13 +196,13 @@ async function resolveDocScope(
   if (!readable) {
     throw new DiscoveryNotFoundError();
   }
-  return [normalizedDocPath];
+  return [DocPath.parse(normalizedDocPath)];
 }
 
 async function resolveFolderScope(
   writer: AuthenticatedWriter | null,
   normalizedFolderPath: string,
-): Promise<string[]> {
+): Promise<DocPath[]> {
   let tree: DocumentTreeEntry[];
   try {
     tree = await readDocumentsTree(normalizedFolderPath, true);
@@ -232,7 +234,7 @@ async function resolveScopedReadableDocuments(
   writer: AuthenticatedWriter | null,
   rawScopePath: string | undefined,
   fieldName: string,
-): Promise<{ scope: ParsedScope; docPaths: string[] }> {
+): Promise<{ scope: ParsedScope; docPaths: DocPath[] }> {
   const scope = parseDiscoveryScopePath(rawScopePath, fieldName);
   if (scope.kind === "document") {
     const docPaths = await resolveDocScope(writer, scope.normalized_path);
@@ -288,7 +290,7 @@ function roundMs(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-function deriveDocPathFromMatchedFile(contentRoot: string, absolutePath: string): string | null {
+function deriveDocPathFromMatchedFile(contentRoot: string, absolutePath: string): DocPath | null {
   const relative = path.relative(contentRoot, absolutePath);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     return null;
@@ -301,7 +303,7 @@ function deriveDocPathFromMatchedFile(contentRoot: string, absolutePath: string)
   }
 
   const docLeaf = segments[docIndex].slice(0, -".sections".length);
-  return "/" + [...segments.slice(0, docIndex), docLeaf].join("/");
+  return docPathFromContentRelativeFsPath([...segments.slice(0, docIndex), docLeaf].join("/"));
 }
 
 function collectRawMatchesFromRgJsonLine(
@@ -545,7 +547,7 @@ export async function searchReadableText(
 
   let absoluteSearchScope = contentRoot;
   if (scope.kind === "folder") {
-    absoluteSearchScope = path.join(contentRoot, scope.normalized_path.replace(/^\/+/, ""));
+    absoluteSearchScope = path.join(contentRoot, browseFolderPathToContentRelativeFsPath(scope.normalized_path));
   } else if (scope.kind === "document") {
     absoluteSearchScope = resolveDocPathUnderContent(contentRoot, scope.normalized_path) + ".sections";
     // Optional dir: a document with no `.sections/` yet is a valid empty state

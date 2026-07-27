@@ -23,6 +23,7 @@ import type {
   ProposalLockConflict,
   ProposalLockResult,
   ProposalTargetRef,
+  ActiveProposalStatus,
   ProposalStatus,
 } from "../types/shared.js";
 
@@ -30,7 +31,7 @@ import type {
  * Statuses that hold an exclusive claim on their section targets. This is the
  * internal blocking-status map (spec 12 `ProposalTargetLockPolicy`).
  */
-export const BLOCKING_LOCK_STATUSES: readonly ProposalStatus[] = ["inprogress", "committing"];
+export const BLOCKING_LOCK_STATUSES: readonly ActiveProposalStatus[] = ["inprogress", "committing"];
 
 export interface CheckProposalLocksInput {
   proposalId: ProposalId;

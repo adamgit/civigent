@@ -35,10 +35,8 @@ import { ProposalReader } from "../../storage/proposal-reader.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { getContentRoot } from "../../storage/data-root.js";
 import type { ProposalId, ProposalStatus } from "../../types/shared.js";
+import { DocPath, proposalSectionsParsedForLiveUse } from "../../types/shared.js";
 
-function norm(docPath: string): string {
-  return docPath.replace(/\\/g, "/").replace(/^\/+/, "");
-}
 const key = (headingPath: string[]): string => headingPath.join(">>");
 
 interface Entry {
@@ -47,30 +45,30 @@ interface Entry {
 }
 
 /** Heading keys the proposal CLAIMS for `docPath` (its section manifest). */
-export async function manifestKeys(proposalId: ProposalId, docPath: string): Promise<Set<string>> {
+export async function manifestKeys(proposalId: ProposalId, docPath: DocPath): Promise<Set<string>> {
   const proposal = await readProposal(proposalId);
-  const target = norm(docPath);
+  const target = DocPath.parse(docPath);
   const keys = new Set<string>();
-  for (const s of proposal.sections) {
-    if (norm(s.doc_path) === target) keys.add(key(s.heading_path));
+  for (const s of proposalSectionsParsedForLiveUse(proposal)) {
+    if (s.doc_path === target) keys.add(key(s.heading_path));
   }
   return keys;
 }
 
-async function effectiveEntries(id: ProposalId, docPath: string, status: ProposalStatus): Promise<Entry[]> {
+async function effectiveEntries(id: ProposalId, docPath: DocPath, status: ProposalStatus): Promise<Entry[]> {
   return ProposalReader.open(id, status).getSectionList(docPath);
 }
-async function effectiveBodies(id: ProposalId, docPath: string, status: ProposalStatus): Promise<Map<string, string>> {
+async function effectiveBodies(id: ProposalId, docPath: DocPath, status: ProposalStatus): Promise<Map<string, string>> {
   return (await ProposalReader.open(id, status).readAllSections(docPath)) as Map<string, string>;
 }
-async function canonicalEntries(docPath: string): Promise<Entry[]> {
+async function canonicalEntries(docPath: DocPath): Promise<Entry[]> {
   try {
     return await new ContentLayer(getContentRoot()).getSectionList(docPath);
   } catch {
     return [];
   }
 }
-async function canonicalBodies(docPath: string): Promise<Map<string, string>> {
+async function canonicalBodies(docPath: DocPath): Promise<Map<string, string>> {
   try {
     return (await new ContentLayer(getContentRoot()).readAllSections(docPath)) as Map<string, string>;
   } catch {
@@ -81,7 +79,7 @@ async function canonicalBodies(docPath: string): Promise<Map<string, string>> {
 /** Heading keys the proposal OWNS for `docPath`, computed by section-file identity. */
 export async function proposalOwnedKeys(
   proposalId: ProposalId,
-  docPath: string,
+  docPath: DocPath,
   status: ProposalStatus = "inprogress",
 ): Promise<Set<string>> {
   const [effEntries, canEntries, effBodies, canBodies] = await Promise.all([
@@ -116,7 +114,7 @@ export async function proposalOwnedKeys(
  */
 export async function assertManifestConsistent(
   proposalId: ProposalId,
-  docPath: string,
+  docPath: DocPath,
   status: ProposalStatus = "inprogress",
 ): Promise<void> {
   const manifest = await manifestKeys(proposalId, docPath);

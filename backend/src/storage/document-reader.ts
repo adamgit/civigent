@@ -4,16 +4,17 @@ import { ContentLayer } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { buildFragmentContent, fragmentFromBodyHolder, type SectionBody, type FragmentContent } from "./section-formatting.js";
 import { isDocumentBeforeFirstHeading } from "./section-shape.js";
+import { DocPath } from "../types/shared.js";
 
 // Re-export error classes from ContentLayer (callers import from here)
 export { DocumentNotFoundError, DocumentAssemblyError } from "./content-layer.js";
 
 export async function readAssembledDocument(rawDocPath: string): Promise<string> {
   const contentRoot = getContentRoot();
-  // Validate the doc path (throws InvalidDocPathError if bad)
-  resolveDocPathUnderContent(contentRoot, rawDocPath);
+  const docPath = DocPath.parse(rawDocPath);
+  resolveDocPathUnderContent(contentRoot, docPath);
   const layer = new ContentLayer(contentRoot);
-  return layer.readAssembledDocument(rawDocPath);
+  return layer.readAssembledDocument(docPath);
 }
 
 /**

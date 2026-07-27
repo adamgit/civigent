@@ -5,6 +5,7 @@ import type {
   ModeTransitionRequest,
   ModeTransitionResult,
 } from "../types/shared";
+import { DocPath } from "../types/shared";
 import {
   WS_CLOSE_DOCUMENT_REPLACED,
   WS_CLOSE_ADMIN_REBUILD,
@@ -15,6 +16,11 @@ import {
 } from "./crdt-close-codes";
 import { encodeDocPathForWs } from "../utils/path-encoding";
 import { randomUuid } from "../utils/random-uuid";
+import {
+  ensurePageWsLifecycleInstalled,
+  isPageWsSuspended,
+  subscribePageWsWake,
+} from "./page-ws-lifecycle";
 
 const MSG_SYNC_STEP_2 = 1;
 const MSG_AWARENESS = 3;
@@ -80,6 +86,10 @@ export class ObserverCrdtProvider {
   private readonly clientInstanceId: ClientInstanceId;
   private readonly docPath: string;
   private initialTransitionRequest: ModeTransitionRequest | null = null;
+  /** Socket was closed while the tab was frozen/BFCached/hidden — reopen on wake
+   *  without entering the user-visible `reconnecting` state. */
+  private wakeReconnectPending = false;
+  private readonly cancelPageWake: () => void;
 
   /** True when the Y.Doc is externally owned (by a LiveSectionReplica). Such a
    *  doc must NOT be destroyed by this provider — the replica owns its lifetime. */
@@ -103,6 +113,9 @@ export class ObserverCrdtProvider {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const encodedPath = encodeDocPathForWs(docPath);
     this.url = `${protocol}//${window.location.host}/ws/crdt/${encodedPath}?clientInstanceId=${encodeURIComponent(this.clientInstanceId)}`;
+
+    ensurePageWsLifecycleInstalled();
+    this.cancelPageWake = subscribePageWsWake(() => this.onPageWake());
   }
 
   get state(): ObserverConnectionState {
@@ -116,6 +129,7 @@ export class ObserverCrdtProvider {
   }
 
   disconnect(): void {
+    this.wakeReconnectPending = false;
     this.clearReconnectTimer();
     if (this.ws) {
       this.ws.onclose = null;
@@ -127,6 +141,7 @@ export class ObserverCrdtProvider {
 
   destroy(): void {
     this.destroyed = true;
+    this.cancelPageWake();
     this.disconnect();
     // Only destroy the Y.Doc if this provider minted it. A replica-owned doc
     // outlives the provider (observer → editor promotion reuses it).
@@ -199,6 +214,14 @@ export class ObserverCrdtProvider {
       if (event.code >= WS_CLOSE_INVALID_URL && event.code <= WS_CLOSE_YDOC_INIT_FAILED) {
         // Permanent rejection — don't reconnect
         this.setState("disconnected");
+        return;
+      }
+
+      // Tab freeze / BFCache closes page-owned sockets. Stay quietly "connected"
+      // and reopen on wake — scheduleReconnect() would flash the page banner.
+      if (isPageWsSuspended()) {
+        this.wakeReconnectPending = true;
+        this.clearReconnectTimer();
         return;
       }
 
@@ -298,13 +321,24 @@ export class ObserverCrdtProvider {
     const request: ModeTransitionRequest = this.initialTransitionRequest ?? {
       requestId: randomUuid(),
       clientInstanceId: this.clientInstanceId,
-      docPath: this.docPath,
+      docPath: DocPath.parse(this.docPath),
       requestedMode: "observer",
       editorFocusTarget: null,
     };
     this.initialTransitionRequest = null;
     const payload = new TextEncoder().encode(JSON.stringify(request));
     this.sendRaw(MSG_MODE_TRANSITION_REQUEST, payload);
+  }
+
+  private onPageWake(): void {
+    if (this.destroyed || !this.wakeReconnectPending) return;
+    this.wakeReconnectPending = false;
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    this.clearReconnectTimer();
+    this.reconnectAttempts = 0;
+    this.openWebSocket();
   }
 
   private scheduleReconnect(): void {
