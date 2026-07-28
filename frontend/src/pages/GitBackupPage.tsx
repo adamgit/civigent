@@ -563,12 +563,6 @@ export function GitBackupPage() {
             {loading && <span className="text-[11px] text-text-muted ml-2">Loading…</span>}
           </div>
 
-          {error && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded text-[12px] font-mono whitespace-pre-wrap">
-              {error}
-            </div>
-          )}
-
           {backup && (
             <Card title="Backup configuration">
               <KVRow label="Feature state">
@@ -646,6 +640,11 @@ export function GitBackupPage() {
                 {runningVerify ? "Verifying…" : "Verify remote backup"}
               </button>
             </div>
+            {error && (
+              <div className="mx-4 mb-3 p-3 bg-red-50 border border-red-200 text-red-700 rounded text-[12px] font-mono whitespace-pre-wrap">
+                {error}
+              </div>
+            )}
             {verifyResult && (
               <div className="px-4 py-3 border-t border-footer-border bg-[#faf8f5] text-[12px]">
                 <div>

@@ -36,6 +36,14 @@ export const REMOTE_AUTH_REF = "refs/heads/auth/main";
 export const LOCAL_AUTH_REF = "refs/heads/auth/main";
 
 /**
+ * Fixed identity for machine-fabricated auth snapshot commits. Content history
+ * is pushed as-is (authors already present); only `commit-tree` for the auth
+ * orphan needs an author, and the container has no operator `user.name`/`user.email`.
+ */
+const AUTH_SNAPSHOT_AUTHOR_NAME = "Civigent Backup";
+const AUTH_SNAPSHOT_AUTHOR_EMAIL = "backup@civigent";
+
+/**
  * Result of a Git primitive that may fail because the ref/remote is missing
  * or unreachable rather than because the machine is broken.
  */
@@ -256,7 +264,15 @@ export async function buildAuthSnapshotRef(
     }
     const { stdout: commitStdout } = await execFileAsync(
       "git",
-      ["-c", `safe.directory=${dataRoot}`, "commit-tree", treeSha, "-m", authMessage],
+      [
+        "-c", `safe.directory=${dataRoot}`,
+        "-c", `user.name=${AUTH_SNAPSHOT_AUTHOR_NAME}`,
+        "-c", `user.email=${AUTH_SNAPSHOT_AUTHOR_EMAIL}`,
+        "commit-tree",
+        treeSha,
+        "-m",
+        authMessage,
+      ],
       { cwd: dataRoot, env: envWithTempIndex },
     );
     const commitSha = commitStdout.trim();
