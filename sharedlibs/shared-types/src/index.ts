@@ -729,6 +729,17 @@ export type GovernanceMode = "available" | "forced";
 
 export type AgentAuthPolicy = "open" | "register" | "verify";
 
+export interface ExportedSkillsAdminConfig {
+  plugin_name: string;
+  zip_path: string;
+  folder: string;
+  folder_exists: boolean;
+  has_exportable_entries: boolean;
+  plugin_url: string;
+  command_prefix: string;
+  version: string | null;
+}
+
 export interface AdminConfig {
   humanInvolvement_preset: HumanInvolvementPresetName;
   humanInvolvement_midpoint_seconds: number;
@@ -736,6 +747,7 @@ export interface AdminConfig {
   snapshot_enabled: boolean;
   governance_mode: GovernanceMode;
   agent_auth_policy: AgentAuthPolicy;
+  exportedSkills: ExportedSkillsAdminConfig;
 }
 
 // ─── ACL / RBAC Datatypes ──────────────────────────────────────────
@@ -1369,11 +1381,14 @@ export interface AllSessionStatusesResponse {
 
 // ─── Document Types ────────────────────────────────────────────────
 
+export type DocumentTreePill = "skills" | "public";
+
 export interface DocumentTreeEntry {
   name: string;
   path: string;
   type: "file" | "directory";
   children?: DocumentTreeEntry[];
+  pills?: DocumentTreePill[];
 }
 
 export interface DocStructureNode {

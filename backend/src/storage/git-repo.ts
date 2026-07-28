@@ -56,6 +56,33 @@ export async function getHeadSha(dataRoot: string): Promise<string> {
   return gitExec(["rev-parse", "HEAD"], dataRoot);
 }
 
+/**
+ * Return the tree object SHA of a repo-relative folder path at HEAD.
+ * `repoRelativePath` is a git path (e.g. `content/public_skills`), not a
+ * content-tree browse path. Returns null when the path is absent at HEAD.
+ */
+export async function getTreeShaAtHead(
+  dataRoot: string,
+  repoRelativePath: string,
+): Promise<string | null> {
+  try {
+    const sha = await gitExec(["rev-parse", `HEAD:${repoRelativePath}`], dataRoot);
+    return sha || null;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (
+      msg.includes("does not exist") ||
+      msg.includes("exists on disk, but not in") ||
+      msg.includes("unknown revision") ||
+      msg.includes("does not have any commits") ||
+      msg.includes("bad revision")
+    ) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 export function isValidSha(sha: string): boolean {
   return /^[0-9a-f]{7,40}$/i.test(sha);
 }

@@ -50,6 +50,16 @@ function defaultFetch(url: unknown) {
       humanInvolvement_preset: "eager",
       humanInvolvement_midpoint_seconds: 7200,
       humanInvolvement_steepness: 1,
+      exportedSkills: {
+        plugin_name: "civ",
+        zip_path: "/exported/skills.zip",
+        folder: "/public_skills",
+        folder_exists: false,
+        has_exportable_entries: false,
+        plugin_url: "http://localhost/exported/skills.zip",
+        command_prefix: "/civ",
+        version: null,
+      },
     });
   }
   if (urlStr.includes("/api/proposals")) {

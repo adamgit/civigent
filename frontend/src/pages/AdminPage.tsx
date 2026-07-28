@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient, resolveWriterId } from "../services/api-client";
 import type { AdminConfig, HumanInvolvementPresetName, GetAdminSnapshotHealthResponse, AnyProposal } from "../types/shared.js";
+import { DocPath } from "../types/shared.js";
+import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
+import { copyTextToClipboard } from "../utils/copy-text";
 import { readNumberSetting, writeNumberSetting } from "../utils/numberSettings";
 
 const HUMAN_INVOLVEMENT_PRESETS: { value: HumanInvolvementPresetName; label: string; description: string }[] = [
@@ -33,6 +37,7 @@ function KVRow({ label, children }: { label: string; children: React.ReactNode }
 }
 
 export function AdminPage() {
+  const navigate = useNavigate();
   const [proposals, setProposals] = useState<AnyProposal[]>([]);
   const [sessionWriterId, setSessionWriterId] = useState<string | null>(null);
   const [activityCount, setActivityCount] = useState(0);
@@ -44,6 +49,9 @@ export function AdminPage() {
   const [daysSetting, setDaysSetting] = useState(() => readNumberSetting("ks_whats_new_days", 7));
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [presetSaving, setPresetSaving] = useState(false);
+  const [pluginUrlCopied, setPluginUrlCopied] = useState(false);
+  const [installCommandCopied, setInstallCommandCopied] = useState(false);
+  const [creatingFirstSkill, setCreatingFirstSkill] = useState(false);
 
   const reloadOperationalSnapshot = useCallback(async () => {
     setLoading(true);
@@ -103,6 +111,34 @@ export function AdminPage() {
     writeNumberSetting("ks_whats_new_limit", normalizedLimit);
     writeNumberSetting("ks_whats_new_days", normalizedDays);
     setSavedMessage("Local frontend preferences saved.");
+  };
+
+  const handleCopyPluginUrl = async (pluginUrl: string) => {
+    const didCopy = await copyTextToClipboard(pluginUrl);
+    if (!didCopy) return;
+    setPluginUrlCopied(true);
+    setTimeout(() => setPluginUrlCopied(false), 2000);
+  };
+
+  const handleCopyInstallCommand = async (pluginUrl: string) => {
+    const didCopy = await copyTextToClipboard(`claude --plugin-url ${pluginUrl}`);
+    if (!didCopy) return;
+    setInstallCommandCopied(true);
+    setTimeout(() => setInstallCommandCopied(false), 2000);
+  };
+
+  const handleCreateFirstSkill = async (folder: string) => {
+    setCreatingFirstSkill(true);
+    setError(null);
+    try {
+      const docPath = DocPath.parse(`${folder}/my-skill.md`);
+      await apiClient.createDocument(docPath);
+      navigate(`/docs/${stripLeadingSlashForRoute(docPath)}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCreatingFirstSkill(false);
+    }
   };
 
   return (
@@ -171,6 +207,73 @@ export function AdminPage() {
               <KVRow label="Committed proposals">{proposalCounts.committed}</KVRow>
               <KVRow label="Withdrawn proposals">{proposalCounts.withdrawn}</KVRow>
               <KVRow label="Recent activity items (7d/50)">{activityCount}</KVRow>
+            </>
+          )}
+        </Card>
+
+        <Card
+          title="Exported Skills Plugin"
+          subtitle="Public Claude Code plugin ZIP built from a content-tree folder (canonical/published only)."
+        >
+          {!adminConfig ? (
+            <p className="px-4 py-3 text-[12px] text-text-muted">Loading…</p>
+          ) : (
+            <>
+              <KVRow label="Plugin name">{adminConfig.exportedSkills.plugin_name}</KVRow>
+              <KVRow label="Command prefix">
+                <span className="font-mono">{adminConfig.exportedSkills.command_prefix}</span>
+              </KVRow>
+              <KVRow label="Folder">
+                <span className="font-mono">{adminConfig.exportedSkills.folder}</span>
+              </KVRow>
+              <KVRow label="Version">
+                <span className="font-mono">{adminConfig.exportedSkills.version ?? "—"}</span>
+              </KVRow>
+              <KVRow label="Plugin URL">
+                <span className="inline-flex items-center gap-2 min-w-0">
+                  <span className="font-mono truncate">{adminConfig.exportedSkills.plugin_url}</span>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyPluginUrl(adminConfig.exportedSkills.plugin_url)}
+                    className="text-xs px-2 py-1 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530] shrink-0"
+                  >
+                    {pluginUrlCopied ? "Copied" : "Copy"}
+                  </button>
+                </span>
+              </KVRow>
+              <KVRow label="Install command">
+                <span className="inline-flex items-center gap-2 min-w-0">
+                  <span className="font-mono truncate">
+                    {`claude --plugin-url ${adminConfig.exportedSkills.plugin_url}`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyInstallCommand(adminConfig.exportedSkills.plugin_url)}
+                    className="text-xs px-2 py-1 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530] shrink-0"
+                  >
+                    {installCommandCopied ? "Copied" : "Copy"}
+                  </button>
+                </span>
+              </KVRow>
+              <div className="px-4 py-3">
+                {adminConfig.exportedSkills.folder_exists && adminConfig.exportedSkills.has_exportable_entries ? (
+                  <Link
+                    to={`/docs${adminConfig.exportedSkills.folder}`}
+                    className="text-xs text-accent hover:underline"
+                  >
+                    Open folder in document tree
+                  </Link>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void handleCreateFirstSkill(adminConfig.exportedSkills.folder)}
+                    disabled={creatingFirstSkill}
+                    className="text-xs px-3 py-1.5 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530] disabled:opacity-50"
+                  >
+                    {creatingFirstSkill ? "Creating…" : "Create your first custom skill"}
+                  </button>
+                )}
+              </div>
             </>
           )}
         </Card>

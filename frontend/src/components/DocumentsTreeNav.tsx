@@ -272,38 +272,38 @@ export function DocumentsTreeNav({
   }, []);
 
   const dirActionButtons = (folderPath: string, stopPropagation = false) => (
-    <span className="flex items-center gap-1">
-      {/* Export/import appear on hover to the left of + so the + stays fixed at the right edge */}
-      <span className="hidden group-hover:flex items-center gap-1">
-        <button
-          type="button"
-          title={`Export ${getDisplayName(folderPath)} as ZIP`}
-          className="text-sidebar-text/55 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[11px] leading-none transition-colors"
-          onClick={(e) => {
-            if (stopPropagation) e.stopPropagation();
-            triggerExport(folderPath);
-          }}
-        >
-          &#8595;
-        </button>
-        <button
-          type="button"
-          title={`Import .md files into ${getDisplayName(folderPath)}`}
-          className="text-sidebar-text/55 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[11px] leading-none transition-colors"
-          onClick={(e) => {
-            if (stopPropagation) e.stopPropagation();
-            triggerImport(folderPath);
-          }}
-          disabled={importingFolder !== null}
-        >
-          &#8593;
-        </button>
-      </span>
+    <span className="flex items-center gap-1 shrink-0">
+      {/* Export/import stay in layout (opacity only) so hover does not resize the sidebar */}
+      <button
+        type="button"
+        title={`Export ${getDisplayName(folderPath)} as ZIP`}
+        aria-label={`Export ${getDisplayName(folderPath)} as ZIP`}
+        className="shrink-0 inline-flex items-center justify-center w-4 h-4 text-sidebar-text/55 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[11px] leading-none opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+        onClick={(e) => {
+          if (stopPropagation) e.stopPropagation();
+          triggerExport(folderPath);
+        }}
+      >
+        &#8595;
+      </button>
+      <button
+        type="button"
+        title={`Import .md files into ${getDisplayName(folderPath)}`}
+        aria-label={`Import .md files into ${getDisplayName(folderPath)}`}
+        className="shrink-0 inline-flex items-center justify-center w-4 h-4 text-sidebar-text/55 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[11px] leading-none opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity disabled:cursor-not-allowed"
+        onClick={(e) => {
+          if (stopPropagation) e.stopPropagation();
+          triggerImport(folderPath);
+        }}
+        disabled={importingFolder !== null}
+      >
+        &#8593;
+      </button>
       <button
         type="button"
         title={`Create a new document in ${getDisplayName(folderPath)}`}
         aria-label={`Create a new document in ${getDisplayName(folderPath)}`}
-        className="text-sidebar-text/70 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[18px] font-medium leading-none transition-colors"
+        className="shrink-0 inline-flex items-center justify-center w-4 h-4 text-sidebar-text/70 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[18px] font-medium leading-none transition-colors"
         onClick={(e) => {
           if (stopPropagation) e.stopPropagation();
           onCreateDocumentInFolder?.(folderPath);
@@ -327,12 +327,11 @@ export function DocumentsTreeNav({
             const emptyFolderClass = !hasChildren && !isSelectedFolder
               ? "text-sidebar-text/40 hover:bg-white/45 hover:text-sidebar-text/55"
               : null;
+            const folderTo = `/docs/${node.path.replace(/^\/+/, "")}`;
             return (
               <div key={node.path}>
                 <div
                   ref={isSelectedFolder ? selectedScrollRef : undefined}
-                  role="button"
-                  tabIndex={0}
                   className={`group flex items-center gap-[7px] w-full min-w-0 px-1.5 py-[5px] rounded-[5px] text-[13px] bg-transparent border-none font-[family-name:var(--font-ui)] text-left cursor-pointer transition-all ${
                     isSelectedFolder
                       ? "bg-sidebar-active-bg text-sidebar-active-text font-medium"
@@ -341,7 +340,6 @@ export function DocumentsTreeNav({
                   }`}
                   style={{ paddingLeft }}
                   onClick={() => toggleDirectory(node.path)}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleDirectory(node.path); } }}
                 >
                   <button
                     type="button"
@@ -363,18 +361,17 @@ export function DocumentsTreeNav({
                     &#128193;
                   </button>
                   <span className="flex items-center gap-0.5 min-w-0 flex-1">
-                    <button
-                      type="button"
+                    <Link
+                      to={folderTo}
                       title={`Open ${getDisplayName(node.path)} folder page`}
                       aria-label={`Open ${getDisplayName(node.path)} folder page`}
-                      className="truncate min-w-0 p-0 text-left bg-transparent border-none cursor-pointer font-inherit text-inherit hover:text-accent"
+                      className="truncate min-w-0 p-0 text-left font-inherit text-inherit no-underline hover:text-accent"
                       onClick={(event) => {
                         event.stopPropagation();
-                        navigate(`/docs${node.path}`);
                       }}
                     >
                       {getDisplayName(node.path)}/
-                    </button>
+                    </Link>
                     <button
                       type="button"
                       className={`shrink-0 inline-flex items-center justify-center w-4 h-4 rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ${
@@ -409,6 +406,16 @@ export function DocumentsTreeNav({
                     </button>
                   </span>
                   <span className="ml-auto flex items-center gap-1 shrink-0">
+                    {node.pills?.includes("skills") ? (
+                      <span className="shrink-0 text-[10px] font-semibold px-[5px] py-px rounded-lg bg-orange-100 text-orange-800">
+                        SKILLS
+                      </span>
+                    ) : null}
+                    {node.pills?.includes("public") ? (
+                      <span className="shrink-0 text-[10px] font-semibold px-[5px] py-px rounded-lg bg-agent-light text-agent-text">
+                        PUBLIC
+                      </span>
+                    ) : null}
                     {dirActionButtons(node.path, true)}
                   </span>
                 </div>

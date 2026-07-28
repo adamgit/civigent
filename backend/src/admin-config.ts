@@ -45,7 +45,9 @@ const initialConfig: RuntimeConfig = {
 
 let runtimeConfig: RuntimeConfig = { ...initialConfig };
 
-export function getAdminConfig(): AdminConfig {
+export type SyncAdminConfig = Omit<AdminConfig, "exportedSkills">;
+
+export function getAdminConfig(): SyncAdminConfig {
   const preset = HUMAN_INVOLVEMENT_PRESETS[runtimeConfig.humanInvolvement_preset];
   return {
     humanInvolvement_preset: runtimeConfig.humanInvolvement_preset,
@@ -61,7 +63,7 @@ export function getHumanHumanInvolvementPreset(): HumanInvolvementPresetName {
   return runtimeConfig.humanInvolvement_preset;
 }
 
-export function updateAdminConfig(next: Partial<AdminConfig>): AdminConfig {
+export function updateAdminConfig(next: Partial<AdminConfig>): SyncAdminConfig {
   if (next.humanInvolvement_preset != null) {
     const valid: HumanInvolvementPresetName[] = ["yolo", "aggressive", "eager", "conservative"];
     if (!valid.includes(next.humanInvolvement_preset)) {

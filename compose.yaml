@@ -50,6 +50,9 @@ services:
       - KS_BACKUP_KNOWN_HOSTS_PATH=${KS_BACKUP_KNOWN_HOSTS_ENABLED:+/run/secrets/civigent_backup/civigent_backup_known_hosts}
       # Set only when the host has an agent socket (ssh-agent mode).
       - SSH_AUTH_SOCK=${SSH_AUTH_SOCK:+/run/civigent/ssh_auth_sock}
+      - KS_EXPORTEDSKILLS_PLUGIN_NAME=${KS_EXPORTEDSKILLS_PLUGIN_NAME:-}
+      - KS_EXPORTEDSKILLS_ZIP_NAME=${KS_EXPORTEDSKILLS_ZIP_NAME:-}
+      - KS_EXPORTEDSKILLS_FOLDER=${KS_EXPORTEDSKILLS_FOLDER:-}
 
   frontend:
     build:

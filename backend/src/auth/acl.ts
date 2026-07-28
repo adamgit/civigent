@@ -25,6 +25,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { getAuthRoot } from "../storage/data-root.js";
 import { isSingleUserMode, type AuthenticatedWriter } from "./context.js";
 import { readEnvVar } from "../env.js";
+import { getExportedSkillsConfig } from "../exported-skills-config.js";
 import {
   AclAction,
   AclPermissionSet,
@@ -169,6 +170,13 @@ export async function getDocWritePermission(docPath: string): Promise<RoleName> 
  * public getters mint the result into a `RoleName` at the boundary.
  */
 async function resolveDocPermissionRaw(docPath: string, action: AclAction): Promise<string> {
+  if (action === "read") {
+    const folder = getExportedSkillsConfig().folder;
+    if (docPath === folder || docPath.startsWith(`${folder}/`)) {
+      return "public";
+    }
+  }
+
   const cache = await loadCache();
 
   // Exact match

@@ -4,6 +4,11 @@ import express from "express";
 import { createApiRouter } from "./api/routes/index.js";
 import { createOAuthRouter } from "./api/routes/oauth.js";
 import { createKnowledgeStoreMcpRouter, createAutoDetectMcpRouter } from "./mcp/index.js";
+import { getExportedSkillsConfig } from "./exported-skills-config.js";
+import {
+  buildExportedSkillsZip,
+  ExportedSkillsFolderAbsentError,
+} from "./api/application/exported-skills.js";
 import type { WsServerEvent } from "./types/shared.js";
 
 interface CreateAppOptions {
@@ -12,6 +17,7 @@ interface CreateAppOptions {
 
 export function createApp(options?: CreateAppOptions) {
   const app = express();
+  const exportedSkillsConfig = getExportedSkillsConfig();
 
   app.use(express.text({ type: ["text/markdown", "text/x-diff", "text/plain"] }));
   app.use(express.json());
@@ -26,6 +32,26 @@ export function createApp(options?: CreateAppOptions) {
   app.use("/mcp/tier3", createKnowledgeStoreMcpRouter({ tier: 3, onWsEvent: options?.onWsEvent }));
   app.use("/mcp", createAutoDetectMcpRouter({ onWsEvent: options?.onWsEvent }));
 
+  app.get("/exported/:zipName", async (req, res, next) => {
+    try {
+      if (req.params.zipName !== exportedSkillsConfig.zipName) {
+        res.status(404).json({ error: "Not found" });
+        return;
+      }
+      const { stream, version } = await buildExportedSkillsZip();
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("ETag", version);
+      stream.pipe(res);
+    } catch (error) {
+      if (error instanceof ExportedSkillsFolderAbsentError) {
+        res.status(404).json({ error: "Not found" });
+        return;
+      }
+      next(error);
+    }
+  });
+
   // In production (quickstart Docker image), serve the frontend from ./public
   const publicDir = join(process.cwd(), "public");
   if (existsSync(publicDir)) {
@@ -39,7 +65,7 @@ export function createApp(options?: CreateAppOptions) {
       },
     }));
     // Backend prefixes must 404 with JSON, not fall through to SPA index.html
-    app.use(["/api", "/mcp", "/oauth", "/.well-known"], (_req, res) => {
+    app.use(["/api", "/mcp", "/oauth", "/.well-known", "/exported"], (_req, res) => {
       res.status(404).json({ error: "Not found" });
     });
     // SPA fallback — let the frontend router handle unmatched paths

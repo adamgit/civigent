@@ -63,7 +63,6 @@ describe("HomePage degraded-proposal alert", () => {
   it("shows the alert with a count when proposals are degraded", async () => {
     fetchMock = installFetchMock(async (input) => {
       const url = String(input);
-      if (url.includes("/api/activity")) return jsonResponse({ items: [] });
       if (url.includes("/api/proposals/degraded")) {
         return jsonResponse({
           proposals: [degradedProposal("p1"), degradedProposal("p2")],
@@ -84,7 +83,6 @@ describe("HomePage degraded-proposal alert", () => {
   it("shows no alert when no proposals are degraded", async () => {
     fetchMock = installFetchMock(async (input) => {
       const url = String(input);
-      if (url.includes("/api/activity")) return jsonResponse({ items: [] });
       if (url.includes("/api/proposals/degraded")) {
         return jsonResponse({ proposals: [], undecodable: [] });
       }
@@ -94,7 +92,7 @@ describe("HomePage degraded-proposal alert", () => {
     renderHome();
 
     await waitFor(() => {
-      expect(screen.getByText("No recent human edits.")).toBeTruthy();
+      expect(screen.getByText("Turn a folder into agent skills")).toBeTruthy();
     });
     expect(screen.queryByTestId("degraded-proposals-alert")).toBeNull();
   });

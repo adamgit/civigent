@@ -214,10 +214,11 @@ export function AppLayout() {
   };
 
   const createDoc = useCallback(async (path: string): Promise<void> => {
-    const docPath = path.endsWith(".md") ? path : `${path}.md`;
+    const withMd = path.endsWith(".md") ? path : `${path}.md`;
+    const docPath = DocPath.fromSlashStrippedUrlSegment(withMd.replace(/^\/+/, ""));
     await apiClient.createDocument(docPath);
     loadTree({ background: true }).catch(() => { /* non-fatal refresh */ });
-    navigate(`/docs/${stripLeadingSlashForRoute(DocPath.parse(docPath))}`);
+    navigate(`/docs/${stripLeadingSlashForRoute(docPath)}`);
   }, [navigate]);
 
   const openCreateDocInFolder = useCallback((folderPath: string) => {
@@ -692,7 +693,7 @@ export function AppLayout() {
             )}
           </div>
           {rootImportError ? (
-            <p className="text-[11px] text-status-red m-0 mb-1">{rootImportError}</p>
+            <p className="text-[11px] text-status-red m-0 mb-1 select-text">{rootImportError}</p>
           ) : null}
           {rootImporting ? (
             <p className="text-[10px] text-text-faint m-0 mb-1">Importing...</p>
@@ -726,7 +727,7 @@ export function AppLayout() {
                 </button>
               </div>
               {newDocError ? (
-                <p className="text-[11px] text-status-red m-0">{newDocError}</p>
+                <p className="text-[11px] text-status-red m-0 select-text">{newDocError}</p>
               ) : null}
             </form>
           )}
@@ -740,7 +741,7 @@ export function AppLayout() {
           {systemStarting ? (
             <p className="text-xs text-text-faint py-2">Waiting for system...</p>
           ) : treeError ? (
-            <p className="text-xs text-status-red py-2">Tree unavailable: {treeError}</p>
+            <p className="text-xs text-status-red py-2 select-text">Tree unavailable: {treeError}</p>
           ) : null}
           {!loadingTree && !systemStarting && !treeError && entries.length === 0 ? (
             <p className="text-xs text-sidebar-text py-2">

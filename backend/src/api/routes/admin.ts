@@ -76,7 +76,7 @@ export function registerAdminRoutes(router: Router): void {
     try {
       const admin = await requireAdmin(req, res);
       if (!admin) return;
-      res.json(getAdminConfigWithDescription());
+      res.json(await getAdminConfigWithDescription());
     } catch (error) {
       next(error);
     }
@@ -86,7 +86,7 @@ export function registerAdminRoutes(router: Router): void {
     try {
       const admin = await requireAdmin(req, res);
       if (!admin) return;
-      res.json(updateAdminConfigWithDescription(req.body));
+      res.json(await updateAdminConfigWithDescription(req.body));
     } catch (error) {
       if (error instanceof AdminConfigValidationError) {
         sendApiError(res, 400, error);

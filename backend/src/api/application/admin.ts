@@ -10,6 +10,7 @@ import type {
   ContentIntegrityFailure,
   CreateCustomRoleRequest,
   DocumentTreeEntry,
+  ExportedSkillsAdminConfig,
   GetActivityResponse,
   GetAdminGitBackupStatusResponse,
   GetAdminGitRestoreStatusResponse,
@@ -24,6 +25,14 @@ import type {
   SetUserRolesRequest,
   VerifyAdminGitBackupResponse,
 } from "../../types/shared.js";
+import { getExportedSkillsConfig } from "../../exported-skills-config.js";
+import { getPublicUrl } from "../../auth/oauth-config.js";
+import {
+  ExportedSkillsFolderAbsentError,
+  folderExistsOnDisk,
+  getExportedSkillsTreeSha,
+  listExportedSkillsContent,
+} from "./exported-skills.js";
 import { getRuntimeMemoryStats } from "../../runtime/memory-stats.js";
 import {
   GitBackupOperationError,
@@ -92,16 +101,48 @@ export {
 
 // ─── Config ─────────────────────────────────────────────
 
-export function getAdminConfigWithDescription(): AdminConfig & { preset_description: string } {
-  const config = getAdminConfig();
-  const preset = HUMAN_INVOLVEMENT_PRESETS[config.humanInvolvement_preset];
-  return { ...config, preset_description: preset.description };
+async function buildExportedSkillsAdminConfig(): Promise<ExportedSkillsAdminConfig> {
+  const cfg = getExportedSkillsConfig();
+  const zip_path = `/exported/${cfg.zipName}`;
+  const folder_exists = await folderExistsOnDisk(cfg.folder);
+  const version = await getExportedSkillsTreeSha(cfg.folder);
+  let has_exportable_entries = false;
+  if (folder_exists) {
+    try {
+      const listing = await listExportedSkillsContent();
+      has_exportable_entries = listing.commands.length > 0 || listing.skills.length > 0;
+    } catch (error) {
+      if (!(error instanceof ExportedSkillsFolderAbsentError)) {
+        throw error;
+      }
+    }
+  }
+  return {
+    plugin_name: cfg.pluginName,
+    zip_path,
+    folder: cfg.folder,
+    folder_exists,
+    has_exportable_entries,
+    plugin_url: `${getPublicUrl()}${zip_path}`,
+    command_prefix: `/${cfg.pluginName}`,
+    version,
+  };
 }
 
-export function updateAdminConfigWithDescription(body: Partial<AdminConfig>): AdminConfig & { preset_description: string } {
+export async function getAdminConfigWithDescription(): Promise<AdminConfig & { preset_description: string }> {
+  const config = getAdminConfig();
+  const preset = HUMAN_INVOLVEMENT_PRESETS[config.humanInvolvement_preset];
+  const exportedSkills = await buildExportedSkillsAdminConfig();
+  return { ...config, exportedSkills, preset_description: preset.description };
+}
+
+export async function updateAdminConfigWithDescription(
+  body: Partial<AdminConfig>,
+): Promise<AdminConfig & { preset_description: string }> {
   const updated = updateAdminConfig(body);
   const preset = HUMAN_INVOLVEMENT_PRESETS[updated.humanInvolvement_preset];
-  return { ...updated, preset_description: preset.description };
+  const exportedSkills = await buildExportedSkillsAdminConfig();
+  return { ...updated, exportedSkills, preset_description: preset.description };
 }
 
 // ─── Runtime memory ─────────────────────────────────────

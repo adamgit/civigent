@@ -63,6 +63,10 @@ export default defineConfig({
         target: backendTarget,
         changeOrigin: true
       },
+      "/exported": {
+        target: backendTarget,
+        changeOrigin: true
+      },
       "/ws": {
         target: backendWsTarget,
         ws: true

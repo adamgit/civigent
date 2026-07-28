@@ -58,6 +58,7 @@ import { DocPath } from "../../types/shared.js";
 import type { AuthenticatedWriter } from "../../auth/context.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
 import { openWorkspaceReader } from "./sections.js";
+import { getExportedSkillsConfig } from "../../exported-skills-config.js";
 
 export { broadcastAgentReading };
 
@@ -97,8 +98,22 @@ async function filterTreeToPublic(entries: DocumentTreeEntry[]): Promise<Documen
   return result;
 }
 
+function annotateExportedSkillsPills(entries: DocumentTreeEntry[]): DocumentTreeEntry[] {
+  const folder = getExportedSkillsConfig().folder;
+  return entries.map((entry) => {
+    const children = entry.children ? annotateExportedSkillsPills(entry.children) : entry.children;
+    if (entry.type === "directory" && entry.path === folder) {
+      return { ...entry, children, pills: ["skills", "public"] };
+    }
+    if (children !== entry.children) {
+      return { ...entry, children };
+    }
+    return entry;
+  });
+}
+
 export async function readTree(basePath: string, isAuthenticated: boolean): Promise<GetDocumentsTreeResponse> {
-  const tree = await readDocumentsTree(basePath);
+  const tree = annotateExportedSkillsPills(await readDocumentsTree(basePath));
   const filteredTree = isAuthenticated ? tree : await filterTreeToPublic(tree);
   return { tree: filteredTree };
 }

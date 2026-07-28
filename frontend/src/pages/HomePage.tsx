@@ -1,26 +1,7 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { Link, useOutletContext } from "react-router-dom";
-import type { ActivityItem } from "../types/shared.js";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
 import { apiClient } from "../services/api-client";
-import { headingPathToLabel } from "./document-page-utils";
-import { docsRouteForStoredPath } from "../app/docsRouteUtils";
-import { relativeTime } from "../utils/relativeTime";
-import { writerInitials } from "../utils/writerInitials";
-
-const AVATAR_COLORS: Array<{ bg: string; fg: string }> = [
-  { bg: "var(--color-accent-light)", fg: "var(--color-accent)" },
-  { bg: "var(--color-agent-light)", fg: "var(--color-agent-text)" },
-  { bg: "var(--color-status-yellow-light)", fg: "#854F0B" },
-  { bg: "var(--color-status-red-light)", fg: "var(--color-status-red)" },
-  { bg: "#E1F5EE", fg: "#085041" },
-];
-
-function avatarColor(name: string): { bg: string; fg: string } {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) | 0;
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
-}
 
 export function HomePage() {
   const { createDoc, sidebarAutoHide, setSidebarAutoHide } = useOutletContext<AppLayoutOutletContext>();
@@ -29,21 +10,8 @@ export function HomePage() {
   const [newDocError, setNewDocError] = useState<string | null>(null);
   const [showHowItWorks, setShowHowItWorks] = useState(false);
 
-  const [items, setItems] = useState<ActivityItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [activityError, setActivityError] = useState<string | null>(null);
-
   const [degradedCount, setDegradedCount] = useState(0);
   const [degradedError, setDegradedError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    apiClient
-      .getActivity(100, 30)
-      .then((res) => { if (!cancelled) { setItems(res.items); setActivityError(null); setLoading(false); } })
-      .catch((err) => { if (!cancelled) { setActivityError(err instanceof Error ? err.message : String(err)); setLoading(false); } });
-    return () => { cancelled = true; };
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,24 +38,6 @@ export function HomePage() {
       .catch((err) => setNewDocError(err instanceof Error ? err.message : String(err)))
       .finally(() => setCreatingDoc(false));
   };
-
-  const humanEdits = useMemo(
-    () =>
-      items
-        .filter((i) => i.writer_type === "human")
-        .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))
-        .slice(0, 8),
-    [items],
-  );
-
-  const agentActivity = useMemo(
-    () =>
-      items
-        .filter((i) => i.writer_type === "agent")
-        .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))
-        .slice(0, 8),
-    [items],
-  );
 
   return (
     <div className="flex-1 overflow-auto canvas-scroll" style={{ fontFamily: "var(--font-ui)" }}>
@@ -151,17 +101,17 @@ export function HomePage() {
               border: "none",
               borderRight: "1px solid var(--color-footer-border)",
               borderRadius: "11px 0 0 11px",
-              padding: "16px 18px",
+              padding: "10px 14px",
               background: sidebarAutoHide ? "var(--color-accent-light)" : "var(--color-sidebar-bg)",
               color: sidebarAutoHide ? "var(--color-accent-text)" : "var(--color-text-secondary)",
               boxShadow: sidebarAutoHide ? "inset 0 0 0 2px var(--color-accent)" : "none",
               transition: "background 150ms ease, color 150ms ease, box-shadow 150ms ease",
             }}
           >
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, color: sidebarAutoHide ? "var(--color-accent-text)" : "var(--color-text-primary)" }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, color: sidebarAutoHide ? "var(--color-accent-text)" : "var(--color-text-primary)" }}>
               Focus mode
             </div>
-            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.45 }}>
+            <p style={{ margin: 0, fontSize: 11, lineHeight: 1.4 }}>
               Hide the sidebar for more room to read and write. Hover the left edge of the window when you need the document tree again.
             </p>
           </button>
@@ -174,17 +124,17 @@ export function HomePage() {
               cursor: "pointer",
               border: "none",
               borderRadius: "0 11px 11px 0",
-              padding: "16px 18px",
+              padding: "10px 14px",
               background: !sidebarAutoHide ? "var(--color-agent2-light)" : "var(--color-sidebar-bg)",
               color: !sidebarAutoHide ? "#8a5520" : "var(--color-text-secondary)",
               boxShadow: !sidebarAutoHide ? "inset 0 0 0 2px var(--color-agent2)" : "none",
               transition: "background 150ms ease, color 150ms ease, box-shadow 150ms ease",
             }}
           >
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, color: !sidebarAutoHide ? "#8a5520" : "var(--color-text-primary)" }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, color: !sidebarAutoHide ? "#8a5520" : "var(--color-text-primary)" }}>
               Browse mode
             </div>
-            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.45 }}>
+            <p style={{ margin: 0, fontSize: 11, lineHeight: 1.4 }}>
               Keep the sidebar open so you can jump between documents. Use this when you are exploring or moving around often.
             </p>
           </button>
@@ -226,8 +176,95 @@ export function HomePage() {
           {newDocError && <p className="text-error" style={{ marginTop: 6 }}>{newDocError}</p>}
         </form>
 
-        {/* Quick links */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: "2rem" }}>
+        {/* Manual search */}
+        <form
+          action="/search-text"
+          method="GET"
+          style={{
+            marginBottom: "2rem",
+            background: "var(--color-sidebar-bg)",
+            borderRadius: 12,
+            padding: "14px 18px",
+          }}
+        >
+          <input type="hidden" name="root" value="/" />
+          <input type="hidden" name="case_sensitive" value="false" />
+          <input type="hidden" name="max_results" value="20" />
+          <input type="hidden" name="context_bytes" value="100" />
+
+          <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 8 }}>
+            Manual text search
+          </label>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              type="text"
+              name="pattern"
+              placeholder="Search /api/search"
+              className="input-field"
+              style={{ flex: 1, height: 34 }}
+              required
+            />
+            <select
+              name="syntax"
+              defaultValue="literal"
+              className="input-field"
+              style={{ width: 120, height: 34 }}
+            >
+              <option value="literal">Plaintext</option>
+              <option value="regexp">Regexp</option>
+            </select>
+            <button
+              type="submit"
+              className="btn-secondary"
+              style={{ height: 34, whiteSpace: "nowrap" }}
+            >
+              Search
+            </button>
+          </div>
+          <p style={{ marginTop: 6, fontSize: 11, color: "var(--color-text-muted)" }}>
+            Opens formatted search results inside the app.
+          </p>
+        </form>
+
+        {/* Exported skills */}
+        <section
+          aria-label="Exported skills"
+          style={{
+            marginBottom: "2rem",
+            background: "var(--color-sidebar-bg)",
+            borderRadius: 12,
+            padding: "16px 18px",
+            border: "1px solid var(--color-footer-border)",
+          }}
+        >
+          <div style={{ fontSize: 11, fontWeight: 500, color: "var(--color-text-muted)", letterSpacing: "0.04em", marginBottom: 6 }}>
+            New &middot; Claude Code skills
+          </div>
+          <h2 style={{ fontFamily: "var(--font-body)", fontSize: 18, fontWeight: 500, lineHeight: 1.25, marginBottom: 6 }}>
+            Turn a folder into agent skills
+          </h2>
+          <p style={{ margin: "0 0 12px", fontSize: 13, lineHeight: 1.5, color: "var(--color-text-secondary)" }}>
+            Put markdown skills in the skills folder (default{" "}
+            <code style={{ fontSize: 12 }}>/public_skills</code>
+            ). Civigent exports them as a Claude Code plugin ZIP — install with{" "}
+            <code style={{ fontSize: 12 }}>claude --plugin-url</code>
+            {" "}and your agents can invoke those skills directly.
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 14, fontSize: 13, fontWeight: 500 }}>
+            <Link to="/docs/public_skills" style={{ color: "var(--color-accent)", textDecoration: "none" }}>
+              Open skills folder &rarr;
+            </Link>
+            <Link to="/admin" style={{ color: "var(--color-accent)", textDecoration: "none" }}>
+              Plugin URL &amp; install command &rarr;
+            </Link>
+          </div>
+        </section>
+
+        {/* Divider */}
+        <hr style={{ border: "none", borderTop: "1px solid var(--color-footer-border)", margin: "0 0 1.5rem" }} />
+
+        {/* Quick links — low priority; kept at the bottom */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
           <Link
             to="/setup"
             style={{
@@ -268,10 +305,10 @@ export function HomePage() {
               <div
                 style={{
                   position: "absolute",
-                  top: "100%",
+                  bottom: "100%",
                   left: "50%",
                   transform: "translateX(-50%)",
-                  paddingTop: 8,
+                  paddingBottom: 8,
                   zIndex: 10,
                   width: 480,
                   maxWidth: "90vw",
@@ -332,218 +369,7 @@ export function HomePage() {
           </Link>
         </div>
 
-        {/* Manual search */}
-        <form
-          action="/search-text"
-          method="GET"
-          style={{
-            marginBottom: "2rem",
-            background: "var(--color-sidebar-bg)",
-            borderRadius: 12,
-            padding: "14px 18px",
-          }}
-        >
-          <input type="hidden" name="root" value="/" />
-          <input type="hidden" name="case_sensitive" value="false" />
-          <input type="hidden" name="max_results" value="20" />
-          <input type="hidden" name="context_bytes" value="100" />
-
-          <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 8 }}>
-            Manual text search
-          </label>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input
-              type="text"
-              name="pattern"
-              placeholder="Search /api/search"
-              className="input-field"
-              style={{ flex: 1, height: 34 }}
-              required
-            />
-            <select
-              name="syntax"
-              defaultValue="literal"
-              className="input-field"
-              style={{ width: 120, height: 34 }}
-            >
-              <option value="literal">Plaintext</option>
-              <option value="regexp">Regexp</option>
-            </select>
-            <button
-              type="submit"
-              className="btn-secondary"
-              style={{ height: 34, whiteSpace: "nowrap" }}
-            >
-              Search
-            </button>
-          </div>
-          <p style={{ marginTop: 6, fontSize: 11, color: "var(--color-text-muted)" }}>
-            Opens formatted search results inside the app.
-          </p>
-        </form>
-
-        {/* Divider */}
-        <hr style={{ border: "none", borderTop: "1px solid var(--color-footer-border)", margin: "0 0 1.5rem" }} />
-
-        {/* Activity feeds */}
-        {activityError && (
-          <p className="text-error" style={{ marginBottom: "1rem" }}>
-            Could not load activity: {activityError}
-          </p>
-        )}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
-
-          {/* Recent human edits */}
-          <div>
-            <p style={{ fontSize: 12, fontWeight: 500, color: "var(--color-text-muted)", letterSpacing: "0.04em", marginBottom: 10 }}>
-              Recent human edits
-            </p>
-            <div style={{ maxHeight: 220, overflowY: "auto" }} className="canvas-scroll">
-              {loading && <p style={{ fontSize: 12, color: "var(--color-text-muted)" }}>Loading&hellip;</p>}
-              {!loading && !activityError && humanEdits.length === 0 && (
-                <p style={{ fontSize: 12, color: "var(--color-text-muted)" }}>No recent human edits.</p>
-              )}
-              {humanEdits.map((item) => {
-                const initials = writerInitials(item.writer_display_name);
-                const color = avatarColor(item.writer_display_name);
-                const docPaths = [...new Set(item.sections.map((s) => s.doc_path))];
-                const sectionLabels = item.sections
-                  .map((s) => headingPathToLabel(s.heading_path))
-                  .join(", ");
-                return (
-                  <Link
-                    key={item.id}
-                    to={docsRouteForStoredPath(docPaths[0]) ?? "/docs"}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      padding: "6px 8px",
-                      borderRadius: 8,
-                      textDecoration: "none",
-                      color: "inherit",
-                    }}
-                    className="hover:bg-page-bg"
-                  >
-                    <div
-                      style={{
-                        width: 24,
-                        height: 24,
-                        borderRadius: "50%",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        fontSize: 10,
-                        fontWeight: 500,
-                        flexShrink: 0,
-                        background: color.bg,
-                        color: color.fg,
-                      }}
-                    >
-                      {initials}
-                    </div>
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {docPaths[0] || "unknown"}
-                      </div>
-                      <div style={{ fontSize: 11, color: "var(--color-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {item.writer_display_name} &middot; {sectionLabels} &middot; {relativeTime(item.timestamp)}
-                      </div>
-                    </div>
-                  </Link>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Recent agent activity */}
-          <div>
-            <p style={{ fontSize: 12, fontWeight: 500, color: "var(--color-text-muted)", letterSpacing: "0.04em", marginBottom: 10 }}>
-              Recent agent activity
-            </p>
-            <div style={{ maxHeight: 220, overflowY: "auto" }} className="canvas-scroll">
-              {loading && <p style={{ fontSize: 12, color: "var(--color-text-muted)" }}>Loading&hellip;</p>}
-              {!loading && !activityError && agentActivity.length === 0 && (
-                <p style={{ fontSize: 12, color: "var(--color-text-muted)" }}>No recent agent activity.</p>
-              )}
-              {agentActivity.map((item) => {
-                const initial = item.writer_display_name.charAt(0).toUpperCase();
-                const docPaths = [...new Set(item.sections.map((s) => s.doc_path))];
-                const sectionLabels = item.sections
-                  .map((s) => headingPathToLabel(s.heading_path))
-                  .join(", ");
-                return (
-                  <Link
-                    key={item.id}
-                    to={docsRouteForStoredPath(docPaths[0]) ?? "/docs"}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      padding: "6px 8px",
-                      borderRadius: 8,
-                      textDecoration: "none",
-                      color: "inherit",
-                    }}
-                    className="hover:bg-page-bg"
-                  >
-                    <div
-                      style={{
-                        width: 24,
-                        height: 24,
-                        borderRadius: "50%",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        fontSize: 10,
-                        fontWeight: 500,
-                        flexShrink: 0,
-                        background: "var(--color-page-bg)",
-                        color: "var(--color-text-muted)",
-                        border: "1px dashed var(--color-text-faint)",
-                      }}
-                    >
-                      {initial}
-                    </div>
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                        <span style={{ fontWeight: 500 }}>{docPaths[0] || "unknown"}</span>
-                        <AgentPill item={item} />
-                      </div>
-                      <div style={{ fontSize: 11, color: "var(--color-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {item.writer_display_name} &middot; {sectionLabels}
-                        {item.intent ? ` \u00b7 \u201c${item.intent}\u201d` : ""}
-                        {" \u00b7 "}{relativeTime(item.timestamp)}
-                      </div>
-                    </div>
-                  </Link>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-
       </div>
     </div>
-  );
-}
-
-function AgentPill({ item }: { item: ActivityItem }) {
-  // We don't have explicit accept/reject status on activity items,
-  // so we show "committed" for all agent proposals that made it to the activity feed
-  return (
-    <span
-      style={{
-        fontSize: 10,
-        padding: "1px 6px",
-        borderRadius: 8,
-        fontWeight: 500,
-        flexShrink: 0,
-        background: "var(--color-status-green-light)",
-        color: "var(--color-status-green)",
-      }}
-    >
-      committed
-    </span>
   );
 }

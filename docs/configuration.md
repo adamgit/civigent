@@ -152,6 +152,9 @@ Operator `.env` only sets `KS_BACKUP_GIT_REMOTE`, `KS_BACKUP_GIT_AUTH_MODE`, and
 | `KS_FATAL_ERRORS_MODE` | What to do after a process-level fatal invariant failure: `report` keeps the process alive and surfaces the error to connected clients (accepts continued availability with the risk of further corruption); `crash` exits so an orchestrator/supervisor can restart. Invalid values fail at startup. | `report` |
 | `KS_INVOLVEMENT_PRESET` | Human involvement preset (`yolo`, `aggressive`, `eager`, `conservative`) | `eager` |
 | `KS_IMPORT_ROOT` | Path inside the container where the import volume is mounted | `/import` |
+| `KS_EXPORTEDSKILLS_PLUGIN_NAME` | Claude Code plugin name / slash namespace (lowercase kebab-case) | `civ` |
+| `KS_EXPORTEDSKILLS_ZIP_NAME` | Filename segment after `/exported/` (`[A-Za-z0-9._-]+`) | `skills.zip` |
+| `KS_EXPORTEDSKILLS_FOLDER` | Content-tree folder exported as the plugin (leading `/`, no trailing `/`) | `/public_skills` |
 
 ### Git remote backup (optional)
 
@@ -179,6 +182,26 @@ Wiring and `backup-secrets/` layout: [Backup, Restore, and Import — Private Gi
 | `KS_BACKUP_SSH_KEY_PATH` | `/run/secrets/civigent_backup/civigent_backup_ssh_key` (always set) |
 | `KS_BACKUP_KNOWN_HOSTS_PATH` | `/run/secrets/civigent_backup/civigent_backup_known_hosts` only when `KS_BACKUP_KNOWN_HOSTS_ENABLED` is set; otherwise unset |
 | `SSH_AUTH_SOCK` | `/run/civigent/ssh_auth_sock` when the host has `SSH_AUTH_SOCK`; otherwise unset |
+
+### Exported skills plugin (optional)
+
+Civigent can serve a Claude Code plugin ZIP built from a content-tree folder (canonical/published content only — not live or workspace drafts). Requires Claude Code ≥ v2.1.128.
+
+**URL:** `https://<host>/exported/<zip name>` (default `/exported/skills.zip`)
+
+```bash
+claude --plugin-url https://<host>/exported/skills.zip
+```
+
+Commands and skills are invoked as `/<plugin name>:<name>` (default prefix `/civ`).
+
+| Variable | Purpose | Default | Format |
+|----------|---------|---------|--------|
+| `KS_EXPORTEDSKILLS_PLUGIN_NAME` | Plugin `name` and slash-command namespace | `civ` | lowercase kebab-case, no spaces |
+| `KS_EXPORTEDSKILLS_ZIP_NAME` | Last path segment of the download URL | `skills.zip` | single segment `[A-Za-z0-9._-]+`, no `/` |
+| `KS_EXPORTEDSKILLS_FOLDER` | Content-tree folder that supplies the ZIP | `/public_skills` | leading `/`, no trailing `/` |
+
+Invalid values fail server startup with an error naming the variable and the violated rule. Compose passes these through from operator `.env`; omit them to keep the defaults.
 
 ---
 
