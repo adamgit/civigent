@@ -13,7 +13,7 @@
 
 import path from "node:path";
 import { readFile, readdir } from "node:fs/promises";
-import { pathExists, readDirentsIfExists, readFileIfExists } from "./fs-primitives.js";
+import { directoryExists, readDirentsIfExists, readFileIfExists } from "./fs-primitives.js";
 import { docPathFromContentRelativeFsPath } from "./path-utils.js";
 import { importFilesToProposal, type ImportFile } from "./import-service.js";
 import { commitProposalToCanonical } from "./commit-pipeline.js";
@@ -154,7 +154,9 @@ export async function bootstrapContentSeedFromDirectoryIfNeeded(
   sourceRoot: string,
   contentRoot: string,
 ): Promise<BootstrapContentSeedSummary> {
-  if (!(await pathExists(sourceRoot))) {
+  // Optional: compose mounts /dev/null at /import when IMPORT_CONTENT_FROM is
+  // unset, so the path can exist without being a directory (ENOTDIR on scandir).
+  if (!(await directoryExists(sourceRoot))) {
     return { imported: 0, failed: 0, skipped: 1, errors: [] };
   }
   return bootstrapContentSeed(sourceRoot, contentRoot);
