@@ -16,8 +16,6 @@ export function LoginPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [methods, setMethods] = useState<AuthMethod[]>([]);
-  const [bootstrapAvailable, setBootstrapAvailable] = useState(false);
-  const [bootstrapCode, setBootstrapCode] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
@@ -34,7 +32,6 @@ export function LoginPage() {
     apiClient.getAuthMethods()
       .then((response) => {
         setMethods(Array.isArray(response.methods) ? response.methods as AuthMethod[] : []);
-        setBootstrapAvailable(!!response.bootstrap_available);
       })
       .catch(() => setMethods([]));
   }, []);
@@ -47,22 +44,6 @@ export function LoginPage() {
       const login = await apiClient.loginSingleUser();
       setMessage(`Authenticated as ${login.identity.displayName}.`);
       navigate(returnToTarget);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setWorking(false);
-    }
-  };
-
-  const handleBootstrap = async () => {
-    setWorking(true);
-    setMessage(null);
-    setError(null);
-    try {
-      await apiClient.bootstrap(bootstrapCode);
-      setMessage("Admin role granted. You can now access admin features.");
-      setBootstrapAvailable(false);
-      setBootstrapCode("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -187,36 +168,6 @@ export function LoginPage() {
                   </span>
                 </button>
               </div>
-
-              {/* Bootstrap admin — only shown when server says no admin exists */}
-              {bootstrapAvailable && (
-                <div className="mb-5">
-                  <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 5 }}>
-                    Bootstrap admin
-                  </div>
-                  <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 8 }}>
-                    No admin users exist. Sign in via OIDC first, then enter the bootstrap code from the server console to claim admin.
-                  </div>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={bootstrapCode}
-                      onChange={(e) => setBootstrapCode(e.target.value)}
-                      placeholder="Paste bootstrap code"
-                      className="input-field"
-                      style={{ flex: 1 }}
-                    />
-                    <button
-                      onClick={() => void handleBootstrap()}
-                      disabled={working || !bootstrapCode.trim()}
-                      className="btn-primary"
-                      style={{ opacity: bootstrapCode.trim() ? 1 : 0.5 }}
-                    >
-                      Claim admin
-                    </button>
-                  </div>
-                </div>
-              )}
 
               {message && <p className="text-xs text-green-700 mb-3">{message}</p>}
               {error && <p data-testid="login-error" className="text-error mb-3">{error}</p>}

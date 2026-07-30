@@ -263,7 +263,7 @@ KS_OIDC_CLIENT_SECRET=...
 
 ### Admin bootstrap
 
-When the server starts with OIDC configured but no admin users in `data/auth/roles.json`, it prints a one-time bootstrap code to stdout. After logging in via OIDC, enter this code on the login page to claim admin. The code is single-use and a new one is generated on each restart (until an admin exists).
+When the server starts with OIDC configured but no admin users in `data/auth/roles.json`, it prints a one-time bootstrap code to stdout. After logging in via OIDC, enter this code on the home page to claim admin. The code is single-use and a new one is generated on each restart (until an admin exists).
 
 ---
 

@@ -1,10 +1,12 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
+import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { apiClient } from "../services/api-client";
 
 export function HomePage() {
   const { createDoc, sidebarAutoHide, setSidebarAutoHide } = useOutletContext<AppLayoutOutletContext>();
+  const currentUser = useCurrentUser();
   const [newDocPath, setNewDocPath] = useState("");
   const [creatingDoc, setCreatingDoc] = useState(false);
   const [newDocError, setNewDocError] = useState<string | null>(null);
@@ -12,6 +14,12 @@ export function HomePage() {
 
   const [degradedCount, setDegradedCount] = useState(0);
   const [degradedError, setDegradedError] = useState<string | null>(null);
+
+  const [bootstrapAvailable, setBootstrapAvailable] = useState(false);
+  const [bootstrapCode, setBootstrapCode] = useState("");
+  const [bootstrapWorking, setBootstrapWorking] = useState(false);
+  const [bootstrapMessage, setBootstrapMessage] = useState<string | null>(null);
+  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -26,6 +34,35 @@ export function HomePage() {
       .catch((err) => { if (!cancelled) setDegradedError(err instanceof Error ? err.message : String(err)); });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .getAuthMethods()
+      .then((response) => {
+        if (!cancelled) setBootstrapAvailable(!!response.bootstrap_available);
+      })
+      .catch(() => {
+        if (!cancelled) setBootstrapAvailable(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleBootstrap = async () => {
+    setBootstrapWorking(true);
+    setBootstrapMessage(null);
+    setBootstrapError(null);
+    try {
+      await apiClient.bootstrap(bootstrapCode);
+      setBootstrapMessage("Admin role granted. You can now access admin features.");
+      setBootstrapAvailable(false);
+      setBootstrapCode("");
+    } catch (err) {
+      setBootstrapError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBootstrapWorking(false);
+    }
+  };
 
   const handleNewDocSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -60,6 +97,51 @@ export function HomePage() {
           <p className="text-error" style={{ marginBottom: "1rem" }}>
             Could not check for degraded proposals: {degradedError}
           </p>
+        )}
+
+        {/* Bootstrap admin — after OIDC login, when no admin exists yet */}
+        {bootstrapAvailable && currentUser && (
+          <div
+            role="region"
+            aria-label="Bootstrap admin"
+            data-testid="bootstrap-admin"
+            style={{
+              marginBottom: "1.75rem",
+              background: "var(--color-sidebar-bg)",
+              borderRadius: 12,
+              padding: "14px 18px",
+              border: "1px solid var(--color-footer-border)",
+            }}
+          >
+            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 5 }}>
+              Bootstrap admin
+            </div>
+            <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 8 }}>
+              No admin users exist. Enter the one-time bootstrap code from the server console to claim admin for your signed-in account.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                type="text"
+                value={bootstrapCode}
+                onChange={(e) => setBootstrapCode(e.target.value)}
+                placeholder="Paste bootstrap code"
+                className="input-field"
+                style={{ flex: 1, height: 34 }}
+                disabled={bootstrapWorking}
+              />
+              <button
+                type="button"
+                onClick={() => void handleBootstrap()}
+                disabled={bootstrapWorking || !bootstrapCode.trim()}
+                className="btn-primary"
+                style={{ height: 34, opacity: bootstrapCode.trim() ? 1 : 0.5, whiteSpace: "nowrap" }}
+              >
+                Claim admin
+              </button>
+            </div>
+            {bootstrapMessage && <p className="text-xs text-green-700" style={{ marginTop: 8 }}>{bootstrapMessage}</p>}
+            {bootstrapError && <p data-testid="bootstrap-error" className="text-error" style={{ marginTop: 8 }}>{bootstrapError}</p>}
+          </div>
         )}
 
         {/* Header */}
@@ -251,11 +333,11 @@ export function HomePage() {
             {" "}and your agents can invoke those skills directly.
           </p>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 14, fontSize: 13, fontWeight: 500 }}>
+            <Link to="/skills" style={{ color: "var(--color-accent)", textDecoration: "none" }}>
+              Skills &amp; launch command &rarr;
+            </Link>
             <Link to="/docs/public_skills" style={{ color: "var(--color-accent)", textDecoration: "none" }}>
               Open skills folder &rarr;
-            </Link>
-            <Link to="/admin" style={{ color: "var(--color-accent)", textDecoration: "none" }}>
-              Plugin URL &amp; install command &rarr;
             </Link>
           </div>
         </section>

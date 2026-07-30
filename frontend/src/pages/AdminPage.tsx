@@ -241,7 +241,7 @@ export function AdminPage() {
                   </button>
                 </span>
               </KVRow>
-              <KVRow label="Install command">
+              <KVRow label="Launch command">
                 <span className="inline-flex items-center gap-2 min-w-0">
                   <span className="font-mono truncate">
                     {`claude --plugin-url ${adminConfig.exportedSkills.plugin_url}`}

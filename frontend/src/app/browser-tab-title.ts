@@ -89,6 +89,9 @@ function titleForNonDocsRoute(pathname: string): string {
   if (pathname === "/agents-activity/feed") {
     return `${PREFIX}Agent Activity Feed`;
   }
+  if (pathname === "/skills") {
+    return `${PREFIX}Skills`;
+  }
   if (pathname === "/imports") {
     return `${PREFIX}Imports`;
   }

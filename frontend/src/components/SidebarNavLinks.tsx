@@ -183,6 +183,9 @@ export function SidebarNavLinks({ variant, onOpenWsDiagnostics }: SidebarNavLink
         <NavLink to="/agents-activity" icon={<>&#129302;</>}>
           Agents
         </NavLink>
+        <NavLink to="/skills" icon={<>&#129513;</>}>
+          Skills
+        </NavLink>
       </nav>
     );
   }
