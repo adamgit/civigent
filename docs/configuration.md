@@ -143,7 +143,7 @@ Operator `.env` only sets `KS_BACKUP_GIT_REMOTE`, `KS_BACKUP_GIT_AUTH_MODE`, and
 | `KS_USER_NAME` | Human display name (single-user mode) | `Local User` |
 | `KS_USER_EMAIL` | Human email (single-user mode) | `local-user@ks.local` |
 | `KS_USER_ID` | Human ID override (single-user mode) | (auto-generated) |
-| `KS_AGENT_AUTH_POLICY` | Agent auth policy: `open` (anonymous allowed), `register` (pre-registered client_id required), `verify` (pre-registered + client_secret required) | `open` (localhost) / `register` (public hostname) |
+| `KS_AGENT_AUTH_POLICY` | Agent auth policy: `open` (anonymous allowed), `approve` (anonymous + one-time human Approve at first connection; incompatible with `KS_AUTH_MODE=single_user`), `confidential` (admin-created identity + client_secret required). Any other value refuses startup. | `open` (localhost) / `confidential` (public hostname) |
 | `KS_AGENT_ANON_SALT` | Salt for signing anonymous agent tokens (change to revoke all) | (auto-generated) |
 | `KS_DATA_ROOT` | Override the root data directory | (built-in default) |
 | `KS_SNAPSHOT_ROOT` | Override the snapshots directory | sibling `snapshots/` directory next to `KS_DATA_ROOT` |

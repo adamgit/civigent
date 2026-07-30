@@ -43,6 +43,7 @@ export function HomePage() {
         if (!cancelled) setBootstrapAvailable(!!response.bootstrap_available);
       })
       .catch(() => {
+        /* non-fatal background fetch */
         if (!cancelled) setBootstrapAvailable(false);
       });
     return () => { cancelled = true; };

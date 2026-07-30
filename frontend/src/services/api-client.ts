@@ -2,6 +2,7 @@ import { encodeDocPath } from "../utils/path-encoding.js";
 import type {
   AclSnapshot,
   AdminConfig,
+  AgentAuthPolicy,
   AuthUser,
   BlameResponse,
   SetAclDefaultsRequest,
@@ -550,14 +551,13 @@ export const apiClient = {
     return requestJson("/api/admin/agents");
   },
 
-  async addAgentKey(displayName: string, options?: { agentId?: string; generateSecret?: boolean }): Promise<{ agent_id: string; display_name: string; secret: string | null }> {
+  async addAgentKey(displayName: string, options?: { agentId?: string }): Promise<{ agent_id: string; display_name: string; secret: string | null }> {
     return requestJson("/api/admin/agents", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         display_name: displayName,
         ...(options?.agentId ? { agent_id: options.agentId } : {}),
-        ...(options?.generateSecret === false ? { generate_secret: false } : {}),
       }),
     });
   },
@@ -580,6 +580,7 @@ export const apiClient = {
     defaultServerName: string;
     internalPort: number;
     mcpUrl: string;
+    agent_auth_policy: AgentAuthPolicy;
     /** Stable tool key → current wire name, for `{{tool:key}}` token substitution. */
     toolKeys: Record<string, string>;
   }> {

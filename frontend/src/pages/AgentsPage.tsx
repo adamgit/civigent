@@ -6,7 +6,7 @@ import { AgentCardExpanded } from "../components/agents/AgentCardExpanded.js";
 import type { AgentCardViewModel } from "../components/agents/types.js";
 import { avatarHueFromId } from "../components/agents/utils.js";
 import { apiClient } from "../services/api-client";
-import type { AdminConfig, AgentAuthPolicy, GetAgentsFullSummaryResponse } from "../types/shared.js";
+import type { AgentAuthPolicy, GetAgentsFullSummaryResponse } from "../types/shared.js";
 import "./agents-page.css";
 
 function buildViewModels(response: GetAgentsFullSummaryResponse): AgentCardViewModel[] {
@@ -33,9 +33,9 @@ function buildViewModels(response: GetAgentsFullSummaryResponse): AgentCardViewM
 // ─── Policy badge ───────────────────────────────────────────────
 
 const POLICY_BADGE: Record<AgentAuthPolicy, { label: string; color: string; bg: string; title: string }> = {
-  open:     { label: "open",     color: "#7f1d1d", bg: "#fee2e2", title: "Any agent can self-register. Anonymous identities are allowed." },
-  register: { label: "register", color: "#92400e", bg: "#fef3c7", title: "Only pre-registered agents can connect. Presenting the registered client_id is sufficient." },
-  verify:   { label: "verify",   color: "#166534", bg: "#dcfce7", title: "Pre-registration required AND the agent must prove possession of its client_secret at the token endpoint." },
+  open:         { label: "open",         color: "#7f1d1d", bg: "#fee2e2", title: "Any agent can self-register. Anonymous identities are allowed." },
+  approve:      { label: "approve",      color: "#92400e", bg: "#fef3c7", title: "Agents self-register, but a signed-in human must approve each agent's first connection in the browser." },
+  confidential: { label: "confidential", color: "#166534", bg: "#dcfce7", title: "Admin-registered agents only. The agent must present its client_secret at the token endpoint." },
 };
 
 function PolicyBadge({ policy }: { policy: AgentAuthPolicy }) {
@@ -65,7 +65,6 @@ function PolicyBadge({ policy }: { policy: AgentAuthPolicy }) {
 
 export function AgentsPage() {
   const [data, setData] = useState<GetAgentsFullSummaryResponse | null>(null);
-  const [adminConfig, setAdminConfig] = useState<AdminConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -73,17 +72,16 @@ export function AgentsPage() {
   useEffect(() => {
     setLoading(true);
     setError(null);
-    Promise.all([apiClient.getAgentsSummary(), apiClient.getAdminConfig()])
-      .then(([res, cfg]) => {
+    apiClient.getAgentsSummary()
+      .then((res) => {
         setData(res);
-        setAdminConfig(cfg);
       })
       .catch((err) => { setError(err instanceof Error ? err.message : String(err)); })
       .finally(() => { setLoading(false); });
   }, []);
 
   const viewModels = data ? buildViewModels(data) : [];
-  const policy: AgentAuthPolicy = adminConfig?.agent_auth_policy ?? "open";
+  const policy: AgentAuthPolicy = data?.agent_auth_policy ?? "open";
 
   return (
     <section>
@@ -91,7 +89,7 @@ export function AgentsPage() {
         title={
           <span className="inline-flex items-center gap-2.5">
             <span>Agents</span>
-            {adminConfig ? (
+            {data ? (
               <>
                 <span className="text-xs font-medium text-text-muted">Agent auth policy:</span>
                 <PolicyBadge policy={policy} />

@@ -151,21 +151,21 @@ With plain Docker bind mounts, `wiki-data/` and `snapshots/` must both exist on 
 **Profile:** Team server where the network itself provides agent authentication (VPN, internal network).
 **Deployment method:** Same as Scenario B (quickstart or self-built), with additional env var configuration.
 
-**Optional:** Require agent pre-registration
+**Optional:** Relax the agent auth policy
 
-Most deployments will restrict access at the network layer, and anonymous agents are safe. However for added security you can require all AI agents to be pre-registered by an admin user before they can connect:
-
-```env
-KS_AGENT_AUTH_POLICY=register
-```
-
-For maximum security (agents must also prove possession of a secret at the token endpoint):
+On a public (non-localhost) hostname the default policy is `confidential`: agents must be admin-created and present a `client_secret` at the token endpoint. When the network itself gates access (VPN, internal network), you can relax this to allow anonymous self-registration:
 
 ```env
-KS_AGENT_AUTH_POLICY=verify
+KS_AGENT_AUTH_POLICY=open
 ```
 
-See [Authentication — Agent auth policy](authentication.md#agent-authentication-policy) for details on all three levels.
+Or keep self-registration but require a signed-in human to approve each agent's first connection in the browser (not compatible with `KS_AUTH_MODE=single_user`):
+
+```env
+KS_AGENT_AUTH_POLICY=approve
+```
+
+The removed `register` / `verify` values refuse startup. See [Authentication — Agent auth policy](authentication.md#agent-authentication-policy) for details on all three levels and migration notes.
 
 ---
 

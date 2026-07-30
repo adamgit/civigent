@@ -69,7 +69,9 @@ KS_OIDC_DISPLAY_NAME=Sign in with Google
 
 ### Admin bootstrap
 
-The first time a Google account logs in, Civigent assigns it a stable UUID derived from the Google `sub` claim. To grant someone admin access, you need their Civigent UUID, then add it to `data/auth/roles.json`:
+The first time a Google account logs in, Civigent assigns it a stable UUID derived from the Google `sub` claim. Once a first admin exists (via the one-time bootstrap code claimed on the home page), that admin grants further admins from the UI: open `/admin/permissions`, find User Roles, and set the `admin` role for the user's writer UUID.
+
+As an offline/ops fallback, roles can also be edited directly in `data/auth/roles.json`:
 
 ```json
 { "human-<uuid>": ["admin"] }
@@ -279,7 +281,7 @@ The redirect URI registered with your provider must exactly match `https://<your
 The `KS_OIDC_ISSUER` you configured does not match the `iss` claim in the provider's tokens. For Auth0 and Authentik this is typically a missing trailing slash. Check the provider's discovery document at `<issuer>/.well-known/openid-configuration` to confirm the exact issuer value.
 
 **User logs in but has no admin access**
-Admin access is granted via `data/auth/roles.json`. The user's Civigent UUID must be added there. See [Admin bootstrap](#admin-bootstrap) under Google Workspace (the process is identical for all providers).
+An existing admin can grant the role at `/admin/permissions` (User Roles → set `admin` for the user's writer UUID). If no admin exists yet, use the one-time bootstrap code printed at server startup. As an offline/ops fallback, the UUID can also be added to `data/auth/roles.json` by hand. See [Admin bootstrap](#admin-bootstrap) under Google Workspace (the process is identical for all providers).
 
 ---
 

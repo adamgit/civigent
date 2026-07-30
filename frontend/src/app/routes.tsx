@@ -11,6 +11,7 @@ import { PermissionsPage } from "../pages/PermissionsPage";
 import { AgentSimulatorPage } from "../pages/AgentSimulatorPage";
 import { CoordinationPage } from "../pages/CoordinationPage";
 import { LoginPage } from "../pages/LoginPage";
+import { ApproveAgentAccessPage } from "../pages/ApproveAgentAccessPage";
 import { GitHistoryPage } from "../pages/GitHistoryPage";
 import { SetupPage } from "../pages/SetupPage";
 import { FeaturesPage } from "../pages/FeaturesPage";
@@ -57,7 +58,8 @@ export const routeConfig: RouteObject[] = [
       { path: "skills", element: <SkillsPage /> },
       { path: "imports", element: <ImportsPage /> },
       { path: "search-text", element: <SearchTextPage /> },
-      { path: "login", element: <LoginPage /> }
+      { path: "login", element: <LoginPage /> },
+      { path: "approve-agent-access", element: <ApproveAgentAccessPage /> }
     ]
   }
 ];

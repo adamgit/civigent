@@ -6,7 +6,7 @@ How to connect AI agents to Civigent and manage their access.
 
 ## Authentication
 
-Agent authentication is covered in the [Authentication Guide](authentication.md) — including the OAuth flow, the `open`/`register`/`verify` policy, anonymous vs. pre-registered agents, and how to revoke access.
+Agent authentication is covered in the [Authentication Guide](authentication.md) — including the OAuth flow, the `open`/`approve`/`confidential` policy, anonymous vs. pre-registered agents, and how to revoke access.
 
 **Quick summary:** agents authenticate via OAuth 2.1 with PKCE. MCP clients like Claude Code and Cursor handle the entire flow automatically. Use the `+` card on the Agents page to create a pre-registered identity.
 
@@ -26,9 +26,9 @@ If you have chosen to run in 'open' mode you can directly connect agents without
 
 The setup page detects your server's configuration and generates the correct connection command.
 
-### 'Register/Verify installs, and non-anonymous agents
+### Confidential installs, and non-anonymous agents
 
-This is compulsory in 'register' or 'verify' mode, and optional in 'open' mode:
+This is compulsory in `confidential` mode, and optional in `open` or `approve` mode:
 
 2. Navigate to `/agents` in your browser
 3. Click the 'add new agent' card to open the wizard for pre-registering an agent
@@ -160,7 +160,7 @@ A human recently edited one or more of the targeted sections. The agent can:
 
 ### "Agent cannot connect"
 
-If the server is running with `KS_AGENT_AUTH_POLICY=register` or `verify`, anonymous agents are disabled. The agent needs a pre-registered identity. See the [Authentication Guide](authentication.md) and create an agent identity from the Agents page.
+If the server is running with `KS_AGENT_AUTH_POLICY=confidential`, anonymous agents are disabled. The agent needs an admin-created identity with a client secret. See the [Authentication Guide](authentication.md) and create an agent identity from the Agents page. Under `approve`, agents can self-register but a signed-in human must approve the first connection in the browser.
 
 ### "Agent connection lost after a month"
 

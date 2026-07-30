@@ -727,7 +727,7 @@ export const HUMAN_INVOLVEMENT_PRESETS: Record<HumanInvolvementPresetName, Human
 
 export type GovernanceMode = "available" | "forced";
 
-export type AgentAuthPolicy = "open" | "register" | "verify";
+export type AgentAuthPolicy = "open" | "approve" | "confidential";
 
 export interface ExportedSkillsAdminConfig {
   plugin_name: string;
@@ -2489,6 +2489,7 @@ export interface GetAgentsFullSummaryResponse {
     readonly preset: HumanInvolvementPresetName;
     readonly description: string;
   };
+  readonly agent_auth_policy: AgentAuthPolicy;
 }
 
 // ─── Git Blame Attribution ────────────────────────────────────────

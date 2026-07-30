@@ -5,15 +5,23 @@
  *   GET  /.well-known/oauth-protected-resource   — RFC 9728 PRM
  *   GET  /.well-known/oauth-authorization-server  — RFC 8414 AS metadata
  *   POST /oauth/register                          — RFC 7591 DCR
- *   GET  /oauth/authorize                         — Authorization (auto-approve, 302 redirect)
- *   POST /oauth/authorize                         — Authorization via POST (auto-approve, 302 redirect)
+ *   GET  /oauth/authorize                         — Authorization (auto-approve or consent redirect, 302)
+ *   POST /oauth/authorize                         — Authorization via POST (auto-approve or human consent, 302)
  *   POST /oauth/token                             — Code exchange + refresh
  */
 
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { createHash } from "node:crypto";
 import { base64UrlEncode } from "../../auth/encoding.js";
-import { getMCPPublicURL, getAgentAuthPolicy } from "../../auth/oauth-config.js";
+import {
+  getMCPPublicURL,
+  getAgentAuthPolicy,
+  allowsAnonymousDcr,
+  requiresPreRegisteredClient,
+  requiresHumanConsent,
+  requiresClientSecretAtToken,
+} from "../../auth/oauth-config.js";
+import { resolveAuthenticatedWriter } from "../../auth/context.js";
 import {
   mintAnonClientId,
   validateAnonClientId,
@@ -177,7 +185,7 @@ export function createOAuthRouter(): Router {
       }
 
       // Path 2: Anonymous agent (no client_secret)
-      if (getAgentAuthPolicy() !== "open") {
+      if (!allowsAnonymousDcr(getAgentAuthPolicy())) {
         sendOAuthError(res, 403, "access_denied", "Anonymous agent registration is disabled. Contact the administrator to register a named agent identity.");
         return;
       }
@@ -225,9 +233,26 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      // Auto-approve: 302 redirect with auth code. Registration already enforces
-      // policy (anonymous blocked if not "open", pre-auth requires valid secret).
-      // Agents are the only consumers of this endpoint — humans use OIDC.
+      const policy = getAgentAuthPolicy();
+      if (requiresPreRegisteredClient(policy) && client.type !== "pre_auth") {
+        sendOAuthError(res, 400, "invalid_request", "Invalid or expired client_id.");
+        return;
+      }
+
+      if (requiresHumanConsent(policy)) {
+        const consentParams = new URLSearchParams({
+          client_id: clientId,
+          redirect_uri: redirectUri,
+          code_challenge: codeChallenge,
+          code_challenge_method: authRequest.code_challenge_method,
+          state: authRequest.state,
+          response_type: authRequest.response_type,
+          agent_name: client.agentName,
+        });
+        res.redirect(302, `/approve-agent-access?${consentParams.toString()}`);
+        return;
+      }
+
       const code = mintAuthCode(clientId, redirectUri, codeChallenge, authRequest.code_challenge_method);
       const redirectTarget = new URL(redirectUri);
       redirectTarget.searchParams.set("code", code);
@@ -242,6 +267,15 @@ export function createOAuthRouter(): Router {
 
   router.post("/oauth/authorize", async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const policy = getAgentAuthPolicy();
+      if (requiresHumanConsent(policy)) {
+        const writer = resolveAuthenticatedWriter(req, { requireExplicitAuth: true });
+        if (!writer || writer.type !== "human") {
+          sendOAuthError(res, 401, "access_denied", "A signed-in human must approve this agent's access.");
+          return;
+        }
+      }
+
       const authRequest = OAuthAuthorizationRequest.parseBody(req.body);
       const { client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge } = authRequest;
 
@@ -252,6 +286,11 @@ export function createOAuthRouter(): Router {
 
       const client = await resolveClientId(clientId);
       if (!client) {
+        sendOAuthError(res, 400, "invalid_request", "Invalid or expired client_id.");
+        return;
+      }
+
+      if (requiresPreRegisteredClient(policy) && client.type !== "pre_auth") {
         sendOAuthError(res, 400, "invalid_request", "Invalid or expired client_id.");
         return;
       }
@@ -356,6 +395,11 @@ async function handleAuthCodeGrant(request: OAuthAuthorizationCodeTokenRequest, 
   // Try anonymous first
   const anon = validateAnonClientId(resolvedClientId);
   if (anon) {
+    if (requiresPreRegisteredClient(getAgentAuthPolicy())) {
+      console.warn("oauth token: anonymous client rejected (confidential policy)");
+      sendOAuthError(res, 400, "invalid_client", "Anonymous agent identities cannot obtain tokens under the confidential policy. Contact the administrator to register a named agent identity.");
+      return;
+    }
     // Anonymous client — no secret required. All checks passed; consume the nonce.
     consumeAuthCode(authCode);
     const tokens = issueTokenPair({
@@ -377,16 +421,16 @@ async function handleAuthCodeGrant(request: OAuthAuthorizationCodeTokenRequest, 
   const preAuth = await lookupAgentKey(resolvedClientId);
   if (preAuth) {
     const policy = getAgentAuthPolicy();
-    if (policy === "verify") {
-      // verify: client_secret is mandatory
+    if (requiresClientSecretAtToken(policy)) {
+      // confidential: client_secret is mandatory
       if (!clientSecret) {
-        console.warn("oauth token: missing client_secret (verify policy)");
-        sendOAuthError(res, 401, "invalid_client", "client_secret is required (policy: verify).");
+        console.warn("oauth token: missing client_secret (confidential policy)");
+        sendOAuthError(res, 401, "invalid_client", "client_secret is required (policy: confidential).");
         return;
       }
       if (preAuth.secretHash === "none") {
-        console.warn("oauth token: agent has no secret hash (verify policy)");
-        sendOAuthError(res, 401, "invalid_client", "Agent was registered without a secret. Re-register the agent with a secret to use verify policy.");
+        console.warn("oauth token: agent has no secret hash (confidential policy)");
+        sendOAuthError(res, 401, "invalid_client", "Agent was registered without a secret. Rotate or re-register the agent with a secret to use the confidential policy.");
         return;
       }
       const { compareSecret } = await import("../../auth/agent-keys.js");
@@ -397,7 +441,7 @@ async function handleAuthCodeGrant(request: OAuthAuthorizationCodeTokenRequest, 
         return;
       }
     }
-    // open / register: client_id in agents.keys is sufficient — issue the token.
+    // open / approve: client_id in agents.keys is sufficient — issue the token.
     // All checks passed; consume the nonce.
     consumeAuthCode(authCode);
     const tokens = issueTokenPair({

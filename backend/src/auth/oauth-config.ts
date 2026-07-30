@@ -7,10 +7,11 @@
  *   KS_MCP_PUBLIC_URL_FROM_HEADERS  — derive MCP public URL from trusted request/proxy headers
  *   KS_AUTH_SECRET                  — JWT signing secret (must not be default in non-single-user mode)
  *   KS_AGENT_ANON_SALT              — HMAC key for stateless anonymous client_id tokens
- *   KS_AGENT_AUTH_POLICY            — "open" | "register" | "verify" (default: open for localhost, register otherwise)
+ *   KS_AGENT_AUTH_POLICY            — "open" | "approve" | "confidential" (default: open for localhost, confidential otherwise)
  */
 
 import type { Request } from "express";
+import type { AgentAuthPolicy } from "../types/shared.js";
 import { randomBytes } from "node:crypto";
 import { isSingleUserMode } from "./context.js";
 import { readRuntimeAuthMode } from "./service.js";
@@ -145,22 +146,43 @@ export function getAgentAnonSalt(): string {
 
 // ─── KS_AGENT_AUTH_POLICY ────────────────────────────────────────
 
-export type AgentAuthPolicy = "open" | "register" | "verify";
-
 /**
  * Get the agent authentication policy.
- * - open:     Anonymous self-registration allowed; any agent can connect.
- * - register: Only pre-registered agents (client_id in agents.keys) can connect.
- * - verify:   Pre-registration required AND client_secret must be presented at token endpoint.
+ * - open:         Anonymous self-registration allowed; any agent can connect.
+ * - approve:      Anonymous registration allowed, plus a one-time human Approve at first connection.
+ * - confidential: Admin-created identity required AND client_secret must be presented at token endpoint.
  *
- * Default: "open" for localhost/127.0.0.1, "register" for public hostnames.
+ * Default: "open" for localhost/127.0.0.1, "confidential" for public hostnames.
+ * Any other non-empty value throws.
  */
 export function getAgentAuthPolicy(): AgentAuthPolicy {
   const val = readEnvVar("KS_AGENT_AUTH_POLICY")?.toLowerCase();
-  if (val === "open" || val === "register" || val === "verify") return val;
+  if (val === "open" || val === "approve" || val === "confidential") return val;
+  if (val) {
+    throw new Error(
+      `FATAL: KS_AGENT_AUTH_POLICY="${val}" is not a legal value.\n` +
+      `Legal values are: open, approve, confidential.`,
+    );
+  }
   const hostname = readEnvVar("KS_EXTERNAL_HOSTNAME", "localhost");
   const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
-  return isLocal ? "open" : "register";
+  return isLocal ? "open" : "confidential";
+}
+
+export function allowsAnonymousDcr(policy: AgentAuthPolicy): boolean {
+  return policy === "open" || policy === "approve";
+}
+
+export function requiresPreRegisteredClient(policy: AgentAuthPolicy): boolean {
+  return policy === "confidential";
+}
+
+export function requiresHumanConsent(policy: AgentAuthPolicy): boolean {
+  return policy === "approve";
+}
+
+export function requiresClientSecretAtToken(policy: AgentAuthPolicy): boolean {
+  return policy === "confidential";
 }
 
 // ─── OIDC configuration ──────────────────────────────────────────
@@ -266,6 +288,16 @@ export function validateOAuthConfig(): void {
         `Set it to the client ID registered with your OIDC provider.`,
       );
     }
+  }
+
+  const agentPolicy = getAgentAuthPolicy();
+  if (agentPolicy === "approve" && singleUser) {
+    throw new Error(
+      `FATAL: KS_AGENT_AUTH_POLICY=approve cannot be combined with KS_AUTH_MODE=single_user.\n` +
+      `In single-user mode a credential-less request resolves to the built-in local human,\n` +
+      `so the consent gate would pass for the agent's own request and "approve" would behave like "open".\n` +
+      `Pick a different agent auth policy (open or confidential) or leave single-user mode.`,
+    );
   }
 
   // Eagerly initialize the anon salt (logs if auto-generated)

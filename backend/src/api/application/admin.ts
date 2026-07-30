@@ -26,7 +26,7 @@ import type {
   VerifyAdminGitBackupResponse,
 } from "../../types/shared.js";
 import { getExportedSkillsConfig } from "../../exported-skills-config.js";
-import { getPublicUrl } from "../../auth/oauth-config.js";
+import { getPublicUrl, getAgentAuthPolicy } from "../../auth/oauth-config.js";
 import {
   ExportedSkillsFolderAbsentError,
   folderExistsOnDisk,
@@ -245,11 +245,11 @@ export async function listAgents() {
   };
 }
 
-export async function createAgent(displayName: string, agentId: string | undefined, generateSecret: boolean) {
+export async function createAgent(displayName: string, agentId: string | undefined) {
   const id = (typeof agentId === "string" && agentId.trim())
     ? agentId.trim()
     : `agent-${crypto.randomUUID()}`;
-  const plainSecret = await addAgentKey(id, displayName.trim(), generateSecret);
+  const plainSecret = await addAgentKey(id, displayName.trim(), true);
   return { agent_id: id, display_name: displayName.trim(), secret: plainSecret };
 }
 
@@ -276,6 +276,7 @@ export async function getAgentsSummary() {
       preset: config.humanInvolvement_preset,
       description: preset.description ?? config.humanInvolvement_preset,
     },
+    agent_auth_policy: getAgentAuthPolicy(),
   };
 }
 

@@ -21,6 +21,7 @@ interface SetupInfo {
   defaultServerName: string;
   internalPort: number;
   mcpUrl: string;
+  agent_auth_policy: AgentAuthPolicy;
   /** Stable tool key → current wire name, for `{{tool:key}}` token substitution. */
   toolKeys: Record<string, string>;
 }
@@ -320,9 +321,8 @@ function AgentRegistrationSection({
   onRegistered: (identity: RegisteredIdentity) => void;
   onClear: () => void;
 }) {
-  const required = policy !== "open";
+  const required = policy === "confidential";
   const [name, setName] = useState("");
-  const [alsoGenerateSecret, setAlsoGenerateSecret] = useState(false);
   const [adding, setAdding] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -338,15 +338,13 @@ function AgentRegistrationSection({
     setAdding(true);
     setFormError(null);
     try {
-      const generateSecret = policy === "verify" || alsoGenerateSecret;
-      const created = await apiClient.addAgentKey(trimmed, { generateSecret });
+      const created = await apiClient.addAgentKey(trimmed);
       onRegistered({
         agentId: created.agent_id,
         secret: created.secret,
         displayName: created.display_name,
       });
       setName("");
-      setAlsoGenerateSecret(false);
     } catch (err) {
       setFormError((err as Error).message);
     } finally {
@@ -354,11 +352,9 @@ function AgentRegistrationSection({
     }
   };
 
-  const hint = policy === "open"
-    ? "Optional — skip for anonymous access, or name an agent for audit trails."
-    : policy === "register"
-      ? "Required — agents must be pre-registered (secret only needed for CI/headless)."
-      : "Required — agents need both client ID and secret.";
+  const hint = policy === "confidential"
+    ? "Required — agents need both client ID and secret."
+    : "Optional — skip for anonymous access, or name an agent for audit trails.";
 
   return (
     <div>
@@ -422,17 +418,6 @@ function AgentRegistrationSection({
             </button>
           </div>
           <p style={{ margin: 0, fontSize: "0.8rem", color: "#888" }}>{hint}</p>
-
-          {policy === "register" && (
-            <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.8rem", color: "#666", cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={alsoGenerateSecret}
-                onChange={(e) => setAlsoGenerateSecret(e.target.checked)}
-              />
-              <span>Also generate a client secret (CI / headless)</span>
-            </label>
-          )}
 
           {formError && <p className="text-error" style={{ margin: 0, fontSize: "0.85rem" }}>{formError}</p>}
         </form>
@@ -518,15 +503,15 @@ export function SetupPage() {
 
   const clientId = registered?.agentId ?? preAuthClientId;
   const clientSecret = registered?.secret ?? null;
-  const registrationRequired = policy !== "open";
+  const registrationRequired = policy === "confidential";
   const awaitingRegistration = registrationRequired && !clientId;
 
   const load = useCallback(async () => {
     try {
-      const [data, adminCfg] = await Promise.all([apiClient.getSetupInfo(), apiClient.getAdminConfig()]);
+      const data = await apiClient.getSetupInfo();
       setInfo(data);
       setServerName(data.defaultServerName);
-      setPolicy(adminCfg.agent_auth_policy);
+      setPolicy(data.agent_auth_policy);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -548,7 +533,7 @@ export function SetupPage() {
     whiteSpace: "nowrap",
   });
 
-  const needsClientSecret = policy === "verify";
+  const needsClientSecret = policy === "confidential";
 
   const claudeConnectCmd = clientId
     ? (needsClientSecret
@@ -636,6 +621,7 @@ export function SetupPage() {
           )}
           <p style={{ margin: "1rem 0 0.5rem", color: "#555", fontSize: "0.9rem" }}>
             A browser window will open for authorization. Click &quot;Allow&quot; to connect.
+            {policy === "approve" ? " On this server, the browser will also ask a signed-in human to approve the agent's first connection." : ""}
           </p>
           <h3 style={{ fontSize: "0.95rem", margin: "1.5rem 0 0.5rem" }}>To remove later:</h3>
           <CopyBlock content={`claude mcp remove ${serverName}`} />

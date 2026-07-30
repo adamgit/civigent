@@ -28,7 +28,7 @@ describe("AgentKeysPage — rotate secret", () => {
         });
       }
       if (url === "/api/admin/config" && method === "GET") {
-        return jsonResponse({ agent_auth_policy: "verify" });
+        return jsonResponse({ agent_auth_policy: "confidential" });
       }
       if (url === "/api/admin/agents/agent-a/rotate-secret" && method === "POST") {
         return jsonResponse({
@@ -110,7 +110,7 @@ describe("AgentKeysPage — rotate secret", () => {
         });
       }
       if (url === "/api/admin/config" && method === "GET") {
-        return jsonResponse({ agent_auth_policy: "verify" });
+        return jsonResponse({ agent_auth_policy: "confidential" });
       }
       if (url === "/api/admin/agents/agent-a/rotate-secret" && method === "POST") {
         return jsonResponse({ message: "boom: rotation failed" }, { status: 500 });

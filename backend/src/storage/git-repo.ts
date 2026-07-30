@@ -61,6 +61,18 @@ export async function getHeadSha(dataRoot: string): Promise<string> {
  * `repoRelativePath` is a git path (e.g. `content/public_skills`), not a
  * content-tree browse path. Returns null when the path is absent at HEAD.
  */
+function gitErrorMeansPathAbsentAtHead(message: string): boolean {
+  const pathMissingFromCommittedTree =
+    message.includes("does not exist") ||
+    message.includes("exists on disk, but not in");
+  const headResolvesToNoCommit =
+    message.includes("unknown revision") ||
+    message.includes("does not have any commits") ||
+    message.includes("bad revision") ||
+    message.includes("invalid object name 'HEAD'");
+  return pathMissingFromCommittedTree || headResolvesToNoCommit;
+}
+
 export async function getTreeShaAtHead(
   dataRoot: string,
   repoRelativePath: string,
@@ -70,15 +82,7 @@ export async function getTreeShaAtHead(
     return sha || null;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    if (
-      msg.includes("does not exist") ||
-      msg.includes("exists on disk, but not in") ||
-      msg.includes("unknown revision") ||
-      msg.includes("does not have any commits") ||
-      msg.includes("bad revision")
-    ) {
-      return null;
-    }
+    if (gitErrorMeansPathAbsentAtHead(msg)) return null;
     throw error;
   }
 }

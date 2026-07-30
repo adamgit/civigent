@@ -17,6 +17,7 @@ const ADMIN_LINKS: Array<{ to: string; icon: ReactNode; label: string }> = [
   { to: "/proposals", icon: <>&#128203;</>, label: "Proposals" },
   { to: "/coordination", icon: <>&#128301;</>, label: "Coordination" },
   { to: "/admin/agents-auth", icon: <>&#128273;</>, label: "Agent Keys" },
+  { to: "/admin/permissions", icon: <>&#128737;</>, label: "Permissions" },
   { to: "/agent-simulator", icon: <>&#129302;</>, label: "Agent Sim" },
   { to: "/imports", icon: <>&#128229;</>, label: "Imports" },
   { to: "/admin/agent-mcp-logs", icon: <>&#128202;</>, label: "Agent Monitoring" },

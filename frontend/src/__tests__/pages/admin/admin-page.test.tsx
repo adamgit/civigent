@@ -138,7 +138,9 @@ describe("AdminPage", () => {
 
     renderAdmin();
     await waitFor(() => {
-      expect(screen.getByText(/Server error/)).toBeDefined();
+      expect(screen.getAllByText(/Server error/).length).toBeGreaterThan(0);
     });
+    expect(screen.getAllByText("Admin config unavailable.").length).toBe(2);
+    expect(screen.queryByText("Loading…")).toBeNull();
   });
 });

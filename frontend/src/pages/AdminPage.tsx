@@ -36,6 +36,20 @@ function KVRow({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+function ConfigCardFallback({ configLoaded, configError }: { configLoaded: boolean; configError: string | null }) {
+  if (!configLoaded) {
+    return <p className="px-4 py-3 text-[12px] text-text-muted">Loading…</p>;
+  }
+  return (
+    <div className="px-4 py-3">
+      <p className="text-[12px] text-text-muted">Admin config unavailable.</p>
+      {configError && (
+        <p className="mt-1 text-[12px] text-red-700 font-mono whitespace-pre-wrap">{configError}</p>
+      )}
+    </div>
+  );
+}
+
 export function AdminPage() {
   const navigate = useNavigate();
   const [proposals, setProposals] = useState<AnyProposal[]>([]);
@@ -45,6 +59,8 @@ export function AdminPage() {
   const [, setSnapshotHealth] = useState<GetAdminSnapshotHealthResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [configLoaded, setConfigLoaded] = useState(false);
   const [limitSetting, setLimitSetting] = useState(() => readNumberSetting("ks_whats_new_limit", 20));
   const [daysSetting, setDaysSetting] = useState(() => readNumberSetting("ks_whats_new_days", 7));
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
@@ -53,21 +69,19 @@ export function AdminPage() {
   const [installCommandCopied, setInstallCommandCopied] = useState(false);
   const [creatingFirstSkill, setCreatingFirstSkill] = useState(false);
 
-  const reloadOperationalSnapshot = useCallback(async () => {
+  const loadOperationalData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [proposalsRes, activityRes, sessionRes, configRes, snapshotRes] = await Promise.all([
+      const [proposalsRes, activityRes, sessionRes, snapshotRes] = await Promise.all([
         apiClient.listProposals(),
         apiClient.getActivity(50, 7),
         apiClient.getSessionInfo(),
-        apiClient.getAdminConfig(),
         apiClient.getAdminSnapshotHealth(),
       ]);
       setProposals(proposalsRes.proposals);
       setActivityCount(activityRes.items.length);
       setSessionWriterId(sessionRes.authenticated && sessionRes.user?.id ? sessionRes.user.id : null);
-      setAdminConfig(configRes);
       setSnapshotHealth(snapshotRes);
       setLoading(false);
     } catch (err) {
@@ -75,6 +89,23 @@ export function AdminPage() {
       setLoading(false);
     }
   }, []);
+
+  const loadAdminConfig = useCallback(async () => {
+    setConfigError(null);
+    try {
+      const configRes = await apiClient.getAdminConfig();
+      setAdminConfig(configRes);
+    } catch (err) {
+      setAdminConfig(null);
+      setConfigError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setConfigLoaded(true);
+    }
+  }, []);
+
+  const reloadOperationalSnapshot = useCallback(async () => {
+    await Promise.all([loadOperationalData(), loadAdminConfig()]);
+  }, [loadOperationalData, loadAdminConfig]);
 
   useEffect(() => {
     void reloadOperationalSnapshot();
@@ -216,7 +247,7 @@ export function AdminPage() {
           subtitle="Public Claude Code plugin ZIP built from a content-tree folder (canonical/published only)."
         >
           {!adminConfig ? (
-            <p className="px-4 py-3 text-[12px] text-text-muted">Loading…</p>
+            <ConfigCardFallback configLoaded={configLoaded} configError={configError} />
           ) : (
             <>
               <KVRow label="Plugin name">{adminConfig.exportedSkills.plugin_name}</KVRow>
@@ -283,7 +314,7 @@ export function AdminPage() {
           subtitle="Controls how long agents wait after human activity before writing."
         >
           {!adminConfig ? (
-            <p className="px-4 py-3 text-[12px] text-text-muted">Loading…</p>
+            <ConfigCardFallback configLoaded={configLoaded} configError={configError} />
           ) : (
             <div className="px-4 py-3 flex flex-col gap-2">
               {HUMAN_INVOLVEMENT_PRESETS.map((preset) => (
@@ -305,6 +336,14 @@ export function AdminPage() {
               </p>
             </div>
           )}
+        </Card>
+
+        <Card title="Permissions" subtitle="Assign roles to user UUIDs, including granting admin.">
+          <div className="px-4 py-3">
+            <Link to="/admin/permissions" className="text-xs text-accent hover:underline">
+              Manage user roles and permissions
+            </Link>
+          </div>
         </Card>
 
         <Card

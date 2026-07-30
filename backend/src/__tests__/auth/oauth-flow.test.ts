@@ -265,12 +265,12 @@ describe("OAuth 2.1 flow", () => {
 
   // ── CRITICAL SECURITY TEST ─────────────────────────────────
 
-  describe("pre-auth client_id without secret must be rejected (verify policy)", () => {
+  describe("pre-auth client_id without secret must be rejected (confidential policy)", () => {
     let prevPolicy: string | undefined;
 
     beforeAll(() => {
       prevPolicy = process.env.KS_AGENT_AUTH_POLICY;
-      process.env.KS_AGENT_AUTH_POLICY = "verify";
+      process.env.KS_AGENT_AUTH_POLICY = "confidential";
     });
 
     afterAll(() => {

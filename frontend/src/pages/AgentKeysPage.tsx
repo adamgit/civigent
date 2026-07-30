@@ -10,9 +10,9 @@ interface AgentEntry {
 }
 
 function AgentAuthStatus({ policy }: { policy: AgentAuthPolicy }) {
-  const anonEnabled = policy === "open";
+  const anonEnabled = policy === "open" || policy === "approve";
   const preAuthEnabled = true; // pre-auth agents work in all modes
-  const secretRequired = policy === "verify";
+  const secretRequired = policy === "confidential";
 
   return (
     <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 6, padding: "0.75rem 1rem", marginBottom: "1rem" }}>
@@ -27,6 +27,7 @@ function AgentAuthStatus({ policy }: { policy: AgentAuthPolicy }) {
           }} />
           <span style={{ fontSize: "0.85rem", color: anonEnabled ? "#166534" : "#64748b" }}>
             Anonymous agents {anonEnabled ? "enabled" : "disabled"}
+            {policy === "approve" ? " (human approves first connection)" : ""}
           </span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>

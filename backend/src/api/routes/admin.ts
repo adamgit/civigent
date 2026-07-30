@@ -11,6 +11,7 @@ import {
   getMCPPublicURL,
   docPathParamOf,
 } from "./middleware.js";
+import { getAgentAuthPolicy } from "../../auth/oauth-config.js";
 import { getToolKeyCatalog } from "../application/setup.js";
 import {
   getAdminConfigWithDescription,
@@ -152,6 +153,7 @@ export function registerAdminRoutes(router: Router): void {
       defaultServerName,
       internalPort: Number(process.env.PORT ?? "3000"),
       mcpUrl: `${getMCPPublicURL(req)}/mcp`,
+      agent_auth_policy: getAgentAuthPolicy(),
       // Stable key → current wire name, so the frontend can resolve `{{tool:key}}`
       // tokens in the served skill.md / cursor-rule.md templates at render time.
       toolKeys: getToolKeyCatalog(),
@@ -178,7 +180,11 @@ export function registerAdminRoutes(router: Router): void {
         sendApiError(res, 400, "display_name is required.");
         return;
       }
-      const result = await createAgent(display_name, typeof agent_id === "string" ? agent_id : undefined, generate_secret !== false);
+      if (generate_secret === false) {
+        sendApiError(res, 400, "Secretless agents are no longer supported; every created agent receives a client secret.");
+        return;
+      }
+      const result = await createAgent(display_name, typeof agent_id === "string" ? agent_id : undefined);
       res.status(201).json(result);
     } catch (error) {
       next(error);

@@ -57,7 +57,7 @@ describe("POST /api/admin/agents/:agentId/rotate-secret", () => {
   beforeAll(async () => {
     process.env.KS_OIDC_PUBLIC_URL = "http://localhost:3000";
     savedPolicy = process.env.KS_AGENT_AUTH_POLICY;
-    process.env.KS_AGENT_AUTH_POLICY = "verify";
+    process.env.KS_AGENT_AUTH_POLICY = "confidential";
     ctx = await createTestServer();
   });
 

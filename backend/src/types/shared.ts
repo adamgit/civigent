@@ -1,5 +1,6 @@
 export type {
   AdminConfig,
+  AgentAuthPolicy,
   ExportedSkillsAdminConfig,
   AclSnapshot,
   ActivityItem,
