@@ -6,6 +6,7 @@
  */
 
 import { createHmac, randomUUID, randomBytes, timingSafeEqual } from "node:crypto";
+import { ClientTokenMonthCalculations } from "./client-token-month-calculations.js";
 import { getAgentAnonSalt } from "./oauth-config.js";
 import { base64UrlEncode, DEFAULT_AUTH_SECRET } from "./encoding.js";
 import { readEnvVar } from "../env.js";
@@ -56,21 +57,6 @@ export interface AnonClientIdPayload {
   iat: number;
 }
 
-function currentMonth(): string {
-  const now = new Date();
-  const y = now.getUTCFullYear();
-  const m = String(now.getUTCMonth() + 1).padStart(2, "0");
-  return `${y}-${m}`;
-}
-
-function previousMonth(): string {
-  const now = new Date();
-  now.setUTCMonth(now.getUTCMonth() - 1);
-  const y = now.getUTCFullYear();
-  const m = String(now.getUTCMonth() + 1).padStart(2, "0");
-  return `${y}-${m}`;
-}
-
 /**
  * Mint a stateless client_id for an anonymous agent.
  * Signed with KS_AGENT_ANON_SALT.
@@ -80,7 +66,7 @@ export function mintAnonClientId(agentName: string): string {
     agent_id: `agent-${randomUUID()}`,
     agent_name: agentName,
     type: "agent",
-    month: currentMonth(),
+    month: ClientTokenMonthCalculations.monthForNewToken(),
     token_use: "client_id",
     iat: Math.floor(Date.now() / 1000),
   };
@@ -102,10 +88,7 @@ export function validateAnonClientId(token: string): AnonClientIdPayload | null 
   if (data.type !== "agent") return null;
   if (typeof data.month !== "string") return null;
 
-  // Month check: current or previous month (1-month grace period)
-  const cur = currentMonth();
-  const prev = previousMonth();
-  if (data.month !== cur && data.month !== prev) return null;
+  if (!ClientTokenMonthCalculations.isTokenMonthStillValid(data.month)) return null;
 
   return data as unknown as AnonClientIdPayload;
 }
