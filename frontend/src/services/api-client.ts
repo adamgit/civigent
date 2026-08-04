@@ -194,10 +194,34 @@ export interface DocDiagnosticsResponse {
   restore_provenance: DiagRestoreProvenance;
 }
 
+/**
+ * What a search hit LOCATED (mirrors `backend/src/storage/discovery.ts`):
+ *  - `body`         — text inside a section body
+ *  - `heading`      — a section heading
+ *  - `filename`     — a document's filename stem (leaf without `.md`)
+ *  - `path_segment` — a folder name in a readable document's path
+ */
+export type SearchHitKind = "body" | "heading" | "filename" | "path_segment";
+
 export interface SearchTextMatch {
+  kind: SearchHitKind;
+  /**
+   * For `body` / `heading` / `filename` this is the DOCUMENT path. For
+   * `path_segment` it is the matched FOLDER PREFIX — not a document, so it has
+   * no `.md` leaf and must not be linked to a document route.
+   */
   doc_path: string;
+  /** Populated for `body` and `heading`; empty for `filename` / `path_segment`. */
   heading_path: string[];
+  /**
+   * Body: surrounding body slice. Heading: the heading text. Filename: the
+   * stem. Path segment: the full folder prefix.
+   */
   match_context: string;
+  /**
+   * Body: byte offset within the section file. Every non-body kind: byte offset
+   * WITHIN `match_context`.
+   */
   match_offset_bytes: number;
 }
 

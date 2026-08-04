@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
+import { SEARCH_MAX_RESULTS } from "./search/search-request-defaults";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { apiClient } from "../services/api-client";
 
@@ -272,7 +273,7 @@ export function HomePage() {
         >
           <input type="hidden" name="root" value="/" />
           <input type="hidden" name="case_sensitive" value="false" />
-          <input type="hidden" name="max_results" value="20" />
+          <input type="hidden" name="max_results" value={SEARCH_MAX_RESULTS} />
           <input type="hidden" name="context_bytes" value="100" />
 
           <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 8 }}>

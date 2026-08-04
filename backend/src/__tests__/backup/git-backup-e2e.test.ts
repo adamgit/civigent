@@ -215,6 +215,42 @@ describe("Git backup + verify + restore e2e", () => {
     expect(authTree).not.toContain("content/");
   });
 
+  it("runs twice against the same remote: auth/main fast-forwards and content/main advances", async () => {
+    // The regression: the auth commit used to be parentless on every run, so
+    // the second push was rejected non-fast-forward — and `--atomic` took
+    // `content/main` down with it, leaving the whole backup unpublished.
+    const firstContentSha = await commitContent(dataRoot, { "readme.md": "# hello" });
+    await writeAuthFiles(dataRoot);
+    const first = await runQuietStateGitBackup();
+    const firstAuthSha = first.last_successful_backup.remote_auth_sha;
+    expect(first.last_successful_backup.remote_content_sha).toBe(firstContentSha);
+
+    // Move both halves on: auth state edited in place, content history extended.
+    await writeFile(
+      path.join(dataRoot, "auth", "roles.json"),
+      JSON.stringify({ editor: ["alice"] }),
+      "utf8",
+    );
+    const secondContentSha = await commitContent(dataRoot, { "second.md": "# more" });
+    expect(secondContentSha).not.toBe(firstContentSha);
+
+    const second = await runQuietStateGitBackup();
+    const secondAuthSha = second.last_successful_backup.remote_auth_sha;
+    expect(secondAuthSha).not.toBe(firstAuthSha);
+
+    // Both remote refs now hold the second run's SHAs.
+    const remoteAuth = await git(["ls-remote", remoteUrl, "refs/heads/auth/main"], dataRoot);
+    expect(remoteAuth).toContain(secondAuthSha);
+    const remoteContent = await git(["ls-remote", remoteUrl, "refs/heads/content/main"], dataRoot);
+    expect(remoteContent).toContain(secondContentSha);
+
+    // The second auth commit descends from the first: the push was an ordinary
+    // fast-forward, not a force and not a replaced orphan.
+    await expect(
+      git(["merge-base", "--is-ancestor", firstAuthSha, secondAuthSha], dataRoot),
+    ).resolves.toBe("");
+  });
+
   it("verifyGitBackup reports matching content and auth refs after a successful backup", async () => {
     await commitContent(dataRoot, { "readme.md": "# hello" });
     await writeAuthFiles(dataRoot);

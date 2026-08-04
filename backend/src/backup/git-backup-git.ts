@@ -38,7 +38,7 @@ export const LOCAL_AUTH_REF = "refs/heads/auth/main";
 /**
  * Fixed identity for machine-fabricated auth snapshot commits. Content history
  * is pushed as-is (authors already present); only `commit-tree` for the auth
- * orphan needs an author, and the container has no operator `user.name`/`user.email`.
+ * snapshot needs an author, and the container has no operator `user.name`/`user.email`.
  */
 const AUTH_SNAPSHOT_AUTHOR_NAME = "Civigent Backup";
 const AUTH_SNAPSHOT_AUTHOR_EMAIL = "backup@civigent";
@@ -138,6 +138,71 @@ export async function readRemoteAuthSha(
 }
 
 /**
+ * Local ref where a backup run stages the remote `auth/main` tip so the new
+ * auth snapshot can be parented on it. Fetched fresh every run and never
+ * pushed; distinct from `LOCAL_AUTH_REF`, which is the ref we build onto and
+ * push from.
+ */
+export const LOCAL_AUTH_PARENT_REF = "refs/backup-parent/auth/main";
+
+/**
+ * Wildcard refspec that maps the remote `refs/heads/auth/*` namespace onto the
+ * local `refs/backup-parent/auth/*` one, so `refs/heads/auth/main` lands on
+ * `LOCAL_AUTH_PARENT_REF`. Wildcard rather than exact for the reason given on
+ * `fetchRemoteAuthTip`.
+ */
+const AUTH_PARENT_FETCH_REFSPEC = "refs/heads/auth/*:refs/backup-parent/auth/*";
+
+/**
+ * Fetch the remote `refs/heads/auth/main` into `LOCAL_AUTH_PARENT_REF` and
+ * return its SHA, or null when the remote has no auth ref yet (first backup).
+ *
+ * This exists instead of a plain `readRemoteAuthSha` because the parent of a
+ * `commit-tree` must be an object in the LOCAL store, not merely a SHA we know
+ * the name of. Re-pointing `KS_BACKUP_GIT_REMOTE` at a remote another instance
+ * backed up, or a `gc` after a failed run left the previous auth commit
+ * unreachable, both leave us naming a commit we do not have — `commit-tree -p`
+ * then dies with `fatal: <sha> is not a valid object`. Fetching resolves the
+ * tip and guarantees the object in one round trip.
+ *
+ * The refspec is a wildcard (`refs/heads/auth/*`) deliberately: an exact
+ * refspec for a ref the remote does not have is a fatal error, so distinguishing
+ * "first backup" from "remote is broken" would mean matching git's prose. A
+ * wildcard that matches nothing exits zero and fetches nothing, leaving the
+ * absent local ref to say "no parent" on its own. The stale local ref from a
+ * previous run is deleted first so its presence afterwards always means this
+ * run fetched it.
+ */
+export async function fetchRemoteAuthTip(
+  config: ConfiguredGitBackup,
+  dataRoot: string,
+): Promise<{ ok: true; sha: string | null } | GitBackupCommandFailure> {
+  const cleared = await backupGitExec(
+    ["update-ref", "-d", LOCAL_AUTH_PARENT_REF],
+    config,
+    dataRoot,
+  );
+  if (!cleared.ok) return cleared;
+
+  const fetched = await backupGitExec(
+    ["fetch", "--no-tags", config.remoteUrl, AUTH_PARENT_FETCH_REFSPEC],
+    config,
+    dataRoot,
+  );
+  if (!fetched.ok) return fetched;
+
+  const sha = await backupGitExec(
+    ["rev-parse", "--verify", "--quiet", LOCAL_AUTH_PARENT_REF],
+    config,
+    dataRoot,
+  );
+  // A missing ref is the first-backup answer, not a failure: the wildcard
+  // fetch matched nothing, so there is no tip to parent on.
+  if (!sha.ok) return { ok: true, sha: null };
+  return { ok: true, sha: sha.stdout || null };
+}
+
+/**
  * Confirm the remote responds to `git ls-remote`. This is a live handshake
  * over SSH: any credential / host key / DNS failure surfaces here so the
  * admin UI has a single "remote reachable" check to render.
@@ -229,12 +294,21 @@ export async function readHeadSymbolicRef(
  * §Default Backup Shape with `GIT_INDEX_FILE` set to a temp file so `HEAD` and
  * the working-tree index never see the auth staging.
  *
+ * `parentSha` chains the new commit onto the previous `auth/main` tip so the
+ * backup push is a normal fast-forward. Only the first backup against a remote
+ * builds a parentless commit; every later run passes the tip resolved by
+ * `fetchRemoteAuthTip`. That SHA must name a commit present in the LOCAL object
+ * store — `commit-tree -p <sha>` on a SHA we merely know the name of dies with
+ * `fatal: <sha> is not a valid object` — which is exactly why the caller fetches
+ * the remote tip rather than reading it with `ls-remote`.
+ *
  * Returns the commit SHA that the local `refs/heads/auth/main` now points at.
  */
 export async function buildAuthSnapshotRef(
   config: ConfiguredGitBackup,
   dataRoot: string,
   authMessage: string,
+  parentSha: string | null,
 ): Promise<string> {
   const tempDir = await mkdtemp(path.join(tmpdir(), "civigent-auth-index-"));
   const tempIndex = path.join(tempDir, "index");
@@ -270,6 +344,7 @@ export async function buildAuthSnapshotRef(
         "-c", `user.email=${AUTH_SNAPSHOT_AUTHOR_EMAIL}`,
         "commit-tree",
         treeSha,
+        ...(parentSha === null ? [] : ["-p", parentSha]),
         "-m",
         authMessage,
       ],
@@ -296,14 +371,19 @@ export async function buildAuthSnapshotRef(
 /**
  * Execute the atomic multi-ref push that publishes the current content
  * `HEAD` and the freshly built `refs/heads/auth/main` to the remote in one
- * transaction. Throws when the push fails so orchestration can surface a
- * clean error and refuse to update the last-success record.
+ * transaction.
+ *
+ * Returns the structured result rather than throwing, matching `backupGitExec`:
+ * a refused push is a remote-side answer the admin can act on (diverged refs,
+ * revoked write access), and the orchestration layer is where that becomes a
+ * `GitBackupOperationError` and a 409. Git's own stderr is carried in
+ * `message`, so nothing is summarised away on the way out.
  */
 export async function atomicPushBackupRefs(
   config: ConfiguredGitBackup,
   dataRoot: string,
-): Promise<void> {
-  const result = await backupGitExec(
+): Promise<GitBackupCommandResult> {
+  return backupGitExec(
     [
       "push",
       "--atomic",
@@ -314,9 +394,6 @@ export async function atomicPushBackupRefs(
     config,
     dataRoot,
   );
-  if (!result.ok) {
-    throw new Error(`atomic push failed: ${result.message}`);
-  }
 }
 
 /** Local refs where restore stages the fetched remote SHAs before checkout. */

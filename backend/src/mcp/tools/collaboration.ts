@@ -791,7 +791,8 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
     "searchText",
     {
       name: "search_text",
-      description: "Run lexical search across live readable section bodies using literal or regular-expression syntax.",
+      description:
+        "Run lexical search across live readable documents using literal or regular-expression syntax. Matches section bodies, section headings, document filenames, and folder path segments; every result carries a `kind` of body, heading, filename, or path_segment. For path_segment results the returned path is the matched folder prefix, not a document.",
       inputSchema: {
         type: "object",
         properties: {

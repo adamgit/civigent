@@ -3,7 +3,7 @@ import { useNavigate, useOutletContext } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { ContentPanel } from "../components/ContentPanel";
 import { PageStatusBar } from "../components/PageStatusBar";
-import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
+import { folderRouteForPath, stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 import { apiClient } from "../services/api-client";
 import type { DocumentTreeEntry } from "../types/shared.js";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
@@ -116,13 +116,6 @@ function formatFolderChildCounts(folder: ChildFolderInfo): string {
   const fileLabel = folder.directFileCount === 1 ? "1 file" : `${folder.directFileCount} files`;
   const folderLabel = folder.directFolderCount === 1 ? "1 folder" : `${folder.directFolderCount} folders`;
   return `${fileLabel} · ${folderLabel}`;
-}
-
-function folderRouteForPath(path: string): string {
-  if (path === "/" || path.length === 0) {
-    return "/docs";
-  }
-  return `/docs${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 function FolderPathBreadcrumb({

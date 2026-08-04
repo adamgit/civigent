@@ -3,8 +3,9 @@
  *
  * Covers the public search contract: literal + regexp syntax, canonical root /
  * folder / document scope, default case-insensitivity, the result shape (byte
- * offset + context), canonical SECTION-BODY-ONLY search (skeleton/heading text is
- * not matched), and permission filtering of matches.
+ * offset + context), the four hit KINDS (`body` plus the `heading` / `filename` /
+ * `path_segment` locators — heading text in the skeleton IS matched), and
+ * permission filtering of matches.
  *
  * Requires ripgrep on PATH (the binary present in this environment). Not a
  * semantic-search or arbitrary-filesystem-grep test.
@@ -113,6 +114,7 @@ describe.skipIf(!RG_AVAILABLE)("search_text / searchReadableText (spec 07)", () 
     const res = await searchReadableText(null, { pattern: "QUICKBROWN", syntax: "literal", root: "/" });
     expect(res.matches.length).toBe(1);
     const m = res.matches[0]!;
+    expect(m.kind).toBe("body");
     expect(m.doc_path).toBe(DOC_A);
     expect(m.heading_path).toEqual(["Overview"]);
     expect(m.match_context).toContain("QUICKBROWN");
@@ -134,12 +136,22 @@ describe.skipIf(!RG_AVAILABLE)("search_text / searchReadableText (spec 07)", () 
     expect(res.matches[0]!.match_context).toContain("Zebra");
   });
 
-  it("searches section BODIES only — a heading-only token is not matched", async () => {
+  it("matches a heading-only token as a `heading` hit", async () => {
     const headingOnly = await searchReadableText(null, { pattern: "HeadingOnlyToken", syntax: "literal", root: "/" });
-    expect(headingOnly.matches).toHaveLength(0);
-    // ...but a token in DOC_B's body is found.
+    expect(headingOnly.matches).toHaveLength(1);
+    const hit = headingOnly.matches[0]!;
+    expect(hit.kind).toBe("heading");
+    expect(hit.doc_path).toBe(DOC_B);
+    expect(hit.heading_path).toEqual(["HeadingOnlyToken"]);
+    // Non-body kinds carry the matched text itself as context, with the offset
+    // measured inside it.
+    expect(hit.match_context).toBe("HeadingOnlyToken");
+    expect(hit.match_offset_bytes).toBe(0);
+
+    // ...and a token in DOC_B's body is still found as a `body` hit.
     const inBody = await searchReadableText(null, { pattern: "Plain summary", syntax: "literal", root: "/" });
     expect(inBody.matches.map((m) => m.doc_path)).toContain(DOC_B);
+    expect(inBody.matches.map((m) => m.kind)).toContain("body");
   });
 
   it("honors canonical scope: a folder root restricts which docs are searched", async () => {

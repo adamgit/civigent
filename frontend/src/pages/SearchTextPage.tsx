@@ -1,99 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient, type SearchTextResponse } from "../services/api-client";
-import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
-import { DocPath } from "../types/shared";
-
-function headingPathLabel(headingPath: string[]): string {
-  if (headingPath.length === 0) return "(before first heading)";
-  return headingPath.join(" > ");
-}
-
-function documentTitleFromPath(docPath: string): string {
-  const filename = docPath.split("/").filter(Boolean).pop() ?? docPath;
-  return filename.endsWith(".md") ? filename.slice(0, -3) : filename;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function buildHighlightRegex(
-  pattern: string,
-  syntax: "literal" | "regexp",
-  caseSensitive: boolean,
-): RegExp | null {
-  if (!pattern) return null;
-  const source = syntax === "literal" ? escapeRegExp(pattern) : pattern;
-  try {
-    return new RegExp(source, caseSensitive ? "g" : "gi");
-  } catch {
-    return null;
-  }
-}
-
-function HighlightedContext({
-  text,
-  highlightRegex,
-}: {
-  text: string;
-  highlightRegex: RegExp | null;
-}) {
-  if (!highlightRegex) return <>{text}</>;
-
-  const parts: Array<{ text: string; highlighted: boolean }> = [];
-  let cursor = 0;
-  const regex = new RegExp(highlightRegex.source, highlightRegex.flags);
-
-  while (true) {
-    const match = regex.exec(text);
-    if (!match) break;
-
-    const matchedText = match[0] ?? "";
-    const start = match.index;
-    const end = start + matchedText.length;
-
-    if (matchedText.length === 0) {
-      regex.lastIndex += 1;
-      continue;
-    }
-
-    if (start > cursor) {
-      parts.push({ text: text.slice(cursor, start), highlighted: false });
-    }
-    parts.push({ text: matchedText, highlighted: true });
-    cursor = end;
-  }
-
-  if (cursor < text.length) {
-    parts.push({ text: text.slice(cursor), highlighted: false });
-  }
-
-  if (parts.length === 0) return <>{text}</>;
-
-  return (
-    <>
-      {parts.map((part, index) =>
-        part.highlighted ? (
-          <mark
-            key={`${index}:${part.text}`}
-            style={{
-              background: "var(--color-status-yellow-light)",
-              color: "var(--color-status-yellow)",
-              padding: "0 1px",
-              borderRadius: 2,
-            }}
-          >
-            {part.text}
-          </mark>
-        ) : (
-          <span key={`${index}:${part.text}`}>{part.text}</span>
-        ),
-      )}
-    </>
-  );
-}
+import { buildHighlightRegex } from "./search/SearchHitCards";
+import { SearchHitInspector } from "./search/SearchHitInspector";
+import { SearchMapChrome, type SearchMapMode } from "./search/SearchMapChrome";
+import { SearchMapViewport } from "./search/SearchMapViewport";
+import { buildSearchHitForest, hitsForSelection } from "./search/search-hit-forest";
+import { SEARCH_MAX_RESULTS } from "./search/search-request-defaults";
 
 function JsonPrimitive({ value }: { value: unknown }) {
   if (typeof value === "string") {
@@ -155,12 +69,22 @@ export function SearchTextPage() {
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<SearchTextResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Which map node the inspector is filtered to. `null` = no selection = show
+   * every hit. Always cleared when a new response arrives: a path selected
+   * against the previous query may not exist in the new forest at all.
+   */
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [mapMode, setMapMode] = useState<SearchMapMode>("folder");
 
   const pattern = searchParams.get("pattern") ?? "";
   const syntax = searchParams.get("syntax") === "regexp" ? "regexp" : "literal";
   const root = searchParams.get("root") ?? "/";
   const caseSensitive = searchParams.get("case_sensitive") ?? "false";
-  const maxResults = searchParams.get("max_results") ?? "20";
+  // Both this fallback and the form's hidden input must carry SEARCH_MAX_RESULTS:
+  // a direct URL navigation never posts the form, and a map built from a
+  // 20-result slice would draw a confident picture of an arbitrary sample.
+  const maxResults = searchParams.get("max_results") ?? SEARCH_MAX_RESULTS;
   const contextBytes = searchParams.get("context_bytes") ?? "100";
   const isCaseSensitive = caseSensitive === "true";
 
@@ -169,6 +93,7 @@ export function SearchTextPage() {
       setResponse(null);
       setError(null);
       setLoading(false);
+      setSelectedPath(null);
       return;
     }
 
@@ -188,11 +113,13 @@ export function SearchTextPage() {
       })
       .then((data) => {
         setResponse(data);
+        setSelectedPath(null);
         setLoading(false);
       })
       .catch((err) => {
         if ((err as Error).name === "AbortError") return;
         setResponse(null);
+        setSelectedPath(null);
         setError(err instanceof Error ? err.message : String(err));
         setLoading(false);
       });
@@ -207,6 +134,8 @@ export function SearchTextPage() {
     () => buildHighlightRegex(pattern, syntax, isCaseSensitive),
     [pattern, syntax, isCaseSensitive],
   );
+  const forest = useMemo(() => buildSearchHitForest(response?.matches ?? []), [response]);
+  const selectedHits = useMemo(() => hitsForSelection(forest, selectedPath), [forest, selectedPath]);
   const hasResponsePayload = error !== null || response !== null;
 
   return (
@@ -225,7 +154,7 @@ export function SearchTextPage() {
       >
         <input type="hidden" name="root" value="/" />
         <input type="hidden" name="case_sensitive" value="false" />
-        <input type="hidden" name="max_results" value="20" />
+        <input type="hidden" name="max_results" value={SEARCH_MAX_RESULTS} />
         <input type="hidden" name="context_bytes" value="100" />
 
         <div style={{ display: "flex", gap: 8 }}>
@@ -335,67 +264,45 @@ export function SearchTextPage() {
           >
             total {response.timings.total_ms}ms | scope+acl {response.timings.scope_and_acl_ms}ms | ripgrep {response.timings.ripgrep_ms}ms | match-mapping {response.timings.match_mapping_ms}ms | context-read {response.timings.context_read_ms}ms
           </div>
+          {response.matches.length === 0 ? null : (
+            <>
+              <SearchMapChrome mode={mapMode} onModeChange={setMapMode} counts={forest.descendantCounts} />
+              <SearchMapViewport
+                tree={forest}
+                mode={mapMode}
+                selectedPath={selectedPath}
+                onSelect={(path) => setSelectedPath(path)}
+              />
+            </>
+          )}
           {response.matches.length === 0 ? (
             <p style={{ color: "var(--color-text-muted)" }}>No matches found.</p>
           ) : (
-            response.matches.map((match, index) => {
-              const docUrl = `/docs/${stripLeadingSlashForRoute(DocPath.parse(match.doc_path))}`;
-              const sectionLabel = headingPathLabel(match.heading_path);
-              const documentTitle = documentTitleFromPath(match.doc_path);
-              return (
-                <div
-                  key={`${match.doc_path}:${match.heading_path.join(">>")}:${match.match_offset_bytes}:${index}`}
-                  className="mb-3.5 overflow-hidden rounded-[10px] border border-footer-border border-l-[3px] border-l-sidebar-border bg-canvas-bg transition-all duration-150 hover:border-accent-border hover:border-l-accent hover:shadow-[0_4px_16px_rgba(45,122,138,0.08)]"
-                >
-                  <div className="bg-gradient-to-br from-sidebar-bg/60 to-page-bg px-3.5 py-2.5 flex items-center gap-2 border-b border-footer-border/70">
-                    <div className="min-w-0 flex-1">
-                      <div
-                        className="text-[15px] text-text-primary font-medium leading-tight"
-                        style={{ fontFamily: "var(--font-body)" }}
-                      >
-                        {documentTitle}
-                      </div>
-                      <div className="font-mono text-[11px] text-text-muted mt-0.5 break-all">
-                        {match.doc_path}
-                      </div>
-                    </div>
-                    <div className="ml-auto flex items-center gap-2 shrink-0">
-                      <span className="font-mono text-[10px] text-text-muted whitespace-nowrap">
-                        offset {match.match_offset_bytes}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="bg-canvas-bg px-3.5 py-2.5">
-                    <p
-                      className="text-sm text-text-secondary leading-relaxed line-clamp-3 m-0"
-                      style={{ fontFamily: "var(--font-body)" }}
-                    >
-                      <HighlightedContext text={match.match_context} highlightRegex={highlightRegex} />
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-2 px-3.5 py-1.5 bg-canvas-bg border-t border-footer-border text-xs">
-                    <Link
-                      to={docUrl}
-                      className="text-accent font-medium no-underline hover:underline"
-                    >
-                      Open document →
-                    </Link>
-                    <span className="font-semibold text-[12px] text-accent-text bg-canvas-bg/70 px-2 py-0.5 rounded border border-accent-border/60 ml-auto">
-                      {sectionLabel}
-                    </span>
-                  </div>
-                </div>
-              );
-            })
+            <SearchHitInspector
+              hits={selectedHits}
+              selectedPath={selectedPath}
+              onShowAll={() => setSelectedPath(null)}
+              highlightRegex={highlightRegex}
+            />
           )}
         </div>
       ) : null}
 
       {!loading && hasResponsePayload ? (
-        <>
-          <h2>Raw Response</h2>
+        // Kept, but collapsed: the raw payload is a debugging tool, and an
+        // always-open JSON dump competes with the map and the cards for the
+        // same attention.
+        <details>
+          <summary
+            style={{
+              cursor: "pointer",
+              fontSize: 13,
+              color: "var(--color-text-muted)",
+              marginBottom: "0.5rem",
+            }}
+          >
+            Raw response
+          </summary>
           <div
             style={{
               border: "1px solid var(--color-footer-border)",
@@ -419,7 +326,7 @@ export function SearchTextPage() {
               <PrettyJsonValue value={prettyPayload} />
             </pre>
           </div>
-        </>
+        </details>
       ) : null}
     </section>
   );
