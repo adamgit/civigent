@@ -14,7 +14,10 @@
  *      (`4025`) so in-flight live edits terminate immediately. Frontend
  *      clients treat that code as a system-starting condition and reconnect
  *      through the readiness/backoff path once step 5 restores readiness.
- *   4. Run the caller's work (`fn`). Its result is returned to the caller.
+ *   4. Take the data repository's index mutex, so an absorb that was already
+ *      in flight when the gate closed finishes before the operation's own git
+ *      commands touch the index, then run the caller's work (`fn`). Its result
+ *      is returned to the caller.
  *   5. In a `finally`, call `setSystemReady()`. Even a thrown error restores
  *      normal traffic — the operation never leaves the system fenced off.
  *
@@ -24,6 +27,7 @@
  */
 
 import { setSystemNotReady, setSystemReady } from "../startup-state.js";
+import { withExclusiveDataRepoIndex } from "../storage/data-repo-index-mutex.js";
 import { closeAllCrdtSocketsForSystemLockdown } from "../ws/crdt-ws-coordinator.js";
 
 let lockdownChain: Promise<unknown> = Promise.resolve();
@@ -39,7 +43,12 @@ export async function withGitBackupLockdown<T>(fn: () => Promise<T>): Promise<T>
     setSystemNotReady();
     try {
       closeAllCrdtSocketsForSystemLockdown();
-      return await fn();
+      // The readiness gate stops NEW writes, but an absorb that started before
+      // this call is still running and still owns the data repo's git index.
+      // Restore checks out over `content/` and rewrites that index, so it must
+      // wait for the in-flight absorb to finish rather than race it for the lock
+      // — a lost race leaves canonical destroyed with no commit recording it.
+      return await withExclusiveDataRepoIndex(fn);
     } finally {
       setSystemReady();
     }

@@ -21,7 +21,6 @@ export interface DocumentPaperHeaderProps {
   renameValue: string;
   renameError: string | null;
   pathCopied: boolean;
-  deleteError: string | null;
   onRenameValueChange: (value: string) => void;
   onStartRename: () => void;
   onCancelRename: () => void;
@@ -42,7 +41,6 @@ export function DocumentPaperHeader({
   renameValue,
   renameError,
   pathCopied,
-  deleteError,
   onRenameValueChange,
   onStartRename,
   onCancelRename,
@@ -98,7 +96,6 @@ export function DocumentPaperHeader({
               >
                 Delete
               </button>
-              {deleteError ? <span className="text-xs text-red-600">{deleteError}</span> : null}
             </div>
           </>
         )}

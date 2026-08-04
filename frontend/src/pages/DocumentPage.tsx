@@ -49,6 +49,7 @@ import { useActiveEditors } from "../hooks/useActiveEditors";
 import { useDocumentPresenceModel } from "../presence/useDocumentPresenceModel";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { DocumentPaperHeader } from "../components/DocumentPaperHeader";
+import { CanonicalWriteFailureDialog } from "../components/CanonicalWriteFailureDialog";
 import {
   DocumentPaperStickyHeader,
   docPaperSectionScrollOffsetPx,
@@ -817,7 +818,6 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
                 renameValue={renameValue}
                 renameError={renameError}
                 pathCopied={pathCopied}
-                deleteError={deleteError}
                 rootRef={paperHeaderRef}
                 onRenameValueChange={setRenameValue}
                 onStartRename={() => { setRenameValue(decodedDocPath ?? ""); setRenaming(true); }}
@@ -1024,6 +1024,14 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
         canEditIntent={activeProposalStatus === "draft"}
         onProposalIntentChange={updateProposalIntent}
       />
+
+      {deleteError ? (
+        <CanonicalWriteFailureDialog
+          operation="Delete document"
+          error={deleteError}
+          onDismiss={() => setDeleteError(null)}
+        />
+      ) : null}
     </div>
     </SectionHoverProvider>
   );

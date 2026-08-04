@@ -32,6 +32,33 @@ function ipcSend(msg: WorkerIpcMessage): void {
   if (isDevSupervised) process.send!(msg);
 }
 
+/**
+ * Stop startup when the data repository cannot record a commit.
+ *
+ * Serving requests against a wedged repo is worse than not starting: every write
+ * mutates canonical content and then fails to commit it, leaving the store
+ * divergent from git with no automatic way back. Mirrors the crash-recovery
+ * report format, including the hard exit — a throw here would be caught by
+ * nodemon, which keeps the port open and lets the rest of the dev stack start.
+ */
+function reportUnusableGitRepoAndExit(dataRoot: string, err: unknown): never {
+  const errMsg = err instanceof Error ? `${err.message}\n${err.stack ?? ""}`.trim() : String(err);
+  console.error([
+    "═══ FULL ERROR (for maintainers) ═══",
+    errMsg,
+    "",
+    "═══ DATA REPOSITORY CANNOT ACCEPT COMMITS ═══",
+    `Data root: ${dataRoot}`,
+    "Startup stopped BEFORE serving any request. Nothing has been written or lost.",
+    "Every write to canonical content deletes and rewrites files on disk and then records",
+    "them in git; a repository that cannot commit would destroy content it cannot record.",
+    "TO RESOLVE: clear the obstruction named above, then restart.",
+    `  cd ${dataRoot}`,
+    "  git status",
+  ].join("\n"));
+  process.exit(1);
+}
+
 // ─── Process-boundary fatal handlers (installed before any async work) ───
 // Behaviour branches on KS_FATAL_ERRORS_MODE inside handleProcessFatal:
 //   crash  — supervised-dev IPCs the report to the parent then exit(1);
@@ -207,7 +234,11 @@ server.listen(listenPort, () => {
 // ─── Startup recovery (runs while gate is active) ────────────────
 await assertDataRootExists();
 await ensureV3Directories();
-await ensureGitRepoReady(getDataRoot());
+try {
+  await ensureGitRepoReady(getDataRoot());
+} catch (err) {
+  reportUnusableGitRepoAndExit(getDataRoot(), err);
+}
 await detectAndRecoverCrash(getDataRoot());
 
 await bootstrapContentSeedFromDirectoryIfNeeded(getImportRoot(), getContentRoot());

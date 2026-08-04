@@ -139,17 +139,21 @@ export function SearchTextPage() {
   const hasResponsePayload = error !== null || response !== null;
 
   return (
-    <section style={{ padding: "0.5rem 0.75rem 1.5rem" }}>
+    // The page owns its own scrollports (house pattern, same as DocumentPage):
+    // the map column must stay put while results scroll, which it cannot do if
+    // the whole page is one scrolling block.
+    <section className="flex h-full min-h-0 flex-col" style={{ padding: "0.5rem 0.75rem 0.75rem" }}>
       <SharedPageHeader title="Text Search" backTo="/" />
 
       <form
         action="/search-text"
         method="GET"
+        className="shrink-0"
         style={{
           display: "grid",
           gap: "0.75rem",
           maxWidth: "56rem",
-          marginBottom: "1.5rem",
+          marginBottom: "1rem",
         }}
       >
         <input type="hidden" name="root" value="/" />
@@ -227,13 +231,14 @@ export function SearchTextPage() {
       {error ? <p className="text-error">{error}</p> : null}
 
       {!loading && !error && response ? (
-        <div style={{ display: "grid", gap: "0.75rem", marginBottom: "1.5rem" }}>
-          <p style={{ marginBottom: 0 }}>
+        <div className="flex min-h-0 flex-1 flex-col" style={{ gap: "0.75rem" }}>
+          <p className="shrink-0" style={{ marginBottom: 0 }}>
             {response.matches.length} match{response.matches.length === 1 ? "" : "es"} for <strong>{pattern}</strong> ({syntax})
           </p>
           {response.failures && response.failures.length > 0 ? (
             <div
               role="alert"
+              className="shrink-0"
               style={{
                 fontSize: 13,
                 color: "var(--color-danger, #b00020)",
@@ -252,6 +257,7 @@ export function SearchTextPage() {
             </div>
           ) : null}
           <div
+            className="shrink-0"
             style={{
               fontSize: 12,
               color: "var(--color-text-muted)",
@@ -264,26 +270,34 @@ export function SearchTextPage() {
           >
             total {response.timings.total_ms}ms | scope+acl {response.timings.scope_and_acl_ms}ms | ripgrep {response.timings.ripgrep_ms}ms | match-mapping {response.timings.match_mapping_ms}ms | context-read {response.timings.context_read_ms}ms
           </div>
-          {response.matches.length === 0 ? null : (
-            <>
-              <SearchMapChrome mode={mapMode} onModeChange={setMapMode} counts={forest.descendantCounts} />
-              <SearchMapViewport
-                tree={forest}
-                mode={mapMode}
-                selectedPath={selectedPath}
-                onSelect={(path) => setSelectedPath(path)}
-              />
-            </>
-          )}
           {response.matches.length === 0 ? (
             <p style={{ color: "var(--color-text-muted)" }}>No matches found.</p>
           ) : (
-            <SearchHitInspector
-              hits={selectedHits}
-              selectedPath={selectedPath}
-              onShowAll={() => setSelectedPath(null)}
-              highlightRegex={highlightRegex}
-            />
+            // Map left, results right. The row takes every pixel the header,
+            // form, and meta strip did not, and each side owns its own
+            // scrollport — so the map stays fixed in place while the cards
+            // scroll past it.
+            <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
+              <div className="flex h-[340px] min-h-0 shrink-0 flex-col gap-2 lg:h-auto lg:w-[380px]">
+                <SearchMapChrome mode={mapMode} onModeChange={setMapMode} counts={forest.descendantCounts} />
+                <div className="min-h-0 flex-1 overflow-auto canvas-scroll">
+                  <SearchMapViewport
+                    tree={forest}
+                    mode={mapMode}
+                    selectedPath={selectedPath}
+                    onSelect={(path) => setSelectedPath(path)}
+                  />
+                </div>
+              </div>
+              <div className="min-h-0 min-w-0 flex-1 overflow-y-auto canvas-scroll pr-1">
+                <SearchHitInspector
+                  hits={selectedHits}
+                  selectedPath={selectedPath}
+                  onShowAll={() => setSelectedPath(null)}
+                  highlightRegex={highlightRegex}
+                />
+              </div>
+            </div>
           )}
         </div>
       ) : null}
@@ -292,7 +306,7 @@ export function SearchTextPage() {
         // Kept, but collapsed: the raw payload is a debugging tool, and an
         // always-open JSON dump competes with the map and the cards for the
         // same attention.
-        <details>
+        <details className="mt-2 shrink-0">
           <summary
             style={{
               cursor: "pointer",
@@ -304,12 +318,16 @@ export function SearchTextPage() {
             Raw response
           </summary>
           <div
+            className="canvas-scroll"
             style={{
               border: "1px solid var(--color-footer-border)",
               borderRadius: 10,
               padding: "12px 14px",
               background: "var(--color-page-bg)",
-              overflowX: "auto",
+              overflow: "auto",
+              // The page no longer scrolls as a whole, so an expanded payload
+              // scrolls inside its own box instead of pushing the layout.
+              maxHeight: "40vh",
             }}
           >
             <pre

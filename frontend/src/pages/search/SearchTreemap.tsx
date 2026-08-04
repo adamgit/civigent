@@ -12,7 +12,6 @@ import type { SearchTreeNode } from "./search-hit-forest";
 import { SEARCH_HIT_KIND_ORDER, SEARCH_HIT_KIND_TOKENS } from "./search-hit-kinds";
 import { buildTreemapRects } from "./search-treemap-layout";
 
-const TREEMAP_HEIGHT_PX = 320;
 /** Below this a rectangle cannot hold readable text, so the label is dropped. */
 const LABEL_MIN_WIDTH_PX = 46;
 const LABEL_MIN_HEIGHT_PX = 18;
@@ -47,35 +46,37 @@ export function SearchTreemap({
   onSelect: (path: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [width, setWidth] = useState(0);
+  // Both dimensions are measured: the treemap fills whatever the map column
+  // gives it, which is the height left over after the page's other rows.
+  const [size, setSize] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
     const element = containerRef.current;
     if (!element) return;
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        setWidth(entry.contentRect.width);
+        setSize({ width: entry.contentRect.width, height: entry.contentRect.height });
       }
     });
     observer.observe(element);
-    setWidth(element.getBoundingClientRect().width);
+    const rect = element.getBoundingClientRect();
+    setSize({ width: rect.width, height: rect.height });
     return () => observer.disconnect();
   }, []);
 
   const rects = useMemo(
     () =>
-      width <= 0
+      size.width <= 0 || size.height <= 0
         ? []
-        : buildTreemapRects(tree, { x: 0, y: 0, w: width, h: TREEMAP_HEIGHT_PX }),
-    [tree, width],
+        : buildTreemapRects(tree, { x: 0, y: 0, w: size.width, h: size.height }),
+    [tree, size],
   );
 
   return (
     <div
       ref={containerRef}
-      className="relative w-full overflow-hidden rounded-lg border"
+      className="relative h-full w-full overflow-hidden rounded-lg border"
       style={{
-        height: TREEMAP_HEIGHT_PX,
         borderColor: "var(--color-footer-border)",
         background: "var(--color-page-bg)",
       }}

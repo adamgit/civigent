@@ -27,7 +27,7 @@ export function SearchMapChrome({
   counts: HitKindCounts;
 }) {
   return (
-    <div className="flex items-center gap-3 flex-wrap">
+    <div className="shrink-0 flex items-center gap-x-3 gap-y-1.5 flex-wrap">
       <div
         className="flex items-center gap-1 rounded-lg border p-0.5"
         style={{ borderColor: "var(--color-footer-border)", background: "var(--color-page-bg)" }}
@@ -55,23 +55,25 @@ export function SearchMapChrome({
         })}
       </div>
 
-      <div className="flex items-center gap-2.5 flex-wrap">
+      {/* Short labels: the legend sits in a narrow column beside the results,
+          and the full description rides along as the tooltip. */}
+      <div className="flex items-center gap-1.5 flex-wrap">
         {SEARCH_HIT_KIND_ORDER.map((kind) => {
           const tokens = SEARCH_HIT_KIND_TOKENS[kind];
           return (
             <span
               key={kind}
-              className="inline-flex items-center gap-1.5 text-[12px] px-1.5 py-0.5 rounded border"
+              className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border whitespace-nowrap"
               style={{
                 color: tokens.foreground,
                 background: tokens.background,
                 borderColor: tokens.border,
               }}
-              title={tokens.description}
+              title={`${tokens.label} — ${tokens.description}`}
             >
-              <tokens.Icon size={13} />
-              {tokens.label}
-              <span className="font-mono text-[11px] opacity-80">{counts[kind]}</span>
+              <tokens.Icon size={12} />
+              {tokens.shortLabel}
+              <span className="font-mono opacity-80">{counts[kind]}</span>
             </span>
           );
         })}
