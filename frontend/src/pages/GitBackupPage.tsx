@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
+import "./git-backup-page.css";
 import type {
   GetAdminGitBackupStatusResponse,
   GetAdminGitRestoreStatusResponse,
