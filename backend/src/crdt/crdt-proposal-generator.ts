@@ -111,7 +111,7 @@ export interface AwaitingStructuralReconciliationSection {
 }
 
 export interface LiveSectionsSnapshotResult {
-  sections: LiveSectionSnapshot[];
+  materializableBodies: LiveSectionSnapshot[];
   awaitingStructuralReconciliation: AwaitingStructuralReconciliationSection[];
 }
 
@@ -132,10 +132,10 @@ export class LiveSnapshotIdentityInvariantError extends Error {
 /**
  * The live-document view the generator materializes from. Supplied by the
  * DocSession actor so the generator stays decoupled from the Y.Doc fragment
- * adapter. `snapshotSections` must reflect the *current, settled* live tree.
+ * adapter. `partitionLiveFragmentsByStructuralCleanliness` must reflect the *current, settled* live tree.
  */
 export interface LiveDocumentSource {
-  snapshotSections(): Promise<LiveSectionsSnapshotResult> | LiveSectionsSnapshotResult;
+  partitionLiveFragmentsByStructuralCleanliness(): Promise<LiveSectionsSnapshotResult> | LiveSectionsSnapshotResult;
   /** Writer ids that have contributed live edits, for co-author attribution. */
   contributingWriterIds?(): Iterable<string>;
 }
@@ -495,7 +495,7 @@ export class CRDTProposalGenerator {
     proposalId: ProposalId,
     scope?: MaterializeScope,
   ): Promise<MaterializeDelta> {
-    const snapshot = await this.source.snapshotSections();
+    const snapshot = await this.source.partitionLiveFragmentsByStructuralCleanliness();
     const editor = ProposalEditor.open(proposalId, "inprogress");
 
     const awaitingByKey = new Map(
@@ -511,8 +511,8 @@ export class CRDTProposalGenerator {
       }),
     );
     const toWrite = scope
-      ? snapshot.sections.filter((s) => scope.touchedFragmentKeys.includes(s.fragmentKey))
-      : snapshot.sections;
+      ? snapshot.materializableBodies.filter((s) => scope.touchedFragmentKeys.includes(s.fragmentKey))
+      : snapshot.materializableBodies;
     const deferredTouched = scope
       ? scope.touchedFragmentKeys
           .map((key) => awaitingByKey.get(key))
@@ -541,7 +541,7 @@ export class CRDTProposalGenerator {
     };
 
     for (const section of toWrite) {
-      const result = await editor.materializeSectionBody(
+      const result = await editor.writeSectionBodyVerbatim(
         this.docPath,
         section.headingPath,
         section.body,
@@ -563,7 +563,7 @@ export class CRDTProposalGenerator {
       await this.growProposalManifest(proposalId, delta, claimSections);
     } else {
       await this.replaceProposalManifest(proposalId, [
-        ...snapshot.sections,
+        ...snapshot.materializableBodies,
         ...deferredAsSnapshots,
       ]);
     }
@@ -782,14 +782,9 @@ export class CRDTProposalGenerator {
     const claimedHeadingKeys = new Set(
       (editedProposal?.sections ?? []).map((s) => SectionRef.headingKey(s.heading_path)),
     );
-    const liveSnapshot = await this.source.snapshotSections();
-    const dirtyClaimedKeys = liveSnapshot.awaitingStructuralReconciliation
-      .filter((entry) => claimedHeadingKeys.has(SectionRef.headingKey(entry.headingPath)))
-      .map((entry) => entry.fragmentKey);
-    if (dirtyClaimedKeys.length > 0) {
-      throw new LiveSnapshotIdentityInvariantError(this.docPath, dirtyClaimedKeys);
-    }
-    const touchedFragmentKeys = liveSnapshot.sections
+    const partition = await this.source.partitionLiveFragmentsByStructuralCleanliness();
+    this.assertNoClaimedFragmentAwaitingStructuralReconciliation(partition, claimedHeadingKeys);
+    const touchedFragmentKeys = partition.materializableBodies
       .filter((s) => claimedHeadingKeys.has(SectionRef.headingKey(s.headingPath)))
       .map((s) => s.fragmentKey);
     try {
@@ -857,6 +852,18 @@ export class CRDTProposalGenerator {
       // Keep both references pointing at the same proposal: editing resumes into
       // it, and an attachment that had authored edits stays armed to retry publish.
       return { status: "failed-returned-to-inprogress", proposalId, error };
+    }
+  }
+
+  private assertNoClaimedFragmentAwaitingStructuralReconciliation(
+    partition: LiveSectionsSnapshotResult,
+    claimedHeadingKeys: ReadonlySet<string>,
+  ): void {
+    const dirtyClaimedKeys = partition.awaitingStructuralReconciliation
+      .filter((entry) => claimedHeadingKeys.has(SectionRef.headingKey(entry.headingPath)))
+      .map((entry) => entry.fragmentKey);
+    if (dirtyClaimedKeys.length > 0) {
+      throw new LiveSnapshotIdentityInvariantError(this.docPath, dirtyClaimedKeys);
     }
   }
 

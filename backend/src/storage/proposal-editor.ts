@@ -79,7 +79,7 @@ export class ProposalEditor extends ProposalReader {
     headingPath: string[],
     heading: string,
     content: SectionBodyWithPotentialSubsections,
-    opts?: { contentIsFullMarkdown?: boolean },
+    opts?: { expandHeadingsIntoSections?: boolean },
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
     return this.shadow.upsertSection(new SectionRef(docPath, headingPath), heading, content, opts);
   }
@@ -97,7 +97,7 @@ export class ProposalEditor extends ProposalReader {
    * using the parser-driven `writeSection(...)`, which intentionally expands
    * embedded headings into real sections.
    */
-  async materializeSectionBody(
+  async writeSectionBodyVerbatim(
     docPath: DocPath,
     headingPath: string[],
     body: SectionBody,
@@ -110,7 +110,7 @@ export class ProposalEditor extends ProposalReader {
    * into the before-first-heading (BFH) body into a real top-level section,
    * preserving the pre-heading orphan as the BFH body and every existing
    * section's id. The root-split counterpart of the parser-driven section-split
-   * reflection (`writeSection(headedPath, …, { contentIsFullMarkdown })`).
+   * reflection (`writeSection(headedPath, …, { expandHeadingsIntoSections })`).
    * Idempotent: a no-op once the heading is already promoted.
    */
   async splitBeforeFirstHeading(

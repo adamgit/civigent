@@ -147,7 +147,7 @@ function indexOfNthHeading(ydoc: Y.Doc, fragmentKey: string, n: number): number 
  *  - The survivor ALWAYS keeps its own heading line (Option A: every live fragment
  *    carries its heading, including a survivor that becomes a sub-skeleton parent —
  *    its body-holder layout entry now reports the parent's visible heading/level,
- *    and `snapshotSections` strips that heading at the parent level on re-snapshot).
+ *    and `partitionLiveFragmentsByStructuralCleanliness` strips that heading at the parent level on re-snapshot).
  *  - New sections are whatever layout keys are absent from the live set; each is
  *    seeded from the proposal body at its authoritative heading/level.
  *
@@ -616,7 +616,7 @@ export async function reflectOrphanToBfhIntoProposal(
  *
  *  - section-split (a real heading path): the live fragment markdown is the
  *    section's full fragment (its own heading + body + the embedded heading).
- *    The parser-driven `writeSection(headingPath, …, { contentIsFullMarkdown })`
+ *    The parser-driven `writeSection(headingPath, …, { expandHeadingsIntoSections })`
  *    trims the survivor body and creates the embedded section once, REUSING the
  *    survivor's `sectionFile` id (WS-0). Idempotent via the upsert identity
  *    short-circuit.
@@ -646,7 +646,7 @@ export async function reflectSplitIntoProposal(
           [...identity.headingPath],
           identity.heading,
           sectionWriteInputFromExternal(fragmentMarkdown),
-          { contentIsFullMarkdown: true },
+          { expandHeadingsIntoSections: true },
         );
 
   // Real-time manifest claim (placement decision in assumptions.md): claim the
@@ -754,7 +754,7 @@ export async function reflectHeadingEditIntoProposal(
   const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
 
   if (kind === "heading-relocated") {
-    await editor.materializeSectionBody(docPath, plan.fromHeadingPath, body);
+    await editor.writeSectionBodyVerbatim(docPath, plan.fromHeadingPath, body);
     await unionCurrentProposalSections(proposalId, [
       { doc_path: docPath, heading_path: [...plan.fromHeadingPath] },
     ]);

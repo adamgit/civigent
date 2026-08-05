@@ -190,7 +190,8 @@ async function buildSectionListResponse(
   }
 
   const sections: GetDocumentSectionsResponse["sections"] = [];
-  for (const headingPath of headingPaths) {
+  for (const entry of sectionList) {
+    const headingPath = entry.headingPath;
     const headingKey = SectionRef.headingKey(headingPath);
     const content = bulkContent.get(headingKey) ?? "";
     const meta = involvementMeta.get(headingKey);
@@ -202,6 +203,7 @@ async function buildSectionListResponse(
       heading: headingPath[headingPath.length - 1] ?? "",
       heading_path: headingPath,
       depth: headingPath.length,
+      level: entry.level,
       content,
       agentWritePolicy: meta.agentWritePolicy,
       crdt_session_active: meta.crdt_session_active,

@@ -21,6 +21,8 @@ export const BEFORE_FIRST_HEADING_SECTION_ID: SectionId = SectionId.brand(
 export interface LiveSectionRef {
   readonly id: SectionId;
   readonly headingPath: readonly string[];
+  /** ATX heading level (1–6); 0 for the before-first-heading section. */
+  readonly level: number;
 }
 
 export type RenderSectionRef = LiveSectionRef;
@@ -34,7 +36,7 @@ export type WorkspaceBootstrap = readonly WorkspaceSectionSeed[];
 
 export function syntheticBeforeFirstHeadingSeed(): WorkspaceSectionSeed {
   return {
-    ref: { id: BEFORE_FIRST_HEADING_SECTION_ID, headingPath: [] },
+    ref: { id: BEFORE_FIRST_HEADING_SECTION_ID, headingPath: [], level: 0 },
     markdown: "",
   };
 }

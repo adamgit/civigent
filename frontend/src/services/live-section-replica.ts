@@ -297,6 +297,7 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
     this.topology = state.topology.map((ref) => ({
       id: SectionId.brand(ref.fragment_key),
       headingPath: [...ref.heading_path],
+      level: ref.level,
     }));
     this.topologyIds = new Set(this.topology.map((r) => r.id));
     this.blocked = new Set(state.blocked_section_ids.map((k) => SectionId.brand(k)));

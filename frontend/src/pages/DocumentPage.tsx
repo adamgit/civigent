@@ -459,7 +459,7 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
         .map((s) => ({
           fragmentKey: SectionId.text(s.id),
           heading: headingText([...s.headingPath]),
-          depth: Math.max(1, s.headingPath.length),
+          depth: Math.max(1, s.level),
           headingPath: [...s.headingPath],
         })),
     [renderSections],

@@ -42,7 +42,7 @@ import {
   computeCanonicalToLiveDeltas,
   type FragmentStringDelta,
 } from "../crdt/live-section-deltas.js";
-import { classifyStructuralChange } from "../crdt/structural-change.js";
+import { captureLiveFragments } from "../crdt/live-fragment-capture.js";
 import { validateLiveEditForDuplicateSiblingHeadings } from "../crdt/live-edit-structural-validation.js";
 import {
   computeStructuralSplitPlan,
@@ -1015,7 +1015,7 @@ interface QuiescedStructureNormalizationResult {
  *
  * A structurally-dirty fragment's content lives ONLY in the in-memory Y.Doc: the
  * ingress path claims it in the proposal manifest without writing a body, and
- * `snapshotSections` excludes it from the materializable set. Until this pass
+ * `partitionLiveFragmentsByStructuralCleanliness` excludes it from the materializable set. Until this pass
  * runs, that content is not durable and the proposal skeleton still carries the
  * PRE-transition section identities.
  *
@@ -1078,16 +1078,16 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
           `left this state; refusing to normalize an untargetable fragment.`,
       );
     }
-    const change = classifyStructuralChange(
-      session.liveFragments.readFragmentString(fragmentKey),
-      identity,
+    const [{ content, change }] = captureLiveFragments(
+      [identity],
+      (key) => session.liveFragments.readFragmentString(key),
     );
 
     if (change.kind === "root-split" || change.kind === "section-split") {
       await reflectSplitIntoProposal(
         proposalId,
         session.docPath,
-        session.liveFragments.readFragmentString(fragmentKey),
+        content,
         identity,
       );
       // Compute the plan once outside the transaction so the coordinator can
@@ -1795,32 +1795,29 @@ export async function processArbitratedClientUpdate(
       notifyDocumentActivityChanged(docPath);
     }
     const layout = await resolveLiveSectionLayout(docPath, session.generator.getCurrentProposalId());
-    const layoutByKey = new Map(layout.map((entry) => [entry.fragmentKey, entry]));
+    const capturedByKey = new Map(
+      captureLiveFragments(layout, (key) => session.liveFragments.readFragmentString(key))
+        .map((captured) => [captured.identity.fragmentKey, captured] as const),
+    );
     const bodyOnlyKeys: string[] = [];
     const structuralClaims: Array<{ doc_path: DocPath; heading_path: string[] }> = [];
     let hasStructuralTransition = false;
 
     for (const fragmentKey of materializeKeys) {
-      const entry = layoutByKey.get(fragmentKey);
-      const identity =
-        entry !== undefined
-          ? { headingPath: entry.headingPath, heading: entry.heading, level: entry.level }
-          : fragmentKey === BEFORE_FIRST_HEADING_KEY
-            ? { headingPath: [] as string[], heading: "", level: 0 }
-            : null;
-      if (identity === null) {
-        hasStructuralTransition = true;
+      const captured = capturedByKey.get(fragmentKey);
+      if (captured === undefined) {
+        if (fragmentKey === BEFORE_FIRST_HEADING_KEY) {
+          bodyOnlyKeys.push(fragmentKey);
+        } else {
+          hasStructuralTransition = true;
+        }
         continue;
       }
-      const change = classifyStructuralChange(
-        session.liveFragments.readFragmentString(fragmentKey),
-        identity,
-      );
-      if (identity.headingPath.length === 0 || change.kind === "clean") {
+      if (captured.identity.headingPath.length === 0 || captured.change.kind === "clean") {
         bodyOnlyKeys.push(fragmentKey);
       } else {
         hasStructuralTransition = true;
-        structuralClaims.push({ doc_path: docPath, heading_path: [...identity.headingPath] });
+        structuralClaims.push({ doc_path: docPath, heading_path: [...captured.identity.headingPath] });
       }
     }
 
@@ -1947,16 +1944,19 @@ export async function moveLiveSection(
     ok: false,
     message: "The document structure is still settling from a recent edit — wait a moment and try the move again.",
   };
+  const capturedByKey = new Map(
+    captureLiveFragments(layout, (key) => session.liveFragments.readFragmentString(key))
+      .map((captured) => [captured.identity.fragmentKey, captured] as const),
+  );
   for (const fragmentKey of session.liveFragments.getFragmentKeys()) {
-    const identity = layout.find((e) => e.fragmentKey === fragmentKey);
-    if (!identity) {
+    const captured = capturedByKey.get(fragmentKey);
+    if (captured === undefined) {
       const content = session.liveFragments.readFragmentString(fragmentKey);
       const hasActivity = session.fragmentLastActivity.has(fragmentKey);
       if (!hasActivity && content.trim() === "") continue;
       return settlingRefusal;
     }
-    const change = classifyStructuralChange(session.liveFragments.readFragmentString(fragmentKey), identity);
-    if (change.kind !== "clean") {
+    if (captured.change.kind !== "clean") {
       return settlingRefusal;
     }
   }

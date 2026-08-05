@@ -11,7 +11,7 @@ import { ProposalAdoptionId, type WriterIdentity } from "../../types/shared.js";
 const writer: WriterIdentity = { id: "user-alice", type: "human", displayName: "Alice" };
 
 const emptySource: LiveDocumentSource = {
-  snapshotSections: () => ({ sections: [], awaitingStructuralReconciliation: [] }),
+  partitionLiveFragmentsByStructuralCleanliness: () => ({ materializableBodies: [], awaitingStructuralReconciliation: [] }),
 };
 
 function makeGenerator(): CRDTProposalGenerator {

@@ -4,7 +4,7 @@
  * Why this test exists
  * --------------------
  * `ProposalShadowContentLayer.upsertSection(ref, heading, content)` (without
- * `contentIsFullMarkdown`) is the body-only convenience entry point used by
+ * `expandHeadingsIntoSections`) is the body-only convenience entry point used by
  * every MCP/API write caller (proposal create / update via collaboration.ts,
  * structural.ts, and api/routes/index.ts). Those callers hand the wrapper raw
  * body bytes and expect "rewrite this section's body, leave structure alone".
@@ -21,7 +21,7 @@
  * parser-driven dispatch compares parsed level against the live skeleton
  * entry's level. Mismatch defeats both the identity short-circuit and the
  * stable-target body-only fast path; the call falls through to
- * `rewriteSubtreeFromParsedMarkdown`, which mints a fresh `sectionFile` id,
+ * `replaceSubtreeDeletingOmittedSections`, which mints a fresh `sectionFile` id,
  * splices out the old entry, splices in a new one, and emits a misleading
  * removed/added pair to the caller. The on-disk body is updated, so a casual
  * read-back looks fine — but the section's storage identity has been silently

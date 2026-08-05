@@ -23,7 +23,7 @@ describe("section upsert runtime result contract", () => {
       new SectionRef(SAMPLE_DOC_PATH, ["Overview"]),
       "Overview",
       "## Overview\n\nUpdated overview body only.",
-      { contentIsFullMarkdown: true },
+      { expandHeadingsIntoSections: true },
     );
 
     expect(result.writtenEntries.map((entry) => entry.headingPath)).toEqual([["Overview"]]);
@@ -65,7 +65,7 @@ describe("section upsert runtime result contract", () => {
         "",
         "Follow up body after split.",
       ].join("\n"),
-      { contentIsFullMarkdown: true },
+      { expandHeadingsIntoSections: true },
     );
 
     expect(result.removedContentEntries.map((entry) => entry.headingPath)).toEqual([["Overview"]]);

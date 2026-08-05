@@ -510,6 +510,46 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
       },
     })));
 
+    // ── Task-list checkbox toggle ────────────────────────
+    // ListItem Crepe feature stays off (native <li> bullet parity). GFM still
+    // owns checked attrs + the "[ ] "/"[x] " input rule; this click handler is
+    // the interactive stand-in for Crepe's checkbox node view.
+    crepe.editor.use($prose(() => new Plugin({
+      props: {
+        handleDOMEvents: {
+          mousedown(view, event) {
+            if (!view.editable || event.button !== 0) return false;
+            const target = event.target;
+            if (!(target instanceof Element)) return false;
+            const li = target.closest("li[data-item-type=\"task\"]");
+            if (!(li instanceof HTMLElement) || !view.dom.contains(li)) return false;
+
+            const rect = li.getBoundingClientRect();
+            // ::before checkbox sits in the ul gutter just left of the li content.
+            if (event.clientX < rect.left - 20 || event.clientX > rect.left + 2) return false;
+
+            const pos = view.posAtDOM(li, 0);
+            const $pos = view.state.doc.resolve(pos);
+            let depth = $pos.depth;
+            while (depth > 0 && $pos.node(depth).type.name !== "list_item") depth--;
+            if (depth === 0) return false;
+
+            const node = $pos.node(depth);
+            if (node.attrs.checked == null) return false;
+
+            event.preventDefault();
+            view.dispatch(
+              view.state.tr.setNodeMarkup($pos.before(depth), undefined, {
+                ...node.attrs,
+                checked: !node.attrs.checked,
+              }),
+            );
+            return true;
+          },
+        },
+      },
+    })));
+
     // ── Drag-source tracking ─────────────────────────────
 
     const fragmentKeyCapture = effectiveFragmentKey;

@@ -3,9 +3,9 @@
  *
  * Renders one row per heading of the live (CRDT/workspace) document structure as
  * a vertical spine with horizontal ticks. Tick length (and therefore the label's
- * indent) scales with the heading's nesting depth: H1 = shortest tick / least
- * indent, deeper = longer / more indented. The document title sits ABOVE the
- * spine in bold black, with a smaller left margin than the section rows.
+ * indent) scales with the ATX heading level: H1 = shortest tick / least indent,
+ * H2–H6 = progressively longer / more indented. The document title sits ABOVE
+ * the spine in bold black, with a smaller left margin than the section rows.
  *
  * Highlight precedence per row:
  *   1. editing cursor section  → green
@@ -28,7 +28,7 @@ export interface DocumentSectionNavItem {
   fragmentKey: string;
   /** Heading text to display. */
   heading: string;
-  /** Nesting depth (heading_path length); 1 = top level. Drives tick length. */
+  /** ATX heading level (1–6). Drives tick length. */
   depth: number;
   headingPath: string[];
 }

@@ -19,7 +19,7 @@ const writer: WriterIdentity = { id: "user-alice", type: "human", displayName: "
 function makeSource(sections: LiveSectionSnapshot[]): LiveDocumentSource {
   let current = sections;
   return {
-    snapshotSections: () => ({ sections: current, awaitingStructuralReconciliation: [] }),
+    partitionLiveFragmentsByStructuralCleanliness: () => ({ materializableBodies: current, awaitingStructuralReconciliation: [] }),
     // helper to mutate from the test
     // @ts-expect-error test-only setter
     _set: (next: LiveSectionSnapshot[]) => { current = next; },
