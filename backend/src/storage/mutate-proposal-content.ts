@@ -38,7 +38,7 @@ import type { DocPath } from "../types/shared.js";
  * maps to exactly one `ProposalEditor` mutation.
  */
 export type ProposalContentOperation =
-  | { kind: "write_section"; docPath: DocPath; headingPath: string[]; heading: string; content: SectionBodyWithPotentialSubsections; contentIsFullMarkdown?: boolean; justification?: string }
+  | { kind: "write_section"; docPath: DocPath; headingPath: string[]; heading: string; content: SectionBodyWithPotentialSubsections; expandHeadingsIntoSections?: boolean; justification?: string }
   | { kind: "create_section"; docPath: DocPath; headingPath: string[]; heading: string; content?: SectionBodyWithPotentialSubsections; justification?: string }
   | { kind: "delete_section"; docPath: DocPath; headingPath: string[] }
   | { kind: "move_section"; docPath: DocPath; headingPath: string[]; newParentPath: string[] }
@@ -115,7 +115,7 @@ export async function mutateProposalContent(
       const writeResult =
         operation.kind === "write_section"
           ? await editor.writeSection(operation.docPath, operation.headingPath, operation.heading, operation.content, {
-              contentIsFullMarkdown: operation.contentIsFullMarkdown,
+              expandHeadingsIntoSections: operation.expandHeadingsIntoSections,
             })
           : await editor.createSection(operation.docPath, operation.headingPath, operation.heading, operation.content ?? sectionWriteInputFromExternal(""));
       extras.writeResult = writeResult;

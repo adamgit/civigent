@@ -211,6 +211,7 @@ const docSections: GetDocumentSectionsResponse = {
       heading: "A",
       heading_path: ["A"],
       depth: 1,
+      level: 1,
       content: "body",
       agentWritePolicy: sectionSummary,
       crdt_session_active: false,

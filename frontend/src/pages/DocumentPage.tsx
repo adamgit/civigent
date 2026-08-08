@@ -53,6 +53,7 @@ import {
   useEditorSessionCommandsValue,
 } from "../contexts/EditorSessionCommandsContext";
 import { DocumentPaperHeader } from "../components/DocumentPaperHeader";
+import { CanonicalWriteFailureDialog } from "../components/CanonicalWriteFailureDialog";
 import {
   DocumentPaperStickyHeader,
   docPaperSectionScrollOffsetPx,
@@ -462,7 +463,7 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
         .map((s) => ({
           fragmentKey: SectionId.text(s.id),
           heading: headingText([...s.headingPath]),
-          depth: Math.max(1, s.headingPath.length),
+          depth: Math.max(1, s.level),
           headingPath: [...s.headingPath],
         })),
     [renderSections],
@@ -827,7 +828,6 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
                 renameValue={renameValue}
                 renameError={renameError}
                 pathCopied={pathCopied}
-                deleteError={deleteError}
                 rootRef={paperHeaderRef}
                 onRenameValueChange={setRenameValue}
                 onStartRename={() => { setRenameValue(decodedDocPath ?? ""); setRenaming(true); }}
@@ -1036,6 +1036,14 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
         canEditIntent={activeProposalStatus === "draft"}
         onProposalIntentChange={updateProposalIntent}
       />
+
+      {deleteError ? (
+        <CanonicalWriteFailureDialog
+          operation="Delete document"
+          error={deleteError}
+          onDismiss={() => setDeleteError(null)}
+        />
+      ) : null}
     </div>
     </SectionHoverProvider>
   );

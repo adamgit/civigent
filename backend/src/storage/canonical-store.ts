@@ -35,7 +35,7 @@
 import path from "node:path";
 import { copyFile, mkdir, rm } from "node:fs/promises";
 import { pathExists, readDirIfExists, readDirentsIfExists, readFileIfExists } from "./fs-primitives.js";
-import { ContentLayer, DocumentNotFoundError } from "./content-layer.js";
+import { ContentLayer, DocumentAssemblyError, DocumentNotFoundError } from "./content-layer.js";
 import { getContentGitPrefix } from "./data-root.js";
 import {
   parseSkeletonToEntries,
@@ -45,9 +45,16 @@ import {
   TOMBSTONE_SUFFIX,
 } from "./document-skeleton.js";
 import type { SectionBody } from "./section-formatting.js";
-import { gitExec, getHeadSha } from "./git-repo.js";
+import {
+  gitExec,
+  getHeadSha,
+  getHeadShaOrNullWhenUnborn,
+  gitStatusPorcelain,
+  assertGitRepoCanCommit,
+} from "./git-repo.js";
 import { docPathFromContentRelativeFsPath, docPathToContentRelativeFsPath } from "./path-utils.js";
 import { DocPath } from "../types/shared.js";
+import { withExclusiveDataRepoIndex } from "./data-repo-index-mutex.js";
 
 export interface SectionRefReceipt {
   docPath: DocPath;
@@ -84,6 +91,78 @@ export interface AbsorbResult {
   rewrittenDocumentPaths: DocPath[];
   absorbedSectionRefs: SectionRefReceipt[];
   changedSections: SectionRefReceipt[];
+}
+
+function describeFailureWithStackAndStderr(failure: unknown): string {
+  if (!(failure instanceof Error)) return String(failure);
+  const stack = failure.stack ?? `${failure.name}: ${failure.message}`;
+  const stderr = (failure as { stderr?: unknown }).stderr;
+  if (typeof stderr === "string" && stderr.trim() !== "" && !stack.includes(stderr.trim())) {
+    return `${stack}\nstderr: ${stderr.trimEnd()}`;
+  }
+  return stack;
+}
+
+/**
+ * Thrown when `absorbChangedSections` mutated canonical on disk, its git commit
+ * failed, AND the rollback that should have restored canonical also failed.
+ *
+ * This is not "the write did not land" — canonical content has been destroyed or
+ * half-written with no git record of it, and nothing in the running process can
+ * put it back. The next boot's `recoverDirtyWorkingTree` will hard-exit on the
+ * dirty tracked tree, so the failure must reach the caller in full rather than
+ * being reported as an ordinary commit failure.
+ */
+export class CanonicalRollbackFailedError extends Error {
+  readonly absorbFailure: unknown;
+  readonly rollbackFailures: ReadonlyArray<{ command: string; failure: unknown }>;
+
+  constructor(
+    absorbFailure: unknown,
+    rollbackFailures: ReadonlyArray<{ command: string; failure: unknown }>,
+  ) {
+    super(
+      "CANONICAL IS DIVERGENT FROM GIT AND WAS NOT ROLLED BACK. absorbChangedSections " +
+        "mutated canonical content on disk, the git commit failed, and the rollback that " +
+        "should have restored canonical also failed. Canonical content may be destroyed or " +
+        "half-written with no commit recording it. Do not restart the server until this is " +
+        "resolved manually — startup recovery hard-exits on a dirty tracked content tree.\n\n" +
+        `ORIGINAL ABSORB FAILURE:\n${describeFailureWithStackAndStderr(absorbFailure)}\n\n` +
+        rollbackFailures
+          .map(
+            ({ command, failure }) =>
+              `ROLLBACK FAILURE (git ${command}):\n${describeFailureWithStackAndStderr(failure)}`,
+          )
+          .join("\n\n"),
+    );
+    this.name = "CanonicalRollbackFailedError";
+    this.absorbFailure = absorbFailure;
+    this.rollbackFailures = rollbackFailures;
+  }
+}
+
+export interface AbsorbOptions {
+  diagnostics?: string[];
+  documentPathsToRewrite?: string[];
+  absorbedSectionRefs?: SectionRefReceipt[];
+  /**
+   * Identity-based delete detection (D5): canonical section-file ids the
+   * proposal deleted, keyed by doc path. Threaded into the absorb merge so a
+   * deleted section is dropped from the new canonical skeleton by stable id
+   * (survives ancestor restructure). Absent → no deletes for that doc.
+   */
+  deletedSectionFilesByDoc?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Transitional alias for older callers. */
+  docPaths?: DocPath[];
+  /**
+   * When true, a totally-empty absorb (no rewritten documents AND no
+   * absorbed/changed sections) is permitted — this is reserved for explicitly
+   * classified recovery/idempotency paths (crash-recovery re-runs of an
+   * already-landed commit). Normal publishes leave it false and FAIL on an
+   * empty absorb rather than write an empty canonical commit that would present
+   * a data-losing no-op as a successful publish. Default false.
+   */
+  allowEmpty?: boolean;
 }
 
 export class CanonicalStore {
@@ -128,31 +207,33 @@ export class CanonicalStore {
     stagingRoot: string,
     commitMessage: string,
     author: { name: string; email: string },
-    opts?: {
-      diagnostics?: string[];
-      documentPathsToRewrite?: string[];
-      absorbedSectionRefs?: SectionRefReceipt[];
-      /**
-       * Identity-based delete detection (D5): canonical section-file ids the
-       * proposal deleted, keyed by doc path. Threaded into the absorb merge so a
-       * deleted section is dropped from the new canonical skeleton by stable id
-       * (survives ancestor restructure). Absent → no deletes for that doc.
-       */
-      deletedSectionFilesByDoc?: ReadonlyMap<string, ReadonlySet<string>>;
-      /** Transitional alias for older callers. */
-      docPaths?: DocPath[];
-      /**
-       * When true, a totally-empty absorb (no rewritten documents AND no
-       * absorbed/changed sections) is permitted — this is reserved for explicitly
-       * classified recovery/idempotency paths (crash-recovery re-runs of an
-       * already-landed commit). Normal publishes leave it false and FAIL on an
-       * empty absorb rather than write an empty canonical commit that would present
-       * a data-losing no-op as a successful publish. Default false.
-       */
-      allowEmpty?: boolean;
-    },
+    opts?: AbsorbOptions,
+  ): Promise<AbsorbResult> {
+    // Two absorbs, or an absorb and a backup restore, racing for `.git/index.lock`
+    // do not queue — the loser fails, and an absorb that loses has already
+    // destroyed canonical content it can no longer commit or restore. Exclusive
+    // use of the index is held across every pass, including the pre-flight, so
+    // that check still means something by the time Pass 3 runs.
+    return withExclusiveDataRepoIndex(() =>
+      this.absorbChangedSectionsHoldingDataRepoIndex(stagingRoot, commitMessage, author, opts),
+    );
+  }
+
+  private async absorbChangedSectionsHoldingDataRepoIndex(
+    stagingRoot: string,
+    commitMessage: string,
+    author: { name: string; email: string },
+    opts?: AbsorbOptions,
   ): Promise<AbsorbResult> {
     const diag = (msg: string) => { if (opts?.diagnostics) opts.diagnostics!.push(msg); };
+
+    // Pre-flight — deliberately OUTSIDE the try/rollback block, because it runs
+    // before a single byte of canonical or staging has been touched and there is
+    // therefore nothing to roll back. Passes 0.5-2.5 destroy canonical content and
+    // only Pass 3 discovers whether git can record it; a repo that cannot commit
+    // must stop the absorb here, while the store is still intact.
+    await assertGitRepoCanCommit(this.dataRoot);
+    diag("git pre-flight: repository can accept a commit");
 
     try {
       // Pass 0: Determine affected storage-root doc paths and snapshot canonical BEFORE
@@ -202,7 +283,8 @@ export class CanonicalStore {
         );
       }
 
-      const beforeContent = await this.snapshotDocPaths(rewrittenDocumentPaths);
+      const tombstonedDocPaths = await this.discoverTombstonedDocPathsInStaging(stagingRoot);
+      const beforeContent = await this.snapshotDocPaths(rewrittenDocumentPaths, tombstonedDocPaths);
 
       // Pass 0.5 — Manifest-overlay merge (Step 5a/5b/5c). For each section-scoped
       // document the proposal CLAIMS (in the manifest) that carries structure (a
@@ -236,6 +318,7 @@ export class CanonicalStore {
 
       // Pass 3: Git commit
       const cp = getContentGitPrefix();
+      const headBeforeCommit = await getHeadShaOrNullWhenUnborn(this.dataRoot);
       await gitExec(["add", "-A", cp + "/"], this.dataRoot);
       diag(`git add -A ${cp}/`);
       await gitExec(
@@ -249,13 +332,14 @@ export class CanonicalStore {
         this.dataRoot,
       );
       const commitSha = await getHeadSha(this.dataRoot);
+      await this.assertCommitLanded(headBeforeCommit, commitSha, cp);
       diag(`git commit: ${commitSha}`);
 
       // Pass 4: Diff canonical-after vs canonical-before to compute the
       // actual changed-section set. Sections present unchanged in both
       // snapshots are intentionally NOT reported (excluding them matches
       // the old session-store.ts behavior — see Bug C in its history).
-      const afterContent = await this.snapshotDocPaths(rewrittenDocumentPaths);
+      const afterContent = await this.snapshotDocPaths(rewrittenDocumentPaths, tombstonedDocPaths);
       const changedSections = diffSnapshots(beforeContent, afterContent);
 
       return {
@@ -265,27 +349,80 @@ export class CanonicalStore {
         changedSections,
       };
     } catch (err) {
-      // Best-effort rollback of canonical to last committed state
+      // Roll canonical back to the last committed state. A step that fails means
+      // canonical is left mutated with no commit recording it, which is a strictly
+      // worse failure than the one being handled — so every failure is collected and
+      // surfaced with the original, never suppressed.
       const cp = getContentGitPrefix();
-      // Best-effort rollback: each step is independent and may no-op. Errors are
-      // intentionally suppressed — the original error is always rethrown below.
-      await gitExec(["reset", "HEAD", "--", cp + "/"], this.dataRoot).catch(() => {});
-      await gitExec(["checkout", "--", cp + "/"], this.dataRoot).catch(() => {});
-      await gitExec(["clean", "-fd", cp + "/"], this.dataRoot).catch(() => {});
+      const rollbackFailures: { command: string; failure: unknown }[] = [];
+      for (const args of [
+        ["reset", "HEAD", "--", cp + "/"],
+        ["checkout", "--", cp + "/"],
+        ["clean", "-fd", cp + "/"],
+      ]) {
+        try {
+          await gitExec(args, this.dataRoot);
+        } catch (rollbackErr) {
+          rollbackFailures.push({ command: args.join(" "), failure: rollbackErr });
+        }
+      }
+      if (rollbackFailures.length > 0) {
+        throw new CanonicalRollbackFailedError(err, rollbackFailures);
+      }
       throw err;
     }
+  }
+
+  /**
+   * Prove the commit that Pass 3 just issued actually landed, rather than trusting
+   * that `git add` + `git commit` reported success.
+   *
+   * `git add -A <content>/` stages the ENTIRE content prefix, so a successful
+   * commit must leave zero entries under it — an absorb that returns a commit SHA
+   * while content is still uncommitted on disk is exactly the receipt-for-nothing
+   * that hides a destroyed canonical and wedges the next boot.
+   */
+  private async assertCommitLanded(
+    headBeforeCommit: string | null,
+    commitSha: string,
+    contentGitPrefix: string,
+  ): Promise<void> {
+    const uncommitted = (await gitStatusPorcelain(this.dataRoot))
+      .filter((entry) => entry.filePath.startsWith(contentGitPrefix + "/"));
+
+    const problems: string[] = [];
+    if (commitSha === headBeforeCommit) {
+      problems.push(`HEAD did not advance — it is still ${headBeforeCommit} after \`git commit\`.`);
+    }
+    if (uncommitted.length > 0) {
+      problems.push(
+        `${uncommitted.length} path(s) under ${contentGitPrefix}/ are still uncommitted:\n` +
+          uncommitted.map((entry) => `  ${entry.code} ${entry.filePath}`).join("\n"),
+      );
+    }
+    if (problems.length === 0) return;
+
+    throw new Error(
+      "Canonical commit did not land. absorbChangedSections has already mutated canonical on disk, so " +
+        `returning ${commitSha} would be a receipt for content that git has not recorded. ` +
+        `HEAD before commit: ${headBeforeCommit ?? "(no commits)"}; HEAD after commit: ${commitSha}.\n` +
+        problems.join("\n"),
+    );
   }
 
   /**
    * Walk stagingRoot once to find every top-level .md file that is not
    * inside a .sections/ directory. Each such file represents one document's
    * skeleton; its parent-relative path (without `.md`-tombstone suffix) is
-   * the affected docPath.
+   * the affected docPath, and a `.md`-tombstone name marks that document as
+   * being deleted by this absorb.
    */
-  private async discoverDocPathsInStaging(stagingRoot: string): Promise<DocPath[]> {
+  private async listStagingDocumentEntries(
+    stagingRoot: string,
+  ): Promise<Array<{ docPath: DocPath; isTombstone: boolean }>> {
     const allEntries = await readDirentsIfExists(stagingRoot, { recursive: true });
 
-    const docPaths: DocPath[] = [];
+    const documentEntries: Array<{ docPath: DocPath; isTombstone: boolean }> = [];
     for (const entry of allEntries) {
       if (entry.isDirectory()) continue;
       if (!entry.name.endsWith(".md") && !entry.name.endsWith(TOMBSTONE_SUFFIX)) continue;
@@ -297,12 +434,31 @@ export class CanonicalStore {
         if (parts[i].endsWith(".sections")) { insideSections = true; break; }
       }
       if (insideSections) continue;
-      const contentRelativeFsPath = relPath.endsWith(TOMBSTONE_SUFFIX)
+      const isTombstone = relPath.endsWith(TOMBSTONE_SUFFIX);
+      const contentRelativeFsPath = isTombstone
         ? relPath.slice(0, -TOMBSTONE_SUFFIX.length)
         : relPath;
-      docPaths.push(docPathFromContentRelativeFsPath(contentRelativeFsPath));
+      documentEntries.push({
+        docPath: docPathFromContentRelativeFsPath(contentRelativeFsPath),
+        isTombstone,
+      });
     }
-    return docPaths;
+    return documentEntries;
+  }
+
+  private async discoverDocPathsInStaging(stagingRoot: string): Promise<DocPath[]> {
+    return (await this.listStagingDocumentEntries(stagingRoot)).map((entry) => entry.docPath);
+  }
+
+  /**
+   * Doc paths this absorb is deleting, taken from the tombstone markers in
+   * staging. Independent of the caller's document scope: a document delete
+   * passes an explicit scope AND writes a tombstone, so the scope alone cannot
+   * distinguish a deletion from an ordinary whole-document rewrite.
+   */
+  private async discoverTombstonedDocPathsInStaging(stagingRoot: string): Promise<Set<DocPath>> {
+    const entries = await this.listStagingDocumentEntries(stagingRoot);
+    return new Set(entries.filter((entry) => entry.isTombstone).map((entry) => entry.docPath));
   }
 
   /**
@@ -311,7 +467,10 @@ export class CanonicalStore {
    * exist in canonical (new docs) contribute an empty sub-map so every
    * section in the after-snapshot is reported as changed.
    */
-  private async snapshotDocPaths(docPaths: DocPath[]): Promise<Map<string, SectionBody>> {
+  private async snapshotDocPaths(
+    docPaths: DocPath[],
+    tombstonedDocPaths: ReadonlySet<DocPath>,
+  ): Promise<Map<string, SectionBody>> {
     const snapshot = new Map<string, SectionBody>();
     for (const dp of docPaths) {
       try {
@@ -321,6 +480,13 @@ export class CanonicalStore {
         }
       } catch (err) {
         if (err instanceof DocumentNotFoundError) continue;
+        // A document whose skeleton references a body file that is not on disk
+        // cannot be assembled — but deleting it does not require assembling it,
+        // and refusing here is what makes a corrupt document permanently
+        // undeletable. The snapshot only feeds the changed-section diff, so a
+        // deletion this absorb is already performing loses nothing but its
+        // per-section change report. Any other document must still fail loudly.
+        if (err instanceof DocumentAssemblyError && tombstonedDocPaths.has(dp)) continue;
         throw err;
       }
     }
@@ -358,8 +524,8 @@ export class CanonicalStore {
       const canonicalSectionsDir = canonicalSkeletonPath + ".sections";
 
       if (isTombstone) {
-        try { await rm(canonicalSkeletonPath, { force: true }); } catch { /* already gone */ }
-        try { await rm(canonicalSectionsDir, { recursive: true, force: true }); } catch { /* already gone */ }
+        await rm(canonicalSkeletonPath, { force: true });
+        await rm(canonicalSectionsDir, { recursive: true, force: true });
         diag(`${relDocPath}: tombstone — deleted canonical skeleton and .sections/`);
         continue;
       }
@@ -395,7 +561,7 @@ export class CanonicalStore {
 
       for (const orphanRel of orphanFiles) {
         const orphanAbs = path.join(canonicalSectionsDir, orphanRel);
-        try { await rm(orphanAbs, { force: true }); } catch { /* already gone */ }
+        await rm(orphanAbs, { force: true });
       }
       if (orphanFiles.length > 0) {
         diag(`${relDocPath}: deleted ${orphanFiles.length} orphaned section file(s)`);

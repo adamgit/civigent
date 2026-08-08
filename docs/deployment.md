@@ -218,6 +218,8 @@ If running behind nginx, Apache, or similar, ensure:
 3. **`KS_OIDC_PUBLIC_URL`** matches the externally reachable URL (not the internal port)
 4. **SSE responses** at `/api/system/events` are not buffered (set `proxy_buffering off` in nginx, or `X-Accel-Buffering: no` — only relevant in dev mode)
 
+For multiple Civigent instances on one Docker host using a shared Caddy proxy, see "Run multiple Civigent instances behind one Caddy proxy" in the [recipes.md](recipes.md) docs.
+
 ### Example nginx configuration
 
 ```nginx

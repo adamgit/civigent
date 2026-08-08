@@ -52,7 +52,7 @@ import {
   type LiveSectionsSnapshotResult,
   type AwaitingStructuralReconciliationSection,
 } from "./crdt-proposal-generator.js";
-import { classifyStructuralChange } from "./structural-change.js";
+import { captureLiveFragments, partitionCapturedLiveFragments } from "./live-fragment-capture.js";
 import { DocSessionPublishPause } from "./docsession-publish-pause.js";
 import type { DocPath } from "../types/shared.js";
 
@@ -237,47 +237,14 @@ interface LiveDocumentSourceDeps {
 
 function makeLiveDocumentSource(deps: LiveDocumentSourceDeps): LiveDocumentSource {
   return {
-    async snapshotSections(): Promise<LiveSectionsSnapshotResult> {
+    async partitionLiveFragmentsByStructuralCleanliness(): Promise<LiveSectionsSnapshotResult> {
       const { resolveLiveSectionLayout } = await import("./live-section-layout.js");
       const layout = await resolveLiveSectionLayout(deps.docPath, deps.getCurrentProposalId());
-      const sections: LiveSectionSnapshot[] = [];
-      const awaitingStructuralReconciliation: AwaitingStructuralReconciliationSection[] = [];
-      for (const entry of layout) {
-        const fragment = deps.liveFragments.readFragmentString(entry.fragmentKey);
-        if (entry.headingPath.length === 0) {
-          sections.push({
-            headingPath: [...entry.headingPath],
-            heading: entry.heading,
-            level: entry.level,
-            body: stripHeadingFromFragment(fragment, 0),
-            fragmentKey: entry.fragmentKey,
-          });
-          continue;
-        }
-        const change = classifyStructuralChange(fragment, {
-          headingPath: entry.headingPath,
-          heading: entry.heading,
-          level: entry.level,
-        });
-        if (change.kind !== "clean") {
-          awaitingStructuralReconciliation.push({
-            fragmentKey: entry.fragmentKey,
-            headingPath: [...entry.headingPath],
-            heading: entry.heading,
-            level: entry.level,
-          });
-          continue;
-        }
-        const body = stripHeadingFromFragment(fragment, entry.level);
-        sections.push({
-          headingPath: [...entry.headingPath],
-          heading: entry.heading,
-          level: entry.level,
-          body,
-          fragmentKey: entry.fragmentKey,
-        });
-      }
-      return { sections, awaitingStructuralReconciliation };
+      const captured = captureLiveFragments(
+        layout,
+        (fragmentKey) => deps.liveFragments.readFragmentString(fragmentKey),
+      );
+      return partitionCapturedLiveFragments(captured);
     },
     contributingWriterIds(): Iterable<string> {
       return deps.contributors.keys();

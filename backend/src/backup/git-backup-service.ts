@@ -26,6 +26,7 @@ import {
   checkoutPathFromCommit,
   checkRemoteReachable,
   countLocalCommits,
+  fetchRemoteAuthTip,
   fetchRemoteBackupRefs,
   readHeadSymbolicRef,
   readLocalAuthRefSha,
@@ -164,8 +165,10 @@ export async function getGitBackupStatus(): Promise<GetAdminGitBackupStatusRespo
  * proposals; there is no client-side override.
  *
  * The content object graph is preserved exactly: no new content commit, no
- * rebase, no history rewrite, no rename of the local content branch. Only the
- * fabricated auth commit and the atomic push touch Git state.
+ * rebase, no history rewrite, no rename of the local content branch. Git state
+ * is touched only by the fetch that stages the remote auth tip on
+ * `refs/backup-parent/auth/main`, the fabricated auth commit, and the atomic
+ * push.
  */
 export async function runQuietStateGitBackup(): Promise<RunAdminGitBackupResponse> {
   const config = requireConfigured(readGitBackupConfig());
@@ -180,8 +183,29 @@ export async function runQuietStateGitBackup(): Promise<RunAdminGitBackupRespons
 
   return withGitBackupLockdown(async () => {
     const timestamp = new Date().toISOString();
-    const authSha = await buildAuthSnapshotRef(config, dataRoot, `auth snapshot ${timestamp}`);
-    await atomicPushBackupRefs(config, dataRoot);
+
+    // Parent the new auth commit on the tip the REMOTE currently holds, so the
+    // push is an ordinary fast-forward. Never parent on local
+    // `refs/heads/auth/main`: `buildAuthSnapshotRef` moves that ref before the
+    // push, so a run whose push failed already left it on a commit the remote
+    // has never seen, and building there would non-fast-forward again.
+    const authParent = await fetchRemoteAuthTip(config, dataRoot);
+    if (!authParent.ok) {
+      throw new GitBackupOperationError(
+        `could not fetch the remote auth tip to parent this backup on: ${authParent.message}`,
+      );
+    }
+
+    const authSha = await buildAuthSnapshotRef(
+      config,
+      dataRoot,
+      `auth snapshot ${timestamp}`,
+      authParent.sha,
+    );
+    const pushed = await atomicPushBackupRefs(config, dataRoot);
+    if (!pushed.ok) {
+      throw new GitBackupOperationError(`atomic push of the backup refs was refused: ${pushed.message}`);
+    }
 
     const contentShaAfter = await readLocalHeadSha(config, dataRoot);
     if (contentShaAfter === null) {

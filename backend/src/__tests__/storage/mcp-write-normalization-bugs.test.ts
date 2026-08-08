@@ -140,7 +140,7 @@ describe("BUG1b FIXED: Overlay upsertSectionFromMarkdown normalizes multi-headin
 
     const multiHeadingContent = "## A\nText A.\n\n## B\nText B.\n";
 
-    await layer.upsertSection(ref, "A", multiHeadingContent, { contentIsFullMarkdown: true });
+    await layer.upsertSection(ref, "A", multiHeadingContent, { expandHeadingsIntoSections: true });
     const headingPaths = await layer.listHeadingPaths(docPath);
     const targets = headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp }));
     expect(targets.length).toBeGreaterThanOrEqual(2);
@@ -155,7 +155,7 @@ describe("BUG1b FIXED: Overlay upsertSectionFromMarkdown normalizes multi-headin
 
     // Single-section headed markdown should preserve the targeted section.
     await expect(
-      layer.upsertSection(ref, "Overview", "## Overview\n\nJust plain body text.\n", { contentIsFullMarkdown: true }),
+      layer.upsertSection(ref, "Overview", "## Overview\n\nJust plain body text.\n", { expandHeadingsIntoSections: true }),
     ).resolves.not.toThrow();
   });
 });

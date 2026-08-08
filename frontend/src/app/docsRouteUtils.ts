@@ -36,6 +36,18 @@ export function stripLeadingSlashForRoute(docPath: DocPath): string {
 }
 
 /**
+ * The browse route for a FOLDER path (not a document). Shared so the folder
+ * browser and anything else that links a folder — e.g. a `path_segment` search
+ * hit — land on the same page.
+ */
+export function folderRouteForPath(path: string): string {
+  if (path === "/" || path.length === 0) {
+    return "/docs";
+  }
+  return `/docs${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+/**
  * Build a `/docs/...` app route for a stored/legacy path without throwing.
  * Returns null when the value cannot be coerced into a lawful DocPath.
  */

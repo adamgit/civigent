@@ -3,7 +3,7 @@
  *
  * A structurally-dirty fragment's content exists ONLY in the in-memory Y.Doc:
  * `processArbitratedClientUpdate` claims it in the proposal manifest WITHOUT
- * writing a body, and `snapshotSections` excludes it from the materializable
+ * writing a body, and `partitionLiveFragmentsByStructuralCleanliness` excludes it from the materializable
  * section set. Quiescence-time normalization is what makes it clean and durable.
  *
  * An editor who splits a section and then publishes (or simply leaves) INSIDE the

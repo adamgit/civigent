@@ -1083,7 +1083,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * caller-provided id).
    *
    * Used by item 145 `deleteHeadingPreservingBody` to locate the orphan
-   * absorption target, and by item 369 `rewriteSubtreeFromParsedMarkdown`
+   * absorption target, and by item 369 `replaceSubtreeDeletingOmittedSections`
    * to locate the merge target for `leadingOrphanBody` absorption.
    *
    * Snapshot semantics — the returned FlatEntry is captured before any
@@ -1683,7 +1683,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    *   2. Partitions parsed sections into "at the original level" and
    *      "deeper than the original level". The first at-level section
    *      becomes the parent of all deeper sections (matching how
-   *      `ProposalShadowContentLayer.rewriteSubtreeFromParsedMarkdown` shapes its
+   *      `ProposalShadowContentLayer.replaceSubtreeDeletingOmittedSections` shapes its
    *      output, since both routes describe the same structural intent).
    *   3. Replaces the original node in its parent sibling list with the
    *      new at-level nodes (sub-skeleton body holders are added by

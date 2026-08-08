@@ -9,9 +9,10 @@
  * application-WebSocket events.
  *
  * Body text is deliberately absent: live bodies exist only in the Yjs update
- * that accompanies the frame. Topology is `fragment_key` + `heading_path` only;
- * everything the old section DTO carried on top of that (content, word-count,
- * agentWritePolicy, section_file, last_editor) is sourced elsewhere.
+ * that accompanies the frame. Topology is `fragment_key` + `heading_path` +
+ * ATX `level` only; everything the old section DTO carried on top of that
+ * (content, word-count, agentWritePolicy, section_file, last_editor) is
+ * sourced elsewhere.
  */
 
 import type { WireLiveSectionsState, WireLiveSectionRef, WirePendingSection, WireClaimedSection, ProposalSectionTargetRef } from "../types/shared.js";
@@ -47,6 +48,7 @@ export async function buildWireLiveSectionsState(
   const topology: WireLiveSectionRef[] = layout.map((entry) => ({
     fragment_key: entry.fragmentKey,
     heading_path: [...entry.headingPath],
+    level: entry.level,
   }));
 
   const blocked_section_ids = await resolveBlockedFragmentKeys(session, layout, currentProposalId);

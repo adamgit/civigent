@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
-import { access } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, open, rm } from "node:fs/promises";
 import { getContentGitPrefix } from "./data-root.js";
 import { docPathToContentRelativeFsPath } from "./path-utils.js";
 import { DocPath } from "../types/shared.js";
@@ -43,6 +44,91 @@ export async function gitExec(args: string[], cwd: string): Promise<string> {
   return stdout.trimEnd();
 }
 
+/**
+ * Absolute path of the repository's real git directory (resolves `.git` files
+ * used by worktrees and submodules, so callers never assume `<dataRoot>/.git`).
+ */
+export async function resolveAbsoluteGitDir(dataRoot: string): Promise<string> {
+  return gitExec(["rev-parse", "--absolute-git-dir"], dataRoot);
+}
+
+/**
+ * Thrown when the repository cannot currently accept a commit. Carries the git
+ * directory and the specific obstruction so a maintainer can clear it.
+ */
+export class GitRepoCannotCommitError extends Error {
+  readonly gitDir: string;
+
+  constructor(gitDir: string, obstruction: string) {
+    super(
+      `Git repository cannot accept a commit (git dir: ${gitDir}). ${obstruction}`,
+    );
+    this.name = "GitRepoCannotCommitError";
+    this.gitDir = gitDir;
+  }
+}
+
+/**
+ * Prove — before any caller mutates the working tree — that this repository can
+ * still record a commit: git runs against it, no index lock is held by another
+ * process or left stale, and the index itself is writable.
+ *
+ * The index-lock probe is the real check: it takes `index.lock` exclusively the
+ * same way git does and releases it immediately, so a wedged repo is detected
+ * rather than discovered after the destructive work is already on disk.
+ */
+export async function assertGitRepoCanCommit(dataRoot: string): Promise<void> {
+  const gitDir = await resolveAbsoluteGitDir(dataRoot);
+  await gitStatusPorcelain(dataRoot);
+
+  const indexPath = path.join(gitDir, "index");
+  if (await pathIsPresent(indexPath)) {
+    try {
+      await access(indexPath, constants.W_OK);
+    } catch (err) {
+      throw new GitRepoCannotCommitError(
+        gitDir,
+        `The git index at ${indexPath} is not writable: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  const indexLockPath = path.join(gitDir, "index.lock");
+  let lockHandle;
+  try {
+    lockHandle = await open(indexLockPath, "wx");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") {
+      throw new GitRepoCannotCommitError(
+        gitDir,
+        `An index lock is already held at ${indexLockPath}. Another git process is running against this ` +
+          "repository, or the lock is stale from a git child that was killed mid-write. Every write to " +
+          "canonical will destroy content it cannot commit until this lock is gone. Stop any git process " +
+          "using this repository and, if none is running, delete the lock file.",
+      );
+    }
+    throw new GitRepoCannotCommitError(
+      gitDir,
+      `The index lock at ${indexLockPath} could not be created: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  } finally {
+    if (lockHandle) {
+      await lockHandle.close();
+      await rm(indexLockPath, { force: true });
+    }
+  }
+}
+
+async function pathIsPresent(target: string): Promise<boolean> {
+  try {
+    await access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function hasLocalGitDir(dataRoot: string): Promise<boolean> {
   try {
     await access(path.join(dataRoot, ".git"));
@@ -54,6 +140,16 @@ async function hasLocalGitDir(dataRoot: string): Promise<boolean> {
 
 export async function getHeadSha(dataRoot: string): Promise<string> {
   return gitExec(["rev-parse", "HEAD"], dataRoot);
+}
+
+/**
+ * HEAD's commit SHA, or null when the repository has no commits yet — the state
+ * of a freshly initialized data root before its first absorb, where `getHeadSha`
+ * cannot resolve a revision.
+ */
+export async function getHeadShaOrNullWhenUnborn(dataRoot: string): Promise<string | null> {
+  const output = await gitExec(["rev-parse", "--revs-only", "HEAD"], dataRoot);
+  return output === "" ? null : output;
 }
 
 /**
@@ -230,13 +326,23 @@ export async function gitDiffForCommit(
   return { diff_text: output, truncated: false };
 }
 
+/**
+ * Prepare the data repository for use and refuse to hand back a repository that
+ * cannot record a commit.
+ *
+ * A wedged repo (stale `index.lock`, unwritable index) is not a degraded state
+ * the server can run in: every runtime write destroys canonical content and then
+ * fails to commit it. Detecting it here means startup stops before the first
+ * request, instead of after the store has been damaged.
+ */
 export async function ensureGitRepoReady(dataRoot: string): Promise<void> {
   const localRepoExists = await hasLocalGitDir(dataRoot);
   if (!localRepoExists) {
     await gitExec(["init"], dataRoot);
-    return;
+  } else {
+    await gitExec(["rev-parse", "--git-dir"], dataRoot);
   }
-  await gitExec(["rev-parse", "--git-dir"], dataRoot);
+  await assertGitRepoCanCommit(dataRoot);
 }
 
 /**

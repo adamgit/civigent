@@ -4,7 +4,7 @@
  *
  * Theory under test (see investigation):
  *   1. Quiescence split reflection uses wholesale `writeSection(..., {
- *      contentIsFullMarkdown: true })` → `rewriteSubtreeFromParsedMarkdown`.
+ *      expandHeadingsIntoSections: true })` → `replaceSubtreeDeletingOmittedSections`.
  *   2. That rewrite only id-reuses paths inside the rewritten subtree and does
  *      NOT collide-check siblings that remain outside the splice slot.
  *   3. Quiescence does NOT re-run the ingress `duplicate-sibling-heading`
@@ -80,7 +80,7 @@ describe("insert-between outside-sibling reinclude → durable duplicate", () =>
     await ctx.cleanup();
   });
 
-  it("rewriteSubtree / writeSection(contentIsFullMarkdown) rejects an outside-sibling reinclude before mutation", async () => {
+  it("rewriteSubtree / writeSection(expandHeadingsIntoSections) rejects an outside-sibling reinclude before mutation", async () => {
     const { id } = await createProposal(WRITER, "insert-between rewrite hole");
     const editor = ProposalEditor.open(id, "draft");
 
@@ -99,7 +99,7 @@ describe("insert-between outside-sibling reinclude → durable duplicate", () =>
         ["Overview"],
         "Overview",
         INSERT_BETWEEN_WITH_NEXT_SIBLING_REINCLUDE,
-        { contentIsFullMarkdown: true },
+        { expandHeadingsIntoSections: true },
       ),
     ).rejects.toMatchObject<Partial<DuplicateSiblingHeadingError>>({
       name: "DuplicateSiblingHeadingError",

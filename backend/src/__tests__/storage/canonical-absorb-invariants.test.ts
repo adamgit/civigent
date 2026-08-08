@@ -7,13 +7,14 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { copyFile, mkdir, readdir, readFile, writeFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 import { CanonicalStore } from "../../storage/canonical-store.js";
 import { ContentLayer } from "../../storage/content-layer.js";
-import { getHeadSha } from "../../storage/git-repo.js";
-import { parseSkeletonToEntries, serializeSkeletonEntries } from "../../storage/document-skeleton.js";
+import { getHeadSha, gitStatusPorcelain } from "../../storage/git-repo.js";
+import { parseSkeletonToEntries, serializeSkeletonEntries, TOMBSTONE_SUFFIX } from "../../storage/document-skeleton.js";
 import { docPathToContentRelativeFsPath } from "../../storage/path-utils.js";
 import { DocPath } from "../../types/shared.js";
 
@@ -103,6 +104,16 @@ describe("A8: Canonical Store (absorb) Invariants", () => {
     const canonical = new ContentLayer(ctx.contentDir);
     const sections = await canonical.readAllSections(SAMPLE_DOC_PATH);
     expect(String(sections.get("Overview") ?? "")).toContain(uniqueMarker);
+
+    // A successful absorb leaves NOTHING uncommitted under content/. This is the
+    // precondition the boot path depends on: `recoverDirtyWorkingTree` hard-exits
+    // the server on any dirty tracked content path, so an absorb that mutates
+    // canonical without recording it locks the whole app out on the next restart.
+    // Asserted here rather than in a bespoke test because it must hold for EVERY
+    // successful absorb, whichever pass or git call is at fault.
+    const dirtyContentPaths = (await gitStatusPorcelain(ctx.rootDir))
+      .filter((entry) => entry.filePath.startsWith("content/"));
+    expect(dirtyContentPaths).toEqual([]);
   });
 
   // ── A8.2 ──────────────────────────────────────────────────────────
@@ -152,19 +163,17 @@ describe("A8: Canonical Store (absorb) Invariants", () => {
 
   // ── A8.3 ──────────────────────────────────────────────────────────
 
-  it("A8.3: absorb rolls back canonical on failure (best-effort)", async () => {
+  it("A8.3: a failed absorb must not leave canonical mutated", async () => {
     // Read canonical overview content before any operation
     const canonicalSectionsDir = join(ctx.contentDir, toDiskRelative(SAMPLE_DOC_PATH) + ".sections");
     const overviewBefore = await readFile(join(canonicalSectionsDir, "overview.md"), "utf8");
     const headBefore = await getHeadSha(ctx.rootDir);
 
-    // Create a staging root with valid content but corrupt the git state
-    // to make the commit fail. We'll make the .git directory read-only.
-    // Instead, use a simpler approach: create a store with a bad dataRoot
-    // so git commands fail.
+    // Point the store at a dataRoot that does not exist, so every git call fails
+    // (the git child process cannot even spawn with that cwd).
     const badStore = new CanonicalStore(ctx.contentDir, "/nonexistent/data/root");
     const stagingRoot = await createStagingRoot(SAMPLE_DOC_PATH, {
-      "overview.md": "This should be rolled back.",
+      "overview.md": "This must never reach canonical.",
     });
 
     // absorb should throw due to git failure
@@ -172,10 +181,62 @@ describe("A8: Canonical Store (absorb) Invariants", () => {
       badStore.absorbChangedSections(stagingRoot, "test: absorb should fail", AUTHOR),
     ).rejects.toThrow();
 
-    // After rollback, canonical should be restored (best-effort)
-    // Note: rollback is best-effort, so we check what we can
     const headAfter = await getHeadSha(ctx.rootDir);
     expect(headAfter).toBe(headBefore);
+
+    // THE load-bearing assertion. absorb() is documented as all-or-nothing: if the
+    // commit did not land, canonical must read exactly as it did before. Checking
+    // HEAD alone is NOT sufficient — "no commit happened" is the SYMPTOM of the
+    // failure, not proof of recovery, so a HEAD-only test passes happily while
+    // canonical has already been overwritten on disk. Do not weaken this back to
+    // "best-effort".
+    const overviewAfter = await readFile(join(canonicalSectionsDir, "overview.md"), "utf8");
+    expect(overviewAfter).toBe(overviewBefore);
+  });
+
+  // ── A8.3b ─────────────────────────────────────────────────────────
+
+  it("A8.3b: a document delete must survive a wedged git repo", async () => {
+    // Same invariant as A8.3, different failure injection — and this is the shape
+    // that actually took the app down (2026-07-27): a real, working git repo that
+    // cannot take the index lock. It behaves differently from A8.3's unspawnable
+    // git: `git clean` does not need the index lock and still succeeds, while
+    // `git reset` / `git checkout` do and fail. That is precisely why creations
+    // roll back correctly here and DELETIONS DO NOT — the rollback only works in
+    // the direction that is not destructive. A8.3 alone cannot see that asymmetry.
+    const diskRelative = toDiskRelative(SAMPLE_DOC_PATH);
+    const canonicalSkeletonPath = join(ctx.contentDir, diskRelative);
+    const headBefore = await getHeadSha(ctx.rootDir);
+
+    // Staging for a delete contains ONLY the tombstone marker (no skeleton, no bodies).
+    const stagingRoot = join(ctx.rootDir, "test-staging-a83b");
+    await mkdir(dirname(join(stagingRoot, diskRelative)), { recursive: true });
+    await writeFile(join(stagingRoot, diskRelative + TOMBSTONE_SUFFIX), "deleted\n", "utf8");
+
+    // Wedge the repo the way a killed git child or a concurrent git process does.
+    const indexLockPath = join(ctx.rootDir, ".git", "index.lock");
+    await writeFile(indexLockPath, "", "utf8");
+
+    try {
+      const store = new CanonicalStore(ctx.contentDir, ctx.rootDir);
+      await expect(
+        store.absorbChangedSections(stagingRoot, "test: delete under wedged git", AUTHOR, {
+          // Mirrors the real delete path: commit-pipeline passes the document as a
+          // wholesale target, which routes the absorb through the tombstone branch.
+          documentPathsToRewrite: [SAMPLE_DOC_PATH],
+        }),
+      ).rejects.toThrow();
+
+      expect(await getHeadSha(ctx.rootDir)).toBe(headBefore);
+
+      // The commit did not land, so the document must still be here. If it is gone,
+      // canonical has been destroyed with no git record of it — the state that makes
+      // the server refuse to boot, and which no later run can recover.
+      expect(existsSync(canonicalSkeletonPath)).toBe(true);
+      expect(existsSync(canonicalSkeletonPath + ".sections")).toBe(true);
+    } finally {
+      await rm(indexLockPath, { force: true });
+    }
   });
 
   // ── A8.4 ──────────────────────────────────────────────────────────

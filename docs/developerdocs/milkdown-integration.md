@@ -29,7 +29,7 @@ Set in `frontend/src/components/MilkdownEditor.tsx`:
 | CodeMirror | **false** | Not needed; would break rendering parity |
 | ImageBlock | **false** | Not needed; would break rendering parity |
 | Latex | **false** | Not needed |
-| ListItem | **true → should be false** | Breaks bullet list rendering parity (see below) |
+| ListItem | **false** | Breaks bullet list rendering parity (see below); task checkboxes handled via CSS + click plugin |
 | Placeholder | true | Overlay only, harmless |
 | Toolbar | true | Overlay only, harmless |
 | LinkTooltip | true | Overlay only, harmless |
@@ -55,8 +55,10 @@ still provides `bulletListSchema`, `orderedListSchema`, and `listItemSchema` whi
 native `<ul>`, `<ol>`, `<li>`. The existing matched CSS rules for `.milkdown .ProseMirror ul/li`
 and `.doc-prose ul/li` then apply to identical DOM structures.
 
-**Trade-off**: task list checkboxes (`- [x]`) lose their SVG rendering and fall back to plain
-text markers. Acceptable since task lists are not a primary feature.
+**Trade-off**: without Crepe's ListItem node view, GFM still strips typed `[ ]` / `[x]` and
+sets `list_item.attrs.checked`, but nothing draws a control. Compensated in
+`styles.css` (`li[data-item-type="task"]::before`) plus a click-to-toggle plugin in
+`MilkdownEditor.tsx` — keeps native `<li>` bullets for regular lists.
 
 ## Crepe Global Reset Warning
 

@@ -133,7 +133,7 @@ describe("body-holder visible heading regressions", () => {
       new SectionRef(DOC_PATH, ["Introduction"]),
       "Introduction",
       "## Introduction\n\nUpdated introduction via proposal.",
-      { contentIsFullMarkdown: true },
+      { expandHeadingsIntoSections: true },
     );
 
     const sections = await overlay.readAllSections(DOC_PATH);

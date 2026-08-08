@@ -110,7 +110,7 @@ describe("ProposalEditor", () => {
     // Seed a real document so subsequent assertion has a baseline.
     await editor.writeSection("/atomic.md", ["Root"], "Root", "root body");
 
-    // Force a failure deep in the write by passing contentIsFullMarkdown with a
+    // Force a failure deep in the write by passing expandHeadingsIntoSections with a
     // mismatched heading (engine throws "Illegal arguments"). The target chain
     // ["A","B","C"] must not be partially materialized.
     await expect(
@@ -119,7 +119,7 @@ describe("ProposalEditor", () => {
         ["A", "B", "C"],
         "C",
         "# Wrong Heading\n\nbody",
-        { contentIsFullMarkdown: true },
+        { expandHeadingsIntoSections: true },
       ),
     ).rejects.toThrow();
 

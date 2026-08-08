@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
+import { SEARCH_MAX_RESULTS } from "../pages/search/search-request-defaults";
 
 const linkClass =
   "flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all";
@@ -74,7 +75,7 @@ function SidebarSearch() {
       >
         <input type="hidden" name="root" value="/" />
         <input type="hidden" name="case_sensitive" value="false" />
-        <input type="hidden" name="max_results" value="20" />
+        <input type="hidden" name="max_results" value={SEARCH_MAX_RESULTS} />
         <input type="hidden" name="context_bytes" value="100" />
         <input type="hidden" name="syntax" value={syntax} />
 

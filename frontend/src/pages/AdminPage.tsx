@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
+import { SEARCH_MAX_RESULTS } from "./search/search-request-defaults";
 import { apiClient, resolveWriterId } from "../services/api-client";
 import type { AdminConfig, HumanInvolvementPresetName, GetAdminSnapshotHealthResponse, AnyProposal } from "../types/shared.js";
 import { DocPath } from "../types/shared.js";
@@ -198,7 +199,7 @@ export function AdminPage() {
           <form action="/api/search" method="GET" target="_blank" className="px-4 py-3 flex flex-wrap gap-2 items-center">
             <input type="hidden" name="root" value="/" />
             <input type="hidden" name="case_sensitive" value="false" />
-            <input type="hidden" name="max_results" value="20" />
+            <input type="hidden" name="max_results" value={SEARCH_MAX_RESULTS} />
             <input type="hidden" name="context_bytes" value="100" />
             <input
               type="text"

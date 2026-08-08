@@ -43,7 +43,7 @@ describe("double-heading bug fix", () => {
       new SectionRef(SAMPLE_DOC_PATH, ["Overview"]),
       "Overview",
       headedContent,
-      { contentIsFullMarkdown: true },
+      { expandHeadingsIntoSections: true },
     );
 
     const result = await evaluateAgentWritePolicy(id);
@@ -71,7 +71,7 @@ describe("double-heading bug fix", () => {
       new SectionRef(SAMPLE_DOC_PATH, ["Timeline"]),
       "Timeline",
       preserveHeadingMarkdown(2, "Timeline", bodyOnlyContent.trimEnd()),
-      { contentIsFullMarkdown: true },
+      { expandHeadingsIntoSections: true },
     );
 
     const result = await evaluateAgentWritePolicy(id);

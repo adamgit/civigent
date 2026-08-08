@@ -243,6 +243,8 @@ export interface WireLiveSectionRef {
   /** Opaque backend-owned CRDT fragment identity; branded to `SectionId` on the client. */
   fragment_key: string;
   heading_path: readonly string[];
+  /** ATX heading level (1–6); 0 for the before-first-heading section. */
+  level: number;
 }
 
 /** A live pending-writer session against one section (drives "wants to modify" UI). */
@@ -258,7 +260,7 @@ export interface WirePendingSection {
  * topology / editability / pending / pause-mirror changes.
  */
 export interface WireLiveSectionsState {
-  /** Ordered, body-free section topology (identity + heading path). */
+  /** Ordered, body-free section topology (identity + heading path + ATX level). */
   topology: readonly WireLiveSectionRef[];
   blocked_section_ids: readonly string[];
   /** Live pending-writer sessions. */
@@ -435,7 +437,15 @@ export const WireLiveSectionRef = {
     if (typeof fragment_key !== "string") {
       throw new Error(`${label}.fragment_key must be a string, got ${JSON.stringify(fragment_key)}`);
     }
-    return { fragment_key, heading_path: wireStringArray(obj["heading_path"], `${label}.heading_path`) };
+    const level = obj["level"];
+    if (typeof level !== "number" || !Number.isInteger(level) || level < 0 || level > 6) {
+      throw new Error(`${label}.level must be an integer 0–6, got ${JSON.stringify(level)}`);
+    }
+    return {
+      fragment_key,
+      heading_path: wireStringArray(obj["heading_path"], `${label}.heading_path`),
+      level,
+    };
   },
 };
 
@@ -1416,7 +1426,10 @@ export interface GetDocumentSectionsResponse {
   sections: Array<{
     heading: string;
     heading_path: string[];
+    /** Heading-path length (tree depth). Prefer `level` for ATX heading rank. */
     depth: number;
+    /** ATX heading level (1–6); 0 for the before-first-heading section. */
+    level: number;
     content: string;
     agentWritePolicy: SectionAgentWritePolicySummary;
     crdt_session_active: boolean;

@@ -13,6 +13,7 @@ export function deriveWorkspaceBootstrap(
     ref: {
       id: SectionId.brand(getSectionFragmentKey(s)),
       headingPath: [...s.heading_path],
+      level: s.level,
     },
     markdown: s.content,
   }));
@@ -45,5 +46,6 @@ export function dtoToRenderRef(section: WorkspaceSectionDto): RenderSectionRef {
   return {
     id: SectionId.brand(getSectionFragmentKey(section)),
     headingPath: [...section.heading_path],
+    level: section.level,
   };
 }

@@ -16,8 +16,8 @@ const writer: WriterIdentity = { id: "user-alice", type: "human", displayName: "
 
 function source(): LiveDocumentSource {
   return {
-    snapshotSections: () => ({
-      sections: [
+    partitionLiveFragmentsByStructuralCleanliness: () => ({
+      materializableBodies: [
         { headingPath: ["Intro"], heading: "Intro", level: 1, body: "content", fragmentKey: "section::intro" },
       ],
       awaitingStructuralReconciliation: [],

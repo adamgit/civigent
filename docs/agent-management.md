@@ -91,7 +91,7 @@ Explicit proposal management with fine-grained control over the collaboration wo
 |------|---------|
 | `list_documents` | List readable documents in canonical scope |
 | `list_sections` | List readable sections and body sizes (no body text) |
-| `search_text` | Search readable canonical section bodies (literal or regexp) |
+| `search_text` | Search readable canonical content — section bodies, headings, filenames, and folder path segments (literal or regexp); each hit carries its `kind` |
 | `read_doc` | Read a complete document |
 | `read_doc_structure` | Read document heading structure |
 | `read_section` | Read a specific section |

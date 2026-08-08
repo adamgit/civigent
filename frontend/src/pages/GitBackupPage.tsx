@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
+import "./git-backup-page.css";
 import type {
   GetAdminGitBackupStatusResponse,
   GetAdminGitRestoreStatusResponse,
@@ -47,6 +48,43 @@ function Card({ title, subtitle, children }: { title: string; subtitle?: string;
         {subtitle && <div className="text-[11px] text-text-muted">{subtitle}</div>}
       </div>
       {children}
+    </div>
+  );
+}
+
+/**
+ * Prominent busy card shown while the status load is in flight. That load runs
+ * an SSH probe against the backup forge and can take several seconds, so the
+ * page says plainly what it is waiting on and which remote it is contacting.
+ * The remote URL is only known once a status response has landed, so on the
+ * very first load it reads as still being resolved from server config.
+ */
+function RemoteCheckCard({ remoteUrl }: { remoteUrl: string | null }) {
+  return (
+    <div className="border-2 border-[#998866] rounded-lg overflow-hidden bg-white mb-4 shadow-sm">
+      <div className="px-5 py-6 flex items-center gap-5">
+        <div
+          className="git-backup-checking-spinner"
+          role="status"
+          aria-label="Checking remote Git connection"
+        />
+        <div className="min-w-0">
+          <div className="text-[16px] font-semibold text-text-primary">
+            Checking the remote Git connection…
+          </div>
+          <div className="text-[12px] text-text-muted mt-1">
+            Contacting the backup remote over SSH to read its backup refs. This can take a few
+            seconds.
+          </div>
+          <div className="text-[13px] font-mono text-text-primary mt-2 break-all">
+            {remoteUrl ?? (
+              <span className="font-sans italic text-text-muted">
+                resolving remote address from server configuration…
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -560,8 +598,9 @@ export function GitBackupPage() {
             >
               Refresh
             </button>
-            {loading && <span className="text-[11px] text-text-muted ml-2">Loading…</span>}
           </div>
+
+          {loading && <RemoteCheckCard remoteUrl={backup?.remote_url ?? null} />}
 
           {backup && (
             <Card title="Backup configuration">
