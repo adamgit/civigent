@@ -23,7 +23,7 @@
  */
 
 import { useEffect, useState, useCallback, useRef, type RefObject } from "react";
-import { dragSourceInfo } from "../components/MilkdownEditor";
+import { dragSourceInfo } from "../components/crossSectionDropPlugin";
 import { proseMirrorNodeToMarkdown } from "@ks/milkdown-serializer";
 import { domPosToMarkdownOffset } from "../services/drop-position";
 import {

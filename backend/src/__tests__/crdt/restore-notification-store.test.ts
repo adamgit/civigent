@@ -1,63 +1,92 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
+import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import {
-  getPendingReplacementNotice,
+  acquireDocSession,
+  destroyAllSessions,
+  getReplacementNoticeForDisplacedSession,
   invalidateSessionForReplacement,
   setBroadcastSessionReplacementInvalidation,
 } from "../../crdt/ydoc-lifecycle.js";
+import { getHeadSha } from "../../storage/git-repo.js";
+import { getDataRoot } from "../../storage/data-root.js";
 
-describe("getPendingReplacementNotice", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    // No-op broadcast so invalidation doesn't try to close real sockets
+const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
+
+describe("getReplacementNoticeForDisplacedSession", () => {
+  let ctx: TempDataRootContext;
+
+  beforeEach(async () => {
+    ctx = await createTempDataRoot();
+    await createSampleDocument(ctx.rootDir);
     setBroadcastSessionReplacementInvalidation(() => {});
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
+    destroyAllSessions();
+    await ctx.cleanup();
   });
 
-  const DOC_PATH = "test/restore-notification.md";
+  async function displaceLiveSession(message: string): Promise<string> {
+    const baseHead = await getHeadSha(getDataRoot());
+    const session = await acquireDocSession(SAMPLE_DOC_PATH, WRITER.id, baseHead, WRITER, "sock-1");
+    const displacedId = session.liveYDocId;
+    await invalidateSessionForReplacement(SAMPLE_DOC_PATH, { message });
+    return displacedId;
+  }
 
-  it("returns null when no notice is pending", () => {
-    const result = getPendingReplacementNotice("nonexistent/doc.md");
-    expect(result).toBeNull();
-  });
-
-  it("returns the pending replacement notice", async () => {
-    await invalidateSessionForReplacement(DOC_PATH, {
+  it("stores nothing when invalidation finds no live session", async () => {
+    await invalidateSessionForReplacement(SAMPLE_DOC_PATH, {
       message: "document was restored to an earlier version",
     });
+    expect(getReplacementNoticeForDisplacedSession("doc-session-that-never-existed", SAMPLE_DOC_PATH)).toBeNull();
+  });
 
-    const result = getPendingReplacementNotice(DOC_PATH);
+  it("delivers the notice to a holder of the displaced session id", async () => {
+    const displacedId = await displaceLiveSession("document was restored to an earlier version");
+
+    const result = getReplacementNoticeForDisplacedSession(displacedId, SAMPLE_DOC_PATH);
     expect(result).not.toBeNull();
     expect(result!.message).toBe("document was restored to an earlier version");
   });
 
-  it("returns null when replacement had no notice", async () => {
-    await invalidateSessionForReplacement(DOC_PATH, null);
-    const result = getPendingReplacementNotice(DOC_PATH);
-    expect(result).toBeNull();
+  it("returns null for an unrelated or absent previous session id", async () => {
+    await displaceLiveSession("admin overwrote this document");
+
+    expect(getReplacementNoticeForDisplacedSession("some-other-session-id", SAMPLE_DOC_PATH)).toBeNull();
+    expect(getReplacementNoticeForDisplacedSession(null, SAMPLE_DOC_PATH)).toBeNull();
+  });
+
+  it("returns null when the displaced id is presented against a different document", async () => {
+    const displacedId = await displaceLiveSession("admin overwrote this document");
+
+    expect(getReplacementNoticeForDisplacedSession(displacedId, "/some/other-doc.md" as typeof SAMPLE_DOC_PATH)).toBeNull();
+  });
+
+  it("stores nothing when replacement carries no notice", async () => {
+    const baseHead = await getHeadSha(getDataRoot());
+    const session = await acquireDocSession(SAMPLE_DOC_PATH, WRITER.id, baseHead, WRITER, "sock-1");
+    const displacedId = session.liveYDocId;
+    await invalidateSessionForReplacement(SAMPLE_DOC_PATH, null);
+
+    expect(getReplacementNoticeForDisplacedSession(displacedId, SAMPLE_DOC_PATH)).toBeNull();
   });
 
   it("returns null after TTL expires", async () => {
-    await invalidateSessionForReplacement(DOC_PATH, {
-      message: "document was restored to an earlier version",
-    });
+    const displacedId = await displaceLiveSession("document was restored to an earlier version");
 
-    // Advance past the 5-minute TTL
+    vi.useFakeTimers();
     vi.advanceTimersByTime(5 * 60 * 1000 + 1);
 
-    const result = getPendingReplacementNotice(DOC_PATH);
-    expect(result).toBeNull();
+    expect(getReplacementNoticeForDisplacedSession(displacedId, SAMPLE_DOC_PATH)).toBeNull();
   });
 
-  it("does not consume the entry — multiple readers see the same notice", async () => {
-    await invalidateSessionForReplacement(DOC_PATH, {
-      message: "admin overwrote this document",
-    });
+  it("does not consume the entry — every displaced client sees the same notice", async () => {
+    const displacedId = await displaceLiveSession("admin overwrote this document");
 
-    const resultA = getPendingReplacementNotice(DOC_PATH);
-    const resultB = getPendingReplacementNotice(DOC_PATH);
+    const resultA = getReplacementNoticeForDisplacedSession(displacedId, SAMPLE_DOC_PATH);
+    const resultB = getReplacementNoticeForDisplacedSession(displacedId, SAMPLE_DOC_PATH);
 
     expect(resultA).not.toBeNull();
     expect(resultB).not.toBeNull();

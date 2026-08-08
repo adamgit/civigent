@@ -77,7 +77,7 @@ export function SharedDraftBanner({
         className="ml-auto shrink-0 rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
         disabled={busy}
         onClick={onForcePublish}
-        title={`Publish all ${changedSectionCount} changed ${sectionWord} now, including any still being edited`}
+        title={`Publish all ${changedSectionCount} changed ${sectionWord} now, including any still being edited (Ctrl/⌘+Enter)`}
       >
         {buttonLabel}
       </button>
@@ -85,7 +85,7 @@ export function SharedDraftBanner({
           proposal, not a selected section or a refresh. */}
       <span className="w-full text-[11px] text-accent-text/80">
         Force publishing commits all {changedSectionCount} changed {sectionWord} in this draft
-        {activelyEditedCount > 0 ? ", including work being edited right now" : ""}.
+        {activelyEditedCount > 0 ? ", including work being edited right now" : ""}. Ctrl/⌘+Enter in a section editor does the same.
       </span>
       {result ? (
         <span className={`w-full ${TONE_CLASS[result.tone]}`}>{result.text}</span>

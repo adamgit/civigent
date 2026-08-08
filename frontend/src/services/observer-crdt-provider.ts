@@ -16,6 +16,7 @@ import {
 } from "./crdt-close-codes";
 import { encodeDocPathForWs } from "../utils/path-encoding";
 import { randomUuid } from "../utils/random-uuid";
+import { recallDocSessionId } from "./doc-session-memory";
 import {
   ensurePageWsLifecycleInstalled,
   isPageWsSuspended,
@@ -318,12 +319,15 @@ export class ObserverCrdtProvider {
   }
 
   private sendModeTransitionRequest(): void {
-    const request: ModeTransitionRequest = this.initialTransitionRequest ?? {
-      requestId: randomUuid(),
-      clientInstanceId: this.clientInstanceId,
-      docPath: DocPath.parse(this.docPath),
-      requestedMode: "observer",
-      editorFocusTarget: null,
+    const request: ModeTransitionRequest = {
+      ...(this.initialTransitionRequest ?? {
+        requestId: randomUuid(),
+        clientInstanceId: this.clientInstanceId,
+        docPath: DocPath.parse(this.docPath),
+        requestedMode: "observer",
+        editorFocusTarget: null,
+      }),
+      previous_doc_session_id: recallDocSessionId(this.docPath),
     };
     this.initialTransitionRequest = null;
     const payload = new TextEncoder().encode(JSON.stringify(request));

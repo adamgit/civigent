@@ -18,7 +18,7 @@ import { buildUnpublishedHistoryRow } from "../models/unpublished-history";
 import { connectionBannerInfo } from "../services/crdt-connection-ux";
 import { DocumentFooter } from "../components/DocumentFooter";
 import DocumentDiagnostics from "../components/DocumentDiagnostics";
-import { OverwriteMarkdownModal } from "../components/OverwriteMarkdownModal";
+import { AdminOverwriteMarkdownModal } from "../components/AdminOverwriteMarkdownModal";
 import { useCrossSectionCopy } from "../hooks/useCrossSectionCopy";
 import { DocumentResourceModel } from "../models/document-resource-model";
 import {
@@ -63,6 +63,11 @@ import { GovernanceLeftGutter, type GovernanceInProgressProposal } from "../comp
 import { GovernanceRightGutter } from "../components/GovernanceRightGutter";
 import { AttributionOverlay } from "../components/AttributionOverlay";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
+import { useCurrentUser } from "../contexts/CurrentUserContext";
+import {
+  EditorSessionCommandsProvider,
+  useEditorSessionCommandsValue,
+} from "../contexts/EditorSessionCommandsContext";
 import { useDocSaveStatusInputs } from "../hooks/useDocSaveStatusInputs";
 import { resolveTransportStatus } from "../services/section-save-state";
 import {
@@ -480,6 +485,8 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
   // editing, observer state while viewing (null when live / no banner needed).
   const crdtBanner = connectionBannerInfo(isEditing, liveReplica.editorState, liveReplica.observerState);
 
+  const currentUser = useCurrentUser();
+
   // Document-level publication-pause flag — drives the topbar status and the
   // editing banner.
   const publishPaused = liveReplica.publishPaused;
@@ -492,6 +499,12 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
   const changedSectionCount = liveReplica.replica?.getChangedSectionCount() ?? 0;
   const activelyEditedCount = liveReplica.replica?.getActivelyEditedSectionKeys().length ?? 0;
   const { forcePublishing, lastOutcome: forcePublishOutcome, forcePublish } = useForcePublish(decodedDocPath);
+  const editorSessionCommands = useEditorSessionCommandsValue({
+    boundProposalId,
+    forcePublishing,
+    publishPaused,
+    forcePublish,
+  });
   const unpublishedHistoryRow = boundProposalId
     ? buildUnpublishedHistoryRow(boundProposalId, liveReplica.replica?.getClaimedSections() ?? [])
     : null;
@@ -685,7 +698,7 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
           showDiagnostics={showDiagnostics}
           onToggleDiagnostics={() => setShowDiagnostics((v) => !v)}
           showOverwrite={showOverwrite}
-          onToggleOverwrite={() => setShowOverwrite((v) => !v)}
+          onToggleOverwrite={currentUser?.is_admin ? () => setShowOverwrite((v) => !v) : undefined}
           crdtState={liveReplica.editorState}
           publishPaused={publishPaused}
           isEditing={isEditing}
@@ -734,8 +747,8 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
       )}
 
       {/* Overwrite from Markdown modal */}
-      {showOverwrite && decodedDocPath && (
-        <OverwriteMarkdownModal docPath={decodedDocPath} onClose={() => setShowOverwrite(false)} />
+      {currentUser?.is_admin && showOverwrite && decodedDocPath && (
+        <AdminOverwriteMarkdownModal docPath={decodedDocPath} onClose={() => setShowOverwrite(false)} />
       )}
 
       {/* Three-column governance layout scroll area */}
@@ -876,7 +889,9 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
               );
             }) : null}
 
-            {!sectionsLoading && !showAttribution ? renderSections.map((section) => {
+            {!sectionsLoading && !showAttribution ? (
+            <EditorSessionCommandsProvider value={editorSessionCommands}>
+            {renderSections.map((section) => {
               const sectionHeadingPathArr = [...section.headingPath];
               const sectionKey = sectionHeadingKey(sectionHeadingPathArr);
               const proposalKey = decodedDocPath ? `${decodedDocPath}::${sectionKey}` : null;
@@ -943,7 +958,9 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
                   )}
                 </div>
               );
-            }) : null}
+            })}
+            </EditorSessionCommandsProvider>
+            ) : null}
           </div>
 
           {/* Right gutter — audit trail */}

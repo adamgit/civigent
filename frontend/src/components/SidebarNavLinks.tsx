@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { useCurrentUser } from "../contexts/CurrentUserContext";
 
 const linkClass =
   "flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all";
@@ -196,10 +197,16 @@ export function SidebarNavLinks({ variant, onOpenWsDiagnostics }: SidebarNavLink
       <NavLink to="/history" icon={<>&#128336;</>}>
         Audit Log
       </NavLink>
-      <AdminFlyout onOpenWsDiagnostics={onOpenWsDiagnostics} />
+      <FooterAdminFlyout onOpenWsDiagnostics={onOpenWsDiagnostics} />
       <NavLink to="/help" icon={<>&#10067;</>}>
         Help & FAQ
       </NavLink>
     </nav>
   );
+}
+
+function FooterAdminFlyout({ onOpenWsDiagnostics }: { onOpenWsDiagnostics?: () => void }) {
+  const currentUser = useCurrentUser();
+  if (!currentUser?.is_admin) return null;
+  return <AdminFlyout onOpenWsDiagnostics={onOpenWsDiagnostics} />;
 }

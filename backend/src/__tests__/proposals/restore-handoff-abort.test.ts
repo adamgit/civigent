@@ -27,7 +27,7 @@ import { buildFragmentContent } from "../../storage/section-formatting.js";
 import type { FragmentContent, SectionBody } from "../../storage/section-formatting.js";
 import {
   restoreDocument,
-  overwriteDocument,
+  adminOverwriteDocument,
   DocSessionHandoffFailedError,
 } from "../../api/application/documents.js";
 import { getHeadSha } from "../../storage/git-repo.js";
@@ -111,7 +111,7 @@ describe("C5: forced restore/overwrite aborts on a failed pre-handoff publish", 
 
     const headBefore = await getHeadSha(getDataRoot());
 
-    await expect(overwriteDocument(SAMPLE_DOC_PATH, "# New content\n", ADMIN)).rejects.toBeInstanceOf(
+    await expect(adminOverwriteDocument(SAMPLE_DOC_PATH, "# New content\n", ADMIN)).rejects.toBeInstanceOf(
       DocSessionHandoffFailedError,
     );
 

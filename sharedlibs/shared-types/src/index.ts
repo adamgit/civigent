@@ -200,6 +200,7 @@ export interface ModeTransitionRequest {
   docPath: DocPath;
   requestedMode: RequestedMode;
   editorFocusTarget: EditorFocusTarget | null;
+  previous_doc_session_id: string | null;
 }
 
 /** Successful server application of a mode transition request. */
@@ -695,10 +696,10 @@ export interface HumanInvolvementPreset {
 export const HUMAN_INVOLVEMENT_PRESETS: Record<HumanInvolvementPresetName, HumanInvolvementPreset> = {
   yolo: {
     name: "yolo",
-    midpoint_seconds: 30,
-    steepness: 3.0,
+    midpoint_seconds: 15,
+    steepness: 0.2,
     description:
-      "Almost no protection. Agents can write within 30 seconds of human activity. Only use for solo work or demos.",
+      "Almost no protection. Agents can write within about 2 seconds of human activity (~15s if unjustified). For teams that want agents running at the fastest possible speed.",
   },
   aggressive: {
     name: "aggressive",
@@ -2093,6 +2094,7 @@ export interface AuthUser {
   type: WriterType;
   displayName: string;
   email?: string;
+  is_admin: boolean;
 }
 
 export interface SessionInfoResponse {

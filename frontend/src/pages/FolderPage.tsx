@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useOutletContext } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { ContentPanel } from "../components/ContentPanel";
@@ -8,6 +8,7 @@ import { apiClient } from "../services/api-client";
 import type { DocumentTreeEntry } from "../types/shared.js";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
 import { DocPath } from "../types/shared";
+import { copyTextToClipboard } from "../utils/copy-text";
 
 interface FolderPageProps {
   folderPath: string;
@@ -125,6 +126,61 @@ function folderRouteForPath(path: string): string {
   return `/docs${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+function folderPathForClipboard(path: string): string {
+  if (path === "/" || path.length === 0) {
+    return "/";
+  }
+  return path.endsWith("/") ? path : `${path}/`;
+}
+
+function CopyPathButton({
+  path,
+  label,
+  copied,
+  onCopied,
+}: {
+  path: string;
+  label: string;
+  copied: boolean;
+  onCopied: (path: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded text-text-muted hover:text-text-primary hover:bg-[rgba(0,0,0,0.04)]"
+      title={copied ? "Copied" : "Copy path"}
+      aria-label={copied ? "Path copied" : `Copy path for ${label}`}
+      onClick={async (event) => {
+        event.stopPropagation();
+        const didCopy = await copyTextToClipboard(path);
+        if (!didCopy) return;
+        onCopied(path);
+      }}
+    >
+      {copied ? (
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path
+            d="M3.5 8.5L6.5 11.5L12.5 4.5"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      ) : (
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="5.5" y="5.5" width="8" height="8" rx="1.25" stroke="currentColor" strokeWidth="1.25" />
+          <path
+            d="M10.5 5.5V4.25C10.5 3.56 9.94 3 9.25 3H4.25C3.56 3 3 3.56 3 4.25V9.25C3 9.94 3.56 10.5 4.25 10.5H5.5"
+            stroke="currentColor"
+            strokeWidth="1.25"
+          />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 function FolderPathBreadcrumb({
   folderPath,
   onNavigate,
@@ -182,9 +238,28 @@ export function FolderPage({ folderPath }: FolderPageProps) {
   const [textFileError, setTextFileError] = useState<string | null>(null);
   const [creatingTextFile, setCreatingTextFile] = useState(false);
   const [sectionNamesByPath, setSectionNamesByPath] = useState<Record<string, string[]>>({});
+  const [copiedPath, setCopiedPath] = useState<string | null>(null);
+  const copiedPathTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const folderEntry = useMemo(() => findFolderEntry(entries, folderPath), [entries, folderPath]);
   const stats = useMemo(() => (folderEntry ? getFolderStats(folderEntry) : null), [folderEntry]);
+  const folderClipboardPath = folderPathForClipboard(folderPath);
+
+  const markPathCopied = (path: string) => {
+    setCopiedPath(path);
+    if (copiedPathTimeoutRef.current) {
+      clearTimeout(copiedPathTimeoutRef.current);
+    }
+    copiedPathTimeoutRef.current = setTimeout(() => setCopiedPath(null), 1500);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (copiedPathTimeoutRef.current) {
+        clearTimeout(copiedPathTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!stats || stats.childFiles.length === 0) {
@@ -256,8 +331,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
     setCreatingTextFile(true);
     setTextFileError(null);
     try {
-      await apiClient.createDocument(nextDocPath);
-      await apiClient.overwriteDoc(nextDocPath, textFileContent);
+      await apiClient.createDocument(nextDocPath, textFileContent);
       await refreshTree();
       navigate(`/docs/${stripLeadingSlashForRoute(nextDocPath)}`);
       setTextFileName("");
@@ -289,7 +363,15 @@ export function FolderPage({ folderPath }: FolderPageProps) {
               <ContentPanel.Header className="gap-3 flex-wrap">
                 <div className="min-w-0 flex-1">
                   <ContentPanel.Title icon={<span className="text-text-muted">&#128193;</span>}>
-                    <FolderPathBreadcrumb folderPath={folderPath} onNavigate={navigate} />
+                    <span className="inline-flex min-w-0 items-center gap-1">
+                      <FolderPathBreadcrumb folderPath={folderPath} onNavigate={navigate} />
+                      <CopyPathButton
+                        path={folderClipboardPath}
+                        label={getDisplayName(folderPath)}
+                        copied={copiedPath === folderClipboardPath}
+                        onCopied={markPathCopied}
+                      />
+                    </span>
                   </ContentPanel.Title>
                 </div>
                 <form
@@ -333,15 +415,11 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                             sections === undefined || sections.length === 0
                               ? undefined
                               : sections.join(" | ");
+                          const openFile = () =>
+                            navigate(`/docs/${stripLeadingSlashForRoute(DocPath.parse(path))}`);
                           return (
                             <li key={path} className="min-w-0">
-                              <button
-                                type="button"
-                                className="flex w-full min-w-0 cursor-pointer flex-col gap-0 rounded-md border-none bg-transparent px-2 py-0.5 text-left hover:bg-section-hover"
-                                onClick={() =>
-                                  navigate(`/docs/${stripLeadingSlashForRoute(DocPath.parse(path))}`)
-                                }
-                              >
+                              <div className="flex w-full min-w-0 flex-col gap-0 rounded-md px-2 py-0.5 hover:bg-section-hover">
                                 <span className="flex min-w-0 items-center gap-1.5">
                                   <span
                                     className="w-4 shrink-0 text-center text-[13px] text-text-muted opacity-45"
@@ -349,22 +427,42 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                                   >
                                     &#128196;
                                   </span>
-                                  <span className="truncate text-[13px] font-medium text-accent-text">
+                                  <button
+                                    type="button"
+                                    className="min-w-0 truncate border-none bg-transparent p-0 text-left text-[13px] font-medium text-accent-text cursor-pointer hover:underline"
+                                    onClick={openFile}
+                                  >
                                     {getDisplayName(path)}
-                                  </span>
+                                  </button>
+                                  <CopyPathButton
+                                    path={path}
+                                    label={getDisplayName(path)}
+                                    copied={copiedPath === path}
+                                    onCopied={markPathCopied}
+                                  />
                                 </span>
                                 {sections === undefined ? (
-                                  <span className="block truncate pl-3 text-[11px] italic text-text-faint">
+                                  <button
+                                    type="button"
+                                    className="block w-full truncate border-none bg-transparent pl-5 text-left text-[11px] italic text-text-faint cursor-pointer"
+                                    onClick={openFile}
+                                  >
                                     (loading contents)
-                                  </span>
+                                  </button>
                                 ) : sections.length === 0 ? (
-                                  <span className="block truncate pl-3 text-[11px] font-medium text-text-secondary">
+                                  <button
+                                    type="button"
+                                    className="block w-full truncate border-none bg-transparent pl-5 text-left text-[11px] font-medium text-text-secondary cursor-pointer"
+                                    onClick={openFile}
+                                  >
                                     No sections
-                                  </span>
+                                  </button>
                                 ) : (
-                                  <span
-                                    className="block truncate pl-3 text-[11px] font-medium text-text-secondary"
+                                  <button
+                                    type="button"
+                                    className="block w-full truncate border-none bg-transparent pl-5 text-left text-[11px] font-medium text-text-secondary cursor-pointer"
                                     title={sectionTitle}
+                                    onClick={openFile}
                                   >
                                     {sections.map((name, index) => (
                                       <span key={`${path}-${index}-${name}`}>
@@ -379,9 +477,9 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                                         {name}
                                       </span>
                                     ))}
-                                  </span>
+                                  </button>
                                 )}
-                              </button>
+                              </div>
                             </li>
                           );
                         })}
@@ -395,27 +493,39 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                       <p className="text-xs text-text-muted">No subfolders.</p>
                     ) : (
                       <ul className="m-0 list-none space-y-0 p-0">
-                        {stats.childFolders.map((folder) => (
-                          <li key={folder.path} className="min-w-0">
-                            <button
-                              type="button"
-                              className="flex w-full min-w-0 cursor-pointer items-center justify-between gap-3 rounded-md border-none bg-transparent px-2 py-0.5 text-left hover:bg-section-hover"
-                              onClick={() => navigate(`/docs${folder.path}`)}
-                            >
-                              <span className="flex min-w-0 items-center gap-1.5">
-                                <span className="shrink-0 text-text-muted" aria-hidden="true">
-                                  &#128193;
+                        {stats.childFolders.map((folder) => {
+                          const clipboardPath = folderPathForClipboard(folder.path);
+                          return (
+                            <li key={folder.path} className="min-w-0">
+                              <div className="flex w-full min-w-0 items-center justify-between gap-3 rounded-md px-2 py-0.5 hover:bg-section-hover">
+                                <span className="flex min-w-0 items-center gap-1.5">
+                                  <span
+                                    className="w-4 shrink-0 text-center text-[13px] text-text-muted opacity-45"
+                                    aria-hidden="true"
+                                  >
+                                    &#128193;
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="min-w-0 truncate border-none bg-transparent p-0 text-left text-[13px] font-medium text-accent-text cursor-pointer hover:underline"
+                                    onClick={() => navigate(`/docs${folder.path}`)}
+                                  >
+                                    {getDisplayName(folder.path)}
+                                  </button>
+                                  <CopyPathButton
+                                    path={clipboardPath}
+                                    label={getDisplayName(folder.path)}
+                                    copied={copiedPath === clipboardPath}
+                                    onCopied={markPathCopied}
+                                  />
                                 </span>
-                                <span className="truncate text-[13px] font-medium text-accent-text">
-                                  {getDisplayName(folder.path)}
+                                <span className="shrink-0 text-[11px] text-text-faint">
+                                  {formatFolderChildCounts(folder)}
                                 </span>
-                              </span>
-                              <span className="shrink-0 text-[11px] text-text-faint">
-                                {formatFolderChildCounts(folder)}
-                              </span>
-                            </button>
-                          </li>
-                        ))}
+                              </div>
+                            </li>
+                          );
+                        })}
                       </ul>
                     )}
                   </div>

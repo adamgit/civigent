@@ -27,6 +27,30 @@ describe("PUT /api/workspace/:doc_path (create)", () => {
     expect(res.body.doc_path).toBe("/new/test-doc.md");
   });
 
+  it("creates a document with initial markdown as one atomic commit", async () => {
+    const markdown = "# Seeded Document\n\nInitial content from create.\n";
+    const res = await request(ctx.app)
+      .put("/api/workspace/new/seeded-doc.md")
+      .set("Authorization", ctx.humanToken)
+      .set("Content-Type", "application/json")
+      .send({ markdown });
+
+    expect(res.status).toBe(201);
+    expect(res.body.doc_path).toBe("/new/seeded-doc.md");
+
+    const read = await request(ctx.app)
+      .get("/api/canonical/new/seeded-doc.md")
+      .set("Authorization", ctx.humanToken);
+    expect(read.status).toBe(200);
+    expect(read.body.content).toContain("Initial content from create.");
+
+    const history = await request(ctx.app)
+      .get("/api/canonical/new/seeded-doc.md/history")
+      .set("Authorization", ctx.humanToken);
+    expect(history.status).toBe(200);
+    expect(history.body.versions).toHaveLength(1);
+  });
+
   it("returns 409 if document already exists", async () => {
     const res = await request(ctx.app)
       .put(`/api/workspace/${SAMPLE_DOC_PATH.replace(/^\//, "")}`)

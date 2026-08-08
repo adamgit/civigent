@@ -31,7 +31,6 @@ import type * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 import { Crepe, CrepeFeature } from "@milkdown/crepe";
 import { editorViewCtx } from "@milkdown/core";
-import { $prose } from "@milkdown/utils";
 import { Plugin } from "@milkdown/prose/state";
 import { TextSelection } from "@milkdown/prose/state";
 import { ySyncPlugin, ySyncPluginKey, yCursorPlugin, yUndoPlugin } from "y-prosemirror";
@@ -39,26 +38,14 @@ import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
 
 import { normalizeMarkdown, resolveHeadingPathFromDoc } from "./milkdown-utils";
-import { proseMirrorNodeToMarkdown } from "@ks/milkdown-serializer";
-import { pmPosToMarkdownOffset } from "../services/drop-position";
-import { applyDragOverVerdict, type SectionTransfer, type DropVerdict } from "../services/section-transfer";
+import type { SectionTransfer, DropVerdict } from "../services/section-transfer";
+import { crossSectionDropPlugin, setDragSourceInfo } from "./crossSectionDropPlugin";
+import { crossSectionNavigationPlugin } from "./crossSectionNavigationPlugin";
+import { editorSessionCommandsPlugin } from "./editorSessionCommandsPlugin";
+import { useEditorSessionCommands } from "../contexts/EditorSessionCommandsContext";
 import { EditorLifecycleController } from "../services/editor-lifecycle";
 import { FirstSyncReadyLatch } from "../services/first-sync-ready-latch";
 import { installLinkPicker } from "./link-picker/install-link-picker";
-
-// ─── Module-level drag source tracking ───────────────────
-// Only one drag can be active at a time, so a module-level
-// variable is safe. Set on dragstart, cleared on dragend.
-
-export interface DragSourceInfo {
-  fragmentKey: string;
-  from: number;
-  to: number;
-  /** Reference to the source ProseMirror view for deletion after cross-section drop. */
-  view: import("@milkdown/prose/view").EditorView;
-}
-
-export let dragSourceInfo: DragSourceInfo | null = null;
 
 /**
  * Custom cursor builder for yCursorPlugin.
@@ -220,6 +207,9 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   onHeadingPathChangeRef.current = onHeadingPathChange;
   const onCursorExitRef = useRef(onCursorExit);
   onCursorExitRef.current = onCursorExit;
+  const editorSessionCommands = useEditorSessionCommands();
+  const editorSessionCommandsRef = useRef(editorSessionCommands);
+  editorSessionCommandsRef.current = editorSessionCommands;
   const canDropRef = useRef(canDrop);
   canDropRef.current = canDrop;
   const onCrossSectionDropRef = useRef(onCrossSectionDrop);
@@ -485,115 +475,20 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 
     // ── Cross-section cursor exit keymap ────────────────
 
-    crepe.editor.use($prose(() => new Plugin({
-      props: {
-        handleKeyDown(view, event) {
-          const exitCb = onCursorExitRef.current;
-          if (!exitCb) return false;
+    crepe.editor.use(crossSectionNavigationPlugin({ onCursorExitRef }));
 
-          if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
-            const { $head } = view.state.selection;
-            if ($head.pos <= 1) {
-              exitCb("up");
-              return true;
-            }
-          }
-          if (event.key === "ArrowDown" || event.key === "ArrowRight") {
-            const { $head } = view.state.selection;
-            if ($head.pos >= view.state.doc.content.size - 1) {
-              exitCb("down");
-              return true;
-            }
-          }
-          return false;
-        },
-      },
-    })));
+    // ── Host/session command chords ─────────────────────
 
-    // ── Drag-source tracking ─────────────────────────────
+    crepe.editor.use(editorSessionCommandsPlugin({ commandsRef: editorSessionCommandsRef }));
+
+    // ── Cross-section drag/drop plugin ──────────────────
 
     const fragmentKeyCapture = effectiveFragmentKey;
-    crepe.editor.use($prose(() => new Plugin({
-      props: {
-        handleDOMEvents: {
-          dragstart(view) {
-            const { from, to } = view.state.selection;
-            dragSourceInfo = { fragmentKey: fragmentKeyCapture, from, to, view };
-            return false;
-          },
-          dragend() {
-            dragSourceInfo = null;
-            return false;
-          },
-          dragover(_view, event) {
-            // Only gate cross-section drags — same-section drags use ProseMirror defaults
-            if (!dragSourceInfo || dragSourceInfo.fragmentKey === fragmentKeyCapture) return false;
-
-            const canDropFn = canDropRef.current;
-            if (!canDropFn) return false;
-
-            const verdict = canDropFn();
-            const allowed = applyDragOverVerdict(event, verdict, true);
-            // When blocked, stop ProseMirror from processing further
-            return !allowed;
-          },
-        },
-      },
-    })));
-
-    // ── Cross-section drop interception ────────────────
-
-    crepe.editor.use($prose(() => new Plugin({
-      props: {
-        handleDrop(view, event) {
-          const dropCb = onCrossSectionDropRef.current;
-          if (!dropCb || !event) return false;
-
-          const source = dragSourceInfo;
-          if (!source || source.fragmentKey === fragmentKeyCapture) return false;
-
-          event.preventDefault();
-
-          const dt = event.dataTransfer;
-          const plainText = dt?.getData("text/plain") ?? "";
-
-          const sourceView = source.view;
-          const sourceFrom = source.from;
-          const sourceTo = source.to;
-          const slice = sourceView.state.doc.slice(sourceFrom, sourceTo);
-          const docNode = sourceView.state.doc.type.create(null, slice.content);
-          const md = proseMirrorNodeToMarkdown(docNode);
-
-          const deleteSourceCallback = () => {
-            const tr = sourceView.state.tr.delete(sourceFrom, sourceTo);
-            sourceView.dispatch(tr);
-          };
-
-          let insertionOffset: number | undefined;
-          const posResult = view.posAtCoords({ left: event.clientX, top: event.clientY });
-          if (posResult) {
-            const targetMarkdown = proseMirrorNodeToMarkdown(view.state.doc);
-            insertionOffset = pmPosToMarkdownOffset(view, posResult.pos, targetMarkdown);
-          }
-
-          const transfer: SectionTransfer = {
-            sourceFragmentKey: source.fragmentKey,
-            sourceHeadingPath: [],
-            targetFragmentKey: fragmentKeyCapture,
-            targetHeadingPath: [],
-            content: { markdown: md, plainText },
-            sourceSliceRange: { from: sourceFrom, to: sourceTo },
-            deleteFromSource: true,
-            insertionOffset,
-            deleteSourceCallback,
-          };
-
-          dropCb(transfer);
-          dragSourceInfo = null;
-          return true;
-        },
-      },
-    })));
+    crepe.editor.use(crossSectionDropPlugin({
+      fragmentKey: fragmentKeyCapture,
+      canDropRef,
+      onCrossSectionDropRef,
+    }));
 
     // ── Listeners ──────────────────────────────────────
 
@@ -634,7 +529,8 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 
     let cleanupDragListeners: (() => void) | null = null;
 
-    crepe.create().then(() => {
+    const createPromise = crepe.create();
+    createPromise.then(() => {
       if (controllerRef.current !== ctrl) return;
       ctrl.send("crepe_created");
 
@@ -644,9 +540,9 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
         const target = (e as DragEvent).target as HTMLElement;
         if (!target.closest?.(".milkdown-block-handle")) return;
         const { from, to } = view.state.selection;
-        dragSourceInfo = { fragmentKey: fragmentKeyCapture, from, to, view };
+        setDragSourceInfo({ fragmentKey: fragmentKeyCapture, from, to, view });
       };
-      const onDragEnd = () => { dragSourceInfo = null; };
+      const onDragEnd = () => { setDragSourceInfo(null); };
       container.addEventListener("dragstart", onDragStart as EventListener);
       container.addEventListener("dragend", onDragEnd);
       cleanupDragListeners = () => {
@@ -671,7 +567,9 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
         markReady(crepe);
       }
     }).catch((err) => {
-      throw err;
+      if (controllerRef.current === ctrl) {
+        throw err;
+      }
     });
 
     return () => {
@@ -700,13 +598,10 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
       setReady(false);
       onUnreadyRef.current?.();
       deferredFocusRef.current = null;
-      // Full teardown still proceeds; the DOM is already detached above, so guard
-      // the now-detached editor's destroy against a teardown-time DOM error.
-      try {
-        void crepe.destroy();
-      } catch {
-        // Editor DOM already detached above — nothing left to tear down.
-      }
+      void createPromise
+        .catch(() => undefined)
+        .then(() => crepe.destroy())
+        .catch(() => undefined);
     };
     // markdown intentionally excluded — only used as initial value.
     // eslint-disable-next-line react-hooks/exhaustive-deps

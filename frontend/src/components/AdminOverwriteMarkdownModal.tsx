@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { apiClient } from "../services/api-client.js";
 
-interface OverwriteMarkdownModalProps {
+interface AdminOverwriteMarkdownModalProps {
   docPath: string;
   onClose: () => void;
 }
 
-export function OverwriteMarkdownModal({ docPath, onClose }: OverwriteMarkdownModalProps) {
+export function AdminOverwriteMarkdownModal({ docPath, onClose }: AdminOverwriteMarkdownModalProps) {
   const [markdown, setMarkdown] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -17,7 +17,7 @@ export function OverwriteMarkdownModal({ docPath, onClose }: OverwriteMarkdownMo
     setError(null);
     setResult(null);
     try {
-      const res = await apiClient.overwriteDoc(docPath, markdown);
+      const res = await apiClient.adminOverwriteDoc(docPath, markdown);
       setResult(`Document overwritten. Commit: ${res.committed_sha.slice(0, 7)}`);
       setTimeout(() => {
         onClose();
@@ -41,9 +41,9 @@ export function OverwriteMarkdownModal({ docPath, onClose }: OverwriteMarkdownMo
           &times;
         </button>
 
-        <h2 className="text-lg font-semibold mb-1">Overwrite from Markdown</h2>
+        <h2 className="text-lg font-semibold mb-1">Admin: Overwrite from Markdown</h2>
         <p className="text-xs text-gray-500 mb-3">
-          This will replace the entire document. The previous version is recoverable from git history.
+          This is an admin-only operation that replaces the entire document. The previous version is recoverable from git history.
         </p>
 
         <textarea
@@ -74,7 +74,7 @@ export function OverwriteMarkdownModal({ docPath, onClose }: OverwriteMarkdownMo
             disabled={!markdown.trim() || submitting}
             className="px-3 py-1.5 text-sm rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {submitting ? "Overwriting\u2026" : "Confirm Overwrite"}
+            {submitting ? "Overwriting…" : "Confirm Admin Overwrite"}
           </button>
         </div>
       </div>

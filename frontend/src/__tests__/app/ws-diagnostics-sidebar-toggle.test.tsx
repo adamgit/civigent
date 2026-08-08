@@ -46,7 +46,7 @@ describe("AppLayout Admin menu WS Diagnostics", () => {
       if (url === "/api/auth/session") {
         return jsonResponse({
           authenticated: true,
-          user: { id: "u1", type: "human", displayName: "Tester" },
+          user: { id: "u1", type: "human", displayName: "Tester", is_admin: true },
         });
       }
       return jsonResponse({});

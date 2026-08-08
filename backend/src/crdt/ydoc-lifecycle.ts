@@ -153,11 +153,12 @@ const sessionPromises = new Map<string, Promise<DocSession>>();
 // ─── Pending replacement notices ─────────────────────────────────
 
 interface PendingReplacementNotice {
+  docPath: DocPath;
   message: string;
   expiresAt: number;
 }
 
-const pendingReplacementNotices = new Map<string, PendingReplacementNotice>();
+const invalidatedSessionNotices = new Map<string, PendingReplacementNotice>();
 const REPLACEMENT_NOTICE_TTL_MS = 5 * 60 * 1000;
 
 let _broadcastSessionReplacementInvalidation: ((docPath: DocPath) => void) | null = null;
@@ -676,18 +677,24 @@ export async function flushAndDestroyAll(): Promise<void> {
 // ─── Session replacement invalidation ────────────────────────────
 
 /**
- * Return the pending replacement notice for reconnecting clients on docPath.
- * Returns null if no notice exists or if it has expired. Does NOT consume it.
+ * Return the replacement notice addressed to a displaced session identity.
+ * Delivers iff the presented previous doc-session id matches an invalidated
+ * session entry; a null/absent id, an unrelated id, or an expired entry yields
+ * null. NOT consumed on delivery — every displaced client of that session, on
+ * any device, must receive it; the TTL exists purely for memory hygiene.
  */
-export function getPendingReplacementNotice(
+export function getReplacementNoticeForDisplacedSession(
+  previousDocSessionId: string | null,
   docPath: DocPath,
 ): DocumentReplacementNoticePayload | null {
-  const entry = pendingReplacementNotices.get(docPath);
+  if (!previousDocSessionId) return null;
+  const entry = invalidatedSessionNotices.get(previousDocSessionId);
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) {
-    pendingReplacementNotices.delete(docPath);
+    invalidatedSessionNotices.delete(previousDocSessionId);
     return null;
   }
+  if (entry.docPath !== docPath) return null;
   return { message: entry.message };
 }
 
@@ -706,20 +713,19 @@ export async function invalidateSessionForReplacement(
   docPath: DocPath,
   notice: DocumentReplacementNoticePayload | null,
 ): Promise<void> {
-  if (notice) {
-    pendingReplacementNotices.set(docPath, {
+  const session = sessions.get(docPath);
+  if (session && notice) {
+    invalidatedSessionNotices.set(session.liveYDocId, {
+      docPath,
       message: notice.message,
       expiresAt: Date.now() + REPLACEMENT_NOTICE_TTL_MS,
     });
-  } else {
-    pendingReplacementNotices.delete(docPath);
   }
 
   if (_broadcastSessionReplacementInvalidation) {
     _broadcastSessionReplacementInvalidation(docPath);
   }
 
-  const session = sessions.get(docPath);
   if (session) {
     assertState(session, ["active", "acquiring"]);
     session.publishPause.end();

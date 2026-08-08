@@ -390,7 +390,7 @@ interface AuthTokenResponse {
   token: string;
   access_token: string;
   refresh_token: string;
-  identity: AuthUser;
+  identity: Omit<AuthUser, "is_admin">;
 }
 
 interface RefreshTokenResponse {
@@ -646,12 +646,12 @@ export const apiClient = {
     return requestJson<GetActivityResponse>(`/api/activity?limit=${limit}&days=${days}`);
   },
 
-  async createDocument(docPath: string): Promise<CreateDocumentResponse> {
+  async createDocument(docPath: string, markdown?: string): Promise<CreateDocumentResponse> {
     const encoded = encodeDocPath(docPath);
     return requestJson<CreateDocumentResponse>(`/api/workspace/${encoded}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: "{}",
+      body: JSON.stringify(markdown !== undefined ? { markdown } : {}),
     });
   },
 
@@ -987,9 +987,9 @@ export const apiClient = {
     });
   },
 
-  async overwriteDoc(docPath: string, markdown: string): Promise<{ committed_sha: string }> {
+  async adminOverwriteDoc(docPath: string, markdown: string): Promise<{ committed_sha: string }> {
     const encoded = encodeDocPath(docPath);
-    return requestJson<{ committed_sha: string }>(`/api/workspace/${encoded}/overwrite`, {
+    return requestJson<{ committed_sha: string }>(`/api/workspace/${encoded}/admin-overwrite`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ markdown }),

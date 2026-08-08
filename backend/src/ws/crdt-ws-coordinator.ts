@@ -30,7 +30,7 @@ import {
   addObserverSocket,
   removeObserverSocket,
   countEditorSockets,
-  getPendingReplacementNotice,
+  getReplacementNoticeForDisplacedSession,
   setBroadcastSessionReplacementInvalidation,
   setBroadcastAdminRebuildInvalidation,
   noteFragmentActivity,
@@ -193,7 +193,7 @@ function removeParticipant(clientInstanceId: ClientInstanceId): void {
 
 export function joinAndNotify(session: DocSession, socket: CoordinatorSocket, st: CrdtSocketState): void {
   if (st.joined) return;
-  const notification = getPendingReplacementNotice(st.docPath);
+  const notification = getReplacementNoticeForDisplacedSession(st.previousDocSessionId ?? null, st.docPath);
   if (notification) sendToSocket(socket, encodeDocumentReplacementNotice(notification));
   st.joined = true;
   sendLiveSectionsBootstrap(session, socket);
@@ -2042,6 +2042,8 @@ async function applyModeTransition(
       reason: "clientInstanceId mismatch",
     };
   }
+
+  state.previousDocSessionId = request.previous_doc_session_id;
 
   if (request.requestedMode === "none") {
     state.requestedMode = request.requestedMode;

@@ -144,9 +144,10 @@ export function SkillsPage() {
     setCreating(true);
     setCreateError(null);
     try {
-      await apiClient.createDocument(docPath);
       if (skillKind === "agent-skill") {
-        await apiClient.overwriteDoc(docPath, agentSkillTemplate(name));
+        await apiClient.createDocument(docPath, agentSkillTemplate(name));
+      } else {
+        await apiClient.createDocument(docPath);
       }
       await refreshTree();
       navigate(`/docs/${stripLeadingSlashForRoute(docPath)}`);

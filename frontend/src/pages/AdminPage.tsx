@@ -7,13 +7,15 @@ import { DocPath } from "../types/shared.js";
 import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
 import { copyTextToClipboard } from "../utils/copy-text";
 import { readNumberSetting, writeNumberSetting } from "../utils/numberSettings";
+import { INVOLVEMENT_PRESET_UI } from "../involvement-preset-ui";
 
-const HUMAN_INVOLVEMENT_PRESETS: { value: HumanInvolvementPresetName; label: string; description: string }[] = [
-  { value: "yolo", label: "YOLO", description: "Almost no protection. ~30s wait." },
-  { value: "aggressive", label: "Aggressive", description: "~5 minute wait after human activity." },
-  { value: "eager", label: "Eager", description: "~2 hour wait. Balanced for most teams." },
-  { value: "conservative", label: "Conservative", description: "~8 hour wait. Maximum protection." },
-];
+const HUMAN_INVOLVEMENT_PRESETS: { value: HumanInvolvementPresetName; label: string; description: string }[] = (
+  ["yolo", "aggressive", "eager", "conservative"] as const
+).map((value) => ({
+  value,
+  label: INVOLVEMENT_PRESET_UI[value].label,
+  description: INVOLVEMENT_PRESET_UI[value].shortDescription,
+}));
 
 function Card({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (

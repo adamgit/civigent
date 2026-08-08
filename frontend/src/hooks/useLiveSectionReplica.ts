@@ -30,6 +30,7 @@ import type { CaretFrameHooks } from "../pages/caret-recovery";
 import type { SectionId, LiveSectionRef } from "../types/live-sections";
 import type { DocumentReplacementNoticePayload } from "../types/shared";
 import { WS_CLOSE_REASON_DOCUMENT_REPLACED } from "../services/crdt-close-codes";
+import { rememberDocSessionId } from "../services/doc-session-memory";
 import { randomUuid } from "../utils/random-uuid";
 
 export type LiveReplicaMode = "observer" | "editor";
@@ -196,6 +197,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     if (!replica) return;
     if (opcode === MSG_LIVE_SECTIONS_BOOTSTRAP) {
       const bootstrap = decodeLiveSectionsBootstrap(payload);
+      rememberDocSessionId(docPathArg, bootstrap.docSessionId);
       const boundTo = replica.boundDocSessionId;
       if (boundTo === null) {
         replica.bindToDocSession(bootstrap);

@@ -2,7 +2,7 @@ import type { AdminConfig, GovernanceMode, HumanInvolvementPresetName } from "./
 import { HUMAN_INVOLVEMENT_PRESETS } from "./types/shared.js";
 import { getAgentAuthPolicy } from "./auth/oauth-config.js";
 
-const DEFAULT_HUMAN_INVOLVEMENT_PRESET: HumanInvolvementPresetName = "eager";
+const DEFAULT_HUMAN_INVOLVEMENT_PRESET: HumanInvolvementPresetName = "yolo";
 const DEFAULT_SNAPSHOT_ENABLED = true;
 const DEFAULT_GOVERNANCE_MODE: GovernanceMode = "available";
 

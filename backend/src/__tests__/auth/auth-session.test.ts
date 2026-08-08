@@ -50,6 +50,7 @@ describe("Auth session and methods", () => {
           id: "cookie-human",
           type: "human",
           displayName: "Cookie Human",
+          is_admin: false,
         });
       } finally {
         process.env.KS_AUTH_MODE = saved;

@@ -41,7 +41,7 @@ function createMockSocket(): { socket: WebSocket; sent: Uint8Array[] } {
 }
 
 /** Build a minimal CrdtSocketState for joinAndNotify. */
-function createSocketState(docPath: string, writerId: string): CrdtSocketState {
+function createSocketState(docPath: string, writerId: string, previousDocSessionId: string | null = null): CrdtSocketState {
   return {
     clientInstanceId: "test-instance" as CrdtSocketState["clientInstanceId"],
     writerId,
@@ -52,6 +52,7 @@ function createSocketState(docPath: string, writerId: string): CrdtSocketState {
     requestedMode: "editor",
     attachmentState: "attached",
     docSessionId: null,
+    previousDocSessionId,
     editorFocusTarget: null,
     tokenExp: Infinity,
     canRead: true,
@@ -81,6 +82,8 @@ describe("joinAndNotify message ordering", () => {
   });
 
   it("when a replacement notice is pending, MSG_DOCUMENT_REPLACEMENT_NOTICE (0x0B) is sent BEFORE the live-sections bootstrap (0x14)", async () => {
+    const displaced = await acquireDocSession(DOC_RESTORE_ORDER, WRITER_A.id, baseHead, WRITER_A, "sock-displaced");
+    const displacedId = displaced.liveYDocId;
     await invalidateSessionForReplacement(DOC_RESTORE_ORDER, {
       message: "document was restored to an earlier version",
     });
@@ -88,7 +91,7 @@ describe("joinAndNotify message ordering", () => {
     // invalidation destroys any existing session — acquire fresh
     const session: DocSession = await acquireDocSession(DOC_RESTORE_ORDER, WRITER_A.id, baseHead, WRITER_A, "sock-test");
     const { socket, sent } = createMockSocket();
-    const st = createSocketState(DOC_RESTORE_ORDER, WRITER_A.id);
+    const st = createSocketState(DOC_RESTORE_ORDER, WRITER_A.id, displacedId);
 
     try {
       joinAndNotify(session, socket, st);
@@ -147,12 +150,14 @@ describe("joinAndNotify message ordering", () => {
   });
 
   it("MSG_DOCUMENT_REPLACEMENT_NOTICE payload is valid JSON with expected fields", async () => {
+    const displaced = await acquireDocSession(DOC_JSON_PAYLOAD, WRITER_A.id, baseHead, WRITER_A, "sock-displaced");
+    const displacedId = displaced.liveYDocId;
     await invalidateSessionForReplacement(DOC_JSON_PAYLOAD, {
       message: "admin overwrote this document",
     });
     const session = await acquireDocSession(DOC_JSON_PAYLOAD, WRITER_A.id, baseHead, WRITER_A, "sock-test");
     const { socket, sent } = createMockSocket();
-    const st = createSocketState(DOC_JSON_PAYLOAD, WRITER_A.id);
+    const st = createSocketState(DOC_JSON_PAYLOAD, WRITER_A.id, displacedId);
 
     try {
       joinAndNotify(session, socket, st);

@@ -16,7 +16,7 @@ import { connectionBannerInfo } from "../services/crdt-connection-ux";
 import { DocumentFooter } from "../components/DocumentFooter";
 import { DocumentHistory } from "../components/DocumentHistory";
 import DocumentDiagnostics from "../components/DocumentDiagnostics";
-import { OverwriteMarkdownModal } from "../components/OverwriteMarkdownModal";
+import { AdminOverwriteMarkdownModal } from "../components/AdminOverwriteMarkdownModal";
 import { SectionEditRejectedModal } from "../components/SectionEditRejectedModal";
 import { useCrossSectionCopy } from "../hooks/useCrossSectionCopy";
 import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
@@ -48,6 +48,10 @@ import { useLiveSectionReplica } from "../hooks/useLiveSectionReplica";
 import { useActiveEditors } from "../hooks/useActiveEditors";
 import { useDocumentPresenceModel } from "../presence/useDocumentPresenceModel";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
+import {
+  EditorSessionCommandsProvider,
+  useEditorSessionCommandsValue,
+} from "../contexts/EditorSessionCommandsContext";
 import { DocumentPaperHeader } from "../components/DocumentPaperHeader";
 import {
   DocumentPaperStickyHeader,
@@ -602,6 +606,12 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
 
   const publishPaused = liveReplica.publishPaused;
   const { forcePublishing, lastOutcome: forcePublishOutcome, forcePublish } = useForcePublish(decodedDocPath);
+  const editorSessionCommands = useEditorSessionCommandsValue({
+    boundProposalId,
+    forcePublishing,
+    publishPaused,
+    forcePublish,
+  });
   const authorshipLedger = useMemo(() => new EphemeralSessionAuthorshipLedger(), []);
   const localEditSink: LocalEditOriginSink = authorshipLedger;
   const authorshipView: SessionAuthorshipView = authorshipLedger;
@@ -720,7 +730,7 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
           showDiagnostics={showDiagnostics}
           onToggleDiagnostics={() => setShowDiagnostics((v) => !v)}
           showOverwrite={showOverwrite}
-          onToggleOverwrite={() => setShowOverwrite((v) => !v)}
+          onToggleOverwrite={currentUser?.is_admin ? () => setShowOverwrite((v) => !v) : undefined}
           crdtState={liveReplica.editorState}
           publishPaused={publishPaused}
           isEditing={isEditing}
@@ -783,8 +793,8 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
       )}
 
       {/* Overwrite from Markdown modal */}
-      {showOverwrite && decodedDocPath && (
-        <OverwriteMarkdownModal docPath={decodedDocPath} onClose={() => setShowOverwrite(false)} />
+      {currentUser?.is_admin && showOverwrite && decodedDocPath && (
+        <AdminOverwriteMarkdownModal docPath={decodedDocPath} onClose={() => setShowOverwrite(false)} />
       )}
 
       {/* Origin-only CRDT live-edit rejection modal */}
@@ -936,6 +946,7 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
               cleanup against the still-alive old doc) in the same commit that
               first renders the replacement replica — before the hook's drain
               effect destroys the old Y.Doc. */}
+          <EditorSessionCommandsProvider value={editorSessionCommands}>
           <DocumentCanvas
             key={`live-gen-${liveReplica.replicaGeneration}`}
             sections={renderSections}
@@ -974,6 +985,7 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
             onCursorExit={handleSectionCursorExit}
             onCrossSectionDrop={handleCrossSectionDrop}
           />
+          </EditorSessionCommandsProvider>
 
           {/* Footer row — closes the paper */}
           <div className="flex">

@@ -19,7 +19,7 @@ import {
   getDiagnostics,
   restoreDocument,
   RestoreValidationError,
-  overwriteDocument,
+  adminOverwriteDocument,
   forcePublishDocument,
   renameDocument,
   createDocument,
@@ -139,8 +139,8 @@ export function registerWorkspaceRoutes(
     }
   });
 
-  // POST /workspace/:docPath/overwrite (admin-only)
-  router.post("/workspace/:docPath(*)/overwrite", async (req, res, next) => {
+  // POST /workspace/:docPath/admin-overwrite (admin-only)
+  router.post("/workspace/:docPath(*)/admin-overwrite", async (req, res, next) => {
     try {
       const docPath = docPathParamOf(req);
       const admin = await requireAdmin(req, res);
@@ -153,7 +153,7 @@ export function registerWorkspaceRoutes(
       }
 
       try {
-        const { committedSha } = await overwriteDocument(docPath, markdown, admin);
+        const { committedSha } = await adminOverwriteDocument(docPath, markdown, admin);
         res.json({ committed_sha: committedSha });
       } catch (error) {
         if (error instanceof DocumentDoesNotExistError) {
@@ -260,9 +260,15 @@ export function registerWorkspaceCatchAllRoutes(
       const writer = await requireDocWritePermission(req, res, docPath);
       if (!writer) return;
 
+      const { markdown } = (req.body ?? {}) as { markdown?: unknown };
+      if (markdown !== undefined && typeof markdown !== "string") {
+        sendApiError(res, 400, new Error(`"markdown" must be a string when present in create request for "${docPath}".`));
+        return;
+      }
+
       let result;
       try {
-        result = await createDocument(docPath, writer);
+        result = await createDocument(docPath, writer, markdown);
       } catch (error) {
         if (error instanceof DocumentAlreadyExistsError) {
           sendApiError(res, 409, error.message);

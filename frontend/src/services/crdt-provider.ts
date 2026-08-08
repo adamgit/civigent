@@ -25,6 +25,7 @@ import { apiClient } from "./api-client";
 import { LIVE_SECTION_SERVER_APPLY_ORIGIN } from "./live-section-replica";
 import { encodeDocPathForWs } from "../utils/path-encoding";
 import { randomUuid } from "../utils/random-uuid";
+import { recallDocSessionId } from "./doc-session-memory";
 import {
   ensurePageWsLifecycleInstalled,
   isPageWsSuspended,
@@ -636,12 +637,15 @@ export class CrdtProvider {
   }
 
   private sendModeTransitionRequest(): void {
-    const request: ModeTransitionRequest = this.initialTransitionRequest ?? {
-      requestId: randomUuid(),
-      clientInstanceId: this.clientInstanceId,
-      docPath: DocPath.parse(this.docPath),
-      requestedMode: "editor",
-      editorFocusTarget: null,
+    const request: ModeTransitionRequest = {
+      ...(this.initialTransitionRequest ?? {
+        requestId: randomUuid(),
+        clientInstanceId: this.clientInstanceId,
+        docPath: DocPath.parse(this.docPath),
+        requestedMode: "editor",
+        editorFocusTarget: null,
+      }),
+      previous_doc_session_id: recallDocSessionId(this.docPath),
     };
     this.initialTransitionRequest = null;
     const payload = new TextEncoder().encode(JSON.stringify(request));

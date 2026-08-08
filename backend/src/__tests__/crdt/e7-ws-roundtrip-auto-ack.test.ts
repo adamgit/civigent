@@ -136,6 +136,7 @@ class TestCrdtClient {
         docPath: SAMPLE_DOC_PATH,
         requestedMode: "editor",
         editorFocusTarget: null,
+        previous_doc_session_id: null,
       })));
     });
 

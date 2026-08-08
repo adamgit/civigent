@@ -3,6 +3,8 @@ import { Link, useOutletContext } from "react-router-dom";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { apiClient } from "../services/api-client";
+import { INVOLVEMENT_PRESET_UI } from "../involvement-preset-ui";
+import { HUMAN_INVOLVEMENT_PRESETS, type HumanInvolvementPresetName } from "../types/shared.js";
 
 export function HomePage() {
   const { createDoc, sidebarAutoHide, setSidebarAutoHide } = useOutletContext<AppLayoutOutletContext>();
@@ -20,6 +22,8 @@ export function HomePage() {
   const [bootstrapWorking, setBootstrapWorking] = useState(false);
   const [bootstrapMessage, setBootstrapMessage] = useState<string | null>(null);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+
+  const [involvementPreset, setInvolvementPreset] = useState<HumanInvolvementPresetName | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -45,6 +49,19 @@ export function HomePage() {
       .catch(() => {
         /* non-fatal background fetch */
         if (!cancelled) setBootstrapAvailable(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .getAgentsSummary()
+      .then((res) => {
+        if (!cancelled) setInvolvementPreset(res.posture.preset);
+      })
+      .catch(() => {
+        /* non-fatal background fetch */
       });
     return () => { cancelled = true; };
   }, []);
@@ -258,6 +275,41 @@ export function HomePage() {
           </div>
           {newDocError && <p className="text-error" style={{ marginTop: 6 }}>{newDocError}</p>}
         </form>
+
+        {involvementPreset && (
+          <p
+            data-testid="involvement-wait-line"
+            title={HUMAN_INVOLVEMENT_PRESETS[involvementPreset].description}
+            style={{
+              maxWidth: "75%",
+              margin: "-0.75rem auto 1.75rem",
+              fontSize: 13,
+              lineHeight: 1.45,
+              color: "var(--color-text-primary)",
+            }}
+          >
+            AI waits for humans:{" "}
+            <Link
+              to="/admin"
+              title={HUMAN_INVOLVEMENT_PRESETS[involvementPreset].description}
+              style={{
+                color: INVOLVEMENT_PRESET_UI[involvementPreset].color,
+                fontWeight: 600,
+                textDecoration: "none",
+              }}
+            >
+              {INVOLVEMENT_PRESET_UI[involvementPreset].label}
+            </Link>
+            {" - "}
+            <Link
+              to="/admin"
+              title={HUMAN_INVOLVEMENT_PRESETS[involvementPreset].description}
+              style={{ color: "var(--color-text-primary)", textDecoration: "none" }}
+            >
+              {INVOLVEMENT_PRESET_UI[involvementPreset].shortDescription}
+            </Link>
+          </p>
+        )}
 
         {/* Manual search */}
         <form

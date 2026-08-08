@@ -124,6 +124,15 @@ function decodeEditorFocusTargetOrNull(value: JsonValue, label: string): EditorF
   throw new Error(`${label}.kind must be "before_first_heading" | "heading_path", got ${JSON.stringify(kind)}`);
 }
 
+function decodeStringOrNullField(obj: JsonObject, key: string, label: string): string | null {
+  const value = obj[key];
+  if (value === null) return null;
+  if (typeof value !== "string") {
+    throw new Error(`${label}.${key} must be a string or null, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
 export function decodeModeTransitionRequest(value: JsonValue): ModeTransitionRequest {
   const label = "ModeTransitionRequest";
   const obj = expectJsonObject(value, label);
@@ -133,6 +142,7 @@ export function decodeModeTransitionRequest(value: JsonValue): ModeTransitionReq
     docPath: DocPath.parse(requireStringField(obj, "docPath", label)),
     requestedMode: decodeRequestedMode(obj["requestedMode"], `${label}.requestedMode`),
     editorFocusTarget: decodeEditorFocusTargetOrNull(obj["editorFocusTarget"], `${label}.editorFocusTarget`),
+    previous_doc_session_id: decodeStringOrNullField(obj, "previous_doc_session_id", label),
   };
 }
 

@@ -389,7 +389,7 @@ export async function restoreDocument(docPath: DocPath, sha: string, writer: Doc
 
 export class DocumentDoesNotExistError extends Error {}
 
-export async function overwriteDocument(docPath: DocPath, markdown: string, admin: DocumentWriter): Promise<{ committedSha: string }> {
+export async function adminOverwriteDocument(docPath: DocPath, markdown: string, admin: DocumentWriter): Promise<{ committedSha: string }> {
   const contentRoot = getContentRoot();
   const resolvedPath = resolveDocPathUnderContent(contentRoot, docPath);
   try {
@@ -448,7 +448,7 @@ export async function renameDocument(docPath: DocPath, newPath: DocPath, writer:
 export class DocumentAlreadyExistsError extends Error {}
 export class DocumentPendingDeletionError extends Error {}
 
-export async function createDocument(docPath: DocPath, writer: DocumentWriter): Promise<StructuralCommitResult> {
+export async function createDocument(docPath: DocPath, writer: DocumentWriter, initialMarkdown?: string): Promise<StructuralCommitResult> {
   const contentRoot = getContentRoot();
   // Validate the doc path (throws InvalidDocPathError on traversal/.md failures).
   resolveDocPathUnderContent(contentRoot, docPath);
@@ -465,6 +465,12 @@ export async function createDocument(docPath: DocPath, writer: DocumentWriter): 
     throw new DocumentPendingDeletionError("Document is pending deletion.");
   }
   await mutateProposalContent(proposalId, { kind: "create_document", docPath });
+  if (typeof initialMarkdown === "string" && initialMarkdown.length > 0) {
+    await mutateProposalContent(proposalId, {
+      kind: "write_document_markdown",
+      files: [{ docPath, markdown: initialMarkdown }],
+    });
+  }
   const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
   if (!committedHead) return { kind: "blocked", proposalId, policyResult };
   return { kind: "committed", proposalId, committedHead, policyResult };

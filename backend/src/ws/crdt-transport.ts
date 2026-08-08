@@ -34,6 +34,7 @@ export interface CrdtSocketState {
   requestedMode: RequestedMode;
   attachmentState: AttachmentState;
   docSessionId: DocSessionId | null;
+  previousDocSessionId?: string | null;
   editorFocusTarget: EditorFocusTarget | null;
   /** Token expiry (epoch seconds). Messages after this time close the connection. */
   tokenExp: number;
