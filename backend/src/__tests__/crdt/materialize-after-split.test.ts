@@ -107,15 +107,15 @@ describe("MW-16: materialize after a structural-dirty split", () => {
     expect(overviewBodyHolder).toBeDefined();
     expect(overviewBodyHolder!.heading).toBe("Overview");
     const timelineEntry = layout.find((e) => e.heading === "Timeline")!;
-    expect(overviewBodyHolder!.level).toBe(timelineEntry.level);
-    expect(overviewBodyHolder!.level).toBeGreaterThan(0);
+    expect(overviewBodyHolder!.headingLevel).toBe(timelineEntry.headingLevel);
+    expect(overviewBodyHolder!.headingLevel).toBeGreaterThan(0);
 
     // …and the survivor's LIVE fragment RETAINS its heading line (Option A: every
     // live fragment carries its heading; the body-holder is no longer body-only).
     const { buildLiveSeedContentMap } = await import("../../crdt/live-section-layout.js");
     const seed = await buildLiveSeedContentMap(SAMPLE_DOC_PATH, thirdId);
     const overviewFragment = seed.get(overviewBodyHolder!.fragmentKey) as unknown as string;
-    expect(overviewFragment.startsWith(`${"#".repeat(overviewBodyHolder!.level)} Overview`)).toBe(true);
+    expect(overviewFragment.startsWith(`${"#".repeat(overviewBodyHolder!.headingLevel)} Overview`)).toBe(true);
     expect(overviewFragment).toContain("base overview body");
   });
 

@@ -90,7 +90,7 @@ describe("body-holder visible heading regressions", () => {
 
     expect(details).toBeDefined();
     expect(details?.heading).toBe("Details");
-    expect(details?.level).toBe(2);
+    expect(details?.headingLevel).toBe(2);
   });
 
   it("getSectionDiscoveryList reports the visible parent heading instead of the anonymous body-holder child", async () => {

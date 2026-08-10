@@ -49,6 +49,8 @@ function createOutletContext(overrides?: Partial<AppLayoutOutletContext>): AppLa
     refreshTree: vi.fn().mockResolvedValue(undefined),
     sidebarAutoHide: false,
     setSidebarAutoHide: vi.fn(),
+    reportFocusedDocTabEditState: vi.fn(),
+    clearFocusedDocTabEditState: vi.fn(),
     ...overrides,
   };
 }

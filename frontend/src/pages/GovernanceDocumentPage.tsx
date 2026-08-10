@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { useParams } from "react-router-dom";
+import { useOutletContext } from "react-router-dom";
+import type { AppLayoutOutletContext } from "../app/AppLayout";
+import {
+  hasInFlightEditsOnThisPage,
+  hasUnpublishedChangesOnThisPage,
+} from "./document-tab-edit-state";
 import { SectionTransferService, type SectionTransfer } from "../services/section-transfer";
 import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
 import { rememberRecentDoc } from "../services/recent-docs";
@@ -81,20 +86,13 @@ import { DocPath } from "../types/shared";
 // ─── Component ───────────────────────────────────────────────────
 
 interface GovernanceDocumentPageProps {
-  docPathOverride?: string | null;
+  docPath: DocPath;
   /** Rendered in DocumentTopbar before History (e.g. view-mode toggle). */
   toolbarAccessory?: ReactNode;
 }
 
-export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: GovernanceDocumentPageProps = {}) {
-  const params = useParams();
-  const decodedDocPath = useMemo(() => {
-    if (typeof docPathOverride === "string" && docPathOverride.length > 0) {
-      return docPathOverride;
-    }
-    const routeDocPath = params["*"];
-    return routeDocPath ? decodeURIComponent(routeDocPath) : null;
-  }, [docPathOverride, params]);
+export function GovernanceDocumentPage({ docPath, toolbarAccessory }: GovernanceDocumentPageProps) {
+  const layoutOutlet = useOutletContext<AppLayoutOutletContext | undefined>();
 
   // ── Section data ─────────────────────────────────────────
   const [sections, setSections] = useState<WorkspaceSectionDto[]>([]);
@@ -121,7 +119,7 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
   const resourceModel = useMemo(() => new DocumentResourceModel(), []);
 
   // ── Load sections ────────────────────────────────────────
-  const loadSections = useCallback(async (docPath: string): Promise<WorkspaceSectionDto[]> => {
+  const loadSections = useCallback(async (docPath: DocPath): Promise<WorkspaceSectionDto[]> => {
     loadStartedAtRef.current = Date.now();
     setLoadDurationMs(null);
     setSectionsLoading(true);
@@ -148,14 +146,14 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
   // the page refetches cold seeds + signals.
   const handleLiveSessionEnded = useCallback(() => {
     setLiveMetaSections(null);
-    if (decodedDocPath) void loadSections(decodedDocPath);
-  }, [decodedDocPath, loadSections]);
+    void loadSections(docPath);
+  }, [docPath, loadSections]);
   const handleSuperseded = useCallback(() => {
     setStatusMessage("Editing moved to another tab. This tab is now read-only.");
   }, []);
   const caretGlue = useCaretRecoveryGlue();
   const liveReplica = useLiveSectionReplica({
-    docPath: decodedDocPath,
+    docPath,
     onSessionEnded: handleLiveSessionEnded,
     // 4022 restore / 4024 force-rebuild: the hook replaces the live pipeline;
     // reseed canonical so cold previews reflect the replaced content.
@@ -171,13 +169,12 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
   // maps only. The cold path is excluded — its lifecycle handling already
   // reloads `sections` outright.
   const refreshLiveGovernanceMeta = useCallback(() => {
-    if (!decodedDocPath) return;
     if (!liveReplicaReadyRef.current) return;
     void resourceModel
-      .loadSections(decodedDocPath)
+      .loadSections(docPath)
       .then((fresh) => setLiveMetaSections(fresh))
       .catch(() => { /* best-effort: gutters keep the last known meta */ });
-  }, [decodedDocPath, resourceModel]);
+  }, [docPath, resourceModel]);
 
   // The rows governance meta (gutters, lock signals) is derived from: the
   // fresher meta fetch while live, the ordinary REST rows otherwise.
@@ -272,7 +269,7 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
     setEditorRef,
     setRetargetCaretTarget,
   } = useDocumentSessionController({
-    decodedDocPath,
+    docPath,
     sections: baseRenderRows,
     workspaceSections: sections,
     setError,
@@ -290,12 +287,11 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
 
   const getProposalOverlayMarkdown = useCallback(
     (ref: RenderSectionRef): string | undefined => {
-      if (!decodedDocPath) return undefined;
-      const key = sectionGlobalKey(decodedDocPath, [...ref.headingPath]);
+      const key = sectionGlobalKey(docPath, [...ref.headingPath]);
       if (!selectedProposalSectionKeys.has(key)) return undefined;
       return proposalSectionsRef.current.get(key)?.content;
     },
-    [decodedDocPath, selectedProposalSectionKeys, proposalSectionsRef, proposalOverlayVersion],
+    [docPath, selectedProposalSectionKeys, proposalSectionsRef, proposalOverlayVersion],
   );
   const getDisplayMarkdown = useCallback(
     (ref: RenderSectionRef): string => {
@@ -357,7 +353,7 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
     pendingProposalIndicatorsRef,
     inProgressProposalsBySectionKey,
   } = useDocumentWebSocket({
-    decodedDocPath,
+    docPath,
     clientInstanceId,
     liveReplicaReadyRef,
     setStructureTree,
@@ -427,21 +423,19 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
 
   // ── Recent doc tracking ──────────────────────────────────
   useEffect(() => {
-    if (!decodedDocPath) return;
-    rememberRecentDoc(decodedDocPath);
-  }, [decodedDocPath]);
+    rememberRecentDoc(docPath);
+  }, [docPath]);
 
   // ── Fetch lightweight structure metadata (skeleton only, no git) ──
   useEffect(() => {
-    if (!decodedDocPath) return;
     let cancelled = false;
     setStructureTree(null);
-    resourceModel.loadStructure(decodedDocPath).then((structure) => {
+    resourceModel.loadStructure(docPath).then((structure) => {
       if (cancelled) return;
       setStructureTree(structure);
     }).catch(() => { /* non-fatal background fetch */ });
     return () => { cancelled = true; };
-  }, [decodedDocPath, resourceModel]);
+  }, [docPath, resourceModel]);
 
   // ── Delayed loading reveal (suppress flicker on fast loads) ──
   useEffect(() => {
@@ -456,9 +450,8 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
   // Initial canonical load. The live replica connects its observer socket on
   // mount by itself — there is no separate observer to start here.
   useEffect(() => {
-    if (!decodedDocPath) return;
-    void loadSections(decodedDocPath);
-  }, [decodedDocPath, loadSections]);
+    void loadSections(docPath);
+  }, [docPath, loadSections]);
 
   // Recently-changed sections are seeded live from `content:committed`
   // WebSocket events via `useDocumentWebSocket`. There is no page-load
@@ -473,14 +466,12 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
       // (same visible outcome as the legacy stop-editing path).
       setFocusedSectionId(null);
       setBootstrapFocusedSectionIndex(null);
-      if (decodedDocPath) {
-        void loadSections(decodedDocPath);
-      }
+      void loadSections(docPath);
     }
-  }, [liveReplica, decodedDocPath, loadSections, setBootstrapFocusedSectionIndex]);
+  }, [liveReplica, docPath, loadSections, setBootstrapFocusedSectionIndex]);
 
   // ── Derived ──────────────────────────────────────────────
-  const docTitle = decodedDocPath ? getDocDisplayName(DocPath.parse(decodedDocPath)) : "Untitled";
+  const docTitle = getDocDisplayName(docPath);
   // Connection banner for every non-live transport phase — editor state while
   // editing, observer state while viewing (null when live / no banner needed).
   const crdtBanner = connectionBannerInfo(isEditing, liveReplica.editorState, liveReplica.observerState);
@@ -498,7 +489,7 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
     : null;
   const changedSectionCount = liveReplica.replica?.getChangedSectionCount() ?? 0;
   const activelyEditedCount = liveReplica.replica?.getActivelyEditedSectionKeys().length ?? 0;
-  const { forcePublishing, lastOutcome: forcePublishOutcome, forcePublish } = useForcePublish(decodedDocPath);
+  const { forcePublishing, lastOutcome: forcePublishOutcome, forcePublish } = useForcePublish(docPath);
   const editorSessionCommands = useEditorSessionCommandsValue({
     boundProposalId,
     forcePublishing,
@@ -525,6 +516,34 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
     isEditing,
     authorshipView,
   );
+  const reportFocusedDocTabEditState = layoutOutlet?.reportFocusedDocTabEditState;
+  const clearFocusedDocTabEditState = layoutOutlet?.clearFocusedDocTabEditState;
+  useEffect(() => {
+    if (!reportFocusedDocTabEditState || !clearFocusedDocTabEditState) {
+      return;
+    }
+    reportFocusedDocTabEditState(docPath, {
+      hasUnpublishedChanges: hasUnpublishedChangesOnThisPage(
+        liveReplica.isCurrentlyLiveAuthority,
+        changedSectionCount,
+      ),
+      hasInFlightEdits: hasInFlightEditsOnThisPage(
+        saveStatus.allReceived,
+        saveStatus.hasLocalUncommittedEdits,
+      ),
+    });
+    return () => {
+      clearFocusedDocTabEditState(docPath);
+    };
+  }, [
+    docPath,
+    reportFocusedDocTabEditState,
+    clearFocusedDocTabEditState,
+    liveReplica.isCurrentlyLiveAuthority,
+    changedSectionCount,
+    saveStatus.allReceived,
+    saveStatus.hasLocalUncommittedEdits,
+  ]);
   // Single authoritative save-state model, shared with the topbar. The activity
   // pill is a presentation adapter over it (same as DocumentPage), never a second
   // model derived from raw `publishPaused` + `hasLocalEdits`.
@@ -608,7 +627,7 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
     [sections, canonicalSectionFileByFragmentKey, workspaceSeeds],
   );
   const blameMap = useBlameData(
-    decodedDocPath ?? "",
+    docPath,
     canonicalAuthorshipTargets,
     showAttribution && !sectionsLoading,
   );
@@ -682,7 +701,7 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
   // Document-not-found / error: show a non-document page instead of the white paper.
   // Non-404 failures must show the backend message (incl. stack) — never a generic substitute.
   if (!sectionsLoading && error) {
-    return <DocumentLoadErrorView docPath={decodedDocPath} error={error} />;
+    return <DocumentLoadErrorView docPath={docPath} error={error} />;
   }
 
   return (
@@ -691,7 +710,7 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
     <div className="relative flex flex-col h-full" style={{ background: "var(--color-page-bg)" }}>
       <div className="relative shrink-0">
         <DocumentTopbar
-          docPath={decodedDocPath}
+          docPath={docPath}
           toolbarAccessory={toolbarAccessory}
           showHistory={showHistory}
           onToggleHistory={() => setShowHistory((v) => !v)}
@@ -717,7 +736,7 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
 
       {/* Version history panel — includes the grayed unpublished live-proposal
           row at the top (FP18). */}
-      {showHistory && decodedDocPath && (
+      {showHistory && (
         <div className="border-b border-[#eae7e2] bg-canvas-bg">
           <div className="max-w-[700px] mx-auto">
             <div className="flex items-center justify-between px-4 py-2 border-b border-[#f5f2ed]">
@@ -730,11 +749,11 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
               </button>
             </div>
             <DocumentHistory
-              docPath={decodedDocPath}
+              docPath={docPath}
               unpublishedRow={unpublishedHistoryRow}
               onRestored={() => {
                 setShowHistory(false);
-                if (decodedDocPath) void loadSections(decodedDocPath);
+                void loadSections(docPath);
               }}
             />
           </div>
@@ -742,13 +761,13 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
       )}
 
       {/* Diagnostics modal */}
-      {showDiagnostics && decodedDocPath && (
-        <DocumentDiagnostics docPath={decodedDocPath} onClose={() => setShowDiagnostics(false)} />
+      {showDiagnostics && (
+        <DocumentDiagnostics docPath={docPath} onClose={() => setShowDiagnostics(false)} />
       )}
 
       {/* Overwrite from Markdown modal */}
-      {currentUser?.is_admin && showOverwrite && decodedDocPath && (
-        <AdminOverwriteMarkdownModal docPath={decodedDocPath} onClose={() => setShowOverwrite(false)} />
+      {currentUser?.is_admin && showOverwrite && (
+        <AdminOverwriteMarkdownModal docPath={docPath} onClose={() => setShowOverwrite(false)} />
       )}
 
       {/* Three-column governance layout scroll area */}
@@ -774,7 +793,7 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
               {docTitle}
             </h1>
             <div className="text-xs text-text-muted mb-7 pb-5 border-b border-[#eae7e2] flex items-center justify-between gap-4">
-              <span>{decodedDocPath ?? ""}</span>
+              <span>{docPath}</span>
               <button
                 onClick={() => setShowAttribution((v) => !v)}
                 className={`shrink-0 text-[10px] font-medium px-2 py-0.5 rounded border transition-colors ${
@@ -894,7 +913,7 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
             {renderSections.map((section) => {
               const sectionHeadingPathArr = [...section.headingPath];
               const sectionKey = sectionHeadingKey(sectionHeadingPathArr);
-              const proposalKey = decodedDocPath ? `${decodedDocPath}::${sectionKey}` : null;
+              const proposalKey = `${docPath}::${sectionKey}`;
               const isInProposal = !!(proposalMode && proposalKey && selectedProposalSectionKeys.has(proposalKey));
               const proposalConflictReason = proposalKey ? (proposalSectionConflicts.get(proposalKey) ?? null) : null;
               const lockedInProposalMode = proposalMode && isInProposal && proposalConflictReason !== null;
@@ -969,7 +988,7 @@ export function GovernanceDocumentPage({ docPathOverride, toolbarAccessory }: Go
       </div>
 
       <DocumentFooter
-        docPath={decodedDocPath}
+        docPath={docPath}
         isEditing={isEditing}
         focusedHeadingPath={focusedHeadingPath}
         loadDurationMs={loadDurationMs}

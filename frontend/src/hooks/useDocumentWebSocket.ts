@@ -30,7 +30,7 @@ import {
 // ─── Hook parameters ─────────────────────────────────────────────
 
 export interface UseDocumentWebSocketParams {
-  decodedDocPath: string | null;
+  docPath: DocPath;
   /**
    * Stable per-tab client instance id, reused across mode transitions. Bound
    * to the JSON app WebSocket subscription so origin-only app events
@@ -41,7 +41,7 @@ export interface UseDocumentWebSocketParams {
    *  ready, live topology/body events on this JSON socket are hints only. */
   liveReplicaReadyRef: React.MutableRefObject<boolean>;
   setStructureTree: React.Dispatch<React.SetStateAction<DocStructureNode[] | null>>;
-  loadSections: (docPath: string) => Promise<WorkspaceSectionDto[]>;
+  loadSections: (docPath: DocPath) => Promise<WorkspaceSectionDto[]>;
   setError: (e: string | null) => void;
   onSectionsInjectedByProposal?: (headingPaths: string[][], writerDisplayName: string) => void;
   onProposalSectionAvailability?: (event: ProposalSectionAvailabilityEvent) => void;
@@ -82,13 +82,13 @@ export interface UseDocumentWebSocketReturn {
   documentActivity: DocumentActivityEvent | null;
 }
 
-import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
+import { docHref } from "../app/docs-location";
 import { DocPath } from "../types/shared";
 
 // ─── Hook ─────────────────────────────────────────────────────────
 
 export function useDocumentWebSocket({
-  decodedDocPath,
+  docPath,
   clientInstanceId,
   liveReplicaReadyRef,
   setStructureTree,
@@ -178,15 +178,13 @@ export function useDocumentWebSocket({
 
   // ── WebSocket events ─────────────────────────────────────
   useEffect(() => {
-    if (!decodedDocPath) return;
-    const pageDocPath = DocPath.parse(decodedDocPath);
     setDocumentActivity(null);
     // The event handler MUST be registered before the subscribe command is
     // issued: the hub answers a subscribe with an initial `document:activity`
     // snapshot, which would otherwise race the handler registration.
     wsClient.onEvent((event) => {
       if (event.type === "document:activity") {
-        if (event.doc_path !== pageDocPath) return;
+        if (event.doc_path !== docPath) return;
         setDocumentActivity(event);
         return;
       }
@@ -194,7 +192,7 @@ export function useDocumentWebSocket({
       // ── content:committed (v3 shape) ──
       if (event.type === "content:committed") {
         const committed = event as ContentCommittedEvent;
-        if (committed.doc_path !== pageDocPath) return;
+        if (committed.doc_path !== docPath) return;
 
         const changedSectionLabels = committed.sections.map((s) =>
           headingPathToLabel(s.heading_path),
@@ -224,7 +222,7 @@ export function useDocumentWebSocket({
         );
 
         if (!liveReplicaReadyRef.current) {
-          loadSections(decodedDocPath);
+          loadSections(docPath);
         }
         onProposalMetaChanged?.();
         return;
@@ -233,7 +231,7 @@ export function useDocumentWebSocket({
       // ── agent:reading (v3) ──
       if (event.type === "agent:reading") {
         const reading = event as AgentReadingEvent;
-        if (reading.doc_path !== pageDocPath) return;
+        if (reading.doc_path !== docPath) return;
 
         const labels = reading.heading_paths.map((hp) => headingPathToLabel(hp));
         const key = `${reading.actor_id}:${labels.join(",")}`;
@@ -269,14 +267,14 @@ export function useDocumentWebSocket({
       // status, NOT the generic error banner, NOT the block-state store.
       if (event.type === "section:edit-rejected") {
         const rejected = event as SectionEditRejectedEvent;
-        if (rejected.doc_path !== pageDocPath) return;
+        if (rejected.doc_path !== docPath) return;
         if (onSectionEditRejected) onSectionEditRejected(rejected);
         return;
       }
 
       if (event.type === "section:pending" || event.type === "section:settled") {
         const pendingState = event as SectionPendingStateEvent;
-        if (pendingState.doc_path !== pageDocPath) return;
+        if (pendingState.doc_path !== docPath) return;
         // While the live replica is authoritative, live pending comes from the
         // CRDT `pending_sections` state — this JSON event is a cold hint only.
         if (liveReplicaReadyRef.current) return;
@@ -298,24 +296,24 @@ export function useDocumentWebSocket({
       // ── doc:renamed ──
       if (event.type === "doc:renamed") {
         const renamed = event as DocRenamedEvent;
-        if (renamed.old_path === pageDocPath) {
-          navigate(`/docs/${stripLeadingSlashForRoute(DocPath.parse(renamed.new_path))}`, { replace: true });
+        if (renamed.old_path === docPath) {
+          navigate(docHref(DocPath.parse(renamed.new_path)), { replace: true });
         }
         return;
       }
 
       if (event.type === "doc:structure-changed") {
         const structureChanged = event as DocStructureChangedEvent;
-        if (structureChanged.doc_path !== pageDocPath) return;
+        if (structureChanged.doc_path !== docPath) return;
         if (liveReplicaReadyRef.current) return;
-        loadSections(decodedDocPath);
+        loadSections(docPath);
         return;
       }
 
       // ── proposal:created ──
       if (event.type === "proposal:draft") {
         const created = event as ProposalDraftEvent;
-        if (created.doc_path !== pageDocPath) return;
+        if (created.doc_path !== docPath) return;
         replaceDraftProposalIndicators(created);
         // A proposal back in draft (e.g. lock loss demotion) is no longer in progress.
         clearInProgressIndicators(created.proposal_id);
@@ -326,7 +324,7 @@ export function useDocumentWebSocket({
       // ── proposal:withdrawn ──
       if (event.type === "proposal:withdrawn") {
         const withdrawn = event as ProposalWithdrawnEvent;
-        if (withdrawn.doc_path !== pageDocPath) return;
+        if (withdrawn.doc_path !== docPath) return;
         clearProposalIndicators(withdrawn.proposal_id);
         clearInProgressIndicators(withdrawn.proposal_id);
         onProposalMetaChanged?.();
@@ -336,7 +334,7 @@ export function useDocumentWebSocket({
       // ── proposal:inprogress ──
       if (event.type === "proposal:inprogress") {
         const inprogress = event as ProposalInProgressEvent;
-        if (inprogress.doc_path !== pageDocPath) return;
+        if (inprogress.doc_path !== docPath) return;
         clearProposalIndicators(inprogress.proposal_id);
         replaceInProgressIndicators(inprogress);
         onProposalMetaChanged?.();
@@ -347,7 +345,7 @@ export function useDocumentWebSocket({
         const availability = event as ProposalSectionAvailabilityEvent;
         if (
           !availability.sections.some((section) =>
-            section.doc_path === pageDocPath
+            section.doc_path === docPath
           )
         ) {
           return;
@@ -359,15 +357,15 @@ export function useDocumentWebSocket({
     wsClient.connect();
     // Bind the stable per-tab id at subscribe time so the hub/private-event
     // routing knows the identity of this document tab.
-    wsClient.subscribe(decodedDocPath, clientInstanceId);
+    wsClient.subscribe(docPath, clientInstanceId);
     return () => {
-      wsClient.unsubscribe(decodedDocPath);
+      wsClient.unsubscribe(docPath);
       wsClient.disconnect();
     };
   }, [
     clearProposalIndicators,
     clearInProgressIndicators,
-    decodedDocPath,
+    docPath,
     loadSections,
     navigate,
     onProposalSectionAvailability,

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DocStructureNode, AnyProposal } from "../types/shared.js";
-import { proposalSectionDocPathForDisplay } from "../types/shared.js";
+import { DocPath, proposalSectionDocPathForDisplay } from "../types/shared.js";
 import { apiClient } from "../services/api-client.js";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 
@@ -106,6 +106,7 @@ function AddSectionForm({
 }) {
   const [open, setOpen] = useState(false);
   const [addDocPath, setAddDocPath] = useState("");
+  const [addDocPathError, setAddDocPathError] = useState<string | null>(null);
   const [addHeadingStr, setAddHeadingStr] = useState("");
   const [addContent, setAddContent] = useState("");
   const [addJustification, setAddJustification] = useState("");
@@ -113,8 +114,15 @@ function AddSectionForm({
 
   // Load headings when doc changes
   useEffect(() => {
-    if (!addDocPath) { setAddHeadings([]); return; }
-    apiClient.getCanonicalDocumentStructure(addDocPath)
+    if (!addDocPath) { setAddHeadings([]); setAddDocPathError(null); return; }
+    const doc = DocPath.tryParse(addDocPath);
+    if (!doc) {
+      setAddHeadings([]);
+      setAddDocPathError(`Invalid document path: ${JSON.stringify(addDocPath)}`);
+      return;
+    }
+    setAddDocPathError(null);
+    apiClient.getCanonicalDocumentStructure(doc)
       .then((data) => {
         if (data.structure) setAddHeadings(flattenHeadings(data.structure));
       })
@@ -314,7 +322,7 @@ export function AgentSimulatorPage() {
       setHeadings([]);
       return;
     }
-    apiClient.getCanonicalDocumentStructure(docPath)
+    apiClient.getCanonicalDocumentStructure(DocPath.parse(docPath))
       .then((data) => {
         if (data.structure) {
           setHeadings(flattenHeadings(data.structure));

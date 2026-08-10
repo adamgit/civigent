@@ -665,7 +665,7 @@ const readProposalSectionHandler: ToolHandler = async (args) => {
       if (!section) {
         return makeToolErrorResult(`Section not found: ${headingPath.join(" > ")} in proposal ${proposalId}`);
       }
-      content = buildFragmentContent(body, section.level, section.heading);
+      content = buildFragmentContent(body, section.headingLevel, section.heading);
     }
 
     return jsonToolResult({

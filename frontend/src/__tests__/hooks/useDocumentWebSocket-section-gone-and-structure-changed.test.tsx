@@ -87,7 +87,7 @@ function buildParams(
   const focusedSectionIndexRef = ref<number | null>(opts.focusedSectionIndex ?? null);
   const loadSections = vi.fn(async () => []);
   const params: UseDocumentWebSocketParams = {
-    decodedDocPath: "/test.md",
+    docPath: "/test.md",
     clientInstanceId: "client-1",
     liveReplicaReadyRef: ref(opts.liveReplicaReady),
     setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],

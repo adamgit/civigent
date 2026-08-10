@@ -2,16 +2,17 @@ import { useCallback, useEffect, useState } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { CommitRow, type GitLogEntry } from "../components/CommitRow";
 import { apiClient } from "../services/api-client";
+import { DocPath } from "../types/shared";
 
 export function GitHistoryPage() {
   const [commits, setCommits] = useState<GitLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [docPathFilter, setDocPathFilter] = useState("");
-  const [activeFilter, setActiveFilter] = useState<string | undefined>(undefined);
+  const [activeFilter, setActiveFilter] = useState<DocPath | undefined>(undefined);
   const [hasMore, setHasMore] = useState(true);
 
-  const fetchCommits = useCallback(async (offset: number, docPath?: string) => {
+  const fetchCommits = useCallback(async (offset: number, docPath?: DocPath) => {
     const entries = await apiClient.getGitLog({ limit: 30, offset, doc_path: docPath });
     if (entries.length < 30) setHasMore(false);
     return entries;
@@ -41,7 +42,7 @@ export function GitHistoryPage() {
 
   const handleFilterSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setActiveFilter(docPathFilter.trim() || undefined);
+    setActiveFilter(DocPath.tryParse(docPathFilter.trim()) ?? undefined);
   };
 
   const clearFilter = () => {

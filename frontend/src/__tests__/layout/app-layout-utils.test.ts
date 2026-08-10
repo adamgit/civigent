@@ -1,34 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  parseRouteDocPath,
-  formatBuildDate,
-} from "../../app/app-layout-utils";
-
-describe("parseRouteDocPath", () => {
-  it("returns canonical path for valid /docs/ route", () => {
-    expect(parseRouteDocPath("/docs/readme.md")).toBe("/readme.md");
-  });
-
-  it("decodes URI-encoded path segments", () => {
-    expect(parseRouteDocPath("/docs/my%20doc.md")).toBe("/my doc.md");
-  });
-
-  it("returns null for non-docs path", () => {
-    expect(parseRouteDocPath("/proposals")).toBeNull();
-  });
-
-  it("returns null for bare /docs/ with no trailing segment", () => {
-    expect(parseRouteDocPath("/docs/")).toBeNull();
-  });
-
-  it("returns null for empty string", () => {
-    expect(parseRouteDocPath("")).toBeNull();
-  });
-
-  it("handles nested paths", () => {
-    expect(parseRouteDocPath("/docs/ops/strategy.md")).toBe("/ops/strategy.md");
-  });
-});
+import { formatBuildDate } from "../../app/app-layout-utils";
 
 describe("formatBuildDate", () => {
   it("formats a valid ISO date", () => {

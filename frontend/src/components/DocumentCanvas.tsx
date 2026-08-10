@@ -8,7 +8,7 @@ import {
   shouldMountEditorForFragment,
 } from "../pages/document-page-utils";
 import { SectionId, type RenderSectionRef } from "../types/live-sections";
-import { sectionHeadingKey } from "../types/shared.js";
+import { sectionHeadingKey, type DocPath } from "../types/shared.js";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import type { LocalEditOriginSink } from "../status/sessionAuthorship";
 import { SummaryWhoChangedThisSection } from "./SummaryWhoChangedThisSection.js";
@@ -25,7 +25,7 @@ export interface DocumentCanvasProps {
   proposalScopeMutationInFlight: boolean;
   selectedProposalSectionKeys: Set<string>;
   proposalSectionConflicts: Map<string, string>;
-  decodedDocPath: string | null;
+  docPath: DocPath;
   recentlyChangedByLabel: Map<string, unknown>;
   injectedByLabel: Map<string, string>;
   dragOverFragmentKey: string | null;
@@ -63,7 +63,7 @@ export function DocumentCanvas({
   proposalScopeMutationInFlight,
   selectedProposalSectionKeys,
   proposalSectionConflicts,
-  decodedDocPath,
+  docPath,
   recentlyChangedByLabel,
   injectedByLabel,
   dragOverFragmentKey,
@@ -96,7 +96,7 @@ export function DocumentCanvas({
       {!sectionsLoading ? sections.map((section) => {
         const headingPath = [...section.headingPath];
         const sectionKey = sectionHeadingKey(headingPath);
-        const proposalKey = decodedDocPath ? `${decodedDocPath}::${sectionKey}` : null;
+        const proposalKey = `${docPath}::${sectionKey}`;
         const isInProposal = !!(proposalMode && proposalKey && selectedProposalSectionKeys.has(proposalKey));
         const proposalConflictReason = proposalKey ? (proposalSectionConflicts.get(proposalKey) ?? null) : null;
         const lockedInProposalMode = proposalMode && isInProposal && proposalConflictReason !== null;

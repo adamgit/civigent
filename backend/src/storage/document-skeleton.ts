@@ -49,7 +49,7 @@ import path from "node:path";
 import { writeFile, mkdir, rm } from "node:fs/promises";
 import { pathExists, readFileIfExists } from "./fs-primitives.js";
 import type { DocStructureNode } from "../types/shared.js";
-import { DocPath } from "../types/shared.js";
+import { DocPath, HeadingLevel } from "../types/shared.js";
 import { docPathToContentRelativeFsPath } from "./path-utils.js";
 import { staleHeadingPath } from "./skeleton-errors.js";
 import { isBodyHolderShape } from "./section-shape.js";
@@ -64,14 +64,14 @@ const SECTION_MARKER_RE = /^\{\{section:\s*([^|}]+?)\s*(?:\|[^}]*)?\}\}$/;
 
 export interface SkeletonEntry {
   heading: string;
-  level: number;
+  headingLevel: HeadingLevel;
   sectionFile: string;
 }
 
 export function parseSkeletonToEntries(skeleton: string): SkeletonEntry[] {
   const lines = skeleton.split(/\r?\n/);
   const entries: SkeletonEntry[] = [];
-  let pendingHeading: { text: string; depth: number } | null = null;
+  let pendingHeading: { text: string; headingLevel: HeadingLevel } | null = null;
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -80,7 +80,7 @@ export function parseSkeletonToEntries(skeleton: string): SkeletonEntry[] {
     if (headingMatch) {
       pendingHeading = {
         text: headingMatch[2].trim(),
-        depth: headingMatch[1].length,
+        headingLevel: HeadingLevel.parse(headingMatch[1].length),
       };
       continue;
     }
@@ -89,7 +89,7 @@ export function parseSkeletonToEntries(skeleton: string): SkeletonEntry[] {
     if (markerMatch && pendingHeading) {
       entries.push({
         heading: pendingHeading.text,
-        level: pendingHeading.depth,
+        headingLevel: pendingHeading.headingLevel,
         sectionFile: markerMatch[1].trim(),
       });
       pendingHeading = null;
@@ -98,7 +98,7 @@ export function parseSkeletonToEntries(skeleton: string): SkeletonEntry[] {
     if (markerMatch && !pendingHeading) {
       entries.push({
         heading: "",
-        level: 0,
+        headingLevel: HeadingLevel.beforeFirstHeading,
         sectionFile: markerMatch[1].trim(),
       });
       continue;
@@ -119,7 +119,7 @@ export function serializeSkeletonEntries(entries: SkeletonEntry[]): string {
       lines.push(`{{section: ${entry.sectionFile}}}`);
     } else {
       lines.push("");
-      lines.push(`${"#".repeat(entry.level)} ${entry.heading}`);
+      lines.push(`${"#".repeat(entry.headingLevel)} ${entry.heading}`);
       lines.push(`{{section: ${entry.sectionFile}}}`);
     }
   }
@@ -253,7 +253,7 @@ export function generateSectionBodyFilename(): string {
 
 export interface SkeletonNode {
   heading: string;
-  level: number;
+  headingLevel: HeadingLevel;
   sectionFile: string;
   children: SkeletonNode[];
 }
@@ -261,7 +261,7 @@ export interface SkeletonNode {
 export interface FlatEntry {
   headingPath: string[];
   heading: string;
-  level: number;
+  headingLevel: HeadingLevel;
   sectionFile: string;
   /** Absolute path to the section body file under the active root */
   absolutePath: string;
@@ -277,7 +277,7 @@ export interface ContentEntry {
   kind: "content_entry";
   headingPath: string[];
   heading: string;
-  level: number;
+  headingLevel: HeadingLevel;
   sectionFile: string;
   absolutePath: string;
   storageRole: "direct_section" | "body_holder" | "before_first_heading";
@@ -287,7 +287,7 @@ export interface StructuralNodeEntry {
   kind: "structural_node";
   headingPath: string[];
   heading: string;
-  level: number;
+  headingLevel: HeadingLevel;
   sectionFile: string;
   absolutePath: string;
   hasChildren: boolean;
@@ -383,7 +383,7 @@ export class DocumentSkeleton {
   forEachNode(
     cb: (
       heading: string,
-      level: number,
+      headingLevel: HeadingLevel,
       sectionFile: string,
       headingPath: string[],
       absolutePath: string,
@@ -401,14 +401,14 @@ export class DocumentSkeleton {
   forEachSection(
     cb: (
       heading: string,
-      level: number,
+      headingLevel: HeadingLevel,
       sectionFile: string,
       headingPath: string[],
       absolutePath: string,
     ) => void,
   ): void {
-    this.forEachNode((heading, level, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
-      if (!isSubSkeleton) cb(heading, level, sectionFile, headingPath, absolutePath);
+    this.forEachNode((heading, headingLevel, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
+      if (!isSubSkeleton) cb(heading, headingLevel, sectionFile, headingPath, absolutePath);
     });
   }
 
@@ -430,7 +430,7 @@ export class DocumentSkeleton {
   forEachVisibleSection(
     cb: (
       heading: string,
-      level: number,
+      headingLevel: HeadingLevel,
       sectionFile: string,
       headingPath: string[],
       absolutePath: string,
@@ -444,10 +444,10 @@ export class DocumentSkeleton {
     hp: string[],
     parentSkeletonPath: string,
     parentVisibleHeading: string | undefined,
-    parentVisibleLevel: number | undefined,
+    parentVisibleLevel: HeadingLevel | undefined,
     cb: (
       heading: string,
-      level: number,
+      headingLevel: HeadingLevel,
       sectionFile: string,
       headingPath: string[],
       absolutePath: string,
@@ -463,14 +463,14 @@ export class DocumentSkeleton {
       if (isSubSkeleton) {
         // Sub-skeleton parent: skip emit; recurse with this node as the
         // visible parent so a nested body-holder child can fold onto it.
-        this.walkVisibleSections(node.children, hp, absPath, node.heading, node.level, cb);
+        this.walkVisibleSections(node.children, hp, absPath, node.heading, node.headingLevel, cb);
       } else if (isBfh && parentVisibleHeading !== undefined && parentVisibleLevel !== undefined) {
         // Nested body-holder: emit with parent's visible heading/level,
         // but keep sectionFile/absolutePath pointed at the body-holder's body file.
         cb(parentVisibleHeading, parentVisibleLevel, node.sectionFile, hp, absPath);
       } else {
         // Normal section, or root-level BFH (no sub-skeleton parent above).
-        cb(node.heading, node.level, node.sectionFile, hp, absPath);
+        cb(node.heading, node.headingLevel, node.sectionFile, hp, absPath);
       }
 
       if (!isBfh) hp.pop();
@@ -483,7 +483,7 @@ export class DocumentSkeleton {
     parentSkeletonPath: string,
     cb: (
       heading: string,
-      level: number,
+      headingLevel: HeadingLevel,
       sectionFile: string,
       headingPath: string[],
       absolutePath: string,
@@ -496,7 +496,7 @@ export class DocumentSkeleton {
       if (!isBfh) hp.push(node.heading);
       const absPath = path.join(sectionsDir, node.sectionFile);
       const isSubSkeleton = node.children.length > 0;
-      cb(node.heading, node.level, node.sectionFile, hp, absPath, isSubSkeleton);
+      cb(node.heading, node.headingLevel, node.sectionFile, hp, absPath, isSubSkeleton);
       if (isSubSkeleton) {
         this.walkNodes(node.children, hp, absPath, cb);
       }
@@ -512,7 +512,7 @@ export class DocumentSkeleton {
   protected toDocStructureNodes(nodes: SkeletonNode[]): DocStructureNode[] {
     return nodes.map(n => ({
       heading: n.heading,
-      level: n.level,
+      heading_level: HeadingLevel.parse(n.headingLevel),
       children: this.toDocStructureNodes(n.children),
     }));
   }
@@ -529,7 +529,7 @@ export class DocumentSkeleton {
       kind: "structural_node",
       headingPath,
       heading: node.heading,
-      level: node.level,
+      headingLevel: node.headingLevel,
       sectionFile: node.sectionFile,
       absolutePath,
       hasChildren: node.children.length > 0,
@@ -545,7 +545,7 @@ export class DocumentSkeleton {
         kind: "content_entry",
         headingPath: [...structuralNode.headingPath],
         heading: structuralNode.heading,
-        level: structuralNode.level,
+        headingLevel: structuralNode.headingLevel,
         sectionFile: bodyHolderSectionFile,
         absolutePath: path.join(`${structuralNode.absolutePath}.sections`, bodyHolderSectionFile),
         storageRole: structuralNode.headingPath.length === 0 ? "before_first_heading" : "body_holder",
@@ -555,7 +555,7 @@ export class DocumentSkeleton {
       kind: "content_entry",
       headingPath: [...structuralNode.headingPath],
       heading: structuralNode.heading,
-      level: structuralNode.level,
+      headingLevel: structuralNode.headingLevel,
       sectionFile: structuralNode.sectionFile,
       absolutePath: structuralNode.absolutePath,
       storageRole: structuralNode.headingPath.length === 0 ? "before_first_heading" : "direct_section",
@@ -599,7 +599,7 @@ export class DocumentSkeleton {
       return {
         headingPath: root.headingPath,
         heading: root.heading,
-        level: root.level,
+        headingLevel: root.headingLevel,
         sectionFile: root.sectionFile,
         absolutePath: root.absolutePath,
         isSubSkeleton: false,
@@ -626,7 +626,7 @@ export class DocumentSkeleton {
       return root ? {
         headingPath: root.headingPath,
         heading: root.heading,
-        level: root.level,
+        headingLevel: root.headingLevel,
         sectionFile: root.sectionFile,
         absolutePath: root.absolutePath,
         isSubSkeleton: false,
@@ -652,7 +652,7 @@ export class DocumentSkeleton {
         return {
           headingPath: [...hp],
           heading: node.heading,
-          level: node.level,
+          headingLevel: node.headingLevel,
           sectionFile: node.sectionFile,
           absolutePath: absPath,
           isSubSkeleton: node.children.length > 0,
@@ -756,8 +756,8 @@ export class DocumentSkeleton {
    */
   allContentEntries(): FlatEntry[] {
     const entries: FlatEntry[] = [];
-    this.forEachSection((heading, level, sectionFile, hp, absolutePath) => {
-      entries.push({ headingPath: [...hp], heading, level, sectionFile, absolutePath, isSubSkeleton: false });
+    this.forEachSection((heading, headingLevel, sectionFile, hp, absolutePath) => {
+      entries.push({ headingPath: [...hp], heading, headingLevel, sectionFile, absolutePath, isSubSkeleton: false });
     });
     return entries;
   }
@@ -777,11 +777,11 @@ export class DocumentSkeleton {
    */
   allStructuralEntries(): FlatEntry[] {
     const entries: FlatEntry[] = [];
-    this.forEachNode((heading, level, sectionFile, hp, absolutePath, isSubSkeleton) => {
+    this.forEachNode((heading, headingLevel, sectionFile, hp, absolutePath, isSubSkeleton) => {
       entries.push({
         headingPath: [...hp],
         heading,
-        level,
+        headingLevel,
         sectionFile,
         absolutePath,
         isSubSkeleton,
@@ -807,8 +807,8 @@ export class DocumentSkeleton {
    */
   serializeStructuralEntries(): SkeletonEntry[] {
     const out: SkeletonEntry[] = [];
-    this.forEachNode((heading, level, sectionFile) => {
-      out.push({ heading, level, sectionFile });
+    this.forEachNode((heading, headingLevel, sectionFile) => {
+      out.push({ heading, headingLevel, sectionFile });
     });
     return out;
   }
@@ -950,7 +950,7 @@ export class DocumentSkeleton {
       result.push({
         headingPath: hp,
         heading: node.heading,
-        level: node.level,
+        headingLevel: node.headingLevel,
         sectionFile: node.sectionFile,
         absolutePath: absPath,
         isSubSkeleton: node.children.length > 0,
@@ -974,7 +974,7 @@ export class DocumentSkeleton {
     const result: FlatEntry[] = [{
       headingPath: hp,
       heading: node.heading,
-      level: node.level,
+      headingLevel: node.headingLevel,
       sectionFile: node.sectionFile,
       absolutePath: absPath,
       isSubSkeleton: node.children.length > 0,
@@ -1011,7 +1011,7 @@ export class DocumentSkeleton {
     isSubSkeleton = false,
   ): Promise<void> {
     const content = serializeSkeletonEntries(
-      nodes.map(n => ({ heading: n.heading, level: n.level, sectionFile: n.sectionFile })),
+      nodes.map(n => ({ heading: n.heading, headingLevel: n.headingLevel, sectionFile: n.sectionFile })),
     );
     await mkdir(path.dirname(skeletonPath), { recursive: true });
     await writeFile(skeletonPath, content, "utf8");
@@ -1095,7 +1095,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
   findPreviousBodyHolder(targetSectionFile: string): FlatEntry | null {
     let snapshot: FlatEntry | null = null;
     let foundTarget = false;
-    this.forEachSection((heading, level, sectionFile, hp, absolutePath) => {
+    this.forEachSection((heading, headingLevel, sectionFile, hp, absolutePath) => {
       if (foundTarget) return;
       if (sectionFile === targetSectionFile) {
         foundTarget = true;
@@ -1104,7 +1104,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
       snapshot = {
         headingPath: [...hp],
         heading,
-        level,
+        headingLevel,
         sectionFile,
         absolutePath,
         isSubSkeleton: false,
@@ -1158,7 +1158,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
         this.flattenNode(node, parentPath, parentSkeletonPath),
       addBodyHoldersToParents: (nodes) => addBodyHoldersToParents(nodes),
       createBfhAtFront: () => {
-        if (this.roots[0]?.level === 0 && this.roots[0]?.heading === "") {
+        if (this.roots[0]?.headingLevel === 0 && this.roots[0]?.heading === "") {
           throw new Error(
             `createBfhAtFront() called in ${this.docPath} but a BFH ` +
             `already exists at the front of roots. Caller must check first.`,
@@ -1167,7 +1167,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
         const bfhFileName = generateBeforeFirstHeadingFilename();
         const bfhNode: SkeletonNode = {
           heading: "",
-          level: 0,
+          headingLevel: HeadingLevel.beforeFirstHeading,
           sectionFile: bfhFileName,
           children: [],
         };
@@ -1417,7 +1417,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
       bodyHolderEntry = {
         headingPath: [...headingPath],
         heading: bodyHolderNode.heading,
-        level: bodyHolderNode.level,
+        headingLevel: bodyHolderNode.headingLevel,
         sectionFile: bodyHolderNode.sectionFile,
         absolutePath: path.join(`${targetNodeAbsPath}.sections`, bodyHolderNode.sectionFile),
         isSubSkeleton: false,
@@ -1471,7 +1471,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
       removed.push({
         headingPath: [...parentPath, removedNode.heading],
         heading: removedNode.heading,
-        level: removedNode.level,
+        headingLevel: removedNode.headingLevel,
         sectionFile: removedNode.sectionFile,
         absolutePath: targetAbsPath,
         isSubSkeleton: true,
@@ -1481,7 +1481,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
         removed.push({
           headingPath: [...parentPath, removedNode.heading],
           heading: "",
-          level: 0,
+          headingLevel: HeadingLevel.beforeFirstHeading,
           sectionFile: bhChild.sectionFile,
           absolutePath: path.join(`${targetAbsPath}.sections`, bhChild.sectionFile),
           isSubSkeleton: false,
@@ -1566,7 +1566,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
               resolvedMergeTarget = {
                 headingPath: [...mtHP],
                 heading: "",
-                level: 0,
+                headingLevel: HeadingLevel.beforeFirstHeading,
                 sectionFile: bhChild.sectionFile,
                 absolutePath: bhAbsPath,
                 isSubSkeleton: false,
@@ -1629,12 +1629,12 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
   async replaceHeadingNodeInPlace(
     headingPath: string[],
     newHeading: string,
-    newLevel: number,
+    newHeadingLevel: HeadingLevel,
   ): Promise<StructuralMutationPlan> {
     if (headingPath.length === 0) {
       throw new Error(
         `replaceHeadingNodeInPlace([]) is illegal in ${this.docPath} — ` +
-        `the before-first-heading section has heading="" and level=0 by ` +
+        `the before-first-heading section has heading="" and headingLevel=0 by ` +
         `definition and cannot be renamed or re-leveled in place.`,
       );
     }
@@ -1654,7 +1654,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
       const newSectionFile = generateSectionFilename(newHeading);
       const newNode: SkeletonNode = {
         heading: newHeading,
-        level: newLevel,
+        headingLevel: newHeadingLevel,
         sectionFile: newSectionFile,
         children: oldNode.children,
       };
@@ -1698,7 +1698,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    */
   async splitHeadingNode(
     headingPath: string[],
-    parsedSections: ReadonlyArray<{ heading: string; level: number; headingPath: readonly string[] }>,
+    parsedSections: ReadonlyArray<{ heading: string; headingLevel: HeadingLevel; headingPath: readonly string[] }>,
   ): Promise<StructuralMutationPlan> {
     if (headingPath.length === 0) {
       throw new Error(
@@ -1725,17 +1725,17 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
       const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
       const removed = ctx.flattenNode(oldNode, parentPath, parentSkeletonPath);
 
-      const originalLevel = oldNode.level;
+      const originalLevel = oldNode.headingLevel;
       const atLevel: Array<(typeof parsedSections)[number]> = [];
       const deeper: Array<(typeof parsedSections)[number]> = [];
       for (const sec of parsedSections) {
-        if (sec.level <= originalLevel) atLevel.push(sec);
+        if (sec.headingLevel <= originalLevel) atLevel.push(sec);
         else deeper.push(sec);
       }
       const replacements: SkeletonNode[] = atLevel.map((sec, i) => {
         const node: SkeletonNode = {
           heading: sec.heading,
-          level: sec.level,
+          headingLevel: sec.headingLevel,
           sectionFile: generateSectionFilename(sec.heading),
           children: [],
         };
@@ -1743,7 +1743,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
           for (const child of deeper) {
             node.children.push({
               heading: child.heading,
-              level: child.level,
+              headingLevel: child.headingLevel,
               sectionFile: generateSectionFilename(child.heading),
               children: [],
             });
@@ -1797,7 +1797,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * own bodies after this method returns.
    */
   async appendRootSections(
-    parsedSections: ReadonlyArray<{ heading: string; level: number; headingPath: readonly string[] }>,
+    parsedSections: ReadonlyArray<{ heading: string; headingLevel: HeadingLevel; headingPath: readonly string[] }>,
   ): Promise<StructuralMutationPlan> {
     if (parsedSections.length === 0) {
       throw new Error(
@@ -1812,7 +1812,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
       for (const sec of parsedSections) {
         const node: SkeletonNode = {
           heading: sec.heading,
-          level: sec.level,
+          headingLevel: sec.headingLevel,
           sectionFile: generateSectionFilename(sec.heading),
           children: [],
         };
@@ -2249,7 +2249,7 @@ async function readTreeRecursive(skeletonPath: string): Promise<SkeletonNode[]> 
   for (const entry of entries) {
     const node: SkeletonNode = {
       heading: entry.heading,
-      level: entry.level,
+      headingLevel: entry.headingLevel,
       sectionFile: entry.sectionFile,
       children: [],
     };
@@ -2295,7 +2295,7 @@ export async function listSkeletonEntriesAtRoot(
       const isSubSkeleton = node.children.length > 0;
       out.push({
         heading: node.heading,
-        level: node.level,
+        headingLevel: node.headingLevel,
         sectionFile: node.sectionFile,
         headingPath,
         absolutePath,
@@ -2318,7 +2318,7 @@ function validateNoDuplicateRoots(nodes: SkeletonNode[], docPath: DocPath): void
   const rootCount = nodes.filter(n => isBodyHolderShape(n)).length;
   if (rootCount > 1) {
     throw new Error(
-      `Skeleton integrity error: ${rootCount} duplicate root entries (level=0, heading="") ` +
+      `Skeleton integrity error: ${rootCount} duplicate root entries (headingLevel=0, heading="") ` +
       `in ${docPath}. This is an impossible state — only one root is allowed.`,
     );
   }
@@ -2340,7 +2340,7 @@ function addBodyHoldersToParents(nodes: SkeletonNode[]): void {
         const rootFile = generateSectionBodyFilename();
         node.children.unshift({
           heading: "",
-          level: 0,
+          headingLevel: HeadingLevel.beforeFirstHeading,
           sectionFile: rootFile,
           children: [],
         });

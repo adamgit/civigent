@@ -3,15 +3,15 @@ import { useNavigate, useOutletContext } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { ContentPanel } from "../components/ContentPanel";
 import { PageStatusBar } from "../components/PageStatusBar";
-import { folderRouteForPath, stripLeadingSlashForRoute } from "../app/docsRouteUtils";
+import { docHref, folderHref } from "../app/docs-location";
 import { apiClient } from "../services/api-client";
 import type { DocumentTreeEntry } from "../types/shared.js";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
-import { DocPath } from "../types/shared";
+import { DocPath, FolderPath } from "../types/shared";
 import { copyTextToClipboard } from "../utils/copy-text";
 
 interface FolderPageProps {
-  folderPath: string;
+  folderPath: FolderPath;
 }
 
 interface ChildFolderInfo {
@@ -28,8 +28,9 @@ interface FolderStats {
 }
 
 function getDisplayName(path: string): string {
-  if (path === "/") {
-    return "/";
+  const folder = FolderPath.tryParse(path);
+  if (folder) {
+    return FolderPath.displayName(folder);
   }
   const parts = path.split("/").filter(Boolean);
   return parts[parts.length - 1] ?? path;
@@ -39,11 +40,7 @@ function ensureMarkdownSuffix(path: string): string {
   return path.toLowerCase().endsWith(".md") ? path : `${path}.md`;
 }
 
-function buildDocPath(folderPath: string, name: string): DocPath {
-  const trimmedName = name.trim().replace(/^\/+/, "");
-  const baseFolder = folderPath === "/" ? "" : folderPath.replace(/\/+$/, "");
-  return DocPath.parse(ensureMarkdownSuffix(`${baseFolder}/${trimmedName}`.replace(/\/{2,}/g, "/")));
-}
+
 
 function findFolderEntry(entries: DocumentTreeEntry[], folderPath: string): DocumentTreeEntry | null {
   const stack = [...entries];
@@ -178,7 +175,7 @@ function FolderPathBreadcrumb({
   folderPath,
   onNavigate,
 }: {
-  folderPath: string;
+  folderPath: FolderPath;
   onNavigate: (route: string) => void;
 }) {
   const parts = folderPath.split("/").filter(Boolean);
@@ -190,7 +187,7 @@ function FolderPathBreadcrumb({
       <button
         type="button"
         className={`shrink-0 ${segmentClass}`}
-        onClick={() => onNavigate(folderRouteForPath("/"))}
+        onClick={() => onNavigate(folderHref(FolderPath.root))}
         aria-label="Open documents root"
       >
         /
@@ -206,7 +203,7 @@ function FolderPathBreadcrumb({
               <button
                 type="button"
                 className={`min-w-0 truncate ${segmentClass}`}
-                onClick={() => onNavigate(folderRouteForPath(segmentPath))}
+                onClick={() => onNavigate(folderHref(FolderPath.parse(segmentPath)))}
                 aria-label={`Open folder ${segmentPath}`}
               >
                 {part}
@@ -233,6 +230,11 @@ export function FolderPage({ folderPath }: FolderPageProps) {
   const [sectionNamesByPath, setSectionNamesByPath] = useState<Record<string, string[]>>({});
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const copiedPathTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [folderOpBusy, setFolderOpBusy] = useState(false);
 
   const folderEntry = useMemo(() => findFolderEntry(entries, folderPath), [entries, folderPath]);
   const stats = useMemo(() => (folderEntry ? getFolderStats(folderEntry) : null), [folderEntry]);
@@ -264,7 +266,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
     Promise.all(
       paths.map(async (path) => {
         try {
-          const response = await apiClient.getWorkspaceDocumentStructure(path);
+          const response = await apiClient.getWorkspaceDocumentStructure(DocPath.parse(path));
           const names = response.structure
             .map((node) => node.heading.trim())
             .filter((heading) => heading.length > 0);
@@ -288,6 +290,52 @@ export function FolderPage({ folderPath }: FolderPageProps) {
     };
   }, [stats]);
 
+  const handleRenameFolder = async (event: FormEvent) => {
+    event.preventDefault();
+    if (folderOpBusy) {
+      return;
+    }
+    let newFolder: FolderPath;
+    try {
+      newFolder = FolderPath.normalize(renameValue);
+    } catch (error) {
+      setRenameError(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    setFolderOpBusy(true);
+    setRenameError(null);
+    try {
+      const res = await apiClient.renameFolder(folderPath, newFolder);
+      await refreshTree();
+      setRenaming(false);
+      navigate(folderHref(FolderPath.parse(res.new_folder_path)));
+    } catch (error) {
+      setRenameError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setFolderOpBusy(false);
+    }
+  };
+
+  const handleDeleteFolder = async () => {
+    if (folderOpBusy) {
+      return;
+    }
+    if (!window.confirm("Delete this folder and every document in it? This cannot be undone.")) {
+      return;
+    }
+    setFolderOpBusy(true);
+    setDeleteError(null);
+    try {
+      await apiClient.deleteFolder(folderPath);
+      await refreshTree();
+      navigate(folderHref(FolderPath.parentOf(folderPath)));
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setFolderOpBusy(false);
+    }
+  };
+
   const handleCreateEmptyFile = async (event: FormEvent) => {
     event.preventDefault();
     if (creatingNewFile) {
@@ -301,7 +349,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
     setCreatingNewFile(true);
     setNewFileError(null);
     try {
-      await createDoc(buildDocPath(folderPath, trimmed));
+      await createDoc(DocPath.fileInFolder(folderPath, ensureMarkdownSuffix(trimmed)));
       setNewFileName("");
     } catch (error) {
       setNewFileError(error instanceof Error ? error.message : String(error));
@@ -320,13 +368,13 @@ export function FolderPage({ folderPath }: FolderPageProps) {
       setTextFileError("File name is required.");
       return;
     }
-    const nextDocPath = buildDocPath(folderPath, trimmed);
     setCreatingTextFile(true);
     setTextFileError(null);
     try {
+      const nextDocPath = DocPath.fileInFolder(folderPath, ensureMarkdownSuffix(trimmed));
       await apiClient.createDocument(nextDocPath, textFileContent);
       await refreshTree();
-      navigate(`/docs/${stripLeadingSlashForRoute(nextDocPath)}`);
+      navigate(docHref(nextDocPath));
       setTextFileName("");
       setTextFileContent("");
     } catch (error) {
@@ -338,7 +386,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <SharedPageHeader title={`Folder: ${getDisplayName(folderPath)}`} backTo="/docs" />
+      <SharedPageHeader title={`Folder: ${FolderPath.displayName(folderPath)}`} backTo="/docs" />
       <div className="flex-1 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
         {treeLoading ? (
           <p className="text-xs text-text-muted">Loading folder details...</p>
@@ -360,7 +408,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                       <FolderPathBreadcrumb folderPath={folderPath} onNavigate={navigate} />
                       <CopyPathButton
                         path={folderClipboardPath}
-                        label={getDisplayName(folderPath)}
+                        label={FolderPath.displayName(folderPath)}
                         copied={copiedPath === folderClipboardPath}
                         onCopied={markPathCopied}
                       />
@@ -388,10 +436,78 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                     {creatingNewFile ? "Creating..." : "Create"}
                   </button>
                 </form>
+                {folderPath !== FolderPath.root ? (
+                  renaming ? (
+                    <form
+                      onSubmit={handleRenameFolder}
+                      className="flex w-full min-w-0 items-center gap-2 sm:w-auto sm:max-w-md"
+                    >
+                      <input
+                        type="text"
+                        value={renameValue}
+                        onChange={(event) => setRenameValue(event.target.value)}
+                        className="input-field min-w-0 flex-1 py-1.5 text-xs"
+                        disabled={folderOpBusy}
+                        aria-label="New folder path"
+                      />
+                      <button
+                        type="submit"
+                        className="btn-primary shrink-0 px-3 py-1.5 text-xs"
+                        disabled={folderOpBusy}
+                      >
+                        {folderOpBusy ? "Renaming..." : "Save"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary shrink-0 px-3 py-1.5 text-xs"
+                        disabled={folderOpBusy}
+                        onClick={() => {
+                          setRenaming(false);
+                          setRenameError(null);
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </form>
+                  ) : (
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button
+                        type="button"
+                        className="btn-secondary px-3 py-1.5 text-xs"
+                        disabled={folderOpBusy}
+                        onClick={() => {
+                          setRenameValue(folderPath);
+                          setRenameError(null);
+                          setRenaming(true);
+                        }}
+                      >
+                        Rename
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-danger px-3 py-1.5 text-xs"
+                        disabled={folderOpBusy}
+                        onClick={handleDeleteFolder}
+                      >
+                        {folderOpBusy ? "Working..." : "Delete"}
+                      </button>
+                    </div>
+                  )
+                ) : null}
               </ContentPanel.Header>
               {newFileError ? (
                 <div className="px-4 pt-2">
                   <p className="text-xs text-status-red">{newFileError}</p>
+                </div>
+              ) : null}
+              {renameError ? (
+                <div className="px-4 pt-2">
+                  <p className="text-xs text-status-red">{renameError}</p>
+                </div>
+              ) : null}
+              {deleteError ? (
+                <div className="px-4 pt-2">
+                  <p className="text-xs text-status-red">{deleteError}</p>
                 </div>
               ) : null}
               <ContentPanel.Body>
@@ -409,7 +525,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                               ? undefined
                               : sections.join(" | ");
                           const openFile = () =>
-                            navigate(`/docs/${stripLeadingSlashForRoute(DocPath.parse(path))}`);
+                            navigate(docHref(DocPath.parse(path)));
                           return (
                             <li key={path} className="min-w-0">
                               <div className="flex w-full min-w-0 flex-col gap-0 rounded-md px-2 py-0.5 hover:bg-section-hover">
@@ -488,6 +604,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                       <ul className="m-0 list-none space-y-0 p-0">
                         {stats.childFolders.map((folder) => {
                           const clipboardPath = folderPathForClipboard(folder.path);
+                          const childFolderPath = FolderPath.tryParse(folder.path);
                           return (
                             <li key={folder.path} className="min-w-0">
                               <div className="flex w-full min-w-0 items-center justify-between gap-3 rounded-md px-2 py-0.5 hover:bg-section-hover">
@@ -498,13 +615,19 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                                   >
                                     &#128193;
                                   </span>
-                                  <button
-                                    type="button"
-                                    className="min-w-0 truncate border-none bg-transparent p-0 text-left text-[13px] font-medium text-accent-text cursor-pointer hover:underline"
-                                    onClick={() => navigate(`/docs${folder.path}`)}
-                                  >
-                                    {getDisplayName(folder.path)}
-                                  </button>
+                                  {childFolderPath ? (
+                                    <button
+                                      type="button"
+                                      className="min-w-0 truncate border-none bg-transparent p-0 text-left text-[13px] font-medium text-accent-text cursor-pointer hover:underline"
+                                      onClick={() => navigate(folderHref(childFolderPath))}
+                                    >
+                                      {getDisplayName(folder.path)}
+                                    </button>
+                                  ) : (
+                                    <span className="min-w-0 truncate text-left text-[13px] font-medium text-text-secondary">
+                                      {getDisplayName(folder.path)}
+                                    </span>
+                                  )}
                                   <CopyPathButton
                                     path={clipboardPath}
                                     label={getDisplayName(folder.path)}

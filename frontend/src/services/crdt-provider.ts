@@ -148,7 +148,7 @@ export class CrdtProvider {
   private trackChangedFragmentKeysAfterTransaction: ((txn: Y.Transaction) => void) | null = null;
   private pendingDocumentReplacementNotice: DocumentReplacementNoticePayload | null = null;
   private readonly clientInstanceId: ClientInstanceId;
-  private readonly docPath: string;
+  private readonly docPath: DocPath;
   private initialTransitionRequest: ModeTransitionRequest | null = null;
   /** One-shot resolvers awaiting the NEXT SYNC_STEP_2 (the live-move ordering barrier). */
   private syncRoundtripResolvers: Array<() => void> = [];
@@ -168,7 +168,7 @@ export class CrdtProvider {
 
   constructor(
     doc: Y.Doc,
-    docPath: string,
+    docPath: DocPath,
     events: CrdtProviderEvents = {},
     opts?: { clientInstanceId?: ClientInstanceId; initialTransitionRequest?: ModeTransitionRequest; awareness?: Awareness },
   ) {
@@ -302,7 +302,7 @@ export class CrdtProvider {
   // ─── Live cross-section move ordering barrier (claim-review 03 / Option E) ──
 
   /** The document path this provider is bound to (for the REST live-move call). */
-  get documentPath(): string {
+  get documentPath(): DocPath {
     return this.docPath;
   }
 
@@ -641,7 +641,7 @@ export class CrdtProvider {
       ...(this.initialTransitionRequest ?? {
         requestId: randomUuid(),
         clientInstanceId: this.clientInstanceId,
-        docPath: DocPath.parse(this.docPath),
+        docPath: this.docPath,
         requestedMode: "editor",
         editorFocusTarget: null,
       }),

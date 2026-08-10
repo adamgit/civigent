@@ -16,6 +16,7 @@ import {
   SAMPLE_DOC_PATH_2,
 } from "../helpers/sample-content.js";
 import { authFor } from "../helpers/auth.js";
+import { updateAdminConfig } from "../../admin-config.js";
 
 let ctx: TestServerContext;
 let mcpSessionId = "";
@@ -74,6 +75,7 @@ async function initMcpSession(token: string = agentToken): Promise<void> {
 
 describe("US-1: multi-document proposal with justification bypass", () => {
   beforeAll(async () => {
+    updateAdminConfig({ humanInvolvement_preset: "eager" });
     ctx = await createTestServer();
     await createSampleDocument(ctx.dataCtx.rootDir);
     await createSampleDocument2(ctx.dataCtx.rootDir);

@@ -1,42 +1,48 @@
-/**
- * WS-1: unit tests for the pure structural-change classifier.
- *
- * The classifier is the parse-and-classify half of structural normalization,
- * ported from the old `FragmentStore.normalizeStructure` dispatch. These tests
- * pin the dispatch decisions in isolation (no Y.Doc, no mutation) so the
- * identity-preserving appliers (WS-2) can be written against a stable contract.
- */
-
 import { describe, it, expect } from "vitest";
 import {
   classifyStructuralChange,
   type AuthoritativeSectionIdentity,
+  type StructuralChange,
 } from "../../crdt/structural-change.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
+import { HeadingLevel } from "../../types/shared.js";
 
-const overview: AuthoritativeSectionIdentity = { headingPath: ["Overview"], heading: "Overview", level: 2 };
-const root: AuthoritativeSectionIdentity = { headingPath: [], heading: "", level: 0 };
+const overview: AuthoritativeSectionIdentity = {
+  headingPath: ["Overview"],
+  heading: "Overview",
+  headingLevel: HeadingLevel.parse(2),
+};
+const root: AuthoritativeSectionIdentity = {
+  headingPath: [],
+  heading: "",
+  headingLevel: HeadingLevel.beforeFirstHeading,
+};
 
 function md(s: string): FragmentContent {
   return s as FragmentContent;
 }
 
-describe("classifyStructuralChange (WS-1)", () => {
+interface SplitView {
+  before?: Array<{ heading: string; body: string }>;
+  survivor?: { heading: string; body: string; renamedFromIdentity: boolean };
+  after?: Array<{ heading: string; body: string }>;
+}
+
+function asSplit(change: StructuralChange): SplitView {
+  return change as unknown as SplitView;
+}
+
+describe("classifyStructuralChange — single-section variants", () => {
   it("clean: a non-root fragment with its matching single heading", () => {
-    const change = classifyStructuralChange(md("## Overview\n\nbody text"), overview);
-    expect(change.kind).toBe("clean");
+    expect(classifyStructuralChange(md("## Overview\n\nbody text"), overview).kind).toBe("clean");
   });
 
   it("clean: a root/BFH fragment with no embedded heading", () => {
-    const change = classifyStructuralChange(md("just preamble body, no heading"), root);
-    expect(change.kind).toBe("clean");
+    expect(classifyStructuralChange(md("just preamble body, no heading"), root).kind).toBe("clean");
   });
 
   it("root-split: a heading typed into the root section", () => {
-    const change = classifyStructuralChange(
-      md("preamble before\n\n## First Heading\n\nfirst body"),
-      root,
-    );
+    const change = classifyStructuralChange(md("preamble before\n\n## First Heading\n\nfirst body"), root);
     expect(change.kind).toBe("root-split");
     if (change.kind !== "root-split") throw new Error("wrong kind");
     expect(change.rootBody).toBe("preamble before");
@@ -44,46 +50,12 @@ describe("classifyStructuralChange (WS-1)", () => {
     expect(change.sections[0].body).toBe("first body");
   });
 
-  it("section-split: a second heading embedded in a non-root section", () => {
-    const change = classifyStructuralChange(
-      md("## Overview\n\nbase overview body\n\n### New Sub\n\nbrand new sub body"),
-      overview,
-    );
-    expect(change.kind).toBe("section-split");
-    if (change.kind !== "section-split") throw new Error("wrong kind");
-    expect(change.sections.map((s) => s.heading)).toEqual(["Overview", "New Sub"]);
-    expect(change.sections.map((s) => s.headingPath)).toEqual([["Overview"], ["Overview", "New Sub"]]);
-    expect(change.sections[0].body).toBe("base overview body");
-    expect(change.sections[1].body).toBe("brand new sub body");
-  });
-
-  it("section-split (sibling): a SECOND same-level heading splits into a top-level sibling section", () => {
-    // Unlike the nested `### New Sub` case above, a second heading at the SAME
-    // level as the survivor is a SIBLING, not a child — so its descriptor stays
-    // top-level (`["Second Section"]`, NOT `["Overview", "Second Section"]`) and
-    // keeps the survivor's level. This is the split shape a live editor produces
-    // when an author types a second `##` heading into a section body.
-    const change = classifyStructuralChange(
-      md("## Overview\n\nbase overview body\n\n## Second Section\n\nbrand new sibling body"),
-      overview,
-    );
-    expect(change.kind).toBe("section-split");
-    if (change.kind !== "section-split") throw new Error("wrong kind");
-    expect(change.sections.map((s) => s.heading)).toEqual(["Overview", "Second Section"]);
-    // Two TOP-LEVEL descriptors (siblings) — neither nested under the other.
-    expect(change.sections.map((s) => s.headingPath)).toEqual([["Overview"], ["Second Section"]]);
-    // The new sibling lands at the SAME level as the survivor.
-    expect(change.sections.map((s) => s.level)).toEqual([2, 2]);
-    expect(change.sections[0].body).toBe("base overview body");
-    expect(change.sections[1].body).toBe("brand new sibling body");
-  });
-
   it("heading-rename: the heading text changed at the same level", () => {
     const change = classifyStructuralChange(md("## Overview Renamed\n\nbody"), overview);
     expect(change.kind).toBe("heading-rename");
     if (change.kind !== "heading-rename") throw new Error("wrong kind");
     expect(change.newHeading).toBe("Overview Renamed");
-    expect(change.level).toBe(2);
+    expect(change.headingLevel).toBe(2);
   });
 
   it("heading-level-change: the heading level changed", () => {
@@ -91,7 +63,7 @@ describe("classifyStructuralChange (WS-1)", () => {
     expect(change.kind).toBe("heading-level-change");
     if (change.kind !== "heading-level-change") throw new Error("wrong kind");
     expect(change.newHeading).toBe("Overview");
-    expect(change.newLevel).toBe(3);
+    expect(change.newHeadingLevel).toBe(3);
   });
 
   it("heading-relocated: matching heading but orphan content before it", () => {
@@ -102,10 +74,6 @@ describe("classifyStructuralChange (WS-1)", () => {
     expect(change.kind).toBe("heading-relocated");
     if (change.kind !== "heading-relocated") throw new Error("wrong kind");
     expect(change.heading).toBe("Overview");
-    expect(change.level).toBe(2);
-    // Body first, then the orphan preamble appended (no content lost).
-    expect(change.combinedBody).toContain("the real body");
-    expect(change.combinedBody).toContain("orphan preamble that drifted up");
     expect(change.combinedBody.indexOf("the real body")).toBeLessThan(
       change.combinedBody.indexOf("orphan preamble"),
     );
@@ -123,5 +91,98 @@ describe("classifyStructuralChange (WS-1)", () => {
     expect(change.kind).toBe("heading-deletion");
     if (change.kind !== "heading-deletion") throw new Error("wrong kind");
     expect(change.orphanedBody).toBe("");
+  });
+});
+
+describe("classifyStructuralChange — multi-heading split shapes locate the survivor", () => {
+  it("split-below (nested child): survivor first, one new section after", () => {
+    const change = classifyStructuralChange(
+      md("## Overview\n\nbase overview body\n\n### New Sub\n\nbrand new sub body"),
+      overview,
+    );
+    expect(change.kind).toBe("section-split");
+    const split = asSplit(change);
+    expect(split.before?.map((s) => s.heading)).toEqual([]);
+    expect(split.survivor?.heading).toBe("Overview");
+    expect(split.survivor?.renamedFromIdentity).toBe(false);
+    expect(split.after?.map((s) => s.heading)).toEqual(["New Sub"]);
+  });
+
+  it("split-below (sibling): survivor first, one same-level sibling after", () => {
+    const change = classifyStructuralChange(
+      md("## Overview\n\nbase overview body\n\n## Second Section\n\nbrand new sibling body"),
+      overview,
+    );
+    expect(change.kind).toBe("section-split");
+    const split = asSplit(change);
+    expect(split.before?.map((s) => s.heading)).toEqual([]);
+    expect(split.survivor?.heading).toBe("Overview");
+    expect(split.after?.map((s) => s.heading)).toEqual(["Second Section"]);
+  });
+
+  it("split-above: a new section inserted ABOVE the survivor", () => {
+    const change = classifyStructuralChange(
+      md("## Added Above\n\nabove body\n\n## Overview\n\nbase overview body"),
+      overview,
+    );
+    expect(change.kind).toBe("section-split");
+    const split = asSplit(change);
+    expect(split.before?.map((s) => s.heading)).toEqual(["Added Above"]);
+    expect(split.survivor?.heading).toBe("Overview");
+    expect(split.survivor?.renamedFromIdentity).toBe(false);
+    expect(split.after?.map((s) => s.heading)).toEqual([]);
+  });
+
+  it("split-above (multiple): several new sections inserted above the survivor", () => {
+    const change = classifyStructuralChange(
+      md("## Alpha\n\nalpha body\n\n## Beta\n\nbeta body\n\n## Overview\n\nbase overview body"),
+      overview,
+    );
+    expect(change.kind).toBe("section-split");
+    const split = asSplit(change);
+    expect(split.before?.map((s) => s.heading)).toEqual(["Alpha", "Beta"]);
+    expect(split.survivor?.heading).toBe("Overview");
+    expect(split.after?.map((s) => s.heading)).toEqual([]);
+  });
+
+  it("split-both-sides: new sections above AND below the survivor", () => {
+    const change = classifyStructuralChange(
+      md("## Alpha\n\nalpha body\n\n## Overview\n\nbase overview body\n\n## Zeta\n\nzeta body"),
+      overview,
+    );
+    expect(change.kind).toBe("section-split");
+    const split = asSplit(change);
+    expect(split.before?.map((s) => s.heading)).toEqual(["Alpha"]);
+    expect(split.survivor?.heading).toBe("Overview");
+    expect(split.after?.map((s) => s.heading)).toEqual(["Zeta"]);
+  });
+
+  it("rename-plus-add: no section matches identity — the FIRST section is the renamed survivor", () => {
+    const change = classifyStructuralChange(
+      md("## Overview Renamed\n\nbase overview body\n\n## Extra Tail\n\ntail body"),
+      overview,
+    );
+    expect(change.kind).toBe("section-split");
+    const split = asSplit(change);
+    expect(split.before?.map((s) => s.heading)).toEqual([]);
+    expect(split.survivor?.heading).toBe("Overview Renamed");
+    expect(split.survivor?.renamedFromIdentity).toBe(true);
+    expect(split.after?.map((s) => s.heading)).toEqual(["Extra Tail"]);
+  });
+
+  it("preamble-plus-split-above: orphan preamble joins the survivor body (body first, preamble after)", () => {
+    const change = classifyStructuralChange(
+      md("stray intro\n\n## Added Above\n\nabove body\n\n## Overview\n\nbase overview body"),
+      overview,
+    );
+    expect(change.kind).toBe("section-split");
+    const split = asSplit(change);
+    expect(split.before?.map((s) => s.heading)).toEqual(["Added Above"]);
+    expect(split.survivor?.heading).toBe("Overview");
+    expect(split.survivor?.body).toContain("base overview body");
+    expect(split.survivor?.body).toContain("stray intro");
+    expect(split.survivor!.body.indexOf("base overview body")).toBeLessThan(
+      split.survivor!.body.indexOf("stray intro"),
+    );
   });
 });

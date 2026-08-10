@@ -232,7 +232,7 @@ describe("fragmentKeyFromSectionFile() — sub-skeleton context", () => {
     expect(entry.storageRole).toBe("body_holder");
     expect(entry.sectionFile).toBe("_details_root.md");
     expect(entry.heading).toBe("Details");
-    expect(entry.level).toBe(2);
+    expect(entry.headingLevel).toBe(2);
     const key = fragmentKeyFromSectionFile(entry.sectionFile, entry.headingPath.length === 0);
     // heading="Details", level=2 → isRoot=false → key from sectionFile
     expect(key).toBe("section::_details_root");
@@ -248,13 +248,13 @@ describe("fragmentKeyFromSectionFile() — sub-skeleton context", () => {
     expect(fromStore).toBe(fromHelper);
   });
 
-  it("resolve().level is correct even for sub-skeleton entries — CRDT section focus uses level", async () => {
+  it("resolve().headingLevel is correct even for sub-skeleton entries — CRDT section focus uses headingLevel", async () => {
     const skeleton = await DocumentSkeleton.fromDisk(
       NESTED_DOC_PATH, ctx.contentDir, ctx.contentDir,
     );
     const entry = skeleton.requireContentEntryByHeadingPath(["Details"]);
     // Level is correctly 2 (## Details) even though absolutePath is wrong
-    expect(entry.level).toBe(2);
+    expect(entry.headingLevel).toBe(2);
   });
 });
 
@@ -280,15 +280,15 @@ describe("Auto-commit dirty fragment key derivation — sub-skeleton context", (
     // which share the same headingPath (["Details"]). The root child (level=0, heading="")
     // gets isBeforeFirstHeading=true → BEFORE_FIRST_HEADING_KEY, overwriting the sub-skeleton's key.
     const forEachEntries: Array<{
-      hpKey: string; heading: string; level: number;
+      hpKey: string; heading: string; headingLevel: number;
       sectionFile: string; fragmentKey: string; isSubSkeleton: boolean;
     }> = [];
-    skeleton.forEachNode((heading, level, sectionFile, headingPath, _absolutePath, isSubSkeleton) => {
-      const isBfh = isBodyHolderShape({ heading, level });
+    skeleton.forEachNode((heading, headingLevel, sectionFile, headingPath, _absolutePath, isSubSkeleton) => {
+      const isBfh = isBodyHolderShape({ heading, headingLevel });
       const fragmentKey = fragmentKeyFromSectionFile(sectionFile, isBfh);
       forEachEntries.push({
         hpKey: headingPath.join(">>"),
-        heading, level, sectionFile, fragmentKey, isSubSkeleton,
+        heading, headingLevel, sectionFile, fragmentKey, isSubSkeleton,
       });
     });
 

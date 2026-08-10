@@ -9,13 +9,14 @@
 import * as Y from "yjs";
 import { updateYFragment } from "y-prosemirror";
 import { markdownToProseMirrorNode } from "@ks/milkdown-serializer";
-import type { WireLiveSectionsState } from "../../types/shared";
+import type { WireLiveSectionsState, HeadingLevel } from "../../types/shared";
 
 export const MSG_LIVE_SECTIONS_BOOTSTRAP_OPCODE = 0x14;
 
 export interface LiveBootstrapSectionFixture {
   fragmentKey: string;
   headingPath: string[];
+  headingLevel: HeadingLevel;
   markdown: string;
 }
 
@@ -48,7 +49,7 @@ export function liveBootstrapFrame(
     );
   }
   const state: WireLiveSectionsState = {
-    topology: sections.map((s) => ({ fragment_key: s.fragmentKey, heading_path: s.headingPath })),
+    topology: sections.map((s) => ({ fragment_key: s.fragmentKey, heading_path: s.headingPath, heading_level: s.headingLevel })),
     blocked_section_ids: [],
     pending_sections: [],
     publish_pause_join_mirror: "not_in_pause",

@@ -32,7 +32,7 @@ export function DocumentLoadingSkeleton({ structureTree }: DocumentLoadingSkelet
       {flatSkeleton.map((entry) => {
         const key = sectionHeadingKey(entry.headingPath);
         const heading = entry.headingPath[entry.headingPath.length - 1] ?? "";
-        const level = Math.max(1, entry.level);
+        const headingLevel = Math.max(1, entry.headingLevel);
         return (
           <div
             key={key}
@@ -41,7 +41,7 @@ export function DocumentLoadingSkeleton({ structureTree }: DocumentLoadingSkelet
             {heading ? (
               <div className="doc-prose">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {`${"#".repeat(level)} ${heading}`}
+                  {`${"#".repeat(headingLevel)} ${heading}`}
                 </ReactMarkdown>
               </div>
             ) : null}

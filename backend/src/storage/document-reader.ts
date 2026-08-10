@@ -4,10 +4,10 @@ import { ContentLayer } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { buildFragmentContent, fragmentFromBodyHolder, type SectionBody, type FragmentContent } from "./section-formatting.js";
 import { isDocumentBeforeFirstHeading } from "./section-shape.js";
-import { DocPath } from "../types/shared.js";
+import { DocPath, HeadingLevel } from "../types/shared.js";
 
 // Re-export error classes from ContentLayer (callers import from here)
-export { DocumentNotFoundError, DocumentAssemblyError } from "./content-layer.js";
+export { DirectoryAtDocPathError, DocumentNotFoundError, DocumentAssemblyError } from "./content-layer.js";
 
 export async function readAssembledDocument(rawDocPath: string): Promise<string> {
   const contentRoot = getContentRoot();
@@ -26,19 +26,19 @@ export async function readAssembledDocument(rawDocPath: string): Promise<string>
  * (body-only IS fragment content for BFH sections).
  */
 export function prependHeadings(
-  sections: Array<{ heading: string; level: number; headingPath: string[] }>,
+  sections: Array<{ heading: string; headingLevel: HeadingLevel; headingPath: string[] }>,
   bodyMap: Map<string, SectionBody>,
 ): Map<string, FragmentContent> {
   const result = new Map<string, FragmentContent>();
   for (const [key, body] of bodyMap) {
     result.set(key, fragmentFromBodyHolder(body));
   }
-  for (const { heading, level, headingPath } of sections) {
-    if (isDocumentBeforeFirstHeading({ heading, level, headingPath })) continue;
+  for (const { heading, headingLevel, headingPath } of sections) {
+    if (isDocumentBeforeFirstHeading({ heading, headingLevel, headingPath })) continue;
     const key = SectionRef.headingKey(headingPath);
     const body = bodyMap.get(key);
     if (body == null) continue;
-    result.set(key, buildFragmentContent(body, level, heading));
+    result.set(key, buildFragmentContent(body, headingLevel, heading));
   }
   return result;
 }

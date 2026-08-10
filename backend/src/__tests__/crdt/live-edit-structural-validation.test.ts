@@ -14,13 +14,13 @@ import type { LiveSectionLayoutEntry } from "../../crdt/live-section-layout.js";
 function layoutEntry(
   fragmentKey: string,
   headingPath: string[],
-  level: number,
+  headingLevel: number,
 ): LiveSectionLayoutEntry {
   return {
     fragmentKey,
     headingPath,
     heading: headingPath[headingPath.length - 1] ?? "",
-    level,
+    headingLevel,
   };
 }
 

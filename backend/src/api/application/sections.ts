@@ -1,5 +1,6 @@
 import type {
   GetDocumentSectionsResponse,
+  HeadingLevel,
   HumanInvolvementPolicyResult,
   WriterIdentity,
 } from "../../types/shared.js";
@@ -11,13 +12,14 @@ import { prependHeadings } from "../../storage/document-reader.js";
 import { SectionNotFoundError } from "../../storage/section-reader.js";
 import { HeadingNotFoundError } from "../../storage/heading-resolver.js";
 import { InvalidDocPathError } from "../../storage/path-utils.js";
-import { DocumentNotFoundError, DocumentAssemblyError } from "../../storage/document-reader.js";
+import { DirectoryAtDocPathError, DocumentNotFoundError, DocumentAssemblyError } from "../../storage/document-reader.js";
 import { ProposalNotFoundError } from "../../storage/proposal-repository.js";
 
 export {
   SectionNotFoundError,
   HeadingNotFoundError,
   InvalidDocPathError,
+  DirectoryAtDocPathError,
   DocumentNotFoundError,
   DocumentAssemblyError,
   ProposalNotFoundError,
@@ -71,7 +73,7 @@ export async function verifyProposalForRead(proposalId: string, writerId: string
 
 
 interface SectionListReader {
-  getSectionList(docPath: DocPath): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>>;
+  getSectionList(docPath: DocPath): Promise<Array<{ heading: string; headingLevel: HeadingLevel; sectionFile: string; headingPath: string[] }>>;
   readAllSections(docPath: DocPath): Promise<Map<string, import("../../storage/section-formatting.js").SectionBody>>;
 }
 
@@ -202,8 +204,7 @@ async function buildSectionListResponse(
     sections.push({
       heading: headingPath[headingPath.length - 1] ?? "",
       heading_path: headingPath,
-      depth: headingPath.length,
-      level: entry.level,
+      heading_level: entry.headingLevel,
       content,
       agentWritePolicy: meta.agentWritePolicy,
       crdt_session_active: meta.crdt_session_active,

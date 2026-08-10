@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { apiClient } from "../services/api-client";
-import type { BlameLineAttribution } from "../types/shared.js";
+import type { BlameLineAttribution, DocPath } from "../types/shared.js";
 import type { SectionAuthorshipTarget } from "../models/section-authorship-model";
 
 interface BlameEntry {
@@ -15,7 +15,7 @@ interface BlameEntry {
  * Always fetches fresh data when enabled — no caching.
  */
 export function useBlameData(
-  docPath: string,
+  docPath: DocPath,
   targets: SectionAuthorshipTarget[],
   enabled: boolean,
 ): Map<string, BlameEntry> {

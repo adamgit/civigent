@@ -28,6 +28,7 @@
 
 import { parseDocumentMarkdown, type ParsedSection } from "../storage/markdown-sections.js";
 import { headingsEqual } from "../storage/document-skeleton.js";
+import type { HeadingLevel } from "../types/shared.js";
 import { bodyFromStructuralAssembly, type FragmentContent, type SectionBody } from "../storage/section-formatting.js";
 
 /** The authoritative identity a live fragment is supposed to carry. */
@@ -37,7 +38,7 @@ export interface AuthoritativeSectionIdentity {
   /** Leaf heading text; "" for the before-first-heading/root. */
   heading: string;
   /** Heading level; 0 for the before-first-heading/root. */
-  level: number;
+  headingLevel: HeadingLevel;
 }
 
 /**
@@ -49,8 +50,22 @@ export interface AuthoritativeSectionIdentity {
 export interface SubsectionDescriptor {
   headingPath: string[];
   heading: string;
-  level: number;
+  headingLevel: HeadingLevel;
   body: SectionBody;
+}
+
+/**
+ * The surviving section of a `section-split`: the parsed section matching the
+ * authoritative identity, or — when none matches — the FIRST parsed section
+ * with the rename/level-change folded in (`renamedFromIdentity: true`). Orphan
+ * preamble before the first heading joins `body` (body-then-preamble, the
+ * `heading-relocated` combination rule).
+ */
+export interface SplitSurvivor {
+  heading: string;
+  headingLevel: HeadingLevel;
+  body: SectionBody;
+  renamedFromIdentity: boolean;
 }
 
 /**
@@ -67,22 +82,18 @@ export type StructuralChange =
    * fragment / proposal section.
    */
   | { kind: "root-split"; rootBody: SectionBody; sections: SubsectionDescriptor[] }
-  /**
-   * A non-root fragment now contains TWO OR MORE headings. The first heading is
-   * the surviving section (kept fragment); the rest split out into new
-   * fragments / proposal sections.
-   */
-  | { kind: "section-split"; sections: SubsectionDescriptor[] }
+  /** A non-root fragment now contains TWO OR MORE headings. */
+  | { kind: "section-split"; before: SubsectionDescriptor[]; survivor: SplitSurvivor; after: SubsectionDescriptor[] }
   /** The single heading's TEXT changed (same level) — rename in place. */
-  | { kind: "heading-rename"; newHeading: string; level: number }
+  | { kind: "heading-rename"; newHeading: string; headingLevel: HeadingLevel }
   /** The single heading's LEVEL changed (text may also differ) — re-level in place. */
-  | { kind: "heading-level-change"; newHeading: string; newLevel: number }
+  | { kind: "heading-level-change"; newHeading: string; newHeadingLevel: HeadingLevel }
   /**
    * The matching heading is present but orphan content appeared BEFORE it. The
    * applier moves the heading to the front and appends the orphan preamble onto
    * the body (no content lost). `combinedBody` is body-then-preamble.
    */
-  | { kind: "heading-relocated"; heading: string; level: number; combinedBody: SectionBody }
+  | { kind: "heading-relocated"; heading: string; headingLevel: HeadingLevel; combinedBody: SectionBody }
   /**
    * The heading was deleted — the fragment now holds only orphan body with no
    * heading. The applier merges `orphanedBody` onto the preceding section and
@@ -98,18 +109,57 @@ function toDescriptor(section: ParsedSection): SubsectionDescriptor {
   return {
     headingPath: [...section.headingPath],
     heading: section.heading,
-    level: section.level,
+    headingLevel: section.headingLevel,
     body: bodyFromStructuralAssembly(section.body),
+  };
+}
+
+function parseSectionSplit(
+  parsed: readonly ParsedSection[],
+  realSections: readonly ParsedSection[],
+  identity: AuthoritativeSectionIdentity,
+): Extract<StructuralChange, { kind: "section-split" }> {
+  const matchIndex = realSections.findIndex(
+    (s) => headingsEqual(s.heading, identity.heading) && s.headingLevel === identity.headingLevel,
+  );
+  const survivorIndex = matchIndex >= 0 ? matchIndex : 0;
+  const survivorSection = realSections[survivorIndex];
+
+  const preamble = trimTrailingNewlines(
+    parsed
+      .filter((s) => s.headingPath.length === 0)
+      .map((s) => s.body)
+      .join("\n"),
+  );
+  const body = trimTrailingNewlines(survivorSection.body);
+  const combinedBody = bodyFromStructuralAssembly(
+    body
+      ? preamble
+        ? `${body}\n\n${preamble}`
+        : body
+      : preamble,
+  );
+
+  return {
+    kind: "section-split",
+    before: realSections.slice(0, survivorIndex).map(toDescriptor),
+    survivor: {
+      heading: survivorSection.heading,
+      headingLevel: survivorSection.headingLevel,
+      body: combinedBody,
+      renamedFromIdentity: matchIndex < 0,
+    },
+    after: realSections.slice(survivorIndex + 1).map(toDescriptor),
   };
 }
 
 export function liveFragmentLeadingHeadingMatchesIdentity(
   fragment: FragmentContent,
-  identity: Pick<AuthoritativeSectionIdentity, "heading" | "level">,
+  identity: Pick<AuthoritativeSectionIdentity, "heading" | "headingLevel">,
 ): boolean {
-  if (identity.level === 0) return true;
+  if (identity.headingLevel === 0) return true;
   const firstLine = fragment.split("\n")[0] ?? "";
-  const prefix = `${"#".repeat(identity.level)} `;
+  const prefix = `${"#".repeat(identity.headingLevel)} `;
   if (!firstLine.startsWith(prefix)) return false;
   return headingsEqual(firstLine.slice(prefix.length), identity.heading);
 }
@@ -132,7 +182,7 @@ export function isStructurallyClean(
     return realSections.length === 0;
   }
   if (parsed.length !== 1 || realSections.length !== 1) return false;
-  return headingsEqual(realSections[0].heading, identity.heading) && realSections[0].level === identity.level;
+  return headingsEqual(realSections[0].heading, identity.heading) && realSections[0].headingLevel === identity.headingLevel;
 }
 
 /**
@@ -162,12 +212,12 @@ export function classifyStructuralChange(
   if (!isRoot && realSections.length === 1) {
     const section = realSections[0];
     // Heading rename (same level, different text).
-    if (!headingsEqual(section.heading, identity.heading) && section.level === identity.level) {
-      return { kind: "heading-rename", newHeading: section.heading, level: section.level };
+    if (!headingsEqual(section.heading, identity.heading) && section.headingLevel === identity.headingLevel) {
+      return { kind: "heading-rename", newHeading: section.heading, headingLevel: section.headingLevel };
     }
     // Heading level change (may also include a rename).
-    if (section.level !== identity.level) {
-      return { kind: "heading-level-change", newHeading: section.heading, newLevel: section.level };
+    if (section.headingLevel !== identity.headingLevel) {
+      return { kind: "heading-level-change", newHeading: section.heading, newHeadingLevel: section.headingLevel };
     }
     // Heading relocated: matching heading, but orphan content appeared before it.
     if (parsed.length > 1) {
@@ -185,13 +235,13 @@ export function classifyStructuralChange(
             : body
           : preamble,
       );
-      return { kind: "heading-relocated", heading: section.heading, level: section.level, combinedBody };
+      return { kind: "heading-relocated", heading: section.heading, headingLevel: section.headingLevel, combinedBody };
     }
   }
 
   // Section split: a non-root fragment now contains two or more headings.
   if (!isRoot && realSections.length >= 2) {
-    return { kind: "section-split", sections: realSections.map(toDescriptor) };
+    return parseSectionSplit(parsed, realSections, identity);
   }
 
   // Heading deletion: a non-root fragment now holds only orphan body, no heading.

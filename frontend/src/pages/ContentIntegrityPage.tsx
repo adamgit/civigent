@@ -3,10 +3,7 @@ import { Link } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
 import type { RunAdminContentIntegrityScanResponse } from "../types/shared.js";
-
-function docsHref(docPath: string): string {
-  return `/docs${docPath.startsWith("/") ? docPath : `/${docPath}`}`;
-}
+import { docsRouteForStoredPath } from "../app/docs-location";
 
 export function ContentIntegrityPage() {
   const [result, setResult] = useState<RunAdminContentIntegrityScanResponse | null>(null);
@@ -106,12 +103,16 @@ export function ContentIntegrityPage() {
                     className="px-4 py-3 border-b border-footer-border last:border-0 space-y-2"
                   >
                     <div className="flex items-baseline gap-3 flex-wrap">
-                      <Link
-                        to={docsHref(failure.doc_path)}
-                        className="text-[13px] font-mono text-accent hover:underline break-all"
-                      >
-                        {failure.doc_path}
-                      </Link>
+                      {docsRouteForStoredPath(failure.doc_path) ? (
+                        <Link
+                          to={docsRouteForStoredPath(failure.doc_path) ?? "/docs"}
+                          className="text-[13px] font-mono text-accent hover:underline break-all"
+                        >
+                          {failure.doc_path}
+                        </Link>
+                      ) : (
+                        <span className="text-[13px] font-mono break-all">{failure.doc_path}</span>
+                      )}
                       <span className="pill pill-red">error</span>
                     </div>
                     <pre className="m-0 rounded border border-red-200 bg-red-50 p-3 text-[11px] text-red-800 overflow-auto max-h-[40vh] whitespace-pre-wrap break-words font-mono">

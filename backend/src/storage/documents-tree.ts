@@ -5,30 +5,20 @@ import { getContentRoot } from "./data-root.js";
 import { assertChildPath } from "./path-utils.js";
 import { SECTIONS_DIR_SUFFIX } from "./document-skeleton.js";
 import type { DocumentTreeEntry } from "../types/shared.js";
+import { FolderPath, InvalidFolderPathError } from "../types/shared.js";
 
 export class DocumentsTreePathNotFoundError extends Error {}
 export class InvalidDocumentsTreePathError extends Error {}
 
 function normalizeBrowsePath(rawPath?: string): string {
-  if (rawPath == null || rawPath.trim().length === 0) {
-    return "/";
+  try {
+    return FolderPath.normalize(rawPath);
+  } catch (error) {
+    if (error instanceof InvalidFolderPathError) {
+      throw new InvalidDocumentsTreePathError(error.message);
+    }
+    throw error;
   }
-  const slashNormalized = rawPath.replaceAll("\\", "/").trim();
-  const withLeadingSlash = slashNormalized.startsWith("/") ? slashNormalized : `/${slashNormalized}`;
-  const normalized = path.posix.normalize(withLeadingSlash);
-  if (normalized === "." || normalized === "") {
-    return "/";
-  }
-  if (!normalized.startsWith("/")) {
-    throw new InvalidDocumentsTreePathError("Browse path must remain under root.");
-  }
-  if (normalized.includes("/../") || normalized === "/..") {
-    throw new InvalidDocumentsTreePathError("Path traversal is not allowed.");
-  }
-  if (normalized !== "/" && normalized.endsWith("/")) {
-    return normalized.slice(0, -1);
-  }
-  return normalized;
 }
 
 export function browseFolderPathToContentRelativeFsPath(normalizedPath: string): string {

@@ -29,6 +29,7 @@ import { proposalContentRoot, recordDeletedSectionFiles } from "./proposal-repos
 import { getContentRoot, getDataRoot, getContentGitPrefix } from "./data-root.js";
 import { docPathToContentRelativeFsPath } from "./path-utils.js";
 import { DocPath } from "../types/shared.js";
+import type { HeadingLevel } from "../types/shared.js";
 import { resolveSkeletonPath } from "./document-skeleton.js";
 import { gitShowFile, extractHistoricalTree } from "./git-repo.js";
 import { ContentLayer } from "./content-layer.js";
@@ -154,9 +155,9 @@ export class ProposalEditor extends ProposalReader {
     docPath: DocPath,
     headingPath: string[],
     newParentPath: string[],
-    newLevel: number,
+    newHeadingLevel: HeadingLevel,
   ): Promise<ProposalSubtreeMutationResult> {
-    return this.shadow.moveSubtree(docPath, headingPath, newParentPath, newLevel);
+    return this.shadow.moveSubtree(docPath, headingPath, newParentPath, newHeadingLevel);
   }
 
   /**
@@ -261,10 +262,10 @@ export class ProposalEditor extends ProposalReader {
     docPath: DocPath,
     headingPath: string[],
     newHeading: string,
-    newLevel: number,
+    newHeadingLevel: HeadingLevel,
     body: SectionBody,
   ): Promise<ContentEntry> {
-    return this.shadow.retitleSectionInPlace(docPath, headingPath, newHeading, newLevel, body);
+    return this.shadow.retitleSectionInPlace(docPath, headingPath, newHeading, newHeadingLevel, body);
   }
 
   // ─── Document-level structural operations (tombstone semantics) ────

@@ -24,6 +24,7 @@ import {
   SAMPLE_DOC_PATH,
 } from "../helpers/sample-content.js";
 import { authFor } from "../helpers/auth.js";
+import { updateAdminConfig } from "../../admin-config.js";
 
 let ctx: TestServerContext;
 let mcpSessionId = "";
@@ -132,6 +133,7 @@ function assertBlockedProseContract(text: string, data: any): void {
 
 describe("Area M: MCP blocked responses carry prose, not codes", () => {
   beforeAll(async () => {
+    updateAdminConfig({ humanInvolvement_preset: "eager" });
     ctx = await createTestServer();
     await createSampleDocument(ctx.dataCtx.rootDir);
     // Very recent human edit → high recency score → agent write policy declines.

@@ -36,7 +36,7 @@ function seedUpdate(): Uint8Array {
 }
 
 const STATE: WireLiveSectionsState = {
-  topology: [{ fragment_key: ALPHA, heading_path: ["Alpha"] }],
+  topology: [{ fragment_key: ALPHA, heading_path: ["Alpha"], heading_level: 1 }],
   blocked_section_ids: [],
   pending_sections: [],
   publish_pause_join_mirror: "not_in_pause",

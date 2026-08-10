@@ -24,11 +24,11 @@ export async function runLogicalDocumentLossCheck(ctx: DocumentDiagnosticsContex
   try {
     const recursiveSkeleton = await ensureRecursiveSkeleton(ctx);
     const physical: Array<{ headingKey: string; sectionFile: string; fragmentKey: string; headingPath: string[] }> = [];
-    recursiveSkeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+    recursiveSkeleton.forEachSection((heading, headingLevel, sectionFile, headingPath) => {
       physical.push({
         headingKey: SectionRef.headingKey(headingPath),
         sectionFile,
-        fragmentKey: fragmentKeyFromSectionFile(sectionFile, isBodyHolderShape({ heading, level }) && headingPath.length === 0),
+        fragmentKey: fragmentKeyFromSectionFile(sectionFile, isBodyHolderShape({ heading, headingLevel }) && headingPath.length === 0),
         headingPath: [...headingPath],
       });
     });

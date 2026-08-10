@@ -6,7 +6,7 @@ import { ContentPanel } from "../components/ContentPanel";
 import { PageStatusBar } from "../components/PageStatusBar";
 import { DocumentsTreeNav } from "../components/DocumentsTreeNav";
 import { rememberRecentDoc } from "../services/recent-docs";
-import type { DocumentTreeEntry } from "../types/shared.js";
+import { DocPath, type DocumentTreeEntry } from "../types/shared.js";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
 
 function filterTree(entries: DocumentTreeEntry[], query: string): DocumentTreeEntry[] {
@@ -56,9 +56,15 @@ export function DocsBrowserPage() {
     e.preventDefault();
     const trimmed = newDocPath.trim();
     if (!trimmed || creatingDoc) return;
+    const withMd = trimmed.endsWith(".md") ? trimmed : `${trimmed}.md`;
+    const docPath = DocPath.tryParse(withMd.startsWith("/") ? withMd : `/${withMd}`);
+    if (!docPath) {
+      setNewDocError(`Invalid document path: ${JSON.stringify(withMd)}`);
+      return;
+    }
     setCreatingDoc(true);
     setNewDocError(null);
-    createDoc(trimmed)
+    createDoc(docPath)
       .then(() => setNewDocPath(""))
       .catch((err) => setNewDocError(err instanceof Error ? err.message : String(err)))
       .finally(() => setCreatingDoc(false));

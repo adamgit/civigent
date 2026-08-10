@@ -1,140 +1,139 @@
-import type { DocumentTreeEntry } from "../types/shared.js";
-import { parseRouteDocPath } from "./app-layout-utils";
 import { getDocDisplayName } from "../pages/document-page-utils";
-import { DocPath } from "../types/shared";
+import { FolderPath } from "../types/shared";
+import { DocsLocation } from "./docs-location";
 
-const PREFIX = "[Civigent] ";
-
-function lookupEntryType(entries: DocumentTreeEntry[], docPath: string): "file" | "directory" | null {
-  const stack = [...entries];
-  while (stack.length > 0) {
-    const node = stack.pop();
-    if (!node) {
-      continue;
-    }
-    if (node.path === docPath) {
-      return node.type === "directory" ? "directory" : "file";
-    }
-    if (node.type === "directory" && Array.isArray(node.children) && node.children.length > 0) {
-      stack.push(...node.children);
-    }
-  }
-  return null;
+export interface BrowserTabFileEditFlags {
+  hasInFlightEdits: boolean;
+  hasUnpublishedChanges: boolean;
 }
 
-/** Last path segment, for folder labels (matches FolderPage). */
-function folderSegmentName(folderPath: string): string {
-  if (folderPath === "/") {
-    return "/";
+/** `label << appName` — app name omitted when empty. */
+function withAppName(label: string, appName: string): string {
+  const trimmedApp = appName.trim();
+  if (!trimmedApp) {
+    return label;
   }
-  const parts = folderPath.split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? folderPath;
+  return `${label} << ${trimmedApp}`;
 }
 
-function titleForNonDocsRoute(pathname: string): string {
+function folderTabLabel(folderPath: FolderPath): string {
+  if (folderPath === FolderPath.root) {
+    return "./";
+  }
+  return `./${FolderPath.displayName(folderPath)}/`;
+}
+
+/** `!` (in-flight) before optional `*` (unpublished shared draft), then the filename. */
+function fileTabLabel(name: string, flags: BrowserTabFileEditFlags): string {
+  const prefixes: string[] = [];
+  if (flags.hasInFlightEdits) {
+    prefixes.push("!");
+  }
+  if (flags.hasUnpublishedChanges) {
+    prefixes.push("*");
+  }
+  return prefixes.length > 0 ? `${prefixes.join(" ")} ${name}` : name;
+}
+
+function titleForSpecialRoute(pathname: string): string {
   if (pathname === "/" || pathname === "") {
-    return `${PREFIX}What's New`;
+    return "What's New";
+  }
+  if (pathname === "/docs" || pathname === "/docs/") {
+    return "Documents";
   }
   if (pathname === "/recent-docs") {
-    return `${PREFIX}Recent Documents`;
+    return "Recent Documents";
   }
   if (pathname === "/proposals") {
-    return `${PREFIX}Proposals`;
+    return "Proposals";
   }
   if (pathname.startsWith("/proposals/")) {
-    return `${PREFIX}Proposal Detail`;
+    return "Proposal Detail";
   }
   if (pathname === "/admin") {
-    return `${PREFIX}Administration`;
+    return "Administration";
   }
   if (pathname === "/admin/agents-auth") {
-    return `${PREFIX}Pre-Authenticated Agents`;
+    return "Pre-Authenticated Agents";
   }
   if (pathname === "/admin/permissions") {
-    return `${PREFIX}Permissions`;
+    return "Permissions";
   }
   if (pathname === "/admin/snapshots") {
-    return `${PREFIX}Snapshots`;
+    return "Snapshots";
   }
   if (pathname === "/admin/agent-mcp-logs") {
-    return `${PREFIX}Agent MCP Logs`;
+    return "Agent MCP Logs";
   }
   if (pathname === "/admin/runtime-memory") {
-    return `${PREFIX}Runtime Memory`;
+    return "Runtime Memory";
   }
   if (pathname === "/admin/content-integrity") {
-    return `${PREFIX}Content Integrity`;
+    return "Content Integrity";
   }
   if (pathname === "/admin/git-backup") {
-    return `${PREFIX}Git Backup`;
+    return "Git Backup";
   }
   if (pathname === "/history") {
-    return `${PREFIX}Git History`;
+    return "Git History";
   }
   if (pathname === "/agent-simulator") {
-    return `${PREFIX}Agent Simulator`;
+    return "Agent Simulator";
   }
   if (pathname === "/coordination") {
-    return `${PREFIX}Coordination`;
+    return "Coordination";
   }
   if (pathname === "/setup") {
-    return `${PREFIX}Connect an Agent`;
+    return "Connect an Agent";
   }
   if (pathname === "/features") {
-    return `${PREFIX}Features`;
+    return "Features";
   }
   if (pathname === "/agents-activity") {
-    return `${PREFIX}Agents`;
+    return "Agents";
   }
   if (pathname === "/agents-activity/feed") {
-    return `${PREFIX}Agent Activity Feed`;
+    return "Agent Activity Feed";
   }
   if (pathname === "/skills") {
-    return `${PREFIX}Skills`;
+    return "Skills";
   }
   if (pathname === "/imports") {
-    return `${PREFIX}Imports`;
+    return "Imports";
   }
   if (pathname === "/search-text") {
-    return `${PREFIX}Text Search`;
+    return "Text Search";
   }
   if (pathname === "/login") {
-    return `${PREFIX}Login`;
+    return "Login";
   }
-  return `${PREFIX}Civigent`;
+  return "Civigent";
 }
 
 /**
- * Browser tab title: `[Civigent] …` for non-document UI; file documents use the
- * display name only (same stem as the in-page heading), matching filename.
+ * Browser tab title schemes:
+ * - file: `filename << {appName}`
+ * - in-flight file: `! filename << {appName}`
+ * - unpublished file: `* filename << {appName}`
+ * - both: `! * filename << {appName}`
+ * - folder: `./foldername/ << {appName}` (leaf segment only; root is `./`)
+ * - special: `(label) << {appName}`
  */
 export function computeBrowserTabTitle(
   pathname: string,
-  entries: DocumentTreeEntry[],
-  treeLoading: boolean,
+  appName: string,
+  fileEditFlags: BrowserTabFileEditFlags = {
+    hasInFlightEdits: false,
+    hasUnpublishedChanges: false,
+  },
 ): string {
-  if (pathname === "/docs" || pathname === "/docs/") {
-    return `${PREFIX}Documents`;
+  const loc = DocsLocation.fromPathname(pathname);
+  if (loc?.kind === "doc") {
+    return withAppName(fileTabLabel(getDocDisplayName(loc.docPath), fileEditFlags), appName);
   }
-
-  const docPath = parseRouteDocPath(pathname);
-  if (docPath) {
-    const entryType = lookupEntryType(entries, docPath);
-    if (entryType === "directory") {
-      return `${PREFIX}Folder: ${folderSegmentName(docPath)}`;
-    }
-    if (entryType === "file") {
-      return getDocDisplayName(DocPath.parse(docPath));
-    }
-    const looksLikeMarkdown = docPath.toLowerCase().endsWith(".md");
-    if (looksLikeMarkdown) {
-      return getDocDisplayName(DocPath.parse(docPath));
-    }
-    if (treeLoading) {
-      return `${PREFIX}Documents`;
-    }
-    return `${PREFIX}Folder: ${folderSegmentName(docPath)}`;
+  if (loc?.kind === "folder") {
+    return withAppName(folderTabLabel(loc.folderPath), appName);
   }
-
-  return titleForNonDocsRoute(pathname);
+  return withAppName(`(${titleForSpecialRoute(pathname)})`, appName);
 }

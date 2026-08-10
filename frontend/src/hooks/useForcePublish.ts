@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { apiClient, type ForcePublishOutcome } from "../services/api-client";
+import type { DocPath } from "../types/shared";
 
 export interface UseForcePublishResult {
   /** True while a force-publish request is in flight. */
@@ -17,7 +18,7 @@ export interface UseForcePublishResult {
  * REJECTION (network/HTTP error) is turned into a `failed` outcome carrying the full
  * error message so nothing is ever silently swallowed.
  */
-export function useForcePublish(docPath: string | null): UseForcePublishResult {
+export function useForcePublish(docPath: DocPath | null): UseForcePublishResult {
   const [forcePublishing, setForcePublishing] = useState(false);
   const [lastOutcome, setLastOutcome] = useState<ForcePublishOutcome | null>(null);
 

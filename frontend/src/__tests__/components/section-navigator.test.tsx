@@ -2,18 +2,19 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { SectionNavigator } from "../../components/SectionNavigator";
 import type { DocStructureNode } from "../../types/shared";
+import { HeadingLevel } from "../../types/shared";
 
 const noop = () => {};
 
 const sampleStructure: DocStructureNode[] = [
   {
     heading: "Introduction",
-    level: 2,
+    heading_level: HeadingLevel.parse(2),
     children: [
-      { heading: "Background", level: 3, children: [] },
+      { heading: "Background", heading_level: HeadingLevel.parse(3), children: [] },
     ],
   },
-  { heading: "Conclusion", level: 2, children: [] },
+  { heading: "Conclusion", heading_level: HeadingLevel.parse(2), children: [] },
 ];
 
 describe("SectionNavigator", () => {

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { getContentRoot } from "./data-root.js";
 import { resolveDocPathUnderContent, InvalidDocPathError } from "./path-utils.js";
-import type { DocStructureNode } from "../types/shared.js";
+import type { DocStructureNode, HeadingLevel } from "../types/shared.js";
 import { ContentLayer, SectionNotFoundError } from "./content-layer.js";
 import { DocumentSkeleton } from "./document-skeleton.js";
 import { SectionRef } from "../domain/section-ref.js";
@@ -30,20 +30,16 @@ export async function resolveHeadingPath(
   }
 }
 
-/**
- * Like resolveHeadingPath but also returns the heading level from the skeleton.
- * Returns { path, level } where level is the markdown heading depth (1-6), or 0 for root.
- */
 export async function resolveHeadingPathWithLevel(
   docPath: DocPath,
   headingPath: string[],
-): Promise<{ path: string; level: number }> {
+): Promise<{ path: string; headingLevel: HeadingLevel }> {
   const contentRoot = getContentRoot();
   resolveDocPathUnderContent(contentRoot, docPath);
   const layer = new ContentLayer(contentRoot);
   try {
-    const { absolutePath, level } = await layer.resolveSectionPathWithLevel(docPath, headingPath);
-    return { path: absolutePath, level };
+    const { absolutePath, headingLevel } = await layer.resolveSectionPathWithLevel(docPath, headingPath);
+    return { path: absolutePath, headingLevel };
   } catch (err) {
     if (err instanceof SectionNotFoundError) throw new HeadingNotFoundError(err.message);
     throw err;
@@ -85,7 +81,7 @@ export async function readDocumentStructure(docPath: DocPath): Promise<DocStruct
 export interface FlatSection {
   headingPath: string[];
   heading: string;
-  level: number;
+  headingLevel: HeadingLevel;
 }
 
 /**
@@ -105,8 +101,12 @@ export interface FlatSection {
  * `*Structural` variant rather than reverting these.
  */
 
+function structureNodeShape(node: DocStructureNode): { heading: string; headingLevel: HeadingLevel } {
+  return { heading: node.heading, headingLevel: node.heading_level };
+}
+
 function isNestedBodyHolderInStructure(node: DocStructureNode, parentPath: string[]): boolean {
-  return isBodyHolderShape(node) && parentPath.length > 0;
+  return isBodyHolderShape(structureNodeShape(node)) && parentPath.length > 0;
 }
 
 export function flattenStructureWithLevels(
@@ -115,10 +115,10 @@ export function flattenStructureWithLevels(
 ): FlatSection[] {
   const result: FlatSection[] = [];
   for (const node of nodes) {
-    const isBeforeFirstHeading = isBodyHolderShape(node);
+    const isBeforeFirstHeading = isBodyHolderShape(structureNodeShape(node));
     const currentPath = isBeforeFirstHeading ? [...parentPath] : [...parentPath, node.heading];
     if (!isNestedBodyHolderInStructure(node, parentPath)) {
-      result.push({ headingPath: currentPath, heading: node.heading, level: node.level });
+      result.push({ headingPath: currentPath, heading: node.heading, headingLevel: node.heading_level });
     }
     if (node.children?.length) {
       result.push(...flattenStructureWithLevels(node.children, currentPath));
@@ -133,7 +133,7 @@ export function flattenStructureToHeadingPaths(
 ): string[][] {
   const result: string[][] = [];
   for (const node of nodes) {
-    const isBeforeFirstHeading = isBodyHolderShape(node);
+    const isBeforeFirstHeading = isBodyHolderShape(structureNodeShape(node));
     const currentPath = isBeforeFirstHeading ? [...parentPath] : [...parentPath, node.heading];
     if (!isNestedBodyHolderInStructure(node, parentPath)) {
       result.push(currentPath);

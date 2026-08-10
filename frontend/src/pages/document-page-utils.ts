@@ -6,7 +6,7 @@ import type {
 // from this module, so a value import here would be a cycle.
 import type { RenderSectionRef } from "../types/live-sections";
 import { relativeTime } from "../utils/relativeTime";
-import type { DocPath } from "../types/shared";
+import type { DocPath, HeadingLevel } from "../types/shared";
 
 // ─── Helper types ────────────────────────────────────────────────
 
@@ -115,11 +115,11 @@ export function countStructureNodes(nodes: { children: unknown[] }[]): number {
 export function flattenStructureTree(
   nodes: DocStructureNode[],
   parentPath: string[] = [],
-): { headingPath: string[]; level: number }[] {
-  const result: { headingPath: string[]; level: number }[] = [];
+): { headingPath: string[]; headingLevel: HeadingLevel }[] {
+  const result: { headingPath: string[]; headingLevel: HeadingLevel }[] = [];
   for (const node of nodes) {
     const path = [...parentPath, node.heading];
-    result.push({ headingPath: path, level: node.level });
+    result.push({ headingPath: path, headingLevel: node.heading_level });
     if (node.children?.length) {
       result.push(...flattenStructureTree(node.children, path));
     }

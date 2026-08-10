@@ -92,7 +92,7 @@ describe("live-editing pipeline wiring (MW-1b/2/3)", () => {
     const reader = ProposalReader.open(proposalId, "inprogress");
     const sections = await reader.getSectionList(SAMPLE_DOC_PATH);
     const overview = sections.find((s) => s.heading === "Overview");
-    expect(overview?.level).toBe(4);
+    expect(overview?.headingLevel).toBe(4);
   });
 
   it("MW-1b: quiet quiescence normalizes without publishing; explicit publish commits", async () => {

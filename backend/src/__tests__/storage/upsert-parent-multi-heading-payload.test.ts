@@ -42,8 +42,8 @@ import { DocumentSkeleton } from "../../storage/document-skeleton.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 
-function h(level: number, heading: string): string {
-  return `${"#".repeat(level)} ${heading}`;
+function h(headingLevel: number, heading: string): string {
+  return `${"#".repeat(headingLevel)} ${heading}`;
 }
 
 describe("multi-heading payload on a sub-skeleton parent", () => {
@@ -87,11 +87,11 @@ describe("multi-heading payload on a sub-skeleton parent", () => {
     const target = skeleton.requireContentEntryByHeadingPath(["Target"]);
 
     const payload = [
-      h(target.level, "Target"),
+      h(target.headingLevel, "Target"),
       "",
       "Target body.",
       "",
-      h(target.level + 1, "New Child"),
+      h(target.headingLevel + 1, "New Child"),
       "",
       "Child body.",
     ].join("\n");
@@ -134,11 +134,11 @@ describe("multi-heading payload on a sub-skeleton parent", () => {
     const { parent, a, b } = await buildParentWithChildren(docPath, overlay);
 
     const payload = [
-      h(parent.level, "Parent"),
+      h(parent.headingLevel, "Parent"),
       "",
       "Parent body edited.",
       "",
-      h(parent.level + 1, "C"),
+      h(parent.headingLevel + 1, "C"),
       "",
       "C body.",
     ].join("\n");
@@ -184,11 +184,11 @@ describe("multi-heading payload on a sub-skeleton parent", () => {
     const { parent, a, b } = await buildParentWithChildren(docPath, overlay);
 
     const payload = [
-      h(parent.level, "Parent"),
+      h(parent.headingLevel, "Parent"),
       "",
       "Parent body.",
       "",
-      h(a.level, "A"),
+      h(a.headingLevel, "A"),
       "",
       "A body updated.",
     ].join("\n");

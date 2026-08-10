@@ -179,7 +179,7 @@ describe("dupeheadings corruption flow", () => {
     // listCanonicalEntries / collect-section-layers see after leaf→sub-skeleton.
     const nestedBodyHolderShape = {
       heading: "",
-      level: 0,
+      headingLevel: 0,
       headingPath: ["Overview"] as string[],
       sectionFile: "--section-body--c2cqo0.md", // matches dupeheadings dump naming
     };
@@ -215,7 +215,7 @@ describe("dupeheadings corruption flow", () => {
     const change = classifyStructuralChange(duplicated, {
       headingPath: ["Overview"],
       heading: "Overview",
-      level: 2,
+      headingLevel: 2,
     });
     expect(change.kind).toBe("section-split");
 

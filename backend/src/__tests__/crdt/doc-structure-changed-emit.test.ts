@@ -108,14 +108,14 @@ function lastStructuralState(): WireLiveSectionsState {
   return structural[structural.length - 1].state!;
 }
 
-/** The topology is body-free: `fragment_key` + `heading_path` only, no body/file/editor. */
+/** The topology is body-free: `fragment_key` + `heading_path` + `heading_level` only, no body/file/editor. */
 function assertBodyFree(state: WireLiveSectionsState): void {
   for (const ref of state.topology) {
     expect(typeof ref.fragment_key).toBe("string");
     expect(ref.fragment_key.length).toBeGreaterThan(0);
     expect(Array.isArray(ref.heading_path)).toBe(true);
     // No body/topology-forbidden fields leaked onto the live ref.
-    expect(Object.keys(ref).sort()).toEqual(["fragment_key", "heading_path"]);
+    expect(Object.keys(ref).sort()).toEqual(["fragment_key", "heading_level", "heading_path"]);
   }
 }
 

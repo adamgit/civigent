@@ -5,6 +5,7 @@ import { isAdmin } from "../../auth/acl.js";
 import { listAuthMethods, buildOidcIdentity, isBootstrapAvailable, redeemBootstrapCode, exchangeRefreshToken } from "../../auth/service.js";
 import { issueTokenPair } from "../../auth/tokens.js";
 import { isOidcConfigured, getOidcDisplayName, getOidcPublicUrl } from "../../auth/oauth-config.js";
+import { getAppName } from "../../app-name.js";
 import { generateOidcState, generateOidcNonce, storeOidcState, retrieveAndClearOidcState } from "../../auth/oidc-state.js";
 import { buildOidcRedirectUrl, redeemOidcCode } from "../../auth/oidc-provider.js";
 import { sendApiError } from "./middleware.js";
@@ -159,9 +160,11 @@ export function registerAuthRoutes(router: Router): void {
   router.get("/auth/session", async (req, res, next) => {
     try {
       const writer = resolveAuthenticatedWriter(req);
+      const app_name = getAppName();
       const response: SessionInfoResponse = writer
         ? {
             authenticated: true,
+            app_name,
             user: {
               id: writer.id,
               type: writer.type,
@@ -170,7 +173,7 @@ export function registerAuthRoutes(router: Router): void {
               is_admin: writer.type !== "agent" && (await isAdmin(writer.id)),
             },
           }
-        : { authenticated: false };
+        : { authenticated: false, app_name };
       res.json(response);
     } catch (error) {
       next(error);

@@ -11,8 +11,8 @@ import { rememberRecentDoc } from "../services/recent-docs";
 import { CurrentUserProvider } from "../contexts/CurrentUserContext";
 import { SidebarIdentity } from "../components/SidebarIdentity";
 import type { DocumentTreeEntry, AuthUser } from "../types/shared.js";
-import { stripLeadingSlashForRoute } from "./docsRouteUtils";
-import { formatBuildDate, readSidebarAutoHide, writeSidebarAutoHide, parseRouteDocPath, classifyWsEvent } from "./app-layout-utils";
+import { DocsLocation, docHref } from "./docs-location";
+import { formatBuildDate, readSidebarAutoHide, writeSidebarAutoHide, classifyWsEvent } from "./app-layout-utils";
 import { recordWsDiag } from "../services/ws-diagnostics";
 import { computeBrowserTabTitle } from "./browser-tab-title";
 import { DocPath } from "../types/shared";
@@ -41,7 +41,13 @@ interface TreeRowFlashEntry {
 interface ToastEntry {
   id: number;
   text: string;
-  docPath: string;
+  docPath: DocPath;
+}
+
+/** Live document page → layout: tab-title edit flags for the focused file. */
+export interface FocusedDocTabEditState {
+  hasInFlightEdits: boolean;
+  hasUnpublishedChanges: boolean;
 }
 
 export interface AppLayoutOutletContext {
@@ -49,12 +55,19 @@ export interface AppLayoutOutletContext {
   treeLoading: boolean;
   treeSyncing: boolean;
   treeError: string | null;
-  createDoc: (path: string) => Promise<void>;
+  createDoc: (docPath: DocPath) => Promise<void>;
   refreshTree: () => Promise<void>;
   /** True when the sidebar auto-hides (Focus mode). */
   sidebarAutoHide: boolean;
   /** Set Focus (`true`) or Browse (`false`) mode; persists and syncs the header toggle. */
   setSidebarAutoHide: (autoHide: boolean) => void;
+  /**
+   * Report tab-title edit flags for a live document page. Scoped by `docPath` so
+   * an unmounting page cannot clear the next page's report.
+   */
+  reportFocusedDocTabEditState: (docPath: string, state: FocusedDocTabEditState) => void;
+  /** Clear flags previously reported for `docPath` (no-op if another doc is current). */
+  clearFocusedDocTabEditState: (docPath: string) => void;
 }
 
 /** Left-rail panel glyph (VS Code / Notion style). Filled rail when pinned; empty when auto-hide. */
@@ -95,6 +108,12 @@ export function AppLayout() {
   const [creatingDoc, setCreatingDoc] = useState(false);
   const [newDocError, setNewDocError] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  // Install label for tab titles (`KS_APP_NAME` or public URL). Seeded from the
+  // browser origin so the first paint is already disambiguated before session loads.
+  const [appName, setAppName] = useState(() => window.location.origin);
+  const [focusedDocTabEdit, setFocusedDocTabEdit] = useState<
+    (FocusedDocTabEditState & { docPath: string }) | null
+  >(null);
   // Visible degraded state for an authoritative session check that genuinely
   // failed (500 / network / malformed) — distinct from a normal signed-out, so
   // the initial load never fails silently. Cleared on the next clean read.
@@ -126,10 +145,28 @@ export function AppLayout() {
   const [rootImportError, setRootImportError] = useState<string | null>(null);
   const rootImportInputRef = useRef<HTMLInputElement>(null);
   const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
-  const focusedDocPath = useMemo(() => parseRouteDocPath(location.pathname), [location.pathname]);
+  const focusedDocPath = useMemo(() => {
+    const loc = DocsLocation.fromPathname(location.pathname);
+    return loc?.kind === "doc" ? loc.docPath : null;
+  }, [location.pathname]);
+  const reportFocusedDocTabEditState = useCallback((docPath: string, state: FocusedDocTabEditState) => {
+    setFocusedDocTabEdit({ docPath, ...state });
+  }, []);
+  const clearFocusedDocTabEditState = useCallback((docPath: string) => {
+    setFocusedDocTabEdit((prev) => (prev?.docPath === docPath ? null : prev));
+  }, []);
+  const fileEditFlags = useMemo(() => {
+    if (!focusedDocPath || focusedDocTabEdit?.docPath !== focusedDocPath) {
+      return { hasInFlightEdits: false, hasUnpublishedChanges: false };
+    }
+    return {
+      hasInFlightEdits: focusedDocTabEdit.hasInFlightEdits,
+      hasUnpublishedChanges: focusedDocTabEdit.hasUnpublishedChanges,
+    };
+  }, [focusedDocPath, focusedDocTabEdit]);
   useEffect(() => {
-    document.title = computeBrowserTabTitle(location.pathname, entries, loadingTree);
-  }, [location.pathname, entries, loadingTree]);
+    document.title = computeBrowserTabTitle(location.pathname, appName, fileEditFlags);
+  }, [location.pathname, appName, fileEditFlags]);
   const focusedDocPathRef = useRef<string | null>(focusedDocPath);
   const windowFocusedRef = useRef(windowFocused);
   const documentVisibleRef = useRef(documentVisible);
@@ -213,12 +250,10 @@ export function AppLayout() {
       });
   };
 
-  const createDoc = useCallback(async (path: string): Promise<void> => {
-    const withMd = path.endsWith(".md") ? path : `${path}.md`;
-    const docPath = DocPath.fromSlashStrippedUrlSegment(withMd.replace(/^\/+/, ""));
+  const createDoc = useCallback(async (docPath: DocPath): Promise<void> => {
     await apiClient.createDocument(docPath);
     loadTree({ background: true }).catch(() => { /* non-fatal refresh */ });
-    navigate(`/docs/${stripLeadingSlashForRoute(docPath)}`);
+    navigate(docHref(docPath));
   }, [navigate]);
 
   const openCreateDocInFolder = useCallback((folderPath: string) => {
@@ -233,9 +268,15 @@ export function AppLayout() {
     e.preventDefault();
     const trimmed = newDocPath.trim();
     if (!trimmed || creatingDoc) return;
+    const withMd = trimmed.endsWith(".md") ? trimmed : `${trimmed}.md`;
+    const docPath = DocPath.tryParse(withMd.startsWith("/") ? withMd : `/${withMd}`);
+    if (!docPath) {
+      setNewDocError(`Invalid document path: ${JSON.stringify(withMd)}`);
+      return;
+    }
     setCreatingDoc(true);
     setNewDocError(null);
-    createDoc(trimmed)
+    createDoc(docPath)
       .then(() => {
         setShowNewDocForm(false);
         setNewDocPath("");
@@ -342,6 +383,9 @@ export function AppLayout() {
         } else {
           clearWriterId();
           setCurrentUser(null);
+        }
+        if (typeof session.app_name === "string" && session.app_name.trim()) {
+          setAppName(session.app_name.trim());
         }
         // A clean read clears any prior degraded banner.
         setSessionError(null);
@@ -815,7 +859,7 @@ export function AppLayout() {
                 >
                   {toast.text}{" "}
                   <Link
-                    to={`/docs/${stripLeadingSlashForRoute(DocPath.parse(toast.docPath))}`}
+                    to={docHref(toast.docPath)}
                     onClick={() => setToasts([])}
                     className="font-medium underline"
                   >
@@ -845,6 +889,8 @@ export function AppLayout() {
                 refreshTree: () => loadTree({ background: true }),
                 sidebarAutoHide,
                 setSidebarAutoHide,
+                reportFocusedDocTabEditState,
+                clearFocusedDocTabEditState,
               } satisfies AppLayoutOutletContext}
             />
           )}

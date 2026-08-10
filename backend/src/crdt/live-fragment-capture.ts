@@ -1,4 +1,5 @@
 import { classifyStructuralChange, type StructuralChange } from "./structural-change.js";
+import { HeadingLevel } from "../types/shared.js";
 import type { LiveSectionLayoutEntry } from "./live-section-layout.js";
 import { stripHeadingFromFragment, type FragmentContent } from "../storage/section-formatting.js";
 import type {
@@ -25,7 +26,7 @@ export function captureLiveFragments(
       change: classifyStructuralChange(content, {
         headingPath: identity.headingPath,
         heading: identity.heading,
-        level: identity.level,
+        headingLevel: identity.headingLevel,
       }),
     };
   });
@@ -41,8 +42,8 @@ export function partitionCapturedLiveFragments(
       materializableBodies.push({
         headingPath: [...identity.headingPath],
         heading: identity.heading,
-        level: identity.level,
-        body: stripHeadingFromFragment(content, 0),
+        headingLevel: identity.headingLevel,
+        body: stripHeadingFromFragment(content, HeadingLevel.beforeFirstHeading),
         fragmentKey: identity.fragmentKey,
       });
       continue;
@@ -52,15 +53,15 @@ export function partitionCapturedLiveFragments(
         fragmentKey: identity.fragmentKey,
         headingPath: [...identity.headingPath],
         heading: identity.heading,
-        level: identity.level,
+        headingLevel: identity.headingLevel,
       });
       continue;
     }
     materializableBodies.push({
       headingPath: [...identity.headingPath],
       heading: identity.heading,
-      level: identity.level,
-      body: stripHeadingFromFragment(content, identity.level),
+      headingLevel: identity.headingLevel,
+      body: stripHeadingFromFragment(content, identity.headingLevel),
       fragmentKey: identity.fragmentKey,
     });
   }

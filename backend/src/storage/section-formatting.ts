@@ -5,6 +5,8 @@
 // Both are plain strings at runtime; the brands exist only at compile time to
 // prevent accidental mixing of "body" and "fragment" strings.
 
+import type { HeadingLevel } from "../types/shared.js";
+
 declare const __sectionBody: unique symbol;
 declare const __fragmentContent: unique symbol;
 declare const __sectionBodyWithSubsections: unique symbol;
@@ -216,9 +218,9 @@ import { isBodyHolderShape } from "./section-shape.js";
  * as-is. Every other live fragment (including a sub-skeleton parent's body-holder)
  * now carries its heading and takes the headed-fragment path below.
  */
-export function buildFragmentContent(body: SectionBody, level: number, heading: string): FragmentContent {
-  if (isBodyHolderShape({ level, heading })) return fragmentFromBodyHolder(body);
-  const headingLine = `${"#".repeat(level)} ${heading}`;
+export function buildFragmentContent(body: SectionBody, headingLevel: HeadingLevel, heading: string): FragmentContent {
+  if (isBodyHolderShape({ headingLevel, heading })) return fragmentFromBodyHolder(body);
+  const headingLine = `${"#".repeat(headingLevel)} ${heading}`;
   const bodyStr = sectionBodyText(body);
   return mintFragmentContent(bodyStr.trim() ? `${headingLine}\n\n${bodyStr}` : headingLine);
 }
@@ -227,8 +229,8 @@ export function buildFragmentContent(body: SectionBody, level: number, heading: 
  * Strip the heading line from a fragment, returning just the body.
  * If no heading line matches the expected level, returns the full content as body.
  */
-export function stripHeadingFromFragment(markdown: FragmentContent, level: number): SectionBody {
-  const headingPrefix = "#".repeat(level) + " ";
+export function stripHeadingFromFragment(markdown: FragmentContent, headingLevel: HeadingLevel): SectionBody {
+  const headingPrefix = "#".repeat(headingLevel) + " ";
   const lines = fragmentContentText(markdown).split("\n");
   if (lines.length > 0 && lines[0].startsWith(headingPrefix)) {
     let startIdx = 1;
@@ -263,8 +265,8 @@ export function bodyFromFragmentStrippingLeadingHeading(fragment: FragmentConten
  * Used during orphan collection when a raw fragment needs to be folded
  * into the canonical content.
  */
-export function mergeOrphanIntoFragment(orphanBody: SectionBody, level: number, heading: string): FragmentContent {
-  return buildFragmentContent(orphanBody, level, heading);
+export function mergeOrphanIntoFragment(orphanBody: SectionBody, headingLevel: HeadingLevel, heading: string): FragmentContent {
+  return buildFragmentContent(orphanBody, headingLevel, heading);
 }
 
 /**

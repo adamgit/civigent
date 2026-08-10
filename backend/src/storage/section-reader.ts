@@ -40,9 +40,9 @@ export async function readSectionWithHeading(
   if (ref.headingPath.length === 0) return fragmentFromBodyHolder(body);
 
   // Get the heading level from the skeleton
-  const { level } = await resolveHeadingPathWithLevel(ref.docPath, ref.headingPath);
-  if (level === 0) return fragmentFromBodyHolder(body);
+  const { headingLevel } = await resolveHeadingPathWithLevel(ref.docPath, ref.headingPath);
+  if (headingLevel === 0) return fragmentFromBodyHolder(body);
 
   const heading = ref.headingPath[ref.headingPath.length - 1];
-  return buildFragmentContent(body, level, heading);
+  return buildFragmentContent(body, headingLevel, heading);
 }

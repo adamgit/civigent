@@ -30,6 +30,7 @@ import {
   AclAction,
   AclPermissionSet,
   BuiltinRoleName,
+  FolderPath,
   RoleName,
   type AclSnapshot,
 } from "../types/shared.js";
@@ -172,7 +173,7 @@ export async function getDocWritePermission(docPath: string): Promise<RoleName> 
 async function resolveDocPermissionRaw(docPath: string, action: AclAction): Promise<string> {
   if (action === "read") {
     const folder = getExportedSkillsConfig().folder;
-    if (docPath === folder || docPath.startsWith(`${folder}/`)) {
+    if (docPath === folder || FolderPath.containsDoc(folder, docPath)) {
       return "public";
     }
   }

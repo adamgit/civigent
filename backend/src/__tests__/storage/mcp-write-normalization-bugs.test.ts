@@ -18,8 +18,8 @@ import { SectionRef } from "../../domain/section-ref.js";
 
 function collectFlat(skeleton: DocumentSkeleton): FlatEntry[] {
   const entries: FlatEntry[] = [];
-  skeleton.forEachNode((heading, level, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
-    entries.push({ heading, level, sectionFile, headingPath: [...headingPath], absolutePath, isSubSkeleton });
+  skeleton.forEachNode((heading, headingLevel, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
+    entries.push({ heading, headingLevel, sectionFile, headingPath: [...headingPath], absolutePath, isSubSkeleton });
   });
   return entries;
 }
@@ -270,7 +270,7 @@ describe("BUG3: H1 embedded in root body creates impossible parse state", () => 
 
     expect(rootSections.length).toBeGreaterThanOrEqual(1);
     expect(h1Sections).toHaveLength(1);
-    expect(h1Sections[0].level).toBe(1);
+    expect(h1Sections[0].headingLevel).toBe(1);
 
     // If someone were to apply this parsed structure back to the skeleton,
     // they'd get a root section AND a separate H1 section — the root body

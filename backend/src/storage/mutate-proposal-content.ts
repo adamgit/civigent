@@ -23,7 +23,7 @@
  */
 
 import type { ActiveProposal, ProposalSection, DocumentTargetRef } from "../types/shared.js";
-import { documentTargetRef } from "../types/shared.js";
+import { documentTargetRef, HeadingLevel } from "../types/shared.js";
 import type { ContentEntry, FlatEntry } from "./document-skeleton.js";
 import type { ProposalWriteResult, ProposalSubtreeMutationResult } from "./proposal-facade-types.js";
 import { ProposalEditor } from "./proposal-editor.js";
@@ -166,14 +166,16 @@ export async function mutateProposalContent(
           `Section not found: ${operation.headingPath.join(" > ")} in ${operation.docPath}`,
         );
       }
-      const newLevel = operation.newParentPath.length === 0 ? current.level : operation.newParentPath.length + 1;
+      const newHeadingLevel = operation.newParentPath.length === 0
+        ? current.headingLevel
+        : HeadingLevel.parse(operation.newParentPath.length + 1);
       // Authoritative affected set: both the removed (old) and added (new)
       // identities of the moved subtree, descendants included.
       const moveResult = await editor.moveSection(
         operation.docPath,
         operation.headingPath,
         operation.newParentPath,
-        newLevel,
+        newHeadingLevel,
       );
       extras.moveResult = moveResult;
       affected = [

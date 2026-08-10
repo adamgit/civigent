@@ -1,6 +1,6 @@
 /**
  * Section-shape predicates — the SINGLE place in the codebase allowed to test
- * `(level === 0 && heading === "")` directly. All other code must call one of
+ * `(headingLevel === 0 && heading === "")` directly. All other code must call one of
  * these named predicates so the discriminator can later be hardened (e.g. a
  * dedicated `storageRole` field on `FlatEntry`/`ContentEntry`) by changing only
  * the predicate bodies, with no caller-side rewrites.
@@ -31,9 +31,11 @@
  *                                  point of change.
  */
 
+import { HeadingLevel } from "../types/shared.js";
+
 export interface BodyHolderShapeInput {
   readonly heading: string;
-  readonly level: number;
+  readonly headingLevel: HeadingLevel;
 }
 
 export interface BodyHolderEntryInput extends BodyHolderShapeInput {
@@ -41,7 +43,7 @@ export interface BodyHolderEntryInput extends BodyHolderShapeInput {
 }
 
 export function isBodyHolderShape(node: BodyHolderShapeInput): boolean {
-  return node.level === 0 && node.heading === "";
+  return node.headingLevel === HeadingLevel.beforeFirstHeading && node.heading === "";
 }
 
 export function isDocumentBeforeFirstHeading(entry: BodyHolderEntryInput): boolean {

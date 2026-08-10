@@ -127,7 +127,7 @@ describe("upsertSection body-only must preserve section identity", () => {
 
     const before = await DocumentSkeleton.fromDisk(DOC_PATH, ctx.contentDir, ctx.contentDir);
     const beforeEntry = before.requireContentEntryByHeadingPath(["Overview"]);
-    expect(beforeEntry.level).toBe(2);
+    expect(beforeEntry.headingLevel).toBe(2);
     expect(beforeEntry.sectionFile).toBe("overview.md");
 
     const result = await overlay.upsertSection(
@@ -139,7 +139,7 @@ describe("upsertSection body-only must preserve section identity", () => {
     const after = await DocumentSkeleton.fromDisk(DOC_PATH, ctx.contentDir, ctx.contentDir);
     const afterEntry = after.requireContentEntryByHeadingPath(["Overview"]);
     expect(afterEntry.sectionFile).toBe(beforeEntry.sectionFile);
-    expect(afterEntry.level).toBe(2);
+    expect(afterEntry.headingLevel).toBe(2);
     expect(afterEntry.heading).toBe("Overview");
 
     expect(await overlay.readSection(new SectionRef(DOC_PATH, ["Overview"]))).toBe(
@@ -157,7 +157,7 @@ describe("upsertSection body-only must preserve section identity", () => {
 
     const before = await DocumentSkeleton.fromDisk(DOC_PATH, ctx.contentDir, ctx.contentDir);
     const beforeEntry = before.requireContentEntryByHeadingPath(["Subsection"]);
-    expect(beforeEntry.level).toBe(3);
+    expect(beforeEntry.headingLevel).toBe(3);
     expect(beforeEntry.sectionFile).toBe("subsection.md");
 
     const result = await overlay.upsertSection(
@@ -169,7 +169,7 @@ describe("upsertSection body-only must preserve section identity", () => {
     const after = await DocumentSkeleton.fromDisk(DOC_PATH, ctx.contentDir, ctx.contentDir);
     const afterEntry = after.requireContentEntryByHeadingPath(["Subsection"]);
     expect(afterEntry.sectionFile).toBe(beforeEntry.sectionFile);
-    expect(afterEntry.level).toBe(3);
+    expect(afterEntry.headingLevel).toBe(3);
     expect(afterEntry.heading).toBe("Subsection");
 
     expect(await overlay.readSection(new SectionRef(DOC_PATH, ["Subsection"]))).toBe(
@@ -187,7 +187,7 @@ describe("upsertSection body-only must preserve section identity", () => {
 
     const before = await DocumentSkeleton.fromDisk(DOC_PATH, ctx.contentDir, ctx.contentDir);
     const beforeEntry = before.requireContentEntryByHeadingPath(["Deep"]);
-    expect(beforeEntry.level).toBe(4);
+    expect(beforeEntry.headingLevel).toBe(4);
     expect(beforeEntry.sectionFile).toBe("deep.md");
 
     const result = await overlay.upsertSection(
@@ -199,7 +199,7 @@ describe("upsertSection body-only must preserve section identity", () => {
     const after = await DocumentSkeleton.fromDisk(DOC_PATH, ctx.contentDir, ctx.contentDir);
     const afterEntry = after.requireContentEntryByHeadingPath(["Deep"]);
     expect(afterEntry.sectionFile).toBe(beforeEntry.sectionFile);
-    expect(afterEntry.level).toBe(4);
+    expect(afterEntry.headingLevel).toBe(4);
     expect(afterEntry.heading).toBe("Deep");
 
     expect(await overlay.readSection(new SectionRef(DOC_PATH, ["Deep"]))).toBe(

@@ -90,7 +90,7 @@ export async function computeCanonicalToLiveDeltas(
       // Section absent from canonical (e.g. deleted) — nothing to apply here.
       continue;
     }
-    const fragmentContent = buildFragmentContent(body, entry.level, entry.heading);
+    const fragmentContent = buildFragmentContent(body, entry.headingLevel, entry.heading);
     const current = liveFragments.readFragmentString(entry.fragmentKey);
     if (fragmentContent === current) continue;
 

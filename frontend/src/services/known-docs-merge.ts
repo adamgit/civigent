@@ -37,7 +37,7 @@ export function mergeKnownDocPaths(
  * Case-insensitive substring filter on the trimmed query. An empty query returns
  * the input unchanged. The query is treated as a literal substring, not a regex.
  */
-export function filterDocsByQuery(docs: string[], query: string): string[] {
+export function filterDocsByQuery<T extends string>(docs: T[], query: string): T[] {
   const normalized = query.trim().toLowerCase();
   if (!normalized) return docs;
   return docs.filter((docPath) => docPath.toLowerCase().includes(normalized));

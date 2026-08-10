@@ -102,12 +102,144 @@ export const DocPath = {
     return DocPath.parse(`/${slashStrippedSegment}`);
   },
 
+  fileInFolder(folder: FolderPath, fileName: string): DocPath {
+    return DocPath.parse(folder === FolderPath.root ? `/${fileName}` : `${folder}/${fileName}`);
+  },
+
   isDocPath(raw: string): raw is DocPath {
     return satisfiesDocPathLaw(raw);
   },
 
   isSlashStrippedUrlSegmentOfDocPath(slashStrippedSegment: string): boolean {
     return satisfiesDocPathLaw(`/${slashStrippedSegment}`);
+  },
+};
+
+declare const __folderPath: unique symbol;
+
+export type FolderPath = string & { readonly [__folderPath]: true };
+
+export class InvalidFolderPathError extends Error {}
+
+function satisfiesFolderPathLaw(raw: string): boolean {
+  if (raw === "/") {
+    return true;
+  }
+  if (!raw.startsWith("/") || raw.includes("//") || raw.includes("\\") || raw.endsWith("/")) {
+    return false;
+  }
+  const segments = raw.slice(1).split("/");
+  for (const segment of segments) {
+    if (
+      segment.length === 0 ||
+      segment === "." ||
+      segment === ".." ||
+      segment.endsWith(".md") ||
+      segment.endsWith(".sections")
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export const FolderPath = {
+  root: "/" as FolderPath,
+
+  parse(raw: string): FolderPath {
+    if (!satisfiesFolderPathLaw(raw)) {
+      throw new InvalidFolderPathError(`Invalid folder path: ${JSON.stringify(raw)}`);
+    }
+    return raw as FolderPath;
+  },
+
+  tryParse(raw: string): FolderPath | null {
+    return satisfiesFolderPathLaw(raw) ? (raw as FolderPath) : null;
+  },
+
+  isFolderPath(raw: string): raw is FolderPath {
+    return satisfiesFolderPathLaw(raw);
+  },
+
+  normalize(raw: string | null | undefined): FolderPath {
+    if (raw === null || raw === undefined) {
+      return FolderPath.root;
+    }
+    const trimmed = raw.trim().replace(/\\/g, "/");
+    if (trimmed.length === 0) {
+      return FolderPath.root;
+    }
+    const prefixed = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+    const segments = prefixed.split("/").filter((segment) => segment.length > 0 && segment !== ".");
+    return FolderPath.parse(segments.length === 0 ? "/" : `/${segments.join("/")}`);
+  },
+
+  fromSlashStrippedUrlSegment(slashStrippedSegment: string): FolderPath {
+    return FolderPath.normalize(`/${slashStrippedSegment}`);
+  },
+
+  parentOf(fp: FolderPath): FolderPath {
+    if (fp === FolderPath.root) {
+      return FolderPath.root;
+    }
+    const lastSlash = fp.lastIndexOf("/");
+    return lastSlash === 0 ? FolderPath.root : (fp.slice(0, lastSlash) as FolderPath);
+  },
+
+  /** Leaf segment for UI labels; root is `"/"`. */
+  displayName(fp: FolderPath): string {
+    if (fp === FolderPath.root) {
+      return "/";
+    }
+    const lastSlash = fp.lastIndexOf("/");
+    return fp.slice(lastSlash + 1);
+  },
+
+  contains(outer: FolderPath, inner: FolderPath): boolean {
+    return outer === inner || outer === FolderPath.root || inner.startsWith(`${outer}/`);
+  },
+
+  containsDoc(folder: FolderPath, docPath: string): boolean {
+    return folder === FolderPath.root || docPath.startsWith(`${folder}/`);
+  },
+
+  rebaseDocPath(doc: DocPath, from: FolderPath, to: FolderPath): DocPath {
+    if (!FolderPath.containsDoc(from, doc)) {
+      throw new InvalidFolderPathError(
+        `Cannot rebase document ${JSON.stringify(doc)}: not under folder ${JSON.stringify(from)}`,
+      );
+    }
+    const suffix = from === FolderPath.root ? doc.slice(1) : doc.slice(from.length + 1);
+    return DocPath.parse(to === FolderPath.root ? `/${suffix}` : `${to}/${suffix}`);
+  },
+};
+
+declare const __headingLevel: unique symbol;
+
+export type HeadingLevel = number & { readonly [__headingLevel]: true };
+
+export class InvalidHeadingLevelError extends Error {}
+
+function satisfiesHeadingLevelLaw(raw: number): boolean {
+  return Number.isInteger(raw) && raw >= 0 && raw <= 6;
+}
+
+export const HeadingLevel = {
+  beforeFirstHeading: 0 as HeadingLevel,
+
+  parse(raw: number): HeadingLevel {
+    if (!satisfiesHeadingLevelLaw(raw)) {
+      throw new InvalidHeadingLevelError(`Invalid heading level: ${JSON.stringify(raw)}`);
+    }
+    return raw as HeadingLevel;
+  },
+
+  tryParse(raw: number): HeadingLevel | null {
+    return satisfiesHeadingLevelLaw(raw) ? (raw as HeadingLevel) : null;
+  },
+
+  isHeadingLevel(raw: number): raw is HeadingLevel {
+    return satisfiesHeadingLevelLaw(raw);
   },
 };
 
@@ -243,8 +375,7 @@ export interface WireLiveSectionRef {
   /** Opaque backend-owned CRDT fragment identity; branded to `SectionId` on the client. */
   fragment_key: string;
   heading_path: readonly string[];
-  /** ATX heading level (1–6); 0 for the before-first-heading section. */
-  level: number;
+  heading_level: HeadingLevel;
 }
 
 /** A live pending-writer session against one section (drives "wants to modify" UI). */
@@ -260,7 +391,6 @@ export interface WirePendingSection {
  * topology / editability / pending / pause-mirror changes.
  */
 export interface WireLiveSectionsState {
-  /** Ordered, body-free section topology (identity + heading path + ATX level). */
   topology: readonly WireLiveSectionRef[];
   blocked_section_ids: readonly string[];
   /** Live pending-writer sessions. */
@@ -437,14 +567,15 @@ export const WireLiveSectionRef = {
     if (typeof fragment_key !== "string") {
       throw new Error(`${label}.fragment_key must be a string, got ${JSON.stringify(fragment_key)}`);
     }
-    const level = obj["level"];
-    if (typeof level !== "number" || !Number.isInteger(level) || level < 0 || level > 6) {
-      throw new Error(`${label}.level must be an integer 0–6, got ${JSON.stringify(level)}`);
+    const rawHeadingLevel = obj["heading_level"];
+    if (typeof rawHeadingLevel !== "number") {
+      throw new Error(`${label}.heading_level must be an integer 0–6, got ${JSON.stringify(rawHeadingLevel)}`);
     }
+    const heading_level = HeadingLevel.parse(rawHeadingLevel);
     return {
       fragment_key,
       heading_path: wireStringArray(obj["heading_path"], `${label}.heading_path`),
-      level,
+      heading_level,
     };
   },
 };
@@ -1404,7 +1535,7 @@ export interface DocumentTreeEntry {
 
 export interface DocStructureNode {
   heading: string;
-  level: number;
+  heading_level: HeadingLevel;
   children: DocStructureNode[];
 }
 
@@ -1426,10 +1557,7 @@ export interface GetDocumentSectionsResponse {
   sections: Array<{
     heading: string;
     heading_path: string[];
-    /** Heading-path length (tree depth). Prefer `level` for ATX heading rank. */
-    depth: number;
-    /** ATX heading level (1–6); 0 for the before-first-heading section. */
-    level: number;
+    heading_level: HeadingLevel;
     content: string;
     agentWritePolicy: SectionAgentWritePolicySummary;
     crdt_session_active: boolean;
@@ -2114,6 +2242,8 @@ export interface SessionInfoResponse {
   authenticated: boolean;
   user?: AuthUser;
   login_providers?: LoginProvider[];
+  /** Install label: `KS_APP_NAME` when set, otherwise the server public URL. */
+  app_name: string;
 }
 
 // ─── API Errors ────────────────────────────────────────────────────
@@ -2143,17 +2273,6 @@ export interface ContentCommittedEvent {
 // It had no server emitter and the frontend ignored it; its role — signalling a
 // section has uncommitted edits — is now served, per-section and with editor
 // identity, by `SectionPendingStateEvent` (`section:pending`/`section:settled`).
-
-export interface WriterDirtyStateChangedEvent {
-  type: "writer:dirty-state-changed";
-  writer_id: string;
-  doc_path: string;
-}
-
-export interface SessionStatusChangedEvent {
-  type: "session:status-changed";
-  doc_path: string;
-}
 
 export interface AgentReadingEvent {
   type: "agent:reading";
@@ -2406,8 +2525,6 @@ export interface DocumentActivityEvent {
 
 export type WsServerEvent =
   | ContentCommittedEvent
-  | WriterDirtyStateChangedEvent
-  | SessionStatusChangedEvent
   | AgentReadingEvent
   | PresenceEditingEvent
   | PresenceDoneEvent

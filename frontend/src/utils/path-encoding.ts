@@ -1,3 +1,5 @@
+import type { DocPath, FolderPath } from "../types/shared.js";
+
 /**
  * Encode a doc path for use in URL paths — encodes each segment
  * individually so slashes are preserved as path separators.
@@ -10,7 +12,7 @@
  * Use this instead of raw encodeURIComponent on doc paths, which
  * would encode `/` as `%2F` and break route matching.
  */
-export function encodeDocPath(docPath: string): string {
+export function encodeDocPath(docPath: DocPath): string {
   return docPath.split("/").filter(Boolean).map(encodeURIComponent).join("/");
 }
 
@@ -18,6 +20,15 @@ export function encodeDocPath(docPath: string): string {
  * Encode a doc path for WebSocket URLs — same segment encoding as encodeDocPath
  * (slash-stripped for a path prefix that already exists on the WS URL).
  */
-export function encodeDocPathForWs(docPath: string): string {
+export function encodeDocPathForWs(docPath: DocPath): string {
   return encodeDocPath(docPath);
+}
+
+/**
+ * Encode a folder path for use in URL paths — same per-segment mechanics as
+ * encodeDocPath, kept distinct so folder paths and doc paths never share an
+ * encoder.
+ */
+export function encodeFolderPath(folderPath: FolderPath): string {
+  return folderPath.split("/").filter(Boolean).map(encodeURIComponent).join("/");
 }

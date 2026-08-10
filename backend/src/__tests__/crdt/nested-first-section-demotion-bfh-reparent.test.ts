@@ -241,8 +241,8 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     const intro = layout.find((e) => e.heading === "Intro")!;
     const child = layout.find((e) => e.heading === "Child")!;
     const grandchild = layout.find((e) => e.heading === "Grandchild")!;
-    expect(child.level).toBe(2);
-    expect(grandchild.level).toBe(3);
+    expect(child.headingLevel).toBe(2);
+    expect(grandchild.headingLevel).toBe(3);
     const childMarkdownBefore = session.liveFragments.readFragmentString(child.fragmentKey) as string;
     const grandchildMarkdownBefore = session.liveFragments.readFragmentString(grandchild.fragmentKey) as string;
     expect(childMarkdownBefore).toMatch(/^## Child/m);
@@ -257,8 +257,8 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     const post = await resolveLiveSectionLayout(DOC, session.generator.getCurrentProposalId());
     const postChild = post.find((e) => e.heading === "Child")!;
     const postGrand = post.find((e) => e.heading === "Grandchild")!;
-    expect(postChild.level).toBe(2);
-    expect(postGrand.level).toBe(3);
+    expect(postChild.headingLevel).toBe(2);
+    expect(postGrand.headingLevel).toBe(3);
     expect(postChild.headingPath).toEqual(["Child"]);
     expect(postGrand.headingPath).toEqual(["Child", "Grandchild"]);
 
@@ -273,8 +273,8 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     const list = await reader.getSectionList(DOC);
     const proposalChild = list.find((e) => e.heading === "Child")!;
     const proposalGrand = list.find((e) => e.heading === "Grandchild")!;
-    expect(proposalChild.level).toBe(2);
-    expect(proposalGrand.level).toBe(3);
+    expect(proposalChild.headingLevel).toBe(2);
+    expect(proposalGrand.headingLevel).toBe(3);
     expect(proposalChild.headingPath).toEqual(["Child"]);
     expect(proposalGrand.headingPath).toEqual(["Child", "Grandchild"]);
     expect(await reader.readSection(DOC, ["Child"])).toContain("Child body");
@@ -306,9 +306,9 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     // levels, bodies intact. Assert the VISIBLE outline (body-holder nodes are
     // a structural detail the flattener drops).
     const visible = flattenStructureWithLevels(await readDocumentStructure(DOC));
-    expect(visible.map((s) => ({ heading: s.heading, level: s.level, headingPath: s.headingPath }))).toEqual([
-      { heading: "Child", level: 2, headingPath: ["Child"] },
-      { heading: "Grandchild", level: 3, headingPath: ["Child", "Grandchild"] },
+    expect(visible.map((s) => ({ heading: s.heading, headingLevel: s.headingLevel, headingPath: s.headingPath }))).toEqual([
+      { heading: "Child", headingLevel: 2, headingPath: ["Child"] },
+      { heading: "Grandchild", headingLevel: 3, headingPath: ["Child", "Grandchild"] },
     ]);
     expect(await readSection(DOC, ["Child"])).toContain("Child body");
     expect(await readSection(DOC, ["Child", "Grandchild"])).toContain("Grandchild body");

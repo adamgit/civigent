@@ -28,7 +28,7 @@ import {
 } from "../services/live-section-frames";
 import type { CaretFrameHooks } from "../pages/caret-recovery";
 import type { SectionId, LiveSectionRef } from "../types/live-sections";
-import type { DocumentReplacementNoticePayload } from "../types/shared";
+import type { DocPath, DocumentReplacementNoticePayload } from "../types/shared";
 import { WS_CLOSE_REASON_DOCUMENT_REPLACED } from "../services/crdt-close-codes";
 import { rememberDocSessionId } from "../services/doc-session-memory";
 import { randomUuid } from "../utils/random-uuid";
@@ -36,7 +36,7 @@ import { randomUuid } from "../utils/random-uuid";
 export type LiveReplicaMode = "observer" | "editor";
 
 export interface UseLiveSectionReplicaParams {
-  docPath: string | null;
+  docPath: DocPath | null;
   onSessionEnded?: () => void;
   /** 4022 document-replaced / 4024 force-rebuild — reseed canonical content. */
   onSessionReinit?: () => void;
@@ -181,8 +181,8 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     replicaRef.current = replica;
   }, [retireReplica]);
 
-  const startFreshObserverPipelineRef = useRef<((docPathArg: string) => void) | null>(null);
-  const startFreshEditorPipelineRef = useRef<((docPathArg: string) => void) | null>(null);
+  const startFreshObserverPipelineRef = useRef<((docPathArg: DocPath) => void) | null>(null);
+  const startFreshEditorPipelineRef = useRef<((docPathArg: DocPath) => void) | null>(null);
 
   /** Route a live-section frame from either socket. A bootstrap for a DIFFERENT
    *  DocSession than the one this replica's doc is bound to means the server
@@ -192,7 +192,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
    *  replica, socket) and rejoin clean; the fresh socket receives a fresh
    *  bootstrap. Covers post-4021 turnover, 4022/4024 reseeds, and a session
    *  turnover that happened entirely while the socket was down. */
-  const handleLiveSectionFrame = useCallback((docPathArg: string, opcode: number, payload: Uint8Array) => {
+  const handleLiveSectionFrame = useCallback((docPathArg: DocPath, opcode: number, payload: Uint8Array) => {
     const replica = replicaRef.current;
     if (!replica) return;
     if (opcode === MSG_LIVE_SECTIONS_BOOTSTRAP) {
@@ -225,7 +225,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     routeLiveSectionFrame(opcode, payload, replica);
   }, []);
 
-  const startObserver = useCallback((docPathArg: string) => {
+  const startObserver = useCallback((docPathArg: DocPath) => {
     const provider = new ObserverCrdtProvider(
       docPathArg,
       {
@@ -260,7 +260,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     provider.connect();
   }, [handleLiveSectionFrame]);
 
-  const startEditor = useCallback((docPathArg: string) => {
+  const startEditor = useCallback((docPathArg: DocPath) => {
     const transport = new CrdtTransport(docPathArg, {
       doc: docRef.current!,
       awareness: awarenessRef.current!,
@@ -341,7 +341,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
   /** Drop and replace the whole live pipeline as OBSERVER — for stale-session
    *  rejection, unknown 4022 reasons, session end, and a bootstrap for a
    *  DocSession this doc never bootstrapped. */
-  const startFreshObserverPipeline = useCallback((docPathArg: string) => {
+  const startFreshObserverPipeline = useCallback((docPathArg: DocPath) => {
     teardownConnection();
     mintFreshReplica();
     modeRef.current = "observer";
@@ -352,7 +352,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
 
   /** Drop and replace the whole live pipeline as EDITOR — for normal 4022
    *  replacement and 4024 force-rebuild, which preserve this tab's editing. */
-  const startFreshEditorPipeline = useCallback((docPathArg: string) => {
+  const startFreshEditorPipeline = useCallback((docPathArg: DocPath) => {
     teardownConnection();
     mintFreshReplica();
     modeRef.current = "editor";

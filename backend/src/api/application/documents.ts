@@ -20,6 +20,7 @@ import { mutateProposalContent } from "../../storage/mutate-proposal-content.js"
 import { getHeadSha, gitLogRecent, isValidSha } from "../../storage/git-repo.js";
 import {
   readAssembledDocument,
+  DirectoryAtDocPathError,
   DocumentAssemblyError,
   DocumentNotFoundError,
 } from "../../storage/document-reader.js";
@@ -52,9 +53,10 @@ import {
   SearchTextPatternError,
   SearchTextExecutionError,
 } from "../../storage/discovery.js";
-import { getDocReadPermission } from "../../auth/acl.js";
+import { getDocReadPermission, checkDocPermission } from "../../auth/acl.js";
 import { RoleName } from "../../types/shared.js";
-import { DocPath } from "../../types/shared.js";
+import { DocPath, FolderPath, InvalidFolderPathError } from "../../types/shared.js";
+import { canonicalDocumentExists } from "../../mcp/catalog-events.js";
 import type { AuthenticatedWriter } from "../../auth/context.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
 import { openWorkspaceReader } from "./sections.js";
@@ -63,6 +65,7 @@ import { getExportedSkillsConfig } from "../../exported-skills-config.js";
 export { broadcastAgentReading };
 
 export {
+  DirectoryAtDocPathError,
   DocumentNotFoundError,
   DocumentAssemblyError,
   InvalidDocPathError,
@@ -222,6 +225,38 @@ export async function readCanonicalDocument(docPath: DocPath): Promise<{ respons
     },
     headingPaths: sectionsMeta.map((s) => s.heading_path),
   };
+}
+
+// ─── Live markdown export (raw fragment truth) ──────────
+
+export async function readLiveDocumentMarkdown(docPath: DocPath): Promise<string> {
+  const session = lookupDocSession(docPath);
+  if (session) {
+    // Raw fragment truth in current layout order — deliberately bypasses
+    // classification/materialization so the export works even when settle
+    // cannot. This is the standing escape hatch for a user's live content.
+    const { resolveLiveSectionLayout } = await import("../../crdt/live-section-layout.js");
+    const layout = await resolveLiveSectionLayout(docPath, session.generator.getCurrentProposalId());
+    const parts = layout
+      .map((entry) => session.liveFragments.readFragmentString(entry.fragmentKey).trim())
+      .filter((fragment) => fragment.length > 0);
+    return parts.join("\n\n");
+  }
+
+  const { buildFragmentContent, EMPTY_BODY } = await import("../../storage/section-formatting.js");
+  const reader = await openWorkspaceReader(docPath);
+  const sections = await reader.getSectionList(docPath);
+  const bodies = await reader.readAllSections(docPath);
+  const parts: string[] = [];
+  for (const section of sections) {
+    const body = bodies.get(SectionRef.headingKey(section.headingPath)) ?? EMPTY_BODY;
+    const fragment =
+      section.headingPath.length === 0
+        ? body
+        : buildFragmentContent(body, section.headingLevel, section.heading);
+    if (fragment.trim().length > 0) parts.push(fragment.trim());
+  }
+  return parts.join("\n\n");
 }
 
 // ─── Search ─────────────────────────────────────────────
@@ -510,4 +545,133 @@ export async function deleteDocument(docPath: DocPath, writer: DocumentWriter): 
   const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
   if (!committedHead) return { kind: "blocked", proposalId, policyResult };
   return { kind: "committed", proposalId, committedHead, policyResult };
+}
+
+// ─── Folder operations (delete / rename) ────────────────
+
+export class FolderWritePermissionError extends Error {
+  constructor(
+    readonly folder: FolderPath,
+    readonly deniedDocPaths: DocPath[],
+  ) {
+    super(`Write permission denied for documents in folder ${folder}: ${deniedDocPaths.join(", ")}`);
+  }
+}
+
+async function listFolderDescendantDocs(folder: FolderPath): Promise<DocPath[]> {
+  const tree = await readDocumentsTree(folder, true);
+  const docPaths: DocPath[] = [];
+  const walk = (nodes: DocumentTreeEntry[]): void => {
+    for (const node of nodes) {
+      if (node.type === "file") {
+        docPaths.push(DocPath.parse(node.path));
+        continue;
+      }
+      walk(node.children ?? []);
+    }
+  };
+  walk(tree);
+  if (docPaths.length === 0) {
+    throw new DocumentsTreePathNotFoundError(`Folder contains no documents: ${folder}`);
+  }
+  return docPaths;
+}
+
+export async function deleteFolder(
+  folder: FolderPath,
+  writer: DocumentWriter,
+): Promise<{ result: StructuralCommitResult; deletedDocPaths: DocPath[] }> {
+  if (folder === FolderPath.root) {
+    throw new InvalidFolderPathError("cannot delete the content root");
+  }
+  const deletedDocPaths = await listFolderDescendantDocs(folder);
+
+  const denied: DocPath[] = [];
+  for (const doc of deletedDocPaths) {
+    if (!(await checkDocPermission(writer, doc, "write"))) {
+      denied.push(doc);
+    }
+  }
+  if (denied.length > 0) {
+    throw new FolderWritePermissionError(folder, denied);
+  }
+
+  for (const doc of deletedDocPaths) {
+    if (lookupDocSession(doc)) {
+      throw new ActiveSessionConflictError(`Cannot delete document with active editing session: ${doc}`);
+    }
+  }
+
+  const { id: proposalId } = await createTransientProposal(
+    { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
+    `Delete folder: ${folder} (${deletedDocPaths.length} documents)`,
+  );
+  for (const doc of deletedDocPaths) {
+    await mutateProposalContent(proposalId, { kind: "delete_document", docPath: doc });
+  }
+  const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
+  const result: StructuralCommitResult = committedHead
+    ? { kind: "committed", proposalId, committedHead, policyResult }
+    : { kind: "blocked", proposalId, policyResult };
+  return { result, deletedDocPaths };
+}
+
+export async function renameFolder(
+  from: FolderPath,
+  to: FolderPath,
+  writer: DocumentWriter,
+): Promise<{ result: StructuralCommitResult; renames: Array<{ from: DocPath; to: DocPath }> }> {
+  if (from === FolderPath.root || to === FolderPath.root) {
+    throw new InvalidFolderPathError("cannot rename the content root or rename a folder to the content root");
+  }
+  if (from === to) {
+    throw new InvalidFolderPathError(`cannot rename folder ${from} to itself`);
+  }
+  if (FolderPath.contains(from, to)) {
+    throw new InvalidFolderPathError(`cannot rename folder ${from} into its own subtree ${to}`);
+  }
+
+  const sourceDocs = await listFolderDescendantDocs(from);
+
+  const renames: Array<{ from: DocPath; to: DocPath }> = [];
+  for (const doc of sourceDocs) {
+    const newDoc = FolderPath.rebaseDocPath(doc, from, to);
+    if (await canonicalDocumentExists(newDoc)) {
+      throw new DocumentAlreadyExistsError(`Document already exists: ${newDoc}`);
+    }
+    renames.push({ from: doc, to: newDoc });
+  }
+
+  const denied: DocPath[] = [];
+  for (const { from: sourceDoc, to: targetDoc } of renames) {
+    if (!(await checkDocPermission(writer, sourceDoc, "write"))) {
+      denied.push(sourceDoc);
+    }
+    if (!(await checkDocPermission(writer, targetDoc, "write"))) {
+      denied.push(targetDoc);
+    }
+  }
+  if (denied.length > 0) {
+    throw new FolderWritePermissionError(from, denied);
+  }
+
+  for (const { from: sourceDoc } of renames) {
+    const docSession = lookupDocSession(sourceDoc);
+    if (docSession && countEditorSockets(docSession) > 0) {
+      throw new ActiveSessionConflictError(`Cannot rename document with active editing session: ${sourceDoc}`);
+    }
+  }
+
+  const { id: proposalId } = await createTransientProposal(
+    { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
+    `Rename folder: ${from} -> ${to} (${renames.length} documents)`,
+  );
+  for (const { from: sourceDoc, to: targetDoc } of renames) {
+    await mutateProposalContent(proposalId, { kind: "rename_document", docPath: sourceDoc, newPath: targetDoc });
+  }
+  const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
+  const result: StructuralCommitResult = committedHead
+    ? { kind: "committed", proposalId, committedHead, policyResult }
+    : { kind: "blocked", proposalId, policyResult };
+  return { result, renames };
 }

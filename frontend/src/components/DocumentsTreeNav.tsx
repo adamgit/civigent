@@ -7,10 +7,9 @@ import type {
 } from "../types/shared.js";
 import { apiClient } from "../services/api-client.js";
 
-import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
-import { parseRouteDocPath } from "../app/app-layout-utils";
+import { DocsLocation, docHref, folderHref } from "../app/docs-location";
 import { copyTextToClipboard } from "../utils/copy-text";
-import { DocPath } from "../types/shared";
+import { DocPath, FolderPath } from "../types/shared";
 
 function findScrollParent(el: HTMLElement): HTMLElement | null {
   let parent = el.parentElement;
@@ -118,7 +117,10 @@ export function DocumentsTreeNav({
 }: DocumentsTreeNavProps) {
   const location = useLocation();
   const navigate = useNavigate();
-  const selectedDocPath = useMemo(() => parseRouteDocPath(location.pathname), [location.pathname]);
+  const docsLoc = useMemo(() => DocsLocation.fromPathname(location.pathname), [location.pathname]);
+  const selectedFilePath = docsLoc?.kind === "doc" ? docsLoc.docPath : null;
+  const selectedFolderPath = docsLoc?.kind === "folder" ? docsLoc.folderPath : null;
+  const selectedPath = selectedFilePath ?? selectedFolderPath;
   const [expanded, setExpanded] = useState<Set<string>>(() => readExpandedState(storageKey));
   const [importingFolder, setImportingFolder] = useState<string | null>(null);
   const [importMessage, setImportMessage] = useState<string | null>(null);
@@ -131,9 +133,9 @@ export function DocumentsTreeNav({
 
   const selectedScrollRef = useCallback(
     (el: HTMLElement | null) => {
-      if (!el || !selectedDocPath) return;
-      if (lastScrolledPathRef.current === selectedDocPath) return;
-      lastScrolledPathRef.current = selectedDocPath;
+      if (!el || !selectedPath) return;
+      if (lastScrolledPathRef.current === selectedPath) return;
+      lastScrolledPathRef.current = selectedPath;
       requestAnimationFrame(() => {
         const container = findScrollParent(el);
         if (!container) return;
@@ -144,31 +146,12 @@ export function DocumentsTreeNav({
         el.scrollIntoView({ block: "center", behavior: "smooth" });
       });
     },
-    [selectedDocPath],
+    [selectedPath],
   );
 
   const sortedEntries = useMemo(() => entries, [entries]);
   const badgeSet = useMemo(() => new Set(badgedDocPaths ?? []), [badgedDocPaths]);
   const allDirectoryPaths = useMemo(() => collectDirectoryPaths(entries), [entries]);
-  const pathTypeMap = useMemo(() => {
-    const map = new Map<string, "file" | "directory">();
-    const stack = [...entries];
-    while (stack.length > 0) {
-      const node = stack.pop();
-      if (!node) {
-        continue;
-      }
-      map.set(node.path, node.type);
-      if (node.type === "directory" && Array.isArray(node.children)) {
-        stack.push(...node.children);
-      }
-    }
-    return map;
-  }, [entries]);
-  const selectedPathType = selectedDocPath ? pathTypeMap.get(selectedDocPath) ?? null : null;
-  const selectedFilePath = selectedPathType === "file" ? selectedDocPath : null;
-  const selectedFolderPath = selectedPathType === "directory" ? selectedDocPath : null;
-
   useEffect(() => {
     writeExpandedState(storageKey, expanded);
   }, [expanded, storageKey]);
@@ -176,8 +159,8 @@ export function DocumentsTreeNav({
   useEffect(() => {
     setExpanded((previous) => {
       const next = new Set(Array.from(previous).filter((path) => allDirectoryPaths.has(path)));
-      if (selectedDocPath) {
-        for (const path of findDirectoryAncestors(entries, selectedDocPath)) {
+      if (selectedPath) {
+        for (const path of findDirectoryAncestors(entries, selectedPath)) {
           next.add(path);
         }
       }
@@ -186,7 +169,7 @@ export function DocumentsTreeNav({
       }
       return next;
     });
-  }, [allDirectoryPaths, entries, selectedDocPath]);
+  }, [allDirectoryPaths, entries, selectedPath]);
 
   // Auto-clear import success message
   useEffect(() => {
@@ -314,11 +297,11 @@ export function DocumentsTreeNav({
     </span>
   );
 
-  const renderEntries = (nodes: DocumentTreeEntry[], depth: number) => {
+  const renderEntries = (nodes: DocumentTreeEntry[], folderPathLength: number) => {
     return (
       <div className="flex flex-col gap-px">
         {nodes.map((node) => {
-          const paddingLeft = `${depth * 12}px`;
+          const paddingLeft = `${folderPathLength * 12}px`;
           if (node.type === "directory") {
             const isExpanded = effectiveExpanded.has(node.path);
             const childEntries = Array.isArray(node.children) ? node.children : [];
@@ -327,7 +310,8 @@ export function DocumentsTreeNav({
             const emptyFolderClass = !hasChildren && !isSelectedFolder
               ? "text-sidebar-text/40 hover:bg-white/45 hover:text-sidebar-text/55"
               : null;
-            const folderTo = `/docs/${node.path.replace(/^\/+/, "")}`;
+            const nodeFolderPath = FolderPath.tryParse(node.path);
+            const folderTo = nodeFolderPath && folderHref(nodeFolderPath);
             return (
               <div key={node.path}>
                 <div
@@ -361,17 +345,21 @@ export function DocumentsTreeNav({
                     &#128193;
                   </button>
                   <span className="flex items-center gap-0.5 min-w-0 flex-1">
-                    <Link
-                      to={folderTo}
-                      title={`Open ${getDisplayName(node.path)} folder page`}
-                      aria-label={`Open ${getDisplayName(node.path)} folder page`}
-                      className="truncate min-w-0 p-0 text-left font-inherit text-inherit no-underline hover:text-accent"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                      }}
-                    >
-                      {getDisplayName(node.path)}/
-                    </Link>
+                    {folderTo ? (
+                      <Link
+                        to={folderTo}
+                        title={`Open ${getDisplayName(node.path)} folder page`}
+                        aria-label={`Open ${getDisplayName(node.path)} folder page`}
+                        className="truncate min-w-0 p-0 text-left font-inherit text-inherit no-underline hover:text-accent"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                        }}
+                      >
+                        {getDisplayName(node.path)}/
+                      </Link>
+                    ) : (
+                      <span className="truncate min-w-0 p-0 text-left">{getDisplayName(node.path)}/</span>
+                    )}
                     <button
                       type="button"
                       className={`shrink-0 inline-flex items-center justify-center w-4 h-4 rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ${
@@ -406,6 +394,11 @@ export function DocumentsTreeNav({
                     </button>
                   </span>
                   <span className="ml-auto flex items-center gap-1 shrink-0">
+                    {getDisplayName(node.path).endsWith(".md") || getDisplayName(node.path).endsWith(".sections") ? (
+                      <span className="shrink-0 text-[10px] font-semibold px-[5px] py-px rounded-lg bg-red-100 text-red-800">
+                        illegal name
+                      </span>
+                    ) : null}
                     {node.pills?.includes("skills") ? (
                       <span className="shrink-0 text-[10px] font-semibold px-[5px] py-px rounded-lg bg-orange-100 text-orange-800">
                         SKILLS
@@ -422,11 +415,11 @@ export function DocumentsTreeNav({
                 {isExpanded ? (
                   <div data-testid={`tree-node-expanded-${node.path}`}>
                     {childEntries.length > 0 ? (
-                      renderEntries(childEntries, depth + 1)
+                      renderEntries(childEntries, folderPathLength + 1)
                     ) : (
                       <p
                         className="text-[11px] text-text-faint px-1.5 py-1"
-                        style={{ marginLeft: `${(depth + 1) * 12}px` }}
+                        style={{ marginLeft: `${(folderPathLength + 1) * 12}px` }}
                       >
                         Empty folder
                       </p>
@@ -447,7 +440,7 @@ export function DocumentsTreeNav({
             <Link
               key={node.path}
               ref={isSelected ? selectedScrollRef : undefined}
-              to={`/docs/${stripLeadingSlashForRoute(DocPath.parse(node.path))}`}
+              to={docHref(DocPath.parse(node.path))}
               onClick={handleClick}
               data-testid={isSelected ? `tree-node-selected-${node.path}` : undefined}
               className={`flex items-center gap-[7px] min-w-0 px-1.5 py-[5px] rounded-[5px] text-[13px] cursor-pointer transition-all relative ${

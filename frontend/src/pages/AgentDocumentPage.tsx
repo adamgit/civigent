@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useParams } from "react-router-dom";
 import { apiClient } from "../services/api-client";
 import { DocumentCanvas } from "../components/DocumentCanvas";
 import DocumentDiagnostics from "../components/DocumentDiagnostics";
@@ -27,7 +26,7 @@ import { type RenderSectionRef } from "../types/live-sections";
 import { DocPath } from "../types/shared";
 
 interface AgentDocumentPageProps {
-  docPathOverride?: string | null;
+  docPath: DocPath;
   /** Rendered in DocumentTopbar before History (e.g. view-mode toggle). */
   toolbarAccessory?: ReactNode;
 }
@@ -43,15 +42,7 @@ interface AgentDocumentPageProps {
  * REST surface directly and renders the exact same cold ReactMarkdown path the
  * standard page uses when there is no live authority.
  */
-export function AgentDocumentPage({ docPathOverride, toolbarAccessory }: AgentDocumentPageProps = {}) {
-  const params = useParams();
-  const decodedDocPath = useMemo(() => {
-    if (typeof docPathOverride === "string" && docPathOverride.length > 0) {
-      return docPathOverride;
-    }
-    const routeDocPath = params["*"];
-    return routeDocPath ? decodeURIComponent(routeDocPath) : null;
-  }, [docPathOverride, params]);
+export function AgentDocumentPage({ docPath, toolbarAccessory }: AgentDocumentPageProps) {
 
   const [sections, setSections] = useState<WorkspaceSectionDto[]>([]);
   const [sectionsLoading, setSectionsLoading] = useState(true);
@@ -61,7 +52,7 @@ export function AgentDocumentPage({ docPathOverride, toolbarAccessory }: AgentDo
   const [showHistory, setShowHistory] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
 
-  const loadCanonicalSections = useCallback((docPath: string) => {
+  const loadCanonicalSections = useCallback((docPath: DocPath) => {
     setSectionsLoading(true);
     setError(null);
     return apiClient.getCanonicalDocumentSections(docPath).then(
@@ -78,11 +69,10 @@ export function AgentDocumentPage({ docPathOverride, toolbarAccessory }: AgentDo
 
   // A5: load committed canonical sections directly over REST on doc change.
   useEffect(() => {
-    if (!decodedDocPath) return;
     let cancelled = false;
     setSectionsLoading(true);
     setError(null);
-    apiClient.getCanonicalDocumentSections(decodedDocPath).then(
+    apiClient.getCanonicalDocumentSections(docPath).then(
       (response) => {
         if (cancelled) return;
         setSections(response.sections);
@@ -95,14 +85,13 @@ export function AgentDocumentPage({ docPathOverride, toolbarAccessory }: AgentDo
       },
     );
     return () => { cancelled = true; };
-  }, [decodedDocPath]);
+  }, [docPath]);
 
   // A6: optional loading skeleton from the canonical structure (non-fatal).
   useEffect(() => {
-    if (!decodedDocPath) return;
     let cancelled = false;
     setStructureTree(null);
-    apiClient.getCanonicalDocumentStructure(decodedDocPath).then(
+    apiClient.getCanonicalDocumentStructure(docPath).then(
       (structure) => {
         if (cancelled) return;
         setStructureTree(structure.structure);
@@ -110,7 +99,7 @@ export function AgentDocumentPage({ docPathOverride, toolbarAccessory }: AgentDo
       () => { /* non-fatal — skeleton just falls back to a plain "Loading" line */ },
     );
     return () => { cancelled = true; };
-  }, [decodedDocPath]);
+  }, [docPath]);
 
   useEffect(() => {
     if (!sectionsLoading) {
@@ -133,7 +122,7 @@ export function AgentDocumentPage({ docPathOverride, toolbarAccessory }: AgentDo
     [workspaceSeeds],
   );
 
-  const docTitle = decodedDocPath ? getDocDisplayName(DocPath.parse(decodedDocPath)) : "Untitled";
+  const docTitle = getDocDisplayName(docPath);
 
   // A8: required-but-inert canvas dependencies. No editor ever mounts (focus is
   // always null and publishPaused disables click-to-edit), so these are never
@@ -151,7 +140,7 @@ export function AgentDocumentPage({ docPathOverride, toolbarAccessory }: AgentDo
       <div className="agent-doc-view relative flex flex-col h-full min-h-0" style={{ background: "var(--color-page-bg)" }}>
         <div className="relative shrink-0">
           <DocumentTopbar
-            docPath={decodedDocPath}
+            docPath={docPath}
             toolbarAccessory={toolbarAccessory}
             showHistory={showHistory}
             onToggleHistory={() => setShowHistory((v) => !v)}
@@ -169,7 +158,7 @@ export function AgentDocumentPage({ docPathOverride, toolbarAccessory }: AgentDo
           />
         </div>
 
-        {showHistory && decodedDocPath ? (
+        {showHistory ? (
           <div className="border-b border-[#eae7e2] bg-canvas-bg">
             <div className="max-w-[700px] mx-auto">
               <div className="flex items-center justify-between px-4 py-2 border-b border-[#f5f2ed]">
@@ -183,18 +172,18 @@ export function AgentDocumentPage({ docPathOverride, toolbarAccessory }: AgentDo
                 </button>
               </div>
               <DocumentHistory
-                docPath={decodedDocPath}
+                docPath={docPath}
                 onRestored={() => {
                   setShowHistory(false);
-                  void loadCanonicalSections(decodedDocPath);
+                  void loadCanonicalSections(docPath);
                 }}
               />
             </div>
           </div>
         ) : null}
 
-        {showDiagnostics && decodedDocPath ? (
-          <DocumentDiagnostics docPath={decodedDocPath} onClose={() => setShowDiagnostics(false)} />
+        {showDiagnostics ? (
+          <DocumentDiagnostics docPath={docPath} onClose={() => setShowDiagnostics(false)} />
         ) : null}
 
         <div
@@ -211,7 +200,7 @@ export function AgentDocumentPage({ docPathOverride, toolbarAccessory }: AgentDo
                   {docTitle}
                 </h1>
                 <div className="text-xs text-text-muted mb-7 pb-5 border-b border-[#eae7e2] flex items-center gap-2">
-                  <span className="truncate">{decodedDocPath ?? ""}</span>
+                  <span className="truncate">{docPath}</span>
                 </div>
 
                 {/* A10: load error — full message/stack, never truncated */}
@@ -243,7 +232,7 @@ export function AgentDocumentPage({ docPathOverride, toolbarAccessory }: AgentDo
               proposalScopeMutationInFlight={false}
               selectedProposalSectionKeys={EMPTY_KEY_SET}
               proposalSectionConflicts={EMPTY_CONFLICT_MAP}
-              decodedDocPath={decodedDocPath}
+              docPath={docPath}
               recentlyChangedByLabel={EMPTY_CHANGED_MAP}
               injectedByLabel={EMPTY_INJECTED_MAP}
               dragOverFragmentKey={null}

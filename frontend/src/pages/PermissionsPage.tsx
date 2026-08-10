@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient, type AclSnapshot } from "../services/api-client";
+import { DocPath } from "../types/shared";
 import {
   RoleName,
   BuiltinRoleName,
@@ -85,8 +86,13 @@ export function PermissionsPage() {
 
   const handleAddDocOverride = async (e: React.FormEvent) => {
     e.preventDefault();
-    const docPath = newDocPath.trim();
-    if (!docPath) return;
+    const raw = newDocPath.trim();
+    if (!raw) return;
+    const docPath = DocPath.tryParse(raw);
+    if (!docPath) {
+      setError(`Invalid document path: ${JSON.stringify(raw)}`);
+      return;
+    }
     const perms: SetDocumentAclRequest = {};
     if (newDocRead) perms.read = RoleName.of(newDocRead);
     if (newDocWrite) perms.write = RoleName.of(newDocWrite);
@@ -105,7 +111,8 @@ export function PermissionsPage() {
     }
   };
 
-  const handleRemoveDocOverride = async (docPath: string) => {
+  const handleRemoveDocOverride = async (aclKey: string) => {
+    const docPath = DocPath.parse(aclKey);
     setSaving(true);
     try {
       await apiClient.removeDocAcl(docPath);

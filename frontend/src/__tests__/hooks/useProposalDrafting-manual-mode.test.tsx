@@ -44,7 +44,7 @@ function section(headingPath: string[], content: string): WorkspaceSectionDto {
 
 function params(sections: WorkspaceSectionDto[]): UseProposalDraftingParams {
   return {
-    decodedDocPath: "/test.md",
+    docPath: "/test.md",
     workspaceBaselineSections: sections,
     setError: vi.fn(),
     loadSections: vi.fn(async () => sections),

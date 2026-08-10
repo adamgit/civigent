@@ -17,6 +17,7 @@ import {
   readCanonicalDocument,
   broadcastAgentReading,
   isValidSha,
+  DirectoryAtDocPathError,
   DocumentNotFoundError,
   DocumentAssemblyError,
   InvalidDocPathError,
@@ -47,6 +48,10 @@ export function registerCanonicalRoutes(
       const out: ReadDocStructureResponse = response;
       res.json(out);
     } catch (error) {
+      if (error instanceof DirectoryAtDocPathError) {
+        sendApiError(res, 409, error);
+        return;
+      }
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
         sendApiError(res, 404, error);
         return;
@@ -86,6 +91,10 @@ export function registerCanonicalRoutes(
       }
       res.json(await getHistoryPreview(docPath, sha));
     } catch (error) {
+      if (error instanceof DirectoryAtDocPathError) {
+        sendApiError(res, 409, error);
+        return;
+      }
       if (error instanceof DocumentNotFoundError) {
         sendApiError(res, 404, error);
         return;
@@ -129,6 +138,10 @@ export function registerCanonicalCatchAllRoutes(
       const out: GetDocumentResponse = response;
       res.json(out);
     } catch (error) {
+      if (error instanceof DirectoryAtDocPathError) {
+        sendApiError(res, 409, error);
+        return;
+      }
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
         sendApiError(res, 404, error);
         return;

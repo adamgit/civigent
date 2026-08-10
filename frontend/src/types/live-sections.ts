@@ -1,4 +1,5 @@
 import { BEFORE_FIRST_HEADING_KEY } from "../pages/document-page-utils";
+import { HeadingLevel } from "./shared";
 
 export type SectionId = string & { readonly __sectionId: unique symbol };
 
@@ -21,8 +22,7 @@ export const BEFORE_FIRST_HEADING_SECTION_ID: SectionId = SectionId.brand(
 export interface LiveSectionRef {
   readonly id: SectionId;
   readonly headingPath: readonly string[];
-  /** ATX heading level (1–6); 0 for the before-first-heading section. */
-  readonly level: number;
+  readonly headingLevel: HeadingLevel;
 }
 
 export type RenderSectionRef = LiveSectionRef;
@@ -36,7 +36,7 @@ export type WorkspaceBootstrap = readonly WorkspaceSectionSeed[];
 
 export function syntheticBeforeFirstHeadingSeed(): WorkspaceSectionSeed {
   return {
-    ref: { id: BEFORE_FIRST_HEADING_SECTION_ID, headingPath: [], level: 0 },
+    ref: { id: BEFORE_FIRST_HEADING_SECTION_ID, headingPath: [], headingLevel: HeadingLevel.beforeFirstHeading },
     markdown: "",
   };
 }

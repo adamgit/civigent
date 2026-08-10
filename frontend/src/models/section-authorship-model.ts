@@ -1,4 +1,5 @@
 import { SectionId, type RenderSectionRef } from "../types/live-sections";
+import type { HeadingLevel } from "../types/shared";
 
 export interface SectionAuthorshipTarget {
   key: string;
@@ -26,6 +27,7 @@ function sectionLabel(headingPath: readonly string[]): string {
 
 function stripHeadingFromSectionFragment(
   headingPath: readonly string[],
+  headingLevel: HeadingLevel,
   content: string,
 ): { bodyContent: string; validationError?: string } {
   const fragment = trimTrailingNewlines(content);
@@ -34,7 +36,7 @@ function stripHeadingFromSectionFragment(
   }
 
   const heading = headingPath[headingPath.length - 1] || "";
-  const expectedHeadingLine = `${"#".repeat(Math.max(1, headingPath.length))} ${heading}`;
+  const expectedHeadingLine = `${"#".repeat(Math.max(1, headingLevel))} ${heading}`;
   const lines = fragment.length > 0 ? fragment.split("\n") : [];
 
   if (lines[0] !== expectedHeadingLine) {
@@ -72,7 +74,7 @@ export function buildSectionAuthorshipTargets(
     }
 
     const body = overrides.resolveBody?.(fragmentKey) ?? "";
-    const stripped = stripHeadingFromSectionFragment(headingPath, body);
+    const stripped = stripHeadingFromSectionFragment(headingPath, section.headingLevel, body);
     if (stripped.validationError) {
       errors.push(stripped.validationError);
     }

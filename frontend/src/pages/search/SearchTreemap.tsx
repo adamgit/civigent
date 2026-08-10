@@ -87,7 +87,7 @@ export function SearchTreemap({
         const showLabel = rect.w >= LABEL_MIN_WIDTH_PX && rect.h >= LABEL_MIN_HEIGHT_PX;
         return (
           <button
-            key={`${rect.node.path}:${rect.depth}`}
+            key={`${rect.node.path}:${rect.folderPathLength}`}
             type="button"
             aria-pressed={selected}
             aria-label={`${rect.node.path}, ${rect.node.totalDescendants} hits`}

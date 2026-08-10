@@ -19,6 +19,7 @@ import {
   broadcastAgentReading,
   SectionNotFoundForMoveError,
   InvalidDocPathError,
+  DirectoryAtDocPathError,
   DocumentNotFoundError,
   DocumentAssemblyError,
 } from "../application/sections.js";
@@ -47,6 +48,10 @@ export function registerSectionRoutes(
       const out: GetDocumentSectionsResponse = response;
       res.json(out);
     } catch (error) {
+      if (error instanceof DirectoryAtDocPathError) {
+        sendApiError(res, 409, error);
+        return;
+      }
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
         sendApiError(res, 404, error);
         return;
@@ -71,6 +76,10 @@ export function registerSectionRoutes(
       const out: GetDocumentSectionsResponse = response;
       res.json(out);
     } catch (error) {
+      if (error instanceof DirectoryAtDocPathError) {
+        sendApiError(res, 409, error);
+        return;
+      }
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
         sendApiError(res, 404, error);
         return;
@@ -139,6 +148,10 @@ export function registerSectionRoutes(
         agent_write_policy: agentWritePolicyRouteBody(result.policyResult),
       });
     } catch (error) {
+      if (error instanceof DirectoryAtDocPathError) {
+        sendApiError(res, 409, error);
+        return;
+      }
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
         sendApiError(res, 404, error);
         return;

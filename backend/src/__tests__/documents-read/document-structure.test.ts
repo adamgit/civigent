@@ -37,7 +37,7 @@ describe("GET /api/canonical/:doc_path/structure", () => {
     expect(Array.isArray(res.body.structure)).toBe(true);
   });
 
-  it("returns structure nodes with heading, level, and children", async () => {
+  it("returns structure nodes with heading, heading_level, and children", async () => {
     const res = await request(ctx.app)
       .get(`/api/canonical/${SAMPLE_DOC_PATH.replace(/^\//, "")}/structure`)
       .set("Authorization", ctx.humanToken);
@@ -49,10 +49,10 @@ describe("GET /api/canonical/:doc_path/structure", () => {
 
     for (const node of structure) {
       expect(node).toHaveProperty("heading");
-      expect(node).toHaveProperty("level");
+      expect(node).toHaveProperty("heading_level");
       expect(node).toHaveProperty("children");
       expect(typeof node.heading).toBe("string");
-      expect(typeof node.level).toBe("number");
+      expect(typeof node.heading_level).toBe("number");
       expect(Array.isArray(node.children)).toBe(true);
     }
   });
@@ -78,7 +78,7 @@ describe("GET /api/canonical/:doc_path/structure", () => {
       (n: { heading: string }) => n.heading === "Overview",
     );
     expect(overviewNode).toBeDefined();
-    expect(overviewNode.level).toBe(2);
+    expect(overviewNode.heading_level).toBe(2);
   });
 
   it("broadcasts agent:reading event when accessed by an agent", async () => {

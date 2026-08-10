@@ -10,6 +10,7 @@
 
 import type { ParsedSection } from "./markdown-sections.js";
 import { bodyFromParser, fragmentFromParser } from "./section-formatting.js";
+import { HeadingLevel } from "../types/shared.js";
 
 // ─── Parser interface ───────────────────────────────────────────
 
@@ -79,8 +80,8 @@ class CommonMarkParser implements MarkdownSectionParser {
 
     let currentLines: string[] = [];
     let currentHeading = "";
-    let currentLevel = 0;
-    const headingStack: Array<{ heading: string; level: number }> = [];
+    let currentHeadingLevel = HeadingLevel.beforeFirstHeading;
+    const headingStack: Array<{ heading: string; headingLevel: HeadingLevel }> = [];
 
     const flushSection = (): void => {
       const fullContent = currentLines.join("\n");
@@ -93,25 +94,25 @@ class CommonMarkParser implements MarkdownSectionParser {
       sections.push({
         headingPath: [...headingPath],
         heading: currentHeading,
-        level: currentLevel,
+        headingLevel: currentHeadingLevel,
         body: bodyFromParser(body),
         fullContent: fragmentFromParser(fullContent),
       });
     };
 
-    const pushHeading = (heading: string, level: number, headingLine: string): void => {
+    const pushHeading = (heading: string, headingLevel: HeadingLevel, headingLine: string): void => {
       if (currentLines.length > 0) {
         flushSection();
       }
 
-      while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= level) {
+      while (headingStack.length > 0 && headingStack[headingStack.length - 1].headingLevel >= headingLevel) {
         headingStack.pop();
       }
-      headingStack.push({ heading, level });
+      headingStack.push({ heading, headingLevel });
 
       currentLines = [headingLine];
       currentHeading = heading;
-      currentLevel = level;
+      currentHeadingLevel = headingLevel;
     };
 
     for (let i = 0; i < lines.length; i++) {
@@ -173,9 +174,9 @@ class CommonMarkParser implements MarkdownSectionParser {
       // Check for ATX heading
       const headingMatch = ATX_HEADING_RE.exec(trimmed);
       if (headingMatch) {
-        const level = headingMatch[1].length;
+        const headingLevel = HeadingLevel.parse(headingMatch[1].length);
         const heading = headingMatch[2].trim();
-        pushHeading(heading, level, line);
+        pushHeading(heading, headingLevel, line);
         continue;
       }
 
@@ -188,14 +189,14 @@ class CommonMarkParser implements MarkdownSectionParser {
             // Remove previous line from current section, it's the heading
             const headingText = currentLines.pop()!.trim();
             const headingLine = `${headingText}\n${line}`;
-            pushHeading(headingText, 1, headingLine);
+            pushHeading(headingText, HeadingLevel.parse(1), headingLine);
             continue;
           }
           if (SETEXT_H2_RE.test(trimmed) && trimmed.length >= 1) {
             // Setext H2: previous line is the heading text
             const headingText = currentLines.pop()!.trim();
             const headingLine = `${headingText}\n${line}`;
-            pushHeading(headingText, 2, headingLine);
+            pushHeading(headingText, HeadingLevel.parse(2), headingLine);
             continue;
           }
         }
@@ -214,6 +215,6 @@ class CommonMarkParser implements MarkdownSectionParser {
   }
 
   containsHeadings(markdown: string): boolean {
-    return this.parseDocumentMarkdown(markdown).some((s) => s.level > 0);
+    return this.parseDocumentMarkdown(markdown).some((s) => s.headingLevel > 0);
   }
 }

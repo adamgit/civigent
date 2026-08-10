@@ -17,9 +17,9 @@ vi.mock("../../pages/RecentDocsPage", () => ({
   ),
 }));
 vi.mock("../../pages/DocumentPage", () => ({
-  DocumentPage: (props: { docPathOverride?: string }) => (
-    <div data-testid="document-page" data-doc-path={props.docPathOverride}>
-      DocumentPage:{props.docPathOverride}
+  DocumentPage: (props: { docPath?: string }) => (
+    <div data-testid="document-page" data-doc-path={props.docPath}>
+      DocumentPage:{props.docPath}
     </div>
   ),
 }));
@@ -62,6 +62,8 @@ vi.mock("../../app/AppLayout", () => {
     refreshTree: async () => {},
     sidebarAutoHide: false,
     setSidebarAutoHide: () => {},
+    reportFocusedDocTabEditState: () => {},
+    clearFocusedDocTabEditState: () => {},
   };
   return {
     AppLayout: () => <Outlet context={outletContext} />,

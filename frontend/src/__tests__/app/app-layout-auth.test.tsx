@@ -57,13 +57,14 @@ function renderAppLayout(initialEntries: string[] = ["/"]) {
 function sessionResponse(name: string) {
   return jsonResponse({
     authenticated: true,
+    app_name: "http://localhost:3000",
     user: { id: name.toLowerCase().replace(/\s/g, "-"), type: "human", displayName: name },
   });
 }
 
 /** Helper: unauthenticated session response */
 function unauthenticatedSessionResponse() {
-  return jsonResponse({ authenticated: false });
+  return jsonResponse({ authenticated: false, app_name: "http://localhost:3000" });
 }
 
 describe("AppLayout auth state", () => {

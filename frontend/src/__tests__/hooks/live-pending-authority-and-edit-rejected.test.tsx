@@ -52,7 +52,7 @@ function buildParams(
   onSectionEditRejected: (e: SectionEditRejectedEvent) => void,
 ): UseDocumentWebSocketParams {
   return {
-    decodedDocPath: "/test.md",
+    docPath: "/test.md",
     clientInstanceId: "client-1",
     liveReplicaReadyRef: ref(liveReady),
     setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],

@@ -35,6 +35,7 @@ import {
   type WriterIdentity,
   type DocumentReplacementNoticePayload,
   DocSessionId,
+  HeadingLevel,
   ProposalAdoptionId,
 } from "../types/shared.js";
 import { LiveFragmentStringsStore } from "./live-fragment-strings-store.js";
@@ -442,7 +443,7 @@ async function constructDocSession(
 
   if (skeleton.areSkeletonRootsEmpty) {
     // Bootstrap an empty BFH fragment so the first client edit has a section.
-    const bfhContent = buildFragmentContentFn(EMPTY_BODY, 0, "");
+    const bfhContent = buildFragmentContentFn(EMPTY_BODY, HeadingLevel.beforeFirstHeading, "");
     const bootstrapMap = new Map<string, FragmentContent>();
     bootstrapMap.set(BEFORE_FIRST_HEADING_KEY, bfhContent);
     session.generator.bootstrapEmptyDocument(ydoc, () => {

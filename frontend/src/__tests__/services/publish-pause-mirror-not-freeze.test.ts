@@ -56,7 +56,7 @@ describe("publish-pause join mirror vs freeze opcodes", () => {
     replica.bindToDocSession({
       docSessionId: "s",
       state: {
-        topology: [{ fragment_key: ALPHA, heading_path: ["Alpha"] }],
+        topology: [{ fragment_key: ALPHA, heading_path: ["Alpha"], heading_level: 1 }],
         blocked_section_ids: [],
         pending_sections: [],
         publish_pause_join_mirror: "not_in_pause",
@@ -71,7 +71,7 @@ describe("publish-pause join mirror vs freeze opcodes", () => {
       frameBody({
         has_yjs_update: false,
         state: {
-          topology: [{ fragment_key: ALPHA, heading_path: ["Alpha"] }],
+          topology: [{ fragment_key: ALPHA, heading_path: ["Alpha"], heading_level: 1 }],
           blocked_section_ids: [],
           pending_sections: [],
           publish_pause_join_mirror: "pause_active_editors_frozen",
@@ -98,7 +98,7 @@ describe("publish-pause join mirror vs freeze opcodes", () => {
       frameBody({
         has_yjs_update: false,
         state: {
-          topology: [{ fragment_key: ALPHA, heading_path: ["Alpha"] }],
+          topology: [{ fragment_key: ALPHA, heading_path: ["Alpha"], heading_level: 1 }],
           blocked_section_ids: [],
           pending_sections: [],
           publish_pause_join_mirror: "not_in_pause",

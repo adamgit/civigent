@@ -15,7 +15,7 @@ import { writeFile, mkdir } from "node:fs/promises";
 import { readFileIfExists } from "./fs-primitives.js";
 import { getContentRoot } from "./data-root.js";
 import { docPathToContentRelativeFsPath } from "./path-utils.js";
-import { DocPath } from "../types/shared.js";
+import { DocPath, HeadingLevel } from "../types/shared.js";
 import {
   type FlatEntry,
   serializeSkeletonEntries,
@@ -36,7 +36,7 @@ export interface ParsedSection {
   /** The heading text (without # prefix) */
   heading: string;
   /** Heading depth (1-6) */
-  level: number;
+  headingLevel: HeadingLevel;
   /** Section body content (everything after the heading line, trimmed) */
   body: SectionBody;
   /** Full content including heading line */
@@ -126,7 +126,7 @@ export async function applyDocumentMarkdownToDraft(
   const canonicalFlat: FlatEntry[] = sectionList.map(s => ({
     headingPath: s.headingPath,
     heading: s.heading,
-    level: s.level,
+    headingLevel: s.headingLevel,
     sectionFile: s.sectionFile,
     absolutePath: path.join(sectionsDir, s.sectionFile),
     isSubSkeleton: false,
@@ -142,7 +142,7 @@ export async function applyDocumentMarkdownToDraft(
   let topLevelIndex = 0;
 
   // Build new skeleton entries for comparison and draft writing
-  const newEntries: Array<{ heading: string; level: number; sectionFile: string }> = [];
+  const newEntries: Array<{ heading: string; headingLevel: HeadingLevel; sectionFile: string }> = [];
 
   for (const section of parsedSections) {
     const isBeforeFirstHeading = section.headingPath.length === 0;
@@ -182,7 +182,7 @@ export async function applyDocumentMarkdownToDraft(
 
     const sectionFile = matchedEntry?.sectionFile ?? (isBeforeFirstHeading ? generateBeforeFirstHeadingFilename() : generateSectionFilename(heading));
 
-    newEntries.push({ heading: isBeforeFirstHeading ? "" : heading, level: section.level, sectionFile });
+    newEntries.push({ heading: isBeforeFirstHeading ? "" : heading, headingLevel: section.headingLevel, sectionFile });
 
     // Read canonical section content for comparison. An absent body file is a
     // valid "no canonical content yet" state; the empty default stands.
@@ -209,7 +209,7 @@ export async function applyDocumentMarkdownToDraft(
     newEntries.length !== canonicalFlat.length ||
     newEntries.some((ne, i) =>
       ne.heading !== canonicalFlat[i].heading ||
-      ne.level !== canonicalFlat[i].level ||
+      ne.headingLevel !== canonicalFlat[i].headingLevel ||
       ne.sectionFile !== canonicalFlat[i].sectionFile
     );
 

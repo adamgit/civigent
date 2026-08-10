@@ -45,7 +45,7 @@ const wrapper = ({ children }: { children: React.ReactNode }) =>
 
 function buildParams(): UseDocumentWebSocketParams {
   return {
-    decodedDocPath: "/test.md",
+    docPath: "/test.md",
     clientInstanceId: "client-1",
     liveReplicaReadyRef: ref(false),
     setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],

@@ -97,15 +97,15 @@ vi.mock("../../../services/api-client", async (importOriginal) => {
 import { DocumentPage } from "../../../pages/DocumentPage";
 import { act } from "@testing-library/react";
 import { liveBootstrapFrame, MSG_LIVE_SECTIONS_BOOTSTRAP_OPCODE } from "../../helpers/live-bootstrap";
+import { HeadingLevel } from "../../../types/shared";
 
 const SECTIONS = [
-  { heading: "", heading_path: [] as string[], content: "Root body.\n", fragment_key: "frag:sec_root", section_file: "/sec_root.md" },
-  { heading: "Overview", heading_path: ["Overview"], content: "# Overview\nOverview body.\n", fragment_key: "frag:sec_overview", section_file: "/sec_overview.md" },
-  { heading: "Details", heading_path: ["Details"], content: "# Details\nDetails body.\n", fragment_key: "frag:sec_details", section_file: "/sec_details.md" },
-  { heading: "Appendix", heading_path: ["Appendix"], content: "# Appendix\nAppendix body.\n", fragment_key: "frag:sec_appendix", section_file: "/sec_appendix.md" },
+  { heading: "", heading_path: [] as string[], heading_level: 0, content: "Root body.\n", fragment_key: "frag:sec_root", section_file: "/sec_root.md" },
+  { heading: "Overview", heading_path: ["Overview"], heading_level: 1, content: "# Overview\nOverview body.\n", fragment_key: "frag:sec_overview", section_file: "/sec_overview.md" },
+  { heading: "Details", heading_path: ["Details"], heading_level: 1, content: "# Details\nDetails body.\n", fragment_key: "frag:sec_details", section_file: "/sec_details.md" },
+  { heading: "Appendix", heading_path: ["Appendix"], heading_level: 1, content: "# Appendix\nAppendix body.\n", fragment_key: "frag:sec_appendix", section_file: "/sec_appendix.md" },
 ].map((s) => ({
   ...s,
-  depth: s.heading_path.length,
   humanInvolvement_score: 0,
   crdt_session_active: false,
 }));
@@ -119,6 +119,7 @@ async function deliverObserverBootstrap(): Promise<void> {
       liveBootstrapFrame("SESS-1", SECTIONS.map((s) => ({
         fragmentKey: s.fragment_key,
         headingPath: s.heading_path,
+        headingLevel: HeadingLevel.parse(s.heading_level),
         markdown: s.content,
       }))),
     );
@@ -135,7 +136,7 @@ function renderDocPage() {
   return render(
     <MemoryRouter initialEntries={["/docs/test.md"]}>
       <Routes>
-        <Route path="/docs/*" element={<DocumentPage docPathOverride="/test.md" />} />
+        <Route path="/docs/*" element={<DocumentPage docPath="/test.md" />} />
       </Routes>
     </MemoryRouter>,
   );

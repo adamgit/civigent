@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useOutletContext } from "react-router-dom";
+import type { AppLayoutOutletContext } from "../app/AppLayout";
+import {
+  hasInFlightEditsOnThisPage,
+  hasUnpublishedChangesOnThisPage,
+} from "./document-tab-edit-state";
 import { SectionTransferService, type SectionTransfer } from "../services/section-transfer";
 import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
 import { rememberRecentDoc } from "../services/recent-docs";
@@ -58,7 +63,7 @@ import {
   DocumentPaperStickyHeader,
   docPaperSectionScrollOffsetPx,
 } from "../components/DocumentPaperStickyHeader";
-import { resolveWriterId } from "../services/api-client";
+import { apiClient, resolveWriterId } from "../services/api-client";
 import type { LiveEditorBinding } from "../services/live-section-replica";
 import {
   SectionId,
@@ -84,24 +89,17 @@ import {
   type SessionAuthorshipView,
 } from "../status/sessionAuthorship";
 import { copyTextToClipboard } from "../utils/copy-text";
-import { DocPath } from "../types/shared";
+import { DocPath, HeadingLevel } from "../types/shared";
 
 interface DocumentPageProps {
-  docPathOverride?: string | null;
+  docPath: DocPath;
   /** Rendered in DocumentTopbar before History (e.g. view-mode toggle). */
   toolbarAccessory?: ReactNode;
 }
 
-export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPageProps = {}) {
-  const params = useParams();
+export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const navigate = useNavigate();
-  const decodedDocPath = useMemo(() => {
-    if (typeof docPathOverride === "string" && docPathOverride.length > 0) {
-      return docPathOverride;
-    }
-    const routeDocPath = params["*"];
-    return routeDocPath ? decodeURIComponent(routeDocPath) : null;
-  }, [docPathOverride, params]);
+  const layoutOutlet = useOutletContext<AppLayoutOutletContext | undefined>();
 
   const [sections, setSections] = useState<WorkspaceSectionDto[]>([]);
   const [sectionsLoading, setSectionsLoading] = useState(true);
@@ -134,7 +132,7 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
   const paperRef = useRef<HTMLDivElement>(null);
   const resourceModel = useMemo(() => new DocumentResourceModel(), []);
 
-  const loadSections = useCallback(async (docPath: string): Promise<WorkspaceSectionDto[]> => {
+  const loadSections = useCallback(async (docPath: DocPath): Promise<WorkspaceSectionDto[]> => {
     loadStartedAtRef.current = Date.now();
     setLoadDurationMs(null);
     setSectionsLoading(true);
@@ -155,14 +153,14 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
   }, [resourceModel]);
 
   const handleLiveSessionEnded = useCallback(() => {
-    if (decodedDocPath) void loadSections(decodedDocPath);
-  }, [decodedDocPath, loadSections]);
+    void loadSections(docPath);
+  }, [docPath, loadSections]);
   const handleSuperseded = useCallback(() => {
     setStatusMessage("Editing moved to another tab. This tab is now read-only.");
   }, []);
   const caretGlue = useCaretRecoveryGlue();
   const liveReplica = useLiveSectionReplica({
-    docPath: decodedDocPath,
+    docPath,
     onSessionEnded: handleLiveSessionEnded,
     // 4022 restore / 4024 force-rebuild: the hook replaces the live pipeline;
     // reseed canonical so cold previews reflect the replaced content.
@@ -289,7 +287,7 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
     setEditorRef,
     setRetargetCaretTarget,
   } = useDocumentSessionController({
-    decodedDocPath,
+    docPath,
     sections: baseRenderRows,
     workspaceSections: sections,
     setError,
@@ -307,12 +305,11 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
 
   const getProposalOverlayMarkdown = useCallback(
     (ref: RenderSectionRef): string | undefined => {
-      if (!decodedDocPath) return undefined;
-      const key = sectionGlobalKey(decodedDocPath, [...ref.headingPath]);
+      const key = sectionGlobalKey(docPath, [...ref.headingPath]);
       if (!selectedProposalSectionKeys.has(key)) return undefined;
       return proposalSectionsRef.current.get(key)?.content;
     },
-    [decodedDocPath, selectedProposalSectionKeys, proposalSectionsRef, proposalOverlayVersion],
+    [docPath, selectedProposalSectionKeys, proposalSectionsRef, proposalOverlayVersion],
   );
   const getDisplayMarkdown = useCallback(
     (ref: RenderSectionRef): string => {
@@ -418,7 +415,7 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
     coldPendingByFragmentKey,
     documentActivity: documentActivitySnapshot,
   } = useDocumentWebSocket({
-    decodedDocPath,
+    docPath,
     clientInstanceId,
     liveReplicaReadyRef,
     setStructureTree,
@@ -463,7 +460,8 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
         .map((s) => ({
           fragmentKey: SectionId.text(s.id),
           heading: headingText([...s.headingPath]),
-          depth: Math.max(1, s.level),
+          headingLevel:
+            s.headingLevel === HeadingLevel.beforeFirstHeading ? HeadingLevel.parse(1) : s.headingLevel,
           headingPath: [...s.headingPath],
         })),
     [renderSections],
@@ -549,9 +547,8 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
   });
 
   useEffect(() => {
-    if (!decodedDocPath) return;
-    rememberRecentDoc(decodedDocPath);
-  }, [decodedDocPath]);
+    rememberRecentDoc(docPath);
+  }, [docPath]);
 
   useEffect(() => {
     return () => {
@@ -562,15 +559,14 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
   }, []);
 
   useEffect(() => {
-    if (!decodedDocPath) return;
     let cancelled = false;
     setStructureTree(null);
-    resourceModel.loadStructure(decodedDocPath).then((structure) => {
+    resourceModel.loadStructure(docPath).then((structure) => {
       if (cancelled) return;
       setStructureTree(structure);
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [decodedDocPath, resourceModel]);
+  }, [docPath, resourceModel]);
 
   useEffect(() => {
     if (!sectionsLoading) {
@@ -584,9 +580,8 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
   // Initial canonical load. The live replica connects its observer socket on
   // mount by itself — there is no separate observer to start here.
   useEffect(() => {
-    if (!decodedDocPath) return;
-    void loadSections(decodedDocPath);
-  }, [decodedDocPath, loadSections]);
+    void loadSections(docPath);
+  }, [docPath, loadSections]);
 
   // Editor socket permanently rejected while editing → drop back to observer
   // and reseed canonical content.
@@ -597,16 +592,14 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
       // (same visible outcome as the legacy stop-editing path).
       setFocusedSectionId(null);
       setBootstrapFocusedSectionIndex(null);
-      if (decodedDocPath) {
-        void loadSections(decodedDocPath);
-      }
+      void loadSections(docPath);
     }
-  }, [liveReplica, decodedDocPath, loadSections, setBootstrapFocusedSectionIndex]);
+  }, [liveReplica, docPath, loadSections, setBootstrapFocusedSectionIndex]);
 
-  const docTitle = decodedDocPath ? getDocDisplayName(DocPath.parse(decodedDocPath)) : "Untitled";
+  const docTitle = getDocDisplayName(docPath);
 
   const publishPaused = liveReplica.publishPaused;
-  const { forcePublishing, lastOutcome: forcePublishOutcome, forcePublish } = useForcePublish(decodedDocPath);
+  const { forcePublishing, lastOutcome: forcePublishOutcome, forcePublish } = useForcePublish(docPath);
   const editorSessionCommands = useEditorSessionCommandsValue({
     boundProposalId,
     forcePublishing,
@@ -625,6 +618,34 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
     isEditing,
     authorshipView,
   );
+  const reportFocusedDocTabEditState = layoutOutlet?.reportFocusedDocTabEditState;
+  const clearFocusedDocTabEditState = layoutOutlet?.clearFocusedDocTabEditState;
+  useEffect(() => {
+    if (!reportFocusedDocTabEditState || !clearFocusedDocTabEditState) {
+      return;
+    }
+    reportFocusedDocTabEditState(docPath, {
+      hasUnpublishedChanges: hasUnpublishedChangesOnThisPage(
+        liveReplica.isCurrentlyLiveAuthority,
+        changedSectionCount,
+      ),
+      hasInFlightEdits: hasInFlightEditsOnThisPage(
+        saveStatus.allReceived,
+        saveStatus.hasLocalUncommittedEdits,
+      ),
+    });
+    return () => {
+      clearFocusedDocTabEditState(docPath);
+    };
+  }, [
+    docPath,
+    reportFocusedDocTabEditState,
+    clearFocusedDocTabEditState,
+    liveReplica.isCurrentlyLiveAuthority,
+    changedSectionCount,
+    saveStatus.allReceived,
+    saveStatus.hasLocalUncommittedEdits,
+  ]);
   const transportStatus = resolveTransportStatus(
     liveReplica.editorState,
     publishPaused,
@@ -706,7 +727,7 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
   // Document-not-found / error: show a non-document page instead of the white paper.
   // Non-404 failures must show the backend message (incl. stack) — never a generic substitute.
   if (!sectionsLoading && error) {
-    return <DocumentLoadErrorView docPath={decodedDocPath} error={error} />;
+    return <DocumentLoadErrorView docPath={docPath} error={error} />;
   }
 
   return (
@@ -724,7 +745,7 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
       />
       <div className="relative shrink-0">
         <DocumentTopbar
-          docPath={decodedDocPath}
+          docPath={docPath}
           toolbarAccessory={toolbarAccessory}
           showHistory={showHistory}
           onToggleHistory={() => setShowHistory((v) => !v)}
@@ -757,7 +778,7 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
       )}
 
       {/* Version history panel */}
-      {showHistory && decodedDocPath && (
+      {showHistory && (
         <div className="border-b border-[#eae7e2] bg-canvas-bg">
           <div className="max-w-[700px] mx-auto">
             <div className="flex items-center justify-between px-4 py-2 border-b border-[#f5f2ed]">
@@ -770,18 +791,16 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
               </button>
             </div>
             <DocumentHistory
-              docPath={decodedDocPath}
+              docPath={docPath}
               unpublishedRow={unpublishedHistoryRow}
               onRestored={() => {
                 setShowHistory(false);
                 // Trigger a re-fetch of sections by re-navigating
-                if (decodedDocPath) {
-                  setSectionsLoading(true);
-                  resourceModel.loadSections(decodedDocPath).then(
-                    (nextSections) => { setSections(nextSections); setSectionsLoading(false); },
-                    () => { setSectionsLoading(false); },
-                  );
-                }
+                setSectionsLoading(true);
+                resourceModel.loadSections(docPath).then(
+                  (nextSections) => { setSections(nextSections); setSectionsLoading(false); },
+                  () => { setSectionsLoading(false); },
+                );
               }}
             />
           </div>
@@ -789,13 +808,13 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
       )}
 
       {/* Diagnostics modal */}
-      {showDiagnostics && decodedDocPath && (
-        <DocumentDiagnostics docPath={decodedDocPath} onClose={() => setShowDiagnostics(false)} />
+      {showDiagnostics && (
+        <DocumentDiagnostics docPath={docPath} onClose={() => setShowDiagnostics(false)} />
       )}
 
       {/* Overwrite from Markdown modal */}
-      {currentUser?.is_admin && showOverwrite && decodedDocPath && (
-        <AdminOverwriteMarkdownModal docPath={decodedDocPath} onClose={() => setShowOverwrite(false)} />
+      {currentUser?.is_admin && showOverwrite && (
+        <AdminOverwriteMarkdownModal docPath={docPath} onClose={() => setShowOverwrite(false)} />
       )}
 
       {/* Origin-only CRDT live-edit rejection modal */}
@@ -820,7 +839,7 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
             <div ref={paperRef} className="flex-1 min-w-[700px] bg-canvas-bg border border-b-0 border-[rgba(0,0,0,0.06)] rounded-t-sm px-14 pt-8 relative">
               <DocumentPaperHeader
                 title={docTitle}
-                docPath={decodedDocPath}
+                docPath={docPath}
                 presenceModel={presenceModel}
                 currentUserId={currentUser?.id ?? null}
                 documentActivity={documentActivitySnapshot}
@@ -830,21 +849,34 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
                 pathCopied={pathCopied}
                 rootRef={paperHeaderRef}
                 onRenameValueChange={setRenameValue}
-                onStartRename={() => { setRenameValue(decodedDocPath ?? ""); setRenaming(true); }}
+                onStartRename={() => { setRenameValue(docPath); setRenaming(true); }}
                 onCancelRename={() => { setRenaming(false); setRenameError(null); }}
                 onSubmitRename={async () => {
-                  if (!decodedDocPath || !renameValue.trim()) return;
+                  if (!renameValue.trim()) return;
                   setRenameError(null);
                   try {
-                    await resourceModel.renameDocument(decodedDocPath, renameValue.trim());
+                    await resourceModel.renameDocument(docPath, DocPath.parse(renameValue.trim()));
                     setRenaming(false);
                   } catch (err) {
                     setRenameError(err instanceof Error ? err.message : String(err));
                   }
                 }}
+                onExportMarkdown={async () => {
+                  try {
+                    const { markdown } = await apiClient.getLiveMarkdown(docPath);
+                    const blob = new Blob([markdown], { type: "text/markdown" });
+                    const url = URL.createObjectURL(blob);
+                    const anchor = document.createElement("a");
+                    anchor.href = url;
+                    anchor.download = `${getDocDisplayName(docPath)}.md`;
+                    anchor.click();
+                    URL.revokeObjectURL(url);
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : String(err));
+                  }
+                }}
                 onCopyPath={async () => {
-                  if (!decodedDocPath) return;
-                  const didCopy = await copyTextToClipboard(decodedDocPath);
+                  const didCopy = await copyTextToClipboard(docPath);
                   if (!didCopy) return;
                   setPathCopied(true);
                   if (pathCopiedTimeoutRef.current) {
@@ -853,11 +885,10 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
                   pathCopiedTimeoutRef.current = setTimeout(() => setPathCopied(false), 1500);
                 }}
                 onDelete={async () => {
-                  if (!decodedDocPath) return;
                   if (!window.confirm("Delete this document? This cannot be undone.")) return;
                   setDeleteError(null);
                   try {
-                    await resourceModel.deleteDocument(decodedDocPath);
+                    await resourceModel.deleteDocument(docPath);
                     navigate("/");
                   } catch (err) {
                     setDeleteError(err instanceof Error ? err.message : String(err));
@@ -958,7 +989,7 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
             proposalScopeMutationInFlight={proposalScopeMutationInFlight}
             selectedProposalSectionKeys={selectedProposalSectionKeys}
             proposalSectionConflicts={proposalSectionConflicts}
-            decodedDocPath={decodedDocPath}
+            docPath={docPath}
             recentlyChangedByLabel={recentlyChangedByLabel}
             injectedByLabel={injectedByLabel}
             dragOverFragmentKey={dragOverFragmentKey}
@@ -1010,7 +1041,7 @@ export function DocumentPage({ docPathOverride, toolbarAccessory }: DocumentPage
       />
 
       <DocumentFooter
-        docPath={decodedDocPath}
+        docPath={docPath}
         isEditing={isEditing}
         focusedHeadingPath={focusedHeadingPath}
         loadDurationMs={loadDurationMs}

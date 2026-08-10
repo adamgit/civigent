@@ -5,7 +5,7 @@ import { assessSkeleton, type SkeletonAssessment } from "../../storage/skeleton-
 import { resolveSkeletonPath, parseSkeletonToEntries, type FlatEntry } from "../../storage/document-skeleton.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { docPathToContentRelativeFsPath } from "../../storage/path-utils.js";
-import { DocPath } from "../../types/shared.js";
+import { DocPath, HeadingLevel } from "../../types/shared.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { gitExec } from "../../storage/git-repo.js";
 import { SectionRef } from "../../domain/section-ref.js";
@@ -21,7 +21,7 @@ import type {
 export interface RecursiveStructuralEntry {
   sectionFile: string;
   heading: string;
-  level: number;
+  headingLevel: HeadingLevel;
   headingPath: string[];
   absolutePath: string;
   isSubSkeleton: boolean;
@@ -38,7 +38,7 @@ export interface RecursiveSkeletonView {
   forEachSection(
     cb: (
       heading: string,
-      level: number,
+      headingLevel: HeadingLevel,
       sectionFile: string,
       headingPath: string[],
       absolutePath: string,
@@ -47,7 +47,7 @@ export interface RecursiveSkeletonView {
   forEachNode(
     cb: (
       heading: string,
-      level: number,
+      headingLevel: HeadingLevel,
       sectionFile: string,
       headingPath: string[],
       absolutePath: string,
@@ -105,7 +105,7 @@ export function createDocumentDiagnosticsContext(docPath: DocPath): DocumentDiag
       recursive_structural_entries: null,
       recursive_content_sections: null,
       recursive_subskeleton_parents: null,
-      recursive_max_depth: null,
+      recursive_max_heading_path_length: null,
       physical_section_count: null,
       logical_section_count: null,
       api_section_count: null,
@@ -158,7 +158,7 @@ function recursiveSkeletonViewFromFlatEntries(entries: FlatEntry[]): RecursiveSk
       return entries.map((e) => ({
         sectionFile: e.sectionFile,
         heading: e.heading,
-        level: e.level,
+        headingLevel: e.headingLevel,
         headingPath: [...e.headingPath],
         absolutePath: e.absolutePath,
         isSubSkeleton: e.isSubSkeleton,
@@ -171,12 +171,12 @@ function recursiveSkeletonViewFromFlatEntries(entries: FlatEntry[]): RecursiveSk
     },
     forEachSection(cb) {
       for (const e of entries) {
-        if (!e.isSubSkeleton) cb(e.heading, e.level, e.sectionFile, e.headingPath, e.absolutePath);
+        if (!e.isSubSkeleton) cb(e.heading, e.headingLevel, e.sectionFile, e.headingPath, e.absolutePath);
       }
     },
     forEachNode(cb) {
       for (const e of entries) {
-        cb(e.heading, e.level, e.sectionFile, e.headingPath, e.absolutePath, e.isSubSkeleton);
+        cb(e.heading, e.headingLevel, e.sectionFile, e.headingPath, e.absolutePath, e.isSubSkeleton);
       }
     },
   };
@@ -187,10 +187,10 @@ export function collectDuplicateFragmentKeyDetails(
 ): string[] {
   const seen = new Map<string, { sectionFile: string; headingPath: string[] }>();
   const duplicates: string[] = [];
-  skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+  skeleton.forEachSection((heading, headingLevel, sectionFile, headingPath) => {
     const fragmentKey = fragmentKeyFromSectionFile(
       sectionFile,
-      isDocumentBeforeFirstHeading({ heading, level, headingPath }),
+      isDocumentBeforeFirstHeading({ heading, headingLevel, headingPath }),
     );
     const existing = seen.get(fragmentKey);
     if (!existing) {
@@ -217,15 +217,15 @@ export function collectDuplicateFragmentKeyDetails(
 export function collectDuplicateHeadingPathDetails(
   skeleton: Pick<RecursiveSkeletonView, "forEachSection">,
 ): string[] {
-  const groups = new Map<string, Array<{ sectionFile: string; fragmentKey: string; headingPath: string[]; heading: string; level: number }>>();
-  skeleton.forEachSection((heading, level, sectionFile, headingPath) => {
+  const groups = new Map<string, Array<{ sectionFile: string; fragmentKey: string; headingPath: string[]; heading: string; headingLevel: HeadingLevel }>>();
+  skeleton.forEachSection((heading, headingLevel, sectionFile, headingPath) => {
     const key = SectionRef.headingKey(headingPath);
     const fragmentKey = fragmentKeyFromSectionFile(
       sectionFile,
-      isDocumentBeforeFirstHeading({ heading, level, headingPath }),
+      isDocumentBeforeFirstHeading({ heading, headingLevel, headingPath }),
     );
     const list = groups.get(key);
-    const row = { sectionFile, fragmentKey, headingPath: [...headingPath], heading, level };
+    const row = { sectionFile, fragmentKey, headingPath: [...headingPath], heading, headingLevel };
     if (list) list.push(row);
     else groups.set(key, [row]);
   });
@@ -254,7 +254,7 @@ export function collectDuplicateHeadingPathDetails(
 export function collectDuplicateSiblingHeadingDetails(
   skeleton: Pick<RecursiveSkeletonView, "allStructuralEntries">,
 ): string[] {
-  interface Row { sectionFile: string; heading: string; level: number; headingPath: string[]; isBodyHolder: boolean }
+  interface Row { sectionFile: string; heading: string; headingLevel: HeadingLevel; headingPath: string[]; isBodyHolder: boolean }
   const groups = new Map<string, Row[]>();
   for (const entry of skeleton.allStructuralEntries()) {
     const isBodyHolder = isBodyHolderShape(entry);
@@ -267,11 +267,11 @@ export function collectDuplicateSiblingHeadingDetails(
     // Group by (parent, heading text, level, body-holder-shape) — the last flag
     // segregates duplicate body-holders from a same-heading named-sibling duplicate
     // so operator-facing details stay unambiguous.
-    const groupKey = `${parentKey}||${entry.heading}@${entry.level}@${isBodyHolder ? "bh" : "h"}`;
+    const groupKey = `${parentKey}||${entry.heading}@${entry.headingLevel}@${isBodyHolder ? "bh" : "h"}`;
     const row: Row = {
       sectionFile: entry.sectionFile,
       heading: entry.heading,
-      level: entry.level,
+      headingLevel: entry.headingLevel,
       headingPath: [...entry.headingPath],
       isBodyHolder,
     };
@@ -291,7 +291,7 @@ export function collectDuplicateSiblingHeadingDetails(
         ? "duplicate document-level before-first-heading root"
         : `duplicate body-holder for "${parentPath[parentPath.length - 1]}"`;
     } else {
-      identityLabel = `duplicate sibling heading "${first.heading}" (level ${first.level})`;
+      identityLabel = `duplicate sibling heading "${first.heading}" (heading level ${first.headingLevel})`;
     }
     const memberList = rows
       .map((r) => `${r.sectionFile} (${fragmentKeyFromSectionFile(r.sectionFile, r.isBodyHolder && r.headingPath.length === 0)})`)

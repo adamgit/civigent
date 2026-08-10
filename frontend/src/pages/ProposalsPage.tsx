@@ -435,13 +435,13 @@ export function ProposalsPage() {
                     {/* Targets */}
                     <div className="flex flex-wrap gap-1">
                       {(() => {
-                        const byDoc = new Map<string, Array<{ heading: string; level: number }>>();
+                        const byDoc = new Map<string, Array<{ heading: string; headingPathLength: number }>>();
                         for (const s of proposal.sections) {
                           const docName = proposalSectionDocPathForDisplay(s);
                           const existing = byDoc.get(docName) ?? [];
                           const heading = headingPathToLabel(s.heading_path);
-                          const level = s.heading_path.length;
-                          existing.push({ heading, level });
+                          const headingPathLength = s.heading_path.length;
+                          existing.push({ heading, headingPathLength });
                           byDoc.set(docName, existing);
                         }
                         return Array.from(byDoc.entries()).map(([docName, sections]) => (
@@ -466,7 +466,7 @@ export function ProposalsPage() {
                                   style={{
                                     padding: "1px 5px",
                                     borderRadius: 3,
-                                    background: s.level <= 1 ? "#f0ede8" : s.level <= 2 ? "#e8e4de" : "#ddd8d0",
+                                    background: s.headingPathLength <= 1 ? "#f0ede8" : s.headingPathLength <= 2 ? "#e8e4de" : "#ddd8d0",
                                     color: "var(--color-text-secondary)",
                                   }}
                                 >

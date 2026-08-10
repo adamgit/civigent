@@ -20,7 +20,7 @@ export interface TreemapBounds {
 export interface TreemapRect extends TreemapBounds {
   node: SearchTreeNode;
   /** 0 for the children of the node being laid out, 1 for their children, … */
-  depth: number;
+  folderPathLength: number;
 }
 
 interface SizedNode {
@@ -49,7 +49,7 @@ function worstAspectRatio(row: readonly number[], sideLength: number): number {
 }
 
 /** Place one finished row along the short side of `rect`, and return what is left. */
-function placeRow(row: readonly SizedNode[], rect: TreemapBounds, out: TreemapRect[], depth: number): TreemapBounds {
+function placeRow(row: readonly SizedNode[], rect: TreemapBounds, out: TreemapRect[], folderPathLength: number): TreemapBounds {
   const rowTotal = row.reduce((sum, item) => sum + item.value, 0);
   if (rowTotal <= 0) return rect;
 
@@ -58,7 +58,7 @@ function placeRow(row: readonly SizedNode[], rect: TreemapBounds, out: TreemapRe
     let y = rect.y;
     for (const item of row) {
       const height = item.value / columnWidth;
-      out.push({ node: item.node, x: rect.x, y, w: columnWidth, h: height, depth });
+      out.push({ node: item.node, x: rect.x, y, w: columnWidth, h: height, folderPathLength });
       y += height;
     }
     return { x: rect.x + columnWidth, y: rect.y, w: rect.w - columnWidth, h: rect.h };
@@ -68,7 +68,7 @@ function placeRow(row: readonly SizedNode[], rect: TreemapBounds, out: TreemapRe
   let x = rect.x;
   for (const item of row) {
     const width = item.value / rowHeight;
-    out.push({ node: item.node, x, y: rect.y, w: width, h: rowHeight, depth });
+    out.push({ node: item.node, x, y: rect.y, w: width, h: rowHeight, folderPathLength });
     x += width;
   }
   return { x: rect.x, y: rect.y + rowHeight, w: rect.w, h: rect.h - rowHeight };
@@ -82,7 +82,7 @@ function placeRow(row: readonly SizedNode[], rect: TreemapBounds, out: TreemapRe
 export function squarifyNodes(
   nodes: readonly SearchTreeNode[],
   bounds: TreemapBounds,
-  depth = 0,
+  folderPathLength = 0,
 ): TreemapRect[] {
   const sized = nodes
     .filter((node) => node.totalDescendants > 0)
@@ -115,12 +115,12 @@ export function squarifyNodes(
       continue;
     }
 
-    rect = placeRow(row, rect, out, depth);
+    rect = placeRow(row, rect, out, folderPathLength);
     row = [];
   }
 
   if (row.length > 0) {
-    placeRow(row, rect, out, depth);
+    placeRow(row, rect, out, folderPathLength);
   }
   return out;
 }
@@ -153,15 +153,15 @@ export function buildTreemapRects(
 
   const all: TreemapRect[] = [];
 
-  const layoutLevel = (node: SearchTreeNode, area: TreemapBounds, depth: number): void => {
-    if (depth >= maxDepth) return;
-    const rects = squarifyNodes(node.children, area, depth);
+  const layoutLevel = (node: SearchTreeNode, area: TreemapBounds, folderPathLength: number): void => {
+    if (folderPathLength >= maxDepth) return;
+    const rects = squarifyNodes(node.children, area, folderPathLength);
     all.push(...rects);
     for (const rect of rects) {
       const hasDrawableChildren = rect.node.children.some((child) => child.totalDescendants > 0);
       if (!hasDrawableChildren) continue;
       if (rect.w < minSubdivisionPx || rect.h < minSubdivisionPx + headerPx) continue;
-      layoutLevel(rect.node, { x: rect.x, y: rect.y + headerPx, w: rect.w, h: rect.h - headerPx }, depth + 1);
+      layoutLevel(rect.node, { x: rect.x, y: rect.y + headerPx, w: rect.w, h: rect.h - headerPx }, folderPathLength + 1);
     }
   };
 

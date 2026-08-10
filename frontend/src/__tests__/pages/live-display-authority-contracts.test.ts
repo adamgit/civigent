@@ -20,6 +20,7 @@ import { dtoToRenderRef } from "../../pages/cold-bootstrap";
 import { createLiveSectionReplica } from "../../services/live-section-replica";
 import { SectionId } from "../../types/live-sections";
 import type { WireLiveSectionsState } from "../../types/shared";
+import { HeadingLevel } from "../../types/shared";
 
 const BETA = "section::sec_beta";
 
@@ -38,7 +39,7 @@ function section(partial: {
   return {
     heading: partial.heading,
     heading_path: partial.heading_path,
-    depth: partial.heading_path.length,
+    heading_level: HeadingLevel.parse(partial.heading_path.length === 0 ? 0 : 1),
     content: partial.content ?? "",
     agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section." },
     crdt_session_active: true,
@@ -55,7 +56,7 @@ describe("live display authority contracts", () => {
     writeFragment(doc, BETA, "Beta");
     const replica = createLiveSectionReplica();
     const state: WireLiveSectionsState = {
-      topology: [{ fragment_key: BETA, heading_path: ["Beta"] }],
+      topology: [{ fragment_key: BETA, heading_path: ["Beta"], heading_level: 1 }],
       blocked_section_ids: [],
       pending_sections: [],
       publish_pause_join_mirror: "not_in_pause",
@@ -79,7 +80,7 @@ describe("live display authority contracts", () => {
     });
 
     const ref = dtoToRenderRef(dto);
-    expect(Object.keys(ref).sort()).toEqual(["headingPath", "id"]);
+    expect(Object.keys(ref).sort()).toEqual(["headingLevel", "headingPath", "id"]);
     expect(SectionId.text(ref.id)).toBe(BETA);
     expect([...ref.headingPath]).toEqual(["Beta"]);
   });

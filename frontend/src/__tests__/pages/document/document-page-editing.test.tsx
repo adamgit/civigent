@@ -117,13 +117,14 @@ vi.mock("../../../services/api-client", async (importOriginal) => {
 import { DocumentPage } from "../../../pages/DocumentPage";
 import { act } from "@testing-library/react";
 import { liveBootstrapFrame, MSG_LIVE_SECTIONS_BOOTSTRAP_OPCODE } from "../../helpers/live-bootstrap";
+import { HeadingLevel } from "../../../types/shared";
 
 const sectionsResponse = {
   sections: [
     {
       heading: "",
       heading_path: [] as string[],
-      depth: 0,
+      heading_level: 0,
       content: "Root content.\n",
       humanInvolvement_score: 0,
       crdt_session_active: false,
@@ -133,7 +134,7 @@ const sectionsResponse = {
     {
       heading: "Overview",
       heading_path: ["Overview"],
-      depth: 1,
+      heading_level: 1,
       content: "# Overview\nOverview content.\n",
       humanInvolvement_score: 0,
       crdt_session_active: false,
@@ -143,7 +144,7 @@ const sectionsResponse = {
     {
       heading: "Details",
       heading_path: ["Details"],
-      depth: 1,
+      heading_level: 1,
       content: "# Details\nDetails content.\n",
       humanInvolvement_score: 0,
       crdt_session_active: false,
@@ -154,9 +155,9 @@ const sectionsResponse = {
 };
 
 const LIVE_FIXTURE_SECTIONS = [
-  { fragmentKey: "frag:sec_root", headingPath: [] as string[], markdown: "Root content.\n" },
-  { fragmentKey: "frag:sec_overview", headingPath: ["Overview"], markdown: "# Overview\nOverview content.\n" },
-  { fragmentKey: "frag:sec_details", headingPath: ["Details"], markdown: "# Details\nDetails content.\n" },
+  { fragmentKey: "frag:sec_root", headingPath: [] as string[], headingLevel: HeadingLevel.beforeFirstHeading, markdown: "Root content.\n" },
+  { fragmentKey: "frag:sec_overview", headingPath: ["Overview"], headingLevel: HeadingLevel.parse(1), markdown: "# Overview\nOverview content.\n" },
+  { fragmentKey: "frag:sec_details", headingPath: ["Details"], headingLevel: HeadingLevel.parse(1), markdown: "# Details\nDetails content.\n" },
 ];
 
 /** Deliver the live bootstrap on the latest observer socket (pre-click path). */
@@ -172,7 +173,7 @@ async function deliverObserverBootstrap(): Promise<void> {
 }
 
 /** Deliver a live bootstrap on the latest editor socket (empty-doc first-edit path). */
-async function deliverEditorBootstrap(sections: { fragmentKey: string; headingPath: string[]; markdown: string }[]): Promise<void> {
+async function deliverEditorBootstrap(sections: { fragmentKey: string; headingPath: string[]; headingLevel: HeadingLevel; markdown: string }[]): Promise<void> {
   await waitFor(() => expect(editorProviderOpts.length).toBeGreaterThan(0));
   const opts = editorProviderOpts[editorProviderOpts.length - 1];
   await act(async () => {
@@ -187,7 +188,7 @@ function renderDocPage() {
   return render(
     <MemoryRouter initialEntries={["/docs/test.md"]}>
       <Routes>
-        <Route path="/docs/*" element={<DocumentPage docPathOverride="/test.md" />} />
+        <Route path="/docs/*" element={<DocumentPage docPath="/test.md" />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -292,7 +293,7 @@ describe("DocumentPage editing", () => {
     // The server's DocSession bootstrap (with the synthetic BFH fragment)
     // arrives on the editor socket; only then may the live editor mount.
     await deliverEditorBootstrap([
-      { fragmentKey: BEFORE_FIRST_HEADING_KEY, headingPath: [], markdown: "" },
+      { fragmentKey: BEFORE_FIRST_HEADING_KEY, headingPath: [], headingLevel: HeadingLevel.beforeFirstHeading, markdown: "" },
     ]);
     await waitFor(() => {
       expect(screen.getByTestId("milkdown-editor")).toBeDefined();
@@ -320,7 +321,7 @@ describe("DocumentPage editing", () => {
     fireEvent.click(await screen.findByText("Document is empty."));
 
     await deliverEditorBootstrap([
-      { fragmentKey: BEFORE_FIRST_HEADING_KEY, headingPath: [], markdown: "" },
+      { fragmentKey: BEFORE_FIRST_HEADING_KEY, headingPath: [], headingLevel: HeadingLevel.beforeFirstHeading, markdown: "" },
     ]);
     await waitFor(() => {
       const editor = screen.getByTestId("milkdown-editor");

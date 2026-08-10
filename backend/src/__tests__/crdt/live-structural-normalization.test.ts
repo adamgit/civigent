@@ -165,7 +165,7 @@ describe("MW-15: live structural normalization (split / orphan-merge)", () => {
 
     // The new sibling carries the moved-out body LIVE, at the top level.
     const sibling = layout.find((e) => e.heading === "Second Section")!;
-    expect(sibling.level).toBe(2);
+    expect(sibling.headingLevel).toBe(2);
     expect(sibling.headingPath).toEqual(["Second Section"]);
     const siblingLive = session.liveFragments.readFragmentString(sibling.fragmentKey) as string;
     expect(siblingLive).toContain("brand new sibling body");
@@ -175,7 +175,7 @@ describe("MW-15: live structural normalization (split / orphan-merge)", () => {
     // body-holder) and REUSES the original `section::overview` id (no re-key).
     const survivor = layout.find((e) => e.fragmentKey === OVERVIEW_KEY)!;
     expect(survivor.heading).toBe("Overview");
-    expect(survivor.level).toBe(2);
+    expect(survivor.headingLevel).toBe(2);
     expect(survivor.headingPath).toEqual(["Overview"]);
     const survivorLive = session.liveFragments.readFragmentString(OVERVIEW_KEY) as string;
     expect(survivorLive).toContain("base overview body");

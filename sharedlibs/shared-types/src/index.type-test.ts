@@ -7,8 +7,9 @@
  * shared-types build fails. It is included by `tsconfig.json` (`include: src`).
  */
 
-import { DocPath } from "./index.js";
+import { DocPath, HeadingLevel } from "./index.js";
 import type {
+  FolderPath,
   AgentWritePolicyResult,
   AgentWritePolicyTarget,
   HumanInvolvementPolicyDetails,
@@ -210,8 +211,7 @@ const docSections: GetDocumentSectionsResponse = {
     {
       heading: "A",
       heading_path: ["A"],
-      depth: 1,
-      level: 1,
+      heading_level: HeadingLevel.parse(1),
       content: "body",
       agentWritePolicy: sectionSummary,
       crdt_session_active: false,
@@ -224,6 +224,13 @@ const docSections: GetDocumentSectionsResponse = {
 };
 
 const committedMeta: HumanInvolvementCommittedProposalMetadata = { "doc.md::A": 0.5 };
+
+type NotAssignable<A, B> = [A] extends [B] ? false : true;
+const folderPathNotDocPath: NotAssignable<FolderPath, DocPath> = true;
+const docPathNotFolderPath: NotAssignable<DocPath, FolderPath> = true;
+const stringNotFolderPath: NotAssignable<string, FolderPath> = true;
+const stringNotDocPath: NotAssignable<string, DocPath> = true;
+const numberNotHeadingLevel: NotAssignable<number, HeadingLevel> = true;
 
 // Reference everything so noUnusedLocals (if enabled) stays satisfied.
 export const __areaQTypeTestRefs = {
@@ -244,4 +251,9 @@ export const __areaQTypeTestRefs = {
   sectionMeta,
   docSections,
   committedMeta,
+  folderPathNotDocPath,
+  docPathNotFolderPath,
+  stringNotFolderPath,
+  stringNotDocPath,
+  numberNotHeadingLevel,
 };

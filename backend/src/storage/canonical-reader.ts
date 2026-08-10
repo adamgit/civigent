@@ -23,7 +23,7 @@ import { getContentRoot } from "./data-root.js";
 import { SectionRef } from "../domain/section-ref.js";
 import type { DocStructureNode } from "../types/shared.js";
 import type { SectionBody } from "./section-formatting.js";
-import type { DocPath } from "../types/shared.js";
+import type { DocPath, HeadingLevel } from "../types/shared.js";
 
 export class CanonicalReader {
   protected readonly canonicalRoot: string;
@@ -63,7 +63,7 @@ export class CanonicalReader {
    */
   async getSectionList(
     docPath: DocPath,
-  ): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>> {
+  ): Promise<Array<{ heading: string; headingLevel: HeadingLevel; sectionFile: string; headingPath: string[] }>> {
     return this.layer.getSectionList(docPath);
   }
 

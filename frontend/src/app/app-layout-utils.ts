@@ -72,7 +72,7 @@ export function writeSidebarAutoHide(value: boolean): void {
 export interface WsEventClassification {
   refreshTree: boolean;
   addBadge: string | null;
-  showToast: { text: string; docPath: string } | null;
+  showToast: { text: string; docPath: DocPath } | null;
   flashDocPaths?: string[];
   flashWriterType?: string;
 }
@@ -147,25 +147,4 @@ export function classifyWsEvent(
     addBadge: committedDocPath,
     showToast: toast,
   };
-}
-
-export function parseRouteDocPath(pathname: string): DocPath | null {
-  if (!pathname.startsWith("/docs/")) {
-    return null;
-  }
-  let encodedPath = pathname.slice("/docs/".length);
-  for (const suffix of ["/edit", "/reconcile"]) {
-    if (encodedPath.endsWith(suffix)) {
-      encodedPath = encodedPath.slice(0, -suffix.length);
-      break;
-    }
-  }
-  if (!encodedPath) {
-    return null;
-  }
-  const decodedSegment = decodeURIComponent(encodedPath);
-  if (!DocPath.isSlashStrippedUrlSegmentOfDocPath(decodedSegment)) {
-    return null;
-  }
-  return DocPath.fromSlashStrippedUrlSegment(decodedSegment);
 }

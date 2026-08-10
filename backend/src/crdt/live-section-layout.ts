@@ -14,13 +14,14 @@ import { BEFORE_FIRST_HEADING_KEY, fragmentKeyFromSectionFile } from "./ydoc-fra
 import { SectionRef } from "../domain/section-ref.js";
 import { buildFragmentContent, EMPTY_BODY, type FragmentContent, type SectionBody } from "../storage/section-formatting.js";
 import type { ProposalId } from "../types/shared.js";
+import { HeadingLevel } from "../types/shared.js";
 import type { DocPath } from "../types/shared.js";
 
 export interface LiveSectionLayoutEntry {
   fragmentKey: string;
   headingPath: string[];
   heading: string;
-  level: number;
+  headingLevel: HeadingLevel;
 }
 
 function emptyDocumentFirstEditSection(): LiveSectionLayoutEntry {
@@ -28,7 +29,7 @@ function emptyDocumentFirstEditSection(): LiveSectionLayoutEntry {
     fragmentKey: BEFORE_FIRST_HEADING_KEY,
     headingPath: [],
     heading: "",
-    level: 0,
+    headingLevel: HeadingLevel.beforeFirstHeading,
   };
 }
 
@@ -51,11 +52,11 @@ async function existingEmptyDocumentCanReceiveFirstEdit(
 }
 
 function resolvePersistedLiveSectionLayout(
-  skeleton: { forEachVisibleSection: (visitor: (heading: string, level: number, sectionFile: string, headingPath: string[]) => void) => void },
+  skeleton: { forEachVisibleSection: (visitor: (heading: string, headingLevel: HeadingLevel, sectionFile: string, headingPath: string[]) => void) => void },
 ): LiveSectionLayoutEntry[] {
   const entries: LiveSectionLayoutEntry[] = [];
   const seen = new Set<string>();
-  skeleton.forEachVisibleSection((heading, level, sectionFile, headingPath) => {
+  skeleton.forEachVisibleSection((heading, headingLevel, sectionFile, headingPath) => {
     const fragmentKey = fragmentKeyFromSectionFile(sectionFile, headingPath.length === 0);
     if (seen.has(fragmentKey)) return;
     seen.add(fragmentKey);
@@ -63,7 +64,7 @@ function resolvePersistedLiveSectionLayout(
       fragmentKey,
       headingPath: [...headingPath],
       heading,
-      level,
+      headingLevel,
     });
   });
   return entries;
@@ -145,7 +146,7 @@ export async function buildLiveSeedContentMap(
   for (const entry of layout) {
     const headingKey = SectionRef.headingKey(entry.headingPath);
     const body = bodies.get(headingKey) ?? EMPTY_BODY;
-    contentMap.set(entry.fragmentKey, buildFragmentContent(body, entry.level, entry.heading));
+    contentMap.set(entry.fragmentKey, buildFragmentContent(body, entry.headingLevel, entry.heading));
   }
   return contentMap;
 }

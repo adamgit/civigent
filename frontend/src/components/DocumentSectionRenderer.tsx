@@ -11,7 +11,7 @@ import { resolveWriterId } from "../services/api-client";
 import type { LocalEditOriginSink } from "../status/sessionAuthorship";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import { useSectionHover } from "../contexts/sectionHoverUtils";
-import { rewriteMarkdownDocHref } from "../app/docsRouteUtils";
+import { rewriteMarkdownDocHref } from "../app/docs-location";
 
 export interface DocumentSectionRendererProps {
   section: RenderSectionRef;

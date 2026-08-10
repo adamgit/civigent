@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { headingPathToLabel } from "./document-page-utils";
-import { docsRouteForStoredPath } from "../app/docsRouteUtils";
+import { docsRouteForStoredPath } from "../app/docs-location";
 import { ActivityTabStrip } from "../components/ActivityTabStrip";
 import { ContentPanel } from "../components/ContentPanel";
 import { ActivityFeedItem } from "../components/ActivityFeedItem";

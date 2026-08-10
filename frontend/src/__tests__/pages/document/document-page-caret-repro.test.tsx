@@ -123,11 +123,12 @@ vi.mock("../../../services/api-client", async (importOriginal) => {
 
 import { DocumentPage } from "../../../pages/DocumentPage";
 import { liveBootstrapFrame, MSG_LIVE_SECTIONS_BOOTSTRAP_OPCODE } from "../../helpers/live-bootstrap";
+import { HeadingLevel } from "../../../types/shared";
 
 const overviewSection = {
   heading: "Overview",
   heading_path: ["Overview"],
-  depth: 1,
+  heading_level: 1,
   content: "# Overview\nOverview content.\n",
   humanInvolvement_score: 0,
   crdt_session_active: false,
@@ -151,7 +152,7 @@ function renderDocPage(strict = false) {
   const tree = (
     <MemoryRouter initialEntries={["/docs/test.md"]}>
       <Routes>
-        <Route path="/docs/*" element={<DocumentPage docPathOverride="/test.md" />} />
+        <Route path="/docs/*" element={<DocumentPage docPath="/test.md" />} />
       </Routes>
     </MemoryRouter>
   );
@@ -167,6 +168,7 @@ async function deliverLiveBootstrap(obs: CapturedObserver): Promise<void> {
       liveBootstrapFrame("OBS-SESSION", [{
         fragmentKey: "frag:sec_overview",
         headingPath: ["Overview"],
+        headingLevel: HeadingLevel.parse(1),
         markdown: "# Overview\nOverview content.\n",
       }]),
     );

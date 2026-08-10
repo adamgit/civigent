@@ -6,6 +6,7 @@ import { access, open, rm } from "node:fs/promises";
 import { getContentGitPrefix } from "./data-root.js";
 import { docPathToContentRelativeFsPath } from "./path-utils.js";
 import { DocPath } from "../types/shared.js";
+import type { HeadingLevel } from "../types/shared.js";
 import { parseSkeletonToEntries } from "./document-skeleton.js";
 import type { AttributionWriterType } from "../types/shared.js";
 import { bodyFromGit, bodyToDisk, buildFragmentContent, assembleFragments, fragmentFromBodyHolder, type FragmentContent } from "./section-formatting.js";
@@ -455,7 +456,7 @@ async function assembleSkeletonFromGit(
   skeletonGitPath: string,
   missingSections: string[],
   parentVisibleHeading?: string,
-  parentVisibleLevel?: number,
+  parentVisibleLevel?: HeadingLevel,
 ): Promise<FragmentContent[]> {
   const skeletonContent = await gitShowFileOrNull(dataRoot, sha, skeletonGitPath);
   if (skeletonContent === null) {
@@ -484,7 +485,7 @@ async function assembleSkeletonFromGit(
     if (bodyContent.includes("{{section:")) {
       const subParts = await assembleSkeletonFromGit(
         dataRoot, sha, bodyGitPath, missingSections,
-        entry.heading, entry.level,
+        entry.heading, entry.headingLevel,
       );
       parts.push(...subParts);
       continue;
@@ -498,7 +499,7 @@ async function assembleSkeletonFromGit(
       // Document-level BFH: anonymous content, no heading line.
       if (body) parts.push(fragmentFromBodyHolder(body));
     } else {
-      parts.push(buildFragmentContent(body, entry.level, entry.heading));
+      parts.push(buildFragmentContent(body, entry.headingLevel, entry.heading));
     }
   }
 

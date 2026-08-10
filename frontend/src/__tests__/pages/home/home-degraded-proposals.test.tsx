@@ -23,6 +23,8 @@ const outletContext: AppLayoutOutletContext = {
   refreshTree: vi.fn(async () => {}),
   sidebarAutoHide: false,
   setSidebarAutoHide: vi.fn(),
+  reportFocusedDocTabEditState: vi.fn(),
+  clearFocusedDocTabEditState: vi.fn(),
 };
 
 function renderHome() {

@@ -30,7 +30,7 @@ describe("Empty document contracts", () => {
     const sections = await overlay.getSectionList("/test/bfh-only.md");
     expect(sections).toHaveLength(1);
     expect(sections[0].heading).toBe("");
-    expect(sections[0].level).toBe(0);
+    expect(sections[0].headingLevel).toBe(0);
     const content = await overlay.readSection(new SectionRef("/test/bfh-only.md", []));
     expect(content).toBe("preamble content");
   });
@@ -89,6 +89,6 @@ describe("Empty document contracts", () => {
     const sections = await overlay.getSectionList(docPath);
     expect(sections).toHaveLength(1);
     expect(sections[0].heading).toBe("Overview");
-    expect(sections[0].level).toBe(1);
+    expect(sections[0].headingLevel).toBe(1);
   });
 });

@@ -24,7 +24,7 @@ import { SectionRef } from "../domain/section-ref.js";
 import type { DocStructureNode } from "../types/shared.js";
 import type { ProposalId, ProposalStatus } from "../types/shared.js";
 import type { SectionBody } from "./section-formatting.js";
-import type { DocPath } from "../types/shared.js";
+import type { DocPath, HeadingLevel } from "../types/shared.js";
 import type {
   ProposalDocumentState,
   ProposalSectionReadResult,
@@ -126,7 +126,7 @@ export class ProposalReader {
    */
   async getSectionList(
     docPath: DocPath,
-  ): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>> {
+  ): Promise<Array<{ heading: string; headingLevel: HeadingLevel; sectionFile: string; headingPath: string[] }>> {
     return this.shadow.getSectionList(docPath);
   }
 

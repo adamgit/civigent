@@ -108,7 +108,7 @@ describe("WS-2: identity-preserving SPLIT", () => {
     const survivorEntry = layout.find((e) => e.fragmentKey === OVERVIEW_KEY)!;
     expect(survivorEntry).toBeDefined();
     expect(survivorEntry.heading).toBe("Overview");
-    expect(survivorEntry.level).toBe(2);
+    expect(survivorEntry.headingLevel).toBe(2);
     expect((session.liveFragments.readFragmentString(OVERVIEW_KEY) as string).startsWith("## Overview")).toBe(true);
 
     // LOAD-BEARING: the surviving Overview body node kept its Yjs struct id —
@@ -163,7 +163,7 @@ describe("WS-2: identity-preserving SPLIT", () => {
     // as a TOP-LEVEL heading path (not nested under Overview).
     const sibling = layout.find((e) => e.heading === "Second Section")!;
     expect(sibling).toBeDefined();
-    expect(sibling.level).toBe(2);
+    expect(sibling.headingLevel).toBe(2);
     expect(sibling.headingPath).toEqual(["Second Section"]);
     expect(session.liveFragments.getFragmentKeys()).toContain(sibling.fragmentKey);
     expect(session.liveFragments.readFragmentString(sibling.fragmentKey) as string).toContain(
@@ -178,7 +178,7 @@ describe("WS-2: identity-preserving SPLIT", () => {
     const survivor = layout.find((e) => e.fragmentKey === OVERVIEW_KEY)!;
     expect(survivor).toBeDefined();
     expect(survivor.heading).toBe("Overview");
-    expect(survivor.level).toBe(2);
+    expect(survivor.headingLevel).toBe(2);
     expect(survivor.headingPath).toEqual(["Overview"]);
     expect(session.liveFragments.getFragmentKeys()).toContain(OVERVIEW_KEY);
 

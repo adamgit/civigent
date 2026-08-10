@@ -1,4 +1,4 @@
-import type { DocStructureNode } from "../types/shared.js";
+import type { DocPath, DocStructureNode } from "../types/shared.js";
 import { apiClient } from "../services/api-client";
 import type { WorkspaceSectionDto } from "../pages/document-page-utils";
 
@@ -13,9 +13,9 @@ import type { WorkspaceSectionDto } from "../pages/document-page-utils";
  * editor/transport layer and intentionally stays outside this model.
  */
 export class DocumentResourceModel {
-  private lastDocPath: string | null = null;
+  private lastDocPath: DocPath | null = null;
 
-  async loadSections(docPath: string): Promise<WorkspaceSectionDto[]> {
+  async loadSections(docPath: DocPath): Promise<WorkspaceSectionDto[]> {
     const response = await apiClient.getWorkspaceDocumentSections(docPath);
     this.lastDocPath = docPath;
     return response.sections;
@@ -26,16 +26,16 @@ export class DocumentResourceModel {
     return this.loadSections(this.lastDocPath);
   }
 
-  async loadStructure(docPath: string): Promise<DocStructureNode[]> {
+  async loadStructure(docPath: DocPath): Promise<DocStructureNode[]> {
     const response = await apiClient.getWorkspaceDocumentStructure(docPath);
     return response.structure;
   }
 
-  async renameDocument(docPath: string, newPath: string): Promise<void> {
+  async renameDocument(docPath: DocPath, newPath: DocPath): Promise<void> {
     await apiClient.renameDocument(docPath, newPath);
   }
 
-  async deleteDocument(docPath: string): Promise<void> {
+  async deleteDocument(docPath: DocPath): Promise<void> {
     await apiClient.deleteDocument(docPath);
   }
 }

@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { MemoryRouter, Outlet, Route, Routes } from "react-router-dom";
 import { DocsRouteResolver } from "../../app/DocsRouteResolver";
-import { resolveDocsSubroute } from "../../app/docsRouteUtils";
 import type { AppLayoutOutletContext } from "../../app/AppLayout";
 import { sampleDocTree } from "../helpers/sample-data";
 
@@ -13,48 +12,26 @@ vi.mock("../../pages/DocsBrowserPage", () => ({
   ),
 }));
 vi.mock("../../pages/DocumentPage", () => ({
-  DocumentPage: (props: { docPathOverride?: string }) => (
-    <div data-testid="document-page" data-doc-path={props.docPathOverride}>
-      DocumentPage:{props.docPathOverride}
+  DocumentPage: (props: { docPath?: string }) => (
+    <div data-testid="document-page" data-doc-path={props.docPath}>
+      DocumentPage:{props.docPath}
     </div>
   ),
 }));
 vi.mock("../../pages/GovernanceDocumentPage", () => ({
-  GovernanceDocumentPage: (props: { docPathOverride?: string }) => (
-    <div data-testid="governance-document-page" data-doc-path={props.docPathOverride}>
-      GovernanceDocumentPage:{props.docPathOverride}
+  GovernanceDocumentPage: (props: { docPath?: string }) => (
+    <div data-testid="governance-document-page" data-doc-path={props.docPath}>
+      GovernanceDocumentPage:{props.docPath}
     </div>
   ),
 }));
-
-describe("resolveDocsSubroute (pure function)", () => {
-  it("returns null docPath for undefined splat", () => {
-    const result = resolveDocsSubroute(undefined);
-    expect(result.docPath).toBeNull();
-    expect(result.mode).toBe("view");
-  });
-
-  it("returns null docPath for empty string splat", () => {
-    const result = resolveDocsSubroute("");
-    expect(result.docPath).toBeNull();
-  });
-
-  it("returns decoded docPath with leading slash for valid splat", () => {
-    const result = resolveDocsSubroute("ops/strategy.md");
-    expect(result.docPath).toBe("/ops/strategy.md");
-    expect(result.mode).toBe("view");
-  });
-
-  it("decodes URI-encoded path segments", () => {
-    const result = resolveDocsSubroute("docs%2Fmy%20file.md");
-    expect(result.docPath).toBe("/docs/my file.md");
-  });
-
-  it("preserves leading slash and strips trailing slashes", () => {
-    const result = resolveDocsSubroute("/some/path.md/");
-    expect(result.docPath).toBe("/some/path.md");
-  });
-});
+vi.mock("../../pages/FolderPage", () => ({
+  FolderPage: (props: { folderPath?: string }) => (
+    <div data-testid="folder-page" data-folder-path={props.folderPath}>
+      FolderPage:{props.folderPath}
+    </div>
+  ),
+}));
 
 describe("DocsRouteResolver component", () => {
   function createOutletContext(overrides?: Partial<AppLayoutOutletContext>): AppLayoutOutletContext {
@@ -67,6 +44,8 @@ describe("DocsRouteResolver component", () => {
       refreshTree: vi.fn().mockResolvedValue(undefined),
       sidebarAutoHide: false,
       setSidebarAutoHide: vi.fn(),
+      reportFocusedDocTabEditState: vi.fn(),
+      clearFocusedDocTabEditState: vi.fn(),
       ...overrides,
     };
   }
@@ -114,5 +93,23 @@ describe("DocsRouteResolver component", () => {
     renderResolver("/docs/my%20docs/file%20name.md", "/docs/*");
     const el = screen.getByTestId("document-page");
     expect(el.getAttribute("data-doc-path")).toBe("/my docs/file name.md");
+  });
+
+  it("renders FolderPage for a folder URL with an encoded space", () => {
+    renderResolver("/docs/my%20docs", "/docs/*");
+    const el = screen.getByTestId("folder-page");
+    expect(el.getAttribute("data-folder-path")).toBe("/my docs");
+  });
+
+  it("renders a doc whose name contains a literal percent sign (decode-exactly-once canary)", () => {
+    renderResolver("/docs/50%25.md", "/docs/*");
+    const el = screen.getByTestId("document-page");
+    expect(el.getAttribute("data-doc-path")).toBe("/50%.md");
+  });
+
+  it("renders a doc whose name contains a literal %20 without double-decoding into the wrong doc (decode-exactly-once canary)", () => {
+    renderResolver("/docs/100%2520done.md", "/docs/*");
+    const el = screen.getByTestId("document-page");
+    expect(el.getAttribute("data-doc-path")).toBe("/100%20done.md");
   });
 });

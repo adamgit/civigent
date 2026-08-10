@@ -122,13 +122,11 @@ describe("classifyWsEvent", () => {
     }
   });
 
-  it("removed dirty-persistence triggers are no-ops at the layout layer", () => {
-    for (const type of ["writer:dirty-state-changed", "session:status-changed"]) {
-      const result = classifyWsEvent({ type, doc_path: "/doc.md" }, "/doc.md", true);
-      expect(result.refreshTree).toBe(false);
-      expect(result.addBadge).toBeNull();
-      expect(result.showToast).toBeNull();
-    }
+  it("unknown event types fall through as no-ops at the layout layer", () => {
+    const result = classifyWsEvent({ type: "never:such-event", doc_path: "/doc.md" }, "/doc.md", true);
+    expect(result.refreshTree).toBe(false);
+    expect(result.addBadge).toBeNull();
+    expect(result.showToast).toBeNull();
   });
 
   it("section:edit-rejected is a layout-level no-op (document-page-only rejection modal)", () => {

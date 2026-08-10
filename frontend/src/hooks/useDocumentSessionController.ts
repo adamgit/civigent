@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo } from "react";
 import type React from "react";
 import type { WorkspaceSectionDto } from "../pages/document-page-utils";
-import type { ProposalDTO } from "../types/shared.js";
+import type { DocPath, ProposalDTO } from "../types/shared.js";
 import type { ProposalSectionAvailabilityEvent } from "../types/shared.js";
 import type { MilkdownEditorHandle } from "../components/MilkdownEditor";
 import { LocalPresence } from "../services/local-presence";
@@ -14,11 +14,11 @@ import { useEditorRegistry } from "./useEditorRegistry";
 import { useProposalDrafting } from "./useProposalDrafting";
 
 export interface UseDocumentSessionControllerParams {
-  decodedDocPath: string | null;
+  docPath: DocPath;
   sections: readonly RenderSectionRef[];
   workspaceSections: WorkspaceSectionDto[];
   setError: (e: string | null) => void;
-  loadSections: (docPath: string) => Promise<WorkspaceSectionDto[]>;
+  loadSections: (docPath: DocPath) => Promise<WorkspaceSectionDto[]>;
   liveReplica: LiveSectionReplicaView;
 }
 
@@ -134,7 +134,7 @@ export function useDocumentSessionController(
   // on the derived focused RENDER index — never on stored focus state here.
 
   const proposal = useProposalDrafting({
-    decodedDocPath: params.decodedDocPath,
+    docPath: params.docPath,
     workspaceBaselineSections: params.workspaceSections,
     setError: params.setError,
     loadSections: params.loadSections,

@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { apiClient } from "../services/api-client.js";
+import type { DocPath } from "../types/shared.js";
 
 interface AdminOverwriteMarkdownModalProps {
-  docPath: string;
+  docPath: DocPath;
   onClose: () => void;
 }
 

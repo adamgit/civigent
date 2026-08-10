@@ -25,6 +25,7 @@ import {
   SAMPLE_SECTIONS,
 } from "../helpers/sample-content.js";
 import { authFor } from "../helpers/auth.js";
+import { updateAdminConfig } from "../../admin-config.js";
 
 let ctx: TestServerContext;
 let mcpSessionId = "";
@@ -95,6 +96,7 @@ async function initMcpSession(): Promise<void> {
 
 describe("US-4: hard-block, drop blocked section, recommit", () => {
   beforeAll(async () => {
+    updateAdminConfig({ humanInvolvement_preset: "eager" });
     ctx = await createTestServer();
     await createSampleDocument(ctx.dataCtx.rootDir);
 

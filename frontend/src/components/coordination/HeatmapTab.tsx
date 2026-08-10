@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { sectionGlobalKey, type GetHeatmapResponse, type HeatmapEntry, type AnyProposal } from "../../types/shared.js";
 import { headingPathToLabel } from "../../pages/document-page-utils";
-import { stripLeadingSlashForRoute } from "../../app/docsRouteUtils";
+import { docHref } from "../../app/docs-location";
 import { relativeTime } from "../../utils/relativeTime";
 import { DocPath } from "../../types/shared";
 
@@ -86,7 +86,7 @@ export function HeatmapTab({ heatmap, agentReadings, proposals, loading, error }
         Array.from(docGroups.entries()).map(([docPath, entries]) => (
           <div key={docPath} className="mb-5">
             <h3 className="text-sm font-semibold mb-1">
-              <Link to={`/docs/${stripLeadingSlashForRoute(DocPath.parse(docPath))}`} className="text-text-primary hover:text-accent-text">{docPath}</Link>
+              <Link to={docHref(DocPath.parse(docPath))} className="text-text-primary hover:text-accent-text">{docPath}</Link>
             </h3>
             <table className="w-full text-xs" style={{ borderCollapse: "collapse" }}>
               <thead>

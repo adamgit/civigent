@@ -4,8 +4,8 @@ import { SharedPageHeader } from "../components/SharedPageHeader";
 import { SEARCH_MAX_RESULTS } from "./search/search-request-defaults";
 import { apiClient, resolveWriterId } from "../services/api-client";
 import type { AdminConfig, HumanInvolvementPresetName, GetAdminSnapshotHealthResponse, AnyProposal } from "../types/shared.js";
-import { DocPath } from "../types/shared.js";
-import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
+import { DocPath, FolderPath } from "../types/shared.js";
+import { docHref, folderHref } from "../app/docs-location";
 import { copyTextToClipboard } from "../utils/copy-text";
 import { readNumberSetting, writeNumberSetting } from "../utils/numberSettings";
 import { INVOLVEMENT_PRESET_UI } from "../involvement-preset-ui";
@@ -165,9 +165,9 @@ export function AdminPage() {
     setCreatingFirstSkill(true);
     setError(null);
     try {
-      const docPath = DocPath.parse(`${folder}/my-skill.md`);
+      const docPath = DocPath.fileInFolder(FolderPath.parse(folder), "my-skill.md");
       await apiClient.createDocument(docPath);
-      navigate(`/docs/${stripLeadingSlashForRoute(docPath)}`);
+      navigate(docHref(docPath));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -292,7 +292,7 @@ export function AdminPage() {
               <div className="px-4 py-3">
                 {adminConfig.exportedSkills.folder_exists && adminConfig.exportedSkills.has_exportable_entries ? (
                   <Link
-                    to={`/docs${adminConfig.exportedSkills.folder}`}
+                    to={folderHref(FolderPath.parse(adminConfig.exportedSkills.folder))}
                     className="text-xs text-accent hover:underline"
                   >
                     Open folder in document tree

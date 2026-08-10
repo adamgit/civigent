@@ -18,10 +18,10 @@ import {
   type StructuralMutationPlan,
 } from "./document-skeleton.js";
 import { docPathToContentRelativeFsPath } from "./path-utils.js";
-import { pathExists } from "./fs-primitives.js";
+import { directoryExists, pathExists } from "./fs-primitives.js";
 import { staleHeadingPath } from "./skeleton-errors.js";
 import type { DocStructureNode } from "../types/shared.js";
-import { DocPath } from "../types/shared.js";
+import { DocPath, HeadingLevel } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
 import { bodyFromDisk, bodyFromParser, stripHeadingFromFragment, buildFragmentContent, assembleFragments, fragmentFromBodyHolder, stripLeadingNewlines, appendToBody, fragmentFromExternalContent, type SectionBody, type FragmentContent, type SectionBodyWithPotentialSubsections } from "./section-formatting.js";
@@ -49,7 +49,7 @@ function flatEntryFromContentEntry(entry: ContentEntry): FlatEntry {
   return {
     headingPath: [...entry.headingPath],
     heading: entry.heading,
-    level: entry.level,
+    headingLevel: entry.headingLevel,
     sectionFile: entry.sectionFile,
     absolutePath: entry.absolutePath,
     isSubSkeleton: false,
@@ -58,7 +58,7 @@ function flatEntryFromContentEntry(entry: ContentEntry): FlatEntry {
 
 type ParsedMarkdownRewriteSection = Readonly<{
   heading: string;
-  level: number;
+  headingLevel: HeadingLevel;
   body: string;
   headingPath: readonly string[];
 }>;
@@ -72,7 +72,7 @@ function headingPathKey(headingPath: readonly string[]): string {
 }
 
 function singleSectionMarkdown(section: ParsedSection): string {
-  return `${"#".repeat(section.level)} ${section.heading}\n\n${section.body as unknown as string}`;
+  return `${"#".repeat(section.headingLevel)} ${section.heading}\n\n${section.body as unknown as string}`;
 }
 
 function buildReplacementRoots(
@@ -102,7 +102,7 @@ function buildReplacementRoots(
 
     const node: RewriteTreeNode = {
       heading: parsedHeadingPath.length === 0 ? "" : section.heading,
-      level: section.level,
+      headingLevel: section.headingLevel,
       sectionFile: parsedHeadingPath.length === 0
         ? generateBeforeFirstHeadingFilename()
         : generateSectionFilename(section.heading),
@@ -135,7 +135,7 @@ function buildReplacementRoots(
     if (node.children.length === 0) {
       node.sectionFile = existingFile;
     } else if (!node.children.some((c) => isBodyHolderShape(c))) {
-      node.children.unshift({ heading: "", level: 0, sectionFile: existingFile, children: [] });
+      node.children.unshift({ heading: "", headingLevel: HeadingLevel.beforeFirstHeading, sectionFile: existingFile, children: [] });
     }
   }
 
@@ -182,6 +182,20 @@ function buildBodyWritesForReplacement(
 
 export class SectionNotFoundError extends Error {}
 export class DocumentNotFoundError extends Error {}
+export class DirectoryAtDocPathError extends Error {}
+
+function directoryAtDocPathMessage(docPath: DocPath): string {
+  return `Path "${docPath}" is shaped like a document (ends in ".md") and is treated as one, but a directory exists at this path — an illegal folder name. Folder names may never end in ".md"; this directory was created as a side effect of a document path with an interior ".md" segment (e.g. "/foo.md/bar.md"). The documents inside it are intact; rename or delete them via their full document paths to remove it.`;
+}
+
+async function throwForAbsentDocument(docPath: DocPath, contentRoots: string[]): Promise<never> {
+  for (const contentRoot of contentRoots) {
+    if (await directoryExists(resolveSkeletonPath(docPath, contentRoot))) {
+      throw new DirectoryAtDocPathError(directoryAtDocPathMessage(docPath));
+    }
+  }
+  throw new DocumentNotFoundError(`Document "${docPath}" does not exist.`);
+}
 export class DocumentAssemblyError extends Error {}
 export class MultiSectionContentError extends Error {}
 
@@ -190,7 +204,7 @@ export class DuplicateSiblingHeadingError extends Error {
   readonly docPath: DocPath;
   readonly parentHeadingPath: readonly string[];
   readonly proposedHeading: string;
-  readonly proposedLevel: number;
+  readonly proposedHeadingLevel: number;
   readonly conflictingSectionFile: string;
   readonly targetSectionFile: string;
   constructor(args: {
@@ -198,7 +212,7 @@ export class DuplicateSiblingHeadingError extends Error {
     docPath: DocPath;
     parentHeadingPath: readonly string[];
     proposedHeading: string;
-    proposedLevel: number;
+    proposedHeadingLevel: number;
     conflictingSectionFile: string;
     targetSectionFile: string;
   }) {
@@ -215,14 +229,14 @@ export class DuplicateSiblingHeadingError extends Error {
     const destinationLabel = args.operation === "move" ? "destination" : "sibling list";
     super(
       `Cannot ${verb} section: ${destinationLabel} under ${parentLabel} already ` +
-      `contains a sibling with heading "${args.proposedHeading}" at level ${args.proposedLevel} in ${args.docPath}.`,
+      `contains a sibling with heading "${args.proposedHeading}" at heading level ${args.proposedHeadingLevel} in ${args.docPath}.`,
     );
     this.name = "DuplicateSiblingHeadingError";
     this.operation = args.operation;
     this.docPath = args.docPath;
     this.parentHeadingPath = args.parentHeadingPath;
     this.proposedHeading = args.proposedHeading;
-    this.proposedLevel = args.proposedLevel;
+    this.proposedHeadingLevel = args.proposedHeadingLevel;
     this.conflictingSectionFile = args.conflictingSectionFile;
     this.targetSectionFile = args.targetSectionFile;
   }
@@ -236,19 +250,19 @@ function assertNoDuplicateSiblingHeadingCollision(
     parentHeadingPath: readonly string[];
     targetSectionFile: string;
     proposedHeading: string;
-    proposedLevel: number;
+    proposedHeadingLevel: number;
   },
 ): void {
   for (const sibling of siblings) {
     if (sibling.sectionFile === args.targetSectionFile) continue;
-    if (sibling.level !== args.proposedLevel) continue;
+    if (sibling.headingLevel !== args.proposedHeadingLevel) continue;
     if (!headingsEqual(sibling.heading, args.proposedHeading)) continue;
     throw new DuplicateSiblingHeadingError({
       operation: args.operation,
       docPath: args.docPath,
       parentHeadingPath: args.parentHeadingPath,
       proposedHeading: args.proposedHeading,
-      proposedLevel: args.proposedLevel,
+      proposedHeadingLevel: args.proposedHeadingLevel,
       conflictingSectionFile: sibling.sectionFile,
       targetSectionFile: args.targetSectionFile,
     });
@@ -289,11 +303,11 @@ export class ContentLayer {
     return skeleton.structure;
   }
 
-  async getSectionList(docPath: DocPath): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>> {
+  async getSectionList(docPath: DocPath): Promise<Array<{ heading: string; headingLevel: HeadingLevel; sectionFile: string; headingPath: string[] }>> {
     const skeleton = await this.readSkeleton(docPath);
-    const sections: Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }> = [];
-    skeleton.forEachVisibleSection((heading, level, sectionFile, headingPath) => {
-      sections.push({ heading, level, sectionFile, headingPath: [...headingPath] });
+    const sections: Array<{ heading: string; headingLevel: HeadingLevel; sectionFile: string; headingPath: string[] }> = [];
+    skeleton.forEachVisibleSection((heading, headingLevel, sectionFile, headingPath) => {
+      sections.push({ heading, headingLevel, sectionFile, headingPath: [...headingPath] });
     });
     return sections;
   }
@@ -339,6 +353,9 @@ export class ContentLayer {
 
   private async readSkeleton(docPath: DocPath): Promise<DocumentSkeleton> {
     if (!(await skeletonFileExists(docPath, this.contentRoot))) {
+      if (await directoryExists(resolveSkeletonPath(docPath, this.contentRoot))) {
+        throw new DirectoryAtDocPathError(directoryAtDocPathMessage(docPath));
+      }
       throw new DocumentNotFoundError(`No skeleton found for document: ${docPath}`);
     }
     return DocumentSkeleton.fromSingleRoot(docPath, this.contentRoot);
@@ -366,21 +383,21 @@ export class ContentLayer {
     }
   }
 
-  async resolveSectionPathWithLevel(docPath: DocPath, headingPath: string[]): Promise<{ absolutePath: string; level: number }> {
+  async resolveSectionPathWithLevel(docPath: DocPath, headingPath: string[]): Promise<{ absolutePath: string; headingLevel: HeadingLevel }> {
     const skeleton = await this.readSkeleton(docPath);
     try {
       const entry = skeleton.requireContentEntryByHeadingPath(headingPath);
-      return { absolutePath: entry.absolutePath, level: entry.level };
+      return { absolutePath: entry.absolutePath, headingLevel: entry.headingLevel };
     } catch (err) {
       throw new SectionNotFoundError((err as Error).message);
     }
   }
 
-  async resolveSectionFileId(docPath: DocPath, sectionFileId: string): Promise<{ absolutePath: string; headingPath: string[]; level: number }> {
+  async resolveSectionFileId(docPath: DocPath, sectionFileId: string): Promise<{ absolutePath: string; headingPath: string[]; headingLevel: HeadingLevel }> {
     const skeleton = await this.readSkeleton(docPath);
     try {
       const entry = skeleton.requireEntryBySectionFileId(sectionFileId);
-      return { absolutePath: entry.absolutePath, headingPath: entry.headingPath, level: entry.level };
+      return { absolutePath: entry.absolutePath, headingPath: entry.headingPath, headingLevel: entry.headingLevel };
     } catch (err) {
       throw new SectionNotFoundError((err as Error).message);
     }
@@ -408,7 +425,7 @@ export class ContentLayer {
   async readSubtree(
     docPath: DocPath,
     headingPath: string[],
-  ): Promise<Array<{ headingPath: string[]; heading: string; level: number; bodyContent: string }>> {
+  ): Promise<Array<{ headingPath: string[]; heading: string; headingLevel: HeadingLevel; bodyContent: string }>> {
     if (headingPath.length === 0) {
       throw new Error(
         `ContentLayer.readSubtree(${docPath}, []) is not allowed — use getSectionList(docPath) + readSection(...) for whole-document enumeration, or readSection(ref(docPath, [])) for before-first-heading.`,
@@ -416,10 +433,10 @@ export class ContentLayer {
     }
     const skeleton = await this.readSkeleton(docPath);
     const entries = skeleton.subtreeEntries(headingPath);
-    const result: Array<{ headingPath: string[]; heading: string; level: number; bodyContent: string }> = [];
+    const result: Array<{ headingPath: string[]; heading: string; headingLevel: HeadingLevel; bodyContent: string }> = [];
     for (const entry of entries) {
       const bodyContent = await this.readSection(new SectionRef(docPath, entry.headingPath));
-      result.push({ headingPath: entry.headingPath, heading: entry.heading, level: entry.level, bodyContent });
+      result.push({ headingPath: entry.headingPath, heading: entry.heading, headingLevel: entry.headingLevel, bodyContent });
     }
     return result;
   }
@@ -457,7 +474,7 @@ export class ContentLayer {
   ): Promise<void> {
     const skeleton = await this.readSkeleton(ref.docPath);
     const entry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
-    const body = stripHeadingFromFragment(fragmentFromExternalContent(content), entry.level);
+    const body = stripHeadingFromFragment(fragmentFromExternalContent(content), entry.headingLevel);
     const hasHeadings = getParser().containsHeadings(body);
     if (hasHeadings) {
       throw new MultiSectionContentError(
@@ -501,9 +518,9 @@ export class ContentLayer {
   async readAssembledDocument(docPath: DocPath): Promise<string> {
     const skeleton = await this.readSkeleton(docPath);
 
-    const bodyEntries: Array<{ heading: string; level: number; sectionFile: string; absolutePath: string; headingPath: string[] }> = [];
-    skeleton.forEachVisibleSection((heading, level, sectionFile, headingPath, absolutePath) => {
-      bodyEntries.push({ heading, level, sectionFile, absolutePath, headingPath: [...headingPath] });
+    const bodyEntries: Array<{ heading: string; headingLevel: HeadingLevel; sectionFile: string; absolutePath: string; headingPath: string[] }> = [];
+    skeleton.forEachVisibleSection((heading, headingLevel, sectionFile, headingPath, absolutePath) => {
+      bodyEntries.push({ heading, headingLevel, sectionFile, absolutePath, headingPath: [...headingPath] });
     });
 
     if (bodyEntries.length === 0) {
@@ -530,7 +547,7 @@ export class ContentLayer {
         const trimmed = stripLeadingNewlines(content);
         if (trimmed) parts.push(fragmentFromBodyHolder(trimmed));
       } else {
-        parts.push(buildFragmentContent(content, entry.level, entry.heading));
+        parts.push(buildFragmentContent(content, entry.headingLevel, entry.heading));
       }
     }
 
@@ -586,7 +603,7 @@ export class ProposalShadowContentLayer {
       throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this proposal.`);
     }
     if (state === "missing") {
-      throw new DocumentNotFoundError(`Document "${docPath}" does not exist.`);
+      await throwForAbsentDocument(docPath, [this.overlayRoot, this.canonicalRoot]);
     }
     return this.loadWritableSkeleton(docPath);
   }
@@ -616,7 +633,7 @@ export class ProposalShadowContentLayer {
       throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this proposal.`);
     }
     if (state === "missing") {
-      throw new DocumentNotFoundError(`Document "${docPath}" does not exist.`);
+      await throwForAbsentDocument(docPath, [this.overlayRoot, this.canonicalRoot]);
     }
     const deletedSectionFiles = this.overlayRoot !== this.canonicalRoot && this.deletedSectionFilesProvider
       ? await this.deletedSectionFilesProvider(docPath)
@@ -629,11 +646,11 @@ export class ProposalShadowContentLayer {
     return skeleton.structure;
   }
 
-  async resolveSectionFileId(docPath: DocPath, sectionFileId: string): Promise<{ absolutePath: string; headingPath: string[]; level: number; heading: string }> {
+  async resolveSectionFileId(docPath: DocPath, sectionFileId: string): Promise<{ absolutePath: string; headingPath: string[]; headingLevel: HeadingLevel; heading: string }> {
     const skeleton = await this.readSkeleton(docPath);
     try {
       const entry = skeleton.requireEntryBySectionFileId(sectionFileId);
-      return { absolutePath: entry.absolutePath, headingPath: entry.headingPath, level: entry.level, heading: entry.heading };
+      return { absolutePath: entry.absolutePath, headingPath: entry.headingPath, headingLevel: entry.headingLevel, heading: entry.heading };
     } catch (err) {
       throw new SectionNotFoundError((err as Error).message);
     }
@@ -648,11 +665,11 @@ export class ProposalShadowContentLayer {
     }
   }
 
-  async resolveSectionPathWithLevel(docPath: DocPath, headingPath: string[]): Promise<{ absolutePath: string; level: number }> {
+  async resolveSectionPathWithLevel(docPath: DocPath, headingPath: string[]): Promise<{ absolutePath: string; headingLevel: HeadingLevel }> {
     const skeleton = await this.readSkeleton(docPath);
     try {
       const entry = skeleton.requireContentEntryByHeadingPath(headingPath);
-      return { absolutePath: entry.absolutePath, level: entry.level };
+      return { absolutePath: entry.absolutePath, headingLevel: entry.headingLevel };
     } catch (err) {
       throw new SectionNotFoundError((err as Error).message);
     }
@@ -740,11 +757,11 @@ export class ProposalShadowContentLayer {
 
   async getSectionList(
     docPath: DocPath,
-  ): Promise<Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }>> {
+  ): Promise<Array<{ heading: string; headingLevel: HeadingLevel; sectionFile: string; headingPath: string[] }>> {
     const skeleton = await this.readSkeleton(docPath);
-    const sections: Array<{ heading: string; level: number; sectionFile: string; headingPath: string[] }> = [];
-    skeleton.forEachVisibleSection((heading, level, sectionFile, headingPath) => {
-      sections.push({ heading, level, sectionFile, headingPath: [...headingPath] });
+    const sections: Array<{ heading: string; headingLevel: HeadingLevel; sectionFile: string; headingPath: string[] }> = [];
+    skeleton.forEachVisibleSection((heading, headingLevel, sectionFile, headingPath) => {
+      sections.push({ heading, headingLevel, sectionFile, headingPath: [...headingPath] });
     });
     return sections;
   }
@@ -811,10 +828,10 @@ export class ProposalShadowContentLayer {
       return await this.upsertSectionFromMarkdownCore(ref, content);
     }
 
-    const level = await this.resolveTargetHeadingLevel(ref);
+    const headingLevel = await this.resolveTargetHeadingLevel(ref);
     const markdown = content
-      ? `${"#".repeat(level)} ${heading}\n\n${content}`
-      : `${"#".repeat(level)} ${heading}`;
+      ? `${"#".repeat(headingLevel)} ${heading}\n\n${content}`
+      : `${"#".repeat(headingLevel)} ${heading}`;
     return await this.upsertSectionFromMarkdownCore(ref, markdown);
   }
 
@@ -866,7 +883,7 @@ export class ProposalShadowContentLayer {
     bfhFragmentMarkdown: string,
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
     const parsed = getParser().parseDocumentMarkdown(bfhFragmentMarkdown);
-    const hasOrphan = parsed.length > 0 && parsed[0].level === 0 && parsed[0].heading === "";
+    const hasOrphan = parsed.length > 0 && parsed[0].headingLevel === 0 && parsed[0].heading === "";
     const orphanBody = (hasOrphan ? (parsed[0].body as unknown as string) : "") as unknown as SectionBody;
     const headed = hasOrphan ? parsed.slice(1) : parsed;
 
@@ -951,10 +968,10 @@ export class ProposalShadowContentLayer {
     }
     const skeleton = await this.readSkeleton(ref.docPath);
     const existing = skeleton.findStructuralNodeByHeadingPath(ref.headingPath);
-    if (existing) return existing.level;
+    if (existing) return existing.headingLevel;
     for (let i = ref.headingPath.length - 1; i >= 1; i--) {
       const ancestor = skeleton.findStructuralNodeByHeadingPath(ref.headingPath.slice(0, i));
-      if (ancestor) return ancestor.level + (ref.headingPath.length - i);
+      if (ancestor) return ancestor.headingLevel + (ref.headingPath.length - i);
     }
     return ref.headingPath.length;
   }
@@ -999,7 +1016,7 @@ export class ProposalShadowContentLayer {
     const parsedSections = getParser().parseDocumentMarkdown(markdown);
 
     const hasOrphan = parsedSections.length > 0
-      && parsedSections[0].level === 0
+      && parsedSections[0].headingLevel === 0
       && parsedSections[0].heading === "";
     const leadingOrphanBody = (hasOrphan
       ? (parsedSections[0].body as unknown as string)
@@ -1033,7 +1050,7 @@ export class ProposalShadowContentLayer {
     if (headedSections.length === 1 && targetIsSubSkeletonParent) {
       const single = headedSections[0];
       const entry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
-      if (single.heading === entry.heading && single.level === entry.level) {
+      if (single.heading === entry.heading && single.headingLevel === entry.headingLevel) {
         await this.writeOverlayBodyFile(
           ref.docPath,
           entry,
@@ -1052,7 +1069,7 @@ export class ProposalShadowContentLayer {
         ref.docPath,
         ref.headingPath,
         single.heading,
-        single.level,
+        single.headingLevel,
       );
       await this.writeOverlayBodyFile(
         ref.docPath,
@@ -1095,7 +1112,7 @@ export class ProposalShadowContentLayer {
     if (headedSections.length === 1 && !targetIsSubSkeletonParent) {
       const single = headedSections[0];
       const entry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
-      if (single.heading === entry.heading && single.level === entry.level) {
+      if (single.heading === entry.heading && single.headingLevel === entry.headingLevel) {
         const writtenEntries: FlatEntry[] = [flatEntryFromContentEntry(entry)];
         const liveReloadEntries: FlatEntry[] = [flatEntryFromContentEntry(entry)];
 
@@ -1234,7 +1251,7 @@ export class ProposalShadowContentLayer {
           parentPath,
           insertIndex,
           parsed.heading,
-          parsed.level,
+          parsed.headingLevel,
           parsed.body as unknown as SectionBody,
         ));
       } else {
@@ -1273,7 +1290,7 @@ export class ProposalShadowContentLayer {
       const liveEntry = skeleton.findContentEntryByHeadingPath(absoluteHeadingPath);
       if (!liveEntry) return false;
       if (liveEntry.heading !== parsed.heading) return false;
-      if (liveEntry.level !== parsed.level) return false;
+      if (liveEntry.headingLevel !== parsed.headingLevel) return false;
       const liveBody = bodyFromDisk(
         (await this.readEffectiveSectionBody(liveEntry.absolutePath)) ?? "",
       );
@@ -1650,7 +1667,7 @@ export class ProposalShadowContentLayer {
         docPath,
         headingPath,
         newHeading,
-        oldEntry.level,
+        oldEntry.headingLevel,
       );
       return newEntry;
     }
@@ -1673,7 +1690,7 @@ export class ProposalShadowContentLayer {
         parentHeadingPath: parentPath,
         targetSectionFile: oldNode.sectionFile,
         proposedHeading: newHeading,
-        proposedLevel: oldNode.level,
+        proposedHeadingLevel: oldNode.headingLevel,
       });
       const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
       const removed = ctx.flattenNode(oldNode, parentPath, parentSkeletonPath);
@@ -1681,7 +1698,7 @@ export class ProposalShadowContentLayer {
       const newSectionFile = oldNode.sectionFile;
       const newNode: SkeletonNode = {
         heading: newHeading,
-        level: oldNode.level,
+        headingLevel: oldNode.headingLevel,
         sectionFile: newSectionFile,
         children: oldNode.children,
       };
@@ -1720,7 +1737,7 @@ export class ProposalShadowContentLayer {
     docPath: DocPath,
     headingPath: string[],
     newHeading: string,
-    newLevel: number,
+    newHeadingLevel: HeadingLevel,
   ): Promise<{ oldEntry: ContentEntry; newEntry: ContentEntry }> {
     if (headingPath.length === 0) {
       throw new Error(
@@ -1743,10 +1760,10 @@ export class ProposalShadowContentLayer {
         parentHeadingPath: parentPath,
         targetSectionFile: siblings[idx].sectionFile,
         proposedHeading: newHeading,
-        proposedLevel: newLevel,
+        proposedHeadingLevel: newHeadingLevel,
       });
       siblings[idx].heading = newHeading;
-      siblings[idx].level = newLevel;
+      siblings[idx].headingLevel = newHeadingLevel;
       return {
         removed: [],
         added: [],
@@ -1826,14 +1843,14 @@ export class ProposalShadowContentLayer {
             extraRemoved.push({
               headingPath: [...predecessorPath],
               heading: predecessor.heading,
-              level: predecessor.level,
+              headingLevel: predecessor.headingLevel,
               sectionFile: predOldId,
               absolutePath: predecessorOldAbsolutePath,
               isSubSkeleton: false,
             });
           }
           predecessor.sectionFile = generateSectionFilename(predecessor.heading);
-          predecessor.children.push({ heading: "", level: 0, sectionFile: predOldId, children: [] });
+          predecessor.children.push({ heading: "", headingLevel: HeadingLevel.beforeFirstHeading, sectionFile: predOldId, children: [] });
         } else if (!predHasBodyHolder) {
           ctx.addBodyHoldersToParents([predecessor]);
         }
@@ -1882,7 +1899,7 @@ export class ProposalShadowContentLayer {
     docPath: DocPath,
     headingPath: string[],
     newHeading: string,
-    newLevel: number,
+    newHeadingLevel: HeadingLevel,
     body: SectionBody,
   ): Promise<ContentEntry> {
     if (headingPath.length === 0) {
@@ -1902,10 +1919,10 @@ export class ProposalShadowContentLayer {
         parentHeadingPath: parentPath,
         targetSectionFile: siblings[idx].sectionFile,
         proposedHeading: newHeading,
-        proposedLevel: newLevel,
+        proposedHeadingLevel: newHeadingLevel,
       });
       siblings[idx].heading = newHeading;
-      siblings[idx].level = newLevel;
+      siblings[idx].headingLevel = newHeadingLevel;
       return { removed: [], added: [], bodyWrites: [], fragmentKeyRemaps: [] } satisfies StructuralMutationPlan;
     });
     const newHeadingPath = [...parentPath, newHeading];
@@ -1922,7 +1939,7 @@ export class ProposalShadowContentLayer {
     docPath: DocPath,
     headingPath: string[],
     newParentPath: string[],
-    newLevel: number,
+    newHeadingLevel: HeadingLevel,
   ): Promise<{ removed: FlatEntry[]; added: FlatEntry[] }> {
     if (headingPath.length === 0) {
       throw new Error(
@@ -1956,7 +1973,7 @@ export class ProposalShadowContentLayer {
         parentHeadingPath: newParentPath,
         targetSectionFile: movedNode.sectionFile,
         proposedHeading: movedNode.heading,
-        proposedLevel: newLevel,
+        proposedHeadingLevel: newHeadingLevel,
       });
 
       const removed = ctx.flattenNode(movedNode, parentPath, ctx.resolveSkeletonPathFor(parentPath));
@@ -1964,7 +1981,7 @@ export class ProposalShadowContentLayer {
 
       const relabeled: SkeletonNode = {
         heading: movedNode.heading,
-        level: newLevel,
+        headingLevel: newHeadingLevel,
         sectionFile: movedNode.sectionFile,
         children: movedNode.children,
       };
@@ -2070,7 +2087,7 @@ export class ProposalShadowContentLayer {
     parentHeadingPath: string[],
     insertIndex: number,
     heading: string,
-    level: number,
+    headingLevel: HeadingLevel,
     body: SectionBody,
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
     if (parentHeadingPath.length === 0) {
@@ -2102,7 +2119,7 @@ export class ProposalShadowContentLayer {
         parentHeadingPath,
         targetSectionFile: sectionFile,
         proposedHeading: heading,
-        proposedLevel: level,
+        proposedHeadingLevel: headingLevel,
       });
       const bodyHolderOffset = children.length > 0 && isBodyHolderShape(children[0]) ? 1 : 0;
       const realChildCount = children.length - bodyHolderOffset;
@@ -2113,7 +2130,7 @@ export class ProposalShadowContentLayer {
           `${realChildCount} child section(s).`,
         );
       }
-      const node: SkeletonNode = { heading, level, sectionFile, children: [] };
+      const node: SkeletonNode = { heading, headingLevel, sectionFile, children: [] };
       children.splice(bodyHolderOffset + insertIndex, 0, node);
       const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentHeadingPath);
       const added = ctx.flattenNode(node, parentHeadingPath, parentSkeletonPath);
@@ -2205,7 +2222,7 @@ export class ProposalShadowContentLayer {
           parentHeadingPath: parentPath,
           targetSectionFile: oldNode.sectionFile,
           proposedHeading: root.heading,
-          proposedLevel: root.level,
+          proposedHeadingLevel: root.headingLevel,
         });
       }
       const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
@@ -2371,7 +2388,7 @@ export class ProposalShadowContentLayer {
 
       if (headingPath.length === 0 && !skeleton.has([])) {
         const bfhFile = generateBeforeFirstHeadingFilename();
-        const bfhNode: SkeletonNode = { heading: "", level: 0, sectionFile: bfhFile, children: [] };
+        const bfhNode: SkeletonNode = { heading: "", headingLevel: HeadingLevel.beforeFirstHeading, sectionFile: bfhFile, children: [] };
         ctx.roots.unshift(bfhNode);
         newlyAdded.push(...ctx.flattenNode(bfhNode, [], resolveSkeletonPath(docPath, this.overlayRoot)));
       }
@@ -2384,13 +2401,13 @@ export class ProposalShadowContentLayer {
         if (topNewParentPath === null) topNewParentPath = ancestorPath;
         const parentPath = ancestorPath.slice(0, -1);
         const parentSiblings = ctx.findSiblingList(parentPath);
-        const level = parentPath.length === 0
+        const headingLevel = HeadingLevel.parse(parentPath.length === 0
           ? 1
-          : skeleton.requireStructuralNodeByHeadingPath(parentPath).level + 1;
+          : skeleton.requireStructuralNodeByHeadingPath(parentPath).headingLevel + 1);
         const heading = ancestorPath[ancestorPath.length - 1];
         const node: SkeletonNode = {
           heading,
-          level,
+          headingLevel,
           sectionFile: generateSectionFilename(heading),
           children: [],
         };
@@ -2412,7 +2429,7 @@ export class ProposalShadowContentLayer {
         }
         ctx.addBodyHoldersToParents([parentNode]);
         const bh = parentNode.children[0];
-        if (!bh || bh.level !== 0 || bh.heading !== "") {
+        if (!bh || bh.headingLevel !== 0 || bh.heading !== "") {
           throw new Error(
             `Skeleton integrity error in ${docPath}: addBodyHoldersToParents ` +
             `did not prepend body holder for [${leafParentPath.join(" > ")}]`,
@@ -2458,7 +2475,7 @@ export class ProposalShadowContentLayer {
         seenBodyPaths.add(e.absolutePath);
         const isMigratedBh =
           migratedBhKey !== null
-          && e.level === 0
+          && e.headingLevel === 0
           && e.heading === ""
           && e.headingPath.join("\u0000") === migratedBhKey;
         bodyWrites.push({

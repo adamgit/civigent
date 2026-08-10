@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { folderHref } from "../app/docs-location";
 import type { CrdtConnectionState } from "../services/crdt-provider";
 import { resolveTransportStatus, TRANSPORT_STATUS_META } from "../services/section-save-state";
 import { PublishRequirementsHover } from "./PublishRequirementsHover";
-import type { PublishTriggerDecision } from "../types/shared";
+import { FolderPath, type PublishTriggerDecision } from "../types/shared";
 
 interface DocumentTopbarProps {
   /** Canonical document path — used to resolve the parent-folder back link. */
@@ -48,8 +49,8 @@ export function parentFolderRoute(docPath: string | null): string {
   const normalized = docPath.replace(/\/+$/, "");
   const lastSlash = normalized.lastIndexOf("/");
   if (lastSlash <= 0) return "/docs";
-  const parentFolderPath = normalized.slice(0, lastSlash);
-  return `/docs${parentFolderPath}`;
+  const parentFolderPath = FolderPath.tryParse(normalized.slice(0, lastSlash));
+  return parentFolderPath ? folderHref(parentFolderPath) : "/docs";
 }
 
 function ClockIcon() {

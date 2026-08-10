@@ -98,7 +98,7 @@ function renderDocPage(docPath = "/ops/strategy.md") {
   return render(
     <MemoryRouter initialEntries={[`/docs/${docPath}`]}>
       <Routes>
-        <Route path="/docs/*" element={<DocumentPage docPathOverride={docPath} />} />
+        <Route path="/docs/*" element={<DocumentPage docPath={docPath} />} />
       </Routes>
     </MemoryRouter>,
   );

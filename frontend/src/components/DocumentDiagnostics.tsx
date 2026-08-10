@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiClient } from "../services/api-client.js";
+import type { DocPath } from "../types/shared.js";
 import type {
   DocDiagnosticsResponse,
   DiagHealthCheck,
@@ -10,7 +11,7 @@ import type {
 } from "../services/api-client.js";
 
 interface DocumentDiagnosticsProps {
-  docPath: string;
+  docPath: DocPath;
   onClose: () => void;
 }
 
@@ -84,7 +85,7 @@ function renderSummary(summary: DiagSummary) {
     { label: "Recursive structural entries", value: summary.recursive_structural_entries },
     { label: "Recursive content sections", value: summary.recursive_content_sections },
     { label: "Recursive sub-skeleton parents", value: summary.recursive_subskeleton_parents },
-    { label: "Recursive max depth", value: summary.recursive_max_depth },
+    { label: "Recursive max depth", value: summary.recursive_max_heading_path_length },
   ];
   // Physical / logical / API counts are the lossy-read signal — a mismatch means
   // normal document reads hide at least one physical section. Highlight in red.

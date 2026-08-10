@@ -9,8 +9,8 @@
  */
 import { Link } from "react-router-dom";
 import type { SearchTextMatch } from "../../services/api-client";
-import { folderRouteForPath, stripLeadingSlashForRoute } from "../../app/docsRouteUtils";
-import { DocPath } from "../../types/shared";
+import { docHref, folderHref } from "../../app/docs-location";
+import { DocPath, FolderPath } from "../../types/shared";
 import { SEARCH_HIT_KIND_TOKENS } from "./search-hit-kinds";
 
 export function headingPathLabel(headingPath: string[]): string {
@@ -120,9 +120,10 @@ export function SearchHitCards({
         // A `path_segment` hit's path is a FOLDER, so it has no document route,
         // no section, and no "Open document" — it opens the folder browser.
         const isFolderHit = match.kind === "path_segment";
+        const hitFolderPath = isFolderHit ? FolderPath.tryParse(match.doc_path) : null;
         const targetUrl = isFolderHit
-          ? folderRouteForPath(match.doc_path)
-          : `/docs/${stripLeadingSlashForRoute(DocPath.parse(match.doc_path))}`;
+          ? hitFolderPath && folderHref(hitFolderPath)
+          : docHref(DocPath.parse(match.doc_path));
         const sectionLabel = headingPathLabel(match.heading_path);
         const documentTitle = documentTitleFromPath(match.doc_path);
         return (
@@ -207,9 +208,13 @@ export function SearchHitCards({
             </div>
 
             <div className="flex items-center gap-2 px-3.5 py-1.5 bg-canvas-bg border-t border-footer-border text-xs">
-              <Link to={targetUrl} className="text-accent font-medium no-underline hover:underline">
-                {isFolderHit ? "Open folder →" : "Open document →"}
-              </Link>
+              {targetUrl ? (
+                <Link to={targetUrl} className="text-accent font-medium no-underline hover:underline">
+                  {isFolderHit ? "Open folder →" : "Open document →"}
+                </Link>
+              ) : (
+                <span className="text-text-faint font-medium">{match.doc_path}</span>
+              )}
               {/* Only body and heading hits belong to a section; a filename or
                   folder hit has no section, and an empty heading path there
                   would read as the misleading "(before first heading)". */}

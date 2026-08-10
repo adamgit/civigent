@@ -10,8 +10,8 @@ import { gitExec } from "../../storage/git-repo.js";
 
 function collectFlat(skeleton: DocumentSkeleton): FlatEntry[] {
   const entries: FlatEntry[] = [];
-  skeleton.forEachNode((heading, level, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
-    entries.push({ heading, level, sectionFile, headingPath: [...headingPath], absolutePath, isSubSkeleton });
+  skeleton.forEachNode((heading, headingLevel, sectionFile, headingPath, absolutePath, isSubSkeleton) => {
+    entries.push({ heading, headingLevel, sectionFile, headingPath: [...headingPath], absolutePath, isSubSkeleton });
   });
   return entries;
 }
@@ -171,10 +171,10 @@ describe("DocumentSkeleton.expect() — flat document (no sub-skeletons)", () =>
 
   afterAll(async () => { await ctx.cleanup(); });
 
-  it("resolve(['Overview']) returns correct absolutePath, level, heading, direct content entry", () => {
+  it("resolve(['Overview']) returns correct absolutePath, headingLevel, heading, direct content entry", () => {
     const entry = skeleton.requireContentEntryByHeadingPath(["Overview"]);
     expect(entry.heading).toBe("Overview");
-    expect(entry.level).toBe(2);
+    expect(entry.headingLevel).toBe(2);
     expect(entry.sectionFile).toBe("overview.md");
     expect(entry.absolutePath).toContain("overview.md");
     expect(entry.absolutePath).toContain(".sections");
@@ -185,14 +185,14 @@ describe("DocumentSkeleton.expect() — flat document (no sub-skeletons)", () =>
   it("resolve(['Timeline']) returns correct entry", () => {
     const entry = skeleton.requireContentEntryByHeadingPath(["Timeline"]);
     expect(entry.heading).toBe("Timeline");
-    expect(entry.level).toBe(2);
+    expect(entry.headingLevel).toBe(2);
     expect(entry.storageRole).toBe("direct_section");
   });
 
   it("resolve([]) returns root section content entry", () => {
     const entry = skeleton.requireContentEntryByHeadingPath([]);
     expect(entry.heading).toBe("");
-    expect(entry.level).toBe(0);
+    expect(entry.headingLevel).toBe(0);
     expect(entry.storageRole).toBe("before_first_heading");
     expect(entry.headingPath).toEqual([]);
   });
@@ -224,7 +224,7 @@ describe("DocumentSkeleton.expect() — nested document (sub-skeletons)", () => 
   it("resolve(['Details']) follows through to root child body file (fixed behavior)", () => {
     const entry = skeleton.requireContentEntryByHeadingPath(["Details"]);
     expect(entry.heading).toBe("Details");
-    expect(entry.level).toBe(2);
+    expect(entry.headingLevel).toBe(2);
     expect(entry.storageRole).toBe("body_holder");
     // absolutePath now points to the root child body file, not the sub-skeleton
     expect(entry.absolutePath).toContain("_details_root.md");
@@ -243,7 +243,7 @@ describe("DocumentSkeleton.expect() — nested document (sub-skeletons)", () => 
   it("resolve(['Details', 'Sub-Detail A']) returns child body with isSubSkeleton=false", () => {
     const entry = skeleton.requireContentEntryByHeadingPath(["Details", "Sub-Detail A"]);
     expect(entry.heading).toBe("Sub-Detail A");
-    expect(entry.level).toBe(3);
+    expect(entry.headingLevel).toBe(3);
     expect(entry.storageRole).toBe("direct_section");
     expect(entry.absolutePath).toContain("sub_a.md");
     expect(entry.headingPath).toEqual(["Details", "Sub-Detail A"]);
@@ -252,7 +252,7 @@ describe("DocumentSkeleton.expect() — nested document (sub-skeletons)", () => 
   it("resolve([]) returns root section content entry — root has no children", () => {
     const entry = skeleton.requireContentEntryByHeadingPath([]);
     expect(entry.heading).toBe("");
-    expect(entry.level).toBe(0);
+    expect(entry.headingLevel).toBe(0);
     expect(entry.storageRole).toBe("before_first_heading");
   });
 });
@@ -302,7 +302,7 @@ describe("DocumentSkeleton.expect([]) — root with children", () => {
     const skeleton = await DocumentSkeleton.fromDisk(docPath, contentRoot, contentRoot);
     const root = skeleton.requireContentEntryByHeadingPath([]);
     expect(root.heading).toBe("");
-    expect(root.level).toBe(0);
+    expect(root.headingLevel).toBe(0);
     expect(root.storageRole).toBe("before_first_heading");
     // Should point to the root child body file, not the sub-skeleton
     expect(root.absolutePath).toContain("_root_body.md");
@@ -334,7 +334,7 @@ describe("DocumentSkeleton.expectByFileId() — nested document", () => {
   it("resolveByFileId for root child within sub-skeleton returns the body file path", () => {
     const entry = skeleton.requireEntryBySectionFileId("_details_root.md");
     expect(entry.heading).toBe("");
-    expect(entry.level).toBe(0);
+    expect(entry.headingLevel).toBe(0);
     expect(entry.isSubSkeleton).toBe(false);
     expect(entry.absolutePath).toContain("_details_root.md");
     expect(entry.absolutePath).toContain("details.md.sections");
@@ -343,7 +343,7 @@ describe("DocumentSkeleton.expectByFileId() — nested document", () => {
   it("resolveByFileId for a leaf child returns body file with isSubSkeleton=false", () => {
     const entry = skeleton.requireEntryBySectionFileId("sub_a.md");
     expect(entry.heading).toBe("Sub-Detail A");
-    expect(entry.level).toBe(3);
+    expect(entry.headingLevel).toBe(3);
     expect(entry.isSubSkeleton).toBe(false);
     expect(entry.absolutePath).toContain("sub_a.md");
   });
@@ -351,7 +351,7 @@ describe("DocumentSkeleton.expectByFileId() — nested document", () => {
   it("resolveByFileId('__beforeFirstHeading__') returns the before-first-heading section", () => {
     const entry = skeleton.requireEntryBySectionFileId("__beforeFirstHeading__");
     expect(entry.heading).toBe("");
-    expect(entry.level).toBe(0);
+    expect(entry.headingLevel).toBe(0);
     expect(entry.headingPath).toEqual([]);
   });
 
@@ -375,7 +375,7 @@ describe("DocumentSkeleton.expectByFileId('__beforeFirstHeading__') — BFH with
     const skeleton = await DocumentSkeleton.fromDisk(NESTED_DOC_PATH, ctx.contentDir, ctx.contentDir);
     const entry = skeleton.requireEntryBySectionFileId("__beforeFirstHeading__");
     expect(entry.heading).toBe("");
-    expect(entry.level).toBe(0);
+    expect(entry.headingLevel).toBe(0);
     expect(entry.isSubSkeleton).toBe(false);
   });
 
@@ -410,7 +410,7 @@ describe("DocumentSkeleton.expectByFileId('__beforeFirstHeading__') — BFH with
     const skeleton = await DocumentSkeleton.fromDisk(docPath, ctx.contentDir, ctx.contentDir);
     const entry = skeleton.requireEntryBySectionFileId("__beforeFirstHeading__");
     expect(entry.heading).toBe("");
-    expect(entry.level).toBe(0);
+    expect(entry.headingLevel).toBe(0);
     expect(entry.isSubSkeleton).toBe(false);
     expect(entry.absolutePath).toContain("_body.md");
     expect(entry.sectionFile).toBe("_body.md");
@@ -442,7 +442,7 @@ describe("DocumentSkeleton.fromNodes", () => {
       .filter(e => !e.isSubSkeleton)
       .map(e => ({
         heading: e.heading,
-        level: e.level,
+        headingLevel: e.headingLevel,
         sectionFile: e.sectionFile,
         children: [] as import("../../storage/document-skeleton.js").SkeletonNode[],
       }));
@@ -453,7 +453,7 @@ describe("DocumentSkeleton.fromNodes", () => {
     expect(nodeEntries.length).toBe(diskEntries.length);
     for (let i = 0; i < diskEntries.length; i++) {
       expect(nodeEntries[i].heading).toBe(diskEntries[i].heading);
-      expect(nodeEntries[i].level).toBe(diskEntries[i].level);
+      expect(nodeEntries[i].headingLevel).toBe(diskEntries[i].headingLevel);
       expect(nodeEntries[i].sectionFile).toBe(diskEntries[i].sectionFile);
     }
 

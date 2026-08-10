@@ -36,6 +36,7 @@ import { classifyStructuralChange, type StructuralChange } from "./structural-ch
 import { headingsEqual } from "../storage/document-skeleton.js";
 import type { LiveSectionLayoutEntry } from "./live-section-layout.js";
 import type { FragmentContent } from "../storage/section-formatting.js";
+import type { HeadingLevel } from "../types/shared.js";
 
 export interface StructuralValidationRejectedFragment {
   fragmentKey: string;
@@ -67,7 +68,7 @@ export interface StructuralValidationResult {
 
 interface SiblingBucketEntry {
   heading: string;
-  level: number;
+  headingLevel: HeadingLevel;
   fragmentKey: string;
 }
 
@@ -93,7 +94,7 @@ export function validateLiveEditForDuplicateSiblingHeadings(
     const change = classifyStructuralChange(markdown, {
       headingPath: entry.headingPath,
       heading: entry.heading,
-      level: entry.level,
+      headingLevel: entry.headingLevel,
     });
     const rejection = detectRejection(fragmentKey, entry, change, siblingsByParentKey);
     if (rejection) rejectionGroups.push(rejection);
@@ -115,7 +116,7 @@ function buildSiblingBuckets(
     const parent = entry.headingPath.slice(0, -1);
     const key = parentKey(parent);
     const list = buckets.get(key) ?? [];
-    list.push({ heading: entry.heading, level: entry.level, fragmentKey: entry.fragmentKey });
+    list.push({ heading: entry.heading, headingLevel: entry.headingLevel, fragmentKey: entry.fragmentKey });
     buckets.set(key, list);
   }
   return buckets;
@@ -125,12 +126,12 @@ function findSiblingCollision(
   siblings: SiblingBucketEntry[] | undefined,
   ownFragmentKey: string | null,
   proposedHeading: string,
-  proposedLevel: number,
+  proposedHeadingLevel: HeadingLevel,
 ): SiblingBucketEntry | null {
   if (!siblings) return null;
   for (const sibling of siblings) {
     if (sibling.fragmentKey === ownFragmentKey) continue;
-    if (sibling.level !== proposedLevel) continue;
+    if (sibling.headingLevel !== proposedHeadingLevel) continue;
     if (!headingsEqual(sibling.heading, proposedHeading)) continue;
     return sibling;
   }
@@ -141,7 +142,7 @@ function buildDuplicateSiblingRejection(
   fragmentKey: string,
   entry: LiveSectionLayoutEntry,
   proposedHeading: string,
-  proposedLevel: number,
+  proposedHeadingLevel: HeadingLevel,
   parentHeadingPath: readonly string[],
   conflict: SiblingBucketEntry,
 ): StructuralValidationRejectionGroup {
@@ -159,7 +160,7 @@ function buildDuplicateSiblingRejection(
     title: "Duplicate heading rejected",
     message: `Two sections under ${parentLabel} would end up with the heading “${proposedHeading}”.`,
     whatHappened:
-      `Your edit would rename the section to “${proposedHeading}” at heading level ${proposedLevel}, ` +
+      `Your edit would rename the section to “${proposedHeading}” at heading level ${proposedHeadingLevel}, ` +
       `but a sibling section already uses that same heading (fragment ${conflict.fragmentKey}).`,
     whyRejected:
       "Two sibling sections cannot share the same heading — the app would no longer be able to tell " +
@@ -179,16 +180,16 @@ function detectRejection(
 ): StructuralValidationRejectionGroup | null {
   if (change.kind === "heading-rename" || change.kind === "heading-level-change") {
     const proposedHeading = change.kind === "heading-rename" ? change.newHeading : change.newHeading;
-    const proposedLevel = change.kind === "heading-rename" ? change.level : change.newLevel;
+    const proposedHeadingLevel = change.kind === "heading-rename" ? change.headingLevel : change.newHeadingLevel;
     const parent = entry.headingPath.slice(0, -1);
     const conflict = findSiblingCollision(
       siblingsByParentKey.get(parentKey(parent)),
       entry.fragmentKey,
       proposedHeading,
-      proposedLevel,
+      proposedHeadingLevel,
     );
     if (conflict) {
-      return buildDuplicateSiblingRejection(fragmentKey, entry, proposedHeading, proposedLevel, parent, conflict);
+      return buildDuplicateSiblingRejection(fragmentKey, entry, proposedHeading, proposedHeadingLevel, parent, conflict);
     }
     return null;
   }
@@ -205,37 +206,46 @@ function detectRejection(
     // Track headings the split itself introduces at each parent's level so the
     // second-and-later duplicates within the split payload also reject cleanly.
     const seenInThisSplit = new Set<string>();
-    for (const section of change.sections) {
+    const splitEntries = [
+      ...change.before,
+      {
+        headingPath: [change.survivor.heading],
+        heading: change.survivor.heading,
+        headingLevel: change.survivor.headingLevel,
+      },
+      ...change.after,
+    ];
+    for (const section of splitEntries) {
       // Only top-of-split entries land as new siblings at this parent's level;
       // deeper nested split entries have their own parent inside the split.
       if (section.headingPath.length !== 1) continue;
       const proposedHeading = section.heading;
-      const proposedLevel = section.level;
+      const proposedHeadingLevel = section.headingLevel;
       const conflict = findSiblingCollision(
         parentSiblings,
         entry.fragmentKey,
         proposedHeading,
-        proposedLevel,
+        proposedHeadingLevel,
       );
       if (conflict) {
         return buildDuplicateSiblingRejection(
           fragmentKey,
           entry,
           proposedHeading,
-          proposedLevel,
+          proposedHeadingLevel,
           parent,
           conflict,
         );
       }
-      const key = `${proposedLevel}::${proposedHeading.toLowerCase()}`;
+      const key = `${proposedHeadingLevel}::${proposedHeading.toLowerCase()}`;
       if (seenInThisSplit.has(key)) {
         return buildDuplicateSiblingRejection(
           fragmentKey,
           entry,
           proposedHeading,
-          proposedLevel,
+          proposedHeadingLevel,
           parent,
-          { heading: proposedHeading, level: proposedLevel, fragmentKey },
+          { heading: proposedHeading, headingLevel: proposedHeadingLevel, fragmentKey },
         );
       }
       seenInThisSplit.add(key);
@@ -251,32 +261,32 @@ function detectRejection(
     for (const section of change.sections) {
       if (section.headingPath.length !== 1) continue;
       const proposedHeading = section.heading;
-      const proposedLevel = section.level;
+      const proposedHeadingLevel = section.headingLevel;
       const conflict = findSiblingCollision(
         rootSiblings,
         entry.fragmentKey,
         proposedHeading,
-        proposedLevel,
+        proposedHeadingLevel,
       );
       if (conflict) {
         return buildDuplicateSiblingRejection(
           fragmentKey,
           entry,
           proposedHeading,
-          proposedLevel,
+          proposedHeadingLevel,
           [],
           conflict,
         );
       }
-      const key = `${proposedLevel}::${proposedHeading.toLowerCase()}`;
+      const key = `${proposedHeadingLevel}::${proposedHeading.toLowerCase()}`;
       if (seenInThisSplit.has(key)) {
         return buildDuplicateSiblingRejection(
           fragmentKey,
           entry,
           proposedHeading,
-          proposedLevel,
+          proposedHeadingLevel,
           [],
-          { heading: proposedHeading, level: proposedLevel, fragmentKey },
+          { heading: proposedHeading, headingLevel: proposedHeadingLevel, fragmentKey },
         );
       }
       seenInThisSplit.add(key);

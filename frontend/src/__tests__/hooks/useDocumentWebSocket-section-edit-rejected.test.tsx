@@ -65,7 +65,7 @@ function buildParams(
   clientInstanceId: string = "tab-instance-id",
 ): UseDocumentWebSocketParams {
   return {
-    decodedDocPath: docPath,
+    docPath: docPath,
     clientInstanceId,
     liveReplicaReadyRef: ref(false),
     setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],

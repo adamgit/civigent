@@ -85,7 +85,7 @@ export class ObserverCrdtProvider {
   private destroyed = false;
   private pendingDocumentReplacementNotice: DocumentReplacementNoticePayload | null = null;
   private readonly clientInstanceId: ClientInstanceId;
-  private readonly docPath: string;
+  private readonly docPath: DocPath;
   private initialTransitionRequest: ModeTransitionRequest | null = null;
   /** Socket was closed while the tab was frozen/BFCached/hidden — reopen on wake
    *  without entering the user-visible `reconnecting` state. */
@@ -97,7 +97,7 @@ export class ObserverCrdtProvider {
   private readonly ownsDoc: boolean;
 
   constructor(
-    docPath: string,
+    docPath: DocPath,
     events: ObserverCrdtProviderEvents = {},
     opts?: { clientInstanceId?: ClientInstanceId; initialTransitionRequest?: ModeTransitionRequest; doc?: Y.Doc },
   ) {

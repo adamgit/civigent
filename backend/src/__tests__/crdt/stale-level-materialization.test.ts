@@ -149,7 +149,7 @@ describe("stale-level materialization", () => {
     const entry = layout.find((e) => e.fragmentKey === fragmentKeyBefore);
     expect(entry).toBeDefined();
     expect(entry!.heading).toBe("h3 3");
-    expect(entry!.level).toBe(1);
+    expect(entry!.headingLevel).toBe(1);
     expect(entry!.headingPath).toEqual(HEADING_PATH);
 
     assertBodyHasNoStructuralHeading(await readProposalBody(session));
@@ -172,7 +172,7 @@ describe("stale-level materialization", () => {
 
     const layout = await resolveLiveSectionLayout(DOC_PATH, proposalId);
     const entry = layout.find((e) => e.fragmentKey === SECTION_KEY);
-    expect(entry?.level).toBe(3);
+    expect(entry?.headingLevel).toBe(3);
   });
 
   it("finalizeAndPublish refuses an unquiesced H3→H1 fragment and keeps the proposal for later reconciliation", async () => {

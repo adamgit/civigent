@@ -7,6 +7,7 @@ import type {
 import {
   sendApiError,
   requireAdmin,
+  requireAuthenticatedWriter,
   resolveAuthenticatedWriter,
   requireDocReadPermission,
   requireDocWritePermission,
@@ -25,6 +26,7 @@ import {
   createDocument,
   deleteDocument,
   isValidSha,
+  DirectoryAtDocPathError,
   DocumentNotFoundError,
   InvalidDocPathError,
   DocumentsTreePathNotFoundError,
@@ -36,9 +38,13 @@ import {
   DocumentPendingDeletionError,
   DocumentNotFoundForDeleteError,
   UncommittedSessionFilesError,
+  deleteFolder,
+  renameFolder,
+  FolderWritePermissionError,
+  readLiveDocumentMarkdown,
 } from "../application/documents.js";
 import { emitCatalogMutationEvents } from "../application/events.js";
-import { DocPath } from "../../types/shared.js";
+import { DocPath, FolderPath, InvalidFolderPathError } from "../../types/shared.js";
 import {
   QueryParamError,
   optionalStringParam,
@@ -89,6 +95,27 @@ export function registerWorkspaceRoutes(
       const { response } = await readWorkspaceStructure(docPath);
       const out: ReadDocStructureResponse = response;
       res.json(out);
+    } catch (error) {
+      if (error instanceof DirectoryAtDocPathError) {
+        sendApiError(res, 409, error);
+        return;
+      }
+      if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // GET /workspace/:docPath/live-markdown — raw live fragment truth export
+  router.get("/workspace/:docPath(*)/live-markdown", async (req, res, next) => {
+    try {
+      const docPath = docPathParamOf(req);
+      const access = await requireDocReadPermission(req, res, docPath);
+      if (!access) return;
+      const markdown = await readLiveDocumentMarkdown(docPath);
+      res.json({ doc_path: docPath, markdown });
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
         sendApiError(res, 404, error);
@@ -242,6 +269,158 @@ export function registerWorkspaceRoutes(
         sendApiError(res, 400, error);
         return;
       }
+      next(error);
+    }
+  });
+
+  // DELETE /workspace-folder/:folderPath — delete every document in a folder
+  router.delete("/workspace-folder/:folderPath(*)", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      let folder;
+      let outcome;
+      try {
+        folder = FolderPath.fromSlashStrippedUrlSegment(req.params.folderPath);
+        outcome = await deleteFolder(folder, writer);
+      } catch (error) {
+        if (error instanceof InvalidFolderPathError) {
+          sendApiError(res, 400, error);
+          return;
+        }
+        if (error instanceof DocumentsTreePathNotFoundError) {
+          sendApiError(res, 404, error);
+          return;
+        }
+        if (error instanceof FolderWritePermissionError) {
+          sendApiError(res, 403, error.message);
+          return;
+        }
+        if (error instanceof ActiveSessionConflictError) {
+          sendApiError(res, 409, error.message);
+          return;
+        }
+        if (error instanceof UncommittedSessionFilesError) {
+          sendApiError(res, 409, error.message);
+          return;
+        }
+        throw error;
+      }
+
+      const { result, deletedDocPaths } = outcome;
+      if (result.kind === "blocked") {
+        res.status(409).json({
+          folder_path: folder,
+          proposal_id: result.proposalId,
+          status: "draft",
+          outcome: "blocked",
+          message: result.policyResult.message,
+          agent_write_policy: agentWritePolicyRouteBody(result.policyResult),
+        });
+        return;
+      }
+
+      emitCatalogMutationEvents(
+        onWsEvent,
+        {
+          catalogChanged: true,
+          createdDocPaths: [],
+          deletedDocPaths,
+          renamed: null,
+        },
+        writer,
+        result.committedHead,
+      );
+
+      res.status(200).json({
+        folder_path: folder,
+        deleted_doc_paths: deletedDocPaths,
+        committed_head: result.committedHead,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // POST /workspace-folder/:folderPath/rename — rename every document in a folder
+  router.post("/workspace-folder/:folderPath(*)/rename", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+
+      const { new_path: newPath } = (req.body ?? {}) as { new_path?: unknown };
+      if (newPath === undefined || typeof newPath !== "string") {
+        sendApiError(res, 400, "Missing required field: new_path");
+        return;
+      }
+
+      let from;
+      let to;
+      let outcome;
+      try {
+        from = FolderPath.fromSlashStrippedUrlSegment(req.params.folderPath);
+        to = FolderPath.normalize(newPath);
+        outcome = await renameFolder(from, to, writer);
+      } catch (error) {
+        if (error instanceof InvalidFolderPathError) {
+          sendApiError(res, 400, error);
+          return;
+        }
+        if (error instanceof DocumentsTreePathNotFoundError) {
+          sendApiError(res, 404, error);
+          return;
+        }
+        if (error instanceof FolderWritePermissionError) {
+          sendApiError(res, 403, error.message);
+          return;
+        }
+        if (error instanceof ActiveSessionConflictError) {
+          sendApiError(res, 409, error.message);
+          return;
+        }
+        if (error instanceof DocumentAlreadyExistsError) {
+          sendApiError(res, 409, error.message);
+          return;
+        }
+        throw error;
+      }
+
+      const { result, renames } = outcome;
+      if (result.kind === "blocked") {
+        res.status(409).json({
+          folder_path: from,
+          proposal_id: result.proposalId,
+          status: "draft",
+          outcome: "blocked",
+          message: result.policyResult.message,
+          agent_write_policy: agentWritePolicyRouteBody(result.policyResult),
+        });
+        return;
+      }
+
+      emitCatalogMutationEvents(
+        onWsEvent,
+        {
+          catalogChanged: true,
+          createdDocPaths: renames.map((r) => r.to),
+          deletedDocPaths: renames.map((r) => r.from),
+          renamed:
+            renames.length === 1
+              ? { oldPath: renames[0].from, newPath: renames[0].to }
+              : null,
+        },
+        writer,
+        result.committedHead,
+      );
+
+      res.status(200).json({
+        old_folder_path: from,
+        new_folder_path: to,
+        renamed: renames.map((r) => ({ old_path: r.from, new_path: r.to })),
+        committed_head: result.committedHead,
+      });
+    } catch (error) {
       next(error);
     }
   });

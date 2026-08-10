@@ -16,14 +16,14 @@ import {
   proposalTargetLabel,
 } from "../types/shared.js";
 import { headingPathToLabel } from "./document-page-utils";
-import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
+import { docHref } from "../app/docs-location";
 import { DocPath } from "../types/shared";
 
 function DocumentLinkWhenDisplayPathIsLiveDocPath({ displayPath }: { displayPath: string }) {
   if (!DocPath.isDocPath(displayPath)) {
     return <>{displayPath}</>;
   }
-  return <Link to={`/docs/${stripLeadingSlashForRoute(displayPath)}`}>{displayPath}</Link>;
+  return <Link to={docHref(displayPath)}>{displayPath}</Link>;
 }
 
 function involvementColor(score: number): string {

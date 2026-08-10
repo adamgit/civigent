@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiClient, type DocHistoryVersion } from "../services/api-client";
+import type { DocPath } from "../types/shared";
 import { relativeTime } from "../utils/relativeTime";
 import {
   describeUnpublishedHistoryRow,
@@ -7,7 +8,7 @@ import {
 } from "../models/unpublished-history";
 
 interface DocumentHistoryProps {
-  docPath: string;
+  docPath: DocPath;
   onRestored?: () => void;
   /**
    * When the document has a bound `inprogress` live proposal, its unpublished

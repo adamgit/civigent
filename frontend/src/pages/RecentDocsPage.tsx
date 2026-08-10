@@ -6,13 +6,17 @@ import { ContentPanel } from "../components/ContentPanel";
 import { PageStatusBar } from "../components/PageStatusBar";
 import { apiClient } from "../services/api-client";
 import { listRecentDocs, rememberRecentDoc } from "../services/recent-docs";
-import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
+import { docHref } from "../app/docs-location";
 import { mergeKnownDocPaths, filterDocsByQuery } from "../services/known-docs-merge";
 import { DocPath } from "../types/shared";
 
+function mintLawfulDocPaths(raw: string[]): DocPath[] {
+  return raw.map((path) => DocPath.tryParse(path)).filter((path): path is DocPath => path !== null);
+}
+
 export function RecentDocsPage() {
   const navigate = useNavigate();
-  const [docs, setDocs] = useState<string[]>(() => listRecentDocs());
+  const [docs, setDocs] = useState<DocPath[]>(() => mintLawfulDocPaths(listRecentDocs()));
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -29,7 +33,7 @@ export function RecentDocsPage() {
           activityResponse.items,
           proposalsResponse.proposals,
         );
-        setDocs(merged);
+        setDocs(mintLawfulDocPaths(merged));
         setLoading(false);
       })
       .catch((err) => {
@@ -42,11 +46,11 @@ export function RecentDocsPage() {
 
   const filteredDocs = useMemo(() => filterDocsByQuery(docs, query), [docs, query]);
 
-  const openDoc = (docPath: string) => {
-    const trimmed = docPath.trim();
-    if (!trimmed) return;
-    rememberRecentDoc(trimmed);
-    navigate(`/docs/${stripLeadingSlashForRoute(DocPath.parse(trimmed))}`);
+  const openDoc = (raw: string) => {
+    const docPath = DocPath.tryParse(raw.trim());
+    if (!docPath) return;
+    rememberRecentDoc(docPath);
+    navigate(docHref(docPath));
   };
 
   const handleDirectOpen = (event: FormEvent<HTMLFormElement>) => {
@@ -91,7 +95,7 @@ export function RecentDocsPage() {
                     <span className="text-[10.5px] text-[#b8b2a8] shrink-0 w-[60px] text-right">Viewed</span>
                     <div className="flex-1 min-w-0">
                       <Link
-                        to={`/docs/${stripLeadingSlashForRoute(DocPath.parse(docPath))}`}
+                        to={docHref(docPath)}
                         onClick={() => rememberRecentDoc(docPath)}
                         className="text-[13px] font-medium text-text-primary hover:text-[#1d5a66] cursor-pointer"
                       >
@@ -99,21 +103,6 @@ export function RecentDocsPage() {
                       </Link>
                     </div>
                     <div className="flex gap-1 shrink-0">
-                      <Link
-                        to={`/docs/${stripLeadingSlashForRoute(DocPath.parse(docPath))}/edit`}
-                        onClick={() => rememberRecentDoc(docPath)}
-                        className="btn-small"
-                      >
-                        Edit
-                      </Link>
-                      <Link
-                        to={`/docs/${stripLeadingSlashForRoute(DocPath.parse(docPath))}/reconcile`}
-                        onClick={() => rememberRecentDoc(docPath)}
-                        className="btn-small"
-                        style={{ borderColor: "var(--color-agent-border)", color: "var(--color-agent-text)" }}
-                      >
-                        Reconcile
-                      </Link>
                       <button
                         onClick={() => openDoc(docPath)}
                         className="btn-primary"

@@ -5,7 +5,7 @@ import { SEARCH_MAX_RESULTS } from "./search/search-request-defaults";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { apiClient } from "../services/api-client";
 import { INVOLVEMENT_PRESET_UI } from "../involvement-preset-ui";
-import { HUMAN_INVOLVEMENT_PRESETS, type HumanInvolvementPresetName } from "../types/shared.js";
+import { DocPath, HUMAN_INVOLVEMENT_PRESETS, type HumanInvolvementPresetName } from "../types/shared.js";
 
 export function HomePage() {
   const { createDoc, sidebarAutoHide, setSidebarAutoHide } = useOutletContext<AppLayoutOutletContext>();
@@ -87,9 +87,15 @@ export function HomePage() {
     e.preventDefault();
     const trimmed = newDocPath.trim();
     if (!trimmed || creatingDoc) return;
+    const withMd = trimmed.endsWith(".md") ? trimmed : `${trimmed}.md`;
+    const docPath = DocPath.tryParse(withMd.startsWith("/") ? withMd : `/${withMd}`);
+    if (!docPath) {
+      setNewDocError(`Invalid document path: ${JSON.stringify(withMd)}`);
+      return;
+    }
     setCreatingDoc(true);
     setNewDocError(null);
-    createDoc(trimmed)
+    createDoc(docPath)
       .then(() => setNewDocPath(""))
       .catch((err) => setNewDocError(err instanceof Error ? err.message : String(err)))
       .finally(() => setCreatingDoc(false));

@@ -10,6 +10,7 @@ import { AGGREGATE_IMPACT_THRESHOLD } from "../../domain/humanInvolvement.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { gitExec } from "../../storage/git-repo.js";
 import { readDocSectionCommitInfo } from "../../storage/section-commit-history.js";
+import { updateAdminConfig } from "../../admin-config.js";
 
 const agentWriter = { id: "agent-test", type: "agent" as const, displayName: "Test Agent" };
 
@@ -17,6 +18,7 @@ describe("AgentWritePolicy (human-involvement compatibility policy)", () => {
   let ctx: TempDataRootContext;
 
   beforeAll(async () => {
+    updateAdminConfig({ humanInvolvement_preset: "eager" });
     ctx = await createTempDataRoot();
     await createSampleDocument(ctx.rootDir);
   });

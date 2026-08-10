@@ -714,9 +714,12 @@ function mapPublishResultToOutcome(result: PublishResult): PublishAttemptOutcome
 
 async function finalizeAndEnd(session: DocSession, ready: boolean): Promise<PublishAttemptOutcome> {
   let outcome: PublishAttemptOutcome;
+  let settling = false;
   try {
     if (ready) {
+      settling = true;
       await settleLiveStructure(session);
+      settling = false;
       outcome = mapPublishResultToOutcome(await session.generator.finalizeAndPublish());
     } else {
       outcome = { outcome: "aborted", message: "Publish aborted: editors did not acknowledge readiness in time." };
@@ -728,6 +731,15 @@ async function finalizeAndEnd(session: DocSession, ready: boolean): Promise<Publ
     // continue to `releaseDocSession` and destroy the Y.Doc holding the only copy
     // of that content. Throwing aborts the teardown and preserves it.
     if (error instanceof LiveSnapshotIdentityInvariantError) throw error;
+    // Settle-phase errors are P0 invariant failures, never a publish-blocked
+    // steady state (spec 05 §Structural normalization): route them through the
+    // exceptional maintainer path and rethrow, matching the quiescence-timer and
+    // last-editor-left paths. Only `finalizeAndPublish` errors convert into a
+    // `failed` outcome with the return-to-inprogress retry contract.
+    if (settling) {
+      handleProcessFatal(error instanceof Error ? error : new Error(String(error)), "unhandledRejection");
+      throw error;
+    }
     outcome = { outcome: "failed", message: `Publish failed: ${describeError(error)}`, error };
   } finally {
     session.publishPause.end();
@@ -1083,11 +1095,12 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
       (key) => session.liveFragments.readFragmentString(key),
     );
 
+    try {
     if (change.kind === "root-split" || change.kind === "section-split") {
       await reflectSplitIntoProposal(
         proposalId,
         session.docPath,
-        content,
+        change,
         identity,
       );
       // Compute the plan once outside the transaction so the coordinator can
@@ -1202,7 +1215,14 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
       }
       applied = applied || res.applied;
     }
-    
+    } catch (error) {
+      throw new Error(
+        `Quiescence-time structural normalization failed for ${session.docPath}, ` +
+          `section [${identity.headingPath.join(" > ")}], fragment "${fragmentKey}" ` +
+          `(change: ${change.kind}): ${describeError(error)}`,
+        { cause: error },
+      );
+    }
   }
 
   return { applied, removedFragments };

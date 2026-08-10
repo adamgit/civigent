@@ -48,7 +48,7 @@ export interface DiagSummary {
   recursive_structural_entries: number | null;
   recursive_content_sections: number | null;
   recursive_subskeleton_parents: number | null;
-  recursive_max_depth: number | null;
+  recursive_max_heading_path_length: number | null;
   /** Physical body files walked from the recursive skeleton. */
   physical_section_count: number | null;
   /** Distinct heading paths across physical files (the heading-key-map size). */

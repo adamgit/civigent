@@ -103,8 +103,8 @@ describe("body holder materialization on leaf-to-sub-skeleton transition", () =>
     // and verify the file on disk holds the parent's original content.
     const reloaded = await DocumentSkeleton.fromDisk(docPath, ctx.contentDir, ctx.contentDir);
     let bodyHolderPath: string | null = null;
-    reloaded.forEachSection((heading, level, _sectionFile, headingPath, absolutePath) => {
-      if (isBodyHolderShape({ heading, level }) && headingPath.length > 0 && headingPath[0] === "Parent") {
+    reloaded.forEachSection((heading, headingLevel, _sectionFile, headingPath, absolutePath) => {
+      if (isBodyHolderShape({ heading, headingLevel }) && headingPath.length > 0 && headingPath[0] === "Parent") {
         bodyHolderPath = absolutePath;
       }
     });

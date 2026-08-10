@@ -139,6 +139,7 @@ Operator `.env` only sets `KS_BACKUP_GIT_REMOTE`, `KS_BACKUP_GIT_AUTH_MODE`, and
 | `PORT` | Port the server listens on inside the container (not the host-facing port) | `3000` |
 | `KS_EXTERNAL_PORT` | The external host port users connect on. Required — set automatically by the compose files. Used to construct the public URL. | (none — required) |
 | `KS_EXTERNAL_HOSTNAME` | The external hostname or IP users connect on. Set to your domain for non-localhost deployments. Combined with `KS_EXTERNAL_PORT` to derive the public URL. | `localhost` |
+| `KS_APP_NAME` | Human-facing name for this install (browser tab suffix, etc.). Distinct from the per-user MCP “server name” on the setup page. | (unset — falls back to `getPublicUrl()`, from `KS_EXTERNAL_HOSTNAME`+`KS_EXTERNAL_PORT`) |
 | `KS_AUTH_MODE` | Auth mode: `single_user`, `oidc`, or `hybrid` (required) | (none — required) |
 | `KS_USER_NAME` | Human display name (single-user mode) | `Local User` |
 | `KS_USER_EMAIL` | Human email (single-user mode) | `local-user@ks.local` |

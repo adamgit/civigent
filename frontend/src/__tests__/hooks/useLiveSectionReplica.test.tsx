@@ -63,7 +63,7 @@ function bootstrapFrameBytes(markdown = "# Alpha\n\nlive body"): { yjs: Uint8Arr
   );
   return {
     yjs: Y.encodeStateAsUpdate(src),
-    state: { topology: [{ fragment_key: ALPHA, heading_path: ["Alpha"] }], blocked_section_ids: [], pending_sections: [], publish_pause_join_mirror: "not_in_pause" },
+    state: { topology: [{ fragment_key: ALPHA, heading_path: ["Alpha"], heading_level: 1 }], blocked_section_ids: [], pending_sections: [], publish_pause_join_mirror: "not_in_pause" },
   };
 }
 

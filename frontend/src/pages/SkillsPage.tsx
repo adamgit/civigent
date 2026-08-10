@@ -3,11 +3,11 @@ import { Link, useNavigate, useOutletContext } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { ContentPanel } from "../components/ContentPanel";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
-import { stripLeadingSlashForRoute } from "../app/docsRouteUtils";
+import { docHref, folderHref } from "../app/docs-location";
 import { apiClient } from "../services/api-client";
 import { copyTextToClipboard } from "../utils/copy-text";
 import type { AdminConfig, DocumentTreeEntry } from "../types/shared.js";
-import { DocPath } from "../types/shared.js";
+import { DocPath, FolderPath } from "../types/shared.js";
 
 type SkillKind = "slash-command" | "agent-skill";
 
@@ -150,7 +150,7 @@ export function SkillsPage() {
         await apiClient.createDocument(docPath);
       }
       await refreshTree();
-      navigate(`/docs/${stripLeadingSlashForRoute(docPath)}`);
+      navigate(docHref(docPath));
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -292,7 +292,7 @@ export function SkillsPage() {
                       </ContentPanel.Subtitle>
                     </div>
                     <Link
-                      to={`/docs${folder}`}
+                      to={folderHref(FolderPath.parse(folder))}
                       className="text-[12px] text-accent hover:underline shrink-0"
                     >
                       Open folder →
@@ -306,7 +306,7 @@ export function SkillsPage() {
                       className="border-b border-footer-border last:border-0"
                     >
                       <Link
-                        to={`/docs/${stripLeadingSlashForRoute(DocPath.parse(entry.docPath))}`}
+                        to={docHref(DocPath.parse(entry.docPath))}
                         className="flex items-center gap-3 px-4 py-3 no-underline hover:bg-section-hover transition-colors"
                       >
                         <span

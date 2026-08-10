@@ -66,7 +66,7 @@ describe("Bug 3 regression: a sub-skeleton parent surfaces its heading on the li
     );
     expect(parent).toBeDefined();
     expect(parent!.heading).toBe("Parent");
-    expect(parent!.level).toBeGreaterThan(0);
+    expect(parent!.headingLevel).toBeGreaterThan(0);
 
     const child = layout.find(
       (e) => SectionRef.headingKey(e.headingPath) === SectionRef.headingKey(["Parent", "Child"]),
@@ -92,7 +92,7 @@ describe("Bug 3 regression: a sub-skeleton parent surfaces its heading on the li
     expect(parentFragment).toBeDefined();
     // The fragment the editor mounts STARTS with the parent heading line at its
     // authoritative level — the bug-3 fix (was: body-only, no heading).
-    expect(parentFragment.startsWith(`${"#".repeat(parent.level)} Parent`)).toBe(true);
+    expect(parentFragment.startsWith(`${"#".repeat(parent.headingLevel)} Parent`)).toBe(true);
     expect(parentFragment).toContain("parent intro body");
     // The child's own body did NOT bleed into the parent's body-holder fragment.
     expect(parentFragment).not.toContain("child body");

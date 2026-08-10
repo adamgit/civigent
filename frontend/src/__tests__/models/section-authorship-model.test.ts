@@ -8,11 +8,18 @@
 import { describe, it, expect } from "vitest";
 import { buildSectionAuthorshipTargets } from "../../models/section-authorship-model";
 import { SectionId, type RenderSectionRef } from "../../types/live-sections";
+import { HeadingLevel } from "../../types/shared";
 
 const ALPHA = "section::alpha";
 
-function ref(key: string, headingPath: string[]): RenderSectionRef {
-  return { id: SectionId.brand(key), headingPath };
+function ref(key: string, headingPath: string[], headingLevel?: HeadingLevel): RenderSectionRef {
+  return {
+    id: SectionId.brand(key),
+    headingPath,
+    headingLevel:
+      headingLevel ??
+      (headingPath.length === 0 ? HeadingLevel.beforeFirstHeading : HeadingLevel.parse(headingPath.length)),
+  };
 }
 
 describe("buildSectionAuthorshipTargets — body-free ref boundaries", () => {
@@ -49,6 +56,19 @@ describe("buildSectionAuthorshipTargets — body-free ref boundaries", () => {
     });
     expect(target.bodyContent).toBe("");
     expect(target.validationError).toMatch(/did not match its metadata/);
+  });
+
+  it("strips by the section's REAL heading level, not headingPath.length (level-skipping doc)", () => {
+    const key = "section::skip";
+    const [target] = buildSectionAuthorshipTargets(
+      [ref(key, ["A", "B"], HeadingLevel.parse(3))],
+      {
+        resolveSectionFile: () => "sec_b.md",
+        resolveBody: () => "### B\n\nskip-level body",
+      },
+    );
+    expect(target.validationError).toBeUndefined();
+    expect(target.bodyContent).toBe("skip-level body");
   });
 
   it("before-first-heading refs use the whole body with no heading strip", () => {

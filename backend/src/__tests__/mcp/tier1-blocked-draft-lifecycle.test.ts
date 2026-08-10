@@ -10,6 +10,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
 import { readProposal } from "../../storage/proposal-repository.js";
+import { updateAdminConfig } from "../../admin-config.js";
 import { createTestServer, type TestServerContext } from "../helpers/test-server.js";
 import {
   createHumanCommit,
@@ -47,6 +48,7 @@ async function writeBlocked(content: string): Promise<{ proposal_id: string; sta
 
 describe("Tier 1 blocked draft lifecycle", () => {
   beforeAll(async () => {
+    updateAdminConfig({ humanInvolvement_preset: "eager" });
     ctx = await createTestServer();
     await createSampleDocument(ctx.dataCtx.rootDir);
     await createHumanCommit(

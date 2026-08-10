@@ -29,7 +29,7 @@
  */
 
 import * as Y from "yjs";
-import type { WriterIdentity, ProposalAdoptionId, ProposalId, PublishTriggerDecision, PublishBlocker } from "../types/shared.js";
+import type { WriterIdentity, ProposalAdoptionId, ProposalId, PublishTriggerDecision, PublishBlocker, HeadingLevel } from "../types/shared.js";
 import type {
   ProposalSection,
   InProgressProposal,
@@ -64,7 +64,7 @@ export interface LiveSectionSnapshot {
   /** Leaf heading text (empty string for the before-first-heading root). */
   heading: string;
   /** Heading level (0 for the before-first-heading root). */
-  level: number;
+  headingLevel: HeadingLevel;
   /** Effective body markdown for the section (no embedded heading line). */
   body: SectionBody;
   /**
@@ -107,7 +107,7 @@ export interface AwaitingStructuralReconciliationSection {
   fragmentKey: string;
   headingPath: string[];
   heading: string;
-  level: number;
+  headingLevel: HeadingLevel;
 }
 
 export interface LiveSectionsSnapshotResult {
@@ -505,7 +505,7 @@ export class CRDTProposalGenerator {
       (entry) => ({
         headingPath: [...entry.headingPath],
         heading: entry.heading,
-        level: entry.level,
+        headingLevel: entry.headingLevel,
         body: EMPTY_BODY,
         fragmentKey: entry.fragmentKey,
       }),
@@ -555,7 +555,7 @@ export class CRDTProposalGenerator {
         ...deferredTouched.map((entry) => ({
           headingPath: [...entry.headingPath],
           heading: entry.heading,
-          level: entry.level,
+          headingLevel: entry.headingLevel,
           body: EMPTY_BODY,
           fragmentKey: entry.fragmentKey,
         })),

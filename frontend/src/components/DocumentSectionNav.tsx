@@ -22,14 +22,14 @@
 
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { SectionVisibilityMap } from "../hooks/useTopViewportSection";
+import type { HeadingLevel } from "../types/shared";
 
 export interface DocumentSectionNavItem {
   /** Stable backend-owned CRDT fragment identity — used for keys + scroll target. */
   fragmentKey: string;
   /** Heading text to display. */
   heading: string;
-  /** ATX heading level (1–6). Drives tick length. */
-  depth: number;
+  headingLevel: HeadingLevel;
   headingPath: string[];
 }
 
@@ -73,8 +73,8 @@ const LABEL_LINE_HEIGHT = 1.3;
 const SPINE_END_FROM_LAST_TOP_PX =
   ROW_PADDING_TOP_PX + (LABEL_FONT_SIZE_PX * LABEL_LINE_HEIGHT) / 2;
 
-function tickWidth(depth: number): number {
-  const d = Math.min(Math.max(1, depth), MAX_VISUAL_DEPTH);
+function tickWidth(headingLevel: HeadingLevel): number {
+  const d = Math.min(Math.max(1, headingLevel), MAX_VISUAL_DEPTH);
   return BASE_TICK_WIDTH + (d - 1) * WIDTH_PER_DEPTH;
 }
 
@@ -342,7 +342,7 @@ export function DocumentSectionNav({
                 style={{
                   flex: "none",
                   height: isEditing ? 3 : 2,
-                  width: tickWidth(item.depth),
+                  width: tickWidth(item.headingLevel),
                   marginTop: 7,
                   borderRadius: 2,
                   background: color,

@@ -26,6 +26,7 @@ export interface DocumentPaperHeaderProps {
   onCancelRename: () => void;
   onSubmitRename: () => void | Promise<void>;
   onCopyPath: () => void | Promise<void>;
+  onExportMarkdown: () => void | Promise<void>;
   onDelete: () => void | Promise<void>;
   /** Observed to pin the sticky header when this block fully leaves the scrollport. */
   rootRef?: Ref<HTMLDivElement>;
@@ -46,6 +47,7 @@ export function DocumentPaperHeader({
   onCancelRename,
   onSubmitRename,
   onCopyPath,
+  onExportMarkdown,
   onDelete,
   rootRef,
 }: DocumentPaperHeaderProps): JSX.Element {
@@ -88,6 +90,13 @@ export function DocumentPaperHeader({
                 onClick={onStartRename}
               >
                 Rename
+              </button>
+              <button
+                type="button"
+                className="text-xs text-accent-primary hover:underline"
+                onClick={() => { void onExportMarkdown(); }}
+              >
+                Export markdown
               </button>
               <button
                 type="button"

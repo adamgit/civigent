@@ -30,12 +30,12 @@ describe("heading-resolver", () => {
     expect(headings).toContain("Timeline");
   });
 
-  it("readDocumentStructure nodes have heading, level, and children", async () => {
+  it("readDocumentStructure nodes have heading, heading_level, and children", async () => {
     const tree = await readDocumentStructure(SAMPLE_DOC_PATH);
 
     for (const node of tree) {
       expect(typeof node.heading).toBe("string");
-      expect(typeof node.level).toBe("number");
+      expect(typeof node.heading_level).toBe("number");
       expect(Array.isArray(node.children)).toBe(true);
     }
   });
@@ -61,7 +61,7 @@ describe("heading-resolver", () => {
     expect(hasTimeline).toBe(true);
   });
 
-  it("flattenStructureWithLevels returns entries with heading, level, and headingPath", async () => {
+  it("flattenStructureWithLevels returns entries with heading, headingLevel, and headingPath", async () => {
     const tree = await readDocumentStructure(SAMPLE_DOC_PATH);
     const entries = flattenStructureWithLevels(tree);
 
@@ -70,7 +70,7 @@ describe("heading-resolver", () => {
 
     for (const entry of entries) {
       expect(entry).toHaveProperty("heading");
-      expect(entry).toHaveProperty("level");
+      expect(entry).toHaveProperty("headingLevel");
       expect(entry).toHaveProperty("headingPath");
       expect(Array.isArray(entry.headingPath)).toBe(true);
     }

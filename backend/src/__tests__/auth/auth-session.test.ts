@@ -22,6 +22,8 @@ describe("Auth session and methods", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.authenticated).toBe(true);
+      expect(typeof res.body.app_name).toBe("string");
+      expect(res.body.app_name.length).toBeGreaterThan(0);
       expect(res.body.user).toBeDefined();
       expect(res.body.user).toHaveProperty("id");
       expect(res.body.user).toHaveProperty("type");

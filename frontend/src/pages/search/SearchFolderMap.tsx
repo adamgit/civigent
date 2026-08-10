@@ -7,8 +7,8 @@
  * every hit under it.
  */
 import { Link } from "react-router-dom";
-import { folderRouteForPath, stripLeadingSlashForRoute } from "../../app/docsRouteUtils";
-import { DocPath } from "../../types/shared";
+import { docHref, folderHref } from "../../app/docs-location";
+import { DocPath, FolderPath } from "../../types/shared";
 import type { SearchTreeNode } from "./search-hit-forest";
 import { SEARCH_HIT_KIND_ORDER, SEARCH_HIT_KIND_TOKENS } from "./search-hit-kinds";
 
@@ -39,12 +39,12 @@ function KindBadges({ node }: { node: SearchTreeNode }) {
 
 function FolderMapRow({
   node,
-  depth,
+  folderPathLength,
   selectedPath,
   onSelect,
 }: {
   node: SearchTreeNode;
-  depth: number;
+  folderPathLength: number;
   selectedPath: string | null;
   onSelect: (path: string) => void;
 }) {
@@ -53,10 +53,11 @@ function FolderMapRow({
   // A folder row opens the folder BROWSER, not a document route — the row is a
   // real place in the tree, and `/docs/<folder>` is where the app already
   // browses folders.
+  const folderPath = node.nodeKind === "folder" ? FolderPath.tryParse(node.path) : null;
   const openUrl =
     node.nodeKind === "folder"
-      ? folderRouteForPath(node.path)
-      : `/docs/${stripLeadingSlashForRoute(DocPath.parse(node.path))}`;
+      ? folderPath && folderHref(folderPath)
+      : docHref(DocPath.parse(node.path));
 
   return (
     <>
@@ -72,7 +73,7 @@ function FolderMapRow({
           onClick={() => onSelect(node.path)}
           aria-pressed={selected}
           className="min-w-0 flex-1 flex items-center gap-2 text-left px-2 py-1 bg-transparent border-none"
-          style={{ paddingLeft: 8 + depth * 16 }}
+          style={{ paddingLeft: 8 + folderPathLength * 16 }}
           title={`Show results under ${node.path}`}
         >
           <span
@@ -96,19 +97,23 @@ function FolderMapRow({
           </span>
           <KindBadges node={node} />
         </button>
-        <Link
-          to={openUrl}
-          className="shrink-0 text-[11px] text-accent no-underline hover:underline"
-          title={node.nodeKind === "folder" ? `Open folder ${node.path}` : `Open document ${node.path}`}
-        >
-          open →
-        </Link>
+        {openUrl ? (
+          <Link
+            to={openUrl}
+            className="shrink-0 text-[11px] text-accent no-underline hover:underline"
+            title={node.nodeKind === "folder" ? `Open folder ${node.path}` : `Open document ${node.path}`}
+          >
+            open →
+          </Link>
+        ) : (
+          <span className="shrink-0 text-[11px] text-text-faint">{node.path}</span>
+        )}
       </div>
       {visibleChildren.map((child) => (
         <FolderMapRow
           key={child.path}
           node={child}
-          depth={depth + 1}
+          folderPathLength={folderPathLength + 1}
           selectedPath={selectedPath}
           onSelect={onSelect}
         />
@@ -128,7 +133,7 @@ export function SearchFolderMap({
 }) {
   return (
     <div className="grid gap-0.5">
-      <FolderMapRow node={tree} depth={0} selectedPath={selectedPath} onSelect={onSelect} />
+      <FolderMapRow node={tree} folderPathLength={0} selectedPath={selectedPath} onSelect={onSelect} />
     </div>
   );
 }

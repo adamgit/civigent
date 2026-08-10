@@ -17,7 +17,7 @@ function regexParseDocumentMarkdown(markdown: string): ParsedSection[] {
   let currentLines: string[] = [];
   let currentHeading = "";
   let currentLevel = 0;
-  const headingStack: Array<{ heading: string; level: number }> = [];
+  const headingStack: Array<{ heading: string; headingLevel: number }> = [];
 
   function flushSection(): void {
     const fullContent = currentLines.join("\n");
@@ -28,7 +28,7 @@ function regexParseDocumentMarkdown(markdown: string): ParsedSection[] {
     sections.push({
       headingPath: [...headingPath],
       heading: currentHeading,
-      level: currentLevel,
+      headingLevel: currentLevel,
       body: body.replace(/\n+$/, ""),
       fullContent: fullContent.replace(/\n+$/, ""),
     });
@@ -42,15 +42,15 @@ function regexParseDocumentMarkdown(markdown: string): ParsedSection[] {
           flushSection();
         }
       }
-      const newLevel = headingMatch[1].length;
+      const newHeadingLevel = headingMatch[1].length;
       const newHeading = headingMatch[2].trim();
-      while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= newLevel) {
+      while (headingStack.length > 0 && headingStack[headingStack.length - 1].headingLevel >= newHeadingLevel) {
         headingStack.pop();
       }
-      headingStack.push({ heading: newHeading, level: newLevel });
+      headingStack.push({ heading: newHeading, headingLevel: newHeadingLevel });
       currentLines = [line];
       currentHeading = newHeading;
-      currentLevel = newLevel;
+      currentLevel = newHeadingLevel;
     } else {
       currentLines.push(line);
     }
@@ -65,7 +65,7 @@ function regexParseDocumentMarkdown(markdown: string): ParsedSection[] {
 
 function containsHeadings(markdown: string): boolean {
   const sections = parseDocumentMarkdown(markdown);
-  return sections.some((s) => s.level > 0);
+  return sections.some((s) => s.headingLevel > 0);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -79,7 +79,7 @@ describe("8a: code-fence-aware parsing", () => {
 
     // Should be 2 sections: root (empty) + "Real"
     // NOT 3 sections (the ## inside the fence is not a heading)
-    const headingSections = sections.filter((s) => s.level > 0);
+    const headingSections = sections.filter((s) => s.headingLevel > 0);
     expect(headingSections).toHaveLength(1);
     expect(headingSections[0].heading).toBe("Real");
     expect(headingSections[0].body).toContain("```");
@@ -90,7 +90,7 @@ describe("8a: code-fence-aware parsing", () => {
     const input = "## Real\n\n    ## indented code\n\nMore text";
     const sections = parseDocumentMarkdown(input);
 
-    const headingSections = sections.filter((s) => s.level > 0);
+    const headingSections = sections.filter((s) => s.headingLevel > 0);
     expect(headingSections).toHaveLength(1);
     expect(headingSections[0].heading).toBe("Real");
   });
@@ -99,7 +99,7 @@ describe("8a: code-fence-aware parsing", () => {
     const input = "## Real\n\n<div>\n## Inside HTML\n</div>";
     const sections = parseDocumentMarkdown(input);
 
-    const headingSections = sections.filter((s) => s.level > 0);
+    const headingSections = sections.filter((s) => s.headingLevel > 0);
     expect(headingSections).toHaveLength(1);
     expect(headingSections[0].heading).toBe("Real");
   });
@@ -116,10 +116,10 @@ describe("8a: code-fence-aware parsing", () => {
     const input = "Real Heading\n============\n\nBody text";
     const sections = parseDocumentMarkdown(input);
 
-    const headingSections = sections.filter((s) => s.level > 0);
+    const headingSections = sections.filter((s) => s.headingLevel > 0);
     expect(headingSections).toHaveLength(1);
     expect(headingSections[0].heading).toBe("Real Heading");
-    expect(headingSections[0].level).toBe(1);
+    expect(headingSections[0].headingLevel).toBe(1);
   });
 });
 

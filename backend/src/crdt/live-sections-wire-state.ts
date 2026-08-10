@@ -48,7 +48,7 @@ export async function buildWireLiveSectionsState(
   const topology: WireLiveSectionRef[] = layout.map((entry) => ({
     fragment_key: entry.fragmentKey,
     heading_path: [...entry.headingPath],
-    level: entry.level,
+    heading_level: entry.headingLevel,
   }));
 
   const blocked_section_ids = await resolveBlockedFragmentKeys(session, layout, currentProposalId);

@@ -2,6 +2,7 @@ import * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 import type {
   ClientInstanceId,
+  DocPath,
   ModeTransitionRequest,
   ModeTransitionResult,
   DocumentReplacementNoticePayload,
@@ -63,7 +64,7 @@ export class CrdtTransport {
   private provider: CrdtProvider;
   private readonly opts: CrdtTransportOptions;
 
-  constructor(docPath: string, opts: CrdtTransportOptions = {}) {
+  constructor(docPath: DocPath, opts: CrdtTransportOptions = {}) {
     this.opts = opts;
     // Reuse the replica's shared doc when provided (single-replica promotion),
     // else mint one (legacy standalone-editor path).
@@ -133,7 +134,7 @@ export class CrdtTransport {
     return this.provider.state;
   }
 
-  get documentPath(): string {
+  get documentPath(): DocPath {
     return this.provider.documentPath;
   }
 

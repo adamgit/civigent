@@ -23,7 +23,7 @@ function outcomeText(outcome: ForcePublishOutcome): { tone: "green" | "amber" | 
     case "aborted":
       return { tone: "amber", text: outcome.message ?? "Publish aborted — editors did not settle in time." };
     case "failed":
-      return { tone: "red", text: outcome.message ? `Publish failed: ${outcome.message}` : "Publish failed." };
+      return { tone: "red", text: outcome.message ? outcome.message : "Publish failed." };
   }
 }
 

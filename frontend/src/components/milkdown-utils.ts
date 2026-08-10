@@ -13,6 +13,13 @@ import {
   proseMirrorNodeToMarkdown,
   type ProseMirrorNode,
 } from "@ks/milkdown-serializer";
+import { HeadingLevel } from "../types/shared";
+
+function headingLevelFromProseMirrorHeading(attrs: { level?: unknown }): HeadingLevel {
+  return (
+    (typeof attrs.level === "number" ? HeadingLevel.tryParse(attrs.level) : null) ?? HeadingLevel.parse(1)
+  );
+}
 
 /**
  * Normalize markdown by round-tripping through the shared serializer.
@@ -52,12 +59,10 @@ export function resolveHeadingPathFromDoc(
     const nodeEnd = offset + child.nodeSize;
 
     if (child.type.name === "heading") {
-      const level: number =
-        typeof child.attrs.level === "number" ? child.attrs.level : 1;
+      const headingLevel = headingLevelFromProseMirrorHeading(child.attrs);
       const text = child.textContent.trim();
-      // Truncate stack to current depth and set this level.
-      stack.length = Math.max(0, level - 1);
-      stack[level - 1] = text;
+      stack.length = Math.max(0, headingLevel - 1);
+      stack[headingLevel - 1] = text;
     }
 
     // If the position falls within (or before) this node, return current path.

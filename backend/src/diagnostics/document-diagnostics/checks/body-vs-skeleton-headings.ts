@@ -4,6 +4,7 @@ import { SectionRef } from "../../../domain/section-ref.js";
 import { ensureRecursiveSkeleton, type DocumentDiagnosticsContext } from "../context.js";
 import { isDocumentBeforeFirstHeading } from "../../../storage/section-shape.js";
 import { fragmentKeyFromSectionFile } from "../../../crdt/ydoc-fragments.js";
+import type { HeadingLevel } from "../../../types/shared.js";
 
 /**
  * Compare each physical section body against the skeleton graph so a heading
@@ -22,10 +23,10 @@ export async function runBodyVsSkeletonHeadingsCheck(ctx: DocumentDiagnosticsCon
   try {
     const recursiveSkeleton = await ensureRecursiveSkeleton(ctx);
     const skeletonSectionKeys = new Set<string>();
-    const skeletonSectionsByAbsPath = new Map<string, { headingPath: string[]; heading: string; level: number; sectionFile: string }>();
-    recursiveSkeleton.forEachSection((heading, level, sectionFile, headingPath, absolutePath) => {
+    const skeletonSectionsByAbsPath = new Map<string, { headingPath: string[]; heading: string; headingLevel: HeadingLevel; sectionFile: string }>();
+    recursiveSkeleton.forEachSection((heading, headingLevel, sectionFile, headingPath, absolutePath) => {
       skeletonSectionKeys.add(SectionRef.headingKey(headingPath));
-      skeletonSectionsByAbsPath.set(absolutePath, { headingPath: [...headingPath], heading, level, sectionFile });
+      skeletonSectionsByAbsPath.set(absolutePath, { headingPath: [...headingPath], heading, headingLevel, sectionFile });
     });
 
     const unpromoted: string[] = [];
@@ -49,10 +50,10 @@ export async function runBodyVsSkeletonHeadingsCheck(ctx: DocumentDiagnosticsCon
       }
       const parsed = parseDocumentMarkdown(body);
       const realSections = parsed.filter((s) => s.headingPath.length > 0);
-      const parentPath = isDocumentBeforeFirstHeading({ heading: meta.heading, level: meta.level, headingPath: meta.headingPath })
+      const parentPath = isDocumentBeforeFirstHeading({ heading: meta.heading, headingLevel: meta.headingLevel, headingPath: meta.headingPath })
         ? []
         : meta.headingPath;
-      const fragmentKey = fragmentKeyFromSectionFile(meta.sectionFile, isDocumentBeforeFirstHeading({ heading: meta.heading, level: meta.level, headingPath: meta.headingPath }));
+      const fragmentKey = fragmentKeyFromSectionFile(meta.sectionFile, isDocumentBeforeFirstHeading({ heading: meta.heading, headingLevel: meta.headingLevel, headingPath: meta.headingPath }));
       for (const section of realSections) {
         const fullPath = [...parentPath, ...section.headingPath];
         const key = SectionRef.headingKey(fullPath);
@@ -61,7 +62,7 @@ export async function runBodyVsSkeletonHeadingsCheck(ctx: DocumentDiagnosticsCon
         // match. Only report headings whose full path is NOT in the skeleton.
         if (!skeletonSectionKeys.has(key)) {
           const preview = section.body.slice(0, 80).replace(/\s+/g, " ");
-          unpromoted.push(`${meta.sectionFile} (${fragmentKey}) hides "${section.heading}" (level ${section.level}) at ${key} — body: "${preview}"`);
+          unpromoted.push(`${meta.sectionFile} (${fragmentKey}) hides "${section.heading}" (heading level ${section.headingLevel}) at ${key} — body: "${preview}"`);
         }
       }
     }
