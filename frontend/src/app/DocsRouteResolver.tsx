@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 import { apiClient } from "../services/api-client";
 import { DocsBrowserPage } from "../pages/DocsBrowserPage";
 import { DocumentPage } from "../pages/DocumentPage";
+// Prior UI: import { LegacyFolderPage as FolderPage } from "../pages/LEGACY_FolderPage";
 import { FolderPage } from "../pages/FolderPage";
 import { GovernanceDocumentPage } from "../pages/GovernanceDocumentPage";
 import { AgentDocumentPage } from "../pages/AgentDocumentPage";

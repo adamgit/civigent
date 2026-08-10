@@ -1,8 +1,16 @@
+/**
+ * Folder details page (current). Prior UI: `LEGACY_FolderPage.tsx`.
+ * Swap the import in `DocsRouteResolver.tsx` to compare or roll back.
+ */
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useOutletContext } from "react-router-dom";
-import { SharedPageHeader } from "../components/SharedPageHeader";
-import { ContentPanel } from "../components/ContentPanel";
 import { PageStatusBar } from "../components/PageStatusBar";
+import { FolderCard } from "../components/folder-details/FolderCard";
+import { FolderFileRow } from "../components/folder-details/FolderFileRow";
+import {
+  NewFileOrFolder,
+  type NewFileOrFolderSubmit,
+} from "../components/folder-details/NewFileOrFolder";
 import { docHref, folderHref } from "../app/docs-location";
 import { apiClient } from "../services/api-client";
 import type { DocumentTreeEntry } from "../types/shared.js";
@@ -14,17 +22,48 @@ interface FolderPageProps {
   folderPath: FolderPath;
 }
 
+type SortMode = "az" | "active";
+
 interface ChildFolderInfo {
   path: string;
   directFileCount: number;
   directFolderCount: number;
+  directFileNames: string[];
 }
 
 interface FolderStats {
   childFiles: string[];
   childFolders: ChildFolderInfo[];
-  descendantFileCount: number;
-  descendantFolderCount: number;
+}
+
+/** Latest committed-activity timestamp (ms) per doc path — proxy for “active”. */
+function lastActivityMsByDoc(
+  items: Array<{ timestamp: string; sections: Array<{ doc_path: string }> }>,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const item of items) {
+    const ms = Date.parse(item.timestamp);
+    if (Number.isNaN(ms)) continue;
+    for (const section of item.sections) {
+      const prior = out.get(section.doc_path);
+      if (prior == null || ms > prior) {
+        out.set(section.doc_path, ms);
+      }
+    }
+  }
+  return out;
+}
+
+function maxActivityUnderFolder(folderPath: string, activityByDoc: Map<string, number>): number {
+  const folder = FolderPath.tryParse(folderPath);
+  if (!folder) return 0;
+  let max = 0;
+  for (const [docPath, ms] of activityByDoc) {
+    if (FolderPath.containsDoc(folder, docPath) && ms > max) {
+      max = ms;
+    }
+  }
+  return max;
 }
 
 function getDisplayName(path: string): string {
@@ -39,8 +78,6 @@ function getDisplayName(path: string): string {
 function ensureMarkdownSuffix(path: string): string {
   return path.toLowerCase().endsWith(".md") ? path : `${path}.md`;
 }
-
-
 
 function findFolderEntry(entries: DocumentTreeEntry[], folderPath: string): DocumentTreeEntry | null {
   const stack = [...entries];
@@ -75,9 +112,6 @@ function countDirectChildren(entry: DocumentTreeEntry): { files: number; folders
 function getFolderStats(entry: DocumentTreeEntry): FolderStats {
   const childFiles: string[] = [];
   const childFolders: ChildFolderInfo[] = [];
-  let descendantFileCount = 0;
-  let descendantFolderCount = 0;
-
   const directChildren = Array.isArray(entry.children) ? entry.children : [];
   for (const child of directChildren) {
     if (child.type === "file") {
@@ -85,35 +119,18 @@ function getFolderStats(entry: DocumentTreeEntry): FolderStats {
       continue;
     }
     const direct = countDirectChildren(child);
+    const directFileNames = (Array.isArray(child.children) ? child.children : [])
+      .filter((node) => node.type === "file")
+      .map((node) => getDisplayName(node.path))
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
     childFolders.push({
       path: child.path,
       directFileCount: direct.files,
       directFolderCount: direct.folders,
+      directFileNames,
     });
-    const stack = [...(Array.isArray(child.children) ? child.children : [])];
-    while (stack.length > 0) {
-      const node = stack.pop();
-      if (!node) {
-        continue;
-      }
-      if (node.type === "file") {
-        descendantFileCount += 1;
-      } else {
-        descendantFolderCount += 1;
-        if (Array.isArray(node.children)) {
-          stack.push(...node.children);
-        }
-      }
-    }
   }
-
-  return { childFiles, childFolders, descendantFileCount, descendantFolderCount };
-}
-
-function formatFolderChildCounts(folder: ChildFolderInfo): string {
-  const fileLabel = folder.directFileCount === 1 ? "1 file" : `${folder.directFileCount} files`;
-  const folderLabel = folder.directFolderCount === 1 ? "1 folder" : `${folder.directFolderCount} folders`;
-  return `${fileLabel} · ${folderLabel}`;
+  return { childFiles, childFolders };
 }
 
 function folderPathForClipboard(path: string): string {
@@ -121,6 +138,10 @@ function folderPathForClipboard(path: string): string {
     return "/";
   }
   return path.endsWith("/") ? path : `${path}/`;
+}
+
+function compareByName(a: string, b: string): number {
+  return getDisplayName(a).localeCompare(getDisplayName(b), undefined, { sensitivity: "base" });
 }
 
 function CopyPathButton({
@@ -137,7 +158,7 @@ function CopyPathButton({
   return (
     <button
       type="button"
-      className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded text-text-muted hover:text-text-primary hover:bg-[rgba(0,0,0,0.04)]"
+      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint hover:bg-section-hover hover:text-text-muted"
       title={copied ? "Copied" : "Copy path"}
       aria-label={copied ? "Path copied" : `Copy path for ${label}`}
       onClick={async (event) => {
@@ -180,36 +201,46 @@ function FolderPathBreadcrumb({
 }) {
   const parts = folderPath.split("/").filter(Boolean);
   const segmentClass =
-    "border-none bg-transparent p-0 font-inherit text-inherit cursor-pointer hover:text-accent-text hover:underline";
+    "border-none bg-transparent p-0 font-inherit text-inherit cursor-pointer hover:text-text-secondary hover:underline";
 
   return (
-    <span className="inline-flex min-w-0 max-w-full items-center truncate">
+    <span className="inline-flex min-w-0 max-w-full items-center truncate font-ui text-[22px] leading-tight tracking-tight">
+      <span className="mr-1.5 inline-flex shrink-0 text-folder-new" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
+          <path
+            d="M2.5 4.25A1.25 1.25 0 0 1 3.75 3h3.1l1.2 1.35h4.2A1.25 1.25 0 0 1 13.5 5.6v6.15A1.25 1.25 0 0 1 12.25 13H3.75A1.25 1.25 0 0 1 2.5 11.75V4.25Z"
+            stroke="currentColor"
+            strokeWidth="1.35"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </span>
       <button
         type="button"
-        className={`shrink-0 ${segmentClass}`}
+        className={`shrink-0 text-text-faint ${segmentClass}`}
         onClick={() => onNavigate(folderHref(FolderPath.root))}
         aria-label="Open documents root"
       >
-        /
+        docs
       </button>
       {parts.map((part, index) => {
         const segmentPath = `/${parts.slice(0, index + 1).join("/")}`;
         const isLast = index === parts.length - 1;
         return (
           <span key={segmentPath} className="inline-flex min-w-0 items-center">
+            <span className="mx-1.5 shrink-0 text-folder-new">/</span>
             {isLast ? (
-              <span className="truncate">{part}</span>
+              <span className="truncate font-semibold text-text-primary">{part}</span>
             ) : (
               <button
                 type="button"
-                className={`min-w-0 truncate ${segmentClass}`}
+                className={`min-w-0 truncate text-text-faint ${segmentClass}`}
                 onClick={() => onNavigate(folderHref(FolderPath.parse(segmentPath)))}
                 aria-label={`Open folder ${segmentPath}`}
               >
                 {part}
               </button>
             )}
-            {!isLast ? <span className="shrink-0 text-text-faint">/</span> : null}
           </span>
         );
       })}
@@ -217,17 +248,16 @@ function FolderPathBreadcrumb({
   );
 }
 
+function sectionLabelClassName() {
+  return "mb-3 font-ui text-[10px] font-semibold uppercase tracking-[0.14em] text-text-faint";
+}
+
 export function FolderPage({ folderPath }: FolderPageProps) {
   const navigate = useNavigate();
-  const { entries, treeLoading, createDoc, refreshTree } = useOutletContext<AppLayoutOutletContext>();
-  const [newFileName, setNewFileName] = useState("");
-  const [newFileError, setNewFileError] = useState<string | null>(null);
-  const [creatingNewFile, setCreatingNewFile] = useState(false);
-  const [textFileName, setTextFileName] = useState("");
-  const [textFileContent, setTextFileContent] = useState("");
-  const [textFileError, setTextFileError] = useState<string | null>(null);
-  const [creatingTextFile, setCreatingTextFile] = useState(false);
-  const [sectionNamesByPath, setSectionNamesByPath] = useState<Record<string, string[]>>({});
+  const { entries, treeLoading, refreshTree } = useOutletContext<AppLayoutOutletContext>();
+  const [sortMode, setSortMode] = useState<SortMode>("az");
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const copiedPathTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -235,10 +265,40 @@ export function FolderPage({ folderPath }: FolderPageProps) {
   const [renameError, setRenameError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [folderOpBusy, setFolderOpBusy] = useState(false);
+  const [sectionNamesByPath, setSectionNamesByPath] = useState<Record<string, string[]>>({});
+  const [activityByDoc, setActivityByDoc] = useState<Map<string, number>>(() => new Map());
 
   const folderEntry = useMemo(() => findFolderEntry(entries, folderPath), [entries, folderPath]);
   const stats = useMemo(() => (folderEntry ? getFolderStats(folderEntry) : null), [folderEntry]);
   const folderClipboardPath = folderPathForClipboard(folderPath);
+
+  const sortedFolders = useMemo(() => {
+    if (!stats) return [];
+    const list = [...stats.childFolders];
+    list.sort((a, b) => {
+      if (sortMode === "active") {
+        const am = maxActivityUnderFolder(a.path, activityByDoc);
+        const bm = maxActivityUnderFolder(b.path, activityByDoc);
+        if (am !== bm) return bm - am;
+      }
+      return compareByName(a.path, b.path);
+    });
+    return list;
+  }, [stats, sortMode, activityByDoc]);
+
+  const sortedFiles = useMemo(() => {
+    if (!stats) return [];
+    const list = [...stats.childFiles];
+    list.sort((a, b) => {
+      if (sortMode === "active") {
+        const am = activityByDoc.get(a) ?? 0;
+        const bm = activityByDoc.get(b) ?? 0;
+        if (am !== bm) return bm - am;
+      }
+      return compareByName(a, b);
+    });
+    return list;
+  }, [stats, sortMode, activityByDoc]);
 
   const markPathCopied = (path: string) => {
     setCopiedPath(path);
@@ -257,6 +317,25 @@ export function FolderPage({ folderPath }: FolderPageProps) {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .getActivity(2000, 365)
+      .then((response) => {
+        if (!cancelled) {
+          setActivityByDoc(lastActivityMsByDoc(response.items));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setActivityByDoc(new Map());
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [folderPath]);
+
+  useEffect(() => {
     if (!stats || stats.childFiles.length === 0) {
       setSectionNamesByPath({});
       return;
@@ -267,9 +346,19 @@ export function FolderPage({ folderPath }: FolderPageProps) {
       paths.map(async (path) => {
         try {
           const response = await apiClient.getWorkspaceDocumentStructure(DocPath.parse(path));
-          const names = response.structure
-            .map((node) => node.heading.trim())
-            .filter((heading) => heading.length > 0);
+          const names: string[] = [];
+          const walk = (nodes: typeof response.structure) => {
+            for (const node of nodes) {
+              const heading = node.heading.trim();
+              if (heading.length > 0) {
+                names.push(heading);
+              }
+              if (node.children.length > 0) {
+                walk(node.children);
+              }
+            }
+          };
+          walk(response.structure);
           return [path, names] as [string, string[]];
         } catch {
           return [path, []] as [string, string[]];
@@ -336,58 +425,52 @@ export function FolderPage({ folderPath }: FolderPageProps) {
     }
   };
 
-  const handleCreateEmptyFile = async (event: FormEvent) => {
-    event.preventDefault();
-    if (creatingNewFile) {
-      return;
-    }
-    const trimmed = newFileName.trim();
-    if (!trimmed) {
-      setNewFileError("File name is required.");
-      return;
-    }
-    setCreatingNewFile(true);
-    setNewFileError(null);
+  const handleCreate = async ({ name, content, isFolder }: NewFileOrFolderSubmit) => {
+    setCreating(true);
+    setCreateError(null);
     try {
-      await createDoc(DocPath.fileInFolder(folderPath, ensureMarkdownSuffix(trimmed)));
-      setNewFileName("");
-    } catch (error) {
-      setNewFileError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setCreatingNewFile(false);
-    }
-  };
+      if (isFolder) {
+        const folderName = name.replace(/\/+$/, "").trim();
+        if (!folderName) {
+          throw new Error("Folder name is required.");
+        }
+        const newFolder = FolderPath.normalize(
+          folderPath === FolderPath.root ? `/${folderName}` : `${folderPath}/${folderName}`,
+        );
+        // Empty folders are not stored; a placeholder doc materializes the path.
+        await apiClient.createDocument(DocPath.fileInFolder(newFolder, "readme.md"), "");
+        await refreshTree();
+        navigate(folderHref(newFolder));
+        return;
+      }
 
-  const handleCreateFileFromText = async (event: FormEvent) => {
-    event.preventDefault();
-    if (creatingTextFile) {
-      return;
-    }
-    const trimmed = textFileName.trim();
-    if (!trimmed) {
-      setTextFileError("File name is required.");
-      return;
-    }
-    setCreatingTextFile(true);
-    setTextFileError(null);
-    try {
-      const nextDocPath = DocPath.fileInFolder(folderPath, ensureMarkdownSuffix(trimmed));
-      await apiClient.createDocument(nextDocPath, textFileContent);
+      const fileName = ensureMarkdownSuffix(name.replace(/\/+$/, "").trim());
+      if (!fileName || fileName === ".md") {
+        throw new Error("File name is required.");
+      }
+      const nextDocPath = DocPath.fileInFolder(folderPath, fileName);
+      await apiClient.createDocument(nextDocPath, content);
       await refreshTree();
       navigate(docHref(nextDocPath));
-      setTextFileName("");
-      setTextFileContent("");
     } catch (error) {
-      setTextFileError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setCreateError(message);
+      throw error instanceof Error ? error : new Error(message);
     } finally {
-      setCreatingTextFile(false);
+      setCreating(false);
     }
   };
 
+  const sortButtonClass = (mode: SortMode) =>
+    `border-none px-2 py-0.5 rounded-md font-ui text-[11px] cursor-pointer transition-colors ${
+      sortMode === mode
+        ? "bg-folder-sort-active text-text-secondary"
+        : "bg-transparent text-text-faint hover:text-text-muted"
+    }`;
+
   return (
-    <div className="flex h-full flex-col">
-      <SharedPageHeader title={`Folder: ${FolderPath.displayName(folderPath)}`} backTo="/docs" />
-      <div className="flex-1 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
+    <div className="flex h-full flex-col bg-folder-page-bg">
+      <div className="flex-1 overflow-auto px-8 py-7 font-ui">
         {treeLoading ? (
           <p className="text-xs text-text-muted">Loading folder details...</p>
         ) : null}
@@ -399,294 +482,148 @@ export function FolderPage({ folderPath }: FolderPageProps) {
         ) : null}
 
         {folderEntry && stats ? (
-          <>
-            <ContentPanel>
-              <ContentPanel.Header className="gap-3 flex-wrap">
-                <div className="min-w-0 flex-1">
-                  <ContentPanel.Title icon={<span className="text-text-muted">&#128193;</span>}>
-                    <span className="inline-flex min-w-0 items-center gap-1">
-                      <FolderPathBreadcrumb folderPath={folderPath} onNavigate={navigate} />
-                      <CopyPathButton
-                        path={folderClipboardPath}
-                        label={FolderPath.displayName(folderPath)}
-                        copied={copiedPath === folderClipboardPath}
-                        onCopied={markPathCopied}
-                      />
-                    </span>
-                  </ContentPanel.Title>
-                </div>
-                <form
-                  onSubmit={handleCreateEmptyFile}
-                  className="flex w-full min-w-0 items-center gap-2 sm:w-auto sm:max-w-md sm:flex-1"
-                >
-                  <input
-                    type="text"
-                    value={newFileName}
-                    onChange={(event) => setNewFileName(event.target.value)}
-                    placeholder="New file name"
-                    className="input-field min-w-0 flex-1 py-1.5 text-xs"
-                    disabled={creatingNewFile}
-                    aria-label="New file name"
+          <div className="w-full max-w-5xl">
+            <div className="flex flex-wrap items-start justify-between gap-4 pb-5">
+              <div className="min-w-0">
+                <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-faint">
+                  Folder
+                </p>
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <FolderPathBreadcrumb folderPath={folderPath} onNavigate={navigate} />
+                  <CopyPathButton
+                    path={folderClipboardPath}
+                    label={FolderPath.displayName(folderPath)}
+                    copied={copiedPath === folderClipboardPath}
+                    onCopied={markPathCopied}
                   />
-                  <button
-                    type="submit"
-                    className="btn-primary shrink-0 px-3 py-1.5 text-xs"
-                    disabled={creatingNewFile}
-                  >
-                    {creatingNewFile ? "Creating..." : "Create"}
-                  </button>
-                </form>
-                {folderPath !== FolderPath.root ? (
-                  renaming ? (
-                    <form
-                      onSubmit={handleRenameFolder}
-                      className="flex w-full min-w-0 items-center gap-2 sm:w-auto sm:max-w-md"
+                </div>
+                <p className="mt-2 text-[12px] text-text-faint">
+                  {stats.childFiles.length} files · {stats.childFolders.length} folders
+                  {" — hover any item for a preview."}
+                </p>
+              </div>
+
+              <div className="flex flex-col items-end gap-2.5">
+                {renaming ? (
+                  <form onSubmit={handleRenameFolder} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={renameValue}
+                      onChange={(event) => setRenameValue(event.target.value)}
+                      className="input-field min-w-[200px] py-1.5 text-xs"
+                      disabled={folderOpBusy}
+                      aria-label="New folder path"
+                    />
+                    <button type="submit" className="btn-primary px-3 py-1.5 text-xs" disabled={folderOpBusy}>
+                      {folderOpBusy ? "Renaming..." : "Save"}
+                    </button>
+                    <button
+                      type="button"
+                      className="border-none bg-transparent p-0 text-[12px] text-text-faint hover:text-text-muted"
+                      disabled={folderOpBusy}
+                      onClick={() => {
+                        setRenaming(false);
+                        setRenameError(null);
+                      }}
                     >
-                      <input
-                        type="text"
-                        value={renameValue}
-                        onChange={(event) => setRenameValue(event.target.value)}
-                        className="input-field min-w-0 flex-1 py-1.5 text-xs"
-                        disabled={folderOpBusy}
-                        aria-label="New folder path"
-                      />
-                      <button
-                        type="submit"
-                        className="btn-primary shrink-0 px-3 py-1.5 text-xs"
-                        disabled={folderOpBusy}
-                      >
-                        {folderOpBusy ? "Renaming..." : "Save"}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-secondary shrink-0 px-3 py-1.5 text-xs"
-                        disabled={folderOpBusy}
-                        onClick={() => {
-                          setRenaming(false);
-                          setRenameError(null);
-                        }}
-                      >
-                        Cancel
-                      </button>
-                    </form>
-                  ) : (
-                    <div className="flex shrink-0 items-center gap-2">
-                      <button
-                        type="button"
-                        className="btn-secondary px-3 py-1.5 text-xs"
-                        disabled={folderOpBusy}
-                        onClick={() => {
-                          setRenameValue(folderPath);
-                          setRenameError(null);
-                          setRenaming(true);
-                        }}
-                      >
-                        Rename
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-danger px-3 py-1.5 text-xs"
-                        disabled={folderOpBusy}
-                        onClick={handleDeleteFolder}
-                      >
-                        {folderOpBusy ? "Working..." : "Delete"}
-                      </button>
-                    </div>
-                  )
-                ) : null}
-              </ContentPanel.Header>
-              {newFileError ? (
-                <div className="px-4 pt-2">
-                  <p className="text-xs text-status-red">{newFileError}</p>
-                </div>
-              ) : null}
-              {renameError ? (
-                <div className="px-4 pt-2">
-                  <p className="text-xs text-status-red">{renameError}</p>
-                </div>
-              ) : null}
-              {deleteError ? (
-                <div className="px-4 pt-2">
-                  <p className="text-xs text-status-red">{deleteError}</p>
-                </div>
-              ) : null}
-              <ContentPanel.Body>
-                <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-                  <div className="min-w-0">
-                    <h3 className="mb-2 text-xs font-semibold text-text-secondary">Files</h3>
-                    {stats.childFiles.length === 0 ? (
-                      <p className="text-xs text-text-muted">No files in this folder.</p>
-                    ) : (
-                      <ul className="m-0 list-none space-y-0 p-0">
-                        {stats.childFiles.map((path) => {
-                          const sections = sectionNamesByPath[path];
-                          const sectionTitle =
-                            sections === undefined || sections.length === 0
-                              ? undefined
-                              : sections.join(" | ");
-                          const openFile = () =>
-                            navigate(docHref(DocPath.parse(path)));
-                          return (
-                            <li key={path} className="min-w-0">
-                              <div className="flex w-full min-w-0 flex-col gap-0 rounded-md px-2 py-0.5 hover:bg-section-hover">
-                                <span className="flex min-w-0 items-center gap-1.5">
-                                  <span
-                                    className="w-4 shrink-0 text-center text-[13px] text-text-muted opacity-45"
-                                    aria-hidden="true"
-                                  >
-                                    &#128196;
-                                  </span>
-                                  <button
-                                    type="button"
-                                    className="min-w-0 truncate border-none bg-transparent p-0 text-left text-[13px] font-medium text-accent-text cursor-pointer hover:underline"
-                                    onClick={openFile}
-                                  >
-                                    {getDisplayName(path)}
-                                  </button>
-                                  <CopyPathButton
-                                    path={path}
-                                    label={getDisplayName(path)}
-                                    copied={copiedPath === path}
-                                    onCopied={markPathCopied}
-                                  />
-                                </span>
-                                {sections === undefined ? (
-                                  <button
-                                    type="button"
-                                    className="block w-full truncate border-none bg-transparent pl-5 text-left text-[11px] italic text-text-faint cursor-pointer"
-                                    onClick={openFile}
-                                  >
-                                    (loading contents)
-                                  </button>
-                                ) : sections.length === 0 ? (
-                                  <button
-                                    type="button"
-                                    className="block w-full truncate border-none bg-transparent pl-5 text-left text-[11px] font-medium text-text-secondary cursor-pointer"
-                                    onClick={openFile}
-                                  >
-                                    No sections
-                                  </button>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    className="block w-full truncate border-none bg-transparent pl-5 text-left text-[11px] font-medium text-text-secondary cursor-pointer"
-                                    title={sectionTitle}
-                                    onClick={openFile}
-                                  >
-                                    {sections.map((name, index) => (
-                                      <span key={`${path}-${index}-${name}`}>
-                                        {index > 0 ? (
-                                          <span
-                                            aria-hidden="true"
-                                            className="mx-1.5 font-normal text-text-faint"
-                                          >
-                                            |
-                                          </span>
-                                        ) : null}
-                                        {name}
-                                      </span>
-                                    ))}
-                                  </button>
-                                )}
-                              </div>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                  </div>
-
-                  <div className="min-w-0">
-                    <h3 className="mb-2 text-xs font-semibold text-text-secondary">Folders</h3>
-                    {stats.childFolders.length === 0 ? (
-                      <p className="text-xs text-text-muted">No subfolders.</p>
-                    ) : (
-                      <ul className="m-0 list-none space-y-0 p-0">
-                        {stats.childFolders.map((folder) => {
-                          const clipboardPath = folderPathForClipboard(folder.path);
-                          const childFolderPath = FolderPath.tryParse(folder.path);
-                          return (
-                            <li key={folder.path} className="min-w-0">
-                              <div className="flex w-full min-w-0 items-center justify-between gap-3 rounded-md px-2 py-0.5 hover:bg-section-hover">
-                                <span className="flex min-w-0 items-center gap-1.5">
-                                  <span
-                                    className="w-4 shrink-0 text-center text-[13px] text-text-muted opacity-45"
-                                    aria-hidden="true"
-                                  >
-                                    &#128193;
-                                  </span>
-                                  {childFolderPath ? (
-                                    <button
-                                      type="button"
-                                      className="min-w-0 truncate border-none bg-transparent p-0 text-left text-[13px] font-medium text-accent-text cursor-pointer hover:underline"
-                                      onClick={() => navigate(folderHref(childFolderPath))}
-                                    >
-                                      {getDisplayName(folder.path)}
-                                    </button>
-                                  ) : (
-                                    <span className="min-w-0 truncate text-left text-[13px] font-medium text-text-secondary">
-                                      {getDisplayName(folder.path)}
-                                    </span>
-                                  )}
-                                  <CopyPathButton
-                                    path={clipboardPath}
-                                    label={getDisplayName(folder.path)}
-                                    copied={copiedPath === clipboardPath}
-                                    onCopied={markPathCopied}
-                                  />
-                                </span>
-                                <span className="shrink-0 text-[11px] text-text-faint">
-                                  {formatFolderChildCounts(folder)}
-                                </span>
-                              </div>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                  </div>
-                </div>
-              </ContentPanel.Body>
-              <ContentPanel.Summary>
-                {stats.childFiles.length} files · {stats.childFolders.length} folders ·{" "}
-                {stats.descendantFileCount} total files · {stats.descendantFolderCount} total subfolders
-              </ContentPanel.Summary>
-            </ContentPanel>
-
-            <ContentPanel>
-              <ContentPanel.Header>
-                <ContentPanel.Title icon={<span className="text-text-muted">&#9998;</span>}>
-                  Create from text
-                </ContentPanel.Title>
-              </ContentPanel.Header>
-              <ContentPanel.Body>
-                <form onSubmit={handleCreateFileFromText} className="flex flex-col gap-2">
-                  <input
-                    type="text"
-                    value={textFileName}
-                    onChange={(event) => setTextFileName(event.target.value)}
-                    placeholder="new-file-name"
-                    className="input-field text-sm"
-                    disabled={creatingTextFile}
-                  />
-                  <textarea
-                    value={textFileContent}
-                    onChange={(event) => setTextFileContent(event.target.value)}
-                    rows={8}
-                    placeholder="Write markdown content here..."
-                    className="input-field font-[family-name:var(--font-mono)] text-xs"
-                    disabled={creatingTextFile}
-                  />
-                  <div>
-                    <button type="submit" className="btn-primary text-xs" disabled={creatingTextFile}>
-                      {creatingTextFile ? "Creating..." : "Create from text"}
+                      cancel
+                    </button>
+                  </form>
+                ) : (
+                  <div className="flex items-center gap-3 text-[12px]">
+                    <button
+                      type="button"
+                      className="border-none bg-transparent p-0 text-text-faint hover:text-text-secondary"
+                      disabled={folderOpBusy}
+                      onClick={() => {
+                        setRenameValue(folderPath);
+                        setRenameError(null);
+                        setRenaming(true);
+                      }}
+                    >
+                      Rename
+                    </button>
+                    <button
+                      type="button"
+                      className="border-none bg-transparent p-0 text-folder-danger hover:text-folder-danger-hover"
+                      disabled={folderOpBusy}
+                      onClick={handleDeleteFolder}
+                    >
+                      {folderOpBusy ? "Working..." : "Delete"}
                     </button>
                   </div>
-                </form>
-                {textFileError ? <p className="mt-2 text-xs text-status-red">{textFileError}</p> : null}
-              </ContentPanel.Body>
-            </ContentPanel>
-          </>
+                )}
+                <div className="flex items-center gap-0.5 text-[11px] text-text-faint">
+                  <span className="mr-1.5">order</span>
+                  <button type="button" className={sortButtonClass("az")} onClick={() => setSortMode("az")}>
+                    A–Z
+                  </button>
+                  <button
+                    type="button"
+                    className={sortButtonClass("active")}
+                    onClick={() => setSortMode("active")}
+                  >
+                    active first
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {renameError ? <p className="mb-3 text-xs text-status-red">{renameError}</p> : null}
+            {deleteError ? <p className="mb-3 text-xs text-status-red">{deleteError}</p> : null}
+
+            <div className="grid grid-cols-1 gap-y-8 border-t border-folder-divider pt-6 md:grid-cols-[max-content_minmax(0,1fr)] md:gap-y-0">
+              <section className="min-w-0 md:pr-8">
+                <h2 className={sectionLabelClassName()}>Folders · {sortedFolders.length}</h2>
+                {sortedFolders.length === 0 ? (
+                  <p className="text-xs text-text-muted">No subfolders.</p>
+                ) : (
+                  <ul className="m-0 flex list-none flex-col gap-2 p-0">
+                    {sortedFolders.map((folder) => {
+                      const childFolderPath = FolderPath.tryParse(folder.path);
+                      return (
+                        <li key={folder.path} className="min-w-0">
+                          <FolderCard
+                            name={getDisplayName(folder.path)}
+                            fileCount={folder.directFileCount}
+                            folderCount={folder.directFolderCount}
+                            fileNames={folder.directFileNames}
+                            onClick={() => {
+                              if (childFolderPath) {
+                                navigate(folderHref(childFolderPath));
+                              }
+                            }}
+                          />
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </section>
+
+              <section className="min-w-0 border-folder-divider md:border-l md:pl-8">
+                <h2 className={sectionLabelClassName()}>Files · {sortedFiles.length}</h2>
+                {sortedFiles.length === 0 ? (
+                  <p className="mb-2 text-xs text-text-muted">No files in this folder.</p>
+                ) : (
+                  <ul className="m-0 list-none p-0">
+                    {sortedFiles.map((path) => (
+                      <li key={path} className="border-b border-folder-divider last:border-b-0">
+                        <FolderFileRow
+                          name={getDisplayName(path)}
+                          sectionNames={sectionNamesByPath[path]}
+                          onClick={() => navigate(docHref(DocPath.parse(path)))}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="border-t border-folder-divider">
+                  <NewFileOrFolder busy={creating} error={createError} onSubmit={handleCreate} />
+                </div>
+              </section>
+            </div>
+          </div>
         ) : null}
       </div>
       <PageStatusBar items={["Folder", folderPath]} />

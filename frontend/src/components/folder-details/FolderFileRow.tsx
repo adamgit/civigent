@@ -1,0 +1,79 @@
+export type FolderFileStatusDot = "new" | "agent";
+
+export interface FolderFileRowProps {
+  name: string;
+  meta?: string;
+  /** Section / heading names shown on hover to the right of the filename. */
+  sectionNames?: string[];
+  statusDots?: FolderFileStatusDot[];
+  onClick: () => void;
+}
+
+const DOT_CLASS: Record<FolderFileStatusDot, string> = {
+  new: "bg-folder-new",
+  agent: "bg-agent",
+};
+
+function SectionPreview({ names }: { names: string[] }) {
+  if (names.length === 0) {
+    return <span className="text-[12px] text-text-faint">No sections</span>;
+  }
+
+  return (
+    <span className="block truncate text-[12px] text-text-secondary" title={names.join(" · ")}>
+      {names.map((heading, index) => (
+        <span key={`${index}-${heading}`}>
+          {index > 0 ? <span className="text-text-faint"> · </span> : null}
+          <span className="font-mono text-[10px] font-semibold text-folder-link" aria-hidden="true">
+            H{" "}
+          </span>
+          {heading}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+export function FolderFileRow({
+  name,
+  meta,
+  sectionNames,
+  statusDots = [],
+  onClick,
+}: FolderFileRowProps) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group flex w-full min-w-0 items-center gap-3 py-2.5 text-left transition-colors hover:bg-section-hover"
+    >
+      {statusDots.length > 0 ? (
+        <span className="flex w-3.5 shrink-0 items-center justify-center gap-0.5" aria-hidden="true">
+          {statusDots.map((dot, index) => (
+            <span
+              key={`${dot}-${index}`}
+              className={`inline-block h-1.5 w-1.5 rounded-full ${DOT_CLASS[dot]}`}
+            />
+          ))}
+        </span>
+      ) : null}
+      <span className="max-w-[50%] shrink-0 truncate text-[15px] font-medium text-folder-link group-hover:text-folder-link-hover group-hover:underline">
+        {name}
+      </span>
+      <span className="ml-auto min-w-0 flex-1 overflow-hidden text-right">
+        {sectionNames !== undefined ? (
+          <>
+            <span className="hidden group-hover:block">
+              <SectionPreview names={sectionNames} />
+            </span>
+            {meta ? (
+              <span className="block truncate text-[11px] text-text-faint group-hover:hidden">{meta}</span>
+            ) : null}
+          </>
+        ) : meta ? (
+          <span className="block truncate text-[11px] text-text-faint">{meta}</span>
+        ) : null}
+      </span>
+    </button>
+  );
+}

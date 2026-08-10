@@ -56,11 +56,11 @@ function selectRange(startNode: Node, startOffset: number, endNode: Node, endOff
   sel.addRange(range);
 }
 
-function dispatchCopy(): { prevented: boolean; setData: ReturnType<typeof vi.fn> } {
+function dispatchCopy(target: Element = container): { prevented: boolean; setData: ReturnType<typeof vi.fn> } {
   const setData = vi.fn();
   const ev = new Event("copy", { bubbles: true, cancelable: true });
   Object.defineProperty(ev, "clipboardData", { value: { setData } });
-  container.dispatchEvent(ev);
+  target.dispatchEvent(ev);
   return { prevented: ev.defaultPrevented, setData };
 }
 
@@ -127,6 +127,54 @@ describe("cross-section copy (spec 05)", () => {
       "text/plain",
       "## Timeline\n\nTimeline body.\n\n## Overview\n\nOverview body.",
     );
+  });
+
+  it("copies markdown when the selection is anchored on page chrome outside the container", () => {
+    const topbar = document.createElement("div");
+    topbar.textContent = "History";
+    document.body.prepend(topbar);
+    const containerRef = { current: container };
+    const editorRefs = { current: new Map() };
+    renderHook(() => useCrossSectionCopy({ containerRef, displayRows: sections, editorRefs }));
+
+    selectRange(topbar.firstChild!, 0, s1.firstChild!, (s1.firstChild as Text).length);
+    const { prevented, setData } = dispatchCopy(topbar);
+
+    expect(prevented).toBe(true);
+    expect(setData).toHaveBeenCalledWith(
+      "text/plain",
+      "## Overview\n\nOverview body.\n\n## Timeline\n\nTimeline body.",
+    );
+  });
+
+  it("copies a single section whole when the selection sweeps into it from outside", () => {
+    const topbar = document.createElement("div");
+    topbar.textContent = "History";
+    document.body.prepend(topbar);
+    const containerRef = { current: container };
+    const editorRefs = { current: new Map() };
+    renderHook(() => useCrossSectionCopy({ containerRef, displayRows: sections, editorRefs }));
+
+    selectRange(topbar.firstChild!, 0, s0.firstChild!, 4);
+    const { prevented, setData } = dispatchCopy(topbar);
+
+    expect(prevented).toBe(true);
+    expect(setData).toHaveBeenCalledWith("text/plain", "## Overview\n\nOverview body.");
+  });
+
+  it("leaves a copy that touches no section to the native handler", () => {
+    const topbar = document.createElement("div");
+    topbar.textContent = "History";
+    document.body.prepend(topbar);
+    const containerRef = { current: container };
+    const editorRefs = { current: new Map() };
+    renderHook(() => useCrossSectionCopy({ containerRef, displayRows: sections, editorRefs }));
+
+    selectRange(topbar.firstChild!, 0, topbar.firstChild!, 7);
+    const { prevented, setData } = dispatchCopy(topbar);
+
+    expect(prevented).toBe(false);
+    expect(setData).not.toHaveBeenCalled();
   });
 
   it("uses proposal overlay markdown ahead of canonical live markdown for copied proposal sections", () => {

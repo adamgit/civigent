@@ -1,4 +1,5 @@
 import type { WsClientMessage, WsServerEvent } from "../types/shared.js";
+import KsSharedWsWorker from "../workers/ws-shared-worker.ts?sharedworker";
 
 /**
  * Envelope carrying a private origin-only app event across the shared
@@ -92,19 +93,16 @@ class SharedWorkerTransport implements CrossTabTransport {
   }
 
   start(onEvent: WsEventHandler): Promise<void> {
-    const SharedWorkerCtor = (window as Window & {
-      SharedWorker?: new (url: URL, options?: { type?: "classic" | "module"; name?: string }) => SharedWorker;
-    }).SharedWorker;
-    if (!SharedWorkerCtor) {
+    // Vite's ?sharedworker wrapper calls `new SharedWorker(...)` itself. Probe
+    // the global before constructing so unsupported environments fall through
+    // to BroadcastChannel instead of throwing an unhelpful ReferenceError.
+    if (typeof SharedWorker === "undefined") {
       return Promise.reject(new Error("SharedWorker unavailable"));
     }
     this.onEvent = onEvent;
     let worker: SharedWorker;
     try {
-      worker = new SharedWorkerCtor(
-        new URL("../workers/ws-shared-worker.ts", import.meta.url),
-        { type: "module", name: "ks-shared-ws" },
-      );
+      worker = new KsSharedWsWorker({ name: "ks-shared-ws" });
     } catch (err) {
       return Promise.reject(err instanceof Error ? err : new Error(String(err)));
     }

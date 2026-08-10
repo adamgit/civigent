@@ -92,7 +92,8 @@ function makeFakeWorker(): { record: FakeWorkerRecord; impl: unknown } {
 }
 
 function installSharedWorkerMock(mode: "sync-throw" | "ok"): void {
-  (window as unknown as { SharedWorker?: unknown }).SharedWorker = function MockSharedWorker() {
+  // Vite's ?sharedworker wrapper constructs via the bare SharedWorker global.
+  const MockSharedWorker = function MockSharedWorker() {
     if (mode === "sync-throw") {
       throw new Error("sync construction failure");
     }
@@ -100,10 +101,13 @@ function installSharedWorkerMock(mode: "sync-throw" | "ok"): void {
     fakeWorker = record;
     return impl as unknown as SharedWorker;
   } as unknown as new (...args: unknown[]) => SharedWorker;
+  (window as unknown as { SharedWorker?: unknown }).SharedWorker = MockSharedWorker;
+  (globalThis as unknown as { SharedWorker?: unknown }).SharedWorker = MockSharedWorker;
 }
 
 function uninstallSharedWorkerMock(): void {
   delete (window as unknown as { SharedWorker?: unknown }).SharedWorker;
+  delete (globalThis as unknown as { SharedWorker?: unknown }).SharedWorker;
   fakeWorker = null;
 }
 

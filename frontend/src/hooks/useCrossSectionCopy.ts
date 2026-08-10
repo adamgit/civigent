@@ -1,8 +1,14 @@
 /**
- * useCrossSectionCopy — intercepts Ctrl-C when selection spans multiple
- * section editors and writes clean markdown to the clipboard.
+ * useCrossSectionCopy — intercepts Ctrl-C when the selection reaches beyond a
+ * single section editor and writes clean markdown to the clipboard.
  *
- * Single-section selections are left to Milkdown's native copy handler.
+ * The listener lives on `document`, not the sections container: browsers fire
+ * `copy` at the selection's START node, so a drag anchored on page chrome
+ * (topbar, header links) never bubbles through the container. Only selections
+ * that intersect at least one section wrapper are intercepted; an endpoint
+ * outside any section copies that boundary section whole.
+ *
+ * Selections within a single section are left to Milkdown's native copy handler.
  *
  * Selected DOM wrappers resolve to sections by FRAGMENT IDENTITY: each real
  * document section wrapper carries `data-document-section` + `data-fragment-key`,
@@ -132,13 +138,15 @@ export function useCrossSectionCopy({
       const startSection = findSectionContainer(range.startContainer);
       const endSection = findSectionContainer(range.endContainer);
 
-      // If both endpoints are in the same section (or neither is in a section),
-      // let the native/Milkdown copy handler do its thing.
-      if (startSection === endSection) return;
+      // Both endpoints inside the same section: Milkdown's own copy handler owns it.
+      if (startSection !== null && startSection === endSection) return;
 
-      // Selection spans multiple sections — intercept
+      // Everything else is ours IF the selection touches this page's sections at
+      // all — spanning sections, or anchored outside the document body (topbar,
+      // page chrome) and sweeping through it. A selection touching no section
+      // (copying topbar text, a modal, the sidebar) stays native.
       const intersected = collectIntersectedSections(container!, range);
-      if (intersected.length < 2) return;
+      if (intersected.length === 0) return;
 
       // Join wrappers to rows by fragment identity ONLY.
       const rowByFragmentKey = new Map(displayRows.map((s) => [s.fragment_key, s]));
@@ -159,9 +167,11 @@ export function useCrossSectionCopy({
         const isLast = i === intersected.length - 1;
         const handle = editorRefs.current?.get(fragmentKey);
 
-        if (isFirst && handle) {
+        if (isFirst && startSection === el && handle) {
           // Partial: from selection start to end of this section's editor.
           // The fragment content already includes the heading, so no prefix.
+          // An endpoint outside any section (startSection null) skips this and
+          // copies the boundary section whole via the fallback below.
           const partial = extractPartialMarkdown(
             handle,
             range.startContainer,
@@ -169,7 +179,7 @@ export function useCrossSectionCopy({
             "start",
           );
           markdownParts.push(partial ?? fallback);
-        } else if (isLast && handle) {
+        } else if (isLast && endSection === el && handle) {
           // Partial: from start of this section's editor to selection end
           const partial = extractPartialMarkdown(
             handle,
@@ -179,7 +189,8 @@ export function useCrossSectionCopy({
           );
           markdownParts.push(partial ?? fallback);
         } else {
-          // Fully selected middle section — use full content (already includes heading)
+          // Fully selected middle section, or a boundary section whose selection
+          // endpoint sits outside any section — full content (includes heading)
           markdownParts.push(fallback);
         }
       }
@@ -190,7 +201,7 @@ export function useCrossSectionCopy({
       event.clipboardData?.setData("text/plain", markdown);
     }
 
-    container.addEventListener("copy", handleCopy);
-    return () => container.removeEventListener("copy", handleCopy);
+    document.addEventListener("copy", handleCopy);
+    return () => document.removeEventListener("copy", handleCopy);
   }, [containerRef, displayRows, editorRefs, getLiveMarkdown]);
 }

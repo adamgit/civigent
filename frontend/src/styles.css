@@ -61,6 +61,22 @@
   --color-footer-border: #e2ded8;
   --color-footer-text: #a09888;
 
+  /* Folder details page */
+  --color-folder-page-bg: #faf8f4;
+  --color-folder-link: #2f5f5c;
+  --color-folder-link-hover: #214845;
+  --color-folder-card-bg: #f1ede6;
+  --color-folder-card-border: #e4dfd6;
+  --color-folder-card-border-hover: #d6d1ca;
+  --color-folder-divider: #e5e1db;
+  --color-folder-sort-active: #ebe7e1;
+  --color-folder-danger: #d4726a;
+  --color-folder-danger-hover: #c4493a;
+  --color-folder-new: #c47a2a;
+  --color-folder-new-bg: #f3e4d2;
+  --color-folder-new-text: #5c3a12;
+  --color-folder-content-border: #d7e6e8;
+
   /* Fonts */
   --font-body: "Source Serif 4", Georgia, serif;
   --font-ui: "DM Sans", -apple-system, sans-serif;
