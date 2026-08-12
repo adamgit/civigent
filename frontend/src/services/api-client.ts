@@ -648,6 +648,28 @@ export const apiClient = {
     return response;
   },
 
+  async loginCredentials(password: string): Promise<AuthTokenResponse> {
+    const response = await requestJson<AuthTokenResponse>(
+      "/api/auth/login",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          provider: "credentials",
+          password,
+        }),
+      },
+      false,
+    );
+    if (response.identity?.id) {
+      setWriterId(response.identity.id);
+      broadcastAuthEvent("login");
+    }
+    return response;
+  },
+
   async refreshAuthSession(): Promise<boolean> {
     return tryRefreshAccessToken();
   },

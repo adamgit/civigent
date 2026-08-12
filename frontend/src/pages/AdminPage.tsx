@@ -18,6 +18,23 @@ const HUMAN_INVOLVEMENT_PRESETS: { value: HumanInvolvementPresetName; label: str
   description: INVOLVEMENT_PRESET_UI[value].shortDescription,
 }));
 
+type HumanAuthMode = AdminConfig["auth_mode"];
+
+const AUTH_MODE_CURRENT_COPY: Record<HumanAuthMode, string> = {
+  single_user:
+    "No login. Anyone who can open this URL is the admin. That is the intended setup on localhost and is refused on a public hostname. Agent policy approve cannot be combined with this mode, because a request with no cookie already is the local human. To require a login, set KS_AUTH_MODE=credentials and KS_CREDENTIALS_PASSWORD.",
+  credentials:
+    "Humans sign in with the shared password from KS_CREDENTIALS_PASSWORD. The env-configured user (KS_USER_NAME / KS_USER_EMAIL / KS_USER_ID) is always admin after login; there is no bootstrap code and no user table. This mode is allowed on a public hostname. KS_AUTH_SECRET signs session JWTs and is not the login password. Agents are a separate setting (KS_AGENT_AUTH_POLICY); on a public host the default is confidential.",
+  oidc:
+    "Humans sign in through the configured OIDC provider. The first admin is claimed with the one-time bootstrap code printed at startup; further admins are granted in Permissions. There is no local password.",
+};
+
+const AUTH_MODE_ONE_LINERS: Array<{ mode: HumanAuthMode; text: string }> = [
+  { mode: "single_user", text: "no login, localhost only, anyone who can open the URL is admin." },
+  { mode: "credentials", text: "one shared password, public hostname allowed." },
+  { mode: "oidc", text: "SSO only, no local password." },
+];
+
 function Card({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
     <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white mb-4">
@@ -193,6 +210,29 @@ export function AdminPage() {
           <KVRow label="Active writer ID">
             <span className="font-mono">{sessionWriterId ?? resolveWriterId()}</span>
           </KVRow>
+        </Card>
+
+        <Card title="Human login mode">
+          {!adminConfig ? (
+            <ConfigCardFallback configLoaded={configLoaded} configError={configError} />
+          ) : (
+            <div className="px-4 py-3 flex flex-col gap-2">
+              <p className="text-[13px] text-text-primary">
+                <span className="font-mono font-semibold">{adminConfig.auth_mode}</span>
+              </p>
+              <p className="text-[12px] text-text-primary">
+                {AUTH_MODE_CURRENT_COPY[adminConfig.auth_mode]}
+              </p>
+              <p className="text-[11px] font-semibold text-text-muted mt-2 uppercase tracking-wide">
+                Other modes
+              </p>
+              {AUTH_MODE_ONE_LINERS.filter((entry) => entry.mode !== adminConfig.auth_mode).map((entry) => (
+                <p key={entry.mode} className="text-[12px] text-text-muted">
+                  <span className="font-mono">KS_AUTH_MODE={entry.mode}</span> — {entry.text}
+                </p>
+              ))}
+            </div>
+          )}
         </Card>
 
         <Card title="Manual Search" subtitle="Raw `GET /api/search` form for quick backend/manual testing.">

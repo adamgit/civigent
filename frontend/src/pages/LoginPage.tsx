@@ -19,12 +19,15 @@ export function LoginPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
+  const [password, setPassword] = useState("");
   const currentWriterId = resolveWriterId();
   const returnToTarget = useMemo(
     () => resolveReturnToTarget(searchParams.get("returnTo")),
     [searchParams],
   );
-  const supportsSingleUser = methods.some((m) => m.type === "single_user") || methods.length === 0;
+  const supportsSingleUser = methods.some((m) => m.type === "single_user");
+  const credentialsMethod = methods.find((m) => m.type === "credentials");
+  const supportsCredentials = !!credentialsMethod;
   const oidcMethod = methods.find((m) => m.type === "oidc");
   const supportsOidc = !!oidcMethod;
 
@@ -51,6 +54,21 @@ export function LoginPage() {
     }
   };
 
+  const handleCredentialsLogin = async () => {
+    setWorking(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const login = await apiClient.loginCredentials(password);
+      setMessage(`Authenticated as ${login.identity.displayName}.`);
+      navigate(returnToTarget);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWorking(false);
+    }
+  };
+
   const handleLogout = async () => {
     setWorking(true);
     try {
@@ -64,7 +82,13 @@ export function LoginPage() {
     }
   };
 
-  const authMode = supportsSingleUser ? "single_user" : supportsOidc ? "oidc" : (methods.length === 0 ? "loading" : "unknown");
+  const authMode = supportsSingleUser
+    ? "single_user"
+    : supportsCredentials
+      ? "credentials"
+      : supportsOidc
+        ? "oidc"
+        : (methods.length === 0 ? "loading" : "unknown");
 
   return (
     <div className="flex flex-col h-full">
@@ -139,6 +163,56 @@ export function LoginPage() {
                     {supportsSingleUser ? "auto-configured" : "not available"}
                   </span>
                 </button>
+
+                {/* Shared password (credentials mode) */}
+                {supportsCredentials ? (
+                  <form
+                    data-testid="login-credentials-form"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void handleCredentialsLogin();
+                    }}
+                    className="w-full mb-2"
+                    style={{
+                      padding: "12px 16px",
+                      border: "1px solid #eae7e2",
+                      borderRadius: 8,
+                      background: "white",
+                    }}
+                  >
+                    <div className="flex items-center gap-2.5 mb-2">
+                      <span style={{ fontSize: 18, width: 24, textAlign: "center" }}>&#128273;</span>
+                      <div style={{ fontWeight: 500, fontSize: 13 }}>
+                        {credentialsMethod?.displayName ?? "Shared password"}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        data-testid="login-password"
+                        type="password"
+                        autoComplete="current-password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="Password"
+                        className="flex-1"
+                        style={{
+                          padding: "8px 10px",
+                          border: "1px solid #eae7e2",
+                          borderRadius: 6,
+                          fontSize: 13,
+                        }}
+                      />
+                      <button
+                        data-testid="login-credentials"
+                        type="submit"
+                        disabled={working || password.length === 0}
+                        className="btn-secondary"
+                      >
+                        Sign in
+                      </button>
+                    </div>
+                  </form>
+                ) : null}
 
                 {/* OIDC */}
                 <button

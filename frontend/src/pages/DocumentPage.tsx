@@ -152,9 +152,26 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     }
   }, [resourceModel]);
 
-  const handleLiveSessionEnded = useCallback(() => {
+  const handleLiveSessionReinit = useCallback(() => {
     void loadSections(docPath);
   }, [docPath, loadSections]);
+  const handleLiveSessionEnded = useCallback((completeSessionEndHandoff: () => void) => {
+    if (sectionsLoading) {
+      completeSessionEndHandoff();
+      return;
+    }
+    resourceModel.loadSections(docPath).then(
+      (nextSections) => {
+        setSections(nextSections);
+        setError(null);
+        completeSessionEndHandoff();
+      },
+      (err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        completeSessionEndHandoff();
+      },
+    );
+  }, [docPath, resourceModel, sectionsLoading]);
   const handleSuperseded = useCallback(() => {
     setStatusMessage("Editing moved to another tab. This tab is now read-only.");
   }, []);
@@ -164,7 +181,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     onSessionEnded: handleLiveSessionEnded,
     // 4022 restore / 4024 force-rebuild: the hook replaces the live pipeline;
     // reseed canonical so cold previews reflect the replaced content.
-    onSessionReinit: handleLiveSessionEnded,
+    onSessionReinit: handleLiveSessionReinit,
     onDocumentReplacementNotice: handleDocumentReplacementNotice,
     onSuperseded: handleSuperseded,
     caretFrameHooks: caretGlue.caretFrameHooks,

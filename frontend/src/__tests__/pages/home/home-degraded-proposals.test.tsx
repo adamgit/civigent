@@ -25,6 +25,7 @@ const outletContext: AppLayoutOutletContext = {
   setSidebarAutoHide: vi.fn(),
   reportFocusedDocTabEditState: vi.fn(),
   clearFocusedDocTabEditState: vi.fn(),
+  singleUser: false,
 };
 
 function renderHome() {

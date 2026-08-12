@@ -50,6 +50,7 @@ function defaultFetch(url: unknown) {
       humanInvolvement_preset: "eager",
       humanInvolvement_midpoint_seconds: 7200,
       humanInvolvement_steepness: 1,
+      auth_mode: "single_user",
       exportedSkills: {
         plugin_name: "civ",
         zip_path: "/exported/skills.zip",
@@ -140,7 +141,7 @@ describe("AdminPage", () => {
     await waitFor(() => {
       expect(screen.getAllByText(/Server error/).length).toBeGreaterThan(0);
     });
-    expect(screen.getAllByText("Admin config unavailable.").length).toBe(2);
+    expect(screen.getAllByText("Admin config unavailable.").length).toBe(3);
     expect(screen.queryByText("Loading…")).toBeNull();
   });
 });

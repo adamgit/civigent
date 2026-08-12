@@ -27,6 +27,7 @@ import type {
 } from "../../types/shared.js";
 import { getExportedSkillsConfig } from "../../exported-skills-config.js";
 import { getPublicUrl, getAgentAuthPolicy } from "../../auth/oauth-config.js";
+import { readRuntimeAuthMode } from "../../auth/service.js";
 import {
   ExportedSkillsFolderAbsentError,
   folderExistsOnDisk,
@@ -133,16 +134,21 @@ export async function getAdminConfigWithDescription(): Promise<AdminConfig & { p
   const config = getAdminConfig();
   const preset = HUMAN_INVOLVEMENT_PRESETS[config.humanInvolvement_preset];
   const exportedSkills = await buildExportedSkillsAdminConfig();
-  return { ...config, exportedSkills, preset_description: preset.description };
+  return { ...config, auth_mode: readRuntimeAuthMode(), exportedSkills, preset_description: preset.description };
 }
 
 export async function updateAdminConfigWithDescription(
   body: Partial<AdminConfig>,
 ): Promise<AdminConfig & { preset_description: string }> {
+  if ("auth_mode" in body) {
+    throw new AdminConfigValidationError(
+      "auth_mode is env-only (KS_AUTH_MODE) and cannot be changed via the API.",
+    );
+  }
   const updated = updateAdminConfig(body);
   const preset = HUMAN_INVOLVEMENT_PRESETS[updated.humanInvolvement_preset];
   const exportedSkills = await buildExportedSkillsAdminConfig();
-  return { ...updated, exportedSkills, preset_description: preset.description };
+  return { ...updated, auth_mode: readRuntimeAuthMode(), exportedSkills, preset_description: preset.description };
 }
 
 // ─── Runtime memory ─────────────────────────────────────

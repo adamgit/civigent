@@ -6,9 +6,10 @@ import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { apiClient } from "../services/api-client";
 import { INVOLVEMENT_PRESET_UI } from "../involvement-preset-ui";
 import { DocPath, HUMAN_INVOLVEMENT_PRESETS, type HumanInvolvementPresetName } from "../types/shared.js";
+import { SINGLE_USER_MODE_EXPLAINER } from "../single-user-mode";
 
 export function HomePage() {
-  const { createDoc, sidebarAutoHide, setSidebarAutoHide } = useOutletContext<AppLayoutOutletContext>();
+  const { createDoc, sidebarAutoHide, setSidebarAutoHide, singleUser } = useOutletContext<AppLayoutOutletContext>();
   const currentUser = useCurrentUser();
   const [newDocPath, setNewDocPath] = useState("");
   const [creatingDoc, setCreatingDoc] = useState(false);
@@ -103,7 +104,7 @@ export function HomePage() {
 
   return (
     <div className="flex-1 overflow-auto canvas-scroll" style={{ fontFamily: "var(--font-ui)" }}>
-      <div style={{ maxWidth: 740, margin: "0 auto", padding: "2.5rem 1.5rem 3rem" }}>
+      <div style={{ maxWidth: 740, margin: "0 auto", padding: "2.5rem 1.5rem 2rem" }}>
 
         {/* Degraded-proposal alert — quarantined proposals need an admin autofix */}
         {degradedCount > 0 && (
@@ -372,7 +373,6 @@ export function HomePage() {
         <section
           aria-label="Exported skills"
           style={{
-            marginBottom: "2rem",
             background: "var(--color-sidebar-bg)",
             borderRadius: 12,
             padding: "16px 18px",
@@ -401,8 +401,21 @@ export function HomePage() {
             </Link>
           </div>
         </section>
+      </div>
 
-        {/* Divider */}
+      {singleUser ? (
+        <section
+          aria-label="Single-user mode"
+          data-testid="single-user-home-banner"
+          className="single-user-home-banner"
+        >
+          <div className="single-user-home-banner__kicker">Single-user mode</div>
+          <p>{SINGLE_USER_MODE_EXPLAINER}</p>
+          <Link to="/admin">Configure login in Admin &rarr;</Link>
+        </section>
+      ) : null}
+
+      <div style={{ maxWidth: 740, margin: "0 auto", padding: "0 1.5rem 3rem" }}>
         <hr style={{ border: "none", borderTop: "1px solid var(--color-footer-border)", margin: "0 0 1.5rem" }} />
 
         {/* Quick links — low priority; kept at the bottom */}

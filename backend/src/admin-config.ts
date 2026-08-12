@@ -45,7 +45,7 @@ const initialConfig: RuntimeConfig = {
 
 let runtimeConfig: RuntimeConfig = { ...initialConfig };
 
-export type SyncAdminConfig = Omit<AdminConfig, "exportedSkills">;
+export type SyncAdminConfig = Omit<AdminConfig, "exportedSkills" | "auth_mode">;
 
 export function getAdminConfig(): SyncAdminConfig {
   const preset = HUMAN_INVOLVEMENT_PRESETS[runtimeConfig.humanInvolvement_preset];

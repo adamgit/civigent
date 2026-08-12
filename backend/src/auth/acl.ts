@@ -96,15 +96,20 @@ function getSingleUserId(): string {
   return readEnvVar("KS_USER_ID", "human-ui");
 }
 
+function isCredentialsMode(): boolean {
+  return (readEnvVar("KS_AUTH_MODE") ?? "").toLowerCase() === "credentials";
+}
+
 /**
  * Returns true if the given writer ID has the "admin" role.
  *
- * In single_user mode, the configured user is always admin without reading roles.json.
- * In oidc/hybrid mode, admin is granted via roles.json only.
+ * In single_user and credentials modes, the env-configured user is always
+ * admin without reading roles.json.
+ * In oidc mode, admin is granted via roles.json only.
  */
 export async function isAdmin(writerId: string): Promise<boolean> {
-  // single_user: the singleton identity is always admin
-  if (isSingleUserMode()) {
+  // single_user / credentials: the env-configured identity is always admin
+  if (isSingleUserMode() || isCredentialsMode()) {
     return writerId === getSingleUserId();
   }
 
@@ -226,8 +231,8 @@ async function getEffectiveRoles(writer: AuthenticatedWriter | null): Promise<st
 
   roles.push(AUTHENTICATED);
 
-  // In single_user mode, the configured user is always admin
-  if (isSingleUserMode() && writer.id === getSingleUserId()) {
+  // In single_user and credentials modes, the env-configured user is always admin
+  if ((isSingleUserMode() || isCredentialsMode()) && writer.id === getSingleUserId()) {
     roles.push(ADMIN);
   }
 

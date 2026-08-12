@@ -64,6 +64,7 @@ vi.mock("../../app/AppLayout", () => {
     setSidebarAutoHide: () => {},
     reportFocusedDocTabEditState: () => {},
     clearFocusedDocTabEditState: () => {},
+    singleUser: false,
   };
   return {
     AppLayout: () => <Outlet context={outletContext} />,

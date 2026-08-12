@@ -889,6 +889,7 @@ export interface AdminConfig {
   snapshot_enabled: boolean;
   governance_mode: GovernanceMode;
   agent_auth_policy: AgentAuthPolicy;
+  auth_mode: "single_user" | "credentials" | "oidc";
   exportedSkills: ExportedSkillsAdminConfig;
 }
 
@@ -2222,7 +2223,7 @@ export interface CreateDocumentResponse {
 
 // ─── Auth ──────────────────────────────────────────────────────────
 
-export type LoginProvider = "single_user" | "credentials" | "oidc" | "hybrid";
+export type LoginProvider = "single_user" | "credentials" | "oidc";
 
 export interface AuthMethod {
   type: "single_user" | "credentials" | "oidc";
@@ -2244,6 +2245,8 @@ export interface SessionInfoResponse {
   login_providers?: LoginProvider[];
   /** Install label: `KS_APP_NAME` when set, otherwise the server public URL. */
   app_name: string;
+  /** True when `KS_AUTH_MODE=single_user` — no login; any visitor is the admin. */
+  single_user: boolean;
 }
 
 // ─── API Errors ────────────────────────────────────────────────────

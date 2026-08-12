@@ -32,9 +32,7 @@ Unless it was an "expected" error — but those are usually signs of bad code de
 
 ### No sensitive data to leak
 
-We do not store passwords or sensitive data, so there is **never** a case where error details contain sensitive information. Stack traces, error messages, and context should always be exposed fully.
-
-It is a core design feature that Auth is entirely external to the system.
+We do not store passwords or other secrets in `data/auth/` or in error payloads. Credentials mode keeps `KS_CREDENTIALS_PASSWORD` in the environment only — never echo it in errors. OIDC auth remains entirely external. Stack traces, error messages, and context should always be exposed fully, except that secret values themselves must not appear in them.
 
 ---
 

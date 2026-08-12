@@ -132,13 +132,13 @@ describe("useLiveSectionReplica", () => {
     expect(onSessionEnded).toHaveBeenCalledTimes(1);
   });
 
-  it("SESSION-END (4021): replaces the pipeline on the spot and reverts consumers to cold seeds", () => {
-    // The page's session-end callback also refetches REST seeds; here we assert the
-    // replica half of that contract — the ended session's pipeline is REPLACED (old
-    // provider destroyed, fresh unbound replica + observer minted immediately), so
-    // paint reverts to the seed — and that the page callback still fires so the
-    // seed refetch runs.
-    const onSessionEnded = vi.fn();
+  it("SESSION-END (4021): parks the replica as read-only display until the page's completion call, then replaces the pipeline", () => {
+    // 4021 with a page handler: the ended provider is destroyed on the spot (it
+    // can never reconnect its old doc), but the replica is PARKED — topology and
+    // paint keep serving the ended session's content — until the page calls the
+    // one-shot completion function, which mints the fresh observer pipeline.
+    let complete: (() => void) | null = null;
+    const onSessionEnded = vi.fn((c: () => void) => { complete = c; });
     const { result } = renderHook(() => useLiveSectionReplica({ docPath: "/doc.md", onSessionEnded }));
 
     // Reach ready via a bootstrap; paint now comes from the live fragment.
@@ -150,16 +150,24 @@ describe("useLiveSectionReplica", () => {
     expect(result.current.isCurrentlyLiveAuthority).toBe(true);
     expect(result.current.paintMarkdown(SectionId.brand(ALPHA), "cold seed")).toContain("live body");
 
-    // Session end (4021): the whole pipeline is replaced immediately — the old
-    // provider is destroyed (its post-callback reconnect is a no-op), a fresh
-    // observer is connected on a fresh doc, live authority is gone, topology is
-    // empty, and paint falls back to the cold seed. The page callback fires so
-    // it can refetch REST seeds.
+    // Session end (4021): connection destroyed, no replacement provider yet,
+    // and the parked replica still paints the ended session's content.
     act(() => {
       provider.events.onSessionEnded!();
     });
     expect(onSessionEnded).toHaveBeenCalledTimes(1);
     expect(provider.destroy).toHaveBeenCalled();
+    expect(providers).toHaveLength(1);
+    expect(result.current.isCurrentlyLiveAuthority).toBe(true);
+    expect(result.current.topology.map((r) => SectionId.text(r.id))).toEqual([ALPHA]);
+    expect(result.current.paintMarkdown(SectionId.brand(ALPHA), "cold seed")).toContain("live body");
+
+    // Completion: fresh observer on a fresh doc; live authority gone, topology
+    // empty, paint falls back to the cold seed. The completion is one-shot.
+    act(() => {
+      complete!();
+      complete!();
+    });
     expect(providers).toHaveLength(2);
     expect(providers[1].doc).not.toBe(provider.doc);
     expect(providers[1].connect).toHaveBeenCalled();

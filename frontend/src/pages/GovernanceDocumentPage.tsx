@@ -142,12 +142,31 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
   // ── Live-section replica (cold-seed / ready-gate / session-end handoff) ──
   // Shared live-page bootstrap path (task 325): one page-owned `LiveSectionReplica`
   // seam. It opens the CRDT observer socket and becomes `ready` only after an
-  // actor-captured bootstrap; on `4021` session_ended it drops live authority and
-  // the page refetches cold seeds + signals.
-  const handleLiveSessionEnded = useCallback(() => {
+  // actor-captured bootstrap; on `4021` session_ended the replica is parked as
+  // display data while the page refetches workspace rows in the background, then
+  // the completion call swaps the display atomically.
+  const handleLiveSessionReinit = useCallback(() => {
     setLiveMetaSections(null);
     void loadSections(docPath);
   }, [docPath, loadSections]);
+  const handleLiveSessionEnded = useCallback((completeSessionEndHandoff: () => void) => {
+    setLiveMetaSections(null);
+    if (sectionsLoading) {
+      completeSessionEndHandoff();
+      return;
+    }
+    resourceModel.loadSections(docPath).then(
+      (nextSections) => {
+        setSections(nextSections);
+        setError(null);
+        completeSessionEndHandoff();
+      },
+      (err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        completeSessionEndHandoff();
+      },
+    );
+  }, [docPath, resourceModel, sectionsLoading]);
   const handleSuperseded = useCallback(() => {
     setStatusMessage("Editing moved to another tab. This tab is now read-only.");
   }, []);
@@ -157,7 +176,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
     onSessionEnded: handleLiveSessionEnded,
     // 4022 restore / 4024 force-rebuild: the hook replaces the live pipeline;
     // reseed canonical so cold previews reflect the replaced content.
-    onSessionReinit: handleLiveSessionEnded,
+    onSessionReinit: handleLiveSessionReinit,
     onSuperseded: handleSuperseded,
     caretFrameHooks: caretGlue.caretFrameHooks,
   });

@@ -4,8 +4,8 @@
  * Uses openid-client v6. No Passport.
  *
  * Env vars:
- *   KS_OIDC_ISSUER       — OIDC issuer URL (required for oidc/hybrid mode)
- *   KS_OIDC_CLIENT_ID    — client ID (required for oidc/hybrid mode)
+ *   KS_OIDC_ISSUER       — OIDC issuer URL (required for oidc mode)
+ *   KS_OIDC_CLIENT_ID    — client ID (required for oidc mode)
  *   KS_OIDC_CLIENT_SECRET — client secret (optional, for confidential clients)
  */
 

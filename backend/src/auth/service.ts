@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { decodeAndValidateToken, InvalidAuthTokenError, issueTokenPair, type IssuedAuthTokenPair } from "./tokens.js";
 import { getSingleUserIdentity, isSingleUserMode, type AuthenticatedWriter } from "./context.js";
 import { hasAnyAdmin, grantAdmin } from "./acl.js";
@@ -11,35 +11,36 @@ export interface AgentRegistrationInput {
 }
 
 export interface LoginInput {
-  provider: "single_user";
+  provider: "single_user" | "credentials";
   email?: string;
   name?: string;
+  password?: string;
 }
 
 function assertNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-type RuntimeAuthMode = "single_user" | "oidc" | "hybrid";
+type RuntimeAuthMode = "single_user" | "credentials" | "oidc";
 
-const LEGAL_AUTH_MODES: ReadonlySet<string> = new Set(["single_user", "oidc", "hybrid"]);
+const LEGAL_AUTH_MODES: ReadonlySet<string> = new Set(["single_user", "credentials", "oidc"]);
 
 export function readRuntimeAuthMode(): RuntimeAuthMode {
   const raw = readEnvVar("KS_AUTH_MODE")?.toLowerCase() ?? "";
   if (!raw) {
     throw new Error(
       `FATAL: KS_AUTH_MODE is not set.\n` +
-      `You must explicitly choose an auth mode. Legal values: single_user, oidc, hybrid.\n` +
-      `  single_user — no login required (personal / evaluation use)\n` +
-      `  oidc        — OIDC provider only\n` +
-      `  hybrid      — OIDC + local credentials fallback\n` +
+      `You must explicitly choose an auth mode. Legal values: single_user, credentials, oidc.\n` +
+      `  single_user — no login; anyone who can open the URL is the user (localhost only)\n` +
+      `  credentials — one shared password (KS_CREDENTIALS_PASSWORD); public hostname allowed\n` +
+      `  oidc        — SSO through the configured OIDC provider only\n` +
       `Example: KS_AUTH_MODE=single_user`,
     );
   }
   if (!LEGAL_AUTH_MODES.has(raw)) {
     throw new Error(
       `FATAL: KS_AUTH_MODE="${raw}" is not a recognised auth mode.\n` +
-      `Legal values: single_user, oidc, hybrid.`,
+      `Legal values: single_user, credentials, oidc.`,
     );
   }
   return raw as RuntimeAuthMode;
@@ -61,7 +62,10 @@ function providerAllowedInMode(provider: LoginInput["provider"], mode: RuntimeAu
   if (mode === "single_user") {
     return true;
   }
-  // oidc and hybrid: human login via POST is not used (OIDC redirects handle it)
+  if (mode === "credentials") {
+    return provider === "credentials";
+  }
+  // oidc: human login via POST is not used (OIDC redirects handle it)
   return false;
 }
 
@@ -108,12 +112,14 @@ export function buildOidcIdentity(claims: OidcIdentityClaims): AuthenticatedWrit
   };
 }
 
-export function listAuthMethods(): Array<"oidc" | "single_user"> {
+export function listAuthMethods(): Array<"oidc" | "single_user" | "credentials"> {
   const mode = readRuntimeAuthMode();
   if (mode === "single_user" || isSingleUserMode()) {
     return ["single_user"];
   }
-  // Both oidc and hybrid use OIDC login
+  if (mode === "credentials") {
+    return ["credentials"];
+  }
   return ["oidc"];
 }
 
@@ -145,6 +151,14 @@ export function registerTransientAgent(input: AgentRegistrationInput): {
   };
 }
 
+export class InvalidCredentialsError extends Error {}
+
+function timingSafeStringEqual(a: string, b: string): boolean {
+  const digestA = createHash("sha256").update(a).digest();
+  const digestB = createHash("sha256").update(b).digest();
+  return timingSafeEqual(digestA, digestB);
+}
+
 export function loginHuman(input: LoginInput): {
   token: string;
   access_token: string;
@@ -169,6 +183,26 @@ export function loginHuman(input: LoginInput): {
     );
   }
 
+  if (input.provider === "credentials") {
+    const configuredPassword = readEnvVar("KS_CREDENTIALS_PASSWORD") ?? "";
+    const presentedPassword = typeof input.password === "string" ? input.password : "";
+    if (
+      configuredPassword.length === 0 ||
+      presentedPassword.length === 0 ||
+      !timingSafeStringEqual(presentedPassword, configuredPassword)
+    ) {
+      throw new InvalidCredentialsError("unauthorized: invalid credentials.");
+    }
+    const identity = getSingleUserIdentity();
+    const tokenPair = issueTokenPair(identity);
+    return {
+      token: tokenPair.access_token,
+      access_token: tokenPair.access_token,
+      refresh_token: tokenPair.refresh_token,
+      identity,
+    };
+  }
+
   // Only single_user provider reaches here; OIDC login is handled via redirect flow
   throw new Error(`validation_error: provider "${input.provider}" is not available via POST login.`);
 }
@@ -187,6 +221,7 @@ const BOOTSTRAP_TTL_MS = 30_000; // 30 seconds
  */
 export async function maybeGenerateBootstrapCode(): Promise<void> {
   if (isSingleUserMode()) return;
+  if ((readEnvVar("KS_AUTH_MODE") ?? "").toLowerCase() === "credentials") return;
   if (!isOidcConfigured()) return;
   if (await hasAnyAdmin()) return;
 

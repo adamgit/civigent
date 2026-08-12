@@ -250,6 +250,125 @@ a {
   }
 }
 
+/* Single-user mode: warm orange rail (warning, not alarm). Localhost is a
+ * legitimate forever-setup; the tint is so a proxied public install is obvious. */
+[data-single-user="on"] {
+  --color-sidebar-bg: #f3e4d2;
+  --color-sidebar-border: #e4c4a0;
+  --color-sidebar-text: #7a5a38;
+  --color-sidebar-text-hover: #4a3018;
+  --color-sidebar-heading: #9a6a3a;
+  --color-sidebar-active-bg: rgba(255, 255, 255, 0.55);
+  --color-sidebar-active-text: #3d2410;
+  --color-sidebar-marker: #c47a2a;
+}
+
+.single-user-brand {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.single-user-brand__name {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-status-red);
+  text-decoration: none;
+}
+
+.single-user-brand__name:hover {
+  color: var(--color-folder-danger-hover);
+}
+
+.single-user-brand__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-status-red);
+  cursor: help;
+  outline: none;
+}
+
+.single-user-brand__icon:focus-visible {
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px var(--color-status-red);
+}
+
+.single-user-brand__tip {
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 50;
+  width: 300px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #fffaf4;
+  border: 1px solid var(--color-sidebar-border);
+  box-shadow: 0 4px 14px rgba(80, 40, 0, 0.12);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+.single-user-brand:hover .single-user-brand__tip,
+.single-user-brand:focus-within .single-user-brand__tip {
+  display: block;
+}
+
+/* Home-page strip: full main-pane width, not a card. Stronger than the orange
+ * sidebar tint so it is discoverable without matching the other home cards. */
+.single-user-home-banner {
+  width: 100%;
+  margin: 0 0 2rem;
+  padding: 16px 1.5rem 18px;
+  background: var(--color-status-red-light);
+  border-top: 1px solid #e0a098;
+  border-bottom: 1px solid #e0a098;
+  box-shadow: inset 5px 0 0 var(--color-status-red);
+  border-radius: 0;
+}
+
+.single-user-home-banner__kicker {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-status-red);
+  margin-bottom: 6px;
+}
+
+.single-user-home-banner p {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #6e3a34;
+}
+
+.single-user-home-banner a {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-status-red);
+  text-decoration: underline;
+}
+
+.single-user-home-banner a:hover {
+  color: var(--color-folder-danger-hover);
+}
+
 /* ===== DRAG/DROP INDICATORS ===== */
 .section-drop-target {
   border-top: 2px solid var(--color-accent);

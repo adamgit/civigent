@@ -55,7 +55,7 @@ export const userFeatures = [
   "Admin permissions page lets admins manage roles, per-document access, and custom roles from the UI",
   "Documents can be restricted to specific user roles (e.g. 'legal-team', 'board-members')",
   "Server shows a friendly 'starting up' screen during crash recovery instead of broken pages",
-  "Sign in via your organization's SSO provider (OIDC) — no passwords stored",
+  "Sign in via your organization's SSO provider (OIDC), or with a shared password in credentials mode (the password lives in env, never in the data store)",
   "First admin is bootstrapped via a one-time code printed to the server console",
   "AI Agents can connect from local machine, remote/cloud servers, and even from inside the app-container/Docker image itself (you can bundle agents with the app by wrapping the Docker container: our agent-auth system detects and handles this special case)",
   "Shared UI theme: consistent button, pill, input, and code styles applied across all pages",

@@ -37,7 +37,7 @@ export type LiveReplicaMode = "observer" | "editor";
 
 export interface UseLiveSectionReplicaParams {
   docPath: DocPath | null;
-  onSessionEnded?: () => void;
+  onSessionEnded?: (completeSessionEndHandoff: () => void) => void;
   /** 4022 document-replaced / 4024 force-rebuild — reseed canonical content. */
   onSessionReinit?: () => void;
   onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
@@ -239,13 +239,18 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
           forceRender();
         },
         onSessionEnded: () => {
-          // 4021: session ended → drop the whole pipeline now. Invalidate-only
-          // would leave a replica whose Y.Doc still holds the ended session's
-          // history, and a later same-id bootstrap could merge live authority
-          // back onto that poisoned doc. Replacing destroys this provider, so
-          // its post-callback scheduleReconnect() is a no-op.
-          startFreshObserverPipelineRef.current?.(docPathArg);
-          onSessionEndedRef.current?.();
+          teardownConnection();
+          const parkedReplica = replicaRef.current;
+          let completed = false;
+          const completeSessionEndHandoff = () => {
+            if (completed) return;
+            completed = true;
+            if (replicaRef.current !== parkedReplica) return;
+            startFreshObserverPipelineRef.current?.(docPathArg);
+          };
+          const handler = onSessionEndedRef.current;
+          if (handler) handler(completeSessionEndHandoff);
+          else completeSessionEndHandoff();
         },
         onSessionReinit: () => {
           onSessionReinitRef.current?.();
@@ -258,7 +263,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     );
     connectionRef.current = { kind: "observer", provider };
     provider.connect();
-  }, [handleLiveSectionFrame]);
+  }, [handleLiveSectionFrame, teardownConnection]);
 
   const startEditor = useCallback((docPathArg: DocPath) => {
     const transport = new CrdtTransport(docPathArg, {

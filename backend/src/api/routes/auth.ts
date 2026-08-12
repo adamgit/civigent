@@ -1,8 +1,8 @@
 import { type Request, type Response, type Router } from "express";
 import type { AuthMethod, SessionInfoResponse } from "../../types/shared.js";
-import { resolveAuthenticatedWriter } from "../../auth/context.js";
+import { isSingleUserMode, resolveAuthenticatedWriter } from "../../auth/context.js";
 import { isAdmin } from "../../auth/acl.js";
-import { listAuthMethods, buildOidcIdentity, isBootstrapAvailable, redeemBootstrapCode, exchangeRefreshToken } from "../../auth/service.js";
+import { listAuthMethods, buildOidcIdentity, isBootstrapAvailable, redeemBootstrapCode, exchangeRefreshToken, loginHuman, InvalidCredentialsError } from "../../auth/service.js";
 import { issueTokenPair } from "../../auth/tokens.js";
 import { isOidcConfigured, getOidcDisplayName, getOidcPublicUrl } from "../../auth/oauth-config.js";
 import { getAppName } from "../../app-name.js";
@@ -84,14 +84,43 @@ export function registerAuthRoutes(router: Router): void {
   router.get("/auth/methods", async (_req, res, next) => {
     try {
       const rawMethods = listAuthMethods();
-      const methods: AuthMethod[] = rawMethods.map((m) => {
+      const methods: AuthMethod[] = rawMethods.map((m): AuthMethod => {
         if (m === "oidc") {
           return { type: "oidc", displayName: getOidcDisplayName(), authUrl: "/api/auth/oidc/authorize" };
+        }
+        if (m === "credentials") {
+          return { type: "credentials", displayName: "Shared password" };
         }
         return { type: "single_user", displayName: "Single-user session" };
       });
       res.json({ methods, bootstrap_available: isBootstrapAvailable() });
     } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/auth/login", (req, res, next) => {
+    try {
+      const { provider, password } = req.body ?? {};
+      if (provider !== "single_user" && provider !== "credentials") {
+        sendApiError(res, 400, `Unknown login provider: ${JSON.stringify(provider ?? null)}.`);
+        return;
+      }
+      const result = loginHuman({
+        provider,
+        ...(typeof password === "string" ? { password } : {}),
+      });
+      setAuthCookies(req, res, result.access_token, result.refresh_token);
+      res.json(result);
+    } catch (error) {
+      if (error instanceof InvalidCredentialsError) {
+        sendApiError(res, 401, error.message);
+        return;
+      }
+      if (error instanceof Error && error.message.startsWith("validation_error:")) {
+        sendApiError(res, 400, error.message);
+        return;
+      }
       next(error);
     }
   });
@@ -161,10 +190,12 @@ export function registerAuthRoutes(router: Router): void {
     try {
       const writer = resolveAuthenticatedWriter(req);
       const app_name = getAppName();
+      const single_user = isSingleUserMode();
       const response: SessionInfoResponse = writer
         ? {
             authenticated: true,
             app_name,
+            single_user,
             user: {
               id: writer.id,
               type: writer.type,
@@ -173,7 +204,7 @@ export function registerAuthRoutes(router: Router): void {
               is_admin: writer.type !== "agent" && (await isAdmin(writer.id)),
             },
           }
-        : { authenticated: false, app_name };
+        : { authenticated: false, app_name, single_user };
       res.json(response);
     } catch (error) {
       next(error);

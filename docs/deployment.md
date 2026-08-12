@@ -118,7 +118,28 @@ No public URL, no OIDC, no agent keys needed. OAuth auto-approves for agents. An
 
 ---
 
-### Scenario B: Team server with a domain
+### Scenario B: Public personal install (one human, shared password)
+
+**Profile:** One human, a public hostname, no SSO. Agents must authenticate.
+**Deployment method:** Quickstart (pre-built image) in credentials mode, behind a reverse proxy.
+
+This is single-user identity with a login. Anyone who can open the URL is **not** the admin until they present `KS_CREDENTIALS_PASSWORD`.
+
+**Key settings:**
+```env
+KS_AUTH_MODE=credentials
+KS_CREDENTIALS_PASSWORD=<the shared login password>
+KS_AUTH_SECRET=<openssl rand -hex 32>
+KS_USER_NAME=Your Name
+KS_USER_EMAIL=you@example.com
+KS_EXTERNAL_HOSTNAME=wiki.example.com
+```
+
+`KS_CREDENTIALS_PASSWORD` is the login secret. `KS_AUTH_SECRET` signs JWTs and is a different value. Agent policy is a separate knob (`KS_AGENT_AUTH_POLICY`); on a public hostname it defaults to `confidential` (admin-created agent identity + client secret).
+
+---
+
+### Scenario C: Team server with a domain
 
 **Profile:** Multiple humans, multiple agents, accessible over the network.
 **Deployment method:** Quickstart (pre-built image) in multi-user mode, behind a reverse proxy, or self-built Docker for customised builds.
@@ -146,10 +167,10 @@ docker compose up
 
 With plain Docker bind mounts, `wiki-data/` and `snapshots/` must both exist on the host first and must be writable by the container process.
 
-### Scenario C: Enterprise with network-gated agents
+### Scenario D: Enterprise with network-gated agents
 
 **Profile:** Team server where the network itself provides agent authentication (VPN, internal network).
-**Deployment method:** Same as Scenario B (quickstart or self-built), with additional env var configuration.
+**Deployment method:** Same as Scenario C (quickstart or self-built), with additional env var configuration.
 
 **Optional:** Relax the agent auth policy
 
@@ -159,7 +180,7 @@ On a public (non-localhost) hostname the default policy is `confidential`: agent
 KS_AGENT_AUTH_POLICY=open
 ```
 
-Or keep self-registration but require a signed-in human to approve each agent's first connection in the browser (not compatible with `KS_AUTH_MODE=single_user`):
+Or keep self-registration but require a signed-in human to approve each agent's first connection in the browser (not compatible with `KS_AUTH_MODE=single_user`; compatible with `credentials` and `oidc`):
 
 ```env
 KS_AGENT_AUTH_POLICY=approve
@@ -175,8 +196,9 @@ The server validates its configuration at startup and refuses to start if critic
 
 | Condition | Result |
 |-----------|--------|
-| Multi-user mode without `KS_OIDC_PUBLIC_URL` | **Refuses to start** with instructions |
-| Multi-user mode without `KS_AUTH_SECRET` | **Refuses to start** with instructions |
+| Non-single-user mode without `KS_OIDC_PUBLIC_URL` or `KS_EXTERNAL_HOSTNAME` | **Refuses to start** with instructions |
+| Non-single-user mode without `KS_AUTH_SECRET` | **Refuses to start** with instructions |
+| `credentials` mode without `KS_CREDENTIALS_PASSWORD` | **Refuses to start** with instructions |
 | Missing `KS_EXTERNAL_PORT` (any mode) | **Refuses to start** — running outside a compose environment is not supported. Both compose files set this automatically. |
 | Single-user mode without `KS_OIDC_PUBLIC_URL` | Auto-derives from `KS_EXTERNAL_HOSTNAME` + `KS_EXTERNAL_PORT`. Scheme is `https` for non-localhost hostnames, `http` for localhost/127.0.0.1. Port omitted for standard ports (80/443). Set `KS_OIDC_PUBLIC_URL` explicitly to override. |
 | Single-user mode without `KS_AUTH_SECRET` | Uses development default (acceptable for localhost) |

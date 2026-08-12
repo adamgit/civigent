@@ -111,7 +111,7 @@ To build and run your local changes:
 npm run dev:single-user
 ```
 
-This starts the backend (port 3000) and frontend Vite dev server (port 5173) with hot reload from your local source. Multi-user auth mode is available but requires OIDC configuration — single-user is the default for development.
+This starts the backend (port 3000) and frontend Vite dev server (port 5173) with hot reload from your local source. Single-user is the default for development. A public install without SSO uses `KS_AUTH_MODE=credentials`. Multi-human SSO uses `KS_AUTH_MODE=oidc`.
 
 ### Option B: Docker Compose (no IDE integration)
 

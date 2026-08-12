@@ -272,9 +272,9 @@ export function validateOAuthConfig(): void {
     }
   }
 
-  // KS_OIDC_ISSUER and KS_OIDC_CLIENT_ID are required in oidc or hybrid mode
+  // KS_OIDC_ISSUER and KS_OIDC_CLIENT_ID are required in oidc mode
   const authMode = readRuntimeAuthMode();
-  if (authMode === "oidc" || authMode === "hybrid") {
+  if (authMode === "oidc") {
     if (!readEnvVar("KS_OIDC_ISSUER")) {
       throw new Error(
         `FATAL: KS_OIDC_ISSUER is required when KS_AUTH_MODE is "${authMode}".\n` +
@@ -288,6 +288,14 @@ export function validateOAuthConfig(): void {
         `Set it to the client ID registered with your OIDC provider.`,
       );
     }
+  }
+
+  if (authMode === "credentials" && !readEnvVar("KS_CREDENTIALS_PASSWORD")) {
+    throw new Error(
+      `FATAL: KS_CREDENTIALS_PASSWORD is required when KS_AUTH_MODE is "credentials".\n` +
+      `Set it to the shared password humans must present at login.\n` +
+      `Note: KS_AUTH_SECRET signs session JWTs and is not the login password.`,
+    );
   }
 
   const agentPolicy = getAgentAuthPolicy();

@@ -46,6 +46,7 @@ describe("DocsRouteResolver component", () => {
       setSidebarAutoHide: vi.fn(),
       reportFocusedDocTabEditState: vi.fn(),
       clearFocusedDocTabEditState: vi.fn(),
+      singleUser: false,
       ...overrides,
     };
   }

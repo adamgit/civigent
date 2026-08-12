@@ -16,6 +16,7 @@ import { formatBuildDate, readSidebarAutoHide, writeSidebarAutoHide, classifyWsE
 import { recordWsDiag } from "../services/ws-diagnostics";
 import { computeBrowserTabTitle } from "./browser-tab-title";
 import { DocPath } from "../types/shared";
+import { SINGLE_USER_MODE_EXPLAINER } from "../single-user-mode";
 
 function flattenTreeDocPaths(entries: DocumentTreeEntry[]): string[] {
   const out: string[] = [];
@@ -68,6 +69,33 @@ export interface AppLayoutOutletContext {
   reportFocusedDocTabEditState: (docPath: string, state: FocusedDocTabEditState) => void;
   /** Clear flags previously reported for `docPath` (no-op if another doc is current). */
   clearFocusedDocTabEditState: (docPath: string) => void;
+  /** True when `KS_AUTH_MODE=single_user`. */
+  singleUser: boolean;
+}
+
+function SingleUserBrandMark() {
+  return (
+    <span className="single-user-brand min-w-0">
+      <a href="/" className="single-user-brand__name truncate">
+        Civigent
+      </a>
+      <button
+        type="button"
+        className="single-user-brand__icon"
+        aria-label="About single-user mode"
+        aria-describedby="single-user-mode-explainer"
+      >
+        <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true">
+          <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" strokeWidth="1.5" />
+          <path d="M7 3.75v4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          <circle cx="7" cy="10.35" r="0.85" fill="currentColor" />
+        </svg>
+      </button>
+      <span id="single-user-mode-explainer" className="single-user-brand__tip" role="tooltip">
+        {SINGLE_USER_MODE_EXPLAINER}
+      </span>
+    </span>
+  );
 }
 
 /** Left-rail panel glyph (VS Code / Notion style). Filled rail when pinned; empty when auto-hide. */
@@ -111,6 +139,7 @@ export function AppLayout() {
   // Install label for tab titles (`KS_APP_NAME` or public URL). Seeded from the
   // browser origin so the first paint is already disambiguated before session loads.
   const [appName, setAppName] = useState(() => window.location.origin);
+  const [singleUser, setSingleUser] = useState(false);
   const [focusedDocTabEdit, setFocusedDocTabEdit] = useState<
     (FocusedDocTabEditState & { docPath: string }) | null
   >(null);
@@ -195,7 +224,7 @@ export function AppLayout() {
 
   const previousTreePathsRef = useRef<string[]>([]);
 
-  const loadTree = (options?: { background?: boolean }) => {
+  const loadTree = useCallback((options?: { background?: boolean }) => {
     if (options?.background) {
       setSyncingTree(true);
     } else {
@@ -248,13 +277,13 @@ export function AppLayout() {
           setLoadingTree(false);
         }
       });
-  };
+  }, []);
 
   const createDoc = useCallback(async (docPath: DocPath): Promise<void> => {
     await apiClient.createDocument(docPath);
     loadTree({ background: true }).catch(() => { /* non-fatal refresh */ });
     navigate(docHref(docPath));
-  }, [navigate]);
+  }, [loadTree, navigate]);
 
   const openCreateDocInFolder = useCallback((folderPath: string) => {
     const trimmedFolder = folderPath === "/" ? "" : folderPath.replace(/\/+$/, "");
@@ -387,6 +416,7 @@ export function AppLayout() {
         if (typeof session.app_name === "string" && session.app_name.trim()) {
           setAppName(session.app_name.trim());
         }
+        setSingleUser(session.single_user === true);
         // A clean read clears any prior degraded banner.
         setSessionError(null);
       })
@@ -474,6 +504,34 @@ export function AppLayout() {
       window.removeEventListener("focus", handleFocusRevalidate);
     };
   }, [revalidateSession]);
+
+  // Mobile browsers commonly freeze page-scoped connections while backgrounded.
+  // Refresh the tree once when the app is foregrounded; desktop continues to
+  // rely exclusively on its existing live event updates.
+  useEffect(() => {
+    if (!window.matchMedia?.("(pointer: coarse)").matches) return;
+
+    let wasVisible = document.visibilityState === "visible";
+    let refreshTimer: number | null = null;
+    const scheduleRefresh = () => {
+      if (refreshTimer !== null) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        loadTree({ background: true }).catch(() => { /* non-fatal refresh */ });
+      }, 0);
+    };
+    const handleVisibilityRefresh = () => {
+      const isVisible = document.visibilityState === "visible";
+      if (isVisible && !wasVisible) scheduleRefresh();
+      wasVisible = isVisible;
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityRefresh);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityRefresh);
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+    };
+  }, [loadTree]);
 
   // BroadcastChannel auth-sync for cross-tab coordination
   useEffect(() => {
@@ -643,6 +701,7 @@ export function AppLayout() {
       className="flex h-screen"
       data-sidebar-mode={sidebarAutoHide ? "autohide" : "expanded"}
       data-sidebar-hover-reveal={hoverRevealArmed ? "on" : "off"}
+      data-single-user={singleUser ? "on" : "off"}
     >
       {/* Sidebar shell — reserves the in-flow width for the left column. In
           expanded mode this is the aside's own content width (capped 30vw); in
@@ -660,9 +719,13 @@ export function AppLayout() {
         <aside className="sidebar bg-sidebar-bg border-r border-sidebar-border flex flex-col select-none overflow-visible min-w-0">
         {/* Sidebar header — brand left; layout toggle on the trailing edge with a text label. */}
         <div className="px-2.5 pt-3 pb-2.5 flex items-center gap-1.5 min-w-0">
-          <span className="text-xs font-semibold text-sidebar-heading uppercase tracking-wide truncate min-w-0">
-            <a href="/">Civigent</a>
-          </span>
+          {singleUser ? (
+            <SingleUserBrandMark />
+          ) : (
+            <span className="text-xs font-semibold text-sidebar-heading uppercase tracking-wide truncate min-w-0">
+              <a href="/">Civigent</a>
+            </span>
+          )}
           <button
             type="button"
             onClick={(e) => {
@@ -891,6 +954,7 @@ export function AppLayout() {
                 setSidebarAutoHide,
                 reportFocusedDocTabEditState,
                 clearFocusedDocTabEditState,
+                singleUser,
               } satisfies AppLayoutOutletContext}
             />
           )}

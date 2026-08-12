@@ -10,7 +10,7 @@ Civigent has two distinct authentication systems — one for **humans** and one 
 
 | Actor | Auth method | Identity source |
 |-------|-------------|-----------------|
-| Human | Browser login (OIDC) or bypass (single-user) | OIDC provider or configured name |
+| Human | Browser login (OIDC, shared password) or bypass (single-user) | OIDC provider, `KS_CREDENTIALS_PASSWORD`, or configured name |
 | Agent | OAuth 2.1 with PKCE | Anonymous self-registration or pre-registered key |
 
 Both systems produce JWTs that the server validates on every request. Humans carry their token in a cookie; agents carry theirs as a `Bearer` token in the `Authorization` header.
@@ -31,9 +31,26 @@ KS_USER_EMAIL=alice@example.com
 
 Agents still go through full OAuth even in single-user mode — they just get auto-approved at the consent step.
 
-### Multi-user mode
+### Credentials mode
 
-In multi-user mode, humans log in via an external OIDC provider (Google, Keycloak, Auth0, Okta, etc.). Civigent acts as an OIDC relying party.
+Credentials mode is the public-host equivalent of a single human: the same env-configured identity (`KS_USER_NAME` / `KS_USER_EMAIL` / `KS_USER_ID`), but the browser must present a shared password. There is no user table and no OIDC. Unauthenticated requests are unauthenticated — the singleton is **not** synthesized.
+
+```env
+KS_AUTH_MODE=credentials
+KS_CREDENTIALS_PASSWORD=<the shared login password>
+KS_AUTH_SECRET=<openssl rand -hex 32>
+KS_USER_NAME=Alice
+KS_USER_EMAIL=alice@example.com
+KS_EXTERNAL_HOSTNAME=wiki.example.com
+```
+
+`KS_CREDENTIALS_PASSWORD` is what the human types at `/login`. `KS_AUTH_SECRET` signs session JWTs (humans and agents) and is not the login password. Both are required.
+
+After login, that env identity is always admin — no bootstrap code, no `roles.json` grant. Public hostnames are allowed. `KS_AGENT_AUTH_POLICY=approve` is legal (a request with no cookie is nobody). Agent policy is a separate knob; on a public hostname it defaults to `confidential`.
+
+### OIDC mode
+
+In OIDC mode, humans log in via an external OIDC provider (Google, Keycloak, Auth0, Okta, etc.). Civigent acts as an OIDC relying party.
 
 ```env
 KS_OIDC_ISSUER=https://auth.company.com/realms/main
@@ -105,7 +122,7 @@ KS_AGENT_AUTH_POLICY=confidential  # admin-created identity + must present secre
 
 **`open`** — Personal use, localhost, network-gated environments. Anyone who can reach the server can connect an agent. Zero admin overhead.
 
-**`approve`** — Team servers where a human wants to admit each agent once. Agents self-register anonymously, then the connection's browser window asks a signed-in human to Approve before the first token is issued. The agent name shown on the consent page is self-asserted by the agent, not verified — this level gates *admission*, not *which software* is connecting. `approve` is incompatible with `KS_AUTH_MODE=single_user` (the server refuses to start with that combination, because in single-user mode a credential-less request already resolves to the built-in local human and the consent gate would approve itself).
+**`approve`** — Team servers where a human wants to admit each agent once. Agents self-register anonymously, then the connection's browser window asks a signed-in human to Approve before the first token is issued. The agent name shown on the consent page is self-asserted by the agent, not verified — this level gates *admission*, not *which software* is connecting. `approve` is incompatible with `KS_AUTH_MODE=single_user` (the server refuses to start with that combination, because in single-user mode a credential-less request already resolves to the built-in local human and the consent gate would approve itself). `approve` is compatible with `credentials` and `oidc`.
 
 **`confidential`** — Internet-exposed instances, headless/CI agents, and high-security environments. Each agent identity is explicitly created by an admin and must present its `client_secret` at the token endpoint. Prevents an agent from connecting even if someone knows its ID. `agents.keys` rows created without a secret (`none`) cannot connect until their secret is rotated.
 
@@ -216,9 +233,10 @@ Both humans and agents use the same token lifetime settings. Agents refresh auto
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `KS_AUTH_MODE` | Auth mode: `single_user`, `oidc`, or `hybrid` (required) | (none — required) |
-| `KS_AUTH_SECRET` | JWT signing secret — required in multi-user mode | (insecure dev default) |
-| `KS_OIDC_ISSUER` | OIDC provider URL for human login | (none — required in multi-user) |
+| `KS_AUTH_MODE` | Auth mode: `single_user`, `credentials`, or `oidc` (required) | (none — required) |
+| `KS_AUTH_SECRET` | JWT signing secret — required in credentials and oidc modes | (insecure dev default) |
+| `KS_CREDENTIALS_PASSWORD` | Shared login password — required in credentials mode. Not `KS_AUTH_SECRET`. | (none) |
+| `KS_OIDC_ISSUER` | OIDC provider URL for human login | (none — required in oidc mode) |
 | `KS_OIDC_CLIENT_ID` | OIDC client ID | (none) |
 | `KS_OIDC_CLIENT_SECRET` | OIDC client secret | (none) |
 | `KS_AGENT_AUTH_POLICY` | Agent auth policy: `open`, `approve`, or `confidential` | `open` (localhost) / `confidential` (public) |

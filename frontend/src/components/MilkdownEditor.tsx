@@ -43,6 +43,7 @@ import type { SectionTransfer, DropVerdict } from "../services/section-transfer"
 import { crossSectionDropPlugin, setDragSourceInfo } from "./crossSectionDropPlugin";
 import { crossSectionNavigationPlugin } from "./crossSectionNavigationPlugin";
 import { editorSessionCommandsPlugin } from "./editorSessionCommandsPlugin";
+import { listGutterSwipePlugin } from "./listGutterSwipePlugin";
 import { useEditorSessionCommands } from "../contexts/EditorSessionCommandsContext";
 import { EditorLifecycleController } from "../services/editor-lifecycle";
 import { FirstSyncReadyLatch } from "../services/first-sync-ready-latch";
@@ -481,6 +482,10 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     // ── Host/session command chords ─────────────────────
 
     crepe.editor.use(editorSessionCommandsPlugin({ commandsRef: editorSessionCommandsRef }));
+
+    // ── Touch list nesting ──────────────────────────────
+
+    crepe.editor.use(listGutterSwipePlugin());
 
     // ── Task-list checkbox toggle ────────────────────────
     // ListItem Crepe feature stays off (native <li> bullet parity). GFM still

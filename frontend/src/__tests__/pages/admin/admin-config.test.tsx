@@ -8,6 +8,7 @@ const baseConfig = {
   humanInvolvement_preset: "eager" as const,
   humanInvolvement_midpoint_seconds: 7200,
   humanInvolvement_steepness: 1,
+  auth_mode: "single_user" as const,
   exportedSkills: {
     plugin_name: "civ",
     zip_path: "/exported/skills.zip",

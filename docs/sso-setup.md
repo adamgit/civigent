@@ -251,28 +251,10 @@ KS_OIDC_DISPLAY_NAME=Sign in with Auth0
 
 ---
 
-## Hybrid mode
-
-Hybrid mode is the same as OIDC mode but is the expected mode for initial setup. Set:
-
-```env
-KS_AUTH_MODE=hybrid
-KS_OIDC_PUBLIC_URL=https://your-civigent-domain
-KS_OIDC_ISSUER=...
-KS_OIDC_CLIENT_ID=...
-KS_OIDC_CLIENT_SECRET=...
-```
-
-### Admin bootstrap
-
-When the server starts with OIDC configured but no admin users in `data/auth/roles.json`, it prints a one-time bootstrap code to stdout. After logging in via OIDC, enter this code on the home page to claim admin. The code is single-use and a new one is generated on each restart (until an admin exists).
-
----
-
 ## Troubleshooting
 
 **"KS_OIDC_ISSUER is not set" at startup**
-You are running in `oidc` or `hybrid` auth mode but forgot to set the OIDC env vars. Either set them or switch to `single_user` mode.
+You are running in `oidc` auth mode but forgot to set the OIDC env vars. Either set them or switch to `single_user` (localhost) or `credentials` (shared password, no SSO).
 
 **Callback URL mismatch error from provider**
 The redirect URI registered with your provider must exactly match `https://<your-civigent-domain>/api/auth/oidc/callback`. Check `KS_OIDC_PUBLIC_URL` — it must reflect the URL users actually see in their browser (not an internal Docker port).
