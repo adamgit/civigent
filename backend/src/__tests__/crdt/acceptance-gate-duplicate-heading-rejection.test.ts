@@ -147,6 +147,56 @@ describe("CRDT live-edit acceptance gate — duplicate-sibling-heading rejection
     expect(rejection.event.guidance.length).toBeGreaterThan(0);
   });
 
+  it("does not reject a content-identical re-encode of a pre-existing duplicate heading", async () => {
+    const session = await openSession();
+    disposers.push(registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "sock-origin").dispose);
+
+    const corruptBaseline =
+      "## Overview\n\nfirst body\n\n## Overview\n\nsecond body" as FragmentContent;
+    session.liveFragments.replaceFragmentString(OVERVIEW_KEY, corruptBaseline);
+    const normalizedBaseline = session.liveFragments.readFragmentString(OVERVIEW_KEY);
+    const update = buildClientUpdateForFragments(session, [
+      { fragmentKey: OVERVIEW_KEY, content: normalizedBaseline },
+    ]);
+
+    await session.enqueue(() =>
+      processArbitratedClientUpdate(session, WRITER.id, update, {
+        clientInstanceId: ORIGIN_CLIENT_INSTANCE_ID,
+      }),
+    );
+
+    expect(session.liveFragments.readFragmentString(OVERVIEW_KEY)).toBe(normalizedBaseline);
+    expect(privateEvents).toHaveLength(0);
+    expect(session.generator.hasCurrentProposal()).toBe(false);
+  });
+
+  it("accepts an edit that repairs a pre-existing duplicate heading", async () => {
+    const session = await openSession();
+    disposers.push(registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "sock-origin").dispose);
+
+    const corruptBaseline =
+      "## Overview\n\nfirst body\n\n## Overview\n\nsecond body" as FragmentContent;
+    session.liveFragments.replaceFragmentString(OVERVIEW_KEY, corruptBaseline);
+    const repairedContent = buildFragmentContent(
+      "first body\n\nsecond body" as SectionBody,
+      2,
+      "Overview",
+    );
+    const update = buildClientUpdateForFragments(session, [
+      { fragmentKey: OVERVIEW_KEY, content: repairedContent },
+    ]);
+
+    await session.enqueue(() =>
+      processArbitratedClientUpdate(session, WRITER.id, update, {
+        clientInstanceId: ORIGIN_CLIENT_INSTANCE_ID,
+      }),
+    );
+
+    expect(session.liveFragments.readFragmentString(OVERVIEW_KEY)).toBe(repairedContent);
+    expect(privateEvents).toHaveLength(0);
+    expect(session.generator.hasCurrentProposal()).toBe(true);
+  });
+
   it("accepts an independent valid fragment even when a colliding fragment is rejected in the same update", async () => {
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "sock-origin").dispose);

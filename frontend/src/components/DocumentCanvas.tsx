@@ -110,7 +110,12 @@ export function DocumentCanvas({
         const renderKey = hasDuplicateIdentity ? `${fk}::duplicate-row-${sectionIndex}` : fk;
         const sectionLabel = headingPathToLabel(headingPath);
         const crdtBlocked = isSectionBlocked(fk);
-        const inMountWindow = shouldMountEditorForFragment(fk, focusedFragmentKey, orderedFragmentKeys);
+        const inMountWindow = shouldMountEditorForFragment(
+          fk,
+          focusedFragmentKey,
+          orderedFragmentKeys,
+          focusedFragmentKey !== null && readyEditors.has(focusedFragmentKey),
+        );
         // A corrupt legacy draft can reference one physical fragment from more
         // than one visible row. Mounting the same Y.XmlFragment in both rows makes
         // their refs and selection bindings fight: the last row wins every focus

@@ -24,7 +24,7 @@ export function useEditorWindowEviction(
       let changed = false;
       const next = new Set<string>();
       for (const fk of prev) {
-        if (shouldMountEditorForFragment(fk, focusedFragmentKey, orderedKeys)) next.add(fk);
+        if (shouldMountEditorForFragment(fk, focusedFragmentKey, orderedKeys, prev.has(focusedFragmentKey))) next.add(fk);
         else changed = true;
       }
       return changed ? next : prev;

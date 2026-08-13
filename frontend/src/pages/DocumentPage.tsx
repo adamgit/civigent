@@ -414,15 +414,21 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const [sectionEditRejection, setSectionEditRejection] = useState<
     import("../types/shared").SectionEditRejectedEvent | null
   >(null);
+  const rejectionFocusMemoryRef = useRef<{ fragmentKey: string; rowIndex: number } | null>(null);
   const onSectionEditRejected = useCallback(
     (event: import("../types/shared").SectionEditRejectedEvent) => {
+      if (focusedFragmentKey !== null) {
+        const rowIndex = sectionsRef.current.findIndex(
+          (r) => SectionId.text(r.id) === focusedFragmentKey,
+        );
+        rejectionFocusMemoryRef.current = { fragmentKey: focusedFragmentKey, rowIndex };
+      } else {
+        rejectionFocusMemoryRef.current = null;
+      }
       setSectionEditRejection(event);
     },
-    [],
+    [focusedFragmentKey],
   );
-  const dismissSectionEditRejection = useCallback(() => {
-    setSectionEditRejection(null);
-  }, []);
 
   const {
     recentlyChangedSections,
@@ -693,6 +699,36 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     await liveReplica.promoteToEditor();
     focusFragmentAndSetCaretTarget(fk, coords);
   }, [liveReplica, focusFragmentAndSetCaretTarget]);
+
+  const dismissSectionEditRejection = useCallback(() => {
+    setSectionEditRejection(null);
+    const memory = rejectionFocusMemoryRef.current;
+    rejectionFocusMemoryRef.current = null;
+    if (!memory) return;
+    const rows = sectionsRef.current;
+    const currentIdx = rows.findIndex((r) => SectionId.text(r.id) === memory.fragmentKey);
+    if (currentIdx >= 0 && canFocusSection(rows[currentIdx])) return;
+    const anchor = currentIdx >= 0
+      ? currentIdx
+      : Math.max(0, Math.min(memory.rowIndex, rows.length - 1));
+    for (let dist = 0; dist < rows.length; dist++) {
+      const candidates = dist === 0 ? [anchor] : [anchor - dist, anchor + dist];
+      for (const idx of candidates) {
+        if (idx < 0 || idx >= rows.length) continue;
+        const row = rows[idx];
+        if (!canFocusSection(row)) continue;
+        const targetFk = SectionId.text(row.id);
+        focusFragmentAndSetCaretTarget(targetFk);
+        if (readyEditors.has(targetFk)) {
+          requestAnimationFrame(() => {
+            editorRefs.current.get(targetFk)?.focus("start");
+            pendingCaretTargetRef.current = null;
+          });
+        }
+        return;
+      }
+    }
+  }, [canFocusSection, focusFragmentAndSetCaretTarget, readyEditors, editorRefs, pendingCaretTargetRef]);
 
   // Cross-section caret navigation: resolve the CURRENT position of the exiting
   // fragment in the rendered rows, then focus the neighboring fragment key.

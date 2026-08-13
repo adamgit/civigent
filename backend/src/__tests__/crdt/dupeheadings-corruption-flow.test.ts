@@ -222,6 +222,7 @@ describe("dupeheadings corruption flow", () => {
     const result = validateLiveEditForDuplicateSiblingHeadings({
       layout,
       touchedFragmentKeys: [OVERVIEW_KEY],
+      readPreUpdateMarkdown: (fk) => session.liveFragments.readFragmentString(fk),
       readPostUpdateMarkdown: (fk) => (fk === OVERVIEW_KEY ? duplicated : ""),
     });
     expect(result.rejectionGroups.length).toBeGreaterThan(0);

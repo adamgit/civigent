@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { SectionEditRejectedEvent } from "../types/shared";
 
 interface SectionEditRejectedModalProps {
@@ -16,6 +17,16 @@ interface SectionEditRejectedModalProps {
  * accepted content, so editors remain usable after dismiss.
  */
 export function SectionEditRejectedModal({ event, onDismiss }: SectionEditRejectedModalProps) {
+  const previouslyFocusedElementRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const active = document.activeElement;
+    previouslyFocusedElementRef.current = active instanceof HTMLElement ? active : null;
+    return () => {
+      const el = previouslyFocusedElementRef.current;
+      if (el && el.isConnected) el.focus();
+    };
+  }, []);
+
   const affected = event.affected_fragments ?? [];
   return (
     <div

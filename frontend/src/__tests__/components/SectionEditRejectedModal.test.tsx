@@ -97,6 +97,36 @@ describe("SectionEditRejectedModal", () => {
     expect(screen.getByTestId("no-modal")).toBeTruthy();
   });
 
+  it("restores focus to the active editor when dismissed without leaving editor mode", () => {
+    function Container() {
+      const [rejection, setRejection] = useState<SectionEditRejectedEvent | null>(null);
+      return (
+        <div>
+          <button type="button" data-testid="active-editor">Editor</button>
+          <span data-testid="editor-mode">editor</span>
+          <button type="button" onClick={() => setRejection(buildRejection())}>
+            Show rejection
+          </button>
+          {rejection ? (
+            <SectionEditRejectedModal event={rejection} onDismiss={() => setRejection(null)} />
+          ) : null}
+        </div>
+      );
+    }
+
+    render(<Container />);
+    const editor = screen.getByTestId("active-editor");
+    editor.focus();
+    fireEvent.click(screen.getByRole("button", { name: "Show rejection" }));
+
+    const dismiss = screen.getByRole("button", { name: /dismiss/i });
+    dismiss.focus();
+    fireEvent.click(dismiss);
+
+    expect(screen.getByTestId("editor-mode").textContent).toBe("editor");
+    expect(document.activeElement).toBe(editor);
+  });
+
   it("handles a rejection whose affected fragments list is empty without crashing", () => {
     // The server may synthesize a rejection with no per-fragment details
     // (e.g. a future validator that operates at the document level). The

@@ -43,6 +43,7 @@ import {
   type FragmentStringDelta,
 } from "../crdt/live-section-deltas.js";
 import { captureLiveFragments } from "../crdt/live-fragment-capture.js";
+import { EMPTY_FRAGMENT, type FragmentContent } from "../storage/section-formatting.js";
 import { validateLiveEditForDuplicateSiblingHeadings } from "../crdt/live-edit-structural-validation.js";
 import {
   computeStructuralSplitPlan,
@@ -1490,6 +1491,7 @@ export interface LiveEditOrigin {
 async function runLiveEditAcceptanceGate(
   session: DocSession,
   touchedKeys: ReadonlySet<string>,
+  preUpdateMarkdownByKey: ReadonlyMap<string, FragmentContent>,
 ): Promise<LiveEditAcceptanceResult> {
   const empty: LiveEditAcceptanceResult = { acceptedFragmentKeys: [], rejectionGroups: [], removedTargetFragmentKeys: [] };
   if (touchedKeys.size === 0) return empty;
@@ -1579,6 +1581,7 @@ async function runLiveEditAcceptanceGate(
     const structural = validateLiveEditForDuplicateSiblingHeadings({
       touchedFragmentKeys: lockAccepted,
       layout,
+      readPreUpdateMarkdown: (key) => preUpdateMarkdownByKey.get(key) ?? EMPTY_FRAGMENT,
       readPostUpdateMarkdown: (key) => session.liveFragments.readFragmentString(key),
     });
     for (const group of structural.rejectionGroups) {
@@ -1688,18 +1691,46 @@ export async function processArbitratedClientUpdate(
   const touchedKeys = session.liveFragments.applyClientUpdate(writerId, payload, undefined);
   updateActivity(docPath);
 
-  
-  
-  
-  
-  const acceptance = await runLiveEditAcceptanceGate(session, touchedKeys);
+  const preUpdateMarkdownByKey = session.liveFragments.snapshotFragmentContentFromState(
+    preEditState,
+    touchedKeys,
+  );
+  const contentIdenticalKeys = new Set<string>();
+  const semanticallyChangedKeys = new Set<string>();
+  for (const fragmentKey of touchedKeys) {
+    if (
+      session.liveFragments.readFragmentString(fragmentKey) ===
+      preUpdateMarkdownByKey.get(fragmentKey)
+    ) {
+      contentIdenticalKeys.add(fragmentKey);
+    } else {
+      semanticallyChangedKeys.add(fragmentKey);
+    }
+  }
+
+  if (semanticallyChangedKeys.size === 0) {
+    broadcastLiveSectionsUpdate(docPath, {
+      yjs_update: Y.encodeStateAsUpdate(session.ydoc, beforeSV),
+    });
+    return;
+  }
+
+  const acceptance = await runLiveEditAcceptanceGate(
+    session,
+    semanticallyChangedKeys,
+    preUpdateMarkdownByKey,
+  );
 
   // Collect every rejected fragment across all rejection groups. Each group
   // is the smallest closed accept/reject unit — accepting only part of a
   // structural operation would corrupt topology meaning — so we revert every
   // fragment in each group together.
+  const rejectionGroups = acceptance.rejectionGroups.map((group) => ({
+    ...group,
+    fragmentKeys: group.fragmentKeys.filter((key) => !contentIdenticalKeys.has(key)),
+  }));
   const rejectedFragmentKeys: string[] = [];
-  for (const group of acceptance.rejectionGroups) {
+  for (const group of rejectionGroups) {
     for (const key of group.fragmentKeys) rejectedFragmentKeys.push(key);
   }
 
@@ -1713,11 +1744,11 @@ export async function processArbitratedClientUpdate(
       rejectedFragmentKeys,
       SERVER_NORMALIZATION_ORIGIN,
     );
-    if (acceptance.rejectionGroups.some((g) => g.reasonCode === "proposal-lock-conflict")) {
+    if (rejectionGroups.some((g) => g.reasonCode === "proposal-lock-conflict")) {
       broadcastLiveSectionsUpdate(docPath, { state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath), activeEditorSocketStates(session.docPath)) });
     }
     if (origin.clientInstanceId !== null && onWsPrivateEvent) {
-      for (const group of acceptance.rejectionGroups) {
+      for (const group of rejectionGroups) {
         if (group.reasonCode === "proposal-lock-conflict") continue;
         emitSectionEditRejected(
           (target, event) => {
@@ -1794,13 +1825,8 @@ export async function processArbitratedClientUpdate(
   
   
   
-  const preEditMaterializeContent = session.liveFragments.snapshotFragmentContentFromState(
-    preEditState,
-    acceptance.acceptedFragmentKeys,
-  );
   const materializeKeys = acceptance.acceptedFragmentKeys.filter(
-    (fragmentKey) =>
-      session.liveFragments.readFragmentString(fragmentKey) !== preEditMaterializeContent.get(fragmentKey),
+    (fragmentKey) => !contentIdenticalKeys.has(fragmentKey),
   );
 
   

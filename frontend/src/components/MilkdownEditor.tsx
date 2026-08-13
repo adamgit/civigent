@@ -46,6 +46,7 @@ import { editorSessionCommandsPlugin } from "./editorSessionCommandsPlugin";
 import { listGutterSwipePlugin } from "./listGutterSwipePlugin";
 import { useEditorSessionCommands } from "../contexts/EditorSessionCommandsContext";
 import { EditorLifecycleController } from "../services/editor-lifecycle";
+import { installAttachEchoGuard } from "../services/ysync-attach-echo-guard";
 import { FirstSyncReadyLatch } from "../services/first-sync-ready-latch";
 import { installLinkPicker } from "./link-picker/install-link-picker";
 
@@ -327,7 +328,11 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     // authorship ledger on open and mislabelling an inbound update as your save.
     teardownLocalEditObserver();
     const editorDom = view.dom;
-    const localEditHandler = (): void => onLocalEditRef.current?.();
+    let disarmEchoGuard: () => void = () => {};
+    const localEditHandler = (): void => {
+      disarmEchoGuard();
+      onLocalEditRef.current?.();
+    };
     editorDom.addEventListener("beforeinput", localEditHandler);
     localEditListenerCleanupRef.current = () => {
       editorDom.removeEventListener("beforeinput", localEditHandler);
@@ -367,6 +372,11 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
         firstSyncDetector,
       ],
     });
+    disarmEchoGuard = installAttachEchoGuard(
+      ySyncPluginKey.getState(newState),
+      replicaStore.doc,
+      fk,
+    );
     view.updateState(newState);
 
     awareness.setLocalStateField("user", {

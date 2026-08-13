@@ -90,12 +90,15 @@ export function shouldMountEditorForFragment(
   fragmentKey: string,
   focusedFragmentKey: string | null,
   orderedFragmentKeys: readonly string[],
+  focusedEditorReady: boolean,
 ): boolean {
   if (focusedFragmentKey === null) return false;
   const focusedPos = orderedFragmentKeys.indexOf(focusedFragmentKey);
   if (focusedPos < 0) return false;
   const rowPos = orderedFragmentKeys.indexOf(fragmentKey);
   if (rowPos < 0) return false;
+  if (fragmentKey === focusedFragmentKey) return true;
+  if (!focusedEditorReady) return false;
   return Math.abs(rowPos - focusedPos) <= 1;
 }
 

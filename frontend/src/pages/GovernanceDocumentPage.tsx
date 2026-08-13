@@ -953,8 +953,8 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
                       hasEditor={
                         proposalMode
                           ? (activeProposalStatus === "inprogress" && isInProposal
-                              && shouldMountEditorForFragment(fk, focusedFragmentKey, orderedRenderKeys))
-                          : (!crdtBlocked && shouldMountEditorForFragment(fk, focusedFragmentKey, orderedRenderKeys))
+                              && shouldMountEditorForFragment(fk, focusedFragmentKey, orderedRenderKeys, focusedFragmentKey !== null && readyEditors.has(focusedFragmentKey)))
+                          : (!crdtBlocked && shouldMountEditorForFragment(fk, focusedFragmentKey, orderedRenderKeys, focusedFragmentKey !== null && readyEditors.has(focusedFragmentKey)))
                       }
                       isInProposal={isInProposal}
                       proposalConflictReason={proposalConflictReason}

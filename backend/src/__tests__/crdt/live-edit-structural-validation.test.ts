@@ -33,6 +33,7 @@ describe("validateLiveEditForDuplicateSiblingHeadings", () => {
     const input: StructuralValidationInput = {
       touchedFragmentKeys: ["section::a"],
       layout,
+      readPreUpdateMarkdown: () => "## Overview\n\nOverview body." as never,
       // The author typed a new heading matching the "Timeline" sibling.
       readPostUpdateMarkdown: () => "## Timeline\n\nOverview body." as never,
     };
@@ -54,6 +55,7 @@ describe("validateLiveEditForDuplicateSiblingHeadings", () => {
     const input: StructuralValidationInput = {
       touchedFragmentKeys: ["section::a"],
       layout,
+      readPreUpdateMarkdown: () => "## Overview\n\nbody." as never,
       readPostUpdateMarkdown: () => "## Overview Renamed\n\nbody." as never,
     };
     const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
@@ -72,6 +74,7 @@ describe("validateLiveEditForDuplicateSiblingHeadings", () => {
     const input: StructuralValidationInput = {
       touchedFragmentKeys: ["section::a"],
       layout,
+      readPreUpdateMarkdown: () => "## Alpha\n\nsome body." as never,
       readPostUpdateMarkdown: () => md,
     };
     const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
@@ -88,6 +91,7 @@ describe("validateLiveEditForDuplicateSiblingHeadings", () => {
     const input: StructuralValidationInput = {
       touchedFragmentKeys: ["section::a"],
       layout,
+      readPreUpdateMarkdown: () => "## Alpha\n\nbody." as never,
       readPostUpdateMarkdown: () => md,
     };
     const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
@@ -104,6 +108,7 @@ describe("validateLiveEditForDuplicateSiblingHeadings", () => {
     const input: StructuralValidationInput = {
       touchedFragmentKeys: ["bfh::0"],
       layout,
+      readPreUpdateMarkdown: () => "Preamble." as never,
       readPostUpdateMarkdown: () => md,
     };
     const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
@@ -119,6 +124,11 @@ describe("validateLiveEditForDuplicateSiblingHeadings", () => {
       layoutEntry("section::c", ["Notes"], 2),
     ];
     // Two fragments touched: one valid body edit, one duplicate-heading rename.
+    const readPreMd = (key: string): string => {
+      if (key === "section::a") return "## Overview\n\noriginal body.";
+      if (key === "section::c") return "## Notes\n\noriginal body.";
+      return "";
+    };
     const readMd = (key: string): string => {
       if (key === "section::a") return "## Timeline\n\nrenamed collision.";
       if (key === "section::c") return "## Notes\n\nvalid body update.";
@@ -127,6 +137,7 @@ describe("validateLiveEditForDuplicateSiblingHeadings", () => {
     const input: StructuralValidationInput = {
       touchedFragmentKeys: ["section::a", "section::c"],
       layout,
+      readPreUpdateMarkdown: readPreMd as never,
       readPostUpdateMarkdown: readMd as never,
     };
     const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
@@ -141,6 +152,11 @@ describe("validateLiveEditForDuplicateSiblingHeadings", () => {
       layoutEntry("section::a", ["Overview"], 2),
       layoutEntry("section::b", ["Timeline"], 2),
     ];
+    const readPreMd = (key: string): string => {
+      if (key === "section::a") return "## Overview\n\noriginal body.";
+      if (key === "section::b") return "## Timeline\n\noriginal body.";
+      return "";
+    };
     const readMd = (key: string): string => {
       if (key === "section::a") return "body only, heading deleted.";
       if (key === "section::b") return "## Timeline\n\nbody edit."; // clean
@@ -149,9 +165,73 @@ describe("validateLiveEditForDuplicateSiblingHeadings", () => {
     const input: StructuralValidationInput = {
       touchedFragmentKeys: ["section::a", "section::b"],
       layout,
+      readPreUpdateMarkdown: readPreMd as never,
       readPostUpdateMarkdown: readMd as never,
     };
     const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
     expect(rejectionGroups).toEqual([]);
+  });
+
+  it("accepts an edit that removes a pre-existing duplicate inside one fragment", async () => {
+    const layout: LiveSectionLayoutEntry[] = [
+      layoutEntry("section::a", ["Overview"], 2),
+      layoutEntry("section::b", ["Timeline"], 2),
+    ];
+    const input: StructuralValidationInput = {
+      touchedFragmentKeys: ["section::a"],
+      layout,
+      readPreUpdateMarkdown: () => "## Overview\n\nfirst.\n\n## Overview\n\nsecond." as never,
+      readPostUpdateMarkdown: () => "## Overview\n\nfirst.\n\nsecond." as never,
+    };
+    const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
+    expect(rejectionGroups).toEqual([]);
+  });
+
+  it("accepts renaming one side of a pre-existing duplicate to a unique sibling heading", async () => {
+    const layout: LiveSectionLayoutEntry[] = [
+      layoutEntry("section::a", ["Overview"], 2),
+      layoutEntry("section::b", ["Timeline"], 2),
+    ];
+    const input: StructuralValidationInput = {
+      touchedFragmentKeys: ["section::a"],
+      layout,
+      readPreUpdateMarkdown: () => "## Overview\n\nfirst.\n\n## Overview\n\nsecond." as never,
+      readPostUpdateMarkdown: () => "## Overview\n\nfirst.\n\n## History\n\nsecond." as never,
+    };
+    const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
+    expect(rejectionGroups).toEqual([]);
+  });
+
+  it("accepts an unrelated content change that preserves a pre-existing duplicate", async () => {
+    const layout: LiveSectionLayoutEntry[] = [
+      layoutEntry("section::a", ["Overview"], 2),
+      layoutEntry("section::b", ["Timeline"], 2),
+    ];
+    const input: StructuralValidationInput = {
+      touchedFragmentKeys: ["section::a"],
+      layout,
+      readPreUpdateMarkdown: () => "## Overview\n\nfirst.\n\n## Overview\n\nsecond." as never,
+      readPostUpdateMarkdown: () =>
+        "## Overview\n\nfirst, now edited.\n\n## Overview\n\nsecond." as never,
+    };
+    const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
+    expect(rejectionGroups).toEqual([]);
+  });
+
+  it("rejects adding a further duplicate while a pre-existing duplicate is preserved", async () => {
+    const layout: LiveSectionLayoutEntry[] = [
+      layoutEntry("section::a", ["Overview"], 2),
+      layoutEntry("section::b", ["Timeline"], 2),
+    ];
+    const input: StructuralValidationInput = {
+      touchedFragmentKeys: ["section::a"],
+      layout,
+      readPreUpdateMarkdown: () => "## Overview\n\nfirst.\n\n## Overview\n\nsecond." as never,
+      readPostUpdateMarkdown: () =>
+        "## Overview\n\nfirst.\n\n## Overview\n\nsecond.\n\n## Overview\n\nthird." as never,
+    };
+    const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
+    expect(rejectionGroups).toHaveLength(1);
+    expect(rejectionGroups[0]?.reasonCode).toBe("duplicate-sibling-heading");
   });
 });
