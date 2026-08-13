@@ -24,6 +24,16 @@ function generateCodeChallenge(verifier: string): string {
     .replace(/=+$/g, "");
 }
 
+function manualCallbackUrl(response: {
+  status: number;
+  text: string;
+}): URL {
+  expect(response.status).toBe(200);
+  const match = /<textarea id="oauth-callback-url" readonly>([^<]+)<\/textarea>/.exec(response.text);
+  expect(match).not.toBeNull();
+  return new URL(match![1].replaceAll("&amp;", "&"));
+}
+
 async function getAuthCode(
   app: Express.Application,
   clientId: string,
@@ -40,8 +50,7 @@ async function getAuthCode(
       code_challenge_method: "S256",
       state: "",
     });
-  expect(res.status).toBe(303);
-  const url = new URL(res.headers.location as string);
+  const url = manualCallbackUrl(res);
   const code = url.searchParams.get("code");
   expect(code).not.toBeNull();
   return code!;

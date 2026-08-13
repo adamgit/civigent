@@ -6,7 +6,7 @@
  *   GET  /.well-known/oauth-authorization-server  — RFC 8414 AS metadata
  *   POST /oauth/register                          — RFC 7591 DCR
  *   GET  /oauth/authorize                         — Authorization (auto-approve or consent redirect, 302)
- *   POST /oauth/authorize                         — Authorization via POST (auto-approve or human consent, 303)
+ *   POST /oauth/authorize                         — Authorization via POST (manual callback confirmation)
  *   POST /oauth/token                             — Code exchange + refresh
  */
 
@@ -47,6 +47,79 @@ import {
 function sendOAuthError(res: Response, status: number, error: string, description: string): void {
   const body: OAuthErrorResponse = { error, error_description: description };
   res.status(status).json(body);
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function sendManualCallbackPage(res: Response, redirectUrl: string): void {
+  const escapedRedirectUrl = escapeHtml(redirectUrl);
+  res
+    .status(200)
+    .set({
+      "Cache-Control": "no-store",
+      Pragma: "no-cache",
+      "Referrer-Policy": "no-referrer",
+      "Content-Type": "text/html; charset=utf-8",
+    })
+    .send(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent access approved</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f7f5f1; color: #252321; }
+    main { box-sizing: border-box; width: min(680px, calc(100% - 32px)); margin: 48px auto; padding: 28px; background: white; border: 1px solid #e3dfd8; border-radius: 12px; box-shadow: 0 8px 30px rgba(40, 35, 30, 0.08); }
+    h1 { margin: 0 0 12px; font-size: 22px; }
+    p { margin: 0 0 18px; line-height: 1.5; color: #5b5650; }
+    label { display: block; margin-bottom: 7px; font-size: 13px; font-weight: 650; }
+    textarea { box-sizing: border-box; width: 100%; min-height: 112px; resize: vertical; padding: 12px; border: 1px solid #cfc8be; border-radius: 7px; background: #fbfaf8; color: #252321; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+    button, a { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 9px 15px; border-radius: 7px; font: inherit; font-weight: 650; cursor: pointer; text-decoration: none; }
+    button { border: 1px solid #bdb5aa; background: white; color: #252321; }
+    a { border: 1px solid #285f68; background: #285f68; color: white; }
+    #copy-status { min-height: 20px; margin: 8px 0 0; font-size: 12px; color: #285f68; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Agent access approved</h1>
+    <p>
+      No redirect has happened. Copy this callback URL into the browser where
+      you started the connection, or explicitly open it in this browser.
+      Complete the callback within five minutes.
+    </p>
+    <label for="oauth-callback-url">Callback URL</label>
+    <textarea id="oauth-callback-url" readonly>${escapedRedirectUrl}</textarea>
+    <div class="actions">
+      <button type="button" id="copy-url">Copy URL</button>
+      <a id="open-callback" href="${escapedRedirectUrl}" rel="noreferrer">Open callback in this browser</a>
+    </div>
+    <p id="copy-status" role="status" aria-live="polite"></p>
+  </main>
+  <script>
+    const urlField = document.getElementById("oauth-callback-url");
+    const copyStatus = document.getElementById("copy-status");
+    document.getElementById("copy-url").addEventListener("click", async () => {
+      urlField.select();
+      try {
+        await navigator.clipboard.writeText(urlField.value);
+        copyStatus.textContent = "Callback URL copied.";
+      } catch {
+        copyStatus.textContent = "The URL is selected. Copy it with Ctrl+C or Command+C.";
+      }
+    });
+  </script>
+</body>
+</html>`);
 }
 
 // ─── Registration rate limiter (process-level, no deps) ─────────
@@ -300,10 +373,7 @@ export function createOAuthRouter(): Router {
       redirectTarget.searchParams.set("code", code);
       if (authRequest.state) redirectTarget.searchParams.set("state", authRequest.state);
 
-      // Consent arrives as POST, while OAuth client callbacks expect GET.
-      // 303 makes the method conversion explicit and prevents the form body
-      // from being forwarded to a method-preserving callback.
-      res.redirect(303, redirectTarget.toString());
+      sendManualCallbackPage(res, redirectTarget.toString());
     } catch (error) {
       next(error);
     }

@@ -28,9 +28,21 @@ function generateCodeChallenge(verifier: string): string {
     .replace(/=+$/g, "");
 }
 
+function manualCallbackUrl(response: {
+  status: number;
+  headers: Record<string, string>;
+  text: string;
+}): URL {
+  expect(response.status).toBe(200);
+  expect(response.headers["content-type"]).toMatch(/^text\/html/);
+  const match = /<textarea id="oauth-callback-url" readonly>([^<]+)<\/textarea>/.exec(response.text);
+  expect(match).not.toBeNull();
+  return new URL(match![1].replaceAll("&amp;", "&"));
+}
+
 /**
  * Get an auth code via POST /oauth/authorize.
- * Returns a 302 redirect with code in the Location header.
+ * Returns the code in a manual callback confirmation page.
  */
 async function getAuthCode(
   app: Express.Application,
@@ -50,9 +62,7 @@ async function getAuthCode(
       code_challenge_method: codeChallengeMethod,
       state: state ?? "",
     });
-  expect(res.status).toBe(303);
-  const location = res.headers.location as string;
-  const url = new URL(location);
+  const url = manualCallbackUrl(res);
   const code = url.searchParams.get("code");
   expect(code).not.toBeNull();
   return code!;
@@ -480,8 +490,7 @@ describe("OAuth 2.1 flow", () => {
           code_challenge: codeChallenge,
           code_challenge_method: "S256",
         });
-      expect(res.status).toBe(303);
-      expect(res.headers.location).toMatch(/code=/);
+      expect(manualCallbackUrl(res).searchParams.get("code")).toBeTruthy();
     });
 
     it("POST /oauth/authorize with agent bearer token succeeds", async () => {
@@ -497,8 +506,7 @@ describe("OAuth 2.1 flow", () => {
           code_challenge: codeChallenge,
           code_challenge_method: "S256",
         });
-      expect(res.status).toBe(303);
-      expect(res.headers.location).toMatch(/code=/);
+      expect(manualCallbackUrl(res).searchParams.get("code")).toBeTruthy();
     });
   });
 
