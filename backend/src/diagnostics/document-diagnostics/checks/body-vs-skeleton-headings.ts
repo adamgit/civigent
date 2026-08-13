@@ -68,13 +68,13 @@ export async function runBodyVsSkeletonHeadingsCheck(ctx: DocumentDiagnosticsCon
     }
 
     ctx.pushCheck(
-      "Recursive Structure Checks",
+      "Canonical",
       "body-headings-match-skeleton",
       unpromoted.length === 0,
       unpromoted.length > 0 ? unpromoted.join(" | ") : undefined,
     );
     ctx.pushCheck(
-      "Recursive Structure Checks",
+      "Canonical",
       "skeleton-sections-have-bodies",
       emptyOrMissing.length === 0,
       emptyOrMissing.length > 0 ? emptyOrMissing.join(" | ") : undefined,

@@ -9,7 +9,7 @@ export async function runDuplicateFragmentKeysCheck(ctx: DocumentDiagnosticsCont
     const recursiveSkeleton = await ensureRecursiveSkeleton(ctx);
     const duplicateFragmentKeys = collectDuplicateFragmentKeyDetails(recursiveSkeleton);
     ctx.pushCheck(
-      "Recursive Structure Checks",
+      "Canonical",
       "duplicate-fragment-keys",
       duplicateFragmentKeys.length === 0,
       duplicateFragmentKeys.length > 0 ? duplicateFragmentKeys.join(" | ") : undefined,

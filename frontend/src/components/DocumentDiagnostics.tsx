@@ -6,8 +6,6 @@ import type {
   DiagHealthCheck,
   DiagSectionLayerInfo,
   DiagLayerStatus,
-  DiagSummary,
-  DiagRestoreProvenance,
 } from "../services/api-client.js";
 
 interface DocumentDiagnosticsProps {
@@ -27,6 +25,10 @@ function renderInvalidStructureBanner(data: DocDiagnosticsResponse) {
     "duplicate-heading-paths",
     "duplicate-sibling-headings",
     "duplicate-fragment-keys",
+    "live-duplicate-heading-paths",
+    "live-duplicate-sibling-headings",
+    "live-topology-vs-canonical",
+    "live-claim-set-orphans",
     "no-logical-loss-in-heading-map",
     "public-api-returns-every-physical-section",
     "recursive-all-sections-readable",
@@ -79,102 +81,21 @@ function renderInvalidStructureBanner(data: DocDiagnosticsResponse) {
   );
 }
 
-function renderSummary(summary: DiagSummary) {
-  const items = [
-    { label: "Top-level entries", value: summary.top_level_entries },
-    { label: "Recursive structural entries", value: summary.recursive_structural_entries },
-    { label: "Recursive content sections", value: summary.recursive_content_sections },
-    { label: "Recursive sub-skeleton parents", value: summary.recursive_subskeleton_parents },
-    { label: "Recursive max depth", value: summary.recursive_max_heading_path_length },
-  ];
-  // Physical / logical / API counts are the lossy-read signal — a mismatch means
-  // normal document reads hide at least one physical section. Highlight in red.
-  const lossyCounts = [
-    { label: "Physical body files", value: summary.physical_section_count },
-    { label: "Unique heading paths (logical)", value: summary.logical_section_count },
-    { label: "API-returned sections", value: summary.api_section_count },
-  ];
-  const anyCountNonNull =
-    summary.physical_section_count !== null ||
-    summary.logical_section_count !== null ||
-    summary.api_section_count !== null;
-  const mismatch =
-    anyCountNonNull &&
-    (summary.physical_section_count !== summary.logical_section_count ||
-      summary.physical_section_count !== summary.api_section_count);
+function renderHealthStripRow(label: string, rowChecks: DiagHealthCheck[]) {
+  const passed = rowChecks.filter((c) => c.pass);
+  const failed = rowChecks.filter((c) => !c.pass);
   return (
-    <div className="border border-gray-200 rounded p-3">
-      <h3 className="text-sm font-semibold mb-2">Structure Summary (with lossy-read counts)</h3>
-      <div className="space-y-1">
-        {items.map((item) => (
-          <div key={item.label} className="flex items-center justify-between gap-3 text-[12px] font-mono">
-            <span className="text-gray-600">{item.label}</span>
-            <span>{item.value ?? "\u2014"}</span>
-          </div>
-        ))}
-      </div>
-      <div className="mt-2 pt-2 border-t border-gray-100 space-y-1">
-        {lossyCounts.map((item) => (
-          <div key={item.label} className={`flex items-center justify-between gap-3 text-[12px] font-mono ${mismatch ? "text-red-700" : "text-gray-700"}`}>
-            <span className={mismatch ? "text-red-700" : "text-gray-600"}>{item.label}</span>
-            <span className={mismatch ? "font-semibold" : ""}>{item.value ?? "\u2014"}</span>
-          </div>
-        ))}
-        {mismatch && (
-          <div className="text-[11px] text-red-700 mt-1">
-            Physical / logical / API counts disagree \u2014 normal document reads hide at least one physical section.
+    <div className="flex items-start gap-3 px-3 py-2">
+      <span className="w-20 shrink-0 text-[11px] font-semibold uppercase tracking-wide text-gray-500">{label}</span>
+      <div className="min-w-0 flex-1 space-y-0.5">
+        {passed.length > 0 && (
+          <div className="text-[12px] font-mono text-green-600 break-words">
+            {"\u2713"} {passed.map((c) => c.name).join(", ")}
           </div>
         )}
-      </div>
-    </div>
-  );
-}
-
-function renderRestoreProvenance(restore: DiagRestoreProvenance) {
-  const formatSha = (value: string | null) => value ? value.slice(0, 12) : "\u2014";
-  const mismatch =
-    restore.recursive_content_match === false
-      ? `Current-only: ${restore.current_only_heading_keys.join(", ") || "(none)"} | Target-only: ${restore.target_only_heading_keys.join(", ") || "(none)"}`
-      : null;
-  return (
-    <div className="border border-gray-200 rounded p-3">
-      <h3 className="text-sm font-semibold mb-2">Restore Provenance</h3>
-      <div className="space-y-1 text-[12px] font-mono">
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-gray-600">Current HEAD</span>
-          <span>{formatSha(restore.current_head_sha)}</span>
-        </div>
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-gray-600">Last restore commit</span>
-          <span>{formatSha(restore.last_restore_commit_sha)}</span>
-        </div>
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-gray-600">Restore target</span>
-          <span>{formatSha(restore.last_restore_target_sha)}</span>
-        </div>
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-gray-600">Target top-level entries</span>
-          <span>{restore.target_top_level_entries ?? "\u2014"}</span>
-        </div>
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-gray-600">Target recursive sections</span>
-          <span>{restore.target_recursive_content_sections ?? "\u2014"}</span>
-        </div>
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-gray-600">Recursive match</span>
-          <span className={
-            restore.recursive_content_match === null
-              ? "text-gray-500"
-              : restore.recursive_content_match
-                ? "text-green-600"
-                : "text-red-600"
-          }>
-            {restore.recursive_content_match === null ? "\u2014" : restore.recursive_content_match ? "match" : "mismatch"}
-          </span>
-        </div>
-        {mismatch && (
-          <div className="text-[11px] text-red-600 pt-1 break-words">
-            {mismatch}
+        {failed.length > 0 && (
+          <div className="text-[12px] font-mono text-red-600 break-words">
+            {"\u2717"} {failed.map((c) => (c.detail ? `${c.name} \u2014 ${c.detail}` : c.name)).join(", ")}
           </div>
         )}
       </div>
@@ -184,47 +105,21 @@ function renderRestoreProvenance(restore: DiagRestoreProvenance) {
 
 function renderChecks(checks: DiagHealthCheck[]) {
   try {
-    const grouped = checks.reduce<Record<string, DiagHealthCheck[]>>((acc, check) => {
-      const key = check.category || "Other";
-      if (!acc[key]) acc[key] = [];
-      acc[key].push(check);
-      return acc;
-    }, {});
+    const canonicalChecks = checks.filter((c) => c.category === "Canonical");
+    const liveChecks = checks.filter((c) => c.category === "Live");
+    const liveSessionCheck = liveChecks.find((c) => c.name === "live-crdt-session");
+    const noLiveSession = liveSessionCheck?.detail === "no-session";
     return (
-      <div>
-        <h3 className="text-sm font-semibold mb-2">Health Checks</h3>
-        <div className="space-y-3">
-          {Object.entries(grouped).map(([category, categoryChecks]) => (
-            <div key={category} className="border border-gray-200 rounded">
-              <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500 border-b border-gray-100">
-                {category}
-              </div>
-              {categoryChecks.map((check, i) => {
-                // Failing duplicate-heading-paths / duplicate-sibling-headings
-                // checks link to the collision groups panel so the operator can
-                // jump straight to the offending physical rows.
-                const linksToCollisions = !check.pass && (check.name === "duplicate-heading-paths" || check.name === "duplicate-sibling-headings");
-                return (
-                <div
-                  key={`${category}-${check.name}`}
-                  className={`flex items-start gap-2 px-3 py-1 text-[12px] font-mono ${i < categoryChecks.length - 1 ? "border-b border-gray-100" : ""}`}
-                >
-                  <span className={check.pass ? "text-green-600" : "text-red-600"}>
-                    {check.pass ? "\u2713" : "\u2717"}
-                  </span>
-                  <span className="font-medium">{check.name}</span>
-                  {linksToCollisions && (
-                    <a href="#collision-groups" className="text-[11px] text-red-700 underline">show collisions</a>
-                  )}
-                  {check.detail && (
-                    <span className="text-gray-500 ml-2">{check.detail}</span>
-                  )}
-                </div>
-                );
-              })}
-            </div>
-          ))}
-        </div>
+      <div className="border border-gray-200 rounded divide-y divide-gray-100">
+        {renderHealthStripRow("Canonical", canonicalChecks)}
+        {noLiveSession ? (
+          <div className="flex items-start gap-3 px-3 py-2">
+            <span className="w-20 shrink-0 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Live</span>
+            <span className="text-[12px] text-gray-500">No live session \u2014 not checked</span>
+          </div>
+        ) : (
+          renderHealthStripRow("Live", liveChecks)
+        )}
       </div>
     );
   } catch (e) {
@@ -390,6 +285,25 @@ function renderCollisionGroups(sections: DiagSectionLayerInfo[]) {
   );
 }
 
+function renderSectionLabel(section: DiagSectionLayerInfo) {
+  const liveDiffers = section.liveHeadingKey !== null && section.liveHeadingKey !== section.headingKey;
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-1">
+        <span className={liveDiffers ? "text-gray-400" : undefined}>{section.headingKey || "(body holder)"}</span>
+        {section.isSubSkeleton ? (
+          <span className="inline-block px-1 py-0 rounded bg-purple-100 text-purple-700 text-[9px] font-semibold">sub-skeleton</span>
+        ) : null}
+      </div>
+      {liveDiffers ? (
+        <div>
+          <span>{section.liveHeadingKey || "(body holder)"}</span>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
   // The React key is `fragmentKey` (physical identity), not `headingKey`. If
   // two rows share `headingKey` (a duplicate-heading-paths corruption case),
@@ -401,12 +315,7 @@ function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
       return [
         <tr key={`${rowKey}-section`} className="border-b border-gray-100 bg-gray-50">
           <td colSpan={5} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
-            <div className="flex flex-wrap items-center gap-1">
-              <span>{section.headingKey || "(body holder)"}</span>
-              {section.isSubSkeleton ? (
-                <span className="inline-block px-1 py-0 rounded bg-purple-100 text-purple-700 text-[9px] font-semibold">sub-skeleton</span>
-              ) : null}
-            </div>
+            {renderSectionLabel(section)}
             <div className="mt-0.5 text-gray-400 text-[10px]">
               {section.fragmentKey}
               {section.sectionFile ? <> · {section.sectionFile}</> : null}
@@ -424,12 +333,7 @@ function renderSectionRow(section: DiagSectionLayerInfo, index: number) {
     return [
       <tr key={`${rowKey}-section`} className="border-b border-gray-100 bg-gray-50">
         <td colSpan={5} className="px-2 py-1.5 text-[11px] font-mono whitespace-normal [overflow-wrap:anywhere]">
-          <div className="flex flex-wrap items-center gap-1">
-            <span>{section.headingKey || "(body holder)"}</span>
-            {section.isSubSkeleton ? (
-              <span className="inline-block px-1 py-0 rounded bg-purple-100 text-purple-700 text-[9px] font-semibold">sub-skeleton</span>
-            ) : null}
-          </div>
+          {renderSectionLabel(section)}
           <div className="mt-0.5 text-gray-400 text-[10px]">
             {section.fragmentKey}
             {section.sectionFile ? <> · {section.sectionFile}</> : null}
@@ -553,14 +457,8 @@ export default function DocumentDiagnostics({ docPath, onClose }: DocumentDiagno
             <div className="flex flex-col gap-4">
               {renderInvalidStructureBanner(data)}
               {renderCollisionGroups(data.sections)}
-              <div className="grid grid-cols-1 xl:grid-cols-[340px_340px_minmax(0,1fr)] gap-4">
-                <div className="flex flex-col gap-4">
-                  {renderSummary(data.summary)}
-                  {renderRestoreProvenance(data.restore_provenance)}
-                </div>
-                {renderChecks(data.checks)}
-                {renderSectionTable(data.sections)}
-              </div>
+              {renderChecks(data.checks)}
+              {renderSectionTable(data.sections)}
             </div>
           )}
         </div>

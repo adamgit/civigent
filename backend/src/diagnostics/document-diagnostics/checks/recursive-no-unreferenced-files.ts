@@ -16,7 +16,7 @@ export async function runRecursiveNoUnreferencedFilesCheck(ctx: DocumentDiagnost
     const recursiveDiskFiles = await listRecursiveMdFiles(ctx.canonicalSectionsDir);
     const recursiveUnreferenced = recursiveDiskFiles.filter((rel) => !recursiveExpectedFiles.has(rel));
     ctx.pushCheck(
-      "Recursive Structure Checks",
+      "Canonical",
       "recursive-no-unreferenced-files",
       recursiveUnreferenced.length === 0,
       recursiveUnreferenced.length > 0 ? recursiveUnreferenced.join(", ") : undefined,

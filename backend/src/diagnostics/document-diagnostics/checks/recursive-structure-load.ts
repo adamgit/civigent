@@ -9,8 +9,8 @@ export async function runRecursiveStructureLoadCheck(ctx: DocumentDiagnosticsCon
     ctx.summary.recursive_content_sections = contentEntries.length;
     ctx.summary.recursive_subskeleton_parents = structuralEntries.filter((entry) => entry.isSubSkeleton).length;
     ctx.summary.recursive_max_heading_path_length = contentEntries.reduce((max, entry) => Math.max(max, entry.headingPath.length), 0);
-    ctx.pushCheck("Recursive Structure Checks", "recursive-structure-load", true, `${structuralEntries.length} structural entries`);
+    ctx.pushCheck("Canonical", "recursive-structure-load", true, `${structuralEntries.length} structural entries`);
   } catch (err) {
-    ctx.pushCheck("Recursive Structure Checks", "recursive-structure-load", false, err instanceof Error ? err.message : String(err));
+    ctx.pushCheck("Canonical", "recursive-structure-load", false, err instanceof Error ? err.message : String(err));
   }
 }

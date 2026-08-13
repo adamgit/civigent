@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
+import { resolveLiveSectionLayout, type LiveSectionLayoutEntry } from "../../crdt/live-section-layout.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import type { FlatEntry } from "../../storage/document-skeleton.js";
@@ -91,6 +92,16 @@ export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Pro
     const session = lookupDocSession(ctx.docPath);
     const crdtKeys = session ? session.liveFragments.getFragmentKeys() : [];
 
+    const liveLayoutByFragmentKey = new Map<string, LiveSectionLayoutEntry>();
+    if (session) {
+      try {
+        const liveLayout = await resolveLiveSectionLayout(ctx.docPath, session.generator.getCurrentProposalId());
+        for (const entry of liveLayout) liveLayoutByFragmentKey.set(entry.fragmentKey, entry);
+      } catch {
+        liveLayoutByFragmentKey.clear();
+      }
+    }
+
     const rowOrder: string[] = [];
     const rowsByKey = new Map<string, UnionRow>();
     const ensureRow = (fragmentKey: string): UnionRow => {
@@ -175,10 +186,14 @@ export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Pro
 
         const winner = computeLayerWinner({ canonical, proposal, crdt });
 
+        const liveEntry = liveLayoutByFragmentKey.get(fragmentKey) ?? null;
+
         ctx.sections.push({
           fragmentKey,
           headingKey,
           headingPath,
+          liveHeadingPath: liveEntry ? [...liveEntry.headingPath] : null,
+          liveHeadingKey: liveEntry ? SectionRef.headingKey(liveEntry.headingPath) : null,
           sectionFile,
           isSubSkeleton,
           canonical,
@@ -191,6 +206,8 @@ export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Pro
           fragmentKey,
           headingKey: "__crdt_only__::" + fragmentKey,
           headingPath: [],
+          liveHeadingPath: null,
+          liveHeadingKey: null,
           sectionFile: "",
           isSubSkeleton: false,
           canonical: absentLayer(),
@@ -203,7 +220,7 @@ export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Pro
     }
   } catch (err) {
     ctx.pushCheck(
-      "Recursive Structure Checks",
+      "Canonical",
       "section-layer-collection",
       false,
       err instanceof Error ? err.message : String(err),

@@ -11,12 +11,12 @@ export async function runTopLevelAllSectionsParseableCheck(ctx: DocumentDiagnost
       if (!result.parseable) unparseable.push(entry.sectionFile);
     }
     ctx.pushCheck(
-      "Top-Level Checks",
+      "Canonical",
       "all-sections-parseable",
       unparseable.length === 0,
       unparseable.length > 0 ? unparseable.join(", ") : undefined,
     );
   } catch (err) {
-    ctx.pushCheck("Top-Level Checks", "all-sections-parseable", false, err instanceof Error ? err.message : String(err));
+    ctx.pushCheck("Canonical", "all-sections-parseable", false, err instanceof Error ? err.message : String(err));
   }
 }

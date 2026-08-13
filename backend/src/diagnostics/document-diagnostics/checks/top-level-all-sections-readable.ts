@@ -14,12 +14,12 @@ export async function runTopLevelAllSectionsReadableCheck(ctx: DocumentDiagnosti
       }
     }
     ctx.pushCheck(
-      "Top-Level Checks",
+      "Canonical",
       "all-sections-readable",
       missing.length === 0,
       missing.length > 0 ? missing.join(", ") : undefined,
     );
   } catch (err) {
-    ctx.pushCheck("Top-Level Checks", "all-sections-readable", false, err instanceof Error ? err.message : String(err));
+    ctx.pushCheck("Canonical", "all-sections-readable", false, err instanceof Error ? err.message : String(err));
   }
 }

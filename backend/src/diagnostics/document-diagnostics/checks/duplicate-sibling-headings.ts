@@ -16,7 +16,7 @@ export async function runDuplicateSiblingHeadingsCheck(ctx: DocumentDiagnosticsC
     const recursiveSkeleton = await ensureRecursiveSkeleton(ctx);
     const duplicates = collectDuplicateSiblingHeadingDetails(recursiveSkeleton);
     ctx.pushCheck(
-      "Recursive Structure Checks",
+      "Canonical",
       "duplicate-sibling-headings",
       duplicates.length === 0,
       duplicates.length > 0 ? duplicates.join(" | ") : undefined,

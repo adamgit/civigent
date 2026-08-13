@@ -17,7 +17,7 @@ export async function runRecursiveNoStaleSubskeletonFilesCheck(ctx: DocumentDiag
       }
     }
     ctx.pushCheck(
-      "Recursive Structure Checks",
+      "Canonical",
       "recursive-no-stale-subskeleton-files",
       recursiveStale.length === 0,
       recursiveStale.length > 0 ? recursiveStale.join(", ") : undefined,

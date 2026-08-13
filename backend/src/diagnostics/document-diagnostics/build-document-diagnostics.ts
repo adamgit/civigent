@@ -7,6 +7,10 @@ import { runTopLevelNoStaleSectionsDirsCheck } from "./checks/top-level-no-stale
 import { runTopLevelAllSectionsReadableCheck } from "./checks/top-level-all-sections-readable.js";
 import { runTopLevelAllSectionsParseableCheck } from "./checks/top-level-all-sections-parseable.js";
 import { runLiveCrdtSessionCheck } from "./checks/live-crdt-session.js";
+import { runLiveDuplicateHeadingPathsCheck } from "./checks/live-duplicate-heading-paths.js";
+import { runLiveDuplicateSiblingHeadingsCheck } from "./checks/live-duplicate-sibling-headings.js";
+import { runLiveTopologyVsCanonicalCheck } from "./checks/live-topology-vs-canonical.js";
+import { runLiveClaimSetOrphansCheck } from "./checks/live-claim-set-orphans.js";
 import { runRecursiveStructureLoadCheck } from "./checks/recursive-structure-load.js";
 import { runRecursiveNoUnreferencedFilesCheck } from "./checks/recursive-no-unreferenced-files.js";
 import { runRecursiveAllSectionsReadableCheck } from "./checks/recursive-all-sections-readable.js";
@@ -31,10 +35,11 @@ export async function buildDocumentDiagnostics(docPath: DocPath): Promise<DocDia
   await runTopLevelAllSectionsReadableCheck(ctx);
   await runTopLevelAllSectionsParseableCheck(ctx);
 
-  // Live CRDT session presence is still a meaningful diagnostic; session-overlay
-  // disk checks (exists / orphaned / read-path / overlay-vs-canonical match) are
-  // removed — `sessions/` is no longer a durable surface (Area D/spec 05).
   await runLiveCrdtSessionCheck(ctx);
+  await runLiveDuplicateHeadingPathsCheck(ctx);
+  await runLiveDuplicateSiblingHeadingsCheck(ctx);
+  await runLiveTopologyVsCanonicalCheck(ctx);
+  await runLiveClaimSetOrphansCheck(ctx);
 
   await runRecursiveStructureLoadCheck(ctx);
   await runRecursiveNoUnreferencedFilesCheck(ctx);

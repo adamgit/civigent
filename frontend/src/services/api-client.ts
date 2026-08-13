@@ -136,6 +136,8 @@ export interface DiagSectionLayerInfo {
   headingKey: string;
   /** Heading path — data, not identity. Multiple rows can share it. */
   headingPath: string[];
+  liveHeadingPath: string[] | null;
+  liveHeadingKey: string | null;
   /** Canonical section-file name (empty when CRDT-only). */
   sectionFile: string;
   isSubSkeleton: boolean;

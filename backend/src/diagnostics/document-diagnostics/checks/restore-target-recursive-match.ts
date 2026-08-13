@@ -46,7 +46,7 @@ export async function runRestoreTargetRecursiveMatchCheck(ctx: DocumentDiagnosti
       && ctx.restoreProvenance.target_only_heading_keys.length === 0;
 
     ctx.pushCheck(
-      "Session / Restore Checks",
+      "Canonical",
       "restore-target-recursive-match",
       ctx.restoreProvenance.recursive_content_match,
       ctx.restoreProvenance.recursive_content_match
@@ -54,6 +54,6 @@ export async function runRestoreTargetRecursiveMatchCheck(ctx: DocumentDiagnosti
         : `current-only: ${ctx.restoreProvenance.current_only_heading_keys.join(", ") || "(none)"} | target-only: ${ctx.restoreProvenance.target_only_heading_keys.join(", ") || "(none)"}`,
     );
   } catch (err) {
-    ctx.pushCheck("Session / Restore Checks", "restore-target-recursive-match", false, err instanceof Error ? err.message : String(err));
+    ctx.pushCheck("Canonical", "restore-target-recursive-match", false, err instanceof Error ? err.message : String(err));
   }
 }

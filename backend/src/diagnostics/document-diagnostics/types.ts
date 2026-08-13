@@ -22,6 +22,8 @@ export interface DiagSectionLayerInfo {
   headingKey: string;
   /** Heading path — data, not identity. */
   headingPath: string[];
+  liveHeadingPath: string[] | null;
+  liveHeadingKey: string | null;
   /** Canonical section-file name (empty when the row is CRDT-only). */
   sectionFile: string;
   isSubSkeleton: boolean;

@@ -26,12 +26,12 @@ export async function runTopLevelNoStaleSectionsDirsCheck(ctx: DocumentDiagnosti
       }
     }
     ctx.pushCheck(
-      "Top-Level Checks",
+      "Canonical",
       "no-stale-sections-dirs",
       stale.length === 0,
       stale.length > 0 ? stale.join(", ") : undefined,
     );
   } catch (err) {
-    ctx.pushCheck("Top-Level Checks", "no-stale-sections-dirs", false, err instanceof Error ? err.message : String(err));
+    ctx.pushCheck("Canonical", "no-stale-sections-dirs", false, err instanceof Error ? err.message : String(err));
   }
 }

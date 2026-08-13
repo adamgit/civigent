@@ -14,7 +14,7 @@ export async function runRecursiveAllSectionsReadableCheck(ctx: DocumentDiagnost
       }
     }
     ctx.pushCheck(
-      "Recursive Structure Checks",
+      "Canonical",
       "recursive-all-sections-readable",
       recursiveMissing.length === 0,
       recursiveMissing.length > 0 ? recursiveMissing.join(", ") : undefined,

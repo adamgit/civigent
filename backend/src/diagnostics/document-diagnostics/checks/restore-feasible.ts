@@ -19,7 +19,7 @@ export async function runRestoreFeasibleCheck(ctx: DocumentDiagnosticsContext): 
   );
   if (ambiguousIdentity) {
     ctx.pushCheck(
-      "Session / Restore Checks",
+      "Canonical",
       "restore-feasible",
       false,
       `manual repair required — ambiguous heading identity blocks a deterministic restore plan (${ambiguousIdentity.name}${ambiguousIdentity.detail ? `: ${ambiguousIdentity.detail}` : ""}). Choose which physical row keeps the disputed heading before restoring.`,
@@ -49,11 +49,11 @@ export async function runRestoreFeasibleCheck(ctx: DocumentDiagnosticsContext): 
     (section) => section.winner === "none" && section.gitHistoryExists === false,
   );
   if (unrecoverableSections.length === 0) {
-    ctx.pushCheck("Session / Restore Checks", "restore-feasible", true);
+    ctx.pushCheck("Canonical", "restore-feasible", true);
     return;
   }
   const details = unrecoverableSections.map(
     (section) => `Section "${section.headingKey || section.sectionFile}" body file ${section.sectionFile} has never existed in git — restore cannot recover this section. The skeleton must be repaired.`,
   );
-  ctx.pushCheck("Session / Restore Checks", "restore-feasible", false, details.join("\n"));
+  ctx.pushCheck("Canonical", "restore-feasible", false, details.join("\n"));
 }

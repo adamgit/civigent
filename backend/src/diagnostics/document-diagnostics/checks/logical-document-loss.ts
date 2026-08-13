@@ -50,9 +50,9 @@ export async function runLogicalDocumentLossCheck(ctx: DocumentDiagnosticsContex
       const detail = `${physicalCount} physical vs ${uniqueCount} unique heading paths — hidden: ${hidden
         .map((h) => `${h.sectionFile} [${h.headingKey}]`)
         .join(", ")}`;
-      ctx.pushCheck("Recursive Structure Checks", "no-logical-loss-in-heading-map", false, detail);
+      ctx.pushCheck("Canonical", "no-logical-loss-in-heading-map", false, detail);
     } else {
-      ctx.pushCheck("Recursive Structure Checks", "no-logical-loss-in-heading-map", true);
+      ctx.pushCheck("Canonical", "no-logical-loss-in-heading-map", true);
     }
 
     // Rung 2 — physical > API-returned (public-API-level collapse).
@@ -67,13 +67,13 @@ export async function runLogicalDocumentLossCheck(ctx: DocumentDiagnosticsContex
         const detail = `${physicalCount} physical vs ${apiCount} API-returned — API-hidden: ${lost
           .map((h) => `${h.sectionFile} [${h.headingKey}]`)
           .join(", ") || "(count-only mismatch)"}`;
-        ctx.pushCheck("Recursive Structure Checks", "public-api-returns-every-physical-section", false, detail);
+        ctx.pushCheck("Canonical", "public-api-returns-every-physical-section", false, detail);
       } else {
-        ctx.pushCheck("Recursive Structure Checks", "public-api-returns-every-physical-section", true);
+        ctx.pushCheck("Canonical", "public-api-returns-every-physical-section", true);
       }
     } catch (err) {
       ctx.pushCheck(
-        "Recursive Structure Checks",
+        "Canonical",
         "public-api-returns-every-physical-section",
         false,
         err instanceof Error ? err.message : String(err),

@@ -5,12 +5,12 @@ export async function runTopLevelNoUnreferencedFilesCheck(ctx: DocumentDiagnosti
     const assessment = await ensureTopLevelSkeletonAssessment(ctx);
     const unreferenced = assessment.unreferencedFiles;
     ctx.pushCheck(
-      "Top-Level Checks",
+      "Canonical",
       "no-unreferenced-files",
       unreferenced.length === 0,
       unreferenced.length > 0 ? unreferenced.join(", ") : undefined,
     );
   } catch (err) {
-    ctx.pushCheck("Top-Level Checks", "no-unreferenced-files", false, err instanceof Error ? err.message : String(err));
+    ctx.pushCheck("Canonical", "no-unreferenced-files", false, err instanceof Error ? err.message : String(err));
   }
 }

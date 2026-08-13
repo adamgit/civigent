@@ -18,7 +18,7 @@ export async function runDuplicateHeadingPathsCheck(ctx: DocumentDiagnosticsCont
     const recursiveSkeleton = await ensureRecursiveSkeleton(ctx);
     const duplicates = collectDuplicateHeadingPathDetails(recursiveSkeleton);
     ctx.pushCheck(
-      "Recursive Structure Checks",
+      "Canonical",
       "duplicate-heading-paths",
       duplicates.length === 0,
       duplicates.length > 0 ? duplicates.join(" | ") : undefined,

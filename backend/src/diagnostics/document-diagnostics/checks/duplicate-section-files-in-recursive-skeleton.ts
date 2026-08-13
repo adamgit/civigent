@@ -11,7 +11,7 @@ export async function runDuplicateSectionFilesInRecursiveSkeletonCheck(
     const recursiveSkeleton = await ensureRecursiveSkeleton(ctx);
     const duplicateSectionFiles = collectDuplicateSectionFileDetails(recursiveSkeleton);
     ctx.pushCheck(
-      "Recursive Structure Checks",
+      "Canonical",
       "duplicate-section-files-in-recursive-skeleton",
       duplicateSectionFiles.length === 0,
       duplicateSectionFiles.length > 0 ? duplicateSectionFiles.join(" | ") : undefined,
