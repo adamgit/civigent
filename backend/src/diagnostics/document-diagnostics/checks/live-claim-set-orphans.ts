@@ -1,18 +1,12 @@
-import { lookupDocSession } from "../../../crdt/ydoc-lifecycle.js";
 import { resolveLiveSectionLayout } from "../../../crdt/live-section-layout.js";
 import { readActiveProposal } from "../../../storage/proposal-repository.js";
 import { SectionRef } from "../../../domain/section-ref.js";
-import type { DocumentDiagnosticsContext } from "../context.js";
+import { resolveDiagnosticsDraftProposalId, type DocumentDiagnosticsContext } from "../context.js";
 
 export async function runLiveClaimSetOrphansCheck(ctx: DocumentDiagnosticsContext): Promise<void> {
-  const session = lookupDocSession(ctx.docPath);
-  if (!session) return;
+  const proposalId = await resolveDiagnosticsDraftProposalId(ctx.docPath);
+  if (!proposalId) return;
   try {
-    const proposalId = session.generator.getCurrentProposalId();
-    if (!proposalId) {
-      ctx.pushCheck("Live", "live-claim-set-orphans", true, "no-bound-proposal");
-      return;
-    }
     const layout = await resolveLiveSectionLayout(ctx.docPath, proposalId);
     const liveHeadingKeys = new Set(layout.map((entry) => SectionRef.headingKey(entry.headingPath)));
     const proposal = await readActiveProposal(proposalId);
@@ -27,7 +21,7 @@ export async function runLiveClaimSetOrphansCheck(ctx: DocumentDiagnosticsContex
       "Live",
       "live-claim-set-orphans",
       orphans.length === 0,
-      orphans.length > 0 ? `claimed but absent from live layout: ${orphans.join(" | ")}` : undefined,
+      orphans.length > 0 ? `claimed but absent from draft layout: ${orphans.join(" | ")}` : undefined,
     );
   } catch (err) {
     ctx.pushCheck("Live", "live-claim-set-orphans", false, err instanceof Error ? err.message : String(err));

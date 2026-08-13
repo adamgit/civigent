@@ -9,7 +9,7 @@ import { isBodyHolderShape } from "../../storage/section-shape.js";
 import { findInProgressProposalForDoc } from "../../storage/proposal-repository.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import type { SectionBody } from "../../storage/section-formatting.js";
-import type { DocumentDiagnosticsContext } from "./context.js";
+import { resolveDiagnosticsDraftProposalId, type DocumentDiagnosticsContext } from "./context.js";
 import type { DiagLayerStatus } from "./types.js";
 
 /**
@@ -93,9 +93,10 @@ export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Pro
     const crdtKeys = session ? session.liveFragments.getFragmentKeys() : [];
 
     const liveLayoutByFragmentKey = new Map<string, LiveSectionLayoutEntry>();
-    if (session) {
+    const draftProposalId = await resolveDiagnosticsDraftProposalId(ctx.docPath);
+    if (draftProposalId) {
       try {
-        const liveLayout = await resolveLiveSectionLayout(ctx.docPath, session.generator.getCurrentProposalId());
+        const liveLayout = await resolveLiveSectionLayout(ctx.docPath, draftProposalId);
         for (const entry of liveLayout) liveLayoutByFragmentKey.set(entry.fragmentKey, entry);
       } catch {
         liveLayoutByFragmentKey.clear();
@@ -124,9 +125,13 @@ export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Pro
     for (const key of crdtKeys) {
       ensureRow(key).hasCrdt = true;
     }
+    for (const fragmentKey of liveLayoutByFragmentKey.keys()) {
+      ensureRow(fragmentKey);
+    }
 
     for (const fragmentKey of rowOrder) {
       const row = rowsByKey.get(fragmentKey)!;
+      const liveEntry = liveLayoutByFragmentKey.get(fragmentKey) ?? null;
       try {
         let headingPath: string[];
         let sectionFile: string;
@@ -136,6 +141,11 @@ export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Pro
           headingPath = [...row.canonicalEntry.headingPath];
           sectionFile = row.canonicalEntry.sectionFile;
           isSubSkeleton = row.canonicalEntry.isSubSkeleton;
+          headingKey = SectionRef.headingKey(headingPath);
+        } else if (liveEntry) {
+          headingPath = [...liveEntry.headingPath];
+          sectionFile = "";
+          isSubSkeleton = false;
           headingKey = SectionRef.headingKey(headingPath);
         } else {
           headingPath = [];
@@ -149,8 +159,11 @@ export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Pro
           : absentLayer();
 
         let proposal: DiagLayerStatus = absentLayer();
-        if (proposalBodies && row.canonicalEntry) {
-          const body = proposalBodies.get(headingKey);
+        if (proposalBodies) {
+          const proposalLookupKey = liveEntry
+            ? SectionRef.headingKey(liveEntry.headingPath)
+            : headingKey;
+          const body = proposalBodies.get(proposalLookupKey) ?? proposalBodies.get(headingKey);
           if (body !== undefined) {
             proposal = {
               exists: true,
@@ -185,8 +198,6 @@ export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Pro
         }
 
         const winner = computeLayerWinner({ canonical, proposal, crdt });
-
-        const liveEntry = liveLayoutByFragmentKey.get(fragmentKey) ?? null;
 
         ctx.sections.push({
           fragmentKey,

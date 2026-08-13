@@ -109,16 +109,18 @@ function renderChecks(checks: DiagHealthCheck[]) {
     const liveChecks = checks.filter((c) => c.category === "Live");
     const liveSessionCheck = liveChecks.find((c) => c.name === "live-crdt-session");
     const noLiveSession = liveSessionCheck?.detail === "no-session";
+    const liveDraftChecks = liveChecks.filter((c) => c.name !== "live-crdt-session");
+    const showLiveUnchecked = noLiveSession && liveDraftChecks.length === 0;
     return (
       <div className="border border-gray-200 rounded divide-y divide-gray-100">
         {renderHealthStripRow("Canonical", canonicalChecks)}
-        {noLiveSession ? (
+        {showLiveUnchecked ? (
           <div className="flex items-start gap-3 px-3 py-2">
             <span className="w-20 shrink-0 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Live</span>
-            <span className="text-[12px] text-gray-500">No live session \u2014 not checked</span>
+            <span className="text-[12px] text-gray-500">No unpublished draft \u2014 not checked</span>
           </div>
         ) : (
-          renderHealthStripRow("Live", liveChecks)
+          renderHealthStripRow("Live", noLiveSession ? liveDraftChecks : liveChecks)
         )}
       </div>
     );

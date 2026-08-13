@@ -5,8 +5,10 @@ import { assessSkeleton, type SkeletonAssessment } from "../../storage/skeleton-
 import { resolveSkeletonPath, parseSkeletonToEntries, type FlatEntry } from "../../storage/document-skeleton.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { docPathToContentRelativeFsPath } from "../../storage/path-utils.js";
-import { DocPath, HeadingLevel } from "../../types/shared.js";
+import { DocPath, HeadingLevel, type ProposalId } from "../../types/shared.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
+import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
+import { findInProgressProposalForDoc } from "../../storage/proposal-repository.js";
 import { gitExec } from "../../storage/git-repo.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { isBodyHolderShape, isDocumentBeforeFirstHeading } from "../../storage/section-shape.js";
@@ -17,6 +19,14 @@ import type {
   DiagSectionLayerInfo,
   DiagSummary,
 } from "./types.js";
+
+export async function resolveDiagnosticsDraftProposalId(docPath: DocPath): Promise<ProposalId | null> {
+  const session = lookupDocSession(docPath);
+  const fromSession = session?.generator.getCurrentProposalId() ?? null;
+  if (fromSession) return fromSession;
+  const inprogress = await findInProgressProposalForDoc(docPath);
+  return inprogress?.id ?? null;
+}
 
 export interface RecursiveStructuralEntry {
   sectionFile: string;

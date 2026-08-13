@@ -1,14 +1,13 @@
-import { lookupDocSession } from "../../../crdt/ydoc-lifecycle.js";
 import { resolveLiveSectionLayout } from "../../../crdt/live-section-layout.js";
 import { isBodyHolderShape } from "../../../storage/section-shape.js";
 import type { HeadingLevel } from "../../../types/shared.js";
-import type { DocumentDiagnosticsContext } from "../context.js";
+import { resolveDiagnosticsDraftProposalId, type DocumentDiagnosticsContext } from "../context.js";
 
 export async function runLiveDuplicateSiblingHeadingsCheck(ctx: DocumentDiagnosticsContext): Promise<void> {
-  const session = lookupDocSession(ctx.docPath);
-  if (!session) return;
+  const proposalId = await resolveDiagnosticsDraftProposalId(ctx.docPath);
+  if (!proposalId) return;
   try {
-    const layout = await resolveLiveSectionLayout(ctx.docPath, session.generator.getCurrentProposalId());
+    const layout = await resolveLiveSectionLayout(ctx.docPath, proposalId);
     interface Row { fragmentKey: string; heading: string; headingLevel: HeadingLevel; headingPath: string[]; isBodyHolder: boolean }
     const groups = new Map<string, Row[]>();
     for (const entry of layout) {
