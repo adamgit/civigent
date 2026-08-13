@@ -1532,6 +1532,11 @@ export interface DocumentTreeEntry {
   type: "file" | "directory";
   children?: DocumentTreeEntry[];
   pills?: DocumentTreePill[];
+  /**
+   * Approximate on-disk content size for file entries (skeleton + section bodies).
+   * Absent on directories. Used for cheap UI mass signals (e.g. page estimates).
+   */
+  size_bytes?: number;
 }
 
 export interface DocStructureNode {

@@ -50,6 +50,7 @@ export interface DocumentCanvasProps {
   onProposalSectionChange?: (headingPath: readonly string[], markdown: string) => void;
   onToggleProposalSection?: (target: RenderSectionRef) => void | Promise<void>;
   onCursorExit: (fragmentKey: string, direction: "up" | "down") => void;
+  onDocumentBoundary: (boundary: "start" | "end") => void;
   onCrossSectionDrop: (target: RenderSectionRef, transfer: SectionTransfer) => void;
 }
 
@@ -88,6 +89,7 @@ export function DocumentCanvas({
   onProposalSectionChange,
   onToggleProposalSection,
   onCursorExit,
+  onDocumentBoundary,
   onCrossSectionDrop,
 }: DocumentCanvasProps) {
   const orderedFragmentKeys = sections.map((s) => SectionId.text(s.id));
@@ -183,6 +185,7 @@ export function DocumentCanvas({
                     : undefined
                 }
                 onCursorExit={onCursorExit}
+                onDocumentBoundary={onDocumentBoundary}
                 onCrossSectionDrop={onCrossSectionDrop}
               />
             </div>

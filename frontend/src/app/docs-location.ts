@@ -2,7 +2,6 @@ import { DocPath, FolderPath } from "../types/shared";
 import { encodeDocPath, encodeFolderPath } from "../utils/path-encoding";
 
 export type DocsLocation =
-  | { kind: "index" }
   | { kind: "doc"; docPath: DocPath }
   | { kind: "folder"; folderPath: FolderPath }
   | { kind: "invalid"; raw: string; reason: string };
@@ -25,7 +24,7 @@ export const DocsLocation = {
     }
     const remainder = pathname.slice("/docs".length).replace(/^\/+/, "").replace(/\/+$/, "");
     if (remainder.length === 0) {
-      return { kind: "index" };
+      return { kind: "folder", folderPath: FolderPath.root };
     }
     let decoded: string;
     try {

@@ -2,45 +2,25 @@ interface DocumentSearchFieldProps {
   placeholder?: string;
   value: string;
   onChange: (value: string) => void;
+  className?: string;
 }
 
-export function DocumentSearchField({ placeholder = "Search...", value, onChange }: DocumentSearchFieldProps) {
+export function DocumentSearchField({
+  placeholder = "Search...",
+  value,
+  onChange,
+  className,
+}: DocumentSearchFieldProps) {
   return (
-    <div style={{ position: "relative" }}>
-      <span
-        style={{
-          position: "absolute",
-          left: 10,
-          top: "50%",
-          transform: "translateY(-50%)",
-          color: "#b8b2a8",
-          fontSize: 13,
-          pointerEvents: "none",
-        }}
-      >
-        &#128270;
-      </span>
-      <input
-        type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        style={{
-          fontSize: 13,
-          padding: "8px 12px 8px 32px",
-          border: "1px solid #eae7e2",
-          borderRadius: 7,
-          background: "white",
-          width: "100%",
-          outline: "none",
-        }}
-        onFocus={(e) => {
-          (e.target as HTMLInputElement).style.borderColor = "#a8d5dc";
-        }}
-        onBlur={(e) => {
-          (e.target as HTMLInputElement).style.borderColor = "#eae7e2";
-        }}
-      />
-    </div>
+    <input
+      type="text"
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+      aria-label={placeholder}
+      autoComplete="off"
+      spellCheck={false}
+      className={`min-w-0 border-0 border-b border-folder-card-border bg-transparent px-0 py-0.5 font-ui text-[12px] text-text-primary outline-none placeholder:text-text-faint focus:border-text-muted ${className ?? "w-full"}`}
+    />
   );
 }

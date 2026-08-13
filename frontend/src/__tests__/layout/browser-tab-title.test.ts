@@ -15,7 +15,7 @@ describe("computeBrowserTabTitle", () => {
     ).toBe("! * strategy << Civigent");
   });
 
-  it("titles the docs index as a special route", () => {
-    expect(computeBrowserTabTitle("/docs", "Civigent")).toBe("(Documents) << Civigent");
+  it("titles the docs root as a folder", () => {
+    expect(computeBrowserTabTitle("/docs", "Civigent")).toBe("./ << Civigent");
   });
 });

@@ -6,9 +6,11 @@ import { createMemoryRouter, RouterProvider } from "react-router-dom";
 vi.mock("../../pages/DashboardPage", () => ({
   DashboardPage: () => <div data-testid="dashboard-page">DashboardPage</div>,
 }));
-vi.mock("../../pages/DocsBrowserPage", () => ({
-  DocsBrowserPage: () => (
-    <div data-testid="docs-browser-page">DocsBrowserPage</div>
+vi.mock("../../pages/FolderPage", () => ({
+  FolderPage: (props: { folderPath?: string }) => (
+    <div data-testid="folder-page" data-folder-path={props.folderPath}>
+      FolderPage:{props.folderPath}
+    </div>
   ),
 }));
 vi.mock("../../pages/RecentDocsPage", () => ({
@@ -91,15 +93,7 @@ function buildRoutes() {
             return { element: <DashboardPage /> };
           },
         },
-        {
-          path: "docs",
-          lazy: async () => {
-            const { DocsBrowserPage } = await import(
-              "../../pages/DocsBrowserPage"
-            );
-            return { element: <DocsBrowserPage /> };
-          },
-        },
+        { path: "docs", element: <DocsRouteResolver /> },
         {
           path: "recent-docs",
           lazy: async () => {
@@ -190,11 +184,11 @@ describe("Route resolution", () => {
     ).toBeDefined();
   });
 
-  it("/docs renders DocsBrowserPage", async () => {
+  it("/docs renders FolderPage for the root folder", async () => {
     renderRoute("/docs");
-    expect(
-      await screen.findByTestId("docs-browser-page"),
-    ).toBeDefined();
+    const el = await screen.findByTestId("folder-page");
+    expect(el).toBeDefined();
+    expect(el.getAttribute("data-folder-path")).toBe("/");
   });
 
   it("/docs/path/to/doc.md renders DocumentPage with correct docPath", async () => {

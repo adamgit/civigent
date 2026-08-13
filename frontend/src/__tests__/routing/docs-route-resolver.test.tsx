@@ -6,11 +6,6 @@ import type { AppLayoutOutletContext } from "../../app/AppLayout";
 import { sampleDocTree } from "../helpers/sample-data";
 
 // Mock page components to render identifiable content
-vi.mock("../../pages/DocsBrowserPage", () => ({
-  DocsBrowserPage: () => (
-    <div data-testid="docs-browser-page">DocsBrowserPage</div>
-  ),
-}));
 vi.mock("../../pages/DocumentPage", () => ({
   DocumentPage: (props: { docPath?: string }) => (
     <div data-testid="document-page" data-doc-path={props.docPath}>
@@ -78,9 +73,11 @@ describe("DocsRouteResolver component", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders DocsBrowserPage when no splat path", () => {
+  it("renders FolderPage for /docs as the root folder", () => {
     renderResolver("/docs", "/docs");
-    expect(screen.getByTestId("docs-browser-page")).toBeDefined();
+    const el = screen.getByTestId("folder-page");
+    expect(el).toBeDefined();
+    expect(el.getAttribute("data-folder-path")).toBe("/");
   });
 
   it("renders DocumentPage with decoded docPath for splat path", () => {

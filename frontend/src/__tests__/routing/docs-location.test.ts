@@ -8,9 +8,15 @@ describe("DocsLocation.fromPathname", () => {
     expect(DocsLocation.fromPathname("/search-text")).toBeNull();
   });
 
-  it("classifies /docs and /docs/ as index", () => {
-    expect(DocsLocation.fromPathname("/docs")).toEqual({ kind: "index" });
-    expect(DocsLocation.fromPathname("/docs/")).toEqual({ kind: "index" });
+  it("classifies /docs and /docs/ as the root folder", () => {
+    expect(DocsLocation.fromPathname("/docs")).toEqual({
+      kind: "folder",
+      folderPath: FolderPath.root,
+    });
+    expect(DocsLocation.fromPathname("/docs/")).toEqual({
+      kind: "folder",
+      folderPath: FolderPath.root,
+    });
   });
 
   it("classifies a lawful doc pathname as doc", () => {
@@ -77,8 +83,11 @@ describe("href roundtrip laws", () => {
     }
   });
 
-  it("folderHref of the root folder is the docs index route", () => {
+  it("folderHref of the root folder is /docs and roundtrips as the root folder", () => {
     expect(folderHref(FolderPath.root)).toBe("/docs");
-    expect(DocsLocation.fromPathname(folderHref(FolderPath.root))).toEqual({ kind: "index" });
+    expect(DocsLocation.fromPathname(folderHref(FolderPath.root))).toEqual({
+      kind: "folder",
+      folderPath: FolderPath.root,
+    });
   });
 });

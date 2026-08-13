@@ -45,6 +45,7 @@ export interface DocumentSectionRendererProps {
   onProposalSectionChange?: (headingPath: readonly string[], markdown: string) => void;
   onToggleProposalSection?: () => void;
   onCursorExit: (fragmentKey: string, direction: "up" | "down") => void;
+  onDocumentBoundary: (boundary: "start" | "end") => void;
   onCrossSectionDrop: (target: RenderSectionRef, transfer: SectionTransfer) => void;
 }
 
@@ -120,6 +121,7 @@ export function DocumentSectionRenderer({
   onProposalSectionChange,
   onToggleProposalSection,
   onCursorExit,
+  onDocumentBoundary,
   onCrossSectionDrop,
 }: DocumentSectionRendererProps) {
   const { setHoveredFragmentKey } = useSectionHover();
@@ -286,6 +288,7 @@ export function DocumentSectionRenderer({
                       : undefined}
                     canDrop={transferService ? () => transferService.canDrop(fk) : undefined}
                     onCursorExit={(direction) => onCursorExit(fk, direction)}
+                    onDocumentBoundary={onDocumentBoundary}
                     onCrossSectionDrop={(transfer) => onCrossSectionDrop(section, transfer)}
                     onLocalEdit={() => localEditSink.recordLocalEdit(fk)}
                     onReady={() => onEditorReady(fk)}
@@ -300,6 +303,7 @@ export function DocumentSectionRenderer({
                     expectsCrdt
                     canDrop={transferService ? () => transferService.canDrop(fk) : undefined}
                     onCursorExit={(direction) => onCursorExit(fk, direction)}
+                    onDocumentBoundary={onDocumentBoundary}
                     onCrossSectionDrop={(transfer) => onCrossSectionDrop(section, transfer)}
                     onLocalEdit={() => localEditSink.recordLocalEdit(fk)}
                     onReady={() => onEditorReady(fk)}

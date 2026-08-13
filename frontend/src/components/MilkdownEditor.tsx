@@ -43,6 +43,8 @@ import type { SectionTransfer, DropVerdict } from "../services/section-transfer"
 import { crossSectionDropPlugin, setDragSourceInfo } from "./crossSectionDropPlugin";
 import { crossSectionNavigationPlugin } from "./crossSectionNavigationPlugin";
 import { editorSessionCommandsPlugin } from "./editorSessionCommandsPlugin";
+import { documentBoundaryPlugin } from "./documentBoundaryPlugin";
+import { caretScrollClearancePlugin } from "./caretScrollClearancePlugin";
 import { listGutterSwipePlugin } from "./listGutterSwipePlugin";
 import { useEditorSessionCommands } from "../contexts/EditorSessionCommandsContext";
 import { EditorLifecycleController } from "../services/editor-lifecycle";
@@ -105,6 +107,7 @@ export interface MilkdownEditorCommonProps {
   userColor?: string;
   /** Called when the cursor exits the editor boundary (ArrowUp at start, ArrowDown at end). */
   onCursorExit?: (direction: "up" | "down") => void;
+  onDocumentBoundary?: (boundary: "start" | "end") => void;
   /** Advisory pre-drop check for cross-section drags.
    *  Called during dragover to gate whether this editor should accept a drop.
    *  When absent, all drops are permitted (browser default for contentEditable). */
@@ -162,6 +165,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     userName = "Anonymous",
     userColor,
     onCursorExit,
+    onDocumentBoundary,
     canDrop,
     onCrossSectionDrop,
     onLocalEdit,
@@ -210,6 +214,8 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   onHeadingPathChangeRef.current = onHeadingPathChange;
   const onCursorExitRef = useRef(onCursorExit);
   onCursorExitRef.current = onCursorExit;
+  const onDocumentBoundaryRef = useRef(onDocumentBoundary);
+  onDocumentBoundaryRef.current = onDocumentBoundary;
   const editorSessionCommands = useEditorSessionCommands();
   const editorSessionCommandsRef = useRef(editorSessionCommands);
   editorSessionCommandsRef.current = editorSessionCommands;
@@ -488,6 +494,10 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     // ── Cross-section cursor exit keymap ────────────────
 
     crepe.editor.use(crossSectionNavigationPlugin({ onCursorExitRef }));
+
+    crepe.editor.use(documentBoundaryPlugin({ onDocumentBoundaryRef }));
+
+    crepe.editor.use(caretScrollClearancePlugin());
 
     // ── Host/session command chords ─────────────────────
 

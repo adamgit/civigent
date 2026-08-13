@@ -250,6 +250,7 @@ export function AgentDocumentPage({ docPath, toolbarAccessory }: AgentDocumentPa
               onEditorReady={noop}
               onEditorUnready={noop}
               onCursorExit={noop}
+              onDocumentBoundary={noop}
               onCrossSectionDrop={noop}
             />
 

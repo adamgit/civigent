@@ -1,6 +1,5 @@
 import { App } from "./App";
 import { HomePage } from "../pages/HomePage";
-import { DocsBrowserPage } from "../pages/DocsBrowserPage";
 import { RecentDocsPage } from "../pages/RecentDocsPage";
 import { DocsRouteResolver } from "./DocsRouteResolver";
 import { ProposalsPage } from "../pages/ProposalsPage";
@@ -34,7 +33,7 @@ export const routeConfig: RouteObject[] = [
     element: <App />,
     children: [
       { index: true, element: <HomePage /> },
-      { path: "docs", element: <DocsBrowserPage /> },
+      { path: "docs", element: <DocsRouteResolver /> },
       { path: "recent-docs", element: <RecentDocsPage /> },
       { path: "docs/*", element: <DocsRouteResolver /> },
       { path: "proposals", element: <ProposalsPage /> },

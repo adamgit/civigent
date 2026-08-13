@@ -16,6 +16,7 @@ import { DocumentActivityIndicator } from "../components/DocumentActivityIndicat
 import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
 import { DocumentLoadErrorView } from "../components/DocumentLoadErrorView";
 import { DocumentSectionRenderer } from "../components/DocumentSectionRenderer";
+import { docPaperSectionScrollOffsetPx } from "../components/DocumentPaperStickyHeader";
 import { SharedDraftBanner } from "../components/SharedDraftBanner";
 import { useForcePublish } from "../hooks/useForcePublish";
 import { DocumentHistory } from "../components/DocumentHistory";
@@ -116,6 +117,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const sectionsContainerRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const resourceModel = useMemo(() => new DocumentResourceModel(), []);
 
   // ── Load sections ────────────────────────────────────────
@@ -688,6 +690,54 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
     publishViewingSection(targetFk);
   }, [liveReplica.isCurrentlyLiveAuthority, handleCursorExit, canFocusSection, pendingCaretTargetRef, publishViewingSection]);
 
+  const handleDocumentBoundary = useCallback((boundary: "start" | "end") => {
+    const rows = sectionsRef.current;
+    let targetIdx = -1;
+    if (boundary === "start") {
+      for (let idx = 0; idx < rows.length; idx++) {
+        if (canFocusSection(rows[idx])) { targetIdx = idx; break; }
+      }
+    } else {
+      for (let idx = rows.length - 1; idx >= 0; idx--) {
+        if (canFocusSection(rows[idx])) { targetIdx = idx; break; }
+      }
+    }
+    if (targetIdx < 0) return;
+    const targetFk = SectionId.text(rows[targetIdx].id);
+    setFocusedSectionId(SectionId.brand(targetFk));
+    if (!liveReplica.isCurrentlyLiveAuthority) {
+      setBootstrapFocusedSectionIndex(targetIdx);
+    }
+    pendingCaretTargetRef.current = { fragmentKey: targetFk, position: boundary };
+    publishViewingSection(targetFk);
+    if (readyEditors.has(targetFk)) {
+      requestAnimationFrame(() => {
+        editorRefs.current.get(targetFk)?.focus(boundary);
+        pendingCaretTargetRef.current = null;
+      });
+    }
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    if (boundary === "start") {
+      container.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    let target: HTMLElement | null = null;
+    for (const el of container.querySelectorAll<HTMLElement>("[data-fragment-key]")) {
+      if (el.getAttribute("data-fragment-key") === targetFk) {
+        target = el;
+        break;
+      }
+    }
+    if (!target) return;
+    const top =
+      container.scrollTop + (target.getBoundingClientRect().top - container.getBoundingClientRect().top);
+    container.scrollTo({
+      top: Math.max(0, top - docPaperSectionScrollOffsetPx()),
+      behavior: "smooth",
+    });
+  }, [canFocusSection, liveReplica.isCurrentlyLiveAuthority, setBootstrapFocusedSectionIndex, pendingCaretTargetRef, publishViewingSection, readyEditors, editorRefs]);
+
   const handleEditorReady = useCallback((fk: string) => {
     setReadyEditors(prev => {
       if (prev.has(fk)) return prev;
@@ -790,7 +840,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
       )}
 
       {/* Three-column governance layout scroll area */}
-      <div className="flex-1 overflow-auto canvas-scroll px-5 pt-8 pb-24" style={{ background: "var(--color-page-bg)" }}>
+      <div ref={scrollContainerRef} className="flex-1 overflow-auto canvas-scroll px-5 pt-8 pb-24" style={{ background: "var(--color-page-bg)" }}>
         <div
           className="mx-auto"
           style={{
@@ -991,6 +1041,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
                           : undefined
                       }
                       onCursorExit={handleSectionCursorExit}
+                      onDocumentBoundary={handleDocumentBoundary}
                       onCrossSectionDrop={handleCrossSectionDrop}
                     />
                   )}

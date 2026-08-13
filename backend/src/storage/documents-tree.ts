@@ -1,5 +1,5 @@
 import path from "node:path";
-import { readdir } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { directoryExists } from "./fs-primitives.js";
 import { getContentRoot } from "./data-root.js";
 import { assertChildPath } from "./path-utils.js";
@@ -43,6 +43,47 @@ function compareEntries(a: DocumentTreeEntry, b: DocumentTreeEntry): number {
   return a.name.localeCompare(b.name);
 }
 
+/** Sum sizes of regular files under `dir` (recursive). Missing dir → 0. */
+async function sumFileBytesRecursive(dir: string): Promise<number> {
+  let total = 0;
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    const absolute = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      total += await sumFileBytesRecursive(absolute);
+      continue;
+    }
+    if (entry.isFile()) {
+      try {
+        total += (await stat(absolute)).size;
+      } catch {
+        // Skip unreadable entries; size is a best-effort UI signal.
+      }
+    }
+  }
+  return total;
+}
+
+/**
+ * Cheap approximate document mass: skeleton file bytes + all files under its
+ * `.sections` tree. Not assembled markdown length — good enough for relative UI.
+ */
+async function approxDocumentSizeBytes(absoluteSkeletonPath: string): Promise<number> {
+  let total = 0;
+  try {
+    total += (await stat(absoluteSkeletonPath)).size;
+  } catch {
+    return 0;
+  }
+  total += await sumFileBytesRecursive(`${absoluteSkeletonPath}${SECTIONS_DIR_SUFFIX}`);
+  return total;
+}
+
 async function buildEntries(currentPath: string, absolutePath: string, recursive: boolean): Promise<DocumentTreeEntry[]> {
   const dirEntries = await readdir(absolutePath, { withFileTypes: true });
   const out: DocumentTreeEntry[] = [];
@@ -67,10 +108,12 @@ async function buildEntries(currentPath: string, absolutePath: string, recursive
     }
 
     if (entry.isFile() && shouldIncludeFile(entry.name)) {
+      const absoluteFile = assertChildPath(absolutePath, path.join(absolutePath, entry.name));
       out.push({
         type: "file",
         name: entry.name,
         path: entryPath,
+        size_bytes: await approxDocumentSizeBytes(absoluteFile),
       });
     }
   }

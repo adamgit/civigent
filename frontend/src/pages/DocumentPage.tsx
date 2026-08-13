@@ -748,6 +748,39 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     publishViewingSection(targetFk);
   }, [liveReplica.isCurrentlyLiveAuthority, handleCursorExit, canFocusSection, pendingCaretTargetRef, publishViewingSection]);
 
+  const handleDocumentBoundary = useCallback((boundary: "start" | "end") => {
+    const rows = sectionsRef.current;
+    let targetIdx = -1;
+    if (boundary === "start") {
+      for (let idx = 0; idx < rows.length; idx++) {
+        if (canFocusSection(rows[idx])) { targetIdx = idx; break; }
+      }
+    } else {
+      for (let idx = rows.length - 1; idx >= 0; idx--) {
+        if (canFocusSection(rows[idx])) { targetIdx = idx; break; }
+      }
+    }
+    if (targetIdx < 0) return;
+    const targetFk = SectionId.text(rows[targetIdx].id);
+    setFocusedSectionId(SectionId.brand(targetFk));
+    if (!liveReplica.isCurrentlyLiveAuthority) {
+      setBootstrapFocusedSectionIndex(targetIdx);
+    }
+    pendingCaretTargetRef.current = { fragmentKey: targetFk, position: boundary };
+    publishViewingSection(targetFk);
+    if (readyEditors.has(targetFk)) {
+      requestAnimationFrame(() => {
+        editorRefs.current.get(targetFk)?.focus(boundary);
+        pendingCaretTargetRef.current = null;
+      });
+    }
+    if (boundary === "start") {
+      handleNavigateToTop();
+    } else {
+      handleNavigateToSection(targetFk);
+    }
+  }, [canFocusSection, liveReplica.isCurrentlyLiveAuthority, setBootstrapFocusedSectionIndex, pendingCaretTargetRef, publishViewingSection, readyEditors, editorRefs, handleNavigateToTop, handleNavigateToSection]);
+
   const handleEditorReady = useCallback((fk: string) => {
     setReadyEditors(prev => {
       if (prev.has(fk)) return prev;
@@ -1067,6 +1100,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
             onProposalSectionChange={handleProposalSectionChange}
             onToggleProposalSection={toggleProposalSection}
             onCursorExit={handleSectionCursorExit}
+            onDocumentBoundary={handleDocumentBoundary}
             onCrossSectionDrop={handleCrossSectionDrop}
           />
           </EditorSessionCommandsProvider>

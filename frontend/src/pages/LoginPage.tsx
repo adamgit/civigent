@@ -19,7 +19,6 @@ export function LoginPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
-  const [password, setPassword] = useState("");
   const currentWriterId = resolveWriterId();
   const returnToTarget = useMemo(
     () => resolveReturnToTarget(searchParams.get("returnTo")),
@@ -54,7 +53,7 @@ export function LoginPage() {
     }
   };
 
-  const handleCredentialsLogin = async () => {
+  const handleCredentialsLogin = async (password: string) => {
     setWorking(true);
     setMessage(null);
     setError(null);
@@ -170,7 +169,11 @@ export function LoginPage() {
                     data-testid="login-credentials-form"
                     onSubmit={(e) => {
                       e.preventDefault();
-                      void handleCredentialsLogin();
+                      const password = new FormData(e.currentTarget).get("password");
+                      if (typeof password !== "string" || password.length === 0) {
+                        return;
+                      }
+                      void handleCredentialsLogin(password);
                     }}
                     className="w-full mb-2"
                     style={{
@@ -189,10 +192,10 @@ export function LoginPage() {
                     <div className="flex gap-2">
                       <input
                         data-testid="login-password"
+                        name="password"
                         type="password"
                         autoComplete="current-password"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
+                        required
                         placeholder="Password"
                         className="flex-1"
                         style={{
@@ -205,7 +208,7 @@ export function LoginPage() {
                       <button
                         data-testid="login-credentials"
                         type="submit"
-                        disabled={working || password.length === 0}
+                        disabled={working}
                         className="btn-secondary"
                       >
                         Sign in

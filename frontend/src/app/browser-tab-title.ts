@@ -39,9 +39,6 @@ function titleForSpecialRoute(pathname: string): string {
   if (pathname === "/" || pathname === "") {
     return "What's New";
   }
-  if (pathname === "/docs" || pathname === "/docs/") {
-    return "Documents";
-  }
   if (pathname === "/recent-docs") {
     return "Recent Documents";
   }
