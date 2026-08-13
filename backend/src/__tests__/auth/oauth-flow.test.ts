@@ -50,7 +50,7 @@ async function getAuthCode(
       code_challenge_method: codeChallengeMethod,
       state: state ?? "",
     });
-  expect(res.status).toBe(302);
+  expect(res.status).toBe(303);
   const location = res.headers.location as string;
   const url = new URL(location);
   const code = url.searchParams.get("code");
@@ -480,7 +480,7 @@ describe("OAuth 2.1 flow", () => {
           code_challenge: codeChallenge,
           code_challenge_method: "S256",
         });
-      expect(res.status).toBe(302);
+      expect(res.status).toBe(303);
       expect(res.headers.location).toMatch(/code=/);
     });
 
@@ -497,7 +497,7 @@ describe("OAuth 2.1 flow", () => {
           code_challenge: codeChallenge,
           code_challenge_method: "S256",
         });
-      expect(res.status).toBe(302);
+      expect(res.status).toBe(303);
       expect(res.headers.location).toMatch(/code=/);
     });
   });

@@ -6,7 +6,7 @@
  *   GET  /.well-known/oauth-authorization-server  — RFC 8414 AS metadata
  *   POST /oauth/register                          — RFC 7591 DCR
  *   GET  /oauth/authorize                         — Authorization (auto-approve or consent redirect, 302)
- *   POST /oauth/authorize                         — Authorization via POST (auto-approve or human consent, 302)
+ *   POST /oauth/authorize                         — Authorization via POST (auto-approve or human consent, 303)
  *   POST /oauth/token                             — Code exchange + refresh
  */
 
@@ -300,7 +300,10 @@ export function createOAuthRouter(): Router {
       redirectTarget.searchParams.set("code", code);
       if (authRequest.state) redirectTarget.searchParams.set("state", authRequest.state);
 
-      res.redirect(302, redirectTarget.toString());
+      // Consent arrives as POST, while OAuth client callbacks expect GET.
+      // 303 makes the method conversion explicit and prevents the form body
+      // from being forwarded to a method-preserving callback.
+      res.redirect(303, redirectTarget.toString());
     } catch (error) {
       next(error);
     }

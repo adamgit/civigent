@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import { render, screen, waitFor, act, fireEvent } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { AppLayout } from "../../app/AppLayout";
 import { useCurrentUser } from "../../contexts/CurrentUserContext";
+import { LoginPage } from "../../pages/LoginPage";
 import { installFetchMock, jsonResponse, type InstalledFetchMock } from "../helpers/fetch-mocks";
 
 vi.mock("../../services/ws-client", () => ({
@@ -51,6 +52,26 @@ function renderAppLayout(initialEntries: string[] = ["/"]) {
   });
 
   return render(<RouterProvider router={router} />);
+}
+
+function renderLoginFlow(initialEntry: string) {
+  const router = createMemoryRouter([
+    {
+      path: "/",
+      element: <AppLayout />,
+      children: [
+        { path: "login", element: <LoginPage /> },
+        { path: "target", element: <div data-testid="return-target">target</div> },
+      ],
+    },
+  ], {
+    initialEntries: [initialEntry],
+  });
+
+  return {
+    router,
+    ...render(<RouterProvider router={router} />),
+  };
 }
 
 /** Helper: authenticated session response */
@@ -196,7 +217,7 @@ describe("AppLayout auth state", () => {
   });
 
   describe("BroadcastChannel auth-sync", () => {
-    it("revalidates session on 'login' broadcast and auto-exits /login page", async () => {
+    it("revalidates session on 'login' broadcast without taking over login navigation", async () => {
       let sessionCallCount = 0;
       fetchMock = installFetchMock(async (input) => {
         const url = String(input);
@@ -231,10 +252,15 @@ describe("AppLayout auth state", () => {
         expect(sessionCallCount).toBeGreaterThan(countBefore);
       });
 
-      // Should have navigated away from /login and loaded the user
+      // Auth sync updates shared identity but leaves navigation to LoginPage.
       await waitFor(() => {
-        expect(screen.getByTestId("current-user").textContent).toBe("Logged In User");
+        expect(
+          screen.getByRole("button", {
+            name: "Signed in as Logged In User. Open identity details.",
+          }),
+        ).toBeDefined();
       });
+      expect(screen.getByTestId("login-page")).toBeDefined();
     });
 
     it("clears currentUser immediately on 'logout' broadcast", async () => {
@@ -294,6 +320,74 @@ describe("AppLayout auth state", () => {
       await waitFor(() => {
         expect(sessionCallCount).toBeGreaterThan(countBefore);
       });
+    });
+  });
+
+  it("preserves and honors an explicit returnTo despite a delayed layout 401", async () => {
+    const returnTo = "/target?mode=review#section";
+    let resolveTree!: (response: Response) => void;
+    const delayedTree = new Promise<Response>((resolve) => {
+      resolveTree = resolve;
+    });
+
+    fetchMock = installFetchMock(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/workspace/tree") return delayedTree;
+      if (url === "/api/auth/session") return unauthenticatedSessionResponse();
+      if (url === "/api/auth/methods") {
+        return jsonResponse({
+          methods: [{ type: "single_user", displayName: "Single-user session" }],
+        });
+      }
+      if (url === "/api/auth/token/refresh") {
+        return jsonResponse(
+          { authenticated: false },
+          { status: 401, statusText: "Unauthorized" },
+        );
+      }
+      if (url === "/api/auth/login" && init?.method === "POST") {
+        return jsonResponse({
+          token: "test-token",
+          access_token: "test-access-token",
+          refresh_token: "test-refresh-token",
+          identity: { id: "user-1", type: "human", displayName: "Test User" },
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const initialEntry = `/login?returnTo=${encodeURIComponent(returnTo)}`;
+    const { router } = renderLoginFlow(initialEntry);
+
+    await waitFor(() => {
+      expect(
+        fetchMock.calls.some((call) => String(call.input) === "/api/workspace/tree"),
+      ).toBe(true);
+      expect(screen.getByTestId("login-single-user")).toBeDefined();
+    });
+
+    await act(async () => {
+      resolveTree(jsonResponse(
+        { message: "Unauthorized" },
+        { status: 401, statusText: "Unauthorized" },
+      ));
+      await delayedTree;
+    });
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe("/login");
+      expect(router.state.location.search).toBe(
+        `?returnTo=${encodeURIComponent(returnTo)}`,
+      );
+    });
+
+    fireEvent.click(screen.getByTestId("login-single-user"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("return-target")).toBeDefined();
+      expect(router.state.location.pathname).toBe("/target");
+      expect(router.state.location.search).toBe("?mode=review");
+      expect(router.state.location.hash).toBe("#section");
     });
   });
 });

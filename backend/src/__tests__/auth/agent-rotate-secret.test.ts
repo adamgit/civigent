@@ -40,7 +40,7 @@ async function getAuthCode(
       code_challenge_method: "S256",
       state: "",
     });
-  expect(res.status).toBe(302);
+  expect(res.status).toBe(303);
   const url = new URL(res.headers.location as string);
   const code = url.searchParams.get("code");
   expect(code).not.toBeNull();

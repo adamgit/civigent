@@ -8,6 +8,8 @@ export function ApproveAgentAccessPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [authChecked, setAuthChecked] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [sessionCheckAttempt, setSessionCheckAttempt] = useState(0);
   const [denyError, setDenyError] = useState<string | null>(null);
 
   const clientId = searchParams.get("client_id") ?? "";
@@ -22,6 +24,7 @@ export function ApproveAgentAccessPage() {
 
   useEffect(() => {
     let cancelled = false;
+    setSessionError(null);
     const toLogin = () => {
       const returnTo = `${window.location.pathname}${window.location.search}`;
       navigate(`/login?returnTo=${encodeURIComponent(returnTo)}`);
@@ -35,13 +38,14 @@ export function ApproveAgentAccessPage() {
           toLogin();
         }
       })
-      .catch(() => {
-        if (!cancelled) toLogin();
+      .catch((error) => {
+        if (cancelled) return;
+        setSessionError(error instanceof Error ? error.message : String(error));
       });
     return () => {
       cancelled = true;
     };
-  }, [navigate]);
+  }, [navigate, sessionCheckAttempt]);
 
   const handleDeny = () => {
     try {
@@ -72,6 +76,19 @@ export function ApproveAgentAccessPage() {
                 <p data-testid="consent-error" className="text-error">
                   This approval request is incomplete (missing client_id, redirect_uri, or code_challenge). Close this page and retry the connection from your agent.
                 </p>
+              ) : sessionError ? (
+                <div>
+                  <p data-testid="consent-session-error" className="text-error mb-3">
+                    Couldn&apos;t verify your session: {sessionError}
+                  </p>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => setSessionCheckAttempt((attempt) => attempt + 1)}
+                  >
+                    Retry
+                  </button>
+                </div>
               ) : !authChecked ? (
                 <p style={{ fontSize: 13, color: "var(--color-text-muted)" }}>Checking your session…</p>
               ) : (

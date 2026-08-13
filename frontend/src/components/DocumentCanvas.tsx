@@ -42,7 +42,7 @@ export interface DocumentCanvasProps {
   sectionUncommitted?: (fragmentKey: string) => boolean;
   localEditSink: LocalEditOriginSink;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
-  onStartEditing: (fragmentKey: string, coords: { x: number; y: number }) => void | Promise<void>;
+  onStartEditing: (fragmentKey: string, coords?: { x: number; y: number }) => void | Promise<void>;
   onFocusSection: (fragmentKey: string, headingPath: string[], coords: { x: number; y: number }) => void;
   onSetEditorRef: (fragmentKey: string, handle: MilkdownEditorHandle | null) => void;
   onEditorReady: (fragmentKey: string) => void;
@@ -91,9 +91,13 @@ export function DocumentCanvas({
   onCrossSectionDrop,
 }: DocumentCanvasProps) {
   const orderedFragmentKeys = sections.map((s) => SectionId.text(s.id));
+  const fragmentKeyCounts = new Map<string, number>();
+  for (const fragmentKey of orderedFragmentKeys) {
+    fragmentKeyCounts.set(fragmentKey, (fragmentKeyCounts.get(fragmentKey) ?? 0) + 1);
+  }
   return (
     <>
-      {!sectionsLoading ? sections.map((section) => {
+      {!sectionsLoading ? sections.map((section, sectionIndex) => {
         const headingPath = [...section.headingPath];
         const sectionKey = sectionHeadingKey(headingPath);
         const proposalKey = `${docPath}::${sectionKey}`;
@@ -101,16 +105,25 @@ export function DocumentCanvas({
         const proposalConflictReason = proposalKey ? (proposalSectionConflicts.get(proposalKey) ?? null) : null;
         const lockedInProposalMode = proposalMode && isInProposal && proposalConflictReason !== null;
         const fk = SectionId.text(section.id);
+        const hasDuplicateIdentity = (fragmentKeyCounts.get(fk) ?? 0) > 1;
+        const ownsFragmentIdentity = orderedFragmentKeys.indexOf(fk) === sectionIndex;
+        const renderKey = hasDuplicateIdentity ? `${fk}::duplicate-row-${sectionIndex}` : fk;
         const sectionLabel = headingPathToLabel(headingPath);
         const crdtBlocked = isSectionBlocked(fk);
         const inMountWindow = shouldMountEditorForFragment(fk, focusedFragmentKey, orderedFragmentKeys);
-        const mountAllowed = proposalMode
+        // A corrupt legacy draft can reference one physical fragment from more
+        // than one visible row. Mounting the same Y.XmlFragment in both rows makes
+        // their refs and selection bindings fight: the last row wins every focus
+        // lookup and continuously pulls the caret there. Keep the first physical
+        // occurrence as the sole editor owner so the user can rename/remove it
+        // and repair the draft. The other occurrence stays visible but static.
+        const mountAllowed = ownsFragmentIdentity && (proposalMode
           ? (canEditProposalContent && isInProposal && inMountWindow)
-          : (!crdtBlocked && inMountWindow);
+          : (!crdtBlocked && inMountWindow));
         const lastEditor = getLastEditor?.(fk);
         const activeEditorIds = getActiveEditors?.(fk) ?? [];
         return (
-          <div key={fk} className="flex items-stretch">
+          <div key={renderKey} className="flex items-stretch">
             <div className="w-[200px] min-w-[100px] shrink relative flex items-stretch justify-end pt-1">
               <SummaryWhoChangedThisSection
                 editorId={lastEditor?.id}
@@ -128,7 +141,7 @@ export function DocumentCanvas({
               <DocumentSectionRenderer
                 section={section}
                 fragmentKey={fk}
-                isFocused={focusedFragmentKey === fk}
+                isFocused={ownsFragmentIdentity && focusedFragmentKey === fk}
                 hasEditor={mountAllowed}
                 isInProposal={isInProposal}
                 proposalConflictReason={proposalConflictReason}
@@ -149,7 +162,11 @@ export function DocumentCanvas({
                 getLiveBinding={getLiveBinding}
                 localEditSink={localEditSink}
                 mouseDownPosRef={mouseDownPosRef}
-                onStartEditing={onStartEditing}
+                onStartEditing={
+                  ownsFragmentIdentity
+                    ? onStartEditing
+                    : (fragmentKey) => onStartEditing(fragmentKey)
+                }
                 onFocusSection={onFocusSection}
                 onSetEditorRef={onSetEditorRef}
                 onEditorReady={onEditorReady}

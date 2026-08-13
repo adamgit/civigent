@@ -364,11 +364,16 @@ export function AppLayout() {
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
-      const returnTo = `${location.pathname}${location.search}${location.hash}`;
-      if (location.pathname === "/login") {
-        navigate("/login");
+      // Login and consent own their authentication flow. A delayed 401 from
+      // layout-level work (for example, the workspace tree) must not overwrite
+      // their returnTo state or compete with their session checks.
+      if (
+        location.pathname === "/login" ||
+        location.pathname === "/approve-agent-access"
+      ) {
         return;
       }
+      const returnTo = `${location.pathname}${location.search}${location.hash}`;
       navigate(`/login?returnTo=${encodeURIComponent(returnTo)}`);
     });
     return () => {
@@ -549,9 +554,6 @@ export function AppLayout() {
       });
       if (msg === "login" || msg === "session_refreshed") {
         revalidateSession();
-        if (msg === "login" && location.pathname === "/login") {
-          navigate("/");
-        }
       } else if (msg === "logout") {
         clearWriterId();
         setCurrentUser(null);
@@ -562,7 +564,7 @@ export function AppLayout() {
       channel!.removeEventListener("message", handleMessage);
       channel!.close();
     };
-  }, [revalidateSession, location.pathname, navigate]);
+  }, [revalidateSession]);
 
   useEffect(() => {
     if (!focusedDocPath) {
