@@ -176,14 +176,12 @@ describe("US-1: multi-document proposal with justification bypass", () => {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Overview"],
     });
-    const overviewData = JSON.parse(readOverview.result.content[0].text);
-    expect(overviewData.content).toContain("Agent-updated overview");
+    expect(readOverview.result.content[0].text).toContain("Agent-updated overview");
 
     const readPrinciples = await callMcpTool("read_published_section", {
       doc_path: SAMPLE_DOC_PATH_2,
       heading_path: ["Principles"],
     });
-    const principlesData = JSON.parse(readPrinciples.result.content[0].text);
-    expect(principlesData.content).toContain("Agent-updated principles");
+    expect(readPrinciples.result.content[0].text).toContain("Agent-updated principles");
   });
 });

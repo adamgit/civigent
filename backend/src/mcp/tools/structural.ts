@@ -1,8 +1,8 @@
 /**
  * Tier 3 structural MCP tools — section creation, deletion, movement, renaming.
  *
- * Tools: create_section, delete_section, move_section, rename_section,
- *        delete_document, rename_document
+ * Tools: create_section, delete_section, move_section, reorder_section,
+ *        rename_section, delete_document, rename_document
  *
  * All section-level structural tools operate within a proposal: they require
  * a proposal_id, verify ownership and pending status, and write skeleton +
@@ -16,6 +16,7 @@
 
 import type { ToolRegistry, ToolHandler } from "../tool-registry.js";
 import { jsonToolResult } from "../tool-registry.js";
+import { AgentPayloadContract } from "../agent-payload-contract.js";
 import { makeToolErrorResult, parseToolArgumentDocPath } from "../protocol.js";
 import { DocumentNotFoundError } from "../../storage/document-reader.js";
 import { InvalidDocPathError } from "../../storage/path-utils.js";
@@ -25,7 +26,7 @@ import {
   ProposalNotFoundError,
   InvalidProposalStateError,
 } from "../../storage/proposal-repository.js";
-import { mutateProposalContent, ProposalSectionNotFoundError } from "../../storage/mutate-proposal-content.js";
+import { mutateProposalContent, ProposalSectionNotFoundError, ProposalSectionReorderError } from "../../storage/mutate-proposal-content.js";
 import { sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
 import { evaluateAgentWritePolicy } from "../../storage/commit-pipeline.js";
 import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
@@ -80,11 +81,27 @@ const createSectionHandler: ToolHandler = async (args, ctx) => {
   const rawDocPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
   const content = (args.content as string | undefined) ?? "";
+  const beforeHeadingPath = args.before_heading_path as string[] | undefined;
+  const afterHeadingPath = args.after_heading_path as string[] | undefined;
 
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
   if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath) || headingPath.length === 0) {
     return makeToolErrorResult("Missing required parameter: heading_path (non-empty array)");
+  }
+  if (beforeHeadingPath !== undefined && !Array.isArray(beforeHeadingPath)) {
+    return makeToolErrorResult("Missing required parameter: before_heading_path (string[])");
+  }
+  if (afterHeadingPath !== undefined && !Array.isArray(afterHeadingPath)) {
+    return makeToolErrorResult("Missing required parameter: after_heading_path (string[])");
+  }
+  if (beforeHeadingPath !== undefined && afterHeadingPath !== undefined) {
+    return makeToolErrorResult("Provide at most one of before_heading_path and after_heading_path.");
+  }
+
+  if (args.content !== undefined) {
+    const refused = AgentPayloadContract.refuseMalformedMarkdown(args.content);
+    if (refused) return refused;
   }
 
   const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
@@ -102,25 +119,42 @@ const createSectionHandler: ToolHandler = async (args, ctx) => {
     // parser-expanded sections (embedded headings become real sections) — never
     // from the requested heading path alone (Claim 3).
     const heading = headingPath.length === 0 ? "" : headingPath[headingPath.length - 1]!;
-    const { proposal: updated } = await mutateProposalContent(proposalId, {
-      kind: "create_section",
-      docPath,
-      headingPath,
-      heading,
-      content: content === undefined ? undefined : sectionWriteInputFromExternal(content),
-    });
+    let updated: AnyProposal;
+    try {
+      ({ proposal: updated } = await mutateProposalContent(proposalId, {
+        kind: "create_section",
+        docPath,
+        headingPath,
+        heading,
+        content: content === undefined ? undefined : sectionWriteInputFromExternal(content),
+        ...(beforeHeadingPath !== undefined ? { beforeHeadingPath } : {}),
+        ...(afterHeadingPath !== undefined ? { afterHeadingPath } : {}),
+      }));
+    } catch (mutateError) {
+      if (mutateError instanceof ProposalSectionReorderError || mutateError instanceof ProposalSectionNotFoundError) {
+        return makeToolErrorResult(mutateError.message);
+      }
+      throw mutateError;
+    }
 
     // Broadcast proposal:draft
     emitProposalDraftEventsByDoc(ctx.emitEvent, updated.id, ctx.writer, updated.intent, updated.targets);
 
     const policyResult = await evaluateAgentWritePolicy(proposalId);
 
+    const normalizationNote = content
+      ? AgentPayloadContract.noteForNormalizedWrite([content], "read_proposal_section")
+      : null;
+
     return jsonToolResult({
       proposal_id: proposalId,
       doc_path: docPath,
       heading_path: headingPath,
       created: true,
+      ...(beforeHeadingPath !== undefined ? { before_heading_path: beforeHeadingPath } : {}),
+      ...(afterHeadingPath !== undefined ? { after_heading_path: afterHeadingPath } : {}),
       agent_write_policy: agentWritePolicyToolBody(policyResult),
+      ...(normalizationNote ? { normalization_note: normalizationNote } : {}),
     });
   } catch (error) {
     if (error instanceof Error && error.message.includes("not found")) {
@@ -237,6 +271,81 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
       heading_path: headingPath,
       new_parent_path: newParentPath,
       moved: true,
+      agent_write_policy: agentWritePolicyToolBody(policyResult),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("not found")) {
+      return makeToolErrorResult(error.message);
+    }
+    throw error;
+  }
+};
+
+// ─── reorder_section (proposal-based) ────────────────────
+
+const reorderSectionHandler: ToolHandler = async (args, ctx) => {
+  const proposalId = args.proposal_id as string | undefined;
+  const rawDocPath = args.doc_path as string | undefined;
+  const headingPath = args.heading_path as string[] | undefined;
+  const targetHeadingPath = args.target_heading_path as string[] | undefined;
+  const position = args.position as string | undefined;
+
+  if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
+  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
+  if (!Array.isArray(headingPath)) {
+    return makeToolErrorResult("Missing required parameter: heading_path (string[])");
+  }
+  if (headingPath.length === 0) {
+    return makeToolErrorResult("Cannot reorder the before-first-heading section.");
+  }
+  if (!Array.isArray(targetHeadingPath)) {
+    return makeToolErrorResult("Missing required parameter: target_heading_path (string[])");
+  }
+  if (position !== "before" && position !== "after") {
+    return makeToolErrorResult('position must be "before" or "after".');
+  }
+
+  const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
+  if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
+  const docPath = parsedDocPath.docPath;
+
+  const reorderWriteOk = await checkDocPermission(ctx.writer, docPath, "write");
+  if (!reorderWriteOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
+
+  const validated = await loadAndValidateProposal(proposalId, ctx.writer.id);
+  if (isError(validated)) return validated;
+
+  try {
+    let updated: AnyProposal;
+    try {
+      ({ proposal: updated } = await mutateProposalContent(proposalId, {
+        kind: "reorder_section",
+        docPath,
+        headingPath,
+        targetHeadingPath,
+        position,
+      }));
+    } catch (reorderError) {
+      if (
+        reorderError instanceof ProposalSectionNotFoundError ||
+        reorderError instanceof ProposalSectionReorderError
+      ) {
+        return makeToolErrorResult(reorderError.message);
+      }
+      throw reorderError;
+    }
+
+    emitProposalDraftEventsByDoc(ctx.emitEvent, updated.id, ctx.writer, updated.intent, updated.targets);
+
+    const policyResult = await evaluateAgentWritePolicy(proposalId);
+
+    return jsonToolResult({
+      proposal_id: proposalId,
+      doc_path: docPath,
+      heading_path: headingPath,
+      target_heading_path: targetHeadingPath,
+      position,
+      reordered: true,
       agent_write_policy: agentWritePolicyToolBody(policyResult),
     });
   } catch (error) {
@@ -410,14 +519,16 @@ export function registerStructuralTools(registry: ToolRegistry): void {
     "createSection",
     {
       name: "create_section",
-      description: "Create a section at the specified heading path within a document. Operates within a proposal. Missing ancestor headings are auto-created.",
+      description: "Create a section at the specified heading path within a document. Operates within a proposal. Missing ancestor headings are auto-created. Omit both placement fields and the new section is placed last among its parent's siblings; before_heading_path / after_heading_path name an existing same-parent sibling to sit beside (provide at most one).",
       inputSchema: {
         type: "object",
         properties: {
           proposal_id: { type: "string", description: "Active proposal ID (required)" },
           doc_path: { type: "string", description: "Document path (must end with .md)" },
           heading_path: { type: "array", items: { type: "string" }, description: "Heading path for the new section" },
-          content: { type: "string", description: "Initial content (markdown). Describes the section as the user wants it to read after the call." },
+          content: { type: "string", description: "Initial content (markdown). Describes the section as the user wants it to read after the call. The value is markdown containing the real characters the section should read as; a \\uXXXX escape sequence in prose is refused — write escape sequences inside inline code or a fenced code block." },
+          before_heading_path: { type: "array", items: { type: "string" }, description: "Heading path of an existing same-parent sibling the new section should sit immediately before. An anchor is a heading path, not an index; [] is illegal (the before-first-heading section cannot anchor a reorder)." },
+          after_heading_path: { type: "array", items: { type: "string" }, description: "Heading path of an existing same-parent sibling the new section should sit immediately after. An anchor is a heading path, not an index; [] is illegal (the before-first-heading section cannot anchor a reorder)." },
         },
         required: ["proposal_id", "doc_path", "heading_path"],
       },
@@ -447,19 +558,39 @@ export function registerStructuralTools(registry: ToolRegistry): void {
     "moveSection",
     {
       name: "move_section",
-      description: "Move a section to a new position in the document hierarchy. Operates within a proposal.",
+      description: "Reparent a section via new_parent_path. Operates within a proposal. The moved subtree becomes last among the new parent's children; use reorder_section to choose sibling order.",
       inputSchema: {
         type: "object",
         properties: {
           proposal_id: { type: "string", description: "Active proposal ID (required)" },
           doc_path: { type: "string", description: "Document path (must end with .md)" },
           heading_path: { type: "array", items: { type: "string" }, description: "Current heading path" },
-          new_parent_path: { type: "array", items: { type: "string" }, description: "New parent heading path" },
+          new_parent_path: { type: "array", items: { type: "string" }, description: "Heading path of the new parent ([] moves to top level). The moved subtree is appended last among that parent's children; use reorder_section to place it among its siblings." },
         },
         required: ["proposal_id", "doc_path", "heading_path", "new_parent_path"],
       },
     },
     moveSectionHandler,
+  );
+
+  registry.register(
+    "reorderSection",
+    {
+      name: "reorder_section",
+      description: "Reorder a section before or after a same-parent sibling inside a proposal. This is sibling order, not reparenting (move_section is the parent change and still appends under the new parent).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          proposal_id: { type: "string", description: "Active proposal ID (required)" },
+          doc_path: { type: "string", description: "Document path (must end with .md)" },
+          heading_path: { type: "array", items: { type: "string" }, description: "Heading path of the section to reorder" },
+          target_heading_path: { type: "array", items: { type: "string" }, description: "Heading path of the same-parent sibling to place the section beside. An anchor is a heading path, not an index; [] is illegal (the before-first-heading section cannot anchor a reorder)." },
+          position: { type: "string", enum: ["before", "after"], description: 'Where to place the section relative to target_heading_path: "before" or "after"' },
+        },
+        required: ["proposal_id", "doc_path", "heading_path", "target_heading_path", "position"],
+      },
+    },
+    reorderSectionHandler,
   );
 
   registry.register(

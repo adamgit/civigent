@@ -122,8 +122,7 @@ describe("multi-heading auto-split in proposals", () => {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Overview"],
     });
-    const overviewDraftData = JSON.parse(overviewRes.result.content[0].text);
-    expect(overviewDraftData.content).toContain("Rewritten overview.");
+    expect(overviewRes.result.content[0].text).toContain("Rewritten overview.");
 
     // Publish the proposal
     const commitRes = await callMcpTool("publish_proposal", {
@@ -137,22 +136,19 @@ describe("multi-heading auto-split in proposals", () => {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Overview"],
     });
-    const overviewData = JSON.parse(readOverview.result.content[0].text);
-    expect(overviewData.content).toContain("Rewritten overview.");
+    expect(readOverview.result.content[0].text).toContain("Rewritten overview.");
 
     const readDetails = await callMcpTool("read_published_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Details"],
     });
-    const detailsData = JSON.parse(readDetails.result.content[0].text);
-    expect(detailsData.content).toContain("New details section.");
+    expect(readDetails.result.content[0].text).toContain("New details section.");
 
     const readSummary = await callMcpTool("read_published_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Summary"],
     });
-    const summaryData = JSON.parse(readSummary.result.content[0].text);
-    expect(summaryData.content).toContain("New summary section.");
+    expect(readSummary.result.content[0].text).toContain("New summary section.");
 
     // Verify the doc section inventory contains all headings
     const sectionsRes = await callMcpTool("list_sections", {
@@ -221,7 +217,6 @@ describe("multi-heading auto-split in proposals", () => {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Milestones"],
     });
-    const milestonesData = JSON.parse(readMilestones.result.content[0].text);
-    expect(milestonesData.content).toContain("Key milestones here.");
+    expect(readMilestones.result.content[0].text).toContain("Key milestones here.");
   });
 });

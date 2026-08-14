@@ -163,7 +163,10 @@ export class ProposalEditor extends ProposalReader {
   /**
    * Reorder `headingPath` relative to a same-parent sibling, placing it before or
    * after `targetHeadingPath`. Pure positional reorder (no key remap, no body
-   * rewrite). Used by the live cross-section drag/drop reorder (MW-10).
+   * rewrite). Two callers: live cross-section drag/drop
+   * (`requestDocSessionMove` / MW-10) and proposal-scoped mutate
+   * (`reorder_section` and `create_section` placement via
+   * `mutateProposalContent`).
    */
   async reorderSection(
     docPath: DocPath,

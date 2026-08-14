@@ -53,7 +53,7 @@ import {
   SearchTextPatternError,
   SearchTextExecutionError,
 } from "../../storage/discovery.js";
-import { getDocReadPermission, checkDocPermission } from "../../auth/acl.js";
+import { getDocReadPermission, getDocWritePermission, checkDocPermission } from "../../auth/acl.js";
 import { RoleName } from "../../types/shared.js";
 import { DocPath, FolderPath, InvalidFolderPathError } from "../../types/shared.js";
 import { canonicalDocumentExists } from "../../mcp/catalog-events.js";
@@ -115,10 +115,31 @@ function annotateExportedSkillsPills(entries: DocumentTreeEntry[]): DocumentTree
   });
 }
 
+async function annotateDirectoryAccess(entries: DocumentTreeEntry[]): Promise<DocumentTreeEntry[]> {
+  return Promise.all(
+    entries.map(async (entry) => {
+      const children = entry.children ? await annotateDirectoryAccess(entry.children) : entry.children;
+      if (entry.type === "directory") {
+        const [read, write] = await Promise.all([
+          getDocReadPermission(entry.path),
+          getDocWritePermission(entry.path),
+        ]);
+        return { ...entry, children, access: { read, write } };
+      }
+      if (children !== entry.children) {
+        return { ...entry, children };
+      }
+      return entry;
+    }),
+  );
+}
+
 export async function readTree(basePath: string, isAuthenticated: boolean): Promise<GetDocumentsTreeResponse> {
   const tree = annotateExportedSkillsPills(await readDocumentsTree(basePath));
-  const filteredTree = isAuthenticated ? tree : await filterTreeToPublic(tree);
-  return { tree: filteredTree };
+  if (!isAuthenticated) {
+    return { tree: await filterTreeToPublic(tree) };
+  }
+  return { tree: await annotateDirectoryAccess(tree) };
 }
 
 // ─── Structure ──────────────────────────────────────────

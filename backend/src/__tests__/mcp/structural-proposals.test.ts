@@ -12,6 +12,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createTestServer, type TestServerContext } from "../helpers/test-server.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
+import { flattenStructureToHeadingPaths, readDocumentStructure } from "../../storage/heading-resolver.js";
+import { DocPath } from "../../types/shared.js";
 
 let ctx: TestServerContext;
 let mcpSessionId: string;
@@ -74,6 +76,7 @@ async function initMcpSession(token: string = ctx.agentToken): Promise<void> {
 async function createProposal(
   intent: string,
   token: string = ctx.agentToken,
+  docPath: string = SAMPLE_DOC_PATH,
 ): Promise<string> {
   const res = await request(ctx.app)
     .post("/api/proposals?replace=true")
@@ -81,7 +84,7 @@ async function createProposal(
     .send({
       intent,
       sections: [{
-        doc_path: SAMPLE_DOC_PATH,
+        doc_path: docPath,
         heading_path: ["Overview"],
         content: "placeholder",
       }],
@@ -96,6 +99,12 @@ async function createProposal(
 async function readCanonicalSkeleton(): Promise<string> {
   const skeletonPath = join(ctx.dataCtx.rootDir, "content", SAMPLE_DOC_PATH);
   return readFile(skeletonPath, "utf8");
+}
+
+/** Top-level headed sections in canonical document order (BFH omitted). */
+async function canonicalTopLevelHeadings(docPath: string): Promise<string[][]> {
+  const structure = await readDocumentStructure(DocPath.parse(docPath));
+  return flattenStructureToHeadingPaths(structure).filter((headingPath) => headingPath.length === 1);
 }
 
 describe("structural tools via proposals", () => {
@@ -308,6 +317,63 @@ describe("structural tools via proposals", () => {
       const newSkeleton = await readCanonicalSkeleton();
       expect(newSkeleton).not.toBe(originalSkeleton);
       expect(newSkeleton).toContain("Appendix");
+    });
+
+    it("create_section before_heading_path order survives commit to canonical", async () => {
+      // Absorb/merge can restore canonical sibling order even when the proposal
+      // overlay looks right. Isolated doc so other commit tests cannot shift the baseline.
+      const docPath = "/ops/placement-before.md";
+      await createSampleDocument(ctx.dataCtx.rootDir, docPath);
+      const proposalId = await createProposal("Place Intro before Overview", ctx.agentToken, docPath);
+
+      const createRes = await callMcpTool("create_section", {
+        proposal_id: proposalId,
+        doc_path: docPath,
+        heading_path: ["Intro"],
+        content: "Intro body.\n",
+        before_heading_path: ["Overview"],
+      });
+      const created = JSON.parse(createRes.result.content[0].text);
+      expect(created.created).toBe(true);
+
+      const commitRes = await request(ctx.app)
+        .post(`/api/proposals/${proposalId}/commit`)
+        .set("Authorization", ctx.agentToken);
+      expect(commitRes.status).toBe(200);
+      expect(commitRes.body.outcome).toBe("accepted");
+
+      expect(await canonicalTopLevelHeadings(docPath)).toEqual([
+        ["Intro"],
+        ["Overview"],
+        ["Timeline"],
+      ]);
+    });
+
+    it("reorder_section order survives commit to canonical", async () => {
+      const docPath = "/ops/reorder-siblings.md";
+      await createSampleDocument(ctx.dataCtx.rootDir, docPath);
+      const proposalId = await createProposal("Reorder Timeline before Overview", ctx.agentToken, docPath);
+
+      const reorderRes = await callMcpTool("reorder_section", {
+        proposal_id: proposalId,
+        doc_path: docPath,
+        heading_path: ["Timeline"],
+        target_heading_path: ["Overview"],
+        position: "before",
+      });
+      const reordered = JSON.parse(reorderRes.result.content[0].text);
+      expect(reordered.reordered).toBe(true);
+
+      const commitRes = await request(ctx.app)
+        .post(`/api/proposals/${proposalId}/commit`)
+        .set("Authorization", ctx.agentToken);
+      expect(commitRes.status).toBe(200);
+      expect(commitRes.body.outcome).toBe("accepted");
+
+      expect(await canonicalTopLevelHeadings(docPath)).toEqual([
+        ["Timeline"],
+        ["Overview"],
+      ]);
     });
   });
 });

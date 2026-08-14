@@ -21,6 +21,7 @@ import { runDuplicateHeadingPathsCheck } from "./checks/duplicate-heading-paths.
 import { runDuplicateSiblingHeadingsCheck } from "./checks/duplicate-sibling-headings.js";
 import { runLogicalDocumentLossCheck } from "./checks/logical-document-loss.js";
 import { runBodyVsSkeletonHeadingsCheck } from "./checks/body-vs-skeleton-headings.js";
+import { runCanonicalProseUnicodeEscapesCheck } from "./checks/canonical-prose-unicode-escapes.js";
 import { runBackendStateCheck } from "./checks/backend-state.js";
 import { runRestoreTargetRecursiveMatchCheck } from "./checks/restore-target-recursive-match.js";
 import { runRestoreFeasibleCheck } from "./checks/restore-feasible.js";
@@ -51,6 +52,7 @@ export async function buildDocumentDiagnostics(docPath: DocPath): Promise<DocDia
   await runDuplicateSiblingHeadingsCheck(ctx);
   await runLogicalDocumentLossCheck(ctx);
   await runBodyVsSkeletonHeadingsCheck(ctx);
+  await runCanonicalProseUnicodeEscapesCheck(ctx);
   await runBackendStateCheck(ctx);
 
   await runRestoreTargetRecursiveMatchCheck(ctx);

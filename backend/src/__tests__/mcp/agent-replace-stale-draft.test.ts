@@ -188,13 +188,13 @@ describe("US-5: replace stale draft with replace=true", () => {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Overview"],
     });
-    expect(JSON.parse(readOverview.result.content[0].text).content).toContain("P3 overview");
+    expect(readOverview.result.content[0].text).toContain("P3 overview");
 
     const readTimeline = await callMcpTool("read_published_section", {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Timeline"],
     });
-    expect(JSON.parse(readTimeline.result.content[0].text).content).toContain("P3 timeline");
+    expect(readTimeline.result.content[0].text).toContain("P3 timeline");
 
     // ── Step 8: create_proposal with replace=true (still has surviving draft) → succeeds ──
     const res8 = await callMcpTool("create_proposal", {

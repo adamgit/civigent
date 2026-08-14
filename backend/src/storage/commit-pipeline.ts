@@ -210,8 +210,7 @@ async function absorbCommittingProposalToCanonical(
   await transitionToCommitted(proposal.id, absorbResult.commitSha, committedMetadata);
 
   if (isSnapshotGenerationEnabled()) {
-    const docPaths = new Set(proposal.sections.map((s) => s.doc_path));
-    scheduleSnapshotRegeneration(Array.from(docPaths));
+    scheduleSnapshotRegeneration([...absorbResult.rewrittenDocumentPaths]);
   }
 
   return absorbResult;

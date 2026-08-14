@@ -209,7 +209,7 @@ describe("US-4: hard-block, drop blocked section, recommit", () => {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Overview"],
     });
-    expect(JSON.parse(readOverview.result.content[0].text).content).toContain(
+    expect(readOverview.result.content[0].text).toContain(
       "Agent-updated overview for US4",
     );
 
@@ -217,7 +217,7 @@ describe("US-4: hard-block, drop blocked section, recommit", () => {
       doc_path: SAMPLE_DOC_PATH,
       heading_path: ["Timeline"],
     });
-    expect(JSON.parse(readTimeline.result.content[0].text).content).toContain(
+    expect(readTimeline.result.content[0].text).toContain(
       SAMPLE_SECTIONS.timeline.trim(),
     );
 

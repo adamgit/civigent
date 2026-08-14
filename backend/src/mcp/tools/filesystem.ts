@@ -7,13 +7,13 @@
 
 import type { ToolRegistry, ToolHandler } from "../tool-registry.js";
 import { jsonToolResult, textToolResult, jsonBlockedToolResult } from "../tool-registry.js";
+import { AgentPayloadContract } from "../agent-payload-contract.js";
 import { makeToolErrorResult, parseToolArgumentDocPath } from "../protocol.js";
 import type { DocPath } from "../../types/shared.js";
 import { readAssembledDocument, DocumentNotFoundError } from "../../storage/document-reader.js";
 import { readDocumentsTree } from "../../storage/documents-tree.js";
-import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
+import { getContentRoot } from "../../storage/data-root.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
-import { getHeadSha } from "../../storage/git-repo.js";
 import { readDocumentStructure, flattenStructureToHeadingPaths } from "../../storage/heading-resolver.js";
 import {
   createTransientProposal,
@@ -54,7 +54,6 @@ const readFileHandler: ToolHandler = async (args, ctx) => {
 
   try {
     const content = await readAssembledDocument(filePath);
-    const headSha = await getHeadSha(getDataRoot());
 
     // Broadcast agent:reading
     if (ctx.writer.type === "agent" && ctx.emitEvent) {
@@ -69,7 +68,7 @@ const readFileHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    return jsonToolResult({ content, head_sha: headSha });
+    return textToolResult(content);
   } catch (error) {
     if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
       return makeToolErrorResult(`Document not found: ${filePath}`);
@@ -86,6 +85,9 @@ const writeFileHandler: ToolHandler = async (args, ctx) => {
 
   if (!rawFilePath) return makeToolErrorResult("Missing required parameter: path");
   if (content === undefined) return makeToolErrorResult("Missing required parameter: content");
+
+  const refused = AgentPayloadContract.refuseMalformedMarkdown(args.content);
+  if (refused) return refused;
 
   const parsedFilePath = parseToolArgumentDocPath(rawFilePath);
   if ("errorResult" in parsedFilePath) return parsedFilePath.errorResult;
@@ -111,6 +113,8 @@ const writeFilesHandler: ToolHandler = async (args, ctx) => {
     if (!file.path || file.content === undefined) {
       return makeToolErrorResult("Each file must have path and content");
     }
+    const refused = AgentPayloadContract.refuseMalformedMarkdown(file.content);
+    if (refused) return refused;
     const parsedFilePath = parseToolArgumentDocPath(file.path);
     if ("errorResult" in parsedFilePath) return parsedFilePath.errorResult;
     parsedFiles.push({ path: parsedFilePath.docPath, content: file.content });
@@ -412,11 +416,17 @@ async function writeDocumentViaProposal(
       );
     }
 
+    const normalizationNote = AgentPayloadContract.noteForNormalizedWrite(
+      files.map((f) => f.content),
+      "read_file",
+    );
+
     return jsonToolResult({
       success: true,
       committed_head: committedHead,
       proposal_id: writeProposalId,
       status: "committed",
+      ...(normalizationNote ? { normalization_note: normalizationNote } : {}),
     });
   } else {
     // Blocked: park the transient as a durable draft (pending/ is discarded on
@@ -539,7 +549,7 @@ export function registerFilesystemTools(registry: ToolRegistry): void {
     "readFile",
     {
       name: "read_file",
-      description: "Read a document from the Knowledge Store. Returns the full assembled markdown content.",
+      description: "Read a document from the Knowledge Store. The response IS the full assembled raw markdown — no JSON envelope.",
       inputSchema: {
         type: "object",
         properties: {
@@ -560,7 +570,7 @@ export function registerFilesystemTools(registry: ToolRegistry): void {
         type: "object",
         properties: {
           path: { type: "string", description: "Logical document path" },
-          content: { type: "string", description: "Full markdown content to write" },
+          content: { type: "string", description: "Full markdown content to write. The value is markdown containing the real characters the section should read as; a \\uXXXX escape sequence in prose is refused — write escape sequences inside inline code or a fenced code block." },
         },
         required: ["path", "content"],
       },
@@ -582,7 +592,7 @@ export function registerFilesystemTools(registry: ToolRegistry): void {
               type: "object",
               properties: {
                 path: { type: "string", description: "Logical document path" },
-                content: { type: "string", description: "Full markdown content" },
+                content: { type: "string", description: "Full markdown content. The value is markdown containing the real characters the section should read as; a \\uXXXX escape sequence in prose is refused — write escape sequences inside inline code or a fenced code block." },
               },
               required: ["path", "content"],
             },

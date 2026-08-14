@@ -195,10 +195,12 @@ export class CanonicalStore {
    * checkout/clean) and rethrows. Callers are responsible for rolling back any
    * non-canonical state (e.g. proposal FSM transitions).
    *
-   * opts.documentPathsToRewrite: if set, only files belonging to those rooted
-   *   document trees are processed. When omitted, the affected set is derived
-   *   by walking the staging tree for top-level .md files (outside any
-   *   .sections/ directory).
+   * opts.documentPathsToRewrite: names the wholesale-replacement documents —
+   *   those skip the Pass 0.5 manifest merge and replace canonical outright.
+   *   The processed set is that list unioned with the manifest's
+   *   section-claimed documents. When omitted, the affected set is the
+   *   manifest claims unioned with a walk of the staging tree for top-level
+   *   .md files (outside any .sections/ directory).
    * opts.absorbedSectionRefs: semantic section-scoped cleanup closure for
    *   ordinary runtime callers. When omitted, the absorb still succeeds, but
    *   callers only receive diff-based `changedSections`.
@@ -248,12 +250,14 @@ export class CanonicalStore {
       // The manifest is the authoritative scope of what the commit touched, so
       // it drives the snapshot/diff set.
       const absorbedSectionRefs = dedupeSectionRefReceipts(opts?.absorbedSectionRefs ?? []);
-      // An EXPLICIT scope (`documentPathsToRewrite` / `docPaths`) is the
-      // authoritative, ISOLATED set of docs to process — every deletion/copy pass
-      // is confined to it (a docPath-filtered commit must never touch another
-      // doc). Such ops are whole-document (restore / import / document
-      // delete/rename, or a DocSession whole-document publish), so they ALSO take
-      // the wholesale replacement path (Step 5d), NOT the section-scoped merge.
+      const manifestClaimedDocPaths = [...new Set(absorbedSectionRefs.map((ref) => DocPath.parse(ref.docPath)))];
+      // An EXPLICIT scope (`documentPathsToRewrite` / `docPaths`) names the
+      // WHOLESALE-replacement documents (restore / import / document
+      // delete/rename, or a DocSession whole-document publish) — those take
+      // Step 5d and skip the section-scoped merge. The PROCESSED set is the
+      // union of that scope with the manifest's section-claimed documents: a
+      // proposal carrying a document op can still touch other documents
+      // section-scoped, and those must land too.
       const explicitScope = (opts?.documentPathsToRewrite ?? opts?.docPaths)?.map(DocPath.parse);
       const documentTargetSet = new Set(explicitScope ?? []);
       // Without an explicit scope, derive the affected set from the proposal
@@ -262,10 +266,9 @@ export class CanonicalStore {
       // staging skeleton, so the skeleton walk alone would miss its document and
       // the diff would report zero changed sections even though copyPass overlaid
       // the edited body onto canonical.
-      const affectedDocPaths = explicitScope ?? [
-        ...absorbedSectionRefs.map((ref) => DocPath.parse(ref.docPath)),
-        ...await this.discoverDocPathsInStaging(stagingRoot),
-      ];
+      const affectedDocPaths = explicitScope
+        ? [...explicitScope, ...manifestClaimedDocPaths]
+        : [...manifestClaimedDocPaths, ...await this.discoverDocPathsInStaging(stagingRoot)];
       const rewrittenDocumentPaths = [...new Set(affectedDocPaths)];
 
       // Reject a totally-empty absorb on a normal publish. `changedSections` is a
@@ -298,7 +301,7 @@ export class CanonicalStore {
       // Skipped for whole-document targets (Step 5d, wholesale replacement) and for
       // docs with no manifest claim (direct absorb callers / legacy staging).
       const deletedSectionFilesByDoc = opts?.deletedSectionFilesByDoc;
-      const claimedDocPaths = new Set(absorbedSectionRefs.map((ref) => DocPath.parse(ref.docPath)));
+      const claimedDocPaths = new Set(manifestClaimedDocPaths);
       for (const docPath of claimedDocPaths) {
         if (documentTargetSet.has(docPath)) continue; // whole-doc op → wholesale
         const deletedIds = deletedSectionFilesByDoc?.get(docPath) ?? new Set<string>();

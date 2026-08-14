@@ -29,6 +29,11 @@ export interface FolderBookSpine {
   name: string;
 }
 
+export interface FolderCardAccess {
+  read: string;
+  write: string;
+}
+
 export interface FolderCardProps {
   name: string;
   fileCount: number;
@@ -37,6 +42,7 @@ export interface FolderCardProps {
   fileNames: string[];
   /** Direct child files with sizes — drives the micro bookshelf. */
   books?: FolderBookSpine[];
+  access?: FolderCardAccess | null;
   newCount?: number;
   accent?: "new" | "agent" | null;
   hasAgentMarker?: boolean;
@@ -67,6 +73,52 @@ function FolderCountIcon() {
         strokeLinejoin="round"
       />
     </svg>
+  );
+}
+
+function PrivateFolderIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true" className="shrink-0">
+      <rect x="3.25" y="7" width="9.5" height="6.25" rx="1.25" stroke="currentColor" strokeWidth="1.35" />
+      <path
+        d="M5.25 7V5.25a2.75 2.75 0 0 1 5.5 0V7"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function PublicFolderIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true" className="shrink-0">
+      <rect x="3.25" y="7" width="9.5" height="6.25" rx="1.25" stroke="currentColor" strokeWidth="1.35" />
+      <path
+        d="M5.25 7V5.25a2.75 2.75 0 0 1 5.35-.95"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function FolderAccessMarker({ access }: { access: FolderCardAccess }) {
+  const isPublicAccess = access.read === "public" || access.write === "public";
+  const label = isPublicAccess
+    ? `Public folder — read: ${access.read} · write: ${access.write}`
+    : `Private folder — read: ${access.read} · write: ${access.write}`;
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center ${
+        isPublicAccess ? "text-status-red" : "text-folder-private"
+      }`}
+      title={label}
+      aria-label={label}
+    >
+      {isPublicAccess ? <PublicFolderIcon /> : <PrivateFolderIcon />}
+    </span>
   );
 }
 
@@ -128,6 +180,7 @@ export function FolderCard({
   folderCount,
   fileNames,
   books = [],
+  access = null,
   newCount,
   accent = null,
   hasAgentMarker = false,
@@ -157,6 +210,7 @@ export function FolderCard({
           <span className="truncate text-[14px] font-semibold text-folder-link group-hover:text-folder-link-hover group-hover:underline">
             {name}
           </span>
+          {access ? <FolderAccessMarker access={access} /> : null}
           {newCount != null && newCount > 0 ? (
             <span className="shrink-0 rounded px-1.5 py-px text-[10px] font-semibold leading-tight bg-folder-new-bg text-folder-new-text">
               {newCount} new

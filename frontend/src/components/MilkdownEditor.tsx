@@ -45,6 +45,7 @@ import { crossSectionNavigationPlugin } from "./crossSectionNavigationPlugin";
 import { editorSessionCommandsPlugin } from "./editorSessionCommandsPlugin";
 import { documentBoundaryPlugin } from "./documentBoundaryPlugin";
 import { caretScrollClearancePlugin } from "./caretScrollClearancePlugin";
+import { vscodeMarkdownPasteFix } from "./vscodeMarkdownPasteFix";
 import { listGutterSwipePlugin } from "./listGutterSwipePlugin";
 import { useEditorSessionCommands } from "../contexts/EditorSessionCommandsContext";
 import { EditorLifecycleController } from "../services/editor-lifecycle";
@@ -484,6 +485,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
         [CrepeFeature.Table]: true,
       },
     });
+    crepe.editor.config(vscodeMarkdownPasteFix);
     ctrl.setCrepe(crepe);
 
     // ── Link document-path picker ─────────────────────────

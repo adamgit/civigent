@@ -22,6 +22,7 @@ export type {
   EditorFocusTarget,
   DocStructureChangedEvent,
   DocStructureNode,
+  DocumentTreeAccess,
   DocumentTreeEntry,
   HumanInvolvementBlockedReason,
   GetActivityResponse,
@@ -143,6 +144,7 @@ export type {
   PublishBlocker,
   PublishTriggerRule,
   PublishDecisionProse,
+  LiveMovePosition,
   JsonObject,
   JsonValue,
 } from "../../../sharedlibs/shared-types/src/index.js";

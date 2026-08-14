@@ -10,6 +10,7 @@ export const ALL_MCP_TOOLS: string[] = [
   "list_proposals",
   "move_file",
   "move_section",
+  "reorder_section",
   "my_proposals",
   "plan_changes",
   "read_doc",

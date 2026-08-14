@@ -30,6 +30,7 @@ export type {
   ProposalSectionAvailabilityEvent,
   ProposalWithdrawnEvent,
   DocStructureNode,
+  DocumentTreeAccess,
   DocumentTreeEntry,
   HumanInvolvementBlockedReason,
   GetActivityResponse,

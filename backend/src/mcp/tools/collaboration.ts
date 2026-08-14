@@ -10,14 +10,13 @@
  */
 
 import type { ToolRegistry, ToolHandler } from "../tool-registry.js";
-import { jsonToolResult, jsonBlockedToolResult } from "../tool-registry.js";
+import { jsonToolResult, textToolResult, jsonBlockedToolResult } from "../tool-registry.js";
+import { AgentPayloadContract } from "../agent-payload-contract.js";
 import { makeToolErrorResult, parseToolArgumentDocPath } from "../protocol.js";
 import { readAssembledDocument, DocumentNotFoundError } from "../../storage/document-reader.js";
 import { readSectionWithHeading, SectionNotFoundError } from "../../storage/section-reader.js";
-import { getDataRoot } from "../../storage/data-root.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
-import { getHeadSha } from "../../storage/git-repo.js";
 import {
   readDocumentStructure,
   flattenStructureToHeadingPaths,
@@ -47,7 +46,9 @@ import {
   listSessionCreatedProposals,
 } from "../session-drafts.js";
 import { SectionRef } from "../../domain/section-ref.js";
+import { findProseUnicodeEscapes } from "../../domain/encoding-defect-detection.js";
 import { InvalidDocPathError } from "../../storage/path-utils.js";
+import { proposalSectionsParsedForLiveUse } from "../../types/shared.js";
 import type { DocPath, HumanInvolvementPolicyResult, ProposalStatus } from "../../types/shared.js";
 import { buildFragmentContent, fragmentFromBodyHolder, sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
 import { checkDocPermission } from "../../auth/acl.js";
@@ -180,7 +181,6 @@ const readDocHandler: ToolHandler = async (args, ctx) => {
 
   try {
     const content = await readAssembledDocument(docPath);
-    const headSha = await getHeadSha(getDataRoot());
     const structure = await readDocumentStructure(docPath);
     const headingPaths = flattenStructureToHeadingPaths(structure);
 
@@ -195,12 +195,7 @@ const readDocHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    return jsonToolResult({
-      doc_path: docPath,
-      content,
-      head_sha: headSha,
-      headings: headingPaths.map((hp) => hp.join(" > ")),
-    });
+    return textToolResult(content);
   } catch (error) {
     if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
       return makeToolErrorResult(`Document not found: ${docPath}`);
@@ -262,7 +257,6 @@ const readPublishedSectionHandler: ToolHandler = async (args, ctx) => {
 
   try {
     const content = await readSectionWithHeading(docPath, headingPath);
-    const headSha = await getHeadSha(getDataRoot());
 
     // Broadcast agent:reading
     if (ctx.writer.type === "agent" && ctx.emitEvent) {
@@ -275,12 +269,7 @@ const readPublishedSectionHandler: ToolHandler = async (args, ctx) => {
       });
     }
 
-    return jsonToolResult({
-      doc_path: docPath,
-      heading_path: headingPath,
-      content,
-      head_sha: headSha,
-    });
+    return textToolResult(content);
   } catch (error) {
     if (error instanceof SectionNotFoundError || error instanceof HeadingNotFoundError) {
       return makeToolErrorResult(`Section not found: ${headingPath.join(" > ")} in ${docPath}`);
@@ -321,6 +310,11 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
     const parsedSectionDocPath = parseToolArgumentDocPath(s.doc_path);
     if ("errorResult" in parsedSectionDocPath) return parsedSectionDocPath.errorResult;
     sections.push({ ...s, doc_path: parsedSectionDocPath.docPath });
+  }
+
+  for (const s of sections) {
+    const refused = AgentPayloadContract.refuseMalformedMarkdown(s.content);
+    if (refused) return refused;
   }
 
   // Check write permission for all target documents
@@ -411,6 +405,11 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
       },
     );
   }
+  const normalizationNote = AgentPayloadContract.noteForNormalizedWrite(
+    sections.map((s) => s.content),
+    "read_proposal_section",
+  );
+
   return jsonToolResult({
     proposal_id: mcpProposalId,
     status: "draft",
@@ -418,6 +417,7 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
     agent_write_policy: agentWritePolicyToolBody(policyResult),
     ...(withdrawnProposalId ? { withdrawn_proposal_id: withdrawnProposalId } : {}),
     ...(withdrawalNote ? { message: withdrawalNote } : {}),
+    ...(normalizationNote ? { normalization_note: normalizationNote } : {}),
   });
 };
 
@@ -442,6 +442,21 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
     for (const dp of commitTargetDocs) {
       const wpOk = await checkDocPermission(ctx.writer, dp, "write");
       if (!wpOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${dp}".`);
+    }
+
+    const { sectionContent } = await readProposalWithContent(proposalId);
+    const offendingSections: Array<{ docPath: string; headingPath: string[]; sequences: string[] }> = [];
+    for (const section of proposalSectionsParsedForLiveUse(proposal)) {
+      const ref = SectionRef.fromTarget(section);
+      const body = sectionContent.get(ref.globalKey);
+      if (body === undefined) continue;
+      const sequences = findProseUnicodeEscapes(body);
+      if (sequences.length > 0) {
+        offendingSections.push({ docPath: ref.docPath, headingPath: ref.headingPath, sequences });
+      }
+    }
+    if (offendingSections.length > 0) {
+      return AgentPayloadContract.refuseProseEscapesAtPublish(offendingSections);
     }
 
     const policyResult = await evaluateAgentWritePolicy(proposalId);
@@ -668,13 +683,7 @@ const readProposalSectionHandler: ToolHandler = async (args) => {
       content = buildFragmentContent(body, section.headingLevel, section.heading);
     }
 
-    return jsonToolResult({
-      proposal_id: proposalId,
-      status: proposal.status,
-      doc_path: docPath,
-      heading_path: headingPath,
-      content,
-    });
+    return textToolResult(content);
   } catch (error) {
     if (error instanceof ProposalNotFoundError) {
       return makeToolErrorResult(`Proposal not found: ${proposalId}`);
@@ -702,6 +711,9 @@ const writeProposalSectionHandler: ToolHandler = async (args, ctx) => {
   if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
   if (!Array.isArray(headingPath)) return makeToolErrorResult("Missing required parameter: heading_path");
   if (content === undefined) return makeToolErrorResult("Missing required parameter: content");
+
+  const refused = AgentPayloadContract.refuseMalformedMarkdown(args.content);
+  if (refused) return refused;
 
   const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
   if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
@@ -738,10 +750,16 @@ const writeProposalSectionHandler: ToolHandler = async (args, ctx) => {
 
     const policyResult = await evaluateAgentWritePolicy(proposalId);
 
+    const normalizationNote = AgentPayloadContract.noteForNormalizedWrite(
+      [content],
+      "read_proposal_section",
+    );
+
     return jsonToolResult({
       proposal_id: proposalId,
       status: "draft",
       agent_write_policy: agentWritePolicyToolBody(policyResult),
+      ...(normalizationNote ? { normalization_note: normalizationNote } : {}),
     });
   } catch (error) {
     if (error instanceof ProposalNotFoundError) {
@@ -813,7 +831,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
     "readDoc",
     {
       name: "read_doc",
-      description: "Read the full live markdown content of a document, including its heading structure.",
+      description: "Read the full live content of a document. The response IS the document's raw markdown — no JSON envelope. For a heading inventory, use list_sections.",
       inputSchema: {
         type: "object",
         properties: {
@@ -847,7 +865,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
     "readPublishedSection",
     {
       name: "read_published_section",
-      description: "Read the published/live (canonical) content of a specific section. This reads the published system and will NOT show proposal-only edits. To read a section as it appears inside a proposal (draft/committed/withdrawn), use read_proposal_section instead.",
+      description: "Read the published/live (canonical) content of a specific section. The response IS the section's raw markdown (heading line + body) — no JSON envelope. This reads the published system and will NOT show proposal-only edits. To read a section as it appears inside a proposal (draft/committed/withdrawn), use read_proposal_section instead.",
       inputSchema: {
         type: "object",
         properties: {
@@ -885,7 +903,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
               properties: {
                 doc_path: { type: "string", description: "Document path (must end with .md)" },
                 heading_path: { type: "array", items: { type: "string" } },
-                content: { type: "string" },
+                content: { type: "string", description: "Section content. The value is markdown containing the real characters the section should read as; a \\uXXXX escape sequence in prose is refused — write escape sequences inside inline code or a fenced code block." },
                 justification: { type: "string", description: "Optional justification for overwriting this section" },
               },
               required: ["doc_path", "heading_path", "content"],
@@ -924,7 +942,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
           proposal_id: { type: "string", description: "ID of the draft proposal" },
           doc_path: { type: "string", description: "Document path (must end with .md)" },
           heading_path: { type: "array", items: { type: "string" }, description: "Section heading path" },
-          content: { type: "string", description: "Section content (markdown). Describes the section as the user wants it to read after the call." },
+          content: { type: "string", description: "Section content (markdown). Describes the section as the user wants it to read after the call. The value is markdown containing the real characters the section should read as; a \\uXXXX escape sequence in prose is refused — write escape sequences inside inline code or a fenced code block." },
           justification: { type: "string", description: "Optional justification for overwriting this section" },
         },
         required: ["proposal_id", "doc_path", "heading_path", "content"],
@@ -1000,7 +1018,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
     "readProposal",
     {
       name: "read_proposal",
-      description: "Read the details of a specific proposal, including its sections, content, and human-involvement evaluation.",
+      description: "Read the details of a specific proposal, including its sections, content, and human-involvement evaluation. This is a proposal RECORD (JSON); to read a section's text, use read_proposal_section, which answers with the raw markdown.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1016,7 +1034,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
     "readProposalSection",
     {
       name: "read_proposal_section",
-      description: "Read a specific section as it appears inside a proposal.",
+      description: "Read a specific section as it appears inside a proposal. The response IS the section's raw markdown (heading line + body) — no JSON envelope.",
       inputSchema: {
         type: "object",
         properties: {

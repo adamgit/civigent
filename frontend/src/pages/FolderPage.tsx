@@ -14,7 +14,7 @@ import {
 } from "../components/folder-details/NewFileOrFolder";
 import { docHref, folderHref } from "../app/docs-location";
 import { apiClient } from "../services/api-client";
-import type { DocumentTreeEntry } from "../types/shared.js";
+import type { DocumentTreeAccess, DocumentTreeEntry } from "../types/shared.js";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
 import { DocPath, FolderPath } from "../types/shared";
 import { copyTextToClipboard } from "../utils/copy-text";
@@ -29,6 +29,7 @@ interface ChildFolderInfo {
   directFolderCount: number;
   directFileNames: string[];
   books: FolderBookSpine[];
+  access: DocumentTreeAccess | null;
 }
 
 interface FolderStats {
@@ -117,6 +118,7 @@ function getFolderStats(entry: DocumentTreeEntry): FolderStats {
       directFolderCount: direct.folders,
       directFileNames,
       books,
+      access: child.access ?? null,
     });
   }
   return { childFiles, childFolders };
@@ -533,6 +535,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                             folderCount={folder.directFolderCount}
                             fileNames={folder.directFileNames}
                             books={folder.books}
+                            access={folder.access}
                             onClick={() => {
                               if (childFolderPath) {
                                 navigate(folderHref(childFolderPath));

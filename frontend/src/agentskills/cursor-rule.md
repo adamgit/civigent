@@ -13,6 +13,8 @@ The system operates at **section-level granularity**. Sections are identified by
 
 **Critical:** `heading_path` must be passed as a real JSON array, never as a string. Correct: `["Chapter 1", "Section A"]`. Wrong: `"[\"Chapter 1\", \"Section A\"]"`.
 
+**Critical:** `content` is markdown and must contain the real characters the section should read as — a real `–`, `—`, `’`, or non-breaking space, never the six-character escape forms `\u2013` / `\u2014` / `\u2019` / `\u00a0`. After your tool call is parsed as JSON, no `\u` sequence may remain in the text you asked us to store. Content that genuinely documents an escape sequence must put it in inline code or a fenced code block.
+
 ### Examples
 
 Read a top-level section called "Overview" from the published/live wiki:

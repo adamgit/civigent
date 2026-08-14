@@ -16,13 +16,14 @@
  * short-lived `ProposalEditor`, applies EXACTLY ONE semantic mutation, derives the
  * affected manifest from that mutation's authoritative result, unions it into the
  * proposal's existing cumulative claim set, and updates `meta.json` via the
- * brand-gated `updateProposalSections(...)`.
+ * brand-gated `updateProposalSections(...)`. `reorder_section` is one such
+ * semantic mutation: exactly one `reorderSection` call.
  *
  * Application and MCP callers MUST import THIS function, never `ProposalEditor`
  * plus a raw `updateProposalSections(...)` (enforced by the import-boundary test).
  */
 
-import type { ActiveProposal, ProposalSection, DocumentTargetRef } from "../types/shared.js";
+import type { ActiveProposal, ProposalSection, DocumentTargetRef, LiveMovePosition } from "../types/shared.js";
 import { documentTargetRef, HeadingLevel } from "../types/shared.js";
 import type { ContentEntry, FlatEntry } from "./document-skeleton.js";
 import type { ProposalWriteResult, ProposalSubtreeMutationResult } from "./proposal-facade-types.js";
@@ -39,9 +40,10 @@ import type { DocPath } from "../types/shared.js";
  */
 export type ProposalContentOperation =
   | { kind: "write_section"; docPath: DocPath; headingPath: string[]; heading: string; content: SectionBodyWithPotentialSubsections; expandHeadingsIntoSections?: boolean; justification?: string }
-  | { kind: "create_section"; docPath: DocPath; headingPath: string[]; heading: string; content?: SectionBodyWithPotentialSubsections; justification?: string }
+  | { kind: "create_section"; docPath: DocPath; headingPath: string[]; heading: string; content?: SectionBodyWithPotentialSubsections; beforeHeadingPath?: string[]; afterHeadingPath?: string[]; justification?: string }
   | { kind: "delete_section"; docPath: DocPath; headingPath: string[] }
   | { kind: "move_section"; docPath: DocPath; headingPath: string[]; newParentPath: string[] }
+  | { kind: "reorder_section"; docPath: DocPath; headingPath: string[]; targetHeadingPath: string[]; position: LiveMovePosition }
   | { kind: "rename_section"; docPath: DocPath; headingPath: string[]; newHeading: string }
   | { kind: "write_document_markdown"; files: Array<{ docPath: DocPath; markdown: string }> }
   | { kind: "create_document"; docPath: DocPath }
@@ -79,8 +81,47 @@ export class ProposalSectionNotFoundError extends Error {
   }
 }
 
+export class ProposalSectionReorderError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProposalSectionReorderError";
+  }
+}
+
 function samePath(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((seg, i) => seg === b[i]);
+}
+
+/**
+ * The proposal-scoped twin of the live-move sibling/BFH precheck
+ * (`crdt-ws-coordinator.ts` reorder path): validate a sibling-placement request
+ * against the proposal's effective section list before touching the engine.
+ * `reorderSiblingSection` still throws if a caller skips it, but MCP/mutate
+ * must not surface those throws as 500s.
+ */
+function checkSiblingReorder(
+  docPath: DocPath,
+  headingPath: string[],
+  targetHeadingPath: string[],
+  rows: Array<{ headingPath: string[] }>,
+): void {
+  if (headingPath.length === 0) {
+    throw new ProposalSectionReorderError("Cannot reorder the before-first-heading section.");
+  }
+  if (targetHeadingPath.length === 0) {
+    throw new ProposalSectionReorderError("Cannot reorder relative to the before-first-heading section.");
+  }
+  if (!rows.some((e) => samePath(e.headingPath, headingPath))) {
+    throw new ProposalSectionNotFoundError(`Section not found: ${headingPath.join(" > ")} in ${docPath}`);
+  }
+  if (!rows.some((e) => samePath(e.headingPath, targetHeadingPath))) {
+    throw new ProposalSectionNotFoundError(`Section not found: ${targetHeadingPath.join(" > ")} in ${docPath}`);
+  }
+  const parentPath = headingPath.slice(0, -1);
+  const targetParentPath = targetHeadingPath.slice(0, -1);
+  if (!samePath(parentPath, targetParentPath)) {
+    throw new ProposalSectionReorderError("Sections can only be reordered among siblings that share the same parent.");
+  }
 }
 
 function sectionsUnder(docPath: DocPath, headingPaths: string[][]): ProposalSection[] {
@@ -112,6 +153,13 @@ export async function mutateProposalContent(
   switch (operation.kind) {
     case "write_section":
     case "create_section": {
+      if (
+        operation.kind === "create_section" &&
+        operation.beforeHeadingPath !== undefined &&
+        operation.afterHeadingPath !== undefined
+      ) {
+        throw new ProposalSectionReorderError("Provide at most one of before_heading_path and after_heading_path.");
+      }
       const writeResult =
         operation.kind === "write_section"
           ? await editor.writeSection(operation.docPath, operation.headingPath, operation.heading, operation.content, {
@@ -119,6 +167,25 @@ export async function mutateProposalContent(
             })
           : await editor.createSection(operation.docPath, operation.headingPath, operation.heading, operation.content ?? sectionWriteInputFromExternal(""));
       extras.writeResult = writeResult;
+      // Create-at-position is still one semantic mutate call: the engine create
+      // stays append-only and placement is the existing reorder primitive on the
+      // requested leaf only (parser-expanded descendants are not reordered;
+      // auto-created ancestors stay where `materializeAncestorHeadings` pushed
+      // them). If the heading already existed, the upsert still runs and the
+      // reorder still moves that leaf — placement is "put this heading here,"
+      // not "only if newly inserted."
+      if (operation.kind === "create_section") {
+        const anchor = operation.beforeHeadingPath ?? operation.afterHeadingPath;
+        if (anchor !== undefined) {
+          checkSiblingReorder(operation.docPath, operation.headingPath, anchor, await editor.getSectionList(operation.docPath));
+          await editor.reorderSection(
+            operation.docPath,
+            operation.headingPath,
+            anchor,
+            operation.beforeHeadingPath !== undefined ? "before" : "after",
+          );
+        }
+      }
       // Authoritative affected set: every parser-expanded section written, every
       // section removed by the restructure, and both sides of any structure change
       // — NOT just the requested heading path.
@@ -182,6 +249,17 @@ export async function mutateProposalContent(
         ...flatEntriesToSections(operation.docPath, moveResult.removed),
         ...flatEntriesToSections(operation.docPath, moveResult.added),
       ];
+      break;
+    }
+    case "reorder_section": {
+      checkSiblingReorder(
+        operation.docPath,
+        operation.headingPath,
+        operation.targetHeadingPath,
+        await editor.getSectionList(operation.docPath),
+      );
+      await editor.reorderSection(operation.docPath, operation.headingPath, operation.targetHeadingPath, operation.position);
+      affected = sectionsUnder(operation.docPath, [operation.headingPath, operation.targetHeadingPath]);
       break;
     }
     case "rename_section": {

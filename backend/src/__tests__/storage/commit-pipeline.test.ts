@@ -10,6 +10,7 @@ import {
 import {
   evaluateAgentWritePolicy,
   commitProposalToCanonical,
+  commitProposalToCanonicalDetailed,
   publishProposalToCanonical,
   publishProposalToCanonicalDetailed,
   publishCommittingProposalToCanonical,
@@ -17,6 +18,11 @@ import {
 import * as canonicalStore from "../../storage/canonical-store.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { SectionRef } from "../../domain/section-ref.js";
+import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
+import { sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
+import { ContentLayer } from "../../storage/content-layer.js";
+import { resolveSkeletonPath } from "../../storage/document-skeleton.js";
+import { pathExists } from "../../storage/fs-primitives.js";
 
 describe("commit-pipeline", () => {
   let ctx: TempDataRootContext;
@@ -217,5 +223,43 @@ describe("commit-pipeline", () => {
     }
     // Human/DocSession → inprogress (NOT draft); stays the current proposal.
     expect((await readProposal(id)).status).toBe("inprogress");
+  });
+
+  // A proposal that both renames (document targets → wholesale absorb) and
+  // write_section to a missing path (section claim only) must still create the
+  // new file in canonical. Exclusive-scope absorb on document targets drops it;
+  // SHA and catalog:changed stay green.
+  it("commit lands a section-created document that shares the proposal with a rename", async () => {
+    const sourcePath = "/canary/source.md";
+    const renamedPath = "/canary/legacy/source.md";
+    const newNotePath = "/canary/legacy/ABOUT.md";
+    const newNoteHeading = "Legacy to-do material";
+    const newNoteBody = "This folder holds the pre-restructure to-do tree.";
+
+    await createSampleDocument(ctx.rootDir, sourcePath);
+
+    const { id } = await createProposal(writer, "preserve under legacy and leave a note");
+    await mutateProposalContent(id, {
+      kind: "write_section",
+      docPath: newNotePath,
+      headingPath: [newNoteHeading],
+      heading: newNoteHeading,
+      content: sectionWriteInputFromExternal(newNoteBody),
+    });
+    await mutateProposalContent(id, {
+      kind: "rename_document",
+      docPath: sourcePath,
+      newPath: renamedPath,
+    });
+
+    const absorb = await commitProposalToCanonicalDetailed(id, {});
+    expect(absorb.commitSha.length).toBe(40);
+
+    expect(await pathExists(resolveSkeletonPath(newNotePath, ctx.contentDir))).toBe(true);
+    const canonical = new ContentLayer(ctx.contentDir);
+    expect(String(await canonical.readSection(new SectionRef(newNotePath, [newNoteHeading])))).toContain(
+      newNoteBody,
+    );
+    expect(absorb.rewrittenDocumentPaths).toContain(newNotePath);
   });
 });
