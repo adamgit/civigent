@@ -6,6 +6,7 @@ import type { HomeActiveFolder } from "../../pages/home/home-folder-activity";
 interface HomeActiveFolderCardProps {
   folder: HomeActiveFolder;
   layoutMode?: DocLayoutMode;
+  variant?: "default" | "all-docs";
 }
 
 const BAR_MAX_PX = 16;
@@ -15,13 +16,29 @@ function barHeight(value: number, max: number): number {
   return Math.max(3, Math.round((value / max) * BAR_MAX_PX));
 }
 
-export function HomeActiveFolderCard({ folder, layoutMode: _layoutMode = "narrow" }: HomeActiveFolderCardProps) {
+export function HomeActiveFolderCard({
+  folder,
+  layoutMode: _layoutMode = "narrow",
+  variant = "default",
+}: HomeActiveFolderCardProps) {
   const max = Math.max(folder.counts.added, folder.counts.modified, folder.counts.deleted);
   const docs = `${folder.docCount} doc${folder.docCount === 1 ? "" : "s"}`;
+  const allDocs = variant === "all-docs";
   return (
-    <Link to={folderHref(folder.folderPath)} className="home-card home-folder-card">
-      <span className="home-folder-card__name">{folder.name}</span>
-      <span className="home-folder-card__count">{docs}</span>
+    <Link
+      to={folderHref(folder.folderPath)}
+      className={
+        allDocs
+          ? "home-card home-folder-card home-folder-card--all bg-accent-light border-accent-border"
+          : "home-card home-folder-card"
+      }
+    >
+      <span className={`home-folder-card__name${allDocs ? " text-accent-text" : ""}`}>
+        {folder.name}
+      </span>
+      <span className={`home-folder-card__count${allDocs ? " text-accent-text" : ""}`}>
+        {allDocs ? `all docs · ${folder.docCount}` : docs}
+      </span>
       <span className="home-folder-card__bars" aria-hidden="true">
         <Bar kind="add" value={folder.counts.added} max={max} />
         <Bar kind="mod" value={folder.counts.modified} max={max} />

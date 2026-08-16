@@ -1,12 +1,12 @@
-import { HomeOverflowMenu } from "./HomeOverflowMenu";
+import type { ReactNode } from "react";
 
 interface HomeHeaderProps {
   title: string;
   hostLabel: string;
-  onCreateDocument: () => void;
+  trailing?: ReactNode;
 }
 
-export function HomeHeader({ title, hostLabel, onCreateDocument }: HomeHeaderProps) {
+export function HomeHeader({ title, hostLabel, trailing }: HomeHeaderProps) {
   return (
     <div className="home-header">
       <div className="min-w-0">
@@ -15,7 +15,7 @@ export function HomeHeader({ title, hostLabel, onCreateDocument }: HomeHeaderPro
           {hostLabel} {"\u00b7"} <span className="home-header__private">private</span>
         </p>
       </div>
-      <HomeOverflowMenu onCreateDocument={onCreateDocument} />
+      {trailing ? <div className="home-header__end">{trailing}</div> : null}
     </div>
   );
 }

@@ -1,25 +1,30 @@
-import { type FormEvent, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
-import { SEARCH_MAX_RESULTS } from "./search/search-request-defaults";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { apiClient, resolveWriterId } from "../services/api-client";
-import { DocPath, type AgentActivitySummary, type ActivityItem, type AnyProposal, type HumanInvolvementPresetName } from "../types/shared.js";
-import { SINGLE_USER_MODE_EXPLAINER } from "../single-user-mode";
+import { type AgentActivitySummary, type ActivityItem, type AnyProposal, type HumanInvolvementPresetName } from "../types/shared.js";
 import { useDocLayoutMode } from "../hooks/useDocLayoutMode";
-import { HomeInvolvementWaitLine } from "../components/home/HomeInvolvementWaitLine";
 import { HomeNarrowLayout } from "./home/HomeNarrowLayout";
-import { HOME_RECENT_WINDOW_DAYS } from "./home/home-constants";
+import { HomeWideLayout } from "./home/HomeWideLayout";
+import {
+  HOME_ACTIVITY_FETCH_DAYS,
+  HOME_ACTIVITY_FETCH_LIMIT,
+  HOME_RECENT_WINDOW_DAYS,
+  homeRecentWindowDays,
+  readHomeRecentWindow,
+  writeHomeRecentWindow,
+  type HomeRecentWindowId,
+} from "./home/home-constants";
 import { homeHostLabel, homeInstallTitle } from "./home/home-title";
 import { countTreeTotals } from "./home/home-tree-stats";
-import { buildActiveFolders } from "./home/home-folder-activity";
+import { buildActiveFolders, buildAllDocsFolder } from "./home/home-folder-activity";
 import { buildRecentDocuments, countRecentDocuments } from "./home/home-recent-documents";
 import { buildAgentActivityRows } from "./home/home-agent-activity";
 import { formatHomeTime } from "./home/home-time";
 
 export function HomePage() {
   const {
-    createDoc,
     sidebarAutoHide,
     setSidebarAutoHide,
     singleUser,
@@ -34,11 +39,6 @@ export function HomePage() {
   }, [layoutMode, setDocLayoutNarrow]);
 
   const currentUser = useCurrentUser();
-  const [newDocPath, setNewDocPath] = useState("");
-  const [creatingDoc, setCreatingDoc] = useState(false);
-  const [newDocError, setNewDocError] = useState<string | null>(null);
-  const [showHowItWorks, setShowHowItWorks] = useState(false);
-  const [showCreateForm, setShowCreateForm] = useState(false);
 
   const [degradedCount, setDegradedCount] = useState(0);
   const [degradedError, setDegradedError] = useState<string | null>(null);
@@ -56,6 +56,7 @@ export function HomePage() {
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [activityError, setActivityError] = useState<string | null>(null);
   const [proposals, setProposals] = useState<AnyProposal[]>([]);
+  const [recentWindowId, setRecentWindowId] = useState<HomeRecentWindowId>(readHomeRecentWindow);
   const [proposalsError, setProposalsError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -106,7 +107,7 @@ export function HomePage() {
   useEffect(() => {
     let cancelled = false;
     apiClient
-      .getActivity(200, HOME_RECENT_WINDOW_DAYS)
+      .getActivity(HOME_ACTIVITY_FETCH_LIMIT, HOME_ACTIVITY_FETCH_DAYS)
       .then((res) => {
         if (!cancelled) {
           setActivity(res.items);
@@ -151,38 +152,26 @@ export function HomePage() {
     }
   };
 
-  const handleNewDocSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    const trimmed = newDocPath.trim();
-    if (!trimmed || creatingDoc) return;
-    const withMd = trimmed.endsWith(".md") ? trimmed : `${trimmed}.md`;
-    const docPath = DocPath.tryParse(withMd.startsWith("/") ? withMd : `/${withMd}`);
-    if (!docPath) {
-      setNewDocError(`Invalid document path: ${JSON.stringify(withMd)}`);
-      return;
-    }
-    setCreatingDoc(true);
-    setNewDocError(null);
-    createDoc(docPath)
-      .then(() => {
-        setNewDocPath("");
-        setShowCreateForm(false);
-      })
-      .catch((err) => setNewDocError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setCreatingDoc(false));
-  };
-
   const treeTotals = useMemo(() => countTreeTotals(entries), [entries]);
   const activeFolders = useMemo(
     () => buildActiveFolders(entries, activity, proposals),
     [entries, activity, proposals],
   );
-  const currentWriterId = currentUser?.id ?? resolveWriterId();
-  const recentDocuments = useMemo(
-    () => buildRecentDocuments(activity, currentWriterId),
-    [activity, currentWriterId],
+  const allDocsFolder = useMemo(
+    () => buildAllDocsFolder(entries, activity, proposals),
+    [entries, activity, proposals],
   );
-  const recentDocumentTotal = useMemo(() => countRecentDocuments(activity), [activity]);
+  const currentWriterId = currentUser?.id ?? resolveWriterId();
+  const recentWindowDays =
+    layoutMode === "wide" ? homeRecentWindowDays(recentWindowId) : HOME_RECENT_WINDOW_DAYS;
+  const recentDocuments = useMemo(
+    () => buildRecentDocuments(activity, currentWriterId, Date.now(), recentWindowDays),
+    [activity, currentWriterId, recentWindowDays],
+  );
+  const recentDocumentTotal = useMemo(
+    () => countRecentDocuments(activity, Date.now(), recentWindowDays),
+    [activity, recentWindowDays],
+  );
   const agentRows = useMemo(
     () => buildAgentActivityRows(agents, formatHomeTime),
     [agents],
@@ -268,377 +257,39 @@ export function HomePage() {
     </>
   );
 
-  const createForm = (
-    <form
-      onSubmit={handleNewDocSubmit}
-      className={layoutMode === "narrow" ? "home-card home-create-form" : undefined}
-      style={
-        layoutMode === "narrow"
-          ? undefined
-          : {
-              maxWidth: "75%",
-              margin: "1.75rem auto",
-              background: "var(--color-sidebar-bg)",
-              borderRadius: 12,
-              padding: "14px 18px",
-            }
-      }
-    >
-      <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 8 }}>
-        Create new document
-      </label>
-      <div style={{ display: "flex", gap: 8 }}>
-        <input
-          type="text"
-          value={newDocPath}
-          onChange={(e) => setNewDocPath(e.target.value)}
-          placeholder="e.g. roadmap.md or projects/brief.md"
-          disabled={creatingDoc}
-          className="input-field"
-          style={{ flex: 1, height: 34 }}
-        />
-        <button
-          type="submit"
-          disabled={creatingDoc}
-          className="btn-secondary"
-          style={{ height: 34, cursor: creatingDoc ? "wait" : "pointer", whiteSpace: "nowrap" }}
-        >
-          {creatingDoc ? "Creating\u2026" : "Create"}
-        </button>
-      </div>
-      {newDocError && <p className="text-error" style={{ marginTop: 6 }}>{newDocError}</p>}
-    </form>
-  );
+  const layoutProps = {
+    title: homeInstallTitle(appName),
+    hostLabel: homeHostLabel(),
+    involvementPreset,
+    folders: activeFolders,
+    agentRows,
+    recentDocuments,
+    recentDocumentTotal,
+    alerts,
+    singleUser,
+  };
 
   if (layoutMode === "narrow") {
     return (
-      <>
-        {singleUser ? (
-          <section
-            aria-label="Single-user mode"
-            data-testid="single-user-home-banner"
-            className="single-user-home-banner"
-          >
-            <div className="single-user-home-banner__kicker">Single-user mode</div>
-            <p>{SINGLE_USER_MODE_EXPLAINER}</p>
-            <Link to="/admin">Configure login in Admin &rarr;</Link>
-          </section>
-        ) : null}
-        <HomeNarrowLayout
-          title={homeInstallTitle(appName)}
-          hostLabel={homeHostLabel()}
-          involvementPreset={involvementPreset}
-          folderCount={treeTotals.folderCount}
-          documentCount={treeTotals.documentCount}
-          folders={activeFolders}
-          agentRows={agentRows}
-          recentDocuments={recentDocuments}
-          recentDocumentTotal={recentDocumentTotal}
-          alerts={alerts}
-          showCreateForm={showCreateForm}
-          createForm={createForm}
-          onCreateDocument={() => setShowCreateForm(true)}
-        />
-      </>
+      <HomeNarrowLayout
+        {...layoutProps}
+        folderCount={treeTotals.folderCount}
+        documentCount={treeTotals.documentCount}
+      />
     );
   }
 
   return (
-    <div className="flex-1 overflow-auto canvas-scroll" data-home-layout="wide" style={{ fontFamily: "var(--font-ui)" }}>
-      <div style={{ maxWidth: 740, margin: "0 auto", padding: "2.5rem 1.5rem 2rem" }}>
-
-        {alerts}
-
-        {/* Header */}
-        <div style={{ marginBottom: "1.75rem" }}>
-          
-          <h1 style={{ fontFamily: "var(--font-body)", fontSize: 28, fontWeight: 500, lineHeight: 1.2, marginBottom: 4 }}>
-            Docs for humans and agents
-            &nbsp;&nbsp;
-            <Link
-            to="https://github.com/adamgit/civigent"
-          >
-            <span style={{ fontSize: 11, fontWeight: 500, color: "var(--color-accent)" }}>[Github]</span>
-            </Link>
-          </h1>
-          <p style={{ fontSize: 14, color: "var(--color-text-secondary)" }}>
-            Real-time collaborative editing with built-in AI agent coordination.
-          </p>
-        </div>
-
-        {/* Workspace layout — Focus vs Browse; synced with the sidebar toggle */}
-        <section
-          aria-label="Workspace layout"
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
-            gap: 0,
-            marginBottom: "1.75rem",
-            borderRadius: 12,
-            border: "1px solid var(--color-footer-border)",
-          }}
-        >
-          <button
-            type="button"
-            onClick={() => setSidebarAutoHide(true)}
-            aria-pressed={sidebarAutoHide}
-            style={{
-              textAlign: "left",
-              cursor: "pointer",
-              border: "none",
-              borderRight: "1px solid var(--color-footer-border)",
-              borderRadius: "11px 0 0 11px",
-              padding: "10px 14px",
-              background: sidebarAutoHide ? "var(--color-accent-light)" : "var(--color-sidebar-bg)",
-              color: sidebarAutoHide ? "var(--color-accent-text)" : "var(--color-text-secondary)",
-              boxShadow: sidebarAutoHide ? "inset 0 0 0 2px var(--color-accent)" : "none",
-              transition: "background 150ms ease, color 150ms ease, box-shadow 150ms ease",
-            }}
-          >
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, color: sidebarAutoHide ? "var(--color-accent-text)" : "var(--color-text-primary)" }}>
-              Focus mode
-            </div>
-            <p style={{ margin: 0, fontSize: 11, lineHeight: 1.4 }}>
-              Hide the sidebar for more room to read and write. Hover the left edge of the window when you need the document tree again.
-            </p>
-          </button>
-          <button
-            type="button"
-            onClick={() => setSidebarAutoHide(false)}
-            aria-pressed={!sidebarAutoHide}
-            style={{
-              textAlign: "left",
-              cursor: "pointer",
-              border: "none",
-              borderRadius: "0 11px 11px 0",
-              padding: "10px 14px",
-              background: !sidebarAutoHide ? "var(--color-agent2-light)" : "var(--color-sidebar-bg)",
-              color: !sidebarAutoHide ? "#8a5520" : "var(--color-text-secondary)",
-              boxShadow: !sidebarAutoHide ? "inset 0 0 0 2px var(--color-agent2)" : "none",
-              transition: "background 150ms ease, color 150ms ease, box-shadow 150ms ease",
-            }}
-          >
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 3, color: !sidebarAutoHide ? "#8a5520" : "var(--color-text-primary)" }}>
-              Browse mode
-            </div>
-            <p style={{ margin: 0, fontSize: 11, lineHeight: 1.4 }}>
-              Keep the sidebar open so you can jump between documents. Use this when you are exploring or moving around often.
-            </p>
-          </button>
-        </section>
-
-        {createForm}
-
-        {involvementPreset && (
-          <HomeInvolvementWaitLine preset={involvementPreset} layoutMode="wide" />
-        )}
-
-        {/* Manual search */}
-        <form
-          action="/search-text"
-          method="GET"
-          style={{
-            marginBottom: "2rem",
-            background: "var(--color-sidebar-bg)",
-            borderRadius: 12,
-            padding: "14px 18px",
-          }}
-        >
-          <input type="hidden" name="root" value="/" />
-          <input type="hidden" name="case_sensitive" value="false" />
-          <input type="hidden" name="max_results" value={SEARCH_MAX_RESULTS} />
-          <input type="hidden" name="context_bytes" value="100" />
-
-          <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 8 }}>
-            Manual text search
-          </label>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input
-              type="text"
-              name="pattern"
-              placeholder="Search /api/search"
-              className="input-field"
-              style={{ flex: 1, height: 34 }}
-              required
-            />
-            <select
-              name="syntax"
-              defaultValue="literal"
-              className="input-field"
-              style={{ width: 120, height: 34 }}
-            >
-              <option value="literal">Plaintext</option>
-              <option value="regexp">Regexp</option>
-            </select>
-            <button
-              type="submit"
-              className="btn-secondary"
-              style={{ height: 34, whiteSpace: "nowrap" }}
-            >
-              Search
-            </button>
-          </div>
-          <p style={{ marginTop: 6, fontSize: 11, color: "var(--color-text-muted)" }}>
-            Opens formatted search results inside the app.
-          </p>
-        </form>
-
-        {/* Exported skills */}
-        <section
-          aria-label="Exported skills"
-          style={{
-            background: "var(--color-sidebar-bg)",
-            borderRadius: 12,
-            padding: "16px 18px",
-            border: "1px solid var(--color-footer-border)",
-          }}
-        >
-          <div style={{ fontSize: 11, fontWeight: 500, color: "var(--color-text-muted)", letterSpacing: "0.04em", marginBottom: 6 }}>
-            New &middot; Claude Code skills
-          </div>
-          <h2 style={{ fontFamily: "var(--font-body)", fontSize: 18, fontWeight: 500, lineHeight: 1.25, marginBottom: 6 }}>
-            Turn a folder into agent skills
-          </h2>
-          <p style={{ margin: "0 0 12px", fontSize: 13, lineHeight: 1.5, color: "var(--color-text-secondary)" }}>
-            Put markdown skills in the skills folder (default{" "}
-            <code style={{ fontSize: 12 }}>/public_skills</code>
-            ). Civigent exports them as a Claude Code plugin ZIP — install with{" "}
-            <code style={{ fontSize: 12 }}>claude --plugin-url</code>
-            {" "}and your agents can invoke those skills directly.
-          </p>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 14, fontSize: 13, fontWeight: 500 }}>
-            <Link to="/skills" style={{ color: "var(--color-accent)", textDecoration: "none" }}>
-              Skills &amp; launch command &rarr;
-            </Link>
-            <Link to="/docs/public_skills" style={{ color: "var(--color-accent)", textDecoration: "none" }}>
-              Open skills folder &rarr;
-            </Link>
-          </div>
-        </section>
-      </div>
-
-      {singleUser ? (
-        <section
-          aria-label="Single-user mode"
-          data-testid="single-user-home-banner"
-          className="single-user-home-banner"
-        >
-          <div className="single-user-home-banner__kicker">Single-user mode</div>
-          <p>{SINGLE_USER_MODE_EXPLAINER}</p>
-          <Link to="/admin">Configure login in Admin &rarr;</Link>
-        </section>
-      ) : null}
-
-      <div style={{ maxWidth: 740, margin: "0 auto", padding: "0 1.5rem 3rem" }}>
-        <hr style={{ border: "none", borderTop: "1px solid var(--color-footer-border)", margin: "0 0 1.5rem" }} />
-
-        {/* Quick links — low priority; kept at the bottom */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-          <Link
-            to="/setup"
-            style={{
-              background: "var(--color-sidebar-bg)",
-              borderRadius: 8,
-              padding: "10px 14px",
-              textDecoration: "none",
-            }}
-          >
-            <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 1 }}>For agents</div>
-            <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-accent)" }}>Connect an agent &rarr;</div>
-          </Link>
-          <div
-            style={{ position: "relative" }}
-            onMouseEnter={() => setShowHowItWorks(true)}
-            onMouseLeave={() => setShowHowItWorks(false)}
-            onFocus={() => setShowHowItWorks(true)}
-            onBlur={() => setShowHowItWorks(false)}
-          >
-            <div
-              style={{
-                background: "var(--color-sidebar-bg)",
-                borderRadius: 8,
-                padding: "10px 14px",
-              }}
-            >
-              <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 1 }}>How it works</div>
-              <div style={{ display: "flex", gap: 14, fontSize: 13, fontWeight: 500 }}>
-                <Link to="/features" style={{ color: "var(--color-accent)", textDecoration: "none" }}>
-                  Features &rarr;
-                </Link>
-                <Link to="/help" style={{ color: "var(--color-accent)", textDecoration: "none" }}>
-                  Help &rarr;
-                </Link>
-              </div>
-            </div>
-            {showHowItWorks && (
-              <div
-                style={{
-                  position: "absolute",
-                  bottom: "100%",
-                  left: "50%",
-                  transform: "translateX(-50%)",
-                  paddingBottom: 8,
-                  zIndex: 10,
-                  width: 480,
-                  maxWidth: "90vw",
-                }}
-                role="tooltip"
-              >
-                <div
-                  style={{
-                    background: "var(--color-page-bg)",
-                    border: "1px solid var(--color-footer-border)",
-                    borderRadius: 12,
-                    padding: 12,
-                    boxShadow: "0 6px 20px rgba(0,0,0,0.10)",
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1fr",
-                    gap: 10,
-                  }}
-                >
-                  <div style={{ padding: "12px 14px", border: "1px solid var(--color-footer-border)", borderRadius: 8 }}>
-                    <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>Live collaboration</p>
-                    <p style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.45 }}>
-                      See other editors' cursors in real time. The section you're editing is locked to prevent conflicts.
-                    </p>
-                  </div>
-                  <div style={{ padding: "12px 14px", border: "1px solid var(--color-footer-border)", borderRadius: 8 }}>
-                    <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>Agent-safe by default</p>
-                    <p style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.45 }}>
-                      AI agents propose changes that are evaluated before merging. Recently human-edited sections are automatically protected.
-                    </p>
-                  </div>
-                  <div style={{ padding: "12px 14px", border: "1px solid var(--color-footer-border)", borderRadius: 8 }}>
-                    <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>Proposals for deep work</p>
-                    <p style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.45 }}>
-                      Reserve sections across documents for extended editing. Others see read-only content until you publish or cancel.
-                    </p>
-                  </div>
-                  <div style={{ padding: "12px 14px", border: "1px solid var(--color-footer-border)", borderRadius: 8 }}>
-                    <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 3 }}>Nothing is lost</p>
-                    <p style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.45 }}>
-                      Every change is versioned and auto-saved. Close the tab, go idle, even survive a server restart &mdash; your work is safe.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-          <Link
-            to="/history"
-            style={{
-              background: "var(--color-sidebar-bg)",
-              borderRadius: 8,
-              padding: "10px 14px",
-              textDecoration: "none",
-            }}
-          >
-            <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginBottom: 1 }}>Compliance</div>
-            <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-accent)" }}>Audit Log &rarr;</div>
-          </Link>
-        </div>
-
-      </div>
-    </div>
+    <HomeWideLayout
+      {...layoutProps}
+      allDocsFolder={allDocsFolder}
+      recentWindowId={recentWindowId}
+      onRecentWindowChange={(id) => {
+        setRecentWindowId(id);
+        writeHomeRecentWindow(id);
+      }}
+      sidebarAutoHide={sidebarAutoHide}
+      setSidebarAutoHide={setSidebarAutoHide}
+    />
   );
 }

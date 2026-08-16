@@ -91,3 +91,50 @@ export function buildActiveFolders(
   folders.sort((a, b) => Date.parse(b.lastChangedAt) - Date.parse(a.lastChangedAt));
   return folders;
 }
+
+/** Tree-wide `/` card: all documents, with add/mod/del across every folder. */
+export function buildAllDocsFolder(
+  entries: DocumentTreeEntry[],
+  activity: ActivityItem[],
+  proposals: AnyProposal[],
+  nowMs: number = Date.now(),
+  windowDays: number = HOME_RECENT_WINDOW_DAYS,
+): HomeActiveFolder {
+  const existingDocs = collectExistingDocPaths(entries);
+  const added = new Set<string>();
+  const modified = new Set<string>();
+  const deleted = new Set<string>();
+  let lastChangedAt = "";
+
+  const touchTime = (iso: string) => {
+    if (!lastChangedAt || Date.parse(iso) > Date.parse(lastChangedAt)) lastChangedAt = iso;
+  };
+
+  for (const item of activity) {
+    if (!inWindow(item.timestamp, nowMs, windowDays)) continue;
+    for (const section of item.sections) {
+      modified.add(section.doc_path);
+      touchTime(item.timestamp);
+    }
+  }
+
+  for (const proposal of proposals) {
+    if (proposal.status !== "committed") continue;
+    if (!inWindow(proposal.created_at, nowMs, windowDays)) continue;
+    for (const target of proposal.targets) {
+      if (target.kind !== "document") continue;
+      const docPath = proposalTargetDocPathForDisplay(target);
+      if (existingDocs.has(docPath)) added.add(docPath);
+      else deleted.add(docPath);
+      touchTime(proposal.created_at);
+    }
+  }
+
+  return {
+    folderPath: FolderPath.root,
+    name: FolderPath.displayName(FolderPath.root),
+    docCount: countFilesInFolder(entries, FolderPath.root),
+    counts: { added: added.size, modified: modified.size, deleted: deleted.size },
+    lastChangedAt: lastChangedAt || new Date(nowMs).toISOString(),
+  };
+}

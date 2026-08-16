@@ -611,46 +611,6 @@ a {
   display: block;
 }
 
-/* Home-page strip: full main-pane width, not a card. Stronger than the orange
- * sidebar tint so it is discoverable without matching the other home cards. */
-.single-user-home-banner {
-  width: 100%;
-  margin: 0 0 2rem;
-  padding: 16px 1.5rem 18px;
-  background: var(--color-status-red-light);
-  border-top: 1px solid #e0a098;
-  border-bottom: 1px solid #e0a098;
-  box-shadow: inset 5px 0 0 var(--color-status-red);
-  border-radius: 0;
-}
-
-.single-user-home-banner__kicker {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--color-status-red);
-  margin-bottom: 6px;
-}
-
-.single-user-home-banner p {
-  margin: 0 0 10px;
-  font-size: 13px;
-  line-height: 1.5;
-  color: #6e3a34;
-}
-
-.single-user-home-banner a {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-status-red);
-  text-decoration: underline;
-}
-
-.single-user-home-banner a:hover {
-  color: var(--color-folder-danger-hover);
-}
-
 /* ===== DRAG/DROP INDICATORS ===== */
 .section-drop-target {
   border-top: 2px solid var(--color-accent);

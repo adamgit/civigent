@@ -113,7 +113,7 @@ describe("HomePage degraded-proposal alert", () => {
     renderHome();
 
     await waitFor(() => {
-      expect(screen.getByText("Turn a folder into agent skills")).toBeTruthy();
+      expect(screen.getByText("Focus or Browse")).toBeTruthy();
     });
     expect(screen.queryByTestId("degraded-proposals-alert")).toBeNull();
   });
