@@ -57,10 +57,10 @@ export function FolderFileRow({
           ))}
         </span>
       ) : null}
-      <span className="max-w-[50%] shrink-0 truncate text-[15px] font-medium text-folder-link group-hover:text-folder-link-hover group-hover:underline">
+      <span className="max-w-full min-w-0 shrink-0 truncate text-[15px] font-medium text-folder-link group-hover:text-folder-link-hover group-hover:underline md:max-w-[50%]">
         {name}
       </span>
-      <span className="ml-auto min-w-0 flex-1 overflow-hidden text-right">
+      <span className="ml-auto min-w-0 flex-1 overflow-hidden text-right max-md:hidden">
         {sectionNames !== undefined ? (
           <>
             <span className="hidden group-hover:block">

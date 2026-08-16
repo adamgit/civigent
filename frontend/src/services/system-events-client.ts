@@ -1,17 +1,27 @@
 /**
- * SSE client for backend system lifecycle state.
+ * Client for backend system lifecycle state (dev supervisor SSE).
  *
- * Opens a single EventSource to /api/system/events and exposes
- * the current lifecycle phase via a callback subscription.
+ * The EventSource to /api/system/events is owned by the shared WebSocket
+ * worker — ONE stream per browser, fanned out to tabs over worker ports —
+ * because Chromium caps ~6 concurrent HTTP/1.1 connections per host:port
+ * across the whole browser, and a per-tab SSE stream permanently held one
+ * slot per tab, hanging every page load past the limit.
  *
- * EventSource's built-in reconnection only works for transient network
- * errors. If the response arrives with the wrong MIME type (e.g. Vite's
- * HTML error page when the backend is down), EventSource permanently
- * aborts. This module handles that by detecting CLOSED state after an
- * error and retrying with exponential backoff.
+ * This module subscribes to the worker's fan-out. Only when the app WS has
+ * fallen back to the BroadcastChannel transport (SharedWorker unavailable)
+ * does it open the legacy per-tab EventSource, including the manual
+ * exponential-backoff retry for the wrong-MIME CLOSED case (e.g. Vite's
+ * HTML error page while the backend is down), which EventSource's built-in
+ * reconnection never recovers from.
  */
 
 import type { FatalReport } from "../types/shared.js";
+import {
+  addSharedSystemStateListener,
+  getAppWsTransportInfo,
+  subscribeAppWsTransport,
+} from "./ws-client";
+
 export type { FatalReport };
 
 export interface SystemState {
@@ -28,10 +38,11 @@ export function connectSystemEvents(onState: SystemStateListener): () => void {
   let es: EventSource | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let retryMs = INITIAL_RETRY_MS;
+  let directActive = false;
   let closed = false;
 
   function connect(): void {
-    if (closed) return;
+    if (closed || !directActive) return;
     es = new EventSource("/api/system/events");
 
     es.addEventListener("system_state", (e) => {
@@ -41,22 +52,16 @@ export function connectSystemEvents(onState: SystemStateListener): () => void {
     });
 
     es.addEventListener("error", () => {
-      // EventSource.CLOSED === 2: the browser gave up (e.g. wrong MIME type).
-      // Built-in reconnection won't fire, so we retry manually.
-      // NOTE: we intentionally do NOT report { state: "starting" } here.
-      // An SSE connection failure does not mean the system is starting —
-      // in production the SSE endpoint doesn't exist (supervisor is dev-only).
       if (es && es.readyState === EventSource.CLOSED) {
         es.close();
         es = null;
         scheduleRetry();
       }
-      // If readyState is CONNECTING, EventSource is auto-reconnecting — let it.
     });
   }
 
   function scheduleRetry(): void {
-    if (closed) return;
+    if (closed || !directActive) return;
     retryTimer = setTimeout(() => {
       retryTimer = null;
       connect();
@@ -64,11 +69,38 @@ export function connectSystemEvents(onState: SystemStateListener): () => void {
     retryMs = Math.min(retryMs * 2, MAX_RETRY_MS);
   }
 
-  connect();
+  function stopDirect(): void {
+    directActive = false;
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    if (es) {
+      es.close();
+      es = null;
+    }
+    retryMs = INITIAL_RETRY_MS;
+  }
+
+  function applyTransportKind(): void {
+    if (closed) return;
+    const { kind } = getAppWsTransportInfo();
+    if (kind === "broadcast-fallback" && !directActive) {
+      directActive = true;
+      connect();
+    } else if (kind === "shared-worker" && directActive) {
+      stopDirect();
+    }
+  }
+
+  const removeSharedListener = addSharedSystemStateListener(onState);
+  const removeTransportListener = subscribeAppWsTransport(applyTransportKind);
+  applyTransportKind();
 
   return () => {
     closed = true;
-    if (retryTimer) clearTimeout(retryTimer);
-    if (es) es.close();
+    removeSharedListener();
+    removeTransportListener();
+    stopDirect();
   };
 }

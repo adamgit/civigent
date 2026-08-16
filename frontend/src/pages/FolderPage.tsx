@@ -2,8 +2,8 @@
  * Folder details page (current). Prior UI: `LEGACY_FolderPage.tsx`.
  * Swap the import in `DocsRouteResolver.tsx` to compare or roll back.
  */
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useOutletContext } from "react-router-dom";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useOutletContext } from "react-router-dom";
 import { PageStatusBar } from "../components/PageStatusBar";
 import { FolderCard, type FolderBookSpine } from "../components/folder-details/FolderCard";
 import { FolderFileRow } from "../components/folder-details/FolderFileRow";
@@ -14,7 +14,7 @@ import {
 } from "../components/folder-details/NewFileOrFolder";
 import { docHref, folderHref } from "../app/docs-location";
 import { apiClient } from "../services/api-client";
-import type { DocumentTreeAccess, DocumentTreeEntry } from "../types/shared.js";
+import type { DocumentTreeAccess, DocumentTreeEntry, ReadDocStructureResponse } from "../types/shared.js";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
 import { DocPath, FolderPath } from "../types/shared";
 import { copyTextToClipboard } from "../utils/copy-text";
@@ -35,6 +35,23 @@ interface ChildFolderInfo {
 interface FolderStats {
   childFiles: string[];
   childFolders: ChildFolderInfo[];
+}
+
+function sectionNamesFromStructure(structure: ReadDocStructureResponse["structure"]): string[] {
+  const names: string[] = [];
+  const walk = (nodes: ReadDocStructureResponse["structure"]) => {
+    for (const node of nodes) {
+      const heading = node.heading.trim();
+      if (heading.length > 0) {
+        names.push(heading);
+      }
+      if (node.children.length > 0) {
+        walk(node.children);
+      }
+    }
+  };
+  walk(structure);
+  return names;
 }
 
 function getDisplayName(path: string): string {
@@ -183,6 +200,114 @@ function CopyPathButton({
   );
 }
 
+function FolderOverflowMenu({
+  busy,
+  onRename,
+  onDelete,
+}: {
+  busy: boolean;
+  onRename: () => void;
+  onDelete: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const onPointerDown = (event: PointerEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+
+  return (
+    <div ref={menuRef} className="relative shrink-0">
+      <button
+        type="button"
+        className="inline-flex h-6 w-6 items-center justify-center rounded border-none bg-transparent text-[15px] leading-none text-text-faint hover:bg-section-hover hover:text-text-secondary"
+        title="Folder actions"
+        aria-label="Folder actions"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        disabled={busy}
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        &#8943;
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 top-full z-10 mt-1 min-w-[7.5rem] rounded-md border border-folder-card-border bg-canvas-bg py-1 shadow-sm"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full border-none bg-transparent px-3 py-1.5 text-left text-[12px] text-text-secondary hover:bg-section-hover hover:text-text-primary"
+            disabled={busy}
+            onClick={() => {
+              setOpen(false);
+              onRename();
+            }}
+          >
+            Rename
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full border-none bg-transparent px-3 py-1.5 text-left text-[12px] text-folder-danger hover:bg-section-hover hover:text-folder-danger-hover"
+            disabled={busy}
+            onClick={() => {
+              setOpen(false);
+              onDelete();
+            }}
+          >
+            {busy ? "Working..." : "Delete"}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ParentPathIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M3 13H8V4"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M5.25 6.5L8 3.5L10.75 6.5"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function FolderGlyphIcon({ size }: { size: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M2.5 4.25A1.25 1.25 0 0 1 3.75 3h3.1l1.2 1.35h4.2A1.25 1.25 0 0 1 13.5 5.6v6.15A1.25 1.25 0 0 1 12.25 13H3.75A1.25 1.25 0 0 1 2.5 11.75V4.25Z"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function FolderPathBreadcrumb({
   folderPath,
   onNavigate,
@@ -193,18 +318,25 @@ function FolderPathBreadcrumb({
   const parts = folderPath.split("/").filter(Boolean);
   const segmentClass =
     "border-none bg-transparent p-0 font-inherit text-inherit cursor-pointer hover:text-text-secondary hover:underline";
+  const slashClass = "mx-1 shrink-0 text-folder-new";
 
   return (
-    <span className="inline-flex w-max items-center whitespace-nowrap font-ui text-[22px] leading-tight tracking-tight">
-      <span className="mr-1.5 inline-flex shrink-0 text-folder-new" aria-hidden="true">
-        <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
-          <path
-            d="M2.5 4.25A1.25 1.25 0 0 1 3.75 3h3.1l1.2 1.35h4.2A1.25 1.25 0 0 1 13.5 5.6v6.15A1.25 1.25 0 0 1 12.25 13H3.75A1.25 1.25 0 0 1 2.5 11.75V4.25Z"
-            stroke="currentColor"
-            strokeWidth="1.35"
-            strokeLinejoin="round"
-          />
-        </svg>
+    <span
+      className={`inline-flex w-max items-center whitespace-nowrap font-ui text-[22px] leading-tight tracking-tight ${
+        parts.length === 0 ? "max-md:hidden" : ""
+      }`}
+    >
+      <span
+        className="mr-1.5 hidden shrink-0 text-text-muted max-md:inline-flex"
+        title="Parent folder path"
+      >
+        <ParentPathIcon />
+      </span>
+      <span className="mr-1.5 inline-flex shrink-0 text-folder-new max-md:hidden">
+        <FolderGlyphIcon size={18} />
+      </span>
+      <span className={slashClass} aria-hidden="true">
+        /
       </span>
       <button
         type="button"
@@ -214,12 +346,17 @@ function FolderPathBreadcrumb({
       >
         docs
       </button>
+      <span className={slashClass} aria-hidden="true">
+        /
+      </span>
       {parts.map((part, index) => {
         const segmentPath = `/${parts.slice(0, index + 1).join("/")}`;
         const isLast = index === parts.length - 1;
         return (
-          <span key={segmentPath} className="inline-flex shrink-0 items-center">
-            <span className="mx-1.5 shrink-0 text-folder-new">/</span>
+          <span
+            key={segmentPath}
+            className={`inline-flex shrink-0 items-center ${isLast ? "max-md:hidden" : ""}`}
+          >
             {isLast ? (
               <span className="font-semibold text-text-primary">{part}</span>
             ) : (
@@ -232,6 +369,9 @@ function FolderPathBreadcrumb({
                 {part}
               </button>
             )}
+            <span className={slashClass} aria-hidden="true">
+              /
+            </span>
           </span>
         );
       })}
@@ -245,7 +385,8 @@ function sectionLabelClassName() {
 
 export function FolderPage({ folderPath }: FolderPageProps) {
   const navigate = useNavigate();
-  const { entries, treeLoading, refreshTree } = useOutletContext<AppLayoutOutletContext>();
+  const { entries, treeLoading, refreshTree, subscribeDocSectionNamesChanged } =
+    useOutletContext<AppLayoutOutletContext>();
   const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
@@ -255,12 +396,29 @@ export function FolderPage({ folderPath }: FolderPageProps) {
   const [renameError, setRenameError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [folderOpBusy, setFolderOpBusy] = useState(false);
-  const [sectionNamesByPath, setSectionNamesByPath] = useState<Record<string, string[]>>({});
+  const [folderDetailsSectionNamesCache, setFolderDetailsSectionNamesCache] = useState<
+    Record<string, string[]>
+  >({});
+  const folderDetailsSectionNamesCacheRef = useRef<Record<string, string[]>>({});
+  const updateFolderDetailsSectionNamesCache = useCallback(
+    (updater: (previous: Record<string, string[]>) => Record<string, string[]>) => {
+      const next = updater(folderDetailsSectionNamesCacheRef.current);
+      folderDetailsSectionNamesCacheRef.current = next;
+      setFolderDetailsSectionNamesCache(next);
+    },
+    [],
+  );
   const [filterQuery, setFilterQuery] = useState("");
   const isRoot = folderPath === FolderPath.root;
 
   const folderEntry = useMemo(() => findFolderEntry(entries, folderPath), [entries, folderPath]);
   const stats = useMemo(() => (folderEntry ? getFolderStats(folderEntry) : null), [folderEntry]);
+  const childFilesKey = stats === null ? null : stats.childFiles.join("\n");
+  const childFiles = useMemo(() => {
+    if (childFilesKey === null) return null;
+    if (childFilesKey.length === 0) return [];
+    return childFilesKey.split("\n");
+  }, [childFilesKey]);
   const folderClipboardPath = folderPathForClipboard(folderPath);
 
   const sortedFolders = useMemo(() => {
@@ -281,9 +439,11 @@ export function FolderPage({ folderPath }: FolderPageProps) {
       if (getDisplayName(path).toLowerCase().includes(filter)) {
         return true;
       }
-      return (sectionNamesByPath[path] ?? []).some((name) => name.toLowerCase().includes(filter));
+      return (folderDetailsSectionNamesCache[path] ?? []).some((name) =>
+        name.toLowerCase().includes(filter),
+      );
     });
-  }, [sortedFiles, filter, sectionNamesByPath]);
+  }, [sortedFiles, filter, folderDetailsSectionNamesCache]);
 
   const markPathCopied = (path: string) => {
     setCopiedPath(path);
@@ -306,30 +466,37 @@ export function FolderPage({ folderPath }: FolderPageProps) {
   }, [folderPath]);
 
   useEffect(() => {
-    if (!stats || stats.childFiles.length === 0) {
-      setSectionNamesByPath({});
+    if (childFiles === null || childFiles.length === 0) {
+      if (Object.keys(folderDetailsSectionNamesCacheRef.current).length > 0) {
+        updateFolderDetailsSectionNamesCache(() => ({}));
+      }
+      return;
+    }
+    const inFolder = new Set(childFiles);
+    const staleKeys = Object.keys(folderDetailsSectionNamesCacheRef.current).filter(
+      (path) => !inFolder.has(path),
+    );
+    if (staleKeys.length > 0) {
+      updateFolderDetailsSectionNamesCache((previous) => {
+        const next = { ...previous };
+        for (const key of staleKeys) {
+          delete next[key];
+        }
+        return next;
+      });
+    }
+    const missing = childFiles.filter(
+      (path) => !(path in folderDetailsSectionNamesCacheRef.current),
+    );
+    if (missing.length === 0) {
       return;
     }
     let cancelled = false;
-    const paths = stats.childFiles;
     Promise.all(
-      paths.map(async (path) => {
+      missing.map(async (path) => {
         try {
           const response = await apiClient.getWorkspaceDocumentStructure(DocPath.parse(path));
-          const names: string[] = [];
-          const walk = (nodes: typeof response.structure) => {
-            for (const node of nodes) {
-              const heading = node.heading.trim();
-              if (heading.length > 0) {
-                names.push(heading);
-              }
-              if (node.children.length > 0) {
-                walk(node.children);
-              }
-            }
-          };
-          walk(response.structure);
-          return [path, names] as [string, string[]];
+          return [path, sectionNamesFromStructure(response.structure)] as [string, string[]];
         } catch {
           return [path, []] as [string, string[]];
         }
@@ -338,16 +505,51 @@ export function FolderPage({ folderPath }: FolderPageProps) {
       if (cancelled) {
         return;
       }
-      const next: Record<string, string[]> = {};
-      for (const [path, names] of results) {
-        next[path] = names;
-      }
-      setSectionNamesByPath(next);
+      updateFolderDetailsSectionNamesCache((previous) => {
+        const next = { ...previous };
+        for (const [path, names] of results) {
+          if (inFolder.has(path)) {
+            next[path] = names;
+          }
+        }
+        return next;
+      });
     });
     return () => {
       cancelled = true;
     };
-  }, [stats]);
+  }, [childFiles, updateFolderDetailsSectionNamesCache]);
+
+  useEffect(() => {
+    return subscribeDocSectionNamesChanged(({ docPath: changedDocPath, sectionHeadings }) => {
+      if (!(changedDocPath in folderDetailsSectionNamesCacheRef.current)) {
+        return;
+      }
+      if (sectionHeadings !== null) {
+        updateFolderDetailsSectionNamesCache((previous) => ({
+          ...previous,
+          [changedDocPath]: sectionHeadings,
+        }));
+        return;
+      }
+      const changedDoc = DocPath.tryParse(changedDocPath);
+      if (!changedDoc) {
+        return;
+      }
+      apiClient
+        .getWorkspaceDocumentStructure(changedDoc)
+        .then((response) => {
+          if (!(changedDocPath in folderDetailsSectionNamesCacheRef.current)) {
+            return;
+          }
+          updateFolderDetailsSectionNamesCache((previous) => ({
+            ...previous,
+            [changedDocPath]: sectionNamesFromStructure(response.structure),
+          }));
+        })
+        .catch(() => { /* non-fatal background fetch */ });
+    });
+  }, [subscribeDocSectionNamesChanged, updateFolderDetailsSectionNamesCache]);
 
   const handleRenameFolder = async (event: FormEvent) => {
     event.preventDefault();
@@ -432,8 +634,8 @@ export function FolderPage({ folderPath }: FolderPageProps) {
   };
 
   return (
-    <div className="flex h-full flex-col bg-folder-page-bg">
-      <div className="flex-1 overflow-auto px-8 py-7 font-ui">
+    <div className="flex h-full min-w-0 flex-col bg-folder-page-bg">
+      <div className="flex-1 overflow-auto px-8 py-7 font-ui max-md:px-4 max-md:py-4">
         {treeLoading ? (
           <p className="text-xs text-text-muted">Loading folder details...</p>
         ) : null}
@@ -447,19 +649,40 @@ export function FolderPage({ folderPath }: FolderPageProps) {
         {folderEntry && stats ? (
           <div className="w-full max-w-5xl">
             <div className="pb-5">
-                <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-faint">
+                <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-faint max-md:hidden">
                   Folder
                 </p>
+                <h1 className="mb-1.5 hidden min-w-0 items-center gap-2 font-body text-[32px] font-bold leading-tight tracking-tight text-text-primary max-md:flex">
+                  <span className="inline-flex shrink-0 text-folder-new">
+                    <FolderGlyphIcon size={28} />
+                  </span>
+                  <span className="flex min-w-0 items-center gap-0.5">
+                    <span className="min-w-0 truncate">
+                      {isRoot ? "docs" : FolderPath.displayName(folderPath)}
+                    </span>
+                    <span className="shrink-0 text-folder-new" aria-hidden="true">
+                      /
+                    </span>
+                    <CopyPathButton
+                      path={folderClipboardPath}
+                      label={FolderPath.displayName(folderPath)}
+                      copied={copiedPath === folderClipboardPath}
+                      onCopied={markPathCopied}
+                    />
+                  </span>
+                </h1>
                 <div className="flex min-w-0 items-center gap-2">
-                  <div className="min-w-0 overflow-x-auto">
+                  <div className="min-w-0 flex-1 overflow-x-auto">
                     <FolderPathBreadcrumb folderPath={folderPath} onNavigate={navigate} />
                   </div>
-                  <CopyPathButton
-                    path={folderClipboardPath}
-                    label={FolderPath.displayName(folderPath)}
-                    copied={copiedPath === folderClipboardPath}
-                    onCopied={markPathCopied}
-                  />
+                  <span className="max-md:hidden">
+                    <CopyPathButton
+                      path={folderClipboardPath}
+                      label={FolderPath.displayName(folderPath)}
+                      copied={copiedPath === folderClipboardPath}
+                      onCopied={markPathCopied}
+                    />
+                  </span>
                   {!isRoot && renaming ? (
                     <form onSubmit={handleRenameFolder} className="flex shrink-0 items-center gap-2">
                       <input
@@ -487,31 +710,20 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                     </form>
                   ) : null}
                   {!isRoot && !renaming ? (
-                    <div className="flex shrink-0 items-center gap-3 text-[12px]">
-                      <button
-                        type="button"
-                        className="border-none bg-transparent p-0 text-text-faint hover:text-text-secondary"
-                        disabled={folderOpBusy}
-                        onClick={() => {
+                    <div className="ml-auto">
+                      <FolderOverflowMenu
+                        busy={folderOpBusy}
+                        onRename={() => {
                           setRenameValue(folderPath);
                           setRenameError(null);
                           setRenaming(true);
                         }}
-                      >
-                        Rename
-                      </button>
-                      <button
-                        type="button"
-                        className="border-none bg-transparent p-0 text-folder-danger hover:text-folder-danger-hover"
-                        disabled={folderOpBusy}
-                        onClick={handleDeleteFolder}
-                      >
-                        {folderOpBusy ? "Working..." : "Delete"}
-                      </button>
+                        onDelete={handleDeleteFolder}
+                      />
                     </div>
                   ) : null}
                 </div>
-              <p className="mt-2 text-[12px] text-text-faint">
+              <p className="mt-2 text-[12px] text-text-faint max-md:hidden">
                 {stats.childFiles.length} files · {stats.childFolders.length} folders
                 {" — hover any item for a preview."}
               </p>
@@ -562,7 +774,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                     placeholder="Filter documents..."
                     value={filterQuery}
                     onChange={setFilterQuery}
-                    className="w-44 shrink-0 text-right"
+                    className="w-44 shrink-0 text-right max-md:hidden"
                   />
                 </div>
                 {visibleFiles.length === 0 ? (
@@ -575,14 +787,14 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                       <li key={path} className="border-b border-folder-divider last:border-b-0">
                         <FolderFileRow
                           name={getDisplayName(path)}
-                          sectionNames={sectionNamesByPath[path]}
+                          sectionNames={folderDetailsSectionNamesCache[path]}
                           onClick={() => navigate(docHref(DocPath.parse(path)))}
                         />
                       </li>
                     ))}
                   </ul>
                 )}
-                <div className="border-t border-folder-divider">
+                <div className="border-t border-folder-divider max-md:hidden">
                   <NewFileOrFolder busy={creating} error={createError} onSubmit={handleCreate} />
                 </div>
               </section>
@@ -590,7 +802,29 @@ export function FolderPage({ folderPath }: FolderPageProps) {
           </div>
         ) : null}
       </div>
-      <PageStatusBar items={["Folder", folderPath]} />
+      {folderEntry && stats ? (
+        <div className="hidden shrink-0 border-t border-folder-divider bg-folder-page-bg px-4 py-3 max-md:block">
+          <div className="flex items-stretch gap-2">
+            <Link
+              to="/"
+              className="inline-flex shrink-0 items-center justify-center rounded-xl border border-folder-card-border bg-canvas-bg px-4 font-ui text-[15px] font-semibold text-text-primary no-underline"
+            >
+              Home
+            </Link>
+            <div className="min-w-0 flex-1">
+              <NewFileOrFolder
+                variant="compact"
+                busy={creating}
+                error={createError}
+                onSubmit={handleCreate}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <div className="max-md:hidden">
+        <PageStatusBar items={["Folder", folderPath]} />
+      </div>
     </div>
   );
 }

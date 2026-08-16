@@ -55,7 +55,6 @@ function buildParams(
     docPath: "/test.md",
     clientInstanceId: "client-1",
     liveReplicaReadyRef: ref(liveReady),
-    setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],
     loadSections: vi.fn().mockResolvedValue([]),
     setError: vi.fn(),
     onSectionEditRejected,

@@ -30,6 +30,9 @@ export interface DocumentPaperHeaderProps {
   onDelete: () => void | Promise<void>;
   /** Observed to pin the sticky header when this block fully leaves the scrollport. */
   rootRef?: Ref<HTMLDivElement>;
+  /** Narrow: path + title live in the sticky chrome; this block keeps presence
+   *  (and the rename form when that action is used). */
+  layoutMode?: "wide" | "narrow";
 }
 
 export function DocumentPaperHeader({
@@ -50,9 +53,12 @@ export function DocumentPaperHeader({
   onExportMarkdown,
   onDelete,
   rootRef,
+  layoutMode = "wide",
 }: DocumentPaperHeaderProps): JSX.Element {
+  const narrow = layoutMode === "narrow";
   return (
     <div ref={rootRef} className="doc-paper-header" data-testid="doc-paper-header">
+      {renaming || !narrow ? (
       <div className="flex items-start justify-between gap-4 mb-1">
         {renaming ? (
           <form
@@ -109,9 +115,17 @@ export function DocumentPaperHeader({
           </>
         )}
       </div>
+      ) : null}
 
-      <div className="doc-paper-header__meta text-xs text-text-muted mb-7 pb-5 border-b border-[#eae7e2]">
+      <div
+        className={
+          narrow
+            ? "doc-paper-header__meta text-xs text-text-muted mb-3"
+            : "doc-paper-header__meta text-xs text-text-muted mb-7 pb-5 border-b border-[#eae7e2]"
+        }
+      >
         <div className="doc-paper-header__meta-row">
+          {narrow ? null : (
           <span className="inline-flex items-center gap-1 min-w-0">
             <span className="truncate">{docPath ?? ""}</span>
             {docPath ? (
@@ -135,6 +149,7 @@ export function DocumentPaperHeader({
               </button>
             ) : null}
           </span>
+          )}
           <DocumentPresenceActivity
             model={presenceModel}
             currentUserId={currentUserId}

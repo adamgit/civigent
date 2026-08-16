@@ -97,9 +97,29 @@ export function DocumentCanvas({
   for (const fragmentKey of orderedFragmentKeys) {
     fragmentKeyCounts.set(fragmentKey, (fragmentKeyCounts.get(fragmentKey) ?? 0) + 1);
   }
+  if (sectionsLoading) {
+    return (
+      <div className="flex items-stretch" data-testid="doc-canvas-loading-bones" aria-hidden="true">
+        <div className="doc-gutter-left" />
+        <div className="doc-paper-col">
+          {[0, 1, 2].map((boneGroup) => (
+            <div key={boneGroup} className="mb-10">
+              <div className="h-5 w-2/5 bg-slate-100 rounded animate-pulse mb-4" />
+              <div className="space-y-2">
+                <div className="h-3 w-full bg-slate-100 rounded animate-pulse" />
+                <div className="h-3 w-11/12 bg-slate-100 rounded animate-pulse" />
+                <div className="h-3 w-3/4 bg-slate-100 rounded animate-pulse" />
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="doc-gutter-right" />
+      </div>
+    );
+  }
   return (
     <>
-      {!sectionsLoading ? sections.map((section, sectionIndex) => {
+      {sections.map((section, sectionIndex) => {
         const headingPath = [...section.headingPath];
         const sectionKey = sectionHeadingKey(headingPath);
         const proposalKey = `${docPath}::${sectionKey}`;
@@ -131,7 +151,7 @@ export function DocumentCanvas({
         const activeEditorIds = getActiveEditors?.(fk) ?? [];
         return (
           <div key={renderKey} className="flex items-stretch">
-            <div className="w-[200px] min-w-[100px] shrink relative flex items-stretch justify-end pt-1">
+            <div className="doc-gutter-left relative flex items-stretch justify-end pt-1">
               <SummaryWhoChangedThisSection
                 editorId={lastEditor?.id}
                 editorName={lastEditor?.name}
@@ -144,7 +164,7 @@ export function DocumentCanvas({
               />
             </div>
 
-            <div className="flex-1 min-w-[700px] bg-canvas-bg border-x border-[rgba(0,0,0,0.06)] px-14">
+            <div className="doc-paper-col">
               <DocumentSectionRenderer
                 section={section}
                 fragmentKey={fk}
@@ -190,10 +210,10 @@ export function DocumentCanvas({
               />
             </div>
 
-            <div className="w-[200px] min-w-[140px] shrink" />
+            <div className="doc-gutter-right" />
           </div>
         );
-      }) : null}
+      })}
     </>
   );
 }

@@ -377,7 +377,6 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
     docPath,
     clientInstanceId,
     liveReplicaReadyRef,
-    setStructureTree,
     loadSections,
     setError,
     onProposalSectionAvailability: applyProposalSectionAvailabilityEvent,

@@ -8,7 +8,9 @@ import type {
   SectionMeta,
   HumanInvolvementPolicyResult,
   WriterIdentity,
+  ProposalTargetRef,
 } from "../../types/shared.js";
+import { isActiveProposal } from "../../types/shared.js";
 import {
   getContentRoot,
   getDataRoot,
@@ -415,7 +417,7 @@ export async function forcePublishDocument(docPath: DocPath): Promise<PublishAtt
   return requestDocSessionPublish(docPath);
 }
 
-export async function restoreDocument(docPath: DocPath, sha: string, writer: DocumentWriter): Promise<{ committedSha: string }> {
+export async function restoreDocument(docPath: DocPath, sha: string, writer: DocumentWriter): Promise<{ committedSha: string; targets: ProposalTargetRef[] }> {
   // Inherit Writer-Type from the target commit so blame attribution reflects
   // the original author, not who clicked the restore button.
   const { getCommitWriterType } = await import("../../storage/git-repo.js");
@@ -434,18 +436,22 @@ export async function restoreDocument(docPath: DocPath, sha: string, writer: Doc
 
   const { createRestoreProposal } = await import("../../storage/restore-service.js");
   const { proposal } = await createRestoreProposal(docPath, sha, restoreWriter);
+  if (!isActiveProposal(proposal)) {
+    throw new Error(`Restore proposal ${proposal.id} is not active after creation (status: ${proposal.status}).`);
+  }
+  const targets = proposal.targets;
 
   const committedSha = await commitProposalToCanonical(proposal.id, {}, undefined, { restoreTargetSha: sha });
 
   await invalidateSessionForReplacement(docPath, { message: "document was restored to an earlier version" });
-  return { committedSha };
+  return { committedSha, targets };
 }
 
 // ─── Overwrite ──────────────────────────────────────────
 
 export class DocumentDoesNotExistError extends Error {}
 
-export async function adminOverwriteDocument(docPath: DocPath, markdown: string, admin: DocumentWriter): Promise<{ committedSha: string }> {
+export async function adminOverwriteDocument(docPath: DocPath, markdown: string, admin: DocumentWriter): Promise<{ committedSha: string; targets: ProposalTargetRef[] }> {
   const contentRoot = getContentRoot();
   const resolvedPath = resolveDocPathUnderContent(contentRoot, docPath);
   try {
@@ -464,7 +470,7 @@ export async function adminOverwriteDocument(docPath: DocPath, markdown: string,
     `Admin overwrite: ${docPath}`,
   );
 
-  await mutateProposalContent(proposalId, {
+  const { manifest } = await mutateProposalContent(proposalId, {
     kind: "write_document_markdown",
     files: [{ docPath, markdown }],
   });
@@ -472,7 +478,7 @@ export async function adminOverwriteDocument(docPath: DocPath, markdown: string,
   const committedSha = await commitProposalToCanonical(proposalId, {}, undefined, {});
 
   await invalidateSessionForReplacement(docPath, { message: "admin overwrote this document" });
-  return { committedSha };
+  return { committedSha, targets: manifest.targets };
 }
 
 // ─── Rename document ────────────────────────────────────

@@ -90,7 +90,6 @@ function buildParams(
     docPath: "/test.md",
     clientInstanceId: "client-1",
     liveReplicaReadyRef: ref(opts.liveReplicaReady),
-    setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],
     loadSections: loadSections as unknown as UseDocumentWebSocketParams["loadSections"],
     setError: vi.fn(),
   };

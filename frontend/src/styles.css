@@ -113,6 +113,274 @@ a {
   border-radius: 3px;
 }
 
+.doc-gutter-left {
+  width: 200px;
+  min-width: 100px;
+  flex-shrink: 1;
+}
+
+.doc-gutter-right {
+  width: 200px;
+  min-width: 140px;
+  flex-shrink: 1;
+}
+
+.doc-paper-col {
+  flex: 1 1 0%;
+  min-width: 700px;
+  background: var(--color-canvas-bg);
+  border-left: 1px solid rgba(0, 0, 0, 0.06);
+  border-right: 1px solid rgba(0, 0, 0, 0.06);
+  padding-left: 56px;
+  padding-right: 56px;
+}
+
+[data-doc-layout="narrow"] .doc-gutter-left,
+[data-doc-layout="narrow"] .doc-gutter-right {
+  display: none;
+}
+
+[data-doc-layout="narrow"] .doc-paper-col {
+  min-width: 0;
+  width: 100%;
+  flex: 1 1 auto;
+  padding-left: 18px;
+  padding-right: 18px;
+  border-radius: 0;
+}
+
+[data-doc-layout="narrow"] .canvas-scroll {
+  padding-left: 0;
+  padding-right: 0;
+  padding-top: 0;
+}
+
+[data-doc-layout="narrow"] .doc-paper-col.border-t {
+  border-top: none;
+  padding-top: 16px;
+}
+
+/* Narrow document chrome — one sticky stack above the scrollport, warm page
+ * background, existing UI type (same 15px title as .doc-paper-sticky-header). */
+.doc-topbar {
+  height: var(--spacing-topbar-h);
+  min-height: var(--spacing-topbar-h);
+  background: transparent;
+  display: flex;
+  align-items: center;
+  padding: 0 1rem;
+  gap: 0.625rem;
+}
+.doc-topbar--narrow {
+  position: relative;
+  height: var(--spacing-topbar-h);
+  min-height: var(--spacing-topbar-h);
+  align-items: center;
+  padding: 0 1rem;
+  gap: 0.35rem;
+}
+.doc-narrow-sticky {
+  position: relative;
+  flex-shrink: 0;
+  background: var(--color-page-bg);
+  border-bottom: 1px solid #eae7e2;
+}
+.doc-narrow-sticky__home {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-left: -4px;
+  border-radius: 4px;
+  color: var(--color-text-muted);
+  text-decoration: none;
+}
+.doc-narrow-sticky__home:hover,
+.doc-narrow-sticky__home:focus-visible {
+  color: var(--color-text-primary);
+  background: rgba(0, 0, 0, 0.04);
+}
+.doc-narrow-sticky__folder-hit {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  cursor: pointer;
+  text-decoration: none;
+}
+.doc-narrow-sticky__path-cluster {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  pointer-events: none;
+}
+.doc-narrow-sticky__path-text {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.doc-narrow-sticky__overflow {
+  z-index: 1;
+  margin-left: auto;
+  pointer-events: auto;
+}
+.doc-narrow-sticky__title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: var(--spacing-topbar-h);
+  margin: 0;
+  padding: 0 1rem;
+  border: none;
+  border-top: 1px solid #eae7e2;
+  background: var(--color-page-bg);
+  text-align: left;
+  cursor: pointer;
+}
+.doc-narrow-sticky__title:hover,
+.doc-narrow-sticky__title:focus-visible {
+  background: var(--color-section-hover);
+}
+.doc-narrow-sticky__doc-glyph {
+  flex: none;
+  display: inline-flex;
+  color: var(--color-sidebar-marker);
+}
+.doc-narrow-sticky__doc-title {
+  display: flex;
+  align-items: baseline;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.025em;
+  color: var(--color-text-primary);
+}
+.doc-narrow-sticky__doc-title-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.doc-narrow-sticky__doc-suffix {
+  flex: none;
+  margin-left: 0.12em;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--color-text-faint);
+}
+.doc-narrow-sticky__doc-copied {
+  flex: none;
+  margin-left: auto;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-accent-text);
+}
+.doc-narrow-sticky__section {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  width: 100%;
+  height: calc(var(--spacing-topbar-h) * 0.8);
+  margin: 0;
+  padding: 0.4rem 1rem;
+  border: none;
+  border-top: 1px solid #eae7e2;
+  background: transparent;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.3;
+  text-align: left;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.doc-narrow-sticky__section:disabled {
+  cursor: default;
+}
+.doc-narrow-sticky__section:not(:disabled):hover,
+.doc-narrow-sticky__section:not(:disabled):focus-visible {
+  background: var(--color-section-hover);
+}
+.doc-narrow-sticky__section-count {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  padding: 0.15em 0.55em 0.2em;
+  border: 1px solid var(--color-accent-border);
+  border-radius: 999px;
+  background: var(--color-accent-light);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+  white-space: nowrap;
+  color: var(--color-accent-text);
+}
+.doc-narrow-sticky__section-spacer {
+  flex: 1 999 0.5rem;
+  max-width: 0.75rem;
+  min-width: 0;
+  margin-right: -0.5rem;
+}
+.doc-narrow-sticky__section-level {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--color-folder-link);
+  white-space: nowrap;
+}
+.doc-narrow-sticky__section-heading {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.doc-narrow-sticky__section-chevron {
+  flex: none;
+  align-self: center;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--color-accent-text);
+}
+.doc-narrow-sticky__draft-overlay {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  box-shadow: 0 6px 12px -8px rgba(0, 0, 0, 0.3);
+}
+
 .sidebar-scroll {
   scrollbar-width: thin;
   scrollbar-color: var(--color-accent) transparent;
@@ -155,6 +423,20 @@ a {
   height: 100%;
   max-width: 30vw;
   min-width: 0;
+}
+
+/* Narrow viewport: shell, hotedge, pin/hide toggle, and aside (including the
+ * autohide overlay) leave the layout. Must be viewport width, not a pane
+ * container query — hiding the sidebar widens the main column and would
+ * oscillate. Matches Tailwind `max-md` (width < 48rem). */
+@media (width < 48rem) {
+  .sidebar-shell {
+    display: none;
+  }
+}
+
+[data-doc-narrow="on"] .sidebar-shell {
+  display: none;
 }
 
 /* The aside sizes to its content and caps at 30vw. No min-width floor.

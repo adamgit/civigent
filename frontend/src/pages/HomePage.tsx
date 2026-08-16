@@ -1,20 +1,44 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
 import { SEARCH_MAX_RESULTS } from "./search/search-request-defaults";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
-import { apiClient } from "../services/api-client";
-import { INVOLVEMENT_PRESET_UI } from "../involvement-preset-ui";
-import { DocPath, HUMAN_INVOLVEMENT_PRESETS, type HumanInvolvementPresetName } from "../types/shared.js";
+import { apiClient, resolveWriterId } from "../services/api-client";
+import { DocPath, type AgentActivitySummary, type ActivityItem, type AnyProposal, type HumanInvolvementPresetName } from "../types/shared.js";
 import { SINGLE_USER_MODE_EXPLAINER } from "../single-user-mode";
+import { useDocLayoutMode } from "../hooks/useDocLayoutMode";
+import { HomeInvolvementWaitLine } from "../components/home/HomeInvolvementWaitLine";
+import { HomeNarrowLayout } from "./home/HomeNarrowLayout";
+import { HOME_RECENT_WINDOW_DAYS } from "./home/home-constants";
+import { homeHostLabel, homeInstallTitle } from "./home/home-title";
+import { countTreeTotals } from "./home/home-tree-stats";
+import { buildActiveFolders } from "./home/home-folder-activity";
+import { buildRecentDocuments, countRecentDocuments } from "./home/home-recent-documents";
+import { buildAgentActivityRows } from "./home/home-agent-activity";
+import { formatHomeTime } from "./home/home-time";
 
 export function HomePage() {
-  const { createDoc, sidebarAutoHide, setSidebarAutoHide, singleUser } = useOutletContext<AppLayoutOutletContext>();
+  const {
+    createDoc,
+    sidebarAutoHide,
+    setSidebarAutoHide,
+    singleUser,
+    setDocLayoutNarrow,
+    appName,
+    entries,
+  } = useOutletContext<AppLayoutOutletContext>();
+  const layoutMode = useDocLayoutMode();
+  useLayoutEffect(() => {
+    setDocLayoutNarrow(layoutMode === "narrow");
+    return () => setDocLayoutNarrow(false);
+  }, [layoutMode, setDocLayoutNarrow]);
+
   const currentUser = useCurrentUser();
   const [newDocPath, setNewDocPath] = useState("");
   const [creatingDoc, setCreatingDoc] = useState(false);
   const [newDocError, setNewDocError] = useState<string | null>(null);
   const [showHowItWorks, setShowHowItWorks] = useState(false);
+  const [showCreateForm, setShowCreateForm] = useState(false);
 
   const [degradedCount, setDegradedCount] = useState(0);
   const [degradedError, setDegradedError] = useState<string | null>(null);
@@ -26,6 +50,13 @@ export function HomePage() {
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
 
   const [involvementPreset, setInvolvementPreset] = useState<HumanInvolvementPresetName | null>(null);
+  const [agents, setAgents] = useState<readonly AgentActivitySummary[]>([]);
+  const [agentsError, setAgentsError] = useState<string | null>(null);
+
+  const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [activityError, setActivityError] = useState<string | null>(null);
+  const [proposals, setProposals] = useState<AnyProposal[]>([]);
+  const [proposalsError, setProposalsError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,10 +91,46 @@ export function HomePage() {
     apiClient
       .getAgentsSummary()
       .then((res) => {
-        if (!cancelled) setInvolvementPreset(res.posture.preset);
+        if (!cancelled) {
+          setInvolvementPreset(res.posture.preset);
+          setAgents(res.agents);
+          setAgentsError(null);
+        }
       })
-      .catch(() => {
-        /* non-fatal background fetch */
+      .catch((err) => {
+        if (!cancelled) setAgentsError(err instanceof Error ? err.message : String(err));
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .getActivity(200, HOME_RECENT_WINDOW_DAYS)
+      .then((res) => {
+        if (!cancelled) {
+          setActivity(res.items);
+          setActivityError(null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setActivityError(err instanceof Error ? err.message : String(err));
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .listProposals()
+      .then((res) => {
+        if (!cancelled) {
+          setProposals(res.proposals);
+          setProposalsError(null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setProposalsError(err instanceof Error ? err.message : String(err));
       });
     return () => { cancelled = true; };
   }, []);
@@ -97,78 +164,190 @@ export function HomePage() {
     setCreatingDoc(true);
     setNewDocError(null);
     createDoc(docPath)
-      .then(() => setNewDocPath(""))
+      .then(() => {
+        setNewDocPath("");
+        setShowCreateForm(false);
+      })
       .catch((err) => setNewDocError(err instanceof Error ? err.message : String(err)))
       .finally(() => setCreatingDoc(false));
   };
 
-  return (
-    <div className="flex-1 overflow-auto canvas-scroll" style={{ fontFamily: "var(--font-ui)" }}>
-      <div style={{ maxWidth: 740, margin: "0 auto", padding: "2.5rem 1.5rem 2rem" }}>
+  const treeTotals = useMemo(() => countTreeTotals(entries), [entries]);
+  const activeFolders = useMemo(
+    () => buildActiveFolders(entries, activity, proposals),
+    [entries, activity, proposals],
+  );
+  const currentWriterId = currentUser?.id ?? resolveWriterId();
+  const recentDocuments = useMemo(
+    () => buildRecentDocuments(activity, currentWriterId),
+    [activity, currentWriterId],
+  );
+  const recentDocumentTotal = useMemo(() => countRecentDocuments(activity), [activity]);
+  const agentRows = useMemo(
+    () => buildAgentActivityRows(agents, formatHomeTime),
+    [agents],
+  );
 
-        {/* Degraded-proposal alert — quarantined proposals need an admin autofix */}
-        {degradedCount > 0 && (
-          <div
-            role="alert"
-            data-testid="degraded-proposals-alert"
-            className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-[13px] text-red-800"
-          >
-            <strong>{degradedCount}</strong> {degradedCount === 1 ? "proposal needs" : "proposals need"} admin review.{" "}
-            <Link to="/proposals" className="font-medium underline">
-              Review on Proposals &rarr;
-            </Link>
+  const alerts = (
+    <>
+      {degradedCount > 0 && (
+        <div
+          role="alert"
+          data-testid="degraded-proposals-alert"
+          className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-[13px] text-red-800"
+        >
+          <strong>{degradedCount}</strong> {degradedCount === 1 ? "proposal needs" : "proposals need"} admin review.{" "}
+          <Link to="/proposals" className="font-medium underline">
+            Review on Proposals &rarr;
+          </Link>
+        </div>
+      )}
+      {degradedError && (
+        <p className="text-error" style={{ marginBottom: "1rem" }}>
+          Could not check for degraded proposals: {degradedError}
+        </p>
+      )}
+      {agentsError && (
+        <p className="text-error" style={{ marginBottom: "1rem" }}>
+          Could not load agents: {agentsError}
+        </p>
+      )}
+      {activityError && (
+        <p className="text-error" style={{ marginBottom: "1rem" }}>
+          Could not load recent activity: {activityError}
+        </p>
+      )}
+      {proposalsError && (
+        <p className="text-error" style={{ marginBottom: "1rem" }}>
+          Could not load proposals: {proposalsError}
+        </p>
+      )}
+      {bootstrapAvailable && currentUser && (
+        <div
+          role="region"
+          aria-label="Bootstrap admin"
+          data-testid="bootstrap-admin"
+          style={{
+            marginBottom: "1.75rem",
+            background: "var(--color-sidebar-bg)",
+            borderRadius: 12,
+            padding: "14px 18px",
+            border: "1px solid var(--color-footer-border)",
+          }}
+        >
+          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 5 }}>
+            Bootstrap admin
           </div>
-        )}
-        {degradedError && (
-          <p className="text-error" style={{ marginBottom: "1rem" }}>
-            Could not check for degraded proposals: {degradedError}
-          </p>
-        )}
+          <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 8 }}>
+            No admin users exist. Enter the one-time bootstrap code from the server console to claim admin for your signed-in account.
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              type="text"
+              value={bootstrapCode}
+              onChange={(e) => setBootstrapCode(e.target.value)}
+              placeholder="Paste bootstrap code"
+              className="input-field"
+              style={{ flex: 1, height: 34 }}
+              disabled={bootstrapWorking}
+            />
+            <button
+              type="button"
+              onClick={() => void handleBootstrap()}
+              disabled={bootstrapWorking || !bootstrapCode.trim()}
+              className="btn-primary"
+              style={{ height: 34, opacity: bootstrapCode.trim() ? 1 : 0.5, whiteSpace: "nowrap" }}
+            >
+              Claim admin
+            </button>
+          </div>
+          {bootstrapMessage && <p className="text-xs text-green-700" style={{ marginTop: 8 }}>{bootstrapMessage}</p>}
+          {bootstrapError && <p data-testid="bootstrap-error" className="text-error" style={{ marginTop: 8 }}>{bootstrapError}</p>}
+        </div>
+      )}
+    </>
+  );
 
-        {/* Bootstrap admin — after OIDC login, when no admin exists yet */}
-        {bootstrapAvailable && currentUser && (
-          <div
-            role="region"
-            aria-label="Bootstrap admin"
-            data-testid="bootstrap-admin"
-            style={{
-              marginBottom: "1.75rem",
+  const createForm = (
+    <form
+      onSubmit={handleNewDocSubmit}
+      className={layoutMode === "narrow" ? "home-card home-create-form" : undefined}
+      style={
+        layoutMode === "narrow"
+          ? undefined
+          : {
+              maxWidth: "75%",
+              margin: "1.75rem auto",
               background: "var(--color-sidebar-bg)",
               borderRadius: 12,
               padding: "14px 18px",
-              border: "1px solid var(--color-footer-border)",
-            }}
+            }
+      }
+    >
+      <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 8 }}>
+        Create new document
+      </label>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input
+          type="text"
+          value={newDocPath}
+          onChange={(e) => setNewDocPath(e.target.value)}
+          placeholder="e.g. roadmap.md or projects/brief.md"
+          disabled={creatingDoc}
+          className="input-field"
+          style={{ flex: 1, height: 34 }}
+        />
+        <button
+          type="submit"
+          disabled={creatingDoc}
+          className="btn-secondary"
+          style={{ height: 34, cursor: creatingDoc ? "wait" : "pointer", whiteSpace: "nowrap" }}
+        >
+          {creatingDoc ? "Creating\u2026" : "Create"}
+        </button>
+      </div>
+      {newDocError && <p className="text-error" style={{ marginTop: 6 }}>{newDocError}</p>}
+    </form>
+  );
+
+  if (layoutMode === "narrow") {
+    return (
+      <>
+        {singleUser ? (
+          <section
+            aria-label="Single-user mode"
+            data-testid="single-user-home-banner"
+            className="single-user-home-banner"
           >
-            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 5 }}>
-              Bootstrap admin
-            </div>
-            <div style={{ fontSize: 12, color: "var(--color-text-muted)", marginBottom: 8 }}>
-              No admin users exist. Enter the one-time bootstrap code from the server console to claim admin for your signed-in account.
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input
-                type="text"
-                value={bootstrapCode}
-                onChange={(e) => setBootstrapCode(e.target.value)}
-                placeholder="Paste bootstrap code"
-                className="input-field"
-                style={{ flex: 1, height: 34 }}
-                disabled={bootstrapWorking}
-              />
-              <button
-                type="button"
-                onClick={() => void handleBootstrap()}
-                disabled={bootstrapWorking || !bootstrapCode.trim()}
-                className="btn-primary"
-                style={{ height: 34, opacity: bootstrapCode.trim() ? 1 : 0.5, whiteSpace: "nowrap" }}
-              >
-                Claim admin
-              </button>
-            </div>
-            {bootstrapMessage && <p className="text-xs text-green-700" style={{ marginTop: 8 }}>{bootstrapMessage}</p>}
-            {bootstrapError && <p data-testid="bootstrap-error" className="text-error" style={{ marginTop: 8 }}>{bootstrapError}</p>}
-          </div>
-        )}
+            <div className="single-user-home-banner__kicker">Single-user mode</div>
+            <p>{SINGLE_USER_MODE_EXPLAINER}</p>
+            <Link to="/admin">Configure login in Admin &rarr;</Link>
+          </section>
+        ) : null}
+        <HomeNarrowLayout
+          title={homeInstallTitle(appName)}
+          hostLabel={homeHostLabel()}
+          involvementPreset={involvementPreset}
+          folderCount={treeTotals.folderCount}
+          documentCount={treeTotals.documentCount}
+          folders={activeFolders}
+          agentRows={agentRows}
+          recentDocuments={recentDocuments}
+          recentDocumentTotal={recentDocumentTotal}
+          alerts={alerts}
+          showCreateForm={showCreateForm}
+          createForm={createForm}
+          onCreateDocument={() => setShowCreateForm(true)}
+        />
+      </>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-auto canvas-scroll" data-home-layout="wide" style={{ fontFamily: "var(--font-ui)" }}>
+      <div style={{ maxWidth: 740, margin: "0 auto", padding: "2.5rem 1.5rem 2rem" }}>
+
+        {alerts}
 
         {/* Header */}
         <div style={{ marginBottom: "1.75rem" }}>
@@ -248,75 +427,10 @@ export function HomePage() {
           </button>
         </section>
 
-        {/* Create new doc */}
-        <form
-          onSubmit={handleNewDocSubmit}
-          style={{
-            maxWidth: "75%",
-            margin: "1.75rem auto",
-            background: "var(--color-sidebar-bg)",
-            borderRadius: 12,
-            padding: "14px 18px",
-          }}
-        >
-          <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 8 }}>
-            Create new document
-          </label>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input
-              type="text"
-              value={newDocPath}
-              onChange={(e) => setNewDocPath(e.target.value)}
-              placeholder="e.g. roadmap.md or projects/brief.md"
-              disabled={creatingDoc}
-              className="input-field"
-              style={{ flex: 1, height: 34 }}
-            />
-            <button
-              type="submit"
-              disabled={creatingDoc}
-              className="btn-secondary"
-              style={{ height: 34, cursor: creatingDoc ? "wait" : "pointer", whiteSpace: "nowrap" }}
-            >
-              {creatingDoc ? "Creating\u2026" : "Create"}
-            </button>
-          </div>
-          {newDocError && <p className="text-error" style={{ marginTop: 6 }}>{newDocError}</p>}
-        </form>
+        {createForm}
 
         {involvementPreset && (
-          <p
-            data-testid="involvement-wait-line"
-            title={HUMAN_INVOLVEMENT_PRESETS[involvementPreset].description}
-            style={{
-              maxWidth: "75%",
-              margin: "-0.75rem auto 1.75rem",
-              fontSize: 13,
-              lineHeight: 1.45,
-              color: "var(--color-text-primary)",
-            }}
-          >
-            AI waits for humans:{" "}
-            <Link
-              to="/admin"
-              title={HUMAN_INVOLVEMENT_PRESETS[involvementPreset].description}
-              style={{
-                color: INVOLVEMENT_PRESET_UI[involvementPreset].color,
-                fontWeight: 600,
-                textDecoration: "none",
-              }}
-            >
-              {INVOLVEMENT_PRESET_UI[involvementPreset].label}
-            </Link>
-            {" - "}
-            <Link
-              to="/admin"
-              title={HUMAN_INVOLVEMENT_PRESETS[involvementPreset].description}
-              style={{ color: "var(--color-text-primary)", textDecoration: "none" }}
-            >
-              {INVOLVEMENT_PRESET_UI[involvementPreset].shortDescription}
-            </Link>
-          </p>
+          <HomeInvolvementWaitLine preset={involvementPreset} layoutMode="wide" />
         )}
 
         {/* Manual search */}

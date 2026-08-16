@@ -64,9 +64,12 @@ vi.mock("../../app/AppLayout", () => {
     refreshTree: async () => {},
     sidebarAutoHide: false,
     setSidebarAutoHide: () => {},
+    setDocLayoutNarrow: () => {},
     reportFocusedDocTabEditState: () => {},
     clearFocusedDocTabEditState: () => {},
     singleUser: false,
+    appName: "Civigent",
+    subscribeDocSectionNamesChanged: () => () => {},
   };
   return {
     AppLayout: () => <Outlet context={outletContext} />,

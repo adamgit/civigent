@@ -44,7 +44,6 @@ function buildParams(): UseDocumentWebSocketParams {
     docPath: "/test.md",
     clientInstanceId: "client-1",
     liveReplicaReadyRef: ref(false),
-    setStructureTree: vi.fn() as unknown as UseDocumentWebSocketParams["setStructureTree"],
     loadSections: vi.fn(async () => []),
     setError: vi.fn(),
   };

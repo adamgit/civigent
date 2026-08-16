@@ -9,6 +9,17 @@ import { FolderPath, type PublishTriggerDecision } from "../types/shared";
 interface DocumentTopbarProps {
   /** Canonical document path — used to resolve the parent-folder back link. */
   docPath: string | null;
+  /** Document display name — stacked under the path in the narrow sticky header. */
+  title?: string;
+  /** Width mode of the owning document page; narrow is the path row of the
+   *  sticky chrome (folder link + copy + overflow). */
+  layoutMode?: "wide" | "narrow";
+  pathCopied?: boolean;
+  onCopyPath?: () => void | Promise<void>;
+  /** Narrow overflow: start in-paper rename. Omitted on read-only surfaces. */
+  onStartRename?: () => void;
+  /** Narrow overflow: delete this document. Omitted on read-only surfaces. */
+  onDelete?: () => void | Promise<void>;
   /**
    * Optional control rendered just before History (e.g. Standard/Governance/Agent
    * view toggle). Keeps page-specific chrome out of the paper header.
@@ -53,6 +64,16 @@ export function parentFolderRoute(docPath: string | null): string {
   return parentFolderPath ? folderHref(parentFolderPath) : "/docs";
 }
 
+/** Parent folder path for the narrow chrome, including a trailing slash. */
+export function parentFolderPathLabel(docPath: string | null): string {
+  if (!docPath) return "/";
+  const normalized = docPath.replace(/\/+$/, "");
+  const lastSlash = normalized.lastIndexOf("/");
+  if (lastSlash <= 0) return "/";
+  const folder = normalized.slice(0, lastSlash);
+  return folder.endsWith("/") ? folder : `${folder}/`;
+}
+
 function ClockIcon() {
   return (
     <svg
@@ -75,6 +96,9 @@ function ClockIcon() {
 
 export function DocumentTopbar({
   docPath,
+  layoutMode = "wide",
+  onStartRename,
+  onDelete,
   toolbarAccessory,
   showHistory,
   onToggleHistory,
@@ -118,8 +142,11 @@ export function DocumentTopbar({
     [status],
   );
   const menuRef = useRef<HTMLDivElement>(null);
-  const menuActive = showDiagnostics || !!showOverwrite;
+  const narrow = layoutMode === "narrow";
+  const Root: "div" | "header" = narrow ? "div" : "header";
+  const menuActive = showDiagnostics || !!showOverwrite || (narrow && showHistory);
   const backTo = useMemo(() => parentFolderRoute(docPath), [docPath]);
+  const folderPathLabel = useMemo(() => parentFolderPathLabel(docPath), [docPath]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -133,32 +160,71 @@ export function DocumentTopbar({
   }, [menuOpen]);
 
   return (
-    <header className="h-[--spacing-topbar-h] min-h-[--spacing-topbar-h] bg-transparent flex items-center px-4 gap-2.5">
-      <Link
-        to={backTo}
-        className="w-[26px] h-[26px] rounded-[5px] flex items-center justify-center text-text-muted text-[15px] hover:bg-section-hover hover:text-text-primary transition-all"
-        title="Back to folder"
-        aria-label="Back to folder"
-      >
-        &#8592;
-      </Link>
+    <Root className={`doc-topbar${narrow ? " doc-topbar--narrow" : ""}`}>
+      {narrow ? (
+        <>
+          <Link
+            to="/"
+            className="doc-narrow-sticky__home"
+            title="Home"
+            aria-label="Home"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="M2.75 7.75L8 3.4L13.25 7.75"
+                stroke="currentColor"
+                strokeWidth="1.35"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M4.25 7.1V12.6H6.85V9.35H9.15V12.6H11.75V7.1"
+                stroke="currentColor"
+                strokeWidth="1.35"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </Link>
+          <Link
+            to={backTo}
+            className="doc-narrow-sticky__folder-hit"
+            title="Open folder"
+            aria-label="Open folder"
+          />
+          <span className="doc-narrow-sticky__path-cluster">
+            <span className="doc-narrow-sticky__path-text">{folderPathLabel}</span>
+          </span>
+        </>
+      ) : (
+        <Link
+          to={backTo}
+          className="w-[26px] h-[26px] rounded-[5px] flex items-center justify-center text-text-muted text-[15px] hover:bg-section-hover hover:text-text-primary transition-all"
+          title="Back to folder"
+          aria-label="Back to folder"
+        >
+          &#8592;
+        </Link>
+      )}
 
-      <div className="flex-1" />
+      {narrow ? null : <div className="flex-1" />}
 
-      {toolbarAccessory}
+      {narrow ? null : toolbarAccessory}
 
-      {/* Version history toggle */}
-      <button
-        onClick={onToggleHistory}
-        className={`inline-flex items-center gap-1.5 text-[11px] px-2 py-1 rounded ${showHistory ? "bg-[#e8f4f6] text-[#1d5a66]" : "bg-[#f5f2ed] text-text-muted hover:text-text-primary"}`}
-        title="Version history"
-      >
-        <ClockIcon />
-        History
-      </button>
+      {/* Version history toggle (wide only — narrow moves it into the overflow menu) */}
+      {narrow ? null : (
+        <button
+          onClick={onToggleHistory}
+          className={`inline-flex items-center gap-1.5 text-[11px] px-2 py-1 rounded ${showHistory ? "bg-[#e8f4f6] text-[#1d5a66]" : "bg-[#f5f2ed] text-text-muted hover:text-text-primary"}`}
+          title="Version history"
+        >
+          <ClockIcon />
+          History
+        </button>
+      )}
 
       {/* Overflow menu: diagnostics + overwrite */}
-      <div className="relative" ref={menuRef}>
+      <div className={`relative${narrow ? " doc-narrow-sticky__overflow" : ""}`} ref={menuRef}>
         <button
           onClick={() => setMenuOpen((open) => !open)}
           className={`w-[26px] h-[26px] rounded flex items-center justify-center text-[15px] leading-none ${
@@ -178,6 +244,49 @@ export function DocumentTopbar({
             role="menu"
             className="absolute right-0 top-full mt-1 z-50 min-w-[140px] rounded border border-topbar-border bg-canvas-bg py-1 shadow-sm"
           >
+            {narrow && toolbarAccessory ? (
+              <div className="px-3 py-1.5 border-b border-topbar-border">{toolbarAccessory}</div>
+            ) : null}
+            {narrow ? (
+              <button
+                role="menuitem"
+                onClick={() => {
+                  onToggleHistory();
+                  setMenuOpen(false);
+                }}
+                className={`w-full text-left text-[11px] px-3 py-1.5 ${
+                  showHistory
+                    ? "bg-[#e8f4f6] text-[#1d5a66]"
+                    : "text-text-muted hover:bg-section-hover hover:text-text-primary"
+                }`}
+              >
+                History
+              </button>
+            ) : null}
+            {narrow && onStartRename ? (
+              <button
+                role="menuitem"
+                onClick={() => {
+                  onStartRename();
+                  setMenuOpen(false);
+                }}
+                className="w-full text-left text-[11px] px-3 py-1.5 text-text-muted hover:bg-section-hover hover:text-text-primary"
+              >
+                Rename
+              </button>
+            ) : null}
+            {narrow && onDelete ? (
+              <button
+                role="menuitem"
+                onClick={() => {
+                  void onDelete();
+                  setMenuOpen(false);
+                }}
+                className="w-full text-left text-[11px] px-3 py-1.5 text-red-600 hover:bg-section-hover"
+              >
+                Delete
+              </button>
+            ) : null}
             <button
               role="menuitem"
               onClick={() => {
@@ -212,8 +321,9 @@ export function DocumentTopbar({
         ) : null}
       </div>
 
-      {/* Coarse transport/publish status indicator; hover explains the detail. */}
-      {meta.label ? (
+      {/* Coarse transport/publish status indicator; hover explains the detail.
+          Hidden on narrow — that path row is folder-link + copy + overflow. */}
+      {!narrow && meta.label ? (
         <div
           className="relative flex items-center gap-[5px] cursor-help"
           data-testid="transport-status-pill"
@@ -250,6 +360,6 @@ export function DocumentTopbar({
           ) : null}
         </div>
       ) : null}
-    </header>
+    </Root>
   );
 }

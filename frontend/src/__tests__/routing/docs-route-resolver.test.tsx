@@ -39,9 +39,12 @@ describe("DocsRouteResolver component", () => {
       refreshTree: vi.fn().mockResolvedValue(undefined),
       sidebarAutoHide: false,
       setSidebarAutoHide: vi.fn(),
+      setDocLayoutNarrow: vi.fn(),
       reportFocusedDocTabEditState: vi.fn(),
       clearFocusedDocTabEditState: vi.fn(),
       singleUser: false,
+      appName: "Civigent",
+      subscribeDocSectionNamesChanged: vi.fn(() => () => {}),
       ...overrides,
     };
   }

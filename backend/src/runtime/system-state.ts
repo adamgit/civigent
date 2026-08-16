@@ -50,8 +50,15 @@ export interface IpcFatalMessage {
   report: FatalReport;
 }
 
+export interface IpcHeartbeatMessage {
+  type: "heartbeat";
+}
+
 export type WorkerIpcMessage =
   | IpcStartingMessage
   | IpcListeningMessage
   | IpcReadyMessage
-  | IpcFatalMessage;
+  | IpcFatalMessage
+  | IpcHeartbeatMessage;
+
+export const WORKER_HEARTBEAT_INTERVAL_MS = 5_000;

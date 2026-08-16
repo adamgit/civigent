@@ -43,7 +43,7 @@ import {
   FolderWritePermissionError,
   readLiveDocumentMarkdown,
 } from "../application/documents.js";
-import { emitCatalogMutationEvents } from "../application/events.js";
+import { emitCatalogMutationEvents, emitContentCommittedEventsByDoc } from "../application/events.js";
 import { DocPath, FolderPath, InvalidFolderPathError } from "../../types/shared.js";
 import {
   QueryParamError,
@@ -149,7 +149,8 @@ export function registerWorkspaceRoutes(
         return;
       }
 
-      const { committedSha } = await restoreDocument(docPath, sha, writer);
+      const { committedSha, targets } = await restoreDocument(docPath, sha, writer);
+      emitContentCommittedEventsByDoc(onWsEvent, writer, [writer.id], committedSha, targets);
       res.json({ committed_sha: committedSha });
     } catch (error) {
       // C5: a failed pre-handoff publish leaves the live edits intact — surface
@@ -180,7 +181,8 @@ export function registerWorkspaceRoutes(
       }
 
       try {
-        const { committedSha } = await adminOverwriteDocument(docPath, markdown, admin);
+        const { committedSha, targets } = await adminOverwriteDocument(docPath, markdown, admin);
+        emitContentCommittedEventsByDoc(onWsEvent, admin, [admin.id], committedSha, targets);
         res.json({ committed_sha: committedSha });
       } catch (error) {
         if (error instanceof DocumentDoesNotExistError) {

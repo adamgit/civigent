@@ -16,7 +16,7 @@ import { bootstrapContentSeedFromDirectoryIfNeeded } from "./storage/bootstrap-c
 import { validateOAuthConfig, getMCPPublicURL, getOidcPublicUrl, isMCPPublicURLFromHeadersEnabled } from "./auth/oauth-config.js";
 import { maybeGenerateBootstrapCode } from "./auth/service.js";
 import { isSystemReady, setSystemReady } from "./startup-state.js";
-import { isDevSupervised } from "./runtime/system-state.js";
+import { isDevSupervised, WORKER_HEARTBEAT_INTERVAL_MS } from "./runtime/system-state.js";
 import type { WorkerIpcMessage } from "./runtime/system-state.js";
 import { startRuntimeMemorySampler } from "./runtime/memory-stats.js";
 import { getFatalErrorsMode } from "./runtime/fatal-errors-mode.js";
@@ -202,6 +202,12 @@ getFatalErrorsMode();
 // the `inprogress` proposal content tree, not from `sessions/` on disk.
 
 ipcSend({ type: "starting" });
+
+if (isDevSupervised) {
+  setInterval(() => {
+    if (process.connected) ipcSend({ type: "heartbeat" });
+  }, WORKER_HEARTBEAT_INTERVAL_MS).unref();
+}
 
 startRuntimeMemorySampler();
 

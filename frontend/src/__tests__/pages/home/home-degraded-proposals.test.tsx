@@ -23,9 +23,12 @@ const outletContext: AppLayoutOutletContext = {
   refreshTree: vi.fn(async () => {}),
   sidebarAutoHide: false,
   setSidebarAutoHide: vi.fn(),
+  setDocLayoutNarrow: vi.fn(),
   reportFocusedDocTabEditState: vi.fn(),
   clearFocusedDocTabEditState: vi.fn(),
   singleUser: false,
+  appName: "Civigent",
+  subscribeDocSectionNamesChanged: vi.fn(() => () => {}),
 };
 
 function renderHome() {
@@ -56,6 +59,29 @@ function degradedProposal(id: string) {
   };
 }
 
+function jsonFor(url: string, degraded: unknown) {
+  if (url.includes("/api/proposals/degraded")) {
+    return jsonResponse(degraded);
+  }
+  if (url.includes("/api/agents/summary")) {
+    return jsonResponse({
+      agents: [],
+      posture: { preset: "yolo", description: "" },
+      agent_auth_policy: "open",
+    });
+  }
+  if (url.includes("/api/activity")) {
+    return jsonResponse({ items: [] });
+  }
+  if (url.includes("/api/proposals")) {
+    return jsonResponse({ proposals: [], undecodable: [] });
+  }
+  if (url.includes("/api/auth/methods")) {
+    return jsonResponse({ bootstrap_available: false });
+  }
+  return jsonResponse({});
+}
+
 afterEach(() => {
   fetchMock?.restore();
   fetchMock = undefined;
@@ -65,14 +91,10 @@ afterEach(() => {
 describe("HomePage degraded-proposal alert", () => {
   it("shows the alert with a count when proposals are degraded", async () => {
     fetchMock = installFetchMock(async (input) => {
-      const url = String(input);
-      if (url.includes("/api/proposals/degraded")) {
-        return jsonResponse({
-          proposals: [degradedProposal("p1"), degradedProposal("p2")],
-          undecodable: [],
-        });
-      }
-      return jsonResponse({});
+      return jsonFor(String(input), {
+        proposals: [degradedProposal("p1"), degradedProposal("p2")],
+        undecodable: [],
+      });
     });
 
     renderHome();
@@ -85,11 +107,7 @@ describe("HomePage degraded-proposal alert", () => {
 
   it("shows no alert when no proposals are degraded", async () => {
     fetchMock = installFetchMock(async (input) => {
-      const url = String(input);
-      if (url.includes("/api/proposals/degraded")) {
-        return jsonResponse({ proposals: [], undecodable: [] });
-      }
-      return jsonResponse({});
+      return jsonFor(String(input), { proposals: [], undecodable: [] });
     });
 
     renderHome();

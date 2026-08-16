@@ -118,6 +118,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
   const unsubscribeReplicaRef = useRef<(() => void) | null>(null);
   const generationRef = useRef(0);
   const connectionRef = useRef<Connection | null>(null);
+  const parkedPipelineRef = useRef<DocPath | null>(null);
   const modeRef = useRef<LiveReplicaMode>("observer");
   const editorStateRef = useRef<CrdtConnectionState>("disconnected");
   const observerStateRef = useRef<ObserverConnectionState>("disconnected");
@@ -180,6 +181,20 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     awarenessRef.current = awareness;
     replicaRef.current = replica;
   }, [retireReplica]);
+
+  const destroyUnreclaimedPipeline = useCallback(() => {
+    teardownConnection();
+    const replica = replicaRef.current;
+    if (replica) {
+      unsubscribeReplicaRef.current?.();
+      unsubscribeReplicaRef.current = null;
+      docRef.current = null;
+      awarenessRef.current = null;
+      replicaRef.current = null;
+      replica.destroy();
+    }
+    modeRef.current = "observer";
+  }, [teardownConnection]);
 
   const startFreshObserverPipelineRef = useRef<((docPathArg: DocPath) => void) | null>(null);
   const startFreshEditorPipelineRef = useRef<((docPathArg: DocPath) => void) | null>(null);
@@ -370,18 +385,35 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
   useEffect(() => {
     if (!docPath) return;
 
-    mintFreshReplica();
-    modeRef.current = "observer";
-    transportErrorRef.current = null;
-    startObserver(docPath);
-    forceRender();
+    const parked = parkedPipelineRef.current;
+    parkedPipelineRef.current = null;
+
+    const reclaimed =
+      parked === docPath &&
+      replicaRef.current !== null &&
+      connectionRef.current?.kind === "observer" &&
+      modeRef.current === "observer";
+
+    if (reclaimed) {
+      forceRender();
+    } else {
+      if (parked !== null) teardownConnection();
+      mintFreshReplica();
+      modeRef.current = "observer";
+      transportErrorRef.current = null;
+      startObserver(docPath);
+      forceRender();
+    }
 
     return () => {
-      teardownConnection();
-      retireReplica();
-      modeRef.current = "observer";
+      parkedPipelineRef.current = docPath;
+      queueMicrotask(() => {
+        if (parkedPipelineRef.current === null) return;
+        parkedPipelineRef.current = null;
+        destroyUnreclaimedPipeline();
+      });
     };
-  }, [docPath, mintFreshReplica, retireReplica, startObserver, teardownConnection]);
+  }, [docPath, destroyUnreclaimedPipeline, mintFreshReplica, startObserver, teardownConnection]);
 
   // Drain retired replicas once the unbind barrier has passed. Runs after every
   // commit, AFTER child effects: if the last committed render still used a
@@ -401,8 +433,9 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
 
   // Unmount barrier: on FULL tree unmount React 18 runs parent passive-effect
   // cleanups BEFORE descendant cleanups, so mounted editors may still hold
-  // these docs when this cleanup fires (the docPath cleanup above has already
-  // retired the live replica — declaration order puts it before this one).
+  // these docs when this cleanup fires (the LIVE replica is not in this
+  // collection — the docPath cleanup above parks the whole pipeline and its
+  // microtask disposer destroys it unless a same-doc remount reclaims it).
   // Capture the retired owners, clear the pending collection immediately
   // (Strict Mode cleanup/recreate must never destroy a newly minted doc), and
   // destroy in one microtask after descendant passive cleanups have detached

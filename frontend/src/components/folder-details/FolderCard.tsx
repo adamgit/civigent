@@ -19,6 +19,8 @@ const SPINE_COLORS = [
 
 const SHELF_HEIGHT_PX = 14;
 const SPINE_MIN_HEIGHT_RATIO = 0.4;
+/** Visible spines before the overflow mark; the rest stay in the tooltip. */
+const MAX_VISIBLE_SPINES = 5;
 
 export interface FolderBookSpine {
   /** Stable identity (doc path) for colour hashing and keys. */
@@ -143,33 +145,46 @@ export function approxPagesFromBytes(sizeBytes: number): number {
 
 function MicroBookshelf({ books }: { books: FolderBookSpine[] }) {
   const maxBytes = books.reduce((max, book) => Math.max(max, book.sizeBytes), 0);
+  const visible = books.slice(0, MAX_VISIBLE_SPINES);
+  const hiddenCount = books.length - visible.length;
+  const hiddenNames = hiddenCount > 0 ? books.slice(MAX_VISIBLE_SPINES).map((book) => book.name) : [];
 
   return (
     <span
-      className="flex max-w-[50%] items-end gap-px overflow-hidden"
+      className="flex max-w-[50%] items-end gap-px"
       style={{ height: `${SHELF_HEIGHT_PX}px` }}
       aria-hidden="true"
     >
-      {books.map((book) => {
-        // Unknown/zero sizes: uniform mid height so the shelf still reads as books.
-        const ratio = maxBytes > 0 ? book.sizeBytes / maxBytes : 0.65;
-        const heightPx = Math.round(
-          SHELF_HEIGHT_PX * (SPINE_MIN_HEIGHT_RATIO + (1 - SPINE_MIN_HEIGHT_RATIO) * ratio),
-        );
-        const pages = approxPagesFromBytes(book.sizeBytes);
-        return (
-          <span
-            key={book.path}
-            title={`${book.name} · ~${pages} page${pages === 1 ? "" : "s"}`}
-            className="w-[3px] shrink-0 rounded-[1px]"
-            style={{
-              height: `${heightPx}px`,
-              backgroundColor: spineColorForPath(book.path),
-              opacity: 0.88,
-            }}
-          />
-        );
-      })}
+      <span className="flex min-w-0 items-end gap-px overflow-hidden">
+        {visible.map((book) => {
+          // Unknown/zero sizes: uniform mid height so the shelf still reads as books.
+          const ratio = maxBytes > 0 ? book.sizeBytes / maxBytes : 0.65;
+          const heightPx = Math.round(
+            SHELF_HEIGHT_PX * (SPINE_MIN_HEIGHT_RATIO + (1 - SPINE_MIN_HEIGHT_RATIO) * ratio),
+          );
+          const pages = approxPagesFromBytes(book.sizeBytes);
+          return (
+            <span
+              key={book.path}
+              title={`${book.name} · ~${pages} page${pages === 1 ? "" : "s"}`}
+              className="w-[3px] shrink-0 rounded-[1px]"
+              style={{
+                height: `${heightPx}px`,
+                backgroundColor: spineColorForPath(book.path),
+                opacity: 0.88,
+              }}
+            />
+          );
+        })}
+      </span>
+      {hiddenCount > 0 ? (
+        <span
+          className="ml-0.5 shrink-0 self-end text-[10px] leading-none text-text-faint"
+          title={`${hiddenCount} more: ${hiddenNames.join(", ")}`}
+        >
+          …
+        </span>
+      ) : null}
     </span>
   );
 }

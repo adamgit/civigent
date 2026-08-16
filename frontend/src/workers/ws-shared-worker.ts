@@ -74,10 +74,67 @@ let reconnectDelayMs = 1000;
 let appliedSubscriptions = new Set<string>();
 let appliedFocusedDocPath: string | null | undefined = undefined;
 
+const SYSTEM_ES_INITIAL_RETRY_MS = 1000;
+const SYSTEM_ES_MAX_RETRY_MS = 10000;
+
+let systemEventSource: EventSource | null = null;
+let systemEsRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let systemEsRetryMs = SYSTEM_ES_INITIAL_RETRY_MS;
+let lastSystemState: unknown = null;
+
 function broadcastServerEvent(event: unknown): void {
   for (const port of tabPorts.values()) {
     port.postMessage({ type: "server_event", event });
   }
+}
+
+function broadcastSystemState(state: unknown): void {
+  for (const port of tabPorts.values()) {
+    port.postMessage({ type: "system_state", state });
+  }
+}
+
+function ensureSystemEventSource(): void {
+  if (!import.meta.env.DEV) return;
+  if (systemEventSource || tabPorts.size === 0) return;
+  const es = new EventSource("/api/system/events");
+  systemEventSource = es;
+
+  es.addEventListener("system_state", (e) => {
+    systemEsRetryMs = SYSTEM_ES_INITIAL_RETRY_MS;
+    const state: unknown = JSON.parse((e as MessageEvent).data);
+    lastSystemState = state;
+    broadcastSystemState(state);
+  });
+
+  es.addEventListener("error", () => {
+    if (systemEventSource === es && es.readyState === EventSource.CLOSED) {
+      es.close();
+      systemEventSource = null;
+      scheduleSystemEsRetry();
+    }
+  });
+}
+
+function scheduleSystemEsRetry(): void {
+  if (systemEsRetryTimer || tabPorts.size === 0) return;
+  systemEsRetryTimer = setTimeout(() => {
+    systemEsRetryTimer = null;
+    ensureSystemEventSource();
+  }, systemEsRetryMs);
+  systemEsRetryMs = Math.min(systemEsRetryMs * 2, SYSTEM_ES_MAX_RETRY_MS);
+}
+
+function closeSystemEventSource(): void {
+  if (systemEsRetryTimer) {
+    clearTimeout(systemEsRetryTimer);
+    systemEsRetryTimer = null;
+  }
+  if (systemEventSource) {
+    systemEventSource.close();
+    systemEventSource = null;
+  }
+  systemEsRetryMs = SYSTEM_ES_INITIAL_RETRY_MS;
 }
 
 function forwardPrivateEnvelope(envelope: PrivateEnvelope): void {
@@ -312,6 +369,7 @@ function sweepStaleTabs(): void {
   if (changed) {
     if (tabPorts.size === 0) {
       closeSocket();
+      closeSystemEventSource();
     } else {
       syncSocketState();
     }
@@ -322,6 +380,9 @@ setInterval(() => {
   sweepStaleTabs();
   if (tabPorts.size > 0 && !ws) {
     ensureSocket();
+  }
+  if (tabPorts.size > 0 && !systemEventSource && !systemEsRetryTimer) {
+    ensureSystemEventSource();
   }
 }, 2000);
 
@@ -347,7 +408,11 @@ workerScope.onconnect = (connectEvent) => {
         updatedAt: Date.now(),
       });
       port.postMessage({ type: "register_ack", tabId: message.tabId });
+      if (lastSystemState !== null) {
+        port.postMessage({ type: "system_state", state: lastSystemState });
+      }
       ensureSocket();
+      ensureSystemEventSource();
       syncSocketState();
       return;
     }
@@ -395,6 +460,7 @@ workerScope.onconnect = (connectEvent) => {
       tabStates.delete(message.tabId);
       if (tabPorts.size === 0) {
         closeSocket();
+        closeSystemEventSource();
       } else {
         syncSocketState();
       }

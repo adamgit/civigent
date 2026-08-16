@@ -20,7 +20,7 @@
  * the page's horizontal scroll reveals it. All document data arrives via props.
  */
 
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { SectionVisibilityMap } from "../hooks/useTopViewportSection";
 import type { HeadingLevel } from "../types/shared";
 
@@ -70,8 +70,6 @@ const COLOR_EDITING = "#15803d"; // green-700 — edit cursor section
 const ROW_PADDING_TOP_PX = 3;
 const LABEL_FONT_SIZE_PX = 12.5;
 const LABEL_LINE_HEIGHT = 1.3;
-const SPINE_END_FROM_LAST_TOP_PX =
-  ROW_PADDING_TOP_PX + (LABEL_FONT_SIZE_PX * LABEL_LINE_HEIGHT) / 2;
 
 function tickWidth(headingLevel: HeadingLevel): number {
   const d = Math.min(Math.max(1, headingLevel), MAX_VISUAL_DEPTH);
@@ -165,6 +163,280 @@ function usePanelPosition(
   return pos;
 }
 
+export interface DocumentSectionNavListProps {
+  title: string;
+  items: DocumentSectionNavItem[];
+  editingFragmentKey: string | null;
+  visibilityByFragmentKey: SectionVisibilityMap;
+  onNavigate: (fragmentKey: string) => void;
+  onNavigateToTop: () => void;
+  /** Overlay uses larger type and padding for touch; gutter stays compact. */
+  density?: "gutter" | "overlay";
+}
+
+function listMetrics(density: "gutter" | "overlay") {
+  const fontSize = density === "overlay" ? 16 : LABEL_FONT_SIZE_PX;
+  const titleSize = density === "overlay" ? 17 : 13;
+  const padTop = density === "overlay" ? 10 : ROW_PADDING_TOP_PX;
+  const padBottom = density === "overlay" ? 10 : 3;
+  const titlePadBottom = density === "overlay" ? 12 : 8;
+  const titleSquare = density === "overlay" ? 8 : 7;
+  const tickMarginTop = (fontSize * LABEL_LINE_HEIGHT) / 2 - 1;
+  const spineEnd = padTop + (fontSize * LABEL_LINE_HEIGHT) / 2;
+  const spineTop = -(titlePadBottom + titleSquare + 2);
+  return {
+    fontSize,
+    titleSize,
+    padTop,
+    padBottom,
+    titlePadBottom,
+    titleSquare,
+    tickMarginTop,
+    spineEnd,
+    spineTop,
+  };
+}
+
+export function DocumentSectionNavList({
+  title,
+  items,
+  editingFragmentKey,
+  visibilityByFragmentKey,
+  onNavigate,
+  onNavigateToTop,
+  density = "gutter",
+}: DocumentSectionNavListProps) {
+  const metrics = listMetrics(density);
+  const lastItemRef = useRef<HTMLButtonElement | null>(null);
+  const [spineBottomPx, setSpineBottomPx] = useState(metrics.spineEnd);
+
+  // End the spine at mid-first-line of the last entry (where the tick sits), not
+  // mid-entry — wrapped labels are taller than one line.
+  useLayoutEffect(() => {
+    const el = lastItemRef.current;
+    if (!el) return;
+
+    const measure = () => {
+      const next = Math.max(0, el.offsetHeight - metrics.spineEnd);
+      setSpineBottomPx((prev) => (prev === next ? prev : next));
+    };
+
+    measure();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    ro?.observe(el);
+    return () => ro?.disconnect();
+  }, [items, metrics.spineEnd]);
+
+  const lastIndex = items.length - 1;
+
+  return (
+    <>
+      {/* Document title — bold black, above the spine, smaller left margin */}
+      <button
+        type="button"
+        className="doc-section-nav__item"
+        onClick={onNavigateToTop}
+        title={title}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: density === "overlay" ? 8 : 7,
+          width: "100%",
+          border: "none",
+          background: "transparent",
+          cursor: "pointer",
+          textAlign: "left",
+          padding: `0 2px ${metrics.titlePadBottom}px`,
+          color: COLOR_TITLE,
+        }}
+      >
+        <span
+          aria-hidden="true"
+          style={{
+            flex: "none",
+            width: metrics.titleSquare,
+            height: metrics.titleSquare,
+            borderRadius: 1,
+            background: COLOR_TITLE,
+          }}
+        />
+        <span
+          className="doc-section-nav__label"
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            fontSize: metrics.titleSize,
+            fontWeight: 700,
+            lineHeight: 1.3,
+          }}
+        >
+          {title}
+        </span>
+      </button>
+
+      {/* Section rows — vertical spine with horizontal ticks.
+       *  Spine ends at mid-first-line of the last row (tick height), so wrapped
+       *  labels do not leave a dangling segment below the tick. */}
+      <div style={{ position: "relative" }}>
+        <span
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            left: 5,
+            top: metrics.spineTop,
+            bottom: spineBottomPx,
+            width: 1.5,
+            borderRadius: 1,
+            background: COLOR_SPINE,
+            zIndex: -1,
+          }}
+        />
+        {items.map((item, index) => {
+          const isEditing = editingFragmentKey === item.fragmentKey;
+          const visibility = visibilityByFragmentKey[item.fragmentKey] ?? 0;
+          const color = isEditing ? COLOR_EDITING : visibilityColor(visibility);
+          return (
+            <button
+              key={item.fragmentKey}
+              ref={index === lastIndex ? lastItemRef : undefined}
+              type="button"
+              className="doc-section-nav__item"
+              title={item.headingPath.join(" > ")}
+              onClick={() => onNavigate(item.fragmentKey)}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: density === "overlay" ? 10 : 8,
+                width: "100%",
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                textAlign: "left",
+                padding: `${metrics.padTop}px 2px ${metrics.padBottom}px 5px`,
+                color,
+                transition: "color 120ms ease",
+              }}
+            >
+              <span
+                aria-hidden="true"
+                style={{
+                  flex: "none",
+                  height: isEditing ? 3 : 2,
+                  width: tickWidth(item.headingLevel),
+                  marginTop: metrics.tickMarginTop,
+                  borderRadius: 2,
+                  background: color,
+                  transition: "background-color 120ms ease, height 120ms ease",
+                }}
+              />
+              <span
+                className="doc-section-nav__label"
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  overflowWrap: "anywhere",
+                  wordBreak: "break-word",
+                  fontSize: metrics.fontSize,
+                  fontWeight: isEditing ? 600 : 400,
+                  lineHeight: LABEL_LINE_HEIGHT,
+                }}
+              >
+                {item.heading}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+export interface DocumentSectionNavOverlayProps extends DocumentSectionNavListProps {
+  onClose: () => void;
+}
+
+export function DocumentSectionNavOverlay({ onClose, ...listProps }: DocumentSectionNavOverlayProps) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Document sections"
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 40,
+        background: "var(--color-page-bg)",
+        display: "flex",
+        flexDirection: "column",
+        fontFamily: "var(--font-ui)",
+      }}
+    >
+      <div
+        style={{
+          flex: "none",
+          padding: "12px 16px 14px",
+          borderBottom: "1px solid rgba(0, 0, 0, 0.06)",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <span style={{ fontSize: 13, fontWeight: 700, color: COLOR_TITLE }}>Sections</span>
+          <button
+            type="button"
+            aria-label="Close sections"
+            onClick={onClose}
+            style={{
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              fontSize: 22,
+              lineHeight: 1,
+              width: 36,
+              height: 36,
+              padding: 0,
+              color: "var(--color-text-muted)",
+            }}
+          >
+            ×
+          </button>
+        </div>
+        <p
+          style={{
+            margin: "6px 0 0",
+            fontSize: 13,
+            fontStyle: "italic",
+            lineHeight: 1.4,
+            color: "var(--color-text-muted)",
+          }}
+        >
+          Tap a heading to go to that place in the document.
+        </p>
+      </div>
+      <div
+        className="canvas-scroll"
+        style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", padding: "16px 16px 32px" }}
+      >
+        <DocumentSectionNavList {...listProps} density="overlay" />
+      </div>
+    </div>
+  );
+}
+
 export function DocumentSectionNav({
   title,
   items,
@@ -177,25 +449,6 @@ export function DocumentSectionNav({
 }: DocumentSectionNavProps) {
   const pos = usePanelPosition(anchorRef, scrollContainerRef);
   const navRef = useRef<HTMLElement | null>(null);
-  const lastItemRef = useRef<HTMLButtonElement | null>(null);
-  const [spineBottomPx, setSpineBottomPx] = useState(SPINE_END_FROM_LAST_TOP_PX);
-
-  // End the spine at mid-first-line of the last entry (where the tick sits), not
-  // mid-entry — wrapped labels are taller than one line.
-  useLayoutEffect(() => {
-    const el = lastItemRef.current;
-    if (!el) return;
-
-    const measure = () => {
-      const next = Math.max(0, el.offsetHeight - SPINE_END_FROM_LAST_TOP_PX);
-      setSpineBottomPx((prev) => (prev === next ? prev : next));
-    };
-
-    measure();
-    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
-    ro?.observe(el);
-    return () => ro?.disconnect();
-  }, [items]);
 
   // The nav is a fixed overlay with its own overflow box, which would otherwise
   // trap wheel events (often scrolling nothing). Forward wheel to the document
@@ -231,8 +484,6 @@ export function DocumentSectionNav({
 
   if (items.length === 0) return null;
 
-  const lastIndex = items.length - 1;
-
   return (
     <nav
       ref={setNavRef}
@@ -254,119 +505,14 @@ export function DocumentSectionNav({
         visibility: pos ? "visible" : "hidden",
       }}
     >
-      {/* Document title — bold black, above the spine, smaller left margin */}
-      <button
-        type="button"
-        className="doc-section-nav__item"
-        onClick={onNavigateToTop}
+      <DocumentSectionNavList
         title={title}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 7,
-          width: "100%",
-          border: "none",
-          background: "transparent",
-          cursor: "pointer",
-          textAlign: "left",
-          padding: "0 2px 8px",
-          color: COLOR_TITLE,
-        }}
-      >
-        <span
-          aria-hidden="true"
-          style={{ flex: "none", width: 7, height: 7, borderRadius: 1, background: COLOR_TITLE }}
-        />
-        <span
-          className="doc-section-nav__label"
-          style={{
-            flex: 1,
-            minWidth: 0,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            fontSize: 13,
-            fontWeight: 700,
-            lineHeight: 1.3,
-          }}
-        >
-          {title}
-        </span>
-      </button>
-
-      {/* Section rows — vertical spine with horizontal ticks.
-       *  Spine ends at mid-first-line of the last row (tick height), so wrapped
-       *  labels do not leave a dangling segment below the tick. */}
-      <div style={{ position: "relative" }}>
-        <span
-          aria-hidden="true"
-          style={{
-            position: "absolute",
-            left: 5,
-            top: -17,
-            bottom: spineBottomPx,
-            width: 1.5,
-            borderRadius: 1,
-            background: COLOR_SPINE,
-            zIndex: -1,
-          }}
-        />
-        {items.map((item, index) => {
-          const isEditing = editingFragmentKey === item.fragmentKey;
-          const visibility = visibilityByFragmentKey[item.fragmentKey] ?? 0;
-          const color = isEditing ? COLOR_EDITING : visibilityColor(visibility);
-          return (
-            <button
-              key={item.fragmentKey}
-              ref={index === lastIndex ? lastItemRef : undefined}
-              type="button"
-              className="doc-section-nav__item"
-              title={item.headingPath.join(" > ")}
-              onClick={() => onNavigate(item.fragmentKey)}
-              style={{
-                display: "flex",
-                alignItems: "flex-start",
-                gap: 8,
-                width: "100%",
-                border: "none",
-                background: "transparent",
-                cursor: "pointer",
-                textAlign: "left",
-                padding: `${ROW_PADDING_TOP_PX}px 2px 3px 5px`,
-                color,
-                transition: "color 120ms ease",
-              }}
-            >
-              <span
-                aria-hidden="true"
-                style={{
-                  flex: "none",
-                  height: isEditing ? 3 : 2,
-                  width: tickWidth(item.headingLevel),
-                  marginTop: 7,
-                  borderRadius: 2,
-                  background: color,
-                  transition: "background-color 120ms ease, height 120ms ease",
-                }}
-              />
-              <span
-                className="doc-section-nav__label"
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  overflowWrap: "anywhere",
-                  wordBreak: "break-word",
-                  fontSize: LABEL_FONT_SIZE_PX,
-                  fontWeight: isEditing ? 600 : 400,
-                  lineHeight: LABEL_LINE_HEIGHT,
-                }}
-              >
-                {item.heading}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+        items={items}
+        editingFragmentKey={editingFragmentKey}
+        visibilityByFragmentKey={visibilityByFragmentKey}
+        onNavigate={onNavigate}
+        onNavigateToTop={onNavigateToTop}
+      />
     </nav>
   );
 }

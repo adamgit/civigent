@@ -1,0 +1,111 @@
+import type { ActivityItem } from "../../types/shared.js";
+import { HOME_RECENT_DOC_LIMIT, HOME_RECENT_WINDOW_DAYS } from "./home-constants.js";
+import { folderPrefixOfDoc } from "./home-tree-stats.js";
+import { getDocDisplayName, headingText } from "../document-page-utils.js";
+import { DocPath } from "../../types/shared.js";
+
+export type HomeDocChangeKind = "rewritten" | "added" | "moved";
+
+export interface HomeDocChangeGroup {
+  kind: HomeDocChangeKind;
+  headings: string[];
+}
+
+export interface HomeRecentDocument {
+  docPath: string;
+  title: string;
+  folderPrefix: string;
+  writerName: string;
+  writerId: string;
+  timestamp: string;
+  yours: boolean;
+  changes: HomeDocChangeGroup[];
+}
+
+function inWindow(iso: string, nowMs: number, days: number): boolean {
+  return nowMs - Date.parse(iso) <= days * 24 * 60 * 60 * 1000;
+}
+
+function sectionLabel(headingPath: string[]): string | null {
+  if (headingPath.length === 0) return null;
+  const text = headingText(headingPath);
+  return text.length > 0 ? text : null;
+}
+
+/**
+ * One card per document touched in the window, newest first.
+ *
+ * Activity items are committed proposals: they name the claimed heading paths
+ * but do not record whether each path was a write, a create, or a move. Those
+ * kinds are not persisted on the proposal manifest (create/write/move all
+ * union into `sections`). Until a richer claim exists, every named heading is
+ * shown as rewritten — the card still renders added/moved rows when a later
+ * source fills those groups.
+ */
+export function buildRecentDocuments(
+  activity: ActivityItem[],
+  currentWriterId: string | null,
+  nowMs: number = Date.now(),
+  windowDays: number = HOME_RECENT_WINDOW_DAYS,
+  limit: number = HOME_RECENT_DOC_LIMIT,
+): HomeRecentDocument[] {
+  const byDoc = new Map<
+    string,
+    { timestamp: string; writerName: string; writerId: string; yours: boolean; headings: string[] }
+  >();
+
+  const sorted = [...activity].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+
+  for (const item of sorted) {
+    if (!inWindow(item.timestamp, nowMs, windowDays)) continue;
+    const isYours = currentWriterId != null && item.writer_id === currentWriterId;
+    for (const section of item.sections) {
+      const label = sectionLabel(section.heading_path);
+      let row = byDoc.get(section.doc_path);
+      if (!row) {
+        row = {
+          timestamp: item.timestamp,
+          writerName: item.writer_display_name,
+          writerId: item.writer_id,
+          yours: isYours,
+          headings: [],
+        };
+        byDoc.set(section.doc_path, row);
+      } else {
+        if (isYours) row.yours = true;
+      }
+      if (label && !row.headings.includes(label)) row.headings.push(label);
+    }
+  }
+
+  const docs: HomeRecentDocument[] = [];
+  for (const [docPath, row] of byDoc) {
+    const parsed = DocPath.tryParse(docPath);
+    docs.push({
+      docPath,
+      title: parsed ? getDocDisplayName(parsed) : docPath,
+      folderPrefix: folderPrefixOfDoc(docPath),
+      writerName: row.writerName,
+      writerId: row.writerId,
+      timestamp: row.timestamp,
+      yours: row.yours,
+      changes: row.headings.length > 0 ? [{ kind: "rewritten", headings: row.headings }] : [],
+    });
+  }
+
+  docs.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  return docs.slice(0, limit);
+}
+
+export function countRecentDocuments(
+  activity: ActivityItem[],
+  nowMs: number = Date.now(),
+  windowDays: number = HOME_RECENT_WINDOW_DAYS,
+): number {
+  const docs = new Set<string>();
+  for (const item of activity) {
+    if (!inWindow(item.timestamp, nowMs, windowDays)) continue;
+    for (const section of item.sections) docs.add(section.doc_path);
+  }
+  return docs.size;
+}

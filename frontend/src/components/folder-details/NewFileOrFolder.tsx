@@ -17,6 +17,8 @@ export interface NewFileOrFolderProps {
   busy?: boolean;
   error?: string | null;
   onSubmit: (value: NewFileOrFolderSubmit) => void | Promise<void>;
+  /** Narrow pane: name field only. Wide pane: file-or-folder expander. */
+  variant?: "full" | "compact";
 }
 
 type CreateKind = "file" | "folder";
@@ -30,7 +32,99 @@ function asFolderName(raw: string): string {
   return base.length > 0 ? `${base}/` : "/";
 }
 
-export function NewFileOrFolder({ busy = false, error = null, onSubmit }: NewFileOrFolderProps) {
+function CompactNewFile({
+  busy = false,
+  error = null,
+  onSubmit,
+}: Omit<NewFileOrFolderProps, "variant">) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (open) {
+      inputRef.current?.focus();
+    }
+  }, [open]);
+
+  const reset = () => {
+    setOpen(false);
+    setName("");
+  };
+
+  const handleSubmit = async (event?: FormEvent) => {
+    event?.preventDefault();
+    if (busy) {
+      return;
+    }
+    const trimmed = stripTrailingSlashes(name).trim();
+    if (!trimmed) {
+      return;
+    }
+    try {
+      await onSubmit({ name: trimmed, content: "", isFolder: false });
+      reset();
+    } catch {
+      // Parent surfaces `error`; keep the field open for correction.
+    }
+  };
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className="w-full rounded-xl border-none bg-text-primary py-3.5 font-ui text-[15px] font-semibold text-white"
+        onClick={() => setOpen(true)}
+      >
+        New document
+      </button>
+    );
+  }
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="font-ui"
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && !busy) {
+          event.preventDefault();
+          reset();
+        }
+      }}
+    >
+      <input
+        ref={inputRef}
+        type="text"
+        value={name}
+        onChange={(event) => setName(event.target.value)}
+        placeholder="file-name.md"
+        disabled={busy}
+        aria-label="New document name"
+        enterKeyHint="go"
+        autoCapitalize="off"
+        autoCorrect="off"
+        autoComplete="off"
+        spellCheck={false}
+        className="w-full rounded-xl border border-folder-card-border bg-canvas-bg px-3 py-3 font-body text-[16px] text-text-primary outline-none placeholder:text-text-faint focus:border-accent"
+      />
+      <button
+        type="button"
+        className="mt-2 border-none bg-transparent p-0 font-ui text-[12px] text-text-faint hover:text-text-muted"
+        disabled={busy}
+        onClick={reset}
+      >
+        cancel
+      </button>
+      {error ? <p className="mt-2 text-xs text-status-red">{error}</p> : null}
+    </form>
+  );
+}
+
+function FullNewFileOrFolder({
+  busy = false,
+  error = null,
+  onSubmit,
+}: Omit<NewFileOrFolderProps, "variant">) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [content, setContent] = useState("");
@@ -333,4 +427,16 @@ export function NewFileOrFolder({ busy = false, error = null, onSubmit }: NewFil
       {error ? <p className="text-xs text-status-red">{error}</p> : null}
     </form>
   );
+}
+
+export function NewFileOrFolder({
+  busy = false,
+  error = null,
+  onSubmit,
+  variant = "full",
+}: NewFileOrFolderProps) {
+  if (variant === "compact") {
+    return <CompactNewFile busy={busy} error={error} onSubmit={onSubmit} />;
+  }
+  return <FullNewFileOrFolder busy={busy} error={error} onSubmit={onSubmit} />;
 }

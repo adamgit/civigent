@@ -62,6 +62,7 @@ export interface AppLayoutOutletContext {
   sidebarAutoHide: boolean;
   /** Set Focus (`true`) or Browse (`false`) mode; persists and syncs the header toggle. */
   setSidebarAutoHide: (autoHide: boolean) => void;
+  setDocLayoutNarrow: (narrow: boolean) => void;
   /**
    * Report tab-title edit flags for a live document page. Scoped by `docPath` so
    * an unmounting page cannot clear the next page's report.
@@ -71,6 +72,16 @@ export interface AppLayoutOutletContext {
   clearFocusedDocTabEditState: (docPath: string) => void;
   /** True when `KS_AUTH_MODE=single_user`. */
   singleUser: boolean;
+  /** Install label (`KS_APP_NAME` or public URL). */
+  appName: string;
+  subscribeDocSectionNamesChanged: (
+    listener: (change: DocSectionNamesChange) => void,
+  ) => () => void;
+}
+
+export interface DocSectionNamesChange {
+  docPath: string;
+  sectionHeadings: string[] | null;
 }
 
 function SingleUserBrandMark() {
@@ -148,6 +159,18 @@ export function AppLayout() {
   // the initial load never fails silently. Cleared on the next clean read.
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [docBadges, setDocBadges] = useState<Set<string>>(() => new Set());
+  const docSectionNamesChangedListenersRef = useRef(
+    new Set<(change: DocSectionNamesChange) => void>(),
+  );
+  const subscribeDocSectionNamesChanged = useCallback(
+    (listener: (change: DocSectionNamesChange) => void) => {
+      docSectionNamesChangedListenersRef.current.add(listener);
+      return () => {
+        docSectionNamesChangedListenersRef.current.delete(listener);
+      };
+    },
+    [],
+  );
   const [treeRowFlashes, setTreeRowFlashes] = useState<Map<string, TreeRowFlashEntry>>(new Map());
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
   const [systemStarting, setSystemStarting] = useState(false);
@@ -163,6 +186,7 @@ export function AppLayout() {
   // toggle immediately re-opens it.
   const [sidebarAutoHide, setSidebarAutoHideState] = useState(readSidebarAutoHide);
   const [hoverRevealArmed, setHoverRevealArmed] = useState(true);
+  const [docLayoutNarrow, setDocLayoutNarrow] = useState(false);
   const setSidebarAutoHide = useCallback((autoHide: boolean) => {
     // Entering autohide: disarm hover reveal until pointer leaves the shell,
     // or the sidebar stays open under the click that collapsed it.
@@ -629,6 +653,19 @@ export function AppLayout() {
         setFatalReport(event.report);
         return;
       }
+      if (event.type === "doc:structure-changed") {
+        const sectionHeadings = event.sections
+          .map((section) => section.heading.trim())
+          .filter((heading) => heading.length > 0);
+        for (const listener of docSectionNamesChangedListenersRef.current) {
+          listener({ docPath: event.doc_path, sectionHeadings });
+        }
+      }
+      if (event.type === "content:committed") {
+        for (const listener of docSectionNamesChangedListenersRef.current) {
+          listener({ docPath: event.doc_path, sectionHeadings: null });
+        }
+      }
       const tabActive = windowFocusedRef.current && documentVisibleRef.current;
       const result = classifyWsEvent(event, focusedDocPathRef.current, tabActive);
       const eventRecord = event as unknown as Record<string, unknown>;
@@ -704,6 +741,7 @@ export function AppLayout() {
       data-sidebar-mode={sidebarAutoHide ? "autohide" : "expanded"}
       data-sidebar-hover-reveal={hoverRevealArmed ? "on" : "off"}
       data-single-user={singleUser ? "on" : "off"}
+      data-doc-narrow={docLayoutNarrow ? "on" : "off"}
     >
       {/* Sidebar shell — reserves the in-flow width for the left column. In
           expanded mode this is the aside's own content width (capped 30vw); in
@@ -954,9 +992,12 @@ export function AppLayout() {
                 refreshTree: () => loadTree({ background: true }),
                 sidebarAutoHide,
                 setSidebarAutoHide,
+                setDocLayoutNarrow,
                 reportFocusedDocTabEditState,
                 clearFocusedDocTabEditState,
                 singleUser,
+                appName,
+                subscribeDocSectionNamesChanged,
               } satisfies AppLayoutOutletContext}
             />
           )}

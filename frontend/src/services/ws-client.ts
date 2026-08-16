@@ -25,8 +25,10 @@ export function isPrivateEnvelope(value: unknown): value is PrivateEnvelope {
 }
 import { randomUuid } from "../utils/random-uuid";
 import { recordWsDiag, type WsDiagSource } from "./ws-diagnostics";
+import type { SystemState } from "./system-events-client.js";
 
 export type WsEventHandler = (event: WsServerEvent) => void;
+export type SharedSystemStateHandler = (state: SystemState) => void;
 
 interface TabState {
   subscriptions: string[];
@@ -43,7 +45,7 @@ interface TabState {
 }
 
 interface CrossTabTransport {
-  start(onEvent: WsEventHandler): Promise<void>;
+  start(onEvent: WsEventHandler, onSystemState?: SharedSystemStateHandler): Promise<void>;
   stop(): void;
   updateTabState(state: TabState): void;
   sendClientMessage(message: WsClientMessage): void;
@@ -79,6 +81,7 @@ class SharedWorkerTransport implements CrossTabTransport {
   private readonly tabId: string;
   private workerPort: MessagePort | null = null;
   private onEvent: WsEventHandler | null = null;
+  private onSystemState: SharedSystemStateHandler | null = null;
   private diagnosticsSubscribed = false;
   private state: TabState = {
     subscriptions: [],
@@ -92,7 +95,7 @@ class SharedWorkerTransport implements CrossTabTransport {
     this.tabId = tabId;
   }
 
-  start(onEvent: WsEventHandler): Promise<void> {
+  start(onEvent: WsEventHandler, onSystemState?: SharedSystemStateHandler): Promise<void> {
     // Vite's ?sharedworker wrapper calls `new SharedWorker(...)` itself. Probe
     // the global before constructing so unsupported environments fall through
     // to BroadcastChannel instead of throwing an unhelpful ReferenceError.
@@ -100,6 +103,7 @@ class SharedWorkerTransport implements CrossTabTransport {
       return Promise.reject(new Error("SharedWorker unavailable"));
     }
     this.onEvent = onEvent;
+    this.onSystemState = onSystemState ?? null;
     let worker: SharedWorker;
     try {
       worker = new KsSharedWsWorker({ name: "ks-shared-ws" });
@@ -137,6 +141,7 @@ class SharedWorkerTransport implements CrossTabTransport {
         const payload = message.data as {
           type?: string;
           event?: WsServerEvent;
+          state?: SystemState;
           entry?: ForwardedDiagEntry;
           entries?: ForwardedDiagEntry[];
         };
@@ -146,6 +151,10 @@ class SharedWorkerTransport implements CrossTabTransport {
         }
         if (payload.type === "server_event" && payload.event) {
           this.onEvent?.(payload.event);
+          return;
+        }
+        if (payload.type === "system_state" && payload.state) {
+          this.onSystemState?.(payload.state);
           return;
         }
         if (payload.type === "diagnostics_event" && payload.entry) {
@@ -181,6 +190,7 @@ class SharedWorkerTransport implements CrossTabTransport {
     this.workerPort.close();
     this.workerPort = null;
     this.onEvent = null;
+    this.onSystemState = null;
   }
 
   updateTabState(state: TabState): void {
@@ -561,12 +571,35 @@ class SessionWsManager {
   private clientInstanceId: string | null = null;
   private transportSnapshot: AppWsTransportInfo = { kind: null, fallbackReason: null };
   private readonly transportListeners = new Set<() => void>();
+  private readonly systemStateListeners = new Set<SharedSystemStateHandler>();
+  private lastSystemState: SystemState | null = null;
 
   addListener(handler: WsEventHandler): () => void {
     this.listeners.add(handler);
     return () => {
       this.listeners.delete(handler);
     };
+  }
+
+  addSystemStateListener(listener: SharedSystemStateHandler): () => void {
+    this.systemStateListeners.add(listener);
+    if (this.lastSystemState) {
+      listener(this.lastSystemState);
+    }
+    return () => {
+      this.systemStateListeners.delete(listener);
+    };
+  }
+
+  private handleSystemState(state: SystemState): void {
+    this.lastSystemState = state;
+    for (const listener of this.systemStateListeners) {
+      try {
+        listener(state);
+      } catch (err) {
+        queueMicrotask(() => { throw err; });
+      }
+    }
   }
 
   getTransportInfo(): AppWsTransportInfo {
@@ -613,7 +646,10 @@ class SessionWsManager {
     const attempted = new SharedWorkerTransport(this.tabId);
     this.transport = attempted;
     attempted
-      .start((event) => this.handleIncomingEvent(event))
+      .start(
+        (event) => this.handleIncomingEvent(event),
+        (state) => this.handleSystemState(state),
+      )
       .then(() => {
         if (this.transport !== attempted || !this.started) {
           return;
@@ -828,6 +864,8 @@ class SessionWsManager {
     this.focusedSection = null;
     this.setTransportInfo(null, null);
     this.transportListeners.clear();
+    this.systemStateListeners.clear();
+    this.lastSystemState = null;
   }
 }
 
@@ -851,6 +889,10 @@ export function unsubscribeWorkerDiagnostics(): void {
 /** Current JSON-app-WS transport (SharedWorker vs BroadcastChannel fallback). */
 export function getAppWsTransportInfo(): AppWsTransportInfo {
   return getSessionWsManager().getTransportInfo();
+}
+
+export function addSharedSystemStateListener(listener: SharedSystemStateHandler): () => void {
+  return getSessionWsManager().addSystemStateListener(listener);
 }
 
 /** Subscribe to transport-mode changes (for footer / diagnostics UI). */

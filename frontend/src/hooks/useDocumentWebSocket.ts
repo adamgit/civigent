@@ -9,7 +9,6 @@ import {
   type DocumentActivityEvent,
   type DocRenamedEvent,
   type DocStructureChangedEvent,
-  type DocStructureNode,
   type ProposalDraftEvent,
   type ProposalInProgressEvent,
   type ProposalSectionAvailabilityEvent,
@@ -40,7 +39,6 @@ export interface UseDocumentWebSocketParams {
   /** True while the LiveSectionReplica holds an authoritative bootstrap. While
    *  ready, live topology/body events on this JSON socket are hints only. */
   liveReplicaReadyRef: React.MutableRefObject<boolean>;
-  setStructureTree: React.Dispatch<React.SetStateAction<DocStructureNode[] | null>>;
   loadSections: (docPath: DocPath) => Promise<WorkspaceSectionDto[]>;
   setError: (e: string | null) => void;
   onSectionsInjectedByProposal?: (headingPaths: string[][], writerDisplayName: string) => void;
@@ -91,7 +89,6 @@ export function useDocumentWebSocket({
   docPath,
   clientInstanceId,
   liveReplicaReadyRef,
-  setStructureTree,
   loadSections,
   setError,
   onSectionsInjectedByProposal,

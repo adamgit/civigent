@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useNavigate, useOutletContext } from "react-router-dom";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
 import {
@@ -11,7 +11,6 @@ import { rememberRecentDoc } from "../services/recent-docs";
 import { ProposalPanel } from "../components/ProposalPanel";
 import { DocumentTopbar } from "../components/DocumentTopbar";
 import { DocumentConnectionBanner } from "../components/DocumentConnectionBanner";
-import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
 import { DocumentLoadErrorView } from "../components/DocumentLoadErrorView";
 import { DocumentCanvas } from "../components/DocumentCanvas";
 import { SharedDraftBanner } from "../components/SharedDraftBanner";
@@ -27,13 +26,16 @@ import { useCrossSectionCopy } from "../hooks/useCrossSectionCopy";
 import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
 import { useDocumentActivity } from "../hooks/useDocumentActivity";
 import { DocumentActivityIndicator } from "../components/DocumentActivityIndicator";
-import { DocumentSectionNav, type DocumentSectionNavItem } from "../components/DocumentSectionNav";
-import { useSectionViewportVisibility } from "../hooks/useTopViewportSection";
+import {
+  DocumentSectionNav,
+  DocumentSectionNavOverlay,
+  type DocumentSectionNavItem,
+} from "../components/DocumentSectionNav";
+import { pickTopViewportSection, useSectionViewportVisibility } from "../hooks/useTopViewportSection";
 import { DocumentResourceModel } from "../models/document-resource-model";
 import {
   sectionHeadingKey,
   sectionGlobalKey,
-  type DocStructureNode,
   type DocumentReplacementNoticePayload,
 } from "../types/shared.js";
 import {
@@ -45,9 +47,9 @@ import {
   getDocDisplayName,
   headingText,
   isDocumentEffectivelyEmpty,
-  LOADING_REVEAL_DELAY_MS,
 } from "./document-page-utils";
 import { useDocumentSessionController } from "../hooks/useDocumentSessionController";
+import { useDocLayoutMode } from "../hooks/useDocLayoutMode";
 import { useEditorWindowEviction } from "../hooks/useEditorRegistry";
 import { useLiveSectionReplica } from "../hooks/useLiveSectionReplica";
 import { useActiveEditors } from "../hooks/useActiveEditors";
@@ -111,11 +113,17 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const [pathCopied, setPathCopied] = useState(false);
   const pathCopiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const paperHeaderRef = useRef<HTMLDivElement>(null);
+  const layoutMode = useDocLayoutMode();
+  const setDocLayoutNarrow = layoutOutlet?.setDocLayoutNarrow;
+  useLayoutEffect(() => {
+    if (!setDocLayoutNarrow) return;
+    setDocLayoutNarrow(layoutMode === "narrow");
+    return () => setDocLayoutNarrow(false);
+  }, [layoutMode, setDocLayoutNarrow]);
+  const [sectionNavOverlayOpen, setSectionNavOverlayOpen] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [showOverwrite, setShowOverwrite] = useState(false);
-  const [structureTree, setStructureTree] = useState<DocStructureNode[] | null>(null);
-  const [showLoading, setShowLoading] = useState(false);
   const [loadDurationMs, setLoadDurationMs] = useState<number | null>(null);
   const loadStartedAtRef = useRef<number | null>(null);
 
@@ -441,7 +449,6 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     docPath,
     clientInstanceId,
     liveReplicaReadyRef,
-    setStructureTree,
     loadSections,
     setError,
     onSectionsInjectedByProposal,
@@ -497,6 +504,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     isEditing && effectiveFocusedIndex !== null && renderSections[effectiveFocusedIndex]
       ? SectionId.text(renderSections[effectiveFocusedIndex].id)
       : null;
+  const currentSectionPick = pickTopViewportSection(navVisibilityByFragmentKey, navItems);
   const handleNavigateToSection = useCallback((fragmentKey: string) => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -580,25 +588,6 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
       }
     };
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    setStructureTree(null);
-    resourceModel.loadStructure(docPath).then((structure) => {
-      if (cancelled) return;
-      setStructureTree(structure);
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [docPath, resourceModel]);
-
-  useEffect(() => {
-    if (!sectionsLoading) {
-      setShowLoading(false);
-      return;
-    }
-    const timer = setTimeout(() => setShowLoading(true), LOADING_REVEAL_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [sectionsLoading]);
 
   // Initial canonical load. The live replica connects its observer socket on
   // mount by itself — there is no separate observer to start here.
@@ -816,22 +805,32 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     return <DocumentLoadErrorView docPath={docPath} error={error} />;
   }
 
-  return (
-    <SectionHoverProvider activeFragmentKey={focusedFragmentKey}>
-    <DocumentActivityIndicator activity={documentActivity} />
-    <div className="relative flex flex-col h-full min-h-0" style={{ background: "var(--color-page-bg)" }}>
-      <DocumentPaperStickyHeader
-        title={docTitle}
-        presenceModel={presenceModel}
-        currentUserId={currentUser?.id ?? null}
-        documentActivity={documentActivitySnapshot}
-        scrollContainerRef={scrollContainerRef}
-        paperHeaderRef={paperHeaderRef}
-        paperRef={paperRef}
-      />
-      <div className="relative shrink-0">
+  const documentTopbar = (
         <DocumentTopbar
           docPath={docPath}
+          title={docTitle}
+          layoutMode={layoutMode}
+          pathCopied={pathCopied}
+          onCopyPath={async () => {
+            const didCopy = await copyTextToClipboard(docPath);
+            if (!didCopy) return;
+            setPathCopied(true);
+            if (pathCopiedTimeoutRef.current) {
+              clearTimeout(pathCopiedTimeoutRef.current);
+            }
+            pathCopiedTimeoutRef.current = setTimeout(() => setPathCopied(false), 1500);
+          }}
+          onStartRename={() => { setRenameValue(docPath); setRenaming(true); }}
+          onDelete={async () => {
+            if (!window.confirm("Delete this document? This cannot be undone.")) return;
+            setDeleteError(null);
+            try {
+              await resourceModel.deleteDocument(docPath);
+              navigate("/");
+            } catch (err) {
+              setDeleteError(err instanceof Error ? err.message : String(err));
+            }
+          }}
           toolbarAccessory={toolbarAccessory}
           showHistory={showHistory}
           onToggleHistory={() => setShowHistory((v) => !v)}
@@ -849,11 +848,138 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
           backendError={saveStatus.backendError}
           publishDecision={publishDecision}
         />
+  );
 
-        {/* Document-level connection banner overlays the content so transient
-            connect phases don't shift the document layout. */}
+  return (
+    <SectionHoverProvider activeFragmentKey={focusedFragmentKey}>
+    <DocumentActivityIndicator activity={documentActivity} />
+    <div data-doc-layout={layoutMode} className="relative flex flex-col h-full min-h-0" style={{ background: "var(--color-page-bg)" }}>
+      {layoutMode === "wide" ? (
+        <DocumentPaperStickyHeader
+          title={docTitle}
+          presenceModel={presenceModel}
+          currentUserId={currentUser?.id ?? null}
+          documentActivity={documentActivitySnapshot}
+          scrollContainerRef={scrollContainerRef}
+          paperHeaderRef={paperHeaderRef}
+          paperRef={paperRef}
+        />
+      ) : null}
+      {layoutMode === "narrow" ? (
+      <header className="doc-narrow-sticky">
+      <div className="relative">
+        {documentTopbar}
         <DocumentConnectionBanner banner={crdtBanner} />
       </div>
+
+      <button
+        type="button"
+        className="doc-narrow-sticky__title"
+        title={pathCopied ? "Copied" : "Copy document path"}
+        aria-label={pathCopied ? "Path copied" : "Copy document path"}
+        onClick={() => {
+          void (async () => {
+            const didCopy = await copyTextToClipboard(docPath);
+            if (!didCopy) return;
+            setPathCopied(true);
+            if (pathCopiedTimeoutRef.current) {
+              clearTimeout(pathCopiedTimeoutRef.current);
+            }
+            pathCopiedTimeoutRef.current = setTimeout(() => setPathCopied(false), 1500);
+          })();
+        }}
+      >
+        <span className="doc-narrow-sticky__doc-glyph" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 16 16" fill="none">
+            <path
+              d="M4.25 2.4h5.15L12.6 5.7v7.75A1.15 1.15 0 0 1 11.45 14.6H4.25A1.15 1.15 0 0 1 3.1 13.45V3.55A1.15 1.15 0 0 1 4.25 2.4Z"
+              stroke="currentColor"
+              strokeWidth="1.35"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M9.25 2.5v3.2h3.2"
+              stroke="currentColor"
+              strokeWidth="1.35"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
+        <h1 className="doc-narrow-sticky__doc-title">
+          <span className="doc-narrow-sticky__doc-title-text">{docTitle}</span>
+          <span className="doc-narrow-sticky__doc-suffix">.md</span>
+        </h1>
+        {pathCopied ? (
+          <span className="doc-narrow-sticky__doc-copied" aria-hidden="true">Copied</span>
+        ) : null}
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setSectionNavOverlayOpen(true)}
+        className="doc-narrow-sticky__section"
+        disabled={!currentSectionPick}
+        aria-label={
+          currentSectionPick
+            ? `Section ${currentSectionPick.index + 1} of ${navItems.length}: ${navItems[currentSectionPick.index].heading}`
+            : "Sections"
+        }
+      >
+        {currentSectionPick ? (
+          <>
+            <span className="doc-narrow-sticky__section-count" aria-hidden="true">
+              {currentSectionPick.index + 1}/{navItems.length}
+            </span>
+            <span className="doc-narrow-sticky__section-spacer" aria-hidden="true" />
+            <span className="doc-narrow-sticky__section-level" aria-hidden="true">
+              H{navItems[currentSectionPick.index].headingLevel}
+            </span>
+            <span
+              className="doc-narrow-sticky__section-heading"
+              data-heading-level={navItems[currentSectionPick.index].headingLevel}
+            >
+              {navItems[currentSectionPick.index].heading}
+            </span>
+            <span className="doc-narrow-sticky__section-chevron" aria-hidden="true">▾</span>
+          </>
+        ) : sectionsLoading ? (
+          <>
+            <span className="h-3 w-10 bg-slate-100 rounded-full animate-pulse self-center" aria-hidden="true" />
+            <span className="h-3 w-36 bg-slate-100 rounded animate-pulse self-center" aria-hidden="true" />
+          </>
+        ) : null}
+      </button>
+
+      {boundProposalId ? (
+        <div
+          className="doc-narrow-sticky__draft-overlay flex items-center gap-2 px-4 py-1.5 text-xs bg-accent-light border-t border-accent-border"
+          role="status"
+          aria-live="polite"
+          data-testid="shared-draft-compact-bar"
+        >
+          <span className="min-w-0 truncate font-medium text-accent-text">
+            Draft — {changedSectionCount} changed
+            {activelyEditedCount > 0 ? `, ${activelyEditedCount} editing` : ""}
+          </span>
+          <button
+            type="button"
+            className="ml-auto shrink-0 rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={forcePublishing || publishPaused}
+            onClick={forcePublish}
+          >
+            {forcePublishing || publishPaused
+              ? "Publishing…"
+              : `Publish ${changedSectionCount}`}
+          </button>
+        </div>
+      ) : null}
+      </header>
+      ) : (
+      <div className="relative shrink-0">
+        {documentTopbar}
+        <DocumentConnectionBanner banner={crdtBanner} />
+      </div>
+      )}
 
       {/* Replacement notice — shown after a reconnect following restore/overwrite */}
       {replacementNotice && (
@@ -921,11 +1047,12 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
 
           {/* Header row */}
           <div className="flex">
-            <div className="w-[200px] min-w-[100px] shrink" />
-            <div ref={paperRef} className="flex-1 min-w-[700px] bg-canvas-bg border border-b-0 border-[rgba(0,0,0,0.06)] rounded-t-sm px-14 pt-8 relative">
+            <div className="doc-gutter-left" />
+            <div ref={paperRef} className="doc-paper-col border-t border-[rgba(0,0,0,0.06)] rounded-t-sm pt-8 relative">
               <DocumentPaperHeader
                 title={docTitle}
                 docPath={docPath}
+                layoutMode={layoutMode}
                 presenceModel={presenceModel}
                 currentUserId={currentUser?.id ?? null}
                 documentActivity={documentActivitySnapshot}
@@ -985,7 +1112,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
               {/* Shared-draft banner — only when a live inprogress proposal is
                   bound to this document (FP7). Retained across an aborted/failed
                   force-publish while the proposal stays in progress. */}
-              {boundProposalId ? (
+              {layoutMode === "wide" && boundProposalId ? (
                 <div className="mb-4">
                   <SharedDraftBanner
                     changedSectionCount={changedSectionCount}
@@ -1029,9 +1156,6 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
                 </pre>
               ) : null}
 
-              {/* Loading state */}
-              {showLoading ? <DocumentLoadingSkeleton structureTree={structureTree} /> : null}
-
               {!sectionsLoading && isDocumentEffectivelyEmpty(renderSections, getDisplayMarkdown) && !isEditing && !error ? (
                 <button
                   type="button"
@@ -1055,7 +1179,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
                 </button>
               ) : null}
             </div>
-            <div className="w-[200px] min-w-[140px] shrink" />
+            <div className="doc-gutter-right" />
           </div>
 
           {/* Live-owner boundary: keyed on the replica generation so a pipeline
@@ -1107,25 +1231,43 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
 
           {/* Footer row — closes the paper */}
           <div className="flex">
-            <div className="w-[200px] min-w-[100px] shrink" />
-            <div className="flex-1 min-w-[700px] bg-canvas-bg border border-t-0 border-[rgba(0,0,0,0.06)] rounded-b-sm pb-16 min-h-[100px]" />
-            <div className="w-[200px] min-w-[140px] shrink" />
+            <div className="doc-gutter-left" />
+            <div className="doc-paper-col border-b border-[rgba(0,0,0,0.06)] rounded-b-sm pb-16 min-h-[100px]" />
+            <div className="doc-gutter-right" />
           </div>
 
         </div>
       </div>
 
-      {/* Section navigation index — right-gutter panel */}
-      <DocumentSectionNav
-        title={docTitle}
-        items={navItems}
-        editingFragmentKey={navEditingFragmentKey}
-        visibilityByFragmentKey={navVisibilityByFragmentKey}
-        onNavigate={handleNavigateToSection}
-        onNavigateToTop={handleNavigateToTop}
-        anchorRef={paperRef}
-        scrollContainerRef={scrollContainerRef}
-      />
+      {/* Section navigation index — right-gutter panel (wide) / overlay (narrow) */}
+      {layoutMode === "wide" ? (
+        <DocumentSectionNav
+          title={docTitle}
+          items={navItems}
+          editingFragmentKey={navEditingFragmentKey}
+          visibilityByFragmentKey={navVisibilityByFragmentKey}
+          onNavigate={handleNavigateToSection}
+          onNavigateToTop={handleNavigateToTop}
+          anchorRef={paperRef}
+          scrollContainerRef={scrollContainerRef}
+        />
+      ) : sectionNavOverlayOpen ? (
+        <DocumentSectionNavOverlay
+          title={docTitle}
+          items={navItems}
+          editingFragmentKey={navEditingFragmentKey}
+          visibilityByFragmentKey={navVisibilityByFragmentKey}
+          onNavigate={(fragmentKey) => {
+            handleNavigateToSection(fragmentKey);
+            setSectionNavOverlayOpen(false);
+          }}
+          onNavigateToTop={() => {
+            handleNavigateToTop();
+            setSectionNavOverlayOpen(false);
+          }}
+          onClose={() => setSectionNavOverlayOpen(false)}
+        />
+      ) : null}
 
       <DocumentFooter
         docPath={docPath}
@@ -1134,7 +1276,8 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
         loadDurationMs={loadDurationMs}
       />
 
-      {/* Proposal floating panel */}
+      {/* Proposal floating panel (wide only) */}
+      {layoutMode === "wide" ? (
       <ProposalPanel
         proposalMode={proposalMode}
         activeProposal={activeProposal}
@@ -1154,6 +1297,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
         canEditIntent={activeProposalStatus === "draft"}
         onProposalIntentChange={updateProposalIntent}
       />
+      ) : null}
 
       {deleteError ? (
         <CanonicalWriteFailureDialog

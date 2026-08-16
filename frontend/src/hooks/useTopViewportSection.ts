@@ -39,6 +39,25 @@ function visibilityMapsEqual(a: SectionVisibilityMap, b: SectionVisibilityMap): 
   return true;
 }
 
+export interface TopViewportSectionPick {
+  fragmentKey: string;
+  index: number;
+}
+
+export function pickTopViewportSection(
+  visibilityByFragmentKey: SectionVisibilityMap,
+  orderedHeadedItems: readonly { fragmentKey: string }[],
+): TopViewportSectionPick | null {
+  if (orderedHeadedItems.length === 0) return null;
+  for (let index = 0; index < orderedHeadedItems.length; index++) {
+    const { fragmentKey } = orderedHeadedItems[index];
+    if ((visibilityByFragmentKey[fragmentKey] ?? 0) > 0) {
+      return { fragmentKey, index };
+    }
+  }
+  return { fragmentKey: orderedHeadedItems[0].fragmentKey, index: 0 };
+}
+
 export function useSectionViewportVisibility(
   scrollContainerRef: React.RefObject<HTMLElement | null>,
   revision: number,
