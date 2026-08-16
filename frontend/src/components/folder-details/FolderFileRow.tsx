@@ -1,3 +1,11 @@
+import { Link } from "react-router-dom";
+
+/**
+ * Clickable file row. The outer element is a real <Link href>, not a
+ * <button onClick={navigate}>. Fake click-handlers are not links: they break
+ * open-in-new-tab, middle-click, copy-link, and every non-JS browser path.
+ */
+
 export type FolderFileStatusDot = "new" | "agent";
 
 export interface FolderFileRowProps {
@@ -6,7 +14,8 @@ export interface FolderFileRowProps {
   /** Section / heading names shown on hover to the right of the filename. */
   sectionNames?: string[];
   statusDots?: FolderFileStatusDot[];
-  onClick: () => void;
+  /** Document route. This row is a real <Link>, never a click handler. */
+  to: string;
 }
 
 const DOT_CLASS: Record<FolderFileStatusDot, string> = {
@@ -39,13 +48,12 @@ export function FolderFileRow({
   meta,
   sectionNames,
   statusDots = [],
-  onClick,
+  to,
 }: FolderFileRowProps) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="group flex w-full min-w-0 items-center gap-3 py-2.5 text-left transition-colors hover:bg-section-hover"
+    <Link
+      to={to}
+      className="group flex w-full min-w-0 items-center gap-3 py-2.5 text-left no-underline transition-colors hover:bg-section-hover"
     >
       {statusDots.length > 0 ? (
         <span className="flex w-3.5 shrink-0 items-center justify-center gap-0.5" aria-hidden="true">
@@ -74,6 +82,6 @@ export function FolderFileRow({
           <span className="block truncate text-[11px] text-text-faint">{meta}</span>
         ) : null}
       </span>
-    </button>
+    </Link>
   );
 }

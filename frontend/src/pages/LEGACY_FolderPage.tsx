@@ -4,7 +4,7 @@
  * Candidate for deletion once the new folder details page is settled.
  */
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useOutletContext } from "react-router-dom";
+import { Link, useNavigate, useOutletContext } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { ContentPanel } from "../components/ContentPanel";
 import { PageStatusBar } from "../components/PageStatusBar";
@@ -176,27 +176,20 @@ function CopyPathButton({
   );
 }
 
-function FolderPathBreadcrumb({
-  folderPath,
-  onNavigate,
-}: {
-  folderPath: FolderPath;
-  onNavigate: (route: string) => void;
-}) {
+function FolderPathBreadcrumb({ folderPath }: { folderPath: FolderPath }) {
   const parts = folderPath.split("/").filter(Boolean);
   const segmentClass =
-    "border-none bg-transparent p-0 font-inherit text-inherit cursor-pointer hover:text-accent-text hover:underline";
+    "font-inherit text-inherit no-underline hover:text-accent-text hover:underline";
 
   return (
     <span className="inline-flex min-w-0 max-w-full items-center truncate">
-      <button
-        type="button"
+      <Link
+        to={folderHref(FolderPath.root)}
         className={`shrink-0 ${segmentClass}`}
-        onClick={() => onNavigate(folderHref(FolderPath.root))}
         aria-label="Open documents root"
       >
         /
-      </button>
+      </Link>
       {parts.map((part, index) => {
         const segmentPath = `/${parts.slice(0, index + 1).join("/")}`;
         const isLast = index === parts.length - 1;
@@ -205,14 +198,13 @@ function FolderPathBreadcrumb({
             {isLast ? (
               <span className="truncate">{part}</span>
             ) : (
-              <button
-                type="button"
+              <Link
+                to={folderHref(FolderPath.parse(segmentPath))}
                 className={`min-w-0 truncate ${segmentClass}`}
-                onClick={() => onNavigate(folderHref(FolderPath.parse(segmentPath)))}
                 aria-label={`Open folder ${segmentPath}`}
               >
                 {part}
-              </button>
+              </Link>
             )}
             {!isLast ? <span className="shrink-0 text-text-faint">/</span> : null}
           </span>
@@ -410,7 +402,7 @@ export function LegacyFolderPage({ folderPath }: LegacyFolderPageProps) {
                 <div className="min-w-0 flex-1">
                   <ContentPanel.Title icon={<span className="text-text-muted">&#128193;</span>}>
                     <span className="inline-flex min-w-0 items-center gap-1">
-                      <FolderPathBreadcrumb folderPath={folderPath} onNavigate={navigate} />
+                      <FolderPathBreadcrumb folderPath={folderPath} />
                       <CopyPathButton
                         path={folderClipboardPath}
                         label={FolderPath.displayName(folderPath)}
@@ -529,8 +521,7 @@ export function LegacyFolderPage({ folderPath }: LegacyFolderPageProps) {
                             sections === undefined || sections.length === 0
                               ? undefined
                               : sections.join(" | ");
-                          const openFile = () =>
-                            navigate(docHref(DocPath.parse(path)));
+                          const fileTo = docHref(DocPath.parse(path));
                           return (
                             <li key={path} className="min-w-0">
                               <div className="flex w-full min-w-0 flex-col gap-0 rounded-md px-2 py-0.5 hover:bg-section-hover">
@@ -541,13 +532,12 @@ export function LegacyFolderPage({ folderPath }: LegacyFolderPageProps) {
                                   >
                                     &#128196;
                                   </span>
-                                  <button
-                                    type="button"
-                                    className="min-w-0 truncate border-none bg-transparent p-0 text-left text-[13px] font-medium text-accent-text cursor-pointer hover:underline"
-                                    onClick={openFile}
+                                  <Link
+                                    to={fileTo}
+                                    className="min-w-0 truncate text-left text-[13px] font-medium text-accent-text no-underline hover:underline"
                                   >
                                     {getDisplayName(path)}
-                                  </button>
+                                  </Link>
                                   <CopyPathButton
                                     path={path}
                                     label={getDisplayName(path)}
@@ -556,27 +546,24 @@ export function LegacyFolderPage({ folderPath }: LegacyFolderPageProps) {
                                   />
                                 </span>
                                 {sections === undefined ? (
-                                  <button
-                                    type="button"
-                                    className="block w-full truncate border-none bg-transparent pl-5 text-left text-[11px] italic text-text-faint cursor-pointer"
-                                    onClick={openFile}
+                                  <Link
+                                    to={fileTo}
+                                    className="block w-full truncate pl-5 text-left text-[11px] italic text-text-faint no-underline"
                                   >
                                     (loading contents)
-                                  </button>
+                                  </Link>
                                 ) : sections.length === 0 ? (
-                                  <button
-                                    type="button"
-                                    className="block w-full truncate border-none bg-transparent pl-5 text-left text-[11px] font-medium text-text-secondary cursor-pointer"
-                                    onClick={openFile}
+                                  <Link
+                                    to={fileTo}
+                                    className="block w-full truncate pl-5 text-left text-[11px] font-medium text-text-secondary no-underline"
                                   >
                                     No sections
-                                  </button>
+                                  </Link>
                                 ) : (
-                                  <button
-                                    type="button"
-                                    className="block w-full truncate border-none bg-transparent pl-5 text-left text-[11px] font-medium text-text-secondary cursor-pointer"
+                                  <Link
+                                    to={fileTo}
+                                    className="block w-full truncate pl-5 text-left text-[11px] font-medium text-text-secondary no-underline"
                                     title={sectionTitle}
-                                    onClick={openFile}
                                   >
                                     {sections.map((name, index) => (
                                       <span key={`${path}-${index}-${name}`}>
@@ -591,7 +578,7 @@ export function LegacyFolderPage({ folderPath }: LegacyFolderPageProps) {
                                         {name}
                                       </span>
                                     ))}
-                                  </button>
+                                  </Link>
                                 )}
                               </div>
                             </li>
@@ -621,13 +608,12 @@ export function LegacyFolderPage({ folderPath }: LegacyFolderPageProps) {
                                     &#128193;
                                   </span>
                                   {childFolderPath ? (
-                                    <button
-                                      type="button"
-                                      className="min-w-0 truncate border-none bg-transparent p-0 text-left text-[13px] font-medium text-accent-text cursor-pointer hover:underline"
-                                      onClick={() => navigate(folderHref(childFolderPath))}
+                                    <Link
+                                      to={folderHref(childFolderPath)}
+                                      className="min-w-0 truncate text-left text-[13px] font-medium text-accent-text no-underline hover:underline"
                                     >
                                       {getDisplayName(folder.path)}
-                                    </button>
+                                    </Link>
                                   ) : (
                                     <span className="min-w-0 truncate text-left text-[13px] font-medium text-text-secondary">
                                       {getDisplayName(folder.path)}

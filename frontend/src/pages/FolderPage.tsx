@@ -308,16 +308,10 @@ function FolderGlyphIcon({ size }: { size: number }) {
   );
 }
 
-function FolderPathBreadcrumb({
-  folderPath,
-  onNavigate,
-}: {
-  folderPath: FolderPath;
-  onNavigate: (route: string) => void;
-}) {
+function FolderPathBreadcrumb({ folderPath }: { folderPath: FolderPath }) {
   const parts = folderPath.split("/").filter(Boolean);
   const segmentClass =
-    "border-none bg-transparent p-0 font-inherit text-inherit cursor-pointer hover:text-text-secondary hover:underline";
+    "font-inherit text-inherit no-underline hover:text-text-secondary hover:underline";
   const slashClass = "mx-1 shrink-0 text-folder-new";
 
   return (
@@ -338,14 +332,13 @@ function FolderPathBreadcrumb({
       <span className={slashClass} aria-hidden="true">
         /
       </span>
-      <button
-        type="button"
+      <Link
+        to={folderHref(FolderPath.root)}
         className={`shrink-0 text-text-faint ${segmentClass}`}
-        onClick={() => onNavigate(folderHref(FolderPath.root))}
         aria-label="Open documents root"
       >
         docs
-      </button>
+      </Link>
       <span className={slashClass} aria-hidden="true">
         /
       </span>
@@ -360,14 +353,13 @@ function FolderPathBreadcrumb({
             {isLast ? (
               <span className="font-semibold text-text-primary">{part}</span>
             ) : (
-              <button
-                type="button"
+              <Link
+                to={folderHref(FolderPath.parse(segmentPath))}
                 className={`text-text-faint ${segmentClass}`}
-                onClick={() => onNavigate(folderHref(FolderPath.parse(segmentPath)))}
                 aria-label={`Open folder ${segmentPath}`}
               >
                 {part}
-              </button>
+              </Link>
             )}
             <span className={slashClass} aria-hidden="true">
               /
@@ -673,7 +665,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                 </h1>
                 <div className="flex min-w-0 items-center gap-2">
                   <div className="min-w-0 flex-1 overflow-x-auto">
-                    <FolderPathBreadcrumb folderPath={folderPath} onNavigate={navigate} />
+                    <FolderPathBreadcrumb folderPath={folderPath} />
                   </div>
                   <span className="max-md:hidden">
                     <CopyPathButton
@@ -739,6 +731,9 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                   <ul className="m-0 flex list-none flex-col gap-2 p-0">
                     {sortedFolders.map((folder) => {
                       const childFolderPath = FolderPath.tryParse(folder.path);
+                      if (!childFolderPath) {
+                        return null;
+                      }
                       return (
                         <li key={folder.path} className="min-w-0">
                           <FolderCard
@@ -748,11 +743,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                             fileNames={folder.directFileNames}
                             books={folder.books}
                             access={folder.access}
-                            onClick={() => {
-                              if (childFolderPath) {
-                                navigate(folderHref(childFolderPath));
-                              }
-                            }}
+                            to={folderHref(childFolderPath)}
                           />
                         </li>
                       );
@@ -788,7 +779,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                         <FolderFileRow
                           name={getDisplayName(path)}
                           sectionNames={folderDetailsSectionNamesCache[path]}
-                          onClick={() => navigate(docHref(DocPath.parse(path)))}
+                          to={docHref(DocPath.parse(path))}
                         />
                       </li>
                     ))}

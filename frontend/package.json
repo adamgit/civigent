@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",
     "guard:api-boundary": "node ./scripts/guard-no-direct-api-fetch.mjs",
-    "test": "npm run guard:api-boundary && vitest run",
+    "guard:folder-links": "node ./scripts/guard-folder-destinations-are-links.mjs",
+    "test": "npm run guard:api-boundary && npm run guard:folder-links && vitest run",
     "test:watch": "vitest",
     "test:ws:single-tab": "vitest run src/__tests__/DocumentViewPage.test.tsx src/__tests__/DocsBrowserPage.tree-contract.test.tsx",
     "test:ws:shared-session": "vitest run src/__tests__/ws-client.test.ts src/__tests__/shared-websocket-transport.test.ts src/__tests__/AppLayout.shared-session.test.tsx"

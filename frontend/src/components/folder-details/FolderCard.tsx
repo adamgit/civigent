@@ -1,3 +1,11 @@
+import { Link } from "react-router-dom";
+
+/**
+ * Clickable folder card. The outer element is a real <Link href>, not a
+ * <button onClick={navigate}>. Fake click-handlers are not links: they break
+ * open-in-new-tab, middle-click, copy-link, and every non-JS browser path.
+ */
+
 /** Bytes per approximate "page" for cheap mass signals. Not a real page measure. */
 export const APPROX_BYTES_PER_PAGE = 2000;
 
@@ -48,7 +56,8 @@ export interface FolderCardProps {
   newCount?: number;
   accent?: "new" | "agent" | null;
   hasAgentMarker?: boolean;
-  onClick: () => void;
+  /** Folder route. This card is a real <Link>, never a click handler. */
+  to: string;
 }
 
 function FileCountIcon() {
@@ -199,17 +208,16 @@ export function FolderCard({
   newCount,
   accent = null,
   hasAgentMarker = false,
-  onClick,
+  to,
 }: FolderCardProps) {
   const accentClass =
     accent === "new" ? "bg-folder-new" : accent === "agent" ? "bg-agent" : null;
   const subtitle = fileNames.length > 0 ? fileNames.join(", ") : "empty";
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="group relative grid w-full min-w-0 max-w-full rounded-md border border-folder-card-border bg-folder-card-bg py-2.5 pr-3 pl-3 text-left transition-colors hover:border-folder-card-border-hover hover:bg-canvas-bg"
+    <Link
+      to={to}
+      className="group relative grid w-full min-w-0 max-w-full rounded-md border border-folder-card-border bg-folder-card-bg py-2.5 pr-3 pl-3 text-left no-underline transition-colors hover:border-folder-card-border-hover hover:bg-canvas-bg"
     >
       {accentClass ? (
         <span
@@ -257,6 +265,6 @@ export function FolderCard({
           {subtitle}
         </span>
       </span>
-    </button>
+    </Link>
   );
 }
