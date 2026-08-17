@@ -140,6 +140,7 @@ function flatEntriesToSections(docPath: DocPath, entries: Array<{ headingPath: s
 export async function mutateProposalContent(
   proposalId: string,
   operation: ProposalContentOperation,
+  options?: { onDocumentWritten?: (progress: { index: number; total: number; docPath: DocPath }) => void },
 ): Promise<MutateProposalContentResult> {
   // Fresh disk read: locate the proposal and read its current (cumulative) claim
   // set. Never cached across calls.
@@ -289,10 +290,11 @@ export async function mutateProposalContent(
       // Whole-document (re)write: derive each doc's claim set from a fresh disk
       // readback of the normalized heading structure AFTER the parser-driven write.
       affected = [];
-      for (const file of operation.files) {
+      for (const [fileIndex, file] of operation.files.entries()) {
         await editor.writeDocumentFromMarkdown(file.docPath, file.markdown);
         const headingPaths = await editor.listHeadingPaths(file.docPath);
         affected.push(...sectionsUnder(file.docPath, headingPaths));
+        options?.onDocumentWritten?.({ index: fileIndex + 1, total: operation.files.length, docPath: file.docPath });
       }
       break;
     }

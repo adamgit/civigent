@@ -384,7 +384,7 @@ export function clearWriterId(): void {
   }
 }
 
-async function requestJson<T>(url: string, init?: RequestInit, includeAuth = true): Promise<T> {
+async function requestRawResponse(url: string, init?: RequestInit, includeAuth = true): Promise<Response> {
   if (includeAuth) {
     await tryBootstrapSingleUserSession();
   }
@@ -415,6 +415,12 @@ async function requestJson<T>(url: string, init?: RequestInit, includeAuth = tru
     unauthorizedHandler?.();
   }
 
+  return response;
+}
+
+async function requestJson<T>(url: string, init?: RequestInit, includeAuth = true): Promise<T> {
+  const response = await requestRawResponse(url, init, includeAuth);
+
   try {
     return await parseJsonOrThrow<T>(response);
   } catch (error) {
@@ -427,6 +433,28 @@ async function requestJson<T>(url: string, init?: RequestInit, includeAuth = tru
     }
     throw error;
   }
+}
+
+export type ImportCommitProgress =
+  | { index: number; total: number; docPath: string }
+  | { publishing: true };
+
+interface SseFrame {
+  event: string;
+  data: string;
+}
+
+function parseSseFrame(block: string): SseFrame | null {
+  let event = "";
+  let data = "";
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) {
+      event = line.slice("event:".length).trim();
+    } else if (line.startsWith("data:")) {
+      data += line.slice("data:".length).trim();
+    }
+  }
+  return event.length > 0 ? { event, data } : null;
 }
 
 interface AuthMethodsResponse {
@@ -1138,12 +1166,66 @@ export const apiClient = {
     });
   },
 
-  async commitImport(id: string, description: string): Promise<ImportResponse> {
-    return requestJson<ImportResponse>(`/api/imports/${encodeURIComponent(id)}/commit`, {
+  async commitImport(
+    id: string,
+    description: string,
+    onProgress?: (event: ImportCommitProgress) => void,
+  ): Promise<ImportResponse> {
+    const response = await requestRawResponse(`/api/imports/${encodeURIComponent(id)}/commit`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ description }),
     });
+    const contentType = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    if (contentType !== "text/event-stream") {
+      return parseJsonOrThrow<ImportResponse>(response);
+    }
+    if (!response.body) {
+      throw new Error("Import commit stream had no response body.");
+    }
+
+    let doneBody: ImportResponse | null = null;
+    let streamError: Error | null = null;
+    const handleFrame = (frame: SseFrame): void => {
+      if (frame.event === "progress") {
+        const parsed = JSON.parse(frame.data) as { index: number; total: number; doc_path: string };
+        onProgress?.({ index: parsed.index, total: parsed.total, docPath: parsed.doc_path });
+      } else if (frame.event === "phase") {
+        onProgress?.({ publishing: true });
+      } else if (frame.event === "done") {
+        doneBody = JSON.parse(frame.data) as ImportResponse;
+      } else if (frame.event === "error") {
+        const parsed = JSON.parse(frame.data) as { message?: string };
+        streamError = new Error(parsed.message ?? "Import commit failed.");
+      }
+    };
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const drainCompleteFrames = (): void => {
+      let separator;
+      while ((separator = buffer.indexOf("\n\n")) >= 0) {
+        const block = buffer.slice(0, separator);
+        buffer = buffer.slice(separator + 2);
+        const frame = parseSseFrame(block);
+        if (frame) handleFrame(frame);
+      }
+    };
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      drainCompleteFrames();
+    }
+    buffer += decoder.decode();
+    drainCompleteFrames();
+    const trailing = parseSseFrame(buffer);
+    if (trailing) handleFrame(trailing);
+
+    if (streamError) throw streamError;
+    if (doneBody) return doneBody;
+    throw new Error("Import commit stream ended without a result — the connection may have been lost mid-commit.");
   },
 
   async resolveImportFile(

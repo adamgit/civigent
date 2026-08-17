@@ -281,10 +281,34 @@ export function registerImportRoutes(
         return;
       }
 
+      let streamHeadWritten = false;
+      const writeFrame = (event: string, data: unknown): void => {
+        if (res.writableEnded) return;
+        if (!streamHeadWritten) {
+          streamHeadWritten = true;
+          res.status(200);
+          res.setHeader("content-type", "text/event-stream");
+          res.setHeader("cache-control", "no-cache");
+          res.flushHeaders();
+        }
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      };
+
       let result;
       try {
-        result = await commitImport(importId, writer, description);
+        result = await commitImport(importId, writer, description, (progress) => {
+          if (progress.kind === "document_written") {
+            writeFrame("progress", { index: progress.index, total: progress.total, doc_path: progress.docPath });
+          } else {
+            writeFrame("phase", { phase: "publish" });
+          }
+        });
       } catch (error) {
+        if (streamHeadWritten) {
+          writeFrame("error", { message: error instanceof Error ? error.message : String(error) });
+          if (!res.writableEnded) res.end();
+          return;
+        }
         if (error instanceof ImportEmptyError || error instanceof ImportValidationError) {
           sendApiError(res, 400, error.message);
           return;
@@ -303,7 +327,7 @@ export function registerImportRoutes(
         );
       }
 
-      res.status(201).json({
+      writeFrame("done", {
         proposal_id: result.proposalId,
         status: "committed",
         outcome: "accepted",
@@ -312,6 +336,7 @@ export function registerImportRoutes(
         sections: result.sections,
         diagnostics: result.diagnostics,
       });
+      if (!res.writableEnded) res.end();
     } catch (error) {
       next(error);
     }

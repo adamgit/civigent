@@ -40,6 +40,7 @@ export async function importFilesToProposal(
   files: ImportFile[],
   writer: WriterIdentity,
   description: string,
+  onDocumentWritten?: (progress: { index: number; total: number; docPath: DocPath }) => void,
 ): Promise<ImportFilesToProposalResult> {
   const { id: proposalId, contentRoot: propContentRoot } = await createTransientProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
@@ -62,10 +63,14 @@ export async function importFilesToProposal(
 
   // Write each whole-document payload + derive the manifest from the normalized
   // on-disk heading structure through the single manifest-owning boundary.
-  await mutateProposalContent(proposalId, {
-    kind: "write_document_markdown",
-    files: files.map((f) => ({ docPath: f.docPath, markdown: f.content })),
-  });
+  await mutateProposalContent(
+    proposalId,
+    {
+      kind: "write_document_markdown",
+      files: files.map((f) => ({ docPath: f.docPath, markdown: f.content })),
+    },
+    { onDocumentWritten },
+  );
 
   return { id: proposalId, contentRoot: propContentRoot };
 }

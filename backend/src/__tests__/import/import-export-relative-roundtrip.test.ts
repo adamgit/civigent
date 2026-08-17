@@ -57,6 +57,19 @@ async function readCanonical(ctx: TestServerContext, docPath: string) {
   return request(ctx.app).get(`/api/canonical${docPath}`).set("Authorization", ctx.humanToken);
 }
 
+function sseDoneFrameBody(sseText: string): Record<string, unknown> {
+  for (const block of sseText.split("\n\n")) {
+    let event = "";
+    let data = "";
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice("event:".length).trim();
+      else if (line.startsWith("data:")) data += line.slice("data:".length).trim();
+    }
+    if (event === "done") return JSON.parse(data) as Record<string, unknown>;
+  }
+  throw new Error(`No done frame in SSE commit response: ${sseText}`);
+}
+
 describe("relative export → zip import round-trip (the batch law)", () => {
   let ctx: TestServerContext;
 
@@ -115,7 +128,12 @@ describe("relative export → zip import round-trip (the batch law)", () => {
       .set("Authorization", ctx.humanToken)
       .set("Content-Type", "application/json")
       .send({ description: "Round-trip re-import of /ops into /ops2" });
-    expect(committed.status).toBe(201);
+    expect(committed.status).toBe(200);
+    expect(committed.headers["content-type"]).toContain("text/event-stream");
+    const doneBody = sseDoneFrameBody(committed.text);
+    expect(doneBody.status).toBe("committed");
+    expect(doneBody.outcome).toBe("accepted");
+    expect(typeof doneBody.committed_head).toBe("string");
 
     for (const doc of OPS_DOCS) {
       const sourceRead = await readCanonical(ctx, doc.docPath);

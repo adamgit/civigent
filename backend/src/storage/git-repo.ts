@@ -45,11 +45,13 @@ export async function gitExec(
   options?: { input?: string },
 ): Promise<string> {
   // Keep safe.directory scoped to this git invocation to avoid mutating global git config.
-  const { stdout } = await execFileAsync(
-    "git",
-    ["-c", `safe.directory=${cwd}`, ...args],
-    { cwd, input: options?.input },
-  );
+  const pending = execFileAsync("git", ["-c", `safe.directory=${cwd}`, ...args], { cwd });
+  if (options?.input !== undefined) {
+    pending.child.stdin?.end(options.input);
+  } else {
+    pending.child.stdin?.end();
+  }
+  const { stdout } = await pending;
   return stdout.trimEnd();
 }
 

@@ -8,6 +8,7 @@ import {
   type ImportResponse,
   type ImportStagingFile,
   type ImportDuplicateBodyConflict,
+  type ImportCommitProgress,
 } from "../services/api-client";
 import type { DocumentTreeEntry } from "../types/shared.js";
 import { FolderPath } from "../types/shared.js";
@@ -284,6 +285,7 @@ function ImportDetailView({
   const [error, setError] = useState<string | null>(null);
   const [description, setDescription] = useState("");
   const [committing, setCommitting] = useState(false);
+  const [commitProgress, setCommitProgress] = useState<ImportCommitProgress | null>(null);
   const [commitResult, setCommitResult] = useState<ImportResponse | null>(null);
   const [uploading, setUploading] = useState(false);
   const [skippedNotice, setSkippedNotice] = useState<string | null>(null);
@@ -377,12 +379,13 @@ function ImportDetailView({
     setError(null);
     setCommitResult(null);
     try {
-      const res = await apiClient.commitImport(importId, description);
+      const res = await apiClient.commitImport(importId, description, setCommitProgress);
       setCommitResult(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCommitting(false);
+      setCommitProgress(null);
     }
   }, [importId, description]);
 
@@ -660,6 +663,37 @@ function ImportDetailView({
         <button className="btn-secondary" onClick={fetchDetail}>Refresh</button>
         <button className="btn-danger" style={{ marginLeft: "auto" }} onClick={handleDelete}>Cancel</button>
       </div>
+
+      {committing && (
+        <div className="space-y-1">
+          {commitProgress && "publishing" in commitProgress ? (
+            <>
+              <div className="h-2 rounded bg-page-bg border border-border-default overflow-hidden">
+                <div className="h-full w-full bg-accent animate-pulse" />
+              </div>
+              <p className="text-xs text-muted">Publishing…</p>
+            </>
+          ) : (
+            <>
+              <div className="h-2 rounded bg-page-bg border border-border-default overflow-hidden">
+                <div
+                  className="h-full bg-accent transition-[width]"
+                  style={{
+                    width: commitProgress
+                      ? `${Math.round((commitProgress.index / commitProgress.total) * 100)}%`
+                      : "0%",
+                  }}
+                />
+              </div>
+              <p className="text-xs text-muted">
+                {commitProgress
+                  ? `${commitProgress.index} of ${commitProgress.total} — ${commitProgress.docPath}`
+                  : "Starting…"}
+              </p>
+            </>
+          )}
+        </div>
+      )}
 
       {conflictModal && (
         <DuplicateBodyConflictModal

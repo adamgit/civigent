@@ -254,6 +254,10 @@ export class ImportEmptyError extends Error {
   }
 }
 
+export type ImportCommitProgressEvent =
+  | { kind: "document_written"; index: number; total: number; docPath: DocPath }
+  | { kind: "publishing" };
+
 export interface CommitImportResult {
   proposalId: string;
   committedHead: string;
@@ -306,7 +310,12 @@ export async function resolveImportFile(
  * rejected (corrupt markdown, internal artifacts, non-markdown) are skipped
  * rather than failing the whole import.
  */
-export async function commitImport(importId: string, writer: ImportWriter, description: string): Promise<CommitImportResult> {
+export async function commitImport(
+  importId: string,
+  writer: ImportWriter,
+  description: string,
+  onProgress?: (event: ImportCommitProgressEvent) => void,
+): Promise<CommitImportResult> {
   const meta = await readImportStagingMeta(importId);
   const scanned = await scanStagingFolder(importId);
   const rejectedPaths = new Set(
@@ -330,11 +339,13 @@ export async function commitImport(importId: string, writer: ImportWriter, descr
     importFiles,
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     description.trim(),
+    (progress) => onProgress?.({ kind: "document_written", ...progress }),
   );
 
   const freshProposal = await readProposal(importProposalId);
 
   const importDiagnostics: string[] = [];
+  onProgress?.({ kind: "publishing" });
   const committedHead = await publishProposalToCanonical(importProposalId, {}, importDiagnostics);
   await deleteStagingFolder(importId);
 
