@@ -239,6 +239,10 @@ export function registerWorkspaceRoutes(
           sendApiError(res, 409, error.message);
           return;
         }
+        if (error instanceof DocumentAlreadyExistsError) {
+          sendApiError(res, 409, error.message);
+          return;
+        }
         throw error;
       }
       if (result.kind === "blocked") {

@@ -7,6 +7,7 @@ import { Link, useNavigate, useOutletContext } from "react-router-dom";
 import { PageStatusBar } from "../components/PageStatusBar";
 import { FolderCard, type FolderBookSpine } from "../components/folder-details/FolderCard";
 import { FolderFileRow } from "../components/folder-details/FolderFileRow";
+import { FolderTreePageWatermark } from "../components/folder-details/FolderTreePageWatermark";
 import { DocumentSearchField } from "../components/DocumentSearchField";
 import {
   NewFileOrFolder,
@@ -638,7 +639,8 @@ export function FolderPage({ folderPath }: FolderPageProps) {
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-folder-page-bg">
-      <div className="flex-1 overflow-auto px-8 py-7 font-ui max-md:px-4 max-md:py-4">
+      <div className="relative isolate flex-1 overflow-auto px-8 py-7 font-ui max-md:px-4 max-md:py-4">
+        {folderEntry ? <FolderTreePageWatermark entry={folderEntry} /> : null}
         {treeLoading ? (
           <p className="text-xs text-text-muted">Loading folder details...</p>
         ) : null}
@@ -650,8 +652,9 @@ export function FolderPage({ folderPath }: FolderPageProps) {
         ) : null}
 
         {folderEntry && stats ? (
-          <div className="w-full max-w-5xl">
-            <div className="pb-5">
+          <div className="relative z-10 w-full max-w-5xl">
+            <div>
+              <div className="pb-5">
                 <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-faint max-md:hidden">
                   Folder
                 </p>
@@ -806,6 +809,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                   />
                 </div>
               </section>
+              </div>
             </div>
           </div>
         ) : null}

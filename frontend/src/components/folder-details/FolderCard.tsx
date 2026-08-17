@@ -1,15 +1,12 @@
 import { Link } from "react-router-dom";
 import type { DocumentTreeEntry } from "../../types/shared.js";
-import { FolderTreeSparkline } from "./FolderTreeSparkline";
+import { FolderTreeRadialDots } from "./FolderTreeRadialDots";
 
 /**
  * Clickable folder card. The outer element is a real <Link href>, not a
  * <button onClick={navigate}>. Fake click-handlers are not links: they break
  * open-in-new-tab, middle-click, copy-link, and every non-JS browser path.
  */
-
-/** Bytes per approximate "page" for cheap mass signals. Not a real page measure. */
-export const APPROX_BYTES_PER_PAGE = 2000;
 
 /** Muted leather-bound spine colours — stable pick via path hash. */
 const SPINE_COLORS = [
@@ -54,7 +51,7 @@ export interface FolderCardProps {
   fileNames: string[];
   /** Direct child files with sizes — drives the micro bookshelf. */
   books?: FolderBookSpine[];
-  /** Full folder entry — drives the removable subtree sparkline. */
+  /** Full folder entry — drives the swappable subtree graphic. */
   tree?: DocumentTreeEntry;
   access?: FolderCardAccess | null;
   newCount?: number;
@@ -149,18 +146,10 @@ function spineColorForPath(path: string): string {
   return SPINE_COLORS[hashPath(path) % SPINE_COLORS.length]!;
 }
 
-export function approxPagesFromBytes(sizeBytes: number): number {
-  if (sizeBytes <= 0) {
-    return 1;
-  }
-  return Math.max(1, Math.round(sizeBytes / APPROX_BYTES_PER_PAGE));
-}
-
 function MicroBookshelf({ books }: { books: FolderBookSpine[] }) {
   const maxBytes = books.reduce((max, book) => Math.max(max, book.sizeBytes), 0);
   const visible = books.slice(0, MAX_VISIBLE_SPINES);
   const hiddenCount = books.length - visible.length;
-  const hiddenNames = hiddenCount > 0 ? books.slice(MAX_VISIBLE_SPINES).map((book) => book.name) : [];
 
   return (
     <span
@@ -175,11 +164,9 @@ function MicroBookshelf({ books }: { books: FolderBookSpine[] }) {
           const heightPx = Math.round(
             SHELF_HEIGHT_PX * (SPINE_MIN_HEIGHT_RATIO + (1 - SPINE_MIN_HEIGHT_RATIO) * ratio),
           );
-          const pages = approxPagesFromBytes(book.sizeBytes);
           return (
             <span
               key={book.path}
-              title={`${book.name} · ~${pages} page${pages === 1 ? "" : "s"}`}
               className="w-[3px] shrink-0 rounded-[1px]"
               style={{
                 height: `${heightPx}px`,
@@ -191,10 +178,7 @@ function MicroBookshelf({ books }: { books: FolderBookSpine[] }) {
         })}
       </span>
       {hiddenCount > 0 ? (
-        <span
-          className="ml-0.5 shrink-0 self-end text-[10px] leading-none text-text-faint"
-          title={`${hiddenCount} more: ${hiddenNames.join(", ")}`}
-        >
+        <span className="ml-0.5 shrink-0 self-end text-[10px] leading-none text-text-faint">
           …
         </span>
       ) : null}
@@ -222,13 +206,21 @@ export function FolderCard({
   return (
     <Link
       to={to}
-      className="group relative grid w-full min-w-0 max-w-full rounded-md border border-folder-card-border bg-folder-card-bg py-2.5 pr-3 pl-3 text-left no-underline transition-colors hover:border-folder-card-border-hover hover:bg-canvas-bg"
+      title={subtitle}
+      className={`group relative grid w-full min-w-0 max-w-full rounded-md border border-folder-card-border bg-folder-card-bg py-2.5 pr-3 pl-3 text-left no-underline transition-colors hover:border-folder-card-border-hover hover:bg-canvas-bg ${
+        tree ? "grid-cols-[28px_minmax(0,1fr)] gap-x-2.5" : "grid-cols-1"
+      }`}
     >
       {accentClass ? (
         <span
           className={`absolute bottom-2 left-0 top-2 w-[3px] rounded-r-sm ${accentClass}`}
           aria-hidden="true"
         />
+      ) : null}
+      {tree ? (
+        <span className="row-span-2 self-center">
+          <FolderTreeRadialDots entry={tree} />
+        </span>
       ) : null}
       <span className="flex min-w-0 items-start justify-between gap-3">
         <span className="flex min-w-0 items-center gap-1.5">
@@ -262,11 +254,9 @@ export function FolderCard({
         </span>
       </span>
       <span className="mt-0.5 flex w-0 min-w-full items-end gap-2.5">
-        {tree ? <FolderTreeSparkline entry={tree} /> : null}
         {books.length > 0 ? <MicroBookshelf books={books} /> : null}
         <span
           className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-text-faint"
-          title={subtitle}
         >
           {subtitle}
         </span>

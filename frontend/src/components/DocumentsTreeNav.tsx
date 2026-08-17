@@ -1,10 +1,31 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type { DocumentTreeEntry } from "../types/shared.js";
 
 import { DocsLocation, docHref, folderHref } from "../app/docs-location";
 import { copyTextToClipboard } from "../utils/copy-text";
 import { DocPath, FolderPath } from "../types/shared";
+
+export type TreeDragSource =
+  | { kind: "doc"; path: DocPath }
+  | { kind: "folder"; path: FolderPath };
+
+export type TreeMoveDest =
+  | { kind: "doc"; from: DocPath; to: DocPath }
+  | { kind: "folder"; from: FolderPath; to: FolderPath };
+
+export function computeTreeMoveDest(source: TreeDragSource, destParent: FolderPath): TreeMoveDest | null {
+  const lastSegment = source.path.split("/").pop() ?? "";
+  const joined = destParent === FolderPath.root ? `/${lastSegment}` : `${destParent}/${lastSegment}`;
+  if (source.kind === "doc") {
+    const to = DocPath.tryParse(joined);
+    if (!to || to === source.path) return null;
+    return { kind: "doc", from: source.path, to };
+  }
+  const to = FolderPath.tryParse(joined);
+  if (!to || FolderPath.contains(source.path, to)) return null;
+  return { kind: "folder", from: source.path, to };
+}
 
 function findScrollParent(el: HTMLElement): HTMLElement | null {
   let parent = el.parentElement;
@@ -91,6 +112,12 @@ interface DocumentsTreeNavProps {
   flashDocKinds?: ReadonlyMap<string, "human" | "agent">;
   onDocumentOpen?: (docPath: string) => void;
   onCreateDocumentInFolder?: (folderPath: string) => void;
+  dragSource?: TreeDragSource | null;
+  onDragSourceChange?: (source: TreeDragSource | null) => void;
+  dropParentFolder?: FolderPath | null;
+  onDropParentFolderChange?: (parent: FolderPath | null) => void;
+  onMoveDocument?: (from: DocPath, to: DocPath) => void;
+  onMoveFolder?: (from: FolderPath, to: FolderPath) => void;
 }
 
 export function DocumentsTreeNav({
@@ -102,6 +129,12 @@ export function DocumentsTreeNav({
   flashDocKinds,
   onDocumentOpen,
   onCreateDocumentInFolder,
+  dragSource,
+  onDragSourceChange,
+  dropParentFolder,
+  onDropParentFolderChange,
+  onMoveDocument,
+  onMoveFolder,
 }: DocumentsTreeNavProps) {
   const location = useLocation();
   const docsLoc = useMemo(() => DocsLocation.fromPathname(location.pathname), [location.pathname]);
@@ -225,6 +258,45 @@ export function DocumentsTreeNav({
     </span>
   );
 
+  const dragSourceHandlers = (source: TreeDragSource) => ({
+    draggable: true,
+    onDragStart: (event: DragEvent<HTMLElement>) => {
+      event.dataTransfer.setData("text/plain", source.path);
+      event.dataTransfer.effectAllowed = "move";
+      onDragSourceChange?.(source);
+    },
+    onDragEnd: () => {
+      onDragSourceChange?.(null);
+      onDropParentFolderChange?.(null);
+    },
+  });
+
+  const dropTargetHandlers = (destParent: FolderPath | null) =>
+    destParent == null
+      ? {}
+      : {
+          onDragOver: (event: DragEvent<HTMLElement>) => {
+            if (!dragSource || !computeTreeMoveDest(dragSource, destParent)) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            if (dropParentFolder !== destParent) onDropParentFolderChange?.(destParent);
+          },
+          onDragLeave: (event: DragEvent<HTMLElement>) => {
+            if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+            if (dropParentFolder === destParent) onDropParentFolderChange?.(null);
+          },
+          onDrop: (event: DragEvent<HTMLElement>) => {
+            if (!dragSource) return;
+            event.preventDefault();
+            onDropParentFolderChange?.(null);
+            const dest = computeTreeMoveDest(dragSource, destParent);
+            onDragSourceChange?.(null);
+            if (!dest) return;
+            if (dest.kind === "doc") onMoveDocument?.(dest.from, dest.to);
+            else onMoveFolder?.(dest.from, dest.to);
+          },
+        };
+
   const renderEntries = (nodes: DocumentTreeEntry[], folderPathLength: number) => {
     return (
       <div className="flex flex-col gap-px">
@@ -249,9 +321,11 @@ export function DocumentsTreeNav({
                       ? "bg-sidebar-active-bg text-sidebar-active-text font-medium"
                       : emptyFolderClass
                         ?? "text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover"
-                  }`}
+                  }${dropParentFolder != null && dropParentFolder === node.path ? " outline outline-2 -outline-offset-2 outline-accent bg-white/60" : ""}`}
                   style={{ paddingLeft }}
                   onClick={() => toggleDirectory(node.path)}
+                  {...(nodeFolderPath ? dragSourceHandlers({ kind: "folder", path: nodeFolderPath }) : {})}
+                  {...dropTargetHandlers(nodeFolderPath)}
                 >
                   <button
                     type="button"
@@ -364,12 +438,18 @@ export function DocumentsTreeNav({
             onDocumentOpen?.(node.path);
           };
           const hasBadge = badgeSet.has(node.path);
+          const fileDocPath = DocPath.parse(node.path);
+          const fileParentFolder = FolderPath.tryParse(
+            node.path.lastIndexOf("/") === 0 ? "/" : node.path.slice(0, node.path.lastIndexOf("/")),
+          );
           return (
             <Link
               key={node.path}
               ref={isSelected ? selectedScrollRef : undefined}
-              to={docHref(DocPath.parse(node.path))}
+              to={docHref(fileDocPath)}
               onClick={handleClick}
+              {...dragSourceHandlers({ kind: "doc", path: fileDocPath })}
+              {...dropTargetHandlers(fileParentFolder)}
               data-testid={isSelected ? `tree-node-selected-${node.path}` : undefined}
               className={`flex items-center gap-[7px] min-w-0 px-1.5 py-[5px] rounded-[5px] text-[13px] cursor-pointer transition-all relative ${
                 isSelected

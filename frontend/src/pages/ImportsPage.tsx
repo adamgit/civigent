@@ -553,12 +553,12 @@ function ImportDetailView({
       )}
 
       {detail && excludedFiles.length > 0 && (
-        <div className="rounded-lg border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-3 space-y-2">
+        <div className="rounded-lg border-2 border-red-300 bg-red-50 p-3 space-y-2">
           <div>
-            <div className="text-sm font-semibold text-red-700 dark:text-red-400">
+            <div className="text-sm font-semibold text-red-700">
               Excluded from import ({excludedFiles.length})
             </div>
-            <p className="text-xs text-red-700/80 dark:text-red-400/80 mt-0.5">
+            <p className="text-xs text-red-700/80 mt-0.5">
               These files will not be imported. Choose a repair where one is offered, or leave them excluded.
             </p>
           </div>
@@ -575,14 +575,14 @@ function ImportDetailView({
               const resolutions = f.applicable_resolutions ?? [];
               const selected = selectedResolutions[f.path] ?? resolutions[0]?.id ?? "";
               return (
-                <tr key={f.path} className="border-t border-border-subtle text-red-800 dark:text-red-300">
+                <tr key={f.path} className="border-t border-border-subtle text-red-800">
                   <td className="py-1 px-2 font-mono text-xs whitespace-nowrap align-top">{f.path}</td>
                   <td className="py-1 px-2 text-xs align-top">{f.rejection_reason}</td>
                   <td className="py-1 px-2 align-top">
                     {resolutions.length > 0 ? (
                       <div className="flex flex-col gap-1">
                         <select
-                          className="w-full text-xs px-1 py-1 border border-border-default rounded bg-canvas-default"
+                          className="w-full text-xs px-1 py-1 border border-border-default rounded bg-canvas-bg"
                           value={selected}
                           onChange={(e) =>
                             setSelectedResolutions((prev) => ({ ...prev, [f.path]: e.target.value }))

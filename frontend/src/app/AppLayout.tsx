@@ -3,7 +3,7 @@ import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { apiClient, SystemStartingError, setUnauthorizedHandler, setSystemStartingHandler, setWriterId, clearWriterId } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
 import { connectSystemEvents, type FatalReport } from "../services/system-events-client";
-import { DocumentsTreeNav } from "../components/DocumentsTreeNav";
+import { DocumentsTreeNav, computeTreeMoveDest, type TreeDragSource } from "../components/DocumentsTreeNav";
 import { SidebarNavLinks } from "../components/SidebarNavLinks";
 import { SystemFatalScreen } from "../components/SystemFatalScreen";
 import { WsDiagnosticsConsole } from "../components/WsDiagnosticsConsole";
@@ -11,11 +11,11 @@ import { rememberRecentDoc } from "../services/recent-docs";
 import { CurrentUserProvider } from "../contexts/CurrentUserContext";
 import { SidebarIdentity } from "../components/SidebarIdentity";
 import type { DocumentTreeEntry, AuthUser } from "../types/shared.js";
-import { DocsLocation, docHref } from "./docs-location";
+import { DocsLocation, docHref, folderHref } from "./docs-location";
 import { formatBuildDate, readSidebarAutoHide, writeSidebarAutoHide, classifyWsEvent } from "./app-layout-utils";
 import { recordWsDiag } from "../services/ws-diagnostics";
 import { computeBrowserTabTitle } from "./browser-tab-title";
-import { DocPath } from "../types/shared";
+import { DocPath, FolderPath } from "../types/shared";
 import { SINGLE_USER_MODE_EXPLAINER } from "../single-user-mode";
 
 function flattenTreeDocPaths(entries: DocumentTreeEntry[]): string[] {
@@ -177,6 +177,10 @@ export function AppLayout() {
     [],
   );
   const [treeRowFlashes, setTreeRowFlashes] = useState<Map<string, TreeRowFlashEntry>>(new Map());
+  const [treeDragSource, setTreeDragSource] = useState<TreeDragSource | null>(null);
+  const [treeDropParentFolder, setTreeDropParentFolder] = useState<FolderPath | null>(null);
+  const [treeMoveError, setTreeMoveError] = useState<string | null>(null);
+  const treeMoveInFlightRef = useRef(false);
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
   const [systemStarting, setSystemStarting] = useState(false);
   const [fatalReport, setFatalReport] = useState<FatalReport | null>(null);
@@ -347,6 +351,45 @@ export function AppLayout() {
   const handleRootExport = () => {
     window.location.href = `/api/export?path=${encodeURIComponent("/")}`;
   };
+
+  const runTreeMove = useCallback(async (move: () => Promise<void>) => {
+    if (treeMoveInFlightRef.current) return;
+    treeMoveInFlightRef.current = true;
+    setTreeMoveError(null);
+    try {
+      await move();
+    } catch (err) {
+      setTreeMoveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      treeMoveInFlightRef.current = false;
+    }
+  }, []);
+
+  const handleTreeMoveDocument = useCallback(
+    (from: DocPath, to: DocPath) => {
+      void runTreeMove(async () => {
+        await apiClient.renameDocument(from, to);
+      });
+    },
+    [runTreeMove],
+  );
+
+  const handleTreeMoveFolder = useCallback(
+    (from: FolderPath, to: FolderPath) => {
+      void runTreeMove(async () => {
+        await apiClient.renameFolder(from, to);
+        const loc = DocsLocation.fromPathname(window.location.pathname);
+        if (loc?.kind === "doc" && FolderPath.containsDoc(from, loc.docPath)) {
+          navigate(docHref(FolderPath.rebaseDocPath(loc.docPath, from, to)));
+        } else if (loc?.kind === "folder" && FolderPath.contains(from, loc.folderPath)) {
+          navigate(
+            folderHref(loc.folderPath === from ? to : FolderPath.parse(`${to}${loc.folderPath.slice(from.length)}`)),
+          );
+        }
+      });
+    },
+    [navigate, runTreeMove],
+  );
 
   useEffect(() => {
     focusedDocPathRef.current = focusedDocPath;
@@ -771,7 +814,31 @@ export function AppLayout() {
         {/* Sidebar tree */}
         <div className="flex-1 px-2 py-0.5 overflow-y-auto sidebar-scroll">
           {/* All Documents + root export/import — text aligns with tree folder icons */}
-          <div className="flex items-center gap-1 pt-2.5 pb-1.5">
+          <div
+            className={`flex items-center gap-1 pt-2.5 pb-1.5 rounded-[5px]${
+              treeDropParentFolder === FolderPath.root ? " outline outline-2 -outline-offset-2 outline-accent bg-white/60" : ""
+            }`}
+            onDragOver={(event) => {
+              if (!treeDragSource || !computeTreeMoveDest(treeDragSource, FolderPath.root)) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+              if (treeDropParentFolder !== FolderPath.root) setTreeDropParentFolder(FolderPath.root);
+            }}
+            onDragLeave={(event) => {
+              if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+              setTreeDropParentFolder((previous) => (previous === FolderPath.root ? null : previous));
+            }}
+            onDrop={(event) => {
+              if (!treeDragSource) return;
+              event.preventDefault();
+              setTreeDropParentFolder(null);
+              const dest = computeTreeMoveDest(treeDragSource, FolderPath.root);
+              setTreeDragSource(null);
+              if (!dest) return;
+              if (dest.kind === "doc") handleTreeMoveDocument(dest.from, dest.to);
+              else handleTreeMoveFolder(dest.from, dest.to);
+            }}
+          >
             <Link
               to="/docs"
               className="min-w-0 flex-1 text-[10.5px] font-semibold text-sidebar-heading uppercase tracking-wider hover:text-sidebar-text-hover transition-colors truncate"
@@ -840,6 +907,9 @@ export function AppLayout() {
             </form>
           )}
 
+          {treeMoveError ? (
+            <p className="text-[11px] text-status-red py-1 select-text">Move failed: {treeMoveError}</p>
+          ) : null}
           {loadingTree ? (
             <p className="text-xs text-sidebar-text py-2">Loading tree...</p>
           ) : null}
@@ -871,6 +941,12 @@ export function AppLayout() {
               flashDocKinds={flashDocKinds}
               onDocumentOpen={rememberRecentDoc}
               onCreateDocumentInFolder={openCreateDocInFolder}
+              dragSource={treeDragSource}
+              onDragSourceChange={setTreeDragSource}
+              dropParentFolder={treeDropParentFolder}
+              onDropParentFolderChange={setTreeDropParentFolder}
+              onMoveDocument={handleTreeMoveDocument}
+              onMoveFolder={handleTreeMoveFolder}
             />
           ) : null}
         </div>

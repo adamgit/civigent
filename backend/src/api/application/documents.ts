@@ -539,6 +539,14 @@ export async function renameDocument(docPath: DocPath, newPath: DocPath, writer:
     throw new ActiveSessionConflictError("Cannot rename document with active editing session.");
   }
 
+  if (!(await checkDocPermission(writer, newPath, "write"))) {
+    throw new PermissionError(`Write permission denied for rename destination: ${newPath}`, false);
+  }
+
+  if (await canonicalDocumentExists(newPath)) {
+    throw new DocumentAlreadyExistsError(`Document already exists: ${newPath}`);
+  }
+
   const { id: proposalId } = await createTransientProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     `Rename document: ${docPath} -> ${newPath}`,
