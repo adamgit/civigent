@@ -46,17 +46,16 @@ export async function importFilesToProposal(
     description,
   );
 
-  // Validate files at import boundary — reject internal storage artifacts
-  const SKELETON_MARKER_RE = /\{\{section:\s*\S+\}\}/;
+  // Reject .sections/ paths — those are the on-disk storage layout, never
+  // assembled documents. Do not sniff bodies for `{{section:}}` markers: that
+  // syntax is valid markdown (docs and planning notes use it as examples), and
+  // folder export is assembled markdown, so those documents must round-trip.
+  // A content-directory copy still fails here because it includes `.sections/`
+  // entry paths; scanStagingFolder flags the same trees in the preview.
   for (const file of files) {
     if (file.docPath.includes(".sections/")) {
       throw new ImportValidationError(
         `.sections/ paths are internal storage artifacts and cannot be imported: ${file.docPath}`,
-      );
-    }
-    if (SKELETON_MARKER_RE.test(file.content)) {
-      throw new ImportValidationError(
-        `File appears to be an internal skeleton file, not a valid markdown document: ${file.docPath}`,
       );
     }
   }

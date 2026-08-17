@@ -324,15 +324,18 @@ export class CanonicalStore {
       const headBeforeCommit = await getHeadShaOrNullWhenUnborn(this.dataRoot);
       await gitExec(["add", "-A", cp + "/"], this.dataRoot);
       diag(`git add -A ${cp}/`);
+      // Message on stdin (`-F -`), not `-m`: publish commit messages list every
+      // section and target, and a large import exceeds Linux MAX_ARG_STRLEN.
       await gitExec(
         [
           "-c", `user.name=${author.name}`,
           "-c", `user.email=${author.email}`,
           "commit",
-          "-m", commitMessage,
+          "-F", "-",
           "--allow-empty",
         ],
         this.dataRoot,
+        { input: commitMessage },
       );
       const commitSha = await getHeadSha(this.dataRoot);
       await this.assertCommitLanded(headBeforeCommit, commitSha, cp);

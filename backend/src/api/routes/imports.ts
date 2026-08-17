@@ -10,6 +10,7 @@ import {
   listImports,
   scanImport,
   commitImport,
+  resolveImportFile,
   removeImport,
   writeUploadedFiles,
   spoolImportZipUpload,
@@ -17,6 +18,8 @@ import {
   stagingFolderExists,
   ImportUploadError,
   ImportEmptyError,
+  ImportValidationError,
+  ImportResolutionError,
   ImportZipTooLargeError,
   humanBypassPolicyResult,
 } from "../application/imports.js";
@@ -219,6 +222,49 @@ export function registerImportRoutes(
     }
   });
 
+  router.post("/imports/:id/resolve", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+      if (writer.type !== "human") {
+        sendApiError(res, 403, "Only human writers can repair import files.");
+        return;
+      }
+
+      const importId = req.params.id;
+      if (!(await stagingFolderExists(importId))) {
+        sendApiError(res, 404, `Import ${importId} not found.`);
+        return;
+      }
+
+      const { path: relativePath, resolution, params } = (req.body ?? {}) as {
+        path?: unknown;
+        resolution?: unknown;
+        params?: unknown;
+      };
+      if (typeof relativePath !== "string" || relativePath.length === 0) {
+        sendApiError(res, 400, "path (non-empty string) is required.");
+        return;
+      }
+      if (typeof resolution !== "string" || resolution.length === 0) {
+        sendApiError(res, 400, "resolution (non-empty string) is required.");
+        return;
+      }
+
+      try {
+        res.json(await resolveImportFile(importId, relativePath, resolution, params));
+      } catch (error) {
+        if (error instanceof ImportResolutionError) {
+          sendApiError(res, 400, error.message);
+          return;
+        }
+        throw error;
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post("/imports/:id/commit", async (req, res, next) => {
     try {
       const writer = requireAuthenticatedWriter(req, res);
@@ -239,7 +285,7 @@ export function registerImportRoutes(
       try {
         result = await commitImport(importId, writer, description);
       } catch (error) {
-        if (error instanceof ImportEmptyError) {
+        if (error instanceof ImportEmptyError || error instanceof ImportValidationError) {
           sendApiError(res, 400, error.message);
           return;
         }

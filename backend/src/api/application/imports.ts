@@ -12,17 +12,23 @@ import {
   listStagingFolders,
   scanStagingFolder,
   readStagingFiles,
+  readStagingFile,
+  writeStagingFile,
   readImportStagingMeta,
   deleteStagingFolder,
   getImportStagingRoot,
   stagingFilesRoot,
   stagingZipSpoolPath,
+  ImportStagingPathError,
 } from "../../storage/import-staging.js";
 import { importFilesToProposal, type ImportFile } from "../../storage/import-service.js";
+import { applyImportResolution, ImportResolutionError } from "../../storage/import-resolutions.js";
 import { readProposal } from "../../storage/proposal-repository.js";
 import { publishProposalToCanonical } from "../../storage/commit-pipeline.js";
 import { humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
 
+export { ImportValidationError } from "../../storage/import-service.js";
+export { ImportResolutionError } from "../../storage/import-resolutions.js";
 export { humanBypassPolicyResult };
 
 export type ImportWriter = Pick<WriterIdentity, "id" | "type" | "displayName" | "email">;
@@ -236,6 +242,7 @@ export async function scanImport(importId: string) {
       section_count: f.sectionCount,
       is_internal_artifact: f.isInternalArtifact,
       rejection_reason: f.rejectionReason,
+      applicable_resolutions: f.applicableResolutions,
     })),
   };
 }
@@ -254,16 +261,65 @@ export interface CommitImportResult {
   diagnostics: string[];
 }
 
+export async function resolveImportFile(
+  importId: string,
+  relativePath: string,
+  resolutionId: string,
+  params?: unknown,
+): Promise<Awaited<ReturnType<typeof scanImport>>> {
+  const scanned = await scanStagingFolder(importId);
+  const file = scanned.find((entry) => entry.relativePath === relativePath);
+  if (!file) {
+    throw new ImportResolutionError(`File not in this import: ${relativePath}`);
+  }
+  if (!file.isMarkdown || file.isInternalArtifact) {
+    throw new ImportResolutionError("This file cannot be repaired.");
+  }
+  if (!file.applicableResolutions.some((resolution) => resolution.id === resolutionId)) {
+    throw new ImportResolutionError("That repair does not apply to this file.");
+  }
+  let content: string;
+  try {
+    content = await readStagingFile(importId, relativePath);
+  } catch (error) {
+    if (error instanceof ImportStagingPathError) {
+      throw new ImportResolutionError(error.message);
+    }
+    throw error;
+  }
+  const next = applyImportResolution(content, resolutionId, params);
+  try {
+    await writeStagingFile(importId, relativePath, next);
+  } catch (error) {
+    if (error instanceof ImportStagingPathError) {
+      throw new ImportResolutionError(error.message);
+    }
+    throw error;
+  }
+  return scanImport(importId);
+}
+
 /**
  * Run the staged files through the shared import pipeline → ProposalEditor →
  * canonical commit. Human imports commit directly (humans bypass Agent Write
- * Policy, spec 12). Deletes the staging folder on success.
+ * Policy, spec 12). Deletes the staging folder on success. Files the scan
+ * rejected (corrupt markdown, internal artifacts, non-markdown) are skipped
+ * rather than failing the whole import.
  */
 export async function commitImport(importId: string, writer: ImportWriter, description: string): Promise<CommitImportResult> {
   const meta = await readImportStagingMeta(importId);
-  const stagedFiles = await readStagingFiles(importId);
+  const scanned = await scanStagingFolder(importId);
+  const rejectedPaths = new Set(
+    scanned.filter((file) => file.rejectionReason !== null).map((file) => file.relativePath),
+  );
+  const stagedFiles = (await readStagingFiles(importId)).filter((file) => !rejectedPaths.has(file.relativePath));
   if (stagedFiles.length === 0) {
-    throw new ImportEmptyError("Staging folder is empty or contains no .md files.");
+    const excludedCount = rejectedPaths.size;
+    throw new ImportEmptyError(
+      excludedCount > 0
+        ? `No importable markdown files (${excludedCount} excluded). Repair excluded files or add valid .md files.`
+        : "Staging folder is empty or contains no .md files.",
+    );
   }
   const importFiles: ImportFile[] = stagedFiles.map((f) => ({
     docPath: DocPath.fileInFolder(meta.targetFolder, f.relativePath),

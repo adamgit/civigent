@@ -12,11 +12,16 @@
 
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { readDirentsIfExists } from "./fs-primitives.js";
 import { getImportStagingRoot } from "./data-root.js";
 import { parseDocumentMarkdown } from "./markdown-sections.js";
 import { FolderPath, InvalidFolderPathError } from "../types/shared.js";
+import {
+  findDuplicateHeadingPathLabels,
+  resolutionsForMarkdown,
+  type DuplicateBodyConflictPreview,
+} from "./import-resolutions.js";
 
 export { getImportStagingRoot } from "./data-root.js";
 
@@ -39,6 +44,19 @@ export function stagingZipSpoolPath(importId: string): string {
 // ─── Public types ────────────────────────────────────────
 
 export class ImportStagingMetaError extends Error {}
+
+export class ImportStagingPathError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ImportStagingPathError";
+  }
+}
+
+export interface ImportResolutionChoice {
+  id: string;
+  label: string;
+  preview?: DuplicateBodyConflictPreview;
+}
 
 export interface ImportStagingMeta {
   targetFolder: FolderPath;
@@ -65,6 +83,11 @@ export interface StagingFileInfo {
    * Human-readable reason why this file cannot be imported, or null if it is valid.
    */
   rejectionReason: string | null;
+  /**
+   * Salvage algorithms that apply() can run on this file's current bytes.
+   * Empty when the file is importable, or when no registered resolution fits.
+   */
+  applicableResolutions: ImportResolutionChoice[];
 }
 
 // ─── meta.json read/decode ───────────────────────────────
@@ -180,19 +203,36 @@ export async function scanStagingFolder(importId: string): Promise<StagingFileIn
 
       const isMarkdown = relPath.toLowerCase().endsWith(".md");
       let sectionCount = 0;
+      let rejectionReason: string | null = isMarkdown
+        ? null
+        : "Unsupported file type. Only .md (Markdown) files can be imported.";
+      let applicableResolutions: ImportResolutionChoice[] = [];
       if (isMarkdown) {
         try {
           const content = await readFile(path.join(root, relPath), "utf8");
           const parsed = parseDocumentMarkdown(content);
           sectionCount = parsed.length;
+          const duplicatePaths = findDuplicateHeadingPathLabels(parsed);
+          if (duplicatePaths.length > 0) {
+            rejectionReason = `Duplicate heading path: ${duplicatePaths.join("; ")}`;
+            applicableResolutions = resolutionsForMarkdown(content).map((resolution) => ({
+              id: resolution.id,
+              label: resolution.label,
+              ...(resolution.preview ? { preview: resolution.preview(content) } : {}),
+            }));
+          }
         } catch {
           // Parse failure — still show the file, just with 0 sections
         }
       }
-      const rejectionReason = isMarkdown
-        ? null
-        : "Unsupported file type. Only .md (Markdown) files can be imported.";
-      files.push({ relativePath: relPath, isMarkdown, sectionCount, isInternalArtifact: false, rejectionReason });
+      files.push({
+        relativePath: relPath,
+        isMarkdown,
+        sectionCount,
+        isInternalArtifact: false,
+        rejectionReason,
+        applicableResolutions,
+      });
     }
   };
 
@@ -215,12 +255,14 @@ export async function scanStagingFolder(importId: string): Promise<StagingFileIn
       if (skeletonPaths.has(f.relativePath)) {
         f.isInternalArtifact = true;
         f.rejectionReason = artifactRejection;
+        f.applicableResolutions = [];
         continue;
       }
       for (const dir of sectionsDirs) {
         if (f.relativePath.startsWith(dir + "/")) {
           f.isInternalArtifact = true;
           f.rejectionReason = artifactRejection;
+          f.applicableResolutions = [];
           break;
         }
       }
@@ -260,6 +302,48 @@ export async function readStagingFiles(importId: string): Promise<StagedMarkdown
   await walk("");
   results.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   return results;
+}
+
+function resolveExistingStagingFilePath(importId: string, relativePath: string): string {
+  const filesRoot = stagingFilesRoot(importId);
+  const normalized = relativePath.replace(/\\/g, "/").replace(/^\/+/, "");
+  const pathSegments = normalized.split("/");
+  if (
+    normalized.length === 0 ||
+    pathSegments.some((segment) => segment.length === 0 || segment === "." || segment === "..")
+  ) {
+    throw new ImportStagingPathError(`Invalid file path: ${relativePath}`);
+  }
+  const filePath = path.resolve(filesRoot, ...pathSegments);
+  if (filePath === filesRoot || !filePath.startsWith(filesRoot + path.sep)) {
+    throw new ImportStagingPathError(`Invalid file path: ${relativePath}`);
+  }
+  return filePath;
+}
+
+export async function readStagingFile(importId: string, relativePath: string): Promise<string> {
+  try {
+    return await readFile(resolveExistingStagingFilePath(importId, relativePath), "utf8");
+  } catch (error) {
+    if (error instanceof ImportStagingPathError) throw error;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new ImportStagingPathError(`File not in this import: ${relativePath}`);
+    }
+    throw error;
+  }
+}
+
+export async function writeStagingFile(importId: string, relativePath: string, content: string): Promise<void> {
+  const filePath = resolveExistingStagingFilePath(importId, relativePath);
+  try {
+    await access(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new ImportStagingPathError(`File not in this import: ${relativePath}`);
+    }
+    throw error;
+  }
+  await writeFile(filePath, content, "utf8");
 }
 
 export async function deleteStagingFolder(importId: string): Promise<void> {

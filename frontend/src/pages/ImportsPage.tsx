@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import {
@@ -6,6 +6,8 @@ import {
   type ImportStagingInfo,
   type ImportDetailResponse,
   type ImportResponse,
+  type ImportStagingFile,
+  type ImportDuplicateBodyConflict,
 } from "../services/api-client";
 import type { DocumentTreeEntry } from "../types/shared.js";
 import { FolderPath } from "../types/shared.js";
@@ -41,6 +43,233 @@ async function uploadFilesToImport(importId: string, files: File[]): Promise<voi
   }
 }
 
+function destinationLabel(folder: string): string {
+  return folder === "/" ? "/ (workspace root)" : folder;
+}
+
+function bindDirectoryPicker(input: HTMLInputElement | null): void {
+  if (!input) return;
+  input.setAttribute("webkitdirectory", "");
+  input.setAttribute("directory", "");
+}
+
+function ImportSourceDropZone({
+  uploading,
+  hint,
+  onFiles,
+}: {
+  uploading: boolean;
+  hint: string;
+  onFiles: (files: FileList) => void;
+}) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    bindDirectoryPicker(folderInputRef.current);
+  }, []);
+
+  const takeFiles = (list: FileList | null, input: HTMLInputElement | null) => {
+    if (list && list.length > 0) onFiles(list);
+    if (input) input.value = "";
+  };
+
+  return (
+    <div
+      className="border-2 border-dashed border-border-subtle rounded-lg p-6 text-center hover:border-accent-emphasis transition-colors"
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        e.preventDefault();
+        takeFiles(e.dataTransfer.files, null);
+      }}
+    >
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept=".md,.zip"
+        className="hidden"
+        onChange={(e) => takeFiles(e.target.files, e.target)}
+      />
+      <input
+        ref={folderInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => takeFiles(e.target.files, e.target)}
+      />
+      <p className="text-sm text-muted">{uploading ? "Uploading..." : hint}</p>
+      <div className="mt-3 flex justify-center gap-2">
+        <button
+          type="button"
+          className="btn-secondary"
+          disabled={uploading}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          Choose files
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          disabled={uploading}
+          onClick={() => folderInputRef.current?.click()}
+        >
+          Choose folder
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ImportDestinationCallout({
+  folder,
+  size,
+}: {
+  folder: string;
+  size: "hero" | "row";
+}) {
+  const label = destinationLabel(folder);
+  if (size === "hero") {
+    return (
+      <div className="w-fit max-w-md rounded-md border border-folder-card-border bg-folder-card-bg px-3.5 py-3">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">
+          New imports will land in
+        </div>
+        <div className="mt-1 font-mono text-sm font-semibold text-text-primary break-all">
+          {label}
+        </div>
+        <p className="mt-2 mb-0 text-[13px] leading-snug text-text-secondary">
+          To import into a different folder, click the ↑ import button next to
+          that folder in the sidebar.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-muted">In-progress import</div>
+      <div className="mt-0.5 text-sm">
+        Importing into <span className="font-mono font-semibold break-all">{label}</span>
+      </div>
+    </div>
+  );
+}
+
+function headingChoiceKey(headingPath: string[]): string {
+  return JSON.stringify(headingPath);
+}
+
+function DuplicateBodyConflictModal({
+  filePath,
+  conflicts,
+  selections,
+  applying,
+  error,
+  onChange,
+  onCancel,
+  onConfirm,
+}: {
+  filePath: string;
+  conflicts: ImportDuplicateBodyConflict[];
+  selections: Record<string, number>;
+  applying: boolean;
+  error: string | null;
+  onChange: (headingPath: string[], index: number) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={applying ? undefined : onCancel} />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-conflict-title"
+        className="relative bg-canvas-bg border border-border-default rounded-lg shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto p-5"
+      >
+        <h2 id="import-conflict-title" className="text-lg font-semibold">
+          Choose which duplicate body to keep
+        </h2>
+        <p className="text-xs text-muted mt-1 mb-4">
+          This file has the same heading more than once, with different text.
+          Pick one copy per heading. The others will be dropped.
+        </p>
+        <p className="font-mono text-xs mb-4 break-all">{filePath}</p>
+        {conflicts.map((conflict) => {
+          const key = headingChoiceKey(conflict.heading_path);
+          const selected = selections[key] ?? 0;
+          return (
+            <div key={key} className="mb-4">
+              <div className="text-sm font-medium mb-2">{conflict.label}</div>
+              <div className="flex flex-col gap-2">
+                {conflict.copies.map((copy) => {
+                  const isLast = copy.index === conflict.copies.length - 1;
+                  const position =
+                    copy.index === 0 ? " (earlier in file)" : isLast ? " (later in file)" : "";
+                  return (
+                    <label
+                      key={copy.index}
+                      className={`block border rounded p-2 cursor-pointer ${
+                        selected === copy.index
+                          ? "border-accent-emphasis bg-accent-light"
+                          : "border-border-default bg-page-bg"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 text-xs font-medium mb-1">
+                        <input
+                          type="radio"
+                          name={key}
+                          checked={selected === copy.index}
+                          onChange={() => onChange(conflict.heading_path, copy.index)}
+                          disabled={applying}
+                        />
+                        Copy {copy.index + 1}{position}
+                      </div>
+                      <pre className="text-xs font-mono whitespace-pre-wrap max-h-48 overflow-auto bg-white p-2 rounded">
+                        {copy.body.trim().length > 0 ? copy.body : "(empty)"}
+                      </pre>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+        {error && <p className="text-error text-sm break-words mt-2">{error}</p>}
+        <div className="flex justify-end gap-2 mt-4">
+          <button type="button" className="btn-secondary" onClick={onCancel} disabled={applying}>
+            Cancel
+          </button>
+          <button type="button" className="btn-primary" onClick={onConfirm} disabled={applying}>
+            {applying ? "Applying..." : "Keep selected"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ImportFileTable({
+  children,
+  columns,
+}: {
+  children: ReactNode;
+  columns: ReactNode;
+}) {
+  return (
+    <div className="max-h-80 overflow-auto border border-border-subtle rounded">
+      <table className="w-full text-sm">
+        <thead className="sticky top-0 z-10 bg-canvas-default">
+          <tr className="text-left text-xs text-muted">
+            {columns}
+          </tr>
+        </thead>
+        <tbody>{children}</tbody>
+      </table>
+    </div>
+  );
+}
+
 function ImportDetailView({
   importId,
   onDelete,
@@ -59,8 +288,14 @@ function ImportDetailView({
   const [uploading, setUploading] = useState(false);
   const [skippedNotice, setSkippedNotice] = useState<string | null>(null);
   const [existingDocPaths, setExistingDocPaths] = useState<ReadonlySet<string>>(new Set());
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const folderInputRef = useRef<HTMLInputElement>(null);
+  const [selectedResolutions, setSelectedResolutions] = useState<Record<string, string>>({});
+  const [resolvingPath, setResolvingPath] = useState<string | null>(null);
+  const [conflictModal, setConflictModal] = useState<{
+    file: ImportStagingFile;
+    resolutionId: string;
+    conflicts: ImportDuplicateBodyConflict[];
+    selections: Record<string, number>;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -101,6 +336,19 @@ function ImportDetailView({
     fetchDetail();
   }, [fetchDetail]);
 
+  useEffect(() => {
+    if (!detail) return;
+    setSelectedResolutions((prev) => {
+      const next = { ...prev };
+      for (const file of detail.files) {
+        if (!next[file.path] && file.applicable_resolutions[0]) {
+          next[file.path] = file.applicable_resolutions[0].id;
+        }
+      }
+      return next;
+    });
+  }, [detail]);
+
   const handleUpload = useCallback(
     async (fileList: FileList) => {
       setUploading(true);
@@ -125,13 +373,6 @@ function ImportDetailView({
   );
 
   const handleCommit = useCallback(async () => {
-    const hasArtifacts = (detail?.files ?? []).some((f) => f.is_internal_artifact);
-    if (hasArtifacts) {
-      alert(
-        "Civigent internal-format files detected — import cannot continue, these files will corrupt on import.\n\nYou probably meant to copy from the snapshots folder instead?"
-      );
-      return;
-    }
     setCommitting(true);
     setError(null);
     setCommitResult(null);
@@ -143,7 +384,59 @@ function ImportDetailView({
     } finally {
       setCommitting(false);
     }
-  }, [importId, description, detail, onCommitted]);
+  }, [importId, description]);
+
+  const handleResolve = useCallback(
+    async (file: ImportStagingFile) => {
+      const resolution = selectedResolutions[file.path] ?? file.applicable_resolutions[0]?.id;
+      if (!resolution) return;
+      const option = file.applicable_resolutions.find((entry) => entry.id === resolution);
+      const conflicts = option?.preview?.conflicts;
+      if (conflicts && conflicts.length > 0) {
+        const selections: Record<string, number> = {};
+        for (const conflict of conflicts) {
+          selections[headingChoiceKey(conflict.heading_path)] = 0;
+        }
+        setConflictModal({ file, resolutionId: resolution, conflicts, selections });
+        return;
+      }
+      setResolvingPath(file.path);
+      setError(null);
+      try {
+        const res = await apiClient.resolveImportFile(importId, file.path, resolution);
+        setDetail(res);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setResolvingPath(null);
+      }
+    },
+    [importId, selectedResolutions],
+  );
+
+  const handleConflictConfirm = useCallback(async () => {
+    if (!conflictModal) return;
+    const keep = conflictModal.conflicts.map((conflict) => ({
+      heading_path: conflict.heading_path,
+      index: conflictModal.selections[headingChoiceKey(conflict.heading_path)] ?? 0,
+    }));
+    setResolvingPath(conflictModal.file.path);
+    setError(null);
+    try {
+      const res = await apiClient.resolveImportFile(
+        importId,
+        conflictModal.file.path,
+        conflictModal.resolutionId,
+        { keep },
+      );
+      setDetail(res);
+      setConflictModal(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setResolvingPath(null);
+    }
+  }, [importId, conflictModal]);
 
   const handleDelete = useCallback(async () => {
     if (!confirm("Delete this import? Files in the staging folder will be removed.")) return;
@@ -154,16 +447,6 @@ function ImportDetailView({
       setError(err instanceof Error ? err.message : String(err));
     }
   }, [importId, onDelete]);
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      if (e.dataTransfer.files.length > 0) {
-        handleUpload(e.dataTransfer.files);
-      }
-    },
-    [handleUpload],
-  );
 
   if (loading) return <div className="p-4 text-sm text-muted">Scanning staging folder...</div>;
 
@@ -214,10 +497,9 @@ function ImportDetailView({
     );
   }
 
-  const mdCount = detail?.files.filter((f) => f.is_markdown).length ?? 0;
-  const totalSections = detail?.files.reduce((sum, f) => sum + f.section_count, 0) ?? 0;
-  const artifactCount = detail?.files.filter((f) => f.is_internal_artifact).length ?? 0;
-  const importableFiles = detail?.files.filter((f) => f.is_markdown && !f.is_internal_artifact) ?? [];
+  const importableFiles = detail?.files.filter((f) => f.is_markdown && f.rejection_reason === null) ?? [];
+  const excludedFiles = detail?.files.filter((f) => f.rejection_reason !== null) ?? [];
+  const totalSections = importableFiles.reduce((sum, f) => sum + f.section_count, 0);
   const overwriteCount = detail
     ? importableFiles.filter((f) => existingDocPaths.has(joinedImportDocPath(detail.target_folder, f.path))).length
     : 0;
@@ -225,8 +507,6 @@ function ImportDetailView({
 
   return (
     <div className="p-4 space-y-4 border-t border-border-subtle">
-      {error && <p className="text-error">{error}</p>}
-
       <div className="flex items-center gap-2 text-xs text-muted">
         <span>Staging path:</span>
         <code className="bg-canvas-subtle px-1 py-0.5 rounded select-all">
@@ -235,84 +515,108 @@ function ImportDetailView({
       </div>
 
       <div className="text-sm text-muted">
-        {mdCount} markdown file{mdCount !== 1 ? "s" : ""}, {totalSections} total section
-        {totalSections !== 1 ? "s" : ""}
+        {importableFiles.length} document{importableFiles.length !== 1 ? "s" : ""} will be imported
+        {totalSections > 0 && `, ${totalSections} section${totalSections !== 1 ? "s" : ""}`}
+        {excludedFiles.length > 0 && `, ${excludedFiles.length} excluded`}
       </div>
 
-      {detail && detail.files.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs text-muted">
-                <th className="py-1">Document</th>
-                <th className="py-1 w-16 text-center">Type</th>
-                <th className="py-1 w-20 text-right">Sections</th>
+      {detail && importableFiles.length > 0 && (
+        <ImportFileTable
+          columns={
+            <>
+              <th className="py-1 px-2">Document</th>
+              <th className="py-1 w-16 text-center">Type</th>
+              <th className="py-1 w-20 text-right px-2">Sections</th>
+            </>
+          }
+        >
+          {importableFiles.map((f) => {
+            const targetDocPath = joinedImportDocPath(detail.target_folder, f.path);
+            const willOverwrite = existingDocPaths.has(targetDocPath);
+            return (
+              <tr key={f.path} className="border-t border-border-subtle">
+                <td className="py-1 px-2 font-mono text-xs whitespace-nowrap">
+                  {targetDocPath}
+                  {willOverwrite && (
+                    <span className="ml-2 font-sans text-amber-600 dark:text-amber-400">will overwrite</span>
+                  )}
+                </td>
+                <td className="py-1 text-center">{"\u2713"}</td>
+                <td className="py-1 text-right px-2">{f.section_count}</td>
               </tr>
-            </thead>
-            <tbody>
-              {detail.files.map((f) => {
-                const rowClass = f.is_internal_artifact
-                  ? "border-t border-border-subtle text-red-600 dark:text-red-400"
-                  : !f.is_markdown
-                    ? "border-t border-border-subtle text-amber-600 dark:text-amber-400"
-                    : "border-t border-border-subtle";
-                const typeIcon = f.is_internal_artifact ? "⚠" : f.is_markdown ? "\u2713" : "\u2717";
-                const isImportable = f.is_markdown && !f.is_internal_artifact;
-                const targetDocPath = joinedImportDocPath(detail.target_folder, f.path);
-                const willOverwrite = isImportable && existingDocPaths.has(targetDocPath);
-                return (
-                  <tr key={f.path} className={rowClass} title={f.rejection_reason ?? undefined}>
-                    <td className="py-1 font-mono text-xs whitespace-nowrap">
-                      {isImportable ? targetDocPath : f.path}
-                      {willOverwrite && (
-                        <span className="ml-2 font-sans text-amber-600 dark:text-amber-400">will overwrite</span>
-                      )}
-                    </td>
-                    <td className="py-1 text-center">{typeIcon}</td>
-                    <td className="py-1 text-right">{f.is_markdown && !f.is_internal_artifact ? f.section_count : "\u2014"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+            );
+          })}
+        </ImportFileTable>
+      )}
+
+      {detail && excludedFiles.length > 0 && (
+        <div className="rounded-lg border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-3 space-y-2">
+          <div>
+            <div className="text-sm font-semibold text-red-700 dark:text-red-400">
+              Excluded from import ({excludedFiles.length})
+            </div>
+            <p className="text-xs text-red-700/80 dark:text-red-400/80 mt-0.5">
+              These files will not be imported. Choose a repair where one is offered, or leave them excluded.
+            </p>
+          </div>
+          <ImportFileTable
+            columns={
+              <>
+                <th className="py-1 px-2">Document</th>
+                <th className="py-1 px-2">Why excluded</th>
+                <th className="py-1 px-2 w-[18rem]">Repair</th>
+              </>
+            }
+          >
+            {excludedFiles.map((f) => {
+              const resolutions = f.applicable_resolutions ?? [];
+              const selected = selectedResolutions[f.path] ?? resolutions[0]?.id ?? "";
+              return (
+                <tr key={f.path} className="border-t border-border-subtle text-red-800 dark:text-red-300">
+                  <td className="py-1 px-2 font-mono text-xs whitespace-nowrap align-top">{f.path}</td>
+                  <td className="py-1 px-2 text-xs align-top">{f.rejection_reason}</td>
+                  <td className="py-1 px-2 align-top">
+                    {resolutions.length > 0 ? (
+                      <div className="flex flex-col gap-1">
+                        <select
+                          className="w-full text-xs px-1 py-1 border border-border-default rounded bg-canvas-default"
+                          value={selected}
+                          onChange={(e) =>
+                            setSelectedResolutions((prev) => ({ ...prev, [f.path]: e.target.value }))
+                          }
+                          disabled={resolvingPath === f.path}
+                        >
+                          {resolutions.map((resolution) => (
+                            <option key={resolution.id} value={resolution.id}>
+                              {resolution.label}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="btn-secondary self-start"
+                          disabled={resolvingPath === f.path || !selected}
+                          onClick={() => handleResolve(f)}
+                        >
+                          {resolvingPath === f.path ? "Applying..." : "Apply"}
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted">No automatic repair</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </ImportFileTable>
         </div>
       )}
 
-      <div
-        className="border-2 border-dashed border-border-subtle rounded-lg p-6 text-center cursor-pointer hover:border-accent-emphasis transition-colors"
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={handleDrop}
-        onClick={() => fileInputRef.current?.click()}
-      >
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          accept=".md,.zip"
-          className="hidden"
-          onChange={(e) => e.target.files && handleUpload(e.target.files)}
-        />
-        <p className="text-sm text-muted">
-          {uploading ? "Uploading..." : "Drop .md or .zip files here or click to browse"}
-        </p>
-      </div>
-
-      <input
-        ref={folderInputRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={(e) => e.target.files && handleUpload(e.target.files)}
-        {...({ webkitdirectory: "" } as Record<string, string>)}
+      <ImportSourceDropZone
+        uploading={uploading}
+        hint="Drop markdown, a zip, or a folder of markdown"
+        onFiles={handleUpload}
       />
-      <button
-        type="button"
-        className="border-none bg-transparent p-0 text-xs text-muted hover:text-accent cursor-pointer"
-        disabled={uploading}
-        onClick={() => folderInputRef.current?.click()}
-      >
-        …or choose a whole folder
-      </button>
 
       {skippedNotice && <p className="text-xs text-amber-600 dark:text-amber-400">{skippedNotice}</p>}
 
@@ -320,6 +624,11 @@ function ImportDetailView({
         <label className="block text-sm font-medium">
           Description <span className="text-red-500">*</span>
         </label>
+        <p className="text-xs text-muted">
+          Required because the import is recorded as a proposal. This text is the
+          proposal intent and the git commit message for what landed — without it
+          there is no explanation in history of why these documents appeared.
+        </p>
         <textarea
           className="w-full px-3 py-2 border border-border-default rounded bg-canvas-default text-sm"
           rows={3}
@@ -329,11 +638,13 @@ function ImportDetailView({
         />
       </div>
 
+      {error && <p className="text-error text-sm break-words">{error}</p>}
+
       <div className="flex gap-2">
         <button
           className="btn-primary"
-          style={{ opacity: (!description.trim() || committing || mdCount === 0) ? 0.5 : 1 }}
-          disabled={!description.trim() || committing || mdCount === 0}
+          style={{ opacity: (!description.trim() || committing || importableFiles.length === 0) ? 0.5 : 1 }}
+          disabled={!description.trim() || committing || importableFiles.length === 0}
           onClick={handleCommit}
         >
           {committing ? "Importing..." : "Import"}
@@ -343,11 +654,38 @@ function ImportDetailView({
             {newDocCount} new document{newDocCount !== 1 ? "s" : ""}
             {overwriteCount > 0 &&
               `, ${overwriteCount} will replace existing document${overwriteCount !== 1 ? "s" : ""}`}
+            {excludedFiles.length > 0 && `, ${excludedFiles.length} excluded`}
           </span>
         )}
         <button className="btn-secondary" onClick={fetchDetail}>Refresh</button>
         <button className="btn-danger" style={{ marginLeft: "auto" }} onClick={handleDelete}>Cancel</button>
       </div>
+
+      {conflictModal && (
+        <DuplicateBodyConflictModal
+          filePath={conflictModal.file.path}
+          conflicts={conflictModal.conflicts}
+          selections={conflictModal.selections}
+          applying={resolvingPath === conflictModal.file.path}
+          error={error}
+          onChange={(headingPath, index) => {
+            setConflictModal((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                selections: { ...prev.selections, [headingChoiceKey(headingPath)]: index },
+              };
+            });
+          }}
+          onCancel={() => {
+            if (resolvingPath) return;
+            setConflictModal(null);
+          }}
+          onConfirm={() => {
+            void handleConflictConfirm();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -361,7 +699,6 @@ export function ImportsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(() => searchParams.get("expand"));
   const [pageSkippedNotice, setPageSkippedNotice] = useState<string | null>(null);
   const [pageUploading, setPageUploading] = useState(false);
-  const pageFileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchImports = useCallback(async () => {
     setLoading(true);
@@ -420,6 +757,12 @@ export function ImportsPage() {
       <div className="flex-1 overflow-y-auto p-6">
         {error && <p className="text-error mb-4">{error}</p>}
 
+        {expandedId === null && (
+          <div className="mb-4">
+            <ImportDestinationCallout folder={intoFolder} size="hero" />
+          </div>
+        )}
+
         <div className="mb-4 flex items-center gap-3">
           <button className="btn-primary" onClick={handleNewImport}>+ New Import</button>
           <Link to="/export" className="text-xs text-muted hover:text-accent">
@@ -429,29 +772,13 @@ export function ImportsPage() {
 
         {expandedId === null && (
           <div className="mb-4 space-y-1">
-            <div
-              className="border-2 border-dashed border-border-subtle rounded-lg p-6 text-center cursor-pointer hover:border-accent-emphasis transition-colors"
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => {
-                e.preventDefault();
-                if (e.dataTransfer.files.length > 0) handlePageFiles(e.dataTransfer.files);
+            <ImportSourceDropZone
+              uploading={pageUploading}
+              hint={`Drop markdown, a zip, or a folder of markdown to start an import into ${destinationLabel(intoFolder)}`}
+              onFiles={(files) => {
+                void handlePageFiles(files);
               }}
-              onClick={() => pageFileInputRef.current?.click()}
-            >
-              <input
-                ref={pageFileInputRef}
-                type="file"
-                multiple
-                accept=".md,.zip"
-                className="hidden"
-                onChange={(e) => e.target.files && handlePageFiles(e.target.files)}
-              />
-              <p className="text-sm text-muted">
-                {pageUploading
-                  ? "Uploading..."
-                  : `Drop .md or .zip files here to start an import into ${intoFolder}`}
-              </p>
-            </div>
+            />
             {pageSkippedNotice && (
               <p className="text-xs text-amber-600 dark:text-amber-400">{pageSkippedNotice}</p>
             )}
@@ -475,25 +802,17 @@ export function ImportsPage() {
               className="border border-border-default rounded bg-canvas-default"
             >
               <div
-                className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-canvas-subtle"
+                className="flex items-start justify-between gap-4 px-4 py-3 cursor-pointer hover:bg-canvas-subtle"
                 onClick={() =>
                   setExpandedId((prev) =>
                     prev === imp.import_id ? null : imp.import_id,
                   )
                 }
               >
-                <div className="flex items-center gap-3">
-                  <span className="text-xs font-mono text-muted">
-                    {imp.import_id.slice(0, 8)}...
-                  </span>
-                  <span className="text-xs text-muted">into</span>
-                  <code className="text-xs bg-canvas-subtle px-1 py-0.5 rounded">
-                    {imp.target_folder}
-                  </code>
-                </div>
-                <span className="text-xs text-muted">
-                  {imp.import_id.slice(0, 12)}
-                </span>
+                <ImportDestinationCallout folder={imp.target_folder} size="row" />
+                <code className="text-xs font-mono text-muted select-all break-all text-right">
+                  {imp.import_id}
+                </code>
               </div>
               {expandedId === imp.import_id && (
                 <ImportDetailView

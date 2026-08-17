@@ -34,13 +34,21 @@ export async function gitStatusPorcelain(cwd: string): Promise<Array<{code: stri
  * The `.trimEnd()` removes the trailing newline that git always appends to stdout.
  * This is a git process boundary, not a content boundary — callers reading file
  * content from git should additionally apply `bodyFromGit()` or `bodyFromDisk()`.
+ *
+ * `input`, when set, is written to the git process stdin. Use that for payloads
+ * that must not become argv (Linux `MAX_ARG_STRLEN` is 128KiB per argument —
+ * `git commit -m` with a full section census exceeds it and fails with E2BIG).
  */
-export async function gitExec(args: string[], cwd: string): Promise<string> {
+export async function gitExec(
+  args: string[],
+  cwd: string,
+  options?: { input?: string },
+): Promise<string> {
   // Keep safe.directory scoped to this git invocation to avoid mutating global git config.
   const { stdout } = await execFileAsync(
     "git",
     ["-c", `safe.directory=${cwd}`, ...args],
-    { cwd },
+    { cwd, input: options?.input },
   );
   return stdout.trimEnd();
 }

@@ -71,12 +71,30 @@ export interface ImportStagingInfo {
   target_folder: string;
 }
 
+export interface ImportDuplicateBodyConflictCopy {
+  index: number;
+  body: string;
+}
+
+export interface ImportDuplicateBodyConflict {
+  heading_path: string[];
+  label: string;
+  copies: ImportDuplicateBodyConflictCopy[];
+}
+
+export interface ImportResolutionChoice {
+  id: string;
+  label: string;
+  preview?: { conflicts: ImportDuplicateBodyConflict[] };
+}
+
 export interface ImportStagingFile {
   path: string;
   is_markdown: boolean;
   section_count: number;
   is_internal_artifact: boolean;
   rejection_reason: string | null;
+  applicable_resolutions: ImportResolutionChoice[];
 }
 
 export interface ImportDetailResponse {
@@ -1125,6 +1143,19 @@ export const apiClient = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ description }),
+    });
+  },
+
+  async resolveImportFile(
+    id: string,
+    relativePath: string,
+    resolution: string,
+    params?: unknown,
+  ): Promise<ImportDetailResponse> {
+    return requestJson<ImportDetailResponse>(`/api/imports/${encodeURIComponent(id)}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: relativePath, resolution, params }),
     });
   },
 
