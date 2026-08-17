@@ -176,6 +176,12 @@ export interface ResolvedSection {
  * @param docPath - the document path (e.g. "/my-doc.md")
  * @returns Map keyed by headingPath.join(">>") → ResolvedSection
  */
+export async function resolveAllCanonicalSectionPaths(
+  docPath: DocPath,
+): Promise<Map<string, ResolvedSection>> {
+  return resolveAllSectionPaths(getContentRoot(), docPath);
+}
+
 export async function resolveAllSectionPaths(
   rootDir: string,
   docPath: DocPath,

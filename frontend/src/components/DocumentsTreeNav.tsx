@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
-import type {
-  DocumentTreeEntry,
-  AgentWritePolicyTarget,
-  HumanInvolvementTargetDetails,
-} from "../types/shared.js";
-import { apiClient } from "../services/api-client.js";
+import { Link, useLocation } from "react-router-dom";
+import type { DocumentTreeEntry } from "../types/shared.js";
 
 import { DocsLocation, docHref, folderHref } from "../app/docs-location";
 import { copyTextToClipboard } from "../utils/copy-text";
@@ -87,11 +82,6 @@ function getDisplayName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-interface BlockedImportInfo {
-  proposalId: string;
-  blockedSections: AgentWritePolicyTarget<HumanInvolvementTargetDetails>[];
-}
-
 interface DocumentsTreeNavProps {
   entries: DocumentTreeEntry[];
   emptyLabel?: string;
@@ -100,7 +90,6 @@ interface DocumentsTreeNavProps {
   badgedDocPaths?: Iterable<string>;
   flashDocKinds?: ReadonlyMap<string, "human" | "agent">;
   onDocumentOpen?: (docPath: string) => void;
-  onTreeRefresh?: () => void;
   onCreateDocumentInFolder?: (folderPath: string) => void;
 }
 
@@ -112,22 +101,15 @@ export function DocumentsTreeNav({
   badgedDocPaths,
   flashDocKinds,
   onDocumentOpen,
-  onTreeRefresh,
   onCreateDocumentInFolder,
 }: DocumentsTreeNavProps) {
   const location = useLocation();
-  const navigate = useNavigate();
   const docsLoc = useMemo(() => DocsLocation.fromPathname(location.pathname), [location.pathname]);
   const selectedFilePath = docsLoc?.kind === "doc" ? docsLoc.docPath : null;
   const selectedFolderPath = docsLoc?.kind === "folder" ? docsLoc.folderPath : null;
   const selectedPath = selectedFilePath ?? selectedFolderPath;
   const [expanded, setExpanded] = useState<Set<string>>(() => readExpandedState(storageKey));
-  const [importingFolder, setImportingFolder] = useState<string | null>(null);
-  const [importMessage, setImportMessage] = useState<string | null>(null);
-  const [blockedImport, setBlockedImport] = useState<BlockedImportInfo | null>(null);
   const [copiedFolderPath, setCopiedFolderPath] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const pendingFolderRef = useRef<string>("/");
   const lastScrolledPathRef = useRef<string | null>(null);
   const copiedFolderTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -171,13 +153,6 @@ export function DocumentsTreeNav({
     });
   }, [allDirectoryPaths, entries, selectedPath]);
 
-  // Auto-clear import success message
-  useEffect(() => {
-    if (!importMessage) return;
-    const timer = window.setTimeout(() => setImportMessage(null), 4000);
-    return () => clearTimeout(timer);
-  }, [importMessage]);
-
   useEffect(() => {
     return () => {
       if (copiedFolderTimeoutRef.current) {
@@ -205,51 +180,6 @@ export function DocumentsTreeNav({
     });
   };
 
-  const triggerImport = useCallback((folderPath: string) => {
-    pendingFolderRef.current = folderPath;
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-      fileInputRef.current.click();
-    }
-  }, []);
-
-  const handleFileSelected = useCallback(async () => {
-    const input = fileInputRef.current;
-    if (!input?.files || input.files.length === 0) return;
-
-    setImportingFolder(pendingFolderRef.current);
-
-    try {
-      const files = Array.from(input.files).filter((file) => file.name.toLowerCase().endsWith(".md"));
-      if (files.length === 0) {
-        throw new Error("No .md files selected.");
-      }
-      // Create staging folder, upload files, navigate to ImportsPage
-      const staging = await apiClient.createImport();
-      await apiClient.uploadImportFiles(staging.import_id, files);
-      navigate(`/imports?expand=${encodeURIComponent(staging.import_id)}`);
-    } catch (error) {
-      setImportMessage(`Import failed: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setImportingFolder(null);
-    }
-  }, [navigate]);
-
-  const handleKeepProposal = useCallback(() => {
-    setBlockedImport(null);
-  }, []);
-
-  const handleCancelImport = useCallback(async () => {
-    if (!blockedImport) return;
-    try {
-      await apiClient.withdrawProposal(blockedImport.proposalId, "Cancelled blocked import");
-      onTreeRefresh?.();
-    } catch {
-      // Withdrawal failure is non-fatal — proposal stays pending.
-    }
-    setBlockedImport(null);
-  }, [blockedImport, onTreeRefresh]);
-
   const triggerExport = useCallback((folderPath: string) => {
     window.location.href = `/api/export?path=${encodeURIComponent(folderPath)}`;
   }, []);
@@ -269,19 +199,17 @@ export function DocumentsTreeNav({
       >
         &#8595;
       </button>
-      <button
-        type="button"
-        title={`Import .md files into ${getDisplayName(folderPath)}`}
-        aria-label={`Import .md files into ${getDisplayName(folderPath)}`}
-        className="shrink-0 inline-flex items-center justify-center w-4 h-4 text-sidebar-text/55 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[11px] leading-none opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity disabled:cursor-not-allowed"
+      <Link
+        to={`/imports?into=${encodeURIComponent(folderPath)}`}
+        title={`Import files into ${getDisplayName(folderPath)}`}
+        aria-label={`Import files into ${getDisplayName(folderPath)}`}
+        className="shrink-0 inline-flex items-center justify-center w-4 h-4 text-sidebar-text/55 hover:text-accent no-underline p-0 text-[11px] leading-none opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
         onClick={(e) => {
           if (stopPropagation) e.stopPropagation();
-          triggerImport(folderPath);
         }}
-        disabled={importingFolder !== null}
       >
         &#8593;
-      </button>
+      </Link>
       <button
         type="button"
         title={`Create a new document in ${getDisplayName(folderPath)}`}
@@ -466,82 +394,11 @@ export function DocumentsTreeNav({
 
   return (
     <>
-      {/* Hidden file input for import */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".md"
-        multiple
-        className="hidden"
-        onChange={handleFileSelected}
-      />
-
-      {/* Import status message */}
-      {importMessage ? (
-        <div className="text-[11px] px-2 py-1 text-sidebar-text bg-white/20 rounded mx-1 mb-1">
-          {importMessage}
-        </div>
-      ) : null}
-
-      {/* Importing spinner */}
-      {importingFolder !== null ? (
-        <div className="text-[11px] px-2 py-1 text-sidebar-text opacity-60 mx-1 mb-1">
-          Importing to {getDisplayName(importingFolder)}...
-        </div>
-      ) : null}
-
       {sortedEntries.length === 0 ? (
         <p className="text-xs text-text-faint px-1.5 py-2">{emptyLabel}</p>
       ) : (
         renderEntries(sortedEntries, 0)
       )}
-
-      {/* Blocked import dialog */}
-      {blockedImport ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 p-5">
-            <h3 className="text-sm font-semibold mb-3">Import blocked</h3>
-            <p className="text-xs text-gray-600 mb-3">
-              Some sections are currently reserved or being edited. The import proposal has been
-              created but cannot be committed yet.
-            </p>
-            <div className="max-h-48 overflow-y-auto mb-4 border rounded p-2">
-              {blockedImport.blockedSections.map((target, i) => (
-                <div key={i} className="text-xs py-1 border-b last:border-b-0">
-                  <div className="font-medium">{target.target.doc_path}</div>
-                  <div className="text-gray-500">
-                    {target.target.kind === "section"
-                      ? target.target.heading_path.join(" > ")
-                      : "(whole document)"}
-                    {" — "}
-                    {/* Area M: render backend prose, not a code/score. */}
-                    {target.message}
-                  </div>
-                  {target.details.justification ? (
-                    <div className="text-gray-400 italic">{target.details.justification}</div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-            <div className="flex gap-2 justify-end">
-              <button
-                type="button"
-                className="px-3 py-1.5 text-xs rounded border border-gray-300 bg-white hover:bg-gray-50 cursor-pointer"
-                onClick={handleCancelImport}
-              >
-                Cancel Import
-              </button>
-              <button
-                type="button"
-                className="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 border-none cursor-pointer"
-                onClick={handleKeepProposal}
-              >
-                Keep Proposal
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </>
   );
 }

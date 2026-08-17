@@ -13,7 +13,7 @@ import { createProposal } from "../../storage/proposal-repository.js";
 import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { importFilesToProposal } from "../../storage/import-service.js";
-import { commitProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonical } from "../../storage/commit-pipeline.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { SectionRef } from "../../domain/section-ref.js";
 
@@ -160,7 +160,7 @@ describe("ProposalEditor", () => {
       writer,
       "seed canonical",
     );
-    await commitProposalToCanonical(importId, {});
+    await publishProposalToCanonical(importId, {});
 
     const editor = await newEditor();
     expect(await editor.getDocumentState("/canon.md")).toBe("live");
@@ -176,7 +176,7 @@ describe("ProposalEditor", () => {
       writer,
       "seed canonical",
     );
-    await commitProposalToCanonical(importId, {});
+    await publishProposalToCanonical(importId, {});
 
     const editor = await newEditor();
     await editor.renameDocument("/old.md", "/new.md");
@@ -191,13 +191,13 @@ describe("ProposalEditor", () => {
     // v1: doc with root + Overview
     const v1 = ["Preamble.", "", "## Overview", "", "Overview body.", ""].join("\n");
     const { id: id1 } = await importFilesToProposal([{ docPath: "/replay.md", content: v1 }], writer, "v1");
-    await commitProposalToCanonical(id1, {});
+    await publishProposalToCanonical(id1, {});
     const v1Sha = await getHeadSha(ctx.rootDir);
 
     // v2: add Details
     const v2 = ["Preamble.", "", "## Overview", "", "Overview body.", "", "## Details", "", "Details body.", ""].join("\n");
     const { id: id2 } = await importFilesToProposal([{ docPath: "/replay.md", content: v2 }], writer, "v2");
-    await commitProposalToCanonical(id2, {});
+    await publishProposalToCanonical(id2, {});
 
     const editor = await newEditor();
     const { restoredHeadingPaths } = await editor.replayDocumentFromGitCommit("/replay.md", v1Sha);

@@ -35,7 +35,7 @@ import {
 } from "../../storage/proposal-repository.js";
 import {
   evaluateAgentWritePolicy,
-  commitProposalToCanonical,
+  publishProposalToCanonical,
 } from "../../storage/commit-pipeline.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
@@ -52,6 +52,7 @@ import { proposalSectionsParsedForLiveUse } from "../../types/shared.js";
 import type { DocPath, HumanInvolvementPolicyResult, ProposalStatus } from "../../types/shared.js";
 import { buildFragmentContent, fragmentFromBodyHolder, sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
 import { checkDocPermission } from "../../auth/acl.js";
+import { authorizeDocRead, PermissionError } from "../../auth/authorized-read.js";
 import { emitCatalogMutationEvents, summarizeProposalCatalogMutations } from "../catalog-events.js";
 import { emitProposalDraftEventsByDoc, emitContentCommittedEventsByDoc } from "../../api/application/events.js";
 import {
@@ -176,11 +177,18 @@ const readDocHandler: ToolHandler = async (args, ctx) => {
   if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
   const docPath = parsedDocPath.docPath;
 
-  const readOk = await checkDocPermission(ctx.writer, docPath, "read");
-  if (!readOk) return makeToolErrorResult(`Permission denied: you do not have read access to "${docPath}".`);
+  let authorizedRead;
+  try {
+    authorizedRead = await authorizeDocRead(ctx.writer, docPath);
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      return makeToolErrorResult(`Permission denied: you do not have read access to "${docPath}".`);
+    }
+    throw error;
+  }
 
   try {
-    const content = await readAssembledDocument(docPath);
+    const content = await readAssembledDocument(authorizedRead);
     const structure = await readDocumentStructure(docPath);
     const headingPaths = flattenStructureToHeadingPaths(structure);
 
@@ -252,11 +260,18 @@ const readPublishedSectionHandler: ToolHandler = async (args, ctx) => {
   if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
   const docPath = parsedDocPath.docPath;
 
-  const secReadOk = await checkDocPermission(ctx.writer, docPath, "read");
-  if (!secReadOk) return makeToolErrorResult(`Permission denied: you do not have read access to "${docPath}".`);
+  let authorizedRead;
+  try {
+    authorizedRead = await authorizeDocRead(ctx.writer, docPath);
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      return makeToolErrorResult(`Permission denied: you do not have read access to "${docPath}".`);
+    }
+    throw error;
+  }
 
   try {
-    const content = await readSectionWithHeading(docPath, headingPath);
+    const content = await readSectionWithHeading(authorizedRead, headingPath);
 
     // Broadcast agent:reading
     if (ctx.writer.type === "agent" && ctx.emitEvent) {
@@ -465,7 +480,7 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
       const catalogMutations = await summarizeProposalCatalogMutations(proposal);
       const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
 
-      const committedHead = await commitProposalToCanonical(proposalId, committedMetadata);
+      const committedHead = await publishProposalToCanonical(proposalId, committedMetadata);
       forgetSessionDraft(ctx.session, proposalId);
 
       if (ctx.writer.type === "agent") {

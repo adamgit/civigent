@@ -18,6 +18,7 @@ import {
   importStagingPath,
 } from "../../api/application/imports.js";
 import { getImportStagingRoot } from "../../storage/data-root.js";
+import { FolderPath } from "../../types/shared.js";
 
 const DOC = ["# Title", "", "Preamble.", "", "## Alpha", "", "Alpha body.", "", "## Beta", "", "Beta body.", ""].join("\n");
 const NESTED = ["## Only", "", "Nested body.", ""].join("\n");
@@ -34,7 +35,7 @@ describe("import staging upload/preview lifecycle (spec 07)", () => {
   });
 
   it("writes uploaded files under import-staging/{uuid}/ and previews structure", async () => {
-    const { importId, stagingPath } = await createImport();
+    const { importId, stagingPath } = await createImport(FolderPath.root);
     // Staging folder is under the data root's import-staging/{uuid}.
     expect(stagingPath).toBe(join(getImportStagingRoot(), importId));
     expect(stagingPath.startsWith(join(ctx.rootDir, "import-staging"))).toBe(true);
@@ -45,9 +46,13 @@ describe("import staging upload/preview lifecycle (spec 07)", () => {
     ]);
     expect(count).toBe(2);
 
-    // Files exist on disk under the staging folder (preserving subfolder).
-    expect(await readFile(join(stagingPath, "guide.md"), "utf8")).toBe(DOC);
-    expect((await stat(join(stagingPath, "sub", "nested.md"))).isFile()).toBe(true);
+    // Staged user files live under the record's files/ root (preserving subfolder),
+    // beside meta.json which carries the destination folder + creation time.
+    expect(await readFile(join(stagingPath, "files", "guide.md"), "utf8")).toBe(DOC);
+    expect((await stat(join(stagingPath, "files", "sub", "nested.md"))).isFile()).toBe(true);
+    const meta = JSON.parse(await readFile(join(stagingPath, "meta.json"), "utf8"));
+    expect(meta.target_folder).toBe("/");
+    expect(typeof meta.created_at).toBe("string");
 
     // Preview returns document paths + section counts + detected structure.
     const preview = await scanImport(importId);
@@ -65,8 +70,8 @@ describe("import staging upload/preview lifecycle (spec 07)", () => {
   });
 
   it("isolates staged uploads across separate imports", async () => {
-    const a = await createImport();
-    const b = await createImport();
+    const a = await createImport(FolderPath.root);
+    const b = await createImport(FolderPath.root);
     expect(a.importId).not.toBe(b.importId);
 
     await writeUploadedFiles(a.importId, [{ name: "a.md", content: DOC }]);
@@ -81,7 +86,7 @@ describe("import staging upload/preview lifecycle (spec 07)", () => {
   });
 
   it("flags a non-markdown upload attempt rather than staging it", async () => {
-    const { importId } = await createImport();
+    const { importId } = await createImport(FolderPath.root);
     await expect(
       writeUploadedFiles(importId, [{ name: "notes.txt", content: "nope" }]),
     ).rejects.toThrow(/only \.md/i);

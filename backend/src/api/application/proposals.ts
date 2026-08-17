@@ -31,7 +31,7 @@ import {
   InvalidProposalStateError,
   ProposalIntegrityError,
 } from "../../storage/proposal-repository.js";
-import { evaluateAgentWritePolicy, commitProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { evaluateAgentWritePolicy, publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { applyCommittedCanonicalToLiveSession } from "../../ws/crdt-ws-coordinator.js";
 import { AgentWritePolicy, humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
 import { ProposalEditor } from "../../storage/proposal-editor.js";
@@ -505,7 +505,7 @@ export async function commitProposalUseCase(
 
   // Human reservations always commit — humans bypass Agent Write Policy (spec 12).
   if (proposal.writer.type === "human") {
-    const absorbResult = await commitProposalToCanonicalDetailed(proposal.id, {});
+    const absorbResult = await publishProposalToCanonicalDetailed(proposal.id, {});
     await propagateCommitToLiveSessions(absorbResult, proposal.id);
     return {
       kind: "committed",
@@ -522,7 +522,7 @@ export async function commitProposalUseCase(
   const policyResult = await evaluateAgentWritePolicy(proposal.id);
   if (policyResult.canWrite) {
     const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
-    const absorbResult = await commitProposalToCanonicalDetailed(proposal.id, committedMetadata);
+    const absorbResult = await publishProposalToCanonicalDetailed(proposal.id, committedMetadata);
     await propagateCommitToLiveSessions(absorbResult, proposal.id);
     return {
       kind: "committed",

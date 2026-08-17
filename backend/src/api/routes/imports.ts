@@ -12,13 +12,16 @@ import {
   commitImport,
   removeImport,
   writeUploadedFiles,
+  spoolImportZipUpload,
+  extractImportZipSpool,
   stagingFolderExists,
   ImportUploadError,
   ImportEmptyError,
+  ImportZipTooLargeError,
   humanBypassPolicyResult,
 } from "../application/imports.js";
 import { emitContentCommittedForSections } from "../application/events.js";
-import { DocPath } from "../../types/shared.js";
+import { DocPath, FolderPath, InvalidFolderPathError } from "../../types/shared.js";
 
 // ─── Multipart wire-format parsing (HTTP-layer body handling) ──
 
@@ -85,8 +88,23 @@ export function registerImportRoutes(
         sendApiError(res, 403, "Only human writers can create imports.");
         return;
       }
-      const { importId, stagingPath } = await createImport();
-      res.status(201).json({ import_id: importId, staging_path: stagingPath });
+      const { target_folder: targetFolderRaw } = (req.body ?? {}) as { target_folder?: unknown };
+      if (typeof targetFolderRaw !== "string") {
+        sendApiError(res, 400, "Missing required field: target_folder");
+        return;
+      }
+      let targetFolder;
+      try {
+        targetFolder = FolderPath.normalize(targetFolderRaw);
+      } catch (error) {
+        if (error instanceof InvalidFolderPathError) {
+          sendApiError(res, 400, error);
+          return;
+        }
+        throw error;
+      }
+      const { importId, stagingPath } = await createImport(targetFolder);
+      res.status(201).json({ import_id: importId, staging_path: stagingPath, target_folder: targetFolder });
     } catch (error) {
       next(error);
     }
@@ -123,6 +141,47 @@ export function registerImportRoutes(
         const uploaded = await writeUploadedFiles(importId, files);
         res.status(200).json({ uploaded });
       } catch (error) {
+        if (error instanceof ImportUploadError) {
+          sendApiError(res, 400, error.message);
+          return;
+        }
+        throw error;
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/imports/:id/upload-zip", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+      if (writer.type !== "human") {
+        sendApiError(res, 403, "Only human writers can upload import files.");
+        return;
+      }
+
+      const importId = req.params.id;
+      const contentType = (req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+      if (contentType !== "application/zip") {
+        sendApiError(res, 400, "An application/zip request body is required.");
+        return;
+      }
+
+      if (!(await stagingFolderExists(importId))) {
+        sendApiError(res, 404, `Import ${importId} not found.`);
+        return;
+      }
+
+      try {
+        await spoolImportZipUpload(importId, req);
+        const uploaded = await extractImportZipSpool(importId);
+        res.status(200).json({ uploaded });
+      } catch (error) {
+        if (error instanceof ImportZipTooLargeError) {
+          sendApiError(res, 413, error.message);
+          return;
+        }
         if (error instanceof ImportUploadError) {
           sendApiError(res, 400, error.message);
           return;

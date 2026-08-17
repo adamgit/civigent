@@ -16,7 +16,7 @@ import {
   stagingFolderExists,
 } from "../../api/application/imports.js";
 import { readProposal } from "../../storage/proposal-repository.js";
-import { proposalTargetDocPathForDisplay } from "../../types/shared.js";
+import { FolderPath, proposalTargetDocPathForDisplay } from "../../types/shared.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { CanonicalReader } from "../../storage/canonical-reader.js";
 import { SectionRef } from "../../domain/section-ref.js";
@@ -37,7 +37,7 @@ describe("import commit + cleanup lifecycle (spec 07)", () => {
   });
 
   it("commits a staged import through a transient proposal with claimed targets, preserving subfolders, and deletes staging", async () => {
-    const { importId } = await createImport();
+    const { importId } = await createImport(FolderPath.root);
     await writeUploadedFiles(importId, [
       { name: "/guide.md", content: GUIDE },
       { name: "/sub/nested.md", content: NESTED },

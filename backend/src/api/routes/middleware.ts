@@ -11,6 +11,8 @@ import {
 import { checkDocPermission } from "../../auth/acl.js";
 import { getMCPPublicURL } from "../../auth/oauth-config.js";
 import { ProposalLockConflictError } from "../../domain/proposal-fsm-locks.js";
+import { CommitPermissionError } from "../../storage/commit-pipeline.js";
+import { PermissionError, authorizeDocRead, type AuthorizedDocRead } from "../../auth/authorized-read.js";
 
 // Re-exports of auth gating consumed by HTTP-only route modules (which may not
 // import auth/* directly). middleware.ts is the single auth-aware seam.
@@ -53,17 +55,22 @@ export function requireAuthenticatedWriter(req: Request, res: Response): Authent
 export async function requireDocReadPermission(
   req: Request,
   res: Response,
-  docPath: string,
-): Promise<AuthenticatedWriter | "public" | null> {
+  docPath: DocPath,
+): Promise<AuthorizedDocRead | null> {
   const writer = resolveAuthenticatedWriter(req);
-  const allowed = await checkDocPermission(writer, docPath, "read");
-  if (allowed) return writer ?? "public";
-  if (!writer) {
-    sendApiError(res, 401, "Authentication required.");
-  } else {
-    sendApiError(res, 403, "You do not have permission to read this document.");
+  try {
+    return await authorizeDocRead(writer, docPath);
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      if (!writer) {
+        sendApiError(res, 401, "Authentication required.");
+      } else {
+        sendApiError(res, 403, "You do not have permission to read this document.");
+      }
+      return null;
+    }
+    throw error;
   }
-  return null;
 }
 
 /**
@@ -223,6 +230,14 @@ export function installErrorHandler(router: Router): void {
   router.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
     if (error instanceof ProposalLockConflictError) {
       sendApiError(res, 409, error.result.message, { conflicts: error.result.conflicts });
+      return;
+    }
+    if (error instanceof CommitPermissionError) {
+      sendApiError(res, 403, error.message);
+      return;
+    }
+    if (error instanceof PermissionError) {
+      sendApiError(res, error.writerWasAnonymous ? 401 : 403, error.message);
       return;
     }
     sendApiError(res, 500, error.stack || error.message);

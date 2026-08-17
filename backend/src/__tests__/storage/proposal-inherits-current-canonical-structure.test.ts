@@ -29,7 +29,7 @@ import {
 import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
-import { commitProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { ProposalAdoptionId } from "../../types/shared.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
@@ -75,7 +75,7 @@ describe("proposal effective structure inherits sections canonical gained after 
       heading: "Roadmap",
       content: "ROADMAP BODY ADDED AFTER THE PROPOSAL OPENED",
     });
-    await commitProposalToCanonicalDetailed(externalId, {});
+    await publishProposalToCanonicalDetailed(externalId, {});
 
     // The proposal's EFFECTIVE structure must inherit Roadmap (current canonical),
     // keep its own edited Overview, and keep the untouched Timeline.

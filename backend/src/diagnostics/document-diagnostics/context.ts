@@ -1,9 +1,9 @@
 import path from "node:path";
 import { readdir } from "node:fs/promises";
-import { getContentRoot, getContentGitPrefix, getDataRoot } from "../../storage/data-root.js";
+import { getContentGitPrefix, getDataRoot } from "../../storage/data-root.js";
 import { assessSkeleton, type SkeletonAssessment } from "../../storage/skeleton-assessment.js";
-import { resolveSkeletonPath, parseSkeletonToEntries, type FlatEntry } from "../../storage/document-skeleton.js";
-import { ContentLayer } from "../../storage/content-layer.js";
+import { resolveCanonicalSkeletonPath, parseSkeletonToEntries, type FlatEntry } from "../../storage/document-skeleton.js";
+import { CanonicalReader } from "../../storage/canonical-reader.js";
 import { docPathToContentRelativeFsPath } from "../../storage/path-utils.js";
 import { DocPath, HeadingLevel, type ProposalId } from "../../types/shared.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
@@ -75,7 +75,6 @@ export interface HistoricalRecursiveView {
 export interface DocumentDiagnosticsContext {
   docPath: DocPath;
   dataRoot: string;
-  contentRoot: string;
   contentGitPrefix: string;
   contentRelativeFsPath: string;
   canonicalSkeletonPath: string;
@@ -93,17 +92,15 @@ export interface DocumentDiagnosticsContext {
 
 export function createDocumentDiagnosticsContext(docPath: DocPath): DocumentDiagnosticsContext {
   const dataRoot = getDataRoot();
-  const contentRoot = getContentRoot();
   const contentGitPrefix = getContentGitPrefix();
   const contentRelativeFsPath = docPathToContentRelativeFsPath(DocPath.parse(docPath));
-  const canonicalSkeletonPath = resolveSkeletonPath(docPath, contentRoot);
+  const canonicalSkeletonPath = resolveCanonicalSkeletonPath(docPath);
   const canonicalSectionsDir = `${canonicalSkeletonPath}.sections`;
   const checks: DiagHealthCheck[] = [];
 
   return {
     docPath,
     dataRoot,
-    contentRoot,
     contentGitPrefix,
     contentRelativeFsPath,
     canonicalSkeletonPath,
@@ -152,7 +149,7 @@ export async function ensureRecursiveSkeleton(
   if (ctx.recursiveSkeleton) return ctx.recursiveSkeleton;
   if (ctx.recursiveSkeletonLoadError) throw ctx.recursiveSkeletonLoadError;
   try {
-    const entries = await new ContentLayer(ctx.contentRoot).listCanonicalEntries(ctx.docPath);
+    const entries = await CanonicalReader.open().listCanonicalEntries(ctx.docPath);
     ctx.recursiveSkeleton = recursiveSkeletonViewFromFlatEntries(entries);
     return ctx.recursiveSkeleton;
   } catch (err) {

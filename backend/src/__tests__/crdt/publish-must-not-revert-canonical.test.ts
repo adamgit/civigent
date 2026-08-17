@@ -29,7 +29,7 @@ import {
 } from "../../storage/proposal-repository.js";
 import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
-import { commitProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { getHeadSha } from "../../storage/git-repo.js";
@@ -81,7 +81,7 @@ describe("data-loss regression: DocSession publish must not revert canonical to 
       heading: "Roadmap",
       content: "ROADMAP COMMITTED AFTER THE INPROGRESS PROPOSAL WAS OPENED",
     });
-    await commitProposalToCanonicalDetailed(externalId, {});
+    await publishProposalToCanonicalDetailed(externalId, {});
 
     // Canonical now genuinely contains Roadmap.
     const roadmapKey = SectionRef.headingKey(["Roadmap"]);

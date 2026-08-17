@@ -79,14 +79,15 @@ import { findProposalDefectDetector } from "../../domain/proposal-defect-detecto
 import type { ActiveProposal, AnyProposal } from "../../types/shared.js";
 import path from "node:path";
 import type { GetHeatmapResponse, HeatmapEntry } from "../../types/shared.js";
-import { readDocumentsTree } from "../../storage/documents-tree.js";
+import { readDocumentsTreeUnfiltered } from "../../storage/documents-tree.js";
 import {
   readDocumentStructure,
   flattenStructureToHeadingPaths,
-  resolveAllSectionPaths,
+  resolveAllCanonicalSectionPaths,
 } from "../../storage/heading-resolver.js";
 import { readDocSectionCommitInfo, type SectionCommitInfo } from "../../storage/section-commit-history.js";
-import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
+import { getDataRoot } from "../../storage/data-root.js";
+import { CanonicalReader } from "../../storage/canonical-reader.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
@@ -339,7 +340,7 @@ export async function getHeatmap(): Promise<GetHeatmapResponse> {
   const config = getAdminConfig();
   const sections: HeatmapEntry[] = [];
 
-  const tree = await readDocumentsTree("");
+  const tree = await readDocumentsTreeUnfiltered("");
   for (const entry of flattenTree(tree)) {
     if (entry.type !== "file") continue;
     const docPath = DocPath.parse(entry.path);
@@ -349,7 +350,7 @@ export async function getHeatmap(): Promise<GetHeatmapResponse> {
 
     const [gitCommitInfo, canonicalPaths] = await Promise.all([
       readDocSectionCommitInfo(docPath),
-      resolveAllSectionPaths(getContentRoot(), docPath),
+      resolveAllCanonicalSectionPaths(docPath),
     ]);
 
     const commitByHeading = new Map<string, SectionCommitInfo>();
@@ -425,9 +426,9 @@ function formatScanError(error: unknown): string {
  */
 export async function scanContentIntegrity(): Promise<RunAdminContentIntegrityScanResponse> {
   const started = Date.now();
-  const tree = await readDocumentsTree("/", true);
+  const tree = await readDocumentsTreeUnfiltered("/", true);
   const docPaths = flattenDocumentTreePaths(tree);
-  const layer = new ContentLayer(getContentRoot());
+  const layer = CanonicalReader.open();
   const failures: ContentIntegrityFailure[] = [];
 
   for (const docPath of docPaths) {

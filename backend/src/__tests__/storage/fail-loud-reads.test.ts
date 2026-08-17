@@ -23,8 +23,14 @@ import {
   ProposalIntegrityError,
 } from "../../storage/proposal-repository.js";
 import { readAssembledDocument, DocumentAssemblyError } from "../../storage/document-reader.js";
+import { systemDocRead } from "../../auth/authorized-read.js";
+import { systemAuthority } from "../../auth/system-authority.js";
 import { listReadableDocuments } from "../../storage/discovery.js";
 import { getContentRoot } from "../../storage/data-root.js";
+import { DocPath } from "../../types/shared.js";
+
+const readAssembledForTest = (docPath: string) =>
+  readAssembledDocument(systemDocRead(systemAuthority("test read"), DocPath.parse(docPath)));
 
 describe("Claim-review 04: fail-loud reads", () => {
   let ctx: TempDataRootContext;
@@ -53,7 +59,7 @@ describe("Claim-review 04: fail-loud reads", () => {
 
   it("single-doc GET assembly THROWS when a skeleton-claimed body file is missing", async () => {
     // Happy path first: the document assembles.
-    const before = await readAssembledDocument(SAMPLE_DOC_PATH);
+    const before = await readAssembledForTest(SAMPLE_DOC_PATH);
     expect(before.length).toBeGreaterThan(0);
 
     // Corrupt: delete a section body file the skeleton still references.
@@ -62,7 +68,7 @@ describe("Claim-review 04: fail-loud reads", () => {
     expect(files.length).toBeGreaterThan(0);
     await rm(path.join(sectionsDir, files[0]), { force: true });
 
-    await expect(readAssembledDocument(SAMPLE_DOC_PATH)).rejects.toBeInstanceOf(DocumentAssemblyError);
+    await expect(readAssembledForTest(SAMPLE_DOC_PATH)).rejects.toBeInstanceOf(DocumentAssemblyError);
   });
 
   it("discovery fan-out exposes the explicit failed-row channel (rows + failures)", async () => {

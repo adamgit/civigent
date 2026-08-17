@@ -10,9 +10,8 @@ import { jsonToolResult, textToolResult, jsonBlockedToolResult } from "../tool-r
 import { AgentPayloadContract } from "../agent-payload-contract.js";
 import { makeToolErrorResult, parseToolArgumentDocPath } from "../protocol.js";
 import type { DocPath } from "../../types/shared.js";
-import { readAssembledDocument, DocumentNotFoundError } from "../../storage/document-reader.js";
-import { readDocumentsTree } from "../../storage/documents-tree.js";
-import { getContentRoot } from "../../storage/data-root.js";
+import { readAssembledDocument, canonicalDocumentExists, DocumentNotFoundError } from "../../storage/document-reader.js";
+import { readDocumentsTreeUnfiltered } from "../../storage/documents-tree.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 import { readDocumentStructure, flattenStructureToHeadingPaths } from "../../storage/heading-resolver.js";
 import {
@@ -21,19 +20,19 @@ import {
   transitionToWithdrawn,
 } from "../../storage/proposal-repository.js";
 import { rememberSessionDraft, takeCurrentSessionDraft } from "../session-drafts.js";
-import { resolveDocPathUnderContent, InvalidDocPathError } from "../../storage/path-utils.js";
+import { InvalidDocPathError } from "../../storage/path-utils.js";
 import { applyUnifiedDiff, DiffParseError, DiffApplyError } from "../../storage/diff-parser.js";
-import { access } from "node:fs/promises";
 import {
   evaluateAgentWritePolicy,
-  commitProposalToCanonical,
-  commitProposalToCanonicalDetailed,
+  publishProposalToCanonical,
+  publishProposalToCanonicalDetailed,
 } from "../../storage/commit-pipeline.js";
 import { applyCommittedCanonicalToLiveSession } from "../../ws/crdt-ws-coordinator.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
 import { checkDocPermission } from "../../auth/acl.js";
-import { canonicalDocumentExists, emitCatalogMutationEvents } from "../catalog-events.js";
+import { authorizeDocRead, PermissionError } from "../../auth/authorized-read.js";
+import { emitCatalogMutationEvents } from "../catalog-events.js";
 import { emitContentCommittedEventsByDoc } from "../../api/application/events.js";
 
 // ─── read_file ───────────────────────────────────────────
@@ -47,13 +46,18 @@ const readFileHandler: ToolHandler = async (args, ctx) => {
   if ("errorResult" in parsedFilePath) return parsedFilePath.errorResult;
   const filePath = parsedFilePath.docPath;
 
-  const readAllowed = await checkDocPermission(ctx.writer, filePath, "read");
-  if (!readAllowed) {
-    return makeToolErrorResult(`Permission denied: you do not have read access to "${filePath}".`);
+  let authorizedRead;
+  try {
+    authorizedRead = await authorizeDocRead(ctx.writer, filePath);
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      return makeToolErrorResult(`Permission denied: you do not have read access to "${filePath}".`);
+    }
+    throw error;
   }
 
   try {
-    const content = await readAssembledDocument(filePath);
+    const content = await readAssembledDocument(authorizedRead);
 
     // Broadcast agent:reading
     if (ctx.writer.type === "agent" && ctx.emitEvent) {
@@ -129,7 +133,7 @@ const listDirectoryHandler: ToolHandler = async (args) => {
   const dirPath = (args.path as string | undefined) ?? "";
 
   try {
-    const tree = await readDocumentsTree(dirPath);
+    const tree = await readDocumentsTreeUnfiltered(dirPath);
     return jsonToolResult({ entries: tree });
   } catch (error) {
     if (error instanceof InvalidDocPathError) {
@@ -183,13 +187,8 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
     return makeToolErrorResult(`Permission denied: you do not have write access to "${destination}".`);
   }
 
-  const canonicalContentRoot = getContentRoot();
-
   // Verify source exists
-  try {
-    resolveDocPathUnderContent(canonicalContentRoot, source);
-    await access(resolveDocPathUnderContent(canonicalContentRoot, source));
-  } catch {
+  if (!(await canonicalDocumentExists(source))) {
     return makeToolErrorResult(`Source document not found: ${source}`);
   }
 
@@ -224,7 +223,7 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
 
   if (policyResult.canWrite) {
     const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
-    const committedHead = await commitProposalToCanonical(moveProposalId, committedMetadata);
+    const committedHead = await publishProposalToCanonical(moveProposalId, committedMetadata);
 
     if (ctx.emitEvent) {
       emitContentCommittedEventsByDoc(ctx.emitEvent, writer, [writer.id], committedHead, manifest.targets);
@@ -289,8 +288,11 @@ const applyPatchHandler: ToolHandler = async (args, ctx) => {
 
   let currentContent: string;
   try {
-    currentContent = await readAssembledDocument(filePath);
+    currentContent = await readAssembledDocument(await authorizeDocRead(ctx.writer, filePath));
   } catch (error) {
+    if (error instanceof PermissionError) {
+      return makeToolErrorResult(`Permission denied: you do not have read access to "${filePath}".`);
+    }
     if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
       return makeToolErrorResult(`Document not found: ${filePath}`);
     }
@@ -378,7 +380,7 @@ async function writeDocumentViaProposal(
   if (policyResult.canWrite) {
     const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
 
-    const absorbResult = await commitProposalToCanonicalDetailed(writeProposalId, committedMetadata);
+    const absorbResult = await publishProposalToCanonicalDetailed(writeProposalId, committedMetadata);
     const committedHead = absorbResult.commitSha;
 
     // MW-3: push the committed canonical change into any open live DocSession
@@ -457,18 +459,8 @@ async function deleteDocumentViaProposal(
     return makeToolErrorResult(`Permission denied: you do not have write access to "${docPath}".`);
   }
 
-  const canonicalContentRoot = getContentRoot();
-
   // Verify document exists in canonical
-  let resolvedPath: string;
-  try {
-    resolvedPath = resolveDocPathUnderContent(canonicalContentRoot, docPath);
-  } catch {
-    return makeToolErrorResult(`Invalid document path: ${docPath}`);
-  }
-  try {
-    await access(resolvedPath);
-  } catch {
+  if (!(await canonicalDocumentExists(docPath))) {
     return makeToolErrorResult(`Document not found: ${docPath}`);
   }
 
@@ -504,7 +496,7 @@ async function deleteDocumentViaProposal(
 
   if (policyResult.canWrite) {
     const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
-    const committedHead = await commitProposalToCanonical(delProposalId, committedMetadata);
+    const committedHead = await publishProposalToCanonical(delProposalId, committedMetadata);
 
     if (ctx.emitEvent) {
       emitContentCommittedEventsByDoc(ctx.emitEvent, writer, [writer.id], committedHead, manifest.targets);

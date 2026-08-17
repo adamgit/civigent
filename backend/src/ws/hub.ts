@@ -108,20 +108,33 @@ export function createWsHub(): WsHub {
   const broadcastInternal = (event: WsServerEvent) => {
     const encoded = JSON.stringify(event);
     const eventDocPath = "doc_path" in event ? DocPath.parse(event.doc_path) : null;
-    for (const [socket, state] of socketState.entries()) {
-      if (socket.readyState !== WebSocket.OPEN) continue;
 
-      if (eventDocPath === null) {
+    if (eventDocPath === null) {
+      for (const [socket] of socketState.entries()) {
+        if (socket.readyState !== WebSocket.OPEN) continue;
         socket.send(encoded);
-        continue;
       }
-
-      const explicitlySubscribed = hasDocumentSubscription(state, eventDocPath);
-      const sessionWide = state.subscriptions.size === 0;
-      if (!explicitlySubscribed && !sessionWide) continue;
-
-      socket.send(encoded);
+      return;
     }
+
+    // Doc-bearing events are delivered only to sockets whose writer can READ
+    // the event's document — including session-wide sockets (zero
+    // subscriptions), whose historical unfiltered fallthrough was a read
+    // bypass: not subscribing meant receiving every doc's paths, headings, and
+    // writer names.
+    void (async () => {
+      for (const [socket, state] of socketState.entries()) {
+        if (socket.readyState !== WebSocket.OPEN) continue;
+
+        const explicitlySubscribed = hasDocumentSubscription(state, eventDocPath);
+        const sessionWide = state.subscriptions.size === 0;
+        if (!explicitlySubscribed && !sessionWide) continue;
+
+        if (!(await checkDocPermission(state.writer, eventDocPath, "read"))) continue;
+
+        socket.send(encoded);
+      }
+    })();
   };
 
   wsServer.on("connection", (socket, request) => {

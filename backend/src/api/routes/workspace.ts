@@ -67,7 +67,7 @@ export function registerWorkspaceRoutes(
     try {
       const writer = resolveAuthenticatedWriter(req);
       const basePath = optionalStringParam(req.query.path, "path") ?? "";
-      const response: GetDocumentsTreeResponse = await readTree(basePath, writer !== null);
+      const response: GetDocumentsTreeResponse = await readTree(writer, basePath);
       res.json(response);
     } catch (error) {
       if (error instanceof QueryParamError) {
@@ -92,7 +92,7 @@ export function registerWorkspaceRoutes(
       const docPath = docPathParamOf(req);
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
-      const { response } = await readWorkspaceStructure(docPath);
+      const { response } = await readWorkspaceStructure(access);
       const out: ReadDocStructureResponse = response;
       res.json(out);
     } catch (error) {
@@ -114,7 +114,7 @@ export function registerWorkspaceRoutes(
       const docPath = docPathParamOf(req);
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
-      const markdown = await readLiveDocumentMarkdown(docPath);
+      const markdown = await readLiveDocumentMarkdown(access);
       res.json({ doc_path: docPath, markdown });
     } catch (error) {
       if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {

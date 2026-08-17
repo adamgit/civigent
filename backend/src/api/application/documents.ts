@@ -1,5 +1,3 @@
-import path from "node:path";
-import { access } from "node:fs/promises";
 import type {
   DocumentTreeEntry,
   GetDocumentResponse,
@@ -11,22 +9,19 @@ import type {
   ProposalTargetRef,
 } from "../../types/shared.js";
 import { isActiveProposal } from "../../types/shared.js";
-import {
-  getContentRoot,
-  getDataRoot,
-} from "../../storage/data-root.js";
-import { ContentLayer } from "../../storage/content-layer.js";
+import { getDataRoot } from "../../storage/data-root.js";
 import { CanonicalReader } from "../../storage/canonical-reader.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 import { getHeadSha, gitLogRecent, isValidSha } from "../../storage/git-repo.js";
 import {
   readAssembledDocument,
+  canonicalDocumentExists,
   DirectoryAtDocPathError,
   DocumentAssemblyError,
   DocumentNotFoundError,
 } from "../../storage/document-reader.js";
-import { InvalidDocPathError, docPathToContentRelativeFsPath, resolveDocPathUnderContent } from "../../storage/path-utils.js";
+import { InvalidDocPathError, docPathToContentRelativeFsPath } from "../../storage/path-utils.js";
 import {
   createTransientProposal,
 } from "../../storage/proposal-repository.js";
@@ -34,7 +29,7 @@ import {
   readDocumentStructure,
   flattenStructureToHeadingPaths,
 } from "../../storage/heading-resolver.js";
-import { evaluateAgentWritePolicy, commitProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { evaluateAgentWritePolicy, publishProposalToCanonical } from "../../storage/commit-pipeline.js";
 import { AgentWritePolicy, humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import {
@@ -44,7 +39,7 @@ import {
 } from "../../crdt/ydoc-lifecycle.js";
 import { requestDocSessionPublish, type PublishAttemptOutcome } from "../../ws/crdt-ws-coordinator.js";
 import {
-  readDocumentsTree,
+  readDocumentsTreeUnfiltered,
   DocumentsTreePathNotFoundError,
   InvalidDocumentsTreePathError,
 } from "../../storage/documents-tree.js";
@@ -56,9 +51,10 @@ import {
   SearchTextExecutionError,
 } from "../../storage/discovery.js";
 import { getDocReadPermission, getDocWritePermission, checkDocPermission } from "../../auth/acl.js";
+import { authorizeDocRead, PermissionError, type AuthorizedDocRead } from "../../auth/authorized-read.js";
 import { RoleName } from "../../types/shared.js";
 import { DocPath, FolderPath, InvalidFolderPathError } from "../../types/shared.js";
-import { canonicalDocumentExists } from "../../mcp/catalog-events.js";
+
 import type { AuthenticatedWriter } from "../../auth/context.js";
 import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
 import { openWorkspaceReader } from "./sections.js";
@@ -136,17 +132,52 @@ async function annotateDirectoryAccess(entries: DocumentTreeEntry[]): Promise<Do
   );
 }
 
-export async function readTree(basePath: string, isAuthenticated: boolean): Promise<GetDocumentsTreeResponse> {
-  const tree = annotateExportedSkillsPills(await readDocumentsTree(basePath));
-  if (!isAuthenticated) {
+async function filterTreeToReadable(
+  writer: AuthenticatedWriter,
+  entries: DocumentTreeEntry[],
+): Promise<DocumentTreeEntry[]> {
+  const result: DocumentTreeEntry[] = [];
+  for (const entry of entries) {
+    if (entry.type === "file") {
+      if (await checkDocPermission(writer, entry.path, "read")) {
+        result.push(entry);
+      }
+    } else {
+      const children = await filterTreeToReadable(writer, entry.children ?? []);
+      if (children.length > 0) {
+        result.push({ ...entry, children });
+      }
+    }
+  }
+  return result;
+}
+
+export async function readReadableTree(
+  writer: AuthenticatedWriter | null,
+  basePath: string,
+): Promise<DocumentTreeEntry[]> {
+  const tree = await readDocumentsTreeUnfiltered(basePath, true);
+  if (writer === null) {
+    return filterTreeToPublic(tree);
+  }
+  return filterTreeToReadable(writer, tree);
+}
+
+export async function readTree(
+  writer: AuthenticatedWriter | null,
+  basePath: string,
+): Promise<GetDocumentsTreeResponse> {
+  const tree = annotateExportedSkillsPills(await readDocumentsTreeUnfiltered(basePath));
+  if (writer === null) {
     return { tree: await filterTreeToPublic(tree) };
   }
-  return { tree: await annotateDirectoryAccess(tree) };
+  return { tree: await annotateDirectoryAccess(await filterTreeToReadable(writer, tree)) };
 }
 
 // ─── Structure ──────────────────────────────────────────
 
-export async function readCanonicalStructure(docPath: DocPath): Promise<{ response: ReadDocStructureResponse; headingPaths: string[][] }> {
+export async function readCanonicalStructure(read: AuthorizedDocRead): Promise<{ response: ReadDocStructureResponse; headingPaths: string[][] }> {
+  const docPath = read.docPath;
   // Canonical (committed) structure read: reads canonical content directly, never
   // a session/live overlay. The agent-facing surface. Proposal-preview structure
   // reads go through ProposalReader on an explicit proposal endpoint.
@@ -157,7 +188,8 @@ export async function readCanonicalStructure(docPath: DocPath): Promise<{ respon
   };
 }
 
-export async function readWorkspaceStructure(docPath: DocPath): Promise<{ response: ReadDocStructureResponse; headingPaths: string[][] }> {
+export async function readWorkspaceStructure(read: AuthorizedDocRead): Promise<{ response: ReadDocStructureResponse; headingPaths: string[][] }> {
+  const docPath = read.docPath;
   // Working-copy structure read: resolves the in-progress proposal (if any) for
   // the doc, else canonical — the same reader selection as workspace section
   // reads (see openWorkspaceReader). No live-fragment assembly.
@@ -171,13 +203,15 @@ export async function readWorkspaceStructure(docPath: DocPath): Promise<{ respon
 
 // ─── History / preview ──────────────────────────────────
 
-export async function getHistory(docPath: DocPath, limit: number, offset: number) {
+export async function getHistory(read: AuthorizedDocRead, limit: number, offset: number) {
+  const docPath = read.docPath;
   const dataRoot = getDataRoot();
   const entries = await gitLogRecent(dataRoot, { limit, offset, docPath });
   return { doc_path: docPath, versions: entries };
 }
 
-export async function getHistoryPreview(docPath: DocPath, sha: string): Promise<{ doc_path: string; sha: string; content: string; corrupt: boolean; missingSections: string[] }> {
+export async function getHistoryPreview(read: AuthorizedDocRead, sha: string): Promise<{ doc_path: string; sha: string; content: string; corrupt: boolean; missingSections: string[] }> {
+  const docPath = read.docPath;
   const { assembleDocumentAtCommit } = await import("../../storage/git-repo.js");
   const dataRoot = getDataRoot();
   const { content, missingSections } = await assembleDocumentAtCommit(dataRoot, sha, docPath);
@@ -196,9 +230,9 @@ export async function getDiagnostics(docPath: DocPath) {
 
 // ─── Blame ──────────────────────────────────────────────
 
-export async function getBlame(docPath: DocPath, sectionFile: string) {
-  const contentRoot = getContentRoot();
-  const { absolutePath: sectionFilePath } = await new ContentLayer(contentRoot).resolveSectionFileId(docPath, sectionFile);
+export async function getBlame(read: AuthorizedDocRead, sectionFile: string) {
+  const docPath = read.docPath;
+  const { absolutePath: sectionFilePath } = await CanonicalReader.open().resolveSectionFileId(docPath, sectionFile);
 
   const { computeSectionBlame } = await import("../../storage/section-blame.js");
   const lines = await computeSectionBlame(sectionFilePath);
@@ -214,8 +248,9 @@ export async function getBlame(docPath: DocPath, sectionFile: string) {
 
 // ─── Full document read (catch-all GET) ─────────────────
 
-export async function readCanonicalDocument(docPath: DocPath): Promise<{ response: GetDocumentResponse; headingPaths: string[][] }> {
-  const assembled = await readAssembledDocument(docPath);
+export async function readCanonicalDocument(read: AuthorizedDocRead): Promise<{ response: GetDocumentResponse; headingPaths: string[][] }> {
+  const docPath = read.docPath;
+  const assembled = await readAssembledDocument(read);
 
   const structure = await readDocumentStructure(docPath);
   const headingPaths = flattenStructureToHeadingPaths(structure);
@@ -252,7 +287,8 @@ export async function readCanonicalDocument(docPath: DocPath): Promise<{ respons
 
 // ─── Live markdown export (raw fragment truth) ──────────
 
-export async function readLiveDocumentMarkdown(docPath: DocPath): Promise<string> {
+export async function readLiveDocumentMarkdown(read: AuthorizedDocRead): Promise<string> {
+  const docPath = read.docPath;
   const session = lookupDocSession(docPath);
   if (session) {
     // Raw fragment truth in current layout order — deliberately bypasses
@@ -304,8 +340,15 @@ export interface ExportResult {
   filename: string;
 }
 
-export async function buildExport(browsePath: string): Promise<ExportResult> {
-  const tree = await readDocumentsTree(browsePath, true);
+export type ExportLayout = "relative" | "absolute";
+
+export async function buildExport(
+  writer: AuthenticatedWriter | null,
+  browsePath: string,
+  layout: ExportLayout = "relative",
+): Promise<ExportResult> {
+  const tree = await readReadableTree(writer, browsePath);
+  const exportFolder = layout === "absolute" ? FolderPath.root : FolderPath.normalize(browsePath);
 
   const filePaths: string[] = [];
   const walk = (nodes: DocumentTreeEntry[]) => {
@@ -325,8 +368,10 @@ export async function buildExport(browsePath: string): Promise<ExportResult> {
   const exportErrors: string[] = [];
   for (const docPath of filePaths) {
     try {
-      const assembled = await readAssembledDocument(docPath);
-      const zipPath = docPathToContentRelativeFsPath(DocPath.parse(docPath));
+      const assembled = await readAssembledDocument(await authorizeDocRead(writer, DocPath.parse(docPath)));
+      const zipPath = docPathToContentRelativeFsPath(
+        FolderPath.rebaseDocPath(DocPath.parse(docPath), exportFolder, FolderPath.root),
+      );
       zipFile.addBuffer(Buffer.from(assembled, "utf8"), zipPath);
     } catch (assemblyError) {
       const msg = assemblyError instanceof Error
@@ -356,7 +401,7 @@ async function evaluateAndMaybeCommitDocumentProposal(
   writerType: "human" | "agent",
 ): Promise<{ policyResult: HumanInvolvementPolicyResult; committedHead?: string }> {
   if (writerType === "human") {
-    const committedHead = await commitProposalToCanonical(proposalId, {});
+    const committedHead = await publishProposalToCanonical(proposalId, {});
     return { policyResult: humanBypassPolicyResult(), committedHead };
   }
   const policyResult = await evaluateAgentWritePolicy(proposalId);
@@ -364,7 +409,7 @@ async function evaluateAndMaybeCommitDocumentProposal(
     return { policyResult };
   }
   const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
-  const committedHead = await commitProposalToCanonical(proposalId, committedMetadata);
+  const committedHead = await publishProposalToCanonical(proposalId, committedMetadata);
   return { policyResult, committedHead };
 }
 
@@ -441,7 +486,10 @@ export async function restoreDocument(docPath: DocPath, sha: string, writer: Doc
   }
   const targets = proposal.targets;
 
-  const committedSha = await commitProposalToCanonical(proposal.id, {}, undefined, { restoreTargetSha: sha });
+  const committedSha = await publishProposalToCanonical(proposal.id, {}, undefined, {
+    authority: writer,
+    restoreTargetSha: sha,
+  });
 
   await invalidateSessionForReplacement(docPath, { message: "document was restored to an earlier version" });
   return { committedSha, targets };
@@ -452,11 +500,7 @@ export async function restoreDocument(docPath: DocPath, sha: string, writer: Doc
 export class DocumentDoesNotExistError extends Error {}
 
 export async function adminOverwriteDocument(docPath: DocPath, markdown: string, admin: DocumentWriter): Promise<{ committedSha: string; targets: ProposalTargetRef[] }> {
-  const contentRoot = getContentRoot();
-  const resolvedPath = resolveDocPathUnderContent(contentRoot, docPath);
-  try {
-    await access(resolvedPath);
-  } catch {
+  if (!(await canonicalDocumentExists(docPath))) {
     throw new DocumentDoesNotExistError(`Document "${docPath}" does not exist in canonical. Use import for new documents.`);
   }
 
@@ -475,7 +519,7 @@ export async function adminOverwriteDocument(docPath: DocPath, markdown: string,
     files: [{ docPath, markdown }],
   });
 
-  const committedSha = await commitProposalToCanonical(proposalId, {}, undefined, {});
+  const committedSha = await publishProposalToCanonical(proposalId, {}, undefined, {});
 
   await invalidateSessionForReplacement(docPath, { message: "admin overwrote this document" });
   return { committedSha, targets: manifest.targets };
@@ -511,10 +555,6 @@ export class DocumentAlreadyExistsError extends Error {}
 export class DocumentPendingDeletionError extends Error {}
 
 export async function createDocument(docPath: DocPath, writer: DocumentWriter, initialMarkdown?: string): Promise<StructuralCommitResult> {
-  const contentRoot = getContentRoot();
-  // Validate the doc path (throws InvalidDocPathError on traversal/.md failures).
-  resolveDocPathUnderContent(contentRoot, docPath);
-
   const { id: proposalId } = await createTransientProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
     `Create document: ${docPath}`,
@@ -544,12 +584,7 @@ export class DocumentNotFoundForDeleteError extends Error {}
 export class UncommittedSessionFilesError extends Error {}
 
 export async function deleteDocument(docPath: DocPath, writer: DocumentWriter): Promise<StructuralCommitResult> {
-  const contentRoot = getContentRoot();
-  const resolvedPath = resolveDocPathUnderContent(contentRoot, docPath);
-
-  try {
-    await access(resolvedPath);
-  } catch {
+  if (!(await canonicalDocumentExists(docPath))) {
     throw new DocumentNotFoundForDeleteError(`Document not found: ${docPath}`);
   }
 
@@ -586,7 +621,7 @@ export class FolderWritePermissionError extends Error {
 }
 
 async function listFolderDescendantDocs(folder: FolderPath): Promise<DocPath[]> {
-  const tree = await readDocumentsTree(folder, true);
+  const tree = await readDocumentsTreeUnfiltered(folder, true);
   const docPaths: DocPath[] = [];
   const walk = (nodes: DocumentTreeEntry[]): void => {
     for (const node of nodes) {

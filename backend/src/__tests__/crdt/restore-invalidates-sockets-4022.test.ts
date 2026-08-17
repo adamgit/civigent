@@ -21,7 +21,7 @@ import {
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
 import { createTransientProposal } from "../../storage/proposal-repository.js";
-import { commitProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
@@ -71,7 +71,7 @@ describe("restore invalidates sockets with 4022 + reconnect reseeds (spec 05)", 
       heading: "Overview",
       content: "RESTORED OVERVIEW",
     });
-    await commitProposalToCanonicalDetailed(id, {});
+    await publishProposalToCanonicalDetailed(id, {});
 
     // Restore invalidates the live session.
     await invalidateSessionForReplacement(SAMPLE_DOC_PATH, { message: "document was restored" });

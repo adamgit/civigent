@@ -6,16 +6,22 @@ import type { AgentAuthPolicy } from "../types/shared.js";
 import { copyTextToClipboard } from "../utils/copy-text";
 import skillTemplate from "../agentskills/skill.md?raw";
 import cursorRuleTemplate from "../agentskills/cursor-rule.md?raw";
+import chatgptPluginFormScreenshot from "../assets/chatgpt-new-plugin-form.png";
 
-type Tab = "claude-code" | "cursor" | "claude-ai" | "openclaw" | "other";
+type Tab = "claude-code" | "cursor" | "chatgpt" | "claude-ai" | "openclaw" | "other";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "claude-code", label: "Claude Code" },
   { id: "cursor", label: "Cursor" },
+  { id: "chatgpt", label: "ChatGPT" },
   { id: "claude-ai", label: "Claude.ai (web)" },
   { id: "openclaw", label: "OpenClaw" },
   { id: "other", label: "Other" },
 ];
+
+const CHATGPT_DEVELOPER_MODE_DOCS = "https://platform.openai.com/docs/guides/developer-mode";
+const CHATGPT_APPS_HELP = "https://help.openai.com/en/articles/11487775-connectors-in-chatgpt";
+const CHATGPT_MCP_APPS_HELP = "https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt";
 
 interface SetupInfo {
   defaultServerName: string;
@@ -705,6 +711,192 @@ export function SetupPage() {
       );
     }
 
+    if (tab === "chatgpt") {
+      return (
+        <div>
+          <p style={{ margin: "0 0 1rem", color: "#555", fontSize: "0.9rem" }}>
+            ChatGPT does not pick up a remote MCP server from a config file. You enable Developer mode
+            in the web UI, then fill in a plugin form by hand.
+          </p>
+
+          <h3 style={{ fontSize: "0.95rem", margin: "0 0 0.5rem" }}>Before you install: enable MCP servers</h3>
+          <p style={{ margin: "0 0 0.6rem", color: "#555", fontSize: "0.9rem" }}>
+            As of the current ChatGPT UI, adding your own MCP server is:
+          </p>
+          <ol style={{ color: "#555", fontSize: "0.9rem", margin: "0 0 1rem", paddingLeft: "1.25rem", lineHeight: 1.55 }}>
+            <li style={{ marginBottom: "0.55rem" }}>
+              <strong>Use ChatGPT on the web.</strong> Custom MCP / developer-mode apps are configured
+              through the web interface. (
+              <a href={CHATGPT_DEVELOPER_MODE_DOCS} target="_blank" rel="noreferrer">
+                ChatGPT Developer mode
+              </a>
+              )
+            </li>
+            <li style={{ marginBottom: "0.55rem" }}>
+              <strong>Turn on Developer mode.</strong> Go to{" "}
+              <strong>Profile → Settings → Security and login → Developer mode</strong>.
+              The current developer documentation lists that location. (
+              <a href={CHATGPT_DEVELOPER_MODE_DOCS} target="_blank" rel="noreferrer">
+                ChatGPT Developer mode
+              </a>
+              )
+            </li>
+            <li style={{ marginBottom: "0.55rem" }}>
+              <strong>Open the Plugins directory.</strong> Open <strong>Plugins</strong> in ChatGPT.
+              OpenAI moved app discovery / setup into Plugins on{" "}
+              <strong>July 9, 2026</strong>. (
+              <a href={CHATGPT_APPS_HELP} target="_blank" rel="noreferrer">
+                Apps in ChatGPT
+              </a>
+              )
+            </li>
+            <li>
+              <strong>Click the <code>+</code> button in Plugins.</strong> With Developer mode on, that
+              plus button creates a developer-mode app backed by your remote MCP server. (
+              <a href={CHATGPT_DEVELOPER_MODE_DOCS} target="_blank" rel="noreferrer">
+                ChatGPT Developer mode
+              </a>
+              )
+            </li>
+          </ol>
+          <p style={{ margin: "0 0 0.6rem", color: "#555", fontSize: "0.9rem" }}>
+            You should then get a setup form for the remote MCP endpoint, authentication
+            (OAuth, No Authentication, or Mixed Authentication), and MCP transport (SSE or streaming HTTP).
+          </p>
+          <p style={{ margin: "0 0 0.6rem", color: "#555", fontSize: "0.9rem" }}>
+            After creation it should appear under <strong>Drafts</strong>, where you can manage or refresh
+            the tools the MCP server exposes. (
+            <a href={CHATGPT_DEVELOPER_MODE_DOCS} target="_blank" rel="noreferrer">
+              ChatGPT Developer mode
+            </a>
+            )
+          </p>
+          <p style={{ margin: "0 0 0.6rem", color: "#555", fontSize: "0.9rem" }}>
+            In an actual conversation, click the <strong>+ / tools menu → Developer mode</strong>, then
+            select your developer-mode app. (
+            <a href={CHATGPT_DEVELOPER_MODE_DOCS} target="_blank" rel="noreferrer">
+              ChatGPT Developer mode
+            </a>
+            )
+          </p>
+          <p style={{ margin: "0 0 0.6rem", color: "#555", fontSize: "0.9rem" }}>
+            Some older or overlapping OpenAI help pages still describe{" "}
+            <strong>Settings → Apps → Create</strong> or{" "}
+            <strong>Workspace Settings → Apps → Create</strong>, especially for Business / Enterprise
+            workspace administration. (
+            <a href={CHATGPT_MCP_APPS_HELP} target="_blank" rel="noreferrer">
+              Developer mode and MCP apps in ChatGPT
+            </a>
+            ) For an individual developer-mode MCP setup, the newer developer documentation points to{" "}
+            <strong>Plugins → <code>+</code></strong>.
+          </p>
+          <p style={{ margin: "0 0 1.25rem", color: "#555", fontSize: "0.9rem" }}>
+            If you do not see the <code>+</code> button in Plugins even with Developer mode on, check
+            whether you are on Plus, Pro, Business, or Enterprise — OpenAI currently gates this UI by plan.
+          </p>
+
+          <h3 style={{ fontSize: "0.95rem", margin: "0 0 0.5rem" }}>Install: add the MCP server</h3>
+          <p style={{ margin: "0 0 0.75rem", color: "#555", fontSize: "0.9rem" }}>
+            Fill ChatGPT&apos;s New Plugin form by hand. Use the values below and match the screenshot.
+          </p>
+
+          <div
+            style={{
+              margin: "0 0 1rem",
+              padding: "0.7rem 0.85rem",
+              background: "#fffbeb",
+              border: "1px solid #fde68a",
+              borderRadius: 6,
+              fontSize: "0.85rem",
+              color: "#92400e",
+              lineHeight: 1.5,
+            }}
+          >
+            <p style={{ margin: "0 0 0.45rem", fontWeight: 600 }}>Two things the form will not do for you:</p>
+            <ol style={{ margin: 0, paddingLeft: "1.2rem" }}>
+              <li style={{ marginBottom: "0.35rem" }}>
+                Open <strong>Advanced OAuth settings</strong> and switch{" "}
+                <strong>Registration method</strong> to <strong>User-Defined OAuth Client</strong>.
+                It does not default to this.
+              </li>
+              <li>
+                Tick <strong>I understand and want to continue</strong> at the bottom, or Create stays disabled.
+              </li>
+            </ol>
+          </div>
+
+          <ul style={{ color: "#555", fontSize: "0.9rem", margin: "0 0 1rem", paddingLeft: "1.25rem", lineHeight: 1.55 }}>
+            <li>Name: <code>{serverName}</code></li>
+            <li>Connection: <strong>Server URL</strong> (leave the Named toggle off)</li>
+            <li>Server URL: the MCP URL below</li>
+            <li>Authentication: <strong>OAuth</strong></li>
+            <li>MCP transport: <strong>streaming HTTP</strong> (not SSE)</li>
+            <li>OAuth Client ID / secret: the values below</li>
+            <li>
+              Token endpoint auth method:{" "}
+              {needsClientSecret ? (
+                <><strong>client_secret_post</strong> (this server requires the client secret)</>
+              ) : (
+                <><strong>none</strong></>
+              )}
+            </li>
+            <li>Scopes: leave empty</li>
+          </ul>
+
+          {!clientId && (
+            <p
+              style={{
+                margin: "0 0 0.75rem",
+                padding: "0.55rem 0.75rem",
+                background: "#fffbeb",
+                border: "1px solid #fde68a",
+                borderRadius: 6,
+                fontSize: "0.85rem",
+                color: "#92400e",
+              }}
+            >
+              ChatGPT&apos;s User-Defined OAuth Client field expects a Client ID. Create an agent identity
+              in Step 1, then paste it here.
+            </p>
+          )}
+
+          <div style={{ marginBottom: "0.85rem" }}>
+            <ManualCredentialFields
+              mcpEndpoint={mcpEndpoint}
+              clientId={clientId}
+              clientSecret={clientSecret}
+              needsClientSecret={needsClientSecret}
+              showMcpUrl
+            />
+          </div>
+
+          <figure style={{ margin: "0 0 0.85rem" }}>
+            <img
+              src={chatgptPluginFormScreenshot}
+              alt="ChatGPT New Plugin form: Server URL, OAuth, User-Defined OAuth Client, and the risk-consent checkbox"
+              style={{
+                display: "block",
+                width: "100%",
+                maxWidth: 720,
+                height: "auto",
+                border: "1px solid var(--color-footer-border)",
+                borderRadius: 8,
+              }}
+            />
+            <figcaption style={{ marginTop: "0.4rem", fontSize: "0.8rem", color: "#888" }}>
+              ChatGPT New Plugin form. Advanced OAuth is on the right; the consent checkbox is at the bottom left.
+            </figcaption>
+          </figure>
+
+          <p style={{ margin: 0, color: "#888", fontSize: "0.8rem" }}>
+            ChatGPT reaches this server from OpenAI&apos;s cloud — the MCP URL must be publicly reachable
+            (not <code>localhost</code> unless you use a tunnel). The orange &quot;OIDC is unavailable&quot;
+            notice is expected and can be ignored.
+          </p>
+        </div>
+      );
+    }
+
     if (tab === "claude-ai") {
       return (
         <div>
@@ -821,7 +1013,7 @@ export function SetupPage() {
     if (tab === "other") {
       return (
         <p style={{ margin: 0, color: "#555", fontSize: "0.9rem" }}>
-          Skill / rule files are agent-specific. Pick Claude Code, Cursor, Claude.ai, or OpenClaw above to see the matching install steps.
+          Skill / rule files are agent-specific. Pick Claude Code, Cursor, ChatGPT, Claude.ai, or OpenClaw above to see the matching install steps.
           For a custom agent, use the <code>SKILL.md</code> content from the Claude Code tab as a starting point.
         </p>
       );
@@ -863,6 +1055,22 @@ export function SetupPage() {
           <p style={{ color: "#555", fontSize: "0.9rem", margin: 0 }}>
             Remove <code>.cursor/rules/{serverName}.mdc</code>.
           </p>
+        </div>
+      );
+    }
+
+    if (tab === "chatgpt") {
+      return (
+        <div>
+          <p style={{ margin: "0 0 0.75rem", color: "#555", fontSize: "0.9rem" }}>
+            ChatGPT does not install a local skill or rule file. After the plugin exists under Drafts,
+            open a conversation, click <strong>+ / tools menu → Developer mode</strong>, and select
+            the app. The MCP tools from this server are then available in that chat.
+          </p>
+          <p style={{ margin: "0 0 0.75rem", color: "#555", fontSize: "0.9rem" }}>
+            Optional: keep the skill text below as a reference for how this server expects agents to work.
+          </p>
+          <CopyBlock label="SKILL.md (reference)" content={renderedSkill} maxHeight={420} />
         </div>
       );
     }

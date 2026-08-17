@@ -21,7 +21,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createTransientProposal } from "../../storage/proposal-repository.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
-import { commitProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { resolveLiveSectionLayout, buildLiveSeedContentMap } from "../../crdt/live-section-layout.js";
 import { SectionRef } from "../../domain/section-ref.js";
 
@@ -51,7 +51,7 @@ describe("Bug 3 regression: a sub-skeleton parent surfaces its heading on the li
       heading: "Child",
       content: "child body",
     });
-    await commitProposalToCanonicalDetailed(id, {});
+    await publishProposalToCanonicalDetailed(id, {});
   });
 
   afterEach(async () => {

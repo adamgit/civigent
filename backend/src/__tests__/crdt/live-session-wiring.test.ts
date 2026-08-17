@@ -153,7 +153,7 @@ describe("live-editing pipeline wiring (MW-1b/2/3)", () => {
     // A SEPARATE writer commits a change to Overview's canonical body via a
     // distinct (non-DocSession) proposal.
     const { createTransientProposal } = await import("../../storage/proposal-repository.js");
-    const { commitProposalToCanonicalDetailed } = await import("../../storage/commit-pipeline.js");
+    const { publishProposalToCanonicalDetailed } = await import("../../storage/commit-pipeline.js");
     const { mutateProposalContent } = await import("../../storage/mutate-proposal-content.js");
 
     const { id: otherProposalId } = await createTransientProposal(
@@ -168,7 +168,7 @@ describe("live-editing pipeline wiring (MW-1b/2/3)", () => {
       heading: "Overview",
       content: "COMMITTED BY BOB",
     });
-    const absorb = await commitProposalToCanonicalDetailed(otherProposalId, {});
+    const absorb = await publishProposalToCanonicalDetailed(otherProposalId, {});
 
     const headingPaths = absorb.changedSections.map((s) => [...s.headingPath]);
     expect(headingPaths.length).toBeGreaterThan(0);

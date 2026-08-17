@@ -7,13 +7,19 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { importFilesToProposal } from "../../storage/import-service.js";
-import { evaluateAgentWritePolicy, commitProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { evaluateAgentWritePolicy, publishProposalToCanonical } from "../../storage/commit-pipeline.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { readAssembledDocument } from "../../storage/document-reader.js";
+import { systemDocRead } from "../../auth/authorized-read.js";
+import { systemAuthority } from "../../auth/system-authority.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { getContentRoot } from "../../storage/data-root.js";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
+import { DocPath } from "../../types/shared.js";
+
+const readAssembledForTest = (docPath: string) =>
+  readAssembledDocument(systemDocRead(systemAuthority("test read"), DocPath.parse(docPath)));
 
 describe("import → commit → read round-trip", () => {
   let ctx: TempDataRootContext;
@@ -57,10 +63,10 @@ describe("import → commit → read round-trip", () => {
 
     // Read fresh proposal and commit
     const result = await evaluateAgentWritePolicy(id);
-    await commitProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
+    await publishProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
 
     // Read from canonical
-    const assembled = await readAssembledDocument(docPath);
+    const assembled = await readAssembledForTest(docPath);
 
     // All sections should be present
     expect(assembled).toContain("This is the preamble.");
@@ -93,7 +99,7 @@ describe("import → commit → read round-trip", () => {
     );
 
     const result = await evaluateAgentWritePolicy(id);
-    await commitProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
+    await publishProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
 
     // Verify skeleton + body files exist on disk
     const contentRoot = getContentRoot();
@@ -139,10 +145,10 @@ describe("import → commit → read round-trip", () => {
     );
 
     const result = await evaluateAgentWritePolicy(id);
-    await commitProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
+    await publishProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
 
     // Read assembled — should not throw and should contain all content
-    const assembled = await readAssembledDocument(docPath);
+    const assembled = await readAssembledForTest(docPath);
     expect(assembled).toContain("Preamble text.");
     expect(assembled).toContain("Content A.");
     expect(assembled).toContain("Content B.");
@@ -172,9 +178,9 @@ describe("import → commit → read round-trip", () => {
     );
 
     const result = await evaluateAgentWritePolicy(id);
-    await commitProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
+    await publishProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
 
-    const assembled = await readAssembledDocument(docPath);
+    const assembled = await readAssembledForTest(docPath);
     // The code block should be preserved intact
     expect(assembled).toContain("```markdown");
     expect(assembled).toContain("## This is NOT a heading");

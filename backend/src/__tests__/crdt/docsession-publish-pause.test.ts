@@ -154,7 +154,7 @@ describe("CRDTProposalGenerator publish (final materialization + commit)", () =>
     // root mid-flight is hard to schedule; instead spy on the commit pipeline.
     const pipeline = await import("../../storage/commit-pipeline.js");
     const spy = vi
-      .spyOn(pipeline, "commitProposalToCanonicalDetailed")
+      .spyOn(pipeline, "publishProposalToCanonicalDetailed")
       .mockRejectedValueOnce(new Error("simulated canonical commit failure"));
 
     // Re-import the generator module is not needed; finalizeAndPublish calls the

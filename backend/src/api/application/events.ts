@@ -204,7 +204,11 @@ export async function emitCanonicalStructureChanged(
 ): Promise<void> {
   if (!emit) return;
   const { readCanonicalSectionList } = await import("./sections.js");
-  const { response } = await readCanonicalSectionList(docPath);
+  const { systemDocRead } = await import("../../auth/authorized-read.js");
+  const { systemAuthority } = await import("../../auth/system-authority.js");
+  const { response } = await readCanonicalSectionList(
+    systemDocRead(systemAuthority("doc:structure-changed event assembly"), docPath),
+  );
   emitDocStructureChanged(emit, docPath, response.sections);
 }
 

@@ -13,7 +13,13 @@ import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { readAssembledDocument } from "../../storage/document-reader.js";
+import { systemDocRead } from "../../auth/authorized-read.js";
+import { systemAuthority } from "../../auth/system-authority.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
+import { DocPath } from "../../types/shared.js";
+
+const readAssembledForTest = (docPath: string) =>
+  readAssembledDocument(systemDocRead(systemAuthority("test read"), DocPath.parse(docPath)));
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 const OVERVIEW_KEY = "section::overview";
@@ -156,7 +162,7 @@ describe("legal-edit publish round-trip: every accepted shape publishes and asse
       await drainLane(session);
       expect(outcome).toMatchObject({ outcome: "committed" });
 
-      const assembled = await readAssembledDocument(SAMPLE_DOC_PATH);
+      const assembled = await readAssembledForTest(SAMPLE_DOC_PATH);
       expect(normalizeMarkdown(assembled)).toBe(normalizeMarkdown(c.expectedDocBlocks.join("\n\n")));
     });
   }
@@ -198,7 +204,7 @@ describe("legal-edit publish round-trip: every accepted shape publishes and asse
     await drainLane(session);
     expect(outcome).toMatchObject({ outcome: "committed" });
 
-    const assembled = await readAssembledDocument(SAMPLE_DOC_PATH);
+    const assembled = await readAssembledForTest(SAMPLE_DOC_PATH);
     expect(normalizeMarkdown(assembled)).toBe(
       normalizeMarkdown(
         [

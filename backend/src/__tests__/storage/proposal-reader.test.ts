@@ -11,7 +11,7 @@ import { ProposalReader } from "../../storage/proposal-reader.js";
 import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { DocumentNotFoundError } from "../../storage/content-layer.js";
 import { importFilesToProposal } from "../../storage/import-service.js";
-import { commitProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonical } from "../../storage/commit-pipeline.js";
 
 const writer = { id: "reader-test", type: "human" as const, displayName: "Reader Test", email: "reader@test.local" };
 
@@ -85,7 +85,7 @@ describe("ProposalReader", () => {
       writer,
       "seed",
     );
-    await commitProposalToCanonical(importId, {});
+    await publishProposalToCanonical(importId, {});
 
     const editor = await newEditor();
     // Canonical exists -> live before tombstone.

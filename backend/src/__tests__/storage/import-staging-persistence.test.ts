@@ -12,6 +12,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createImport, writeUploadedFiles } from "../../api/application/imports.js";
+import { FolderPath } from "../../types/shared.js";
 
 const DOC = ["## Alpha", "", "Alpha body.", "", "## Beta", "", "Beta body.", ""].join("\n");
 
@@ -28,7 +29,7 @@ describe("import staging persistence across reinitialization (spec 07)", () => {
   });
 
   it("a freshly reinitialized staging module reconstructs the staged import from disk", async () => {
-    const { importId } = await createImport();
+    const { importId } = await createImport(FolderPath.root);
     await writeUploadedFiles(importId, [
       { name: "guide.md", content: DOC },
       { name: "sub/nested.md", content: "## Only\n\nNested body.\n" },
@@ -52,6 +53,6 @@ describe("import staging persistence across reinitialization (spec 07)", () => {
 
     // And the raw staged content is readable for a subsequent commit.
     const staged = await fresh.readStagingFiles(importId);
-    expect(staged.map((f) => f.docPath).sort()).toEqual(["/guide.md", "/sub/nested.md"]);
+    expect(staged.map((f) => f.relativePath).sort()).toEqual(["guide.md", "sub/nested.md"]);
   });
 });

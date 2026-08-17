@@ -43,7 +43,7 @@ export function registerCanonicalRoutes(
       const docPath = docPathParamOf(req);
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
-      const { response, headingPaths } = await readCanonicalStructure(docPath);
+      const { response, headingPaths } = await readCanonicalStructure(access);
       broadcastAgentReading(req, docPath, headingPaths, onWsEvent);
       const out: ReadDocStructureResponse = response;
       res.json(out);
@@ -68,7 +68,7 @@ export function registerCanonicalRoutes(
       if (!access) return;
       const limit = boundedIntParam(req.query.limit, "limit", { fallback: 30, min: 1, max: 100 });
       const offset = boundedIntParam(req.query.offset, "offset", { fallback: 0, min: 0, max: Number.MAX_SAFE_INTEGER });
-      res.json(await getHistory(docPath, limit, offset));
+      res.json(await getHistory(access, limit, offset));
     } catch (error) {
       if (error instanceof QueryParamError) {
         sendApiError(res, 400, error);
@@ -89,7 +89,7 @@ export function registerCanonicalRoutes(
         sendApiError(res, 400, new Error(`Invalid SHA format: "${sha}"`));
         return;
       }
-      res.json(await getHistoryPreview(docPath, sha));
+      res.json(await getHistoryPreview(access, sha));
     } catch (error) {
       if (error instanceof DirectoryAtDocPathError) {
         sendApiError(res, 409, error);
@@ -109,7 +109,7 @@ export function registerCanonicalRoutes(
       const docPath = docPathParamOf(req);
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
-      const response = await getBlame(docPath, req.params.sectionFile);
+      const response = await getBlame(access, req.params.sectionFile);
       res.json(response);
     } catch (error) {
       if (error instanceof InvalidDocPathError) {
@@ -133,7 +133,7 @@ export function registerCanonicalCatchAllRoutes(
       const docPath = docPathParamOf(req);
       const accessResult = await requireDocReadPermission(req, res, docPath);
       if (!accessResult) return;
-      const { response, headingPaths } = await readCanonicalDocument(docPath);
+      const { response, headingPaths } = await readCanonicalDocument(accessResult);
       broadcastAgentReading(req, docPath, headingPaths, onWsEvent);
       const out: GetDocumentResponse = response;
       res.json(out);

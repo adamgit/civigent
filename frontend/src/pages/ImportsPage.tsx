@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import {
   apiClient,
@@ -6,6 +7,39 @@ import {
   type ImportDetailResponse,
   type ImportResponse,
 } from "../services/api-client";
+import type { DocumentTreeEntry } from "../types/shared.js";
+import { FolderPath } from "../types/shared.js";
+import { folderHref } from "../app/docs-location";
+
+function joinedImportDocPath(targetFolder: string, relativePath: string): string {
+  return targetFolder === "/" ? `/${relativePath}` : `${targetFolder}/${relativePath}`;
+}
+
+function filterSupportedImportFiles(fileList: FileList): { files: File[]; skippedNotice: string | null } {
+  const all = Array.from(fileList);
+  const files = all.filter((file) => {
+    const name = file.name.toLowerCase();
+    return name.endsWith(".md") || name.endsWith(".zip");
+  });
+  const skipped = all.length - files.length;
+  return {
+    files,
+    skippedNotice:
+      skipped > 0 ? `Skipped ${skipped} unsupported file(s) — only .md and .zip can be imported.` : null,
+  };
+}
+
+async function uploadFilesToImport(importId: string, files: File[]): Promise<void> {
+  const zipFiles = files.filter((file) => file.name.toLowerCase().endsWith(".zip"));
+  const mdFiles = files.filter((file) => file.name.toLowerCase().endsWith(".md"));
+  for (const zipFile of zipFiles) {
+    await apiClient.uploadImportZip(importId, zipFile);
+  }
+  const BATCH_SIZE = 5;
+  for (let i = 0; i < mdFiles.length; i += BATCH_SIZE) {
+    await apiClient.uploadImportFiles(importId, mdFiles.slice(i, i + BATCH_SIZE));
+  }
+}
 
 function ImportDetailView({
   importId,
@@ -23,7 +57,32 @@ function ImportDetailView({
   const [committing, setCommitting] = useState(false);
   const [commitResult, setCommitResult] = useState<ImportResponse | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [skippedNotice, setSkippedNotice] = useState<string | null>(null);
+  const [existingDocPaths, setExistingDocPaths] = useState<ReadonlySet<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .getWorkspaceTree()
+      .then((res) => {
+        if (cancelled) return;
+        const paths = new Set<string>();
+        const walk = (nodes: DocumentTreeEntry[]) => {
+          for (const node of nodes) {
+            if (node.type === "file") paths.add(node.path);
+            else if (node.children) walk(node.children);
+          }
+        };
+        walk(res.tree);
+        setExistingDocPaths(paths);
+      })
+      .catch(() => { /* non-fatal background fetch */ });
+    return () => {
+      cancelled = true;
+    };
+  }, [importId]);
 
   const fetchDetail = useCallback(async () => {
     setLoading(true);
@@ -47,16 +106,14 @@ function ImportDetailView({
       setUploading(true);
       setError(null);
       try {
-        const files = Array.from(fileList).filter((file) => file.name.toLowerCase().endsWith(".md"));
+        const { files, skippedNotice: notice } = filterSupportedImportFiles(fileList);
+        setSkippedNotice(notice);
         if (files.length === 0) {
-          setError("No .md files selected.");
+          if (!notice) setError("No .md or .zip files selected.");
           return;
         }
 
-        const BATCH_SIZE = 5;
-        for (let i = 0; i < files.length; i += BATCH_SIZE) {
-          await apiClient.uploadImportFiles(importId, files.slice(i, i + BATCH_SIZE));
-        }
+        await uploadFilesToImport(importId, files);
         await fetchDetail();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -160,6 +217,11 @@ function ImportDetailView({
   const mdCount = detail?.files.filter((f) => f.is_markdown).length ?? 0;
   const totalSections = detail?.files.reduce((sum, f) => sum + f.section_count, 0) ?? 0;
   const artifactCount = detail?.files.filter((f) => f.is_internal_artifact).length ?? 0;
+  const importableFiles = detail?.files.filter((f) => f.is_markdown && !f.is_internal_artifact) ?? [];
+  const overwriteCount = detail
+    ? importableFiles.filter((f) => existingDocPaths.has(joinedImportDocPath(detail.target_folder, f.path))).length
+    : 0;
+  const newDocCount = importableFiles.length - overwriteCount;
 
   return (
     <div className="p-4 space-y-4 border-t border-border-subtle">
@@ -182,7 +244,7 @@ function ImportDetailView({
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-muted">
-                <th className="py-1">File</th>
+                <th className="py-1">Document</th>
                 <th className="py-1 w-16 text-center">Type</th>
                 <th className="py-1 w-20 text-right">Sections</th>
               </tr>
@@ -195,9 +257,17 @@ function ImportDetailView({
                     ? "border-t border-border-subtle text-amber-600 dark:text-amber-400"
                     : "border-t border-border-subtle";
                 const typeIcon = f.is_internal_artifact ? "⚠" : f.is_markdown ? "\u2713" : "\u2717";
+                const isImportable = f.is_markdown && !f.is_internal_artifact;
+                const targetDocPath = joinedImportDocPath(detail.target_folder, f.path);
+                const willOverwrite = isImportable && existingDocPaths.has(targetDocPath);
                 return (
                   <tr key={f.path} className={rowClass} title={f.rejection_reason ?? undefined}>
-                    <td className="py-1 font-mono text-xs whitespace-nowrap">{f.path}</td>
+                    <td className="py-1 font-mono text-xs whitespace-nowrap">
+                      {isImportable ? targetDocPath : f.path}
+                      {willOverwrite && (
+                        <span className="ml-2 font-sans text-amber-600 dark:text-amber-400">will overwrite</span>
+                      )}
+                    </td>
                     <td className="py-1 text-center">{typeIcon}</td>
                     <td className="py-1 text-right">{f.is_markdown && !f.is_internal_artifact ? f.section_count : "\u2014"}</td>
                   </tr>
@@ -218,14 +288,33 @@ function ImportDetailView({
           ref={fileInputRef}
           type="file"
           multiple
-          accept=".md"
+          accept=".md,.zip"
           className="hidden"
           onChange={(e) => e.target.files && handleUpload(e.target.files)}
         />
         <p className="text-sm text-muted">
-          {uploading ? "Uploading..." : "Drop .md files here or click to browse"}
+          {uploading ? "Uploading..." : "Drop .md or .zip files here or click to browse"}
         </p>
       </div>
+
+      <input
+        ref={folderInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => e.target.files && handleUpload(e.target.files)}
+        {...({ webkitdirectory: "" } as Record<string, string>)}
+      />
+      <button
+        type="button"
+        className="border-none bg-transparent p-0 text-xs text-muted hover:text-accent cursor-pointer"
+        disabled={uploading}
+        onClick={() => folderInputRef.current?.click()}
+      >
+        …or choose a whole folder
+      </button>
+
+      {skippedNotice && <p className="text-xs text-amber-600 dark:text-amber-400">{skippedNotice}</p>}
 
       <div className="space-y-2">
         <label className="block text-sm font-medium">
@@ -249,6 +338,13 @@ function ImportDetailView({
         >
           {committing ? "Importing..." : "Import"}
         </button>
+        {importableFiles.length > 0 && (
+          <span className="self-center text-xs text-muted">
+            {newDocCount} new document{newDocCount !== 1 ? "s" : ""}
+            {overwriteCount > 0 &&
+              `, ${overwriteCount} will replace existing document${overwriteCount !== 1 ? "s" : ""}`}
+          </span>
+        )}
         <button className="btn-secondary" onClick={fetchDetail}>Refresh</button>
         <button className="btn-danger" style={{ marginLeft: "auto" }} onClick={handleDelete}>Cancel</button>
       </div>
@@ -257,10 +353,15 @@ function ImportDetailView({
 }
 
 export function ImportsPage() {
+  const [searchParams] = useSearchParams();
+  const intoFolder = searchParams.get("into")?.trim() || "/";
   const [imports, setImports] = useState<ImportStagingInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(() => searchParams.get("expand"));
+  const [pageSkippedNotice, setPageSkippedNotice] = useState<string | null>(null);
+  const [pageUploading, setPageUploading] = useState(false);
+  const pageFileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchImports = useCallback(async () => {
     setLoading(true);
@@ -281,23 +382,81 @@ export function ImportsPage() {
 
   const handleNewImport = useCallback(async () => {
     try {
-      const res = await apiClient.createImport();
+      const res = await apiClient.createImport(intoFolder);
       setImports((prev) => [res, ...prev]);
       setExpandedId(res.import_id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [intoFolder]);
+
+  const handlePageFiles = useCallback(
+    async (fileList: FileList) => {
+      const { files, skippedNotice } = filterSupportedImportFiles(fileList);
+      setPageSkippedNotice(skippedNotice);
+      if (files.length === 0) return;
+      setPageUploading(true);
+      setError(null);
+      try {
+        const res = await apiClient.createImport(intoFolder);
+        await uploadFilesToImport(res.import_id, files);
+        setImports((prev) => [res, ...prev]);
+        setExpandedId(res.import_id);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setPageUploading(false);
+      }
+    },
+    [intoFolder],
+  );
+
+  const intoFolderPath = FolderPath.tryParse(intoFolder);
+  const backTo = intoFolderPath && intoFolderPath !== FolderPath.root ? folderHref(intoFolderPath) : "/";
 
   return (
     <div className="flex flex-col h-full">
-      <SharedPageHeader title="Imports" backTo="/admin" />
+      <SharedPageHeader title="Imports" backTo={backTo} />
       <div className="flex-1 overflow-y-auto p-6">
         {error && <p className="text-error mb-4">{error}</p>}
 
-        <div className="mb-4">
+        <div className="mb-4 flex items-center gap-3">
           <button className="btn-primary" onClick={handleNewImport}>+ New Import</button>
+          <Link to="/export" className="text-xs text-muted hover:text-accent">
+            Advanced Export
+          </Link>
         </div>
+
+        {expandedId === null && (
+          <div className="mb-4 space-y-1">
+            <div
+              className="border-2 border-dashed border-border-subtle rounded-lg p-6 text-center cursor-pointer hover:border-accent-emphasis transition-colors"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (e.dataTransfer.files.length > 0) handlePageFiles(e.dataTransfer.files);
+              }}
+              onClick={() => pageFileInputRef.current?.click()}
+            >
+              <input
+                ref={pageFileInputRef}
+                type="file"
+                multiple
+                accept=".md,.zip"
+                className="hidden"
+                onChange={(e) => e.target.files && handlePageFiles(e.target.files)}
+              />
+              <p className="text-sm text-muted">
+                {pageUploading
+                  ? "Uploading..."
+                  : `Drop .md or .zip files here to start an import into ${intoFolder}`}
+              </p>
+            </div>
+            {pageSkippedNotice && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">{pageSkippedNotice}</p>
+            )}
+          </div>
+        )}
 
         {loading && imports.length === 0 && (
           <div className="text-sm text-muted">Loading...</div>
@@ -327,8 +486,9 @@ export function ImportsPage() {
                   <span className="text-xs font-mono text-muted">
                     {imp.import_id.slice(0, 8)}...
                   </span>
+                  <span className="text-xs text-muted">into</span>
                   <code className="text-xs bg-canvas-subtle px-1 py-0.5 rounded">
-                    {imp.staging_path}
+                    {imp.target_folder}
                   </code>
                 </div>
                 <span className="text-xs text-muted">

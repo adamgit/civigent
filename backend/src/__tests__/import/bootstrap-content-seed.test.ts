@@ -16,10 +16,7 @@ describe("Bootstrap Content Seed", () => {
   });
 
   it("returns skipped when source directory does not exist", async () => {
-    const result = await bootstrapContentSeedFromDirectoryIfNeeded(
-      join(ctx.rootDir, "nonexistent-import"),
-      join(ctx.rootDir, "content"),
-    );
+    const result = await bootstrapContentSeedFromDirectoryIfNeeded(join(ctx.rootDir, "nonexistent-import"));
     expect(result.skipped).toBe(1);
   });
 
@@ -30,7 +27,7 @@ describe("Bootstrap Content Seed", () => {
     const sampleMd = "# Imported Doc\n\nThis is imported content.\n\n## Section A\n\nBody of section A.\n";
     await writeFile(join(importDir, "imported-doc.md"), sampleMd, "utf8");
 
-    const result = await bootstrapContentSeed(importDir, join(ctx.rootDir, "content"));
+    const result = await bootstrapContentSeed(importDir);
     expect(result.imported).toBeGreaterThanOrEqual(1);
 
     // Verify the content directory has the imported doc
@@ -42,7 +39,7 @@ describe("Bootstrap Content Seed", () => {
 
   it("import is idempotent — second run imports zero new files", async () => {
     const importDir = join(ctx.rootDir, "import-src");
-    const result = await bootstrapContentSeed(importDir, join(ctx.rootDir, "content"));
+    const result = await bootstrapContentSeed(importDir);
     // Second import: file already exists, so it should skip
     expect(result.imported).toBe(0);
   });

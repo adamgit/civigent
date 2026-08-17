@@ -1,7 +1,7 @@
 import path from "node:path";
-import { access, readdir } from "node:fs/promises";
-import { getContentRoot } from "../storage/data-root.js";
-import { docPathFromContentRelativeFsPath, resolveDocPathUnderContent, InvalidDocPathError } from "../storage/path-utils.js";
+import { readdir } from "node:fs/promises";
+import { canonicalDocumentExists } from "../storage/document-reader.js";
+import { docPathFromContentRelativeFsPath } from "../storage/path-utils.js";
 import { ProposalReader } from "../storage/proposal-reader.js";
 import type { ActiveProposal, WriterType, WsServerEvent } from "../types/shared.js";
 import { DocPath } from "../types/shared.js";
@@ -21,18 +21,7 @@ export interface CatalogMutationSummary {
     | null;
 }
 
-export async function canonicalDocumentExists(docPath: DocPath): Promise<boolean> {
-  try {
-    const resolvedPath = resolveDocPathUnderContent(getContentRoot(), docPath);
-    await access(resolvedPath);
-    return true;
-  } catch (error) {
-    if (error instanceof InvalidDocPathError) {
-      return false;
-    }
-    return false;
-  }
-}
+export { canonicalDocumentExists };
 
 export async function summarizeProposalCatalogMutations(
   proposal: Pick<ActiveProposal, "id" | "status" | "sections">,

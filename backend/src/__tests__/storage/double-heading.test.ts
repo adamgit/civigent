@@ -4,7 +4,7 @@ import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content
 import { createProposal } from "../../storage/proposal-repository.js";
 import {
   evaluateAgentWritePolicy,
-  commitProposalToCanonical,
+  publishProposalToCanonical,
 } from "../../storage/commit-pipeline.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { ContentLayer, ProposalShadowContentLayer } from "../../storage/content-layer.js";
@@ -47,7 +47,7 @@ describe("double-heading bug fix", () => {
     );
 
     const result = await evaluateAgentWritePolicy(id);
-    await commitProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
+    await publishProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
 
     const readLayer = new ContentLayer(getContentRoot());
     const assembled = await readLayer.readAssembledDocument(SAMPLE_DOC_PATH);
@@ -75,7 +75,7 @@ describe("double-heading bug fix", () => {
     );
 
     const result = await evaluateAgentWritePolicy(id);
-    await commitProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
+    await publishProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
 
     const canonical = new ContentLayer(getContentRoot());
     const assembled = await canonical.readAssembledDocument(SAMPLE_DOC_PATH);

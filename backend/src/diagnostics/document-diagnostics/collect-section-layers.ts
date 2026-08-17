@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { resolveLiveSectionLayout, type LiveSectionLayoutEntry } from "../../crdt/live-section-layout.js";
-import { ContentLayer } from "../../storage/content-layer.js";
+import { CanonicalReader } from "../../storage/canonical-reader.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import type { FlatEntry } from "../../storage/document-skeleton.js";
 import { isBodyHolderShape } from "../../storage/section-shape.js";
@@ -72,7 +72,7 @@ interface UnionRow {
 
 export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Promise<void> {
   try {
-    const canonicalLayer = new ContentLayer(ctx.contentRoot);
+    const canonicalLayer = CanonicalReader.open();
     const canonicalEntries = await canonicalLayer.listCanonicalEntries(ctx.docPath);
 
     // Effective inprogress proposal — durable saved state (survives refresh via

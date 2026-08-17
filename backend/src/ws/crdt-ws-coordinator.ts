@@ -21,6 +21,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import * as Y from "yjs";
 import { resolveWriterWithExpiry } from "../auth/context.js";
 import { checkDocPermission } from "../auth/acl.js";
+import { CommitPermissionError } from "../storage/commit-pipeline.js";
 import {
   acquireDocSession,
   lookupDocSession,
@@ -672,6 +673,15 @@ const publishChains = new Map<string, Promise<PublishAttemptOutcome>>();
  */
 function surfacePublishOutcome(docPath: DocPath, outcome: PublishAttemptOutcome): void {
   if (outcome.outcome !== "failed" && outcome.outcome !== "aborted") return;
+  // A commit-gate permission denial is an ordinary `failed` publish outcome —
+  // an ACL steady state an admin resolves, not a process invariant failure. It
+  // must never wedge the session actor or the fatal machinery; the inprogress
+  // proposal keeps the content and the next publish retries. Still surfaced
+  // (never silently discarded), just not as a fatal.
+  if (outcome.error instanceof CommitPermissionError) {
+    console.error(`[publish:${docPath}] permission denied: ${outcome.message}`);
+    return;
+  }
   // Route to the process-boundary fatal policy rather than a bare console write:
   // under `crash` the operator's chosen policy stops the process, under `report`
   // the sticky FatalReport reaches every connected client. `outcome.error` carries

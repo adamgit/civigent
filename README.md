@@ -1,5 +1,11 @@
 # Civigent
 
+[![ChatGPT](https://custom-icon-badges.demolab.com/badge/ChatGPT-74aa9c?logo=openai&logoColor=white)](https://chatgpt.com)
+[![Claude Code](https://img.shields.io/badge/Claude_Code-D97757?logo=claudecode&logoColor=white)](https://claude.com/claude-code)
+[![Claude AI](https://img.shields.io/badge/Claude_AI-D97757?logo=claude&logoColor=white)](https://claude.ai)
+[![Codex](https://custom-icon-badges.demolab.com/badge/Codex-412991?logo=openai&logoColor=white)](https://openai.com/codex)
+[![Cursor](https://img.shields.io/badge/Cursor-000000?logo=cursor&logoColor=white)](https://cursor.com)
+
 ## What is it?
 
 A modern document-authoring system where humans and AI agents can safely co-author serious structured content, with git-like auditability and proposal governance, but with human-friendly interfaces and live collaborative editing.

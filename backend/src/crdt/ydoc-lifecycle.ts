@@ -30,7 +30,6 @@
  */
 
 import * as Y from "yjs";
-import { getContentRoot } from "../storage/data-root.js";
 import {
   type WriterIdentity,
   type DocumentReplacementNoticePayload,
@@ -318,9 +317,7 @@ async function constructDocSession(
 ): Promise<DocSession> {
   const { DocumentSkeletonInternal } = await import("../storage/document-skeleton.js");
   const { listInProgressProposalsForDoc } = await import("../storage/proposal-repository.js");
-  const { proposalContentRoot, loadDeletedSectionFiles } = await import("../storage/proposal-repository.js");
-
-  const canonicalRoot = getContentRoot();
+  const { effectiveSkeletonRootPair, loadDeletedSectionFiles } = await import("../storage/proposal-repository.js");
 
   // Durable in-flight state, if any, lives in the existing `inprogress` proposal
   // content tree. Source the skeleton + bodies from there when present; else
@@ -343,9 +340,7 @@ async function constructDocSession(
     );
   }
   const existingInProgress = inProgressMatches[0] ?? null;
-  const seedRoot = existingInProgress
-    ? proposalContentRoot(existingInProgress.id, "inprogress")
-    : canonicalRoot;
+  const { skeletonRoot: seedRoot, canonicalRoot } = effectiveSkeletonRootPair(existingInProgress?.id ?? null);
 
   // (C1) Adopt the existing proposal's adoption identity when present. Fall
   // back to a fresh id only when there is no proposal to adopt, or — defensively

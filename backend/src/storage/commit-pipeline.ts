@@ -28,11 +28,30 @@ import {
 import { ProposalReader } from "./proposal-reader.js";
 import { isSnapshotGenerationEnabled, scheduleSnapshotRegeneration } from "./snapshot.js";
 import { CanonicalStore, type AbsorbResult } from "./canonical-store.js";
-import type { DocPath, DocumentTargetRef } from "../types/shared.js";
+import type { DocPath, DocumentTargetRef, WriterIdentity } from "../types/shared.js";
+import { checkDocPermission } from "../auth/acl.js";
+import { isSystemAuthority, systemAuthority, type SystemAuthority } from "../auth/system-authority.js";
 
 // ─────────────────────────────────────────────────────────────────
 
+export class CommitPermissionError extends Error {
+  constructor(
+    readonly proposalId: ProposalId,
+    readonly deniedDocPaths: DocPath[],
+  ) {
+    super(`Write permission denied for commit of proposal ${proposalId}: ${deniedDocPaths.join(", ")}`);
+  }
+}
+
 export interface CommitProposalToCanonicalOptions {
+  /**
+   * The ASKER the commit gate evaluates — on whose behalf this publish runs.
+   * Absent → the gate checks `proposal.writer` (fail-closed default: someone
+   * real is always checked). `SystemAuthority` skips the check (the single
+   * explicit bypass). Transient call parameter only: never stored, never
+   * serialized, never conflated with the credited `proposal.writer`.
+   */
+  authority?: WriterIdentity | SystemAuthority;
   restoreTargetSha?: string;
   commitMessageOverride?: string;
   authorOverride?: { name: string; email: string };
@@ -248,12 +267,46 @@ export type { AbsorbResult } from "./canonical-store.js";
  * already-`committing` proposal does NOT use this entry point — see
  * `publishCommittingProposalToCanonical`.
  */
+/**
+ * The single write-legality gate: every claimed document (document targets ∪
+ * the doc paths of manifest section claims — the same union absorb lands) must
+ * be writable by the ASKER, all-or-nothing. `SystemAuthority` is the one
+ * explicit bypass; an absent authority checks the credited `proposal.writer`.
+ */
+async function enforceCommitWritePermission(
+  proposalId: ProposalId,
+  authority: WriterIdentity | SystemAuthority | undefined,
+): Promise<void> {
+  if (isSystemAuthority(authority)) return;
+  const proposal = await readActiveProposal(proposalId);
+  const asker = authority ?? proposal.writer;
+  const claimedDocPaths = [
+    ...new Set<DocPath>([
+      ...proposal.targets
+        .filter((t): t is DocumentTargetRef => t.kind === "document")
+        .map((t) => t.doc_path),
+      ...proposal.sections.map((s) => s.doc_path),
+    ]),
+  ];
+  const deniedDocPaths: DocPath[] = [];
+  for (const docPath of claimedDocPaths) {
+    if (!(await checkDocPermission(asker, docPath, "write"))) {
+      deniedDocPaths.push(docPath);
+    }
+  }
+  if (deniedDocPaths.length > 0) {
+    throw new CommitPermissionError(proposalId, deniedDocPaths);
+  }
+}
+
 export async function publishProposalToCanonicalDetailed(
   proposalId: ProposalId,
   committedMetadata: HumanInvolvementCommittedProposalMetadata,
   diagnostics?: string[],
   options: CommitProposalToCanonicalOptions = {},
 ): Promise<AbsorbResult> {
+  await enforceCommitWritePermission(proposalId, options.authority);
+
   // Transition to committing (guard state)
   await transitionToCommitting(proposalId);
 
@@ -321,6 +374,10 @@ export async function publishCommittingProposalToCanonical(
       `Cannot recover-publish proposal ${proposalId}: status is ${proposal.status}, expected committing.`,
     );
   }
+  await enforceCommitWritePermission(
+    proposalId,
+    options.authority ?? systemAuthority("crash-recovery republish"),
+  );
   // Recovery/idempotency path: a re-run of an already-landed commit legitimately
   // absorbs nothing, so an empty commit is permitted here (and only here).
   return absorbCommittingProposalToCanonical(
@@ -331,17 +388,3 @@ export async function publishCommittingProposalToCanonical(
     true,
   );
 }
-
-// ─── Deprecated aliases ─────────────────────────────────────────────
-//
-// The pre-narrowing names are retained so the many callers in
-// `api/routes/index.ts`, `mcp/tools/{collaboration,filesystem}.ts`,
-// `content-import.ts`, and the CRDTProposalGenerator keep compiling until
-// Areas I/J/K port them onto the publication-intent names. These are exact
-// re-exports; do not add behaviour here.
-
-/** @deprecated Use `publishProposalToCanonicalDetailed`. */
-export const commitProposalToCanonicalDetailed = publishProposalToCanonicalDetailed;
-
-/** @deprecated Use `publishProposalToCanonical`. */
-export const commitProposalToCanonical = publishProposalToCanonical;

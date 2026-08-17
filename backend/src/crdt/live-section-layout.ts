@@ -9,7 +9,6 @@
  * materialization.
  */
 
-import { getContentRoot } from "../storage/data-root.js";
 import { BEFORE_FIRST_HEADING_KEY, fragmentKeyFromSectionFile } from "./ydoc-fragments.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { buildFragmentContent, EMPTY_BODY, type FragmentContent, type SectionBody } from "../storage/section-formatting.js";
@@ -80,12 +79,9 @@ export async function resolveLiveSectionLayout(
   currentProposalId: ProposalId | null,
 ): Promise<LiveSectionLayoutEntry[]> {
   const { DocumentSkeletonInternal } = await import("../storage/document-skeleton.js");
-  const { proposalContentRoot, loadDeletedSectionFiles } = await import("../storage/proposal-repository.js");
+  const { effectiveSkeletonRootPair, loadDeletedSectionFiles } = await import("../storage/proposal-repository.js");
 
-  const canonicalRoot = getContentRoot();
-  const skeletonRoot = currentProposalId
-    ? proposalContentRoot(currentProposalId, "inprogress")
-    : canonicalRoot;
+  const { skeletonRoot, canonicalRoot } = effectiveSkeletonRootPair(currentProposalId);
 
   // Manifest-overlay (U3 / D5): the LIVE structure merges like EVERY other proposal
   // read — current canonical overlaid by the proposal's structural changes, with a
@@ -122,8 +118,8 @@ export async function readLiveSectionBodies(
     const { ProposalReader } = await import("../storage/proposal-reader.js");
     return ProposalReader.open(currentProposalId, "inprogress").readAllSections(docPath);
   }
-  const { ContentLayer } = await import("../storage/content-layer.js");
-  return new ContentLayer(getContentRoot()).readAllSections(docPath);
+  const { CanonicalReader } = await import("../storage/canonical-reader.js");
+  return CanonicalReader.open().readAllSections(docPath);
 }
 
 /**

@@ -12,7 +12,7 @@ import { writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createTransientProposal, proposalContentRoot } from "../../storage/proposal-repository.js";
-import { commitProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonical } from "../../storage/commit-pipeline.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
@@ -34,7 +34,7 @@ async function seedCanonical(): Promise<void> {
     kind: "write_document_markdown",
     files: [{ docPath: DOC, markdown: CANONICAL_MD }],
   });
-  await commitProposalToCanonical(id, {});
+  await publishProposalToCanonical(id, {});
 }
 
 describe("tombstoned proposal documents reject writes (item 31)", () => {

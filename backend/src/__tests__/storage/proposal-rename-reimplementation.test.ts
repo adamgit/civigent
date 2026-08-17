@@ -13,7 +13,7 @@ import { readdir, writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createTransientProposal, proposalContentRoot, readProposal } from "../../storage/proposal-repository.js";
-import { commitProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonical } from "../../storage/commit-pipeline.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
@@ -41,7 +41,7 @@ afterEach(async () => {
 async function seedCanonical(docPath: string, markdown: string): Promise<void> {
   const { id } = await createTransientProposal(WRITER, "seed");
   await mutateProposalContent(id, { kind: "write_document_markdown", files: [{ docPath, markdown }] });
-  await commitProposalToCanonical(id, {});
+  await publishProposalToCanonical(id, {});
 }
 
 async function sectionFilesAt(reader: ProposalReader, docPath: string): Promise<string[]> {

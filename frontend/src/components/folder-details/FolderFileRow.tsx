@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { SectionHeadingBarcode } from "./SectionHeadingBarcode";
 
 /**
  * Clickable file row. The outer element is a real <Link href>, not a
@@ -8,11 +9,16 @@ import { Link } from "react-router-dom";
 
 export type FolderFileStatusDot = "new" | "agent";
 
+export interface FolderFileSectionHeading {
+  name: string;
+  level: number;
+}
+
 export interface FolderFileRowProps {
   name: string;
   meta?: string;
   /** Section / heading names shown on hover to the right of the filename. */
-  sectionNames?: string[];
+  sectionHeadings?: FolderFileSectionHeading[];
   statusDots?: FolderFileStatusDot[];
   /** Document route. This row is a real <Link>, never a click handler. */
   to: string;
@@ -23,20 +29,23 @@ const DOT_CLASS: Record<FolderFileStatusDot, string> = {
   agent: "bg-agent",
 };
 
-function SectionPreview({ names }: { names: string[] }) {
-  if (names.length === 0) {
+function SectionPreview({ headings }: { headings: FolderFileSectionHeading[] }) {
+  if (headings.length === 0) {
     return <span className="text-[12px] text-text-faint">No sections</span>;
   }
 
   return (
-    <span className="block truncate text-[12px] text-text-secondary" title={names.join(" · ")}>
-      {names.map((heading, index) => (
-        <span key={`${index}-${heading}`}>
+    <span
+      className="block truncate text-[12px] text-text-secondary"
+      title={headings.map((heading) => heading.name).join(" · ")}
+    >
+      {headings.map((heading, index) => (
+        <span key={`${index}-${heading.name}`}>
           {index > 0 ? <span className="text-text-faint"> · </span> : null}
           <span className="font-mono text-[10px] font-semibold text-folder-link" aria-hidden="true">
-            H{" "}
+            H{heading.level}{" "}
           </span>
-          {heading}
+          {heading.name}
         </span>
       ))}
     </span>
@@ -46,7 +55,7 @@ function SectionPreview({ names }: { names: string[] }) {
 export function FolderFileRow({
   name,
   meta,
-  sectionNames,
+  sectionHeadings,
   statusDots = [],
   to,
 }: FolderFileRowProps) {
@@ -69,14 +78,15 @@ export function FolderFileRow({
         {name}
       </span>
       <span className="ml-auto min-w-0 flex-1 overflow-hidden text-right max-md:hidden">
-        {sectionNames !== undefined ? (
+        {sectionHeadings !== undefined ? (
           <>
             <span className="hidden group-hover:block">
-              <SectionPreview names={sectionNames} />
+              <SectionPreview headings={sectionHeadings} />
             </span>
-            {meta ? (
-              <span className="block truncate text-[11px] text-text-faint group-hover:hidden">{meta}</span>
-            ) : null}
+            <span className="flex min-w-0 items-center justify-end gap-2 group-hover:hidden">
+              {meta ? <span className="truncate text-[11px] text-text-faint">{meta}</span> : null}
+              <SectionHeadingBarcode levels={sectionHeadings.map((heading) => heading.level)} />
+            </span>
           </>
         ) : meta ? (
           <span className="block truncate text-[11px] text-text-faint">{meta}</span>

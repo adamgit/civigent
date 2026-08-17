@@ -9,7 +9,7 @@ import {
   recordAgentDocumentRead,
   setDocumentActivityBroadcaster,
 } from "./ws/document-activity.js";
-import { assertDataRootExists, getContentRoot, getDataRoot, getImportRoot, ensureV3Directories } from "./storage/data-root.js";
+import { assertDataRootExists, getDataRoot, getImportRoot, ensureV3Directories } from "./storage/data-root.js";
 import { ensureGitRepoReady } from "./storage/git-repo.js";
 import { detectAndRecoverCrash } from "./storage/crash-recovery.js";
 import { bootstrapContentSeedFromDirectoryIfNeeded } from "./storage/bootstrap-content-seed.js";
@@ -247,7 +247,7 @@ try {
 }
 await detectAndRecoverCrash(getDataRoot());
 
-await bootstrapContentSeedFromDirectoryIfNeeded(getImportRoot(), getContentRoot());
+await bootstrapContentSeedFromDirectoryIfNeeded(getImportRoot());
 
 // System is ready — crash recovery and import complete
 setSystemReady();

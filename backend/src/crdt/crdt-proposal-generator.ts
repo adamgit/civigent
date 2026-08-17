@@ -43,7 +43,7 @@ import {
   unionCurrentProposalSections,
   rollbackCommittingProposal,
 } from "../storage/proposal-repository.js";
-import { commitProposalToCanonicalDetailed } from "../storage/commit-pipeline.js";
+import { publishProposalToCanonicalDetailed } from "../storage/commit-pipeline.js";
 import type { AbsorbResult } from "../storage/canonical-store.js";
 import type { UpsertSectionFromMarkdownDetailedResult } from "../storage/content-layer.js";
 import type { FlatEntry } from "../storage/document-skeleton.js";
@@ -812,7 +812,7 @@ export class CRDTProposalGenerator {
     const descriptionHeadline = synthesizeCommitDescription({ changedSections });
 
     try {
-      const absorbResult = await commitProposalToCanonicalDetailed(
+      const absorbResult = await publishProposalToCanonicalDetailed(
         proposalId,
         committedMetadata,
         undefined,

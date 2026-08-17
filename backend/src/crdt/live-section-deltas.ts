@@ -66,8 +66,7 @@ export async function computeCanonicalToLiveDeltas(
   currentProposalId: ProposalId | null,
   changedHeadingPaths: readonly string[][],
 ): Promise<{ deltas: FragmentStringDelta[]; fragmentKeys: string[] }> {
-  const { ContentLayer } = await import("../storage/content-layer.js");
-  const { getContentRoot } = await import("../storage/data-root.js");
+  const { CanonicalReader } = await import("../storage/canonical-reader.js");
 
   const layout = await resolveLiveSectionLayout(docPath, currentProposalId);
   const byHeadingKey = new Map<string, LiveSectionLayoutEntry>();
@@ -75,7 +74,7 @@ export async function computeCanonicalToLiveDeltas(
     byHeadingKey.set(SectionRef.headingKey(entry.headingPath), entry);
   }
 
-  const canonical = new ContentLayer(getContentRoot());
+  const canonical = CanonicalReader.open();
   const deltas: FragmentStringDelta[] = [];
   const fragmentKeys: string[] = [];
 
@@ -85,7 +84,7 @@ export async function computeCanonicalToLiveDeltas(
 
     let body;
     try {
-      body = await canonical.readSection(new SectionRef(docPath, [...headingPath]));
+      body = await canonical.readSection(docPath, [...headingPath]);
     } catch {
       // Section absent from canonical (e.g. deleted) — nothing to apply here.
       continue;

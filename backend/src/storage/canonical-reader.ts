@@ -96,4 +96,12 @@ export class CanonicalReader {
   async readAssembledDocument(docPath: DocPath): Promise<string> {
     return this.layer.readAssembledDocument(docPath);
   }
+
+  async listCanonicalEntries(docPath: DocPath): ReturnType<ContentLayer["listCanonicalEntries"]> {
+    return this.layer.listCanonicalEntries(docPath);
+  }
+
+  async resolveSectionFileId(docPath: DocPath, sectionFileId: string): ReturnType<ContentLayer["resolveSectionFileId"]> {
+    return this.layer.resolveSectionFileId(docPath, sectionFileId);
+  }
 }

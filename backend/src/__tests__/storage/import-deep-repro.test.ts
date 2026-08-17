@@ -5,7 +5,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument } from "../helpers/sample-content.js";
 import { importFilesToProposal } from "../../storage/import-service.js";
-import { commitProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonical } from "../../storage/commit-pipeline.js";
 import { ContentLayer, ProposalShadowContentLayer } from "../../storage/content-layer.js";
 import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
 import { readAssembledDocument } from "../../storage/document-reader.js";
@@ -76,7 +76,7 @@ describe("deeply nested import repro", () => {
     for (const s of freshProposal.sections) {
       scores[SectionRef.fromTarget(s).globalKey] = 0;
     }
-    await commitProposalToCanonical(id, scores);
+    await publishProposalToCanonical(id, scores);
 
     const sessionSectionsContentRoot = scratchOverlayContentRoot();
     const overlay = new ProposalShadowContentLayer(sessionSectionsContentRoot, getContentRoot(), async () => new Set<string>());
@@ -116,7 +116,7 @@ describe("deeply nested import repro", () => {
     for (const s of freshProposal.sections) {
       scores[SectionRef.fromTarget(s).globalKey] = 0;
     }
-    await commitProposalToCanonical(id, scores);
+    await publishProposalToCanonical(id, scores);
 
     const contentRoot = getContentRoot();
     const sessionSectionsContentRoot = scratchOverlayContentRoot();
@@ -163,7 +163,7 @@ describe("deeply nested import repro", () => {
     for (const s of freshProposal.sections) {
       scores[SectionRef.fromTarget(s).globalKey] = 0;
     }
-    await commitProposalToCanonical(firstId, scores);
+    await publishProposalToCanonical(firstId, scores);
 
     // Read the canonical content to see what files exist
     const contentRoot = getContentRoot();

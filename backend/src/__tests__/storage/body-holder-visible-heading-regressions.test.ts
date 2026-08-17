@@ -3,10 +3,16 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ContentLayer, ProposalShadowContentLayer } from "../../storage/content-layer.js";
 import { readAssembledDocument } from "../../storage/document-reader.js";
+import { systemDocRead } from "../../auth/authorized-read.js";
+import { systemAuthority } from "../../auth/system-authority.js";
 import { flattenStructureToHeadingPaths, readDocumentStructure } from "../../storage/heading-resolver.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { createProposal } from "../../storage/proposal-repository.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
+import { DocPath } from "../../types/shared.js";
+
+const readAssembledForTest = (docPath: string) =>
+  readAssembledDocument(systemDocRead(systemAuthority("test read"), DocPath.parse(docPath)));
 
 const DOC_PATH = "/test/body-holder-visible-heading.md";
 
@@ -70,7 +76,7 @@ describe("body-holder visible heading regressions", () => {
   });
 
   it("readAssembledDocument keeps the parent heading visible for a body-holder-backed section", async () => {
-    const assembled = await readAssembledDocument(DOC_PATH);
+    const assembled = await readAssembledForTest(DOC_PATH);
 
     const detailsHeadingIndex = assembled.indexOf("## Details");
     const detailsBodyIndex = assembled.indexOf("Details body.");

@@ -51,6 +51,7 @@ import { pathExists, readFileIfExists } from "./fs-primitives.js";
 import type { DocStructureNode } from "../types/shared.js";
 import { DocPath, HeadingLevel } from "../types/shared.js";
 import { docPathToContentRelativeFsPath } from "./path-utils.js";
+import { getContentRoot } from "./data-root.js";
 import { staleHeadingPath } from "./skeleton-errors.js";
 import { isBodyHolderShape } from "./section-shape.js";
 
@@ -142,6 +143,10 @@ export type ProposalDocumentState = "missing" | "live" | "tombstone";
 
 export function resolveSkeletonPath(docPath: DocPath, contentRoot: string): string {
   return path.resolve(contentRoot, ...docPathToContentRelativeFsPath(DocPath.parse(docPath)).split("/"));
+}
+
+export function resolveCanonicalSkeletonPath(docPath: DocPath): string {
+  return resolveSkeletonPath(docPath, getContentRoot());
 }
 
 export function resolveTombstonePath(docPath: DocPath, overlayRoot: string): string {

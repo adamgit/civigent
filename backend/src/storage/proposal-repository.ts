@@ -26,6 +26,7 @@ import {
   readLandedCommittedHead,
 } from "./proposal-file-decoder.js";
 import {
+  getContentRoot,
   getProposalsDraftRoot,
   getProposalsPendingRoot,
   getProposalsInProgressRoot,
@@ -159,6 +160,23 @@ export function proposalContentRoot(id: ProposalId, status: ProposalStatus): str
 export async function locateProposalContentRoot(id: ProposalId): Promise<string> {
   const { status } = await locateProposal(id);
   return proposalContentRoot(id, status);
+}
+
+/**
+ * The effective root pair for skeleton/seed reads of a live document: the
+ * `inprogress` proposal overlay when a current proposal exists, else canonical
+ * — with the canonical root alongside as the merge base. The CRDT layer
+ * (live-section-layout, ydoc-lifecycle) consumes this instead of composing
+ * roots from `getContentRoot` itself.
+ */
+export function effectiveSkeletonRootPair(
+  currentProposalId: ProposalId | null,
+): { skeletonRoot: string; canonicalRoot: string } {
+  const canonicalRoot = getContentRoot();
+  return {
+    canonicalRoot,
+    skeletonRoot: currentProposalId ? proposalContentRoot(currentProposalId, "inprogress") : canonicalRoot,
+  };
 }
 
 /**

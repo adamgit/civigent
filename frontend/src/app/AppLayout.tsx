@@ -81,7 +81,12 @@ export interface AppLayoutOutletContext {
 
 export interface DocSectionNamesChange {
   docPath: string;
-  sectionHeadings: string[] | null;
+  sectionHeadings: DocSectionHeading[] | null;
+}
+
+export interface DocSectionHeading {
+  name: string;
+  level: number;
 }
 
 function SingleUserBrandMark() {
@@ -194,9 +199,6 @@ export function AppLayout() {
     writeSidebarAutoHide(autoHide);
     setSidebarAutoHideState(autoHide);
   }, []);
-  const [rootImporting, setRootImporting] = useState(false);
-  const [rootImportError, setRootImportError] = useState<string | null>(null);
-  const rootImportInputRef = useRef<HTMLInputElement>(null);
   const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
   const focusedDocPath = useMemo(() => {
     const loc = DocsLocation.fromPathname(location.pathname);
@@ -344,34 +346,6 @@ export function AppLayout() {
 
   const handleRootExport = () => {
     window.location.href = `/api/export?path=${encodeURIComponent("/")}`;
-  };
-
-  const handleRootImportClick = () => {
-    setRootImportError(null);
-    if (rootImportInputRef.current) {
-      rootImportInputRef.current.value = "";
-      rootImportInputRef.current.click();
-    }
-  };
-
-  const handleRootImportSelected = async () => {
-    const input = rootImportInputRef.current;
-    if (!input?.files || input.files.length === 0) return;
-    setRootImporting(true);
-    setRootImportError(null);
-    try {
-      const files = Array.from(input.files).filter((file) => file.name.toLowerCase().endsWith(".md"));
-      if (files.length === 0) {
-        throw new Error("No .md files selected.");
-      }
-      const staging = await apiClient.createImport();
-      await apiClient.uploadImportFiles(staging.import_id, files);
-      navigate(`/imports?expand=${encodeURIComponent(staging.import_id)}`);
-    } catch (error) {
-      setRootImportError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setRootImporting(false);
-    }
   };
 
   useEffect(() => {
@@ -655,8 +629,11 @@ export function AppLayout() {
       }
       if (event.type === "doc:structure-changed") {
         const sectionHeadings = event.sections
-          .map((section) => section.heading.trim())
-          .filter((heading) => heading.length > 0);
+          .map((section) => ({
+            name: section.heading.trim(),
+            level: section.heading_level,
+          }))
+          .filter((heading) => heading.name.length > 0);
         for (const listener of docSectionNamesChangedListenersRef.current) {
           listener({ docPath: event.doc_path, sectionHeadings });
         }
@@ -793,14 +770,6 @@ export function AppLayout() {
 
         {/* Sidebar tree */}
         <div className="flex-1 px-2 py-0.5 overflow-y-auto sidebar-scroll">
-          <input
-            ref={rootImportInputRef}
-            type="file"
-            accept=".md"
-            multiple
-            className="hidden"
-            onChange={() => { void handleRootImportSelected(); }}
-          />
           {/* All Documents + root export/import — text aligns with tree folder icons */}
           <div className="flex items-center gap-1 pt-2.5 pb-1.5">
             <Link
@@ -818,15 +787,13 @@ export function AppLayout() {
             >
               &#8595;
             </button>
-            <button
-              type="button"
-              title="Import .md files to root"
-              className="text-[11px] text-sidebar-text opacity-50 hover:opacity-100 bg-transparent border-none cursor-pointer p-0.5 leading-none transition-opacity disabled:opacity-30"
-              onClick={handleRootImportClick}
-              disabled={rootImporting}
+            <Link
+              to="/imports?into=/"
+              title="Import files to root"
+              className="text-[11px] text-sidebar-text opacity-50 hover:opacity-100 no-underline p-0.5 leading-none transition-opacity"
             >
               &#8593;
-            </button>
+            </Link>
             {!loadingTree && (
               <button
                 type="button"
@@ -839,12 +806,6 @@ export function AppLayout() {
               </button>
             )}
           </div>
-          {rootImportError ? (
-            <p className="text-[11px] text-status-red m-0 mb-1 select-text">{rootImportError}</p>
-          ) : null}
-          {rootImporting ? (
-            <p className="text-[10px] text-text-faint m-0 mb-1">Importing...</p>
-          ) : null}
 
           {!loadingTree && showNewDocForm && (
             <form onSubmit={handleNewDocSubmit} className="flex flex-col gap-1 mb-1.5">
@@ -909,7 +870,6 @@ export function AppLayout() {
               badgedDocPaths={docBadges}
               flashDocKinds={flashDocKinds}
               onDocumentOpen={rememberRecentDoc}
-              onTreeRefresh={() => loadTree({ background: true })}
               onCreateDocumentInFolder={openCreateDocInFolder}
             />
           ) : null}

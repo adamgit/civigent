@@ -2,12 +2,14 @@ import path from "node:path";
 import { getExportedSkillsConfig } from "../../exported-skills-config.js";
 import { getPublicUrl } from "../../auth/oauth-config.js";
 import { readAssembledDocument, DocumentNotFoundError } from "../../storage/document-reader.js";
+import { authorizeDocRead } from "../../auth/authorized-read.js";
+import { DocPath } from "../../types/shared.js";
 import {
   DocumentsTreePathNotFoundError,
-  browseFolderPathToContentRelativeFsPath,
-  readDocumentsTree,
+  browseFolderExistsOnDisk,
+  readDocumentsTreeUnfiltered,
 } from "../../storage/documents-tree.js";
-import { getContentGitPrefix, getContentRoot, getDataRoot } from "../../storage/data-root.js";
+import { getContentGitPrefix, getDataRoot } from "../../storage/data-root.js";
 import { getTreeShaAtHead } from "../../storage/git-repo.js";
 import { directoryExists } from "../../storage/fs-primitives.js";
 import { assertChildPath } from "../../storage/path-utils.js";
@@ -59,9 +61,7 @@ function folderGitPath(folder: string): string {
 
 export async function folderExistsOnDisk(folder?: string): Promise<boolean> {
   const target = folder ?? getExportedSkillsConfig().folder;
-  const relative = browseFolderPathToContentRelativeFsPath(target);
-  const absolute = assertChildPath(getContentRoot(), path.join(getContentRoot(), relative));
-  return directoryExists(absolute);
+  return browseFolderExistsOnDisk(target);
 }
 
 export async function getExportedSkillsTreeSha(folder?: string): Promise<string | null> {
@@ -78,7 +78,7 @@ export async function listExportedSkillsContent(): Promise<ExportedSkillsListing
 
   let topLevel;
   try {
-    topLevel = await readDocumentsTree(folder, false);
+    topLevel = await readDocumentsTreeUnfiltered(folder, false);
   } catch (error) {
     if (error instanceof DocumentsTreePathNotFoundError) {
       throw new ExportedSkillsFolderAbsentError(folder);
@@ -93,7 +93,7 @@ export async function listExportedSkillsContent(): Promise<ExportedSkillsListing
   const commands: ExportedSkillCommand[] = [];
   for (let i = 0; i < mdFiles.length; i++) {
     const entry = mdFiles[i]!;
-    const body = await readAssembledDocument(entry.path);
+    const body = await readAssembledDocument(await authorizeDocRead(null, DocPath.parse(entry.path)));
     commands.push({ commandName: commandNames[i]!, body });
   }
 
@@ -102,7 +102,7 @@ export async function listExportedSkillsContent(): Promise<ExportedSkillsListing
   for (const dir of childDirs) {
     const skillPath = `${dir.path}/SKILL.md`;
     try {
-      const body = await readAssembledDocument(skillPath);
+      const body = await readAssembledDocument(await authorizeDocRead(null, DocPath.parse(skillPath)));
       skills.push({ dirName: dir.name, body });
     } catch (error) {
       if (error instanceof DocumentNotFoundError) {

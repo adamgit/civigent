@@ -19,6 +19,12 @@ export interface NewFileOrFolderProps {
   onSubmit: (value: NewFileOrFolderSubmit) => void | Promise<void>;
   /** Narrow pane: name field only. Wide pane: file-or-folder expander. */
   variant?: "full" | "compact";
+  /**
+   * Called when the picker or drop receives a .zip or more than one file.
+   * Bulk intake is a redirect (the Imports page owns uploads) — the files are
+   * never passed and the create form is not filled.
+   */
+  onBulkIntake?: () => void;
 }
 
 type CreateKind = "file" | "folder";
@@ -124,6 +130,7 @@ function FullNewFileOrFolder({
   busy = false,
   error = null,
   onSubmit,
+  onBulkIntake,
 }: Omit<NewFileOrFolderProps, "variant">) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -132,6 +139,7 @@ function FullNewFileOrFolder({
   const [kind, setKind] = useState<CreateKind>("file");
   const [kindMenuOpen, setKindMenuOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const pickFileInputRef = useRef<HTMLInputElement>(null);
   const kindMenuRef = useRef<HTMLDivElement>(null);
   /** Caret index to apply after a folder-name rewrite (always before the trailing `/`). */
   const pendingCaretRef = useRef<number | null>(null);
@@ -243,6 +251,27 @@ function FullNewFileOrFolder({
     }
   };
 
+  const intakeLocalFiles = (fileList: FileList | File[]) => {
+    const files = Array.from(fileList);
+    if (files.length === 0) {
+      return;
+    }
+    if (files.length > 1 || files.some((file) => file.name.toLowerCase().endsWith(".zip"))) {
+      onBulkIntake?.();
+      return;
+    }
+    const file = files[0];
+    if (!file.name.toLowerCase().endsWith(".md")) {
+      return;
+    }
+    void file.text().then((text) => {
+      setKind("file");
+      setName(file.name);
+      setContent(text);
+      setShowContent(true);
+    });
+  };
+
   if (!open) {
     return (
       <button
@@ -260,6 +289,13 @@ function FullNewFileOrFolder({
     <form
       onSubmit={handleSubmit}
       className="mt-2 flex flex-col gap-2 font-ui"
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault();
+        if (event.dataTransfer.files.length > 0) {
+          intakeLocalFiles(event.dataTransfer.files);
+        }
+      }}
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.preventDefault();
@@ -339,18 +375,42 @@ function FullNewFileOrFolder({
         </div>
         <div className="flex shrink-0 items-center gap-3 text-[11px] text-text-faint">
           {!folderMode ? (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 border-none bg-transparent p-0 text-[11px] text-text-faint hover:text-text-muted"
-              disabled={busy}
-              onClick={() => setShowContent((prev) => !prev)}
-              aria-expanded={showContent}
-            >
-              add content
-              <span aria-hidden="true" className="text-[9px]">
-                {showContent ? "▴" : "▾"}
-              </span>
-            </button>
+            <>
+              <input
+                ref={pickFileInputRef}
+                type="file"
+                accept=".md,.zip"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  if (event.target.files) {
+                    intakeLocalFiles(event.target.files);
+                  }
+                  event.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                className="border-none bg-transparent p-0 text-[11px] text-text-faint hover:text-text-muted"
+                disabled={busy}
+                onClick={() => pickFileInputRef.current?.click()}
+                title="Fill name and content from a local .md file"
+              >
+                from local file
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 border-none bg-transparent p-0 text-[11px] text-text-faint hover:text-text-muted"
+                disabled={busy}
+                onClick={() => setShowContent((prev) => !prev)}
+                aria-expanded={showContent}
+              >
+                add content
+                <span aria-hidden="true" className="text-[9px]">
+                  {showContent ? "▴" : "▾"}
+                </span>
+              </button>
+            </>
           ) : null}
           <span>↵ create</span>
           <button
@@ -434,9 +494,10 @@ export function NewFileOrFolder({
   error = null,
   onSubmit,
   variant = "full",
+  onBulkIntake,
 }: NewFileOrFolderProps) {
   if (variant === "compact") {
     return <CompactNewFile busy={busy} error={error} onSubmit={onSubmit} />;
   }
-  return <FullNewFileOrFolder busy={busy} error={error} onSubmit={onSubmit} />;
+  return <FullNewFileOrFolder busy={busy} error={error} onSubmit={onSubmit} onBulkIntake={onBulkIntake} />;
 }

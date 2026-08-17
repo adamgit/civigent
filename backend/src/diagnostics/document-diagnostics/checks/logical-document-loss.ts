@@ -1,5 +1,5 @@
 import { SectionRef } from "../../../domain/section-ref.js";
-import { ContentLayer } from "../../../storage/content-layer.js";
+import { CanonicalReader } from "../../../storage/canonical-reader.js";
 import { ensureRecursiveSkeleton, type DocumentDiagnosticsContext } from "../context.js";
 import { fragmentKeyFromSectionFile } from "../../../crdt/ydoc-fragments.js";
 import { isBodyHolderShape } from "../../../storage/section-shape.js";
@@ -57,7 +57,7 @@ export async function runLogicalDocumentLossCheck(ctx: DocumentDiagnosticsContex
 
     // Rung 2 — physical > API-returned (public-API-level collapse).
     try {
-      const layer = new ContentLayer(ctx.contentRoot);
+      const layer = CanonicalReader.open();
       const apiHeadingPaths = await layer.listHeadingPaths(ctx.docPath);
       const apiCount = apiHeadingPaths.length;
       ctx.summary.api_section_count = apiCount;

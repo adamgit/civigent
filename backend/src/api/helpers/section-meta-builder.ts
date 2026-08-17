@@ -9,8 +9,8 @@
 
 import path from "node:path";
 import type { Request } from "express";
-import { getContentRoot, getDataRoot } from "../../storage/data-root.js";
-import { resolveAllSectionPaths } from "../../storage/heading-resolver.js";
+import { getDataRoot } from "../../storage/data-root.js";
+import { resolveAllCanonicalSectionPaths } from "../../storage/heading-resolver.js";
 import { readDocSectionCommitInfo, type SectionCommitInfo } from "../../storage/section-commit-history.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { SectionRef } from "../../domain/section-ref.js";
@@ -53,7 +53,7 @@ export async function buildSectionInvolvementMeta(
 ): Promise<Map<string, SectionInvolvementMeta>> {
   const [gitCommitInfo, canonicalPaths] = await Promise.all([
     readDocSectionCommitInfo(docPath),
-    resolveAllSectionPaths(getContentRoot(), docPath),
+    resolveAllCanonicalSectionPaths(docPath),
   ]);
 
   // Build heading-keyed commit map by joining git info with resolved paths

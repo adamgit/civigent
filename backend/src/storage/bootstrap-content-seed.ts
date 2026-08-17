@@ -7,7 +7,7 @@
  * general runtime/admin import path (those go through the normal import flow).
  *
  * It is a thin orchestrator over `importFilesToProposal` + an immediate
- * `commitProposalToCanonical`; the `ProposalEditor` routing is inherited
+ * `publishProposalToCanonical`; the `ProposalEditor` routing is inherited
  * transitively through `importFilesToProposal`.
  */
 
@@ -15,8 +15,10 @@ import path from "node:path";
 import { readFile, readdir } from "node:fs/promises";
 import { directoryExists, readDirentsIfExists, readFileIfExists } from "./fs-primitives.js";
 import { docPathFromContentRelativeFsPath } from "./path-utils.js";
+import { getContentRoot } from "./data-root.js";
 import { importFilesToProposal, type ImportFile } from "./import-service.js";
-import { commitProposalToCanonical } from "./commit-pipeline.js";
+import { publishProposalToCanonical } from "./commit-pipeline.js";
+import { systemAuthority } from "../auth/system-authority.js";
 import type { WriterIdentity } from "../types/shared.js";
 
 export interface BootstrapContentSeedSummary {
@@ -97,10 +99,8 @@ async function collectImportMarkdownFiles(sourceRoot: string, patterns: string[]
   return files;
 }
 
-export async function bootstrapContentSeed(
-  sourceRoot: string,
-  contentRoot: string,
-): Promise<BootstrapContentSeedSummary> {
+export async function bootstrapContentSeed(sourceRoot: string): Promise<BootstrapContentSeedSummary> {
+  const contentRoot = getContentRoot();
   const summary: BootstrapContentSeedSummary = { imported: 0, failed: 0, skipped: 0, errors: [] };
 
   // An absent contentRoot is a valid "fresh install" state (it will be created
@@ -142,7 +142,8 @@ export async function bootstrapContentSeed(
   // Startup-only seed: zero scores (empty SectionScoreSnapshot) and an explicit
   // bootstrap-seed commit message rather than the default `agent proposal:`
   // line. See assumptions.md (bootstrap commit-metadata decision).
-  await commitProposalToCanonical(proposalId, {}, undefined, {
+  await publishProposalToCanonical(proposalId, {}, undefined, {
+    authority: systemAuthority("bootstrap content seed"),
     commitMessageOverride: `bootstrap seed: initial content import from ${sourceRoot}\n\nProposal: ${proposalId}`,
   });
   summary.imported += importFiles.length;
@@ -152,12 +153,11 @@ export async function bootstrapContentSeed(
 
 export async function bootstrapContentSeedFromDirectoryIfNeeded(
   sourceRoot: string,
-  contentRoot: string,
 ): Promise<BootstrapContentSeedSummary> {
   // Optional: compose mounts /dev/null at /import when IMPORT_CONTENT_FROM is
   // unset, so the path can exist without being a directory (ENOTDIR on scandir).
   if (!(await directoryExists(sourceRoot))) {
     return { imported: 0, failed: 0, skipped: 1, errors: [] };
   }
-  return bootstrapContentSeed(sourceRoot, contentRoot);
+  return bootstrapContentSeed(sourceRoot);
 }

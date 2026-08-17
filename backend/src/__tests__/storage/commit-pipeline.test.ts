@@ -9,8 +9,8 @@ import {
 } from "../../storage/proposal-repository.js";
 import {
   evaluateAgentWritePolicy,
-  commitProposalToCanonical,
-  commitProposalToCanonicalDetailed,
+  publishProposalToCanonical,
+  publishProposalToCanonicalDetailed,
   publishProposalToCanonical,
   publishProposalToCanonicalDetailed,
   publishCommittingProposalToCanonical,
@@ -89,7 +89,7 @@ describe("commit-pipeline", () => {
     expect(result.targets[0].target.heading_path).toEqual(["Overview"]);
   });
 
-  it("commitProposalToCanonical writes sections and returns commit SHA using policy metadata", async () => {
+  it("publishProposalToCanonical writes sections and returns commit SHA using policy metadata", async () => {
     const { id } = await createProposal(
       writer,
       "Test commit",
@@ -99,7 +99,7 @@ describe("commit-pipeline", () => {
     const result = await evaluateAgentWritePolicy(id);
     const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(result);
 
-    const committedHead = await commitProposalToCanonical(id, committedMetadata);
+    const committedHead = await publishProposalToCanonical(id, committedMetadata);
     expect(typeof committedHead).toBe("string");
     expect(committedHead.length).toBe(40); // SHA hex
   });
@@ -116,7 +116,7 @@ describe("commit-pipeline", () => {
     const key = new SectionRef(SAMPLE_DOC_PATH, ["Timeline"]).globalKey;
     expect(committedMetadata).toHaveProperty(key);
 
-    await commitProposalToCanonical(id, committedMetadata);
+    await publishProposalToCanonical(id, committedMetadata);
 
     // Read the proposal back to verify it's committed with the stored metadata
     const read = await readProposal(id);
@@ -141,8 +141,8 @@ describe("commit-pipeline", () => {
     expect((await readProposal(id)).status).toBe("committed");
   });
 
-  it("commitProposalToCanonical is a deprecated alias of publishProposalToCanonical", () => {
-    expect(commitProposalToCanonical).toBe(publishProposalToCanonical);
+  it("publishProposalToCanonical is a deprecated alias of publishProposalToCanonical", () => {
+    expect(publishProposalToCanonical).toBe(publishProposalToCanonical);
   });
 
   // ── Re-runnable committing-recovery entrypoint ───────────────────
@@ -252,7 +252,7 @@ describe("commit-pipeline", () => {
       newPath: renamedPath,
     });
 
-    const absorb = await commitProposalToCanonicalDetailed(id, {});
+    const absorb = await publishProposalToCanonicalDetailed(id, {});
     expect(absorb.commitSha.length).toBe(40);
 
     expect(await pathExists(resolveSkeletonPath(newNotePath, ctx.contentDir))).toBe(true);

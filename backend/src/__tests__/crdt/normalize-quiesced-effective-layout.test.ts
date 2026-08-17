@@ -40,7 +40,7 @@ import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { readProposal } from "../../storage/proposal-repository.js";
 import { createTransientProposal } from "../../storage/proposal-repository.js";
-import { commitProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import type { InProgressProposal, ProposalSection } from "../../types/shared.js";
@@ -349,7 +349,7 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
       heading: "Roadmap",
       content: "external roadmap body",
     });
-    const absorb = await commitProposalToCanonicalDetailed(externalProposalId, {});
+    const absorb = await publishProposalToCanonicalDetailed(externalProposalId, {});
     const changedHeadingPaths = absorb.changedSections.map((s) => [...s.headingPath]);
     await applyCommittedCanonicalToLiveSession(SAMPLE_DOC_PATH, changedHeadingPaths, externalProposalId);
     await session.enqueue(() => undefined);
@@ -417,7 +417,7 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
       heading: "Appendix",
       content: "external appendix body",
     });
-    const absorb = await commitProposalToCanonicalDetailed(externalProposalId, {});
+    const absorb = await publishProposalToCanonicalDetailed(externalProposalId, {});
     const changedHeadingPaths = absorb.changedSections.map((s) => [...s.headingPath]);
     await applyCommittedCanonicalToLiveSession(SAMPLE_DOC_PATH, changedHeadingPaths, externalProposalId);
     await session.enqueue(() => undefined);

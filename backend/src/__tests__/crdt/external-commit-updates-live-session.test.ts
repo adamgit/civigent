@@ -30,7 +30,7 @@ import type { SectionBody } from "../../storage/section-formatting.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { createTransientProposal } from "../../storage/proposal-repository.js";
-import { commitProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
@@ -85,7 +85,7 @@ describe("external commit updates the active live Y.Doc without a session reset"
       heading: "Overview",
       content: "EXTERNALLY COMMITTED OVERVIEW",
     });
-    const absorb = await commitProposalToCanonicalDetailed(externalProposalId, {});
+    const absorb = await publishProposalToCanonicalDetailed(externalProposalId, {});
     const changedHeadingPaths = absorb.changedSections.map((s) => [...s.headingPath]);
 
     // Apply the external committed canonical change into the live session.
@@ -130,7 +130,7 @@ describe("external commit updates the active live Y.Doc without a session reset"
       docPath: SAMPLE_DOC_PATH,
       headingPath: ["Timeline"],
     });
-    const absorb = await commitProposalToCanonicalDetailed(externalProposalId, {});
+    const absorb = await publishProposalToCanonicalDetailed(externalProposalId, {});
     const changedHeadingPaths = absorb.changedSections.map((s) => [...s.headingPath]);
 
     await applyCommittedCanonicalToLiveSession(SAMPLE_DOC_PATH, changedHeadingPaths, externalProposalId);

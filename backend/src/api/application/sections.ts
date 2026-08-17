@@ -10,6 +10,7 @@ import { CanonicalReader } from "../../storage/canonical-reader.js";
 import { mutateProposalContent, ProposalSectionNotFoundError } from "../../storage/mutate-proposal-content.js";
 import { prependHeadings } from "../../storage/document-reader.js";
 import { SectionNotFoundError } from "../../storage/section-reader.js";
+import type { AuthorizedDocRead } from "../../auth/authorized-read.js";
 import { HeadingNotFoundError } from "../../storage/heading-resolver.js";
 import { InvalidDocPathError } from "../../storage/path-utils.js";
 import { DirectoryAtDocPathError, DocumentNotFoundError, DocumentAssemblyError } from "../../storage/document-reader.js";
@@ -29,7 +30,7 @@ import {
   readProposal,
   findInProgressProposalForDoc,
 } from "../../storage/proposal-repository.js";
-import { evaluateAgentWritePolicy, commitProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { evaluateAgentWritePolicy, publishProposalToCanonical } from "../../storage/commit-pipeline.js";
 import { AgentWritePolicy, humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
 import { ProposalFsmLockIndex } from "../../domain/proposal-fsm-lock-index.js";
 import { BLOCKING_LOCK_STATUSES } from "../../domain/proposal-fsm-locks.js";
@@ -82,8 +83,8 @@ interface SectionListReader {
 
 
 
-export async function readCanonicalSectionList(docPath: DocPath): Promise<ReadSectionListResult> {
-  return buildSectionListResponse(docPath, CanonicalReader.open(), undefined);
+export async function readCanonicalSectionList(read: AuthorizedDocRead): Promise<ReadSectionListResult> {
+  return buildSectionListResponse(read.docPath, CanonicalReader.open(), undefined);
 }
 
 export async function openWorkspaceReader(docPath: DocPath): Promise<CanonicalReader | ProposalReader> {
@@ -94,7 +95,8 @@ export async function openWorkspaceReader(docPath: DocPath): Promise<CanonicalRe
   return CanonicalReader.open();
 }
 
-export async function readWorkspaceSectionList(docPath: DocPath): Promise<ReadSectionListResult> {
+export async function readWorkspaceSectionList(read: AuthorizedDocRead): Promise<ReadSectionListResult> {
+  const docPath = read.docPath;
   const session = lookupDocSession(docPath);
   return buildSectionListResponse(
     docPath,
@@ -233,7 +235,7 @@ async function evaluateAndMaybeCommit(
 ): Promise<{ policyResult: HumanInvolvementPolicyResult; committedHead?: string }> {
   if (writerType === "human") {
     
-    const committedHead = await commitProposalToCanonical(proposalId, {});
+    const committedHead = await publishProposalToCanonical(proposalId, {});
     return { policyResult: humanBypassPolicyResult(), committedHead };
   }
   const policyResult = await evaluateAgentWritePolicy(proposalId);
@@ -241,7 +243,7 @@ async function evaluateAndMaybeCommit(
     return { policyResult };
   }
   const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
-  const committedHead = await commitProposalToCanonical(proposalId, committedMetadata);
+  const committedHead = await publishProposalToCanonical(proposalId, committedMetadata);
   return { policyResult, committedHead };
 }
 

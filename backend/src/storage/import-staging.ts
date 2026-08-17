@@ -1,33 +1,55 @@
 /**
- * import-staging.ts — Staging folder infrastructure for imports.
+ * import-staging.ts — Staging record infrastructure for imports.
  *
- * All state is on disk — no in-memory map, no metadata files.
- * Each import is a subdirectory under /app/data/import-staging/{uuid}/
- * containing only the user's files. Survives server restarts with no
- * reconstruction needed.
+ * All state is on disk — no in-memory map. Each import is a record directory
+ * under /app/data/import-staging/{uuid}/ holding `meta.json` (destination
+ * folder + creation time, the proposals meta.json idiom) beside a `files/`
+ * root that contains only the user's staged files. Content walkers only ever
+ * enter `files/`, so record-level artifacts (meta.json, the zip spool) are
+ * structurally invisible to them — no reserved-name skip lists. Survives
+ * server restarts with no reconstruction needed.
  */
 
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { readDirentsIfExists } from "./fs-primitives.js";
 import { getImportStagingRoot } from "./data-root.js";
 import { parseDocumentMarkdown } from "./markdown-sections.js";
-import type { ImportFile } from "./import-service.js";
-import { docPathFromContentRelativeFsPath } from "./path-utils.js";
+import { FolderPath, InvalidFolderPathError } from "../types/shared.js";
 
 export { getImportStagingRoot } from "./data-root.js";
 
-function stagingFolderPath(importId: string): string {
+function stagingRecordPath(importId: string): string {
   return path.join(getImportStagingRoot(), importId);
 }
 
+export function stagingFilesRoot(importId: string): string {
+  return path.join(stagingRecordPath(importId), "files");
+}
+
+function stagingMetaPath(importId: string): string {
+  return path.join(stagingRecordPath(importId), "meta.json");
+}
+
+export function stagingZipSpoolPath(importId: string): string {
+  return path.join(stagingRecordPath(importId), ".incoming.zip");
+}
+
 // ─── Public types ────────────────────────────────────────
+
+export class ImportStagingMetaError extends Error {}
+
+export interface ImportStagingMeta {
+  targetFolder: FolderPath;
+  createdAt: string;
+}
 
 export interface StagingFolderInfo {
   importId: string;
   stagingPath: string;
   createdAt: string;
+  targetFolder: FolderPath;
 }
 
 export interface StagingFileInfo {
@@ -45,13 +67,73 @@ export interface StagingFileInfo {
   rejectionReason: string | null;
 }
 
+// ─── meta.json read/decode ───────────────────────────────
+
+function decodeImportStagingMeta(raw: unknown, importId: string): ImportStagingMeta {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new ImportStagingMetaError(`Import ${importId} meta.json is not an object.`);
+  }
+  const record = raw as Record<string, unknown>;
+  if (typeof record.target_folder !== "string") {
+    throw new ImportStagingMetaError(`Import ${importId} meta.json is missing target_folder.`);
+  }
+  let targetFolder: FolderPath;
+  try {
+    targetFolder = FolderPath.parse(record.target_folder);
+  } catch (error) {
+    if (error instanceof InvalidFolderPathError) {
+      throw new ImportStagingMetaError(`Import ${importId} meta.json target_folder: ${error.message}`);
+    }
+    throw error;
+  }
+  if (typeof record.created_at !== "string" || record.created_at.length === 0) {
+    throw new ImportStagingMetaError(`Import ${importId} meta.json is missing created_at.`);
+  }
+  return { targetFolder, createdAt: record.created_at };
+}
+
+async function readImportStagingMetaIfPresent(importId: string): Promise<ImportStagingMeta | null> {
+  let content: string;
+  try {
+    content = await readFile(stagingMetaPath(importId), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new ImportStagingMetaError(
+      `Import ${importId} meta.json is unreadable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(content);
+  } catch (error) {
+    throw new ImportStagingMetaError(
+      `Import ${importId} meta.json is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return decodeImportStagingMeta(raw, importId);
+}
+
+export async function readImportStagingMeta(importId: string): Promise<ImportStagingMeta> {
+  const meta = await readImportStagingMetaIfPresent(importId);
+  if (meta === null) {
+    throw new ImportStagingMetaError(`Import ${importId} has no meta.json.`);
+  }
+  return meta;
+}
+
 // ─── Public API ──────────────────────────────────────────
 
-export async function createStagingFolder(): Promise<{ importId: string; stagingPath: string }> {
+export async function createStagingFolder(
+  targetFolder: FolderPath,
+): Promise<{ importId: string; stagingPath: string }> {
   const importId = randomUUID();
-  const stagingPath = stagingFolderPath(importId);
-  await mkdir(stagingPath, { recursive: true });
-  return { importId, stagingPath };
+  await mkdir(stagingFilesRoot(importId), { recursive: true });
+  await writeFile(
+    stagingMetaPath(importId),
+    JSON.stringify({ target_folder: targetFolder, created_at: new Date().toISOString() }, null, 2),
+    "utf8",
+  );
+  return { importId, stagingPath: stagingRecordPath(importId) };
 }
 
 export async function listStagingFolders(): Promise<StagingFolderInfo[]> {
@@ -62,19 +144,22 @@ export async function listStagingFolders(): Promise<StagingFolderInfo[]> {
   const results: StagingFolderInfo[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const folderPath = path.join(root, entry.name);
-    const stats = await stat(folderPath);
+    // A record directory without a meta.json is a mid-creation partial and is
+    // skipped; a present-but-corrupt meta.json surfaces (decoding throws).
+    const meta = await readImportStagingMetaIfPresent(entry.name);
+    if (meta === null) continue;
     results.push({
       importId: entry.name,
-      stagingPath: folderPath,
-      createdAt: stats.birthtime.toISOString(),
+      stagingPath: path.join(root, entry.name),
+      createdAt: meta.createdAt,
+      targetFolder: meta.targetFolder,
     });
   }
   return results;
 }
 
 export async function scanStagingFolder(importId: string): Promise<StagingFileInfo[]> {
-  const root = stagingFolderPath(importId);
+  const root = stagingFilesRoot(importId);
   const files: StagingFileInfo[] = [];
   // Collect relative paths of all .sections/ directories so we can flag artifacts
   const sectionsDirs = new Set<string>();
@@ -146,9 +231,14 @@ export async function scanStagingFolder(importId: string): Promise<StagingFileIn
   return files;
 }
 
-export async function readStagingFiles(importId: string): Promise<ImportFile[]> {
-  const root = stagingFolderPath(importId);
-  const results: ImportFile[] = [];
+export interface StagedMarkdownFile {
+  relativePath: string;
+  content: string;
+}
+
+export async function readStagingFiles(importId: string): Promise<StagedMarkdownFile[]> {
+  const root = stagingFilesRoot(importId);
+  const results: StagedMarkdownFile[] = [];
 
   const walk = async (relativeDir: string) => {
     const absoluteDir = path.join(root, relativeDir);
@@ -163,16 +253,15 @@ export async function readStagingFiles(importId: string): Promise<ImportFile[]> 
       if (!relPath.toLowerCase().endsWith(".md")) continue;
 
       const content = await readFile(path.join(root, relPath), "utf8");
-      results.push({ docPath: docPathFromContentRelativeFsPath(relPath), content });
+      results.push({ relativePath: relPath, content });
     }
   };
 
   await walk("");
-  results.sort((a, b) => a.docPath.localeCompare(b.docPath));
+  results.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   return results;
 }
 
 export async function deleteStagingFolder(importId: string): Promise<void> {
-  const folderPath = stagingFolderPath(importId);
-  await rm(folderPath, { recursive: true, force: true });
+  await rm(stagingRecordPath(importId), { recursive: true, force: true });
 }

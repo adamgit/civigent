@@ -1,20 +1,38 @@
+import { access } from "node:fs/promises";
 import { getContentRoot } from "./data-root.js";
 import { resolveDocPathUnderContent } from "./path-utils.js";
+import type { DocPath } from "../types/shared.js";
 import { ContentLayer } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { buildFragmentContent, fragmentFromBodyHolder, type SectionBody, type FragmentContent } from "./section-formatting.js";
 import { isDocumentBeforeFirstHeading } from "./section-shape.js";
-import { DocPath, HeadingLevel } from "../types/shared.js";
+import { HeadingLevel } from "../types/shared.js";
+import type { AuthorizedDocRead } from "../auth/authorized-read.js";
 
 // Re-export error classes from ContentLayer (callers import from here)
 export { DirectoryAtDocPathError, DocumentNotFoundError, DocumentAssemblyError } from "./content-layer.js";
 
-export async function readAssembledDocument(rawDocPath: string): Promise<string> {
+export async function readAssembledDocument(read: AuthorizedDocRead): Promise<string> {
   const contentRoot = getContentRoot();
-  const docPath = DocPath.parse(rawDocPath);
+  const docPath = read.docPath;
   resolveDocPathUnderContent(contentRoot, docPath);
   const layer = new ContentLayer(contentRoot);
   return layer.readAssembledDocument(docPath);
+}
+
+/**
+ * Existence probe for a canonical document's skeleton file. Not an ACL
+ * surface: answers only "does a canonical file exist at this path", the
+ * precondition check the write/move/delete flows run before staging work.
+ */
+export async function canonicalDocumentExists(docPath: DocPath): Promise<boolean> {
+  try {
+    const resolvedPath = resolveDocPathUnderContent(getContentRoot(), docPath);
+    await access(resolvedPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

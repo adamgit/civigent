@@ -38,7 +38,7 @@ import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { createTransientProposal } from "../../storage/proposal-repository.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
-import { commitProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
 import { assertManifestConsistent, manifestKeys } from "../helpers/proposal-manifest-consistency.js";
 
@@ -185,7 +185,7 @@ describe("manifest ↔ overlay consistency under CRDT-injected live edits", () =
       heading: "Roadmap",
       content: "roadmap body",
     });
-    await commitProposalToCanonicalDetailed(externalId, {});
+    await publishProposalToCanonicalDetailed(externalId, {});
 
     // Roadmap was never claimed by this proposal → it must be inherited (not owned);
     // Timeline (live-deleted) must stay claimed-but-absent. Either drift fails the check.

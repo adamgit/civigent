@@ -21,7 +21,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { createTransientProposal } from "../../storage/proposal-repository.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
-import { commitProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { getContentRoot } from "../../storage/data-root.js";
@@ -38,7 +38,7 @@ async function nestSubUnderOverview(): Promise<void> {
     heading: "Sub",
     content: "original sub body",
   });
-  await commitProposalToCanonicalDetailed(id, {});
+  await publishProposalToCanonicalDetailed(id, {});
 }
 
 async function effectiveKeys(id: string): Promise<string[]> {
@@ -77,7 +77,7 @@ describe("a deleted subsection stays deleted across ancestor restructuring", () 
     expect(eff).not.toContain("Overview>>Sub"); // old path gone
     expect(eff).not.toContain("Overview Renamed>>Sub"); // NOT resurrected under the new path
 
-    await commitProposalToCanonicalDetailed(id, {});
+    await publishProposalToCanonicalDetailed(id, {});
     const canon = await canonicalKeys();
     expect(canon).not.toContain("Overview>>Sub");
     expect(canon).not.toContain("Overview Renamed>>Sub");
@@ -99,7 +99,7 @@ describe("a deleted subsection stays deleted across ancestor restructuring", () 
     expect(eff).not.toContain("Overview>>Sub");
     expect(eff).not.toContain("Timeline>>Overview>>Sub");
 
-    await commitProposalToCanonicalDetailed(id, {});
+    await publishProposalToCanonicalDetailed(id, {});
     const canon = await canonicalKeys();
     expect(canon).not.toContain("Overview>>Sub");
     expect(canon).not.toContain("Timeline>>Overview>>Sub");

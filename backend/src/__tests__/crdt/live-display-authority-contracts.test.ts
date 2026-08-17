@@ -29,6 +29,9 @@ import { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store
 import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
 import { getBackendSchema } from "../../crdt/ydoc-fragments.js";
 import { readWorkspaceSectionList } from "../../api/application/sections.js";
+import { systemDocRead } from "../../auth/authorized-read.js";
+import { systemAuthority } from "../../auth/system-authority.js";
+import { DocPath } from "../../types/shared.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
 
 const DOC = "/test/todo/authority-contracts.md";
@@ -144,7 +147,9 @@ describe("live display authority + real delete contracts (expect RED today)", ()
     const live = session.liveFragments.readFragmentString(beta.fragmentKey) as string;
     expect(live).not.toMatch(/^#\s/m);
 
-    const { response } = await readWorkspaceSectionList(DOC);
+    const { response } = await readWorkspaceSectionList(
+      systemDocRead(systemAuthority("test read"), DocPath.parse(DOC)),
+    );
     const workspaceSection = response.sections.find((s) => s.fragment_key === beta.fragmentKey);
     expect(workspaceSection).toBeDefined();
 

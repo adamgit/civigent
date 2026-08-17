@@ -28,6 +28,14 @@ export function browseFolderPathToContentRelativeFsPath(normalizedPath: string):
   return normalizedPath.replace(/^\/+/, "");
 }
 
+export async function browseFolderExistsOnDisk(rawPath: string): Promise<boolean> {
+  const contentRoot = getContentRoot();
+  const normalizedPath = normalizeBrowsePath(rawPath);
+  const relative = browseFolderPathToContentRelativeFsPath(normalizedPath);
+  const targetDir = assertChildPath(contentRoot, path.join(contentRoot, relative));
+  return directoryExists(targetDir);
+}
+
 function shouldIncludeDirectory(name: string): boolean {
   return !name.endsWith(SECTIONS_DIR_SUFFIX);
 }
@@ -122,7 +130,7 @@ async function buildEntries(currentPath: string, absolutePath: string, recursive
   return out;
 }
 
-export async function readDocumentsTree(rawPath?: string, recursive?: boolean): Promise<DocumentTreeEntry[]> {
+export async function readDocumentsTreeUnfiltered(rawPath?: string, recursive?: boolean): Promise<DocumentTreeEntry[]> {
   const contentRoot = getContentRoot();
   const normalizedPath = normalizeBrowsePath(rawPath);
   const relative = browseFolderPathToContentRelativeFsPath(normalizedPath);

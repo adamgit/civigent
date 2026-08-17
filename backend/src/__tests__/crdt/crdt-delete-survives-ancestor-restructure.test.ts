@@ -26,7 +26,7 @@ import {
 import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
 import { createTransientProposal } from "../../storage/proposal-repository.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
-import { commitProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { getContentRoot } from "../../storage/data-root.js";
 import { SectionRef } from "../../domain/section-ref.js";
@@ -66,7 +66,7 @@ async function nestSubUnderOverview(): Promise<void> {
     heading: "Sub",
     content: "original sub body",
   });
-  await commitProposalToCanonicalDetailed(id, {});
+  await publishProposalToCanonicalDetailed(id, {});
 }
 
 describe("live delete of a subsection survives an ancestor rename (CRDT path)", () => {

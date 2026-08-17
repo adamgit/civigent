@@ -35,7 +35,7 @@ import {
 } from "../../storage/proposal-repository.js";
 import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
-import { commitProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { ProposalAdoptionId } from "../../types/shared.js";
@@ -84,7 +84,7 @@ describe("DocSession reseed inherits sections canonical gained after the proposa
       heading: "Roadmap",
       content: "ROADMAP BODY ADDED AFTER THE PROPOSAL OPENED",
     });
-    await commitProposalToCanonicalDetailed(externalId, {});
+    await publishProposalToCanonicalDetailed(externalId, {});
 
     // Reconstruct the DocSession (adopts the inprogress proposal) and seed the Y.Doc.
     destroyAllSessions();

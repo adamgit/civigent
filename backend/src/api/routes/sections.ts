@@ -42,7 +42,7 @@ export function registerSectionRoutes(
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
 
-      const { response, headingPaths } = await readCanonicalSectionList(docPath);
+      const { response, headingPaths } = await readCanonicalSectionList(access);
       broadcastAgentReading(req, docPath, headingPaths, onWsEvent);
 
       const out: GetDocumentSectionsResponse = response;
@@ -71,7 +71,7 @@ export function registerSectionRoutes(
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
 
-      const { response } = await readWorkspaceSectionList(docPath);
+      const { response } = await readWorkspaceSectionList(access);
 
       const out: GetDocumentSectionsResponse = response;
       res.json(out);

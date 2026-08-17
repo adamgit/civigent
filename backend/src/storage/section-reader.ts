@@ -3,6 +3,7 @@ import { resolveHeadingPathWithLevel } from "./heading-resolver.js";
 import { ContentLayer } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { buildFragmentContent, fragmentFromBodyHolder, type SectionBody, type FragmentContent } from "./section-formatting.js";
+import type { AuthorizedDocRead } from "../auth/authorized-read.js";
 
 // Re-export from ContentLayer (callers import SectionNotFoundError from here)
 export { SectionNotFoundError } from "./content-layer.js";
@@ -27,11 +28,11 @@ export async function readSection(
  * based on the skeleton's heading level.
  */
 export async function readSectionWithHeading(
-  docPath: string,
+  read: AuthorizedDocRead,
   headingPath: string[],
 ): Promise<FragmentContent> {
   const layer = new ContentLayer(getContentRoot());
-  const ref = new SectionRef(docPath, headingPath);
+  const ref = new SectionRef(read.docPath, headingPath);
 
   // Read body via ContentLayer
   const body = await layer.readSection(ref);

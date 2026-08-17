@@ -68,6 +68,7 @@ export interface AgentMcpSessionRecord {
 export interface ImportStagingInfo {
   import_id: string;
   staging_path: string;
+  target_folder: string;
 }
 
 export interface ImportStagingFile {
@@ -81,6 +82,7 @@ export interface ImportStagingFile {
 export interface ImportDetailResponse {
   import_id: string;
   staging_path: string;
+  target_folder: string;
   files: ImportStagingFile[];
 }
 
@@ -1077,19 +1079,6 @@ export const apiClient = {
     });
   },
 
-  // --- Import helpers ---
-
-  async importFiles(
-    targetFolder: string,
-    files: { name: string; content: string }[],
-  ): Promise<ImportResponse> {
-    return requestJson<ImportResponse>("/api/import", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ target_folder: targetFolder, files }),
-    });
-  },
-
   // --- Imports (staging-based pipeline) ---
 
   async getImports(): Promise<ImportStagingInfo[]> {
@@ -1100,11 +1089,11 @@ export const apiClient = {
     return requestJson<ImportDetailResponse>(`/api/imports/${encodeURIComponent(id)}`);
   },
 
-  async createImport(): Promise<ImportStagingInfo> {
+  async createImport(targetFolder: string): Promise<ImportStagingInfo> {
     return requestJson<ImportStagingInfo>("/api/imports", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ target_folder: targetFolder }),
     });
   },
 
@@ -1120,6 +1109,14 @@ export const apiClient = {
     return requestJson<{ uploaded: number }>(`/api/imports/${encodeURIComponent(id)}/upload`, {
       method: "POST",
       body: formData,
+    });
+  },
+
+  async uploadImportZip(id: string, file: File): Promise<{ uploaded: number }> {
+    return requestJson<{ uploaded: number }>(`/api/imports/${encodeURIComponent(id)}/upload-zip`, {
+      method: "POST",
+      headers: { "content-type": "application/zip" },
+      body: file,
     });
   },
 

@@ -15,7 +15,7 @@ import {
 import { docHref, folderHref } from "../app/docs-location";
 import { apiClient } from "../services/api-client";
 import type { DocumentTreeAccess, DocumentTreeEntry, ReadDocStructureResponse } from "../types/shared.js";
-import type { AppLayoutOutletContext } from "../app/AppLayout";
+import type { AppLayoutOutletContext, DocSectionHeading } from "../app/AppLayout";
 import { DocPath, FolderPath } from "../types/shared";
 import { copyTextToClipboard } from "../utils/copy-text";
 
@@ -29,6 +29,7 @@ interface ChildFolderInfo {
   directFolderCount: number;
   directFileNames: string[];
   books: FolderBookSpine[];
+  tree: DocumentTreeEntry;
   access: DocumentTreeAccess | null;
 }
 
@@ -37,13 +38,15 @@ interface FolderStats {
   childFolders: ChildFolderInfo[];
 }
 
-function sectionNamesFromStructure(structure: ReadDocStructureResponse["structure"]): string[] {
-  const names: string[] = [];
+function sectionHeadingsFromStructure(
+  structure: ReadDocStructureResponse["structure"],
+): DocSectionHeading[] {
+  const headings: DocSectionHeading[] = [];
   const walk = (nodes: ReadDocStructureResponse["structure"]) => {
     for (const node of nodes) {
       const heading = node.heading.trim();
       if (heading.length > 0) {
-        names.push(heading);
+        headings.push({ name: heading, level: node.heading_level });
       }
       if (node.children.length > 0) {
         walk(node.children);
@@ -51,7 +54,7 @@ function sectionNamesFromStructure(structure: ReadDocStructureResponse["structur
     }
   };
   walk(structure);
-  return names;
+  return headings;
 }
 
 function getDisplayName(path: string): string {
@@ -135,6 +138,7 @@ function getFolderStats(entry: DocumentTreeEntry): FolderStats {
       directFolderCount: direct.folders,
       directFileNames,
       books,
+      tree: child,
       access: child.access ?? null,
     });
   }
@@ -388,15 +392,19 @@ export function FolderPage({ folderPath }: FolderPageProps) {
   const [renameError, setRenameError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [folderOpBusy, setFolderOpBusy] = useState(false);
-  const [folderDetailsSectionNamesCache, setFolderDetailsSectionNamesCache] = useState<
-    Record<string, string[]>
+  const [folderDetailsSectionHeadingsCache, setFolderDetailsSectionHeadingsCache] = useState<
+    Record<string, DocSectionHeading[]>
   >({});
-  const folderDetailsSectionNamesCacheRef = useRef<Record<string, string[]>>({});
-  const updateFolderDetailsSectionNamesCache = useCallback(
-    (updater: (previous: Record<string, string[]>) => Record<string, string[]>) => {
-      const next = updater(folderDetailsSectionNamesCacheRef.current);
-      folderDetailsSectionNamesCacheRef.current = next;
-      setFolderDetailsSectionNamesCache(next);
+  const folderDetailsSectionHeadingsCacheRef = useRef<Record<string, DocSectionHeading[]>>({});
+  const updateFolderDetailsSectionHeadingsCache = useCallback(
+    (
+      updater: (
+        previous: Record<string, DocSectionHeading[]>,
+      ) => Record<string, DocSectionHeading[]>,
+    ) => {
+      const next = updater(folderDetailsSectionHeadingsCacheRef.current);
+      folderDetailsSectionHeadingsCacheRef.current = next;
+      setFolderDetailsSectionHeadingsCache(next);
     },
     [],
   );
@@ -431,11 +439,11 @@ export function FolderPage({ folderPath }: FolderPageProps) {
       if (getDisplayName(path).toLowerCase().includes(filter)) {
         return true;
       }
-      return (folderDetailsSectionNamesCache[path] ?? []).some((name) =>
-        name.toLowerCase().includes(filter),
+      return (folderDetailsSectionHeadingsCache[path] ?? []).some((heading) =>
+        heading.name.toLowerCase().includes(filter),
       );
     });
-  }, [sortedFiles, filter, folderDetailsSectionNamesCache]);
+  }, [sortedFiles, filter, folderDetailsSectionHeadingsCache]);
 
   const markPathCopied = (path: string) => {
     setCopiedPath(path);
@@ -459,17 +467,17 @@ export function FolderPage({ folderPath }: FolderPageProps) {
 
   useEffect(() => {
     if (childFiles === null || childFiles.length === 0) {
-      if (Object.keys(folderDetailsSectionNamesCacheRef.current).length > 0) {
-        updateFolderDetailsSectionNamesCache(() => ({}));
+      if (Object.keys(folderDetailsSectionHeadingsCacheRef.current).length > 0) {
+        updateFolderDetailsSectionHeadingsCache(() => ({}));
       }
       return;
     }
     const inFolder = new Set(childFiles);
-    const staleKeys = Object.keys(folderDetailsSectionNamesCacheRef.current).filter(
+    const staleKeys = Object.keys(folderDetailsSectionHeadingsCacheRef.current).filter(
       (path) => !inFolder.has(path),
     );
     if (staleKeys.length > 0) {
-      updateFolderDetailsSectionNamesCache((previous) => {
+      updateFolderDetailsSectionHeadingsCache((previous) => {
         const next = { ...previous };
         for (const key of staleKeys) {
           delete next[key];
@@ -478,7 +486,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
       });
     }
     const missing = childFiles.filter(
-      (path) => !(path in folderDetailsSectionNamesCacheRef.current),
+      (path) => !(path in folderDetailsSectionHeadingsCacheRef.current),
     );
     if (missing.length === 0) {
       return;
@@ -488,16 +496,19 @@ export function FolderPage({ folderPath }: FolderPageProps) {
       missing.map(async (path) => {
         try {
           const response = await apiClient.getWorkspaceDocumentStructure(DocPath.parse(path));
-          return [path, sectionNamesFromStructure(response.structure)] as [string, string[]];
+          return [path, sectionHeadingsFromStructure(response.structure)] as [
+            string,
+            DocSectionHeading[],
+          ];
         } catch {
-          return [path, []] as [string, string[]];
+          return [path, []] as [string, DocSectionHeading[]];
         }
       }),
     ).then((results) => {
       if (cancelled) {
         return;
       }
-      updateFolderDetailsSectionNamesCache((previous) => {
+      updateFolderDetailsSectionHeadingsCache((previous) => {
         const next = { ...previous };
         for (const [path, names] of results) {
           if (inFolder.has(path)) {
@@ -510,15 +521,15 @@ export function FolderPage({ folderPath }: FolderPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [childFiles, updateFolderDetailsSectionNamesCache]);
+  }, [childFiles, updateFolderDetailsSectionHeadingsCache]);
 
   useEffect(() => {
     return subscribeDocSectionNamesChanged(({ docPath: changedDocPath, sectionHeadings }) => {
-      if (!(changedDocPath in folderDetailsSectionNamesCacheRef.current)) {
+      if (!(changedDocPath in folderDetailsSectionHeadingsCacheRef.current)) {
         return;
       }
       if (sectionHeadings !== null) {
-        updateFolderDetailsSectionNamesCache((previous) => ({
+        updateFolderDetailsSectionHeadingsCache((previous) => ({
           ...previous,
           [changedDocPath]: sectionHeadings,
         }));
@@ -531,17 +542,17 @@ export function FolderPage({ folderPath }: FolderPageProps) {
       apiClient
         .getWorkspaceDocumentStructure(changedDoc)
         .then((response) => {
-          if (!(changedDocPath in folderDetailsSectionNamesCacheRef.current)) {
+          if (!(changedDocPath in folderDetailsSectionHeadingsCacheRef.current)) {
             return;
           }
-          updateFolderDetailsSectionNamesCache((previous) => ({
+          updateFolderDetailsSectionHeadingsCache((previous) => ({
             ...previous,
-            [changedDocPath]: sectionNamesFromStructure(response.structure),
+            [changedDocPath]: sectionHeadingsFromStructure(response.structure),
           }));
         })
         .catch(() => { /* non-fatal background fetch */ });
     });
-  }, [subscribeDocSectionNamesChanged, updateFolderDetailsSectionNamesCache]);
+  }, [subscribeDocSectionNamesChanged, updateFolderDetailsSectionHeadingsCache]);
 
   const handleRenameFolder = async (event: FormEvent) => {
     event.preventDefault();
@@ -742,6 +753,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                             folderCount={folder.directFolderCount}
                             fileNames={folder.directFileNames}
                             books={folder.books}
+                            tree={folder.tree}
                             access={folder.access}
                             to={folderHref(childFolderPath)}
                           />
@@ -778,7 +790,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                       <li key={path} className="border-b border-folder-divider last:border-b-0">
                         <FolderFileRow
                           name={getDisplayName(path)}
-                          sectionNames={folderDetailsSectionNamesCache[path]}
+                          sectionHeadings={folderDetailsSectionHeadingsCache[path]}
                           to={docHref(DocPath.parse(path))}
                         />
                       </li>
@@ -786,7 +798,12 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                   </ul>
                 )}
                 <div className="border-t border-folder-divider max-md:hidden">
-                  <NewFileOrFolder busy={creating} error={createError} onSubmit={handleCreate} />
+                  <NewFileOrFolder
+                    busy={creating}
+                    error={createError}
+                    onSubmit={handleCreate}
+                    onBulkIntake={() => navigate(`/imports?into=${encodeURIComponent(folderPath)}`)}
+                  />
                 </div>
               </section>
             </div>

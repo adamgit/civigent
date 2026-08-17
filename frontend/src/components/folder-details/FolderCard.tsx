@@ -1,4 +1,6 @@
 import { Link } from "react-router-dom";
+import type { DocumentTreeEntry } from "../../types/shared.js";
+import { FolderTreeSparkline } from "./FolderTreeSparkline";
 
 /**
  * Clickable folder card. The outer element is a real <Link href>, not a
@@ -52,6 +54,8 @@ export interface FolderCardProps {
   fileNames: string[];
   /** Direct child files with sizes — drives the micro bookshelf. */
   books?: FolderBookSpine[];
+  /** Full folder entry — drives the removable subtree sparkline. */
+  tree?: DocumentTreeEntry;
   access?: FolderCardAccess | null;
   newCount?: number;
   accent?: "new" | "agent" | null;
@@ -204,6 +208,7 @@ export function FolderCard({
   folderCount,
   fileNames,
   books = [],
+  tree,
   access = null,
   newCount,
   accent = null,
@@ -257,6 +262,7 @@ export function FolderCard({
         </span>
       </span>
       <span className="mt-0.5 flex w-0 min-w-full items-end gap-2.5">
+        {tree ? <FolderTreeSparkline entry={tree} /> : null}
         {books.length > 0 ? <MicroBookshelf books={books} /> : null}
         <span
           className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-text-faint"

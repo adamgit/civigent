@@ -18,7 +18,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createTransientProposal, readProposal } from "../../storage/proposal-repository.js";
-import { commitProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { publishProposalToCanonical } from "../../storage/commit-pipeline.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 
 const WRITER = { id: "human-c3", type: "human" as const, displayName: "C3", email: "c3@test.local" };
@@ -58,7 +58,7 @@ async function seedCanonicalNestedDoc(): Promise<void> {
     kind: "write_document_markdown",
     files: [{ docPath: DOC, markdown: NESTED_MARKDOWN }],
   });
-  await commitProposalToCanonical(id, {});
+  await publishProposalToCanonical(id, {});
 }
 
 describe("Claim 3: mutateProposalContent derives manifests from the real mutation", () => {

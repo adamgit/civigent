@@ -19,6 +19,7 @@ import { AgentsPage } from "../pages/AgentsPage";
 import { AgentFeedPage } from "../pages/AgentFeedPage";
 import { SkillsPage } from "../pages/SkillsPage";
 import { ImportsPage } from "../pages/ImportsPage";
+import { AdvancedExportPage } from "../pages/AdvancedExportPage";
 import { SnapshotsPage } from "../pages/SnapshotsPage";
 import { AgentMcpLogsPage } from "../pages/AgentMcpLogsPage";
 import { RuntimeMemoryPage } from "../pages/RuntimeMemoryPage";
@@ -56,6 +57,7 @@ export const routeConfig: RouteObject[] = [
       { path: "agents-activity/feed", element: <AgentFeedPage /> },
       { path: "skills", element: <SkillsPage /> },
       { path: "imports", element: <ImportsPage /> },
+      { path: "export", element: <AdvancedExportPage /> },
       { path: "search-text", element: <SearchTextPage /> },
       { path: "login", element: <LoginPage /> },
       { path: "approve-agent-access", element: <ApproveAgentAccessPage /> }
