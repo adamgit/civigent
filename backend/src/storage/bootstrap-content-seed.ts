@@ -19,7 +19,7 @@ import { getContentRoot } from "./data-root.js";
 import { importFilesToProposal, type ImportFile } from "./import-service.js";
 import { publishProposalToCanonical } from "./commit-pipeline.js";
 import { systemAuthority } from "../auth/system-authority.js";
-import type { WriterIdentity } from "../types/shared.js";
+import { DocPath, type WriterIdentity } from "../types/shared.js";
 
 export interface BootstrapContentSeedSummary {
   imported: number;
@@ -123,7 +123,10 @@ export async function bootstrapContentSeed(sourceRoot: string): Promise<Bootstra
     try {
       const sourcePath = path.join(sourceRoot, relPath);
       const content = await readFile(sourcePath, "utf8");
-      importFiles.push({ docPath: docPathFromContentRelativeFsPath(normalizeRelPath(relPath)), content });
+      importFiles.push({
+        docPath: docPathFromContentRelativeFsPath(normalizeRelPath(DocPath.normalizeMarkdownFileName(relPath))),
+        content,
+      });
     } catch (error) {
       summary.failed += 1;
       summary.errors.push(`${relPath}: ${error instanceof Error ? error.message : String(error)}`);

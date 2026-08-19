@@ -306,24 +306,44 @@ export interface ReplacementResult {
   added: FlatEntry[];
 }
 
-export interface CollapseParentResult {
-  /** Entries removed from the skeleton (target sub-skeleton entry + body holder only). */
-  removed: FlatEntry[];
-  /** The merge target — where the orphan body should be absorbed. */
-  mergeTarget: FlatEntry;
-  /** Whether the merge target was auto-created (BFH fabrication). */
-  mergeTargetWasCreated: boolean;
-  /** The target's body-holder entry (OLD position) — carries the orphan body content.
-   *  Null when the target had no body-holder child. */
-  bodyHolderEntry: FlatEntry | null;
-  /** Promoted children entries in their OLD positions (for pre-reading bodies). */
-  oldPromotedEntries: FlatEntry[];
-  /** Promoted children entries in their NEW positions (for writing bodies). */
-  promotedEntries: FlatEntry[];
-  /** Body file writes the caller must perform (e.g. empty BFH body). */
+export interface HeadingRemovalMergeTarget {
+  /** Pre-removal body-bearing entry. Null when the anchor was newly created. */
+  oldEntry: FlatEntry | null;
+  /** Post-removal body-bearing entry (a body-holder when the merge target is or became a parent). */
+  newEntry: FlatEntry;
+  /** User-visible identity of the merge target: the owning parent's heading for a
+   *  body-holder, `""`/level 0 for the document BFH, the entry's own heading otherwise. */
+  visibleHeadingPath: string[];
+  visibleHeading: string;
+  visibleHeadingLevel: HeadingLevel;
+  /** True when the merge target is a newly-created document-start BFH anchor. */
+  wasCreated: boolean;
+  /** Completed by the heading-removal executor (content layer): the merge target's
+   *  post-merge body. Null when its stored body was left untouched. */
+  mergedBody: string | null;
+}
+
+export interface HeadingRemovalEffect {
+  /** The removed heading's OWN identities only: its named entry (sub-skeleton entry
+   *  when a parent, leaf entry otherwise) first, then its body-holder when a parent.
+   *  Preserved descendants are NEVER in this list. */
+  removedTargetEntries: FlatEntry[];
+  /** The removed heading's body-bearing section-file id (the live fragment id). */
+  removedBodySectionFile: string;
+  /** Where the orphan body belongs, or null when nothing precedes the removed
+   *  heading and no body content had to survive (no anchor is fabricated). */
+  mergeTarget: HeadingRemovalMergeTarget | null;
+  /** Exact section-file ids the removal deletes. */
+  deletedSectionFileIds: string[];
+  /** Preserved descendants (body-bearing entries), ids/levels/order unchanged,
+   *  with their old and new positions. */
+  preservedDescendants: Array<{ oldEntry: FlatEntry; newEntry: FlatEntry }>;
+  /** Fragment-key changes (section-file ids; `to: null` = key removed). */
+  fragmentKeyChanges: Array<{ from: string; to: string | null }>;
+  /** Body writes the removal mandates structurally (created-anchor placeholder). */
   bodyWrites: Array<{ absolutePath: string; content: string }>;
-  /** Fragment key remaps (from → null for deleted keys). */
-  fragmentKeyRemaps: Array<{ from: string; to: string | null }>;
+  /** Resulting ordered content layout (whole document, body-bearing entries). */
+  resultingLayout: FlatEntry[];
 }
 
 // ─── DocumentSkeleton (readonly) ────────────────────────────────
@@ -1087,9 +1107,9 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * is not present in the skeleton at all (corrupted skeleton or stale
    * caller-provided id).
    *
-   * Used by item 145 `deleteHeadingPreservingBody` to locate the orphan
-   * absorption target, and by item 369 `replaceSubtreeDeletingOmittedSections`
-   * to locate the merge target for `leadingOrphanBody` absorption.
+   * Used by `removeHeading` to locate the orphan absorption target, and by
+   * item 369 `replaceSubtreeDeletingOmittedSections` to locate the merge
+   * target for `leadingOrphanBody` absorption.
    *
    * Snapshot semantics — the returned FlatEntry is captured before any
    * caller mutation, so its absolutePath/sectionFile remain valid even
@@ -1195,412 +1215,238 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     return plan;
   }
 
-  // --- Heading deletion with structural body absorption (item 145) ---
+  // --- Heading removal (one engine: predecessor merge / document-start anchor / reparent) ---
 
   /**
-   * Delete a heading section while declaring the structurally correct
-   * absorption target for its orphaned body content.
+   * Remove ONE heading from the skeleton — the single heading-removal operation.
    *
-   * Per checklist items 143/145, this absorbs the previous-section walking,
-   * document-start fabrication, and BFH/root-position branching that used
-   * to live inside the normalization pipeline. Callers (now
-   * StagedSectionsStore) request the semantic action and never make
-   * structural decisions themselves.
+   * Structure only; no file I/O beyond skeleton persistence. The caller
+   * (ProposalShadowContentLayer.removeHeading) owns body reads/writes/deletes and
+   * completes the returned effect with the merged body.
    *
-   * Algorithm:
-   *   1. Walk forEachSection in document order, stopping at the deleted
-   *      heading. The last body-holding section emitted before the stop
-   *      is the merge target.
-   *   2. If no merge target was emitted (the deleted heading was the very
-   *      first body-holding section in the document, AND there is no BFH),
-   *      a fresh BFH section is created at the front of `roots` to serve
-   *      as the merge target. The plan emits an empty body file write for
-   *      the new BFH.
-   *   3. Inside the transaction the deleted entry is spliced from its
-   *      parent sibling list and the entire removed subtree is reported.
+   *  - The merge target (where the removed heading's orphan body belongs) is the
+   *    last body-bearing entry emitted BEFORE the target in the skeleton's
+   *    document-order walk. An existing BFH is an ordinary predecessor.
+   *  - When no predecessor exists, a document-start BFH anchor is created ONLY
+   *    when `createDocumentStartAnchor` is true (body content must survive before
+   *    the first remaining heading); otherwise `mergeTarget` is null and nothing
+   *    is fabricated.
+   *  - Only the target heading's OWN identities (named entry + body-holder) are
+   *    removed. Real descendants are reparented at UNCHANGED section-file ids,
+   *    levels, order, and bodies: each attaches under the deepest heading that
+   *    remains open before it in flat document order with a smaller level —
+   *    exactly where the flat markdown minus the removed heading line nests it.
+   *    A leaf attach point becomes a parent id-preservingly (its body file id
+   *    becomes the body-holder id; a fresh sub-skeleton id is minted), so its
+   *    live fragment key survives.
    *
-   * The body merge itself (reading the merge target's existing content,
-   * appending the orphan body, writing back) is NOT performed here — the
-   * caller (StagedSectionsStore + LiveFragmentStringsStore) owns the Y.Doc state and must do that step.
-   * This method only declares "where the orphan body belongs" structurally.
-   *
-   * Throws if:
-   *   - `headingPath === []` (the BFH is not deletable via heading deletion)
-   *   - `headingPath` does not resolve in the current skeleton
-   *   - the resolved entry is a sub-skeleton parent (use deleteSubtree
-   *     for whole-subtree removal — body absorption only makes sense for
-   *     leaf body-holding sections)
+   * Throws when `headingPath` is `[]` (the BFH has no heading to remove) or does
+   * not resolve in the current skeleton.
    */
-  async deleteHeadingPreservingBody(
+  async removeHeading(
     headingPath: string[],
-  ): Promise<{
-    removed: FlatEntry[];
-    mergeTarget: FlatEntry;
-    mergeTargetWasCreated: boolean;
-    bodyWrites: Array<{ absolutePath: string; content: string }>;
-    fragmentKeyRemaps: Array<{ from: string; to: string | null }>;
-  }> {
+    opts: { createDocumentStartAnchor: boolean },
+  ): Promise<HeadingRemovalEffect> {
     if (headingPath.length === 0) {
       throw new Error(
-        `deleteHeadingPreservingBody([]) is illegal in ${this.docPath} — ` +
-        `the before-first-heading section cannot be removed via heading deletion. ` +
-        `Use ProposalShadowContentLayer.tombstoneDocumentExplicit() to remove the entire document, ` +
-        `or clear the BFH body content directly via LiveFragmentStringsStore.`,
+        `removeHeading([]) is illegal in ${this.docPath} — the before-first-heading ` +
+        `section has no heading to remove. Clear its body content or delete the ` +
+        `whole document instead.`,
       );
     }
 
     const targetEntry = this.findStructuralNodeByHeadingPath(headingPath);
     if (!targetEntry) {
-      throw staleHeadingPath(this.docPath, headingPath, "deleteHeadingPreservingBody");
-    }
-    if (targetEntry.hasChildren) {
-      throw new Error(
-        `deleteHeadingPreservingBody cannot delete sub-skeleton parents in ${this.docPath}: ` +
-        `the entry at [${headingPath.join(" > ")}] owns child sections. ` +
-        `Use ProposalShadowContentLayer.deleteSubtree() to remove the whole subtree instead.`,
-      );
+      throw staleHeadingPath(this.docPath, headingPath, "removeHeading");
     }
 
-    // Walk forEachSection in document order to find the last body-holding
-    // section emitted before the deleted target. Snapshot it BEFORE the
-    // mutation so its absolutePath/sectionFile remain valid (the mutation
-    // only affects the deleted entry, never the merge target).
-    const mergeTargetSnapshot = this.findPreviousBodyHolder(targetEntry.sectionFile);
-
-    // Capture across the closure boundary
-    let resolvedMergeTarget: FlatEntry | null = mergeTargetSnapshot;
-    let mergeTargetWasCreated = false;
-
-    const plan = await this.applyStructuralMutationTransaction((ctx) => {
-      const removed: FlatEntry[] = [];
-      const added: FlatEntry[] = [];
-      const bodyWrites: Array<{ absolutePath: string; content: string }> = [];
-      const fragmentKeyRemaps: Array<{ from: string; to: string | null }> = [];
-
-      // (1) Auto-create a BFH section if there is no preceding body-holder.
-      if (!resolvedMergeTarget) {
-        const bfhEntry = ctx.createBfhAtFront();
-        added.push(bfhEntry);
-        bodyWrites.push({ absolutePath: bfhEntry.absolutePath, content: "" });
-        resolvedMergeTarget = bfhEntry;
-        mergeTargetWasCreated = true;
-      }
-
-      // (2) Splice the deleted entry out of its parent sibling list.
-      const parentPath = headingPath.slice(0, -1);
-      const siblingList = ctx.findSiblingList(parentPath);
-      const idx = siblingList.findIndex((n) => n.sectionFile === targetEntry.sectionFile);
-      if (idx < 0) {
-        throw new Error(
-          `Skeleton integrity error in ${this.docPath}: target sectionFile ` +
-          `${targetEntry.sectionFile} not found in expected parent sibling list at ` +
-          `[${parentPath.join(" > ")}]`,
-        );
-      }
-      const removedNode = siblingList.splice(idx, 1)[0];
-
-      const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
-      const removedEntries = ctx.flattenNode(removedNode, parentPath, parentSkeletonPath);
-      removed.push(...removedEntries);
-
-      // (3) The deleted heading's fragment key disappears with no replacement.
-      // Convention matches the explicit ProposalShadowContentLayer operations:
-      // emit raw section file ids in the remap; the caller is responsible
-      // for translating to fragment-key encoding.
-      fragmentKeyRemaps.push({ from: targetEntry.sectionFile, to: null });
-
-      return { removed, added, bodyWrites, fragmentKeyRemaps };
-    });
-
-    if (!resolvedMergeTarget) {
-      // Defensive: the algorithm above always sets resolvedMergeTarget
-      // (either from the snapshot or from BFH creation in branch 1).
-      throw new Error(
-        `Skeleton integrity error in ${this.docPath}: deleteHeadingPreservingBody ` +
-        `failed to resolve a merge target for headingPath=[${headingPath.join(" > ")}]`,
-      );
-    }
-
-    return {
-      removed: plan.removed,
-      mergeTarget: resolvedMergeTarget,
-      mergeTargetWasCreated,
-      bodyWrites: plan.bodyWrites,
-      fragmentKeyRemaps: plan.fragmentKeyRemaps,
-    };
-  }
-
-  // --- Parent heading collapse (item 32) --------------------------------
-
-  /**
-   * Collapse a parent heading node: remove it from the skeleton,
-   * reparent its children, and declare the merge target for the orphan
-   * body.
-   *
-   * A "parent heading" is a heading that owns a sub-skeleton (has
-   * children). Collapsing it:
-   *
-   *   1. Finds the merge target (previous body holder in document order).
-   *   2. Removes the target from its parent sibling list.
-   *   3. Partitions the target's children into body-holder (carries the
-   *      orphan body content) and promoted (the real child headings).
-   *   4. Re-nests promoted children:
-   *      - If the merge target's heading path equals the target's parent
-   *        path → insert at the target's former position in the same
-   *        sibling list (the merge target is the parent or a preceding
-   *        body holder at the same tree level).
-   *      - Otherwise → insert as children of the merge target heading
-   *        node (the merge target is a preceding sibling).
-   *   5. Ensures body holders exist for any newly-parented nodes.
-   *
-   * Returns a CollapseParentResult that the caller (ProposalShadowContentLayer)
-   * uses to drive body reads, writes, file deletion, and fragment
-   * reconciliation.
-   *
-   * Throws if:
-   *   - headingPath === [] (BFH cannot be collapsed)
-   *   - headingPath does not resolve
-   *   - the resolved entry is NOT a sub-skeleton parent (leaf sections
-   *     use deleteHeadingPreservingBody instead)
-   */
-  async collapseParentHeading(
-    headingPath: string[],
-  ): Promise<CollapseParentResult> {
-    if (headingPath.length === 0) {
-      throw new Error(
-        `collapseParentHeading([]) is illegal in ${this.docPath} — ` +
-        `the before-first-heading section cannot be collapsed.`,
-      );
-    }
-
-    const targetEntry = this.findStructuralNodeByHeadingPath(headingPath);
-    if (!targetEntry) {
-      throw staleHeadingPath(this.docPath, headingPath, "collapseParentHeading");
-    }
-    if (!targetEntry.hasChildren) {
-      throw new Error(
-        `collapseParentHeading requires a sub-skeleton parent in ${this.docPath}: ` +
-        `the entry at [${headingPath.join(" > ")}] has no children. ` +
-        `Use deleteHeadingPreservingBody() for leaf sections instead.`,
-      );
-    }
-
-    // Pre-capture the target's children from the actual SkeletonNode so we
-    // can separate body-holder from promoted before the transaction.
     const parentPath = headingPath.slice(0, -1);
     const preSiblings = this.findSiblingList(parentPath);
-    const targetNode = preSiblings.find(n => headingsEqual(n.heading, headingPath[headingPath.length - 1]));
-    if (!targetNode) {
-      throw staleHeadingPath(this.docPath, headingPath, "collapseParentHeading");
+    const preIdx = preSiblings.findIndex((n) => n.sectionFile === targetEntry.sectionFile);
+    if (preIdx < 0) {
+      throw new Error(
+        `Skeleton integrity error in ${this.docPath}: target sectionFile ` +
+        `${targetEntry.sectionFile} not found in expected parent sibling list at ` +
+        `[${parentPath.join(" > ")}]`,
+      );
     }
+    const targetNode = preSiblings[preIdx];
 
-    // The target is a sub-skeleton parent — forEachSection emits its
-    // body-holder child, not the parent file itself. Use the body-holder's
-    // sectionFile for the document-order walk so findPreviousBodyHolder
-    // can locate it.
-    const bodyHolderNode = targetNode.children.find(c => isBodyHolderShape(c));
-    if (!bodyHolderNode) {
+    const bodyHolderChild = targetNode.children.find((c) => isBodyHolderShape(c)) ?? null;
+    if (targetNode.children.length > 0 && !bodyHolderChild) {
       throw new Error(
         `Skeleton integrity error in ${this.docPath}: sub-skeleton parent ` +
         `at [${headingPath.join(" > ")}] has no body-holder child.`,
       );
     }
+    const removedBodySectionFile = bodyHolderChild
+      ? bodyHolderChild.sectionFile
+      : targetNode.sectionFile;
 
-    // Snapshot the merge target BEFORE the mutation.
-    const mergeTargetSnapshot = this.findPreviousBodyHolder(bodyHolderNode.sectionFile);
+    const mergeTargetSnapshot = this.findPreviousBodyHolder(removedBodySectionFile);
 
-    let resolvedMergeTarget: FlatEntry | null = mergeTargetSnapshot;
-    let mergeTargetWasCreated = false;
-
-    const promotedNodes = targetNode.children.filter(c => !isBodyHolderShape(c));
-
-    // Capture body-holder flat entry before mutation (old absolutePath).
-    const targetSkeletonPath = this.resolveSkeletonPathFor(parentPath);
-    const targetNodeAbsPath = path.join(`${targetSkeletonPath}.sections`, targetNode.sectionFile);
-    let bodyHolderEntry: FlatEntry | null = null;
-    if (bodyHolderNode) {
-      bodyHolderEntry = {
-        headingPath: [...headingPath],
-        heading: bodyHolderNode.heading,
-        headingLevel: bodyHolderNode.headingLevel,
-        sectionFile: bodyHolderNode.sectionFile,
-        absolutePath: path.join(`${targetNodeAbsPath}.sections`, bodyHolderNode.sectionFile),
-        isSubSkeleton: false,
-      };
+    let mergeVisible: { headingPath: string[]; heading: string; headingLevel: HeadingLevel } | null = null;
+    if (mergeTargetSnapshot) {
+      const snapshot: FlatEntry = mergeTargetSnapshot;
+      if (snapshot.headingPath.length === 0) {
+        mergeVisible = { headingPath: [], heading: "", headingLevel: HeadingLevel.beforeFirstHeading };
+      } else if (snapshot.heading === "") {
+        const owner = this.requireStructuralNodeByHeadingPath(snapshot.headingPath);
+        mergeVisible = {
+          headingPath: [...snapshot.headingPath],
+          heading: owner.heading,
+          headingLevel: owner.headingLevel,
+        };
+      } else {
+        mergeVisible = {
+          headingPath: [...snapshot.headingPath],
+          heading: snapshot.heading,
+          headingLevel: snapshot.headingLevel,
+        };
+      }
     }
 
-    // Capture promoted entries in OLD positions for the caller's pre-read.
-    const oldPromotedEntries: FlatEntry[] = [];
-    for (const pn of promotedNodes) {
-      oldPromotedEntries.push(
-        ...this.flattenNode(pn, headingPath, targetNodeAbsPath)
-          .filter(e => !e.isSubSkeleton),
-      );
-    }
+    const parentSkeletonPath = this.resolveSkeletonPathFor(parentPath);
+    const targetFlat = this.flattenNode(targetNode, parentPath, parentSkeletonPath);
+    const removedTargetIds = new Set<string>(
+      [targetNode.sectionFile, ...(bodyHolderChild ? [bodyHolderChild.sectionFile] : [])],
+    );
+    const removedTargetEntries = targetFlat.filter((e) => removedTargetIds.has(e.sectionFile));
+    const oldDescendantEntries = targetFlat.filter(
+      (e) => !e.isSubSkeleton && !removedTargetIds.has(e.sectionFile),
+    );
+    const realChildren = targetNode.children.filter((c) => !isBodyHolderShape(c));
 
-    let newPromotedEntries: FlatEntry[] = [];
+    let createdBfhEntry: FlatEntry | null = null;
 
     const plan = await this.applyStructuralMutationTransaction((ctx) => {
-      const removed: FlatEntry[] = [];
+      const removed: FlatEntry[] = [...removedTargetEntries];
       const added: FlatEntry[] = [];
       const bodyWrites: Array<{ absolutePath: string; content: string }> = [];
-      const fragmentKeyRemaps: Array<{ from: string; to: string | null }> = [];
+      const fragmentKeyRemaps: Array<{ from: string; to: string | null }> = [
+        { from: removedBodySectionFile, to: null },
+      ];
 
-      // (1) Auto-create BFH if no merge target exists.
-      if (!resolvedMergeTarget) {
-        const bfhEntry = ctx.createBfhAtFront();
-        added.push(bfhEntry);
-        bodyWrites.push({ absolutePath: bfhEntry.absolutePath, content: "" });
-        resolvedMergeTarget = bfhEntry;
-        mergeTargetWasCreated = true;
+      if (!mergeTargetSnapshot && opts.createDocumentStartAnchor) {
+        createdBfhEntry = ctx.createBfhAtFront();
+        added.push(createdBfhEntry);
+        bodyWrites.push({ absolutePath: createdBfhEntry.absolutePath, content: "" });
       }
 
-      // (2) Remove the target from its parent sibling list.
       const siblings = ctx.findSiblingList(parentPath);
-      const idx = siblings.findIndex(n => n.sectionFile === targetEntry.sectionFile);
+      const idx = siblings.findIndex((n) => n.sectionFile === targetNode.sectionFile);
       if (idx < 0) {
         throw new Error(
           `Skeleton integrity error in ${this.docPath}: target sectionFile ` +
-          `${targetEntry.sectionFile} not found in expected parent sibling list at ` +
-          `[${parentPath.join(" > ")}]`,
+          `${targetNode.sectionFile} disappeared from its parent sibling list at ` +
+          `[${parentPath.join(" > ")}] during removeHeading.`,
         );
       }
-      const removedNode = siblings.splice(idx, 1)[0];
 
-      const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
-
-      // Only the target's own sub-skeleton entry and its body holder are
-      // truly removed. Promoted children are MOVED to the merge target,
-      // not deleted — they must NOT appear in the removed list.
-      const targetAbsPath = path.join(`${parentSkeletonPath}.sections`, removedNode.sectionFile);
-      removed.push({
-        headingPath: [...parentPath, removedNode.heading],
-        heading: removedNode.heading,
-        headingLevel: removedNode.headingLevel,
-        sectionFile: removedNode.sectionFile,
-        absolutePath: targetAbsPath,
-        isSubSkeleton: true,
-      });
-      const bhChild = removedNode.children.find(c => isBodyHolderShape(c));
-      if (bhChild) {
-        removed.push({
-          headingPath: [...parentPath, removedNode.heading],
-          heading: "",
-          headingLevel: HeadingLevel.beforeFirstHeading,
-          sectionFile: bhChild.sectionFile,
-          absolutePath: path.join(`${targetAbsPath}.sections`, bhChild.sectionFile),
-          isSubSkeleton: false,
-        });
-      }
-
-      // Body holder fragment key disappears (its content is absorbed into
-      // the merge target). The target's sub-skeleton sectionFile is NOT a
-      // fragment key — only body files produce fragment keys.
-      if (bodyHolderNode) {
-        fragmentKeyRemaps.push({ from: bodyHolderNode.sectionFile, to: null });
-      }
-
-      // (3) Re-nest promoted children.
-      const mergeTargetHeadingPath = resolvedMergeTarget!.headingPath;
-      const pathsEqual = parentPath.length === mergeTargetHeadingPath.length
-        && parentPath.every((seg, i) => headingsEqual(seg, mergeTargetHeadingPath[i]));
-
-      if (pathsEqual) {
-        // Merge target is at the same tree level (parent, or a sibling that
-        // is a body holder of the parent). Insert promoted children at the
-        // target's former position in the same sibling list.
-        // (Re-fetch siblings in case the list reference shifted after splice.)
-        const currentSiblings = ctx.findSiblingList(parentPath);
-        const insertIdx = Math.min(idx, currentSiblings.length);
-        currentSiblings.splice(insertIdx, 0, ...promotedNodes);
-      } else {
-        // Merge target is a preceding sibling heading. Insert promoted
-        // children as children of the merge target node.
-        const mergeTargetSiblings = ctx.findSiblingList(mergeTargetHeadingPath.slice(0, -1));
-        const mergeNode = mergeTargetSiblings.find(
-          n => headingsEqual(n.heading, mergeTargetHeadingPath[mergeTargetHeadingPath.length - 1]),
-        );
-        if (!mergeNode) {
-          throw new Error(
-            `Skeleton integrity error in ${this.docPath}: merge target node ` +
-            `[${mergeTargetHeadingPath.join(" > ")}] not found after splice.`,
-          );
+      // The poppable open-heading chain at the removal point: the rightmost
+      // real-heading descent of the nearest preceding REAL sibling (a preceding
+      // BFH/body-holder is a body predecessor, never a nesting anchor). Ancestors
+      // form the fixed floor: a preserved descendant's level is always greater
+      // than the target's (hence every ancestor's), so popping never crosses it.
+      const descent: SkeletonNode[] = [];
+      for (let j = idx - 1; j >= 0; j--) {
+        if (isBodyHolderShape(siblings[j])) continue;
+        let node = siblings[j];
+        descent.push(node);
+        for (;;) {
+          const realKids = node.children.filter((c) => !isBodyHolderShape(c));
+          if (realKids.length === 0) break;
+          node = realKids[realKids.length - 1];
+          descent.push(node);
         }
-        mergeNode.children.push(...promotedNodes);
+        break;
       }
 
-      // (4) Ensure body holders exist for any newly-parented nodes.
-      ctx.addBodyHoldersToParents(ctx.roots);
+      siblings.splice(idx, 1);
 
-      // (5) Flatten promoted entries in their NEW positions.
-      const newParentPath = pathsEqual ? parentPath : mergeTargetHeadingPath;
-      const newParentSkeletonPath = ctx.resolveSkeletonPathFor(newParentPath);
-      for (const pn of promotedNodes) {
-        const entries = ctx.flattenNode(pn, newParentPath, newParentSkeletonPath);
-        newPromotedEntries.push(...entries.filter(e => !e.isSubSkeleton));
-        added.push(...entries);
-      }
-
-      // (6) If the merge target transitioned from leaf to parent (it
-      // gained promoted children), addBodyHoldersToParents created a new
-      // body-holder child for it. The old leaf sectionFile will be
-      // overwritten with skeleton markers by persistSkeletonTree, so update
-      // resolvedMergeTarget to point to the body holder and emit a
-      // fragment key remap.
-      if (!mergeTargetWasCreated) {
-        const mtHP = resolvedMergeTarget!.headingPath;
-        if (mtHP.length > 0) {
-          const mtParent = mtHP.slice(0, -1);
-          const mtSiblings = ctx.findSiblingList(mtParent);
-          const mtNode = mtSiblings.find(
-            n => headingsEqual(n.heading, mtHP[mtHP.length - 1]),
-          );
-          if (mtNode && mtNode.children.length > 0) {
-            const bhChild = mtNode.children.find(
-              c => isBodyHolderShape(c),
-            );
-            if (bhChild && resolvedMergeTarget!.sectionFile !== bhChild.sectionFile) {
-              const oldSF = resolvedMergeTarget!.sectionFile;
-              const mtParentSkPath = ctx.resolveSkeletonPathFor(mtParent);
-              const mtAbsPath = path.join(
-                `${mtParentSkPath}.sections`, mtNode.sectionFile,
-              );
-              const bhAbsPath = path.join(
-                `${mtAbsPath}.sections`, bhChild.sectionFile,
-              );
-              resolvedMergeTarget = {
-                headingPath: [...mtHP],
-                heading: "",
-                headingLevel: HeadingLevel.beforeFirstHeading,
-                sectionFile: bhChild.sectionFile,
-                absolutePath: bhAbsPath,
-                isSubSkeleton: false,
-              };
-              fragmentKeyRemaps.push({ from: oldSF, to: bhChild.sectionFile });
-            }
+      let parentInsertIdx = idx;
+      for (const child of realChildren) {
+        while (descent.length > 0 && descent[descent.length - 1].headingLevel >= child.headingLevel) {
+          descent.pop();
+        }
+        if (descent.length === 0) {
+          siblings.splice(parentInsertIdx++, 0, child);
+        } else {
+          const attach = descent[descent.length - 1];
+          if (attach.children.length === 0) {
+            const bodyId = attach.sectionFile;
+            attach.sectionFile = generateSectionFilename(attach.heading);
+            attach.children.push({
+              heading: "",
+              headingLevel: HeadingLevel.beforeFirstHeading,
+              sectionFile: bodyId,
+              children: [],
+            });
           }
+          attach.children.push(child);
         }
+        descent.push(child);
       }
 
       return { removed, added, bodyWrites, fragmentKeyRemaps };
     });
 
-    if (!resolvedMergeTarget) {
-      throw new Error(
-        `Skeleton integrity error in ${this.docPath}: collapseParentHeading ` +
-        `failed to resolve a merge target for headingPath=[${headingPath.join(" > ")}]`,
-      );
+    const bodyEntriesAfter = new Map<string, FlatEntry>();
+    for (const entry of this.allStructuralEntries()) {
+      if (!entry.isSubSkeleton) bodyEntriesAfter.set(entry.sectionFile, entry);
+    }
+
+    const preservedDescendants = oldDescendantEntries.map((oldEntry) => {
+      const newEntry = bodyEntriesAfter.get(oldEntry.sectionFile);
+      if (!newEntry) {
+        throw new Error(
+          `Skeleton integrity error in ${this.docPath}: removeHeading lost preserved ` +
+          `descendant section file ${oldEntry.sectionFile}.`,
+        );
+      }
+      return { oldEntry, newEntry };
+    });
+
+    let mergeTarget: HeadingRemovalMergeTarget | null = null;
+    if (createdBfhEntry) {
+      mergeTarget = {
+        oldEntry: null,
+        newEntry: createdBfhEntry,
+        visibleHeadingPath: [],
+        visibleHeading: "",
+        visibleHeadingLevel: HeadingLevel.beforeFirstHeading,
+        wasCreated: true,
+        mergedBody: null,
+      };
+    } else if (mergeTargetSnapshot && mergeVisible) {
+      const snapshot: FlatEntry = mergeTargetSnapshot;
+      const newEntry = bodyEntriesAfter.get(snapshot.sectionFile);
+      if (!newEntry) {
+        throw new Error(
+          `Skeleton integrity error in ${this.docPath}: removeHeading lost the merge ` +
+          `target section file ${snapshot.sectionFile}.`,
+        );
+      }
+      mergeTarget = {
+        oldEntry: snapshot,
+        newEntry,
+        visibleHeadingPath: mergeVisible.headingPath,
+        visibleHeading: mergeVisible.heading,
+        visibleHeadingLevel: mergeVisible.headingLevel,
+        wasCreated: false,
+        mergedBody: null,
+      };
     }
 
     return {
-      removed: plan.removed,
-      mergeTarget: resolvedMergeTarget,
-      mergeTargetWasCreated,
-      bodyHolderEntry,
-      oldPromotedEntries,
-      promotedEntries: newPromotedEntries,
+      removedTargetEntries: plan.removed,
+      removedBodySectionFile,
+      mergeTarget,
+      deletedSectionFileIds: [...removedTargetIds],
+      preservedDescendants,
+      fragmentKeyChanges: plan.fragmentKeyRemaps,
       bodyWrites: plan.bodyWrites,
-      fragmentKeyRemaps: plan.fragmentKeyRemaps,
+      resultingLayout: this.allContentEntries(),
     };
   }
 

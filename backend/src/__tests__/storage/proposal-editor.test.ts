@@ -147,7 +147,7 @@ describe("ProposalEditor", () => {
     expect(paths).not.toContainEqual(["Beta"]);
 
     // delete the subtree
-    await editor.deleteSection("/s.md", ["Alpha Renamed"]);
+    await editor.deleteSubtree("/s.md", ["Alpha Renamed"]);
     paths = await editor.listHeadingPaths("/s.md");
     expect(paths).not.toContainEqual(["Alpha Renamed"]);
     expect(paths).not.toContainEqual(["Alpha Renamed", "Beta"]);

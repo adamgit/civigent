@@ -13,9 +13,10 @@ import { assertDataRootExists, getDataRoot, getImportRoot, ensureV3Directories }
 import { ensureGitRepoReady } from "./storage/git-repo.js";
 import { detectAndRecoverCrash } from "./storage/crash-recovery.js";
 import { bootstrapContentSeedFromDirectoryIfNeeded } from "./storage/bootstrap-content-seed.js";
+import { loadFatalState } from "./storage/fatal-state.js";
 import { validateOAuthConfig, getMCPPublicURL, getOidcPublicUrl, isMCPPublicURLFromHeadersEnabled } from "./auth/oauth-config.js";
 import { maybeGenerateBootstrapCode } from "./auth/service.js";
-import { isSystemReady, setSystemReady } from "./startup-state.js";
+import { getSystemState, isSystemReady, setSystemFatal, setSystemReady } from "./startup-state.js";
 import { isDevSupervised, WORKER_HEARTBEAT_INTERVAL_MS } from "./runtime/system-state.js";
 import type { WorkerIpcMessage } from "./runtime/system-state.js";
 import { startRuntimeMemorySampler } from "./runtime/memory-stats.js";
@@ -163,6 +164,22 @@ const server = createServer(app);
 
 // Single upgrade dispatcher — routes WebSocket connections by path.
 server.on("upgrade", (request, socket, head) => {
+  const pathname = new URL(request.url ?? "", `http://${request.headers.host}`).pathname;
+
+  // Latched fatal: the system WS stays reachable (it delivers the retained
+  // fatal report to every tab); every CRDT upgrade is refused.
+  if (getSystemState().state === "fatal") {
+    if (pathname === "/ws") {
+      wsHub.handleUpgrade(request, socket, head);
+      return;
+    }
+    socket.end(
+      "HTTP/1.1 503 Service Unavailable\r\n" +
+      "Connection: close\r\n\r\n",
+    );
+    return;
+  }
+
   if (!isSystemReady()) {
     // Reject WS during startup — answer HTTP 503 directly on the socket,
     // flushed before FIN so the proxy relays it instead of a hang-up.
@@ -174,7 +191,6 @@ server.on("upgrade", (request, socket, head) => {
     return;
   }
 
-  const pathname = new URL(request.url ?? "", `http://${request.headers.host}`).pathname;
   if (pathname.startsWith("/ws/crdt/")) {
     crdtWs.handleUpgrade(request, socket, head).then(null, (err) => {
       socket.destroy();
@@ -237,28 +253,47 @@ server.listen(listenPort, () => {
   }
 });
 
-// ─── Startup recovery (runs while gate is active) ────────────────
-await assertDataRootExists();
-await ensureV3Directories();
-try {
-  await ensureGitRepoReady(getDataRoot());
-} catch (err) {
-  reportUnusableGitRepoAndExit(getDataRoot(), err);
+// ─── Durable fatal latch check + startup recovery (gate active) ──
+// The latch is inspected BEFORE directory initialization, crash recovery,
+// proposal recovery, import bootstrap, and readiness. While it exists the
+// process stays up serving only the diagnostic surfaces (auth, static assets,
+// the system WS carrying the retained fatal report) and runs NO normal
+// startup mutation.
+const latchedFatal = await loadFatalState();
+if (latchedFatal) {
+  setSystemFatal(latchedFatal);
+  ipcSend({ type: "fatal", report: latchedFatal });
+  console.error([
+    "═══ CIVIGENT IS HALTED BY A DURABLE FATAL LATCH ═══",
+    `A previous run recorded a fatal error at ${latchedFatal.timestamp}:`,
+    latchedFatal.message,
+    "",
+    latchedFatal.operator_action,
+    `Latch file: ${getDataRoot()}/fatal.json`,
+  ].join("\n"));
+} else {
+  await assertDataRootExists();
+  await ensureV3Directories();
+  try {
+    await ensureGitRepoReady(getDataRoot());
+  } catch (err) {
+    reportUnusableGitRepoAndExit(getDataRoot(), err);
+  }
+  await detectAndRecoverCrash(getDataRoot());
+
+  await bootstrapContentSeedFromDirectoryIfNeeded(getImportRoot());
+
+  // System is ready — crash recovery and import complete
+  setSystemReady();
+  ipcSend({ type: "ready" });
+  console.log("  System ready — accepting requests.\n");
+
+  // Print bootstrap code to stdout if OIDC is configured but no admin exists
+  await maybeGenerateBootstrapCode();
+
+  const startupAgentUrl = getMCPPublicURL();
+  const startupDisplayUrl = getOidcPublicUrl();
+  console.log(`  Connect an agent:\n`);
+  console.log(`    claude mcp add --transport http knowledge-store ${startupAgentUrl}/mcp\n`);
+  console.log(`  Setup page: ${startupDisplayUrl}/setup\n`);
 }
-await detectAndRecoverCrash(getDataRoot());
-
-await bootstrapContentSeedFromDirectoryIfNeeded(getImportRoot());
-
-// System is ready — crash recovery and import complete
-setSystemReady();
-ipcSend({ type: "ready" });
-console.log("  System ready — accepting requests.\n");
-
-// Print bootstrap code to stdout if OIDC is configured but no admin exists
-await maybeGenerateBootstrapCode();
-
-const startupAgentUrl = getMCPPublicURL();
-const startupDisplayUrl = getOidcPublicUrl();
-console.log(`  Connect an agent:\n`);
-console.log(`    claude mcp add --transport http knowledge-store ${startupAgentUrl}/mcp\n`);
-console.log(`  Setup page: ${startupDisplayUrl}/setup\n`);

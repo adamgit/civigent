@@ -18,6 +18,7 @@ import { getDataRoot } from "../../storage/data-root.js";
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import {
   armQuiescenceTimer,
+  normalizeQuiescedStructureForTest,
   registerFakeEditorSocketForTest,
   requestDocSessionPublish,
   resetCoordinatorPublishStateForTest,
@@ -39,18 +40,28 @@ const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" 
  *   ## Child
  *   ### Grandchild
  */
-async function createNestedFirstDoc(dataRoot: string, introBody = "Intro body\n"): Promise<void> {
+async function createNestedFirstDoc(
+  dataRoot: string,
+  introBody = "Intro body\n",
+  preambleBody?: string,
+): Promise<void> {
   const contentRoot = join(dataRoot, "content");
   const skeletonPath = join(contentRoot, DOC.replace(/^\//, ""));
   const sectionsDir = `${skeletonPath}.sections`;
   await mkdir(dirname(skeletonPath), { recursive: true });
   await mkdir(sectionsDir, { recursive: true });
 
+  const rootSkeleton = preambleBody === undefined
+    ? ["# Intro", "{{section: intro.md}}", ""]
+    : ["{{section: preamble.md}}", "", "# Intro", "{{section: intro.md}}", ""];
   await writeFile(
     skeletonPath,
-    ["# Intro", "{{section: intro.md}}", ""].join("\n"),
+    rootSkeleton.join("\n"),
     "utf8",
   );
+  if (preambleBody !== undefined) {
+    await writeFile(join(sectionsDir, "preamble.md"), preambleBody, "utf8");
+  }
 
   const introSectionsDir = join(sectionsDir, "intro.md.sections");
   await mkdir(introSectionsDir, { recursive: true });
@@ -184,6 +195,59 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     expect(postGrand.headingPath[0]).toBe("Child");
   });
 
+  it("existing BFH is the predecessor when removing the first headed parent's heading", async () => {
+    await createNestedFirstDoc(ctx.rootDir, "Intro body\n", "Existing preamble\n");
+    const session = await openSession();
+
+    const layout = await resolveLiveSectionLayout(DOC, null);
+    const bfh = layout.find((e) => e.headingPath.length === 0)!;
+    const intro = layout.find((e) => e.heading === "Intro")!;
+    const child = layout.find((e) => e.heading === "Child")!;
+    const grandchild = layout.find((e) => e.heading === "Grandchild")!;
+    expect(layout.map((e) => e.fragmentKey).slice(0, 2)).toEqual([
+      bfh.fragmentKey,
+      intro.fragmentKey,
+    ]);
+
+    const childKeyBefore = child.fragmentKey;
+    const grandchildKeyBefore = grandchild.fragmentKey;
+    const childLevelBefore = child.headingLevel;
+    const grandchildLevelBefore = grandchild.headingLevel;
+
+    setFragment(session, intro.fragmentKey, "Intro body");
+    session.fragmentLastActivity.set(intro.fragmentKey, Date.now());
+    await session.generator.materializeEdit({ touchedFragmentKeys: [intro.fragmentKey] });
+    await normalizeQuiescedStructureForTest(session);
+
+    const proposalId = session.generator.getCurrentProposalId()!;
+    const post = await resolveLiveSectionLayout(DOC, proposalId);
+    expect(post.some((e) => e.fragmentKey === intro.fragmentKey)).toBe(false);
+
+    const postBfh = post.find((e) => e.headingPath.length === 0)!;
+    const postChild = post.find((e) => e.heading === "Child")!;
+    const postGrandchild = post.find((e) => e.heading === "Grandchild")!;
+    expect(postBfh.fragmentKey).toBe(bfh.fragmentKey);
+    expect(postChild.fragmentKey).toBe(childKeyBefore);
+    expect(postGrandchild.fragmentKey).toBe(grandchildKeyBefore);
+    expect(postChild.headingLevel).toBe(childLevelBefore);
+    expect(postGrandchild.headingLevel).toBe(grandchildLevelBefore);
+    expect(postChild.headingPath).toEqual(["Child"]);
+    expect(postGrandchild.headingPath).toEqual(["Child", "Grandchild"]);
+
+    const bfhMarkdown = session.liveFragments.readFragmentString(bfh.fragmentKey) as string;
+    expect(bfhMarkdown).toContain("Existing preamble");
+    expect(bfhMarkdown.match(/Intro body/g)).toHaveLength(1);
+    expect(new Set(session.liveFragments.getFragmentKeys())).toEqual(
+      new Set(post.map((entry) => entry.fragmentKey)),
+    );
+
+    const reader = ProposalReader.open(proposalId, "inprogress");
+    expect(await reader.readSection(DOC, [])).toContain("Existing preamble");
+    expect(await reader.readSection(DOC, [])).toContain("Intro body");
+    expect(await reader.readSection(DOC, ["Child"])).toContain("Child body");
+    expect(await reader.readSection(DOC, ["Child", "Grandchild"])).toContain("Grandchild body");
+  });
+
   it("9: empty nested first H1 demotion dissolves BFH and hands topology to the first child", async () => {
     await createNestedFirstDoc(ctx.rootDir, "");
     vi.useFakeTimers();
@@ -225,11 +289,11 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     expect(proposalHeadingPaths).toContainEqual(["Child"]);
   });
 
-  it("11: reparent PRESERVES authored child levels — live markdown, layout, and proposal (consistent with deleteHeadingKeepingChildren)", async () => {
+  it("11: reparent PRESERVES authored child levels — live markdown, layout, and proposal (consistent with predecessor-path heading removal)", async () => {
     // Intended contract: descendants reparented by no-predecessor nested
     // demotion keep their AUTHORED heading levels while only their heading
     // PATHS change — the same "re-nests the children at their UNCHANGED
-    // levels" rule as the predecessor path (`deleteHeadingKeepingChildren` /
+    // levels" rule as the predecessor path (`removeProposalHeading` /
     // parent-heading-deletion.test.ts). Live child fragments are untouched
     // (stable keys AND stable markdown); no re-levelling happens anywhere.
     await createNestedFirstDoc(ctx.rootDir);

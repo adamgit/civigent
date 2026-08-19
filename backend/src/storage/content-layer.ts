@@ -13,6 +13,7 @@ import {
   listSkeletonEntriesAtRoot,
   type ContentEntry,
   type FlatEntry,
+  type HeadingRemovalEffect,
   type ProposalDocumentState,
   type SkeletonNode,
   type StructuralMutationPlan,
@@ -53,6 +54,30 @@ function flatEntryFromContentEntry(entry: ContentEntry): FlatEntry {
     sectionFile: entry.sectionFile,
     absolutePath: entry.absolutePath,
     isSubSkeleton: false,
+  };
+}
+
+/** Express a completed heading removal in the section-upsert result shape the
+ *  parser-driven write path returns (a body-only write to a headed section IS a
+ *  heading removal). Written entries are the relocated descendants plus the merge
+ *  target when its body was written. */
+function upsertResultFromHeadingRemoval(
+  effect: HeadingRemovalEffect,
+  deletedEntry: ContentEntry,
+): UpsertSectionFromMarkdownDetailedResult {
+  const writtenEntries: FlatEntry[] = [];
+  for (const { oldEntry, newEntry } of effect.preservedDescendants) {
+    if (oldEntry.absolutePath !== newEntry.absolutePath) writtenEntries.push(newEntry);
+  }
+  if (effect.mergeTarget && effect.mergeTarget.mergedBody !== null) {
+    writtenEntries.push(effect.mergeTarget.newEntry);
+  }
+  return {
+    writtenEntries,
+    removedContentEntries: effect.removedTargetEntries.filter((e) => !e.isSubSkeleton),
+    fragmentKeyRemaps: effect.fragmentKeyChanges,
+    liveReloadEntries: [...writtenEntries],
+    structureChanges: [{ oldEntry: flatEntryFromContentEntry(deletedEntry), newEntries: [] }],
   };
 }
 
@@ -285,7 +310,6 @@ export interface UpsertSectionFromMarkdownDetailedResult {
     oldEntry: FlatEntry;
     newEntries: FlatEntry[];
   }>;
-  removedStructuralEntries?: FlatEntry[];
 }
 
 import { getParser } from "./markdown-parser.js";
@@ -1030,19 +1054,9 @@ export class ProposalShadowContentLayer {
     }
 
     if (headedSections.length === 0) {
-      const isParent = skeleton.subtreeEntries(ref.headingPath).length > 1;
-      if (isParent) {
-        return await this.collapseParentAndAbsorbOrphanBody(
-          skeleton,
-          ref.headingPath,
-          leadingOrphanBody,
-        );
-      }
-      return await this.deleteSectionAndAbsorbOrphanBody(
-        skeleton,
-        ref.headingPath,
-        leadingOrphanBody,
-      );
+      const deletedEntry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
+      const effect = await this.removeHeading(ref.docPath, ref.headingPath, leadingOrphanBody);
+      return upsertResultFromHeadingRemoval(effect, deletedEntry);
     }
 
     const targetIsSubSkeletonParent =
@@ -1175,7 +1189,6 @@ export class ProposalShadowContentLayer {
       fragmentKeyRemaps: [],
       liveReloadEntries: [],
       structureChanges: [],
-      removedStructuralEntries: [],
     };
     const mergeInto = (result: UpsertSectionFromMarkdownDetailedResult): void => {
       aggregate.writtenEntries.push(...result.writtenEntries);
@@ -1183,9 +1196,6 @@ export class ProposalShadowContentLayer {
       aggregate.fragmentKeyRemaps.push(...result.fragmentKeyRemaps);
       aggregate.liveReloadEntries.push(...result.liveReloadEntries);
       aggregate.structureChanges.push(...result.structureChanges);
-      if (result.removedStructuralEntries) {
-        aggregate.removedStructuralEntries!.push(...result.removedStructuralEntries);
-      }
     };
 
     const parentPrefix = ref.headingPath.slice(0, -1);
@@ -1451,156 +1461,95 @@ export class ProposalShadowContentLayer {
     await writeBodyFile(entry, content);
   }
 
-  private async deleteSectionAndAbsorbOrphanBody(
-    skeleton: DocumentSkeletonInternal,
-    headingPath: string[],
-    body: SectionBody,
-  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
-    const deletedEntry = skeleton.requireContentEntryByHeadingPath(headingPath);
-    const deletion = await skeleton.deleteHeadingPreservingBody(headingPath);
-    for (const removed of deletion.removed) {
-      if (removed.isSubSkeleton) {
-        await rm(`${removed.absolutePath}.sections`, { recursive: true, force: true });
-      }
-      await rm(removed.absolutePath, { force: true });
-    }
-    for (const write of deletion.bodyWrites) {
-      await this.writeOverlayBodyFile(
-        skeleton.docPath,
-        { absolutePath: write.absolutePath, isSubSkeleton: false } as FlatEntry,
-        write.content as SectionBody,
-      );
-    }
-
-    const orphanBody = stripLeadingNewlines(body);
-    if ((orphanBody as string).trim()) {
-      const existingMergeBody = bodyFromDisk(
-        await this.requireEffectiveSectionBody(deletion.mergeTarget.absolutePath, skeleton.docPath, deletion.mergeTarget.sectionFile),
-      );
-      await this.writeOverlayBodyFile(
-        skeleton.docPath,
-        deletion.mergeTarget,
-        appendToBody(existingMergeBody, orphanBody),
-      );
-    }
-
-    return {
-      writtenEntries: deletion.mergeTargetWasCreated || (orphanBody as string).trim()
-        ? [deletion.mergeTarget]
-        : [],
-      removedContentEntries: deletion.removed.filter((e) => !e.isSubSkeleton),
-      fragmentKeyRemaps: deletion.fragmentKeyRemaps,
-      liveReloadEntries: deletion.mergeTargetWasCreated || (orphanBody as string).trim()
-        ? [deletion.mergeTarget]
-        : [],
-      structureChanges: [{
-        oldEntry: flatEntryFromContentEntry(deletedEntry),
-        newEntries: [],
-      }],
-    };
-  }
-
-  private async collapseParentAndAbsorbOrphanBody(
-    skeleton: DocumentSkeletonInternal,
-    headingPath: string[],
-    orphanBody: SectionBody,
-  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
-    const deletedEntry = skeleton.requireContentEntryByHeadingPath(headingPath);
-
-    const subtreeEntries = skeleton.subtreeEntries(headingPath);
-    const bodiesBySectionFile = new Map<string, string>();
-    for (const entry of subtreeEntries) {
-      if (entry.isSubSkeleton) continue;
-      const content = await this.readEffectiveSectionBody(entry.absolutePath);
-      if (content !== null) {
-        bodiesBySectionFile.set(entry.sectionFile, content);
-      }
-    }
-
-    const targetBH = subtreeEntries.find(e => isBodyHolderShape(e));
-    let mergeTargetPreBody: string | null = null;
-    let preMergeTargetSF: string | null = null;
-    if (targetBH) {
-      const preTarget = skeleton.findPreviousBodyHolder(targetBH.sectionFile);
-      if (preTarget) {
-        mergeTargetPreBody = await this.requireEffectiveSectionBody(preTarget.absolutePath, skeleton.docPath, preTarget.sectionFile);
-        preMergeTargetSF = preTarget.sectionFile;
-      }
-    }
-
-    const collapse = await skeleton.collapseParentHeading(headingPath);
-
-    for (const removed of collapse.removed) {
-      if (removed.isSubSkeleton) {
-        await rm(`${removed.absolutePath}.sections`, { recursive: true, force: true });
-      }
-      await rm(removed.absolutePath, { force: true });
-    }
-
-    for (const write of collapse.bodyWrites) {
-      await this.writeOverlayBodyFile(
-        skeleton.docPath,
-        { absolutePath: write.absolutePath, isSubSkeleton: false } as FlatEntry,
-        write.content as SectionBody,
-      );
-    }
-
-    const writtenEntries: FlatEntry[] = [];
-    const liveReloadEntries: FlatEntry[] = [];
-
-    for (const promoted of collapse.promotedEntries) {
-      const body = bodiesBySectionFile.get(promoted.sectionFile);
-      if (body !== undefined) {
-        await this.writeOverlayBodyFile(
-          skeleton.docPath,
-          promoted,
-          body as SectionBody,
-        );
-        writtenEntries.push(promoted);
-        liveReloadEntries.push(promoted);
-      }
-    }
-
-    const trimmedOrphan = stripLeadingNewlines(orphanBody);
-    const hasOrphanContent = (trimmedOrphan as string).trim().length > 0;
-
-    const hasPreReadBody = mergeTargetPreBody !== null && mergeTargetPreBody.trim().length > 0;
-
-    if (collapse.mergeTargetWasCreated || hasOrphanContent || hasPreReadBody) {
-      const existingMergeBody = bodyFromDisk(mergeTargetPreBody ?? "");
-      const finalBody = hasOrphanContent
-        ? appendToBody(existingMergeBody, trimmedOrphan)
-        : existingMergeBody;
-      await this.writeOverlayBodyFile(
-        skeleton.docPath,
-        collapse.mergeTarget,
-        finalBody,
-      );
-      liveReloadEntries.push(collapse.mergeTarget);
-      writtenEntries.push(collapse.mergeTarget);
-    }
-
-    return {
-      writtenEntries,
-      removedContentEntries: collapse.removed.filter((e) => !e.isSubSkeleton),
-      removedStructuralEntries: collapse.removed,
-      fragmentKeyRemaps: collapse.fragmentKeyRemaps,
-      liveReloadEntries,
-      structureChanges: [{
-        oldEntry: flatEntryFromContentEntry(deletedEntry),
-        newEntries: [],
-      }],
-    };
-  }
-
-  async collapseParentHeadingToBfh(
+  /**
+   * Remove ONE heading — the single heading-removal method (predecessor merge,
+   * document-start anchoring, and id-preserving descendant reparenting in one
+   * engine, structural decisions owned by `DocumentSkeletonInternal.removeHeading`).
+   *
+   * `orphanBody` is the AUTHORITATIVE body the removed heading leaves behind
+   * (the live fragment's orphan on the quiescence path; the written markdown's
+   * leading orphan on the section-write path). The target's previously stored
+   * body is discarded — it was replaced by whatever produced the orphan. The
+   * orphan merges into the effect's declared merge target exactly once; preserved
+   * descendant body files are relocated by section-file id.
+   */
+  async removeHeading(
     docPath: DocPath,
     headingPath: string[],
     orphanBody: SectionBody,
-  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+  ): Promise<HeadingRemovalEffect> {
     const skeleton = await this.getWritableSkeleton(docPath);
-    return this.collapseParentAndAbsorbOrphanBody(skeleton, headingPath, orphanBody);
+    const trimmedOrphan = stripLeadingNewlines(orphanBody);
+    const orphanHasContent = (trimmedOrphan as string).trim().length > 0;
+
+    const effect = await skeleton.removeHeading(headingPath, {
+      createDocumentStartAnchor: orphanHasContent,
+    });
+
+    // Read every effective body the removal relocates BEFORE deleting anything —
+    // the old files (overlay-else-canonical) are the only source.
+    let mergeTargetPreBody: string | null = null;
+    if (effect.mergeTarget && effect.mergeTarget.oldEntry) {
+      mergeTargetPreBody = await this.readEffectiveSectionBody(effect.mergeTarget.oldEntry.absolutePath);
+    }
+    const relocatedBodiesById = new Map<string, string>();
+    for (const { oldEntry, newEntry } of effect.preservedDescendants) {
+      if (oldEntry.absolutePath === newEntry.absolutePath) continue;
+      const body = await this.readEffectiveSectionBody(oldEntry.absolutePath);
+      if (body !== null) relocatedBodiesById.set(newEntry.sectionFile, body);
+    }
+
+    // Delete the removed heading's own files. Its `.sections` tree holds the
+    // preserved descendants' OLD files (already read above), so the recursive
+    // removal is also their old-location cleanup.
+    for (const removed of effect.removedTargetEntries) {
+      if (removed.isSubSkeleton) {
+        await rm(`${removed.absolutePath}.sections`, { recursive: true, force: true });
+      }
+      await rm(removed.absolutePath, { force: true });
+    }
+    // A merge target that transitioned leaf → parent keeps its section-file id at
+    // a new body-holder path; its old-location file must not linger.
+    if (
+      effect.mergeTarget?.oldEntry &&
+      effect.mergeTarget.oldEntry.absolutePath !== effect.mergeTarget.newEntry.absolutePath
+    ) {
+      await rm(effect.mergeTarget.oldEntry.absolutePath, { force: true });
+    }
+
+    for (const write of effect.bodyWrites) {
+      await this.writeOverlayBodyFile(
+        docPath,
+        { absolutePath: write.absolutePath, isSubSkeleton: false } as FlatEntry,
+        write.content,
+      );
+    }
+
+    for (const { newEntry } of effect.preservedDescendants) {
+      const body = relocatedBodiesById.get(newEntry.sectionFile);
+      if (body === undefined) continue;
+      await this.writeOverlayBodyFile(docPath, newEntry, body);
+    }
+
+    if (effect.mergeTarget) {
+      const mergeTarget = effect.mergeTarget;
+      const relocated =
+        mergeTarget.oldEntry !== null &&
+        mergeTarget.oldEntry.absolutePath !== mergeTarget.newEntry.absolutePath;
+      if (mergeTarget.wasCreated) {
+        await this.writeOverlayBodyFile(docPath, mergeTarget.newEntry, trimmedOrphan as string);
+        mergeTarget.mergedBody = trimmedOrphan as string;
+      } else if (orphanHasContent || relocated) {
+        const preBody = bodyFromDisk(mergeTargetPreBody ?? "");
+        const merged = orphanHasContent ? appendToBody(preBody, trimmedOrphan) : preBody;
+        await this.writeOverlayBodyFile(docPath, mergeTarget.newEntry, merged as string);
+        mergeTarget.mergedBody = merged as string;
+      }
+    }
+
+    return effect;
   }
+
 
   async deleteSubtree(docPath: DocPath, headingPath: string[]): Promise<FlatEntry[]> {
     const skeleton = await this.getWritableSkeleton(docPath);
@@ -1775,124 +1724,6 @@ export class ProposalShadowContentLayer {
     const newHeadingPath = [...parentPath, newHeading];
     const newEntry = skeleton.requireContentEntryByHeadingPath(newHeadingPath);
     return { oldEntry, newEntry };
-  }
-
-  async removeHeadingPreservingChildren(
-    docPath: DocPath,
-    headingPath: string[],
-  ): Promise<{ removed: FlatEntry[]; added: FlatEntry[] }> {
-    if (headingPath.length === 0) {
-      throw new Error(`Cannot delete the before-first-heading section's heading in ${docPath}.`);
-    }
-    const skeleton = await this.getWritableSkeleton(docPath);
-    const targetNode = skeleton.findStructuralNodeByHeadingPath(headingPath);
-    if (!targetNode) throw staleHeadingPath(docPath, headingPath, "cannot delete heading");
-
-    const parentPath = headingPath.slice(0, -1);
-    const targetHeading = headingPath[headingPath.length - 1];
-
-    const siblingPaths = (await this.getSectionList(docPath))
-      .filter(
-        (s) =>
-          s.headingPath.length === parentPath.length + 1 &&
-          parentPath.every((seg, i) => headingsEqual(seg, s.headingPath[i])),
-      )
-      .map((s) => s.headingPath);
-    const targetSiblingIdx = siblingPaths.findIndex((p) => headingsEqual(p[p.length - 1], targetHeading));
-    if (targetSiblingIdx <= 0) {
-      throw new Error(
-        `removeHeadingPreservingChildren: "${headingPath.join(" > ")}" has no preceding sibling in ${docPath}.`,
-      );
-    }
-    const predecessorPath = siblingPaths[targetSiblingIdx - 1];
-
-    const bodyById = new Map<string, string>();
-    let targetOwnBody = "" as SectionBody;
-    for (const entry of skeleton.subtreeEntries(headingPath)) {
-      const body = bodyFromDisk((await this.readEffectiveSectionBody(entry.absolutePath)) ?? "");
-      bodyById.set(entry.sectionFile, body);
-      if (headingPathKey(entry.headingPath) === headingPathKey(headingPath)) {
-        targetOwnBody = body;
-      }
-    }
-    const predecessorEntry = skeleton.findContentEntryByHeadingPath(predecessorPath);
-    const predecessorOldBody = predecessorEntry
-      ? bodyFromDisk((await this.readEffectiveSectionBody(predecessorEntry.absolutePath)) ?? "")
-      : ("" as SectionBody);
-    const predecessorOldAbsolutePath = predecessorEntry?.absolutePath ?? null;
-    const mergedPredecessorBody = appendToBody(predecessorOldBody, targetOwnBody);
-
-    const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
-      const siblings = ctx.findSiblingList(parentPath);
-      const idx = siblings.findIndex((n) => headingsEqual(n.heading, targetHeading));
-      if (idx <= 0) throw staleHeadingPath(docPath, headingPath, "cannot delete heading");
-      const target = siblings[idx];
-      const predecessor = siblings[idx - 1];
-      const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
-
-      const removed = ctx.flattenNode(target, parentPath, parentSkeletonPath);
-      const extraRemoved: FlatEntry[] = [];
-
-      const realChildren = target.children.filter((c) => !isBodyHolderShape(c));
-
-      if (realChildren.length > 0) {
-        const predHasBodyHolder = predecessor.children.some((c) => isBodyHolderShape(c));
-        if (predecessor.children.length === 0) {
-          const predOldId = predecessor.sectionFile;
-          if (predecessorOldAbsolutePath) {
-            extraRemoved.push({
-              headingPath: [...predecessorPath],
-              heading: predecessor.heading,
-              headingLevel: predecessor.headingLevel,
-              sectionFile: predOldId,
-              absolutePath: predecessorOldAbsolutePath,
-              isSubSkeleton: false,
-            });
-          }
-          predecessor.sectionFile = generateSectionFilename(predecessor.heading);
-          predecessor.children.push({ heading: "", headingLevel: HeadingLevel.beforeFirstHeading, sectionFile: predOldId, children: [] });
-        } else if (!predHasBodyHolder) {
-          ctx.addBodyHoldersToParents([predecessor]);
-        }
-        predecessor.children.push(...realChildren);
-      }
-
-      siblings.splice(idx, 1);
-
-      const added = ctx.flattenNode(predecessor, parentPath, parentSkeletonPath);
-
-      const predContent = added.find(
-        (e) => !e.isSubSkeleton && headingPathKey(e.headingPath) === headingPathKey(predecessorPath),
-      );
-      const bodyWrites: StructuralMutationPlan["bodyWrites"] = [];
-      if (predContent) bodyWrites.push({ absolutePath: predContent.absolutePath, content: mergedPredecessorBody as string });
-      for (const entry of added) {
-        if (entry.isSubSkeleton) continue;
-        if (predContent && entry.absolutePath === predContent.absolutePath) continue;
-        const preserved = bodyById.get(entry.sectionFile);
-        if (preserved !== undefined) bodyWrites.push({ absolutePath: entry.absolutePath, content: preserved });
-      }
-
-      return {
-        removed: [...removed, ...extraRemoved],
-        added,
-        bodyWrites,
-        fragmentKeyRemaps: [],
-      } satisfies StructuralMutationPlan;
-    });
-
-    for (const entry of plan.removed) {
-      if (entry.isSubSkeleton) await rm(`${entry.absolutePath}.sections`, { recursive: true, force: true });
-      await rm(entry.absolutePath, { force: true });
-    }
-    for (const write of plan.bodyWrites) {
-      await this.writeOverlayBodyFile(
-        docPath,
-        { absolutePath: write.absolutePath, isSubSkeleton: false } as FlatEntry,
-        write.content,
-      );
-    }
-    return { removed: plan.removed, added: plan.added };
   }
 
   async retitleSectionInPlace(

@@ -83,7 +83,7 @@ export async function writeUploadedFiles(importId: string, files: UploadFile[]):
     if (!f.name.toLowerCase().endsWith(".md")) {
       throw new ImportUploadError(`Only .md files are accepted. Got: ${f.name}`);
     }
-    const relativePath = f.name.replace(/\\/g, "/").replace(/^\/+/, "");
+    const relativePath = DocPath.normalizeMarkdownFileName(f.name.replace(/\\/g, "/").replace(/^\/+/, ""));
     const pathSegments = relativePath.split("/");
     if (
       relativePath.length === 0 ||
@@ -149,6 +149,10 @@ function zipEntryPathSegments(entryFileName: string, filesRoot: string): string[
   const resolved = path.resolve(filesRoot, ...segments);
   if (resolved === filesRoot || !resolved.startsWith(filesRoot + path.sep)) {
     throw new ImportUploadError(`Invalid zip entry path: ${entryFileName}`);
+  }
+  const leaf = segments[segments.length - 1];
+  if (/\.md$/i.test(leaf)) {
+    segments[segments.length - 1] = DocPath.normalizeMarkdownFileName(leaf);
   }
   return segments;
 }

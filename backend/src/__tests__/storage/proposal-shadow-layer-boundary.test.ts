@@ -7,8 +7,10 @@
  * seed/read helpers.
  *
  * This is a defence-in-depth runtime scan: the only production files allowed to
- * name `ProposalShadowContentLayer` are the class definition (`content-layer.ts`)
- * and the two facades that own it.
+ * name `ProposalShadowContentLayer` are the class definition (`content-layer.ts`),
+ * the two aggregate facades that own it, and the two narrow proposal
+ * structural-mutation modules (`proposal-heading-removal.ts` /
+ * `proposal-subtree-deletion.ts`) that are facades of the same family.
  */
 
 import { describe, it, expect } from "vitest";
@@ -19,12 +21,15 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(HERE, "..", "..");
 
-// Production files permitted to reference the class: where it is defined and the
-// two facades that privately own it.
+// Production files permitted to reference the class: where it is defined, the
+// two aggregate facades that privately own it, and the narrow proposal
+// structural-mutation facades.
 const ALLOWED = new Set([
   path.join(SRC, "storage", "content-layer.ts"),
   path.join(SRC, "storage", "proposal-reader.ts"),
   path.join(SRC, "storage", "proposal-editor.ts"),
+  path.join(SRC, "storage", "proposal-heading-removal.ts"),
+  path.join(SRC, "storage", "proposal-subtree-deletion.ts"),
 ]);
 
 async function walk(dir: string): Promise<string[]> {

@@ -24,16 +24,16 @@
 import * as Y from "yjs";
 import { markdownToJSON } from "@ks/milkdown-serializer";
 import { updateYFragment } from "y-prosemirror";
-import { buildFragmentContent, EMPTY_BODY, appendToBody, appendBodyToFragment, bodyFromFragmentStrippingLeadingHeading, sectionWriteInputFromBody, type FragmentContent, type SectionBody } from "../storage/section-formatting.js";
+import { buildFragmentContent, EMPTY_BODY, appendBodyToFragment, bodyFromFragmentStrippingLeadingHeading, type FragmentContent, type SectionBody } from "../storage/section-formatting.js";
 import { SectionRef } from "../domain/section-ref.js";
-import { resolveLiveSectionLayout, readLiveSectionBodies, type LiveSectionLayoutEntry } from "./live-section-layout.js";
-import { BEFORE_FIRST_HEADING_KEY, getBackendSchema } from "./ydoc-fragments.js";
+import { resolveLiveSectionLayout, readLiveSectionBodies } from "./live-section-layout.js";
+import { BEFORE_FIRST_HEADING_KEY, fragmentKeyFromSectionFile, getBackendSchema } from "./ydoc-fragments.js";
 import type { LiveFragmentStringsStore } from "./live-fragment-strings-store.js";
 import type { StructuralChange } from "./structural-change.js";
 import type { ProposalId, ProposalSection } from "../types/shared.js";
-import { HeadingLevel } from "../types/shared.js";
+import type { HeadingLevel } from "../types/shared.js";
 import type { UpsertSectionFromMarkdownDetailedResult } from "../storage/content-layer.js";
-import type { FlatEntry } from "../storage/document-skeleton.js";
+import type { HeadingRemovalEffect } from "../storage/document-skeleton.js";
 import type { DocPath } from "../types/shared.js";
 
 /**
@@ -114,7 +114,7 @@ export interface StructuralSplitPlan {
    * the before-first-heading fragment AND the surviving `rootBody` is empty/
    * whitespace, the applier unregisters the BFH live fragment key after clearing
    * its children so it leaves the effective layout. The coordinator additionally
-   * removes BFH from the proposal skeleton (`deleteSection([])`) and emits
+   * removes BFH from the proposal skeleton (`deleteSubtree([])`) and emits
    * `section:gone` for BFH — same client contract as heading-deletion merge.
    * A non-empty preamble keeps BFH as the survivor section (unchanged root-split).
    */
@@ -269,374 +269,98 @@ export function applyStructuralSplitPlan(
   }
 }
 
-// ─── MERGE (heading-deletion → predecessor) ───────────────────────
+// ─── HEADING REMOVAL (heading-deletion → one durable engine) ──────
 
 /**
- * A precomputed identity-preserving merge: the dirty fragment lost its heading,
- * so its orphan body folds onto the END of the preceding section's fragment
- * (the predecessor's existing nodes keep their ids — append-only), and the dirty
- * fragment is removed.
+ * The live half of a settled heading deletion, derived ENTIRELY from the
+ * proposal engine's `HeadingRemovalEffect` — the durable proposal mutation runs
+ * FIRST (`removeProposalHeading`), and this plan only mirrors its declared
+ * outcome onto the live Y.Doc. The applier never reads layout to choose a
+ * different structural outcome.
  */
-export interface StructuralMergePlan {
-  predecessorKey: string;
-  /** Predecessor's full target content (its current content + the orphan body). */
-  predecessorTarget: FragmentContent;
-  /** Authoritative identity of the predecessor (for proposal reflection). */
-  predecessorIdentity: { headingPath: string[]; heading: string; headingLevel: HeadingLevel };
-  /** The fragment to remove (the heading-deleted section). */
+export interface HeadingRemovalPlan {
+  /** The removed heading's live fragment (cleared + unregistered). */
   removeKey: string;
-  /** Heading path of the removed section (for proposal `deleteSection`). */
+  /** Heading path the removed fragment carried (for tombstones / section:gone). */
   removedHeadingPath: string[];
-  /** The orphan body folded into the predecessor (for proposal reflection). */
+  /** The declared merge target's fragment key, or null when the effect declared
+   *  no merge target (nothing precedes and no body content had to survive). */
+  mergeTargetKey: string | null;
+  /** Full fragment content to SEED when the merge-target fragment is not live
+   *  yet (a created document-start BFH, or an inherited section the session
+   *  never registered). Null when the effect wrote no merge-target body. */
+  mergeTargetSeedContent: FragmentContent | null;
+  /** The authoritative orphan body appended to an already-live merge target. */
   orphanBody: SectionBody;
   affectedKeys: string[];
 }
 
-/**
- * Compute the merge plan for a `heading-deletion` classified change. Runs OUTSIDE
- * the transaction. Returns null when there is no preceding section to merge into
- * (the dirty fragment is the document's first section — leave it for the set-diff
- * / future BFH handling rather than dropping content).
- */
-export async function computeStructuralMergePlan(
-  liveFragments: LiveFragmentStringsStore,
-  docPath: DocPath,
-  currentProposalId: ProposalId | null,
-  dirtyKey: string,
-  change: Extract<StructuralChange, { kind: "heading-deletion" }>,
-): Promise<StructuralMergePlan | null> {
-  // Resolve doc order from the EFFECTIVE pre-normalization layout (canonical +
-  // inprogress proposal manifest overlay): the predecessor is the section
-  // immediately before the dirty one in document order — including sections
-  // this session already promoted (proposal-only) that a canonical-only lookup
-  // would miss and mis-attribute the merge to the wrong predecessor.
-  const effectiveLayout: LiveSectionLayoutEntry[] = await resolveLiveSectionLayout(docPath, currentProposalId);
-  const idx = effectiveLayout.findIndex((e) => e.fragmentKey === dirtyKey);
-  if (idx <= 0) return null; // no predecessor in document order
-  const predecessor = effectiveLayout[idx - 1];
-
-  const orphanBody = change.orphanedBody;
-  const predecessorCurrent = liveFragments.readFragmentString(predecessor.fragmentKey);
-  const predecessorTarget = appendBodyToFragment(predecessorCurrent, orphanBody);
-
-  return {
-    predecessorKey: predecessor.fragmentKey,
-    predecessorTarget,
-    predecessorIdentity: {
-      headingPath: [...predecessor.headingPath],
-      heading: predecessor.heading,
-      headingLevel: predecessor.headingLevel,
-    },
-    removeKey: dirtyKey,
-    removedHeadingPath: [...(effectiveLayout[idx].headingPath)],
-    orphanBody,
-    affectedKeys: [predecessor.fragmentKey, dirtyKey],
-  };
-}
-
-/**
- * Apply a merge plan INSIDE the generator's `Y.transact`. The predecessor's
- * existing nodes keep their struct ids (append-only minimal diff); the
- * heading-deleted fragment is cleared and unregistered.
- */
-export function applyStructuralMergePlan(
-  liveFragments: LiveFragmentStringsStore,
-  ydoc: Y.Doc,
-  plan: StructuralMergePlan,
-  origin: unknown,
-): void {
-  updateFragmentPreservingIdentity(ydoc, plan.predecessorKey, plan.predecessorTarget);
-  // Clear the removed fragment's nodes inside the same transaction, then drop the
-  // key from the adapter so the live set converges to the post-merge layout.
-  const removed = ydoc.getXmlFragment(plan.removeKey);
-  while (removed.length > 0) removed.delete(0, 1);
-  liveFragments.unregisterFragmentKey(plan.removeKey);
-}
-
-/**
- * Reflect a merge into the DocSession `inprogress` proposal (WS-3): fold the
- * orphan body onto the predecessor section's body, then delete the heading-
- * deleted section. The live materialize cannot observe an in-fragment heading
- * deletion (the snapshot derives identity from the layout, not fragment content),
- * so this explicit reflection is required for the proposal to follow the merge.
- */
-export async function reflectMergeIntoProposal(
-  proposalId: ProposalId,
-  docPath: DocPath,
-  plan: StructuralMergePlan,
-): Promise<void> {
-  const { ProposalEditor } = await import("../storage/proposal-editor.js");
-  const { ProposalReader } = await import("../storage/proposal-reader.js");
-  const editor = ProposalEditor.open(proposalId, "inprogress");
-
-  // If the deleted section has descendants, use the id-preserving keep-children
-  // deletion (it removes ONLY the heading, merges its own body into the
-  // predecessor, and re-parents the children KEEPING their ids — so their live
-  // fragment keys/cursors survive). That single op does the whole job, so we must
-  // NOT also append the orphan separately (it would double-merge).
-  const reader = ProposalReader.open(proposalId, "inprogress");
-  let hasChildren = false;
-  try {
-    const paths = await reader.listHeadingPaths(docPath);
-    const target = plan.removedHeadingPath;
-    hasChildren = paths.some(
-      (p) => p.length > target.length && target.every((seg, i) => seg === p[i]),
+/** Derive the live plan from the completed proposal effect. Pure — no layout
+ *  reads, no Y.Doc reads; content is read at apply time inside the transaction. */
+export function deriveHeadingRemovalPlan(
+  effect: HeadingRemovalEffect,
+  orphanBody: SectionBody,
+  removedHeadingPath: string[],
+): HeadingRemovalPlan {
+  const removeKey = fragmentKeyFromSectionFile(effect.removedBodySectionFile, false);
+  let mergeTargetKey: string | null = null;
+  let mergeTargetSeedContent: FragmentContent | null = null;
+  if (effect.mergeTarget) {
+    const mergeTarget = effect.mergeTarget;
+    mergeTargetKey = fragmentKeyFromSectionFile(
+      mergeTarget.newEntry.sectionFile,
+      mergeTarget.visibleHeadingPath.length === 0,
     );
-  } catch {
-    hasChildren = false;
-  }
-
-  if (hasChildren) {
-    // The catch guards ONLY the content op (the EXPECTED "no preceding sibling"
-    // error → fall through to the subtree-delete + append path below); the
-    // subsequent manifest update runs OUTSIDE it so a genuine manifest error is
-    // never swallowed (CLAUDE.md error policy).
-    let remap: { removed: FlatEntry[]; added: FlatEntry[] } | null = null;
-    try {
-      remap = await editor.deleteHeadingKeepingChildren(docPath, plan.removedHeadingPath);
-    } catch {
-      remap = null;
-    }
-    if (remap) {
-      // Real-time manifest reparent (U1): the reparented descendants (and the
-      // body-grown predecessor) are claimed at their NEW paths. The deleted
-      // heading and the descendants' OLD paths are NOT dropped from the manifest —
-      // the manifest only ever grows, so the deleted heading stays claimed-but-
-      // absent (its delete signal) and the stale old descendant paths are harmless
-      // extra claims (the merge keys surviving sections by section-file id, which
-      // the reparent preserves, so a reparented descendant is never dropped).
-      // Idempotent across clock-check retries: union-add dedups.
-      const addClaims: ProposalSection[] = remap.added
-        .filter((e) => !e.isSubSkeleton)
-        .map((e) => ({ doc_path: docPath, heading_path: [...e.headingPath] }));
-      const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
-      await unionCurrentProposalSections(proposalId, addClaims);
-      return;
-    }
-  }
-
-  // Leaf deletion (or the keep-children fallback): delete the folded-away section
-  // FIRST so its (materialize-written) body does not linger, then re-write the
-  // predecessor body with the orphan appended.
-  await editor.deleteSection(docPath, plan.removedHeadingPath);
-  // Real-time manifest (U1): the merged-away section stays CLAIMED — removing its
-  // overlay content alone IS the delete (claimed-but-absent), so we never drop it
-  // from the manifest. We only ever ADD claims here: the predecessor whose body
-  // grew with the folded orphan. Mirrors `growProposalManifest`'s grow-only union;
-  // idempotent across clock-check retries (union-add dedups).
-  const add: ProposalSection[] = [];
-  if (plan.orphanBody.length > 0) {
-    const existing = (await editor.readSection(docPath, plan.predecessorIdentity.headingPath)) ?? EMPTY_BODY;
-    const merged = appendToBody(existing, plan.orphanBody);
-    const result = await editor.writeSection(
-      docPath,
-      plan.predecessorIdentity.headingPath,
-      plan.predecessorIdentity.heading,
-      // Body-only content crossing into the parser-driven write path.
-      sectionWriteInputFromBody(merged),
-    );
-    add.push(...manifestDeltaFromResult(docPath, result).add);
-  }
-  const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
-  await unionCurrentProposalSections(proposalId, add);
-}
-
-// ─── NO-PREDECESSOR heading-deletion → before-first-heading (BFH) ──
-//
-// A heading-deleted section at layout index 0 has NO predecessor to fold into,
-// so `computeStructuralMergePlan` returns null and the merge path leaves it with
-// no quiescence endpoint. Its orphan body belongs under the before-first-heading
-// (BFH) preamble instead: create/register BFH, move the orphan there, and delete
-// the old headed identity — the same removal contract as a predecessor merge, but
-// a DEDICATED plan (not a fake predecessor merge onto `StructuralMergePlan`).
-// When the orphan body is empty/whitespace, no durable empty BFH is created
-// (dissolve), matching the already-shipped empty-BFH dissolve behavior.
-//
-// NESTED first-section demotion (option B): when the demoted first section has
-// DESCENDANTS, leaving it as a headed identity with no heading parenting those
-// children is structural corruption. `reparentChildren` routes the proposal
-// reflection through `collapseHeadingReparentingToBfh`, which moves the orphan
-// body under BFH AND reparents the former children to top level KEEPING their
-// section-file ids (live fragment keys survive — no live mutation of the child
-// fragments is needed). The demoted headed identity is removed. The
-// empty/whitespace-orphan DISSOLVE rule applies to the nested case too: the
-// collapse auto-creates BFH as its reparent merge target, so the reflection
-// deletes that empty preamble afterwards, and the live side never seeds BFH —
-// topology hands off to the first reparented child.
-
-export interface StructuralOrphanToBfhPlan {
-  /** The demoted first headed section fragment to remove. */
-  removeKey: string;
-  /** Heading path of the removed headed section (for proposal `deleteSection`). */
-  removedHeadingPath: string[];
-  /** BFH live fragment key (`section::__beforeFirstHeading__`). */
-  bfhKey: string;
-  /** Full BFH fragment content (body-only; heading `""`, level 0). */
-  bfhTarget: FragmentContent;
-  /** The orphan body moved under BFH (for proposal reflection). */
-  orphanBody: SectionBody;
-  /** True when the orphan body is empty/whitespace: do NOT create a durable BFH. */
-  dissolveBfh: boolean;
-  /**
-   * True when the demoted first section has descendants: reflect via
-   * `collapseHeadingReparentingToBfh` (reparent children to top level, keep ids)
-   * instead of the leaf `writeSection([]) + deleteSection` path. With an
-   * empty/whitespace orphan the reflection deletes the collapse's auto-created
-   * BFH merge target afterwards (`dissolveBfh` applies to both shapes).
-   */
-  reparentChildren: boolean;
-  affectedKeys: string[];
-}
-
-/**
- * Compute the no-predecessor orphan→BFH plan for a `heading-deletion` change.
- * Runs OUTSIDE the transaction. Returns null (leave as-is, no data loss) unless
- * the dirty fragment is a HEADED section at layout index 0 (no predecessor) —
- * the case the predecessor-merge path can't handle.
- *
- *  - LEAF (no descendants): orphan body → BFH (or dissolve when empty), delete
- *    the demoted headed identity.
- *  - NESTED (has descendants, option B): reflect via
- *    `collapseHeadingReparentingToBfh` — orphan body under BFH (or dissolved
- *    when empty), former children reparented to top level KEEPING their
- *    section-file ids, demoted identity removed. `reparentChildren` is set so
- *    the reflection takes that path; the live side is identical to the leaf
- *    case (seed BFH — or not, when dissolving — + clear the demoted key; child
- *    fragments keep their keys and are untouched).
- */
-export async function computeStructuralOrphanToBfhPlan(
-  liveFragments: LiveFragmentStringsStore,
-  docPath: DocPath,
-  currentProposalId: ProposalId | null,
-  dirtyKey: string,
-  change: Extract<StructuralChange, { kind: "heading-deletion" }>,
-): Promise<StructuralOrphanToBfhPlan | null> {
-  const layout: LiveSectionLayoutEntry[] = await resolveLiveSectionLayout(docPath, currentProposalId);
-  const idx = layout.findIndex((e) => e.fragmentKey === dirtyKey);
-  // Only the first section, and only a headed one (a body-only BFH never
-  // classifies as heading-deletion). Anything else is not the no-predecessor
-  // hole — let the caller `continue`.
-  if (idx !== 0) return null;
-  const removed = layout[0];
-  if (removed.headingPath.length === 0) return null;
-
-  // Detect descendants: a demoted first section with children reparents them to
-  // top level (option B) rather than deleting the subtree. `collapseHeading-
-  // ReparentingToBfh` (via `collapseParentHeading`) requires a proposal + a
-  // readable sub-skeleton parent; with no proposal there can be no descendants,
-  // so the leaf path is correct.
-  let reparentChildren = false;
-  if (currentProposalId) {
-    const { ProposalReader } = await import("../storage/proposal-reader.js");
-    try {
-      const paths = await ProposalReader.open(currentProposalId, "inprogress").listHeadingPaths(docPath);
-      const target = removed.headingPath;
-      reparentChildren = paths.some(
-        (p) => p.length > target.length && target.every((seg, i) => seg === p[i]),
+    if (mergeTarget.mergedBody !== null) {
+      mergeTargetSeedContent = buildFragmentContent(
+        mergeTarget.mergedBody as SectionBody,
+        mergeTarget.visibleHeadingLevel,
+        mergeTarget.visibleHeading,
       );
-    } catch {
-      // No readable layout → treat as leaf (nothing to reparent).
     }
   }
-
-  const orphanBody = change.orphanedBody;
-  // An empty/whitespace orphan dissolves BFH in BOTH shapes: leaf (no BFH is
-  // created at all) and nested (the reflection removes the collapse's
-  // auto-created merge target), so no phantom empty preamble ever survives.
-  const dissolveBfh = orphanBody.trim() === "";
   return {
-    removeKey: dirtyKey,
-    removedHeadingPath: [...removed.headingPath],
-    bfhKey: BEFORE_FIRST_HEADING_KEY,
-    bfhTarget: buildFragmentContent(orphanBody, HeadingLevel.beforeFirstHeading, ""),
+    removeKey,
+    removedHeadingPath: [...removedHeadingPath],
+    mergeTargetKey,
+    mergeTargetSeedContent,
     orphanBody,
-    dissolveBfh,
-    reparentChildren,
-    affectedKeys: dissolveBfh
-      ? [dirtyKey]
-      : [BEFORE_FIRST_HEADING_KEY, dirtyKey],
+    affectedKeys: mergeTargetKey ? [mergeTargetKey, removeKey] : [removeKey],
   };
 }
 
 /**
- * Apply a no-predecessor orphan→BFH plan INSIDE the generator's `Y.transact`.
- * Seeds a fresh BFH fragment with the orphan body (identity is new — this uses
- * the seed path, never a survivor rewrite), then clears + unregisters the removed
- * headed fragment so the live set converges to the post-demotion layout. When
- * dissolving, no BFH is seeded — only the headed fragment is removed.
+ * Apply a heading-removal plan INSIDE the generator's `Y.transact`. An
+ * already-live merge target keeps its struct ids (append-only minimal diff over
+ * its CURRENT content); a not-yet-live merge target is seeded fresh from the
+ * effect's merged body. The removed fragment is cleared and unregistered.
+ * Preserved descendant fragments are untouched — their keys did not change.
  */
-export function applyStructuralOrphanToBfhPlan(
+export function applyHeadingRemovalPlan(
   liveFragments: LiveFragmentStringsStore,
   ydoc: Y.Doc,
-  plan: StructuralOrphanToBfhPlan,
+  plan: HeadingRemovalPlan,
   origin: unknown,
 ): void {
-  if (!plan.dissolveBfh) {
-    // BFH is a genuinely-new live fragment here (the doc had no preamble), so the
-    // seed path is correct — identity does not matter for a fragment that did not
-    // exist. `replaceFragmentString` also registers the key with the adapter.
-    liveFragments.replaceFragmentString(plan.bfhKey, plan.bfhTarget, origin);
+  if (plan.mergeTargetKey !== null) {
+    if (liveFragments.hasFragmentKey(plan.mergeTargetKey)) {
+      if (plan.orphanBody.trim() !== "") {
+        const current = liveFragments.readFragmentString(plan.mergeTargetKey);
+        updateFragmentPreservingIdentity(
+          ydoc,
+          plan.mergeTargetKey,
+          appendBodyToFragment(current, plan.orphanBody),
+        );
+      }
+    } else if (plan.mergeTargetSeedContent !== null) {
+      liveFragments.replaceFragmentString(plan.mergeTargetKey, plan.mergeTargetSeedContent, origin);
+    }
   }
   const removed = ydoc.getXmlFragment(plan.removeKey);
   while (removed.length > 0) removed.delete(0, 1);
   liveFragments.unregisterFragmentKey(plan.removeKey);
 }
 
-/**
- * Reflect a no-predecessor orphan→BFH into the DocSession `inprogress` proposal.
- * Writes the orphan as the BFH preamble body (a `[]` write is body-only and never
- * parsed for structure — embedded heading syntax stays literal, matching the live
- * BFH fragment), then deletes the demoted headed section. On dissolve, only the
- * headed section is deleted (no durable empty BFH). Mirrors `reflectMergeIntoProposal`'s
- * grow-only manifest union; the deleted heading rides the id-based delete overlay.
- */
-export async function reflectOrphanToBfhIntoProposal(
-  proposalId: ProposalId,
-  docPath: DocPath,
-  plan: StructuralOrphanToBfhPlan,
-): Promise<void> {
-  const { ProposalEditor } = await import("../storage/proposal-editor.js");
-  const editor = ProposalEditor.open(proposalId, "inprogress");
-  const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
-
-  // Nested (option B): one collapse folds the orphan under BFH, reparents the
-  // former children to top level keeping their ids, and removes the demoted
-  // headed identity. Claim the written entries (reparented children + BFH) at
-  // their NEW paths (grow-only union); the demoted heading rides the id-based
-  // delete overlay recorded by `collapseHeadingReparentingToBfh`.
-  if (plan.reparentChildren) {
-    const result = await editor.collapseHeadingReparentingToBfh(
-      docPath,
-      plan.removedHeadingPath,
-      plan.orphanBody,
-    );
-    let add = manifestDeltaFromResult(docPath, result).add;
-    if (plan.dissolveBfh) {
-      // The collapse auto-creates BFH as its reparent merge target; an
-      // empty/whitespace orphan must not leave that empty preamble behind —
-      // delete it and never claim the `[]` path in the manifest.
-      await editor.deleteSection(docPath, []);
-      add = add.filter((section) => section.heading_path.length > 0);
-    }
-    await unionCurrentProposalSections(proposalId, add);
-    return;
-  }
-
-  // Leaf: write the orphan as the BFH preamble body (unless dissolving an empty
-  // orphan), then delete the demoted headed section.
-  if (!plan.dissolveBfh) {
-    const result = await editor.writeSection(
-      docPath,
-      [],
-      "",
-      sectionWriteInputFromBody(plan.orphanBody),
-    );
-    await unionCurrentProposalSections(proposalId, manifestDeltaFromResult(docPath, result).add);
-  }
-  // Delete the demoted headed section. Its canonical section-file id enters the
-  // proposal's `deleted_section_files`, so the effective layout drops it by id.
-  await editor.deleteSection(docPath, plan.removedHeadingPath);
-}
 
 // ─── SPLIT (embedded heading promoted) — proposal reflection ──────
 

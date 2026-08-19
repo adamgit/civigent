@@ -1,39 +1,47 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
-import { DocumentSearchField } from "../components/DocumentSearchField";
-import { ContentPanel } from "../components/ContentPanel";
 import { PageStatusBar } from "../components/PageStatusBar";
-import { apiClient } from "../services/api-client";
-import { listRecentDocs, rememberRecentDoc } from "../services/recent-docs";
-import { docHref } from "../app/docs-location";
-import { mergeKnownDocPaths, filterDocsByQuery } from "../services/known-docs-merge";
-import { DocPath } from "../types/shared";
-
-function mintLawfulDocPaths(raw: string[]): DocPath[] {
-  return raw.map((path) => DocPath.tryParse(path)).filter((path): path is DocPath => path !== null);
-}
+import { HomeRecentDocumentsSection } from "../components/home/HomeRecentDocumentsSection";
+import { useCurrentUser } from "../contexts/CurrentUserContext";
+import { useDocLayoutMode } from "../hooks/useDocLayoutMode";
+import { apiClient, resolveWriterId } from "../services/api-client";
+import type { ActivityItem } from "../types/shared.js";
+import { buildRecentDocuments, countRecentDocuments } from "./home/home-recent-documents";
+import {
+  HOME_ACTIVITY_FETCH_DAYS,
+  HOME_ACTIVITY_FETCH_LIMIT,
+  parseHomeRecentWindowId,
+  readHomeRecentWindow,
+  writeHomeRecentWindow,
+  homeRecentWindowDays,
+  type HomeRecentWindowId,
+} from "./home/home-constants";
+import "./home/home.css";
 
 export function RecentDocsPage() {
-  const navigate = useNavigate();
-  const [docs, setDocs] = useState<DocPath[]>(() => mintLawfulDocPaths(listRecentDocs()));
-  const [query, setQuery] = useState("");
+  const layoutMode = useDocLayoutMode();
+  const currentUser = useCurrentUser();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const windowId = parseHomeRecentWindowId(searchParams.get("window")) ?? readHomeRecentWindow();
+  const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (searchParams.get("window")) return;
+    setSearchParams({ window: windowId }, { replace: true });
+  }, [searchParams, setSearchParams, windowId]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    Promise.all([apiClient.getActivity(2000, 3650), apiClient.listProposals()])
-      .then(([activityResponse, proposalsResponse]) => {
+    apiClient
+      .getActivity(HOME_ACTIVITY_FETCH_LIMIT, HOME_ACTIVITY_FETCH_DAYS)
+      .then((res) => {
         if (cancelled) return;
-        const merged = mergeKnownDocPaths(
-          listRecentDocs(),
-          activityResponse.items,
-          proposalsResponse.proposals,
-        );
-        setDocs(mintLawfulDocPaths(merged));
+        setActivity(res.items);
         setLoading(false);
       })
       .catch((err) => {
@@ -44,80 +52,41 @@ export function RecentDocsPage() {
     return () => { cancelled = true; };
   }, []);
 
-  const filteredDocs = useMemo(() => filterDocsByQuery(docs, query), [docs, query]);
+  const currentWriterId = currentUser?.id ?? resolveWriterId();
+  const windowDays = homeRecentWindowDays(windowId);
+  const documents = useMemo(
+    () => buildRecentDocuments(activity, currentWriterId, Date.now(), windowDays),
+    [activity, currentWriterId, windowDays],
+  );
+  const totalCount = useMemo(
+    () => countRecentDocuments(activity, Date.now(), windowDays),
+    [activity, windowDays],
+  );
 
-  const openDoc = (raw: string) => {
-    const docPath = DocPath.tryParse(raw.trim());
-    if (!docPath) return;
-    rememberRecentDoc(docPath);
-    navigate(docHref(docPath));
-  };
-
-  const handleDirectOpen = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    openDoc(query);
+  const handleWindowChange = (id: HomeRecentWindowId) => {
+    writeHomeRecentWindow(id);
+    setSearchParams({ window: id }, { replace: true });
   };
 
   return (
     <div className="flex flex-col h-full">
       <SharedPageHeader title="Recent Documents" backTo="/" />
       <div className="flex-1 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
-        {/* Search field */}
-        <form onSubmit={handleDirectOpen} className="mb-4">
-          <DocumentSearchField
-            placeholder="Open by path... e.g. ops/runbook.md"
-            value={query}
-            onChange={setQuery}
-          />
-        </form>
-
-        {loading && <p className="text-xs text-text-muted">Loading known documents...</p>}
+        {loading && <p className="text-xs text-text-muted">Loading recent documents...</p>}
         {error && <p className="text-error text-xs">{error}</p>}
-
         {!loading && !error && (
-          <ContentPanel>
-            <ContentPanel.Header>
-              <div>
-                <ContentPanel.Title>Recently opened & edited</ContentPanel.Title>
-                <ContentPanel.Subtitle>Documents from your recent context, activity, and proposal history</ContentPanel.Subtitle>
-              </div>
-            </ContentPanel.Header>
-            <ContentPanel.Body className="p-0">
-              {filteredDocs.length === 0 ? (
-                <div className="p-4 text-xs text-text-muted">No matching documents found.</div>
-              ) : (
-                filteredDocs.map((docPath) => (
-                  <div
-                    key={docPath}
-                    className="flex items-center gap-3 border-b border-[#f5f2ed] hover:bg-[#faf8f5] last:border-b-0"
-                    style={{ padding: "10px 16px" }}
-                  >
-                    <span className="text-[10.5px] text-[#b8b2a8] shrink-0 w-[60px] text-right">Viewed</span>
-                    <div className="flex-1 min-w-0">
-                      <Link
-                        to={docHref(docPath)}
-                        onClick={() => rememberRecentDoc(docPath)}
-                        className="text-[13px] font-medium text-text-primary hover:text-[#1d5a66] cursor-pointer"
-                      >
-                        {docPath}
-                      </Link>
-                    </div>
-                    <div className="flex gap-1 shrink-0">
-                      <button
-                        onClick={() => openDoc(docPath)}
-                        className="btn-primary"
-                      >
-                        Open
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </ContentPanel.Body>
-          </ContentPanel>
+          <HomeRecentDocumentsSection
+            documents={documents}
+            totalCount={totalCount}
+            layoutMode={layoutMode}
+            windowId={windowId}
+            onWindowChange={handleWindowChange}
+            showAllLink={false}
+            hideWhenEmpty={false}
+          />
         )}
       </div>
-      <PageStatusBar items={["Recent", `${docs.length} known documents`]} />
+      <PageStatusBar items={["Recent", loading ? "Loading" : `${totalCount} documents`]} />
     </div>
   );
 }

@@ -4,7 +4,7 @@
  * resurrected on reseed or publish.
  *
  * This drives the real live pipeline so it exercises the CRDT structural
- * reflections that record/remap delete-claims (`reflectMergeIntoProposal`,
+ * reflections that record/remap delete-claims (`removeProposalHeading`,
  * `reflectHeadingEditIntoProposal` in `crdt/structural-appliers.ts`) against the
  * manifest-overlay merge's path-based delete detection. The agent path is covered
  * in `storage/delete-survives-ancestor-restructure.test.ts`.

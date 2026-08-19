@@ -23,6 +23,7 @@
 import { isDevSupervised } from "./system-state.js";
 import type { FatalReport, WorkerIpcMessage } from "./system-state.js";
 import { getFatalErrorsMode } from "./fatal-errors-mode.js";
+import { persistFatalState } from "../storage/fatal-state.js";
 
 type FatalOrigin = FatalReport["origin"];
 
@@ -95,6 +96,16 @@ export function handleProcessFatal(err: unknown, origin: FatalOrigin): void {
   console.error(`[fatal:${mode}] ${report.message}\n${report.stack}`);
 
   if (mode === "crash") {
+    // Latch the fatal durably BEFORE exiting so a supervisor/Docker restart
+    // refuses normal startup until the operator clears fatal.json. The write is
+    // exclusive-create, so an existing latch (the first fatal) stays
+    // authoritative. A persistence failure still exits nonzero — it is emitted
+    // alongside the original fatal, never allowed to mask it.
+    try {
+      persistFatalState(report);
+    } catch (persistErr) {
+      console.error("[fatal:crash] failed to persist fatal.json for the fatal above:", persistErr);
+    }
     if (isDevSupervised) ipcSend({ type: "fatal", report });
     process.exit(1);
     return; // process.exit is typed `never`; the return is only for tests that stub it.

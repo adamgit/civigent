@@ -13,6 +13,7 @@ import { DocPath, expectJsonObject, parseJson } from "../types/shared.js";
 import { resolveAuthenticatedWriterFromHeaders, type AuthenticatedWriter } from "../auth/context.js";
 import { checkDocPermission } from "../auth/acl.js";
 import { getCurrentFatal, handleProcessFatal } from "../runtime/fatal-handler.js";
+import { getSystemState } from "../startup-state.js";
 import { sendDocumentActivitySnapshot } from "./document-activity.js";
 
 interface SocketState {
@@ -152,12 +153,12 @@ export function createWsHub(): WsHub {
       clientInstanceId: null,
     });
 
-    // Sticky-fatal replay: if the process is already in KS_FATAL_ERRORS_MODE
-    // "report" and a fatal has fired, a browser tab that connects afterwards
-    // must still see the fatal screen. Send the current report to just this
-    // new socket immediately — no subscription is required because the event
-    // is system-scoped (no doc_path).
-    const currentFatal = getCurrentFatal();
+    // Sticky-fatal replay, two sources: the lifecycle state's RETAINED report
+    // (the durable fatal.json latch — covers tabs opened after Docker restarted
+    // the backend into the latched state) and the in-process report-mode sticky
+    // fatal. Send to just this new socket immediately — no subscription is
+    // required because the event is system-scoped (no doc_path).
+    const currentFatal = getSystemState().fatal ?? getCurrentFatal();
     if (currentFatal) {
       const stickyEvent: WsServerEvent = { type: "system:fatal", report: currentFatal };
       socket.send(JSON.stringify(stickyEvent));

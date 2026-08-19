@@ -34,8 +34,8 @@ function sectionLabel(headingPath: string[]): string | null {
 
 /**
  * One card per document touched in the window, newest first. Not sliced —
- * the home section applies the per-column display limit after partitioning
- * so a wide Yours/Everyone-else split can fill both lists.
+ * the home section paginates after partitioning so a wide Yours/Everyone-else
+ * split can page each column independently.
  *
  * Activity items are committed proposals: they name the claimed heading paths
  * but do not record whether each path was a write, a create, or a move. Those

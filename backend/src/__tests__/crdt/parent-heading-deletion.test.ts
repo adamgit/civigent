@@ -1,8 +1,8 @@
 /**
- * WS-2 parent-heading deletion (parent-collapse) — RED spec.
+ * WS-2 parent-heading deletion (heading removal preserving descendants).
  *
  * Deleting a heading that HAS sub-sections must NOT wipe the subtree. The obvious
- * markdown behavior: the one heading line is removed, its OWN direct body merges
+ * markdown behavior: the one heading line is removed, its orphan body merges
  * into the preceding section, and the child headings stay exactly where they are
  * (same text, same level) — they simply re-nest under whatever heading now sits
  * above them, because document structure is derived from the heading lines that
@@ -13,19 +13,20 @@
  * dropped) — and the children's section-file IDS must be PRESERVED through it, so
  * their `section::<id>` live fragment keys (and any cursors inside them) survive.
  *
- * These tests pin all three layers and currently FAIL (the implementation stub
- * delegates to `deleteSubtree`, which wipes the children). The next person makes
- * them green by implementing the id-preserving re-parent described in the
- * `removeHeadingPreservingChildren` TODO.
+ * These tests pin all three layers through the ONE proposal-side heading-removal
+ * entry point, `removeProposalHeading` (the narrow heading-removal module).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
-import { createProposal, proposalContentRoot } from "../../storage/proposal-repository.js";
+import { getOrCreateInProgressProposalForAdoptionId, proposalContentRoot } from "../../storage/proposal-repository.js";
 import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
+import { removeProposalHeading } from "../../storage/proposal-heading-removal.js";
+import { bodyFromDisk } from "../../storage/section-formatting.js";
+import { ProposalAdoptionId } from "../../types/shared.js";
 
 const WRITER = { id: "editor-test", type: "human" as const, displayName: "Editor", email: "e@test.local" };
 const DOC = "/doc.md";
@@ -34,6 +35,10 @@ interface Built {
   proposalId: string;
   editor: ProposalEditor;
   reader: ProposalReader;
+}
+
+function removeChapter2Heading(proposalId: string): ReturnType<typeof removeProposalHeading> {
+  return removeProposalHeading(proposalId as never, DOC as never, ["Chapter 2"], bodyFromDisk("chapter two intro body"));
 }
 
 /**
@@ -45,14 +50,18 @@ interface Built {
  *   ## Chapter 3   — chapter three body
  */
 async function build(): Promise<Built> {
-  const { id } = await createProposal(WRITER, "parent-deletion test");
-  const editor = ProposalEditor.open(id, "draft");
+  const { id } = await getOrCreateInProgressProposalForAdoptionId({
+    proposalAdoptionId: ProposalAdoptionId.fromStoredValue("ds-parent-deletion"),
+    docPath: DOC as never,
+    writer: WRITER,
+  });
+  const editor = ProposalEditor.open(id, "inprogress");
   await editor.writeSection(DOC, ["Chapter 1"], "Chapter 1", "chapter one body");
   await editor.writeSection(DOC, ["Chapter 2"], "Chapter 2", "chapter two intro body");
   await editor.writeSection(DOC, ["Chapter 2", "2.1"], "2.1", "body of 2.1");
   await editor.writeSection(DOC, ["Chapter 2", "2.2"], "2.2", "body of 2.2");
   await editor.writeSection(DOC, ["Chapter 3"], "Chapter 3", "chapter three body");
-  return { proposalId: id, editor, reader: ProposalReader.open(id, "draft") };
+  return { proposalId: id, editor, reader: ProposalReader.open(id, "inprogress") };
 }
 
 function sectionFileFor(
@@ -71,8 +80,8 @@ describe("WS-2: deleting a parent heading keeps its sub-sections", () => {
 
   // ── Layer 1: feature behaviour ──────────────────────────────────
   it("keeps the child sub-sections (does NOT wipe the subtree)", async () => {
-    const { editor, reader } = await build();
-    await editor.deleteHeadingKeepingChildren(DOC, ["Chapter 2"]);
+    const { proposalId, reader } = await build();
+    await removeChapter2Heading(proposalId);
 
     const list = await reader.getSectionList(DOC);
     const headings = list.map((s) => s.heading);
@@ -90,9 +99,9 @@ describe("WS-2: deleting a parent heading keeps its sub-sections", () => {
     expect((await reader.readSection(DOC, body22.headingPath)) as string).toContain("body of 2.2");
   });
 
-  it("merges the deleted heading's OWN body into the preceding section", async () => {
-    const { editor, reader } = await build();
-    await editor.deleteHeadingKeepingChildren(DOC, ["Chapter 2"]);
+  it("merges the deleted heading's orphan body into the preceding section", async () => {
+    const { proposalId, reader } = await build();
+    await removeChapter2Heading(proposalId);
 
     // "chapter two intro body" folds into Chapter 1 (the predecessor).
     const chapter1Body = (await reader.readSection(DOC, ["Chapter 1"])) as string;
@@ -102,12 +111,12 @@ describe("WS-2: deleting a parent heading keeps its sub-sections", () => {
 
   // ── Layer 2: markdown / tree shape (minimal, uncorrupted change) ──
   it("re-nests the children at their UNCHANGED levels under the new parent", async () => {
-    const { editor, reader } = await build();
+    const { proposalId, reader } = await build();
     const before = await reader.getSectionList(DOC);
     const level21Before = before.find((s) => s.heading === "2.1")!.level;
     const level22Before = before.find((s) => s.heading === "2.2")!.level;
 
-    await editor.deleteHeadingKeepingChildren(DOC, ["Chapter 2"]);
+    await removeChapter2Heading(proposalId);
 
     const list = await reader.getSectionList(DOC);
     const s21 = list.find((s) => s.heading === "2.1")!;
@@ -127,12 +136,12 @@ describe("WS-2: deleting a parent heading keeps its sub-sections", () => {
 
   // ── Layer 3: skeleton-file + section-file id internals ───────────
   it("PRESERVES the children's section-file ids through the re-parent", async () => {
-    const { editor, reader } = await build();
+    const { proposalId, reader } = await build();
     const before = await reader.getSectionList(DOC);
     const id21 = sectionFileFor(before, "2.1");
     const id22 = sectionFileFor(before, "2.2");
 
-    await editor.deleteHeadingKeepingChildren(DOC, ["Chapter 2"]);
+    await removeChapter2Heading(proposalId);
 
     const after = await reader.getSectionList(DOC);
     // Same section-file id => same `section::<id>` live fragment key => cursors survive.
@@ -141,19 +150,19 @@ describe("WS-2: deleting a parent heading keeps its sub-sections", () => {
   });
 
   it("drops Chapter 2's section file from the on-disk skeleton, keeps the children's", async () => {
-    const { editor, reader, proposalId } = await build();
+    const { reader, proposalId } = await build();
     const before = await reader.getSectionList(DOC);
     const chapter2File = sectionFileFor(before, "Chapter 2");
     const id21 = sectionFileFor(before, "2.1");
     const id22 = sectionFileFor(before, "2.2");
 
-    await editor.deleteHeadingKeepingChildren(DOC, ["Chapter 2"]);
+    await removeChapter2Heading(proposalId);
 
     // Concatenate every on-disk skeleton file under the proposal (the top-level
     // doc skeleton + every nested `.sections/` sub-skeleton listing). When
     // Chapter 1 becomes a parent, the children's ids live in a NESTED listing —
     // so we scan the whole tree, not just the top file.
-    const root = proposalContentRoot(proposalId, "draft");
+    const root = proposalContentRoot(proposalId as never, "inprogress");
     async function readAllSkeletonText(dir: string): Promise<string> {
       let out = "";
       let entries: import("node:fs").Dirent[];

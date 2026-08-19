@@ -10,6 +10,7 @@ import { HomeDocsSearchRow } from "../../components/home/HomeDocsSearchRow";
 import { HomeActiveFoldersSection } from "../../components/home/HomeActiveFoldersSection";
 import { HomeAgentActivitySection } from "../../components/home/HomeAgentActivitySection";
 import { HomeRecentDocumentsSection } from "../../components/home/HomeRecentDocumentsSection";
+import { HOME_RECENT_WINDOW_DEFAULT } from "./home-constants";
 import "./home.css";
 
 interface HomeNarrowLayoutProps {
@@ -64,6 +65,7 @@ export function HomeNarrowLayout({
             documents={recentDocuments}
             totalCount={recentDocumentTotal}
             layoutMode="narrow"
+            windowId={HOME_RECENT_WINDOW_DEFAULT}
           />
         </div>
       </div>

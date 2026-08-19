@@ -10,11 +10,20 @@ export function SystemFatalScreen({ fatal }: SystemFatalScreenProps) {
       <div className="max-w-3xl w-full space-y-6">
         <div className="space-y-2">
           <h1 className="text-2xl font-bold text-red-400">Backend Fatal Error</h1>
-          <p className="text-sm text-slate-400">
-            The backend process crashed and is no longer running.
-            Restart the dev server to recover.
-          </p>
+          {!fatal.operator_action && (
+            <p className="text-sm text-slate-400">
+              The backend process crashed and is no longer running.
+              Restart the dev server to recover.
+            </p>
+          )}
         </div>
+
+        {fatal.operator_action && (
+          <div className="rounded-lg border border-amber-700 bg-amber-950/40 p-4 space-y-1">
+            <div className="text-xs font-semibold uppercase tracking-wide text-amber-400">To resolve</div>
+            <p className="text-sm text-amber-200 break-words m-0">{fatal.operator_action}</p>
+          </div>
+        )}
 
         <div className="rounded-lg border border-red-900 bg-red-950/50 p-4 space-y-3">
           <div className="text-red-300 font-medium break-words">{fatal.message}</div>

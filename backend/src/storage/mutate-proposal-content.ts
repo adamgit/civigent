@@ -210,12 +210,12 @@ export async function mutateProposalContent(
     case "delete_section": {
       // Authoritative affected set: the target section PLUS every deleted
       // descendant (the engine returns the full removed subtree).
-      const removed = await editor.deleteSection(operation.docPath, operation.headingPath);
+      const removed = await editor.deleteSubtree(operation.docPath, operation.headingPath);
       affected = flatEntriesToSections(operation.docPath, removed);
       // Defensive: if the engine ever returns an empty set, still claim the target.
       if (affected.length === 0) affected = sectionsUnder(operation.docPath, [operation.headingPath]);
       // Identity-based delete detection (D3/D4): the delete is recorded inside
-      // `editor.deleteSection` as the removed canonical section-file IDS in the
+      // `editor.deleteSubtree` as the removed canonical section-file IDS in the
       // proposal's `deleted_section_files` set — that id set is the signal the
       // effective-structure merge and the absorb use to drop the section (by id, so
       // it survives ancestor rename/move). `unionSections` below still KEEPS the

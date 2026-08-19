@@ -36,6 +36,7 @@ import {
   setBroadcastAdminRebuildInvalidation,
   noteFragmentActivity,
   onSessionDiscard,
+  invalidateSessionForReplacement,
   type DocSession,
 } from "../crdt/ydoc-lifecycle.js";
 import {
@@ -50,20 +51,16 @@ import {
   computeStructuralSplitPlan,
   applyStructuralSplitPlan,
   reflectSplitIntoProposal,
-  computeStructuralMergePlan,
-  applyStructuralMergePlan,
-  reflectMergeIntoProposal,
+  deriveHeadingRemovalPlan,
+  applyHeadingRemovalPlan,
   computeStructuralHeadingEditPlan,
   applyStructuralHeadingEditPlan,
   reflectHeadingEditIntoProposal,
-  computeStructuralOrphanToBfhPlan,
-  applyStructuralOrphanToBfhPlan,
-  reflectOrphanToBfhIntoProposal,
   type StructuralSplitPlan,
-  type StructuralMergePlan,
+  type HeadingRemovalPlan,
   type StructuralHeadingEditPlan,
-  type StructuralOrphanToBfhPlan,
 } from "../crdt/structural-appliers.js";
+import { removeProposalHeading } from "../storage/proposal-heading-removal.js";
 import { getHeadSha } from "../storage/git-repo.js";
 import { getDataRoot } from "../storage/data-root.js";
 import { resolveLiveSectionLayout, type LiveSectionLayoutEntry } from "../crdt/live-section-layout.js";
@@ -731,6 +728,12 @@ async function finalizeAndEnd(session: DocSession, ready: boolean): Promise<Publ
       settling = true;
       await settleLiveStructure(session);
       settling = false;
+      if (session.state !== "active") {
+        return {
+          outcome: "failed",
+          message: "Publish aborted: the live session was rebuilt while settling a structural change; the in-progress proposal keeps the edits.",
+        };
+      }
       outcome = mapPublishResultToOutcome(await session.generator.finalizeAndPublish());
     } else {
       outcome = { outcome: "aborted", message: "Publish aborted: editors did not acknowledge readiness in time." };
@@ -1022,6 +1025,13 @@ onSessionDiscard(cancelQuiescenceTimer);
 interface QuiescedStructureNormalizationResult {
   applied: boolean;
   /**
+   * True when a heading-removal's durable proposal mutation succeeded but its
+   * live application could not complete, so the active DocSession was discarded
+   * (4022) for the next acquire to reconstruct from the durable proposal. The
+   * caller must stop touching the session — no tombstones, no frames.
+   */
+  sessionDiscarded: boolean;
+  /**
    * Sections removed from the effective layout by live structural normalization:
    * heading-deletion merges (dirty fragment folded onto its predecessor) and
    * empty-BFH root-split dissolves (bootstrap BFH left the layout because the
@@ -1050,6 +1060,7 @@ interface QuiescedStructureNormalizationResult {
 async function settleLiveStructure(session: DocSession): Promise<boolean> {
   if (!session.generator.hasCurrentProposal()) return false;
   const settled = await normalizeQuiescedStructure(session);
+  if (settled.sessionDiscarded) return false;
   if (!settled.applied) return false;
   for (const removed of settled.removedFragments) {
     session.removedFragmentTombstones.set(removed.fragmentKey, removed.headingPath);
@@ -1140,7 +1151,7 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
       }
       if (res.applied && plan.dissolveSurvivorBfh) {
         // Dissolve BFH from the proposal after the live apply succeeded so the
-        // effective layout matches the unregistered live set. `deleteSection([])`
+        // effective layout matches the unregistered live set. `deleteSubtree([])`
         // splices BFH out of the proposal skeleton roots AND records its
         // canonical section-file id in `deletedSectionFiles`, so the manifest
         // overlay drops the inherited-canonical BFH entry too. Ordered AFTER
@@ -1149,7 +1160,7 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
         // (BFH in both live and layout) rather than a mismatched one.
         const { ProposalEditor } = await import("../storage/proposal-editor.js");
         const editor = ProposalEditor.open(proposalId, "inprogress");
-        await editor.deleteSection(session.docPath, []);
+        await editor.deleteSubtree(session.docPath, []);
         removedFragments.push({
           fragmentKey: plan.survivorKey,
           headingPath: [],
@@ -1157,57 +1168,39 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
       }
       applied = applied || res.applied;
     } else if (change.kind === "heading-deletion") {
-      const plan = await computeStructuralMergePlan(session.liveFragments, session.docPath, proposalId, fragmentKey, change);
-      if (plan) {
-        const res = await session.generator.normalizeQuiescedSection<StructuralMergePlan>(
-          session.liveFragments.ydoc,
-          plan.affectedKeys,
-          () => plan,
-          (p) => applyStructuralMergePlan(session.liveFragments, session.liveFragments.ydoc, p, SERVER_NORMALIZATION_ORIGIN),
-        );
-        if (res.applied) {
-          for (const key of plan.affectedKeys) session.dirtyFragmentKeys.add(key);
-          session.dirtyFragmentKeys.add(plan.predecessorKey);
-          await reflectMergeIntoProposal(proposalId, session.docPath, plan);
-          removedFragments.push({
-            fragmentKey: plan.removeKey,
-            headingPath: plan.removedHeadingPath,
-          });
-        }
-        applied = applied || res.applied;
-      } else {
-        // No predecessor to merge into: the demoted section is the document's
-        // first section. Its orphan body settles under the before-first-heading
-        // (BFH) preamble via a DEDICATED path (create/register BFH, delete the old
-        // headed identity), with empty-BFH dissolve when the orphan is empty. When
-        // the demoted first section has descendants, that path reparents them to
-        // top level keeping their ids (option B). A null plan here means the shape
-        // is not the no-predecessor hole (not first) — leave it.
-        const bfhPlan = await computeStructuralOrphanToBfhPlan(
-          session.liveFragments,
-          session.docPath,
-          proposalId,
-          fragmentKey,
-          change,
-        );
-        if (!bfhPlan) continue;
-        const res = await session.generator.normalizeQuiescedSection<StructuralOrphanToBfhPlan>(
-          session.liveFragments.ydoc,
-          bfhPlan.affectedKeys,
-          () => bfhPlan,
-          (p) => applyStructuralOrphanToBfhPlan(session.liveFragments, session.liveFragments.ydoc, p, SERVER_NORMALIZATION_ORIGIN),
-        );
-        if (res.applied) {
-          for (const key of bfhPlan.affectedKeys) session.dirtyFragmentKeys.add(key);
-          if (!bfhPlan.dissolveBfh) session.dirtyFragmentKeys.add(bfhPlan.bfhKey);
-          await reflectOrphanToBfhIntoProposal(proposalId, session.docPath, bfhPlan);
-          removedFragments.push({
-            fragmentKey: bfhPlan.removeKey,
-            headingPath: bfhPlan.removedHeadingPath,
-          });
-        }
-        applied = applied || res.applied;
+      // ONE quiescence flow for every heading deletion: the durable proposal
+      // heading removal runs FIRST (predecessor merge / document-start anchor /
+      // id-preserving descendant reparent — all decided inside the engine), and
+      // the live apply only mirrors the effect it returns inside the guarded
+      // transaction. Failures before/inside the proposal mutation propagate via
+      // the surrounding catch; a proposal mutation that succeeded while the live
+      // apply could not complete discards the session so the next acquire
+      // reconstructs from the durable proposal.
+      const effect = await removeProposalHeading(
+        proposalId,
+        session.docPath,
+        [...identity.headingPath],
+        change.orphanedBody,
+      );
+      const plan = deriveHeadingRemovalPlan(effect, change.orphanedBody, [...identity.headingPath]);
+      const res = await session.generator.normalizeQuiescedSection<HeadingRemovalPlan>(
+        session.liveFragments.ydoc,
+        plan.affectedKeys,
+        () => plan,
+        (p) => applyHeadingRemovalPlan(session.liveFragments, session.liveFragments.ydoc, p, SERVER_NORMALIZATION_ORIGIN),
+      );
+      if (!res.applied) {
+        await invalidateSessionForReplacement(session.docPath, {
+          message: "document structure was updated during editing",
+        });
+        return { applied, removedFragments, sessionDiscarded: true };
       }
+      for (const key of plan.affectedKeys) session.dirtyFragmentKeys.add(key);
+      removedFragments.push({
+        fragmentKey: plan.removeKey,
+        headingPath: plan.removedHeadingPath,
+      });
+      applied = true;
     } else if (
       change.kind === "heading-rename" ||
       change.kind === "heading-level-change" ||
@@ -1236,7 +1229,7 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
     }
   }
 
-  return { applied, removedFragments };
+  return { applied, removedFragments, sessionDiscarded: false };
 }
 
 export async function normalizeQuiescedStructureForTest(session: DocSession): Promise<boolean> {
@@ -1286,6 +1279,7 @@ async function runQuiescenceCommand(session: DocSession): Promise<void> {
   
   
   const appliedAnyStructural = anyStillActive ? false : await settleLiveStructure(session);
+  if (session.state !== "active") return;
 
   // AUTONOMOUS-publish gate. Unlike the last-editor leave-path and explicit
   // PublishNow (which may flush an adopted proposal), the quiescence timer may
@@ -1992,6 +1986,9 @@ export async function moveLiveSection(
   // splices stale identities. Settling first (rather than refusing the move)
   // also makes the reorder addresses the ones the author is actually looking at.
   await settleLiveStructure(session);
+  if (session.state !== "active") {
+    return { ok: false, message: "This document isn't ready for editing right now — try again in a moment." };
+  }
 
   const ownProposalId = session.generator.getCurrentProposalId();
   const layout = await resolveLiveSectionLayout(docPath, ownProposalId);

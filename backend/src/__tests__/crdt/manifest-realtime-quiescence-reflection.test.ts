@@ -7,7 +7,7 @@
  * and replaced wholesale at publish by `replaceProposalManifest`.
  *
  * The quiescence structural reflections — `reflectSplitIntoProposal`,
- * `reflectMergeIntoProposal`, `reflectHeadingEditIntoProposal` — mutate proposal
+ * `removeProposalHeading`, `reflectHeadingEditIntoProposal` — mutate proposal
  * CONTENT (promote / fold / rename a section) but do NOT touch the manifest, so a
  * promoted / merged / renamed section's CLAIM only reconciles at publish (or a
  * later per-edit materialize that happens to touch it). These tests pin the hole:
@@ -46,8 +46,8 @@ import {
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { readSection } from "../../storage/section-reader.js";
-import { reflectMergeIntoProposal } from "../../crdt/structural-appliers.js";
-import type { StructuralMergePlan } from "../../crdt/structural-appliers.js";
+import { removeProposalHeading } from "../../storage/proposal-heading-removal.js";
+import { bodyFromDisk } from "../../storage/section-formatting.js";
 import { ProposalAdoptionId } from "../../types/shared.js";
 import { SectionRef } from "../../domain/section-ref.js";
 
@@ -317,18 +317,9 @@ describe("real-time proposal-manifest reflection at quiescence (publish deferred
     ]);
 
     // Delete the Beta heading, keeping children → Child reparents under Alpha (the
-    // predecessor). Only `removedHeadingPath` is consumed by the keep-children
-    // branch; the live-apply fields are unused here.
-    const plan: StructuralMergePlan = {
-      predecessorKey: "unused",
-      predecessorTarget: "" as never,
-      predecessorIdentity: { headingPath: ["Alpha"], heading: "Alpha", level: 2 },
-      removeKey: "unused",
-      removedHeadingPath: ["Beta"],
-      orphanBody: "beta body" as never,
-      affectedKeys: [],
-    };
-    await reflectMergeIntoProposal(proposalId, docPath, plan);
+    // predecessor). The narrow heading-removal module is the one proposal-side
+    // entry point; the orphan body it is handed is Beta's own body.
+    await removeProposalHeading(proposalId, docPath as never, ["Beta"], bodyFromDisk("beta body"));
 
     // Content followed: Child now lives under Alpha; Beta's heading is gone.
     const reader = ProposalReader.open(proposalId, "inprogress");

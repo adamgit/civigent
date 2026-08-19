@@ -1,7 +1,7 @@
 import { type NextFunction, type Request, type Response, type Router } from "express";
 import type { HumanInvolvementPolicyResult } from "../../types/shared.js";
 import { DocPath } from "../../types/shared.js";
-import { isSystemReady } from "../../startup-state.js";
+import { getSystemState } from "../../startup-state.js";
 import {
   resolveAuthenticatedWriter,
   isSingleUserMode,
@@ -109,18 +109,32 @@ export function installSlashStrippedDocPathParamParser(router: Router): void {
 }
 
 /**
- * Startup gate: reject requests during crash recovery.
+ * Lifecycle gate: reject requests while the system is not ready.
  * Exempt: /build-info, /auth/* (login page needs to load).
+ *
+ * Two distinct not-ready answers: `system_starting` (ordinary startup /
+ * lockdown — retryable) and `system_fatal` (the durable fatal latch — carries
+ * the retained report; clears only when the operator deletes fatal.json and
+ * restarts).
  */
 export function installStartupGate(router: Router): void {
   router.use((req: Request, res: Response, next: NextFunction) => {
-    if (isSystemReady()) {
+    const lifecycle = getSystemState();
+    if (lifecycle.state === "ready") {
       next();
       return;
     }
     const p = req.path;
     if (p === "/build-info" || p.startsWith("/auth/")) {
       next();
+      return;
+    }
+    if (lifecycle.state === "fatal" && lifecycle.fatal) {
+      res.status(503).json({
+        error: "system_fatal",
+        message: lifecycle.fatal.message,
+        fatal: lifecycle.fatal,
+      });
       return;
     }
     res.status(503)

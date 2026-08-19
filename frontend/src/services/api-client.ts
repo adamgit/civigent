@@ -1,5 +1,6 @@
 import { encodeDocPath, encodeFolderPath } from "../utils/path-encoding.js";
 import type {
+  FatalReport,
   AclSnapshot,
   AdminConfig,
   AgentAuthPolicy,
@@ -311,6 +312,22 @@ export function setSystemStartingHandler(handler: (() => void) | null): void {
   systemStartingHandler = handler;
 }
 
+let systemFatalHandler: ((report: FatalReport) => void) | null = null;
+
+export function setSystemFatalHandler(handler: ((report: FatalReport) => void) | null): void {
+  systemFatalHandler = handler;
+}
+
+export class SystemFatalError extends Error {
+  public readonly report: FatalReport;
+
+  constructor(report: FatalReport) {
+    super(report.message);
+    this.name = "SystemFatalError";
+    this.report = report;
+  }
+}
+
 export class SystemStartingError extends Error {
   public readonly retryAfter: number;
 
@@ -325,10 +342,14 @@ async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const text = await response.text();
 
-    // Detect 503 system_starting — throw specific error for startup gate
+    // Detect 503 system_starting / system_fatal — throw the specific error so
+    // the lifecycle handlers (startup gate poll vs. fatal screen) take over.
     if (response.status === 503) {
       try {
-        const parsed = JSON.parse(text) as { error?: string; message?: string };
+        const parsed = JSON.parse(text) as { error?: string; message?: string; fatal?: FatalReport };
+        if (parsed.error === "system_fatal" && parsed.fatal) {
+          throw new SystemFatalError(parsed.fatal);
+        }
         if (parsed.error === "system_starting") {
           const retryAfter = Number(response.headers.get("Retry-After")) || 5;
           throw new SystemStartingError(
@@ -337,7 +358,7 @@ async function parseJsonOrThrow<T>(response: Response): Promise<T> {
           );
         }
       } catch (e) {
-        if (e instanceof SystemStartingError) throw e;
+        if (e instanceof SystemStartingError || e instanceof SystemFatalError) throw e;
       }
     }
 
@@ -433,6 +454,12 @@ async function requestJson<T>(url: string, init?: RequestInit, includeAuth = tru
   try {
     return await parseJsonOrThrow<T>(response);
   } catch (error) {
+    if (error instanceof SystemFatalError && systemFatalHandler) {
+      // Fatal latch: retain the report and render the fatal screen — never the
+      // startup polling loop. Same never-settling contract as system_starting.
+      systemFatalHandler(error.report);
+      return new Promise<T>(() => {});
+    }
     if (error instanceof SystemStartingError && systemStartingHandler) {
       systemStartingHandler();
       // Don't re-throw — handler set systemStarting=true which unmounts callers.

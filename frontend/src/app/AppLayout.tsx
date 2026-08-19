@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { apiClient, SystemStartingError, setUnauthorizedHandler, setSystemStartingHandler, setWriterId, clearWriterId } from "../services/api-client";
+import { apiClient, SystemStartingError, setUnauthorizedHandler, setSystemStartingHandler, setSystemFatalHandler, setWriterId, clearWriterId } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
 import { connectSystemEvents, type FatalReport } from "../services/system-events-client";
 import { DocumentsTreeNav, computeTreeMoveDest, type TreeDragSource } from "../components/DocumentsTreeNav";
@@ -327,7 +327,7 @@ export function AppLayout() {
     e.preventDefault();
     const trimmed = newDocPath.trim();
     if (!trimmed || creatingDoc) return;
-    const withMd = trimmed.endsWith(".md") ? trimmed : `${trimmed}.md`;
+    const withMd = DocPath.normalizeMarkdownFileName(trimmed);
     const docPath = DocPath.tryParse(withMd.startsWith("/") ? withMd : `/${withMd}`);
     if (!docPath) {
       setNewDocError(`Invalid document path: ${JSON.stringify(withMd)}`);
@@ -426,6 +426,14 @@ export function AppLayout() {
   useEffect(() => {
     setSystemStartingHandler(() => setSystemStarting(true));
     return () => setSystemStartingHandler(null);
+  }, []);
+
+  // Global handler: a 503 system_fatal carries the backend's durably latched
+  // fatal report — retain it and render the fatal screen instead of entering
+  // the startup polling loop.
+  useEffect(() => {
+    setSystemFatalHandler((report) => setFatalReport(report));
+    return () => setSystemFatalHandler(null);
   }, []);
 
   // SSE connection for backend lifecycle state (dev-only enhancement).

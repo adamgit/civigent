@@ -1,6 +1,5 @@
 /**
- * Folder details page (current). Prior UI: `LEGACY_FolderPage.tsx`.
- * Swap the import in `DocsRouteResolver.tsx` to compare or roll back.
+ * Folder details page.
  */
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useOutletContext } from "react-router-dom";
@@ -65,10 +64,6 @@ function getDisplayName(path: string): string {
   }
   const parts = path.split("/").filter(Boolean);
   return parts[parts.length - 1] ?? path;
-}
-
-function ensureMarkdownSuffix(path: string): string {
-  return path.toLowerCase().endsWith(".md") ? path : `${path}.md`;
 }
 
 function findFolderEntry(entries: DocumentTreeEntry[], folderPath: string): DocumentTreeEntry | null {
@@ -620,7 +615,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
         return;
       }
 
-      const fileName = ensureMarkdownSuffix(name.replace(/\/+$/, "").trim());
+      const fileName = DocPath.normalizeMarkdownFileName(name.replace(/\/+$/, "").trim());
       if (!fileName || fileName === ".md") {
         throw new Error("File name is required.");
       }

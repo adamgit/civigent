@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { DocLayoutMode } from "../../hooks/useDocLayoutMode";
 import {
@@ -6,9 +6,11 @@ import {
   type HomeRecentDocument,
 } from "../../pages/home/home-recent-documents";
 import {
-  HOME_RECENT_DOC_LIMIT,
   HOME_RECENT_SPLIT_MIN_PX,
+  HOME_RECENT_WINDOW_DEFAULT,
   HOME_RECENT_WINDOW_OPTIONS,
+  homeRecentPageSize,
+  recentDocsHref,
   type HomeRecentWindowId,
 } from "../../pages/home/home-constants";
 import { HomeRecentDocumentCard } from "./HomeRecentDocumentCard";
@@ -19,10 +21,30 @@ interface HomeRecentDocumentsSectionProps {
   layoutMode?: DocLayoutMode;
   windowId?: HomeRecentWindowId;
   onWindowChange?: (id: HomeRecentWindowId) => void;
+  showAllLink?: boolean;
+  hideWhenEmpty?: boolean;
 }
 
-function takeRecent(documents: HomeRecentDocument[]): HomeRecentDocument[] {
-  return documents.slice(0, HOME_RECENT_DOC_LIMIT);
+function usePagedItems<T>(items: T[], pageSize: number, resetKey: string): {
+  page: number;
+  setPage: (page: number) => void;
+  slice: T[];
+  total: number;
+  pageSize: number;
+} {
+  const [page, setPage] = useState(0);
+  useEffect(() => {
+    setPage(0);
+  }, [resetKey]);
+  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+  const safePage = Math.min(page, pageCount - 1);
+  return {
+    page: safePage,
+    setPage,
+    slice: items.slice(safePage * pageSize, safePage * pageSize + pageSize),
+    total: items.length,
+    pageSize,
+  };
 }
 
 export function HomeRecentDocumentsSection({
@@ -31,9 +53,13 @@ export function HomeRecentDocumentsSection({
   layoutMode = "narrow",
   windowId,
   onWindowChange,
+  showAllLink = true,
+  hideWhenEmpty,
 }: HomeRecentDocumentsSectionProps) {
   const rootRef = useRef<HTMLElement>(null);
   const [wideEnoughToSplit, setWideEnoughToSplit] = useState(false);
+  const pageSize = homeRecentPageSize(layoutMode);
+  const pageResetKey = windowId ?? HOME_RECENT_WINDOW_DEFAULT;
 
   useLayoutEffect(() => {
     const el = rootRef.current;
@@ -50,13 +76,13 @@ export function HomeRecentDocumentsSection({
     () => (splitColumns ? partitionRecentDocuments(documents) : null),
     [documents, splitColumns],
   );
-  const mixedDocuments = useMemo(
-    () => (splitColumns ? [] : takeRecent(documents)),
-    [documents, splitColumns],
-  );
+  const mixed = usePagedItems(splitColumns ? [] : documents, pageSize, pageResetKey);
+  const yours = usePagedItems(columns?.yours ?? [], pageSize, pageResetKey);
+  const others = usePagedItems(columns?.others ?? [], pageSize, pageResetKey);
 
-  if (totalCount === 0 && layoutMode === "narrow") return null;
-  const showToggle = layoutMode === "wide" && windowId != null && onWindowChange != null;
+  const shouldHideEmpty = hideWhenEmpty ?? layoutMode === "narrow";
+  if (totalCount === 0 && shouldHideEmpty) return null;
+  const showToggle = windowId != null && onWindowChange != null;
   return (
     <section
       ref={rootRef}
@@ -67,29 +93,35 @@ export function HomeRecentDocumentsSection({
         <h2 className="home-section-label">
           Recent documents {"\u00b7"} {totalCount}
         </h2>
-        {showToggle ? (
-          <div className="home-window-toggle" role="radiogroup" aria-label="Recent documents window">
-            {HOME_RECENT_WINDOW_OPTIONS.map((option) => {
-              const active = option.id === windowId;
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={active}
-                  className={`home-window-toggle__btn${active ? " home-window-toggle__btn--active" : ""}`}
-                  onClick={() => onWindowChange(option.id)}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <Link to="/recent-docs" className="home-recent__all">
-            All {"\u2192"}
-          </Link>
-        )}
+        <div className="home-recent__actions">
+          {showToggle ? (
+            <div className="home-window-toggle" role="radiogroup" aria-label="Recent documents window">
+              {HOME_RECENT_WINDOW_OPTIONS.map((option) => {
+                const active = option.id === windowId;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    className={`home-window-toggle__btn${active ? " home-window-toggle__btn--active" : ""}`}
+                    onClick={() => onWindowChange(option.id)}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+          {showAllLink ? (
+            <Link
+              to={recentDocsHref(windowId ?? HOME_RECENT_WINDOW_DEFAULT)}
+              className="home-recent__all"
+            >
+              All {"\u2192"}
+            </Link>
+          ) : null}
+        </div>
       </div>
       {totalCount === 0 ? (
         <RecentDocList documents={[]} empty="No recent document changes." />
@@ -98,20 +130,33 @@ export function HomeRecentDocumentsSection({
           <RecentDocColumn
             title="Yours"
             empty="No recent changes of yours."
-            documents={takeRecent(columns.yours)}
+            documents={yours.slice}
             showYoursMark={false}
+            pager={yours}
           />
           <RecentDocColumn
             title="Everyone else"
             empty="No recent changes by others."
-            documents={takeRecent(columns.others)}
+            documents={others.slice}
+            pager={others}
           />
         </div>
       ) : (
-        <RecentDocList documents={mixedDocuments} empty="No recent document changes." />
+        <RecentDocList
+          documents={mixed.slice}
+          empty="No recent document changes."
+          pager={mixed}
+        />
       )}
     </section>
   );
+}
+
+interface RecentDocPagerModel {
+  page: number;
+  setPage: (page: number) => void;
+  total: number;
+  pageSize: number;
 }
 
 function RecentDocColumn({
@@ -119,16 +164,23 @@ function RecentDocColumn({
   empty,
   documents,
   showYoursMark = true,
+  pager,
 }: {
   title: string;
   empty: string;
   documents: HomeRecentDocument[];
   showYoursMark?: boolean;
+  pager: RecentDocPagerModel;
 }) {
   return (
     <div className="home-recent__col">
       <h3 className="home-recent__col-title">{title}</h3>
-      <RecentDocList documents={documents} empty={empty} showYoursMark={showYoursMark} />
+      <RecentDocList
+        documents={documents}
+        empty={empty}
+        showYoursMark={showYoursMark}
+        pager={pager}
+      />
     </div>
   );
 }
@@ -137,10 +189,12 @@ function RecentDocList({
   documents,
   empty,
   showYoursMark = true,
+  pager,
 }: {
   documents: HomeRecentDocument[];
   empty: string;
   showYoursMark?: boolean;
+  pager?: RecentDocPagerModel;
 }) {
   return (
     <div className="home-recent__list">
@@ -155,6 +209,37 @@ function RecentDocList({
           />
         ))
       )}
+      {pager ? <RecentDocPager {...pager} /> : null}
     </div>
+  );
+}
+
+function RecentDocPager({ page, pageSize, total, setPage }: RecentDocPagerModel) {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  if (total <= pageSize) return null;
+  const start = page * pageSize + 1;
+  const end = Math.min(total, (page + 1) * pageSize);
+  return (
+    <nav className="home-recent__pager" aria-label="Recent documents pages">
+      <button
+        type="button"
+        className="home-recent__pager-btn"
+        disabled={page <= 0}
+        onClick={() => setPage(page - 1)}
+      >
+        Previous
+      </button>
+      <span className="home-recent__pager-status">
+        {start}{"\u2013"}{end} of {total}
+      </span>
+      <button
+        type="button"
+        className="home-recent__pager-btn"
+        disabled={page >= pageCount - 1}
+        onClick={() => setPage(page + 1)}
+      >
+        Next
+      </button>
+    </nav>
   );
 }

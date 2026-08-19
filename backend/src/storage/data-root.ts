@@ -55,6 +55,11 @@ export function getProposalsWithdrawnRoot(): string {
 // legacy session-overlay read path) were removed with MW-7, when document and
 // section GETs became canonical-only.
 
+/** The durable fatal latch — the ONLY fatal-state path that exists. */
+export function getFatalStatePath(): string {
+  return path.join(getDataRoot(), "fatal.json");
+}
+
 /** Root directory for import staging areas (one subdir per import ID). */
 export function getImportStagingRoot(): string {
   return path.join(getDataRoot(), "import-staging");

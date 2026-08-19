@@ -106,6 +106,13 @@ export const DocPath = {
     return DocPath.parse(folder === FolderPath.root ? `/${fileName}` : `${folder}/${fileName}`);
   },
 
+  normalizeMarkdownFileName(name: string): string {
+    if (!/\.md$/i.test(name)) {
+      return `${name}.md`;
+    }
+    return `${name.slice(0, -".md".length)}.md`;
+  },
+
   isDocPath(raw: string): raw is DocPath {
     return satisfiesDocPathLaw(raw);
   },
@@ -2502,6 +2509,12 @@ export interface FatalReport {
   origin: "uncaughtException" | "unhandledRejection";
   /** ISO-8601. */
   timestamp: string;
+  /**
+   * Present on latched fatals (persisted `fatal.json` and lifecycle states
+   * derived from it): the instruction telling the operator how to clear the
+   * latch. Absent on transient report-mode fatals, which latch nothing.
+   */
+  operator_action?: string;
 }
 
 /**

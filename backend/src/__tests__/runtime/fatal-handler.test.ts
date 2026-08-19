@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { FatalReport } from "../../runtime/system-state.js";
 import {
   handleProcessFatal,
+  resetFatalHandlerForTests,
   setFatalReportDeliveryHandler,
 } from "../../runtime/fatal-handler.js";
 import { resetFatalErrorsModeForTests } from "../../runtime/fatal-errors-mode.js";
@@ -37,6 +41,33 @@ describe("handleProcessFatal", () => {
 
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(delivery).not.toHaveBeenCalled();
+  });
+
+  it("crash mode: persists the fatal report so a fresh process can recover it", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "ks-fatal-latch-"));
+    const previousDataRoot = process.env.KS_DATA_ROOT;
+    process.env.KS_DATA_ROOT = root;
+    process.env.KS_FATAL_ERRORS_MODE = "crash";
+    resetFatalErrorsModeForTests();
+
+    try {
+      handleProcessFatal(new Error("durable fatal"), "uncaughtException");
+      resetFatalHandlerForTests();
+
+      const persisted = JSON.parse(
+        await readFile(path.join(root, "fatal.json"), "utf8"),
+      ) as FatalReport & { operator_action?: string };
+
+      expect(persisted.message).toBe("durable fatal");
+      expect(persisted.stack).toContain("durable fatal");
+      expect(persisted.origin).toBe("uncaughtException");
+      expect(persisted.operator_action).toContain("delete `fatal.json`");
+      expect(persisted.operator_action).toContain("restart Civigent");
+    } finally {
+      if (previousDataRoot === undefined) delete process.env.KS_DATA_ROOT;
+      else process.env.KS_DATA_ROOT = previousDataRoot;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("report mode: does NOT exit and invokes the delivery handler with a FatalReport", () => {

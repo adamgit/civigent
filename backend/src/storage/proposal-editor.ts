@@ -25,7 +25,8 @@ import {
   type UpsertSectionFromMarkdownDetailedResult,
 } from "./content-layer.js";
 import { ProposalReader } from "./proposal-reader.js";
-import { proposalContentRoot, recordDeletedSectionFiles } from "./proposal-repository.js";
+import { proposalContentRoot } from "./proposal-repository.js";
+import { deleteProposalSubtree } from "./proposal-subtree-deletion.js";
 import { getContentRoot, getDataRoot, getContentGitPrefix } from "./data-root.js";
 import { docPathToContentRelativeFsPath } from "./path-utils.js";
 import { DocPath } from "../types/shared.js";
@@ -186,74 +187,11 @@ export class ProposalEditor extends ProposalReader {
     return this.shadow.renameHeading(docPath, headingPath, newHeading);
   }
 
-  /** Delete a subtree (target section plus all descendants). */
-  async deleteSection(docPath: DocPath, headingPath: string[]): Promise<FlatEntry[]> {
-    const removed = await this.shadow.deleteSubtree(docPath, headingPath);
-    // Identity-based delete detection (D3): record the deleted canonical
-    // section-file ids so the manifest merge drops them by id, not by heading
-    // path. A whole-subtree delete removes everything it returns — nothing is
-    // re-parented — so every removed entry's id is a genuine delete.
-    await recordDeletedSectionFiles(this.proposalId, docPath, removed.map((e) => e.sectionFile));
-    return removed;
-  }
-
-  /**
-   * Delete ONLY a heading line, KEEPING its descendants (WS-2 parent-heading
-   * deletion). The heading's own body merges into the preceding section; child
-   * subtrees re-parent up KEEPING their section-file ids (live fragment keys /
-   * cursors survive). See `ProposalShadowContentLayer.removeHeadingPreservingChildren`.
-   */
-  async deleteHeadingKeepingChildren(
-    docPath: DocPath,
-    headingPath: string[],
-  ): Promise<{ removed: FlatEntry[]; added: FlatEntry[] }> {
-    const result = await this.shadow.removeHeadingPreservingChildren(docPath, headingPath);
-    // Identity-based delete detection (D3): only the heading's OWN section is
-    // deleted — its descendants re-parent KEEPING their ids, so they appear in
-    // BOTH `removed` (old path) and `added` (new path). Record only ids that are
-    // removed and NOT re-added, or a surviving re-parented child would be wrongly
-    // dropped by the merge.
-    const addedIds = new Set(result.added.map((e) => e.sectionFile));
-    const deletedIds = result.removed
-      .filter((e) => !addedIds.has(e.sectionFile))
-      .map((e) => e.sectionFile);
-    await recordDeletedSectionFiles(this.proposalId, docPath, deletedIds);
-    return result;
-  }
-
-  /**
-   * No-predecessor demotion (WS-2, nested first-section → BFH): delete a
-   * sub-skeleton PARENT heading that is the document's FIRST section (no
-   * preceding sibling), folding its orphan body under an auto-created BFH
-   * preamble and reparenting its descendants to top level KEEPING their
-   * section-file ids (live fragment keys / cursors survive). This is the
-   * no-predecessor companion to `deleteHeadingKeepingChildren`
-   * (`removeHeadingPreservingChildren`), which throws when the target has no
-   * preceding sibling. Records only the demoted heading's OWN removed ids
-   * (body-holder absorbed into BFH); reparented descendants reappear as written
-   * entries and must NOT be recorded as deleted or the merge would drop them.
-   */
-  async collapseHeadingReparentingToBfh(
-    docPath: DocPath,
-    headingPath: string[],
-    orphanBody: SectionBody,
-  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
-    const result = await this.shadow.collapseParentHeadingToBfh(docPath, headingPath, orphanBody);
-    // Identity-based delete detection (D3): only ids removed and NOT re-written
-    // are genuine deletes. Reparented descendants (and the created BFH) appear in
-    // `writtenEntries` under their preserved / new ids; the demoted parent's OWN
-    // sub-skeleton + body-holder ids are removed with no re-add → they are the
-    // delete signal. Use `removedStructuralEntries` (sub-skeletons INCLUDED):
-    // the effective-layout merge keys a sub-skeleton parent's canonical node by
-    // its sub-skeleton id, so recording only the body-holder would re-splice the
-    // demoted parent back into the live layout.
-    const writtenIds = new Set(result.writtenEntries.map((e) => e.sectionFile));
-    const removedForDelete = result.removedStructuralEntries ?? result.removedContentEntries;
-    const deletedIds = removedForDelete
-      .filter((e) => !writtenIds.has(e.sectionFile))
-      .map((e) => e.sectionFile);
-    await recordDeletedSectionFiles(this.proposalId, docPath, deletedIds);
-    return result;
+  /** Delete a subtree (target section plus all descendants). Explicit subtree
+   *  deletion ONLY — heading removal (descendants preserved) is the narrow
+   *  `proposal-heading-removal.ts` module, never this. */
+  async deleteSubtree(docPath: DocPath, headingPath: string[]): Promise<FlatEntry[]> {
+    return deleteProposalSubtree(this.proposalId, this.shadow, docPath, headingPath);
   }
 
   /**

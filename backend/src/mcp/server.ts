@@ -35,7 +35,7 @@ import { type GatedTier, governanceForcedRejection } from "./governance-gate.js"
 import { makeToolErrorResult } from "./protocol.js";
 import type { AuthenticatedWriter } from "../auth/context.js";
 import type { WsServerEvent } from "../types/shared.js";
-import { isSystemReady } from "../startup-state.js";
+import { getSystemState, isSystemReady } from "../startup-state.js";
 
 // ─── Server options ──────────────────────────────────────
 
@@ -142,7 +142,16 @@ export class McpServer {
       case MCP_METHODS.TOOLS_LIST:
         return this.handleToolsList(req);
 
-      case MCP_METHODS.TOOLS_CALL:
+      case MCP_METHODS.TOOLS_CALL: {
+        const lifecycle = getSystemState();
+        if (lifecycle.state === "fatal" && lifecycle.fatal) {
+          return makeErrorResponse(
+            req.id,
+            JSONRPC_ERRORS.INTERNAL_ERROR,
+            `Civigent is halted by a fatal error and refuses tool execution: ${lifecycle.fatal.message} ` +
+              `${lifecycle.fatal.operator_action ?? ""}`.trim(),
+          );
+        }
         if (!isSystemReady()) {
           return makeErrorResponse(
             req.id,
@@ -151,6 +160,7 @@ export class McpServer {
           );
         }
         return this.handleToolCall(req, writer, session, emitEvent);
+      }
 
       default:
         return makeErrorResponse(
