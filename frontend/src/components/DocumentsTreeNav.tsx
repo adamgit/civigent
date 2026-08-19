@@ -402,9 +402,17 @@ export function DocumentsTreeNav({
                       </span>
                     ) : null}
                     {node.pills?.includes("skills") ? (
-                      <span className="shrink-0 text-[10px] font-semibold px-[5px] py-px rounded-lg bg-orange-100 text-orange-800">
+                      <Link
+                        to="/skills"
+                        title="Open skills page"
+                        aria-label="Open skills page"
+                        className="shrink-0 text-[10px] font-semibold px-[5px] py-px rounded-lg bg-orange-100 text-orange-800 no-underline hover:bg-orange-200"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                        }}
+                      >
                         SKILLS
-                      </span>
+                      </Link>
                     ) : null}
                     {node.pills?.includes("public") ? (
                       <span className="shrink-0 text-[10px] font-semibold px-[5px] py-px rounded-lg bg-agent-light text-agent-text">

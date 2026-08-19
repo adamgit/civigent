@@ -469,3 +469,68 @@ export async function getAgentActivity(): Promise<{ sessions: unknown[] }> {
     .map((line) => JSON.parse(line));
   return { sessions };
 }
+
+export interface AgentMcpPulseAction {
+  agent_id: string;
+  agent_display_name: string;
+  method: string;
+  ts: string;
+  doc_path: string | null;
+  heading_path: string[] | null;
+}
+
+/**
+ * Last-24h MCP tool calls for the home pulse. Merges durable JSONL with
+ * in-flight session buffers so an open Cursor/Claude session still counts.
+ * Same data as the admin log, stripped to method + time + optional doc.
+ */
+export async function getAgentMcpPulse(hours = 24): Promise<{ actions: AgentMcpPulseAction[] }> {
+  const windowMs = Math.max(hours, 1) * 60 * 60 * 1000;
+  const sinceMs = Date.now() - windowMs;
+  const { sessions } = await getAgentActivity();
+  const { activityLog } = await import("../../monitoring/activity-log.js");
+  const envelopes = [...sessions, ...activityLog.snapshotInFlight()];
+  const actions: AgentMcpPulseAction[] = [];
+
+  for (const envelope of envelopes) {
+    if (!envelope || typeof envelope !== "object") continue;
+    const session = envelope as {
+      agent_id?: unknown;
+      agent_display_name?: unknown;
+      actions?: unknown;
+    };
+    const agentId = typeof session.agent_id === "string" ? session.agent_id : "";
+    const displayName =
+      typeof session.agent_display_name === "string" ? session.agent_display_name : agentId;
+    if (!Array.isArray(session.actions)) continue;
+    for (const rawAction of session.actions) {
+      if (!rawAction || typeof rawAction !== "object") continue;
+      const action = rawAction as {
+        method?: unknown;
+        ts?: unknown;
+        metadata?: unknown;
+      };
+      if (typeof action.method !== "string" || typeof action.ts !== "string") continue;
+      const tsMs = Date.parse(action.ts);
+      if (Number.isNaN(tsMs) || tsMs < sinceMs) continue;
+      const metadata =
+        action.metadata && typeof action.metadata === "object"
+          ? (action.metadata as Record<string, unknown>)
+          : {};
+      const headingPath = Array.isArray(metadata.heading_path)
+        ? metadata.heading_path.filter((part): part is string => typeof part === "string")
+        : null;
+      actions.push({
+        agent_id: agentId,
+        agent_display_name: displayName,
+        method: action.method,
+        ts: action.ts,
+        doc_path: typeof metadata.doc_path === "string" ? metadata.doc_path : null,
+        heading_path: headingPath,
+      });
+    }
+  }
+
+  actions.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+  return { actions };
+}

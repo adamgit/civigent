@@ -65,6 +65,15 @@ export interface AgentMcpSessionRecord {
   actions: AgentMcpActionEntry[];
 }
 
+export interface AgentMcpPulseAction {
+  agent_id: string;
+  agent_display_name: string;
+  method: string;
+  ts: string;
+  doc_path: string | null;
+  heading_path: string[] | null;
+}
+
 export interface ImportStagingInfo {
   import_id: string;
   staging_path: string;
@@ -1251,6 +1260,10 @@ export const apiClient = {
 
   async getAgentsSummary(): Promise<GetAgentsFullSummaryResponse> {
     return requestJson<GetAgentsFullSummaryResponse>("/api/agents/summary");
+  },
+
+  async getAgentMcpPulse(hours = 24): Promise<{ actions: AgentMcpPulseAction[] }> {
+    return requestJson<{ actions: AgentMcpPulseAction[] }>(`/api/agents/mcp-pulse?hours=${hours}`);
   },
 
   async getBlame(docPath: DocPath, sectionFile: string): Promise<BlameResponse> {

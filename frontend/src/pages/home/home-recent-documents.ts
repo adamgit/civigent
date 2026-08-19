@@ -1,5 +1,5 @@
 import type { ActivityItem } from "../../types/shared.js";
-import { HOME_RECENT_DOC_LIMIT, HOME_RECENT_WINDOW_DAYS } from "./home-constants.js";
+import { HOME_RECENT_WINDOW_DAYS } from "./home-constants.js";
 import { folderPrefixOfDoc } from "./home-tree-stats.js";
 import { getDocDisplayName, headingText } from "../document-page-utils.js";
 import { DocPath } from "../../types/shared.js";
@@ -33,7 +33,9 @@ function sectionLabel(headingPath: string[]): string | null {
 }
 
 /**
- * One card per document touched in the window, newest first.
+ * One card per document touched in the window, newest first. Not sliced —
+ * the home section applies the per-column display limit after partitioning
+ * so a wide Yours/Everyone-else split can fill both lists.
  *
  * Activity items are committed proposals: they name the claimed heading paths
  * but do not record whether each path was a write, a create, or a move. Those
@@ -41,13 +43,21 @@ function sectionLabel(headingPath: string[]): string | null {
  * union into `sections`). Until a richer claim exists, every named heading is
  * shown as rewritten — the card still renders added/moved rows when a later
  * source fills those groups.
+ *
+ * `yours` is true when the current writer committed any proposal touching the
+ * document in the window — participation, not last-writer. That is the only
+ * durable, time-windowed, user-attributed signal the home page already has
+ * (`ActivityItem.writer_id` vs `currentUser.id`). Views (`ks_recent_docs`)
+ * have no timestamps and are device-local; live `document:activity` presence
+ * is current-session only; drafts and per-section git last-editor are not on
+ * this feed. A later collaborator or agent commit keeps the card in Yours
+ * (the badge already meant that) and still names whoever wrote last.
  */
 export function buildRecentDocuments(
   activity: ActivityItem[],
   currentWriterId: string | null,
   nowMs: number = Date.now(),
   windowDays: number = HOME_RECENT_WINDOW_DAYS,
-  limit: number = HOME_RECENT_DOC_LIMIT,
 ): HomeRecentDocument[] {
   const byDoc = new Map<
     string,
@@ -94,7 +104,21 @@ export function buildRecentDocuments(
   }
 
   docs.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
-  return docs.slice(0, limit);
+  return docs;
+}
+
+/** Partition newest-first recent docs into current-writer vs everyone else. */
+export function partitionRecentDocuments(documents: HomeRecentDocument[]): {
+  yours: HomeRecentDocument[];
+  others: HomeRecentDocument[];
+} {
+  const yours: HomeRecentDocument[] = [];
+  const others: HomeRecentDocument[] = [];
+  for (const doc of documents) {
+    if (doc.yours) yours.push(doc);
+    else others.push(doc);
+  }
+  return { yours, others };
 }
 
 export function countRecentDocuments(

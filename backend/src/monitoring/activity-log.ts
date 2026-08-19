@@ -159,6 +159,34 @@ export class ActivityLog {
   has(sessionId: string, agentId: string): boolean {
     return this.sessions.has(compoundActivityKey(agentId, sessionId));
   }
+
+  /**
+   * Copy in-flight session buffers as SessionRecord envelopes (ended_at = now).
+   * Does not flush or mutate — home/pulse reads live MCP calls that have not
+   * hit JSONL yet because the MCP session is still open.
+   */
+  snapshotInFlight(): SessionRecord[] {
+    const endedAt = new Date().toISOString();
+    const records: SessionRecord[] = [];
+    for (const [key, session] of this.sessions) {
+      const nul = key.indexOf("\u0000");
+      const sessionId = nul === -1 ? "" : key.slice(nul + 1);
+      records.push({
+        session_id: sessionId,
+        agent_id: session.agentId,
+        agent_display_name: session.agentDisplayName,
+        started_at: new Date(session.startedAt).toISOString(),
+        ended_at: endedAt,
+        action_count: session.actions.length,
+        actions: session.actions.map((action) => ({
+          method: action.method,
+          ts: action.ts,
+          metadata: { ...action.metadata },
+        })),
+      });
+    }
+    return records;
+  }
 }
 
 // Singleton instance

@@ -25,6 +25,7 @@ import {
   deleteAgent,
   rotateAgent,
   getAgentsSummary,
+  getAgentMcpPulse,
   getAcl,
   setAclDefaults,
   setDocAclEntry,
@@ -236,6 +237,16 @@ export function registerAdminRoutes(router: Router): void {
   router.get("/agents/summary", async (_req, res, next) => {
     try {
       res.json(await getAgentsSummary());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Home pulse: last-N-hours MCP calls (not admin-gated — humans watch agents).
+  router.get("/agents/mcp-pulse", async (req, res, next) => {
+    try {
+      const hours = Math.min(Math.max(Number(req.query.hours ?? 24), 1), 168);
+      res.json(await getAgentMcpPulse(hours));
     } catch (error) {
       next(error);
     }

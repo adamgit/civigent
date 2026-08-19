@@ -11,7 +11,7 @@ import { resolveWriterId } from "../services/api-client";
 import type { LocalEditOriginSink } from "../status/sessionAuthorship";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import { useSectionHover } from "../contexts/sectionHoverUtils";
-import { rewriteMarkdownDocHref } from "../app/docs-location";
+import { rewriteMarkdownContentHref } from "../app/docs-location";
 
 export interface DocumentSectionRendererProps {
   section: RenderSectionRef;
@@ -134,7 +134,7 @@ export function DocumentSectionRenderer({
   const crdtPaused = crdtBannerInfo(crdtState);
   const markdownComponents = {
     a({ node: _node, href, children, ...props }: React.ComponentProps<"a"> & { node?: unknown }) {
-      const resolvedHref = typeof href === "string" ? rewriteMarkdownDocHref(href) : null;
+      const resolvedHref = typeof href === "string" ? rewriteMarkdownContentHref(href) : null;
       if (resolvedHref) {
         return (
           <Link {...props} to={resolvedHref}>

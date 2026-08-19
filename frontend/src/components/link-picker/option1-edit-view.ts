@@ -46,8 +46,7 @@ export class Option1LinkEditView implements PluginView {
   ) {
     const content = document.createElement("div");
     // `.milkdown-link-edit` reuses the crepe link-tooltip chrome/positioning; the
-    // second class marks it as the Option 1 variant and is also the click-guard
-    // hook (see MilkdownEditor's document-link click handler).
+    // second class marks it as the Option 1 picker variant (picker-only chrome).
     content.className = "milkdown-link-edit milkdown-link-edit-option1";
     this.#content = content;
     this.#root = createRoot(content);

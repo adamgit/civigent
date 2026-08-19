@@ -3,6 +3,7 @@ import { Link, useOutletContext } from "react-router-dom";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { apiClient, resolveWriterId } from "../services/api-client";
+import { KnowledgeStoreWsClient } from "../services/ws-client";
 import { type AgentActivitySummary, type ActivityItem, type AnyProposal, type HumanInvolvementPresetName } from "../types/shared.js";
 import { useDocLayoutMode } from "../hooks/useDocLayoutMode";
 import { HomeNarrowLayout } from "./home/HomeNarrowLayout";
@@ -21,6 +22,9 @@ import { countTreeTotals } from "./home/home-tree-stats";
 import { buildActiveFolders, buildAllDocsFolder } from "./home/home-folder-activity";
 import { buildRecentDocuments, countRecentDocuments } from "./home/home-recent-documents";
 import { buildAgentActivityRows } from "./home/home-agent-activity";
+import { buildAgentTasks } from "../components/home/experiment/build-agent-tasks";
+import { PULSE_FETCH_HOURS } from "../components/home/experiment/build-pulse-hours";
+import type { HomeMcpPulseAction } from "../components/home/experiment/types";
 import { formatHomeTime } from "./home/home-time";
 
 export function HomePage() {
@@ -58,6 +62,9 @@ export function HomePage() {
   const [proposals, setProposals] = useState<AnyProposal[]>([]);
   const [recentWindowId, setRecentWindowId] = useState<HomeRecentWindowId>(readHomeRecentWindow);
   const [proposalsError, setProposalsError] = useState<string | null>(null);
+  const [mcpActions, setMcpActions] = useState<HomeMcpPulseAction[]>([]);
+  const [pulseError, setPulseError] = useState<string | null>(null);
+  const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -136,6 +143,94 @@ export function HomePage() {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .getAgentMcpPulse(PULSE_FETCH_HOURS)
+      .then((res) => {
+        if (!cancelled) {
+          const fromServer = res.actions ?? [];
+          setMcpActions((prev) => {
+            const seen = new Set(
+              fromServer.map((action) => `${action.agent_id}\0${action.ts}\0${action.method}\0${action.doc_path ?? ""}`),
+            );
+            const live = prev.filter(
+              (action) => !seen.has(`${action.agent_id}\0${action.ts}\0${action.method}\0${action.doc_path ?? ""}`),
+            );
+            return live.length === 0 ? fromServer : [...fromServer, ...live];
+          });
+          setPulseError(null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setMcpActions([]);
+          setPulseError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    wsClient.connect();
+    let refreshTimer: number | null = null;
+    const refreshFeeds = () => {
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        apiClient
+          .getActivity(HOME_ACTIVITY_FETCH_LIMIT, HOME_ACTIVITY_FETCH_DAYS)
+          .then((res) => {
+            setActivity(res.items);
+            setActivityError(null);
+          })
+          .catch((err) => { setActivityError(err instanceof Error ? err.message : String(err)); });
+        apiClient
+          .listProposals()
+          .then((res) => {
+            setProposals(res.proposals);
+            setProposalsError(null);
+          })
+          .catch((err) => { setProposalsError(err instanceof Error ? err.message : String(err)); });
+        apiClient
+          .getAgentsSummary()
+          .then((res) => {
+            setInvolvementPreset(res.posture.preset);
+            setAgents(res.agents);
+            setAgentsError(null);
+          })
+          .catch((err) => { setAgentsError(err instanceof Error ? err.message : String(err)); });
+      }, 180);
+    };
+    wsClient.onEvent((event) => {
+      if (event.type === "agent:reading") {
+        setMcpActions((prev) => [
+          ...prev,
+          {
+            agent_id: event.actor_id,
+            agent_display_name: event.actor_display_name,
+            method: "read_doc",
+            ts: new Date().toISOString(),
+            doc_path: event.doc_path,
+            heading_path: event.heading_paths[0] ?? null,
+          },
+        ]);
+        return;
+      }
+      if (
+        event.type === "content:committed" ||
+        event.type === "proposal:draft" ||
+        event.type === "proposal:inprogress" ||
+        event.type === "proposal:withdrawn"
+      ) {
+        refreshFeeds();
+      }
+    });
+    return () => {
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      wsClient.disconnect();
+    };
+  }, [wsClient]);
+
   const handleBootstrap = async () => {
     setBootstrapWorking(true);
     setBootstrapMessage(null);
@@ -175,6 +270,10 @@ export function HomePage() {
   const agentRows = useMemo(
     () => buildAgentActivityRows(agents, formatHomeTime),
     [agents],
+  );
+  const agentTasks = useMemo(
+    () => buildAgentTasks(proposals, mcpActions, agents, activity),
+    [proposals, mcpActions, agents, activity],
   );
 
   const alerts = (
@@ -262,7 +361,6 @@ export function HomePage() {
     hostLabel: homeHostLabel(),
     involvementPreset,
     folders: activeFolders,
-    agentRows,
     recentDocuments,
     recentDocumentTotal,
     alerts,
@@ -273,6 +371,7 @@ export function HomePage() {
     return (
       <HomeNarrowLayout
         {...layoutProps}
+        agentRows={agentRows}
         folderCount={treeTotals.folderCount}
         documentCount={treeTotals.documentCount}
       />
@@ -290,6 +389,10 @@ export function HomePage() {
       }}
       sidebarAutoHide={sidebarAutoHide}
       setSidebarAutoHide={setSidebarAutoHide}
+      mcpActions={mcpActions}
+      pulseActivity={activity}
+      agentTasks={agentTasks}
+      pulseError={pulseError}
     />
   );
 }

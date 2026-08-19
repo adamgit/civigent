@@ -52,6 +52,7 @@ import { EditorLifecycleController } from "../services/editor-lifecycle";
 import { installAttachEchoGuard } from "../services/ysync-attach-echo-guard";
 import { FirstSyncReadyLatch } from "../services/first-sync-ready-latch";
 import { installLinkPicker } from "./link-picker/install-link-picker";
+import { installLinkHrefBridge } from "./install-link-href-bridge";
 
 /**
  * Custom cursor builder for yCursorPlugin.
@@ -492,6 +493,8 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     // Replaces the stock link-edit tooltip with the React popup that offers
     // workspace document-path autocomplete (runs after Crepe's LinkTooltip configure).
     installLinkPicker(crepe.editor);
+
+    installLinkHrefBridge(crepe.editor);
 
     // ── Cross-section cursor exit keymap ────────────────
 

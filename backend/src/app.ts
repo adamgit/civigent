@@ -40,6 +40,7 @@ export function createApp(options?: CreateAppOptions) {
       }
       const { stream, version } = await buildExportedSkillsZip();
       res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="${exportedSkillsConfig.zipName}"`);
       res.setHeader("Cache-Control", "no-store");
       res.setHeader("ETag", version);
       stream.pipe(res);

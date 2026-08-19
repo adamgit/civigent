@@ -4,6 +4,13 @@ export const HOME_RECENT_WINDOW_DAYS = 7;
 export const HOME_RECENT_DOC_LIMIT = 6;
 export const HOME_AGENT_ROW_LIMIT = 8;
 
+/**
+ * When the recent-documents section is at least this wide, cards split into
+ * Yours / Everyone else columns instead of one mixed list. Significantly
+ * wider than the 750px card cap so a second column is usable.
+ */
+export const HOME_RECENT_SPLIT_MIN_PX = 1000;
+
 /** Fetch the widest toggle option so 24h / 7d / 30d can filter client-side. */
 export const HOME_ACTIVITY_FETCH_DAYS = 30;
 export const HOME_ACTIVITY_FETCH_LIMIT = 500;

@@ -287,7 +287,7 @@ export function AdminPage() {
 
         <Card
           title="Exported Skills Plugin"
-          subtitle="Public Claude Code plugin ZIP built from a content-tree folder (canonical/published only)."
+          subtitle="Public Claude Code plugin ZIP built from a content-tree folder (canonical/published only). Same zip for Claude.ai plugin upload."
         >
           {!adminConfig ? (
             <ConfigCardFallback configLoaded={configLoaded} configError={configError} />

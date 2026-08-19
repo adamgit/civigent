@@ -1,7 +1,6 @@
 import { useMemo, type ReactNode } from "react";
-import type { HumanInvolvementPresetName } from "../../types/shared.js";
+import type { ActivityItem, HumanInvolvementPresetName } from "../../types/shared.js";
 import type { HomeActiveFolder } from "./home-folder-activity";
-import type { HomeAgentActivityRowModel } from "./home-agent-activity";
 import type { HomeRecentDocument } from "./home-recent-documents";
 import type { HomeRecentWindowId } from "./home-constants";
 import { HomeHeader } from "../../components/home/HomeHeader";
@@ -12,8 +11,9 @@ import { HomeFocusBrowseSlide } from "../../components/home/HomeFocusBrowseSlide
 import { HomeSingleUserSlide } from "../../components/home/HomeSingleUserSlide";
 import { HomeSearchBar } from "../../components/home/HomeSearchBar";
 import { HomeActiveFoldersSection } from "../../components/home/HomeActiveFoldersSection";
-import { HomeAgentActivitySection } from "../../components/home/HomeAgentActivitySection";
 import { HomeRecentDocumentsSection } from "../../components/home/HomeRecentDocumentsSection";
+import { HomeAgentExperimentRow } from "../../components/home/experiment/HomeAgentExperimentRow";
+import type { HomeAgentTask, HomeMcpPulseAction } from "../../components/home/experiment/types";
 import "./home.css";
 
 interface HomeWideLayoutProps {
@@ -22,7 +22,6 @@ interface HomeWideLayoutProps {
   involvementPreset: HumanInvolvementPresetName | null;
   folders: HomeActiveFolder[];
   allDocsFolder: HomeActiveFolder;
-  agentRows: HomeAgentActivityRowModel[];
   recentDocuments: HomeRecentDocument[];
   recentDocumentTotal: number;
   recentWindowId: HomeRecentWindowId;
@@ -31,6 +30,10 @@ interface HomeWideLayoutProps {
   singleUser: boolean;
   sidebarAutoHide: boolean;
   setSidebarAutoHide: (autoHide: boolean) => void;
+  mcpActions: HomeMcpPulseAction[];
+  pulseActivity: ActivityItem[];
+  agentTasks: HomeAgentTask[];
+  pulseError: string | null;
 }
 
 export function HomeWideLayout({
@@ -39,7 +42,6 @@ export function HomeWideLayout({
   involvementPreset,
   folders,
   allDocsFolder,
-  agentRows,
   recentDocuments,
   recentDocumentTotal,
   recentWindowId,
@@ -48,6 +50,10 @@ export function HomeWideLayout({
   singleUser,
   sidebarAutoHide,
   setSidebarAutoHide,
+  mcpActions,
+  pulseActivity,
+  agentTasks,
+  pulseError,
 }: HomeWideLayoutProps) {
   const slides = useMemo<HomeCarouselSlide[]>(() => {
     const items: HomeCarouselSlide[] = [
@@ -92,7 +98,12 @@ export function HomeWideLayout({
       </div>
       <div className="home-wide__body sidebar-scroll">
         {alerts}
-        <HomeCarousel slides={slides} />
+        <HomeAgentExperimentRow
+          actions={mcpActions}
+          activity={pulseActivity}
+          tasks={agentTasks}
+          pulseError={pulseError}
+        />
         <HomeSearchBar />
         <HomeActiveFoldersSection folders={folders} allDocsFolder={allDocsFolder} layoutMode="wide" />
         <div className="home-wide__bottom">
@@ -103,7 +114,7 @@ export function HomeWideLayout({
             windowId={recentWindowId}
             onWindowChange={onRecentWindowChange}
           />
-          <HomeAgentActivitySection rows={agentRows} layoutMode="wide" />
+          <HomeCarousel slides={slides} />
         </div>
       </div>
     </div>

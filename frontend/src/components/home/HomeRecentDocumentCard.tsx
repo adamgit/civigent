@@ -1,5 +1,4 @@
 import { Link } from "react-router-dom";
-import type { DocLayoutMode } from "../../hooks/useDocLayoutMode";
 import { docHref } from "../../app/docs-location";
 import { DocPath } from "../../types/shared.js";
 import type { HomeDocChangeKind, HomeRecentDocument } from "../../pages/home/home-recent-documents";
@@ -7,7 +6,8 @@ import { formatHomeTime } from "../../pages/home/home-time";
 
 interface HomeRecentDocumentCardProps {
   document: HomeRecentDocument;
-  layoutMode?: DocLayoutMode;
+  /** When false, the YOURS badge/bar are omitted (the column header already says it). */
+  showYoursMark?: boolean;
 }
 
 const BADGE_LABEL: Record<HomeDocChangeKind, string> = {
@@ -18,15 +18,16 @@ const BADGE_LABEL: Record<HomeDocChangeKind, string> = {
 
 export function HomeRecentDocumentCard({
   document: doc,
-  layoutMode: _layoutMode = "narrow",
+  showYoursMark = true,
 }: HomeRecentDocumentCardProps) {
   const parsed = DocPath.tryParse(doc.docPath);
+  const markYours = showYoursMark && doc.yours;
   const body = (
     <>
-      {doc.yours ? <span className="home-doc-card__yours-bar" aria-hidden="true" /> : null}
+      {markYours ? <span className="home-doc-card__yours-bar" aria-hidden="true" /> : null}
       <div className="home-doc-card__title-row">
         <span className="home-doc-card__title">{doc.title}</span>
-        {doc.yours ? <span className="home-doc-card__yours">YOURS</span> : null}
+        {markYours ? <span className="home-doc-card__yours">YOURS</span> : null}
       </div>
       <div className="home-doc-card__meta">
         {doc.folderPrefix} {"\u00b7"} {doc.writerName} {"\u00b7"} {formatHomeTime(doc.timestamp, "compact")}
@@ -46,7 +47,7 @@ export function HomeRecentDocumentCard({
     </>
   );
 
-  const className = `home-card home-doc-card${doc.yours ? " home-doc-card--yours" : ""}`;
+  const className = `home-card home-doc-card${markYours ? " home-doc-card--yours" : ""}`;
   if (!parsed) {
     return <div className={className}>{body}</div>;
   }

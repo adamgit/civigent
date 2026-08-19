@@ -187,13 +187,17 @@ Wiring and `backup-secrets/` layout: [Backup, Restore, and Import — Private Gi
 
 ### Exported skills plugin (optional)
 
-Civigent can serve a Claude Code plugin ZIP built from a content-tree folder (canonical/published content only — not live or workspace drafts). Requires Claude Code ≥ v2.1.128.
+Civigent can serve a Claude plugin ZIP built from a content-tree folder (canonical/published content only — not live or workspace drafts).
 
 **URL:** `https://<host>/exported/<zip name>` (default `/exported/skills.zip`)
+
+Claude Code (≥ v2.1.128) loads it for a session:
 
 ```bash
 claude --plugin-url https://<host>/exported/skills.zip
 ```
+
+Claude.ai uploads the same ZIP as a plugin (**Customize → Plugins → Upload**).
 
 Commands and skills are invoked as `/<plugin name>:<name>` (default prefix `/civ`).
 

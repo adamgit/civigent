@@ -2,10 +2,12 @@
  * apply-link-mark — confirm path for the link document-path picker. Mirrors the
  * stock Milkdown `LinkEditTooltip#confirmEdit` semantics:
  *
- *   1. sanitize the raw href with DOMPurify (same safety as stock),
- *   2. if editing an existing mark and the sanitized href is unchanged, reset
+ *   1. collapse a rendered app URL (`/docs/…` pathname or same-origin absolute)
+ *      to its stored content-root form, so `/docs` never enters the mark attrs,
+ *   2. sanitize the href with DOMPurify (same safety as stock),
+ *   3. if editing an existing mark and the resulting href is unchanged, reset
  *      without dispatching a transaction,
- *   3. otherwise remove the old link mark (when editing) and addMark a fresh
+ *   4. otherwise remove the old link mark (when editing) and addMark a fresh
  *      commonmark `link` mark for [from, to], then dispatch.
  */
 
@@ -14,6 +16,8 @@ import type { EditorView } from "@milkdown/prose/view";
 import type { Mark } from "@milkdown/prose/model";
 import { linkSchema } from "@milkdown/preset-commonmark";
 import DOMPurify from "dompurify";
+
+import { storedContentHrefFromRendered } from "../../app/docs-location";
 
 /**
  * Apply (or update) a commonmark `link` mark over [from, to].
@@ -34,7 +38,7 @@ export function applyLinkMark(
   rawHref: string,
 ): void {
   const type = linkSchema.type(ctx);
-  const href = DOMPurify.sanitize(rawHref);
+  const href = DOMPurify.sanitize(storedContentHrefFromRendered(rawHref));
 
   // Unchanged-href reset: editing an existing mark whose href already equals the
   // sanitized value — no-op, matching stock (no transaction dispatched).

@@ -1,5 +1,4 @@
-import { type ReactNode, useState } from "react";
-import { CIVIGENT_GITHUB_URL } from "../../pages/home/home-constants";
+import { type ReactNode, useEffect, useState } from "react";
 
 export interface HomeCarouselSlide {
   id: string;
@@ -11,12 +10,22 @@ interface HomeCarouselProps {
   slides: HomeCarouselSlide[];
 }
 
+const CYCLE_MS = 8000;
+
 export function HomeCarousel({ slides }: HomeCarouselProps) {
   const [index, setIndex] = useState(0);
+
+  useEffect(() => {
+    if (slides.length < 2) return;
+    const timer = window.setInterval(() => {
+      setIndex((current) => (current + 1) % slides.length);
+    }, CYCLE_MS);
+    return () => window.clearInterval(timer);
+  }, [slides.length]);
+
   if (slides.length === 0) return null;
 
-  const current = slides[index]!;
-  const next = slides[(index + 1) % slides.length]!;
+  const current = slides[index] ?? slides[0]!;
 
   return (
     <div className="home-carousel">
@@ -37,22 +46,6 @@ export function HomeCarousel({ slides }: HomeCarouselProps) {
             ))}
           </div>
         ) : null}
-      </div>
-      <div className="home-carousel__side">
-        {slides.length > 1 ? (
-          <button
-            type="button"
-            className="home-card home-mini-card"
-            onClick={() => setIndex((i) => (i + 1) % slides.length)}
-          >
-            <span className="home-mini-card__kicker">Next</span>
-            <span className="home-mini-card__title">{next.title}</span>
-          </button>
-        ) : null}
-        <a href={CIVIGENT_GITHUB_URL} className="home-card home-mini-card">
-          <span className="home-mini-card__kicker">GitHub</span>
-          <span className="home-mini-card__title">adamgit/civigent {"\u2192"}</span>
-        </a>
       </div>
     </div>
   );

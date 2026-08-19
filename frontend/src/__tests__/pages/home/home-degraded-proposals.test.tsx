@@ -79,6 +79,9 @@ function jsonFor(url: string, degraded: unknown) {
   if (url.includes("/api/auth/methods")) {
     return jsonResponse({ bootstrap_available: false });
   }
+  if (url.includes("/api/agents/mcp-pulse")) {
+    return jsonResponse({ actions: [] });
+  }
   return jsonResponse({});
 }
 
@@ -113,7 +116,7 @@ describe("HomePage degraded-proposal alert", () => {
     renderHome();
 
     await waitFor(() => {
-      expect(screen.getByText("Focus or Browse")).toBeTruthy();
+      expect(screen.getByText("Agent pulse")).toBeTruthy();
     });
     expect(screen.queryByTestId("degraded-proposals-alert")).toBeNull();
   });

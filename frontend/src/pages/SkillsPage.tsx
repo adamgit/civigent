@@ -10,6 +10,7 @@ import type { AdminConfig, DocumentTreeEntry } from "../types/shared.js";
 import { DocPath, FolderPath } from "../types/shared.js";
 
 type SkillKind = "slash-command" | "agent-skill";
+type InstallClient = "claude-code" | "claude-ai";
 
 interface CatalogEntry {
   kind: SkillKind;
@@ -92,6 +93,7 @@ export function SkillsPage() {
   const [adminConfig, setAdminConfig] = useState<AdminConfig | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
   const [installCopied, setInstallCopied] = useState(false);
+  const [installClient, setInstallClient] = useState<InstallClient>("claude-code");
   const [skillName, setSkillName] = useState("");
   const [skillKind, setSkillKind] = useState<SkillKind>("slash-command");
   const [creating, setCreating] = useState(false);
@@ -115,6 +117,7 @@ export function SkillsPage() {
   const installCommand = adminConfig
     ? `claude --plugin-url ${adminConfig.exportedSkills.plugin_url}`
     : null;
+  const zipPath = adminConfig?.exportedSkills.zip_path ?? null;
 
   const handleCopyInstall = async () => {
     if (!installCommand) return;
@@ -231,44 +234,97 @@ export function SkillsPage() {
           <ContentPanel>
             <ContentPanel.Body>
               <p className="text-[14px] text-text-primary leading-relaxed m-0">
-                This site automatically turns documents in{" "}
+                Documents in{" "}
                 <code className="font-mono text-[13px] px-1.5 py-0.5 rounded bg-accent-light text-accent-text">
                   {folder}
                 </code>{" "}
-                into Claude Code skills. Top-level markdown files become slash commands; folders that
+                are exported as a Claude plugin. Top-level markdown files become slash commands; folders that
                 contain a <code className="font-mono text-[12px]">SKILL.md</code> become agent skills.
               </p>
             </ContentPanel.Body>
           </ContentPanel>
 
           <ContentPanel>
-            <ContentPanel.Header>
+            <ContentPanel.Header className="flex-wrap gap-2">
               <div>
-                <ContentPanel.Title>Start Claude Code with these skills</ContentPanel.Title>
-                <ContentPanel.Subtitle>
-                  Not a one-time install — use this instead of plain{" "}
-                  <code className="font-mono">claude</code> whenever you want the skills loaded.
-                  Claude fetches the plugin for that session only.
-                </ContentPanel.Subtitle>
+                {installClient === "claude-code" ? (
+                  <>
+                    <ContentPanel.Title>Start Claude Code with these skills</ContentPanel.Title>
+                    <ContentPanel.Subtitle>
+                      Use this instead of plain <code className="font-mono">claude</code> whenever you want
+                      the skills loaded. Claude fetches the plugin for that session only.
+                    </ContentPanel.Subtitle>
+                  </>
+                ) : (
+                  <>
+                    <ContentPanel.Title>Upload this as a plugin on Claude.ai</ContentPanel.Title>
+                    <ContentPanel.Subtitle>Customize → Plugins.</ContentPanel.Subtitle>
+                  </>
+                )}
+              </div>
+              <div
+                role="tablist"
+                aria-label="Install client"
+                className="flex gap-1 shrink-0"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={installClient === "claude-code"}
+                  className={`px-2.5 py-1.5 text-[13px] bg-transparent border-0 border-b-2 cursor-pointer whitespace-nowrap ${
+                    installClient === "claude-code"
+                      ? "border-accent text-accent font-semibold"
+                      : "border-transparent text-text-secondary font-normal"
+                  }`}
+                  onClick={() => setInstallClient("claude-code")}
+                >
+                  Claude Code
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={installClient === "claude-ai"}
+                  className={`px-2.5 py-1.5 text-[13px] bg-transparent border-0 border-b-2 cursor-pointer whitespace-nowrap ${
+                    installClient === "claude-ai"
+                      ? "border-accent text-accent font-semibold"
+                      : "border-transparent text-text-secondary font-normal"
+                  }`}
+                  onClick={() => setInstallClient("claude-ai")}
+                >
+                  Claude.ai
+                </button>
               </div>
             </ContentPanel.Header>
             <ContentPanel.Body>
               {configError ? (
                 <p className="text-error m-0">{configError}</p>
-              ) : !installCommand ? (
-                <p className="text-[13px] text-text-muted m-0">Loading launch command…</p>
+              ) : installClient === "claude-code" ? (
+                !installCommand ? (
+                  <p className="text-[13px] text-text-muted m-0">Loading launch command…</p>
+                ) : (
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                    <code className="font-mono text-[12px] sm:text-[13px] text-text-primary bg-section-hover border border-footer-border rounded-md px-3 py-2.5 flex-1 min-w-0 break-all">
+                      {installCommand}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyInstall()}
+                      className="btn-secondary shrink-0"
+                    >
+                      {installCopied ? "Copied" : "Copy"}
+                    </button>
+                  </div>
+                )
+              ) : !zipPath ? (
+                <p className="text-[13px] text-text-muted m-0">Loading…</p>
               ) : (
-                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                  <code className="font-mono text-[12px] sm:text-[13px] text-text-primary bg-section-hover border border-footer-border rounded-md px-3 py-2.5 flex-1 min-w-0 break-all">
-                    {installCommand}
-                  </code>
-                  <button
-                    type="button"
-                    onClick={() => void handleCopyInstall()}
-                    className="btn-secondary shrink-0"
-                  >
-                    {installCopied ? "Copied" : "Copy"}
-                  </button>
+                <div className="flex flex-col gap-3">
+                  <a href={zipPath} download className="btn-secondary no-underline self-start">
+                    Download zip
+                  </a>
+                  <p className="text-[13px] text-text-secondary m-0 leading-relaxed">
+                    Re-upload after you publish changes.
+                  </p>
                 </div>
               )}
             </ContentPanel.Body>
@@ -339,10 +395,8 @@ export function SkillsPage() {
           <ContentPanel>
             <ContentPanel.Body>
               <p className="text-[13px] text-text-secondary leading-relaxed m-0">
-                After you write or change a skill, <strong className="font-medium text-text-primary">publish</strong> it
-                so it appears in the exported plugin. Then start a new Claude Code session with the launch command above
-                (or run <code className="font-mono text-[12px]">/reload-plugins</code> in an already-running session)
-                so the updated skills show up.
+                Publish a skill before it appears in the zip. For Claude Code, start a new session or run{" "}
+                <code className="font-mono text-[12px]">/reload-plugins</code>. For Claude.ai, upload the zip again.
               </p>
             </ContentPanel.Body>
           </ContentPanel>

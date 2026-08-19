@@ -60,7 +60,7 @@ export function docsRouteForStoredPath(rawPath: string | undefined | null): stri
   return docHref(docPath);
 }
 
-export function rewriteMarkdownDocHref(href: string): string | null {
+export function rewriteMarkdownContentHref(href: string): string | null {
   if (!href.startsWith("/")) {
     return null;
   }
@@ -76,10 +76,52 @@ export function rewriteMarkdownDocHref(href: string): string | null {
     decodedPath = rawPath;
   }
 
-  if (!/\.md$/i.test(decodedPath)) {
+  const docRoute = docsRouteForStoredPath(decodedPath);
+  if (docRoute) {
+    return `${docRoute}${suffix}`;
+  }
+  if (isFileShapedPath(decodedPath)) {
     return null;
   }
 
-  const route = docsRouteForStoredPath(decodedPath);
-  return route ? `${route}${suffix}` : null;
+  const folderPath = FolderPath.tryParse(decodedPath);
+  return folderPath ? `${folderHref(folderPath)}${suffix}` : null;
+}
+
+function isFileShapedPath(decodedPath: string): boolean {
+  return /\.md$/i.test(decodedPath);
+}
+
+export function storedContentHrefFromRendered(href: string): string {
+  let pathname: string;
+  let suffix: string;
+  if (href.startsWith("/")) {
+    const suffixStart = href.search(/[?#]/);
+    pathname = suffixStart >= 0 ? href.slice(0, suffixStart) : href;
+    suffix = suffixStart >= 0 ? href.slice(suffixStart) : "";
+  } else {
+    let url: URL;
+    try {
+      url = new URL(href);
+    } catch {
+      return href;
+    }
+    if (url.origin !== window.location.origin) {
+      return href;
+    }
+    pathname = url.pathname;
+    suffix = `${url.search}${url.hash}`;
+  }
+
+  const location = DocsLocation.fromPathname(pathname);
+  if (!location || location.kind === "invalid") {
+    return href;
+  }
+  if (location.kind === "doc") {
+    return `${location.docPath}${suffix}`;
+  }
+  if (isFileShapedPath(location.folderPath)) {
+    return href;
+  }
+  return `${location.folderPath}${suffix}`;
 }
