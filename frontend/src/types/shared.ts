@@ -113,6 +113,7 @@ export type {
   ProposalStatus,
   ProposalDefect,
   ReadDocStructureResponse,
+  ReadAdminProposalResponse,
   ReadProposalResponse,
   ReadSectionResponse,
   SectionMeta,

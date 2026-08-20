@@ -240,6 +240,16 @@ async function locateProposal(id: ProposalId): Promise<{ status: ProposalStatus;
   throw new ProposalNotFoundError(`Proposal not found: ${id}`);
 }
 
+export async function readRawProposalMeta(
+  id: ProposalId,
+): Promise<{ status: ProposalStatus; rawMeta: string }> {
+  const located = await locateProposal(id);
+  return {
+    status: located.status,
+    rawMeta: await readFile(located.filePath, "utf8"),
+  };
+}
+
 /**
  * Project a decoded proposal domain object back to its on-disk file shape by
  * dropping the directory-derived `status` (which is NEVER stored in `meta.json`).

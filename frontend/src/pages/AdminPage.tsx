@@ -94,7 +94,7 @@ export function AdminPage() {
     setError(null);
     try {
       const [proposalsRes, activityRes, sessionRes, snapshotRes] = await Promise.all([
-        apiClient.listProposals(),
+        apiClient.listAdminProposals(),
         apiClient.getActivity(50, 7),
         apiClient.getSessionInfo(),
         apiClient.getAdminSnapshotHealth(),

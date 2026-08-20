@@ -1929,6 +1929,20 @@ export interface ReadProposalResponse {
   proposal: ProposalDTO;
 }
 
+export type ReadAdminProposalResponse =
+  | {
+      mode: "full";
+      proposal: ProposalDTO;
+    }
+  | {
+      mode: "raw-fallback";
+      proposal_id: ProposalId;
+      status: ProposalStatus | null;
+      raw_meta: string | null;
+      read_error: string;
+      raw_read_error?: string;
+    };
+
 /**
  * Result of listing proposals for UI/agent surfaces that must survive corrupt meta.
  * `proposals` are successfully decoded; `undecodable` are files that failed strict

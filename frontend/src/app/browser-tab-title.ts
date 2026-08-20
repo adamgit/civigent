@@ -42,10 +42,10 @@ function titleForSpecialRoute(pathname: string): string {
   if (pathname === "/recent-docs") {
     return "Recent Documents";
   }
-  if (pathname === "/proposals") {
+  if (pathname === "/admin/proposals") {
     return "Proposals";
   }
-  if (pathname.startsWith("/proposals/")) {
+  if (pathname.startsWith("/admin/proposals/")) {
     return "Proposal Detail";
   }
   if (pathname === "/admin") {

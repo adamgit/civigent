@@ -7,6 +7,7 @@ import type {
   ProposalDefect,
   HumanInvolvementPolicyResult,
   HumanInvolvementTargetDetails,
+  ReadAdminProposalResponse,
 } from "../types/shared.js";
 import {
   proposalDeletedSectionFileDocPathForDisplay,
@@ -136,6 +137,9 @@ function ProposalTruthPanel({ proposal }: { proposal: ProposalDTO }) {
 export function ProposalDetailPage() {
   const { id } = useParams();
   const [proposal, setProposal] = useState<ProposalDTO | null>(null);
+  const [rawFallback, setRawFallback] = useState<
+    Extract<ReadAdminProposalResponse, { mode: "raw-fallback" }> | null
+  >(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
@@ -159,9 +163,15 @@ export function ProposalDetailPage() {
     }
     setLoading(true);
     setError(null);
+    setRawFallback(null);
     try {
-      const response = await apiClient.getProposal(id);
-      setProposal(response.proposal);
+      const response = await apiClient.getAdminProposal(id);
+      if (response.mode === "full") {
+        setProposal(response.proposal);
+      } else {
+        setProposal(null);
+        setRawFallback(response);
+      }
       setLoading(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -219,6 +229,24 @@ export function ProposalDetailPage() {
     }
   }, [loadProposal, proposal]);
 
+  const handleRawForceCancel = useCallback(async () => {
+    if (!rawFallback) return;
+    if (!window.confirm(`Force cancel proposal ${rawFallback.proposal_id}? This cannot be undone.`)) return;
+    setActionBusy(true);
+    setError(null);
+    try {
+      await apiClient.forceCancelProposal(
+        rawFallback.proposal_id,
+        "Force-cancelled from the admin raw proposal fallback.",
+      );
+      await loadProposal();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(false);
+    }
+  }, [loadProposal, rawFallback]);
+
   // Affected documents derive from the authoritative `targets` claim set (not
   // `sections`), so document-level targets with no sections are still surfaced.
   const affectedDocs = proposal
@@ -227,10 +255,79 @@ export function ProposalDetailPage() {
 
   return (
     <section>
-      <SharedPageHeader title="Proposal Detail" backTo="/proposals" />
+      <SharedPageHeader title="Proposal Detail" backTo="/admin/proposals" />
       <p>Proposal ID: {id ?? "(unknown)"}</p>
       {loading ? <p>Loading proposal...</p> : null}
       {error ? <p className="text-error">{error}</p> : null}
+      {rawFallback ? (
+        <div
+          role="alert"
+          className="mx-4 my-4 overflow-hidden rounded-lg border-2 border-red-600 bg-red-50 shadow-sm"
+        >
+          <div className="bg-red-700 px-4 py-3 text-white">
+            <div className="text-lg font-bold uppercase tracking-wide">
+              Raw diagnostic fallback
+            </div>
+            <p className="mt-1 text-sm leading-5">
+              The normal proposal view crashed while interpreting this proposal. This is a
+              known, handled fallback: no proposal content was rendered or silently omitted.
+            </p>
+          </div>
+
+          <div className="space-y-4 p-4">
+            <section>
+              <h2 className="m-0 text-sm font-bold text-red-900">Handled read failure</h2>
+              <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded border border-red-300 bg-white p-3 text-xs text-red-950">
+                {rawFallback.read_error}
+              </pre>
+            </section>
+
+            {rawFallback.raw_read_error ? (
+              <section>
+                <h2 className="m-0 text-sm font-bold text-red-900">
+                  Raw metadata could not be read
+                </h2>
+                <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-red-300 bg-white p-3 text-xs text-red-950">
+                  {rawFallback.raw_read_error}
+                </pre>
+              </section>
+            ) : null}
+
+            <section>
+              <h2 className="m-0 text-sm font-bold text-slate-900">Uninterpreted metadata</h2>
+              <p className="my-1 text-xs text-slate-700">
+                Directory status: <strong>{rawFallback.status ?? "unknown"}</strong>. The text
+                below is the stored <code>meta.json</code> exactly as read from disk.
+              </p>
+              <pre className="mt-2 max-h-[32rem] overflow-auto whitespace-pre-wrap rounded border border-slate-300 bg-slate-950 p-3 text-xs text-slate-100">
+                {rawFallback.raw_meta ?? "Raw metadata is unavailable."}
+              </pre>
+            </section>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => void loadProposal()}
+                disabled={actionBusy || loading}
+              >
+                Retry normal view
+              </button>
+              {(rawFallback.status === "draft"
+                || rawFallback.status === "pending"
+                || rawFallback.status === "inprogress") ? (
+                <button
+                  type="button"
+                  onClick={() => void handleRawForceCancel()}
+                  disabled={actionBusy}
+                  className="rounded border border-red-700 bg-red-700 px-3 py-1.5 font-semibold text-white disabled:opacity-60"
+                >
+                  {actionBusy ? "Force cancelling…" : "Force cancel proposal"}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
       {proposal ? (
         <>
           {proposal.degraded && proposal.degraded.length > 0 ? (

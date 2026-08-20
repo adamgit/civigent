@@ -17,6 +17,7 @@ import type {
   GetAdminRuntimeMemoryResponse,
   GetAdminSnapshotHealthResponse,
   GetAdminSnapshotHistoryResponse,
+  ReadAdminProposalResponse,
   RunAdminContentIntegrityScanResponse,
   RunAdminGitBackupResponse,
   RunAdminGitRestoreResponse,
@@ -71,12 +72,15 @@ import {
 } from "../../auth/agent-keys.js";
 import {
   listProposalsToleratingUndecodable,
+  readRawProposalMeta,
   readActiveProposal,
   rewriteProposalMeta,
+  transitionToWithdrawn,
+  InvalidProposalStateError,
   ProposalNotFoundError,
 } from "../../storage/proposal-repository.js";
 import { findProposalDefectDetector } from "../../domain/proposal-defect-detectors.js";
-import type { ActiveProposal, AnyProposal } from "../../types/shared.js";
+import type { ActiveProposal, AnyProposal, ProposalTargetRef } from "../../types/shared.js";
 import path from "node:path";
 import type { GetHeatmapResponse, HeatmapEntry } from "../../types/shared.js";
 import { readDocumentsTreeUnfiltered } from "../../storage/documents-tree.js";
@@ -93,12 +97,15 @@ import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { DocPath } from "../../types/shared.js";
+import { readProposalDto } from "./proposals.js";
 
 export {
   AdminConfigValidationError,
   SnapshotGenerationDisabledError,
   SnapshotRootNotWritableError,
   GitBackupOperationError,
+  InvalidProposalStateError,
+  ProposalNotFoundError,
 };
 
 // ─── Config ─────────────────────────────────────────────
@@ -199,6 +206,71 @@ export async function triggerSnapshotNow(): Promise<void> {
 export async function getActivity(limit: number, days: number): Promise<GetActivityResponse> {
   const items = await readActivity(limit, days);
   return { items };
+}
+
+// ─── Proposal administration ────────────────────────────
+
+export async function listAdminProposals() {
+  return listProposalsToleratingUndecodable();
+}
+
+function adminProposalReadError(error: unknown): string {
+  return error instanceof Error ? (error.stack || error.message) : String(error);
+}
+
+export async function readAdminProposal(
+  proposalId: string,
+): Promise<ReadAdminProposalResponse> {
+  try {
+    return {
+      mode: "full",
+      proposal: await readProposalDto(proposalId),
+    };
+  } catch (error) {
+    if (error instanceof ProposalNotFoundError) throw error;
+
+    try {
+      const raw = await readRawProposalMeta(proposalId);
+      return {
+        mode: "raw-fallback",
+        proposal_id: proposalId,
+        status: raw.status,
+        raw_meta: raw.rawMeta,
+        read_error: adminProposalReadError(error),
+      };
+    } catch (rawError) {
+      return {
+        mode: "raw-fallback",
+        proposal_id: proposalId,
+        status: null,
+        raw_meta: null,
+        read_error: adminProposalReadError(error),
+        raw_read_error: adminProposalReadError(rawError),
+      };
+    }
+  }
+}
+
+export interface ForceCancelProposalResult {
+  proposalId: string;
+  sections: Array<{ doc_path: DocPath; heading_path: string[] }>;
+  targets: ProposalTargetRef[];
+}
+
+export async function forceCancelProposal(
+  proposalId: string,
+  reason?: string,
+): Promise<ForceCancelProposalResult> {
+  const proposal = await readActiveProposal(proposalId);
+  await transitionToWithdrawn(proposal.id, reason);
+  return {
+    proposalId: proposal.id,
+    sections: proposal.sections.map((section) => ({
+      doc_path: section.doc_path,
+      heading_path: section.heading_path,
+    })),
+    targets: proposal.targets,
+  };
 }
 
 // ─── Proposal defect autofix ────────────────────────────

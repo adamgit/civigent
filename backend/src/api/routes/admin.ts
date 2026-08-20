@@ -5,6 +5,11 @@ import {
   SetUserRolesRequest,
   CreateCustomRoleRequest,
 } from "../../types/shared.js";
+import type {
+  ListProposalsResponse,
+  WithdrawProposalResponse,
+  WsServerEvent,
+} from "../../types/shared.js";
 import {
   sendApiError,
   requireAdmin,
@@ -37,7 +42,12 @@ import {
   getAgentActivity,
   getHeatmap,
   getRuntimeMemory,
+  listAdminProposals,
+  readAdminProposal,
+  forceCancelProposal,
   autofixProposalDefect,
+  InvalidProposalStateError,
+  ProposalNotFoundError,
   AdminConfigValidationError,
   SnapshotGenerationDisabledError,
   SnapshotRootNotWritableError,
@@ -49,8 +59,17 @@ import {
   GitBackupOperationError,
   scanContentIntegrity,
 } from "../application/admin.js";
+import {
+  emitProposalWithdrawnEventsByDoc,
+  emitSectionBlockState,
+  groupSectionsByDocPath,
+} from "../application/events.js";
+import { refreshLiveSectionsState } from "../../ws/crdt-ws-coordinator.js";
 
-export function registerAdminRoutes(router: Router): void {
+export function registerAdminRoutes(
+  router: Router,
+  onWsEvent: ((event: WsServerEvent) => void) | undefined,
+): void {
   // ─── Activity (not admin-gated) ───────────────────────
   router.get("/activity", async (req, res, next) => {
     try {
@@ -213,6 +232,66 @@ export function registerAdminRoutes(router: Router): void {
       if (!admin) return;
       res.json(await rotateAgent(req.params.agentId));
     } catch (error) {
+      next(error);
+    }
+  });
+
+  // ─── Proposal administration ──────────────────────────
+  router.get("/admin/proposals", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const result = await listAdminProposals();
+      const response: ListProposalsResponse = result;
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/admin/proposals/:id", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      res.json(await readAdminProposal(req.params.id));
+    } catch (error) {
+      if (error instanceof ProposalNotFoundError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  router.post("/admin/proposals/:id/force-cancel", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const reason = typeof req.body?.reason === "string"
+        ? req.body.reason
+        : `Force-cancelled by administrator ${admin.displayName}.`;
+      const result = await forceCancelProposal(req.params.id, reason);
+
+      emitProposalWithdrawnEventsByDoc(onWsEvent, result.proposalId, result.targets);
+      for (const [docPath, headingPaths] of groupSectionsByDocPath(result.sections)) {
+        await emitSectionBlockState(onWsEvent, docPath, headingPaths, "section:unblocked");
+        await refreshLiveSectionsState(docPath);
+      }
+
+      const response: WithdrawProposalResponse = {
+        proposal_id: result.proposalId,
+        status: "withdrawn",
+      };
+      res.json(response);
+    } catch (error) {
+      if (error instanceof ProposalNotFoundError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      if (error instanceof InvalidProposalStateError) {
+        sendApiError(res, 409, error);
+        return;
+      }
       next(error);
     }
   });

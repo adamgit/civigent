@@ -16,7 +16,7 @@ function NavLink({ to, icon, children }: { to: string; icon: ReactNode; children
 }
 
 const ADMIN_LINKS: Array<{ to: string; icon: ReactNode; label: string }> = [
-  { to: "/proposals", icon: <>&#128203;</>, label: "Proposals" },
+  { to: "/admin/proposals", icon: <>&#128203;</>, label: "Proposals" },
   { to: "/coordination", icon: <>&#128301;</>, label: "Coordination" },
   { to: "/admin/agents-auth", icon: <>&#128273;</>, label: "Agent Keys" },
   { to: "/admin/permissions", icon: <>&#128737;</>, label: "Permissions" },

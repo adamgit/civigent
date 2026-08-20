@@ -67,6 +67,11 @@ export function HomePage() {
   const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
 
   useEffect(() => {
+    if (!currentUser?.is_admin) {
+      setDegradedCount(0);
+      setDegradedError(null);
+      return;
+    }
     let cancelled = false;
     apiClient
       .listDegradedProposals()
@@ -78,7 +83,7 @@ export function HomePage() {
       })
       .catch((err) => { if (!cancelled) setDegradedError(err instanceof Error ? err.message : String(err)); });
     return () => { cancelled = true; };
-  }, []);
+  }, [currentUser?.is_admin]);
 
   useEffect(() => {
     let cancelled = false;
@@ -285,7 +290,7 @@ export function HomePage() {
           className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-[13px] text-red-800"
         >
           <strong>{degradedCount}</strong> {degradedCount === 1 ? "proposal needs" : "proposals need"} admin review.{" "}
-          <Link to="/proposals" className="font-medium underline">
+          <Link to="/admin/proposals" className="font-medium underline">
             Review on Proposals &rarr;
           </Link>
         </div>

@@ -52,7 +52,7 @@ export function createApiRouter(options?: CreateApiRouterOptions): express.Route
   registerProposalRoutes(router, onWsEvent);
   registerImportRoutes(router, onWsEvent);
   registerExportRoutes(router);
-  registerAdminRoutes(router);
+  registerAdminRoutes(router, onWsEvent);
   registerGitRoutes(router);
 
   // Catch-all (`:docPath(*)`) routes MUST register last so they never shadow the

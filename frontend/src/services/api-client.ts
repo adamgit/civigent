@@ -38,6 +38,7 @@ import type {
   ProposalId,
   ProposalStatus,
   ReadDocStructureResponse,
+  ReadAdminProposalResponse,
   ReadProposalResponse,
   SessionInfoResponse,
   UpdateProposalManifestRequest,
@@ -1040,6 +1041,27 @@ export const apiClient = {
   async listProposals(status?: ProposalStatus): Promise<ListProposalsResponse> {
     const query = status ? `?status=${encodeURIComponent(status)}` : "";
     return requestJson<ListProposalsResponse>(`/api/proposals${query}`);
+  },
+
+  async listAdminProposals(): Promise<ListProposalsResponse> {
+    return requestJson<ListProposalsResponse>("/api/admin/proposals");
+  },
+
+  async getAdminProposal(id: ProposalId): Promise<ReadAdminProposalResponse> {
+    return requestJson<ReadAdminProposalResponse>(
+      `/api/admin/proposals/${encodeURIComponent(id)}`,
+    );
+  },
+
+  async forceCancelProposal(id: ProposalId, reason?: string): Promise<WithdrawProposalResponse> {
+    return requestJson<WithdrawProposalResponse>(
+      `/api/admin/proposals/${encodeURIComponent(id)}/force-cancel`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason }),
+      },
+    );
   },
 
   /**

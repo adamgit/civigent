@@ -91,6 +91,8 @@ export function ProposalsPage() {
   // Per-(proposal,defect) autofix in-flight keys and per-proposal autofix errors.
   const [autofixing, setAutofixing] = useState<Set<string>>(new Set());
   const [autofixErrors, setAutofixErrors] = useState<Record<string, string>>({});
+  const [forceCancelling, setForceCancelling] = useState<Set<string>>(new Set());
+  const [forceCancelErrors, setForceCancelErrors] = useState<Record<string, string>>({});
 
   const handleAutofix = async (proposalId: string, detectorId: string) => {
     const key = `${proposalId}:${detectorId}`;
@@ -117,11 +119,41 @@ export function ProposalsPage() {
     }
   };
 
+  const handleForceCancel = async (proposalId: string) => {
+    if (!window.confirm(`Force cancel proposal ${proposalId}? This cannot be undone.`)) return;
+    setForceCancelling((prev) => new Set(prev).add(proposalId));
+    setForceCancelErrors((prev) => {
+      const next = { ...prev };
+      delete next[proposalId];
+      return next;
+    });
+    try {
+      await apiClient.forceCancelProposal(
+        proposalId,
+        "Force-cancelled from the admin proposals page.",
+      );
+      const response = await apiClient.listAdminProposals();
+      setProposals(response.proposals);
+      setUndecodable(response.undecodable ?? []);
+    } catch (err) {
+      setForceCancelErrors((prev) => ({
+        ...prev,
+        [proposalId]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setForceCancelling((prev) => {
+        const next = new Set(prev);
+        next.delete(proposalId);
+        return next;
+      });
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    apiClient.listProposals()
+    apiClient.listAdminProposals()
       .then((response) => {
         if (!cancelled) {
           setProposals(response.proposals);
@@ -170,13 +202,18 @@ export function ProposalsPage() {
   );
   const adminReviewCount = degradedProposals.length + undecodable.length;
 
-  const inflight = proposals.filter((p) => p.status === "draft" || p.status === "committing").length;
+  const inflight = proposals.filter(
+    (p) => p.status === "draft"
+      || p.status === "pending"
+      || p.status === "inprogress"
+      || p.status === "committing",
+  ).length;
   const committed = proposals.filter((p) => p.status === "committed").length;
   const totalListed = proposals.length + undecodable.length;
 
   return (
     <div className="flex flex-col h-full">
-      <SharedPageHeader title="Proposals" backTo="/" />
+      <SharedPageHeader title="Proposals" backTo="/admin" />
       <div className="flex-1 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
         {!loading && !error && adminReviewCount > 0 && (
           <div
@@ -207,7 +244,7 @@ export function ProposalsPage() {
                           {proposal.status}
                         </StatusPill>
                         <Link
-                          to={`/proposals/${encodeURIComponent(proposal.id)}`}
+                          to={`/admin/proposals/${encodeURIComponent(proposal.id)}`}
                           className="font-mono text-[11px] font-medium text-red-900 underline"
                         >
                           {shortProposalId(proposal.id)}
@@ -359,7 +396,7 @@ export function ProposalsPage() {
                   return (
                   <Link
                     key={proposal.id}
-                    to={`/proposals/${encodeURIComponent(proposal.id)}`}
+                    to={`/admin/proposals/${encodeURIComponent(proposal.id)}`}
                     data-testid={isDegraded ? "proposal-row-degraded" : "proposal-row"}
                     className={`block border-b last:border-b-0 ${isDegraded ? "border-red-200 bg-red-50 hover:bg-red-100" : "border-[#f5f2ed] hover:bg-[#faf8f5]"}`}
                     style={{
@@ -482,7 +519,28 @@ export function ProposalsPage() {
                     {/* Bottom row */}
                     <div className="flex items-center gap-2 mt-2 text-[11px] text-text-muted">
                       <span>{proposal.sections.length} write targets</span>
+                      {(proposal.status === "draft"
+                        || proposal.status === "pending"
+                        || proposal.status === "inprogress") ? (
+                        <button
+                          type="button"
+                          disabled={forceCancelling.has(proposal.id)}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            void handleForceCancel(proposal.id);
+                          }}
+                          className="ml-auto rounded border border-red-300 bg-red-50 px-2 py-1 text-[11px] font-semibold text-red-800 hover:bg-red-100 disabled:opacity-60"
+                        >
+                          {forceCancelling.has(proposal.id) ? "Force cancelling…" : "Force cancel"}
+                        </button>
+                      ) : null}
                     </div>
+                    {forceCancelErrors[proposal.id] ? (
+                      <div className="mt-1 text-[11px] text-red-700">
+                        {forceCancelErrors[proposal.id]}
+                      </div>
+                    ) : null}
                   </Link>
                   );
                 })}
