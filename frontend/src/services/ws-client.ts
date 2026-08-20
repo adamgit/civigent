@@ -31,7 +31,7 @@ export type WsEventHandler = (event: WsServerEvent) => void;
 export type SharedSystemStateHandler = (state: SystemState) => void;
 
 interface TabState {
-  subscriptions: string[];
+  openDocPaths: string[];
   focusedDocPath: string | null;
   focusedSection: { docPath: string; headingPath: string[] } | null;
   /**
@@ -84,7 +84,7 @@ class SharedWorkerTransport implements CrossTabTransport {
   private onSystemState: SharedSystemStateHandler | null = null;
   private diagnosticsSubscribed = false;
   private state: TabState = {
-    subscriptions: [],
+    openDocPaths: [],
     focusedDocPath: null,
     focusedSection: null,
     clientInstanceId: null,
@@ -263,10 +263,10 @@ class BroadcastFallbackTransport implements CrossTabTransport {
   private ws: WebSocket | null = null;
   private reconnectDelayMs = 1000;
   private reconnectTimer: number | null = null;
-  private appliedSubscriptions = new Set<string>();
+  private appliedOpenDocPaths = new Set<string>();
   private appliedFocusedDocPath: string | null | undefined = undefined;
   private state: TabState = {
-    subscriptions: [],
+    openDocPaths: [],
     focusedDocPath: null,
     focusedSection: null,
     clientInstanceId: null,
@@ -402,7 +402,7 @@ class BroadcastFallbackTransport implements CrossTabTransport {
       this.ws.close();
       this.ws = null;
     }
-    this.appliedSubscriptions = new Set<string>();
+    this.appliedOpenDocPaths = new Set<string>();
     this.appliedFocusedDocPath = undefined;
   }
 
@@ -416,7 +416,7 @@ class BroadcastFallbackTransport implements CrossTabTransport {
 
     socket.addEventListener("open", () => {
       this.reconnectDelayMs = 1000;
-      this.appliedSubscriptions = new Set<string>();
+      this.appliedOpenDocPaths = new Set<string>();
       this.appliedFocusedDocPath = undefined;
       this.syncLeaderSessionState();
       recordWsDiag({
@@ -483,7 +483,7 @@ class BroadcastFallbackTransport implements CrossTabTransport {
   }
 
   private aggregateDesiredState(): {
-    subscriptions: Set<string>;
+    openDocPaths: Set<string>;
     focusedDocPath: string | null;
     focusedSection: { docPath: string; headingPath: string[] } | null;
   } {
@@ -492,10 +492,10 @@ class BroadcastFallbackTransport implements CrossTabTransport {
       states.push(peer.state);
     }
 
-    const subscriptions = new Set<string>();
+    const openDocPaths = new Set<string>();
     for (const state of states) {
-      for (const path of state.subscriptions) {
-        subscriptions.add(path);
+      for (const path of state.openDocPaths) {
+        openDocPaths.add(path);
       }
     }
 
@@ -504,7 +504,7 @@ class BroadcastFallbackTransport implements CrossTabTransport {
       .sort((a, b) => b.updatedAt - a.updatedAt)[0];
 
     return {
-      subscriptions,
+      openDocPaths,
       focusedDocPath: mostRecentFocus?.focusedDocPath ?? null,
       focusedSection: mostRecentFocus?.focusedSection ?? null,
     };
@@ -516,17 +516,17 @@ class BroadcastFallbackTransport implements CrossTabTransport {
     }
     const desired = this.aggregateDesiredState();
 
-    for (const path of desired.subscriptions) {
-      if (!this.appliedSubscriptions.has(path)) {
-        this.ws.send(JSON.stringify({ subscribe: path }));
+    for (const path of desired.openDocPaths) {
+      if (!this.appliedOpenDocPaths.has(path)) {
+        this.ws.send(JSON.stringify({ document_open: path }));
       }
     }
-    for (const path of this.appliedSubscriptions) {
-      if (!desired.subscriptions.has(path)) {
-        this.ws.send(JSON.stringify({ unsubscribe: path }));
+    for (const path of this.appliedOpenDocPaths) {
+      if (!desired.openDocPaths.has(path)) {
+        this.ws.send(JSON.stringify({ document_closed: path }));
       }
     }
-    this.appliedSubscriptions = desired.subscriptions;
+    this.appliedOpenDocPaths = desired.openDocPaths;
 
     // Document-level focus/blur is the only retained focus signal on the JSON
     // application socket. The former section_focus/section_blur frames were
@@ -563,7 +563,7 @@ class SessionWsManager {
   private started = false;
   private referenceCount = 0;
   private listeners = new Set<WsEventHandler>();
-  private localSubscriptionRefCounts = new Map<string, number>();
+  private openDocumentRefCounts = new Map<string, number>();
   private focusedDocPath: string | null = null;
   private focusedSection: { docPath: string; headingPath: string[] } | null = null;
   private heartbeatTimer: number | null = null;
@@ -756,27 +756,27 @@ class SessionWsManager {
     });
   }
 
-  subscribe(docPath: string, clientInstanceId?: string): void {
+  openDocument(docPath: string, clientInstanceId?: string): void {
     const normalized = docPath.trim();
     if (!normalized) {
       return;
     }
     if (clientInstanceId) this.clientInstanceId = clientInstanceId;
-    const previous = this.localSubscriptionRefCounts.get(normalized) ?? 0;
-    this.localSubscriptionRefCounts.set(normalized, previous + 1);
+    const previous = this.openDocumentRefCounts.get(normalized) ?? 0;
+    this.openDocumentRefCounts.set(normalized, previous + 1);
     this.pushTabState();
   }
 
-  unsubscribe(docPath: string): void {
+  closeDocument(docPath: string): void {
     const normalized = docPath.trim();
     if (!normalized) {
       return;
     }
-    const previous = this.localSubscriptionRefCounts.get(normalized) ?? 0;
+    const previous = this.openDocumentRefCounts.get(normalized) ?? 0;
     if (previous <= 1) {
-      this.localSubscriptionRefCounts.delete(normalized);
+      this.openDocumentRefCounts.delete(normalized);
     } else {
-      this.localSubscriptionRefCounts.set(normalized, previous - 1);
+      this.openDocumentRefCounts.set(normalized, previous - 1);
     }
     this.pushTabState();
   }
@@ -805,7 +805,7 @@ class SessionWsManager {
       return;
     }
     this.transport.updateTabState({
-      subscriptions: Array.from(this.localSubscriptionRefCounts.keys()),
+      openDocPaths: Array.from(this.openDocumentRefCounts.keys()),
       focusedDocPath: this.focusedDocPath,
       focusedSection: this.focusedSection,
       clientInstanceId: this.clientInstanceId,
@@ -859,7 +859,7 @@ class SessionWsManager {
     this.referenceCount = 0;
     this.fallbackTransitioned = false;
     this.listeners.clear();
-    this.localSubscriptionRefCounts.clear();
+    this.openDocumentRefCounts.clear();
     this.focusedDocPath = null;
     this.focusedSection = null;
     this.setTransportInfo(null, null);
@@ -961,17 +961,18 @@ export class KnowledgeStoreWsClient {
   }
 
   /**
-   * Subscribe to a document. When a stable per-tab `clientInstanceId` is
-   * supplied, it is bound to this tab's shared-worker/hub state so private
-   * origin-only app events (`section:edit-rejected`) route only to this tab.
-   * Ordinary broadcast events continue to be delivered regardless of the id.
+   * Report a document as open in this tab. When a stable per-tab
+   * `clientInstanceId` is supplied, it is bound to this tab's
+   * shared-worker/hub state so private origin-only app events
+   * (`section:edit-rejected`) route only to this tab. Ordinary broadcast
+   * events continue to be delivered regardless of the id.
    */
-  subscribe(docPath: string, clientInstanceId?: string): void {
-    this.manager.subscribe(docPath, clientInstanceId);
+  openDocument(docPath: string, clientInstanceId?: string): void {
+    this.manager.openDocument(docPath, clientInstanceId);
   }
 
-  unsubscribe(docPath: string): void {
-    this.manager.unsubscribe(docPath);
+  closeDocument(docPath: string): void {
+    this.manager.closeDocument(docPath);
   }
 
   focusDocument(docPath: string): void {

@@ -49,12 +49,12 @@ async function openTab(clientInstanceId: string, subscriptions: string[]): Promi
     }
   });
   // Identify this tab first so the hub knows its clientInstanceId, then
-  // subscribe to the requested documents.
+  // open the requested documents.
   ws.send(JSON.stringify({ action: "identify", clientInstanceId }));
   for (const docPath of subscriptions) {
-    ws.send(JSON.stringify({ action: "subscribe", doc_path: docPath, clientInstanceId }));
+    ws.send(JSON.stringify({ action: "document_open", doc_path: docPath, clientInstanceId }));
   }
-  // Small delay to let the subscribe messages land server-side before the
+  // Small delay to let the document-open messages land server-side before the
   // caller emits events.
   await new Promise((resolve) => setTimeout(resolve, 30));
   return {

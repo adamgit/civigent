@@ -35,8 +35,9 @@ import {
 } from "../../storage/proposal-repository.js";
 import {
   evaluateAgentWritePolicy,
-  publishProposalToCanonical,
+  publishProposalToCanonicalDetailed,
 } from "../../storage/commit-pipeline.js";
+import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
 import {
@@ -480,13 +481,16 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
       const catalogMutations = await summarizeProposalCatalogMutations(proposal);
       const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
 
-      const committedHead = await publishProposalToCanonical(proposalId, committedMetadata);
+      const absorbResult = await publishProposalToCanonicalDetailed(proposalId, committedMetadata);
+      const committedHead = absorbResult.commitSha;
       forgetSessionDraft(ctx.session, proposalId);
 
       if (ctx.writer.type === "agent") {
         const { agentEventLog } = await import("../agent-event-log.js");
         agentEventLog.append(ctx.writer, { kind: "proposal_committed", proposalId });
       }
+
+      await propagateCommitToLiveSessions(absorbResult, proposalId);
 
       if (ctx.emitEvent) {
         emitContentCommittedEventsByDoc(

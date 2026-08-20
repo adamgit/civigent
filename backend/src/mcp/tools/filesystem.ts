@@ -27,7 +27,7 @@ import {
   publishProposalToCanonical,
   publishProposalToCanonicalDetailed,
 } from "../../storage/commit-pipeline.js";
-import { applyCommittedCanonicalToLiveSession } from "../../ws/crdt-ws-coordinator.js";
+import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
 import { checkDocPermission } from "../../auth/acl.js";
@@ -383,25 +383,7 @@ async function writeDocumentViaProposal(
     const absorbResult = await publishProposalToCanonicalDetailed(writeProposalId, committedMetadata);
     const committedHead = absorbResult.commitSha;
 
-    // MW-3: push the committed canonical change into any open live DocSession
-    // for the affected docs (canonical→live; the coordinator skips a self-commit).
-    // `changedSections` is a body-diff receipt only; structure-only or
-    // delete-only commits still need topology reconcile, so also include every
-    // rewritten doc path (its list may be empty and that is fine — the
-    // coordinator re-derives removals from the post-commit effective layout).
-    {
-      const byDoc = new Map<DocPath, string[][]>();
-      for (const docPath of absorbResult.rewrittenDocumentPaths) {
-        if (!byDoc.has(docPath)) byDoc.set(docPath, []);
-      }
-      for (const ref of absorbResult.changedSections) {
-        if (!byDoc.has(ref.docPath)) byDoc.set(ref.docPath, []);
-        byDoc.get(ref.docPath)!.push([...ref.headingPath]);
-      }
-      for (const [docPath, headingPaths] of byDoc) {
-        await applyCommittedCanonicalToLiveSession(docPath, headingPaths, writeProposalId);
-      }
-    }
+    await propagateCommitToLiveSessions(absorbResult, writeProposalId);
 
     // Broadcast content:committed
     if (ctx.emitEvent) {

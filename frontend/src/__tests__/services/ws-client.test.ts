@@ -68,14 +68,14 @@ describe("KnowledgeStoreWsClient", () => {
     expect(() => client.disconnect()).not.toThrow();
   });
 
-  it("subscribe does not throw before connect", () => {
+  it("openDocument does not throw before connect", () => {
     const client = new KnowledgeStoreWsClient();
-    expect(() => client.subscribe("docs/readme.md")).not.toThrow();
+    expect(() => client.openDocument("docs/readme.md")).not.toThrow();
   });
 
-  it("unsubscribe does not throw before connect", () => {
+  it("closeDocument does not throw before connect", () => {
     const client = new KnowledgeStoreWsClient();
-    expect(() => client.unsubscribe("docs/readme.md")).not.toThrow();
+    expect(() => client.closeDocument("docs/readme.md")).not.toThrow();
   });
 
   it("focusDocument does not throw before connect", () => {
@@ -97,8 +97,8 @@ describe("KnowledgeStoreWsClient", () => {
   it("methods work after connect without throwing", () => {
     const client = new KnowledgeStoreWsClient();
     client.connect();
-    expect(() => client.subscribe("docs/a.md")).not.toThrow();
-    expect(() => client.unsubscribe("docs/a.md")).not.toThrow();
+    expect(() => client.openDocument("docs/a.md")).not.toThrow();
+    expect(() => client.closeDocument("docs/a.md")).not.toThrow();
     expect(() => client.focusDocument("docs/a.md")).not.toThrow();
     expect(() => client.blurDocument("docs/a.md")).not.toThrow();
     client.disconnect();
@@ -107,7 +107,7 @@ describe("KnowledgeStoreWsClient", () => {
   it("__resetSessionWsManagerForTests cleans up without errors", () => {
     const client = new KnowledgeStoreWsClient();
     client.connect();
-    client.subscribe("docs/x.md");
+    client.openDocument("docs/x.md");
     expect(() => __resetSessionWsManagerForTests()).not.toThrow();
   });
 

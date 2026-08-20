@@ -1404,6 +1404,36 @@ export async function applyCommittedCanonicalToLiveSession(
   });
 }
 
+/**
+ * MW-3: after a proposal commits to canonical, push the committed section
+ * changes into any OPEN live DocSession for the affected documents (canonical→
+ * live, "one primitive, both directions"). The coordinator distinguishes body
+ * updates (section-scoped deltas from `changedSections`) from topology
+ * reconciliation (post-commit effective-layout diff), so we MUST also invoke
+ * the reconcile for docs that were rewritten but produced no body diff — e.g.
+ * a structure-only or delete-only external commit. The coordinator skips a
+ * self-commit (the live session committing its own proposal).
+ */
+export async function propagateCommitToLiveSessions(
+  absorbResult: {
+    changedSections: Array<{ docPath: DocPath; headingPath: string[] }>;
+    rewrittenDocumentPaths: DocPath[];
+  },
+  originProposalId: string,
+): Promise<void> {
+  const byDoc = new Map<DocPath, string[][]>();
+  for (const docPath of absorbResult.rewrittenDocumentPaths) {
+    if (!byDoc.has(docPath)) byDoc.set(docPath, []);
+  }
+  for (const ref of absorbResult.changedSections) {
+    if (!byDoc.has(ref.docPath)) byDoc.set(ref.docPath, []);
+    byDoc.get(ref.docPath)!.push([...ref.headingPath]);
+  }
+  for (const [docPath, headingPaths] of byDoc) {
+    await applyCommittedCanonicalToLiveSession(docPath, headingPaths, originProposalId);
+  }
+}
+
 
 
 

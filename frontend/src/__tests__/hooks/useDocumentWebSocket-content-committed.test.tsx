@@ -36,8 +36,8 @@ vi.mock("../../services/ws-client", () => ({
     onEvent = (handler: WsEventHandler) => {
       capturedWsHandler = handler;
     };
-    subscribe = vi.fn();
-    unsubscribe = vi.fn();
+    openDocument = vi.fn();
+    closeDocument = vi.fn();
     focusDocument = vi.fn();
     blurDocument = vi.fn();
   },

@@ -32,7 +32,7 @@ vi.mock("../../app.js", () => ({
 vi.mock("../../ws/hub.js", () => ({
   createWsHub: vi.fn(() => ({
     broadcast: vi.fn(),
-    broadcastToDocumentSubscribers: vi.fn(),
+    broadcastActivityToSocketsWithDocOpen: vi.fn(),
     sendPrivate: vi.fn(),
     handleUpgrade: vi.fn(),
   })),

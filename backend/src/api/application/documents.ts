@@ -29,7 +29,8 @@ import {
   readDocumentStructure,
   flattenStructureToHeadingPaths,
 } from "../../storage/heading-resolver.js";
-import { evaluateAgentWritePolicy, publishProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { evaluateAgentWritePolicy, publishProposalToCanonical, publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
 import { AgentWritePolicy, humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import {
@@ -401,7 +402,9 @@ async function evaluateAndMaybeCommitDocumentProposal(
   writerType: "human" | "agent",
 ): Promise<{ policyResult: HumanInvolvementPolicyResult; committedHead?: string }> {
   if (writerType === "human") {
-    const committedHead = await publishProposalToCanonical(proposalId, {});
+    const absorbResult = await publishProposalToCanonicalDetailed(proposalId, {});
+    const committedHead = absorbResult.commitSha;
+    await propagateCommitToLiveSessions(absorbResult, proposalId);
     return { policyResult: humanBypassPolicyResult(), committedHead };
   }
   const policyResult = await evaluateAgentWritePolicy(proposalId);
@@ -409,7 +412,9 @@ async function evaluateAndMaybeCommitDocumentProposal(
     return { policyResult };
   }
   const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
-  const committedHead = await publishProposalToCanonical(proposalId, committedMetadata);
+  const absorbResult = await publishProposalToCanonicalDetailed(proposalId, committedMetadata);
+  const committedHead = absorbResult.commitSha;
+  await propagateCommitToLiveSessions(absorbResult, proposalId);
   return { policyResult, committedHead };
 }
 

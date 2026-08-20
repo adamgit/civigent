@@ -22,6 +22,7 @@ import { RoleName } from "../../types/shared.js";
 import type { WsServerEvent } from "../../types/shared.js";
 
 const READABLE_DOC = "/ops/routing.md";
+const OTHER_READABLE_DOC = "/ops/strategy.md";
 const SECRET_DOC = "/secret/hidden.md";
 
 let ctx: TempDataRootContext;
@@ -29,7 +30,11 @@ let server: Server;
 let port: number;
 let hub: WsHub;
 
-async function openSessionWideTab(): Promise<{
+async function openTab(opts: {
+  clientInstanceId: string;
+  /** When set, send the frontend `{ document_open: path }` frame (document page open). */
+  openedDocPath?: string;
+}): Promise<{
   received: WsServerEvent[];
   close: () => Promise<void>;
 }> {
@@ -46,7 +51,10 @@ async function openSessionWideTab(): Promise<{
       // ignore malformed
     }
   });
-  ws.send(JSON.stringify({ action: "identify", clientInstanceId: "tab-session-wide" }));
+  ws.send(JSON.stringify({ action: "identify", clientInstanceId: opts.clientInstanceId }));
+  if (opts.openedDocPath) {
+    ws.send(JSON.stringify({ document_open: opts.openedDocPath }));
+  }
   await new Promise((resolve) => setTimeout(resolve, 30));
   return {
     received,
@@ -88,7 +96,7 @@ describe("hub broadcast delivers doc-bearing events only to readers", () => {
   });
 
   it("a zero-subscription socket receives readable-doc events but never unreadable-doc events", async () => {
-    const tab = await openSessionWideTab();
+    const tab = await openTab({ clientInstanceId: "tab-session-wide" });
 
     try {
       hub.broadcast({ type: "doc:structure-changed", doc_path: READABLE_DOC, sections: [] });
@@ -98,6 +106,26 @@ describe("hub broadcast delivers doc-bearing events only to readers", () => {
 
       const docEvents = tab.received.filter((e) => e.type === "doc:structure-changed");
       expect(docEvents.some((e) => "doc_path" in e && e.doc_path === READABLE_DOC)).toBe(true);
+      expect(docEvents.some((e) => "doc_path" in e && e.doc_path === SECRET_DOC)).toBe(false);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it("a socket that has opened one readable doc still receives other readable docs' broadcasts", async () => {
+    const tab = await openTab({
+      clientInstanceId: "tab-viewing-one-doc",
+      openedDocPath: READABLE_DOC,
+    });
+
+    try {
+      hub.broadcast({ type: "doc:structure-changed", doc_path: OTHER_READABLE_DOC, sections: [] });
+      hub.broadcast({ type: "doc:structure-changed", doc_path: SECRET_DOC, sections: [] });
+
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      const docEvents = tab.received.filter((e) => e.type === "doc:structure-changed");
+      expect(docEvents.some((e) => "doc_path" in e && e.doc_path === OTHER_READABLE_DOC)).toBe(true);
       expect(docEvents.some((e) => "doc_path" in e && e.doc_path === SECRET_DOC)).toBe(false);
     } finally {
       await tab.close();

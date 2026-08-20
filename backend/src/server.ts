@@ -148,7 +148,7 @@ setFatalReportDeliveryHandler((report) => {
 
 // Wire up CRDT events so they broadcast through the hub
 setCrdtEventHandler((event) => handleWsEvent(event));
-setDocumentActivityBroadcaster((event) => wsHub.broadcastToDocumentSubscribers(event));
+setDocumentActivityBroadcaster((event) => wsHub.broadcastActivityToSocketsWithDocOpen(event));
 setDocumentActivityChangedHandler((docPath) => {
   void broadcastDocumentActivitySnapshot(docPath);
 });

@@ -20,7 +20,7 @@ interface SocketState {
   writer: AuthenticatedWriter;
   writerId: string;
   writerDisplayName: string;
-  subscriptions: Set<DocPath>;
+  openDocPaths: Set<DocPath>;
   // Stable per-tab identity supplied by the client. Used ONLY for private
   // origin-only routing (see `sendPrivate`) — the ordinary broadcast path
   // does not consult this field.
@@ -29,7 +29,7 @@ interface SocketState {
 
 export interface WsHub {
   broadcast(event: WsServerEvent): void;
-  broadcastToDocumentSubscribers(event: DocumentActivityEvent): void;
+  broadcastActivityToSocketsWithDocOpen(event: DocumentActivityEvent): void;
   /**
    * Deliver an origin-only app event (e.g. `section:edit-rejected`) to the one
    * socket whose `(docPath, clientInstanceId)` matches the target. Silently
@@ -48,10 +48,10 @@ export interface WsHub {
  * Decode a hub client message at the JSON trust boundary.
  *
  * Malformed input THROWS (full message): `parseJson` carries its own `SyntaxError`
- * for non-JSON, `expectJsonObject` throws for non-objects, and a subscription
+ * for non-JSON, `expectJsonObject` throws for non-objects, and a doc-open
  * command with a non-string path throws naming the field — none are swallowed.
  *
- * Returns `null` ONLY for a well-formed message that is not a subscription command
+ * Returns `null` ONLY for a well-formed message that is not a doc-open command
  * (the frontend also sends `{ type: "document_focus" | "document_blur" }` over this
  * same socket; the hub does not own those and ignores them). That is NOT an error
  * swallow — it is a different, valid message class outside `WsClientMessage`.
@@ -60,7 +60,7 @@ function decodeWsClientMessage(value: JsonValue): WsClientMessage | null {
   const obj: JsonObject = expectJsonObject(value, "hub client message");
 
   const action = obj["action"];
-  if (action === "subscribe") {
+  if (action === "document_open") {
     const docPath = obj["doc_path"];
     if (typeof docPath !== "string") {
       throw new Error(`hub client message "${action}" requires a string doc_path, got ${JSON.stringify(docPath)}`);
@@ -69,7 +69,7 @@ function decodeWsClientMessage(value: JsonValue): WsClientMessage | null {
     const clientInstanceId = typeof rawInstanceId === "string" ? rawInstanceId : undefined;
     return { action, doc_path: docPath, clientInstanceId };
   }
-  if (action === "unsubscribe") {
+  if (action === "document_closed") {
     const docPath = obj["doc_path"];
     if (typeof docPath !== "string") {
       throw new Error(`hub client message "${action}" requires a string doc_path, got ${JSON.stringify(docPath)}`);
@@ -84,17 +84,17 @@ function decodeWsClientMessage(value: JsonValue): WsClientMessage | null {
     return { action, clientInstanceId: rawInstanceId };
   }
 
-  // Top-level subscribe/unsubscribe key form — the shape the frontend actually sends.
-  const subscribe = obj["subscribe"];
-  if (typeof subscribe === "string") {
-    return { action: "subscribe", doc_path: subscribe };
+  // Top-level document_open/document_closed key form — the shape the frontend actually sends.
+  const documentOpen = obj["document_open"];
+  if (typeof documentOpen === "string") {
+    return { action: "document_open", doc_path: documentOpen };
   }
-  const unsubscribe = obj["unsubscribe"];
-  if (typeof unsubscribe === "string") {
-    return { action: "unsubscribe", doc_path: unsubscribe };
+  const documentClosed = obj["document_closed"];
+  if (typeof documentClosed === "string") {
+    return { action: "document_closed", doc_path: documentClosed };
   }
 
-  // Well-formed, but not a subscription command (e.g. document focus/blur). Not
+  // Well-formed, but not a doc-open command (e.g. document focus/blur). Not
   // this hub's concern — ignored without throwing.
   return null;
 }
@@ -103,8 +103,8 @@ export function createWsHub(): WsHub {
   const wsServer = new WebSocketServer({ noServer: true });
   const socketState = new Map<WebSocket, SocketState>();
 
-  const hasDocumentSubscription = (state: SocketState, docPath: DocPath): boolean =>
-    state.subscriptions.has(docPath);
+  const hasOpenDocument = (state: SocketState, docPath: DocPath): boolean =>
+    state.openDocPaths.has(docPath);
 
   const broadcastInternal = (event: WsServerEvent) => {
     const encoded = JSON.stringify(event);
@@ -118,18 +118,12 @@ export function createWsHub(): WsHub {
       return;
     }
 
-    // Doc-bearing events are delivered only to sockets whose writer can READ
-    // the event's document — including session-wide sockets (zero
-    // subscriptions), whose historical unfiltered fallthrough was a read
-    // bypass: not subscribing meant receiving every doc's paths, headings, and
-    // writer names.
+    // Doc-bearing events are delivered to every open socket whose writer can
+    // READ the event's document — the read ACL is the only delivery filter;
+    // which documents a socket has open does not gate broadcasts.
     void (async () => {
       for (const [socket, state] of socketState.entries()) {
         if (socket.readyState !== WebSocket.OPEN) continue;
-
-        const explicitlySubscribed = hasDocumentSubscription(state, eventDocPath);
-        const sessionWide = state.subscriptions.size === 0;
-        if (!explicitlySubscribed && !sessionWide) continue;
 
         if (!(await checkDocPermission(state.writer, eventDocPath, "read"))) continue;
 
@@ -149,14 +143,14 @@ export function createWsHub(): WsHub {
       writer,
       writerId: writer.id,
       writerDisplayName: writer.displayName,
-      subscriptions: new Set<DocPath>(),
+      openDocPaths: new Set<DocPath>(),
       clientInstanceId: null,
     });
 
     // Sticky-fatal replay, two sources: the lifecycle state's RETAINED report
     // (the durable fatal.json latch — covers tabs opened after Docker restarted
     // the backend into the latched state) and the in-process report-mode sticky
-    // fatal. Send to just this new socket immediately — no subscription is
+    // fatal. Send to just this new socket immediately — no open document is
     // required because the event is system-scoped (no doc_path).
     const currentFatal = getSystemState().fatal ?? getCurrentFatal();
     if (currentFatal) {
@@ -164,10 +158,10 @@ export function createWsHub(): WsHub {
       socket.send(JSON.stringify(stickyEvent));
     }
 
-    // Read-ACL check + initial activity snapshot make subscribe handling async;
-    // the per-socket chain keeps subscribe/unsubscribe ordering intact.
-    let subscriptionChain: Promise<void> = Promise.resolve();
-    const closeSocketAndReportSubscriptionCommandFailure = (err: unknown): void => {
+    // Read-ACL check + initial activity snapshot make doc-open handling async;
+    // the per-socket chain keeps document_open/document_closed ordering intact.
+    let docOpenCommandChain: Promise<void> = Promise.resolve();
+    const closeSocketAndReportDocOpenCommandFailure = (err: unknown): void => {
       socket.close(1011, "internal error");
       handleProcessFatal(err, "uncaughtException");
     };
@@ -176,36 +170,36 @@ export function createWsHub(): WsHub {
       if (!state) return;
 
       // Decode at the trust boundary: malformed input throws (propagates — never
-      // swallowed); a non-subscription message decodes to null and is ignored.
+      // swallowed); a non-doc-open message decodes to null and is ignored.
       const message = decodeWsClientMessage(parseJson(String(data)));
       if (message === null) return;
 
-      if (message.action === "subscribe") {
+      if (message.action === "document_open") {
         if (message.clientInstanceId !== undefined) {
           state.clientInstanceId = message.clientInstanceId;
         }
-        subscriptionChain = subscriptionChain
+        docOpenCommandChain = docOpenCommandChain
           .then(async () => {
             const docPath = DocPath.parse(message.doc_path);
             const canRead = await checkDocPermission(state.writer, docPath, "read");
             if (!canRead) return;
-            state.subscriptions.add(docPath);
+            state.openDocPaths.add(docPath);
             await sendDocumentActivitySnapshot(docPath, (event) => {
               if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event));
             });
           })
-          .then(null, closeSocketAndReportSubscriptionCommandFailure);
+          .then(null, closeSocketAndReportDocOpenCommandFailure);
         return;
       }
       if (message.action === "identify") {
         state.clientInstanceId = message.clientInstanceId;
         return;
       }
-      subscriptionChain = subscriptionChain
+      docOpenCommandChain = docOpenCommandChain
         .then(() => {
-          state.subscriptions.delete(DocPath.parse(message.doc_path));
+          state.openDocPaths.delete(DocPath.parse(message.doc_path));
         })
-        .then(null, closeSocketAndReportSubscriptionCommandFailure);
+        .then(null, closeSocketAndReportDocOpenCommandFailure);
     });
 
     socket.on("close", () => {
@@ -231,12 +225,12 @@ export function createWsHub(): WsHub {
     for (const [socket, state] of socketState.entries()) {
       if (socket.readyState !== WebSocket.OPEN) continue;
       if (state.clientInstanceId !== target.clientInstanceId) continue;
-      // Require an active subscription to the doc so a tab that never opened
+      // Require the doc to be open on this socket so a tab that never opened
       // this document still cannot receive its rejection payload — matching
       // clientInstanceId is necessary but not sufficient.
-      const explicitlySubscribed = hasDocumentSubscription(state, target.docPath);
-      const sessionWide = state.subscriptions.size === 0;
-      if (!explicitlySubscribed && !sessionWide) continue;
+      const openedThisDocument = hasOpenDocument(state, target.docPath);
+      const noOpenDocuments = state.openDocPaths.size === 0;
+      if (!openedThisDocument && !noOpenDocuments) continue;
       socket.send(envelope);
       // The origin identity is unique per tab; no need to keep scanning after
       // a hit. Silently drop if no socket matches.
@@ -248,12 +242,12 @@ export function createWsHub(): WsHub {
     broadcast(event: WsServerEvent) {
       broadcastInternal(event);
     },
-    broadcastToDocumentSubscribers(event: DocumentActivityEvent) {
+    broadcastActivityToSocketsWithDocOpen(event: DocumentActivityEvent) {
       const encoded = JSON.stringify(event);
       const eventDocPath = DocPath.parse(event.doc_path);
       for (const [socket, state] of socketState.entries()) {
         if (socket.readyState !== WebSocket.OPEN) continue;
-        if (!hasDocumentSubscription(state, eventDocPath)) continue;
+        if (!hasOpenDocument(state, eventDocPath)) continue;
         socket.send(encoded);
       }
     },

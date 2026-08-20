@@ -2584,7 +2584,7 @@ export type WsServerEvent =
 
 // ─── WebSocket Client Messages ─────────────────────────────────────
 //
-// The JSON application WebSocket only carries subscription intent. The former
+// The JSON application WebSocket only carries document-open intent. The former
 // focus/pulse client-message surface (`focus_section`/`blur_section`/
 // `session_departure`) had NO server consumer — the hub parser ignored them
 // entirely (spec 06 §6) — so it was removed end-to-end (MW-13).
@@ -2594,28 +2594,28 @@ export type WsServerEvent =
 // `ModeTransitionRequest.editorFocusTarget` above), which IS server-authoritative
 // (the CRDT coordinator patches `editorFocusTarget`) and is deliberately kept.
 
-export interface WsSubscribeMessage {
-  action: "subscribe";
+export interface WsDocumentOpenMessage {
+  action: "document_open";
   doc_path: string;
   /**
    * Stable per-tab client instance identity. When present, the hub routes
    * origin-only app events (e.g. `section:edit-rejected`) exclusively to the
    * matching `(doc_path, clientInstanceId)` tab, so semantic rejection
    * explanations never leak into other tabs of the same writer. Omit when a
-   * connection has no per-tab identity (server-internal subscribers, tests).
+   * connection has no per-tab identity (server-internal callers, tests).
    */
   clientInstanceId?: string;
 }
 
-export interface WsUnsubscribeMessage {
-  action: "unsubscribe";
+export interface WsDocumentClosedMessage {
+  action: "document_closed";
   doc_path: string;
 }
 
 /**
  * Hint that binds a client-instance identity to this connection without
- * subscribing to a specific document. Useful during the initial handshake so
- * private events can be routed even before the tab explicitly subscribes.
+ * opening a specific document. Useful during the initial handshake so
+ * private events can be routed even before the tab opens a document.
  */
 export interface WsIdentifyMessage {
   action: "identify";
@@ -2623,8 +2623,8 @@ export interface WsIdentifyMessage {
 }
 
 export type WsClientMessage =
-  | WsSubscribeMessage
-  | WsUnsubscribeMessage
+  | WsDocumentOpenMessage
+  | WsDocumentClosedMessage
   | WsIdentifyMessage;
 
 // ─── Agent Activity View ─────────────────────────────────────────

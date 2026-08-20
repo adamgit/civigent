@@ -90,8 +90,8 @@ vi.mock("../../../services/ws-client", () => ({
     connect = vi.fn();
     disconnect = vi.fn();
     onEvent = (_h: (e: WsServerEvent) => void) => {};
-    subscribe = vi.fn();
-    unsubscribe = vi.fn();
+    openDocument = vi.fn();
+    closeDocument = vi.fn();
     focusDocument = vi.fn();
     blurDocument = vi.fn();
   },

@@ -6,7 +6,7 @@ import {
 } from "./ws-shared-worker-routing";
 
 interface TabState {
-  subscriptions: string[];
+  openDocPaths: string[];
   focusedDocPath: string | null;
   focusedSection: { docPath: string; headingPath: string[] } | null;
   /**
@@ -71,7 +71,7 @@ const diagnostics = new WorkerDiagnostics();
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectDelayMs = 1000;
-let appliedSubscriptions = new Set<string>();
+let appliedOpenDocPaths = new Set<string>();
 let appliedFocusedDocPath: string | null | undefined = undefined;
 
 const SYSTEM_ES_INITIAL_RETRY_MS = 1000;
@@ -154,11 +154,11 @@ function describeOutgoing(obj: unknown): { type: string; docPath: string | undef
     const docPath = typeof rec.doc_path === "string" ? rec.doc_path : undefined;
     return { type: rec.type, docPath };
   }
-  if (typeof rec.subscribe === "string") {
-    return { type: "subscribe", docPath: rec.subscribe };
+  if (typeof rec.document_open === "string") {
+    return { type: "document_open", docPath: rec.document_open };
   }
-  if (typeof rec.unsubscribe === "string") {
-    return { type: "unsubscribe", docPath: rec.unsubscribe };
+  if (typeof rec.document_closed === "string") {
+    return { type: "document_closed", docPath: rec.document_closed };
   }
   return { type: "(untyped)", docPath: undefined };
 }
@@ -179,22 +179,22 @@ function sendWs(obj: unknown): void {
 }
 
 function desiredSessionState(): {
-  subscriptions: Set<string>;
+  openDocPaths: Set<string>;
   focusedDocPath: string | null;
   focusedSection: { docPath: string; headingPath: string[] } | null;
 } {
   const states = Array.from(tabStates.values());
-  const subscriptions = new Set<string>();
+  const openDocPaths = new Set<string>();
   for (const state of states) {
-    for (const path of state.subscriptions) {
-      subscriptions.add(path);
+    for (const path of state.openDocPaths) {
+      openDocPaths.add(path);
     }
   }
   const latestFocus = states
     .filter((state) => typeof state.focusedDocPath === "string" && state.focusedDocPath.length > 0)
     .sort((a, b) => b.updatedAt - a.updatedAt)[0];
   return {
-    subscriptions,
+    openDocPaths,
     focusedDocPath: latestFocus?.focusedDocPath ?? null,
     focusedSection: latestFocus?.focusedSection ?? null,
   };
@@ -210,7 +210,7 @@ function ensureSocket(): void {
 
   socket.addEventListener("open", () => {
     reconnectDelayMs = 1000;
-    appliedSubscriptions = new Set<string>();
+    appliedOpenDocPaths = new Set<string>();
     appliedFocusedDocPath = undefined;
     diagnostics.capture({
       source: "worker-lifecycle",
@@ -298,7 +298,7 @@ function closeSocket(): void {
     ws.close();
     ws = null;
   }
-  appliedSubscriptions = new Set<string>();
+  appliedOpenDocPaths = new Set<string>();
   appliedFocusedDocPath = undefined;
 }
 
@@ -325,17 +325,17 @@ function syncSocketState(): void {
     return;
   }
   const desired = desiredSessionState();
-  for (const path of desired.subscriptions) {
-    if (!appliedSubscriptions.has(path)) {
-      sendWs({ subscribe: path });
+  for (const path of desired.openDocPaths) {
+    if (!appliedOpenDocPaths.has(path)) {
+      sendWs({ document_open: path });
     }
   }
-  for (const path of appliedSubscriptions) {
-    if (!desired.subscriptions.has(path)) {
-      sendWs({ unsubscribe: path });
+  for (const path of appliedOpenDocPaths) {
+    if (!desired.openDocPaths.has(path)) {
+      sendWs({ document_closed: path });
     }
   }
-  appliedSubscriptions = desired.subscriptions;
+  appliedOpenDocPaths = desired.openDocPaths;
 
   // Document-level focus/blur is the only retained focus signal (MW-13): the
   // hub never consumed section_focus/section_blur (spec 06 §6).
@@ -401,7 +401,7 @@ workerScope.onconnect = (connectEvent) => {
     if (message.type === "register") {
       tabPorts.set(message.tabId, port);
       tabStates.set(message.tabId, {
-        subscriptions: [],
+        openDocPaths: [],
         focusedDocPath: null,
         focusedSection: null,
         clientInstanceId: null,
@@ -424,19 +424,19 @@ workerScope.onconnect = (connectEvent) => {
         typeof message.state.clientInstanceId === "string" && message.state.clientInstanceId.length > 0
           ? message.state.clientInstanceId
           : priorInstanceId;
-      const nextSubscriptions = Array.isArray(message.state.subscriptions) ? message.state.subscriptions : [];
+      const nextOpenDocPaths = Array.isArray(message.state.openDocPaths) ? message.state.openDocPaths : [];
       tabStates.set(message.tabId, {
-        subscriptions: nextSubscriptions,
+        openDocPaths: nextOpenDocPaths,
         focusedDocPath: message.state.focusedDocPath ?? null,
         focusedSection: message.state.focusedSection ?? null,
         clientInstanceId: nextInstanceId,
         updatedAt: Date.now(),
       });
       if (ws && ws.readyState === WebSocket.OPEN) {
-        const priorTabSubscriptions = new Set(priorTabState?.subscriptions ?? []);
-        for (const path of nextSubscriptions) {
-          if (!priorTabSubscriptions.has(path) && appliedSubscriptions.has(path)) {
-            sendWs({ subscribe: path });
+        const priorTabOpenDocPaths = new Set(priorTabState?.openDocPaths ?? []);
+        for (const path of nextOpenDocPaths) {
+          if (!priorTabOpenDocPaths.has(path) && appliedOpenDocPaths.has(path)) {
+            sendWs({ document_open: path });
           }
         }
       }

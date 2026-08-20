@@ -22,7 +22,7 @@ import type { WorkspaceSectionDto } from "../../pages/document-page-utils";
 
 type WsEventHandler = (event: WsServerEvent) => void;
 let capturedWsHandler: WsEventHandler | null = null;
-let subscribeArgs: Array<{ docPath: string; clientInstanceId: string | undefined }> = [];
+let openDocumentArgs: Array<{ docPath: string; clientInstanceId: string | undefined }> = [];
 
 vi.mock("../../services/ws-client", () => ({
   KnowledgeStoreWsClient: class {
@@ -31,10 +31,10 @@ vi.mock("../../services/ws-client", () => ({
     onEvent = (handler: WsEventHandler) => {
       capturedWsHandler = handler;
     };
-    subscribe = (docPath: string, clientInstanceId?: string) => {
-      subscribeArgs.push({ docPath, clientInstanceId });
+    openDocument = (docPath: string, clientInstanceId?: string) => {
+      openDocumentArgs.push({ docPath, clientInstanceId });
     };
-    unsubscribe = vi.fn();
+    closeDocument = vi.fn();
     focusDocument = vi.fn();
     blurDocument = vi.fn();
   },
@@ -95,7 +95,7 @@ function buildRejection(docPath: string): SectionEditRejectedEvent {
 describe("useDocumentWebSocket — section:edit-rejected routing", () => {
   beforeEach(() => {
     capturedWsHandler = null;
-    subscribeArgs = [];
+    openDocumentArgs = [];
   });
   afterEach(() => {
     vi.clearAllMocks();
@@ -135,11 +135,11 @@ describe("useDocumentWebSocket — section:edit-rejected routing", () => {
     expect(params.loadSections).not.toHaveBeenCalled();
   });
 
-  it("binds the tab's clientInstanceId at subscribe time so the hub can route private events", () => {
+  it("binds the tab's clientInstanceId at document-open time so the hub can route private events", () => {
     const onSectionEditRejected = vi.fn();
     const params = buildParams("/current.md", onSectionEditRejected, "my-tab-abc123");
     renderHook(() => useDocumentWebSocket(params), { wrapper });
 
-    expect(subscribeArgs).toEqual([{ docPath: "/current.md", clientInstanceId: "my-tab-abc123" }]);
+    expect(openDocumentArgs).toEqual([{ docPath: "/current.md", clientInstanceId: "my-tab-abc123" }]);
   });
 });

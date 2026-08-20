@@ -352,11 +352,11 @@ export function useDocumentWebSocket({
       }
     });
     wsClient.connect();
-    // Bind the stable per-tab id at subscribe time so the hub/private-event
+    // Bind the stable per-tab id at document-open time so the hub/private-event
     // routing knows the identity of this document tab.
-    wsClient.subscribe(docPath, clientInstanceId);
+    wsClient.openDocument(docPath, clientInstanceId);
     return () => {
-      wsClient.unsubscribe(docPath);
+      wsClient.closeDocument(docPath);
       wsClient.disconnect();
     };
   }, [
