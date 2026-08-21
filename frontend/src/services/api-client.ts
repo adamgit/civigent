@@ -69,6 +69,17 @@ export interface AgentMcpSessionRecord {
   actions: AgentMcpActionEntry[];
 }
 
+export interface AgentMcpLogFileInfo {
+  path: string;
+  size_bytes: number;
+  exists: boolean;
+}
+
+export interface GetAgentActivityResponse {
+  sessions: AgentMcpSessionRecord[];
+  log_file: AgentMcpLogFileInfo;
+}
+
 export interface AgentMcpPulseAction {
   agent_id: string;
   agent_display_name: string;
@@ -1379,8 +1390,8 @@ export const apiClient = {
     });
   },
 
-  async getAgentActivity(): Promise<{ sessions: AgentMcpSessionRecord[] }> {
-    return requestJson<{ sessions: AgentMcpSessionRecord[] }>("/api/admin/agent-activity");
+  async getAgentActivity(): Promise<GetAgentActivityResponse> {
+    return requestJson<GetAgentActivityResponse>("/api/admin/agent-activity");
   },
 
   // --- Document diagnostics ---

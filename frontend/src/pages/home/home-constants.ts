@@ -5,6 +5,8 @@ export const HOME_RECENT_WINDOW_DAYS = 7;
 export const HOME_RECENT_PAGE_SIZE_NARROW = 10;
 /** First page on wide; a typical 7-day list is a couple of pages, not nine. */
 export const HOME_RECENT_PAGE_SIZE_WIDE = 24;
+/** Wide home folder and recent-document lists. Hide the pager at or below this. */
+export const HOME_WIDE_LIST_PAGE_SIZE = 10;
 export const HOME_AGENT_ROW_LIMIT = 8;
 
 /**
@@ -27,6 +29,20 @@ export const HOME_RECENT_WINDOW_OPTIONS = [
 export type HomeRecentWindowId = (typeof HOME_RECENT_WINDOW_OPTIONS)[number]["id"];
 
 export const HOME_RECENT_WINDOW_DEFAULT: HomeRecentWindowId = "7d";
+
+export const HOME_FOLDER_WINDOW_OPTIONS = [
+  { id: "7d", label: "7d", days: 7 },
+  { id: "30d", label: "30d", days: 30 },
+] as const;
+
+export type HomeFolderWindowId = (typeof HOME_FOLDER_WINDOW_OPTIONS)[number]["id"];
+
+export const HOME_FOLDER_WINDOW_DEFAULT: HomeFolderWindowId = "7d";
+
+export function homeFolderWindowDays(id: HomeFolderWindowId): number {
+  const match = HOME_FOLDER_WINDOW_OPTIONS.find((option) => option.id === id);
+  return match?.days ?? HOME_RECENT_WINDOW_DAYS;
+}
 export const HOME_RECENT_WINDOW_STORAGE_KEY = "ks_home_recent_window";
 
 export function parseHomeRecentWindowId(value: string | null | undefined): HomeRecentWindowId | null {

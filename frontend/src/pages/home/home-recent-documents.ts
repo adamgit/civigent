@@ -1,4 +1,4 @@
-import type { ActivityItem } from "../../types/shared.js";
+import type { ActivityItem, WriterType } from "../../types/shared.js";
 import { HOME_RECENT_WINDOW_DAYS } from "./home-constants.js";
 import { folderPrefixOfDoc } from "./home-tree-stats.js";
 import { getDocDisplayName, headingText } from "../document-page-utils.js";
@@ -58,6 +58,7 @@ export function buildRecentDocuments(
   currentWriterId: string | null,
   nowMs: number = Date.now(),
   windowDays: number = HOME_RECENT_WINDOW_DAYS,
+  writerType?: WriterType,
 ): HomeRecentDocument[] {
   const byDoc = new Map<
     string,
@@ -68,6 +69,7 @@ export function buildRecentDocuments(
 
   for (const item of sorted) {
     if (!inWindow(item.timestamp, nowMs, windowDays)) continue;
+    if (writerType && item.writer_type !== writerType) continue;
     const isYours = currentWriterId != null && item.writer_id === currentWriterId;
     for (const section of item.sections) {
       const label = sectionLabel(section.heading_path);
@@ -125,10 +127,12 @@ export function countRecentDocuments(
   activity: ActivityItem[],
   nowMs: number = Date.now(),
   windowDays: number = HOME_RECENT_WINDOW_DAYS,
+  writerType?: WriterType,
 ): number {
   const docs = new Set<string>();
   for (const item of activity) {
     if (!inWindow(item.timestamp, nowMs, windowDays)) continue;
+    if (writerType && item.writer_type !== writerType) continue;
     for (const section of item.sections) docs.add(section.doc_path);
   }
   return docs.size;

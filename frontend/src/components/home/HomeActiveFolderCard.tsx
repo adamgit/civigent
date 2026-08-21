@@ -16,12 +16,26 @@ function barHeight(value: number, max: number): number {
   return Math.max(3, Math.round((value / max) * BAR_MAX_PX));
 }
 
+export function FolderChangeBars({
+  counts,
+}: {
+  counts: HomeActiveFolder["counts"];
+}) {
+  const max = Math.max(counts.added, counts.modified, counts.deleted);
+  return (
+    <span className="home-folder-card__bars" aria-hidden="true">
+      <Bar kind="add" value={counts.added} max={max} />
+      <Bar kind="mod" value={counts.modified} max={max} />
+      <Bar kind="del" value={counts.deleted} max={max} />
+    </span>
+  );
+}
+
 export function HomeActiveFolderCard({
   folder,
   layoutMode: _layoutMode = "narrow",
   variant = "default",
 }: HomeActiveFolderCardProps) {
-  const max = Math.max(folder.counts.added, folder.counts.modified, folder.counts.deleted);
   const docs = `${folder.docCount} doc${folder.docCount === 1 ? "" : "s"}`;
   const allDocs = variant === "all-docs";
   return (
@@ -39,11 +53,7 @@ export function HomeActiveFolderCard({
       <span className={`home-folder-card__count${allDocs ? " text-accent-text" : ""}`}>
         {allDocs ? `all docs · ${folder.docCount}` : docs}
       </span>
-      <span className="home-folder-card__bars" aria-hidden="true">
-        <Bar kind="add" value={folder.counts.added} max={max} />
-        <Bar kind="mod" value={folder.counts.modified} max={max} />
-        <Bar kind="del" value={folder.counts.deleted} max={max} />
-      </span>
+      <FolderChangeBars counts={folder.counts} />
     </Link>
   );
 }

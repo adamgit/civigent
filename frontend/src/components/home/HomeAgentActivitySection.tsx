@@ -15,7 +15,7 @@ export function HomeAgentActivitySection({
   return (
     <section className="home-agents" aria-label="Agent activity">
       <h2 className="home-section-label home-agents__label">Agent activity</h2>
-      <div className="home-card home-agents__card">
+      <div className="home-card home-agents__card home-agents__card--pulse">
         {rows.length === 0 ? (
           <p className="home-agents__empty">No agents yet.</p>
         ) : (

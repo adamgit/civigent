@@ -1,33 +1,40 @@
 import { useMemo, type ReactNode } from "react";
-import type { ActivityItem, HumanInvolvementPresetName } from "../../types/shared.js";
+import type { ActivityItem, HumanInvolvementPresetName, LoginProvider } from "../../types/shared.js";
 import type { HomeActiveFolder } from "./home-folder-activity";
 import type { HomeRecentDocument } from "./home-recent-documents";
-import type { HomeRecentWindowId } from "./home-constants";
-import { HomeHeader } from "../../components/home/HomeHeader";
-import { HomeInvolvementWaitLine } from "../../components/home/HomeInvolvementWaitLine";
+import type { HomeFolderWindowId, HomeRecentWindowId } from "./home-constants";
 import { HomeCarousel, type HomeCarouselSlide } from "../../components/home/HomeCarousel";
-import { HomeSkillsSlide } from "../../components/home/HomeSkillsSlide";
 import { HomeFocusBrowseSlide } from "../../components/home/HomeFocusBrowseSlide";
-import { HomeSingleUserSlide } from "../../components/home/HomeSingleUserSlide";
 import { HomeSearchBar } from "../../components/home/HomeSearchBar";
-import { HomeActiveFoldersSection } from "../../components/home/HomeActiveFoldersSection";
-import { HomeRecentDocumentsSection } from "../../components/home/HomeRecentDocumentsSection";
-import { HomeAgentExperimentRow } from "../../components/home/experiment/HomeAgentExperimentRow";
+import { HomeSingleUserSlide } from "../../components/home/HomeSingleUserSlide";
+import { HomeFolderIconsSlide } from "../../components/home/HomeFolderIconsSlide";
+import { HomeSkillsSlide } from "../../components/home/HomeSkillsSlide";
+import { BrowseRootButton } from "../../components/home/wide/BrowseRootButton";
+import { HomeWideActiveFolders } from "../../components/home/wide/HomeWideActiveFolders";
+import { HomeWideAgentPulse } from "../../components/home/wide/HomeWideAgentPulse";
+import { HomeWideRecentDocuments } from "../../components/home/wide/HomeWideRecentDocuments";
+import { SiteMasthead } from "../../components/home/wide/SiteMasthead";
 import type { HomeAgentTask, HomeMcpPulseAction } from "../../components/home/experiment/types";
 import "./home.css";
 
 interface HomeWideLayoutProps {
-  title: string;
   hostLabel: string;
+  tagline: string;
   involvementPreset: HumanInvolvementPresetName | null;
+  documentCount: number;
+  folderCount: number;
+  agentCount: number;
+  lastChangeAt: string | null;
   folders: HomeActiveFolder[];
-  allDocsFolder: HomeActiveFolder;
+  folderWindowId: HomeFolderWindowId;
+  onFolderWindowChange: (id: HomeFolderWindowId) => void;
   recentDocuments: HomeRecentDocument[];
   recentDocumentTotal: number;
   recentWindowId: HomeRecentWindowId;
   onRecentWindowChange: (id: HomeRecentWindowId) => void;
   alerts: ReactNode;
   singleUser: boolean;
+  authMode: LoginProvider | null;
   sidebarAutoHide: boolean;
   setSidebarAutoHide: (autoHide: boolean) => void;
   mcpActions: HomeMcpPulseAction[];
@@ -37,17 +44,23 @@ interface HomeWideLayoutProps {
 }
 
 export function HomeWideLayout({
-  title,
   hostLabel,
+  tagline,
   involvementPreset,
+  documentCount,
+  folderCount,
+  agentCount,
+  lastChangeAt,
   folders,
-  allDocsFolder,
+  folderWindowId,
+  onFolderWindowChange,
   recentDocuments,
   recentDocumentTotal,
   recentWindowId,
   onRecentWindowChange,
   alerts,
   singleUser,
+  authMode,
   sidebarAutoHide,
   setSidebarAutoHide,
   mcpActions,
@@ -72,9 +85,14 @@ export function HomeWideLayout({
       items.push({
         id: "single-user",
         title: "Single-user mode",
-        content: <HomeSingleUserSlide />,
+        content: <HomeSingleUserSlide hideHeading />,
       });
     }
+    items.push({
+      id: "folder-icons",
+      title: "How folder icons work",
+      content: <HomeFolderIconsSlide />,
+    });
     items.push({
       id: "skills",
       title: "Turn a folder into agent skills",
@@ -85,36 +103,54 @@ export function HomeWideLayout({
 
   return (
     <div className="home-wide" data-home-layout="wide">
-      <div className="home-wide__chrome">
-        <HomeHeader
-          title={title}
-          hostLabel={hostLabel}
-          trailing={
-            involvementPreset ? (
-              <HomeInvolvementWaitLine preset={involvementPreset} layoutMode="wide" />
-            ) : null
-          }
-        />
-      </div>
       <div className="home-wide__body sidebar-scroll">
-        {alerts}
-        <HomeAgentExperimentRow
-          actions={mcpActions}
-          activity={pulseActivity}
-          tasks={agentTasks}
-          pulseError={pulseError}
-        />
-        <HomeSearchBar />
-        <HomeActiveFoldersSection folders={folders} allDocsFolder={allDocsFolder} layoutMode="wide" />
-        <div className="home-wide__bottom">
-          <HomeRecentDocumentsSection
-            documents={recentDocuments}
-            totalCount={recentDocumentTotal}
-            layoutMode="wide"
-            windowId={recentWindowId}
-            onWindowChange={onRecentWindowChange}
-          />
-          <HomeCarousel slides={slides} />
+        <div className="home-page">
+          {alerts}
+          <div className="home-frame">
+            <header className="home-welcome">
+              <SiteMasthead
+                hostLabel={hostLabel}
+                tagline={tagline}
+                documentCount={documentCount}
+                folderCount={folderCount}
+                agentCount={agentCount}
+                lastChangeAt={lastChangeAt}
+                involvementPreset={involvementPreset}
+                authMode={authMode}
+              />
+              <div className="home-welcome__actions">
+                <div className="home-welcome__pair">
+                  <HomeSearchBar />
+                  <BrowseRootButton documentCount={documentCount} folderCount={folderCount} />
+                </div>
+                <HomeCarousel slides={slides} />
+              </div>
+            </header>
+
+            <div className="home-wide-flow">
+              <HomeWideAgentPulse
+                actions={mcpActions}
+                activity={pulseActivity}
+                tasks={agentTasks}
+                pulseError={pulseError}
+              />
+
+              <div className="home-human-band">
+                <HomeWideActiveFolders
+                  folders={folders}
+                  totalFolderCount={folderCount}
+                  windowId={folderWindowId}
+                  onWindowChange={onFolderWindowChange}
+                />
+                <HomeWideRecentDocuments
+                  documents={recentDocuments}
+                  totalCount={recentDocumentTotal}
+                  windowId={recentWindowId}
+                  onWindowChange={onRecentWindowChange}
+                />
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

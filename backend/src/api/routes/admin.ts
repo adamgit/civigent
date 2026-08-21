@@ -40,6 +40,7 @@ import {
   createCustomRole,
   removeCustomRole,
   getAgentActivity,
+  readAgentActivityLogFileInfo,
   getHeatmap,
   getRuntimeMemory,
   listAdminProposals,
@@ -475,6 +476,23 @@ export function registerAdminRoutes(
       const admin = await requireAdmin(req, res);
       if (!admin) return;
       res.json(await getAgentActivity());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/admin/agent-activity/download", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const logFile = await readAgentActivityLogFileInfo();
+      if (!logFile.exists) {
+        sendApiError(res, 404, "No agent MCP activity log has been written yet.");
+        return;
+      }
+      res.download(logFile.path, "agent-mcp-activity.jsonl", (error) => {
+        if (error) next(error);
+      });
     } catch (error) {
       next(error);
     }

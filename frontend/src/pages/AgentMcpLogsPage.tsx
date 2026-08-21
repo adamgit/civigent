@@ -3,6 +3,7 @@ import { SharedPageHeader } from "../components/SharedPageHeader";
 import {
   apiClient,
   type AgentMcpActionEntry,
+  type AgentMcpLogFileInfo,
   type AgentMcpSessionRecord,
 } from "../services/api-client";
 
@@ -91,6 +92,7 @@ function SessionRow({
 
 export function AgentMcpLogsPage() {
   const [sessions, setSessions] = useState<AgentMcpSessionRecord[]>([]);
+  const [logFile, setLogFile] = useState<AgentMcpLogFileInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -102,6 +104,7 @@ export function AgentMcpLogsPage() {
       const resp = await apiClient.getAgentActivity();
       // Show most recent first
       setSessions(resp.sessions.reverse());
+      setLogFile(resp.log_file);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -120,6 +123,31 @@ export function AgentMcpLogsPage() {
       <div style={{ maxWidth: "72rem", margin: "0 auto", padding: "1.5rem 1rem" }}>
         {loading && <p className="text-text-muted text-[13px]">Loading...</p>}
         {error && <p className="text-red-500 text-[13px]">{error}</p>}
+
+        {!loading && !error && logFile && (
+          <div className="mb-4 flex items-center justify-between gap-4 rounded border border-footer-border px-4 py-3">
+            <div className="min-w-0">
+              <div className="text-[11px] font-medium text-text-muted">Server log file</div>
+              <code className="block truncate text-[12px] text-text-primary" title={logFile.path}>
+                {logFile.path}
+              </code>
+              <div className="mt-1 text-[11px] text-text-muted tabular-nums">
+                {logFile.size_bytes.toLocaleString()} bytes
+              </div>
+            </div>
+            {logFile.exists ? (
+              <a
+                href="/api/admin/agent-activity/download"
+                download
+                className="btn-secondary shrink-0 no-underline"
+              >
+                Download log
+              </a>
+            ) : (
+              <span className="shrink-0 text-[12px] text-text-muted">No file yet</span>
+            )}
+          </div>
+        )}
 
         {!loading && !error && sessions.length === 0 && (
           <p className="text-text-muted text-[13px]">No agent MCP sessions recorded yet.</p>

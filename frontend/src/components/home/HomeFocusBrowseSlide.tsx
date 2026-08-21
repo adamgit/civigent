@@ -8,33 +8,20 @@ export function HomeFocusBrowseSlide({
   setSidebarAutoHide,
 }: HomeFocusBrowseSlideProps) {
   return (
-    <div className="home-slide">
-      <div className="home-slide__kicker">Workspace layout</div>
-      <h2 className="home-slide__title">Focus or Browse</h2>
-      <div className="home-focus-browse">
+    <>
+      <p className="home-slide__body">
+        {sidebarAutoHide
+          ? "The sidebar is hidden for more room. Hover the left edge of the window to show it."
+          : "The sidebar stays open so you can explore. Hide it when you want more room to read."}
+      </p>
+      <div className="home-slide__links">
         <button
           type="button"
-          onClick={() => setSidebarAutoHide(true)}
-          aria-pressed={sidebarAutoHide}
-          className={`home-focus-browse__btn${sidebarAutoHide ? " home-focus-browse__btn--focus" : ""}`}
+          onClick={() => setSidebarAutoHide(!sidebarAutoHide)}
         >
-          <div className="home-focus-browse__name">Focus mode</div>
-          <p>
-            Hide the sidebar for more room to read and write. Hover the left edge of the window when you need the document tree again.
-          </p>
-        </button>
-        <button
-          type="button"
-          onClick={() => setSidebarAutoHide(false)}
-          aria-pressed={!sidebarAutoHide}
-          className={`home-focus-browse__btn${sidebarAutoHide ? "" : " home-focus-browse__btn--browse"}`}
-        >
-          <div className="home-focus-browse__name">Browse mode</div>
-          <p>
-            Keep the sidebar open so you can jump between documents. Use this when you are exploring or moving around often.
-          </p>
+          {sidebarAutoHide ? "Show sidebar" : "Hide sidebar"} {"\u2192"}
         </button>
       </div>
-    </div>
+    </>
   );
 }

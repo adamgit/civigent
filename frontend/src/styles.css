@@ -36,6 +36,22 @@
   --color-agent-light: #f3effa;
   --color-agent-border: #c9b8e8;
   --color-agent-text: #6b4fa0;
+  /* Agent panel surfaces — cool ground that marks machine-authored work. */
+  --color-agent-surface: #eceaf6;
+  --color-agent-rule: #dcd7ec;
+  --color-agent-strong: #3c3a52;
+  --color-agent-secondary: #4e4c63;
+  --color-agent-muted: #837e9e;
+  --color-agent-faint: #9d98b6;
+  /* Read / write coding inside agent-authored output. */
+  --color-write: #b85a20;
+  --color-write-light: #f4e2d3;
+  --color-write-text: #8a4213;
+  --color-read: #3f5da8;
+  --color-read-light: #e2e8f6;
+  --color-read-text: #2a4785;
+  /* Human change kinds. Only "removed" carries hue. */
+  --color-edit-removed: #9b5148;
 
   /* Human colors */
   --color-human-light: #e8f4f6;

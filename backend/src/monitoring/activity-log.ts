@@ -13,7 +13,7 @@
  *   The envelope includes agent identity, session timing, and aggregate stats.
  */
 
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { getMonitoringRoot } from "../storage/data-root.js";
 
@@ -48,8 +48,35 @@ interface InFlightSession {
 
 // ─── Paths ────────────────────────────────────────────────
 
-function getActivityLogPath(): string {
+export function getActivityLogPath(): string {
   return path.join(getMonitoringRoot(), "agent-mcp-activity.jsonl");
+}
+
+export interface ActivityLogFileInfo {
+  path: string;
+  size_bytes: number;
+  exists: boolean;
+}
+
+export async function getActivityLogFileInfo(): Promise<ActivityLogFileInfo> {
+  const logPath = getActivityLogPath();
+  try {
+    const fileStat = await stat(logPath);
+    return {
+      path: logPath,
+      size_bytes: fileStat.size,
+      exists: true,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return {
+        path: logPath,
+        size_bytes: 0,
+        exists: false,
+      };
+    }
+    throw error;
+  }
 }
 
 // ─── ActivityLog class ────────────────────────────────────

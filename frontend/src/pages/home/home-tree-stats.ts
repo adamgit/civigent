@@ -41,7 +41,7 @@ function countFilesInSubtree(entry: DocumentTreeEntry): number {
   return count;
 }
 
-function findFolderEntry(entries: DocumentTreeEntry[], folderPath: FolderPath): DocumentTreeEntry | null {
+export function findFolderEntry(entries: DocumentTreeEntry[], folderPath: FolderPath): DocumentTreeEntry | null {
   if (folderPath === FolderPath.root) {
     return { type: "directory", name: "/", path: FolderPath.root, children: entries };
   }

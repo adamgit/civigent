@@ -4,22 +4,25 @@ import type { AppLayoutOutletContext } from "../app/AppLayout";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { apiClient, resolveWriterId } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
-import { type AgentActivitySummary, type ActivityItem, type AnyProposal, type HumanInvolvementPresetName } from "../types/shared.js";
+import { type AgentActivitySummary, type ActivityItem, type AnyProposal, type HumanInvolvementPresetName, type LoginProvider } from "../types/shared.js";
 import { useDocLayoutMode } from "../hooks/useDocLayoutMode";
 import { HomeNarrowLayout } from "./home/HomeNarrowLayout";
 import { HomeWideLayout } from "./home/HomeWideLayout";
 import {
   HOME_ACTIVITY_FETCH_DAYS,
   HOME_ACTIVITY_FETCH_LIMIT,
+  HOME_FOLDER_WINDOW_DEFAULT,
   HOME_RECENT_WINDOW_DAYS,
+  homeFolderWindowDays,
   homeRecentWindowDays,
   readHomeRecentWindow,
   writeHomeRecentWindow,
+  type HomeFolderWindowId,
   type HomeRecentWindowId,
 } from "./home/home-constants";
-import { homeHostLabel, homeInstallTitle } from "./home/home-title";
+import { homeHostLabel, homePageTagline } from "./home/home-title";
 import { countTreeTotals } from "./home/home-tree-stats";
-import { buildActiveFolders, buildAllDocsFolder } from "./home/home-folder-activity";
+import { buildActiveFolders } from "./home/home-folder-activity";
 import { buildRecentDocuments, countRecentDocuments } from "./home/home-recent-documents";
 import { buildAgentActivityRows } from "./home/home-agent-activity";
 import { buildAgentTasks } from "../components/home/experiment/build-agent-tasks";
@@ -29,9 +32,9 @@ import { formatHomeTime } from "./home/home-time";
 
 export function HomePage() {
   const {
+    singleUser,
     sidebarAutoHide,
     setSidebarAutoHide,
-    singleUser,
     setDocLayoutNarrow,
     appName,
     entries,
@@ -47,6 +50,7 @@ export function HomePage() {
   const [degradedCount, setDegradedCount] = useState(0);
   const [degradedError, setDegradedError] = useState<string | null>(null);
 
+  const [authMode, setAuthMode] = useState<LoginProvider | null>(null);
   const [bootstrapAvailable, setBootstrapAvailable] = useState(false);
   const [bootstrapCode, setBootstrapCode] = useState("");
   const [bootstrapWorking, setBootstrapWorking] = useState(false);
@@ -61,6 +65,7 @@ export function HomePage() {
   const [activityError, setActivityError] = useState<string | null>(null);
   const [proposals, setProposals] = useState<AnyProposal[]>([]);
   const [recentWindowId, setRecentWindowId] = useState<HomeRecentWindowId>(readHomeRecentWindow);
+  const [folderWindowId, setFolderWindowId] = useState<HomeFolderWindowId>(HOME_FOLDER_WINDOW_DEFAULT);
   const [proposalsError, setProposalsError] = useState<string | null>(null);
   const [mcpActions, setMcpActions] = useState<HomeMcpPulseAction[]>([]);
   const [pulseError, setPulseError] = useState<string | null>(null);
@@ -90,11 +95,17 @@ export function HomePage() {
     apiClient
       .getAuthMethods()
       .then((response) => {
-        if (!cancelled) setBootstrapAvailable(!!response.bootstrap_available);
+        if (cancelled) return;
+        setBootstrapAvailable(!!response.bootstrap_available);
+        const type = response.methods?.[0]?.type;
+        setAuthMode(type === "single_user" || type === "credentials" || type === "oidc" ? type : null);
       })
       .catch(() => {
         /* non-fatal background fetch */
-        if (!cancelled) setBootstrapAvailable(false);
+        if (!cancelled) {
+          setBootstrapAvailable(false);
+          setAuthMode(null);
+        }
       });
     return () => { cancelled = true; };
   }, []);
@@ -253,24 +264,29 @@ export function HomePage() {
   };
 
   const treeTotals = useMemo(() => countTreeTotals(entries), [entries]);
+  const folderWindowDays = homeFolderWindowDays(folderWindowId);
   const activeFolders = useMemo(
-    () => buildActiveFolders(entries, activity, proposals),
-    [entries, activity, proposals],
+    () => buildActiveFolders(entries, activity, proposals, Date.now(), folderWindowDays),
+    [entries, activity, proposals, folderWindowDays],
   );
-  const allDocsFolder = useMemo(
-    () => buildAllDocsFolder(entries, activity, proposals),
-    [entries, activity, proposals],
-  );
+  const lastChangeAt = useMemo(() => {
+    let latest = "";
+    for (const item of activity) {
+      if (!latest || Date.parse(item.timestamp) > Date.parse(latest)) latest = item.timestamp;
+    }
+    return latest || null;
+  }, [activity]);
   const currentWriterId = currentUser?.id ?? resolveWriterId();
   const recentWindowDays =
     layoutMode === "wide" ? homeRecentWindowDays(recentWindowId) : HOME_RECENT_WINDOW_DAYS;
+  const recentWriterType = layoutMode === "wide" ? "human" : undefined;
   const recentDocuments = useMemo(
-    () => buildRecentDocuments(activity, currentWriterId, Date.now(), recentWindowDays),
-    [activity, currentWriterId, recentWindowDays],
+    () => buildRecentDocuments(activity, currentWriterId, Date.now(), recentWindowDays, recentWriterType),
+    [activity, currentWriterId, recentWindowDays, recentWriterType],
   );
   const recentDocumentTotal = useMemo(
-    () => countRecentDocuments(activity, Date.now(), recentWindowDays),
-    [activity, recentWindowDays],
+    () => countRecentDocuments(activity, Date.now(), recentWindowDays, recentWriterType),
+    [activity, recentWindowDays, recentWriterType],
   );
   const agentRows = useMemo(
     () => buildAgentActivityRows(agents, formatHomeTime),
@@ -361,21 +377,23 @@ export function HomePage() {
     </>
   );
 
+  const hostLabel = homeHostLabel();
   const layoutProps = {
-    title: homeInstallTitle(appName),
-    hostLabel: homeHostLabel(),
+    hostLabel,
     involvementPreset,
     folders: activeFolders,
     recentDocuments,
     recentDocumentTotal,
     alerts,
     singleUser,
+    authMode: authMode ?? (singleUser ? "single_user" : null),
   };
 
   if (layoutMode === "narrow") {
     return (
       <HomeNarrowLayout
         {...layoutProps}
+        title={hostLabel}
         agentRows={agentRows}
         folderCount={treeTotals.folderCount}
         documentCount={treeTotals.documentCount}
@@ -386,7 +404,13 @@ export function HomePage() {
   return (
     <HomeWideLayout
       {...layoutProps}
-      allDocsFolder={allDocsFolder}
+      tagline={homePageTagline(appName)}
+      documentCount={treeTotals.documentCount}
+      folderCount={treeTotals.folderCount}
+      agentCount={agents.length}
+      lastChangeAt={lastChangeAt}
+      folderWindowId={folderWindowId}
+      onFolderWindowChange={setFolderWindowId}
       recentWindowId={recentWindowId}
       onRecentWindowChange={(id) => {
         setRecentWindowId(id);

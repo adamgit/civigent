@@ -525,21 +525,30 @@ export async function scanContentIntegrity(): Promise<RunAdminContentIntegritySc
 
 // ─── Agent MCP activity log ─────────────────────────────
 
-export async function getAgentActivity(): Promise<{ sessions: unknown[] }> {
+export async function readAgentActivityLogFileInfo() {
+  const { getActivityLogFileInfo } = await import("../../monitoring/activity-log.js");
+  return getActivityLogFileInfo();
+}
+
+export async function getAgentActivity(): Promise<{
+  sessions: unknown[];
+  log_file: Awaited<ReturnType<typeof readAgentActivityLogFileInfo>>;
+}> {
   const { readFileIfExists } = await import("../../storage/fs-primitives.js");
-  const { getMonitoringRoot } = await import("../../storage/data-root.js");
-  const logPath = (await import("node:path")).join(getMonitoringRoot(), "agent-mcp-activity.jsonl");
+  const { getActivityLogPath } = await import("../../monitoring/activity-log.js");
+  const logPath = getActivityLogPath();
   // A genuinely absent log file means no agent activity has been recorded yet —
   // a valid empty state. Any other read failure (permission, I/O) propagates.
   const raw = await readFileIfExists(logPath);
+  const logFile = await readAgentActivityLogFileInfo();
   if (raw === null) {
-    return { sessions: [] };
+    return { sessions: [], log_file: logFile };
   }
   const sessions = raw
     .split("\n")
     .filter((line) => line.trim().length > 0)
     .map((line) => JSON.parse(line));
-  return { sessions };
+  return { sessions, log_file: logFile };
 }
 
 export interface AgentMcpPulseAction {

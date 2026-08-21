@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { HumanInvolvementPresetName } from "../../types/shared.js";
+import type { HumanInvolvementPresetName, LoginProvider } from "../../types/shared.js";
 import type { HomeActiveFolder } from "./home-folder-activity";
 import type { HomeAgentActivityRowModel } from "./home-agent-activity";
 import type { HomeRecentDocument } from "./home-recent-documents";
@@ -25,6 +25,7 @@ interface HomeNarrowLayoutProps {
   recentDocumentTotal: number;
   alerts: ReactNode;
   singleUser: boolean;
+  authMode: LoginProvider | null;
 }
 
 export function HomeNarrowLayout({
@@ -39,12 +40,13 @@ export function HomeNarrowLayout({
   recentDocumentTotal,
   alerts,
   singleUser,
+  authMode,
 }: HomeNarrowLayoutProps) {
   return (
     <div className="home-narrow" data-home-layout="narrow">
       <div className="home-narrow__chrome">
         <div className="home-narrow__chrome-inner">
-          <HomeHeader title={title} hostLabel={hostLabel} />
+          <HomeHeader title={title} hostLabel={hostLabel} authMode={authMode} />
           {involvementPreset ? (
             <HomeInvolvementWaitLine preset={involvementPreset} layoutMode="narrow" />
           ) : null}
