@@ -1,8 +1,8 @@
 /**
- * Claim-review 04 enforcement: read paths must FAIL LOUD. This test bans the
- * catch-and-swallow anti-patterns on the read-path modules the claim fixed:
- *   - a bare `continue` inside a `catch` that does not rethrow (swallows the row);
- *   - coercing a read result to empty via `?? null` / `?? ""` over a `.get(...)`.
+ * Claim-review 04 enforcement: unexpected read failures must remain visible.
+ * Behavioural tests own the distinction between a valid claimed-but-absent
+ * deletion and corruption; this file only guards narrow source-level
+ * catch-and-swallow regressions that are independent of proposal semantics.
  *
  * EXEMPT by contract (tolerant readers — do NOT touch): `skeleton-assessment.ts`
  * (diagnostic, never throws) and `crash-recovery.ts` (fails loud via process.exit).
@@ -20,20 +20,11 @@ const SRC = path.join(HERE, "..", "..");
 
 // The read-path modules whose fail-loud behaviour this test pins.
 const GUARDED_FILES = [
-  "storage/proposal-repository.ts", // readProposalWithContent throws ProposalIntegrityError
+  "storage/proposal-repository.ts",
   "domain/agent-write-policy.ts",   // safeSecondsSinceLastHumanActivity narrowed catch
 ];
 
 describe("Claim-review 04: read paths do not catch-and-swallow", () => {
-  it("readProposalWithContent no longer silently `continue`s past a missing claimed section", async () => {
-    const source = await readFile(path.join(SRC, "storage/proposal-repository.ts"), "utf8");
-    const fn = source.slice(source.indexOf("export async function readProposalWithContent"));
-    const body = fn.slice(0, fn.indexOf("\n}\n"));
-    // The NotFound branch must THROW (ProposalIntegrityError), never `continue`.
-    expect(body).toContain("ProposalIntegrityError");
-    expect(body).not.toMatch(/instanceof\s+SectionNotFoundError[\s\S]{0,80}continue/);
-  });
-
   it("the scoring path narrows its catch to not-yet-canonical errors (skeleton-integrity now throws)", async () => {
     const source = await readFile(path.join(SRC, "domain/agent-write-policy.ts"), "utf8");
     const fn = source.slice(source.indexOf("safeSecondsSinceLastHumanActivity"));

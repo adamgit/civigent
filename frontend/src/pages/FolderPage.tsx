@@ -653,76 +653,78 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                 <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-faint max-md:hidden">
                   Folder
                 </p>
-                <h1 className="mb-1.5 hidden min-w-0 items-center gap-2 font-body text-[32px] font-bold leading-tight tracking-tight text-text-primary max-md:flex">
-                  <span className="inline-flex shrink-0 text-folder-new">
-                    <FolderGlyphIcon size={28} />
-                  </span>
-                  <span className="flex min-w-0 items-center gap-0.5">
-                    <span className="min-w-0 truncate">
-                      {isRoot ? "docs" : FolderPath.displayName(folderPath)}
+                <div className="flex flex-col max-md:flex-col-reverse max-md:gap-1.5">
+                  <h1 className="mb-1.5 hidden min-w-0 items-center gap-2 font-body text-[32px] font-bold leading-tight tracking-tight text-text-primary max-md:mb-0 max-md:flex">
+                    <span className="inline-flex shrink-0 text-folder-new">
+                      <FolderGlyphIcon size={28} />
                     </span>
-                    <span className="shrink-0 text-folder-new" aria-hidden="true">
-                      /
+                    <span className="flex min-w-0 items-center gap-0.5">
+                      <span className="min-w-0 truncate">
+                        {isRoot ? "docs" : FolderPath.displayName(folderPath)}
+                      </span>
+                      <span className="shrink-0 text-folder-new" aria-hidden="true">
+                        /
+                      </span>
+                      <CopyPathButton
+                        path={folderClipboardPath}
+                        label={FolderPath.displayName(folderPath)}
+                        copied={copiedPath === folderClipboardPath}
+                        onCopied={markPathCopied}
+                      />
                     </span>
-                    <CopyPathButton
-                      path={folderClipboardPath}
-                      label={FolderPath.displayName(folderPath)}
-                      copied={copiedPath === folderClipboardPath}
-                      onCopied={markPathCopied}
-                    />
-                  </span>
-                </h1>
-                <div className="flex min-w-0 items-center gap-2">
-                  <div className="min-w-0 flex-1 overflow-x-auto">
-                    <FolderPathBreadcrumb folderPath={folderPath} />
-                  </div>
-                  <span className="max-md:hidden">
-                    <CopyPathButton
-                      path={folderClipboardPath}
-                      label={FolderPath.displayName(folderPath)}
-                      copied={copiedPath === folderClipboardPath}
-                      onCopied={markPathCopied}
-                    />
-                  </span>
-                  {!isRoot && renaming ? (
-                    <form onSubmit={handleRenameFolder} className="flex shrink-0 items-center gap-2">
-                      <input
-                        type="text"
-                        value={renameValue}
-                        onChange={(event) => setRenameValue(event.target.value)}
-                        className="input-field min-w-[200px] py-1.5 text-xs"
-                        disabled={folderOpBusy}
-                        aria-label="New folder path"
-                      />
-                      <button type="submit" className="btn-primary px-3 py-1.5 text-xs" disabled={folderOpBusy}>
-                        {folderOpBusy ? "Renaming..." : "Save"}
-                      </button>
-                      <button
-                        type="button"
-                        className="border-none bg-transparent p-0 text-[12px] text-text-faint hover:text-text-muted"
-                        disabled={folderOpBusy}
-                        onClick={() => {
-                          setRenaming(false);
-                          setRenameError(null);
-                        }}
-                      >
-                        cancel
-                      </button>
-                    </form>
-                  ) : null}
-                  {!isRoot && !renaming ? (
-                    <div className="ml-auto">
-                      <FolderOverflowMenu
-                        busy={folderOpBusy}
-                        onRename={() => {
-                          setRenameValue(folderPath);
-                          setRenameError(null);
-                          setRenaming(true);
-                        }}
-                        onDelete={handleDeleteFolder}
-                      />
+                  </h1>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <div className="min-w-0 flex-1 overflow-x-auto">
+                      <FolderPathBreadcrumb folderPath={folderPath} />
                     </div>
-                  ) : null}
+                    <span className="max-md:hidden">
+                      <CopyPathButton
+                        path={folderClipboardPath}
+                        label={FolderPath.displayName(folderPath)}
+                        copied={copiedPath === folderClipboardPath}
+                        onCopied={markPathCopied}
+                      />
+                    </span>
+                    {!isRoot && renaming ? (
+                      <form onSubmit={handleRenameFolder} className="flex shrink-0 items-center gap-2">
+                        <input
+                          type="text"
+                          value={renameValue}
+                          onChange={(event) => setRenameValue(event.target.value)}
+                          className="input-field min-w-[200px] py-1.5 text-xs"
+                          disabled={folderOpBusy}
+                          aria-label="New folder path"
+                        />
+                        <button type="submit" className="btn-primary px-3 py-1.5 text-xs" disabled={folderOpBusy}>
+                          {folderOpBusy ? "Renaming..." : "Save"}
+                        </button>
+                        <button
+                          type="button"
+                          className="border-none bg-transparent p-0 text-[12px] text-text-faint hover:text-text-muted"
+                          disabled={folderOpBusy}
+                          onClick={() => {
+                            setRenaming(false);
+                            setRenameError(null);
+                          }}
+                        >
+                          cancel
+                        </button>
+                      </form>
+                    ) : null}
+                    {!isRoot && !renaming ? (
+                      <div className="ml-auto">
+                        <FolderOverflowMenu
+                          busy={folderOpBusy}
+                          onRename={() => {
+                            setRenameValue(folderPath);
+                            setRenameError(null);
+                            setRenaming(true);
+                          }}
+                          onDelete={handleDeleteFolder}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               <p className="mt-2 text-[12px] text-text-faint max-md:hidden">
                 {stats.childFiles.length} files · {stats.childFolders.length} folders

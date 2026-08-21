@@ -75,6 +75,22 @@ description: Describe what this skill does and when Claude should use it
 `;
 }
 
+function slashCommandTemplate(name: string): string {
+  const spokenName = name.replace(/[-_]+/g, " ");
+  const nameTriggers = spokenName === name
+    ? `"${name}"`
+    : `"${name}" or "${spokenName}"`;
+  const detailedDescription = `Use when the user says ${nameTriggers} or asks to run the ${spokenName} command.`;
+  const description = detailedDescription.length <= 200
+    ? detailedDescription
+    : `Use when the user explicitly asks to run the "${name.slice(0, 140)}" command.`;
+  return `---
+description: ${description}
+---
+
+`;
+}
+
 function validateBareName(raw: string): string | null {
   const name = raw.trim();
   if (!name) return "Enter a skill name.";
@@ -150,7 +166,7 @@ export function SkillsPage() {
       if (skillKind === "agent-skill") {
         await apiClient.createDocument(docPath, agentSkillTemplate(name));
       } else {
-        await apiClient.createDocument(docPath);
+        await apiClient.createDocument(docPath, slashCommandTemplate(name));
       }
       await refreshTree();
       navigate(docHref(docPath));
@@ -206,7 +222,8 @@ export function SkillsPage() {
       <p className="text-[11px] text-text-muted m-0 leading-relaxed">
         {skillKind === "slash-command" ? (
           <>
-            Creates <code className="font-mono text-accent-text">{folder}/{skillName.trim() || "name"}.md</code>
+            Creates <code className="font-mono text-accent-text">{folder}/{skillName.trim() || "name"}.md</code>{" "}
+            with a trigger description for Claude (customize it with aliases; maximum 200 characters)
           </>
         ) : (
           <>

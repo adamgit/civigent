@@ -11,8 +11,9 @@ import request from "supertest";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createTestServer, type TestServerContext } from "../helpers/test-server.js";
-import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
+import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 import { flattenStructureToHeadingPaths, readDocumentStructure } from "../../storage/heading-resolver.js";
+import { SectionRef } from "../../domain/section-ref.js";
 import { DocPath } from "../../types/shared.js";
 
 let ctx: TestServerContext;
@@ -96,8 +97,8 @@ async function createProposal(
 }
 
 // Helper to read canonical skeleton
-async function readCanonicalSkeleton(): Promise<string> {
-  const skeletonPath = join(ctx.dataCtx.rootDir, "content", SAMPLE_DOC_PATH);
+async function readCanonicalSkeleton(docPath: string = SAMPLE_DOC_PATH): Promise<string> {
+  const skeletonPath = join(ctx.dataCtx.rootDir, "content", docPath);
   return readFile(skeletonPath, "utf8");
 }
 
@@ -196,14 +197,16 @@ describe("structural tools via proposals", () => {
       expect(content[0].text).toContain("proposal_id");
     });
 
-    it("updates skeleton in overlay, canonical untouched", async () => {
-      const proposalId = await createProposal("Delete section test");
-      const originalSkeleton = await readCanonicalSkeleton();
+    it("publishes a claimed-but-absent deletion through publish_proposal", async () => {
+      const docPath = "/ops/delete-publish-canary.md";
+      await createSampleDocument(ctx.dataCtx.rootDir, docPath);
+      const proposalId = await createProposal("Delete section test", ctx.agentToken, docPath);
+      const originalSkeleton = await readCanonicalSkeleton(docPath);
 
       const res = await callMcpTool("delete_section", {
         proposal_id: proposalId,
-        doc_path: SAMPLE_DOC_PATH,
-        heading_path: ["Overview"],
+        doc_path: docPath,
+        heading_path: ["Timeline"],
       });
 
       expect(res.result).toBeDefined();
@@ -211,21 +214,35 @@ describe("structural tools via proposals", () => {
       expect(parsed.deleted).toBe(true);
 
       // Canonical should be UNCHANGED
-      const currentSkeleton = await readCanonicalSkeleton();
+      const currentSkeleton = await readCanonicalSkeleton(docPath);
       expect(currentSkeleton).toBe(originalSkeleton);
+
+      const publishRes = await callMcpTool("publish_proposal", {
+        proposal_id: proposalId,
+      });
+      expect(publishRes.error, JSON.stringify(publishRes)).toBeUndefined();
+      expect(publishRes.result?.isError, JSON.stringify(publishRes)).not.toBe(true);
+      const published = JSON.parse(publishRes.result.content[0].text);
+      expect(published.status).toBe("committed");
+
+      expect(await canonicalTopLevelHeadings(docPath)).toEqual([
+        ["Overview"],
+      ]);
     });
   });
 
   describe("move_section", () => {
-    it("moves section in overlay, canonical untouched", async () => {
-      const proposalId = await createProposal("Move section test");
-      const originalSkeleton = await readCanonicalSkeleton();
+    it("read_proposal represents a real reparent as old-absent and new-present", async () => {
+      const docPath = "/ops/move-read-canary.md";
+      await createSampleDocument(ctx.dataCtx.rootDir, docPath);
+      const proposalId = await createProposal("Move section test", ctx.agentToken, docPath);
+      const originalSkeleton = await readCanonicalSkeleton(docPath);
 
       const res = await callMcpTool("move_section", {
         proposal_id: proposalId,
-        doc_path: SAMPLE_DOC_PATH,
+        doc_path: docPath,
         heading_path: ["Timeline"],
-        new_parent_path: [],
+        new_parent_path: ["Overview"],
       });
 
       expect(res.result).toBeDefined();
@@ -233,8 +250,25 @@ describe("structural tools via proposals", () => {
       expect(parsed.moved).toBe(true);
 
       // Canonical should be UNCHANGED
-      const currentSkeleton = await readCanonicalSkeleton();
+      const currentSkeleton = await readCanonicalSkeleton(docPath);
       expect(currentSkeleton).toBe(originalSkeleton);
+
+      const readRes = await callMcpTool("read_proposal", {
+        proposal_id: proposalId,
+      });
+      expect(readRes.error, JSON.stringify(readRes)).toBeUndefined();
+      expect(readRes.result?.isError, JSON.stringify(readRes)).not.toBe(true);
+      const read = JSON.parse(readRes.result.content[0].text);
+      const claimedPaths = read.proposal.sections.map(
+        (section: { heading_path: string[] }) => section.heading_path,
+      );
+      expect(claimedPaths).toContainEqual(["Timeline"]);
+      expect(claimedPaths).toContainEqual(["Overview", "Timeline"]);
+
+      const oldKey = new SectionRef(DocPath.parse(docPath), ["Timeline"]).globalKey;
+      const newKey = new SectionRef(DocPath.parse(docPath), ["Overview", "Timeline"]).globalKey;
+      expect(read.section_content[oldKey]).toBeUndefined();
+      expect(read.section_content[newKey]).toContain(SAMPLE_SECTIONS.timeline);
     });
   });
 

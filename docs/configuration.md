@@ -201,6 +201,11 @@ Claude.ai uploads the same ZIP as a plugin (**Customize → Plugins → Upload**
 
 Commands and skills are invoked as `/<plugin name>:<name>` (default prefix `/civ`).
 
+Top-level command documents should begin with YAML frontmatter whose `description` (maximum 200 characters)
+lists the phrases and aliases that should trigger the command. Civigent preserves an authored description.
+When it is absent, the ZIP exporter adds a fallback based on the command filename so Claude can route explicit
+requests instead of exposing the command with a generic plugin description.
+
 | Variable | Purpose | Default | Format |
 |----------|---------|---------|--------|
 | `KS_EXPORTEDSKILLS_PLUGIN_NAME` | Plugin `name` and slash-command namespace | `civ` | lowercase kebab-case, no spaces |

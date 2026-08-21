@@ -36,6 +36,8 @@ export interface ExportedSkillsListing {
   skills: ExportedSkillEntry[];
 }
 
+const COMMAND_DESCRIPTION_MAX_LENGTH = 200;
+
 function sanitizeCommandName(basenameSansMd: string): string {
   const lowered = basenameSansMd.trim().toLowerCase();
   const kebab = lowered
@@ -57,6 +59,42 @@ function uniquifyNames(rawNames: string[]): string[] {
 function folderGitPath(folder: string): string {
   const relative = folder.replace(/^\/+/, "");
   return `${getContentGitPrefix()}/${relative}`;
+}
+
+function commandTriggerDescription(commandName: string, pluginName: string): string {
+  const spokenName = commandName.replace(/[-_]+/g, " ");
+  const nameTriggers = spokenName === commandName
+    ? `"${commandName}"`
+    : `"${commandName}" or "${spokenName}"`;
+  const candidates = [
+    `Use when the user says ${nameTriggers}, invokes "/${pluginName}:${commandName}", or asks to run the ${spokenName} command. A bare "${commandName}" always means run this skill.`,
+    `Use when the user says ${nameTriggers} or asks to run the ${spokenName} command. A bare "${commandName}" always means run this skill.`,
+    `Use when the user says "${commandName}" or explicitly asks to run this command.`,
+    "Use when the user explicitly asks to run this command.",
+  ];
+  return candidates.find((candidate) => candidate.length <= COMMAND_DESCRIPTION_MAX_LENGTH)!;
+}
+
+function commandBodyWithDescription(body: string, commandName: string, pluginName: string): string {
+  const descriptionLine = `description: ${JSON.stringify(commandTriggerDescription(commandName, pluginName))}`;
+  const lines = body.split(/\r?\n/);
+
+  if (lines[0]?.trim() === "---") {
+    const closingIndex = lines.findIndex(
+      (line, index) => index > 0 && (line.trim() === "---" || line.trim() === "..."),
+    );
+    if (closingIndex > 0) {
+      const hasDescription = lines
+        .slice(1, closingIndex)
+        .some((line) => /^description\s*:/i.test(line));
+      if (hasDescription) return body;
+
+      lines.splice(1, 0, descriptionLine);
+      return lines.join("\n");
+    }
+  }
+
+  return `---\n${descriptionLine}\n---\n\n${body}`;
 }
 
 export async function folderExistsOnDisk(folder?: string): Promise<boolean> {
@@ -141,7 +179,8 @@ export async function buildExportedSkillsZip(): Promise<ExportedSkillsZipResult>
   zipFile.addBuffer(Buffer.from(`${JSON.stringify(pluginJson, null, 2)}\n`, "utf8"), ".claude-plugin/plugin.json");
 
   for (const command of listing.commands) {
-    zipFile.addBuffer(Buffer.from(command.body, "utf8"), `commands/${command.commandName}.md`);
+    const body = commandBodyWithDescription(command.body, command.commandName, config.pluginName);
+    zipFile.addBuffer(Buffer.from(body, "utf8"), `commands/${command.commandName}.md`);
   }
   for (const skill of listing.skills) {
     zipFile.addBuffer(Buffer.from(skill.body, "utf8"), `skills/${skill.dirName}/SKILL.md`);
