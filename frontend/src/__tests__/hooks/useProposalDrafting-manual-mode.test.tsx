@@ -16,9 +16,10 @@ import { dtoToRenderRef } from "../../pages/cold-bootstrap";
 const api = vi.hoisted(() => ({
   submitProposal: vi.fn(),
   getProposal: vi.fn(),
+  getProposalSections: vi.fn(),
   getProposalDocumentSections: vi.fn(),
   updateProposalManifest: vi.fn(),
-  replaceProposalSections: vi.fn(),
+  upsertProposalSections: vi.fn(),
   acquireLocks: vi.fn(),
 }));
 
@@ -57,9 +58,10 @@ describe("manual proposal mode (spec 11)", () => {
   beforeEach(() => {
     api.submitProposal.mockClear().mockResolvedValue({ proposal_id: "p1" });
     api.getProposal.mockClear().mockResolvedValue({ proposal: { id: "p1", status: "draft", intent: "", sections: [] } });
+    api.getProposalSections.mockClear().mockResolvedValue({ proposal_id: "p1", documents: [] });
     api.getProposalDocumentSections.mockClear().mockResolvedValue({ sections: [] });
     api.updateProposalManifest.mockClear().mockResolvedValue({});
-    api.replaceProposalSections.mockClear().mockResolvedValue({});
+    api.upsertProposalSections.mockClear().mockResolvedValue({});
     api.acquireLocks.mockClear().mockResolvedValue({ acquired: true, status: "inprogress" });
   });
   afterEach(() => vi.clearAllMocks());
@@ -90,7 +92,7 @@ describe("manual proposal mode (spec 11)", () => {
       intent: "",
       targets: [{ doc_path: "/test.md", heading_path: ["Overview"] }],
     });
-    expect(api.replaceProposalSections).toHaveBeenCalledWith("p1", {
+    expect(api.upsertProposalSections).toHaveBeenCalledWith("p1", {
       sections: [{ doc_path: "/test.md", heading_path: ["Overview"], content: "Overview body.\n" }],
     });
   });
@@ -124,10 +126,22 @@ describe("manual proposal mode (spec 11)", () => {
           id: "p1",
           status: "draft",
           intent: "",
-          sections: [{ doc_path: "/test.md", heading_path: ["Overview"], content: "Overview body.\n" }],
+          sections: [{ doc_path: "/test.md", heading_path: ["Overview"] }],
         },
       })
       .mockResolvedValue({ proposal: { id: "p1", status: "draft", intent: "", sections: [] } });
+    api.getProposalSections
+      .mockResolvedValueOnce({ proposal_id: "p1", documents: [] })
+      .mockResolvedValueOnce({
+        proposal_id: "p1",
+        documents: [
+          {
+            doc_path: "/test.md",
+            sections: [{ heading_path: ["Overview"], content: "Overview body.\n" }],
+          },
+        ],
+      })
+      .mockResolvedValue({ proposal_id: "p1", documents: [] });
 
     await act(async () => { await result.current.startManualPublish(); });
 
@@ -136,13 +150,13 @@ describe("manual proposal mode (spec 11)", () => {
     expect(result.current.selectedProposalSectionKeys.size).toBe(1);
 
     api.updateProposalManifest.mockClear();
-    api.replaceProposalSections.mockClear();
+    api.upsertProposalSections.mockClear();
 
     // Remove that same (only) section — the last one.
     await act(async () => { await result.current.removeProposalSection("/test.md", ["Overview"]); });
 
     // The empty draft scope is persisted as targets: [] (not blocked, not corruption).
-    expect(api.replaceProposalSections).toHaveBeenCalledWith("p1", { sections: [] });
+    expect(api.upsertProposalSections).toHaveBeenCalledWith("p1", { sections: [] });
     expect(api.updateProposalManifest).toHaveBeenCalledWith("p1", { intent: "", targets: [] });
     expect(result.current.selectedProposalSectionKeys.size).toBe(0);
     expect(result.current.panelError).toBeNull();
@@ -171,12 +185,12 @@ describe("manual proposal mode (spec 11)", () => {
     expect(result.current.activeProposalStatus).toBe("inprogress");
 
     api.updateProposalManifest.mockClear();
-    api.replaceProposalSections.mockClear();
+    api.upsertProposalSections.mockClear();
 
     // Attempting to change scope while inprogress is refused.
     await act(async () => { await result.current.toggleProposalSection(dtoToRenderRef(timeline)); });
     expect(result.current.panelError).toMatch(/scope is locked once proposal is inprogress/i);
     expect(api.updateProposalManifest).not.toHaveBeenCalled();
-    expect(api.replaceProposalSections).not.toHaveBeenCalled();
+    expect(api.upsertProposalSections).not.toHaveBeenCalled();
   });
 });

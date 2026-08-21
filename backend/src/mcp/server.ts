@@ -30,7 +30,13 @@ import {
   MCP_PROTOCOL_VERSION,
   MCP_METHODS,
 } from "./protocol.js";
-import { type ToolRegistry, type ToolContext, type McpSession } from "./tool-registry.js";
+import {
+  type ToolRegistry,
+  type ToolContext,
+  type McpSession,
+  buildMcpActivityMetadata,
+  recordAgentMcpActivity,
+} from "./tool-registry.js";
 import { type GatedTier, governanceForcedRejection } from "./governance-gate.js";
 import { makeToolErrorResult } from "./protocol.js";
 import type { AuthenticatedWriter } from "../auth/context.js";
@@ -226,6 +232,18 @@ export class McpServer {
   ): Promise<JsonRpcSuccessResponse | JsonRpcErrorResponse> {
     const parsed = McpToolCallParams.parse(req.params);
     if (!parsed.ok) {
+      const rawName =
+        typeof req.params === "object" && req.params !== null
+          ? (req.params as Record<string, unknown>).name
+          : undefined;
+      await recordAgentMcpActivity(
+        writer,
+        session,
+        typeof rawName === "string" ? rawName : "invalid_tool_call",
+        {},
+        "error",
+        parsed.message,
+      );
       return makeErrorResponse(req.id, JSONRPC_ERRORS.INVALID_PARAMS, parsed.message);
     }
     const params = parsed.value;
@@ -234,13 +252,27 @@ export class McpServer {
     // unknown-tool error: an agent holding a stale tool list should learn what
     // to call instead rather than see a hard failure.
     if (this.registry.isDeprecated(params.name)) {
-      return makeSuccessResponse(
-        req.id,
-        makeToolErrorResult(this.registry.deprecationMessage(params.name)),
+      const deprecationMessage = this.registry.deprecationMessage(params.name);
+      await recordAgentMcpActivity(
+        writer,
+        session,
+        params.name,
+        buildMcpActivityMetadata(params.arguments ?? {}),
+        "error",
+        deprecationMessage,
       );
+      return makeSuccessResponse(req.id, makeToolErrorResult(deprecationMessage));
     }
 
     if (!this.registry.hasTool(params.name)) {
+      await recordAgentMcpActivity(
+        writer,
+        session,
+        params.name,
+        buildMcpActivityMetadata(params.arguments ?? {}),
+        "error",
+        `Unknown tool: ${params.name}`,
+      );
       return makeErrorResponse(
         req.id,
         JSONRPC_ERRORS.INVALID_PARAMS,
@@ -253,6 +285,14 @@ export class McpServer {
     // handler so no read or write occurs — the agent learns it must use Tier 3.
     const governanceRejection = governanceForcedRejection(this.tier);
     if (governanceRejection !== null) {
+      await recordAgentMcpActivity(
+        writer,
+        session,
+        params.name,
+        buildMcpActivityMetadata(params.arguments ?? {}),
+        "error",
+        governanceRejection,
+      );
       return makeSuccessResponse(req.id, makeToolErrorResult(governanceRejection));
     }
 

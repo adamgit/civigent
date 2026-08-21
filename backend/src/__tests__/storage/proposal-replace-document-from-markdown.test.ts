@@ -70,8 +70,8 @@ describe("replaceDocumentFromMarkdown overwrite (items 67-75)", () => {
     expect(headings).not.toContain("Beta");
     expect(headings).not.toContain("Gamma");
     // Alpha's body was overwritten.
-    expect(await reader.readSection(DOC, ["Alpha"])).toContain("Alpha body REWRITTEN.");
-    expect(await reader.readSection(DOC, ["Delta"])).toContain("Delta body.");
+    expect(await reader.readEffectiveSection(DOC, ["Alpha"])).toContain("Alpha body REWRITTEN.");
+    expect(await reader.readEffectiveSection(DOC, ["Delta"])).toContain("Delta body.");
 
     // No orphaned proposal body files: the removed sections' bodies are gone.
     const bodies = await proposalBodies(id);
@@ -101,6 +101,6 @@ describe("replaceDocumentFromMarkdown overwrite (items 67-75)", () => {
     expect(headings).toContain("Alpha");
     expect(headings).toContain("Beta");
     expect(headings).toContain("Gamma");
-    expect(await reader.readSection(DOC, ["Beta"])).toContain("Beta body.");
+    expect(await reader.readEffectiveSection(DOC, ["Beta"])).toContain("Beta body.");
   });
 });

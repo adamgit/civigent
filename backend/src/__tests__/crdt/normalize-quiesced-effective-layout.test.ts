@@ -43,7 +43,7 @@ import { createTransientProposal } from "../../storage/proposal-repository.js";
 import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 import { SectionRef } from "../../domain/section-ref.js";
-import type { InProgressProposal, ProposalSection } from "../../types/shared.js";
+import type { InProgressProposal, ProposalSectionClaim } from "../../types/shared.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 const OVERVIEW_KEY = "section::overview";
@@ -84,7 +84,7 @@ async function readProposalHeadingPaths(session: DocSession): Promise<string[][]
   const proposalId = session.generator.getCurrentProposalId();
   if (!proposalId) return [];
   const p = (await readProposal(proposalId)) as InProgressProposal;
-  return p.sections.map((s: ProposalSection) => [...s.heading_path]);
+  return p.sections.map((s: ProposalSectionClaim) => [...s.heading_path]);
 }
 
 describe("normalizeQuiescedStructure() — effective-layout identity + predecessor", () => {

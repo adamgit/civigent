@@ -18,7 +18,7 @@ import type {
   ProposalFileBase,
   ProposalFileIdentityFields,
   ProposalId,
-  ProposalSection,
+  ProposalSectionClaim,
   ProposalStatus,
   ProposalTargetRef,
   StoredHistoryDeletedSectionFileRef,
@@ -97,9 +97,9 @@ function requireDocPath(obj: JsonObject, key: string, label: string): DocPath {
   return DocPath.parse(requireString(obj, key, label));
 }
 
-function decodeProposalSection(value: JsonValue, label: string): ProposalSection {
+function decodeProposalSection(value: JsonValue, label: string): ProposalSectionClaim {
   const obj = expectJsonObject(value, label);
-  const section: ProposalSection = {
+  const section: ProposalSectionClaim = {
     doc_path: requireDocPath(obj, "doc_path", label),
     heading_path: requireStringArray(obj["heading_path"], `${label}.heading_path`),
   };
@@ -108,7 +108,7 @@ function decodeProposalSection(value: JsonValue, label: string): ProposalSection
   return section;
 }
 
-function decodeProposalSections(value: JsonValue, label: string): ProposalSection[] {
+function decodeProposalSections(value: JsonValue, label: string): ProposalSectionClaim[] {
   if (!isJsonArray(value)) {
     throw new Error(`${label} must be an array, got ${JSON.stringify(value)}`);
   }

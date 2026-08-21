@@ -89,8 +89,8 @@ describe("first-edit sparse-overlay write (item 30 / manifest-overlay Step 1)", 
 
     const reader = ProposalReader.open(id, "pending");
     // Section A reads the new proposal body; Section B falls back to canonical.
-    expect(await reader.readSection(DOC, ["Section A"])).toContain("Proposal A body.");
-    expect(await reader.readSection(DOC, ["Section B"])).toContain("Canonical B body.");
+    expect(await reader.readEffectiveSection(DOC, ["Section A"])).toContain("Proposal A body.");
+    expect(await reader.readEffectiveSection(DOC, ["Section B"])).toContain("Canonical B body.");
 
     // Only Section A's body was written into the proposal tree — Section B's
     // body is NOT shadowed by a proposal-local file (canonical fallback intact).
@@ -123,7 +123,7 @@ describe("first-edit sparse-overlay write (item 30 / manifest-overlay Step 1)", 
     });
 
     const reader = ProposalReader.open(id, "pending");
-    expect(await reader.readSection(DOC, ["Section A"])).toContain("Proposal A body.");
-    expect(await reader.readSection(DOC, ["Section B"])).toContain("Proposal B body.");
+    expect(await reader.readEffectiveSection(DOC, ["Section A"])).toContain("Proposal A body.");
+    expect(await reader.readEffectiveSection(DOC, ["Section B"])).toContain("Proposal B body.");
   });
 });

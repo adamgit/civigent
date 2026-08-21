@@ -116,7 +116,7 @@ describe("MCP transport session state", () => {
     const app = createTransportApp();
     const sessionId = "unauth-delete-session";
 
-    activityLog.record(sessionId, "unauth-delete-writer", "U", "read_doc", {});
+    activityLog.record(sessionId, "unauth-delete-writer", "U", "read_doc", {}, "ok");
 
     const res = await request(app)
       .delete("/mcp")
@@ -135,8 +135,8 @@ describe("MCP transport session state", () => {
     const sessionId = "transport-shared-session";
     const writerAToken = authFor("delete-writer-A", "agent");
 
-    activityLog.record(sessionId, "delete-writer-A", "A", "read_doc", {});
-    activityLog.record(sessionId, "delete-writer-B", "B", "read_doc", {});
+    activityLog.record(sessionId, "delete-writer-A", "A", "read_doc", {}, "ok");
+    activityLog.record(sessionId, "delete-writer-B", "B", "read_doc", {}, "ok");
 
     const res = await request(app)
       .delete("/mcp")

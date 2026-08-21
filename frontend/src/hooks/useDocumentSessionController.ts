@@ -40,6 +40,8 @@ export interface UseDocumentSessionControllerReturn {
   proposalScopeMutationInFlight: boolean;
   panelError: string | null;
   selectedProposalSectionKeys: Set<string>;
+  proposalClaimKeys: Set<string>;
+  absentProposalClaimKeys: Set<string>;
   proposalSectionConflicts: Map<string, string>;
   proposalOverlayVersion: number;
 
@@ -168,6 +170,8 @@ export function useDocumentSessionController(
     proposalScopeMutationInFlight: proposal.proposalScopeMutationInFlight,
     panelError: proposal.panelError,
     selectedProposalSectionKeys: proposal.selectedProposalSectionKeys,
+    proposalClaimKeys: proposal.proposalClaimKeys,
+    absentProposalClaimKeys: proposal.absentProposalClaimKeys,
     proposalSectionConflicts: proposal.proposalSectionConflicts,
     proposalOverlayVersion: proposal.proposalOverlayVersion,
     editorRefs: registry.editorRefs,

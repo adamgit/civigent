@@ -1398,7 +1398,12 @@ export class ProposalShadowContentLayer {
 
   async readSection(ref: SectionRef): Promise<SectionBody> {
     const skeleton = await this.readSkeleton(ref.docPath);
-    const entry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
+    let entry: ContentEntry;
+    try {
+      entry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
+    } catch (err) {
+      throw new SectionNotFoundError((err as Error).message);
+    }
     const content = await this.readEffectiveSectionBody(entry.absolutePath);
     if (content === null) {
       throw new SectionNotFoundError(`Section not found in any layer for "${ref.docPath}" [${ref.headingPath.join(" > ")}]`);

@@ -15,7 +15,8 @@
 
 import type { SectionBody } from "./section-formatting.js";
 import type { UpsertSectionFromMarkdownDetailedResult } from "./content-layer.js";
-import type { FlatEntry } from "./document-skeleton.js";
+import type { FlatEntry, ProposalDocumentState } from "./document-skeleton.js";
+import type { HeadingLevel } from "../types/shared.js";
 
 /**
  * Effective state of a document inside a proposal content tree, resolved
@@ -31,14 +32,27 @@ export type { ProposalDocumentState } from "./document-skeleton.js";
 
 /**
  * Result of a section read through a facade: the effective body content at a
- * heading path. `null` body means the section does not exist in the effective
- * proposal view (caller decides whether that is an error).
+ * heading path. Absent effective sections are omitted from results, so every
+ * returned entry carries a non-null `body`.
  */
-export interface ProposalSectionReadResult {
+export interface ProposalEffectiveSectionReadResult {
   readonly docPath: string;
   readonly headingPath: string[];
   readonly body: SectionBody;
 }
+
+export type ProposalEffectiveSectionLookup =
+  | {
+      readonly state: "present";
+      readonly body: SectionBody;
+      readonly sectionFile: string;
+      readonly heading: string;
+      readonly headingLevel: HeadingLevel;
+    }
+  | {
+      readonly state: "absent";
+      readonly documentState: ProposalDocumentState;
+    };
 
 /**
  * Detailed result of a content write / replace through `ProposalEditor`.

@@ -56,8 +56,8 @@ describe("createDocumentFromMarkdown (items 62-65)", () => {
     expect(await reader.getDocumentState(DOC)).toBe("live");
     const headingKeys = (await reader.listHeadingPaths(DOC)).map((p) => p.join(" > "));
     expect(headingKeys).toEqual(expect.arrayContaining(["Alpha", "Beta"]));
-    expect(await reader.readSection(DOC, ["Alpha"])).toContain("Alpha body.");
-    expect(await reader.readSection(DOC, ["Beta"])).toContain("Beta body.");
+    expect(await reader.readEffectiveSection(DOC, ["Alpha"])).toContain("Alpha body.");
+    expect(await reader.readEffectiveSection(DOC, ["Beta"])).toContain("Beta body.");
 
     // Self-contained: the proposal skeleton + every section body live in the
     // proposal tree (canonical has nothing for this new doc).

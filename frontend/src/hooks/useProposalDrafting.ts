@@ -42,6 +42,8 @@ export interface UseProposalDraftingReturn {
   proposalScopeMutationInFlight: boolean;
   panelError: string | null;
   selectedProposalSectionKeys: Set<string>;
+  proposalClaimKeys: Set<string>;
+  absentProposalClaimKeys: Set<string>;
   proposalSectionConflicts: Map<string, string>;
   proposalSectionsRef: React.MutableRefObject<Map<string, { doc_path: DocPath; heading_path: string[]; content: string }>>;
   proposalOverlayVersion: number;
@@ -107,7 +109,12 @@ export function useProposalDrafting({
   const [panelError, setPanelError] = useState<string | null>(null);
   const [proposalSectionConflicts, setProposalSectionConflicts] = useState<Map<string, string>>(new Map());
   const [proposalOverlayVersion, setProposalOverlayVersion] = useState(0);
+  const [presentClaimKeys, setPresentClaimKeys] = useState<Set<string>>(new Set());
+  const [absentClaimKeys, setAbsentClaimKeys] = useState<Set<string>>(new Set());
   const proposalSectionsRef = useRef<Map<string, { doc_path: DocPath; heading_path: string[]; content: string }>>(new Map());
+  const proposalClaimsRef = useRef<Array<{ doc_path: string; heading_path: string[]; justification?: string }>>([]);
+  const dirtyContentKeysRef = useRef<Set<string>>(new Set());
+  const intentDirtyRef = useRef(false);
   const proposalSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const proposalIntentRef = useRef("");
   const mutationQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -118,11 +125,17 @@ export function useProposalDrafting({
     return section?.content ?? "";
   }, [docPath, workspaceBaselineSections]);
 
-  const syncProposalFromServer = useCallback((proposal: ProposalDTO | null) => {
+  const syncProposalFromServer = useCallback((
+    proposal: ProposalDTO | null,
+    effectiveContentByKey: Map<string, string>,
+  ) => {
     if (!proposal || !Array.isArray(proposal.sections)) {
       setActiveProposal(null);
       setActiveProposalStatus(null);
       proposalSectionsRef.current.clear();
+      proposalClaimsRef.current = [];
+      setPresentClaimKeys(new Set());
+      setAbsentClaimKeys(new Set());
       setProposalIntent("");
       proposalIntentRef.current = "";
       setProposalSectionConflicts(new Map());
@@ -135,24 +148,34 @@ export function useProposalDrafting({
     setProposalIntent(proposal.intent);
     proposalIntentRef.current = proposal.intent;
 
-    const nextDraftSections = new Map<string, { doc_path: DocPath; heading_path: string[]; content: string }>();
+    const claims = proposal.sections.map((section) => {
+      const justification =
+        "justification" in section && typeof section.justification === "string"
+          ? section.justification
+          : undefined;
+      return {
+        doc_path: proposalSectionDocPathForDisplay(section),
+        heading_path: [...section.heading_path],
+        ...(justification !== undefined ? { justification } : {}),
+      };
+    });
+    proposalClaimsRef.current = claims;
+
+    const nextPresentSections = new Map<string, { doc_path: DocPath; heading_path: string[]; content: string }>();
+    const nextAbsent = new Set<string>();
     const nextConflicts = new Map<string, string>();
 
-    for (const section of proposal.sections as Array<{
-      doc_path: string;
-      heading_path: string[];
-      content?: string | null;
-    }>) {
-      const key = sectionGlobalKey(section.doc_path, section.heading_path);
-      const existing = proposalSectionsRef.current.get(key);
-      const content = typeof section.content === "string"
-        ? section.content
-        : (existing?.content ?? resolveWorkspaceBaselineContent(section.doc_path, section.heading_path));
-
-      nextDraftSections.set(key, {
-        doc_path: DocPath.parse(section.doc_path),
-        heading_path: [...section.heading_path],
-        content,
+    for (const claim of claims) {
+      const key = sectionGlobalKey(claim.doc_path, claim.heading_path);
+      const effectiveContent = effectiveContentByKey.get(key);
+      if (effectiveContent === undefined) {
+        nextAbsent.add(key);
+        continue;
+      }
+      nextPresentSections.set(key, {
+        doc_path: DocPath.parse(claim.doc_path),
+        heading_path: [...claim.heading_path],
+        content: effectiveContent,
       });
     }
 
@@ -173,10 +196,12 @@ export function useProposalDrafting({
       if (!nextConflicts.has(key)) nextConflicts.set(key, target.message);
     }
 
-    proposalSectionsRef.current = nextDraftSections;
+    proposalSectionsRef.current = nextPresentSections;
+    setPresentClaimKeys(new Set(nextPresentSections.keys()));
+    setAbsentClaimKeys(nextAbsent);
     setProposalSectionConflicts(nextConflicts);
     setProposalOverlayVersion((prev) => prev + 1);
-  }, [resolveWorkspaceBaselineContent]);
+  }, []);
 
   const runQueuedMutation = useCallback((task: () => Promise<void>): Promise<void> => {
     const run = mutationQueueRef.current.then(task, task);
@@ -187,31 +212,75 @@ export function useProposalDrafting({
   const refreshActiveProposal = useCallback(async (proposalIdOverride?: string): Promise<ProposalDTO | null> => {
     const proposalId = proposalIdOverride ?? activeProposalIdRef.current;
     if (!proposalId) return null;
-    const refreshed = await apiClient.getProposal(proposalId);
+    const [refreshed, sectionsResponse] = await Promise.all([
+      apiClient.getProposal(proposalId),
+      apiClient.getProposalSections(proposalId),
+    ]);
     if (activeProposalIdRef.current !== proposalId) return null;
-    syncProposalFromServer(refreshed.proposal);
+    const effectiveContentByKey = new Map<string, string>();
+    for (const doc of sectionsResponse.documents) {
+      for (const section of doc.sections) {
+        effectiveContentByKey.set(sectionGlobalKey(doc.doc_path, section.heading_path), section.content);
+      }
+    }
+    syncProposalFromServer(refreshed.proposal, effectiveContentByKey);
     return refreshed.proposal;
   }, [syncProposalFromServer]);
 
-  const persistProposalSections = useCallback(async (
-    nextSections: Map<string, { doc_path: DocPath; heading_path: string[]; content: string }>,
+  const claimsToManifestTargets = useCallback((
+    claims: Array<{ doc_path: string; heading_path: string[]; justification?: string }>,
+  ) => claims.map((claim) => ({
+    doc_path: DocPath.parse(claim.doc_path),
+    heading_path: [...claim.heading_path],
+    ...(claim.justification !== undefined ? { justification: claim.justification } : {}),
+  })), []);
+
+  const persistProposalScope = useCallback(async (
+    nextClaims: Array<{ doc_path: string; heading_path: string[]; justification?: string }>,
+    stagedSections: Array<{ doc_path: DocPath; heading_path: string[]; content: string }>,
   ) => {
     const proposalId = activeProposalIdRef.current;
     if (!proposalId) return;
-    const sections = [...nextSections.values()];
     await runQueuedMutation(async () => {
       // Content first, then the manifest (intent + target scope) — these are
       // separate routes (content vs. intent/scope). Content-first is the
       // safer order for the unavoidable non-atomic window: if the content
       // write fails, the manifest/scope is left untouched (nothing changed)
       // rather than leaving scope expanded ahead of content that never landed.
-      // Staging content does not depend on the manifest scope being set first
-      // (the content route is ownership/mutability-gated only).
-      await apiClient.replaceProposalSections(proposalId, { sections });
+      // The manifest targets are the COMPLETE claim set (absent-at-address
+      // claims included), never a projection of content-bearing entries.
+      await apiClient.upsertProposalSections(proposalId, { sections: stagedSections });
       await apiClient.updateProposalManifest(proposalId, {
         intent: proposalIntentRef.current,
-        targets: sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+        targets: claimsToManifestTargets(nextClaims),
       });
+      await refreshActiveProposal(proposalId);
+    });
+  }, [claimsToManifestTargets, refreshActiveProposal, runQueuedMutation]);
+
+  const persistProposalIntent = useCallback(async () => {
+    const proposalId = activeProposalIdRef.current;
+    if (!proposalId) return;
+    await runQueuedMutation(async () => {
+      await apiClient.updateProposalManifest(proposalId, {
+        intent: proposalIntentRef.current,
+        targets: claimsToManifestTargets(proposalClaimsRef.current),
+      });
+      await refreshActiveProposal(proposalId);
+    });
+  }, [claimsToManifestTargets, refreshActiveProposal, runQueuedMutation]);
+
+  const persistDirtyProposalContent = useCallback(async () => {
+    const proposalId = activeProposalIdRef.current;
+    if (!proposalId) return;
+    const dirtyKeys = [...dirtyContentKeysRef.current];
+    dirtyContentKeysRef.current = new Set();
+    const sections = dirtyKeys
+      .map((key) => proposalSectionsRef.current.get(key))
+      .filter((section): section is { doc_path: DocPath; heading_path: string[]; content: string } => section !== undefined);
+    if (sections.length === 0) return;
+    await runQueuedMutation(async () => {
+      await apiClient.upsertProposalSections(proposalId, { sections });
       await refreshActiveProposal(proposalId);
     });
   }, [refreshActiveProposal, runQueuedMutation]);
@@ -229,6 +298,11 @@ export function useProposalDrafting({
     setBootstrapFocusedSectionIndex(null);
     setProposalSectionConflicts(new Map());
     proposalSectionsRef.current.clear();
+    proposalClaimsRef.current = [];
+    dirtyContentKeysRef.current = new Set();
+    intentDirtyRef.current = false;
+    setPresentClaimKeys(new Set());
+    setAbsentClaimKeys(new Set());
     try {
       await refreshActiveProposal(proposalId);
     } catch (err) {
@@ -263,6 +337,11 @@ export function useProposalDrafting({
       proposalSaveTimerRef.current = null;
     }
     proposalSectionsRef.current.clear();
+    proposalClaimsRef.current = [];
+    dirtyContentKeysRef.current = new Set();
+    intentDirtyRef.current = false;
+    setPresentClaimKeys(new Set());
+    setAbsentClaimKeys(new Set());
     activeProposalIdRef.current = null;
     setProposalMode(false);
     setActiveProposalId(null);
@@ -275,30 +354,36 @@ export function useProposalDrafting({
     await loadSections(docPath);
   }, [docPath, loadSections]);
 
-  const saveProposalSections = useCallback(() => {
+  const scheduleProposalSave = useCallback(() => {
     if (proposalSaveTimerRef.current) {
       clearTimeout(proposalSaveTimerRef.current);
     }
     proposalSaveTimerRef.current = setTimeout(async () => {
       proposalSaveTimerRef.current = null;
-      const snapshot = new Map(proposalSectionsRef.current);
       try {
-        await persistProposalSections(snapshot);
+        if (intentDirtyRef.current) {
+          intentDirtyRef.current = false;
+          await persistProposalIntent();
+        }
+        if (dirtyContentKeysRef.current.size > 0) {
+          await persistDirtyProposalContent();
+        }
       } catch (err) {
         const message = `Failed to save proposal: ${err instanceof Error ? err.message : String(err)}`;
         setPanelError(message);
         setError(message);
       }
     }, 2000);
-  }, [persistProposalSections, setError]);
+  }, [persistDirtyProposalContent, persistProposalIntent, setError]);
 
   const updateProposalIntent = useCallback((nextIntent: string) => {
     setProposalIntent(nextIntent);
     proposalIntentRef.current = nextIntent;
     setPanelError(null);
     if (activeProposalStatus !== "draft") return;
-    saveProposalSections();
-  }, [activeProposalStatus, saveProposalSections]);
+    intentDirtyRef.current = true;
+    scheduleProposalSave();
+  }, [activeProposalStatus, scheduleProposalSave]);
 
   const applyProposalSectionAvailabilityEvent = useCallback((event: ProposalSectionAvailabilityEvent) => {
     if (!activeProposalIdRef.current) return;
@@ -329,9 +414,15 @@ export function useProposalDrafting({
     const headingPath = [...target.headingPath];
     const key = sectionGlobalKey(docPath, headingPath);
     try {
-      const nextSections = new Map(proposalSectionsRef.current);
-      if (nextSections.has(key)) {
-        nextSections.delete(key);
+      const currentClaims = proposalClaimsRef.current;
+      const alreadyClaimed = currentClaims.some(
+        (claim) => sectionGlobalKey(claim.doc_path, claim.heading_path) === key,
+      );
+      if (alreadyClaimed) {
+        const nextClaims = currentClaims.filter(
+          (claim) => sectionGlobalKey(claim.doc_path, claim.heading_path) !== key,
+        );
+        await persistProposalScope(nextClaims, []);
       } else {
         let baselineContent = resolveWorkspaceBaselineContent(docPath, headingPath);
         const proposalView = await apiClient.getProposalDocumentSections(
@@ -344,13 +435,11 @@ export function useProposalDrafting({
         if (matched) {
           baselineContent = matched.content;
         }
-        nextSections.set(key, {
-          doc_path: docPath,
-          heading_path: headingPath,
-          content: baselineContent,
-        });
+        const nextClaims = [...currentClaims, { doc_path: docPath, heading_path: headingPath }];
+        await persistProposalScope(nextClaims, [
+          { doc_path: docPath, heading_path: headingPath, content: baselineContent },
+        ]);
       }
-      await persistProposalSections(nextSections);
     } catch (err) {
       const message = `Failed to update proposal sections: ${err instanceof Error ? err.message : String(err)}`;
       setPanelError(message);
@@ -358,7 +447,7 @@ export function useProposalDrafting({
     } finally {
       setProposalScopeMutationInFlight(false);
     }
-  }, [activeProposalStatus, docPath, persistProposalSections, resolveWorkspaceBaselineContent, setError]);
+  }, [activeProposalStatus, docPath, persistProposalScope, resolveWorkspaceBaselineContent, setError]);
 
   const removeProposalSection = useCallback(async (sectionDocPath: string, headingPath: string[]) => {
     if (activeProposalStatus !== "draft") {
@@ -369,10 +458,12 @@ export function useProposalDrafting({
     setProposalScopeMutationInFlight(true);
     const key = sectionGlobalKey(sectionDocPath, headingPath);
     try {
-      if (!proposalSectionsRef.current.has(key)) return;
-      const nextSections = new Map(proposalSectionsRef.current);
-      nextSections.delete(key);
-      await persistProposalSections(nextSections);
+      const currentClaims = proposalClaimsRef.current;
+      if (!currentClaims.some((claim) => sectionGlobalKey(claim.doc_path, claim.heading_path) === key)) return;
+      const nextClaims = currentClaims.filter(
+        (claim) => sectionGlobalKey(claim.doc_path, claim.heading_path) !== key,
+      );
+      await persistProposalScope(nextClaims, []);
     } catch (err) {
       const message = `Failed to remove proposal section: ${err instanceof Error ? err.message : String(err)}`;
       setPanelError(message);
@@ -380,7 +471,7 @@ export function useProposalDrafting({
     } finally {
       setProposalScopeMutationInFlight(false);
     }
-  }, [activeProposalStatus, persistProposalSections, setError]);
+  }, [activeProposalStatus, persistProposalScope, setError]);
 
   const handleProposalSectionChange = useCallback((headingPath: readonly string[], markdown: string) => {
     if (activeProposalStatus !== "inprogress") return;
@@ -393,9 +484,10 @@ export function useProposalDrafting({
       heading_path: [...headingPath],
       content: markdown,
     });
+    dirtyContentKeysRef.current.add(key);
     setProposalOverlayVersion((prev) => prev + 1);
-    saveProposalSections();
-  }, [activeProposalStatus, docPath, saveProposalSections]);
+    scheduleProposalSave();
+  }, [activeProposalStatus, docPath, scheduleProposalSave]);
 
   const acquireProposalLocks = useCallback(async () => {
     const proposalId = activeProposalIdRef.current;
@@ -453,7 +545,7 @@ export function useProposalDrafting({
     }
   }, [exitProposalMode, setError]);
 
-  const selectedKeysFromProposal = useMemo(() => {
+  const proposalClaimKeys = useMemo(() => {
     if (!activeProposal || !Array.isArray(activeProposal.sections)) return new Set<string>();
     return new Set(
       activeProposal.sections.map((section) =>
@@ -477,7 +569,9 @@ export function useProposalDrafting({
     cancellingProposal,
     proposalScopeMutationInFlight,
     panelError,
-    selectedProposalSectionKeys: selectedKeysFromProposal,
+    selectedProposalSectionKeys: presentClaimKeys,
+    proposalClaimKeys,
+    absentProposalClaimKeys: absentClaimKeys,
     proposalSectionConflicts,
     proposalSectionsRef,
     proposalOverlayVersion,

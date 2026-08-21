@@ -6,7 +6,7 @@ import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import yauzl from "yauzl";
 import type { FolderPath, WriterIdentity } from "../../types/shared.js";
-import { DocPath, proposalSectionsParsedForLiveUse } from "../../types/shared.js";
+import { DocPath, proposalSectionClaimsWithParsedDocPaths } from "../../types/shared.js";
 import {
   createStagingFolder,
   listStagingFolders,
@@ -359,7 +359,7 @@ export async function commitImport(
   return {
     proposalId: importProposalId,
     committedHead,
-    sections: proposalSectionsParsedForLiveUse(freshProposal).map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
+    sections: proposalSectionClaimsWithParsedDocPaths(freshProposal).map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
     diagnostics: importDiagnostics,
   };
 }

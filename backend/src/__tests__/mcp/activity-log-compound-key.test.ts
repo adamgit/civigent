@@ -60,8 +60,8 @@ describe("ActivityLog compound (agentId, sessionId) keying (task 673)", () => {
     const log = new ActivityLog();
     const SID = "shared-session-id";
 
-    log.record(SID, "writer-A", "A", "create_proposal", {});
-    log.record(SID, "writer-B", "B", "read_doc", {});
+    log.record(SID, "writer-A", "A", "create_proposal", {}, "ok");
+    log.record(SID, "writer-B", "B", "read_doc", {}, "ok");
 
     // Distinct compound buffers under the same session-id string.
     expect(log.has(SID, "writer-A")).toBe(true);
@@ -91,7 +91,7 @@ describe("ActivityLog compound (agentId, sessionId) keying (task 673)", () => {
     const log = new ActivityLog();
     const SID = "flush-race-session";
 
-    log.record(SID, "writer-race", "R", "first", {});
+    log.record(SID, "writer-race", "R", "first", {}, "ok");
 
     // Hold appendFile so flush yields after snapshotting but before map delete.
     fsState.holdAppend();
@@ -100,7 +100,7 @@ describe("ActivityLog compound (agentId, sessionId) keying (task 673)", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    log.record(SID, "writer-race", "R", "second", {});
+    log.record(SID, "writer-race", "R", "second", {}, "ok");
     fsState.releaseAppend();
     await flushPromise;
 
@@ -124,7 +124,7 @@ describe("ActivityLog compound (agentId, sessionId) keying (task 673)", () => {
     const log = new ActivityLog();
     const SID = "double-flush-session";
 
-    log.record(SID, "writer-dup", "D", "only", {});
+    log.record(SID, "writer-dup", "D", "only", {}, "ok");
 
     // Both flushes overlap while appendFile is held; the second must not
     // snapshot/write the same buffer again.

@@ -25,7 +25,7 @@ import {
 } from "./proposal-repository.js";
 import { getContentRoot } from "./data-root.js";
 import type { SectionBody } from "./section-formatting.js";
-import type { DocPath, ProposalId, ProposalSection } from "../types/shared.js";
+import type { DocPath, ProposalId, ProposalSectionClaim } from "../types/shared.js";
 
 export async function removeProposalHeading(
   proposalId: ProposalId,
@@ -41,7 +41,7 @@ export async function removeProposalHeading(
   const effect = await shadow.removeHeading(docPath, headingPath, orphanBody);
   await recordDeletedSectionFiles(proposalId, docPath, effect.deletedSectionFileIds);
 
-  const claims: ProposalSection[] = [];
+  const claims: ProposalSectionClaim[] = [];
   if (effect.mergeTarget) {
     claims.push({ doc_path: docPath, heading_path: [...effect.mergeTarget.visibleHeadingPath] });
   }

@@ -27,7 +27,8 @@ import type { SectionBody } from "./section-formatting.js";
 import type { DocPath, HeadingLevel } from "../types/shared.js";
 import type {
   ProposalDocumentState,
-  ProposalSectionReadResult,
+  ProposalEffectiveSectionLookup,
+  ProposalEffectiveSectionReadResult,
 } from "./proposal-facade-types.js";
 
 export class ProposalReader {
@@ -93,7 +94,7 @@ export class ProposalReader {
    * Effective state of a single section: tombstoned doc -> "tombstone";
    * missing doc or absent heading path -> "missing"; otherwise "live".
    */
-  async getSectionState(docPath: DocPath, headingPath: string[]): Promise<ProposalDocumentState> {
+  async getEffectiveSectionState(docPath: DocPath, headingPath: string[]): Promise<ProposalDocumentState> {
     const docState = await this.getDocumentState(docPath);
     if (docState !== "live") return docState;
     const paths = await this.shadow.listHeadingPaths(docPath);
@@ -124,7 +125,7 @@ export class ProposalReader {
    * heading path (no body content). Useful for callers that need a section's
    * level/heading to render a fragment.
    */
-  async getSectionList(
+  async listEffectiveSections(
     docPath: DocPath,
   ): Promise<Array<{ heading: string; headingLevel: HeadingLevel; sectionFile: string; headingPath: string[] }>> {
     return this.shadow.getSectionList(docPath);
@@ -153,8 +154,32 @@ export class ProposalReader {
    * Read the effective body content of a section at a heading path.
    * Throws `DocumentNotFoundError` / `SectionNotFoundError` from the engine.
    */
-  async readSection(docPath: DocPath, headingPath: string[]): Promise<SectionBody> {
+  async readEffectiveSection(docPath: DocPath, headingPath: string[]): Promise<SectionBody> {
     return this.shadow.readSection(new SectionRef(docPath, headingPath));
+  }
+
+  async lookupEffectiveSection(
+    docPath: DocPath,
+    headingPath: string[],
+  ): Promise<ProposalEffectiveSectionLookup> {
+    const documentState = await this.getDocumentState(docPath);
+    if (documentState !== "live") {
+      return { state: "absent", documentState };
+    }
+    const sections = await this.shadow.getSectionList(docPath);
+    const key = SectionRef.headingKey(headingPath);
+    const entry = sections.find((section) => SectionRef.headingKey(section.headingPath) === key);
+    if (!entry) {
+      return { state: "absent", documentState };
+    }
+    const body = await this.shadow.readSection(new SectionRef(docPath, headingPath));
+    return {
+      state: "present",
+      body,
+      sectionFile: entry.sectionFile,
+      heading: entry.heading,
+      headingLevel: entry.headingLevel,
+    };
   }
 
   /**
@@ -164,7 +189,7 @@ export class ProposalReader {
    *
    * Throws `DocumentNotFoundError` for a missing or tombstoned document.
    */
-  async readDocument(docPath: DocPath): Promise<ProposalSectionReadResult[]> {
+  async readEffectiveDocument(docPath: DocPath): Promise<ProposalEffectiveSectionReadResult[]> {
     const state = await this.getDocumentState(docPath);
     if (state !== "live") {
       throw new DocumentNotFoundError(
@@ -174,7 +199,7 @@ export class ProposalReader {
       );
     }
     const headingPaths = await this.shadow.listHeadingPaths(docPath);
-    const result: ProposalSectionReadResult[] = [];
+    const result: ProposalEffectiveSectionReadResult[] = [];
     for (const headingPath of headingPaths) {
       const body = await this.shadow.readSection(new SectionRef(docPath, headingPath));
       result.push({ docPath, headingPath, body });
@@ -185,7 +210,7 @@ export class ProposalReader {
   /**
    * Read all effective section bodies for a document, keyed by heading key.
    */
-  async readAllSections(docPath: DocPath): Promise<Map<string, SectionBody>> {
+  async readAllEffectiveSections(docPath: DocPath): Promise<Map<string, SectionBody>> {
     return this.shadow.readAllSections(docPath);
   }
 }

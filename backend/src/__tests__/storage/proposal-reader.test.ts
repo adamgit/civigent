@@ -52,30 +52,30 @@ describe("ProposalReader", () => {
     const structure = await reader.getDocumentStructure("/doc.md");
     expect(structure.length).toBeGreaterThan(0);
 
-    const alpha = await reader.readSection("/doc.md", ["Alpha"]);
+    const alpha = await reader.readEffectiveSection("/doc.md", ["Alpha"]);
     expect(alpha).toContain("alpha body");
   });
 
-  it("readDocument returns effective heading paths plus bodies", async () => {
+  it("readEffectiveDocument returns effective heading paths plus bodies", async () => {
     const editor = await newEditor();
     await editor.writeSection("/rb.md", ["One"], "One", "body one");
     await editor.writeSection("/rb.md", ["Two"], "Two", "body two");
 
     const reader = ProposalReader.open(editor.id, "draft");
-    const sections = await reader.readDocument("/rb.md");
+    const sections = await reader.readEffectiveDocument("/rb.md");
     const byKey = new Map(sections.map((s) => [s.headingPath.join(">"), s.body as string]));
     expect(byKey.get("One")).toContain("body one");
     expect(byKey.get("Two")).toContain("body two");
   });
 
-  it("getSectionState resolves live / missing for sections of a live doc", async () => {
+  it("getEffectiveSectionState resolves live / missing for sections of a live doc", async () => {
     const editor = await newEditor();
     await editor.writeSection("/ss.md", ["Present"], "Present", "x");
 
     const reader = ProposalReader.open(editor.id, "draft");
-    expect(await reader.getSectionState("/ss.md", ["Present"])).toBe("live");
-    expect(await reader.getSectionState("/ss.md", ["Absent"])).toBe("missing");
-    expect(await reader.getSectionState("/missing-doc.md", ["Whatever"])).toBe("missing");
+    expect(await reader.getEffectiveSectionState("/ss.md", ["Present"])).toBe("live");
+    expect(await reader.getEffectiveSectionState("/ss.md", ["Absent"])).toBe("missing");
+    expect(await reader.getEffectiveSectionState("/missing-doc.md", ["Whatever"])).toBe("missing");
   });
 
   it("tombstone is detected first; reads throw DocumentNotFoundError", async () => {
@@ -97,9 +97,9 @@ describe("ProposalReader", () => {
     // view is "tombstone".
     expect(await reader.getDocumentState("/victim.md")).toBe("tombstone");
     expect(await reader.documentExists("/victim.md")).toBe(false);
-    expect(await reader.getSectionState("/victim.md", ["S"])).toBe("tombstone");
+    expect(await reader.getEffectiveSectionState("/victim.md", ["S"])).toBe("tombstone");
 
     await expect(reader.listHeadingPaths("/victim.md")).rejects.toBeInstanceOf(DocumentNotFoundError);
-    await expect(reader.readDocument("/victim.md")).rejects.toBeInstanceOf(DocumentNotFoundError);
+    await expect(reader.readEffectiveDocument("/victim.md")).rejects.toBeInstanceOf(DocumentNotFoundError);
   });
 });

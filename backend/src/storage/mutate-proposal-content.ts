@@ -23,7 +23,7 @@
  * plus a raw `updateProposalSections(...)` (enforced by the import-boundary test).
  */
 
-import type { ActiveProposal, ProposalSection, DocumentTargetRef, LiveMovePosition } from "../types/shared.js";
+import type { ActiveProposal, ProposalSectionClaim, DocumentTargetRef, LiveMovePosition } from "../types/shared.js";
 import { documentTargetRef, HeadingLevel } from "../types/shared.js";
 import type { ContentEntry, FlatEntry } from "./document-skeleton.js";
 import type { ProposalWriteResult, ProposalSubtreeMutationResult } from "./proposal-facade-types.js";
@@ -49,7 +49,7 @@ export type ProposalContentOperation =
   | { kind: "create_document"; docPath: DocPath }
   | { kind: "delete_document"; docPath: DocPath }
   | { kind: "rename_document"; docPath: DocPath; newPath: DocPath }
-  | { kind: "replay_document"; docPath: DocPath; targetSha: string; extraDeletedSections?: ProposalSection[] };
+  | { kind: "replay_document"; docPath: DocPath; targetSha: string; extraDeletedSections?: ProposalSectionClaim[] };
 
 /**
  * Result of a `mutateProposalContent(...)` call. `proposal` and `manifest` are
@@ -124,11 +124,11 @@ function checkSiblingReorder(
   }
 }
 
-function sectionsUnder(docPath: DocPath, headingPaths: string[][]): ProposalSection[] {
+function sectionsUnder(docPath: DocPath, headingPaths: string[][]): ProposalSectionClaim[] {
   return headingPaths.map((hp) => ({ doc_path: docPath, heading_path: hp }));
 }
 
-function flatEntriesToSections(docPath: DocPath, entries: Array<{ headingPath: string[] }>): ProposalSection[] {
+function flatEntriesToSections(docPath: DocPath, entries: Array<{ headingPath: string[] }>): ProposalSectionClaim[] {
   return entries.map((e) => ({ doc_path: docPath, heading_path: e.headingPath }));
 }
 
@@ -148,7 +148,7 @@ export async function mutateProposalContent(
   const editor = ProposalEditor.open(proposalId, proposal.status);
   const existing = proposal.sections;
 
-  let affected: ProposalSection[];
+  let affected: ProposalSectionClaim[];
   const extras: Omit<MutateProposalContentResult, "proposal" | "manifest"> = {};
 
   switch (operation.kind) {
@@ -178,7 +178,7 @@ export async function mutateProposalContent(
       if (operation.kind === "create_section") {
         const anchor = operation.beforeHeadingPath ?? operation.afterHeadingPath;
         if (anchor !== undefined) {
-          checkSiblingReorder(operation.docPath, operation.headingPath, anchor, await editor.getSectionList(operation.docPath));
+          checkSiblingReorder(operation.docPath, operation.headingPath, anchor, await editor.listEffectiveSections(operation.docPath));
           await editor.reorderSection(
             operation.docPath,
             operation.headingPath,
@@ -226,7 +226,7 @@ export async function mutateProposalContent(
       // Resolve the new level from the effective section list (boundary-owned, so
       // callers never open an editor): keep the section's level when moving to
       // root, else nest one below the new parent.
-      const current = (await editor.getSectionList(operation.docPath)).find((e) =>
+      const current = (await editor.listEffectiveSections(operation.docPath)).find((e) =>
         samePath(e.headingPath, operation.headingPath),
       );
       if (!current) {
@@ -257,7 +257,7 @@ export async function mutateProposalContent(
         operation.docPath,
         operation.headingPath,
         operation.targetHeadingPath,
-        await editor.getSectionList(operation.docPath),
+        await editor.listEffectiveSections(operation.docPath),
       );
       await editor.reorderSection(operation.docPath, operation.headingPath, operation.targetHeadingPath, operation.position);
       affected = sectionsUnder(operation.docPath, [operation.headingPath, operation.targetHeadingPath]);
@@ -268,7 +268,7 @@ export async function mutateProposalContent(
       // descendant. Capture the old subtree before, the new subtree after, and
       // claim both — so the manifest records the old removed identities and the
       // new added identities (descendants included).
-      const before = await editor.getSectionList(operation.docPath);
+      const before = await editor.listEffectiveSections(operation.docPath);
       const oldSubtree = before
         .filter((e) => isPrefix(operation.headingPath, e.headingPath))
         .map((e) => e.headingPath);
@@ -278,7 +278,7 @@ export async function mutateProposalContent(
       extras.renamedEntry = renamedEntry;
       extras.newHeadingPath = newHeadingPath;
 
-      const after = await editor.getSectionList(operation.docPath);
+      const after = await editor.listEffectiveSections(operation.docPath);
       const newSubtree = after
         .filter((e) => isPrefix(newHeadingPath, e.headingPath))
         .map((e) => e.headingPath);

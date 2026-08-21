@@ -74,7 +74,7 @@ describe("CRDTProposalGenerator", () => {
 
     // Content was materialized through ProposalEditor.
     const reader = ProposalReader.open(proposalId, "inprogress");
-    const body = await reader.readSection("/guide.md", ["Intro"]);
+    const body = await reader.readEffectiveSection("/guide.md", ["Intro"]);
     expect(body).toContain("Hello world.");
   });
 
@@ -104,8 +104,8 @@ describe("CRDTProposalGenerator", () => {
     expect(inProgress).toHaveLength(1);
 
     const reader = ProposalReader.open(first, "inprogress");
-    expect(await reader.readSection("/guide.md", ["Intro"])).toContain("Updated.");
-    expect(await reader.readSection("/guide.md", ["Details"])).toContain("More.");
+    expect(await reader.readEffectiveSection("/guide.md", ["Intro"])).toContain("Updated.");
+    expect(await reader.readEffectiveSection("/guide.md", ["Details"])).toContain("More.");
   });
 
   it("enforces one active proposal per DocSession", async () => {

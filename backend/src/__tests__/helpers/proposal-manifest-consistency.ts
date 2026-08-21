@@ -35,7 +35,7 @@ import { ProposalReader } from "../../storage/proposal-reader.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { getContentRoot } from "../../storage/data-root.js";
 import type { ProposalId, ProposalStatus } from "../../types/shared.js";
-import { DocPath, proposalSectionsParsedForLiveUse } from "../../types/shared.js";
+import { DocPath, proposalSectionClaimsWithParsedDocPaths } from "../../types/shared.js";
 
 const key = (headingPath: string[]): string => headingPath.join(">>");
 
@@ -49,17 +49,17 @@ export async function manifestKeys(proposalId: ProposalId, docPath: DocPath): Pr
   const proposal = await readProposal(proposalId);
   const target = DocPath.parse(docPath);
   const keys = new Set<string>();
-  for (const s of proposalSectionsParsedForLiveUse(proposal)) {
+  for (const s of proposalSectionClaimsWithParsedDocPaths(proposal)) {
     if (s.doc_path === target) keys.add(key(s.heading_path));
   }
   return keys;
 }
 
 async function effectiveEntries(id: ProposalId, docPath: DocPath, status: ProposalStatus): Promise<Entry[]> {
-  return ProposalReader.open(id, status).getSectionList(docPath);
+  return ProposalReader.open(id, status).listEffectiveSections(docPath);
 }
 async function effectiveBodies(id: ProposalId, docPath: DocPath, status: ProposalStatus): Promise<Map<string, string>> {
-  return (await ProposalReader.open(id, status).readAllSections(docPath)) as Map<string, string>;
+  return (await ProposalReader.open(id, status).readAllEffectiveSections(docPath)) as Map<string, string>;
 }
 async function canonicalEntries(docPath: DocPath): Promise<Entry[]> {
   try {

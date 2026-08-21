@@ -9,7 +9,7 @@ import {
   isActiveProposal,
   parseJson,
   proposalDeletedSectionFileDocPathForDisplay,
-  proposalSectionsParsedForLiveUse,
+  proposalSectionClaimsWithParsedDocPaths,
   proposalTargetsParsedForLiveUse,
   sectionGlobalKey,
   sectionsToTargets,
@@ -49,7 +49,7 @@ import type {
   ProposalId,
   ProposalLockResult,
   ProposalReportingUndecodableEntry,
-  ProposalSection,
+  ProposalSectionClaim,
   ProposalStatus,
   ProposalTargetRef,
   HumanInvolvementCommittedProposalMetadata,
@@ -281,7 +281,7 @@ export interface CreateProposalResult {
 export async function createProposal(
   writer: WriterIdentity,
   intent: string,
-  sections?: ProposalSection[],
+  sections?: ProposalSectionClaim[],
 ): Promise<CreateProposalResult> {
   const id = generateProposalId();
   const now = new Date().toISOString();
@@ -313,7 +313,7 @@ export async function createProposal(
 export async function createTransientProposal(
   writer: WriterIdentity,
   intent: string,
-  sections?: ProposalSection[],
+  sections?: ProposalSectionClaim[],
 ): Promise<CreateProposalResult> {
   const id = generateProposalId();
   const now = new Date().toISOString();
@@ -429,44 +429,79 @@ export async function rewriteProposalMeta(id: ProposalId, repaired: ActivePropos
   return readProposalFile(filePath, status);
 }
 
+export type ResolvedProposalSectionClaim =
+  | { state: "present"; docPath: DocPath; headingPath: string[]; content: string }
+  | { state: "absent-at-address"; docPath: DocPath; headingPath: string[] };
+
 /**
- * Read a proposal and its section content through the proposal facade.
- * Returns the proposal metadata and a separate content map (keyed by the
- * SectionRef global key "doc_path::heading>path"). Content lives on disk,
- * never on the section objects.
+ * Resolve every persisted section claim of a proposal through the effective
+ * proposal view. Each claim resolves to `"present"` (with its effective body,
+ * overlay-first with canonical fallback) or `"absent-at-address"` (the claim's
+ * heading address does not exist in the effective structure — which is NOT
+ * interpreted as a deletion; deletions are recorded separately in
+ * `deleted_section_files`).
  *
  * Routed through `ProposalReader` (effective proposal-content read path)
  * rather than reaching into the content store directly. The dynamic import
  * breaks the proposal-reader -> proposal-repository -> proposal-reader cycle.
  *
- * FAIL LOUD (claim-review 04): this is a SINGLE-SUBJECT read. A section the
- * manifest claims whose body is missing/unreadable is CORRUPTION — it throws
- * `ProposalIntegrityError` rather than silently dropping the section. Every
- * claimed section therefore resolves (or the whole read fails), so callers can
- * drop their `?? null` / `?? ""` coercions over a missing entry.
+ * FAIL LOUD (claim-review 04): a claim whose heading the effective structure
+ * declares but whose body exists in neither overlay nor canonical is
+ * CORRUPTION — it throws `ProposalIntegrityError` rather than silently
+ * dropping the section.
  */
-export async function readProposalWithContent(id: ProposalId): Promise<{ proposal: AnyProposal; sectionContent: Map<string, string> }> {
+export async function resolveProposalSectionClaims(
+  id: ProposalId,
+): Promise<{ proposal: AnyProposal; claims: ResolvedProposalSectionClaim[] }> {
   const proposal = await readProposal(id);
   const { ProposalReader } = await import("./proposal-reader.js");
   const { SectionNotFoundError, DocumentNotFoundError } = await import("./content-layer.js");
   const reader = ProposalReader.open(id, proposal.status);
 
-  const sectionContent = new Map<string, string>();
-  for (const section of proposalSectionsParsedForLiveUse(proposal)) {
+  const claims: ResolvedProposalSectionClaim[] = [];
+  for (const section of proposalSectionClaimsWithParsedDocPaths(proposal)) {
     const ref = SectionRef.fromTarget(section);
     try {
-      const body = await reader.readSection(ref.docPath, ref.headingPath);
-      sectionContent.set(ref.globalKey, body);
+      const lookup = await reader.lookupEffectiveSection(ref.docPath, ref.headingPath);
+      if (lookup.state === "present") {
+        claims.push({
+          state: "present",
+          docPath: ref.docPath,
+          headingPath: ref.headingPath,
+          content: lookup.body,
+        });
+      } else {
+        claims.push({
+          state: "absent-at-address",
+          docPath: ref.docPath,
+          headingPath: ref.headingPath,
+        });
+      }
     } catch (err) {
       if (err instanceof SectionNotFoundError || err instanceof DocumentNotFoundError) {
-        // A manifest-claimed section with no readable body is corruption — surface
-        // it, do NOT continue past it.
         throw new ProposalIntegrityError(id, ref.globalKey, err);
       }
       throw err;
     }
   }
 
+  return { proposal, claims };
+}
+
+/**
+ * Compatibility projection over `resolveProposalSectionClaims`: proposal
+ * metadata plus a PARTIAL content map (keyed by the SectionRef global key
+ * "doc_path::heading>path") containing only the present claims. Absent
+ * claims are simply missing from the map; integrity failures (a structurally
+ * declared section whose body exists in neither layer) still throw.
+ */
+export async function readProposalWithContent(id: ProposalId): Promise<{ proposal: AnyProposal; sectionContent: Map<string, string> }> {
+  const { proposal, claims } = await resolveProposalSectionClaims(id);
+  const sectionContent = new Map<string, string>();
+  for (const claim of claims) {
+    if (claim.state !== "present") continue;
+    sectionContent.set(new SectionRef(claim.docPath, claim.headingPath).globalKey, claim.content);
+  }
   return { proposal, sectionContent };
 }
 
@@ -727,7 +762,7 @@ export interface UpdateProposalResult {
  * Replace a proposal's `sections` manifest. The manifest is BRAND-GATED: it can
  * only be a `ProposalManifest` produced by the `mutateProposalContent(...)`
  * boundary (or the explicit recovery escape hatch below), never a raw
- * `ProposalSection[]` hand-built from request parameters (spec 12 §Proposal FSM
+ * `ProposalSectionClaim[]` hand-built from request parameters (spec 12 §Proposal FSM
  * locking — the manifest is the lock/policy/audit/event claim set and must be
  * derived from the authoritative mutation result). See {@link ProposalManifest}.
  */
@@ -750,7 +785,7 @@ export async function updateProposalSections(
  */
 export async function unsafeReplaceProposalManifestForRecoveryOnly(
   id: ProposalId,
-  sections: ProposalSection[],
+  sections: ProposalSectionClaim[],
   intent?: string,
   extraTargets: ProposalTargetRef[] = [],
 ): Promise<UpdateProposalResult> {
@@ -770,7 +805,7 @@ export async function unsafeReplaceProposalManifestForRecoveryOnly(
  */
 export async function declareReservedProposalSectionsFromRequest(
   id: ProposalId,
-  sections: ProposalSection[],
+  sections: ProposalSectionClaim[],
   intent?: string,
 ): Promise<UpdateProposalResult> {
   return writeProposalSectionsFile(id, mintProposalManifest(sections), intent);
@@ -1313,7 +1348,7 @@ export async function getOrCreateInProgressProposalForAdoptionId(input: {
   docPath: DocPath;
   writer: WriterIdentity;
   intent?: string;
-  sections?: ProposalSection[];
+  sections?: ProposalSectionClaim[];
 }): Promise<CreateProposalResult & { proposal: InProgressProposal }> {
   const existing = await findInProgressProposalByAdoptionId(input.proposalAdoptionId);
   if (existing) {
@@ -1353,7 +1388,7 @@ export async function getOrCreateInProgressProposalForAdoptionId(input: {
  */
 export async function updateCurrentProposalSections(
   id: ProposalId,
-  sections: ProposalSection[],
+  sections: ProposalSectionClaim[],
   intent?: string,
 ): Promise<InProgressProposal> {
   const { status, filePath } = await locateProposal(id);
@@ -1401,7 +1436,7 @@ export async function updateCurrentProposalSections(
  */
 export async function unionCurrentProposalSections(
   id: ProposalId,
-  addSections: ProposalSection[],
+  addSections: ProposalSectionClaim[],
 ): Promise<InProgressProposal> {
   const { status, filePath } = await locateProposal(id);
   if (status !== "inprogress") {
@@ -1414,7 +1449,7 @@ export async function unionCurrentProposalSections(
     throw new InvalidProposalStateError(`Proposal ${id} is not inprogress as located.`);
   }
 
-  const merged: ProposalSection[] = [];
+  const merged: ProposalSectionClaim[] = [];
   const seen = new Set<string>();
   for (const section of [...current.sections, ...addSections]) {
     const key = SectionRef.fromTarget(section).globalKey;

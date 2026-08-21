@@ -92,7 +92,6 @@ describe("GET /api/proposals/:id — read proposal", () => {
     const section = res.body.proposal.sections[0];
     expect(section.stored_doc_path).toBe(SAMPLE_DOC_PATH);
     expect(section.heading_path).toEqual(["Overview"]);
-    expect(typeof section.content).toBe("string");
   });
 
   it("returns 404 for non-existent proposal", async () => {

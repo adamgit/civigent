@@ -90,7 +90,7 @@ describe("live-editing pipeline wiring (MW-1b/2/3)", () => {
     // fragment key still resolves to the now-level-4 Overview section).
     const { ProposalReader } = await import("../../storage/proposal-reader.js");
     const reader = ProposalReader.open(proposalId, "inprogress");
-    const sections = await reader.getSectionList(SAMPLE_DOC_PATH);
+    const sections = await reader.listEffectiveSections(SAMPLE_DOC_PATH);
     const overview = sections.find((s) => s.heading === "Overview");
     expect(overview?.headingLevel).toBe(4);
   });

@@ -61,7 +61,7 @@ export class CanonicalReader {
    * Flat ordered list of canonical sections (heading, level, sectionFile,
    * headingPath) with no body content.
    */
-  async getSectionList(
+  async listEffectiveSections(
     docPath: DocPath,
   ): Promise<Array<{ heading: string; headingLevel: HeadingLevel; sectionFile: string; headingPath: string[] }>> {
     return this.layer.getSectionList(docPath);
@@ -88,7 +88,7 @@ export class CanonicalReader {
    * Read every canonical section body for a document, keyed by heading key
    * (e.g. "Heading A>>Sub B").
    */
-  async readAllSections(docPath: DocPath): Promise<Map<string, SectionBody>> {
+  async readAllEffectiveSections(docPath: DocPath): Promise<Map<string, SectionBody>> {
     return this.layer.readAllSections(docPath);
   }
 

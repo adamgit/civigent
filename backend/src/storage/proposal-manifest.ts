@@ -22,7 +22,7 @@
  * import-boundary test that enforces this.
  */
 
-import type { DeletedSectionFileRef, ProposalSection, ProposalTargetRef } from "../types/shared.js";
+import type { DeletedSectionFileRef, ProposalSectionClaim, ProposalTargetRef } from "../types/shared.js";
 import { asSectionTarget, proposalTargetKey } from "../types/shared.js";
 
 declare const PROPOSAL_MANIFEST_BRAND: unique symbol;
@@ -34,7 +34,7 @@ declare const PROPOSAL_MANIFEST_BRAND: unique symbol;
 export interface ProposalManifest {
   readonly [PROPOSAL_MANIFEST_BRAND]: true;
   /** Section content/evaluation view (with justification). */
-  readonly sections: ProposalSection[];
+  readonly sections: ProposalSectionClaim[];
   /** Authoritative lock/audit/policy claim set (section + document targets). */
   readonly targets: ProposalTargetRef[];
 }
@@ -50,7 +50,7 @@ export interface ProposalManifest {
  * `extraTargets` to add document targets (or any non-section claims).
  */
 export function mintProposalManifest(
-  sections: ProposalSection[],
+  sections: ProposalSectionClaim[],
   extraTargets: ProposalTargetRef[] = [],
 ): ProposalManifest {
   const targets = dedupeTargets([...sections.map(asSectionTarget), ...extraTargets]);
@@ -64,11 +64,11 @@ export function mintProposalManifest(
  * commit). Keeps the first-seen `justification` for a duplicate.
  */
 export function unionSections(
-  existing: ProposalSection[],
-  affected: ProposalSection[],
-): ProposalSection[] {
-  const byKey = new Map<string, ProposalSection>();
-  const keyOf = (s: ProposalSection): string => `${s.doc_path} ${JSON.stringify(s.heading_path)}`;
+  existing: ProposalSectionClaim[],
+  affected: ProposalSectionClaim[],
+): ProposalSectionClaim[] {
+  const byKey = new Map<string, ProposalSectionClaim>();
+  const keyOf = (s: ProposalSectionClaim): string => `${s.doc_path} ${JSON.stringify(s.heading_path)}`;
   for (const s of existing) byKey.set(keyOf(s), s);
   for (const s of affected) {
     const k = keyOf(s);

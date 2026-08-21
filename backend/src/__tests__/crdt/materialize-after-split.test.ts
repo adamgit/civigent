@@ -87,10 +87,10 @@ describe("MW-16: materialize after a structural-dirty split", () => {
     // and its New Sub child.
     const { ProposalReader } = await import("../../storage/proposal-reader.js");
     const reader = ProposalReader.open(thirdId, "inprogress");
-    const overviewBody = (await reader.readSection(SAMPLE_DOC_PATH, ["Overview"])) as unknown as string;
+    const overviewBody = (await reader.readEffectiveSection(SAMPLE_DOC_PATH, ["Overview"])) as unknown as string;
     expect(overviewBody).toContain("base overview body");
     expect(overviewBody).not.toContain("brand new sub body");
-    const subBody = (await reader.readSection(SAMPLE_DOC_PATH, ["Overview", "New Sub"])) as unknown as string;
+    const subBody = (await reader.readEffectiveSection(SAMPLE_DOC_PATH, ["Overview", "New Sub"])) as unknown as string;
     expect(subBody).toContain("brand new sub body");
 
     // The live layout still resolves the body-holder + New Sub + Timeline.
@@ -147,10 +147,10 @@ describe("MW-16: materialize after a structural-dirty split", () => {
     // new Second Section is a TOP-LEVEL sibling carrying the moved-out body.
     const { ProposalReader } = await import("../../storage/proposal-reader.js");
     const reader = ProposalReader.open(thirdId, "inprogress");
-    const overviewBody = (await reader.readSection(SAMPLE_DOC_PATH, ["Overview"])) as unknown as string;
+    const overviewBody = (await reader.readEffectiveSection(SAMPLE_DOC_PATH, ["Overview"])) as unknown as string;
     expect(overviewBody).toContain("base overview body");
     expect(overviewBody).not.toContain("brand new sibling body");
-    const siblingBody = (await reader.readSection(SAMPLE_DOC_PATH, ["Second Section"])) as unknown as string;
+    const siblingBody = (await reader.readEffectiveSection(SAMPLE_DOC_PATH, ["Second Section"])) as unknown as string;
     expect(siblingBody).toContain("brand new sibling body");
 
     // The live layout resolves Overview (leaf) + Second Section + Timeline.

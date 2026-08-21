@@ -51,9 +51,14 @@ describe("human REST proposal writes are not subject to the agent escape guard",
     expect(createRes.status).toBe(201);
     const proposalId = createRes.body.proposal_id;
 
-    const readRes = await request(ctx.app).get(`/api/proposals/${proposalId}`);
+    const readRes = await request(ctx.app)
+      .get(`/api/proposals/${proposalId}/sections`)
+      .set("Authorization", ctx.humanToken);
     expect(readRes.status).toBe(200);
-    const section = readRes.body.proposal.sections.find(
+    const doc = readRes.body.documents.find(
+      (d: { doc_path: string }) => d.doc_path === SAMPLE_DOC_PATH,
+    );
+    const section = doc.sections.find(
       (s: { heading_path: string[] }) => s.heading_path[0] === "Overview",
     );
     expect(section.content).toContain(ESCAPE_TOKEN);

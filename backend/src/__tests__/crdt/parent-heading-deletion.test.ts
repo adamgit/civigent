@@ -83,7 +83,7 @@ describe("WS-2: deleting a parent heading keeps its sub-sections", () => {
     const { proposalId, reader } = await build();
     await removeChapter2Heading(proposalId);
 
-    const list = await reader.getSectionList(DOC);
+    const list = await reader.listEffectiveSections(DOC);
     const headings = list.map((s) => s.heading);
 
     // Chapter 2's own heading is gone…
@@ -94,9 +94,9 @@ describe("WS-2: deleting a parent heading keeps its sub-sections", () => {
     expect(headings).toContain("Chapter 3");
 
     const body21 = list.find((s) => s.heading === "2.1")!;
-    expect((await reader.readSection(DOC, body21.headingPath)) as string).toContain("body of 2.1");
+    expect((await reader.readEffectiveSection(DOC, body21.headingPath)) as string).toContain("body of 2.1");
     const body22 = list.find((s) => s.heading === "2.2")!;
-    expect((await reader.readSection(DOC, body22.headingPath)) as string).toContain("body of 2.2");
+    expect((await reader.readEffectiveSection(DOC, body22.headingPath)) as string).toContain("body of 2.2");
   });
 
   it("merges the deleted heading's orphan body into the preceding section", async () => {
@@ -104,7 +104,7 @@ describe("WS-2: deleting a parent heading keeps its sub-sections", () => {
     await removeChapter2Heading(proposalId);
 
     // "chapter two intro body" folds into Chapter 1 (the predecessor).
-    const chapter1Body = (await reader.readSection(DOC, ["Chapter 1"])) as string;
+    const chapter1Body = (await reader.readEffectiveSection(DOC, ["Chapter 1"])) as string;
     expect(chapter1Body).toContain("chapter one body");
     expect(chapter1Body).toContain("chapter two intro body");
   });
@@ -112,13 +112,13 @@ describe("WS-2: deleting a parent heading keeps its sub-sections", () => {
   // ── Layer 2: markdown / tree shape (minimal, uncorrupted change) ──
   it("re-nests the children at their UNCHANGED levels under the new parent", async () => {
     const { proposalId, reader } = await build();
-    const before = await reader.getSectionList(DOC);
+    const before = await reader.listEffectiveSections(DOC);
     const level21Before = before.find((s) => s.heading === "2.1")!.level;
     const level22Before = before.find((s) => s.heading === "2.2")!.level;
 
     await removeChapter2Heading(proposalId);
 
-    const list = await reader.getSectionList(DOC);
+    const list = await reader.listEffectiveSections(DOC);
     const s21 = list.find((s) => s.heading === "2.1")!;
     const s22 = list.find((s) => s.heading === "2.2")!;
 
@@ -137,13 +137,13 @@ describe("WS-2: deleting a parent heading keeps its sub-sections", () => {
   // ── Layer 3: skeleton-file + section-file id internals ───────────
   it("PRESERVES the children's section-file ids through the re-parent", async () => {
     const { proposalId, reader } = await build();
-    const before = await reader.getSectionList(DOC);
+    const before = await reader.listEffectiveSections(DOC);
     const id21 = sectionFileFor(before, "2.1");
     const id22 = sectionFileFor(before, "2.2");
 
     await removeChapter2Heading(proposalId);
 
-    const after = await reader.getSectionList(DOC);
+    const after = await reader.listEffectiveSections(DOC);
     // Same section-file id => same `section::<id>` live fragment key => cursors survive.
     expect(sectionFileFor(after, "2.1")).toBe(id21);
     expect(sectionFileFor(after, "2.2")).toBe(id22);
@@ -151,7 +151,7 @@ describe("WS-2: deleting a parent heading keeps its sub-sections", () => {
 
   it("drops Chapter 2's section file from the on-disk skeleton, keeps the children's", async () => {
     const { reader, proposalId } = await build();
-    const before = await reader.getSectionList(DOC);
+    const before = await reader.listEffectiveSections(DOC);
     const chapter2File = sectionFileFor(before, "Chapter 2");
     const id21 = sectionFileFor(before, "2.1");
     const id22 = sectionFileFor(before, "2.2");

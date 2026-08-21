@@ -42,7 +42,7 @@ import type {
   ReadProposalResponse,
   SessionInfoResponse,
   UpdateProposalManifestRequest,
-  ReplaceProposalSectionsRequest,
+  UpsertProposalSectionsRequest,
   WriteProposalDocumentSectionsRequest,
   AcquireLocksResponse,
   WithdrawProposalResponse,
@@ -55,6 +55,8 @@ export interface AgentMcpActionEntry {
   method: string;
   ts: string;
   metadata: Record<string, unknown>;
+  result?: "ok" | "error" | "blocked";
+  error_message?: string;
 }
 
 export interface AgentMcpSessionRecord {
@@ -973,7 +975,7 @@ export const apiClient = {
   },
 
   // Update the proposal MANIFEST (intent + target scope) ONLY. Staged section
-  // content is written through `replaceProposalSections` / `writeProposalDocumentSections`.
+  // content is written through `upsertProposalSections` / `writeProposalDocumentSections`.
   async updateProposalManifest(
     id: ProposalId,
     body: UpdateProposalManifestRequest,
@@ -986,9 +988,9 @@ export const apiClient = {
   },
 
   // Bulk staged-content replace across any number of target documents.
-  async replaceProposalSections(
+  async upsertProposalSections(
     id: ProposalId,
-    body: ReplaceProposalSectionsRequest,
+    body: UpsertProposalSectionsRequest,
   ): Promise<ReadProposalResponse> {
     return requestJson<ReadProposalResponse>(`/api/proposals/${encodeURIComponent(id)}/sections`, {
       method: "PUT",

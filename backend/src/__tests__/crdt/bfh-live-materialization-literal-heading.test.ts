@@ -75,7 +75,7 @@ describe("BFH live fragment materialization keeps heading syntax literal", () =>
     const reader = ProposalReader.open(proposalId, "inprogress");
 
     // BFH body holds the heading text verbatim.
-    const bfhBody = await reader.readSection(SAMPLE_DOC_PATH, []);
+    const bfhBody = await reader.readEffectiveSection(SAMPLE_DOC_PATH, []);
     expect(bfhBody).toBe(bfhBodyWithHeading);
     expect(bfhBody).toContain("## Looks Like Heading");
 
@@ -83,7 +83,7 @@ describe("BFH live fragment materialization keeps heading syntax literal", () =>
     // renamed, reordered, or replaced.
     const after = await reader.listHeadingPaths(SAMPLE_DOC_PATH);
     expect(headedPaths(after)).toEqual([["Overview"], ["Timeline"]]);
-    expect(await reader.readSection(SAMPLE_DOC_PATH, ["Overview"])).toBe(SAMPLE_SECTIONS.overview);
-    expect(await reader.readSection(SAMPLE_DOC_PATH, ["Timeline"])).toBe(SAMPLE_SECTIONS.timeline);
+    expect(await reader.readEffectiveSection(SAMPLE_DOC_PATH, ["Overview"])).toBe(SAMPLE_SECTIONS.overview);
+    expect(await reader.readEffectiveSection(SAMPLE_DOC_PATH, ["Timeline"])).toBe(SAMPLE_SECTIONS.timeline);
   });
 });

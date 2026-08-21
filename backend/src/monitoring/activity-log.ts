@@ -19,10 +19,14 @@ import { getMonitoringRoot } from "../storage/data-root.js";
 
 // ─── Types ────────────────────────────────────────────────
 
+export type ActionResult = "ok" | "error" | "blocked";
+
 export interface ActionEntry {
   method: string;
   ts: string; // ISO 8601
   metadata: Record<string, unknown>;
+  result?: ActionResult;
+  error_message?: string;
 }
 
 export interface SessionRecord {
@@ -75,6 +79,8 @@ export class ActivityLog {
     agentDisplayName: string,
     method: string,
     metadata: Record<string, unknown>,
+    result: ActionResult,
+    errorMessage?: string,
   ): void {
     const key = compoundActivityKey(agentId, sessionId);
     let session = this.sessions.get(key);
@@ -94,6 +100,8 @@ export class ActivityLog {
       method,
       ts: new Date().toISOString(),
       metadata,
+      result,
+      ...(result === "error" && errorMessage !== undefined ? { error_message: errorMessage } : {}),
     });
   }
 
@@ -179,8 +187,7 @@ export class ActivityLog {
         ended_at: endedAt,
         action_count: session.actions.length,
         actions: session.actions.map((action) => ({
-          method: action.method,
-          ts: action.ts,
+          ...action,
           metadata: { ...action.metadata },
         })),
       });

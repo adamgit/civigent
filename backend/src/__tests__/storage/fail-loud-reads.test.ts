@@ -90,7 +90,7 @@ describe("Claim-review 04: fail-loud reads", () => {
     });
 
     const reader = ProposalReader.open(id, "pending");
-    const entry = (await reader.getSectionList(docPath)).find(
+    const entry = (await reader.listEffectiveSections(docPath)).find(
       (section) => section.headingPath.length === 1 && section.headingPath[0] === "Only",
     );
     expect(entry).toBeDefined();

@@ -83,7 +83,7 @@ export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Pro
     try {
       const inprogress = await findInProgressProposalForDoc(ctx.docPath);
       if (inprogress) {
-        proposalBodies = await ProposalReader.open(inprogress.id, "inprogress").readAllSections(ctx.docPath);
+        proposalBodies = await ProposalReader.open(inprogress.id, "inprogress").readAllEffectiveSections(ctx.docPath);
       }
     } catch {
       proposalBodies = null;

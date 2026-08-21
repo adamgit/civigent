@@ -41,7 +41,7 @@ describe("ProposalEditor", () => {
     await editor.writeSection("/new-doc.md", ["Intro"], "Intro", "Hello world.");
 
     expect(await editor.getDocumentState("/new-doc.md")).toBe("live");
-    const body = await editor.readSection("/new-doc.md", ["Intro"]);
+    const body = await editor.readEffectiveSection("/new-doc.md", ["Intro"]);
     expect(body).toContain("Hello world.");
   });
 
@@ -79,7 +79,7 @@ describe("ProposalEditor", () => {
     expect(headingPaths).toContainEqual(["Getting Started", "Installation"]);
     expect(headingPaths).toContainEqual(["Getting Started", "Installation", "Linux"]);
 
-    const leaf = await editor.readSection("/guide.md", ["Getting Started", "Installation", "Linux"]);
+    const leaf = await editor.readEffectiveSection("/guide.md", ["Getting Started", "Installation", "Linux"]);
     expect(leaf).toContain("apt-get install widget");
   });
 
@@ -92,7 +92,7 @@ describe("ProposalEditor", () => {
     expect(headingPaths).toContainEqual(["Sub"]);
     expect(headingPaths).toContainEqual(["Sub", "Leaf"]);
 
-    const leaf = await editor.readSection("/two.md", ["Sub", "Leaf"]);
+    const leaf = await editor.readEffectiveSection("/two.md", ["Sub", "Leaf"]);
     expect(leaf).toContain("leaf body");
   });
 
@@ -210,7 +210,7 @@ describe("ProposalEditor", () => {
 
     // The replayed content is now readable through a reader on the same proposal.
     const reader = ProposalReader.open(editor.id, "draft");
-    const overview = await reader.readSection("/replay.md", ["Overview"]);
+    const overview = await reader.readEffectiveSection("/replay.md", ["Overview"]);
     expect(overview).toContain("Overview body.");
   });
 });

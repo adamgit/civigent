@@ -90,7 +90,7 @@ describe("topology-neutral materialization (priority-0 heading-in-body bug)", ()
     const headed = headingPaths.filter((p) => p.length > 0);
     expect(headed).toEqual([["Overview"], ["Timeline"]]);
 
-    const overviewBody = await reader.readSection(SAMPLE_DOC_PATH, ["Overview"]);
+    const overviewBody = await reader.readEffectiveSection(SAMPLE_DOC_PATH, ["Overview"]);
     expect(overviewBody).not.toContain("### Sub");
     expect(overviewBody).not.toContain("sub body text");
   });

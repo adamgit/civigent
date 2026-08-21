@@ -305,8 +305,8 @@ export async function readLiveDocumentMarkdown(read: AuthorizedDocRead): Promise
 
   const { buildFragmentContent, EMPTY_BODY } = await import("../../storage/section-formatting.js");
   const reader = await openWorkspaceReader(docPath);
-  const sections = await reader.getSectionList(docPath);
-  const bodies = await reader.readAllSections(docPath);
+  const sections = await reader.listEffectiveSections(docPath);
+  const bodies = await reader.readAllEffectiveSections(docPath);
   const parts: string[] = [];
   for (const section of sections) {
     const body = bodies.get(SectionRef.headingKey(section.headingPath)) ?? EMPTY_BODY;

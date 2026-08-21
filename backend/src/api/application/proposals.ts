@@ -1,7 +1,7 @@
 import type {
   CreateProposalRequest,
   UpdateProposalManifestRequest,
-  ReplaceProposalSectionsRequest,
+  UpsertProposalSectionsRequest,
   WriteProposalDocumentSectionsRequest,
   ProposalDTO,
   ProposalStatus,
@@ -10,7 +10,6 @@ import type {
   ProposalTargetRef,
 } from "../../types/shared.js";
 import {
-  docPathFromStoredHistoryProposalPath,
   isActiveProposal,
   sectionTargetsOf,
 } from "../../types/shared.js";
@@ -18,7 +17,6 @@ import {
   createProposal,
   readActiveProposal,
   readProposal,
-  readProposalWithContent,
   listProposalsToleratingUndecodable,
   listDegradedProposals,
   findDraftProposalByWriter,
@@ -29,7 +27,6 @@ import {
   isProposalStatus,
   ProposalNotFoundError,
   InvalidProposalStateError,
-  ProposalIntegrityError,
 } from "../../storage/proposal-repository.js";
 import { evaluateAgentWritePolicy, publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
@@ -179,43 +176,16 @@ export async function createProposalUseCase(
 // ─── Read (metadata + content) ──────────────────────────
 
 export async function readProposalDto(id: string): Promise<ProposalDTO> {
-  const { proposal, sectionContent } = await readProposalWithContent(id);
-
-  // `readProposalWithContent` now throws `ProposalIntegrityError` for any claimed
-  // section whose body is missing, so every claimed section resolves here — no
-  // `?? null` coercion that would hide a missing/corrupt body (claim-review 04).
-  const contentForClaimedSection = (docPath: DocPath, headingPath: string[]): string => {
-    const key = SectionRef.fromTarget({ doc_path: docPath, heading_path: headingPath }).globalKey;
-    const content = sectionContent.get(key);
-    if (content === undefined) {
-      // Unreachable in practice (the reader threw upstream); assert rather than coerce.
-      throw new ProposalIntegrityError(proposal.id, key);
-    }
-    return content;
-  };
+  const proposal = await readProposal(id);
 
   if (proposal.status === "committed" || proposal.status === "withdrawn") {
-    return {
-      ...proposal,
-      sections: proposal.sections.map((s) => ({
-        ...s,
-        content: contentForClaimedSection(
-          docPathFromStoredHistoryProposalPath(s.stored_doc_path),
-          s.heading_path,
-        ),
-      })),
-    };
+    return proposal;
   }
-
-  const sectionsWithContent = proposal.sections.map((s) => ({
-    ...s,
-    content: contentForClaimedSection(s.doc_path, s.heading_path),
-  }));
   if (proposal.writer.type === "human") {
-    return { ...proposal, sections: sectionsWithContent };
+    return proposal;
   }
   const agentWritePolicy = await evaluateAgentWritePolicy(proposal.id);
-  return { ...proposal, agentWritePolicy, sections: sectionsWithContent };
+  return { ...proposal, agentWritePolicy };
 }
 
 // ─── Modify ─────────────────────────────────────────────
@@ -294,7 +264,7 @@ export async function modifyProposalUseCase(
   // it uses the dedicated reservation declarator rather than the
   // `mutateProposalContent(...)` boundary (Claim 3 §Human reservations). This route
   // owns ONLY intent + scope; staged content is written through the staged-content
-  // routes (`replaceProposalSectionsUseCase` / `writeProposalDocumentSectionsUseCase`).
+  // routes (`upsertProposalSectionsUseCase` / `writeProposalDocumentSectionsUseCase`).
   const { proposal: updated } = await declareReservedProposalSectionsFromRequest(
     proposal.id,
     body.targets.map((t) => ({
@@ -384,13 +354,13 @@ async function stageProposalSectionContent(
 }
 
 /**
- * Bulk staged-content replace across any number of target documents
+ * Bulk staged-content partial upsert across any number of target documents: each given entry is written, omitted claims are left untouched
  * (`PUT /api/proposals/:id/sections`). Routed through `ProposalEditor`.
  */
-export async function replaceProposalSectionsUseCase(
+export async function upsertProposalSectionsUseCase(
   proposalId: string,
   writer: ProposalWriter,
-  body: ReplaceProposalSectionsRequest,
+  body: UpsertProposalSectionsRequest,
 ): Promise<StageProposalContentResult> {
   if (!Array.isArray(body.sections)) {
     return { ok: false, status: 400, message: "sections[] is required." };

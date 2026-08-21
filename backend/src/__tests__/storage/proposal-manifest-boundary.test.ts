@@ -7,7 +7,7 @@
  *
  * Two layers of enforcement:
  *  1. COMPILE-TIME (the real guarantee): `updateProposalSections(...)` accepts only
- *     a branded `ProposalManifest`, so a raw `ProposalSection[]` is a type error.
+ *     a branded `ProposalManifest`, so a raw `ProposalSectionClaim[]` is a type error.
  *     The `@ts-expect-error` below fails the build if that brand ever weakens.
  *  2. THIS runtime scan: a defence-in-depth check that app/MCP source files do not
  *     import the raw manifest-replacement / brand-minting helpers directly.
@@ -45,12 +45,12 @@ async function walk(dir: string): Promise<string[]> {
 }
 
 describe("Claim 3: proposal-manifest import boundary", () => {
-  it("compile-time: updateProposalSections rejects a raw ProposalSection[] (brand-gated)", async () => {
+  it("compile-time: updateProposalSections rejects a raw ProposalSectionClaim[] (brand-gated)", async () => {
     // Type-level guard. If the brand weakens so a raw array is accepted, the
     // `@ts-expect-error` becomes unused and `tsc` (npm run build) FAILS.
     const id = "never-called";
     void (async () => {
-      // @ts-expect-error — a raw ProposalSection[] is not a branded ProposalManifest.
+      // @ts-expect-error — a raw ProposalSectionClaim[] is not a branded ProposalManifest.
       await updateProposalSections(id, [{ doc_path: "/x.md", heading_path: ["A"] }]);
     });
     // Sanity: a minted manifest IS accepted by the type (no error expected). It

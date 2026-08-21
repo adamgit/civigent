@@ -31,7 +31,7 @@ import {
   type ProposalId,
   type HumanInvolvementPolicyResult,
   type HumanInvolvementCommittedProposalMetadata,
-  type ProposalSection,
+  type ProposalSectionClaim,
   type SectionAgentWritePolicySummary,
 } from "../types/shared.js";
 import { SectionRef } from "./section-ref.js";
@@ -157,10 +157,10 @@ class HumanInvolvementCompatibilityPolicy
    * each section and applies the aggregate-impact escalation.
    */
   private async evaluateSections(
-    sections: ProposalSection[],
+    sections: ProposalSectionClaim[],
   ): Promise<HumanInvolvementPolicyResult> {
     // Group by document for batched I/O.
-    const sectionsByDoc = new Map<string, ProposalSection[]>();
+    const sectionsByDoc = new Map<string, ProposalSectionClaim[]>();
     for (const section of sections) {
       const group = sectionsByDoc.get(section.doc_path) ?? [];
       group.push(section);

@@ -65,7 +65,7 @@ describe("live edits materialize into proposal content; canonical unchanged unti
 
     // The DURABLE inprogress proposal content (on disk, via the reader facade)
     // already holds the live edit.
-    const proposalBody = await ProposalReader.open(proposalId, "inprogress").readSection(
+    const proposalBody = await ProposalReader.open(proposalId, "inprogress").readEffectiveSection(
       SAMPLE_DOC_PATH,
       ["Overview"],
     );

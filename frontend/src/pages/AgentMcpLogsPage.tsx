@@ -1,9 +1,26 @@
 import { useCallback, useEffect, useState } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
-import { apiClient, type AgentMcpSessionRecord } from "../services/api-client";
+import {
+  apiClient,
+  type AgentMcpActionEntry,
+  type AgentMcpSessionRecord,
+} from "../services/api-client";
 
 function formatTs(iso: string): string {
   return new Date(iso).toLocaleString();
+}
+
+function resultLabel(result: AgentMcpActionEntry["result"]): { text: string; className: string } {
+  switch (result) {
+    case "ok":
+      return { text: "Succeeded", className: "text-green-600" };
+    case "error":
+      return { text: "Failed", className: "text-red-500" };
+    case "blocked":
+      return { text: "Blocked", className: "text-amber-500" };
+    default:
+      return { text: "Unknown", className: "text-text-muted" };
+  }
 }
 
 function durationMs(start: string, end: string): string {
@@ -40,23 +57,32 @@ function SessionRow({
 
       {expanded && (
         <div className="px-6 pb-3">
-          <div className="grid grid-cols-[180px_160px_1fr] gap-x-4 items-center px-2 py-1 text-[11px] text-text-muted font-medium border-b border-footer-border">
+          <div className="grid grid-cols-[180px_160px_90px_1fr] gap-x-4 items-center px-2 py-1 text-[11px] text-text-muted font-medium border-b border-footer-border">
             <span>Time</span>
             <span>Method</span>
+            <span>Result</span>
             <span>Metadata</span>
           </div>
-          {session.actions.map((action, i) => (
-            <div
-              key={i}
-              className="grid grid-cols-[180px_160px_1fr] gap-x-4 items-start px-2 py-1 text-[11px] border-b border-footer-border last:border-0"
-            >
-              <span className="text-text-muted font-mono">{formatTs(action.ts)}</span>
-              <span className="text-text-primary font-mono">{action.method}</span>
-              <span className="text-text-muted font-mono truncate" title={JSON.stringify(action.metadata)}>
-                {Object.keys(action.metadata).length > 0 ? JSON.stringify(action.metadata) : "—"}
-              </span>
-            </div>
-          ))}
+          {session.actions.map((action, i) => {
+            const label = resultLabel(action.result);
+            return (
+              <div key={i} className="border-b border-footer-border last:border-0">
+                <div className="grid grid-cols-[180px_160px_90px_1fr] gap-x-4 items-start px-2 py-1 text-[11px]">
+                  <span className="text-text-muted font-mono">{formatTs(action.ts)}</span>
+                  <span className="text-text-primary font-mono">{action.method}</span>
+                  <span className={label.className}>{label.text}</span>
+                  <span className="text-text-muted font-mono truncate" title={JSON.stringify(action.metadata)}>
+                    {Object.keys(action.metadata).length > 0 ? JSON.stringify(action.metadata) : "—"}
+                  </span>
+                </div>
+                {action.result === "error" && action.error_message && (
+                  <div className="px-2 pb-1 pl-[196px] text-[11px] text-red-500 font-mono whitespace-pre-wrap break-words">
+                    {action.error_message}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

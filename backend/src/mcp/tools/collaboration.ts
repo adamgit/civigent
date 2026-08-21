@@ -25,7 +25,7 @@ import {
 import {
   createProposal,
   readProposal,
-  readProposalWithContent,
+  resolveProposalSectionClaims,
   listProposalsToleratingUndecodable,
   transitionToWithdrawn,
   isProposalMutable,
@@ -49,7 +49,6 @@ import {
 import { SectionRef } from "../../domain/section-ref.js";
 import { findProseUnicodeEscapes } from "../../domain/encoding-defect-detection.js";
 import { InvalidDocPathError } from "../../storage/path-utils.js";
-import { proposalSectionsParsedForLiveUse } from "../../types/shared.js";
 import type { DocPath, HumanInvolvementPolicyResult, ProposalStatus } from "../../types/shared.js";
 import { buildFragmentContent, fragmentFromBodyHolder, sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
 import { checkDocPermission } from "../../auth/acl.js";
@@ -460,15 +459,13 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
       if (!wpOk) return makeToolErrorResult(`Permission denied: you do not have write access to "${dp}".`);
     }
 
-    const { sectionContent } = await readProposalWithContent(proposalId);
+    const { claims } = await resolveProposalSectionClaims(proposalId);
     const offendingSections: Array<{ docPath: string; headingPath: string[]; sequences: string[] }> = [];
-    for (const section of proposalSectionsParsedForLiveUse(proposal)) {
-      const ref = SectionRef.fromTarget(section);
-      const body = sectionContent.get(ref.globalKey);
-      if (body === undefined) continue;
-      const sequences = findProseUnicodeEscapes(body);
+    for (const claim of claims) {
+      if (claim.state !== "present") continue;
+      const sequences = findProseUnicodeEscapes(claim.content);
       if (sequences.length > 0) {
-        offendingSections.push({ docPath: ref.docPath, headingPath: ref.headingPath, sequences });
+        offendingSections.push({ docPath: claim.docPath, headingPath: claim.headingPath, sequences });
       }
     }
     if (offendingSections.length > 0) {
@@ -639,7 +636,7 @@ const readProposalHandler: ToolHandler = async (args) => {
       );
     }
 
-    const { proposal, sectionContent } = await readProposalWithContent(proposalId);
+    const { proposal, claims } = await resolveProposalSectionClaims(proposalId);
 
     // Re-evaluate agent write policy for draft/committing proposals
     let agentWritePolicy: HumanInvolvementPolicyResult | undefined;
@@ -649,8 +646,13 @@ const readProposalHandler: ToolHandler = async (args) => {
 
     // Return content as a separate map, not on section objects
     const contentMap: Record<string, string> = {};
-    for (const [key, value] of sectionContent) {
-      contentMap[key] = value;
+    const absentSectionClaims: Array<{ doc_path: string; heading_path: string[] }> = [];
+    for (const claim of claims) {
+      if (claim.state === "present") {
+        contentMap[new SectionRef(claim.docPath, claim.headingPath).globalKey] = claim.content;
+      } else {
+        absentSectionClaims.push({ doc_path: claim.docPath, heading_path: claim.headingPath });
+      }
     }
 
     return jsonToolResult({
@@ -659,6 +661,7 @@ const readProposalHandler: ToolHandler = async (args) => {
         ...(agentWritePolicy ? { agent_write_policy: agentWritePolicyToolBody(agentWritePolicy) } : {}),
       },
       section_content: contentMap,
+      absent_section_claims: absentSectionClaims,
     });
   } catch (error) {
     if (error instanceof ProposalNotFoundError) {
@@ -686,29 +689,19 @@ const readProposalSectionHandler: ToolHandler = async (args) => {
   try {
     const proposal = await readProposal(proposalId);
     const reader = ProposalReader.open(proposal.id, proposal.status);
-    const body = await reader.readSection(docPath, headingPath);
-
-    let content;
-    if (headingPath.length === 0) {
-      content = fragmentFromBodyHolder(body);
-    } else {
-      const section = (await reader.getSectionList(docPath)).find((entry) =>
-        entry.headingPath.length === headingPath.length
-        && entry.headingPath.every((segment, index) => segment === headingPath[index]),
-      );
-      if (!section) {
-        return makeToolErrorResult(`Section not found: ${headingPath.join(" > ")} in proposal ${proposalId}`);
-      }
-      content = buildFragmentContent(body, section.headingLevel, section.heading);
+    const lookup = await reader.lookupEffectiveSection(docPath, headingPath);
+    if (lookup.state === "absent") {
+      return makeToolErrorResult(`Section not found: ${headingPath.join(" > ")} in ${docPath}`);
     }
+
+    const content = headingPath.length === 0
+      ? fragmentFromBodyHolder(lookup.body)
+      : buildFragmentContent(lookup.body, lookup.headingLevel, lookup.heading);
 
     return textToolResult(content);
   } catch (error) {
     if (error instanceof ProposalNotFoundError) {
       return makeToolErrorResult(`Proposal not found: ${proposalId}`);
-    }
-    if (error instanceof SectionNotFoundError || error instanceof HeadingNotFoundError) {
-      return makeToolErrorResult(`Section not found: ${headingPath.join(" > ")} in ${docPath}`);
     }
     if (error instanceof InvalidDocPathError) {
       return makeToolErrorResult(`Invalid document path: ${docPath}`);

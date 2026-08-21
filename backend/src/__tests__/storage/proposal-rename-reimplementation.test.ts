@@ -45,7 +45,7 @@ async function seedCanonical(docPath: string, markdown: string): Promise<void> {
 }
 
 async function sectionFilesAt(reader: ProposalReader, docPath: string): Promise<string[]> {
-  return (await reader.getSectionList(docPath)).map((s) => s.sectionFile).sort();
+  return (await reader.listEffectiveSections(docPath)).map((s) => s.sectionFile).sort();
 }
 
 describe("proposal-owned semantic document rename (items 54-61)", () => {
@@ -64,8 +64,8 @@ describe("proposal-owned semantic document rename (items 54-61)", () => {
     const reader = ProposalReader.open(id, "pending");
     // New path is live with the source's content.
     expect(await reader.getDocumentState(NEW)).toBe("live");
-    expect(await reader.readSection(NEW, ["Section A"])).toContain("Body A.");
-    expect(await reader.readSection(NEW, ["Section B"])).toContain("Body B.");
+    expect(await reader.readEffectiveSection(NEW, ["Section A"])).toContain("Body A.");
+    expect(await reader.readEffectiveSection(NEW, ["Section B"])).toContain("Body B.");
     // Section-file IDs are preserved (no remint).
     expect(await sectionFilesAt(reader, NEW)).toEqual(sourceSectionFiles);
     // Old path is tombstoned in the same mutation.
@@ -96,7 +96,7 @@ describe("proposal-owned semantic document rename (items 54-61)", () => {
     const destFiles = (await pathExists(newSectionsDir)) ? await readdir(newSectionsDir) : [];
     expect(destFiles).not.toContain("orphan-undeclared.md");
     // The real content still made it across.
-    expect(await ProposalReader.open(id, "pending").readSection(NEW, ["Section A"])).toContain("Body A.");
+    expect(await ProposalReader.open(id, "pending").readEffectiveSection(NEW, ["Section A"])).toContain("Body A.");
   });
 
   it("rejects when the destination already exists (canonical-live)", async () => {

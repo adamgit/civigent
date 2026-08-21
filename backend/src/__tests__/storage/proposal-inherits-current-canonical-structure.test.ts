@@ -87,7 +87,7 @@ describe("proposal effective structure inherits sections canonical gained after 
     expect(keys).toContain("Roadmap"); // FAILS today: frozen snapshot omits it.
 
     // And its body is inherited from current canonical (the proposal never claimed it).
-    const roadmapBody = (await reader.readSection(SAMPLE_DOC_PATH, ["Roadmap"])) as string;
+    const roadmapBody = (await reader.readEffectiveSection(SAMPLE_DOC_PATH, ["Roadmap"])) as string;
     expect(roadmapBody).toContain("ROADMAP BODY ADDED AFTER THE PROPOSAL OPENED");
   });
 });

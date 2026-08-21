@@ -7,7 +7,7 @@
  * automatically because the restore goes through the normal proposal pipeline.
  */
 
-import type { WriterIdentity, AnyProposal, ProposalSection } from "../types/shared.js";
+import type { WriterIdentity, AnyProposal, ProposalSectionClaim } from "../types/shared.js";
 import { CanonicalReader } from "./canonical-reader.js";
 import { DocumentNotFoundError, DocumentAssemblyError } from "./content-layer.js";
 import { ProposalEditor } from "./proposal-editor.js";
@@ -62,7 +62,7 @@ export async function createRestoreProposal(
     throw err;
   }
 
-  const restoredTargets: ProposalSection[] = restoredHeadingPaths.map(hp => ({
+  const restoredTargets: ProposalSectionClaim[] = restoredHeadingPaths.map(hp => ({
     doc_path: docPath,
     heading_path: hp,
   }));
@@ -71,9 +71,9 @@ export async function createRestoreProposal(
   // These are being deleted by the restore — they must appear in the proposal manifest
   // so that conflict detection, lock checks, and human-involvement scoring evaluate them.
   const canonicalReader = CanonicalReader.open();
-  const deletedSections: ProposalSection[] = [];
+  const deletedSections: ProposalSectionClaim[] = [];
   try {
-    const canonicalSections = await canonicalReader.getSectionList(docPath);
+    const canonicalSections = await canonicalReader.listEffectiveSections(docPath);
     const restoredKeys = new Set(restoredHeadingPaths.map(hp => SectionRef.headingKey(hp)));
     for (const entry of canonicalSections) {
       if (!restoredKeys.has(SectionRef.headingKey(entry.headingPath))) {

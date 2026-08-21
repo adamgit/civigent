@@ -505,7 +505,7 @@ export async function scanContentIntegrity(): Promise<RunAdminContentIntegritySc
 
   for (const docPath of docPaths) {
     try {
-      await layer.readAllSections(docPath);
+      await layer.readAllEffectiveSections(docPath);
     } catch (error) {
       failures.push({
         doc_path: docPath,

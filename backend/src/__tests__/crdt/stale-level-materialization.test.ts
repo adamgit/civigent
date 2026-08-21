@@ -81,7 +81,7 @@ async function readProposalBody(session: DocSession): Promise<string> {
   const proposalId = session.generator.getCurrentProposalId();
   expect(proposalId).toBeTruthy();
   const reader = ProposalReader.open(proposalId!, "inprogress");
-  return reader.readSection(DOC_PATH, HEADING_PATH);
+  return reader.readEffectiveSection(DOC_PATH, HEADING_PATH);
 }
 
 function assertBodyHasNoStructuralHeading(body: string): void {
@@ -168,7 +168,7 @@ describe("stale-level materialization", () => {
     const proposalId = session.generator.getCurrentProposalId();
     expect(proposalId).toBeTruthy();
     const reader = ProposalReader.open(proposalId!, "inprogress");
-    expect(await reader.readSection(DOC_PATH, HEADING_PATH)).toBe("real body\n\nmore text");
+    expect(await reader.readEffectiveSection(DOC_PATH, HEADING_PATH)).toBe("real body\n\nmore text");
 
     const layout = await resolveLiveSectionLayout(DOC_PATH, proposalId);
     const entry = layout.find((e) => e.fragmentKey === SECTION_KEY);

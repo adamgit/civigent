@@ -2,7 +2,7 @@ import { type Router } from "express";
 import {
   CreateProposalRequest,
   UpdateProposalManifestRequest,
-  ReplaceProposalSectionsRequest,
+  UpsertProposalSectionsRequest,
   WriteProposalDocumentSectionsRequest,
 } from "../../types/shared.js";
 import type {
@@ -32,7 +32,7 @@ import {
   validateCreateProposal,
   createProposalUseCase,
   modifyProposalUseCase,
-  replaceProposalSectionsUseCase,
+  upsertProposalSectionsUseCase,
   writeProposalDocumentSectionsUseCase,
   acquireLocksUseCase,
   commitProposalUseCase,
@@ -302,18 +302,18 @@ export function registerProposalRoutes(
     }
   });
 
-  // PUT /api/proposals/:id/sections — bulk staged-content replace across docs.
+  // PUT /api/proposals/:id/sections — bulk staged-content partial upsert across docs (omitted entries are untouched).
   router.put("/proposals/:id/sections", async (req, res, next) => {
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
 
-      const parsed = ReplaceProposalSectionsRequest.parse(req.body);
+      const parsed = UpsertProposalSectionsRequest.parse(req.body);
       if (!parsed.ok) {
         sendApiError(res, 400, parsed.message);
         return;
       }
-      const result = await replaceProposalSectionsUseCase(req.params.id, writer, parsed.value);
+      const result = await upsertProposalSectionsUseCase(req.params.id, writer, parsed.value);
       if (!result.ok) {
         sendApiError(res, result.status, result.message);
         return;

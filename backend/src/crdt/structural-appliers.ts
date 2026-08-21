@@ -30,7 +30,7 @@ import { resolveLiveSectionLayout, readLiveSectionBodies } from "./live-section-
 import { BEFORE_FIRST_HEADING_KEY, fragmentKeyFromSectionFile, getBackendSchema } from "./ydoc-fragments.js";
 import type { LiveFragmentStringsStore } from "./live-fragment-strings-store.js";
 import type { StructuralChange } from "./structural-change.js";
-import type { ProposalId, ProposalSection } from "../types/shared.js";
+import type { ProposalId, ProposalSectionClaim } from "../types/shared.js";
 import type { HeadingLevel } from "../types/shared.js";
 import type { UpsertSectionFromMarkdownDetailedResult } from "../storage/content-layer.js";
 import type { HeadingRemovalEffect } from "../storage/document-skeleton.js";
@@ -48,7 +48,7 @@ import type { DocPath } from "../types/shared.js";
 function manifestDeltaFromResult(
   docPath: DocPath,
   result: UpsertSectionFromMarkdownDetailedResult,
-): { add: ProposalSection[]; remove: ProposalSection[] } {
+): { add: ProposalSectionClaim[]; remove: ProposalSectionClaim[] } {
   const add = result.writtenEntries
     .filter((e) => !e.isSubSkeleton)
     .map((e) => ({ doc_path: docPath, heading_path: [...e.headingPath] }));

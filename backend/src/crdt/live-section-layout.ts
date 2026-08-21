@@ -116,10 +116,10 @@ export async function readLiveSectionBodies(
 ): Promise<Map<string, SectionBody>> {
   if (currentProposalId) {
     const { ProposalReader } = await import("../storage/proposal-reader.js");
-    return ProposalReader.open(currentProposalId, "inprogress").readAllSections(docPath);
+    return ProposalReader.open(currentProposalId, "inprogress").readAllEffectiveSections(docPath);
   }
   const { CanonicalReader } = await import("../storage/canonical-reader.js");
-  return CanonicalReader.open().readAllSections(docPath);
+  return CanonicalReader.open().readAllEffectiveSections(docPath);
 }
 
 /**

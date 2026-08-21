@@ -764,7 +764,7 @@ export function documentTargetRef(docPath: string): DocumentTargetRef {
   return { kind: "document", doc_path: DocPath.parse(docPath) };
 }
 
-/** Map a section view (`ProposalSection` / `SectionTargetRef`) list to section targets. */
+/** Map a section view (`ProposalSectionClaim` / `SectionTargetRef`) list to section targets. */
 export function sectionsToTargets(sections: SectionTargetRef[]): ProposalSectionTargetRef[] {
   return sections.map(asSectionTarget);
 }
@@ -1150,7 +1150,7 @@ export interface ProposalFileBase extends ProposalFileIdentityFields {
    * the semantic content unit set; it is NOT the authoritative lock/audit claim
    * set — that is {@link ProposalFileBase.targets} (spec 12 §Data Shapes).
    */
-  sections: ProposalSection[];
+  sections: ProposalSectionClaim[];
   /**
    * Authoritative lock/audit/policy claim set (spec 12 §Data Shapes). Includes
    * section targets (mirroring `sections`) AND document targets for document
@@ -1277,7 +1277,7 @@ export function docPathFromStoredHistoryProposalPath(storedDocPath: string): Doc
 }
 
 export function proposalSectionDocPathForDisplay(
-  section: ProposalSection | StoredHistoryProposalSection,
+  section: ProposalSectionClaim | StoredHistoryProposalSection,
 ): string {
   return "doc_path" in section ? section.doc_path : section.stored_doc_path;
 }
@@ -1294,10 +1294,10 @@ export function proposalDeletedSectionFileDocPathForDisplay(
   return "doc_path" in ref ? ref.doc_path : ref.stored_doc_path;
 }
 
-export function proposalSectionsParsedForLiveUse(proposal: AnyProposal): ProposalSection[] {
+export function proposalSectionClaimsWithParsedDocPaths(proposal: AnyProposal): ProposalSectionClaim[] {
   if (isActiveProposal(proposal)) return proposal.sections;
   return proposal.sections.map((section) => {
-    const parsed: ProposalSection = {
+    const parsed: ProposalSectionClaim = {
       doc_path: docPathFromStoredHistoryProposalPath(section.stored_doc_path),
       heading_path: [...section.heading_path],
     };
@@ -1323,7 +1323,7 @@ export function proposalTargetsParsedForLiveUse(proposal: AnyProposal): Proposal
 
 /**
  * Draft proposal DTO — adds agent-write-policy + proposal-lock evaluation
- * computed at read time. `sections` reverts to plain {@link ProposalSection}[]
+ * computed at read time. `sections` reverts to plain {@link ProposalSectionClaim}[]
  * (per-section policy summaries are surfaced via the write-policy targets, not
  * baked into the section type). Lock conflicts are surfaced separately from
  * `agentWritePolicy` per spec 12 §Event/API Surfaces.
@@ -1345,7 +1345,7 @@ export type ProposalDTO = DraftProposalDTO | InProgressProposalDTO | CommittedPr
 
 // ── Proposal sub-types ────────────────────────────────────────────
 
-export interface ProposalSection {
+export interface ProposalSectionClaim {
   doc_path: DocPath;
   heading_path: string[];
   justification?: string;
@@ -1649,11 +1649,13 @@ export interface UpdateProposalManifestRequest {
 }
 
 /**
- * Body of `PUT /api/proposals/:id/sections` — bulk staged-content replace across
- * any number of target documents. Each entry carries explicit `doc_path` and the
- * full markdown `content` to stage into the proposal content tree.
+ * Body of `PUT /api/proposals/:id/sections` — bulk staged-content PARTIAL UPSERT
+ * across any number of target documents: each given entry is staged into the
+ * proposal content tree; entries omitted from the request are left untouched
+ * (never treated as removals). Each entry carries explicit `doc_path` and the
+ * full markdown `content`.
  */
-export interface ReplaceProposalSectionsRequest {
+export interface UpsertProposalSectionsRequest {
   sections: Array<{
     doc_path: DocPath;
     heading_path: string[];
@@ -1685,7 +1687,7 @@ export interface GetProposalSectionsResponse {
 // ── Proposal request parsing (companion parsers) ───────────────────
 //
 // `CreateProposalRequest.parse` / `UpdateProposalManifestRequest.parse` /
-// `ReplaceProposalSectionsRequest.parse` / `WriteProposalDocumentSectionsRequest.parse`
+// `UpsertProposalSectionsRequest.parse` / `WriteProposalDocumentSectionsRequest.parse`
 // validate an untrusted request body and return a `RequestParseResult` for the route's
 // `if (!parsed.ok) { sendApiError(res, 400, parsed.message); return; }` boundary.
 // They validate shape only (record-ness, field types) — they are NOT a DTO
@@ -1816,8 +1818,8 @@ function parseProposalSectionContentInput(value: JsonValue, label: string): Prop
   };
 }
 
-export const ReplaceProposalSectionsRequest = {
-  parse(value: JsonValue, label = "replace proposal sections request"): RequestParseResult<ReplaceProposalSectionsRequest> {
+export const UpsertProposalSectionsRequest = {
+  parse(value: JsonValue, label = "upsert proposal sections request"): RequestParseResult<UpsertProposalSectionsRequest> {
     return asRequestParseResult(() => {
       const obj = expectJsonObject(value, label);
       const sectionsValue = obj.sections;

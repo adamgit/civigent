@@ -31,7 +31,7 @@
 import * as Y from "yjs";
 import type { WriterIdentity, ProposalAdoptionId, ProposalId, PublishTriggerDecision, PublishBlocker, HeadingLevel } from "../types/shared.js";
 import type {
-  ProposalSection,
+  ProposalSectionClaim,
   InProgressProposal,
   HumanInvolvementCommittedProposalMetadata,
 } from "../types/shared.js";
@@ -473,7 +473,7 @@ export class CRDTProposalGenerator {
     return created.id;
   }
 
-  async ensureAuthoredProposalClaiming(sections: ProposalSection[]): Promise<ProposalId> {
+  async ensureAuthoredProposalClaiming(sections: ProposalSectionClaim[]): Promise<ProposalId> {
     const proposalId = await this.ensureCurrentProposal();
     this.authoredProposalId = proposalId;
     if (sections.length > 0) {
@@ -627,9 +627,9 @@ export class CRDTProposalGenerator {
     await updateCurrentProposalSections(proposalId, manifest);
   }
 
-  private dedupSections(sections: ProposalSection[]): ProposalSection[] {
+  private dedupSections(sections: ProposalSectionClaim[]): ProposalSectionClaim[] {
     const seen = new Set<string>();
-    const out: ProposalSection[] = [];
+    const out: ProposalSectionClaim[] = [];
     for (const section of sections) {
       const key = SectionRef.headingKey(section.heading_path);
       if (seen.has(key)) continue;

@@ -4,7 +4,7 @@ import type {
   HumanInvolvementPolicyResult,
   WriterIdentity,
 } from "../../types/shared.js";
-import { proposalSectionsParsedForLiveUse } from "../../types/shared.js";
+import { proposalSectionClaimsWithParsedDocPaths } from "../../types/shared.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { CanonicalReader } from "../../storage/canonical-reader.js";
 import { mutateProposalContent, ProposalSectionNotFoundError } from "../../storage/mutate-proposal-content.js";
@@ -75,8 +75,8 @@ export async function verifyProposalForRead(proposalId: string, writerId: string
 
 
 interface SectionListReader {
-  getSectionList(docPath: DocPath): Promise<Array<{ heading: string; headingLevel: HeadingLevel; sectionFile: string; headingPath: string[] }>>;
-  readAllSections(docPath: DocPath): Promise<Map<string, import("../../storage/section-formatting.js").SectionBody>>;
+  listEffectiveSections(docPath: DocPath): Promise<Array<{ heading: string; headingLevel: HeadingLevel; sectionFile: string; headingPath: string[] }>>;
+  readAllEffectiveSections(docPath: DocPath): Promise<Map<string, import("../../storage/section-formatting.js").SectionBody>>;
 }
 
 
@@ -116,7 +116,11 @@ export async function readWorkspaceSectionList(read: AuthorizedDocRead): Promise
 
 export async function readProposalSectionList(proposalId: string, docPath: DocPath): Promise<ReadSectionListResult> {
   const proposal = await readProposal(proposalId);
-  return buildSectionListResponse(docPath, ProposalReader.open(proposal.id, proposal.status), proposalId);
+  const reader = ProposalReader.open(proposal.id, proposal.status);
+  if ((await reader.getDocumentState(docPath)) !== "live") {
+    return { response: { doc_path: docPath, sections: [] }, headingPaths: [] };
+  }
+  return buildSectionListResponse(docPath, reader, proposalId);
 }
 
 
@@ -133,7 +137,7 @@ export async function readProposalAllSections(
   
   const docPaths: DocPath[] = [];
   const seen = new Set<string>();
-  for (const section of proposalSectionsParsedForLiveUse(proposal)) {
+  for (const section of proposalSectionClaimsWithParsedDocPaths(proposal)) {
     if (!seen.has(section.doc_path)) {
       seen.add(section.doc_path);
       docPaths.push(section.doc_path);
@@ -142,6 +146,10 @@ export async function readProposalAllSections(
 
   const documents: GetDocumentSectionsResponse[] = [];
   for (const docPath of docPaths) {
+    if ((await reader.getDocumentState(docPath)) !== "live") {
+      documents.push({ doc_path: docPath, sections: [] });
+      continue;
+    }
     const { response } = await buildSectionListResponse(docPath, reader, proposalId);
     documents.push(response);
   }
@@ -167,7 +175,7 @@ async function buildSectionListResponse(
   excludeProposalId: string | undefined,
   liveFragments?: LiveFragmentStringsStore,
 ): Promise<ReadSectionListResult> {
-  const sectionList = await sectionReader.getSectionList(docPath);
+  const sectionList = await sectionReader.listEffectiveSections(docPath);
 
   const headingPaths: string[][] = sectionList.map((s) => s.headingPath);
   const sectionFileByKey = new Map<string, string>(
@@ -176,7 +184,7 @@ async function buildSectionListResponse(
 
   const bulkContent = liveFragments
     ? buildLiveSectionContent(sectionList, liveFragments)
-    : prependHeadings(sectionList, await sectionReader.readAllSections(docPath));
+    : prependHeadings(sectionList, await sectionReader.readAllEffectiveSections(docPath));
 
   const involvementMeta = await buildSectionInvolvementMeta(docPath, headingPaths);
 

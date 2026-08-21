@@ -9,6 +9,7 @@
 import type { McpToolDefinition, McpToolCallResult } from "./protocol.js";
 import { makeToolResult, makeToolErrorResult } from "./protocol.js";
 import type { AuthenticatedWriter } from "../auth/context.js";
+import type { ActionResult } from "../monitoring/activity-log.js";
 import type { WsServerEvent } from "../types/shared.js";
 import { ProposalLockConflictError } from "../domain/proposal-fsm-locks.js";
 
@@ -199,21 +200,19 @@ export class ToolRegistry {
         agentEventLog.append(ctx.writer, { kind: "tool_call", tool: name });
 
         // Persistent activity log — append per-call metadata for JSONL persistence
-        if (ctx.session.sessionId) {
-          const { activityLog } = await import("../monitoring/activity-log.js");
-          const metadata: Record<string, unknown> = {};
-          if (typeof args.doc_path === "string") metadata.doc_path = args.doc_path;
-          if (Array.isArray(args.heading_path)) metadata.heading_path = args.heading_path;
-          if (Array.isArray(args.sections)) metadata.sections_count = args.sections.length;
-          if (typeof args.content === "string") metadata.content_chars = args.content.length;
-          activityLog.record(
-            ctx.session.sessionId,
-            ctx.writer.id,
-            ctx.writer.displayName,
-            name,
-            metadata,
-          );
-        }
+        const outcome: ActionResult = isBlockedResult(result)
+          ? "blocked"
+          : result.isError === true
+            ? "error"
+            : "ok";
+        await recordAgentMcpActivity(
+          ctx.writer,
+          ctx.session,
+          name,
+          buildMcpActivityMetadata(args),
+          outcome,
+          outcome === "error" ? extractToolResultErrorText(result) : undefined,
+        );
       }
       return result;
     } catch (error) {
@@ -222,8 +221,23 @@ export class ToolRegistry {
       // structured `lock_conflicts[]` (each with its own prose) via the Area M
       // blocked shaper — never a bare code, never just a stack.
       if (error instanceof ProposalLockConflictError) {
+        await recordAgentMcpActivity(
+          ctx.writer,
+          ctx.session,
+          name,
+          buildMcpActivityMetadata(args),
+          "blocked",
+        );
         return jsonBlockedToolResult(error.result.message, { lock_conflicts: error.result.conflicts });
       }
+      await recordAgentMcpActivity(
+        ctx.writer,
+        ctx.session,
+        name,
+        buildMcpActivityMetadata(args),
+        "error",
+        error instanceof Error ? error.message : String(error),
+      );
       // Per CLAUDE.md: never hide errors — expose full stack trace
       const message = error instanceof Error
         ? error.stack ?? error.message
@@ -231,6 +245,46 @@ export class ToolRegistry {
       return makeToolErrorResult(message);
     }
   }
+}
+
+export function buildMcpActivityMetadata(args: Record<string, unknown>): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  if (typeof args.doc_path === "string") metadata.doc_path = args.doc_path;
+  if (Array.isArray(args.heading_path)) metadata.heading_path = args.heading_path;
+  if (Array.isArray(args.sections)) metadata.sections_count = args.sections.length;
+  if (typeof args.content === "string") metadata.content_chars = args.content.length;
+  return metadata;
+}
+
+const MAX_RECORDED_ERROR_CHARS = 500;
+
+export function extractToolResultErrorText(result: McpToolCallResult): string {
+  return result.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n")
+    .slice(0, MAX_RECORDED_ERROR_CHARS);
+}
+
+export async function recordAgentMcpActivity(
+  writer: AuthenticatedWriter,
+  session: McpSession,
+  method: string,
+  metadata: Record<string, unknown>,
+  result: ActionResult,
+  errorMessage?: string,
+): Promise<void> {
+  if (writer.type !== "agent" || !session.sessionId) return;
+  const { activityLog } = await import("../monitoring/activity-log.js");
+  activityLog.record(
+    session.sessionId,
+    writer.id,
+    writer.displayName,
+    method,
+    metadata,
+    result,
+    errorMessage,
+  );
 }
 
 /**
@@ -265,9 +319,17 @@ export function jsonBlockedToolResult(
   message: string,
   detail: Record<string, unknown>,
 ): McpToolCallResult {
-  return jsonToolResult({
+  const result = jsonToolResult({
     outcome: "blocked",
     message,
     ...detail,
   });
+  blockedResults.add(result);
+  return result;
+}
+
+const blockedResults = new WeakSet<McpToolCallResult>();
+
+export function isBlockedResult(result: McpToolCallResult): boolean {
+  return blockedResults.has(result);
 }

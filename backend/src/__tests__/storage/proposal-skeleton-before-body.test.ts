@@ -50,7 +50,7 @@ async function bodyFilesOnDisk(proposalId: string): Promise<string[]> {
 /** The section files DECLARED by the effective proposal skeleton. */
 async function declaredSectionFiles(proposalId: string): Promise<string[]> {
   const reader = ProposalReader.open(proposalId, "pending");
-  const list = await reader.getSectionList(DOC);
+  const list = await reader.listEffectiveSections(DOC);
   return list.map((s) => s.sectionFile).sort();
 }
 
@@ -80,7 +80,7 @@ describe("skeleton-before-body invariants (item 32)", () => {
     });
 
     const before = await declaredSectionFiles(id);
-    const bFile = (await ProposalReader.open(id, "pending").getSectionList(DOC))
+    const bFile = (await ProposalReader.open(id, "pending").listEffectiveSections(DOC))
       .find((s) => s.heading === "Section B")?.sectionFile;
     expect(bFile).toBeTruthy();
     expect(before).toContain(bFile);

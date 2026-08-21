@@ -70,7 +70,7 @@ describe("CRDT materialization via the Proposal subsystem (item 34)", () => {
     // API — the edit landed in the inprogress proposal, not canonical.
     const reader = ProposalReader.open(proposalId!, "inprogress");
     expect(await reader.getDocumentState(SAMPLE_DOC_PATH)).toBe("live");
-    const overviewBody = await reader.readSection(SAMPLE_DOC_PATH, ["Overview"]);
+    const overviewBody = await reader.readEffectiveSection(SAMPLE_DOC_PATH, ["Overview"]);
     expect(overviewBody).toContain("i34 overview snapshot edit");
 
     // The proposal manifest claims the Overview section it materialized.

@@ -242,10 +242,10 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     );
 
     const reader = ProposalReader.open(proposalId, "inprogress");
-    expect(await reader.readSection(DOC, [])).toContain("Existing preamble");
-    expect(await reader.readSection(DOC, [])).toContain("Intro body");
-    expect(await reader.readSection(DOC, ["Child"])).toContain("Child body");
-    expect(await reader.readSection(DOC, ["Child", "Grandchild"])).toContain("Grandchild body");
+    expect(await reader.readEffectiveSection(DOC, [])).toContain("Existing preamble");
+    expect(await reader.readEffectiveSection(DOC, [])).toContain("Intro body");
+    expect(await reader.readEffectiveSection(DOC, ["Child"])).toContain("Child body");
+    expect(await reader.readEffectiveSection(DOC, ["Child", "Grandchild"])).toContain("Grandchild body");
   });
 
   it("9: empty nested first H1 demotion dissolves BFH and hands topology to the first child", async () => {
@@ -334,15 +334,15 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     // bodies at the NEW paths.
     const proposalId = session.generator.getCurrentProposalId()!;
     const reader = ProposalReader.open(proposalId, "inprogress");
-    const list = await reader.getSectionList(DOC);
+    const list = await reader.listEffectiveSections(DOC);
     const proposalChild = list.find((e) => e.heading === "Child")!;
     const proposalGrand = list.find((e) => e.heading === "Grandchild")!;
     expect(proposalChild.headingLevel).toBe(2);
     expect(proposalGrand.headingLevel).toBe(3);
     expect(proposalChild.headingPath).toEqual(["Child"]);
     expect(proposalGrand.headingPath).toEqual(["Child", "Grandchild"]);
-    expect(await reader.readSection(DOC, ["Child"])).toContain("Child body");
-    expect(await reader.readSection(DOC, ["Child", "Grandchild"])).toContain("Grandchild body");
+    expect(await reader.readEffectiveSection(DOC, ["Child"])).toContain("Child body");
+    expect(await reader.readEffectiveSection(DOC, ["Child", "Grandchild"])).toContain("Grandchild body");
   });
 
   it("12: publish after empty nested demotion reconstructs the settled outline (no Intro, no BFH, levels preserved)", async () => {
