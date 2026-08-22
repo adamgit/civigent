@@ -93,7 +93,7 @@ describe("Area J — structural/filesystem delete stage while a DocSession exist
   it("structural delete_document stages a proposal draft despite the live DocSession", async () => {
     const createRes = await callMcpTool("/mcp/tier3", tier3SessionId, "create_proposal", {
       intent: "structural delete while live session exists",
-      sections: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"], content: "x\n" }],
+      sections: [],
     });
     tier3SessionId = createRes.sessionId;
     const proposalId = JSON.parse(createRes.body.result.content[0].text).proposal_id;

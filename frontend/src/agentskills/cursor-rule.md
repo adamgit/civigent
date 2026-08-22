@@ -46,12 +46,12 @@ Read a section from a proposal:
 
 ### Quick write (2 calls):
 
-1. `{{tool:createProposal}}` — provide `intent` (string) and `sections` (non-empty array of `{doc_path, heading_path, content, justification?}`). Content is written immediately into the proposal. Keep this call small when possible — very large tool-call JSON is a common client-side failure mode.
+1. `{{tool:createProposal}}` — provide `intent` (string) and `sections` (array of `{doc_path, heading_path, content, justification?}`; may be empty). Content, when given, is written immediately into the proposal. An empty `sections` array opens an intent-only draft for later structural tools or `write_proposal_section`. A draft that still claims nothing cannot be published. Keep this call small when possible — very large tool-call JSON is a common client-side failure mode.
 2. `{{tool:publishProposal}}` — runs the publish gates and either publishes (returns `committed_head`) or reports that the proposal cannot be published yet, with a per-target indication of which sections are unavailable and a human-readable explanation of why.
 
 ### Incremental write (preferred for large content):
 
-1. `{{tool:createProposal}}` — create a draft with `intent` and at least one section (a small first section is fine).
+1. `{{tool:createProposal}}` — create a draft with `intent`. `sections` may be empty when the next calls are structural tools; otherwise include at least one section (a small first section is fine).
 2. `{{tool:writeProposalSection}}` — add or update section content within that same draft. Repeat as needed. Prefer this over packing a huge body into `create_proposal`.
 3. `{{tool:readProposalSection}}` or `{{tool:readProposal}}` — inspect the proposal content you just wrote.
 4. `{{tool:publishProposal}}` — same as above.

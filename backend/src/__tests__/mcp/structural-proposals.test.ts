@@ -73,22 +73,19 @@ async function initMcpSession(token: string = ctx.agentToken): Promise<void> {
   }
 }
 
-// Helper to create a proposal via REST
+// Helper to create an intent-only draft via REST — no content claim.
+// Structural tools attach later; a dummy write_section would force the
+// content-plus-structural mix this suite is not testing.
 async function createProposal(
   intent: string,
   token: string = ctx.agentToken,
-  docPath: string = SAMPLE_DOC_PATH,
 ): Promise<string> {
   const res = await request(ctx.app)
     .post("/api/proposals?replace=true")
     .set("Authorization", token)
     .send({
       intent,
-      sections: [{
-        doc_path: docPath,
-        heading_path: ["Overview"],
-        content: "placeholder",
-      }],
+      sections: [],
     });
 
   expect(res.status).toBeGreaterThanOrEqual(200);
@@ -200,7 +197,7 @@ describe("structural tools via proposals", () => {
     it("publishes a claimed-but-absent deletion through publish_proposal", async () => {
       const docPath = "/ops/delete-publish-canary.md";
       await createSampleDocument(ctx.dataCtx.rootDir, docPath);
-      const proposalId = await createProposal("Delete section test", ctx.agentToken, docPath);
+      const proposalId = await createProposal("Delete section test");
       const originalSkeleton = await readCanonicalSkeleton(docPath);
 
       const res = await callMcpTool("delete_section", {
@@ -235,7 +232,7 @@ describe("structural tools via proposals", () => {
     it("read_proposal represents a real reparent as old-absent and new-present", async () => {
       const docPath = "/ops/move-read-canary.md";
       await createSampleDocument(ctx.dataCtx.rootDir, docPath);
-      const proposalId = await createProposal("Move section test", ctx.agentToken, docPath);
+      const proposalId = await createProposal("Move section test");
       const originalSkeleton = await readCanonicalSkeleton(docPath);
 
       const res = await callMcpTool("move_section", {
@@ -358,7 +355,7 @@ describe("structural tools via proposals", () => {
       // overlay looks right. Isolated doc so other commit tests cannot shift the baseline.
       const docPath = "/ops/placement-before.md";
       await createSampleDocument(ctx.dataCtx.rootDir, docPath);
-      const proposalId = await createProposal("Place Intro before Overview", ctx.agentToken, docPath);
+      const proposalId = await createProposal("Place Intro before Overview");
 
       const createRes = await callMcpTool("create_section", {
         proposal_id: proposalId,
@@ -386,7 +383,7 @@ describe("structural tools via proposals", () => {
     it("reorder_section order survives commit to canonical", async () => {
       const docPath = "/ops/reorder-siblings.md";
       await createSampleDocument(ctx.dataCtx.rootDir, docPath);
-      const proposalId = await createProposal("Reorder Timeline before Overview", ctx.agentToken, docPath);
+      const proposalId = await createProposal("Reorder Timeline before Overview");
 
       const reorderRes = await callMcpTool("reorder_section", {
         proposal_id: proposalId,

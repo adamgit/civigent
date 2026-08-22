@@ -66,7 +66,7 @@ export type CreateProposalValidation =
   | { ok: false; status: number; message: string }
   | { ok: true };
 
-/** Validate an agent create-proposal request. Humans may start with empty sections. */
+/** Validate an agent create-proposal request. Empty sections are a legal intent-only draft. */
 export function validateCreateProposal(writerType: "human" | "agent", body: CreateProposalRequest): CreateProposalValidation {
   const intent = typeof body.intent === "string" ? body.intent : "";
   if (writerType === "agent") {
@@ -76,19 +76,9 @@ export function validateCreateProposal(writerType: "human" | "agent", body: Crea
     if (!Array.isArray(body.sections)) {
       return { ok: false, status: 400, message: "sections[] is required for agent proposals." };
     }
-    // A CreateProposalRequest cannot carry a document target, so an agent request
-    // with zero sections claims and changes nothing — a known-uncommittable draft.
-    // Reject it here rather than creating a draft that only fails later at commit.
-    if (body.sections.length === 0) {
-      return {
-        ok: false,
-        status: 400,
-        message:
-          "sections[] must claim at least one section: an agent proposal that claims nothing " +
-          "cannot be committed. Document-level operations (create/delete/rename) are not created " +
-          "through this endpoint.",
-      };
-    }
+    // An empty sections array is an intent-only draft: structural tools
+    // (delete/move/rename/create section or document) attach later. A draft that
+    // still claims nothing is refused at commit (`transitionToCommitting`), not here.
     for (const section of body.sections) {
       if (!section.doc_path || !Array.isArray(section.heading_path) || typeof section.content !== "string") {
         return { ok: false, status: 400, message: "Each section must have doc_path, heading_path, and content." };

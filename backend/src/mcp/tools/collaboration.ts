@@ -308,8 +308,8 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
   }> | undefined;
 
   if (!intent) return makeToolErrorResult("Missing required parameter: intent");
-  if (!Array.isArray(rawSections) || rawSections.length === 0) {
-    return makeToolErrorResult("Missing required parameter: sections (non-empty array)");
+  if (!Array.isArray(rawSections)) {
+    return makeToolErrorResult("Missing required parameter: sections (array, may be empty)");
   }
 
   const sections: Array<{
@@ -899,7 +899,10 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
     {
       name: "create_proposal",
       description:
-        "Create a new proposal with intent and section changes. The proposal starts in draft status. " +
+        "Create a new proposal with intent and optional section content writes. The proposal starts in draft status. " +
+        "sections may be empty: an intent-only draft is a legal handle for later structural tools " +
+        "(create_section, delete_section, move_section, rename_section, delete_document, rename_document) " +
+        "or write_proposal_section. A draft that still claims nothing cannot be published. " +
         "For large edits, prefer a SMALL create_proposal (one or a few sections) followed by repeated " +
         "write_proposal_section calls on the returned proposal_id, rather than one create_proposal " +
         "carrying a giant sections payload — big tool-call JSON is error-prone and hard to retry. " +
@@ -920,7 +923,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
               },
               required: ["doc_path", "heading_path", "content"],
             },
-            description: "Sections to create or overwrite",
+            description: "Sections to create or overwrite. Empty is allowed: open an intent-only draft, then attach structural tools or write_proposal_section. A still-empty draft cannot be published.",
           },
           replace: {
             type: "boolean",

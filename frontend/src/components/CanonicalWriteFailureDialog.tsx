@@ -11,7 +11,7 @@
  * carries the server's full error text (stack included) verbatim.
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type JSX } from "react";
 
 export interface CanonicalWriteFailureDialogProps {
   /** What the user asked for, e.g. "Delete document". Names the failed operation. */

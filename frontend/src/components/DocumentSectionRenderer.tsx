@@ -279,7 +279,7 @@ export function DocumentSectionRenderer({
               >
                 {proposalMode ? (
                   <MilkdownEditor
-                    ref={(handle) => onSetEditorRef(fk, handle)}
+                    ref={(handle) => { onSetEditorRef(fk, handle); }}
                     markdown={displayMarkdown}
                     userName={resolveWriterId()}
                     readOnly={!isFocused || unavailableForEdit || publishPaused || crdtDegraded || !canEditProposalContent}
@@ -296,7 +296,7 @@ export function DocumentSectionRenderer({
                   />
                 ) : liveBinding ? (
                   <MilkdownEditor
-                    ref={(handle) => onSetEditorRef(fk, handle)}
+                    ref={(handle) => { onSetEditorRef(fk, handle); }}
                     binding={liveBinding}
                     userName={resolveWriterId()}
                     readOnly={!isFocused || unavailableForEdit || publishPaused || crdtDegraded}

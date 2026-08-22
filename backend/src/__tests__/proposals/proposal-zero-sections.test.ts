@@ -16,27 +16,24 @@ describe("Proposals with zero sections — document-level operations", () => {
     await ctx.cleanup();
   });
 
-  // A zero-section agent proposal carries zero targets (the create API cannot
-  // attach a document target), so it claims and changes nothing: a known-
-  // uncommittable draft. It is rejected at the REQUEST boundary (400) rather than
-  // created and later failed at commit. Zero-section operations are valid ONLY
-  // when they carry an explicit document target — see the PUT-create and
-  // DELETE-tombstone cases below, which auto-commit proposals with document
-  // targets and succeed.
-  it("agent proposal with zero sections is rejected at the create boundary (400)", async () => {
+  // A zero-section agent create is an intent-only draft: structural tools attach
+  // later. Commit still refuses a draft that claims nothing (`transitionToCommitting`).
+  // Zero-section operations that auto-commit (PUT-create, DELETE-tombstone below)
+  // succeed because they carry an explicit document target.
+  it("agent proposal with zero sections is accepted as an intent-only draft", async () => {
     const agentToken = authFor("zero-sec-agent-1", "agent");
 
     const res = await request(ctx.app)
       .post("/api/proposals")
       .set("Authorization", agentToken)
       .send({
-        intent: "Operation that claims nothing",
+        intent: "Operation that claims nothing yet",
         sections: [],
       });
 
-    // The uncommittable draft is never created: fail fast at the request boundary.
-    expect(res.status).toBe(400);
-    expect(res.body.proposal_id).toBeUndefined();
+    expect(res.status).toBe(201);
+    expect(res.body.proposal_id).toBeDefined();
+    expect(res.body.status).toBe("draft");
   });
 
   it("PUT /documents creates live-empty doc with zero sections via auto-committed proposal", async () => {

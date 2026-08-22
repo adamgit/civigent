@@ -13,6 +13,7 @@
  * the animation from full opacity).
  */
 
+import type { JSX } from "react";
 import type {
   DocumentPresenceModel,
   PresenceBadge as PresenceBadgeModel,

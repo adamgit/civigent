@@ -11,7 +11,7 @@
  * the title line when space allows, and drops it underneath for long titles.
  */
 
-import { useEffect, useState, type RefObject } from "react";
+import { useEffect, useState, type JSX, type RefObject } from "react";
 import type { DocumentActivityEvent } from "../types/shared.js";
 import type { DocumentPresenceModel } from "../presence/document-presence-model";
 import { DocumentPresenceActivity } from "./DocumentPresenceActivity";

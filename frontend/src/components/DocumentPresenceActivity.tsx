@@ -7,6 +7,7 @@
  * ("you and Sam viewing", "Nina edited 8s ago").
  */
 
+import type { JSX } from "react";
 import type { DocumentActivityEvent } from "../types/shared.js";
 import {
   buildDocumentPresenceActivityItems,

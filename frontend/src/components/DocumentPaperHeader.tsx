@@ -6,7 +6,7 @@
  * sibling is the compact bar that pins when this block scrolls out of view.
  */
 
-import type { Ref } from "react";
+import type { JSX, Ref } from "react";
 import type { DocumentActivityEvent } from "../types/shared.js";
 import type { DocumentPresenceModel } from "../presence/document-presence-model";
 import { DocumentPresenceActivity } from "./DocumentPresenceActivity";

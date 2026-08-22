@@ -74,10 +74,9 @@ describe("POST /api/proposals — create proposal", () => {
     expect(res.status).toBe(400);
   });
 
-  it("rejects an empty sections array for agent proposals at the create boundary (400)", async () => {
-    // A CreateProposalRequest cannot carry a document target, so an agent request
-    // with zero sections claims nothing and is uncommittable — refused at create,
-    // not created as a draft that only fails later at commit.
+  it("accepts an empty sections array as an intent-only agent draft", async () => {
+    // Empty create is a legal handle for later structural tools. A draft that
+    // still claims nothing is refused at commit, not here.
     const uniqueAgentToken = authFor("empty-sec-agent", "agent");
     const res = await request(ctx.app)
       .post("/api/proposals")
@@ -87,8 +86,9 @@ describe("POST /api/proposals — create proposal", () => {
         sections: [],
       });
 
-    expect(res.status).toBe(400);
-    expect(res.body.proposal_id).toBeUndefined();
+    expect(res.status).toBe(201);
+    expect(res.body.proposal_id).toBeDefined();
+    expect(res.body.status).toBe("draft");
   });
 
   it("returns 400 if section missing doc_path", async () => {
