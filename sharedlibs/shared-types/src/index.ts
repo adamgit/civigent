@@ -2271,6 +2271,9 @@ export interface AuthUser {
   displayName: string;
   email?: string;
   is_admin: boolean;
+  auth_source?: "share";
+  scope_doc?: string;
+  scope_action?: "read" | "write";
 }
 
 export interface SessionInfoResponse {

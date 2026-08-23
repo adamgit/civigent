@@ -21,6 +21,7 @@ import {
   type ConfiguredGitBackup,
 } from "./git-backup-config.js";
 import type { GitBackupStatusCheck } from "../types/shared.js";
+import { gitErrorMeansRevisionResolvesToNoCommit } from "../storage/git-error-meanings.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -233,8 +234,7 @@ export async function readLocalHeadSha(
 ): Promise<string | null> {
   const result = await backupGitExec(["rev-parse", "HEAD"], config, dataRoot);
   if (result.ok) return result.stdout || null;
-  const msg = result.message.toLowerCase();
-  if (msg.includes("unknown revision") || msg.includes("ambiguous argument") || msg.includes("bad revision")) {
+  if (gitErrorMeansRevisionResolvesToNoCommit(result.message)) {
     return null;
   }
   throw new Error(`git rev-parse HEAD failed: ${result.message}`);
@@ -264,8 +264,7 @@ export async function countLocalCommits(
     const n = Number(result.stdout);
     return Number.isFinite(n) && n >= 0 ? n : 0;
   }
-  const msg = result.message.toLowerCase();
-  if (msg.includes("unknown revision") || msg.includes("ambiguous argument") || msg.includes("bad revision")) {
+  if (gitErrorMeansRevisionResolvesToNoCommit(result.message)) {
     return 0;
   }
   throw new Error(`git rev-list --count HEAD failed: ${result.message}`);

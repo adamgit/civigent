@@ -15,10 +15,11 @@
  */
 
 import { spawn } from "node:child_process";
-import readline from "node:readline";
 import path from "node:path";
 import { SectionRef } from "../domain/section-ref.js";
 import { getContentRoot, getDataRoot } from "./data-root.js";
+import { readNulSeparatedFields } from "./git-repo.js";
+import { gitErrorMeansRevisionResolvesToNoCommit } from "./git-error-meanings.js";
 import { resolveHeadingPath } from "./heading-resolver.js";
 import { ContentLayer } from "./content-layer.js";
 import { pathExists } from "./fs-primitives.js";
@@ -70,10 +71,11 @@ export async function readDocSectionCommitInfo(
       "log",
       "--format=COMMIT_%at_%H%x00%an%x00%ae%x00%(trailers:key=Writer,valueonly,separator=%x2c)%x00%(trailers:key=Writer-Type,valueonly,separator=%x2c)%x00%(trailers:key=Writer-Display-Name,valueonly,separator=%x2c)",
       "--name-only",
+      "-z",
       "--",
       relSectionsDir + "/",
     ],
-    { cwd: dataRoot, stdio: ["ignore", "pipe", "ignore"] },
+    { cwd: dataRoot, stdio: ["ignore", "pipe", "pipe"] },
   );
 
   // Capture spawn-level failure (e.g. git missing) immediately — an unhandled
@@ -83,28 +85,55 @@ export async function readDocSectionCommitInfo(
     spawnError = err instanceof Error ? err : new Error(String(err));
   });
 
-  const rl = readline.createInterface({ input: proc.stdout! });
+  const stderrChunks: string[] = [];
+  proc.stderr!.on("data", (chunk: Buffer | string) => {
+    stderrChunks.push(chunk.toString());
+  });
+
+  // Under `-z` each commit is: COMMIT_<unix-seconds>_<sha> NUL <author-name> NUL
+  // <author-email> NUL <Writer> NUL <Writer-Type> NUL <Writer-Display-Name> NUL,
+  // then one NUL-terminated raw path per changed file (the first carrying the
+  // newline that separated format output from diff output). Paths are raw bytes,
+  // so a name containing a newline, tab, quote or backslash stays intact.
+  const fields = readNulSeparatedFields(proc.stdout!);
+  const nextField = async (): Promise<string | null> => {
+    const next = await fields.next();
+    return next.done ? null : next.value;
+  };
+  const requireHeaderField = async (name: string): Promise<string> => {
+    const field = await nextField();
+    if (field === null) {
+      throw new Error(
+        `git log produced a truncated commit header (missing ${name}) for "${relSectionsDir}"`,
+      );
+    }
+    return field;
+  };
 
   let currentTs = 0;
   let currentSha = "";
   let currentAuthor = "";
   let currentWriterId = "";
   let currentWriterType: AttributionWriterType = "unknown";
+  let sawCommitHeader = false;
 
   try {
-    for await (const line of rl) {
-      if (line.startsWith("COMMIT_")) {
-        // Format:
-        // COMMIT_<unix-seconds>_<sha>\0<author-name>\0<author-email>\0<Writer>\0<Writer-Type>\0<Writer-Display-Name>
-        const payload = line.slice("COMMIT_".length);
+    for (;;) {
+      const rawField = await nextField();
+      if (rawField === null) break;
+      const field = rawField.replace(/^[\r\n]+/, "");
+      if (field === "") continue;
+
+      if (field.startsWith("COMMIT_")) {
+        const payload = field.slice("COMMIT_".length);
         const tsSep = payload.indexOf("_");
         currentTs = parseInt(payload.slice(0, tsSep), 10) * 1000;
-        const fields = payload.slice(tsSep + 1).split("\0");
-        currentSha = fields[0] ?? "";
-        const authorFromGit = fields[1] ?? "";
-        const writerTrailer = (fields[3] ?? "").trim();
-        const writerTypeTrailer = (fields[4] ?? "").trim().toLowerCase();
-        const displayNameTrailer = (fields[5] ?? "").trim();
+        currentSha = payload.slice(tsSep + 1);
+        const authorFromGit = await requireHeaderField("author name");
+        await requireHeaderField("author email");
+        const writerTrailer = (await requireHeaderField("Writer trailer")).trim();
+        const writerTypeTrailer = (await requireHeaderField("Writer-Type trailer")).trim().toLowerCase();
+        const displayNameTrailer = (await requireHeaderField("Writer-Display-Name trailer")).trim();
         // Multi-valued trailers (comma-joined by git separator=%x2c) are malformed —
         // our commit code writes exactly one of each trailer per commit.
         // Treat comma-containing values as integrity errors → "unknown".
@@ -118,29 +147,40 @@ export async function readDocSectionCommitInfo(
           displayNameTrailer && !displayNameTrailer.includes(",")
             ? displayNameTrailer
             : authorFromGit;
-      } else if (line.trim()) {
-        // File path — keep only first occurrence (most recent commit)
-        if (!result.has(line)) {
-          result.set(line, {
-            timestampMs: currentTs,
-            sha: currentSha,
-            authorName: currentAuthor,
-            writerId: currentWriterId,
-            writerType: currentWriterType,
-          });
-        }
+        sawCommitHeader = true;
+        continue;
+      }
+
+      if (!sawCommitHeader) {
+        throw new Error(
+          `git log produced a changed-path record with no preceding commit header for "${relSectionsDir}"`,
+        );
+      }
+      // File path — keep only first occurrence (most recent commit)
+      if (!result.has(field)) {
+        result.set(field, {
+          timestampMs: currentTs,
+          sha: currentSha,
+          authorName: currentAuthor,
+          writerId: currentWriterId,
+          writerType: currentWriterType,
+        });
       }
     }
-  } catch {
-    // readline can throw if process is killed mid-stream — that's expected
+  } catch (error) {
+    throw new Error(
+      `git log output could not be read for "${relSectionsDir}": ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
   }
 
-  // Wait for process to exit; SIGTERM from our kill() is OK
-  await new Promise<void>((resolve) => {
-    proc.on("close", () => resolve());
-    proc.on("error", () => resolve());
+  const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    proc.on("close", (code, signal) => resolve({ code, signal }));
+    proc.on("error", () => resolve({ code: proc.exitCode, signal: proc.signalCode }));
     // If already exited, 'close' fires immediately
-    if (proc.exitCode !== null || proc.signalCode !== null) resolve();
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      resolve({ code: proc.exitCode, signal: proc.signalCode });
+    }
   });
 
   if (spawnError) {
@@ -148,6 +188,15 @@ export async function readDocSectionCommitInfo(
       `git log spawn failed for "${relSectionsDir}": ${(spawnError as Error).message}`,
       { cause: spawnError },
     );
+  }
+
+  if (exit.code !== 0) {
+    const stderrText = stderrChunks.join("").trim();
+    if (!gitErrorMeansRevisionResolvesToNoCommit(stderrText)) {
+      throw new Error(
+        `git log failed for "${relSectionsDir}" (${exit.signal !== null ? `signal ${exit.signal}` : `exit code ${exit.code}`}): ${stderrText || "no stderr output"}`,
+      );
+    }
   }
 
   return result;

@@ -19,10 +19,16 @@ import type {
 import {
   sendApiError,
   requireAuthenticatedWriter,
+  refuseScopedWriter,
   requireDocReadPermission,
   checkWritePermission,
   docPathParamOf,
 } from "./middleware.js";
+import { resolveAuthenticatedWriter } from "../../auth/context.js";
+import {
+  proposalTargetDocPathForDisplay,
+  proposalSectionDocPathForDisplay,
+} from "../../types/shared.js";
 import {
   isProposalStatus,
   listProposalsForStatusFilter,
@@ -113,6 +119,7 @@ export function registerProposalRoutes(
   // GET /api/proposals — List proposals
   router.get("/proposals", async (req, res, next) => {
     try {
+      if (refuseScopedWriter(resolveAuthenticatedWriter(req), res)) return;
       const statusFilterRaw = req.query.status;
       if (statusFilterRaw !== undefined && !isProposalStatus(statusFilterRaw)) {
         sendApiError(res, 400, "Invalid status filter.");
@@ -150,8 +157,9 @@ export function registerProposalRoutes(
   // GET /api/proposals/degraded — List degraded (quarantined) proposals only.
   // Registered BEFORE /proposals/:id so the literal path is not captured by the
   // :id param route. Scans only the degradable statuses (never full history).
-  router.get("/proposals/degraded", async (_req, res, next) => {
+  router.get("/proposals/degraded", async (req, res, next) => {
     try {
+      if (refuseScopedWriter(resolveAuthenticatedWriter(req), res)) return;
       const response = await listDegradedProposalsUseCase();
       res.json(response);
     } catch (error) {
@@ -163,6 +171,17 @@ export function registerProposalRoutes(
   router.get("/proposals/:id", async (req, res, next) => {
     try {
       const dto = await readProposalDto(req.params.id);
+      const scope = resolveAuthenticatedWriter(req)?.scope;
+      if (scope) {
+        const claimedDocPaths = new Set<string>([
+          ...dto.targets.map(proposalTargetDocPathForDisplay),
+          ...dto.sections.map(proposalSectionDocPathForDisplay),
+        ]);
+        if (!claimedDocPaths.has(scope.docPath)) {
+          sendApiError(res, 403, "This action is not available to shared-link sessions.");
+          return;
+        }
+      }
       const response: ReadProposalResponse = { proposal: dto };
       res.json(response);
     } catch (error) {

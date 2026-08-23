@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { SEARCH_MAX_RESULTS } from "../pages/search/search-request-defaults";
+import { docsRouteForStoredPath } from "../app/docs-location";
 
 const linkClass =
   "flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all";
@@ -178,6 +179,20 @@ interface SidebarNavLinksProps {
  * `footer` sits at the bottom of the nav (above the version line).
  */
 export function SidebarNavLinks({ variant, onOpenWsDiagnostics }: SidebarNavLinksProps) {
+  const currentUser = useCurrentUser();
+  if (currentUser?.auth_source === "share") {
+    if (variant !== "primary") return null;
+    const sharedDocRoute = docsRouteForStoredPath(currentUser.scope_doc);
+    if (!sharedDocRoute) return null;
+    return (
+      <nav className="px-2 pt-1 pb-2 flex flex-col gap-px border-b border-sidebar-border" aria-label="Primary">
+        <NavLink to={sharedDocRoute} icon={<>&#128196;</>}>
+          Shared document
+        </NavLink>
+      </nav>
+    );
+  }
+
   if (variant === "primary") {
     return (
       <nav className="px-2 pt-1 pb-2 flex flex-col gap-px border-b border-sidebar-border" aria-label="Primary">

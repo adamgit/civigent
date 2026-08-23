@@ -33,6 +33,11 @@ interface SectionHistoryList {
   versions: ListedVersion[];
 }
 
+// A document name outside ASCII puts non-ASCII bytes in the `.sections`
+// directory of every one of its body files, which is where git's default
+// path quoting bites.
+const NON_ASCII_DOC_PATH = "/ops/стратегия.md";
+
 let activeContext: TestServerContext | null = null;
 
 afterEach(async () => {
@@ -126,6 +131,28 @@ async function commitSectionBody(
   );
 }
 
+async function deleteSectionBodyAndCommit(
+  dataRoot: string,
+  docPath: string,
+  sectionFile: string,
+  message: string,
+): Promise<void> {
+  await rm(
+    path.join(dataRoot, "content", docPath.replace(/^\//, "") + ".sections", sectionFile),
+  );
+  await gitExec(["add", "-A", "content/"], dataRoot);
+  await gitExec(
+    [
+      "-c", "user.name=Test",
+      "-c", "user.email=test@test.local",
+      "commit",
+      "-m", message,
+      "--trailer", "Writer-Type: agent",
+    ],
+    dataRoot,
+  );
+}
+
 async function listOverviewHistory(
   callTool: (name: string, args: Record<string, unknown>) => Promise<McpCallResponse>,
   docPath = SAMPLE_DOC_PATH,
@@ -193,6 +220,88 @@ describe("MCP section history product canaries", () => {
 
     const secondList = await listOverviewHistory(callTool);
     expect(secondList.versions.slice(1).map((row) => row.version)).toEqual(existingHandles);
+  });
+
+  it("stops the lineage at a deletion, so no advertised version is unreadable or from the previous file at that path", async () => {
+    const { ctx, callTool } = await createInitializedServer();
+    await createSampleDocument(ctx.dataCtx.rootDir);
+    await commitSectionBody(
+      ctx.dataCtx.rootDir,
+      SAMPLE_DOC_PATH,
+      "overview.md",
+      "Content of the section that was later deleted.",
+      "edit before deletion",
+    );
+    await deleteSectionBodyAndCommit(
+      ctx.dataCtx.rootDir,
+      SAMPLE_DOC_PATH,
+      "overview.md",
+      "delete the overview body",
+    );
+    // A restore rewrites historical section files under their original names,
+    // so the same body path comes back holding unrelated content.
+    await commitSectionBody(
+      ctx.dataCtx.rootDir,
+      SAMPLE_DOC_PATH,
+      "overview.md",
+      "Content of the section that lives at this path now.",
+      "recreate the overview body",
+    );
+
+    const list = await listOverviewHistory(callTool);
+    expect(list.versions).toHaveLength(1);
+
+    // Every advertised handle must resolve to a stored body: a version whose
+    // blob does not exist at its commit breaks the stable-or-dead contract.
+    const bodies: string[] = [];
+    for (const row of list.versions) {
+      const read = await callTool("read_section_history", {
+        doc_path: SAMPLE_DOC_PATH,
+        heading_path: ["Overview"],
+        version: row.version,
+      });
+      bodies.push(expectSuccessfulResult(read));
+    }
+
+    expect(bodies[0]).toContain("Content of the section that lives at this path now.");
+    expect(bodies.join("\n")).not.toContain("Content of the section that was later deleted.");
+    expect(bodies.join("\n")).not.toContain(SAMPLE_SECTIONS.overview);
+  });
+
+  it("serves history for a document whose name is not ASCII", async () => {
+    const { ctx, callTool } = await createInitializedServer();
+    await createSampleDocument(ctx.dataCtx.rootDir, NON_ASCII_DOC_PATH);
+    await commitSectionBody(
+      ctx.dataCtx.rootDir,
+      NON_ASCII_DOC_PATH,
+      "overview.md",
+      "Первая версия обзора.",
+      "first overview version",
+    );
+    await commitSectionBody(
+      ctx.dataCtx.rootDir,
+      NON_ASCII_DOC_PATH,
+      "overview.md",
+      "Вторая версия обзора.",
+      "second overview version",
+    );
+
+    const list = await listOverviewHistory(callTool, NON_ASCII_DOC_PATH, ["Overview"]);
+    expect(list.versions).toHaveLength(3);
+
+    const newest = await callTool("read_section_history", {
+      doc_path: NON_ASCII_DOC_PATH,
+      heading_path: ["Overview"],
+      version: list.versions[0]!.version,
+    });
+    expect(expectSuccessfulResult(newest)).toContain("Вторая версия обзора.");
+
+    const oldest = await callTool("read_section_history", {
+      doc_path: NON_ASCII_DOC_PATH,
+      heading_path: ["Overview"],
+      version: list.versions[2]!.version,
+    });
+    expect(expectSuccessfulResult(oldest)).toContain(SAMPLE_SECTIONS.overview);
   });
 
   it("stops lineage at the current document boundary and rejects the old document handle", async () => {

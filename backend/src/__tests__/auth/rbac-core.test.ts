@@ -122,6 +122,34 @@ describe("RBAC Core — role-based permission check", () => {
       const denied = await checkDocPermission(null, "doc", "read");
       expect(denied).toBe(false);
     });
+
+    it("a scoped share writer is not authenticated for other documents", async () => {
+      await writeAuthFile("defaults.json", { read: "authenticated", write: "authenticated" });
+      invalidateCache();
+
+      const scopedWrite: AuthenticatedWriter = {
+        id: "human-share-1",
+        type: "human",
+        displayName: "Guest",
+        scope: {
+          docPath: "/shared.md",
+          action: "write",
+          grantJti: "jti-write",
+          grantExp: Math.floor(Date.now() / 1000) + 3600,
+        },
+      };
+      const scopedRead: AuthenticatedWriter = {
+        ...scopedWrite,
+        scope: { ...scopedWrite.scope!, action: "read", grantJti: "jti-read" },
+      };
+
+      expect(await checkDocPermission(scopedWrite, "/shared.md", "read")).toBe(true);
+      expect(await checkDocPermission(scopedWrite, "/shared.md", "write")).toBe(true);
+      expect(await checkDocPermission(scopedRead, "/shared.md", "read")).toBe(true);
+      expect(await checkDocPermission(scopedRead, "/shared.md", "write")).toBe(false);
+      expect(await checkDocPermission(scopedWrite, "/other.md", "read")).toBe(false);
+      expect(await checkDocPermission(scopedWrite, "/other.md", "write")).toBe(false);
+    });
   });
 
   // ── getDocWritePermission ─────────────────────────────────────────

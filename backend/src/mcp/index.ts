@@ -22,6 +22,7 @@ import { createMcpRouter } from "./transport.js";
 import { registerFilesystemTools, registerPlanChangesTool } from "./tools/filesystem.js";
 import { registerCollaborationTools } from "./tools/collaboration.js";
 import { registerStructuralTools } from "./tools/structural.js";
+import { registerSectionHistoryTools } from "./tools/section-history.js";
 import type { WsServerEvent } from "../types/shared.js";
 import express from "express";
 
@@ -32,7 +33,7 @@ export type McpTier = 1 | 2 | 3;
  *
  * tier 1 → registerFilesystemTools (read, write, list, delete, move)
  * tier 2 → registerFilesystemTools + registerPlanChangesTool
- * tier 3 → registerCollaborationTools + registerStructuralTools
+ * tier 3 → registerCollaborationTools + registerStructuralTools + registerSectionHistoryTools
  *
  * Usage:
  *   app.use("/mcp/tier1", createKnowledgeStoreMcpRouter({ tier: 1, onWsEvent }));
@@ -53,6 +54,7 @@ export function createKnowledgeStoreMcpRouter(options?: {
     // Tier 3: collaboration + structural tools
     registerCollaborationTools(registry);
     registerStructuralTools(registry);
+    registerSectionHistoryTools(registry);
   }
 
   const server = new McpServer({

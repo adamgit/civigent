@@ -791,7 +791,7 @@ export function AppLayout() {
             <SingleUserBrandMark />
           ) : (
             <span className="text-xs font-semibold text-sidebar-heading uppercase tracking-wide truncate min-w-0">
-              <a href="/">Civigent</a>
+              {currentUser?.auth_source === "share" ? "Civigent" : <a href="/">Civigent</a>}
             </span>
           )}
           <button

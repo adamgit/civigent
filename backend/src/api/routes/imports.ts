@@ -3,6 +3,7 @@ import type { WsServerEvent } from "../../types/shared.js";
 import {
   sendApiError,
   requireAuthenticatedWriter,
+  refuseScopedWriter,
   agentWritePolicyRouteBody,
 } from "./middleware.js";
 import {
@@ -87,6 +88,7 @@ export function registerImportRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
       if (writer.type !== "human") {
         sendApiError(res, 403, "Only human writers can create imports.");
         return;
@@ -117,6 +119,7 @@ export function registerImportRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
       if (writer.type !== "human") {
         sendApiError(res, 403, "Only human writers can upload import files.");
         return;
@@ -159,6 +162,7 @@ export function registerImportRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
       if (writer.type !== "human") {
         sendApiError(res, 403, "Only human writers can upload import files.");
         return;
@@ -200,6 +204,7 @@ export function registerImportRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
       res.json(await listImports());
     } catch (error) {
       next(error);
@@ -210,6 +215,7 @@ export function registerImportRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
 
       const importId = req.params.id;
       if (!(await stagingFolderExists(importId))) {
@@ -226,6 +232,7 @@ export function registerImportRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
       if (writer.type !== "human") {
         sendApiError(res, 403, "Only human writers can repair import files.");
         return;
@@ -269,6 +276,7 @@ export function registerImportRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
       if (writer.type !== "human") {
         sendApiError(res, 403, "Only human writers can commit imports.");
         return;
@@ -346,6 +354,7 @@ export function registerImportRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
       await removeImport(req.params.id);
       res.json({ ok: true });
     } catch (error) {

@@ -6,6 +6,7 @@ import {
   resolveAuthenticatedWriter,
   isSingleUserMode,
   requireAdmin,
+  isScopedWriter,
   type AuthenticatedWriter,
 } from "../../auth/context.js";
 import { checkDocPermission } from "../../auth/acl.js";
@@ -45,6 +46,14 @@ export function requireAuthenticatedWriter(req: Request, res: Response): Authent
     return null;
   }
   return writer;
+}
+
+export function refuseScopedWriter(writer: AuthenticatedWriter | null, res: Response): boolean {
+  if (isScopedWriter(writer)) {
+    sendApiError(res, 403, "This action is not available to shared-link sessions.");
+    return true;
+  }
+  return false;
 }
 
 /**

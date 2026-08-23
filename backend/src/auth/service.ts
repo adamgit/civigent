@@ -1,5 +1,12 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { decodeAndValidateToken, InvalidAuthTokenError, issueTokenPair, type IssuedAuthTokenPair } from "./tokens.js";
+import {
+  decodeAndValidateToken,
+  InvalidAuthTokenError,
+  issueTokenPair,
+  issueScopedTokenPair,
+  type IssuedAuthTokenPair,
+} from "./tokens.js";
+import { validateShareGrant } from "./share-grants.js";
 import { getSingleUserIdentity, isSingleUserMode, type AuthenticatedWriter } from "./context.js";
 import { hasAnyAdmin, grantAdmin } from "./acl.js";
 import { isOidcConfigured } from "./oauth-config.js";
@@ -312,6 +319,34 @@ export function exchangeRefreshToken(refreshToken: string): IssuedAuthTokenPair 
   if (claims.token_use !== "refresh") {
     throw new InvalidRefreshTokenError("unauthorized: invalid refresh token.");
   }
+  if (claims.auth_source === "share") {
+    if (
+      typeof claims.scope_doc !== "string" ||
+      (claims.scope_action !== "read" && claims.scope_action !== "write") ||
+      typeof claims.grant_jti !== "string" ||
+      typeof claims.grant_exp !== "number"
+    ) {
+      throw new InvalidRefreshTokenError("unauthorized: invalid refresh token.");
+    }
+    if (claims.grant_exp <= Math.floor(Date.now() / 1000)) {
+      throw new InvalidRefreshTokenError("unauthorized: share link has expired.");
+    }
+    return issueScopedTokenPair(
+      {
+        id: claims.sub,
+        type: claims.type,
+        displayName: claims.display_name,
+        ...(claims.description ? { description: claims.description } : {}),
+        ...(claims.email ? { email: claims.email } : {}),
+      },
+      {
+        docPath: claims.scope_doc,
+        action: claims.scope_action,
+        grantJti: claims.grant_jti,
+        grantExp: claims.grant_exp,
+      },
+    );
+  }
   return issueTokenPair({
     id: claims.sub,
     type: claims.type,
@@ -319,4 +354,43 @@ export function exchangeRefreshToken(refreshToken: string): IssuedAuthTokenPair 
     ...(claims.description ? { description: claims.description } : {}),
     ...(claims.email ? { email: claims.email } : {}),
   });
+}
+
+export class InvalidShareGrantError extends Error {}
+
+export function redeemShareGrant(
+  token: string,
+  name: string | undefined,
+): {
+  access_token: string;
+  refresh_token: string;
+  doc_path: string;
+  display_name: string;
+  grant_exp: number;
+} {
+  const grant = validateShareGrant(token);
+  if (!grant) {
+    throw new InvalidShareGrantError("unauthorized: this share link is invalid or has expired.");
+  }
+  const displayName = (name ?? "").trim() || "Guest";
+  const pair = issueScopedTokenPair(
+    {
+      id: `human-share-${randomUUID()}`,
+      type: "human",
+      displayName,
+    },
+    {
+      docPath: grant.doc_path,
+      action: grant.action,
+      grantJti: grant.jti,
+      grantExp: grant.exp,
+    },
+  );
+  return {
+    access_token: pair.access_token,
+    refresh_token: pair.refresh_token,
+    doc_path: grant.doc_path,
+    display_name: displayName,
+    grant_exp: grant.exp,
+  };
 }

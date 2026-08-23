@@ -1,6 +1,6 @@
 import { type Router } from "express";
 import { sendApiError } from "./middleware.js";
-import { getGitLog, getReadableGitLog, getGitDiff, isValidSha } from "../application/git.js";
+import { getGitLog, getReadableGitLog, getReadableGitDiff, isValidSha } from "../application/git.js";
 import {
   QueryParamError,
   optionalStringParam,
@@ -41,7 +41,7 @@ export function registerGitRoutes(router: Router): void {
         sendApiError(res, 400, "Invalid SHA format");
         return;
       }
-      const result = await getGitDiff(sha);
+      const result = await getReadableGitDiff(resolveAuthenticatedWriter(req), sha);
       res.json({ sha, ...result });
     } catch (error) {
       next(error);

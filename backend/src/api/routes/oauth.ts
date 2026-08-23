@@ -21,7 +21,7 @@ import {
   requiresHumanConsent,
   requiresClientSecretAtToken,
 } from "../../auth/oauth-config.js";
-import { resolveAuthenticatedWriter } from "../../auth/context.js";
+import { resolveAuthenticatedWriter, isScopedWriter } from "../../auth/context.js";
 import {
   mintAnonClientId,
   validateAnonClientId,
@@ -343,7 +343,7 @@ export function createOAuthRouter(): Router {
       const policy = getAgentAuthPolicy();
       if (requiresHumanConsent(policy)) {
         const writer = resolveAuthenticatedWriter(req, { requireExplicitAuth: true });
-        if (!writer || writer.type !== "human") {
+        if (!writer || writer.type !== "human" || isScopedWriter(writer)) {
           sendOAuthError(res, 401, "access_denied", "A signed-in human must approve this agent's access.");
           return;
         }

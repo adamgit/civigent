@@ -21,6 +21,7 @@ import { DEFAULT_AUTH_SECRET } from "./encoding.js";
 // ─── Lazy-initialized values ─────────────────────────────────────
 
 let _anonSalt: string | null = null;
+let _shareSalt: string | null = null;
 
 // ─── KS_EXTERNAL_HOSTNAME / public URL ───────────────────────────
 
@@ -142,6 +143,30 @@ export function getAgentAnonSalt(): string {
     `Anonymous agent registrations will not survive restart unless you set this explicitly.`,
   );
   return _anonSalt;
+}
+
+// ─── KS_SHARE_SALT ──────────────────────────────────────────────
+
+/**
+ * Get the HMAC key for signing share-link grants and scoped share sessions.
+ * Auto-generated if not set (logged to stdout, not persisted).
+ * Rotating it revokes every unused share link and every live share session.
+ */
+export function getShareSalt(): string {
+  if (_shareSalt) return _shareSalt;
+
+  const fromEnv = readEnvVar("KS_SHARE_SALT");
+  if (fromEnv) {
+    _shareSalt = fromEnv;
+    return _shareSalt;
+  }
+
+  _shareSalt = randomBytes(32).toString("hex");
+  console.log(
+    `KS_SHARE_SALT not set — auto-generated: ${_shareSalt}\n` +
+    `Share links and shared-link sessions will not survive restart unless you set this explicitly.`,
+  );
+  return _shareSalt;
 }
 
 // ─── KS_AGENT_AUTH_POLICY ────────────────────────────────────────
@@ -308,6 +333,7 @@ export function validateOAuthConfig(): void {
     );
   }
 
-  // Eagerly initialize the anon salt (logs if auto-generated)
+  // Eagerly initialize the anon and share salts (logs if auto-generated)
   getAgentAnonSalt();
+  getShareSalt();
 }

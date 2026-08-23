@@ -15,7 +15,7 @@ import express, { type Request, type Response } from "express";
 import { randomUUID } from "node:crypto";
 import { McpServer } from "./server.js";
 import type { McpSession } from "./tool-registry.js";
-import { resolveAuthenticatedWriter, type AuthenticatedWriter } from "../auth/context.js";
+import { resolveAuthenticatedWriter, isScopedWriter, type AuthenticatedWriter } from "../auth/context.js";
 import { getMCPPublicURL } from "../auth/oauth-config.js";
 import type { WsServerEvent } from "../types/shared.js";
 import { JSONRPC_ERRORS, makeErrorResponse } from "./protocol.js";
@@ -124,7 +124,7 @@ export function createMcpRouter(options: McpTransportOptions): express.Router {
     // The single-user human fallback must NOT apply here; without this, agents
     // that skip/fail OAuth silently inherit the human identity.
     const writer = resolveAuthenticatedWriter(req, { requireExplicitAuth: true });
-    if (!writer) {
+    if (!writer || isScopedWriter(writer)) {
       const resourceUrl = `${getMCPPublicURL(req)}/.well-known/oauth-protected-resource`;
       res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${resourceUrl}"`);
       res.status(401).json(
@@ -196,7 +196,7 @@ export function createMcpRouter(options: McpTransportOptions): express.Router {
     // unauthenticated caller gets an unambiguous 401 (same protected-resource
     // challenge as POST), never a false "session terminated" 204.
     const writer = resolveAuthenticatedWriter(req, { requireExplicitAuth: true });
-    if (!writer) {
+    if (!writer || isScopedWriter(writer)) {
       const resourceUrl = `${getMCPPublicURL(req)}/.well-known/oauth-protected-resource`;
       res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${resourceUrl}"`);
       res.status(401).json({ error: "Authentication required" });

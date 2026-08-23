@@ -60,6 +60,7 @@ import {
   useEditorSessionCommandsValue,
 } from "../contexts/EditorSessionCommandsContext";
 import { DocumentPaperHeader } from "../components/DocumentPaperHeader";
+import { ShareDocumentDialog } from "../components/ShareDocumentDialog";
 import { CanonicalWriteFailureDialog } from "../components/CanonicalWriteFailureDialog";
 import {
   DocumentPaperStickyHeader,
@@ -124,6 +125,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const [showHistory, setShowHistory] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [showOverwrite, setShowOverwrite] = useState(false);
+  const [showShareDialog, setShowShareDialog] = useState(false);
   const [loadDurationMs, setLoadDurationMs] = useState<number | null>(null);
   const loadStartedAtRef = useRef<number | null>(null);
 
@@ -464,6 +466,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     activity: documentActivitySnapshot,
     currentUser,
   });
+  const shareAvailable = currentUser?.auth_source !== "share" && layoutOutlet?.singleUser === false;
 
   const sectionUncommitted = useCallback(
     (fragmentKey: string): boolean => {
@@ -1029,6 +1032,10 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
         <AdminOverwriteMarkdownModal docPath={docPath} onClose={() => setShowOverwrite(false)} />
       )}
 
+      {showShareDialog && (
+        <ShareDocumentDialog docPath={docPath} onClose={() => setShowShareDialog(false)} />
+      )}
+
       {/* Origin-only CRDT live-edit rejection modal */}
       {sectionEditRejection && (
         <SectionEditRejectedModal
@@ -1036,6 +1043,15 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
           onDismiss={dismissSectionEditRejection}
         />
       )}
+
+      {currentUser?.auth_source === "share" ? (
+        <div
+          className="px-5 py-2 text-xs border-b border-[rgba(0,0,0,0.08)] bg-accent-light text-accent-text"
+          data-testid="shared-document-banner"
+        >
+          You're viewing a shared document as {currentUser.displayName}.
+        </div>
+      ) : null}
 
       {/* Canvas scroll area — min-h-0 so THIS is the scrollport sticky math uses */}
       <div
@@ -1061,6 +1077,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
                 renameError={renameError}
                 pathCopied={pathCopied}
                 rootRef={paperHeaderRef}
+                onShare={shareAvailable ? () => setShowShareDialog(true) : undefined}
                 onRenameValueChange={setRenameValue}
                 onStartRename={() => { setRenameValue(docPath); setRenaming(true); }}
                 onCancelRename={() => { setRenaming(false); setRenameError(null); }}

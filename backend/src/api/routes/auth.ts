@@ -1,14 +1,21 @@
 import { type Request, type Response, type Router } from "express";
 import type { AuthMethod, SessionInfoResponse } from "../../types/shared.js";
+import { DocPath } from "../../types/shared.js";
 import { isSingleUserMode, resolveAuthenticatedWriter } from "../../auth/context.js";
 import { isAdmin } from "../../auth/acl.js";
-import { listAuthMethods, buildOidcIdentity, isBootstrapAvailable, redeemBootstrapCode, exchangeRefreshToken, loginHuman, InvalidCredentialsError } from "../../auth/service.js";
+import { listAuthMethods, buildOidcIdentity, isBootstrapAvailable, redeemBootstrapCode, exchangeRefreshToken, loginHuman, InvalidCredentialsError, redeemShareGrant, InvalidShareGrantError } from "../../auth/service.js";
 import { issueTokenPair } from "../../auth/tokens.js";
-import { isOidcConfigured, getOidcDisplayName, getOidcPublicUrl } from "../../auth/oauth-config.js";
+import { isOidcConfigured, getOidcDisplayName, getOidcPublicUrl, getPublicUrl } from "../../auth/oauth-config.js";
+import { mintShareGrant } from "../../auth/share-grants.js";
 import { getAppName } from "../../app-name.js";
 import { generateOidcState, generateOidcNonce, storeOidcState, retrieveAndClearOidcState } from "../../auth/oidc-state.js";
 import { buildOidcRedirectUrl, redeemOidcCode } from "../../auth/oidc-provider.js";
-import { sendApiError } from "./middleware.js";
+import {
+  sendApiError,
+  requireAuthenticatedWriter,
+  refuseScopedWriter,
+  requireDocWritePermission,
+} from "./middleware.js";
 import { QueryParamError, optionalStringParam } from "../helpers/query-params.js";
 import { fileURLToPath } from "node:url";
 import { readFileIfExists } from "../../storage/fs-primitives.js";
@@ -39,7 +46,13 @@ function authCookieAttributes(req: Request): { secure: boolean } {
   return { secure };
 }
 
-function setAuthCookies(req: Request, res: Response, accessToken: string, refreshToken: string): void {
+function setAuthCookies(
+  req: Request,
+  res: Response,
+  accessToken: string,
+  refreshToken: string,
+  refreshMaxAgeSeconds: number = 2592000,
+): void {
   const { secure } = authCookieAttributes(req);
   const secureFlag = secure ? "; Secure" : "";
   res.append(
@@ -48,7 +61,7 @@ function setAuthCookies(req: Request, res: Response, accessToken: string, refres
   );
   res.append(
     "Set-Cookie",
-    `ks_refresh_token=${encodeURIComponent(refreshToken)}; Path=/; HttpOnly; SameSite=Lax${secureFlag}; Max-Age=2592000`,
+    `ks_refresh_token=${encodeURIComponent(refreshToken)}; Path=/; HttpOnly; SameSite=Lax${secureFlag}; Max-Age=${refreshMaxAgeSeconds}`,
   );
 }
 
@@ -202,6 +215,13 @@ export function registerAuthRoutes(router: Router): void {
               displayName: writer.displayName,
               email: writer.email,
               is_admin: writer.type !== "agent" && (await isAdmin(writer.id)),
+              ...(writer.scope
+                ? {
+                    auth_source: "share" as const,
+                    scope_doc: writer.scope.docPath,
+                    scope_action: writer.scope.action,
+                  }
+                : {}),
             },
           }
         : { authenticated: false, app_name, single_user };
@@ -218,6 +238,7 @@ export function registerAuthRoutes(router: Router): void {
         sendApiError(res, 401, "You must be authenticated (via OIDC) before using the bootstrap code.");
         return;
       }
+      if (refuseScopedWriter(writer, res)) return;
       const { code } = req.body ?? {};
       if (!code) {
         sendApiError(res, 400, "Bootstrap code is required.");
@@ -232,6 +253,74 @@ export function registerAuthRoutes(router: Router): void {
       }
       if (error instanceof Error && error.message.includes("not available")) {
         sendApiError(res, 410, error.message);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  router.post("/auth/share", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
+      if (writer.type === "agent") {
+        sendApiError(res, 403, "Share links are not available to agents.");
+        return;
+      }
+      if (isSingleUserMode()) {
+        sendApiError(res, 400, "Share links are not available in single-user mode.");
+        return;
+      }
+      const { doc_path, action, expires_in_days } = req.body ?? {};
+      if (typeof doc_path !== "string" || doc_path.length === 0) {
+        sendApiError(res, 400, "doc_path is required.");
+        return;
+      }
+      if (action !== "read" && action !== "write") {
+        sendApiError(res, 400, 'action must be "read" or "write".');
+        return;
+      }
+      if (expires_in_days !== 1 && expires_in_days !== 7 && expires_in_days !== 30) {
+        sendApiError(res, 400, "expires_in_days must be 1, 7, or 30.");
+        return;
+      }
+      let docPath: DocPath;
+      try {
+        docPath = DocPath.parse(doc_path);
+      } catch (error) {
+        sendApiError(res, 400, error instanceof Error ? error.message : String(error));
+        return;
+      }
+      const permitted = await requireDocWritePermission(req, res, docPath);
+      if (!permitted) return;
+
+      const { token, exp } = mintShareGrant({
+        docPath,
+        action,
+        expiresInDays: expires_in_days,
+        issuedBy: writer.id,
+      });
+      res.json({ url: `${getPublicUrl()}/share/${token}`, exp });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/auth/share/redeem", (req, res, next) => {
+    try {
+      const { token, name } = req.body ?? {};
+      if (typeof token !== "string" || token.length === 0) {
+        sendApiError(res, 400, "token is required.");
+        return;
+      }
+      const result = redeemShareGrant(token, typeof name === "string" ? name : undefined);
+      const refreshMaxAge = Math.max(0, result.grant_exp - Math.floor(Date.now() / 1000));
+      setAuthCookies(req, res, result.access_token, result.refresh_token, refreshMaxAge);
+      res.json({ doc_path: result.doc_path, display_name: result.display_name });
+    } catch (error) {
+      if (error instanceof InvalidShareGrantError) {
+        sendApiError(res, 401, error.message);
         return;
       }
       next(error);

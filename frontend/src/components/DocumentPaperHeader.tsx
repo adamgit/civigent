@@ -28,6 +28,7 @@ export interface DocumentPaperHeaderProps {
   onCopyPath: () => void | Promise<void>;
   onExportMarkdown: () => void | Promise<void>;
   onDelete: () => void | Promise<void>;
+  onShare?: () => void;
   /** Observed to pin the sticky header when this block fully leaves the scrollport. */
   rootRef?: Ref<HTMLDivElement>;
   /** Narrow: path + title live in the sticky chrome; this block keeps presence
@@ -52,6 +53,7 @@ export function DocumentPaperHeader({
   onCopyPath,
   onExportMarkdown,
   onDelete,
+  onShare,
   rootRef,
   layoutMode = "wide",
 }: DocumentPaperHeaderProps): JSX.Element {
@@ -104,6 +106,15 @@ export function DocumentPaperHeader({
               >
                 Export markdown
               </button>
+              {onShare ? (
+                <button
+                  type="button"
+                  className="text-xs text-accent-primary hover:underline"
+                  onClick={onShare}
+                >
+                  Share
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="text-xs text-red-600 hover:underline"

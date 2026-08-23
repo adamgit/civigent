@@ -10,6 +10,7 @@ import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import { findInProgressProposalForDoc } from "../../storage/proposal-repository.js";
 import { gitExec } from "../../storage/git-repo.js";
+import { gitErrorMeansPathAbsentAtCommit } from "../../storage/git-error-meanings.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { isBodyHolderShape, isDocumentBeforeFirstHeading } from "../../storage/section-shape.js";
 import type {
@@ -355,7 +356,7 @@ export async function gitShowFileOrNullAtSha(
     return await gitExec(["show", `${sha}:${relativePath}`], ctx.dataRoot);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("does not exist") || msg.includes("exists on disk, but not in")) return null;
+    if (gitErrorMeansPathAbsentAtCommit(msg)) return null;
     throw err;
   }
 }

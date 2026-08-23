@@ -9,6 +9,16 @@ export interface AuthenticatedWriter {
   type: "human" | "agent";
   displayName: string;
   email?: string;
+  scope?: {
+    docPath: string;
+    action: "read" | "write";
+    grantJti: string;
+    grantExp: number;
+  };
+}
+
+export function isScopedWriter(writer: AuthenticatedWriter | null): boolean {
+  return writer?.scope !== undefined;
 }
 
 function parseBearerTokenFromHeaders(headers: IncomingHttpHeaders): string | null {
@@ -47,11 +57,27 @@ function parseCookieTokenFromHeaders(headers: IncomingHttpHeaders): string | nul
 }
 
 function toWriter(claims: AuthTokenClaims): AuthenticatedWriter {
+  const scoped =
+    claims.auth_source === "share" &&
+    typeof claims.scope_doc === "string" &&
+    (claims.scope_action === "read" || claims.scope_action === "write") &&
+    typeof claims.grant_jti === "string" &&
+    typeof claims.grant_exp === "number";
   return {
     id: claims.sub,
     type: claims.type,
     displayName: claims.display_name,
     ...(claims.email ? { email: claims.email } : {}),
+    ...(scoped
+      ? {
+          scope: {
+            docPath: claims.scope_doc as string,
+            action: claims.scope_action as "read" | "write",
+            grantJti: claims.grant_jti as string,
+            grantExp: claims.grant_exp as number,
+          },
+        }
+      : {}),
   };
 }
 
@@ -148,6 +174,10 @@ export async function requireAdmin(req: Request, res: Response): Promise<Authent
   }
   if (writer.type === "agent") {
     res.status(403).json({ message: "Admin access is not available to agents." });
+    return null;
+  }
+  if (isScopedWriter(writer)) {
+    res.status(403).json({ message: "Admin access is not available to shared-link sessions." });
     return null;
   }
   const admin = await isAdmin(writer.id);

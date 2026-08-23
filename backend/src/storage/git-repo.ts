@@ -3,7 +3,9 @@ import { promisify } from "node:util";
 import path from "node:path";
 import { constants } from "node:fs";
 import { access, open, rm } from "node:fs/promises";
+import type { Readable } from "node:stream";
 import { getContentGitPrefix } from "./data-root.js";
+import { gitErrorMeansPathAbsentAtCommit, gitErrorMeansRevisionResolvesToNoCommit } from "./git-error-meanings.js";
 import { docPathToContentRelativeFsPath } from "./path-utils.js";
 import { DocPath } from "../types/shared.js";
 import type { HeadingLevel } from "../types/shared.js";
@@ -17,16 +19,25 @@ const execFileAsync = promisify(execFile);
 export async function gitStatusPorcelain(cwd: string): Promise<Array<{code: string; filePath: string}>> {
   const { stdout } = await execFileAsync(
     "git",
-    ["-c", `safe.directory=${cwd}`, "status", "--porcelain"],
+    ["-c", `safe.directory=${cwd}`, "status", "--porcelain", "-z"],
     { cwd },
   );
-  const lines = stdout.split("\n").filter(line => line.length > 0);
-  return lines.map(line => {
-    if (line.length < 4 || line[2] !== " ") {
-      throw new Error(`Unexpected git status --porcelain format: "${line}"`);
+  // `-z` records are `XY<space><path>` terminated by NUL, with a rename's or
+  // copy's SOURCE path following as its own NUL-terminated field. Without it
+  // git C-quotes any path that is not plain ASCII, and every caller filtering
+  // on the content prefix then fails to match its own files.
+  const records = stdout.split("\0").filter(record => record.length > 0);
+  const entries: Array<{code: string; filePath: string}> = [];
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (record.length < 4 || record[2] !== " ") {
+      throw new Error(`Unexpected git status --porcelain -z format: "${record}"`);
     }
-    return { code: line.slice(0, 2), filePath: line.slice(3) };
-  });
+    const code = record.slice(0, 2);
+    entries.push({ code, filePath: record.slice(3) });
+    if (code.startsWith("R") || code.startsWith("C")) index += 1;
+  }
+  return entries;
 }
 
 /**
@@ -149,6 +160,24 @@ async function hasLocalGitDir(dataRoot: string): Promise<boolean> {
   }
 }
 
+const NUL_BYTE = 0x00;
+
+export async function* readNulSeparatedFields(stream: Readable): AsyncGenerator<string> {
+  let pending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+  for await (const chunk of stream as AsyncIterable<Buffer>) {
+    pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
+    let fieldStart = 0;
+    let nulAt = pending.indexOf(NUL_BYTE, fieldStart);
+    while (nulAt !== -1) {
+      yield pending.subarray(fieldStart, nulAt).toString("utf8");
+      fieldStart = nulAt + 1;
+      nulAt = pending.indexOf(NUL_BYTE, fieldStart);
+    }
+    pending = pending.subarray(fieldStart);
+  }
+  if (pending.length > 0) yield pending.toString("utf8");
+}
+
 export async function getHeadSha(dataRoot: string): Promise<string> {
   return gitExec(["rev-parse", "HEAD"], dataRoot);
 }
@@ -168,18 +197,6 @@ export async function getHeadShaOrNullWhenUnborn(dataRoot: string): Promise<stri
  * `repoRelativePath` is a git path (e.g. `content/public_skills`), not a
  * content-tree browse path. Returns null when the path is absent at HEAD.
  */
-function gitErrorMeansPathAbsentAtHead(message: string): boolean {
-  const pathMissingFromCommittedTree =
-    message.includes("does not exist") ||
-    message.includes("exists on disk, but not in");
-  const headResolvesToNoCommit =
-    message.includes("unknown revision") ||
-    message.includes("does not have any commits") ||
-    message.includes("bad revision") ||
-    message.includes("invalid object name 'HEAD'");
-  return pathMissingFromCommittedTree || headResolvesToNoCommit;
-}
-
 export async function getTreeShaAtHead(
   dataRoot: string,
   repoRelativePath: string,
@@ -189,7 +206,7 @@ export async function getTreeShaAtHead(
     return sha || null;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    if (gitErrorMeansPathAbsentAtHead(msg)) return null;
+    if (gitErrorMeansPathAbsentAtCommit(msg) || gitErrorMeansRevisionResolvesToNoCommit(msg)) return null;
     throw error;
   }
 }
@@ -204,7 +221,7 @@ export async function getLatestCommitTimestampIso(dataRoot: string): Promise<str
     return output || null;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    if (msg.includes("does not have any commits") || msg.includes("unknown revision")) {
+    if (gitErrorMeansRevisionResolvesToNoCommit(msg)) {
       return null;
     }
     throw error;
@@ -246,6 +263,11 @@ export async function getChangedFilesInRange(
   return new Set(output.split("\n").filter(Boolean));
 }
 
+export async function gitChangedFilesForCommit(dataRoot: string, sha: string): Promise<string[]> {
+  const output = await gitExec(["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", sha], dataRoot);
+  return output.split("\0").filter(Boolean);
+}
+
 export interface GitLogEntry {
   sha: string;
   author_name: string;
@@ -272,6 +294,7 @@ export async function gitLogRecent(
     "log",
     `--format=${COMMIT_DELIM}%H%x00%an%x00%ae%x00%(trailers:key=Writer-Type,valueonly,separator=%x2c)%x00%(trailers:key=Writer-Display-Name,valueonly,separator=%x2c)%x00%aI%x00%s`,
     "--name-only",
+    "-z",
     `-n`, String(limit),
     `--skip`, String(skip),
   ];
@@ -288,38 +311,57 @@ export async function gitLogRecent(
     output = await gitExec(args, dataRoot);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    if (msg.includes("does not have any commits") || msg.includes("unknown revision")) {
+    if (gitErrorMeansRevisionResolvesToNoCommit(msg)) {
       return [];
     }
     throw error;
   }
   if (!output) return [];
   const entries: GitLogEntry[] = [];
-  const blocks = output.split(COMMIT_DELIM);
-  for (const block of blocks) {
-    if (!block.trim()) continue;
-    const lines = block.split("\n").filter(Boolean);
-    if (lines.length === 0) continue;
-    const parts = lines[0].split("\0");
-    if (parts.length < 7) continue;
-    const rawWriterType = (parts[3] ?? "").trim().toLowerCase();
+  // Under `-z` every field is NUL-terminated: the delimited header is exactly
+  // seven fields (sha, author name, author email, Writer-Type trailer,
+  // Writer-Display-Name trailer, author date, subject), then one raw path per
+  // changed file until the next delimited header. Paths arrive unquoted, so a
+  // non-ASCII document name still maps back to a DocPath downstream.
+  const fields = output.split("\0");
+  const HEADER_FIELD_COUNT = 7;
+  let index = 0;
+  while (index < fields.length) {
+    if (!fields[index].startsWith(COMMIT_DELIM)) {
+      index += 1;
+      continue;
+    }
+    if (index + HEADER_FIELD_COUNT > fields.length) break;
+    const sha = fields[index].slice(COMMIT_DELIM.length);
+    const authorFromGit = fields[index + 1];
+    const authorEmail = fields[index + 2];
+    const rawWriterType = fields[index + 3].trim().toLowerCase();
     // Multi-valued trailers (comma-joined) are malformed — treat as "unknown"
     const writerType: AttributionWriterType =
       rawWriterType === "agent" || rawWriterType === "human" ? rawWriterType : "unknown";
-    const displayNameTrailer = (parts[4] ?? "").trim();
-    const authorFromGit = parts[1] ?? "";
-    const authorName =
-      displayNameTrailer && !displayNameTrailer.includes(",")
-        ? displayNameTrailer
-        : authorFromGit;
+    const displayNameTrailer = fields[index + 4].trim();
+    const timestampIso = fields[index + 5];
+    const message = fields[index + 6];
+    index += HEADER_FIELD_COUNT;
+
+    const changedFiles: string[] = [];
+    while (index < fields.length && !fields[index].startsWith(COMMIT_DELIM)) {
+      const changedFile = fields[index].replace(/^[\r\n]+/, "");
+      if (changedFile) changedFiles.push(changedFile);
+      index += 1;
+    }
+
     entries.push({
-      sha: parts[0],
-      author_name: authorName,
-      author_email: parts[2],
+      sha,
+      author_name:
+        displayNameTrailer && !displayNameTrailer.includes(",")
+          ? displayNameTrailer
+          : authorFromGit,
+      author_email: authorEmail,
       writer_type: writerType,
-      timestamp_iso: parts[5],
-      message: parts[6],
-      changed_files: lines.slice(1),
+      timestamp_iso: timestampIso,
+      message,
+      changed_files: changedFiles,
     });
   }
   return entries;
@@ -442,7 +484,7 @@ async function gitShowFileOrNull(
     return await gitShowFile(dataRoot, sha, relativePath);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "";
-    if (msg.includes("does not exist") || msg.includes("exists on disk, but not in")) {
+    if (gitErrorMeansPathAbsentAtCommit(msg)) {
       return null;
     }
     throw err;

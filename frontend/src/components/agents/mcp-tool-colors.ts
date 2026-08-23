@@ -19,6 +19,8 @@ export const ALL_MCP_TOOLS: string[] = [
   "read_proposal",
   "read_proposal_section",
   "read_published_section",
+  "list_section_history",
+  "read_section_history",
   "rename_section",
   "search_text",
   "publish_proposal",

@@ -13,9 +13,11 @@ import type {
 import {
   sendApiError,
   requireAdmin,
+  refuseScopedWriter,
   getMCPPublicURL,
   docPathParamOf,
 } from "./middleware.js";
+import { resolveAuthenticatedWriter } from "../../auth/context.js";
 import { getAgentAuthPolicy } from "../../auth/oauth-config.js";
 import { getToolKeyCatalog } from "../application/setup.js";
 import {
@@ -74,6 +76,7 @@ export function registerAdminRoutes(
   // ─── Activity (not admin-gated) ───────────────────────
   router.get("/activity", async (req, res, next) => {
     try {
+      if (refuseScopedWriter(resolveAuthenticatedWriter(req), res)) return;
       const limit = Math.min(Math.max(Number(req.query.limit ?? 50), 1), 500);
       const days = Math.max(Number(req.query.days ?? 30), 1);
       res.json(await getActivity(limit, days));
@@ -314,8 +317,9 @@ export function registerAdminRoutes(
   });
 
   // ─── Agent activity summary ───────────────────────────
-  router.get("/agents/summary", async (_req, res, next) => {
+  router.get("/agents/summary", async (req, res, next) => {
     try {
+      if (refuseScopedWriter(resolveAuthenticatedWriter(req), res)) return;
       res.json(await getAgentsSummary());
     } catch (error) {
       next(error);
@@ -325,6 +329,7 @@ export function registerAdminRoutes(
   // Home pulse: last-N-hours MCP calls (not admin-gated — humans watch agents).
   router.get("/agents/mcp-pulse", async (req, res, next) => {
     try {
+      if (refuseScopedWriter(resolveAuthenticatedWriter(req), res)) return;
       const hours = Math.min(Math.max(Number(req.query.hours ?? 24), 1), 168);
       res.json(await getAgentMcpPulse(hours));
     } catch (error) {

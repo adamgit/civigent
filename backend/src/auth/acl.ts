@@ -212,6 +212,12 @@ export async function checkDocPermission(
   docPath: string,
   action: AclAction,
 ): Promise<boolean> {
+  const scope = writer?.scope;
+  if (scope) {
+    if (docPath !== scope.docPath) return false;
+    return scope.action === "write" || action === "read";
+  }
+
   const requiredRole = await resolveDocPermissionRaw(docPath, action);
   const effectiveRoles = await getEffectiveRoles(writer);
   return effectiveRoles.includes(requiredRole);

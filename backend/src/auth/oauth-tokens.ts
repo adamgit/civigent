@@ -24,13 +24,13 @@ function hmacSign(payload: string, secret: string): string {
   return base64UrlEncode(sig);
 }
 
-function mintToken(data: Record<string, unknown>, secret: string): string {
+export function mintHmacSignedToken(data: Record<string, unknown>, secret: string): string {
   const payload = base64UrlEncode(Buffer.from(JSON.stringify(data), "utf8"));
   const sig = hmacSign(payload, secret);
   return `${payload}.${sig}`;
 }
 
-function verifyToken(token: string, secret: string): Record<string, unknown> | null {
+export function verifyHmacSignedToken(token: string, secret: string): Record<string, unknown> | null {
   const dotIdx = token.lastIndexOf(".");
   if (dotIdx <= 0) return null;
   const payload = token.slice(0, dotIdx);
@@ -70,7 +70,7 @@ export function mintAnonClientId(agentName: string): string {
     token_use: "client_id",
     iat: Math.floor(Date.now() / 1000),
   };
-  return mintToken(data as unknown as Record<string, unknown>, getAgentAnonSalt());
+  return mintHmacSignedToken(data as unknown as Record<string, unknown>, getAgentAnonSalt());
 }
 
 /**
@@ -78,7 +78,7 @@ export function mintAnonClientId(agentName: string): string {
  * Returns the payload if valid, null if invalid or expired.
  */
 export function validateAnonClientId(token: string): AnonClientIdPayload | null {
-  const data = verifyToken(token, getAgentAnonSalt());
+  const data = verifyHmacSignedToken(token, getAgentAnonSalt());
   if (!data) return null;
 
   // Check required fields
@@ -136,7 +136,7 @@ export function mintAuthCode(
     exp: Math.floor(Date.now() / 1000) + 300,
     jti: randomUUID(),
   };
-  return mintToken(data as unknown as Record<string, unknown>, getAuthSecret());
+  return mintHmacSignedToken(data as unknown as Record<string, unknown>, getAuthSecret());
 }
 
 /**
@@ -145,7 +145,7 @@ export function mintAuthCode(
  * Call `consumeAuthCode` after all grant-level checks pass to mark the nonce as used.
  */
 export function validateAuthCode(code: string): AuthCodePayload | null {
-  const data = verifyToken(code, getAuthSecret());
+  const data = verifyHmacSignedToken(code, getAuthSecret());
   if (!data) return null;
 
   // Check required fields

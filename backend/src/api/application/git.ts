@@ -1,5 +1,12 @@
 import { getContentGitPrefix, getDataRoot } from "../../storage/data-root.js";
-import { gitLogRecent, gitDiffForCommit, isValidSha, type GitLogEntry } from "../../storage/git-repo.js";
+import {
+  gitLogRecent,
+  gitDiffForCommit,
+  gitChangedFilesForCommit,
+  isValidSha,
+  type GitLogEntry,
+} from "../../storage/git-repo.js";
+import { PermissionError } from "../../auth/authorized-read.js";
 import { checkDocPermission } from "../../auth/acl.js";
 import type { AuthenticatedWriter } from "../../auth/context.js";
 import { DocPath } from "../../types/shared.js";
@@ -17,7 +24,7 @@ export async function getGitLog(query: GitLogQuery) {
   return gitLogRecent(dataRoot, { limit: query.limit, offset: query.offset, docPath: query.docPath });
 }
 
-function docPathOfChangedFile(changedFile: string): DocPath | null {
+export function docPathOfChangedFile(changedFile: string): DocPath | null {
   const prefix = `${getContentGitPrefix()}/`;
   if (!changedFile.startsWith(prefix)) return null;
   const segments = changedFile.slice(prefix.length).split("/").filter(Boolean);
@@ -60,7 +67,30 @@ export async function getReadableGitLog(
   return readable;
 }
 
-export async function getGitDiff(sha: string) {
+/**
+ * Whole-commit diff read scoped to the requester. A unified diff cannot be
+ * partially served without fabricating one, so a commit spanning a readable and
+ * an unreadable document is refused entire.
+ */
+export async function getReadableGitDiff(
+  writer: AuthenticatedWriter | null,
+  sha: string,
+): Promise<{ diff_text: string; truncated: boolean }> {
   const dataRoot = getDataRoot();
+  const docPaths = [
+    ...new Set(
+      (await gitChangedFilesForCommit(dataRoot, sha))
+        .map(docPathOfChangedFile)
+        .filter((candidate): candidate is DocPath => candidate !== null),
+    ),
+  ];
+  for (const candidate of docPaths) {
+    if (!(await checkDocPermission(writer, candidate, "read"))) {
+      throw new PermissionError(
+        `Read permission denied for a document changed by commit ${sha}`,
+        writer === null,
+      );
+    }
+  }
   return gitDiffForCommit(dataRoot, sha);
 }

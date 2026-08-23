@@ -1,6 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { base64UrlEncode, DEFAULT_AUTH_SECRET } from "./encoding.js";
 import { readEnvVar } from "../env.js";
+import { getShareSalt } from "./oauth-config.js";
 
 type TokenUse = "access" | "refresh" | "bootstrap";
 
@@ -14,6 +15,11 @@ export interface AuthTokenClaims {
   exp: number;
   iat: number;
   jti: string;
+  auth_source?: "share";
+  scope_doc?: string;
+  scope_action?: "read" | "write";
+  grant_jti?: string;
+  grant_exp?: number;
 }
 
 export const ACCESS_TTL_SECONDS = 1800;
@@ -31,17 +37,21 @@ function base64UrlDecode(input: string): string {
   return Buffer.from(padded, "base64").toString("utf8");
 }
 
-function signValue(value: string): string {
+function signValue(value: string, secret: string): string {
   return base64UrlEncode(
-    createHmac("sha256", getAuthSecret()).update(value).digest()
+    createHmac("sha256", secret).update(value).digest()
   );
+}
+
+function secretForAuthSource(authSource: unknown): string {
+  return authSource === "share" ? getShareSalt() : getAuthSecret();
 }
 
 function encodeToken(claims: AuthTokenClaims): string {
   const header = { alg: "HS256", typ: "JWT" };
   const headerPart = base64UrlEncode(JSON.stringify(header));
   const payloadPart = base64UrlEncode(JSON.stringify(claims));
-  const signature = signValue(`${headerPart}.${payloadPart}`);
+  const signature = signValue(`${headerPart}.${payloadPart}`, secretForAuthSource(claims.auth_source));
   return `${headerPart}.${payloadPart}.${signature}`;
 }
 
@@ -53,18 +63,22 @@ export function decodeAndValidateToken(token: string): AuthTokenClaims {
     throw new InvalidAuthTokenError("Malformed token.");
   }
   const [headerPart, payloadPart, providedSignature] = parts;
-  const expectedSignature = signValue(`${headerPart}.${payloadPart}`);
-  const providedBuf = Buffer.from(providedSignature);
-  const expectedBuf = Buffer.from(expectedSignature);
-  if (providedBuf.length !== expectedBuf.length || !timingSafeEqual(providedBuf, expectedBuf)) {
-    throw new InvalidAuthTokenError("Invalid token signature.");
-  }
 
   let claims: AuthTokenClaims;
   try {
     claims = JSON.parse(base64UrlDecode(payloadPart)) as AuthTokenClaims;
   } catch {
     throw new InvalidAuthTokenError("Invalid token payload.");
+  }
+
+  const expectedSignature = signValue(
+    `${headerPart}.${payloadPart}`,
+    secretForAuthSource(claims.auth_source),
+  );
+  const providedBuf = Buffer.from(providedSignature);
+  const expectedBuf = Buffer.from(expectedSignature);
+  if (providedBuf.length !== expectedBuf.length || !timingSafeEqual(providedBuf, expectedBuf)) {
+    throw new InvalidAuthTokenError("Invalid token signature.");
   }
 
   const nowSeconds = Math.floor(Date.now() / 1000);
@@ -78,6 +92,7 @@ function issueToken(
   identity: { id: string; type: "human" | "agent"; displayName: string; description?: string; email?: string },
   tokenUse: TokenUse,
   ttlSeconds: number,
+  scope?: ShareSessionScope,
 ): string {
   const nowSeconds = Math.floor(Date.now() / 1000);
   const claims: AuthTokenClaims = {
@@ -90,6 +105,15 @@ function issueToken(
     iat: nowSeconds,
     exp: nowSeconds + Math.max(60, ttlSeconds),
     jti: randomUUID(),
+    ...(scope
+      ? {
+          auth_source: "share" as const,
+          scope_doc: scope.docPath,
+          scope_action: scope.action,
+          grant_jti: scope.grantJti,
+          grant_exp: scope.grantExp,
+        }
+      : {}),
   };
   return encodeToken(claims);
 }
@@ -109,6 +133,39 @@ export function issueTokenPair(identity: {
   return {
     access_token: issueToken(identity, "access", ACCESS_TTL_SECONDS),
     refresh_token: issueToken(identity, "refresh", REFRESH_TTL_SECONDS),
+  };
+}
+
+export interface ShareSessionScope {
+  docPath: string;
+  action: "read" | "write";
+  grantJti: string;
+  grantExp: number;
+}
+
+export function issueScopedTokenPair(
+  identity: {
+    id: string;
+    type: "human" | "agent";
+    displayName: string;
+    description?: string;
+    email?: string;
+  },
+  scope: ShareSessionScope,
+): IssuedAuthTokenPair {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const remainingSeconds = scope.grantExp - nowSeconds;
+  if (remainingSeconds <= 0) {
+    throw new Error("Cannot issue a scoped session for an expired share grant.");
+  }
+  return {
+    access_token: issueToken(identity, "access", ACCESS_TTL_SECONDS, scope),
+    refresh_token: issueToken(
+      identity,
+      "refresh",
+      Math.min(REFRESH_TTL_SECONDS, remainingSeconds),
+      scope,
+    ),
   };
 }
 

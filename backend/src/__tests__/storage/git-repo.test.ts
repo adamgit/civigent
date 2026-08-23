@@ -59,6 +59,35 @@ describe("git-repo", () => {
     await gitExec(["checkout", "--", "content/"], ctx.rootDir);
   });
 
+  it("gitStatusPorcelain reports a non-ASCII path raw, so content-prefix filters still match it", async () => {
+    const { writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+
+    // A committed document whose NAME is not ASCII, with one of its section
+    // bodies left modified — exactly the state canonical-store's post-commit
+    // completeness check exists to catch.
+    await createSampleDocument(ctx.rootDir, "/ops/стратегия.md");
+    await writeFile(
+      join(ctx.rootDir, "content", "ops", "стратегия.md.sections", "overview.md"),
+      "modified content\n",
+      "utf8",
+    );
+
+    try {
+      const entries = await gitStatusPorcelain(ctx.rootDir);
+      const expectedPath = "content/ops/стратегия.md.sections/overview.md";
+
+      // Every consumer of this primitive filters on the content prefix
+      // (canonical-store's post-commit completeness check does exactly this),
+      // so a quoted path is invisible to them rather than merely ugly.
+      expect(entries.map((entry) => entry.filePath)).toContain(expectedPath);
+      expect(entries.filter((entry) => entry.filePath.startsWith("content/")).map((e) => e.filePath))
+        .toContain(expectedPath);
+    } finally {
+      await gitExec(["checkout", "--", "content/"], ctx.rootDir);
+    }
+  });
+
   it("gitStatusPorcelain returns empty array for clean working tree", async () => {
     const entries = await gitStatusPorcelain(ctx.rootDir);
     expect(entries).toEqual([]);
