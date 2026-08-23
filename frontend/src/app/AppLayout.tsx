@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { apiClient, SystemStartingError, setUnauthorizedHandler, setSystemStartingHandler, setSystemFatalHandler, setWriterId, clearWriterId } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
+import { routeOwnsItsAuthenticationFlow } from "./pre-auth-routes";
 import { connectSystemEvents, type FatalReport } from "../services/system-events-client";
 import { DocumentsTreeNav, computeTreeMoveDest, type TreeDragSource } from "../components/DocumentsTreeNav";
 import { SidebarNavLinks } from "../components/SidebarNavLinks";
@@ -405,13 +406,7 @@ export function AppLayout() {
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
-      // Login and consent own their authentication flow. A delayed 401 from
-      // layout-level work (for example, the workspace tree) must not overwrite
-      // their returnTo state or compete with their session checks.
-      if (
-        location.pathname === "/login" ||
-        location.pathname === "/approve-agent-access"
-      ) {
+      if (routeOwnsItsAuthenticationFlow(location.pathname)) {
         return;
       }
       const returnTo = `${location.pathname}${location.search}${location.hash}`;

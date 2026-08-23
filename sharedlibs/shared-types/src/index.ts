@@ -889,6 +889,10 @@ export interface ExportedSkillsAdminConfig {
   version: string | null;
 }
 
+export interface ShareLinksAdminConfig {
+  salt_is_ephemeral: boolean;
+}
+
 export interface AdminConfig {
   humanInvolvement_preset: HumanInvolvementPresetName;
   humanInvolvement_midpoint_seconds: number;
@@ -898,6 +902,7 @@ export interface AdminConfig {
   agent_auth_policy: AgentAuthPolicy;
   auth_mode: "single_user" | "credentials" | "oidc";
   exportedSkills: ExportedSkillsAdminConfig;
+  shareLinks: ShareLinksAdminConfig;
 }
 
 // ─── ACL / RBAC Datatypes ──────────────────────────────────────────
@@ -2264,6 +2269,8 @@ export interface AuthMethod {
   displayName: string;
   authUrl?: string; // only present for "oidc"
 }
+
+export type ShareGrantExpiry = 1 | 7 | "never";
 
 export interface AuthUser {
   id: string;

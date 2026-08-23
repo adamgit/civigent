@@ -7,6 +7,7 @@ export type {
   AgentReadingEvent,
   ApiError,
   AuthUser,
+  ShareGrantExpiry,
   CommitProposalResponse,
   ContentCommittedEvent,
   CreateDocumentResponse,

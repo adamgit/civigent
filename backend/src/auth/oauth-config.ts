@@ -169,6 +169,10 @@ export function getShareSalt(): string {
   return _shareSalt;
 }
 
+export function isShareSaltEphemeral(): boolean {
+  return readEnvVar("KS_SHARE_SALT") == null;
+}
+
 // ─── KS_AGENT_AUTH_POLICY ────────────────────────────────────────
 
 /**

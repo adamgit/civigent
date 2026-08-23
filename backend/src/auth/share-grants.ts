@@ -8,7 +8,9 @@
 import { randomUUID } from "node:crypto";
 import { mintHmacSignedToken, verifyHmacSignedToken } from "./oauth-tokens.js";
 import { getShareSalt } from "./oauth-config.js";
-import { DocPath } from "../types/shared.js";
+import { DocPath, type ShareGrantExpiry } from "../types/shared.js";
+
+const NEVER_EXPIRES_DAYS = 3650;
 
 export interface ShareGrantPayload {
   doc_path: string;
@@ -23,11 +25,12 @@ export interface ShareGrantPayload {
 export function mintShareGrant(input: {
   docPath: DocPath;
   action: "read" | "write";
-  expiresInDays: number;
+  expiry: ShareGrantExpiry;
   issuedBy: string;
 }): { token: string; exp: number } {
+  const days = input.expiry === "never" ? NEVER_EXPIRES_DAYS : input.expiry;
   const iat = Math.floor(Date.now() / 1000);
-  const exp = iat + input.expiresInDays * 24 * 60 * 60;
+  const exp = iat + days * 24 * 60 * 60;
   const data: ShareGrantPayload = {
     doc_path: input.docPath,
     action: input.action,

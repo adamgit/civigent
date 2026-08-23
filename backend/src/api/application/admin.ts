@@ -27,7 +27,7 @@ import type {
   VerifyAdminGitBackupResponse,
 } from "../../types/shared.js";
 import { getExportedSkillsConfig } from "../../exported-skills-config.js";
-import { getPublicUrl, getAgentAuthPolicy } from "../../auth/oauth-config.js";
+import { getPublicUrl, getAgentAuthPolicy, isShareSaltEphemeral } from "../../auth/oauth-config.js";
 import { readRuntimeAuthMode } from "../../auth/service.js";
 import {
   ExportedSkillsFolderAbsentError,
@@ -142,7 +142,13 @@ export async function getAdminConfigWithDescription(): Promise<AdminConfig & { p
   const config = getAdminConfig();
   const preset = HUMAN_INVOLVEMENT_PRESETS[config.humanInvolvement_preset];
   const exportedSkills = await buildExportedSkillsAdminConfig();
-  return { ...config, auth_mode: readRuntimeAuthMode(), exportedSkills, preset_description: preset.description };
+  return {
+    ...config,
+    auth_mode: readRuntimeAuthMode(),
+    exportedSkills,
+    shareLinks: { salt_is_ephemeral: isShareSaltEphemeral() },
+    preset_description: preset.description,
+  };
 }
 
 export async function updateAdminConfigWithDescription(
@@ -156,7 +162,13 @@ export async function updateAdminConfigWithDescription(
   const updated = updateAdminConfig(body);
   const preset = HUMAN_INVOLVEMENT_PRESETS[updated.humanInvolvement_preset];
   const exportedSkills = await buildExportedSkillsAdminConfig();
-  return { ...updated, auth_mode: readRuntimeAuthMode(), exportedSkills, preset_description: preset.description };
+  return {
+    ...updated,
+    auth_mode: readRuntimeAuthMode(),
+    exportedSkills,
+    shareLinks: { salt_is_ephemeral: isShareSaltEphemeral() },
+    preset_description: preset.description,
+  };
 }
 
 // ─── Runtime memory ─────────────────────────────────────

@@ -353,6 +353,37 @@ export function AdminPage() {
         </Card>
 
         <Card
+          title="Share Links"
+          subtitle="Per-document capability links. Revocation is grant expiry plus KS_SHARE_SALT rotation; there is no per-link revoke."
+        >
+          {!adminConfig ? (
+            <ConfigCardFallback configLoaded={configLoaded} configError={configError} />
+          ) : (
+            <>
+              <KVRow label="Availability">
+                {adminConfig.auth_mode === "single_user"
+                  ? "Unavailable — share links require a login mode (KS_AUTH_MODE=credentials or oidc)."
+                  : "Available"}
+              </KVRow>
+              <KVRow label="Link durability">
+                {adminConfig.shareLinks.salt_is_ephemeral ? (
+                  <span className="text-red-700">
+                    Ephemeral — <span className="font-mono">KS_SHARE_SALT</span> is auto-generated, so every share
+                    link and shared session stops working when the server restarts. Set{" "}
+                    <span className="font-mono">KS_SHARE_SALT</span> to make links durable.
+                  </span>
+                ) : (
+                  <span>
+                    Durable — links work across restarts. Rotate <span className="font-mono">KS_SHARE_SALT</span> to
+                    revoke every link and every shared session.
+                  </span>
+                )}
+              </KVRow>
+            </>
+          )}
+        </Card>
+
+        <Card
           title="Human Involvement Preset"
           subtitle="Controls how long agents wait after human activity before writing."
         >

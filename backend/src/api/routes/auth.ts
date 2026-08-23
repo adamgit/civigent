@@ -281,8 +281,8 @@ export function registerAuthRoutes(router: Router): void {
         sendApiError(res, 400, 'action must be "read" or "write".');
         return;
       }
-      if (expires_in_days !== 1 && expires_in_days !== 7 && expires_in_days !== 30) {
-        sendApiError(res, 400, "expires_in_days must be 1, 7, or 30.");
+      if (expires_in_days !== 1 && expires_in_days !== 7 && expires_in_days !== "never") {
+        sendApiError(res, 400, 'expires_in_days must be 1, 7, or "never".');
         return;
       }
       let docPath: DocPath;
@@ -298,7 +298,7 @@ export function registerAuthRoutes(router: Router): void {
       const { token, exp } = mintShareGrant({
         docPath,
         action,
-        expiresInDays: expires_in_days,
+        expiry: expires_in_days,
         issuedBy: writer.id,
       });
       res.json({ url: `${getPublicUrl()}/share/${token}`, exp });

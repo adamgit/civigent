@@ -148,6 +148,7 @@ export type {
   LiveMovePosition,
   JsonObject,
   JsonValue,
+  ShareGrantExpiry,
 } from "../../../sharedlibs/shared-types/src/index.js";
 
 export {

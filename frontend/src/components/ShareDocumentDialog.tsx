@@ -1,23 +1,23 @@
 import { useState } from "react";
 import { apiClient } from "../services/api-client.js";
-import type { DocPath } from "../types/shared.js";
+import type { DocPath, ShareGrantExpiry } from "../types/shared.js";
 
 interface ShareDocumentDialogProps {
   docPath: DocPath;
   onClose: () => void;
 }
 
-const EXPIRY_CHOICES: Array<{ days: number; label: string }> = [
-  { days: 1, label: "1 day" },
-  { days: 7, label: "7 days" },
-  { days: 30, label: "30 days" },
+const EXPIRY_CHOICES: Array<{ value: ShareGrantExpiry; label: string }> = [
+  { value: 1, label: "1 day" },
+  { value: 7, label: "7 days" },
+  { value: "never", label: "Never" },
 ];
 
 export function ShareDocumentDialog({ docPath, onClose }: ShareDocumentDialogProps) {
   const [action, setAction] = useState<"read" | "write">("write");
-  const [expiresInDays, setExpiresInDays] = useState(7);
+  const [expiry, setExpiry] = useState<ShareGrantExpiry>(7);
   const [creating, setCreating] = useState(false);
-  const [link, setLink] = useState<{ url: string; exp: number } | null>(null);
+  const [link, setLink] = useState<{ url: string; exp: number; expiry: ShareGrantExpiry } | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,7 +25,7 @@ export function ShareDocumentDialog({ docPath, onClose }: ShareDocumentDialogPro
     setCreating(true);
     setError(null);
     try {
-      setLink(await apiClient.createShareLink(docPath, action, expiresInDays));
+      setLink({ ...(await apiClient.createShareLink(docPath, action, expiry)), expiry });
       setCopied(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -83,10 +83,10 @@ export function ShareDocumentDialog({ docPath, onClose }: ShareDocumentDialogPro
           <div className="flex gap-2">
             {EXPIRY_CHOICES.map((choice) => (
               <button
-                key={choice.days}
+                key={String(choice.value)}
                 type="button"
-                onClick={() => setExpiresInDays(choice.days)}
-                className={`px-3 py-1.5 text-sm rounded border ${expiresInDays === choice.days ? "border-blue-500 bg-blue-50 text-blue-700" : "border-gray-300 text-gray-600 hover:bg-gray-50"}`}
+                onClick={() => setExpiry(choice.value)}
+                className={`px-3 py-1.5 text-sm rounded border ${expiry === choice.value ? "border-blue-500 bg-blue-50 text-blue-700" : "border-gray-300 text-gray-600 hover:bg-gray-50"}`}
               >
                 {choice.label}
               </button>
@@ -114,8 +114,11 @@ export function ShareDocumentDialog({ docPath, onClose }: ShareDocumentDialogPro
               </button>
             </div>
             <p className="mt-2 text-xs text-gray-500">
-              Anyone with this link can {action === "write" ? "edit" : "read"} this document until{" "}
-              {new Date(link.exp * 1000).toLocaleString()}. They will not see other documents.
+              Anyone with this link can {action === "write" ? "edit" : "read"} this document{" "}
+              {link.expiry === "never"
+                ? "until an administrator revokes it"
+                : `until ${new Date(link.exp * 1000).toLocaleString()}`}
+              . They will not see other documents.
             </p>
           </div>
         ) : (

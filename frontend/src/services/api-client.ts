@@ -47,6 +47,7 @@ import type {
   AcquireLocksResponse,
   WithdrawProposalResponse,
   DocPath,
+  ShareGrantExpiry,
 } from "../types/shared.js";
 
 export type ImportResponse = CreateProposalResponse;
@@ -608,21 +609,23 @@ export const apiClient = {
   async createShareLink(
     docPath: DocPath,
     action: "read" | "write",
-    expiresInDays: number,
+    expiry: ShareGrantExpiry,
   ): Promise<{ url: string; exp: number }> {
     return requestJson<{ url: string; exp: number }>("/api/auth/share", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ doc_path: docPath, action, expires_in_days: expiresInDays }),
+      body: JSON.stringify({ doc_path: docPath, action, expires_in_days: expiry }),
     });
   },
 
   async redeemShareGrant(token: string, name: string): Promise<{ doc_path: string; display_name: string }> {
-    return requestJson<{ doc_path: string; display_name: string }>("/api/auth/share/redeem", {
+    const response = await requestJson<{ doc_path: string; display_name: string }>("/api/auth/share/redeem", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token, name }),
     }, false);
+    broadcastAuthEvent("login");
+    return response;
   },
 
   async getAuthMethods(): Promise<AuthMethodsResponse> {
