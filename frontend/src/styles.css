@@ -548,6 +548,11 @@ a {
   }
 }
 
+/* Default = multi-user / blue scheme. Single-user keeps the fainter mark. */
+[data-single-user] {
+  --folder-watermark-opacity: 0.072;
+}
+
 /* Single-user mode: warm orange rail (warning, not alarm). Localhost is a
  * legitimate forever-setup; the tint is so a proxied public install is obvious. */
 [data-single-user="on"] {
@@ -559,6 +564,134 @@ a {
   --color-sidebar-active-bg: rgba(255, 255, 255, 0.55);
   --color-sidebar-active-text: #3d2410;
   --color-sidebar-marker: #c47a2a;
+  --folder-watermark-opacity: 0.036;
+}
+
+.folder-tree-page-watermark {
+  opacity: var(--folder-watermark-opacity);
+}
+
+/* Folder-card icon column: left padding through to the text. */
+.folder-card-icon-hit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  box-sizing: border-box;
+  width: calc(0.75rem + 28px + 0.625rem);
+  margin-left: -0.75rem;
+  padding-left: 0.75rem;
+  padding-right: 0.625rem;
+}
+
+.folder-card:hover {
+  z-index: 20;
+}
+
+.folder-card-icon-legend {
+  position: absolute;
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+  left: 100%;
+  top: 50%;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  align-items: start;
+  width: min(780px, 50vw);
+  min-height: 300px;
+  height: auto;
+  max-height: 75vh;
+  margin-left: 8px;
+  padding: 16px;
+  overflow: hidden;
+  border: 1px solid var(--color-folder-card-border);
+  border-radius: 8px;
+  background: var(--color-canvas-bg);
+  box-shadow: 0 8px 28px rgba(26, 22, 16, 0.14);
+  color: var(--color-text-secondary);
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transform: translateY(-50%);
+}
+
+.folder-card:hover .folder-card-icon-legend {
+  visibility: visible;
+  opacity: 1;
+}
+
+.folder-card-icon-legend__icon {
+  display: block;
+  width: 268px;
+  height: 268px;
+  color: var(--color-folder-link);
+}
+
+.folder-card-icon-legend__copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.folder-card-icon-legend__summary p {
+  margin: 0;
+}
+
+.folder-card-icon-legend__summary p + p {
+  margin-top: 0.55em;
+}
+
+.folder-card-icon-legend__rule {
+  flex: none;
+  width: 100%;
+  height: 0;
+  margin: 0.85em 0 0.75em;
+  border: none;
+  border-top: 1px solid var(--color-folder-divider);
+}
+
+.folder-card-icon-legend__folders {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.folder-card-icon-legend__folders li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4em;
+}
+
+.folder-card-icon-legend__folders li + li {
+  margin-top: 0.5em;
+}
+
+.folder-card-icon-legend__folders svg {
+  flex: none;
+  margin-top: 0.2em;
+}
+
+.folder-card-icon-legend__folders strong {
+  font-weight: 600;
+}
+
+.folder-card-icon-legend__detail {
+  color: var(--color-text-muted);
+}
+
+.folder-card-icon-legend__leftover {
+  margin: 0.7em 0 0;
+  color: var(--color-text-muted);
+}
+
+@media (max-width: 767px) {
+  .folder-card-icon-legend {
+    display: none;
+  }
 }
 
 .single-user-brand {

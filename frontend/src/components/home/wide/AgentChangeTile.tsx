@@ -10,7 +10,7 @@ interface AgentChangeTileProps {
 
 function tileHref(task: HomeAgentTask): string {
   const first = task.writes[0] ?? task.reads[0];
-  return (first && docsRouteForStoredPath(first.path)) || "/agents-activity";
+  return (first && docsRouteForStoredPath(first.path)) || "/agent-pulse";
 }
 
 export function AgentChangeTile({ task, visibleFiles = 5 }: AgentChangeTileProps) {

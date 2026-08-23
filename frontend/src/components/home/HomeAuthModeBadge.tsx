@@ -33,10 +33,13 @@ export function HomeAuthModeBadge({ mode, className }: HomeAuthModeBadgeProps) {
   const ui = AUTH_MODE_UI[mode];
 
   return (
-    <span ref={rootRef} className="home-auth-mode">
+    <span
+      ref={rootRef}
+      className={`home-auth-mode home-auth-badge home-auth-badge--${ui.modifier}${className ? ` ${className}` : ""}`}
+    >
       <button
         type="button"
-        className={`home-auth-badge home-auth-badge--${ui.modifier}${className ? ` ${className}` : ""}`}
+        className="home-auth-mode__trigger"
         aria-expanded={open}
         aria-controls={popupId}
         aria-haspopup="dialog"

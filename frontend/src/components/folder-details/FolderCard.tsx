@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import type { DocumentTreeEntry } from "../../types/shared.js";
+import { FolderTreeIconHoverCard } from "./FolderTreeIconHoverCard";
 import { FolderTreeRadialDots } from "./FolderTreeRadialDots";
 
 /**
@@ -126,7 +127,6 @@ function FolderAccessMarker({ access }: { access: FolderCardAccess }) {
       className={`inline-flex shrink-0 items-center ${
         isPublicAccess ? "text-status-red" : "text-folder-private"
       }`}
-      title={label}
       aria-label={label}
     >
       {isPublicAccess ? <PublicFolderIcon /> : <PrivateFolderIcon />}
@@ -206,9 +206,8 @@ export function FolderCard({
   return (
     <Link
       to={to}
-      title={subtitle}
-      className={`group relative grid w-full min-w-0 max-w-full rounded-md border border-folder-card-border bg-folder-card-bg py-2.5 pr-3 pl-3 text-left no-underline transition-colors hover:border-folder-card-border-hover hover:bg-canvas-bg ${
-        tree ? "grid-cols-[28px_minmax(0,1fr)] gap-x-2.5" : "grid-cols-1"
+      className={`folder-card group relative grid w-full min-w-0 max-w-full rounded-md border border-folder-card-border bg-folder-card-bg py-2.5 pr-3 pl-3 text-left no-underline transition-colors hover:border-folder-card-border-hover hover:bg-canvas-bg ${
+        tree ? "grid-cols-[auto_minmax(0,1fr)]" : "grid-cols-1"
       }`}
     >
       {accentClass ? (
@@ -218,10 +217,11 @@ export function FolderCard({
         />
       ) : null}
       {tree ? (
-        <span className="row-span-2 self-center">
-          <FolderTreeRadialDots entry={tree} />
+        <span className="folder-card-icon-hit row-span-2">
+          <FolderTreeRadialDots entry={tree} nativeTitles={false} />
         </span>
       ) : null}
+      {tree ? <FolderTreeIconHoverCard entry={tree} /> : null}
       <span className="flex min-w-0 items-start justify-between gap-3">
         <span className="flex min-w-0 items-center gap-1.5">
           {hasAgentMarker ? (
@@ -239,13 +239,13 @@ export function FolderCard({
         </span>
         <span className="flex shrink-0 items-center gap-2 pt-0.5 text-[11px] text-text-faint">
           {fileCount > 0 ? (
-            <span className="inline-flex items-center gap-0.5" title={`${fileCount} files`}>
+            <span className="inline-flex items-center gap-0.5">
               {fileCount}
               <FileCountIcon />
             </span>
           ) : null}
           {folderCount > 0 ? (
-            <span className="inline-flex items-center gap-0.5" title={`${folderCount} folders`}>
+            <span className="inline-flex items-center gap-0.5">
               {folderCount}
               <FolderCountIcon />
             </span>
@@ -255,9 +255,7 @@ export function FolderCard({
       </span>
       <span className="mt-0.5 flex w-0 min-w-full items-end gap-2.5">
         {books.length > 0 ? <MicroBookshelf books={books} /> : null}
-        <span
-          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-text-faint"
-        >
+        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-text-faint">
           {subtitle}
         </span>
       </span>

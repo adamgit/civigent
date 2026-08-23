@@ -93,6 +93,9 @@ function titleForSpecialRoute(pathname: string): string {
   if (pathname === "/agents-activity/feed") {
     return "Agent Activity Feed";
   }
+  if (pathname === "/agent-pulse") {
+    return "Agent Pulse";
+  }
   if (pathname === "/skills") {
     return "Skills";
   }

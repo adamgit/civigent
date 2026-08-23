@@ -18,6 +18,7 @@ import { FeaturesPage } from "../pages/FeaturesPage";
 import { HelpPage } from "../pages/HelpPage";
 import { AgentsPage } from "../pages/AgentsPage";
 import { AgentFeedPage } from "../pages/AgentFeedPage";
+import { AgentPulsePage } from "../pages/AgentPulsePage";
 import { SkillsPage } from "../pages/SkillsPage";
 import { ImportsPage } from "../pages/ImportsPage";
 import { AdvancedExportPage } from "../pages/AdvancedExportPage";
@@ -56,6 +57,7 @@ export const routeConfig: RouteObject[] = [
       { path: "help", element: <HelpPage /> },
       { path: "agents-activity", element: <AgentsPage /> },
       { path: "agents-activity/feed", element: <AgentFeedPage /> },
+      { path: "agent-pulse", element: <AgentPulsePage /> },
       { path: "skills", element: <SkillsPage /> },
       { path: "imports", element: <ImportsPage /> },
       { path: "export", element: <AdvancedExportPage /> },
