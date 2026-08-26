@@ -96,9 +96,9 @@ export function DashboardPage() {
   ];
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <SharedPageHeader title="What's New" />
-      <div className="flex-1 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
+      <div className="flex-1 min-h-0 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
         <ActivityTabStrip tabs={tabs} activeKey={activeTab} onTabChange={setActiveTab} />
 
         {error && <p className="text-xs text-red-600 mb-3">{error}</p>}

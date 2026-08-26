@@ -102,7 +102,7 @@ export function HelpPage() {
     <>
       <SharedPageHeader title="Help & FAQ" backTo="/" />
 
-      <div className="flex-1 overflow-auto canvas-scroll" style={{ fontFamily: "var(--font-ui)" }}>
+      <div className="min-h-0 flex-1 overflow-auto canvas-scroll" style={{ fontFamily: "var(--font-ui)" }}>
         <div style={{ maxWidth: 740, margin: "0 auto", padding: "1.75rem 1.5rem 3rem" }}>
           <p style={{ fontSize: 14, color: "var(--color-text-secondary)", margin: "0 0 1.75rem" }}>
             How to create and edit documents, connect AI agents, and move data in and out of Civigent.

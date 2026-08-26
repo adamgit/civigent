@@ -241,10 +241,10 @@ export function SkillsPage() {
   );
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <SharedPageHeader title="Skills" />
       <div
-        className="flex-1 overflow-auto p-4 md:px-6"
+        className="flex-1 min-h-0 overflow-auto p-4 md:px-6"
         style={{ fontFamily: "var(--font-ui)" }}
       >
         <div className="max-w-[720px] mx-auto flex flex-col gap-4">

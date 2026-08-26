@@ -173,7 +173,7 @@ export function AgentKeysPage() {
     <>
       <SharedPageHeader title="Pre-Authenticated Agents" backTo="/admin" />
 
-      <section style={{ maxWidth: 700, margin: "0 auto", padding: "1rem" }}>
+      <section className="min-h-0 flex-1 overflow-auto" style={{ maxWidth: 700, margin: "0 auto", padding: "1rem" }}>
         {authPolicy && <AgentAuthStatus policy={authPolicy} />}
 
         {error && (

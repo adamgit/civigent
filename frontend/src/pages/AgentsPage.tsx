@@ -84,7 +84,7 @@ export function AgentsPage() {
   const policy: AgentAuthPolicy = data?.agent_auth_policy ?? "open";
 
   return (
-    <section>
+    <section className="min-h-0 flex-1 overflow-auto">
       <SharedPageHeader
         title={
           <span className="inline-flex items-center gap-2.5">

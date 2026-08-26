@@ -379,9 +379,9 @@ export function RuntimeMemoryPage() {
   }, [load]);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <SharedPageHeader title="Runtime Memory" backTo="/admin" />
-      <div className="flex-1 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
+      <div className="flex-1 min-h-0 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
 
         <div className="flex items-center gap-2 mb-4">
           <button

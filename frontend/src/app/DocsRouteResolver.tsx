@@ -79,7 +79,7 @@ export function DocsRouteResolver() {
 
   if (loc.kind === "invalid") {
     return (
-      <div className="flex-1 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
+      <div className="min-h-0 flex-1 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
         <p className="text-xs text-status-red">Not a valid document or folder URL: {loc.reason}</p>
         <p className="text-xs text-status-red">
           <code>{loc.raw}</code>

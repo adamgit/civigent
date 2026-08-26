@@ -134,7 +134,7 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
   private destroyed = false;
   /** Per-fragment markdown, invalidated when that fragment's Y types change. */
   private readonly markdownCache = new Map<string, string>();
-  private readonly shareByType = new Map<Y.AbstractType<unknown>, string>();
+  private readonly shareByType = new Map<Y.AbstractType<Y.YEvent<any>>, string>();
   private lastShareSize = -1;
   private readonly invalidateCachedMarkdown = (txn: Y.Transaction): void => {
     if (this.destroyed) return;
@@ -146,9 +146,9 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
       this.lastShareSize = this.doc.share.size;
     }
     for (const [type] of txn.changed) {
-      let current: Y.AbstractType<unknown> | null = type;
+      let current: Y.AbstractType<Y.YEvent<any>> | null = type;
       while (current?._item?.parent) {
-        current = current._item.parent as Y.AbstractType<unknown>;
+        current = current._item.parent as Y.AbstractType<Y.YEvent<any>>;
       }
       if (!current) continue;
       const name = this.shareByType.get(current);

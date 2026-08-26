@@ -123,7 +123,7 @@ export function AgentDocumentPage({ docPath, toolbarAccessory }: AgentDocumentPa
 
   return (
     <SectionHoverProvider activeFragmentKey={null}>
-      <div data-doc-layout={layoutMode} className="agent-doc-view relative flex flex-col h-full min-h-0" style={{ background: "var(--color-page-bg)" }}>
+      <div data-doc-layout={layoutMode} className="agent-doc-view relative flex h-full min-h-0 flex-col overflow-hidden" style={{ background: "var(--color-page-bg)" }}>
         {layoutMode === "narrow" ? (
         <header className="doc-narrow-sticky">
           <DocumentTopbar

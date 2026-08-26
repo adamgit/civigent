@@ -14,7 +14,7 @@ export function DocumentLoadErrorView({ docPath, error }: DocumentLoadErrorViewP
   const isNotFound = /^404\b/.test(error);
 
   return (
-    <div className="flex flex-col h-full" style={{ background: "var(--color-page-bg)" }}>
+    <div className="flex h-full min-h-0 flex-col overflow-hidden" style={{ background: "var(--color-page-bg)" }}>
       <div className="px-4 pt-4">
         <Link
           to="/docs"
@@ -23,7 +23,7 @@ export function DocumentLoadErrorView({ docPath, error }: DocumentLoadErrorViewP
           <span className="text-[15px]">&#8592;</span> Back to documents
         </Link>
       </div>
-      <div className="flex-1 flex items-center justify-center overflow-auto py-8">
+      <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto py-8">
         {isNotFound ? (
           <div className="text-center max-w-md px-6">
             <div className="text-5xl mb-5 opacity-30">&#128196;</div>

@@ -105,9 +105,9 @@ export function SnapshotsPage() {
   const mostRecent = data?.history.find((e) => e.type === "snapshot") ?? null;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <SharedPageHeader title="Snapshots" backTo="/admin" />
-      <div className="flex-1 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
+      <div className="flex-1 min-h-0 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
 
         {/* Action bar */}
         <div className="flex items-center gap-2 mb-4">

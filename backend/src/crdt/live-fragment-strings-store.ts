@@ -30,13 +30,6 @@ import { fragmentFromRemark, EMPTY_FRAGMENT, type FragmentContent } from "../sto
 import type { DocPath } from "../types/shared.js";
 
 /**
- * The top-level shared types stored in `Y.Doc.share` and keyed by
- * `Y.Transaction.changed` — derived from the official Yjs declarations so we
- * never spell `any` or reach into a private Yjs internal type.
- */
-type YSharedType = Y.Doc["share"] extends Map<string, infer V> ? V : never;
-
-/**
  * Yjs ↔ ProseMirror-JSON boundary. `yDocToProsemirrorJSON` is weakly typed
  * (`Record<string, any>`); this is the single adapter that crosses that boundary
  * into the `Record<string, unknown>` shape `jsonToMarkdown` consumes (the
@@ -61,7 +54,7 @@ export class LiveFragmentStringsStore {
 
   /** Y.AbstractType → fragment key name reverse lookup. Rebuilt lazily when
    *  `ydoc.share` grows (new fragments appear during structural reconciliation). */
-  private reverseMap = new Map<YSharedType, string>();
+  private reverseMap = new Map<Y.AbstractType<Y.YEvent<any>>, string>();
   private lastShareSize = 0;
 
   constructor(ydoc: Y.Doc, orderedKeys: string[], docPath: DocPath) {
@@ -74,7 +67,7 @@ export class LiveFragmentStringsStore {
       for (const [type] of txn.changed) {
         // Walk up to the top-level shared type via the public `parent` getter
         // (no private `_item` traversal), then attribute the change to its key.
-        let current: YSharedType = type;
+        let current: Y.AbstractType<Y.YEvent<any>> = type;
         let parent = current.parent;
         while (parent) {
           current = parent;

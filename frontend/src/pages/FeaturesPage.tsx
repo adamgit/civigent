@@ -9,7 +9,7 @@ export function FeaturesPage() {
   const features = activeTab === "user" ? userFeatures : architectureFeatures;
 
   return (
-    <div className="flex-1 overflow-auto canvas-scroll" style={{ fontFamily: "var(--font-ui)" }}>
+    <div className="min-h-0 flex-1 overflow-auto canvas-scroll" style={{ fontFamily: "var(--font-ui)" }}>
       <div style={{ maxWidth: 740, margin: "0 auto", padding: "2.5rem 1.5rem 3rem" }}>
 
         <div style={{ marginBottom: "1.5rem" }}>

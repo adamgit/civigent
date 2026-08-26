@@ -582,7 +582,7 @@ export function GitBackupPage() {
     restore.remote_auth_sha !== null;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <SharedPageHeader title="Git Backup" backTo="/admin" />
       <div
         className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2"

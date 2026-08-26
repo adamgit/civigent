@@ -15,7 +15,7 @@ export function AgentPulsePage() {
   const chart = useAgentPulseChart(mcpActions, activity, agentTasks);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <SharedPageHeader title="Agent pulse" backTo="/" />
       <div className="agent-pulse-page sidebar-scroll">
         <section

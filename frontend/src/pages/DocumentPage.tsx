@@ -856,7 +856,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   return (
     <SectionHoverProvider activeFragmentKey={focusedFragmentKey}>
     <DocumentActivityIndicator activity={documentActivity} />
-    <div data-doc-layout={layoutMode} className="relative flex flex-col h-full min-h-0" style={{ background: "var(--color-page-bg)" }}>
+    <div data-doc-layout={layoutMode} className="relative flex h-full min-h-0 flex-col overflow-hidden" style={{ background: "var(--color-page-bg)" }}>
       {layoutMode === "wide" ? (
         <DocumentPaperStickyHeader
           title={docTitle}

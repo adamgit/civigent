@@ -39,9 +39,9 @@ export function AdvancedExportPage() {
   const folderPaths = useMemo(() => ["/", ...collectFolderPaths(entries)], [entries]);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <SharedPageHeader title="Advanced Export" backTo="/imports" />
-      <div className="flex-1 overflow-y-auto p-6 space-y-4">
+      <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-4">
         {error && <p className="text-error">{error}</p>}
 
         <p className="text-sm text-muted max-w-prose">

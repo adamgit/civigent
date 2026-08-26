@@ -616,7 +616,7 @@ export function AgentSimulatorPage() {
   const isTerminal = proposalStatus === "committed" || proposalStatus === "cancelled";
 
   return (
-    <section className="max-w-[720px] mx-auto px-6 py-8">
+    <section className="min-h-0 flex-1 overflow-auto max-w-[720px] mx-auto px-6 py-8">
       <SharedPageHeader title="Agent Simulator" backTo="/" />
       <p className="text-xs text-text-secondary mb-6">
         Drive agent API calls step-by-step from the browser. Open the editor in another tab to test coordination.

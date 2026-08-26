@@ -90,8 +90,8 @@ export function LoginPage() {
         : (methods.length === 0 ? "loading" : "unknown");
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-auto flex justify-center" style={{ fontFamily: "var(--font-ui)" }}>
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-auto flex justify-center" style={{ fontFamily: "var(--font-ui)" }}>
         <div style={{ maxWidth: 420, width: "100%", margin: "40px auto" }}>
           <ContentPanel>
             <ContentPanel.Header className="border-b-0 pb-0">

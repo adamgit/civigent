@@ -974,18 +974,20 @@ export function AppLayout() {
         </aside>
       </div>
 
-      {/* Main area — min-h-0 so flex children can own their own scrollports
-          (e.g. DocumentPage canvas) instead of forcing this column to grow. */}
+      {/* Main never scrolls. Each route owns exactly one scrollport: pinned
+          chrome pages clip (overflow-hidden) and scroll inside; growing pages
+          use flex-1 overflow-auto. min-h-0 keeps a flex child from forcing
+          this column to grow past the viewport. */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {/* Content */}
-        <main className="flex-1 min-h-0 overflow-y-auto canvas-scroll">
+        <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {/* Authoritative session check failed (500 / network / malformed) — a
               visible degraded state so the initial load never fails silently. */}
           {sessionError ? (
             <div
               role="alert"
               data-testid="session-degraded"
-              className="bg-red-50 border-b border-red-200 px-4 py-2 text-xs text-red-800"
+              className="shrink-0 bg-red-50 border-b border-red-200 px-4 py-2 text-xs text-red-800"
             >
               Couldn&apos;t verify your session: {sessionError}. You may be signed out — retry by refreshing or refocusing the tab.
             </div>
@@ -1012,7 +1014,7 @@ export function AppLayout() {
             </div>
           ) : null}
           {systemStarting ? (
-            <div className="flex flex-col items-center justify-center h-full gap-4 text-text-faint">
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 text-text-faint">
               <div className="flex gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse" />
                 <span className="w-2 h-2 rounded-full bg-accent/60 animate-pulse [animation-delay:300ms]" />
@@ -1021,24 +1023,26 @@ export function AppLayout() {
               <p className="text-sm">The system is starting up. This page will refresh automatically.</p>
             </div>
           ) : (
-            <Outlet
-              context={{
-                entries,
-                treeLoading: loadingTree,
-                treeSyncing: syncingTree,
-                treeError,
-                createDoc,
-                refreshTree: () => loadTree({ background: true }),
-                sidebarAutoHide,
-                setSidebarAutoHide,
-                setDocLayoutNarrow,
-                reportFocusedDocTabEditState,
-                clearFocusedDocTabEditState,
-                singleUser,
-                appName,
-                subscribeDocSectionNamesChanged,
-              } satisfies AppLayoutOutletContext}
-            />
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              <Outlet
+                context={{
+                  entries,
+                  treeLoading: loadingTree,
+                  treeSyncing: syncingTree,
+                  treeError,
+                  createDoc,
+                  refreshTree: () => loadTree({ background: true }),
+                  sidebarAutoHide,
+                  setSidebarAutoHide,
+                  setDocLayoutNarrow,
+                  reportFocusedDocTabEditState,
+                  clearFocusedDocTabEditState,
+                  singleUser,
+                  appName,
+                  subscribeDocSectionNamesChanged,
+                } satisfies AppLayoutOutletContext}
+              />
+            </div>
           )}
         </main>
         {/* Publish mirror intentionally hidden while the unpublished-changes UX is redesigned.

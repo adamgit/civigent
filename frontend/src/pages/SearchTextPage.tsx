@@ -142,7 +142,7 @@ export function SearchTextPage() {
     // The page owns its own scrollports (house pattern, same as DocumentPage):
     // the map column must stay put while results scroll, which it cannot do if
     // the whole page is one scrolling block.
-    <section className="flex h-full min-h-0 flex-col" style={{ padding: "0.5rem 0.75rem 0.75rem" }}>
+    <section className="flex h-full min-h-0 flex-col overflow-hidden" style={{ padding: "0.5rem 0.75rem 0.75rem" }}>
       <SharedPageHeader title="Text Search" backTo="/" />
 
       <form

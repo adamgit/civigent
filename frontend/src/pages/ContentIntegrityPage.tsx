@@ -24,9 +24,9 @@ export function ContentIntegrityPage() {
   }, []);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <SharedPageHeader title="Content Integrity" backTo="/admin" />
-      <div className="flex-1 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
+      <div className="flex-1 min-h-0 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
         <p className="text-[13px] text-text-muted mb-4 max-w-2xl leading-relaxed">
           Scans every canonical document with the same section-assembly path the document page uses.
           Nothing is written — results are computed in memory and discarded when you leave.

@@ -775,7 +775,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
   return (
     <SectionHoverProvider activeFragmentKey={focusedFragmentKey}>
     <DocumentActivityIndicator activity={documentActivity} />
-    <div className="relative flex flex-col h-full" style={{ background: "var(--color-page-bg)" }}>
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden" style={{ background: "var(--color-page-bg)" }}>
       <div className="relative shrink-0">
         <DocumentTopbar
           docPath={docPath}
@@ -839,7 +839,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
       )}
 
       {/* Three-column governance layout scroll area */}
-      <div ref={scrollContainerRef} className="flex-1 overflow-auto canvas-scroll px-5 pt-8 pb-24" style={{ background: "var(--color-page-bg)" }}>
+      <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-auto canvas-scroll px-5 pt-8 pb-24" style={{ background: "var(--color-page-bg)" }}>
         <div
           className="mx-auto"
           style={{

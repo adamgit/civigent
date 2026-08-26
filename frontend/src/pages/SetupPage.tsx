@@ -1123,7 +1123,7 @@ export function SetupPage() {
     <>
       <SharedPageHeader title="Connect an Agent" backTo="/" />
 
-      <section style={{ maxWidth: 1100, margin: "0 auto", padding: "1rem 1.5rem 2.5rem" }}>
+      <section className="min-h-0 flex-1 overflow-auto" style={{ maxWidth: 1100, margin: "0 auto", padding: "1rem 1.5rem 2.5rem" }}>
         {error && <p className="text-error" style={{ marginBottom: "1rem" }}>{error}</p>}
 
         {!info ? (

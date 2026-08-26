@@ -43,7 +43,7 @@ export function SharePage() {
   };
 
   return (
-    <div className="p-8 max-w-xl mx-auto">
+    <div className="min-h-0 flex-1 overflow-auto p-8 max-w-xl mx-auto">
       <ContentPanel>
         <h1 className="text-lg font-semibold mb-1">A document has been shared with you</h1>
         <p className="text-sm text-gray-600 mb-4">

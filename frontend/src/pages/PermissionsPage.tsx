@@ -158,10 +158,10 @@ export function PermissionsPage() {
     }
   };
 
-  if (loading) return <div style={{ padding: "2rem" }}>Loading...</div>;
+  if (loading) return <div className="min-h-0 flex-1 overflow-auto" style={{ padding: "2rem" }}>Loading...</div>;
 
   return (
-    <div style={{ padding: "1rem 2rem", maxWidth: 900 }}>
+    <div className="min-h-0 flex-1 overflow-auto" style={{ padding: "1rem 2rem", maxWidth: 900 }}>
       <SharedPageHeader title="Permissions" />
 
       {error && (

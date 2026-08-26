@@ -193,9 +193,9 @@ export function AdminPage() {
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <SharedPageHeader title="Administration" backTo="/" />
-      <div className="flex-1 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
+      <div className="flex-1 min-h-0 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
         <p className="text-[12px] text-text-muted mb-4">
           Operational status, human-involvement preset configuration, and local frontend controls.
         </p>

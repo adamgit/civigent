@@ -254,7 +254,7 @@ export function ProposalDetailPage() {
     : [];
 
   return (
-    <section>
+    <section className="min-h-0 flex-1 overflow-auto">
       <SharedPageHeader title="Proposal Detail" backTo="/admin/proposals" />
       <p>Proposal ID: {id ?? "(unknown)"}</p>
       {loading ? <p>Loading proposal...</p> : null}
