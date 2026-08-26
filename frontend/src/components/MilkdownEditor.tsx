@@ -566,13 +566,18 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
     crepe.on((listener) => {
-      listener.markdownUpdated((_ctx, md, _prevMd) => {
-        if (debounceTimer !== null) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => {
-          debounceTimer = null;
-          onChangeRef.current?.(md);
-        }, 300);
-      });
+      // markdownUpdated serializes the whole editor doc on every transaction.
+      // Live CRDT editors never consume onChange (y-prosemirror is the source
+      // of truth), so subscribing would stall every keystroke for no reason.
+      if (!expectsCrdt) {
+        listener.markdownUpdated((_ctx, md, _prevMd) => {
+          if (debounceTimer !== null) clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => {
+            debounceTimer = null;
+            onChangeRef.current?.(md);
+          }, 300);
+        });
+      }
 
       listener.selectionUpdated((_ctx, selection, _prevSelection) => {
         try {

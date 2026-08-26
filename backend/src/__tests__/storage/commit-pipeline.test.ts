@@ -262,4 +262,70 @@ describe("commit-pipeline", () => {
     );
     expect(absorb.rewrittenDocumentPaths).toContain(newNotePath);
   });
+
+  // Empty create_section materializes the heading in the overlay, then
+  // isIdentityUpsert returns writtenEntries: [] so mutate adds no section claim
+  // and no document target. Exclusive-scope absorb on the rename pair never
+  // walks that overlay; publish still commits.
+  it("commit lands an empty create_section that shares the proposal with a rename", async () => {
+    const sourcePath = "/canary-empty/source.md";
+    const renamedPath = "/canary-empty/legacy/source.md";
+    const newNotePath = "/canary-empty/legacy/ABOUT.md";
+    const newNoteHeading = "Unclaimed empty create";
+
+    await createSampleDocument(ctx.rootDir, sourcePath);
+
+    const { id } = await createProposal(writer, "empty create plus rename");
+    await mutateProposalContent(id, {
+      kind: "create_section",
+      docPath: newNotePath,
+      headingPath: [newNoteHeading],
+      heading: newNoteHeading,
+    });
+    await mutateProposalContent(id, {
+      kind: "rename_document",
+      docPath: sourcePath,
+      newPath: renamedPath,
+    });
+
+    const absorb = await publishProposalToCanonicalDetailed(id, {});
+    expect((await readProposal(id)).status).toBe("committed");
+    expect(absorb.commitSha.length).toBe(40);
+
+    expect(await pathExists(resolveSkeletonPath(newNotePath, ctx.contentDir))).toBe(true);
+    const canonical = new ContentLayer(ctx.contentDir);
+    expect(await canonical.listHeadingPaths(newNotePath)).toContainEqual([newNoteHeading]);
+    expect(absorb.rewrittenDocumentPaths).toContain(newNotePath);
+  });
+
+  it("commit lands an empty create_section on an existing document that shares the proposal with a rename", async () => {
+    const sourcePath = "/canary-empty-existing/source.md";
+    const renamedPath = "/canary-empty-existing/legacy/source.md";
+    const hostPath = "/canary-empty-existing/host.md";
+    const newHeading = "Unclaimed empty create";
+
+    await createSampleDocument(ctx.rootDir, sourcePath);
+    await createSampleDocument(ctx.rootDir, hostPath);
+
+    const { id } = await createProposal(writer, "empty create on host plus rename");
+    await mutateProposalContent(id, {
+      kind: "create_section",
+      docPath: hostPath,
+      headingPath: [newHeading],
+      heading: newHeading,
+    });
+    await mutateProposalContent(id, {
+      kind: "rename_document",
+      docPath: sourcePath,
+      newPath: renamedPath,
+    });
+
+    const absorb = await publishProposalToCanonicalDetailed(id, {});
+    expect((await readProposal(id)).status).toBe("committed");
+    expect(absorb.commitSha.length).toBe(40);
+
+    const canonical = new ContentLayer(ctx.contentDir);
+    expect(await canonical.listHeadingPaths(hostPath)).toContainEqual([newHeading]);
+    expect(absorb.rewrittenDocumentPaths).toContain(hostPath);
+  });
 });

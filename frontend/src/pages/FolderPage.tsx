@@ -633,8 +633,8 @@ export function FolderPage({ folderPath }: FolderPageProps) {
   };
 
   return (
-    <div className="flex h-full min-w-0 flex-col bg-folder-page-bg">
-      <div className="relative isolate flex-1 overflow-auto px-8 py-7 font-ui max-md:px-4 max-md:py-4">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-folder-page-bg">
+      <div className="relative isolate min-h-0 flex-1 overflow-auto px-8 py-7 font-ui max-md:px-4 max-md:py-4">
         {folderEntry ? <FolderTreePageWatermark entry={folderEntry} /> : null}
         {treeLoading ? (
           <p className="text-xs text-text-muted">Loading folder details...</p>
@@ -812,7 +812,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
         ) : null}
       </div>
       {folderEntry && stats ? (
-        <div className="hidden shrink-0 border-t border-folder-divider bg-folder-page-bg px-4 py-3 max-md:block">
+        <div className="hidden shrink-0 border-t border-folder-divider bg-folder-page-bg px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] max-md:block">
           <div className="flex items-stretch gap-2">
             <Link
               to="/"

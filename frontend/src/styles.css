@@ -106,12 +106,18 @@
 }
 
 /* ===== BASE ===== */
+/* 100dvh follows the visible viewport (URL bar / Android system nav). 100vh is
+ * the large viewport, so a bottom-of-page control is clipped on real phones
+ * while still showing in a desktop window resized to the same CSS width. */
+html, body, #root {
+  height: 100%;
+  height: 100dvh;
+}
 body {
   margin: 0;
   font-family: var(--font-ui);
   background: var(--color-page-bg);
   color: var(--color-text-primary);
-  height: 100vh;
   overflow: hidden;
 }
 

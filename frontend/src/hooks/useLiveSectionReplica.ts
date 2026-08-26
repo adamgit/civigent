@@ -297,6 +297,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
         forceRender();
       },
       onReceiptChange: ({ allReceived }) => {
+        if (allReceivedRef.current === allReceived) return;
         allReceivedRef.current = allReceived;
         forceRender();
       },

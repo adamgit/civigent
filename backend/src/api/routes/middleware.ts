@@ -13,6 +13,7 @@ import { checkDocPermission } from "../../auth/acl.js";
 import { getMCPPublicURL } from "../../auth/oauth-config.js";
 import { ProposalLockConflictError } from "../../domain/proposal-fsm-locks.js";
 import { CommitPermissionError } from "../../storage/commit-pipeline.js";
+import { UnclaimedProposalOverlayError } from "../../storage/proposal-overlay-ownership.js";
 import { PermissionError, authorizeDocRead, type AuthorizedDocRead } from "../../auth/authorized-read.js";
 
 // Re-exports of auth gating consumed by HTTP-only route modules (which may not
@@ -257,6 +258,10 @@ export function installErrorHandler(router: Router): void {
     }
     if (error instanceof CommitPermissionError) {
       sendApiError(res, 403, error.message);
+      return;
+    }
+    if (error instanceof UnclaimedProposalOverlayError) {
+      sendApiError(res, 409, error.message);
       return;
     }
     if (error instanceof PermissionError) {

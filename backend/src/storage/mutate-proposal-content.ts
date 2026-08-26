@@ -150,6 +150,7 @@ export async function mutateProposalContent(
 
   let affected: ProposalSectionClaim[];
   const extras: Omit<MutateProposalContentResult, "proposal" | "manifest"> = {};
+  const documentTargetsForImplicitCreates: DocumentTargetRef[] = [];
 
   switch (operation.kind) {
     case "write_section":
@@ -168,6 +169,9 @@ export async function mutateProposalContent(
             })
           : await editor.createSection(operation.docPath, operation.headingPath, operation.heading, operation.content ?? sectionWriteInputFromExternal(""));
       extras.writeResult = writeResult;
+      if (writeResult.createdDocument === true) {
+        documentTargetsForImplicitCreates.push(documentTargetRef(operation.docPath));
+      }
       // Create-at-position is still one semantic mutate call: the engine create
       // stays append-only and placement is the existing reorder primitive on the
       // requested leaf only (parser-expanded descendants are not reordered;
@@ -345,7 +349,11 @@ export async function mutateProposalContent(
   const existingDocumentTargets = proposal.targets.filter(
     (t): t is DocumentTargetRef => t.kind === "document",
   );
-  const documentTargets = [...existingDocumentTargets, ...documentTargetsForOperation(operation)];
+  const documentTargets = [
+    ...existingDocumentTargets,
+    ...documentTargetsForOperation(operation),
+    ...documentTargetsForImplicitCreates,
+  ];
   const manifest = mintProposalManifest(sections, documentTargets);
   const { proposal: updated } = await updateProposalSections(proposalId, manifest);
 

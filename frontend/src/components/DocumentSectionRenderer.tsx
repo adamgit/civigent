@@ -13,6 +13,47 @@ import type { SectionTransfer, SectionTransferService } from "../services/sectio
 import { useSectionHover } from "../contexts/sectionHoverUtils";
 import { rewriteMarkdownContentHref } from "../app/docs-location";
 
+const REMARK_PLUGINS = [remarkGfm];
+
+function MarkdownContentLink({
+  node: _node,
+  href,
+  children,
+  ...props
+}: React.ComponentProps<"a"> & { node?: unknown }) {
+  const resolvedHref = typeof href === "string" ? rewriteMarkdownContentHref(href) : null;
+  if (resolvedHref) {
+    return (
+      <Link {...props} to={resolvedHref}>
+        {children}
+      </Link>
+    );
+  }
+  return (
+    <a {...props} href={href}>
+      {children}
+    </a>
+  );
+}
+
+const markdownComponents = { a: MarkdownContentLink };
+
+const StaticSectionMarkdown = React.memo(function StaticSectionMarkdown({
+  markdown,
+  className = "doc-prose",
+}: {
+  markdown: string;
+  className?: string;
+}) {
+  return (
+    <div className={className}>
+      <ReactMarkdown components={markdownComponents} remarkPlugins={REMARK_PLUGINS}>
+        {markdown}
+      </ReactMarkdown>
+    </div>
+  );
+});
+
 export interface DocumentSectionRendererProps {
   section: RenderSectionRef;
   fragmentKey: string;
@@ -126,29 +167,17 @@ export function DocumentSectionRenderer({
 }: DocumentSectionRendererProps) {
   const { setHoveredFragmentKey } = useSectionHover();
   const headingPath = [...section.headingPath];
-  const displayMarkdown = getDisplayMarkdown(section);
   const unavailableForEdit = isLockedByOtherHuman || crdtBlocked;
   const liveBinding = !proposalMode && hasEditor ? getLiveBinding?.(fk) : undefined;
   const mountEditor = hasEditor && (proposalMode || liveBinding !== undefined);
   const crdtDegraded = isCrdtDegraded(crdtState);
   const crdtPaused = crdtBannerInfo(crdtState);
-  const markdownComponents = {
-    a({ node: _node, href, children, ...props }: React.ComponentProps<"a"> & { node?: unknown }) {
-      const resolvedHref = typeof href === "string" ? rewriteMarkdownContentHref(href) : null;
-      if (resolvedHref) {
-        return (
-          <Link {...props} to={resolvedHref}>
-            {children}
-          </Link>
-        );
-      }
-      return (
-        <a {...props} href={href}>
-          {children}
-        </a>
-      );
-    },
-  };
+  // A ready live editor already holds the body via y-prosemirror. Reading
+  // painted markdown here would serialize that fragment on every parent render
+  // (every keystroke, before the cache-and-echo fixes).
+  const needsPaintedMarkdown =
+    proposalMode || !mountEditor || !isReady || (crdtDegraded && !isFocused);
+  const displayMarkdown = needsPaintedMarkdown ? getDisplayMarkdown(section) : "";
 
   return (
     <div
@@ -240,11 +269,7 @@ export function DocumentSectionRenderer({
 
       {mountEditor ? (
         crdtDegraded && !isFocused ? (
-          <div className="doc-prose opacity-50">
-            <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
-              {displayMarkdown}
-            </ReactMarkdown>
-          </div>
+          <StaticSectionMarkdown markdown={displayMarkdown} className="doc-prose opacity-50" />
         ) : (
           <>
             {crdtPaused ? (
@@ -258,11 +283,7 @@ export function DocumentSectionRenderer({
             ) : null}
             <div className={`relative${crdtDegraded ? " opacity-50" : ""}`}>
               {!isReady && (
-                <div className="doc-prose">
-                  <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
-                    {displayMarkdown}
-                  </ReactMarkdown>
-                </div>
+                <StaticSectionMarkdown markdown={displayMarkdown} />
               )}
               <div
                 className={isReady ? "" : "absolute inset-0"}
@@ -315,11 +336,7 @@ export function DocumentSectionRenderer({
           </>
         )
       ) : (
-        <div className="doc-prose">
-          <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
-            {displayMarkdown}
-          </ReactMarkdown>
-        </div>
+        <StaticSectionMarkdown markdown={displayMarkdown} />
       )}
     </div>
   );

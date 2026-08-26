@@ -760,7 +760,7 @@ export function AppLayout() {
   return (
     <CurrentUserProvider currentUser={currentUser}>
     <div
-      className="flex h-screen"
+      className="flex h-full min-h-0"
       data-sidebar-mode={sidebarAutoHide ? "autohide" : "expanded"}
       data-sidebar-hover-reveal={hoverRevealArmed ? "on" : "off"}
       data-single-user={singleUser ? "on" : "off"}

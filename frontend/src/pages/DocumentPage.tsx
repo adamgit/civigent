@@ -345,7 +345,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
       }
       return liveReplica.paintMarkdown(ref.id, seedMarkdownFor(workspaceSeeds, ref.id) ?? "");
     },
-    [proposalMode, getProposalOverlayMarkdown, workspaceSeeds, liveReplica],
+    [proposalMode, getProposalOverlayMarkdown, workspaceSeeds, liveReplica.paintMarkdown],
   );
 
   useEffect(() => {

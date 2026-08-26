@@ -37,6 +37,7 @@ import {
   evaluateAgentWritePolicy,
   publishProposalToCanonicalDetailed,
 } from "../../storage/commit-pipeline.js";
+import { UnclaimedProposalOverlayError } from "../../storage/proposal-overlay-ownership.js";
 import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
@@ -524,6 +525,9 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
       return makeToolErrorResult(`Proposal not found: ${proposalId}`);
     }
     if (error instanceof InvalidProposalStateError) {
+      return makeToolErrorResult(error.message);
+    }
+    if (error instanceof UnclaimedProposalOverlayError) {
       return makeToolErrorResult(error.message);
     }
     throw error;

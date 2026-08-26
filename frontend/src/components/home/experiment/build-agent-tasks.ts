@@ -302,8 +302,7 @@ export function buildAgentTasks(
 }
 
 export function taskOverlapsRange(task: HomeAgentTask, startMs: number, endMs: number): boolean {
-  const t0 = Date.parse(task.startedAt);
-  const t1 = Date.parse(task.endedAt ?? new Date().toISOString());
-  if (Number.isNaN(t0) || Number.isNaN(t1)) return false;
-  return t0 < endMs && t1 >= startMs;
+  const at = Date.parse(task.endedAt ?? task.startedAt);
+  if (Number.isNaN(at)) return false;
+  return at >= startMs && at < endMs;
 }

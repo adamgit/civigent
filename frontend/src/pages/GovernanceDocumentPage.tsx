@@ -321,7 +321,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
       }
       return liveReplica.paintMarkdown(ref.id, seedMarkdownFor(workspaceSeeds, ref.id) ?? "");
     },
-    [proposalMode, getProposalOverlayMarkdown, workspaceSeeds, liveReplica],
+    [proposalMode, getProposalOverlayMarkdown, workspaceSeeds, liveReplica.paintMarkdown],
   );
 
   useEffect(() => {

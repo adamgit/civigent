@@ -30,11 +30,11 @@ describe("Post-commit notify invariants", () => {
   });
 
   it("does not emit websocket events from commit pipeline", async () => {
-    const { readActiveProposal, transitionToCommitting, transitionToCommitted } =
+    const { readProposal, readActiveProposal, transitionToCommitting, transitionToCommitted } =
       await import("../../storage/proposal-repository.js");
     const { CanonicalStore } = await import("../../storage/canonical-store.js");
 
-    vi.mocked(readActiveProposal).mockResolvedValue({
+    const proposal001 = {
       id: "test-prop-001",
       intent: "test intent",
       writer: { id: "writer-1", type: "human", displayName: "Writer One" },
@@ -48,7 +48,9 @@ describe("Post-commit notify invariants", () => {
       ],
       created_at: new Date().toISOString(),
       status: "draft",
-    });
+    } as unknown as Awaited<ReturnType<typeof readActiveProposal>>;
+    vi.mocked(readActiveProposal).mockResolvedValue(proposal001);
+    vi.mocked(readProposal).mockResolvedValue(proposal001);
     vi.mocked(transitionToCommitting).mockResolvedValue(undefined);
     vi.mocked(transitionToCommitted).mockResolvedValue(undefined);
     vi.spyOn(CanonicalStore.prototype, "absorbChangedSections").mockResolvedValue({
@@ -79,11 +81,11 @@ describe("Post-commit notify invariants", () => {
   });
 
   it("keeps restore-target commit metadata without any post-commit websocket branch", async () => {
-    const { readActiveProposal, transitionToCommitting, transitionToCommitted } =
+    const { readProposal, readActiveProposal, transitionToCommitting, transitionToCommitted } =
       await import("../../storage/proposal-repository.js");
     const { CanonicalStore } = await import("../../storage/canonical-store.js");
 
-    vi.mocked(readActiveProposal).mockResolvedValue({
+    const proposal002 = {
       id: "test-prop-002",
       intent: "restore",
       writer: { id: "admin", type: "human", displayName: "Admin" },
@@ -91,7 +93,9 @@ describe("Post-commit notify invariants", () => {
       targets: [{ kind: "section", doc_path: "/sample.md", heading_path: ["Overview"] }],
       created_at: new Date().toISOString(),
       status: "draft",
-    });
+    } as unknown as Awaited<ReturnType<typeof readActiveProposal>>;
+    vi.mocked(readActiveProposal).mockResolvedValue(proposal002);
+    vi.mocked(readProposal).mockResolvedValue(proposal002);
     vi.mocked(transitionToCommitting).mockResolvedValue(undefined);
     vi.mocked(transitionToCommitted).mockResolvedValue(undefined);
     vi.spyOn(CanonicalStore.prototype, "absorbChangedSections").mockResolvedValue({

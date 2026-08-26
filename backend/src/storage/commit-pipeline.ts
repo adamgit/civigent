@@ -26,6 +26,10 @@ import {
   InvalidProposalStateError,
 } from "./proposal-repository.js";
 import { ProposalReader } from "./proposal-reader.js";
+import {
+  UnclaimedProposalOverlayError,
+  unclaimedOwnedHeadings,
+} from "./proposal-overlay-ownership.js";
 import { isSnapshotGenerationEnabled, scheduleSnapshotRegeneration } from "./snapshot.js";
 import { CanonicalStore, type AbsorbResult } from "./canonical-store.js";
 import type { DocPath, DocumentTargetRef, WriterIdentity } from "../types/shared.js";
@@ -207,6 +211,15 @@ async function absorbCommittingProposalToCanonical(
     const dp = ref.doc_path;
     if (!deletedSectionFilesByDoc.has(dp)) deletedSectionFilesByDoc.set(dp, new Set<string>());
     deletedSectionFilesByDoc.get(dp)!.add(ref.section_file);
+  }
+
+  // Claim check (spec `01` §Proposal Overlay Model): absorb touches only what the
+  // manifest claims, so overlay content the manifest does not claim would be
+  // silently dropped or committed outside the proposal's declared scope. Both are
+  // corruption, so publish refuses before a single canonical byte moves.
+  const unclaimed = await unclaimedOwnedHeadings(proposal.id, "committing");
+  if (unclaimed.length > 0) {
+    throw new UnclaimedProposalOverlayError(proposal.id, unclaimed);
   }
 
   const absorbResult = await store.absorbChangedSections(overlayRoot, commitMessage, author, {

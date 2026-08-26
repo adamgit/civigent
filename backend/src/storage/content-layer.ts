@@ -303,6 +303,7 @@ export interface SectionDiscoveryEntry {
 
 export interface UpsertSectionFromMarkdownDetailedResult {
   writtenEntries: FlatEntry[];
+  createdDocument?: boolean;
   removedContentEntries: FlatEntry[];
   fragmentKeyRemaps: StructuralMutationPlan["fragmentKeyRemaps"];
   liveReloadEntries: FlatEntry[];
@@ -1028,14 +1029,34 @@ export class ProposalShadowContentLayer {
     if (state === "tombstone") {
       throw new DocumentNotFoundError(`Document "${ref.docPath}" is pending deletion in this proposal.`);
     }
+    let createdDocument = false;
     if (state === "missing") {
       await this.createDocument(ref.docPath);
+      createdDocument = true;
     }
-    let skeleton = await this.getWritableSkeleton(ref.docPath);
+    const preWriteSkeleton = await this.getWritableSkeleton(ref.docPath);
+    let skeleton = preWriteSkeleton;
+    let materializedEntries: FlatEntry[] = [];
     if (!skeleton.has(ref.headingPath)) {
-      await this.materializeAncestorHeadings(ref.docPath, ref.headingPath);
+      materializedEntries = await this.materializeAncestorHeadings(ref.docPath, ref.headingPath);
       skeleton = await this.getWritableSkeleton(ref.docPath);
     }
+    const withImplicitStructuralCreates = (
+      result: UpsertSectionFromMarkdownDetailedResult,
+    ): UpsertSectionFromMarkdownDetailedResult => {
+      const writtenEntries = [...result.writtenEntries];
+      const alreadyAccountedFor = new Set([
+        ...writtenEntries.map((e) => e.absolutePath),
+        ...result.removedContentEntries.map((e) => e.absolutePath),
+      ]);
+      for (const entry of materializedEntries) {
+        if (entry.isSubSkeleton) continue;
+        if (alreadyAccountedFor.has(entry.absolutePath)) continue;
+        alreadyAccountedFor.add(entry.absolutePath);
+        writtenEntries.push(entry);
+      }
+      return { ...result, writtenEntries, createdDocument };
+    };
 
     const parsedSections = getParser().parseDocumentMarkdown(markdown);
 
@@ -1056,7 +1077,7 @@ export class ProposalShadowContentLayer {
     if (headedSections.length === 0) {
       const deletedEntry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
       const effect = await this.removeHeading(ref.docPath, ref.headingPath, leadingOrphanBody);
-      return upsertResultFromHeadingRemoval(effect, deletedEntry);
+      return withImplicitStructuralCreates(upsertResultFromHeadingRemoval(effect, deletedEntry));
     }
 
     const targetIsSubSkeletonParent =
@@ -1070,13 +1091,13 @@ export class ProposalShadowContentLayer {
           entry,
           single.body as unknown as string,
         );
-        return {
+        return withImplicitStructuralCreates({
           writtenEntries: [flatEntryFromContentEntry(entry)],
           removedContentEntries: [],
           fragmentKeyRemaps: [],
           liveReloadEntries: [flatEntryFromContentEntry(entry)],
           structureChanges: [],
-        };
+        });
       }
       const { oldEntry, newEntry } = await this.retitleSubSkeletonParentInPlace(
         skeleton,
@@ -1090,7 +1111,7 @@ export class ProposalShadowContentLayer {
         newEntry,
         single.body as unknown as string,
       );
-      return {
+      return withImplicitStructuralCreates({
         writtenEntries: [flatEntryFromContentEntry(newEntry)],
         removedContentEntries: [],
         fragmentKeyRemaps: [],
@@ -1099,27 +1120,29 @@ export class ProposalShadowContentLayer {
           oldEntry: flatEntryFromContentEntry(oldEntry),
           newEntries: [flatEntryFromContentEntry(newEntry)],
         }],
-      };
+      });
     }
 
     if (
       !hasOrphan
-      && (await this.isIdentityUpsert(skeleton, ref.headingPath, headedSections))
+      && (await this.isIdentityUpsert(preWriteSkeleton, ref.headingPath, headedSections))
     ) {
-      return {
+      return withImplicitStructuralCreates({
         writtenEntries: [],
         removedContentEntries: [],
         fragmentKeyRemaps: [],
         liveReloadEntries: [],
         structureChanges: [],
-      };
+      });
     }
 
     if (targetIsSubSkeletonParent && headedSections.length > 1) {
-      return await this.applyMultiHeadingPayloadToSubSkeletonParent(
-        ref,
-        headedSections,
-        leadingOrphanBody,
+      return withImplicitStructuralCreates(
+        await this.applyMultiHeadingPayloadToSubSkeletonParent(
+          ref,
+          headedSections,
+          leadingOrphanBody,
+        ),
       );
     }
 
@@ -1145,11 +1168,13 @@ export class ProposalShadowContentLayer {
             writtenEntries.push(prevHolder);
             liveReloadEntries.push(prevHolder);
           } else {
-            return await this.replaceSubtreeDeletingOmittedSections(
-              ref.docPath,
-              ref.headingPath,
-              headedSections,
-              { leadingOrphanBody },
+            return withImplicitStructuralCreates(
+              await this.replaceSubtreeDeletingOmittedSections(
+                ref.docPath,
+                ref.headingPath,
+                headedSections,
+                { leadingOrphanBody },
+              ),
             );
           }
         }
@@ -1160,21 +1185,23 @@ export class ProposalShadowContentLayer {
           single.body as unknown as string,
         );
 
-        return {
+        return withImplicitStructuralCreates({
           writtenEntries,
           removedContentEntries: [],
           fragmentKeyRemaps: [],
           liveReloadEntries,
           structureChanges: [],
-        };
+        });
       }
     }
 
-    return await this.replaceSubtreeDeletingOmittedSections(
-      ref.docPath,
-      ref.headingPath,
-      headedSections,
-      { leadingOrphanBody },
+    return withImplicitStructuralCreates(
+      await this.replaceSubtreeDeletingOmittedSections(
+        ref.docPath,
+        ref.headingPath,
+        headedSections,
+        { leadingOrphanBody },
+      ),
     );
   }
 
@@ -1290,6 +1317,7 @@ export class ProposalShadowContentLayer {
       );
     }
     if (parsedSections.length === 0) return false;
+    if (!skeleton.has(headingPath)) return false;
 
     const liveEntries = skeleton.subtreeEntries(headingPath);
     if (liveEntries.length !== parsedSections.length) return false;
@@ -1792,6 +1820,20 @@ export class ProposalShadowContentLayer {
       preBodies.set(relKey, (await this.readEffectiveSectionBody(entry.absolutePath)) ?? "");
     }
 
+    // A destination parent that is currently a LEAF holds its body in its own
+    // file, which this move turns into a sub-skeleton. Its body must travel into
+    // the body holder minted below, exactly as `materializeAncestorHeadings`
+    // migrates one — otherwise the move silently empties the new parent.
+    const destParentIsLeaf =
+      newParentPath.length > 0
+      && skeleton.has(newParentPath)
+      && skeleton.subtreeEntries(newParentPath).length === 1;
+    const destParentBody = destParentIsLeaf
+      ? (await this.readEffectiveSectionBody(
+          skeleton.requireContentEntryByHeadingPath(newParentPath).absolutePath,
+        )) ?? ""
+      : null;
+
     const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
       const parentPath = headingPath.slice(0, -1);
       const target = headingPath[headingPath.length - 1];
@@ -1826,17 +1868,36 @@ export class ProposalShadowContentLayer {
       destSiblings.push(relabeled);
 
       const destSkeletonPath = ctx.resolveSkeletonPathFor(newParentPath);
+      let migratedDestParentBodyPath: string | null = null;
       if (newParentPath.length > 0) {
         const grandparentPath = newParentPath.slice(0, -1);
         const parentSiblings = ctx.findSiblingList(grandparentPath);
         const parentNode = parentSiblings.find((n) =>
           headingsEqual(n.heading, newParentPath[newParentPath.length - 1]),
         );
-        if (parentNode) ctx.addBodyHoldersToParents([parentNode]);
+        if (parentNode) {
+          ctx.addBodyHoldersToParents([parentNode]);
+          if (destParentBody !== null) {
+            const bodyHolder = parentNode.children[0];
+            if (!bodyHolder || bodyHolder.headingLevel !== 0 || bodyHolder.heading !== "") {
+              throw new Error(
+                `Skeleton integrity error in ${docPath}: addBodyHoldersToParents did not ` +
+                `prepend a body holder for the move destination [${newParentPath.join(" > ")}]`,
+              );
+            }
+            migratedDestParentBodyPath = path.join(
+              `${destSkeletonPath}.sections`,
+              bodyHolder.sectionFile,
+            );
+          }
+        }
       }
       const added = ctx.flattenNode(relabeled, newParentPath, destSkeletonPath);
 
       const bodyWrites: StructuralMutationPlan["bodyWrites"] = [];
+      if (migratedDestParentBodyPath !== null) {
+        bodyWrites.push({ absolutePath: migratedDestParentBodyPath, content: destParentBody! });
+      }
       for (const addedEntry of added) {
         if (addedEntry.isSubSkeleton) continue;
         const rel = addedEntry.headingPath.slice(newParentPath.length).join("\u0000");

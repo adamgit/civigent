@@ -132,10 +132,34 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
 
   private readonly listeners = new Set<() => void>();
   private destroyed = false;
+  /** Per-fragment markdown, invalidated when that fragment's Y types change. */
+  private readonly markdownCache = new Map<string, string>();
+  private readonly shareByType = new Map<Y.AbstractType<unknown>, string>();
+  private lastShareSize = -1;
+  private readonly invalidateCachedMarkdown = (txn: Y.Transaction): void => {
+    if (this.destroyed) return;
+    if (this.doc.share.size !== this.lastShareSize) {
+      this.shareByType.clear();
+      for (const [name, shared] of this.doc.share) {
+        this.shareByType.set(shared, name);
+      }
+      this.lastShareSize = this.doc.share.size;
+    }
+    for (const [type] of txn.changed) {
+      let current: Y.AbstractType<unknown> | null = type;
+      while (current?._item?.parent) {
+        current = current._item.parent as Y.AbstractType<unknown>;
+      }
+      if (!current) continue;
+      const name = this.shareByType.get(current);
+      if (name) this.markdownCache.delete(name);
+    }
+  };
 
   constructor(doc?: Y.Doc, awareness?: Awareness) {
     this.doc = doc ?? new Y.Doc();
     this.awareness = awareness ?? new Awareness(this.doc);
+    this.doc.on("afterTransaction", this.invalidateCachedMarkdown);
   }
 
   get isCurrentlyLiveAuthority(): boolean {
@@ -267,14 +291,23 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
 
   ingestUpdate(input: LiveUpdateInput): void {
     if (this.destroyed) return;
-    if (input.yjsUpdate) Y.applyUpdate(this.doc, input.yjsUpdate, this.origin);
+    let yjsChanged = false;
+    if (input.yjsUpdate) {
+      const before = Y.encodeStateVector(this.doc);
+      Y.applyUpdate(this.doc, input.yjsUpdate, this.origin);
+      yjsChanged = !stateVectorsEqual(before, Y.encodeStateVector(this.doc));
+    }
     if (input.state) this.adoptState(input.state);
-    this.notify();
+    // Content-only echoes of our own keystrokes are already in the doc (y-prosemirror
+    // wrote them). Applying them is a no-op; notifying would re-render every
+    // section and re-parse the whole document on each typed character.
+    if (yjsChanged || input.state) this.notify();
   }
 
   destroy(): void {
     this.destroyed = true;
     this.listeners.clear();
+    this.doc.off("afterTransaction", this.invalidateCachedMarkdown);
     this.awareness.destroy();
     this.doc.destroy();
   }
@@ -321,7 +354,13 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
     const key = SectionId.text(id);
     return {
       id,
-      readMarkdown: () => fragmentToMarkdown(this.doc, key) ?? "",
+      readMarkdown: () => {
+        const cached = this.markdownCache.get(key);
+        if (cached !== undefined) return cached;
+        const md = fragmentToMarkdown(this.doc, key) ?? "";
+        this.markdownCache.set(key, md);
+        return md;
+      },
       isEditable: () => this.editingEnabled && !this.blocked.has(id) && !this.editorsFrozenByPauseMirror,
       createEditorBinding: () =>
         // The runtime shape is LiveEditorAttachFields; the public type hides it.
@@ -333,6 +372,14 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
     if (this.destroyed) return;
     for (const listener of this.listeners) listener();
   }
+}
+
+function stateVectorsEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 export function createLiveSectionReplica(doc?: Y.Doc, awareness?: Awareness): LiveSectionReplica {
