@@ -11,7 +11,7 @@
  *   - forced: a Tier 1 write and a Tier 2 write both return the governance error
  *     and perform NO write (the doc never appears once the mode is relaxed),
  *   - forced: a Tier 1 read also returns the governance error (reads are gated too),
- *   - forced: the `/mcp` UA-fallback (resolves to Tier 1) is gated as well,
+ *   - forced: `/mcp` is a Tier 3 alias and is not gated,
  *   - forced: a Tier 3 tool still works,
  *   - available: the same Tier 1 / Tier 2 tools succeed and Tier 3 is unaffected.
  */
@@ -140,13 +140,10 @@ describe("Governance mode `forced` — MCP call-time gate", () => {
     expectGovernanceError(writeRes.body);
   });
 
-  it("forced: the /mcp UA-fallback (resolves to Tier 1) is also gated", async () => {
+  it("forced: /mcp is a Tier 3 alias and is not gated", async () => {
     setGovernanceMode("forced");
-    const res = await callMcpTool("/mcp", autoSessionId, "write_file", {
-      path: FORCED_DOC_PATH,
-      content: "# Forced via auto-detect\n",
-    });
-    expectGovernanceError(res.body);
+    const res = await callMcpTool("/mcp", autoSessionId, "list_documents", {});
+    expect(res.body.result.isError).toBeFalsy();
   });
 
   it("forced: a Tier 3 tool is unaffected", async () => {

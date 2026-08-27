@@ -11,7 +11,7 @@
  *
  * Per the task spec we repeat the scenario on:
  *   - /mcp/tier3          — the explicit tier-3 mount
- *   - /mcp (auto-detect)  — with Claude user-agent so it routes to tier-3
+ *   - /mcp                — the Tier 3 alias
  *
  * /mcp/tier1 and /mcp/tier2 do not expose create_proposal / publish_proposal,
  * so they are out of scope for this integration.
@@ -83,7 +83,7 @@ async function callMcpTool(
 
 const MOUNTS: Array<{ label: string; opts: McpCallOptions }> = [
   { label: "/mcp/tier3", opts: { mount: "/mcp/tier3" } },
-  { label: "/mcp (auto-detect, claude UA)", opts: { mount: "/mcp", userAgent: "claude-code/1.0" } },
+  { label: "/mcp (tier-3 alias)", opts: { mount: "/mcp" } },
 ];
 
 describe("MCP create_proposal+publish_proposal emits catalog:changed for new doc", () => {

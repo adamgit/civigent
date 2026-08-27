@@ -110,7 +110,7 @@ export const architectureFeatures = [
   "Two WebSocket channels: binary per-document CRDT for editing data, and JSON presence hub for system-wide events",
   "Human and agent proposals use the same infrastructure, same commit path, same API endpoints — distinguished only by writer.type",
   "Sections in a pending human proposal are hard-blocked for everyone else, even after the CRDT session has committed",
-  "Agent MCP access has three tiers: Tier 1 (file operations), Tier 2 (+ intent declaration), Tier 3 (full proposal workflow with danger-score checks). Claude Code and Cursor auto-detect to Tier 3",
+  "Agent MCP access has three tiers: Tier 1 (file operations), Tier 2 (+ intent declaration), Tier 3 (full proposal workflow with danger-score checks). /mcp is always Tier 3; User-Agent auto-detect lives at /mcp/autodetect and defaults to Tier 3",
   "Crash recovery finishes forward in-flight committing proposals and verifies git integrity — no raw-fragment replay, no special UI or user interaction required",
   "Version restore creates a proposal through the same pipeline as human and agent proposals, inheriting all lock and danger-score checks — git show provides the historical content",
 ];

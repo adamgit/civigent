@@ -70,13 +70,16 @@ export function createKnowledgeStoreMcpRouter(options?: {
   });
 }
 
-const AI_UA_RE = /claude|cursor/i;
+/**
+ * User-Agents that must be served the filesystem-compatible Tier 1 surface.
+ * None today — unmatched and unknown clients get Tier 3.
+ */
+const TIER1_UA_RE: RegExp | null = null;
 
 /**
  * Create an auto-detecting MCP router that picks tier based on User-Agent.
  *
- * "claude" or "cursor" (case-insensitive) in User-Agent → tier 3,
- * otherwise → tier 1.
+ * Default is tier 3. Only a User-Agent matching TIER1_UA_RE is served tier 1.
  */
 export function createAutoDetectMcpRouter(options?: {
   onWsEvent?: (event: WsServerEvent) => void;
@@ -87,10 +90,10 @@ export function createAutoDetectMcpRouter(options?: {
   const router = express.Router();
   router.use((req, _res, next) => {
     const ua = req.get("user-agent") ?? "";
-    if (AI_UA_RE.test(ua)) {
-      tier3Router(req, _res, next);
-    } else {
+    if (TIER1_UA_RE !== null && TIER1_UA_RE.test(ua)) {
       tier1Router(req, _res, next);
+    } else {
+      tier3Router(req, _res, next);
     }
   });
   return router;

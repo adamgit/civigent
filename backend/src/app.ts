@@ -26,11 +26,14 @@ export function createApp(options?: CreateAppOptions) {
   app.use("/api", createApiRouter({
     onWsEvent: options?.onWsEvent,
   }));
-  // Tiered MCP mounts — explicit tiers first so /mcp/tierN isn't swallowed by /mcp
+  // Specific MCP mounts first so /mcp/tierN and /mcp/autodetect aren't swallowed by /mcp.
+  // /mcp is a Tier 3 alias — no User-Agent logic.
   app.use("/mcp/tier1", createKnowledgeStoreMcpRouter({ tier: 1, onWsEvent: options?.onWsEvent }));
   app.use("/mcp/tier2", createKnowledgeStoreMcpRouter({ tier: 2, onWsEvent: options?.onWsEvent }));
-  app.use("/mcp/tier3", createKnowledgeStoreMcpRouter({ tier: 3, onWsEvent: options?.onWsEvent }));
-  app.use("/mcp", createAutoDetectMcpRouter({ onWsEvent: options?.onWsEvent }));
+  const tier3Router = createKnowledgeStoreMcpRouter({ tier: 3, onWsEvent: options?.onWsEvent });
+  app.use("/mcp/tier3", tier3Router);
+  app.use("/mcp/autodetect", createAutoDetectMcpRouter({ onWsEvent: options?.onWsEvent }));
+  app.use("/mcp", tier3Router);
 
   app.get("/exported/:zipName", async (req, res, next) => {
     try {
