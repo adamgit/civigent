@@ -895,7 +895,7 @@ export class DocumentSkeleton {
    * fallback via the effective-load `fromDisk(...)`.
    */
   static async fromSingleRoot(docPath: DocPath, contentRoot: string): Promise<DocumentSkeleton> {
-    const nodes = await readTreeRecursive(resolveSkeletonPath(docPath, contentRoot));
+    const nodes = await readSkeletonRootTree(resolveSkeletonPath(docPath, contentRoot));
     validateNoDuplicateRoots(nodes, docPath);
     return new DocumentSkeleton(docPath, nodes, contentRoot);
   }
@@ -1812,7 +1812,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * passes the result to `fromNodes(...)`; DS itself never chooses between roots.
    */
   static async loadNodesFromRoot(docPath: DocPath, contentRoot: string): Promise<SkeletonNode[]> {
-    const nodes = await readTreeRecursive(resolveSkeletonPath(docPath, contentRoot));
+    const nodes = await readSkeletonRootTree(resolveSkeletonPath(docPath, contentRoot));
     validateNoDuplicateRoots(nodes, docPath);
     return nodes;
   }
@@ -1946,7 +1946,7 @@ async function buildSkeletonTree(
   // canonicalRoot`). Read the single root wholesale.
   if (overlayRoot === canonicalRoot) {
     if (!(await pathExists(canonicalPath))) return [];
-    return readTreeRecursive(canonicalPath);
+    return readSkeletonRootTree(canonicalPath);
   }
 
   // U5: ONE law for every proposal-overlay read (`overlayRoot !== canonicalRoot`) —
@@ -1974,7 +1974,7 @@ async function buildSkeletonTree(
   }
 
   const canonicalNodes = (await pathExists(canonicalPath))
-    ? await readTreeRecursive(canonicalPath)
+    ? await readSkeletonRootTree(canonicalPath)
     : [];
 
   // Body-only (sparse) proposal: no overlay skeleton → structure is fully
@@ -1984,7 +1984,7 @@ async function buildSkeletonTree(
     return canonicalNodes;
   }
 
-  const overlayNodes = await readTreeRecursive(overlayPath);
+  const overlayNodes = await readSkeletonRootTree(overlayPath);
 
   // No canonical to inherit (proposal-created document) → overlay is the whole
   // structure.
@@ -2087,9 +2087,22 @@ function canonicalInsertPosition(
  * by the file system (sub-skeleton files in .sections/ directories), NOT by
  * heading level numbers within a file.
  */
-async function readTreeRecursive(skeletonPath: string): Promise<SkeletonNode[]> {
+async function readSkeletonRootTree(skeletonPath: string): Promise<SkeletonNode[]> {
   const content = await readFileIfExists(skeletonPath);
-  if (content === null) return []; // File doesn't exist — no entries
+  if (content === null) return [];
+  if (content === "") return [];
+  if (parseSkeletonToEntries(content).length === 0) {
+    throw new Error(
+      `Skeleton root "${skeletonPath}" holds ${content.length} bytes that parse to zero entries. `
+      + `serializeSkeletonEntries writes exactly "" for a zero-entry skeleton, so these bytes are not a skeleton.`,
+    );
+  }
+  return readChildTreeTreatingLeafBodiesAsChildless(skeletonPath);
+}
+
+async function readChildTreeTreatingLeafBodiesAsChildless(skeletonPath: string): Promise<SkeletonNode[]> {
+  const content = await readFileIfExists(skeletonPath);
+  if (content === null) return [];
 
   const entries = parseSkeletonToEntries(content);
   if (entries.length === 0) return [];
@@ -2108,7 +2121,7 @@ async function readTreeRecursive(skeletonPath: string): Promise<SkeletonNode[]> 
     // Children come from sub-skeleton files, NOT from level numbers.
     // A section file that itself contains {{section:}} markers is a sub-skeleton.
     const subSkeletonPath = path.join(sectionsDir, entry.sectionFile);
-    node.children = await readTreeRecursive(subSkeletonPath);
+    node.children = await readChildTreeTreatingLeafBodiesAsChildless(subSkeletonPath);
 
     nodes.push(node);
   }
@@ -2135,7 +2148,7 @@ export async function listSkeletonEntriesAtRoot(
 ): Promise<FlatEntry[] | null> {
   const skeletonPath = resolveSkeletonPath(docPath, root);
   if (!(await pathExists(skeletonPath))) return null;
-  const rootNodes = await readTreeRecursive(skeletonPath);
+  const rootNodes = await readSkeletonRootTree(skeletonPath);
   const out: FlatEntry[] = [];
   const walk = (nodes: SkeletonNode[], parentPath: string[], parentSkeletonPath: string): void => {
     const sectionsDir = `${parentSkeletonPath}.sections`;

@@ -84,6 +84,7 @@ function renderCanvas(
         transferService={null}
         readyEditors={readyEditors}
         getDisplayMarkdown={displayMarkdown}
+        getFragmentVersion={() => 0}
         getLiveBinding={getLiveBinding}
         localEditSink={{ recordLocalEdit: () => {} }}
         mouseDownPosRef={{ current: null }}
@@ -139,6 +140,7 @@ describe("DocumentCanvas fragment-key readiness identity (duplicate-render fix)"
           transferService={null}
           readyEditors={ready}
           getDisplayMarkdown={displayMarkdown}
+        getFragmentVersion={() => 0}
           getLiveBinding={getLiveBinding}
           localEditSink={{ recordLocalEdit: () => {} }}
           mouseDownPosRef={{ current: null }}

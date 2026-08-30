@@ -22,7 +22,7 @@ import {
   WS_CLOSE_YDOC_INIT_FAILED,
 } from "./crdt-close-codes";
 import { apiClient } from "./api-client";
-import { LIVE_SECTION_SERVER_APPLY_ORIGIN } from "./live-section-replica";
+import { LIVE_SECTION_SERVER_APPLY_ORIGIN, isSectionFragmentShareEntry } from "./live-section-replica";
 import { encodeDocPathForWs } from "../utils/path-encoding";
 import { randomUuid } from "../utils/random-uuid";
 import { recallDocSessionId } from "./doc-session-memory";
@@ -114,11 +114,6 @@ export interface CrdtProviderEvents {
   /** Raw authoritative live-section frame (opcode + payload) — routed into a
    *  `LiveSectionReplica` via `routeLiveSectionFrame`. */
   onLiveSectionFrame?: (opcode: number, payload: Uint8Array) => void;
-  /** Fired after a MSG_SYNC_STEP_2 update is applied to the shared Y.Doc, so a
-   *  passively-watching viewer (no mounted Milkdown) can re-read `paintMarkdown`
-   *  and repaint. NOT a general doc.on("update") — only this inbound-sync opcode
-   *  fires it, so local keystrokes don't trigger a repaint. */
-  onDocUpdated?: () => void;
 }
 
 // ─── Provider ──────────────────────────────────────────────────────
@@ -143,9 +138,9 @@ export class CrdtProvider {
   private updateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
   private awarenessUpdateHandler: ((changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => void) | null = null;
   private lastTouchedFragments = new Set<string>();
-  private reverseMap = new Map<object, string>();
-  private lastShareSize = 0;
-  private trackChangedFragmentKeysAfterTransaction: ((txn: Y.Transaction) => void) | null = null;
+  private readonly localEditObserverByFragmentKey = new Map<string, (events: Y.YEvent<any>[], txn: Y.Transaction) => void>();
+  private shareSizeAtLastNewKeyScan = -1;
+  private attachObserversToKeysThatJustArrived: (() => void) | null = null;
   private pendingDocumentReplacementNotice: DocumentReplacementNoticePayload | null = null;
   private readonly clientInstanceId: ClientInstanceId;
   private readonly docPath: DocPath;
@@ -188,23 +183,22 @@ export class CrdtProvider {
     ensurePageWsLifecycleInstalled();
     this.cancelPageWake = subscribePageWsWake(() => this.onPageWake());
 
-    this.trackChangedFragmentKeysAfterTransaction = (txn: Y.Transaction) => {
-      if (txn.origin === this || txn.origin === LIVE_SECTION_SERVER_APPLY_ORIGIN) return;
-      if (doc.share.size !== this.lastShareSize) {
-        this.reverseMap = new Map();
-        for (const [name, shared] of doc.share) {
-          this.reverseMap.set(shared, name);
-        }
-        this.lastShareSize = doc.share.size;
+    this.attachObserversToKeysThatJustArrived = () => {
+      if (doc.share.size === this.shareSizeAtLastNewKeyScan) return;
+      for (const fragmentKey of doc.share.keys()) {
+        if (this.localEditObserverByFragmentKey.has(fragmentKey)) continue;
+        if (!isSectionFragmentShareEntry(doc, fragmentKey)) continue;
+        const recordThisKeyAsLocallyTouched = (_events: Y.YEvent<any>[], txn: Y.Transaction): void => {
+          if (txn.origin === this || txn.origin === LIVE_SECTION_SERVER_APPLY_ORIGIN) return;
+          this.lastTouchedFragments.add(fragmentKey);
+        };
+        doc.getXmlFragment(fragmentKey).observeDeep(recordThisKeyAsLocallyTouched);
+        this.localEditObserverByFragmentKey.set(fragmentKey, recordThisKeyAsLocallyTouched);
       }
-      for (const [type] of txn.changed) {
-        let current: any = type;
-        while (current._item?.parent) current = current._item.parent;
-        const name = this.reverseMap.get(current);
-        if (name) this.lastTouchedFragments.add(name);
-      }
+      this.shareSizeAtLastNewKeyScan = doc.share.size;
     };
-    doc.on("afterTransaction", this.trackChangedFragmentKeysAfterTransaction);
+    this.attachObserversToKeysThatJustArrived();
+    doc.on("afterTransaction", this.attachObserversToKeysThatJustArrived);
 
     // Listen for local Y.Doc changes to broadcast.
     this.updateHandler = (update: Uint8Array, origin: unknown) => {
@@ -262,10 +256,14 @@ export class CrdtProvider {
     this.cancelPageWake();
     this.disconnect();
     this.barrier = null;
-    if (this.trackChangedFragmentKeysAfterTransaction) {
-      this.doc.off("afterTransaction", this.trackChangedFragmentKeysAfterTransaction);
-      this.trackChangedFragmentKeysAfterTransaction = null;
+    if (this.attachObserversToKeysThatJustArrived) {
+      this.doc.off("afterTransaction", this.attachObserversToKeysThatJustArrived);
+      this.attachObserversToKeysThatJustArrived = null;
     }
+    for (const [fragmentKey, observer] of this.localEditObserverByFragmentKey) {
+      this.doc.getXmlFragment(fragmentKey).unobserveDeep(observer);
+    }
+    this.localEditObserverByFragmentKey.clear();
     if (this.updateHandler) {
       this.doc.off("update", this.updateHandler);
       this.updateHandler = null;
@@ -490,7 +488,6 @@ export class CrdtProvider {
           this.syncRoundtripResolvers = [];
           for (const r of resolvers) r();
         }
-        this.events.onDocUpdated?.();
         break;
       }
       case MSG_UPDATE_ACK: {

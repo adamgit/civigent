@@ -96,6 +96,7 @@ function renderCanvas(
           ? new Set([SectionId.text(sections[focusedSectionIndex].id)])
           : new Set<string>()}
         getDisplayMarkdown={displayMarkdown}
+        getFragmentVersion={() => 0}
         getLiveBinding={getLiveBinding}
         localEditSink={{ recordLocalEdit: () => {} }}
         mouseDownPosRef={{ current: null }}

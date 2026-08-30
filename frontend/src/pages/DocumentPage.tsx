@@ -263,7 +263,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
       if (!liveReplica.isCurrentlyLiveAuthority || !replica) return undefined;
       return replica.getLiveSection(SectionId.brand(fragmentKey)).createEditorBinding();
     },
-    [liveReplica],
+    [liveReplica.replica, liveReplica.isCurrentlyLiveAuthority],
   );
 
   const getLiveMarkdown = useCallback(
@@ -690,7 +690,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const promoteToEditorAndFocusFragment = useCallback(async (fk: string, coords?: { x: number; y: number }) => {
     await liveReplica.promoteToEditor();
     focusFragmentAndSetCaretTarget(fk, coords);
-  }, [liveReplica, focusFragmentAndSetCaretTarget]);
+  }, [liveReplica.promoteToEditor, focusFragmentAndSetCaretTarget]);
 
   const dismissSectionEditRejection = useCallback(() => {
     setSectionEditRejection(null);
@@ -1226,6 +1226,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
             transferService={transferServiceRef.current}
             readyEditors={readyEditors}
             getDisplayMarkdown={getDisplayMarkdown}
+            getFragmentVersion={liveReplica.getFragmentVersion}
             getLiveBinding={getLiveBinding}
             getLastEditor={getLastEditor}
             getActiveEditors={getActiveEditors}

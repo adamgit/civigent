@@ -1,23 +1,15 @@
-import {
-  type ChangeEvent,
-  type FormEvent,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 
 export interface NewFileOrFolderSubmit {
   name: string;
   content: string;
-  isFolder: boolean;
 }
 
 export interface NewFileOrFolderProps {
   busy?: boolean;
   error?: string | null;
   onSubmit: (value: NewFileOrFolderSubmit) => void | Promise<void>;
-  /** Narrow pane: name field only. Wide pane: file-or-folder expander. */
+  /** Narrow pane: name field only. Wide pane: expander with optional content. */
   variant?: "full" | "compact";
   /**
    * Called when the picker or drop receives a .zip or more than one file.
@@ -25,17 +17,6 @@ export interface NewFileOrFolderProps {
    * never passed and the create form is not filled.
    */
   onBulkIntake?: () => void;
-}
-
-type CreateKind = "file" | "folder";
-
-function stripTrailingSlashes(raw: string): string {
-  return raw.replace(/\/+$/, "");
-}
-
-function asFolderName(raw: string): string {
-  const base = stripTrailingSlashes(raw);
-  return base.length > 0 ? `${base}/` : "/";
 }
 
 function CompactNewFile({
@@ -63,12 +44,12 @@ function CompactNewFile({
     if (busy) {
       return;
     }
-    const trimmed = stripTrailingSlashes(name).trim();
+    const trimmed = name.trim();
     if (!trimmed) {
       return;
     }
     try {
-      await onSubmit({ name: trimmed, content: "", isFolder: false });
+      await onSubmit({ name: trimmed, content: "" });
       reset();
     } catch {
       // Parent surfaces `error`; keep the field open for correction.
@@ -126,7 +107,7 @@ function CompactNewFile({
   );
 }
 
-function FullNewFileOrFolder({
+function FullNewFile({
   busy = false,
   error = null,
   onSubmit,
@@ -136,15 +117,8 @@ function FullNewFileOrFolder({
   const [name, setName] = useState("");
   const [content, setContent] = useState("");
   const [showContent, setShowContent] = useState(true);
-  const [kind, setKind] = useState<CreateKind>("file");
-  const [kindMenuOpen, setKindMenuOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const pickFileInputRef = useRef<HTMLInputElement>(null);
-  const kindMenuRef = useRef<HTMLDivElement>(null);
-  /** Caret index to apply after a folder-name rewrite (always before the trailing `/`). */
-  const pendingCaretRef = useRef<number | null>(null);
-
-  const folderMode = kind === "folder";
 
   useEffect(() => {
     if (open) {
@@ -152,82 +126,11 @@ function FullNewFileOrFolder({
     }
   }, [open]);
 
-  useLayoutEffect(() => {
-    const input = inputRef.current;
-    const caret = pendingCaretRef.current;
-    if (!input || caret == null) {
-      return;
-    }
-    input.setSelectionRange(caret, caret);
-    pendingCaretRef.current = null;
-  });
-
-  useEffect(() => {
-    if (!kindMenuOpen) {
-      return;
-    }
-    const onPointerDown = (event: PointerEvent) => {
-      if (kindMenuRef.current && !kindMenuRef.current.contains(event.target as Node)) {
-        setKindMenuOpen(false);
-      }
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [kindMenuOpen]);
-
   const reset = () => {
     setOpen(false);
     setName("");
     setContent("");
     setShowContent(true);
-    setKind("file");
-    setKindMenuOpen(false);
-    pendingCaretRef.current = null;
-  };
-
-  const selectKind = (next: CreateKind) => {
-    setKind(next);
-    if (next === "folder") {
-      setName((prev) => {
-        const nextName = asFolderName(prev);
-        pendingCaretRef.current = stripTrailingSlashes(nextName).length;
-        return nextName;
-      });
-    } else {
-      setName((prev) => stripTrailingSlashes(prev));
-    }
-    setKindMenuOpen(false);
-    inputRef.current?.focus();
-  };
-
-  const handleNameChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const value = event.target.value;
-    const selectionStart = event.target.selectionStart ?? value.length;
-
-    if (kind === "folder") {
-      // Deleting the trailing slash is the explicit exit from folder mode.
-      if (name.endsWith("/") && !value.endsWith("/")) {
-        setKind("file");
-        setName(value);
-        return;
-      }
-      const base = stripTrailingSlashes(value);
-      const next = asFolderName(value);
-      // Keep the caret in the editable prefix — never after the forced `/`.
-      pendingCaretRef.current = Math.min(selectionStart, base.length);
-      setName(next);
-      return;
-    }
-
-    if (value.endsWith("/")) {
-      setKind("folder");
-      const base = stripTrailingSlashes(value);
-      pendingCaretRef.current = base.length;
-      setName(asFolderName(value));
-      return;
-    }
-
-    setName(value);
   };
 
   const handleSubmit = async (event?: FormEvent) => {
@@ -235,15 +138,14 @@ function FullNewFileOrFolder({
     if (busy) {
       return;
     }
-    const trimmed = stripTrailingSlashes(name).trim();
+    const trimmed = name.trim();
     if (!trimmed) {
       return;
     }
     try {
       await onSubmit({
-        name: folderMode ? `${trimmed}/` : name.trim(),
-        content: folderMode ? "" : content,
-        isFolder: folderMode,
+        name: trimmed,
+        content,
       });
       reset();
     } catch {
@@ -265,7 +167,6 @@ function FullNewFileOrFolder({
       return;
     }
     void file.text().then((text) => {
-      setKind("file");
       setName(file.name);
       setContent(text);
       setShowContent(true);
@@ -280,7 +181,7 @@ function FullNewFileOrFolder({
         onClick={() => setOpen(true)}
       >
         <span aria-hidden="true">+</span>
-        <span>New file or folder</span>
+        <span>New file</span>
       </button>
     );
   }
@@ -299,10 +200,6 @@ function FullNewFileOrFolder({
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.preventDefault();
-          if (kindMenuOpen) {
-            setKindMenuOpen(false);
-            return;
-          }
           if (!busy) {
             reset();
           }
@@ -315,103 +212,52 @@ function FullNewFileOrFolder({
     >
       <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          <div ref={kindMenuRef} className="relative shrink-0">
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded-md border border-folder-card-border bg-folder-card-bg px-2 py-1 text-[12px] font-medium text-text-secondary hover:border-folder-card-border-hover hover:bg-canvas-bg hover:text-text-primary"
-              disabled={busy}
-              aria-haspopup="listbox"
-              aria-expanded={kindMenuOpen}
-              onClick={() => setKindMenuOpen((prev) => !prev)}
-            >
-              <span>+ {kind}</span>
-              <span aria-hidden="true" className="text-[9px] text-text-faint">
-                ▾
-              </span>
-            </button>
-            {kindMenuOpen ? (
-              <div
-                role="listbox"
-                aria-label="Create as file or folder"
-                className="absolute left-0 top-full z-10 mt-1 min-w-[7.5rem] rounded-md border border-folder-card-border bg-canvas-bg py-1 shadow-sm"
-              >
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={kind === "file"}
-                  className={`flex w-full border-none bg-transparent px-3 py-1.5 text-left text-[12px] ${
-                    kind === "file" ? "bg-section-hover text-folder-link" : "text-text-secondary hover:bg-section-hover"
-                  }`}
-                  onClick={() => selectKind("file")}
-                >
-                  + file
-                </button>
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={kind === "folder"}
-                  className={`flex w-full border-none bg-transparent px-3 py-1.5 text-left text-[12px] ${
-                    kind === "folder"
-                      ? "bg-section-hover text-folder-link"
-                      : "text-text-secondary hover:bg-section-hover"
-                  }`}
-                  onClick={() => selectKind("folder")}
-                >
-                  + folder
-                </button>
-              </div>
-            ) : null}
-          </div>
           <input
             ref={inputRef}
             type="text"
             value={name}
-            onChange={handleNameChange}
-            placeholder={folderMode ? "folder-name/" : "file-name.md"}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="file-name.md"
             disabled={busy}
-            aria-label="New file or folder name"
+            aria-label="New file name"
             className="min-w-0 flex-1 border-none bg-transparent p-0 font-body text-[14px] text-text-primary outline-none placeholder:text-text-faint"
           />
         </div>
         <div className="flex shrink-0 items-center gap-3 text-[11px] text-text-faint">
-          {!folderMode ? (
-            <>
-              <input
-                ref={pickFileInputRef}
-                type="file"
-                accept=".md,.zip"
-                multiple
-                className="hidden"
-                onChange={(event) => {
-                  if (event.target.files) {
-                    intakeLocalFiles(event.target.files);
-                  }
-                  event.target.value = "";
-                }}
-              />
-              <button
-                type="button"
-                className="border-none bg-transparent p-0 text-[11px] text-text-faint hover:text-text-muted"
-                disabled={busy}
-                onClick={() => pickFileInputRef.current?.click()}
-                title="Fill name and content from a local .md file"
-              >
-                from local file
-              </button>
-              <button
-                type="button"
-                className="inline-flex items-center gap-1 border-none bg-transparent p-0 text-[11px] text-text-faint hover:text-text-muted"
-                disabled={busy}
-                onClick={() => setShowContent((prev) => !prev)}
-                aria-expanded={showContent}
-              >
-                add content
-                <span aria-hidden="true" className="text-[9px]">
-                  {showContent ? "▴" : "▾"}
-                </span>
-              </button>
-            </>
-          ) : null}
+          <input
+            ref={pickFileInputRef}
+            type="file"
+            accept=".md,.zip"
+            multiple
+            className="hidden"
+            onChange={(event) => {
+              if (event.target.files) {
+                intakeLocalFiles(event.target.files);
+              }
+              event.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            className="border-none bg-transparent p-0 text-[11px] text-text-faint hover:text-text-muted"
+            disabled={busy}
+            onClick={() => pickFileInputRef.current?.click()}
+            title="Fill name and content from a local .md file"
+          >
+            from local file
+          </button>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 border-none bg-transparent p-0 text-[11px] text-text-faint hover:text-text-muted"
+            disabled={busy}
+            onClick={() => setShowContent((prev) => !prev)}
+            aria-expanded={showContent}
+          >
+            add content
+            <span aria-hidden="true" className="text-[9px]">
+              {showContent ? "▴" : "▾"}
+            </span>
+          </button>
           <span>↵ create</span>
           <button
             type="button"
@@ -424,25 +270,7 @@ function FullNewFileOrFolder({
         </div>
       </div>
 
-      {folderMode ? (
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="submit"
-            className="btn-primary text-xs"
-            disabled={busy || !stripTrailingSlashes(name).trim()}
-          >
-            {busy ? "Creating..." : "Create folder"}
-          </button>
-          <button
-            type="button"
-            className="border-none bg-transparent p-0 text-[12px] text-text-faint hover:text-text-muted"
-            disabled={busy}
-            onClick={reset}
-          >
-            cancel
-          </button>
-        </div>
-      ) : showContent ? (
+      {showContent ? (
         <div className="rounded-lg border border-folder-card-border bg-folder-card-bg p-3">
           <textarea
             value={content}
@@ -499,5 +327,5 @@ export function NewFileOrFolder({
   if (variant === "compact") {
     return <CompactNewFile busy={busy} error={error} onSubmit={onSubmit} />;
   }
-  return <FullNewFileOrFolder busy={busy} error={error} onSubmit={onSubmit} onBulkIntake={onBulkIntake} />;
+  return <FullNewFile busy={busy} error={error} onSubmit={onSubmit} onBulkIntake={onBulkIntake} />;
 }

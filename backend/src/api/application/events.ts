@@ -223,12 +223,7 @@ export async function resolveSectionFragmentKey(
   headingPath: string[],
   currentProposalId: import("../../types/shared.js").ProposalId | null = null,
 ): Promise<string | null> {
-  let layout: Awaited<ReturnType<typeof resolveLiveSectionLayout>>;
-  try {
-    layout = await resolveLiveSectionLayout(docPath, currentProposalId);
-  } catch {
-    return null;
-  }
+  const layout = await resolveLiveSectionLayout(docPath, currentProposalId);
   const targetKey = new SectionRef(docPath, headingPath).globalKey;
   for (const entry of layout) {
     if (new SectionRef(docPath, entry.headingPath).globalKey === targetKey) {
@@ -265,14 +260,7 @@ export async function emitSectionBlockState(
 ): Promise<void> {
   if (!emit || headingPaths.length === 0) return;
 
-  let layout: Awaited<ReturnType<typeof resolveLiveSectionLayout>> = [];
-  try {
-    layout = await resolveLiveSectionLayout(docPath, currentProposalId);
-  } catch {
-    
-    
-    layout = [];
-  }
+  const layout = await resolveLiveSectionLayout(docPath, currentProposalId);
 
   const fragmentKeyByGlobalKey = new Map<string, { fragmentKey: string; headingPath: string[] }>();
   for (const entry of layout) {

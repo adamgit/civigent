@@ -10,7 +10,7 @@ import type { RenderSectionRef } from "../types/live-sections";
 import { resolveWriterId } from "../services/api-client";
 import type { LocalEditOriginSink } from "../status/sessionAuthorship";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
-import { useSectionHover } from "../contexts/sectionHoverUtils";
+import { useSetHoveredFragmentKey } from "../contexts/sectionHoverUtils";
 import { rewriteMarkdownContentHref } from "../app/docs-location";
 
 const REMARK_PLUGINS = [remarkGfm];
@@ -74,6 +74,9 @@ export interface DocumentSectionRendererProps {
   canEditProposalContent: boolean;
   proposalScopeMutationInFlight: boolean;
   isReady: boolean;
+  /** Changes exactly when this row's live fragment changes. Its only job is to
+   *  let the shallow memo below skip rows whose content did not move. */
+  replicaFragmentVersion: number;
   getDisplayMarkdown: (section: RenderSectionRef) => string;
   getLiveBinding?: (fragmentKey: string) => import("../services/live-section-replica").LiveEditorBinding | undefined;
   localEditSink: LocalEditOriginSink;
@@ -84,7 +87,7 @@ export interface DocumentSectionRendererProps {
   onEditorReady: (fragmentKey: string) => void;
   onEditorUnready?: (fragmentKey: string) => void;
   onProposalSectionChange?: (headingPath: readonly string[], markdown: string) => void;
-  onToggleProposalSection?: () => void;
+  onToggleProposalSection?: (target: RenderSectionRef) => void | Promise<void>;
   onCursorExit: (fragmentKey: string, direction: "up" | "down") => void;
   onDocumentBoundary: (boundary: "start" | "end") => void;
   onCrossSectionDrop: (target: RenderSectionRef, transfer: SectionTransfer) => void;
@@ -130,7 +133,7 @@ function playFlyToProposalPanelAnimation(fromX: number, fromY: number): void {
   window.setTimeout(() => marker.remove(), 420);
 }
 
-export function DocumentSectionRenderer({
+export const DocumentSectionRenderer = React.memo(function DocumentSectionRenderer({
   section,
   fragmentKey: fk,
   isFocused,
@@ -150,6 +153,7 @@ export function DocumentSectionRenderer({
   canEditProposalContent,
   proposalScopeMutationInFlight,
   isReady,
+  replicaFragmentVersion: _replicaFragmentVersion,
   getDisplayMarkdown,
   getLiveBinding,
   localEditSink,
@@ -165,19 +169,14 @@ export function DocumentSectionRenderer({
   onDocumentBoundary,
   onCrossSectionDrop,
 }: DocumentSectionRendererProps) {
-  const { setHoveredFragmentKey } = useSectionHover();
+  const setHoveredFragmentKey = useSetHoveredFragmentKey();
   const headingPath = [...section.headingPath];
   const unavailableForEdit = isLockedByOtherHuman || crdtBlocked;
   const liveBinding = !proposalMode && hasEditor ? getLiveBinding?.(fk) : undefined;
   const mountEditor = hasEditor && (proposalMode || liveBinding !== undefined);
   const crdtDegraded = isCrdtDegraded(crdtState);
   const crdtPaused = crdtBannerInfo(crdtState);
-  // A ready live editor already holds the body via y-prosemirror. Reading
-  // painted markdown here would serialize that fragment on every parent render
-  // (every keystroke, before the cache-and-echo fixes).
-  const needsPaintedMarkdown =
-    proposalMode || !mountEditor || !isReady || (crdtDegraded && !isFocused);
-  const displayMarkdown = needsPaintedMarkdown ? getDisplayMarkdown(section) : "";
+  const displayMarkdown = getDisplayMarkdown(section);
 
   return (
     <div
@@ -213,7 +212,7 @@ export function DocumentSectionRenderer({
             if (proposalScopeMutationInFlight) return;
             if (!isInProposal && onToggleProposalSection) {
               playFlyToProposalPanelAnimation(e.clientX, e.clientY);
-              void onToggleProposalSection();
+              void onToggleProposalSection(section);
             }
             return;
           }
@@ -245,7 +244,7 @@ export function DocumentSectionRenderer({
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              void onToggleProposalSection();
+              void onToggleProposalSection(section);
             }}
           >
             {isInProposal ? "Remove" : "Add"}
@@ -330,7 +329,7 @@ export function DocumentSectionRenderer({
                     onReady={() => onEditorReady(fk)}
                     onUnready={onEditorUnready ? () => onEditorUnready(fk) : undefined}
                   />
-                ) : null /* unreachable: mountEditor requires liveBinding on the live path */}
+                ) : null}
               </div>
             </div>
           </>
@@ -340,4 +339,4 @@ export function DocumentSectionRenderer({
       )}
     </div>
   );
-}
+});

@@ -32,22 +32,31 @@ function emptyDocumentFirstEditSection(): LiveSectionLayoutEntry {
   };
 }
 
-async function existingEmptyDocumentCanReceiveFirstEdit(
+type EmptyDocumentDisposition =
+  | "existing_empty_document_can_receive_first_edit"
+  | "deleted_by_proposal_tombstone"
+  | "no_skeleton_at_either_root";
+
+async function classifyEmptyDocument(
   docPath: DocPath,
   skeletonRoot: string,
   canonicalRoot: string,
-): Promise<boolean> {
+): Promise<EmptyDocumentDisposition> {
   const { skeletonFileExists, tombstoneFileExists } = await import("../storage/document-skeleton.js");
 
   if (skeletonRoot !== canonicalRoot && await tombstoneFileExists(docPath, skeletonRoot)) {
-    return false;
+    return "deleted_by_proposal_tombstone";
   }
 
   if (await skeletonFileExists(docPath, skeletonRoot)) {
-    return true;
+    return "existing_empty_document_can_receive_first_edit";
   }
 
-  return skeletonRoot !== canonicalRoot && await skeletonFileExists(docPath, canonicalRoot);
+  if (skeletonRoot !== canonicalRoot && await skeletonFileExists(docPath, canonicalRoot)) {
+    return "existing_empty_document_can_receive_first_edit";
+  }
+
+  return "no_skeleton_at_either_root";
 }
 
 function resolvePersistedLiveSectionLayout(
@@ -96,10 +105,19 @@ export async function resolveLiveSectionLayout(
   const skeleton = await DocumentSkeletonInternal.fromDisk(docPath, skeletonRoot, canonicalRoot, deletedSectionFiles);
   const persistedLayout = resolvePersistedLiveSectionLayout(skeleton);
   if (persistedLayout.length > 0) return persistedLayout;
-  if (skeleton.areSkeletonRootsEmpty && await existingEmptyDocumentCanReceiveFirstEdit(docPath, skeletonRoot, canonicalRoot)) {
+  if (!skeleton.areSkeletonRootsEmpty) return [];
+
+  const disposition = await classifyEmptyDocument(docPath, skeletonRoot, canonicalRoot);
+  if (disposition === "existing_empty_document_can_receive_first_edit") {
     return [emptyDocumentFirstEditSection()];
   }
-  return [];
+  if (disposition === "deleted_by_proposal_tombstone") {
+    return [];
+  }
+  throw new Error(
+    `resolveLiveSectionLayout: document "${docPath}" has no skeleton at "${skeletonRoot}" nor at "${canonicalRoot}". `
+    + `A live session asked for the layout of a document that is not on disk; reporting it as an empty document would be a lie.`,
+  );
 }
 
 /**

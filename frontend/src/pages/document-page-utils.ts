@@ -154,12 +154,15 @@ export const BEFORE_FIRST_HEADING_KEY = "section::__beforeFirstHeading__";
 
 export function isDocumentEffectivelyEmpty(
   rows: readonly RenderSectionRef[],
-  readBody: (row: RenderSectionRef) => string,
+  readBody: (row: RenderSectionRef) => string | undefined,
 ): boolean {
   if (rows.length === 0) return true;
   if (rows.length === 1) {
     const only = rows[0];
-    if (only.headingPath.length === 0 && readBody(only).trim() === "") return true;
+    if (only.headingPath.length !== 0) return false;
+    const body = readBody(only);
+    if (body === undefined) return false;
+    if (body.trim() === "") return true;
   }
   return false;
 }

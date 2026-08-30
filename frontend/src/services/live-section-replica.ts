@@ -58,6 +58,10 @@ export interface LiveSectionReplica {
 
   subscribe(listener: () => void): () => void;
   getTopology(): readonly LiveSectionRef[];
+  /** Monotonic per-fragment change counter. Frontend-only render identity:
+   *  nothing is stored against it, it is never sent or persisted, and it resets
+   *  only when a fresh replica (and therefore a fresh Y.Doc) is minted. */
+  getFragmentVersion(fragmentKey: string): number;
   /** Topology membership only — safe before live authority; never implies
    *  editable/live paint. The only soft-miss section accessor. */
   findInTopology(sectionId: SectionId): LiveSectionHandle | undefined;
@@ -132,34 +136,63 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
 
   private readonly listeners = new Set<() => void>();
   private destroyed = false;
-  /** Per-fragment markdown, invalidated when that fragment's Y types change. */
-  private readonly markdownCache = new Map<string, string>();
-  private readonly shareByType = new Map<Y.AbstractType<Y.YEvent<any>>, string>();
-  private lastShareSize = -1;
-  private readonly invalidateCachedMarkdown = (txn: Y.Transaction): void => {
-    if (this.destroyed) return;
-    if (this.doc.share.size !== this.lastShareSize) {
-      this.shareByType.clear();
-      for (const [name, shared] of this.doc.share) {
-        this.shareByType.set(shared, name);
-      }
-      this.lastShareSize = this.doc.share.size;
-    }
-    for (const [type] of txn.changed) {
-      let current: Y.AbstractType<Y.YEvent<any>> | null = type;
-      while (current?._item?.parent) {
-        current = current._item.parent as Y.AbstractType<Y.YEvent<any>>;
-      }
-      if (!current) continue;
-      const name = this.shareByType.get(current);
-      if (name) this.markdownCache.delete(name);
-    }
-  };
+
+  private readonly fragmentVersionByKey = new Map<string, number>();
+  private readonly fragmentChangeObserverByKey = new Map<string, () => void>();
+  private readonly fragmentKeysChangedThisApply = new Set<string>();
+  private fragmentChangeObserversAttached = false;
+  private shareSizeAtLastNewKeyScan = -1;
 
   constructor(doc?: Y.Doc, awareness?: Awareness) {
     this.doc = doc ?? new Y.Doc();
     this.awareness = awareness ?? new Awareness(this.doc);
-    this.doc.on("afterTransaction", this.invalidateCachedMarkdown);
+  }
+
+  getFragmentVersion(fragmentKey: string): number {
+    return this.fragmentVersionByKey.get(fragmentKey) ?? 0;
+  }
+
+  private attachFragmentChangeObserver(fragmentKey: string): void {
+    if (!this.fragmentChangeObserversAttached) return;
+    if (this.fragmentChangeObserverByKey.has(fragmentKey)) return;
+    const bumpVersionAndRecordChange = (): void => {
+      if (this.destroyed) return;
+      this.fragmentVersionByKey.set(fragmentKey, this.getFragmentVersion(fragmentKey) + 1);
+      this.fragmentKeysChangedThisApply.add(fragmentKey);
+    };
+    this.doc.getXmlFragment(fragmentKey).observeDeep(bumpVersionAndRecordChange);
+    this.fragmentChangeObserverByKey.set(fragmentKey, bumpVersionAndRecordChange);
+  }
+
+  private detachFragmentChangeObserver(fragmentKey: string): void {
+    const observer = this.fragmentChangeObserverByKey.get(fragmentKey);
+    if (!observer) return;
+    this.doc.getXmlFragment(fragmentKey).unobserveDeep(observer);
+    this.fragmentChangeObserverByKey.delete(fragmentKey);
+  }
+
+  private syncFragmentChangeObserversToTopology(): void {
+    if (!this.fragmentChangeObserversAttached) return;
+    for (const ref of this.topology) this.attachFragmentChangeObserver(SectionId.text(ref.id));
+    for (const observedKey of [...this.fragmentChangeObserverByKey.keys()]) {
+      if (!this.topologyIds.has(SectionId.brand(observedKey))) {
+        this.detachFragmentChangeObserver(observedKey);
+      }
+    }
+    this.shareSizeAtLastNewKeyScan = this.doc.share.size;
+  }
+
+  private attachObserversToKeysThatJustArrived(): void {
+    if (!this.fragmentChangeObserversAttached) return;
+    if (this.doc.share.size === this.shareSizeAtLastNewKeyScan) return;
+    for (const shareKey of this.doc.share.keys()) {
+      if (this.fragmentChangeObserverByKey.has(shareKey)) continue;
+      if (!isSectionFragmentShareEntry(this.doc, shareKey)) continue;
+      this.attachFragmentChangeObserver(shareKey);
+      this.fragmentVersionByKey.set(shareKey, this.getFragmentVersion(shareKey) + 1);
+      this.fragmentKeysChangedThisApply.add(shareKey);
+    }
+    this.shareSizeAtLastNewKeyScan = this.doc.share.size;
   }
 
   get isCurrentlyLiveAuthority(): boolean {
@@ -184,6 +217,7 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
 
   findInTopology(sectionId: SectionId): LiveSectionHandle | undefined {
     if (!this.topologyIds.has(sectionId)) return undefined;
+    if (!this.doc.share.has(SectionId.text(sectionId))) return undefined;
     return this.makeHandle(sectionId);
   }
 
@@ -291,47 +325,58 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
 
   ingestUpdate(input: LiveUpdateInput): void {
     if (this.destroyed) return;
-    let yjsChanged = false;
+    let serverApplyChangedFragments = false;
     if (input.yjsUpdate) {
-      const before = Y.encodeStateVector(this.doc);
+      this.fragmentKeysChangedThisApply.clear();
       Y.applyUpdate(this.doc, input.yjsUpdate, this.origin);
-      yjsChanged = !stateVectorsEqual(before, Y.encodeStateVector(this.doc));
+      this.attachObserversToKeysThatJustArrived();
+      serverApplyChangedFragments = this.fragmentKeysChangedThisApply.size > 0;
+      this.fragmentKeysChangedThisApply.clear();
     }
     if (input.state) this.adoptState(input.state);
-    // Content-only echoes of our own keystrokes are already in the doc (y-prosemirror
-    // wrote them). Applying them is a no-op; notifying would re-render every
-    // section and re-parse the whole document on each typed character.
-    if (yjsChanged || input.state) this.notify();
+    if (serverApplyChangedFragments || input.state) this.notify();
   }
 
   destroy(): void {
     this.destroyed = true;
     this.listeners.clear();
-    this.doc.off("afterTransaction", this.invalidateCachedMarkdown);
+    for (const observedKey of [...this.fragmentChangeObserverByKey.keys()]) {
+      this.detachFragmentChangeObserver(observedKey);
+    }
     this.awareness.destroy();
     this.doc.destroy();
   }
 
   private adoptBootstrap(bootstrap: LiveBootstrapInput): void {
+    this.fragmentKeysChangedThisApply.clear();
     Y.applyUpdate(this.doc, bootstrap.yjsUpdate, this.origin);
     this.adoptState(bootstrap.state);
-    for (const ref of this.topology) {
-      if (!this.doc.share.has(SectionId.text(ref.id))) {
-        throw new Error(
-          `LiveSectionReplica bootstrap incomplete: topology id "${SectionId.text(ref.id)}" has no fragment.`,
-        );
-      }
-    }
+    this.fragmentChangeObserversAttached = true;
+    this.syncFragmentChangeObserversToTopology();
+    this.fragmentKeysChangedThisApply.clear();
     this.currentlyLiveAuthority = true;
     this.notify();
   }
 
   private adoptState(state: WireLiveSectionsState): void {
-    this.topology = state.topology.map((ref) => ({
-      id: SectionId.brand(ref.fragment_key),
-      headingPath: [...ref.heading_path],
-      headingLevel: ref.heading_level,
-    }));
+    const previousById = new Map(this.topology.map((ref) => [ref.id, ref]));
+    this.topology = state.topology.map((ref) => {
+      const id = SectionId.brand(ref.fragment_key);
+      const previous = previousById.get(id);
+      if (
+        previous
+        && previous.headingLevel === ref.heading_level
+        && previous.headingPath.length === ref.heading_path.length
+        && previous.headingPath.every((part, i) => part === ref.heading_path[i])
+      ) {
+        return previous;
+      }
+      return {
+        id,
+        headingPath: [...ref.heading_path],
+        headingLevel: ref.heading_level,
+      };
+    });
     this.topologyIds = new Set(this.topology.map((r) => r.id));
     this.blocked = new Set(state.blocked_section_ids.map((k) => SectionId.brand(k)));
     this.pending = new Map(
@@ -348,6 +393,14 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
       fragmentKey: c.fragment_key,
     }));
     this._editorFocusSectionIds = [...(state.editor_focus_section_ids ?? [])];
+    for (const ref of this.topology) {
+      if (!this.doc.share.has(SectionId.text(ref.id))) {
+        throw new Error(
+          `LiveSectionReplica invariant: topology id "${SectionId.text(ref.id)}" has no fragment in the shared doc.`,
+        );
+      }
+    }
+    this.syncFragmentChangeObserversToTopology();
   }
 
   private makeHandle(id: SectionId): LiveSectionHandle {
@@ -355,15 +408,15 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
     return {
       id,
       readMarkdown: () => {
-        const cached = this.markdownCache.get(key);
-        if (cached !== undefined) return cached;
-        const md = fragmentToMarkdown(this.doc, key) ?? "";
-        this.markdownCache.set(key, md);
-        return md;
+        if (!this.doc.share.has(key)) {
+          throw new Error(
+            `LiveSectionReplica.readMarkdown: fragment "${key}" is absent from the shared doc.`,
+          );
+        }
+        return fragmentToMarkdown(this.doc, key) ?? "";
       },
       isEditable: () => this.editingEnabled && !this.blocked.has(id) && !this.editorsFrozenByPauseMirror,
       createEditorBinding: () =>
-        // The runtime shape is LiveEditorAttachFields; the public type hides it.
         ({ doc: this.doc, awareness: this.awareness, fragmentKey: key }) as unknown as LiveEditorBinding,
     };
   }
@@ -374,12 +427,17 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
   }
 }
 
-function stateVectorsEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
+export const SECTION_FRAGMENT_KEY_PREFIX = "section::";
+
+/** A `Y.Doc.share` entry is a section fragment when its key carries the section
+ *  prefix AND it is already an XmlFragment or still the untyped placeholder
+ *  `Y.applyUpdate` installs. Typing any other key as an XmlFragment would throw
+ *  inside `getXmlFragment`, so the prefix check is load-bearing, not cosmetic. */
+export function isSectionFragmentShareEntry(doc: Y.Doc, shareKey: string): boolean {
+  if (!shareKey.startsWith(SECTION_FRAGMENT_KEY_PREFIX)) return false;
+  const shared = doc.share.get(shareKey);
+  if (shared === undefined) return false;
+  return shared instanceof Y.XmlFragment || shared.constructor === Y.AbstractType;
 }
 
 export function createLiveSectionReplica(doc?: Y.Doc, awareness?: Awareness): LiveSectionReplica {

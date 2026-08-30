@@ -1,27 +1,3 @@
-/**
- * LiveFragmentStringsStore — the thin Y.Doc fragment adapter.
- *
- * Owns the live Y.Doc and an ordered list of opaque fragment keys, and is the
- * single place that reads/writes per-section Y.XmlFragment content as markdown.
- * It does NOT own durability (the `inprogress` proposal content tree is the
- * durable in-flight state — spec 05 §Session Persistence), and it does NOT own
- * settle/accept/staged-store coordination, ahead-of-staged tracking, raw-fragment
- * recovery, or any `SERVER_INJECTION_ORIGIN` reinjection semantics — all of which
- * belonged to the removed `sessions/` mirror.
- *
- * Responsibilities that remain:
- *   - markdown roundtrip: `readFragmentString` / `replaceFragmentString(s)` /
- *     `replaceAndClearFragmentStrings`
- *   - `applyClientUpdate`: apply an inbound client Yjs update and report the
- *     exact set of touched fragment keys (the DocSession actor uses this set as
- *     the single source of truth for per-section activity attribution)
- *   - fragment-key validation (`hasFragmentKey` / `getFragmentKeys`)
- *   - writer attribution (`fragmentWriterIds`) for co-author lists
- *
- * Pure markdown/fragment helpers (heading/body composition, fragment-key
- * derivation) live in `../storage/section-formatting.ts` and `./ydoc-fragments.ts`.
- */
-
 import * as Y from "yjs";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
 import { yDocToProsemirrorJSON, prosemirrorJSONToYDoc } from "y-prosemirror";
@@ -29,13 +5,12 @@ import { getBackendSchema } from "./ydoc-fragments.js";
 import { fragmentFromRemark, EMPTY_FRAGMENT, type FragmentContent } from "../storage/section-formatting.js";
 import type { DocPath } from "../types/shared.js";
 
-/**
- * Yjs ↔ ProseMirror-JSON boundary. `yDocToProsemirrorJSON` is weakly typed
- * (`Record<string, any>`); this is the single adapter that crosses that boundary
- * into the `Record<string, unknown>` shape `jsonToMarkdown` consumes (the
- * `any → unknown` widening is implicit and safe), so no `as` assertion is needed
- * at the call sites.
- */
+function isXmlFragmentShareEntry(doc: Y.Doc, shareKey: string): boolean {
+  const shared = doc.share.get(shareKey);
+  if (shared === undefined) return false;
+  return shared instanceof Y.XmlFragment || shared.constructor === Y.AbstractType;
+}
+
 function fragmentToMarkdown(doc: Y.Doc, fragmentKey: string): FragmentContent {
   const pmJson: Record<string, unknown> = yDocToProsemirrorJSON(doc, fragmentKey);
   return fragmentFromRemark(jsonToMarkdown(pmJson));
@@ -48,40 +23,56 @@ export class LiveFragmentStringsStore {
   private orderedKeys: string[];
   private readonly fragmentWriterIds = new Map<string, Set<string>>();
 
-  /** Fragment keys touched by the current transaction — populated by the
-   *  afterTransaction listener, drained by `applyClientUpdate`. */
-  private readonly touchedThisTransaction = new Set<string>();
-
-  /** Y.AbstractType → fragment key name reverse lookup. Rebuilt lazily when
-   *  `ydoc.share` grows (new fragments appear during structural reconciliation). */
-  private reverseMap = new Map<Y.AbstractType<Y.YEvent<any>>, string>();
-  private lastShareSize = 0;
+  private readonly touchedByObserverThisApply = new Set<string>();
+  private readonly touchedKeyObserverByFragmentKey = new Map<string, () => void>();
+  private touchedKeyObserversAttached = false;
+  private shareSizeAtLastNewKeyScan = 0;
 
   constructor(ydoc: Y.Doc, orderedKeys: string[], docPath: DocPath) {
     this.ydoc = ydoc;
     this.orderedKeys = [...orderedKeys];
     this.docPath = docPath;
-
-    this.ydoc.on("afterTransaction", (txn: Y.Transaction) => {
-      if (this.ydoc.share.size !== this.lastShareSize) this.rebuildReverseMap();
-      for (const [type] of txn.changed) {
-        // Walk up to the top-level shared type via the public `parent` getter
-        // (no private `_item` traversal), then attribute the change to its key.
-        let current: Y.AbstractType<Y.YEvent<any>> = type;
-        let parent = current.parent;
-        while (parent) {
-          current = parent;
-          parent = current.parent;
-        }
-        const name = this.reverseMap.get(current);
-        if (name) {
-          this.touchedThisTransaction.add(name);
-        }
-      }
-    });
   }
 
-  // ─── Fragment key access ──────────────────────────────────────────
+  private attachTouchedKeyObserversAfterSeed(): void {
+    if (this.touchedKeyObserversAttached) return;
+    this.touchedKeyObserversAttached = true;
+    for (const fragmentKey of this.orderedKeys) this.attachTouchedKeyObserver(fragmentKey);
+    for (const shareKey of this.ydoc.share.keys()) {
+      if (isXmlFragmentShareEntry(this.ydoc, shareKey)) this.attachTouchedKeyObserver(shareKey);
+    }
+    this.shareSizeAtLastNewKeyScan = this.ydoc.share.size;
+  }
+
+  private attachTouchedKeyObserver(fragmentKey: string): void {
+    if (!this.touchedKeyObserversAttached) return;
+    if (this.touchedKeyObserverByFragmentKey.has(fragmentKey)) return;
+    const recordThisKeyAsTouched = (): void => {
+      this.touchedByObserverThisApply.add(fragmentKey);
+    };
+    this.ydoc.getXmlFragment(fragmentKey).observeDeep(recordThisKeyAsTouched);
+    this.touchedKeyObserverByFragmentKey.set(fragmentKey, recordThisKeyAsTouched);
+  }
+
+  private detachTouchedKeyObserver(fragmentKey: string): void {
+    const observer = this.touchedKeyObserverByFragmentKey.get(fragmentKey);
+    if (!observer) return;
+    this.ydoc.getXmlFragment(fragmentKey).unobserveDeep(observer);
+    this.touchedKeyObserverByFragmentKey.delete(fragmentKey);
+  }
+
+  private attachObserversToKeysThatJustArrived(): string[] {
+    if (this.ydoc.share.size === this.shareSizeAtLastNewKeyScan) return [];
+    const arrived: string[] = [];
+    for (const shareKey of this.ydoc.share.keys()) {
+      if (this.touchedKeyObserverByFragmentKey.has(shareKey)) continue;
+      if (!isXmlFragmentShareEntry(this.ydoc, shareKey)) continue;
+      this.attachTouchedKeyObserver(shareKey);
+      arrived.push(shareKey);
+    }
+    this.shareSizeAtLastNewKeyScan = this.ydoc.share.size;
+    return arrived;
+  }
 
   getFragmentKeys(): string[] {
     return [...this.orderedKeys];
@@ -91,27 +82,18 @@ export class LiveFragmentStringsStore {
     return this.orderedKeys.includes(fragmentKey);
   }
 
-  /** Register a fragment key as known to the adapter (e.g. after a structural
-   *  materialization introduced a new section). Idempotent. */
   registerFragmentKey(fragmentKey: string): void {
     if (!this.orderedKeys.includes(fragmentKey)) {
       this.orderedKeys.push(fragmentKey);
     }
+    this.attachTouchedKeyObserver(fragmentKey);
   }
 
-  /**
-   * Forget a fragment key the adapter no longer tracks (e.g. structural
-   * reconciliation merged/removed the section it represented). Drops the key
-   * from the ordered key list and its writer-attribution set so subsequent
-   * `getFragmentKeys()` callers (quiescence normalization, co-author lists) no
-   * longer see the dead section. Idempotent. The underlying Y.XmlFragment is
-   * left empty in `ydoc.share` (Y.js has no top-level type deletion); callers
-   * that need it cleared must do so in the same transaction (see
-   * `replaceAndClearFragmentStrings`). */
   unregisterFragmentKey(fragmentKey: string): void {
     const idx = this.orderedKeys.indexOf(fragmentKey);
     if (idx !== -1) this.orderedKeys.splice(idx, 1);
     this.fragmentWriterIds.delete(fragmentKey);
+    this.detachTouchedKeyObserver(fragmentKey);
   }
 
   getWriterIdsForFragment(fragmentKey: string): string[] {
@@ -143,35 +125,14 @@ export class LiveFragmentStringsStore {
     this.fragmentWriterIds.set(fragmentKey, normalized);
   }
 
-  // ─── Content reads ────────────────────────────────────────────────
-
-  /**
-   * Read the full fragment content (heading + body for non-root, body for
-   * root/BFH) from the Y.Doc. Content is sourced directly from Yjs state,
-   * so it is always current — never stale.
-   */
   readFragmentString(fragmentKey: string): FragmentContent {
     return fragmentToMarkdown(this.ydoc, fragmentKey);
   }
 
-  /**
-   * Capture the current full Y.Doc state as a binary update (C3-perf). This is a
-   * single O(structs) binary serialization — far cheaper than a markdown
-   * roundtrip per fragment — and lets a caller defer the (expensive) per-fragment
-   * markdown reconstruction to the rare subset it actually needs (e.g. only the
-   * fragments a competing proposal blocked, which must be reverted to their
-   * pre-edit content).
-   */
   captureState(): Uint8Array {
     return Y.encodeStateAsUpdate(this.ydoc);
   }
 
-  /**
-   * Reconstruct the markdown content of specific fragment keys from a previously
-   * `captureState()`-ed snapshot (C3-perf). Builds ONE throwaway Y.Doc from the
-   * snapshot and reads only the requested keys, so the per-fragment markdown
-   * roundtrip is paid only for those keys (not the whole document).
-   */
   snapshotFragmentContentFromState(
     state: Uint8Array,
     fragmentKeys: Iterable<string>,
@@ -191,13 +152,6 @@ export class LiveFragmentStringsStore {
     return result;
   }
 
-  // ─── Content writes ───────────────────────────────────────────────
-
-  /**
-   * Replace a single fragment's content. `origin` is forwarded to the Y.Doc
-   * transaction so callers (e.g. the DocSession actor's structural mutations)
-   * can tag server-authored writes for their own observers.
-   */
   replaceFragmentString(fragmentKey: string, content: FragmentContent, origin: unknown = undefined): void {
     this.registerFragmentKey(fragmentKey);
     this.ydoc.transact(() => {
@@ -211,24 +165,10 @@ export class LiveFragmentStringsStore {
     tempDoc.destroy();
   }
 
-  /**
-   * Replace many fragments at once. Clears all target fragments in one
-   * transaction (no partial-state visibility), then merges all populating
-   * updates into a single `Y.applyUpdate` call.
-   */
   replaceFragmentStrings(map: Map<string, FragmentContent>, origin: unknown = undefined): void {
     this.replaceAndClearFragmentStrings(map, [], origin);
   }
 
-  /**
-   * Restore a set of fragment keys to their content in a previously
-   * `captureState()`-ed snapshot. The CRDT live-edit acceptance gate uses this
-   * when one or more validators reject fragments in a client update — every
-   * rejected key is reverted from the pre-update snapshot in a single
-   * server-origin Yjs transaction, keeping the shared Y.Doc free of
-   * partial-state visibility. Missing keys are cleared to empty so a rejected
-   * fragment that did not exist before the update leaves no residue.
-   */
   restoreFragmentsFromSnapshot(
     state: Uint8Array,
     fragmentKeys: Iterable<string>,
@@ -244,14 +184,6 @@ export class LiveFragmentStringsStore {
     this.replaceFragmentStrings(revertMap, origin);
   }
 
-  /**
-   * Replace `writeMap` keys with new content AND clear `clearKeys` to empty,
-   * all within a single transaction (no partial-state visibility).
-   *
-   * Used by the structural-reconciliation path where some fragments must be
-   * wiped (because the skeleton entry was removed) while others receive new
-   * content.
-   */
   replaceAndClearFragmentStrings(
     writeMap: Map<string, FragmentContent>,
     clearKeys: Iterable<string>,
@@ -284,23 +216,16 @@ export class LiveFragmentStringsStore {
     }
   }
 
-  // ─── Client update application ─────────────────────────────────────
-
-  /**
-   * Apply a Yjs binary update received from a client. Returns the exact set of
-   * fragment keys the update affected and records the writer for each touched
-   * key (for co-author attribution). The caller (DocSession actor) uses this
-   * return value as the single source of truth for per-section activity — it
-   * MUST NOT infer scope from focus or ambient state.
-   */
   applyClientUpdate(writerId: string, update: Uint8Array, origin: unknown): ReadonlySet<string> {
-    this.touchedThisTransaction.clear();
+    this.attachTouchedKeyObserversAfterSeed();
+    this.touchedByObserverThisApply.clear();
     Y.applyUpdate(this.ydoc, update, origin);
-    const touched = new Set(this.touchedThisTransaction);
+    const touched = new Set(this.touchedByObserverThisApply);
+    for (const arrivedKey of this.attachObserversToKeysThatJustArrived()) touched.add(arrivedKey);
+    this.touchedByObserverThisApply.clear();
     for (const fragmentKey of touched) {
       this.noteWriterForFragment(fragmentKey, writerId);
     }
-    this.touchedThisTransaction.clear();
     return touched;
   }
 
@@ -313,13 +238,5 @@ export class LiveFragmentStringsStore {
       this.fragmentWriterIds.set(fragmentKey, writerIds);
     }
     writerIds.add(trimmed);
-  }
-
-  private rebuildReverseMap(): void {
-    this.reverseMap = new Map();
-    for (const [name, shared] of this.ydoc.share) {
-      this.reverseMap.set(shared, name);
-    }
-    this.lastShareSize = this.ydoc.share.size;
   }
 }

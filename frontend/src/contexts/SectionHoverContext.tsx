@@ -6,17 +6,22 @@
  * render positions are never used as hover/active identity, so attribution and
  * gutter highlighting follow the same section across reorders.
  *
+ * The setter lives in its own context because it is permanently stable while the
+ * hovered/active keys change on every hover move: a row that only needs to
+ * report hover must not re-render when some other row becomes hovered.
+ *
  * Usage:
  *   - Wrap your section-rendering page with <SectionHoverProvider activeFragmentKey={focusedFragmentKey}>
- *   - In section renderers: const { setHoveredFragmentKey } = useSectionHover()
+ *   - In section renderers: const setHoveredFragmentKey = useSetHoveredFragmentKey()
  *   - In gutter components: const { hoveredFragmentKey, activeFragmentKey } = useSectionHover()
  */
 
 import { createContext, useCallback, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import type { SectionHoverContextValue } from "./sectionHoverUtils";
+import type { SectionHoverContextValue, SetHoveredFragmentKey } from "./sectionHoverUtils";
 
 export const SectionHoverContext = createContext<SectionHoverContextValue | null>(null);
+export const SetHoveredFragmentKeyContext = createContext<SetHoveredFragmentKey | null>(null);
 
 interface SectionHoverProviderProps {
   children: ReactNode;
@@ -30,12 +35,14 @@ export function SectionHoverProvider({ children, activeFragmentKey = null }: Sec
     setHoveredFragmentKeyState(fragmentKey);
   }, []);
   const value = useMemo(
-    () => ({ hoveredFragmentKey, activeFragmentKey, setHoveredFragmentKey }),
-    [hoveredFragmentKey, activeFragmentKey, setHoveredFragmentKey],
+    () => ({ hoveredFragmentKey, activeFragmentKey }),
+    [hoveredFragmentKey, activeFragmentKey],
   );
   return (
-    <SectionHoverContext.Provider value={value}>
-      {children}
-    </SectionHoverContext.Provider>
+    <SetHoveredFragmentKeyContext.Provider value={setHoveredFragmentKey}>
+      <SectionHoverContext.Provider value={value}>
+        {children}
+      </SectionHoverContext.Provider>
+    </SetHoveredFragmentKeyContext.Provider>
   );
 }

@@ -239,7 +239,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
       if (!liveReplica.isCurrentlyLiveAuthority || !replica) return undefined;
       return replica.getLiveSection(SectionId.brand(fragmentKey)).createEditorBinding();
     },
-    [liveReplica],
+    [liveReplica.replica, liveReplica.isCurrentlyLiveAuthority],
   );
 
   const getLiveMarkdown = useCallback(
@@ -669,7 +669,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
   const promoteToEditorAndFocusFragment = useCallback(async (fk: string, coords?: { x: number; y: number }) => {
     await liveReplica.promoteToEditor();
     focusFragmentAndSetCaretTarget(fk, coords);
-  }, [liveReplica, focusFragmentAndSetCaretTarget]);
+  }, [liveReplica.promoteToEditor, focusFragmentAndSetCaretTarget]);
 
   // Cross-section caret navigation: resolve the CURRENT position of the exiting
   // fragment in the rendered rows, then focus the neighboring fragment key.
@@ -921,7 +921,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
             ) : null}
 
             {/* Loading state */}
-            {showLoading ? <DocumentLoadingSkeleton structureTree={structureTree} /> : null}
+            {showLoading && renderSections.length === 0 ? <DocumentLoadingSkeleton structureTree={structureTree} /> : null}
 
             {/* Sections */}
             {!sectionsLoading && isDocumentEffectivelyEmpty(renderSections, getDisplayMarkdown) && !isEditing && !error ? (
@@ -976,7 +976,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
               );
             }) : null}
 
-            {!sectionsLoading && !showAttribution ? (
+            {(!sectionsLoading || renderSections.length > 0) && !showAttribution ? (
             <EditorSessionCommandsProvider value={editorSessionCommands}>
             {renderSections.map((section) => {
               const sectionHeadingPathArr = [...section.headingPath];
@@ -1024,6 +1024,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
                       canEditProposalContent={activeProposalStatus === "inprogress"}
                       proposalScopeMutationInFlight={proposalScopeMutationInFlight}
                       isReady={readyEditors.has(fk)}
+                      replicaFragmentVersion={liveReplica.getFragmentVersion(fk)}
                       getDisplayMarkdown={getDisplayMarkdown}
                       getLiveBinding={getLiveBinding}
                       localEditSink={localEditSink}
@@ -1036,7 +1037,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
                       onProposalSectionChange={proposalMode ? handleProposalSectionChange : undefined}
                       onToggleProposalSection={
                         proposalMode && canEditProposalScope && !proposalScopeMutationInFlight
-                          ? () => toggleProposalSection(section)
+                          ? toggleProposalSection
                           : undefined
                       }
                       onCursorExit={handleSectionCursorExit}

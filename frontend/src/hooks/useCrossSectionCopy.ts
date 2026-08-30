@@ -151,17 +151,24 @@ export function useCrossSectionCopy({
       // Join wrappers to rows by fragment identity ONLY.
       const rowByFragmentKey = new Map(displayRows.map((s) => [s.fragment_key, s]));
 
+      // A section whose body this page cannot name would be copied as a silent
+      // blank gap after preventDefault discarded what the user could see. Hand
+      // the whole copy back to the browser instead — the rendered DOM is right.
+      const bodyByFragmentKey = new Map<string, string>();
+      for (const el of intersected) {
+        const fragmentKey = el.dataset.fragmentKey!;
+        const body = rowByFragmentKey.get(fragmentKey)?.displayMarkdown
+          ?? getLiveMarkdown?.(fragmentKey);
+        if (body === undefined) return;
+        bodyByFragmentKey.set(fragmentKey, body);
+      }
+
       const markdownParts: string[] = [];
 
       for (let i = 0; i < intersected.length; i++) {
         const el = intersected[i];
         const fragmentKey = el.dataset.fragmentKey!;
-        const row = rowByFragmentKey.get(fragmentKey);
-
-        // Full-section body: the row's display markdown (page-selected authority:
-        // overlay / live / seed); live reader only for a row-less wrapper.
-        const fallback = row?.displayMarkdown ?? getLiveMarkdown?.(fragmentKey);
-        if (fallback === undefined) continue;
+        const fallback = bodyByFragmentKey.get(fragmentKey)!;
 
         const isFirst = i === 0;
         const isLast = i === intersected.length - 1;

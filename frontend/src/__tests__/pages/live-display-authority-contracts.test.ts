@@ -9,6 +9,14 @@
  *        REST payload can install reconstructed `# Heading` text onto a live row,
  *        because the row cannot carry body/metadata fields at all (the legacy
  *        `adoptFreshSectionLayout` content-preserve dance is deleted with it).
+ *   F3 — the fragment stays the display authority AFTER bootstrap: an update
+ *        frame's content is what the next paint shows, so the replica is a live
+ *        view of the Y.Doc and never a snapshot taken at first read.
+ *   F4 — an update frame that changes the doc notifies subscribers, including a
+ *        delete-only frame (the shape that arrives when another writer or the
+ *        server removes content).
+ *   F5 — a section whose first read finds it empty is not frozen at empty: a
+ *        later frame's content is what the next paint shows.
  */
 
 import { describe, it, expect } from "vitest";
@@ -28,6 +36,22 @@ function writeFragment(doc: Y.Doc, key: string, markdown: string): void {
   const frag = doc.getXmlFragment(key);
   const node = markdownToProseMirrorNode(markdown);
   doc.transact(() => updateYFragment(doc, frag, node, { mapping: new Map(), isOMark: new Map() }));
+}
+
+function clearFragment(doc: Y.Doc, key: string): void {
+  const frag = doc.getXmlFragment(key);
+  doc.transact(() => {
+    while (frag.length > 0) frag.delete(0, 1);
+  });
+}
+
+function betaTopologyState(): WireLiveSectionsState {
+  return {
+    topology: [{ fragment_key: BETA, heading_path: ["Beta"], heading_level: 1 }],
+    blocked_section_ids: [],
+    pending_sections: [],
+    publish_pause_join_mirror: "not_in_pause",
+  };
 }
 
 function section(partial: {
@@ -83,5 +107,76 @@ describe("live display authority contracts", () => {
     expect(Object.keys(ref).sort()).toEqual(["headingLevel", "headingPath", "id"]);
     expect(SectionId.text(ref.id)).toBe(BETA);
     expect([...ref.headingPath]).toEqual(["Beta"]);
+  });
+
+  it("F3: paintMarkdown shows the update frame's content, not the content at first read", () => {
+    const doc = new Y.Doc();
+    writeFragment(doc, BETA, "Beta");
+    const replica = createLiveSectionReplica();
+    replica.bindToDocSession({
+      docSessionId: "s",
+      state: betaTopologyState(),
+      yjsUpdate: Y.encodeStateAsUpdate(doc),
+    });
+
+    // Reading BEFORE the update is load-bearing: this first read is what any
+    // per-fragment memoization populates. Drop it and the test passes vacuously.
+    expect(replica.getLiveSection(SectionId.brand(BETA)).readMarkdown()).toContain("Beta");
+
+    // The frame must not introduce a NEW fragment key: a `Y.Doc.share` size
+    // change is enough to rebuild an identity-keyed invalidation map and hide a
+    // broken one. A body-only edit to a live section is the ordinary case.
+    const beforeEdit = Y.encodeStateVector(doc);
+    writeFragment(doc, BETA, "Beta edited");
+    replica.ingestUpdate({ yjsUpdate: Y.encodeStateAsUpdate(doc, beforeEdit) });
+
+    expect(replica.getLiveSection(SectionId.brand(BETA)).readMarkdown()).toContain("edited");
+  });
+
+  it("F4: a delete-only update frame notifies subscribers", () => {
+    const doc = new Y.Doc();
+    writeFragment(doc, BETA, "Beta");
+    const replica = createLiveSectionReplica();
+    replica.bindToDocSession({
+      docSessionId: "s",
+      state: betaTopologyState(),
+      yjsUpdate: Y.encodeStateAsUpdate(doc),
+    });
+
+    let notified = 0;
+    replica.subscribe(() => { notified += 1; });
+
+    // A Yjs deletion creates no new structs, so the doc's state vector is
+    // IDENTICAL before and after — it cannot stand in for "did anything change".
+    const beforeClear = Y.encodeStateVector(doc);
+    clearFragment(doc, BETA);
+    replica.ingestUpdate({ yjsUpdate: Y.encodeStateAsUpdate(doc, beforeClear) });
+
+    expect(notified).toBeGreaterThan(0);
+  });
+
+  it("F5: a section first read while empty shows the content a later frame delivers", () => {
+    const doc = new Y.Doc();
+    writeFragment(doc, BETA, "Beta");
+    const replica = createLiveSectionReplica();
+    replica.bindToDocSession({
+      docSessionId: "s",
+      state: betaTopologyState(),
+      yjsUpdate: Y.encodeStateAsUpdate(doc),
+    });
+
+    const beforeClear = Y.encodeStateVector(doc);
+    clearFragment(doc, BETA);
+    replica.ingestUpdate({ yjsUpdate: Y.encodeStateAsUpdate(doc, beforeClear) });
+
+    // Reading here is load-bearing: it is the read that captures "" as this
+    // fragment's answer. The section is legitimately empty at this instant.
+    expect(replica.getLiveSection(SectionId.brand(BETA)).readMarkdown().trim()).toBe("");
+
+    const beforeRefill = Y.encodeStateVector(doc);
+    writeFragment(doc, BETA, "Beta returns");
+    replica.ingestUpdate({ yjsUpdate: Y.encodeStateAsUpdate(doc, beforeRefill) });
+
+    expect(replica.getLiveSection(SectionId.brand(BETA)).readMarkdown()).toContain("returns");
   });
 });

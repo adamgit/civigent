@@ -54,11 +54,6 @@ export interface ObserverCrdtProviderEvents {
   onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
   onModeTransitionResult?: (result: ModeTransitionResult) => void;
   onLiveSectionFrame?: (opcode: number, payload: Uint8Array) => void;
-  /** Fired after a MSG_SYNC_STEP_2 update is applied to the shared Y.Doc, so a
-   *  passively-watching (no mounted Milkdown) viewer can re-read `paintMarkdown`
-   *  and repaint its ReactMarkdown body. NOT a general doc.on("update") — only
-   *  this inbound-sync opcode fires it, so local keystrokes don't trigger it. */
-  onDocUpdated?: () => void;
   /** Fired when a protocol-level error occurs (e.g. malformed JSON payload).
    *  The connection is terminated after this callback. */
   onError?: (reason: string) => void;
@@ -243,7 +238,6 @@ export class ObserverCrdtProvider {
     switch (msgType) {
       case MSG_SYNC_STEP_2: {
         Y.applyUpdate(this.doc, payload);
-        this.events.onDocUpdated?.();
         break;
       }
       case MSG_AWARENESS:

@@ -99,7 +99,12 @@ describe("frontend live-section frame decode + routing", () => {
 
   it("routes a state-only update frame", () => {
     const replica = createLiveSectionReplica();
-    routeLiveSectionFrame(MSG_LIVE_SECTIONS_BOOTSTRAP, frameBody({ doc_session_id: "s", state: STATE }, seedUpdate()), replica);
+    // The bootstrap opcode is not routed — the hook decodes and binds it
+    // explicitly, and a state-only frame is only legal against a replica whose
+    // fragments are already present.
+    replica.bindToDocSession(
+      decodeLiveSectionsBootstrap(frameBody({ doc_session_id: "s", state: STATE }, seedUpdate())),
+    );
     const handled = routeLiveSectionFrame(
       MSG_LIVE_SECTIONS_UPDATE,
       frameBody({ has_yjs_update: false, state: { ...STATE, blocked_section_ids: [ALPHA] } }, new Uint8Array(0)),

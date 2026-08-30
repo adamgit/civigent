@@ -35,6 +35,7 @@ export interface DocumentCanvasProps {
   transferService: SectionTransferService | null;
   readyEditors: Set<string>;
   getDisplayMarkdown: (section: RenderSectionRef) => string;
+  getFragmentVersion: (fragmentKey: string) => number;
   getLiveBinding?: (fragmentKey: string) => import("../services/live-section-replica").LiveEditorBinding | undefined;
   getLastEditor?: (fragmentKey: string) => SectionLastEditor | undefined;
   getActiveEditors?: (fragmentKey: string) => string[];
@@ -74,6 +75,7 @@ export function DocumentCanvas({
   transferService,
   readyEditors,
   getDisplayMarkdown,
+  getFragmentVersion,
   getLiveBinding,
   getLastEditor,
   getActiveEditors,
@@ -97,7 +99,7 @@ export function DocumentCanvas({
   for (const fragmentKey of orderedFragmentKeys) {
     fragmentKeyCounts.set(fragmentKey, (fragmentKeyCounts.get(fragmentKey) ?? 0) + 1);
   }
-  if (sectionsLoading) {
+  if (sectionsLoading && sections.length === 0) {
     return (
       <div className="flex items-stretch" data-testid="doc-canvas-loading-bones" aria-hidden="true">
         <div className="doc-gutter-left" />
@@ -185,6 +187,7 @@ export function DocumentCanvas({
                 canEditProposalContent={canEditProposalContent}
                 proposalScopeMutationInFlight={proposalScopeMutationInFlight}
                 isReady={readyEditors.has(fk)}
+                replicaFragmentVersion={getFragmentVersion(fk)}
                 getDisplayMarkdown={getDisplayMarkdown}
                 getLiveBinding={getLiveBinding}
                 localEditSink={localEditSink}
@@ -200,8 +203,8 @@ export function DocumentCanvas({
                 onEditorUnready={onEditorUnready}
                 onProposalSectionChange={proposalMode ? onProposalSectionChange : undefined}
                 onToggleProposalSection={
-                  proposalMode && canEditProposalScope && !proposalScopeMutationInFlight && onToggleProposalSection
-                    ? () => onToggleProposalSection(section)
+                  proposalMode && canEditProposalScope && !proposalScopeMutationInFlight
+                    ? onToggleProposalSection
                     : undefined
                 }
                 onCursorExit={onCursorExit}

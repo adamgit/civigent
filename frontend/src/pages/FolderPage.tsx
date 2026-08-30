@@ -596,26 +596,11 @@ export function FolderPage({ folderPath }: FolderPageProps) {
     }
   };
 
-  const handleCreate = async ({ name, content, isFolder }: NewFileOrFolderSubmit) => {
+  const handleCreate = async ({ name, content }: NewFileOrFolderSubmit) => {
     setCreating(true);
     setCreateError(null);
     try {
-      if (isFolder) {
-        const folderName = name.replace(/\/+$/, "").trim();
-        if (!folderName) {
-          throw new Error("Folder name is required.");
-        }
-        const newFolder = FolderPath.normalize(
-          folderPath === FolderPath.root ? `/${folderName}` : `${folderPath}/${folderName}`,
-        );
-        // Empty folders are not stored; a placeholder doc materializes the path.
-        await apiClient.createDocument(DocPath.fileInFolder(newFolder, "readme.md"), "");
-        await refreshTree();
-        navigate(folderHref(newFolder));
-        return;
-      }
-
-      const fileName = DocPath.normalizeMarkdownFileName(name.replace(/\/+$/, "").trim());
+      const fileName = DocPath.normalizeMarkdownFileName(name.trim());
       if (!fileName || fileName === ".md") {
         throw new Error("File name is required.");
       }
@@ -674,19 +659,19 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                     </span>
                   </h1>
                   <div className="flex min-w-0 items-center gap-2">
-                    <div className="min-w-0 flex-1 overflow-x-auto">
+                    <div className="flex min-w-0 items-center gap-0.5 overflow-x-auto">
                       <FolderPathBreadcrumb folderPath={folderPath} />
+                      <span className="max-md:hidden shrink-0">
+                        <CopyPathButton
+                          path={folderClipboardPath}
+                          label={FolderPath.displayName(folderPath)}
+                          copied={copiedPath === folderClipboardPath}
+                          onCopied={markPathCopied}
+                        />
+                      </span>
                     </div>
-                    <span className="max-md:hidden">
-                      <CopyPathButton
-                        path={folderClipboardPath}
-                        label={FolderPath.displayName(folderPath)}
-                        copied={copiedPath === folderClipboardPath}
-                        onCopied={markPathCopied}
-                      />
-                    </span>
                     {!isRoot && renaming ? (
-                      <form onSubmit={handleRenameFolder} className="flex shrink-0 items-center gap-2">
+                      <form onSubmit={handleRenameFolder} className="ml-auto flex shrink-0 items-center gap-2">
                         <input
                           type="text"
                           value={renameValue}
@@ -712,17 +697,43 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                       </form>
                     ) : null}
                     {!isRoot && !renaming ? (
-                      <div className="ml-auto">
-                        <FolderOverflowMenu
-                          busy={folderOpBusy}
-                          onRename={() => {
-                            setRenameValue(folderPath);
-                            setRenameError(null);
-                            setRenaming(true);
-                          }}
-                          onDelete={handleDeleteFolder}
-                        />
-                      </div>
+                      <>
+                        <div className="ml-auto hidden shrink-0 items-center gap-2 md:flex">
+                          <button
+                            type="button"
+                            className="border-none bg-transparent p-0 text-xs text-accent-primary hover:underline"
+                            disabled={folderOpBusy}
+                            onClick={() => {
+                              setRenameValue(folderPath);
+                              setRenameError(null);
+                              setRenaming(true);
+                            }}
+                          >
+                            Rename
+                          </button>
+                          <button
+                            type="button"
+                            className="border-none bg-transparent p-0 text-xs text-folder-danger hover:underline hover:text-folder-danger-hover"
+                            disabled={folderOpBusy}
+                            onClick={() => {
+                              void handleDeleteFolder();
+                            }}
+                          >
+                            {folderOpBusy ? "Working..." : "Delete"}
+                          </button>
+                        </div>
+                        <div className="ml-auto shrink-0 md:hidden">
+                          <FolderOverflowMenu
+                            busy={folderOpBusy}
+                            onRename={() => {
+                              setRenameValue(folderPath);
+                              setRenameError(null);
+                              setRenaming(true);
+                            }}
+                            onDelete={handleDeleteFolder}
+                          />
+                        </div>
+                      </>
                     ) : null}
                   </div>
                 </div>

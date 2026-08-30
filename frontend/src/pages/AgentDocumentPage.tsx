@@ -304,6 +304,7 @@ export function AgentDocumentPage({ docPath, toolbarAccessory }: AgentDocumentPa
               transferService={null}
               readyEditors={EMPTY_KEY_SET}
               getDisplayMarkdown={getDisplayMarkdown}
+              getFragmentVersion={returnZero}
               localEditSink={localEditSink}
               mouseDownPosRef={mouseDownPosRef}
               onStartEditing={noop}
@@ -337,3 +338,4 @@ const EMPTY_CONFLICT_MAP: Map<string, string> = new Map();
 const EMPTY_CHANGED_MAP: Map<string, unknown> = new Map();
 const EMPTY_INJECTED_MAP: Map<string, string> = new Map();
 const returnFalse = (): boolean => false;
+const returnZero = (): number => 0;

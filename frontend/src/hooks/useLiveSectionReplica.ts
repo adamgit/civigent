@@ -80,6 +80,9 @@ export interface LiveSectionReplicaView {
    *  section transfer). Owned by this hook — do not destroy it. */
   editorTransport: CrdtTransport | null;
   paintMarkdown: (id: SectionId, seedMarkdown: string) => string;
+  /** Per-fragment render version — changes exactly when that fragment's Y types
+   *  change, so a memoised row re-renders on its own content and nothing else. */
+  getFragmentVersion: (fragmentKey: string) => number;
   promoteToEditor: () => Promise<void>;
   demoteToObserver: () => Promise<void>;
 }
@@ -245,10 +248,6 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       docPathArg,
       {
         onLiveSectionFrame: (opcode, payload) => handleLiveSectionFrame(docPathArg, opcode, payload),
-        // Inbound SYNC_STEP_2 applied to the shared doc: re-render so a passive
-        // viewer (no mounted Milkdown) re-reads paintMarkdown and repaints its
-        // ReactMarkdown body. (0x14/0x15 already forceRender via the replica.)
-        onDocUpdated: () => { forceRender(); },
         onStateChange: (state) => {
           observerStateRef.current = state;
           forceRender();
@@ -286,8 +285,6 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       awareness: awarenessRef.current!,
       clientInstanceId: clientInstanceIdRef.current,
       onLiveSectionFrame: (opcode, payload) => handleLiveSectionFrame(docPathArg, opcode, payload),
-      // Same passive-repaint hook on the editor socket (see startObserver).
-      onDocUpdated: () => { forceRender(); },
       onStateChange: (state) => {
         editorStateRef.current = state;
         forceRender();
@@ -489,6 +486,10 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     return r.getLiveSection(id).readMarkdown();
   }, []);
 
+  const getFragmentVersion = useCallback((fragmentKey: string): number => {
+    return replicaRef.current?.getFragmentVersion(fragmentKey) ?? 0;
+  }, []);
+
   const conn = connectionRef.current;
   return {
     isCurrentlyLiveAuthority,
@@ -505,6 +506,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     replicaGeneration: generationRef.current,
     editorTransport: conn?.kind === "editor" ? conn.transport : null,
     paintMarkdown,
+    getFragmentVersion,
     promoteToEditor,
     demoteToObserver,
   };
