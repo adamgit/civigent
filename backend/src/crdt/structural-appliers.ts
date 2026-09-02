@@ -529,6 +529,29 @@ export function applyStructuralHeadingEditPlan(
   updateFragmentPreservingIdentity(ydoc, plan.fragmentKey, plan.target);
 }
 
+/** True when `prefix` is a (non-strict) prefix of `path` — i.e. `path` is the
+ *  target itself or one of its descendants. */
+function headingPathHasPrefix(prefix: string[], path: string[]): boolean {
+  if (path.length < prefix.length) return false;
+  return prefix.every((seg, i) => path[i] === seg);
+}
+
+/**
+ * Every effective heading path of the inprogress proposal's document that lies
+ * at or under `prefix` — the subtree a rename re-keys, which overlay ownership
+ * reports as owned at those NEW addresses.
+ */
+async function effectiveSubtreeHeadingPaths(
+  proposalId: ProposalId,
+  docPath: DocPath,
+  prefix: string[],
+): Promise<string[][]> {
+  const { ProposalReader } = await import("../storage/proposal-reader.js");
+  const reader = ProposalReader.open(proposalId, "inprogress");
+  const headingPaths = await reader.listHeadingPaths(docPath);
+  return headingPaths.filter((path) => headingPathHasPrefix(prefix, path));
+}
+
 /**
  * Reflect a rename / level-change into the proposal (WS-3). A level change is a
  * move to the same parent at a new level; a pure rename is `renameSection`. The
@@ -555,7 +578,9 @@ export async function reflectHeadingEditIntoProposal(
   }
 
   const newEntry = await editor.retitleSection(docPath, plan.fromHeadingPath, plan.newHeading, plan.newHeadingLevel, body);
-  await unionCurrentProposalSections(proposalId, [
-    { doc_path: docPath, heading_path: [...newEntry.headingPath] },
-  ]);
+  const reKeyed = await effectiveSubtreeHeadingPaths(proposalId, docPath, newEntry.headingPath);
+  await unionCurrentProposalSections(
+    proposalId,
+    reKeyed.map((heading_path) => ({ doc_path: docPath, heading_path: [...heading_path] })),
+  );
 }
