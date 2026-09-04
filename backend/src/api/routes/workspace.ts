@@ -1,6 +1,7 @@
 import { type Router } from "express";
 import type {
   GetDocumentsTreeResponse,
+  GetFolderFileAgesResponse,
   ReadDocStructureResponse,
   WsServerEvent,
 } from "../../types/shared.js";
@@ -16,6 +17,7 @@ import {
 } from "./middleware.js";
 import {
   readTree,
+  readFolderFileAges,
   readWorkspaceStructure,
   getDiagnostics,
   restoreDocument,
@@ -273,6 +275,26 @@ export function registerWorkspaceRoutes(
     } catch (error) {
       if (error instanceof InvalidDocPathError) {
         sendApiError(res, 400, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // GET /workspace-folder/:folderPath/file-ages — last-touch age per direct-child file
+  router.get("/workspace-folder/:folderPath(*)/file-ages", async (req, res, next) => {
+    try {
+      const writer = resolveAuthenticatedWriter(req);
+      const folder = FolderPath.fromSlashStrippedUrlSegment(req.params.folderPath);
+      const response: GetFolderFileAgesResponse = await readFolderFileAges(writer, folder);
+      res.json(response);
+    } catch (error) {
+      if (error instanceof InvalidFolderPathError) {
+        sendApiError(res, 400, error);
+        return;
+      }
+      if (error instanceof DocumentsTreePathNotFoundError) {
+        sendApiError(res, 404, error);
         return;
       }
       next(error);

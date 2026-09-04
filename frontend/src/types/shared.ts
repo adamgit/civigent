@@ -58,6 +58,7 @@ export type {
   GetDocumentSectionsResponse,
   GetProposalSectionsResponse,
   GetDocumentsTreeResponse,
+  GetFolderFileAgesResponse,
   GetHeatmapResponse,
   HeadingPath,
   HeatmapEntry,

@@ -102,6 +102,15 @@ export async function readFileBufferIfExists(targetPath: string): Promise<Buffer
   }
 }
 
+export async function mtimeMsIfExists(targetPath: string): Promise<number | null> {
+  try {
+    return (await stat(targetPath)).mtimeMs;
+  } catch (error) {
+    if (isMissingPathError(error)) return null;
+    throw error;
+  }
+}
+
 /**
  * List directory entry names, or `[]` if the directory does not exist.
  * Pass `{ recursive: true }` for a recursive walk. Non-missing errors propagate.

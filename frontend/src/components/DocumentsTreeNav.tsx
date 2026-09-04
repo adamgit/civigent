@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type MouseEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type { DocumentTreeEntry } from "../types/shared.js";
 
 import { DocsLocation, docHref, folderHref } from "../app/docs-location";
 import { copyTextToClipboard } from "../utils/copy-text";
 import { DocPath, FolderPath } from "../types/shared";
+import { NewDocFileNameForm } from "./NewDocTreeForm";
 
 export type TreeDragSource =
   | { kind: "doc"; path: DocPath }
@@ -112,6 +113,15 @@ interface DocumentsTreeNavProps {
   flashDocKinds?: ReadonlyMap<string, "human" | "agent">;
   onDocumentOpen?: (docPath: string) => void;
   onCreateDocumentInFolder?: (folderPath: string) => void;
+  inlineCreate?: {
+    folderPath: string;
+    name: string;
+    busy: boolean;
+    error: string | null;
+    onNameChange: (name: string) => void;
+    onSubmit: (event: FormEvent) => void;
+    onCancel: () => void;
+  } | null;
   dragSource?: TreeDragSource | null;
   onDragSourceChange?: (source: TreeDragSource | null) => void;
   dropParentFolder?: FolderPath | null;
@@ -129,6 +139,7 @@ export function DocumentsTreeNav({
   flashDocKinds,
   onDocumentOpen,
   onCreateDocumentInFolder,
+  inlineCreate = null,
   dragSource,
   onDragSourceChange,
   dropParentFolder,
@@ -136,15 +147,16 @@ export function DocumentsTreeNav({
   onMoveDocument,
   onMoveFolder,
 }: DocumentsTreeNavProps) {
+  const inlineCreateFolderPath = inlineCreate?.folderPath ?? null;
   const location = useLocation();
   const docsLoc = useMemo(() => DocsLocation.fromPathname(location.pathname), [location.pathname]);
   const selectedFilePath = docsLoc?.kind === "doc" ? docsLoc.docPath : null;
   const selectedFolderPath = docsLoc?.kind === "folder" ? docsLoc.folderPath : null;
   const selectedPath = selectedFilePath ?? selectedFolderPath;
   const [expanded, setExpanded] = useState<Set<string>>(() => readExpandedState(storageKey));
-  const [copiedFolderPath, setCopiedFolderPath] = useState<string | null>(null);
+  const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const lastScrolledPathRef = useRef<string | null>(null);
-  const copiedFolderTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copiedPathTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const selectedScrollRef = useCallback(
     (el: HTMLElement | null) => {
@@ -179,17 +191,20 @@ export function DocumentsTreeNav({
           next.add(path);
         }
       }
+      if (inlineCreateFolderPath && allDirectoryPaths.has(inlineCreateFolderPath)) {
+        next.add(inlineCreateFolderPath);
+      }
       if (next.size === previous.size && Array.from(next).every((path) => previous.has(path))) {
         return previous;
       }
       return next;
     });
-  }, [allDirectoryPaths, entries, selectedPath]);
+  }, [allDirectoryPaths, entries, selectedPath, inlineCreateFolderPath]);
 
   useEffect(() => {
     return () => {
-      if (copiedFolderTimeoutRef.current) {
-        clearTimeout(copiedFolderTimeoutRef.current);
+      if (copiedPathTimeoutRef.current) {
+        clearTimeout(copiedPathTimeoutRef.current);
       }
     };
   }, []);
@@ -250,12 +265,61 @@ export function DocumentsTreeNav({
         className="shrink-0 inline-flex items-center justify-center w-4 h-4 text-sidebar-text/70 hover:text-accent bg-transparent border-none cursor-pointer p-0 text-[18px] font-medium leading-none transition-colors"
         onClick={(e) => {
           if (stopPropagation) e.stopPropagation();
+          setExpanded((previous) => {
+            if (previous.has(folderPath)) return previous;
+            const next = new Set(previous);
+            next.add(folderPath);
+            return next;
+          });
           onCreateDocumentInFolder?.(folderPath);
         }}
       >
         +
       </button>
     </span>
+  );
+
+  const pathCopyButton = (
+    path: string,
+    copyValue: string,
+    isSelected: boolean,
+    kindLabel: "folder" | "document",
+  ) => (
+    <button
+      type="button"
+      className={`shrink-0 inline-flex items-center justify-center w-4 h-4 rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ${
+        isSelected
+          ? "text-sidebar-active-text/70 hover:text-sidebar-active-text hover:bg-black/5"
+          : "text-sidebar-text/55 hover:text-accent hover:bg-white/50"
+      }`}
+      title={copiedPath === path ? "Copied" : `Copy ${kindLabel} path`}
+      aria-label={
+        copiedPath === path
+          ? `${kindLabel === "folder" ? "Folder" : "Document"} path copied`
+          : `Copy path for ${getDisplayName(path)}`
+      }
+      onClick={async (event) => {
+        event.stopPropagation();
+        const didCopy = await copyTextToClipboard(copyValue);
+        if (!didCopy) return;
+        setCopiedPath(path);
+        if (copiedPathTimeoutRef.current) {
+          clearTimeout(copiedPathTimeoutRef.current);
+        }
+        copiedPathTimeoutRef.current = setTimeout(() => setCopiedPath(null), 1500);
+      }}
+    >
+      {copiedPath === path ? (
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      ) : (
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="5.5" y="5.5" width="8" height="8" rx="1.25" stroke="currentColor" strokeWidth="1.25" />
+          <path d="M10.5 5.5V4.25C10.5 3.56 9.94 3 9.25 3H4.25C3.56 3 3 3.56 3 4.25V9.25C3 9.94 3.56 10.5 4.25 10.5H5.5" stroke="currentColor" strokeWidth="1.25" />
+        </svg>
+      )}
+    </button>
   );
 
   const dragSourceHandlers = (source: TreeDragSource) => ({
@@ -362,38 +426,12 @@ export function DocumentsTreeNav({
                     ) : (
                       <span className="truncate min-w-0 p-0 text-left">{getDisplayName(node.path)}/</span>
                     )}
-                    <button
-                      type="button"
-                      className={`shrink-0 inline-flex items-center justify-center w-4 h-4 rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ${
-                        isSelectedFolder
-                          ? "text-sidebar-active-text/70 hover:text-sidebar-active-text hover:bg-black/5"
-                          : "text-sidebar-text/55 hover:text-accent hover:bg-white/50"
-                      }`}
-                      title={copiedFolderPath === node.path ? "Copied" : "Copy folder path"}
-                      aria-label={copiedFolderPath === node.path ? "Folder path copied" : `Copy path for ${getDisplayName(node.path)}`}
-                      onClick={async (event) => {
-                        event.stopPropagation();
-                        const folderPath = node.path.endsWith("/") ? node.path : `${node.path}/`;
-                        const didCopy = await copyTextToClipboard(folderPath);
-                        if (!didCopy) return;
-                        setCopiedFolderPath(node.path);
-                        if (copiedFolderTimeoutRef.current) {
-                          clearTimeout(copiedFolderTimeoutRef.current);
-                        }
-                        copiedFolderTimeoutRef.current = setTimeout(() => setCopiedFolderPath(null), 1500);
-                      }}
-                    >
-                      {copiedFolderPath === node.path ? (
-                        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                          <path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      ) : (
-                        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                          <rect x="5.5" y="5.5" width="8" height="8" rx="1.25" stroke="currentColor" strokeWidth="1.25" />
-                          <path d="M10.5 5.5V4.25C10.5 3.56 9.94 3 9.25 3H4.25C3.56 3 3 3.56 3 4.25V9.25C3 9.94 3.56 10.5 4.25 10.5H5.5" stroke="currentColor" strokeWidth="1.25" />
-                        </svg>
-                      )}
-                    </button>
+                    {pathCopyButton(
+                      node.path,
+                      node.path.endsWith("/") ? node.path : `${node.path}/`,
+                      isSelectedFolder,
+                      "folder",
+                    )}
                   </span>
                   <span className="ml-auto flex items-center gap-1 shrink-0">
                     {getDisplayName(node.path).endsWith(".md") || getDisplayName(node.path).endsWith(".sections") ? (
@@ -424,9 +462,20 @@ export function DocumentsTreeNav({
                 </div>
                 {isExpanded ? (
                   <div data-testid={`tree-node-expanded-${node.path}`}>
+                    {inlineCreate && inlineCreate.folderPath === node.path ? (
+                      <NewDocFileNameForm
+                        value={inlineCreate.name}
+                        onChange={inlineCreate.onNameChange}
+                        onSubmit={inlineCreate.onSubmit}
+                        onCancel={inlineCreate.onCancel}
+                        busy={inlineCreate.busy}
+                        error={inlineCreate.error}
+                        paddingLeft={`${(folderPathLength + 1) * 12}px`}
+                      />
+                    ) : null}
                     {childEntries.length > 0 ? (
                       renderEntries(childEntries, folderPathLength + 1)
-                    ) : (
+                    ) : inlineCreate && inlineCreate.folderPath === node.path ? null : (
                       <p
                         className="text-[11px] text-text-faint px-1.5 py-1"
                         style={{ marginLeft: `${(folderPathLength + 1) * 12}px` }}
@@ -451,15 +500,13 @@ export function DocumentsTreeNav({
             node.path.lastIndexOf("/") === 0 ? "/" : node.path.slice(0, node.path.lastIndexOf("/")),
           );
           return (
-            <Link
+            <div
               key={node.path}
               ref={isSelected ? selectedScrollRef : undefined}
-              to={docHref(fileDocPath)}
-              onClick={handleClick}
               {...dragSourceHandlers({ kind: "doc", path: fileDocPath })}
               {...dropTargetHandlers(fileParentFolder)}
               data-testid={isSelected ? `tree-node-selected-${node.path}` : undefined}
-              className={`flex items-center gap-[7px] min-w-0 px-1.5 py-[5px] rounded-[5px] text-[13px] cursor-pointer transition-all relative ${
+              className={`group flex items-center gap-[7px] w-full min-w-0 px-1.5 py-[5px] rounded-[5px] text-[13px] transition-all relative ${
                 isSelected
                   ? "bg-sidebar-active-bg text-sidebar-active-text font-medium"
                   : "text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover"
@@ -467,13 +514,24 @@ export function DocumentsTreeNav({
               style={{ paddingLeft }}
             >
               <span className="text-[13px] opacity-45 w-4 shrink-0 text-center">&#128196;</span>
-              <span className="truncate min-w-0 flex-1">{getDisplayName(node.path)}</span>
+              <span className="flex items-center gap-0.5 min-w-0 flex-1">
+                <Link
+                  to={docHref(fileDocPath)}
+                  onClick={handleClick}
+                  title={`Open ${getDisplayName(node.path)}`}
+                  aria-label={`Open ${getDisplayName(node.path)}`}
+                  className="truncate min-w-0 p-0 text-left font-inherit text-inherit no-underline hover:text-accent"
+                >
+                  {getDisplayName(node.path)}
+                </Link>
+                {pathCopyButton(node.path, node.path, isSelected, "document")}
+              </span>
               {hasBadge ? (
                 <span className="ml-auto shrink-0 text-[10px] font-semibold px-[5px] py-px rounded-lg bg-agent-light text-agent-text">
                   new
                 </span>
               ) : null}
-            </Link>
+            </div>
           );
         })}
       </div>

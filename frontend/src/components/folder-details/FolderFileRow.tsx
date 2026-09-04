@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { SectionHeadingBarcode } from "./SectionHeadingBarcode";
+import { compactAge } from "../../utils/prettyAge";
 
 /**
  * Clickable file row. The outer element is a real <Link href>, not a
@@ -20,6 +21,7 @@ export interface FolderFileRowProps {
   /** Section / heading names shown on hover to the right of the filename. */
   sectionHeadings?: FolderFileSectionHeading[];
   statusDots?: FolderFileStatusDot[];
+  secondsAgo?: number | null;
   /** Document route. This row is a real <Link>, never a click handler. */
   to: string;
 }
@@ -57,6 +59,7 @@ export function FolderFileRow({
   meta,
   sectionHeadings,
   statusDots = [],
+  secondsAgo,
   to,
 }: FolderFileRowProps) {
   return (
@@ -74,6 +77,9 @@ export function FolderFileRow({
           ))}
         </span>
       ) : null}
+      <span className="w-14 shrink-0 tabular-nums text-[11px] text-text-faint">
+        {typeof secondsAgo === "number" ? compactAge(secondsAgo) : null}
+      </span>
       <span className="max-w-full min-w-0 shrink-0 truncate text-[15px] font-medium text-folder-link group-hover:text-folder-link-hover group-hover:underline md:max-w-[50%]">
         {name}
       </span>

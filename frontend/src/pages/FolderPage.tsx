@@ -316,7 +316,7 @@ function FolderPathBreadcrumb({ folderPath }: { folderPath: FolderPath }) {
 
   return (
     <span
-      className={`inline-flex w-max items-center whitespace-nowrap font-ui text-[22px] leading-tight tracking-tight ${
+      className={`inline-flex w-max items-center whitespace-nowrap font-ui text-[22px] leading-[28px] tracking-tight ${
         parts.length === 0 ? "max-md:hidden" : ""
       }`}
     >
@@ -387,6 +387,8 @@ export function FolderPage({ folderPath }: FolderPageProps) {
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [fileAges, setFileAges] = useState<Record<string, number | null> | null>(null);
+  const [fileAgesError, setFileAgesError] = useState<string | null>(null);
   const [folderOpBusy, setFolderOpBusy] = useState(false);
   const [folderDetailsSectionHeadingsCache, setFolderDetailsSectionHeadingsCache] = useState<
     Record<string, DocSectionHeading[]>
@@ -460,6 +462,29 @@ export function FolderPage({ folderPath }: FolderPageProps) {
   useEffect(() => {
     setFilterQuery("");
   }, [folderPath]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setFileAgesError(null);
+    apiClient
+      .getFolderFileAges(folderPath)
+      .then((response) => {
+        if (cancelled) return;
+        const next: Record<string, number | null> = {};
+        for (const file of response.files) {
+          next[file.path] = file.seconds_ago;
+        }
+        setFileAges(next);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setFileAges(null);
+        setFileAgesError(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [folderPath, childFilesKey]);
 
   useEffect(() => {
     if (childFiles === null || childFiles.length === 0) {
@@ -619,8 +644,9 @@ export function FolderPage({ folderPath }: FolderPageProps) {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-folder-page-bg">
-      <div className="relative isolate min-h-0 flex-1 overflow-auto px-8 py-7 font-ui max-md:px-4 max-md:py-4">
+      <div className="relative isolate flex min-h-0 flex-1 flex-col overflow-hidden">
         {folderEntry ? <FolderTreePageWatermark entry={folderEntry} /> : null}
+        <div className="relative z-10 min-h-0 flex-1 overflow-auto px-8 py-7 font-ui max-md:px-4 max-md:py-4">
         {treeLoading ? (
           <p className="text-xs text-text-muted">Loading folder details...</p>
         ) : null}
@@ -659,7 +685,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                     </span>
                   </h1>
                   <div className="flex min-w-0 items-center gap-2">
-                    <div className="flex min-w-0 items-center gap-0.5 overflow-x-auto">
+                    <div className="flex min-w-0 items-center gap-0.5 overflow-x-auto overflow-y-hidden">
                       <FolderPathBreadcrumb folderPath={folderPath} />
                       <span className="max-md:hidden shrink-0">
                         <CopyPathButton
@@ -737,14 +763,13 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                     ) : null}
                   </div>
                 </div>
-              <p className="mt-2 text-[12px] text-text-faint max-md:hidden">
-                {stats.childFiles.length} files · {stats.childFolders.length} folders
-                {" — hover any item for a preview."}
-              </p>
             </div>
 
             {renameError ? <p className="mb-3 text-xs text-status-red">{renameError}</p> : null}
             {deleteError ? <p className="mb-3 text-xs text-status-red">{deleteError}</p> : null}
+            {fileAgesError ? (
+              <p className="mb-3 text-xs text-status-red">{fileAgesError}</p>
+            ) : null}
 
             <div className="flex flex-col gap-y-8 border-t border-folder-divider pt-6 md:flex-row md:gap-y-0">
               {sortedFolders.length > 0 ? (
@@ -780,15 +805,15 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                   sortedFolders.length > 0 ? "border-folder-divider md:border-l md:pl-8" : ""
                 }`}
               >
-                <div className="mb-3 flex items-baseline justify-between gap-3">
-                  <h2 className="m-0 font-ui text-[10px] font-semibold uppercase tracking-[0.14em] text-text-faint">
+                <div className="mb-3 flex items-center gap-3">
+                  <h2 className="m-0 shrink-0 font-ui text-[10px] font-semibold uppercase tracking-[0.14em] text-text-faint">
                     Files · {visibleFiles.length}
                   </h2>
                   <DocumentSearchField
-                    placeholder="Filter documents..."
+                    placeholder="Filter files"
                     value={filterQuery}
                     onChange={setFilterQuery}
-                    className="w-44 shrink-0 text-right max-md:hidden"
+                    className="min-w-0 flex-1"
                   />
                 </div>
                 {visibleFiles.length === 0 ? (
@@ -802,13 +827,14 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                         <FolderFileRow
                           name={getDisplayName(path)}
                           sectionHeadings={folderDetailsSectionHeadingsCache[path]}
+                          secondsAgo={fileAges === null ? undefined : (fileAges[path] ?? null)}
                           to={docHref(DocPath.parse(path))}
                         />
                       </li>
                     ))}
                   </ul>
                 )}
-                <div className="border-t border-folder-divider max-md:hidden">
+                <div className="mt-3 max-md:hidden">
                   <NewFileOrFolder
                     busy={creating}
                     error={createError}
@@ -821,6 +847,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
             </div>
           </div>
         ) : null}
+        </div>
       </div>
       {folderEntry && stats ? (
         <div className="hidden shrink-0 border-t border-folder-divider bg-folder-page-bg px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] max-md:block">

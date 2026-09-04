@@ -30,6 +30,7 @@ import type {
   GetDocumentSectionsResponse,
   GetProposalSectionsResponse,
   GetDocumentsTreeResponse,
+  GetFolderFileAgesResponse,
   GetHeatmapResponse,
   ListDegradedProposalsResponse,
   ListProposalsResponse,
@@ -866,6 +867,11 @@ export const apiClient = {
     return requestJson(`/api/workspace-folder/${encoded}`, {
       method: "DELETE",
     });
+  },
+
+  async getFolderFileAges(folderPath: FolderPath): Promise<GetFolderFileAgesResponse> {
+    const encoded = encodeFolderPath(folderPath);
+    return requestJson<GetFolderFileAgesResponse>(`/api/workspace-folder/${encoded}/file-ages`);
   },
 
   // The agent-facing assembled committed read (canonical, read-only).

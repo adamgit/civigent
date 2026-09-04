@@ -2,6 +2,7 @@ import type {
   DocumentTreeEntry,
   GetDocumentResponse,
   GetDocumentsTreeResponse,
+  GetFolderFileAgesResponse,
   ReadDocStructureResponse,
   SectionMeta,
   HumanInvolvementPolicyResult,
@@ -44,6 +45,7 @@ import {
   DocumentsTreePathNotFoundError,
   InvalidDocumentsTreePathError,
 } from "../../storage/documents-tree.js";
+import { resolveFolderFileAges } from "../../storage/folder-file-ages.js";
 import {
   searchReadableText,
   DiscoveryValidationError,
@@ -173,6 +175,22 @@ export async function readTree(
     return { tree: await filterTreeToPublic(tree) };
   }
   return { tree: await annotateDirectoryAccess(await filterTreeToReadable(writer, tree)) };
+}
+
+export async function readFolderFileAges(
+  writer: AuthenticatedWriter | null,
+  folder: FolderPath,
+): Promise<GetFolderFileAgesResponse> {
+  const children = (await readDocumentsTreeUnfiltered(folder, false)).filter((entry) => entry.type === "file");
+  const readable = writer === null
+    ? await filterTreeToPublic(children)
+    : await filterTreeToReadable(writer, children);
+  const docPaths = readable.map((entry) => DocPath.parse(entry.path));
+  const ages = await resolveFolderFileAges(docPaths, Date.now());
+  return {
+    folder,
+    files: docPaths.map((path) => ({ path, seconds_ago: ages.get(path) ?? null })),
+  };
 }
 
 // ─── Structure ──────────────────────────────────────────

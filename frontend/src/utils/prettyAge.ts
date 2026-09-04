@@ -13,3 +13,11 @@ export function prettyAge(secondsAgo: number): string {
   if (secondsAgo < 86400) return `${Math.floor(secondsAgo / 3600)}h ago`;
   return `${Math.floor(secondsAgo / 86400)}d ago`;
 }
+
+export function compactAge(secondsAgo: number): string {
+  if (secondsAgo < 60) return `${Math.floor(secondsAgo)}s ago`;
+  if (secondsAgo < 3600) return `${Math.floor(secondsAgo / 60)}m ago`;
+  if (secondsAgo < 86400) return `${Math.floor(secondsAgo / 3600)}h ago`;
+  if (secondsAgo < 604800) return `${Math.floor(secondsAgo / 86400)}d ago`;
+  return `${Math.floor(secondsAgo / 604800)}w ago`;
+}

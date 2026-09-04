@@ -5,6 +5,7 @@ import { KnowledgeStoreWsClient } from "../services/ws-client";
 import { routeOwnsItsAuthenticationFlow } from "./pre-auth-routes";
 import { connectSystemEvents, type FatalReport } from "../services/system-events-client";
 import { DocumentsTreeNav, computeTreeMoveDest, type TreeDragSource } from "../components/DocumentsTreeNav";
+import { NewDocFullPathForm } from "../components/NewDocTreeForm";
 import { SidebarNavLinks } from "../components/SidebarNavLinks";
 import { SystemFatalScreen } from "../components/SystemFatalScreen";
 import { WsDiagnosticsConsole } from "../components/WsDiagnosticsConsole";
@@ -150,6 +151,8 @@ export function AppLayout() {
   const [treeError, setTreeError] = useState<string | null>(null);
   const [newDocPath, setNewDocPath] = useState("");
   const [showNewDocForm, setShowNewDocForm] = useState(false);
+  const [creatingInFolder, setCreatingInFolder] = useState<string | null>(null);
+  const [newDocFileName, setNewDocFileName] = useState("");
   const [creatingDoc, setCreatingDoc] = useState(false);
   const [newDocError, setNewDocError] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
@@ -316,17 +319,24 @@ export function AppLayout() {
     navigate(docHref(docPath));
   }, [loadTree, navigate]);
 
-  const openCreateDocInFolder = useCallback((folderPath: string) => {
-    const trimmedFolder = folderPath === "/" ? "" : folderPath.replace(/\/+$/, "");
-    const prefill = trimmedFolder ? `${trimmedFolder}/` : "";
-    setShowNewDocForm(true);
-    setNewDocPath(prefill);
+  const resetNewDocUi = useCallback(() => {
+    setShowNewDocForm(false);
+    setNewDocPath("");
+    setCreatingInFolder(null);
+    setNewDocFileName("");
     setNewDocError(null);
   }, []);
 
-  const handleNewDocSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    const trimmed = newDocPath.trim();
+  const openCreateDocInFolder = useCallback((folderPath: string) => {
+    setShowNewDocForm(false);
+    setNewDocPath("");
+    setNewDocFileName("");
+    setNewDocError(null);
+    setCreatingInFolder((current) => (current === folderPath ? null : folderPath));
+  }, []);
+
+  const submitNewDocPath = (raw: string) => {
+    const trimmed = raw.trim();
     if (!trimmed || creatingDoc) return;
     const withMd = DocPath.normalizeMarkdownFileName(trimmed);
     const docPath = DocPath.tryParse(withMd.startsWith("/") ? withMd : `/${withMd}`);
@@ -338,8 +348,7 @@ export function AppLayout() {
     setNewDocError(null);
     createDoc(docPath)
       .then(() => {
-        setShowNewDocForm(false);
-        setNewDocPath("");
+        resetNewDocUi();
       })
       .catch((err) => {
         setNewDocError(err instanceof Error ? err.message : String(err));
@@ -347,6 +356,30 @@ export function AppLayout() {
       .finally(() => {
         setCreatingDoc(false);
       });
+  };
+
+  const handleNewDocSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    submitNewDocPath(newDocPath);
+  };
+
+  const handleNewDocFileNameSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!creatingInFolder || creatingDoc) return;
+    const trimmed = newDocFileName.trim();
+    if (!trimmed) return;
+    if (trimmed.includes("/") || trimmed.includes("\\")) {
+      setNewDocError("File name cannot contain '/'");
+      return;
+    }
+    const folder = FolderPath.tryParse(creatingInFolder);
+    if (!folder) {
+      setNewDocError(`Invalid folder path: ${JSON.stringify(creatingInFolder)}`);
+      return;
+    }
+    const fileName = DocPath.normalizeMarkdownFileName(trimmed);
+    const joined = folder === FolderPath.root ? `/${fileName}` : `${folder}/${fileName}`;
+    submitNewDocPath(joined);
   };
 
   const handleRootExport = () => {
@@ -867,7 +900,12 @@ export function AppLayout() {
             {!loadingTree && (
               <button
                 type="button"
-                onClick={() => setShowNewDocForm((v) => !v)}
+                onClick={() => {
+                  setCreatingInFolder(null);
+                  setNewDocFileName("");
+                  setNewDocError(null);
+                  setShowNewDocForm((v) => !v);
+                }}
                 className="text-[15px] text-sidebar-heading bg-transparent border-none cursor-pointer leading-none opacity-50 hover:opacity-100 transition-opacity"
                 title="Create a new document"
                 aria-label="Create a new document"
@@ -878,36 +916,14 @@ export function AppLayout() {
           </div>
 
           {!loadingTree && showNewDocForm && (
-            <form onSubmit={handleNewDocSubmit} className="flex flex-col gap-1 mb-1.5">
-              <div className="flex gap-1">
-                <input
-                  type="text"
-                  value={newDocPath}
-                  onChange={(e) => setNewDocPath(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key !== "Escape") return;
-                    e.preventDefault();
-                    setShowNewDocForm(false);
-                    setNewDocPath("");
-                    setNewDocError(null);
-                  }}
-                  placeholder="path/to/my-doc"
-                  className="flex-1 min-w-0 text-xs font-[family-name:var(--font-ui)] bg-white/60 border border-sidebar-border rounded px-2 py-1 outline-none focus:border-accent-border"
-                  autoFocus
-                  disabled={creatingDoc}
-                />
-                <button
-                  type="submit"
-                  className="text-xs px-2 py-1 rounded bg-accent text-white border-none cursor-pointer"
-                  disabled={creatingDoc}
-                >
-                  {creatingDoc ? "..." : "Go"}
-                </button>
-              </div>
-              {newDocError ? (
-                <p className="text-[11px] text-status-red m-0 select-text">{newDocError}</p>
-              ) : null}
-            </form>
+            <NewDocFullPathForm
+              value={newDocPath}
+              onChange={setNewDocPath}
+              onSubmit={handleNewDocSubmit}
+              onCancel={resetNewDocUi}
+              busy={creatingDoc}
+              error={newDocError}
+            />
           )}
 
           {treeMoveError ? (
@@ -944,6 +960,19 @@ export function AppLayout() {
               flashDocKinds={flashDocKinds}
               onDocumentOpen={rememberRecentDoc}
               onCreateDocumentInFolder={openCreateDocInFolder}
+              inlineCreate={
+                creatingInFolder
+                  ? {
+                      folderPath: creatingInFolder,
+                      name: newDocFileName,
+                      busy: creatingDoc,
+                      error: newDocError,
+                      onNameChange: setNewDocFileName,
+                      onSubmit: handleNewDocFileNameSubmit,
+                      onCancel: resetNewDocUi,
+                    }
+                  : null
+              }
               dragSource={treeDragSource}
               onDragSourceChange={setTreeDragSource}
               dropParentFolder={treeDropParentFolder}

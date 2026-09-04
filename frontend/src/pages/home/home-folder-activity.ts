@@ -40,10 +40,11 @@ function changedDocumentNames(docTouched: Map<string, string>): string[] {
 
 /**
  * Folders with any file add / modify / delete in the recent window, newest
- * activity first. Modify comes from committed section activity; add/delete
- * from committed proposals that claimed a document target (create / rename /
- * delete). A file created and then edited in the window counts toward both
- * add and mod — the bars are ratios of those three sets, not a partition.
+ * activity first. Modify is committed section activity on a path that still
+ * exists in the tree the caller can see. Add/delete come from committed
+ * proposals that claimed a document target (create / rename / delete). A file
+ * created and then edited in the window counts toward both add and mod — those
+ * two sets are not a partition. A deleted file is never also modified.
  */
 export function buildActiveFolders(
   entries: DocumentTreeEntry[],
@@ -91,6 +92,7 @@ export function buildActiveFolders(
   for (const item of activity) {
     if (!inWindow(item.timestamp, nowMs, windowDays)) continue;
     for (const section of item.sections) {
+      if (!existingDocs.has(section.doc_path)) continue;
       const folder = parentFolderOfDoc(section.doc_path);
       if (!folder) continue;
       touchDoc(folder, item.timestamp, section.doc_path).modified.add(section.doc_path);
@@ -154,6 +156,7 @@ export function buildAllDocsFolder(
   for (const item of activity) {
     if (!inWindow(item.timestamp, nowMs, windowDays)) continue;
     for (const section of item.sections) {
+      if (!existingDocs.has(section.doc_path)) continue;
       modified.add(section.doc_path);
       touchTime(item.timestamp, section.doc_path);
     }

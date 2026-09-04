@@ -1599,6 +1599,11 @@ export interface GetDocumentsTreeResponse {
   tree: DocumentTreeEntry[];
 }
 
+export interface GetFolderFileAgesResponse {
+  folder: FolderPath;
+  files: Array<{ path: DocPath; seconds_ago: number | null }>;
+}
+
 export interface ReadDocStructureResponse {
   doc_path: string;
   structure: DocStructureNode[];

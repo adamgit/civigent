@@ -99,14 +99,17 @@ export function DocumentPaperHeader({
               >
                 Rename
               </button>
+              |
               <button
                 type="button"
                 className="text-xs text-accent-primary hover:underline"
                 onClick={() => { void onExportMarkdown(); }}
               >
-                Export markdown
+                Export
               </button>
               {onShare ? (
+                <>
+                |
                 <button
                   type="button"
                   className="text-xs text-accent-primary hover:underline"
@@ -114,7 +117,9 @@ export function DocumentPaperHeader({
                 >
                   Share
                 </button>
+                </>
               ) : null}
+              |
               <button
                 type="button"
                 className="text-xs text-red-600 hover:underline"

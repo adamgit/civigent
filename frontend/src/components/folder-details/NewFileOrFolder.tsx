@@ -177,7 +177,7 @@ function FullNewFile({
     return (
       <button
         type="button"
-        className="mt-1 flex items-center gap-1.5 border-none bg-transparent py-2 font-ui text-[13px] text-text-muted transition-colors hover:text-folder-link"
+        className="mt-1 flex w-full items-center justify-center gap-1.5 rounded-md border-2 border-dashed border-folder-link/45 bg-transparent py-6 font-ui text-[14px] font-semibold text-folder-link transition-colors hover:border-folder-link hover:bg-folder-card-bg"
         onClick={() => setOpen(true)}
       >
         <span aria-hidden="true">+</span>
