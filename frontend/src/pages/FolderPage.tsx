@@ -13,11 +13,12 @@ import {
   type NewFileOrFolderSubmit,
 } from "../components/folder-details/NewFileOrFolder";
 import { docHref, folderHref } from "../app/docs-location";
+import { CopyPathButton } from "../components/CopyPathButton";
+import { FolderGlyphIcon, FolderPathBreadcrumb } from "../components/FolderPathBreadcrumb";
 import { apiClient } from "../services/api-client";
 import type { DocumentTreeAccess, DocumentTreeEntry, ReadDocStructureResponse } from "../types/shared.js";
 import type { AppLayoutOutletContext, DocSectionHeading } from "../app/AppLayout";
 import { DocPath, FolderPath } from "../types/shared";
-import { copyTextToClipboard } from "../utils/copy-text";
 
 interface FolderPageProps {
   folderPath: FolderPath;
@@ -152,54 +153,6 @@ function compareByName(a: string, b: string): number {
   return getDisplayName(a).localeCompare(getDisplayName(b), undefined, { sensitivity: "base" });
 }
 
-function CopyPathButton({
-  path,
-  label,
-  copied,
-  onCopied,
-}: {
-  path: string;
-  label: string;
-  copied: boolean;
-  onCopied: (path: string) => void;
-}) {
-  return (
-    <button
-      type="button"
-      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint hover:bg-section-hover hover:text-text-muted"
-      title={copied ? "Copied" : "Copy path"}
-      aria-label={copied ? "Path copied" : `Copy path for ${label}`}
-      onClick={async (event) => {
-        event.stopPropagation();
-        const didCopy = await copyTextToClipboard(path);
-        if (!didCopy) return;
-        onCopied(path);
-      }}
-    >
-      {copied ? (
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path
-            d="M3.5 8.5L6.5 11.5L12.5 4.5"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      ) : (
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <rect x="5.5" y="5.5" width="8" height="8" rx="1.25" stroke="currentColor" strokeWidth="1.25" />
-          <path
-            d="M10.5 5.5V4.25C10.5 3.56 9.94 3 9.25 3H4.25C3.56 3 3 3.56 3 4.25V9.25C3 9.94 3.56 10.5 4.25 10.5H5.5"
-            stroke="currentColor"
-            strokeWidth="1.25"
-          />
-        </svg>
-      )}
-    </button>
-  );
-}
-
 function FolderOverflowMenu({
   busy,
   onRename,
@@ -271,103 +224,6 @@ function FolderOverflowMenu({
         </div>
       ) : null}
     </div>
-  );
-}
-
-function ParentPathIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path
-        d="M3 13H8V4"
-        stroke="currentColor"
-        strokeWidth="1.35"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M5.25 6.5L8 3.5L10.75 6.5"
-        stroke="currentColor"
-        strokeWidth="1.35"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function FolderGlyphIcon({ size }: { size: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path
-        d="M2.5 4.25A1.25 1.25 0 0 1 3.75 3h3.1l1.2 1.35h4.2A1.25 1.25 0 0 1 13.5 5.6v6.15A1.25 1.25 0 0 1 12.25 13H3.75A1.25 1.25 0 0 1 2.5 11.75V4.25Z"
-        stroke="currentColor"
-        strokeWidth="1.35"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function FolderPathBreadcrumb({ folderPath }: { folderPath: FolderPath }) {
-  const parts = folderPath.split("/").filter(Boolean);
-  const segmentClass =
-    "font-inherit text-inherit no-underline hover:text-text-secondary hover:underline";
-  const slashClass = "mx-1 shrink-0 text-folder-new";
-
-  return (
-    <span
-      className={`inline-flex w-max items-center whitespace-nowrap font-ui text-[22px] leading-[28px] tracking-tight ${
-        parts.length === 0 ? "max-md:hidden" : ""
-      }`}
-    >
-      <span
-        className="mr-1.5 hidden shrink-0 text-text-muted max-md:inline-flex"
-        title="Parent folder path"
-      >
-        <ParentPathIcon />
-      </span>
-      <span className="mr-1.5 inline-flex shrink-0 text-folder-new max-md:hidden">
-        <FolderGlyphIcon size={18} />
-      </span>
-      <span className={slashClass} aria-hidden="true">
-        /
-      </span>
-      <Link
-        to={folderHref(FolderPath.root)}
-        className={`shrink-0 text-text-faint ${segmentClass}`}
-        aria-label="Open documents root"
-      >
-        docs
-      </Link>
-      <span className={slashClass} aria-hidden="true">
-        /
-      </span>
-      {parts.map((part, index) => {
-        const segmentPath = `/${parts.slice(0, index + 1).join("/")}`;
-        const isLast = index === parts.length - 1;
-        return (
-          <span
-            key={segmentPath}
-            className={`inline-flex shrink-0 items-center ${isLast ? "max-md:hidden" : ""}`}
-          >
-            {isLast ? (
-              <span className="font-semibold text-text-primary">{part}</span>
-            ) : (
-              <Link
-                to={folderHref(FolderPath.parse(segmentPath))}
-                className={`text-text-faint ${segmentClass}`}
-                aria-label={`Open folder ${segmentPath}`}
-              >
-                {part}
-              </Link>
-            )}
-            <span className={slashClass} aria-hidden="true">
-              /
-            </span>
-          </span>
-        );
-      })}
-    </span>
   );
 }
 

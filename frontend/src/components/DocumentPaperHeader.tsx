@@ -2,14 +2,17 @@
  * DocumentPaperHeader — in-flow title block at the top of the document paper.
  *
  * Pair with {@link DocumentPaperStickyHeader}: this is the full header (serif
- * title + rename/delete on one row; path + activity on the next). The sticky
- * sibling is the compact bar that pins when this block scrolls out of view.
+ * title + copy + rename/delete on one row; folder breadcrumbs + activity on
+ * the next). The sticky sibling is the compact bar that pins when this block
+ * scrolls out of view.
  */
 
 import type { JSX, Ref } from "react";
 import type { DocumentActivityEvent } from "../types/shared.js";
 import type { DocumentPresenceModel } from "../presence/document-presence-model";
+import { CopyPathButton } from "./CopyPathButton";
 import { DocumentPresenceActivity } from "./DocumentPresenceActivity";
+import { FolderPathBreadcrumb, folderPathOfDoc } from "./FolderPathBreadcrumb";
 
 export interface DocumentPaperHeaderProps {
   title: string;
@@ -88,9 +91,21 @@ export function DocumentPaperHeader({
           </form>
         ) : (
           <>
-            <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight tracking-tight min-w-0 flex-1">
-              {title}
-            </h1>
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              <h1 className="font-[family-name:var(--font-body)] text-[32px] font-bold text-text-primary leading-tight tracking-tight min-w-0">
+                {title}
+              </h1>
+              {docPath ? (
+                <CopyPathButton
+                  path={docPath}
+                  label={title}
+                  copied={pathCopied}
+                  onCopied={() => {
+                    void onCopyPath();
+                  }}
+                />
+              ) : null}
+            </div>
             <div className="flex items-center gap-2 shrink-0 pt-2">
               <button
                 type="button"
@@ -141,29 +156,9 @@ export function DocumentPaperHeader({
         }
       >
         <div className="doc-paper-header__meta-row">
-          {narrow ? null : (
-          <span className="inline-flex items-center gap-1 min-w-0">
-            <span className="truncate">{docPath ?? ""}</span>
-            {docPath ? (
-              <button
-                type="button"
-                className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded text-text-muted hover:text-text-primary hover:bg-[rgba(0,0,0,0.04)]"
-                title={pathCopied ? "Copied" : "Copy path"}
-                aria-label={pathCopied ? "Path copied" : "Copy document path"}
-                onClick={() => { void onCopyPath(); }}
-              >
-                {pathCopied ? (
-                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                ) : (
-                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <rect x="5.5" y="5.5" width="8" height="8" rx="1.25" stroke="currentColor" strokeWidth="1.25" />
-                    <path d="M10.5 5.5V4.25C10.5 3.56 9.94 3 9.25 3H4.25C3.56 3 3 3.56 3 4.25V9.25C3 9.94 3.56 10.5 4.25 10.5H5.5" stroke="currentColor" strokeWidth="1.25" />
-                  </svg>
-                )}
-              </button>
-            ) : null}
+          {narrow || !docPath ? null : (
+          <span className="flex min-w-0 items-center overflow-x-auto overflow-y-hidden">
+            <FolderPathBreadcrumb folderPath={folderPathOfDoc(docPath)} size="subtitle" />
           </span>
           )}
           <DocumentPresenceActivity

@@ -1918,6 +1918,17 @@ a {
   }
 }
 
+/* Breadcrumb Links are <a>. The unlayered `a { text-decoration: none }`
+ * above beats every Tailwind hover:underline in @layer utilities, so the
+ * hover cue has to live here as a more specific unlayered rule. */
+.folder-path-breadcrumb a:hover,
+.folder-path-breadcrumb a:focus-visible {
+  text-decoration: underline;
+  text-decoration-color: var(--color-accent);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 0.18em;
+}
+
 /* ── Document paper header + sticky compact bar ───────────────────
  * Full header stays in document flow. The compact bar is position:fixed
  * to the canvas scrollport (geometry from JS) with opacity/translate
