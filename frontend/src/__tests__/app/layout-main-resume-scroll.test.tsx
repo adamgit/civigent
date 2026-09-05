@@ -1,3 +1,4 @@
+import React from "react";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
@@ -32,7 +33,7 @@ vi.mock("../../services/recent-docs", () => ({
 
 function NarrowDocChromeStub() {
   return (
-    <div data-doc-layout="narrow" className="relative flex h-full min-h-0 flex-col overflow-hidden">
+    <div data-doc-layout="narrow" className="relative flex h-dvh min-h-0 flex-col overflow-hidden">
       <header className="doc-narrow-sticky">
         <div className="doc-topbar doc-topbar--narrow" data-testid="doc-path-row">
           /ops/
@@ -85,7 +86,7 @@ describe("layout main after app resume", () => {
     vi.restoreAllMocks();
   });
 
-  it("does not make the layout main a y-scroller, so a leftover offset cannot hide the path row", async () => {
+  it("does not make the layout main a scroller or clip container, so a leftover offset cannot hide the path row", async () => {
     renderAppLayout();
     await waitFor(() => {
       expect(screen.getByTestId("doc-path-row")).toBeDefined();
@@ -93,7 +94,8 @@ describe("layout main after app resume", () => {
 
     const main = document.querySelector("main");
     expect(main).toBeInstanceOf(HTMLElement);
-    expect(main?.className.split(/\s+/)).toContain("overflow-hidden");
+    expect(main?.className.split(/\s+/)).not.toContain("overflow-hidden");
+    expect(main?.className.split(/\s+/)).not.toContain("overflow-auto");
     expect(main?.className.split(/\s+/)).not.toContain("overflow-y-auto");
 
     await act(async () => {

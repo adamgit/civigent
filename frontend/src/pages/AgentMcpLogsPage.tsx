@@ -117,7 +117,7 @@ export function AgentMcpLogsPage() {
   }, [load]);
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto">
+    <div>
       <SharedPageHeader title="Agent MCP Logs" backTo="/admin" />
 
       <div style={{ maxWidth: "72rem", margin: "0 auto", padding: "1.5rem 1rem" }}>

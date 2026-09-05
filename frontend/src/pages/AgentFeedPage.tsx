@@ -52,7 +52,7 @@ export function AgentFeedPage() {
   }, []);
 
   return (
-    <section className="min-h-0 flex-1 overflow-auto">
+    <section>
       <SharedPageHeader title="Agent Activity Feed" backTo="/agents-activity" />
 
       <div className="px-4 py-2 border-b border-gray-100">

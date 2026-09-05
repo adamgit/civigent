@@ -871,7 +871,10 @@ export const apiClient = {
 
   async getFolderFileAges(folderPath: FolderPath): Promise<GetFolderFileAgesResponse> {
     const encoded = encodeFolderPath(folderPath);
-    return requestJson<GetFolderFileAgesResponse>(`/api/workspace-folder/${encoded}/file-ages`);
+    const route = encoded.length === 0
+      ? "/api/workspace-folder/file-ages"
+      : `/api/workspace-folder/${encoded}/file-ages`;
+    return requestJson<GetFolderFileAgesResponse>(route);
   },
 
   // The agent-facing assembled committed read (canonical, read-only).

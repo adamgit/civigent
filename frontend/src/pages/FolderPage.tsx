@@ -499,10 +499,9 @@ export function FolderPage({ folderPath }: FolderPageProps) {
   };
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-folder-page-bg">
-      <div className="relative isolate flex min-h-0 flex-1 flex-col overflow-hidden">
-        {folderEntry ? <FolderTreePageWatermark entry={folderEntry} /> : null}
-        <div className="relative z-10 min-h-0 flex-1 overflow-auto px-8 py-7 font-ui max-md:px-4 max-md:py-4">
+    <div className="flex min-w-0 flex-col bg-folder-page-bg">
+      {folderEntry ? <FolderTreePageWatermark entry={folderEntry} /> : null}
+      <div className="px-8 py-7 font-ui max-md:px-4 max-md:py-4">
         {treeLoading ? (
           <p className="text-xs text-text-muted">Loading folder details...</p>
         ) : null}
@@ -541,6 +540,12 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                     </span>
                   </h1>
                   <div className="flex min-w-0 items-center gap-2">
+                    <Link
+                      to="/"
+                      className="hidden shrink-0 rounded-lg border border-folder-card-border bg-canvas-bg px-3 py-1.5 text-[12px] font-semibold text-text-primary no-underline max-md:inline-flex"
+                    >
+                      Home
+                    </Link>
                     <div className="flex min-w-0 items-center gap-0.5 overflow-x-auto overflow-y-hidden">
                       <FolderPathBreadcrumb folderPath={folderPath} />
                       <span className="max-md:hidden shrink-0">
@@ -690,7 +695,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                     ))}
                   </ul>
                 )}
-                <div className="mt-3 max-md:hidden">
+                <div className="mt-3">
                   <NewFileOrFolder
                     busy={creating}
                     error={createError}
@@ -704,27 +709,6 @@ export function FolderPage({ folderPath }: FolderPageProps) {
           </div>
         ) : null}
         </div>
-      </div>
-      {folderEntry && stats ? (
-        <div className="hidden shrink-0 border-t border-folder-divider bg-folder-page-bg px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] max-md:block">
-          <div className="flex items-stretch gap-2">
-            <Link
-              to="/"
-              className="inline-flex shrink-0 items-center justify-center rounded-xl border border-folder-card-border bg-canvas-bg px-4 font-ui text-[15px] font-semibold text-text-primary no-underline"
-            >
-              Home
-            </Link>
-            <div className="min-w-0 flex-1">
-              <NewFileOrFolder
-                variant="compact"
-                busy={creating}
-                error={createError}
-                onSubmit={handleCreate}
-              />
-            </div>
-          </div>
-        </div>
-      ) : null}
       <div className="max-md:hidden">
         <PageStatusBar items={["Folder", folderPath]} />
       </div>

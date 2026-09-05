@@ -106,19 +106,14 @@
 }
 
 /* ===== BASE ===== */
-/* 100dvh follows the visible viewport (URL bar / Android system nav). 100vh is
- * the large viewport, so a bottom-of-page control is clipped on real phones
- * while still showing in a desktop window resized to the same CSS width. */
 html, body, #root {
-  height: 100%;
-  height: 100dvh;
+  min-height: 100dvh;
 }
 body {
   margin: 0;
   font-family: var(--font-ui);
   background: var(--color-page-bg);
   color: var(--color-text-primary);
-  overflow: hidden;
 }
 
 a {
@@ -442,7 +437,10 @@ a {
 .sidebar-shell {
   display: flex;
   flex: 0 0 auto;
-  height: 100%;
+  position: sticky;
+  top: 0;
+  height: 100svh;
+  align-self: flex-start;
   max-width: 30vw;
   min-width: 0;
 }
@@ -472,7 +470,7 @@ a {
    * content-sized shell and the browser would ignore the constraint. */
   max-width: 30vw;
   min-width: 0;
-  height: 100%;
+  height: 100svh;
 }
 
 /* Flex column children must be allowed to shrink below content size or the
@@ -507,7 +505,7 @@ a {
 [data-sidebar-mode="autohide"] .sidebar-hotedge {
   position: relative;
   width: 14px;
-  height: 100vh;
+  height: 100svh;
   overflow: visible;
   display: flex;
   align-items: center;

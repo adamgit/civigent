@@ -208,7 +208,7 @@ function GitBackupInstructions({
   ].join("\n");
 
   return (
-    <div className="h-full overflow-auto p-4 lg:border-l border-[#eae7e2] bg-[#faf8f5]">
+    <div className="p-4 lg:border-l border-[#eae7e2] bg-[#faf8f5]">
       <DocSection title="What this is">
         <p>
           One-directional whole-instance backup: push published content history and durable
@@ -582,13 +582,13 @@ export function GitBackupPage() {
     restore.remote_auth_sha !== null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+    <div className="flex flex-col">
       <SharedPageHeader title="Git Backup" backTo="/admin" />
       <div
-        className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2"
+        className="grid grid-cols-1 lg:grid-cols-2"
         style={{ fontFamily: "var(--font-ui)" }}
       >
-        <div className="overflow-auto p-4">
+        <div className="p-4">
           <div className="flex items-center gap-2 mb-4">
             <button
               type="button"

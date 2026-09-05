@@ -80,10 +80,10 @@ export function FolderFileRow({
       <span className="w-14 shrink-0 tabular-nums text-[11px] text-text-faint">
         {typeof secondsAgo === "number" ? compactAge(secondsAgo) : null}
       </span>
-      <span className="max-w-full min-w-0 shrink-0 truncate text-[15px] font-medium text-folder-link group-hover:text-folder-link-hover group-hover:underline md:max-w-[50%]">
+      <span className="min-w-0 flex-1 truncate text-[15px] font-medium text-folder-link group-hover:text-folder-link-hover group-hover:underline md:max-w-[50%] md:flex-none md:shrink-0">
         {name}
       </span>
-      <span className="ml-auto min-w-0 flex-1 overflow-hidden text-right max-md:hidden">
+      <span className="ml-auto min-w-0 shrink-0 overflow-hidden text-right md:flex-1">
         {sectionHeadings !== undefined ? (
           <>
             <span className="hidden group-hover:block">

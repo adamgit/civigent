@@ -1,5 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Link, Outlet, ScrollRestoration, useLocation, useNavigate } from "react-router-dom";
 import { apiClient, SystemStartingError, setUnauthorizedHandler, setSystemStartingHandler, setSystemFatalHandler, setWriterId, clearWriterId } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
 import { routeOwnsItsAuthenticationFlow } from "./pre-auth-routes";
@@ -793,12 +793,13 @@ export function AppLayout() {
   return (
     <CurrentUserProvider currentUser={currentUser}>
     <div
-      className="flex h-full min-h-0"
+      className="flex min-h-dvh"
       data-sidebar-mode={sidebarAutoHide ? "autohide" : "expanded"}
       data-sidebar-hover-reveal={hoverRevealArmed ? "on" : "off"}
       data-single-user={singleUser ? "on" : "off"}
       data-doc-narrow={docLayoutNarrow ? "on" : "off"}
     >
+      <ScrollRestoration />
       {/* Sidebar shell — reserves the in-flow width for the left column. In
           expanded mode this is the aside's own content width (capped 30vw); in
           autohide mode it collapses to the hotedge and the aside slides over. */}
@@ -1003,20 +1004,16 @@ export function AppLayout() {
         </aside>
       </div>
 
-      {/* Main never scrolls. Each route owns exactly one scrollport: pinned
-          chrome pages clip (overflow-hidden) and scroll inside; growing pages
-          use flex-1 overflow-auto. min-h-0 keeps a flex child from forcing
-          this column to grow past the viewport. */}
-      <div className="flex-1 flex flex-col min-w-0 min-h-0">
+      <div className="flex-1 flex flex-col min-w-0">
         {/* Content */}
-        <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <main className="flex flex-1 flex-col">
           {/* Authoritative session check failed (500 / network / malformed) — a
               visible degraded state so the initial load never fails silently. */}
           {sessionError ? (
             <div
               role="alert"
               data-testid="session-degraded"
-              className="shrink-0 bg-red-50 border-b border-red-200 px-4 py-2 text-xs text-red-800"
+              className="fixed top-0 left-0 right-0 z-10 shrink-0 bg-red-50 border-b border-red-200 px-4 py-2 text-xs text-red-800"
             >
               Couldn&apos;t verify your session: {sessionError}. You may be signed out — retry by refreshing or refocusing the tab.
             </div>
@@ -1052,7 +1049,7 @@ export function AppLayout() {
               <p className="text-sm">The system is starting up. This page will refresh automatically.</p>
             </div>
           ) : (
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <div className="flex min-w-0 flex-1 flex-col">
               <Outlet
                 context={{
                   entries,

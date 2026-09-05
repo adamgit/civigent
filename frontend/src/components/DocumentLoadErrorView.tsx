@@ -14,7 +14,7 @@ export function DocumentLoadErrorView({ docPath, error }: DocumentLoadErrorViewP
   const isNotFound = /^404\b/.test(error);
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden" style={{ background: "var(--color-page-bg)" }}>
+    <div className="flex h-dvh min-h-0 flex-col overflow-hidden" style={{ background: "var(--color-page-bg)" }}>
       <div className="px-4 pt-4">
         <Link
           to="/docs"

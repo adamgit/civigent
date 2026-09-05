@@ -775,7 +775,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
   return (
     <SectionHoverProvider activeFragmentKey={focusedFragmentKey}>
     <DocumentActivityIndicator activity={documentActivity} />
-    <div className="relative flex h-full min-h-0 flex-col overflow-hidden" style={{ background: "var(--color-page-bg)" }}>
+    <div className="relative flex h-dvh min-h-0 flex-col overflow-hidden" style={{ background: "var(--color-page-bg)" }}>
       <div className="relative shrink-0">
         <DocumentTopbar
           docPath={docPath}

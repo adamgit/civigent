@@ -121,9 +121,9 @@ export function CoordinationPage() {
   ).length;
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+    <div className="flex flex-col">
       <SharedPageHeader title="Coordination" backTo="/" />
-      <div className="flex-1 min-h-0 overflow-auto p-4" style={{ fontFamily: "var(--font-ui)" }}>
+      <div className="p-4" style={{ fontFamily: "var(--font-ui)" }}>
         <ActivityTabStrip tabs={TABS} activeKey={activeTab} onTabChange={setActiveTab} />
 
         {activeTab === "heatmap" && (

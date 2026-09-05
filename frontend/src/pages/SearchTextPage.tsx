@@ -139,10 +139,7 @@ export function SearchTextPage() {
   const hasResponsePayload = error !== null || response !== null;
 
   return (
-    // The page owns its own scrollports (house pattern, same as DocumentPage):
-    // the map column must stay put while results scroll, which it cannot do if
-    // the whole page is one scrolling block.
-    <section className="flex h-full min-h-0 flex-col overflow-hidden" style={{ padding: "0.5rem 0.75rem 0.75rem" }}>
+    <section className="flex flex-col" style={{ padding: "0.5rem 0.75rem 0.75rem" }}>
       <SharedPageHeader title="Text Search" backTo="/" />
 
       <form
@@ -231,7 +228,7 @@ export function SearchTextPage() {
       {error ? <p className="text-error">{error}</p> : null}
 
       {!loading && !error && response ? (
-        <div className="flex min-h-0 flex-1 flex-col" style={{ gap: "0.75rem" }}>
+        <div className="flex flex-col" style={{ gap: "0.75rem" }}>
           <p className="shrink-0" style={{ marginBottom: 0 }}>
             {response.matches.length} match{response.matches.length === 1 ? "" : "es"} for <strong>{pattern}</strong> ({syntax})
           </p>
@@ -273,12 +270,8 @@ export function SearchTextPage() {
           {response.matches.length === 0 ? (
             <p style={{ color: "var(--color-text-muted)" }}>No matches found.</p>
           ) : (
-            // Map left, results right. The row takes every pixel the header,
-            // form, and meta strip did not, and each side owns its own
-            // scrollport — so the map stays fixed in place while the cards
-            // scroll past it.
-            <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
-              <div className="flex h-[340px] min-h-0 shrink-0 flex-col gap-2 lg:h-auto lg:w-[380px]">
+            <div className="flex flex-col gap-3 lg:flex-row">
+              <div className="flex h-[340px] shrink-0 flex-col gap-2 lg:sticky lg:top-0 lg:h-dvh lg:w-[380px] lg:self-start lg:overflow-auto">
                 <SearchMapChrome mode={mapMode} onModeChange={setMapMode} counts={forest.descendantCounts} />
                 <div className="min-h-0 flex-1 overflow-auto canvas-scroll">
                   <SearchMapViewport
@@ -289,7 +282,7 @@ export function SearchTextPage() {
                   />
                 </div>
               </div>
-              <div className="min-h-0 min-w-0 flex-1 overflow-y-auto canvas-scroll pr-1">
+              <div className="min-w-0 flex-1 pr-1">
                 <SearchHitInspector
                   hits={selectedHits}
                   selectedPath={selectedPath}
@@ -325,8 +318,6 @@ export function SearchTextPage() {
               padding: "12px 14px",
               background: "var(--color-page-bg)",
               overflow: "auto",
-              // The page no longer scrolls as a whole, so an expanded payload
-              // scrolls inside its own box instead of pushing the layout.
               maxHeight: "40vh",
             }}
           >

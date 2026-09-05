@@ -1,4 +1,4 @@
-import { type Router } from "express";
+import { type NextFunction, type Request, type Response, type Router } from "express";
 import type {
   GetDocumentsTreeResponse,
   GetFolderFileAgesResponse,
@@ -64,6 +64,29 @@ export function registerWorkspaceRoutes(
   router: Router,
   onWsEvent: ((event: WsServerEvent) => void) | undefined,
 ): void {
+  async function sendFolderFileAges(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+    folder: FolderPath,
+  ): Promise<void> {
+    try {
+      const writer = resolveAuthenticatedWriter(req);
+      const response: GetFolderFileAgesResponse = await readFolderFileAges(writer, folder);
+      res.json(response);
+    } catch (error) {
+      if (error instanceof InvalidFolderPathError) {
+        sendApiError(res, 400, error);
+        return;
+      }
+      if (error instanceof DocumentsTreePathNotFoundError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      next(error);
+    }
+  }
+
   // GET /workspace/tree
   router.get("/workspace/tree", async (req, res, next) => {
     try {
@@ -281,24 +304,14 @@ export function registerWorkspaceRoutes(
     }
   });
 
+  // GET /workspace-folder/file-ages — last-touch age per root direct-child file
+  router.get("/workspace-folder/file-ages", async (req, res, next) => {
+    await sendFolderFileAges(req, res, next, FolderPath.root);
+  });
+
   // GET /workspace-folder/:folderPath/file-ages — last-touch age per direct-child file
   router.get("/workspace-folder/:folderPath(*)/file-ages", async (req, res, next) => {
-    try {
-      const writer = resolveAuthenticatedWriter(req);
-      const folder = FolderPath.fromSlashStrippedUrlSegment(req.params.folderPath);
-      const response: GetFolderFileAgesResponse = await readFolderFileAges(writer, folder);
-      res.json(response);
-    } catch (error) {
-      if (error instanceof InvalidFolderPathError) {
-        sendApiError(res, 400, error);
-        return;
-      }
-      if (error instanceof DocumentsTreePathNotFoundError) {
-        sendApiError(res, 404, error);
-        return;
-      }
-      next(error);
-    }
+    await sendFolderFileAges(req, res, next, FolderPath.fromSlashStrippedUrlSegment(req.params.folderPath));
   });
 
   // DELETE /workspace-folder/:folderPath — delete every document in a folder
