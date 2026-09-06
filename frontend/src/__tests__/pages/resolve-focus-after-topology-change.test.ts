@@ -1,6 +1,6 @@
 /**
  * resolveFocusAfterTopologyChange — the complete removal-handoff rule.
- * Covers: present (keep), BFH-dissolve, no-predecessor→BFH / first-remaining,
+ * Covers: present (keep), no-predecessor→BFH / first-remaining,
  * predecessor-merge survivor, mid-slot fallback, null cases.
  */
 
@@ -24,14 +24,6 @@ describe("resolveFocusAfterTopologyChange", () => {
 
   it("returns null when focusedId is null", () => {
     expect(resolveFocusAfterTopologyChange([A], [A], null)).toBeNull();
-  });
-
-  it("BFH dissolved → first headed section", () => {
-    expect(resolveFocusAfterTopologyChange([BFH, A, B], [A, B], BEFORE_FIRST_HEADING_SECTION_ID)).toBe(A.id);
-  });
-
-  it("BFH dissolved with no headed section → null", () => {
-    expect(resolveFocusAfterTopologyChange([BFH], [], BEFORE_FIRST_HEADING_SECTION_ID)).toBeNull();
   });
 
   it("first section removed, BFH created → focus BFH", () => {
@@ -80,11 +72,12 @@ describe("resolveFocusAfterTopologyChange", () => {
     expect(resolveFocusAfterTopologyChange([A, C], [A, B, C], A.id, null)).toBe(A.id);
   });
 
-  it("caretOwningId wins even when the previous focus id is gone (BFH dissolve retarget)", () => {
-    // BFH dissolved into promoted B; recovery says the caret landed in B, which
-    // must beat the default first-headed handoff to A.
+  it("caretOwningId wins even when the previous focus id is gone", () => {
+    // A was replaced outright (e.g. a heading-deletion demotion) and B took its
+    // slot; recovery says the caret landed in B, which must beat the default
+    // no-predecessor handoff.
     expect(
-      resolveFocusAfterTopologyChange([BFH, A], [A, B], BEFORE_FIRST_HEADING_SECTION_ID, B.id),
+      resolveFocusAfterTopologyChange([A, C], [B, C], A.id, B.id),
     ).toBe(B.id);
   });
 
@@ -105,7 +98,7 @@ describe("resolveFocusAfterTopologyChange", () => {
       ),
     ).toBe(BEFORE_FIRST_HEADING_SECTION_ID);
 
-    // Same demotion with empty orphan body (BFH dissolved) → first remaining (Child).
+    // Same demotion with empty orphan body (no BFH anchor created) → first remaining (Child).
     expect(
       resolveFocusAfterTopologyChange(
         [intro, child, grand],

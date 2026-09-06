@@ -55,27 +55,6 @@ export class ProposalEditor extends ProposalReader {
 
   // ─── Content writes ───────────────────────────────────────────────
 
-  /**
-   * Write / replace the content at a heading path. Missing document, missing
-   * leaf heading, and all missing ancestors are auto-created atomically as
-   * part of this one operation (the engine creates the proposal-scoped
-   * skeleton from canonical when present else fresh-empty, materializes
-   * ancestors root-to-leaf, then writes the body — callers never observe a
-   * partial heading chain).
-   *
-   * For a real (non-empty) heading path, `content` is treated as section
-   * markdown and routed through the parser-driven upsert path so embedded
-   * headings expand into real sections (NOT a body-only write).
-   *
-   * For the before-first-heading target (`headingPath === []`, `heading === ""`)
-   * the write is BODY-ONLY: `content` is stored verbatim as the BFH body and is
-   * NEVER parsed for structure. Embedded heading syntax stays literal text and
-   * cannot create/rename/reorder headed sections. Whole-document structural
-   * writes use `writeDocumentFromMarkdown(...)`, never a `[]` section write.
-   *
-   * `heading` is the leaf heading text (empty string when targeting the
-   * before-first-heading root section, i.e. `headingPath === []`).
-   */
   async writeSection(
     docPath: DocPath,
     headingPath: string[],
@@ -105,21 +84,6 @@ export class ProposalEditor extends ProposalReader {
     body: SectionBody,
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
     return this.shadow.writeSectionBodyVerbatim(new SectionRef(docPath, headingPath), body);
-  }
-
-  /**
-   * QUIESCENCE REFLECTION ONLY. Promote a settled `## Heading` that was typed
-   * into the before-first-heading (BFH) body into a real top-level section,
-   * preserving the pre-heading orphan as the BFH body and every existing
-   * section's id. The root-split counterpart of the parser-driven section-split
-   * reflection (`writeSection(headedPath, …, { expandHeadingsIntoSections })`).
-   * Idempotent: a no-op once the heading is already promoted.
-   */
-  async splitBeforeFirstHeading(
-    docPath: DocPath,
-    bfhFragmentMarkdown: string,
-  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
-    return this.shadow.splitBeforeFirstHeadingPromotingHeadings(docPath, bfhFragmentMarkdown);
   }
 
   /**

@@ -1034,9 +1034,9 @@ interface QuiescedStructureNormalizationResult {
   /**
    * Sections removed from the effective layout by live structural normalization:
    * heading-deletion merges (dirty fragment folded onto its predecessor) and
-   * empty-BFH root-split dissolves (bootstrap BFH left the layout because the
-   * surviving preamble was empty). Carried out to the caller so it can emit
-   * `section:gone` for each removed fragment — clients must unmount the
+   * empty-BFH dissolves (a root-split's or heading-deletion's surviving BFH
+   * preamble settled empty/whitespace). Carried out to the caller so it can
+   * emit `section:gone` for each removed fragment — clients must unmount the
    * cleared-but-still-in-`ydoc.share` fragment before further local writes
    * can echo into a dead key (spec 05/06 §"Section block-state events").
    */
@@ -1125,10 +1125,9 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
         change,
         identity,
       );
-      // Compute the plan once outside the transaction so the coordinator can
-      // read `dissolveSurvivorBfh` off the applied plan post-apply. Matches the
-      // merge branch's outside-compute pattern; the retry loop reuses the same
-      // plan since the reflected proposal state is stable across attempts.
+      // Compute the plan once outside the transaction, matching the merge
+      // branch's outside-compute pattern; the retry loop reuses the same plan
+      // since the reflected proposal state is stable across attempts.
       const plan = await computeStructuralSplitPlan(
         session.liveFragments,
         session.liveFragments.ydoc,
@@ -1138,33 +1137,32 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
         change,
       );
       if (!plan) continue;
-      const res = await session.generator.normalizeQuiescedSection<StructuralSplitPlan>(
-        session.liveFragments.ydoc,
-        plan.affectedKeys,
-        () => plan,
-        (p) =>
-          applyStructuralSplitPlan(session.liveFragments, session.liveFragments.ydoc, p, SERVER_NORMALIZATION_ORIGIN),
-      );
+      // The proposal reflection above has already run. If the live apply
+      // cannot land (fragments kept moving after retry), the primitive throws
+      // rather than returning `{ applied: false }`; discard the session so the
+      // next acquire reconstructs from the durable proposal instead of leaving
+      // live and durable state disagreeing.
+      let res: { applied: boolean };
+      try {
+        res = await session.generator.normalizeQuiescedSection<StructuralSplitPlan>(
+          session.liveFragments.ydoc,
+          plan.affectedKeys,
+          () => plan,
+          (p) =>
+            applyStructuralSplitPlan(session.liveFragments, session.liveFragments.ydoc, p, SERVER_NORMALIZATION_ORIGIN),
+        );
+      } catch {
+        await invalidateSessionForReplacement(session.docPath, {
+          message: "document structure was updated during editing",
+        });
+        return { applied, removedFragments, sessionDiscarded: true };
+      }
       if (res.applied) {
         for (const key of plan.affectedKeys) session.dirtyFragmentKeys.add(key);
         for (const key of plan.seeds.keys()) session.dirtyFragmentKeys.add(key);
-      }
-      if (res.applied && plan.dissolveSurvivorBfh) {
-        // Dissolve BFH from the proposal after the live apply succeeded so the
-        // effective layout matches the unregistered live set. `deleteSubtree([])`
-        // splices BFH out of the proposal skeleton roots AND records its
-        // canonical section-file id in `deletedSectionFiles`, so the manifest
-        // overlay drops the inherited-canonical BFH entry too. Ordered AFTER
-        // live apply: if a clock-check retry exhausted its budget, the proposal
-        // still carries BFH and the next quiescence starts from a legal state
-        // (BFH in both live and layout) rather than a mismatched one.
-        const { ProposalEditor } = await import("../storage/proposal-editor.js");
-        const editor = ProposalEditor.open(proposalId, "inprogress");
-        await editor.deleteSubtree(session.docPath, []);
-        removedFragments.push({
-          fragmentKey: plan.survivorKey,
-          headingPath: [],
-        });
+        if (plan.dissolveSurvivorBfh) {
+          removedFragments.push({ fragmentKey: plan.survivorKey, headingPath: [] });
+        }
       }
       applied = applied || res.applied;
     } else if (change.kind === "heading-deletion") {
@@ -1183,13 +1181,14 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
         change.orphanedBody,
       );
       const plan = deriveHeadingRemovalPlan(effect, change.orphanedBody, [...identity.headingPath]);
-      const res = await session.generator.normalizeQuiescedSection<HeadingRemovalPlan>(
-        session.liveFragments.ydoc,
-        plan.affectedKeys,
-        () => plan,
-        (p) => applyHeadingRemovalPlan(session.liveFragments, session.liveFragments.ydoc, p, SERVER_NORMALIZATION_ORIGIN),
-      );
-      if (!res.applied) {
+      try {
+        await session.generator.normalizeQuiescedSection<HeadingRemovalPlan>(
+          session.liveFragments.ydoc,
+          plan.affectedKeys,
+          () => plan,
+          (p) => applyHeadingRemovalPlan(session.liveFragments, session.liveFragments.ydoc, p, SERVER_NORMALIZATION_ORIGIN),
+        );
+      } catch {
         await invalidateSessionForReplacement(session.docPath, {
           message: "document structure was updated during editing",
         });
@@ -1200,6 +1199,9 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
         fragmentKey: plan.removeKey,
         headingPath: plan.removedHeadingPath,
       });
+      if (plan.dissolvedBfhKey !== null) {
+        removedFragments.push({ fragmentKey: plan.dissolvedBfhKey, headingPath: [] });
+      }
       applied = true;
     } else if (
       change.kind === "heading-rename" ||

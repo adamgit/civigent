@@ -49,6 +49,7 @@ import { DocumentNotFoundError } from "../storage/content-layer.js";
 import { HeadingNotFoundError } from "../storage/heading-resolver.js";
 import { readActiveProposal } from "../storage/proposal-repository.js";
 import { DocPath } from "../types/shared.js";
+import { getHumanHumanInvolvementPreset } from "../admin-config.js";
 
 /**
  * The interface a single selected policy must implement. Generic over the
@@ -214,7 +215,7 @@ class HumanInvolvementCompatibilityPolicy
     const aggregate = computeAggregateImpact(scores);
 
     let canWrite = targets.every((t) => t.canWrite);
-    if (canWrite && aggregate.blocked) {
+    if (canWrite && aggregate.blocked && getHumanHumanInvolvementPreset() !== "yolo") {
       canWrite = false;
       const passing = targets.filter((t) => t.canWrite);
       passing.sort((a, b) => b.details.score - a.details.score);

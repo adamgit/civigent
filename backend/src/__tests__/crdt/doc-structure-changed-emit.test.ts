@@ -23,6 +23,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import * as Y from "yjs";
 import { markdownToJSON } from "@ks/milkdown-serializer";
 import { updateYFragment } from "y-prosemirror";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
@@ -265,5 +266,55 @@ describe("live structural-change emission on the CRDT channel", () => {
     assertNoRawStructuralPrecursor();
     // The live topology still resolves Overview (the external body rides the Yjs update).
     expect(findByHeadingPath(state.topology, ["Overview"])).toBeDefined();
+  });
+
+  it("CROSS-CLIENT FAILURE: emits no live frame when canonical application repeatedly loses preflight", async () => {
+    const session = await openSession();
+    await joinLiveRecipient(session, disposers);
+
+    const { id: externalProposalId } = await createTransientProposal(
+      { id: "user-bob", type: "human", displayName: "Bob" },
+      "edit overview externally",
+    );
+    await mutateProposalContent(externalProposalId, {
+      kind: "write_section",
+      docPath: SAMPLE_DOC_PATH,
+      headingPath: ["Overview"],
+      heading: "Overview",
+      content: "EXTERNALLY COMMITTED OVERVIEW",
+    });
+    const absorb = await publishProposalToCanonicalDetailed(externalProposalId, {});
+    const changedHeadingPaths = absorb.changedSections.map((s) => [...s.headingPath]);
+
+    let forcedMovements = 0;
+    const forceAffectedFragmentMovement = (): void => {
+      forcedMovements++;
+      const fragment = session.ydoc.getXmlFragment(OVERVIEW_KEY);
+      fragment.insert(fragment.length, [new Y.XmlElement("paragraph")]);
+    };
+    session.ydoc.on("beforeTransaction", forceAffectedFragmentMovement);
+
+    let caught: unknown;
+    try {
+      await applyCommittedCanonicalToLiveSession(
+        SAMPLE_DOC_PATH,
+        changedHeadingPaths,
+        externalProposalId,
+      );
+    } catch (error) {
+      caught = error;
+    } finally {
+      session.ydoc.off("beforeTransaction", forceAffectedFragmentMovement);
+    }
+
+    expect({
+      threwInvariant: caught instanceof Error,
+      forcedMovements,
+      emittedFrames: updateFrames().length,
+    }).toEqual({
+      threwInvariant: true,
+      forcedMovements: 2,
+      emittedFrames: 0,
+    });
   });
 });

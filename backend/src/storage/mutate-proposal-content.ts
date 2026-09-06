@@ -28,7 +28,7 @@ import { documentTargetRef, HeadingLevel } from "../types/shared.js";
 import type { ContentEntry, FlatEntry } from "./document-skeleton.js";
 import type { ProposalWriteResult, ProposalSubtreeMutationResult } from "./proposal-facade-types.js";
 import { ProposalEditor } from "./proposal-editor.js";
-import { readActiveProposal, updateProposalSections } from "./proposal-repository.js";
+import { readActiveProposal, recordDeletedSectionFiles, updateProposalSections } from "./proposal-repository.js";
 import { mintProposalManifest, unionSections, type ProposalManifest } from "./proposal-manifest.js";
 import { sectionWriteInputFromExternal, type SectionBodyWithPotentialSubsections } from "./section-formatting.js";
 import type { DocPath } from "../types/shared.js";
@@ -171,6 +171,22 @@ export async function mutateProposalContent(
       extras.writeResult = writeResult;
       if (writeResult.createdDocument === true) {
         documentTargetsForImplicitCreates.push(documentTargetRef(operation.docPath));
+      }
+      // Empty-BFH lifecycle (and any other subtree rewrite that drops a section
+      // with no successor reusing its identity, e.g. an explicit `[]` write that
+      // dissolves a canonical BFH): the shared subtree-replace path underneath
+      // `writeSection` never records `deleted_section_files` itself — only
+      // `deleteSubtree` and heading-removal do. A removed entry whose
+      // section-file id is not reused by any written entry (the ordinary
+      // survivor-keeps-its-heading case reuses the id at the SAME resulting
+      // path) is genuinely gone, not renamed in place, and must be recorded so
+      // the effective-structure merge stops re-inheriting it from canonical.
+      const survivingSectionFiles = new Set(writeResult.writtenEntries.map((e) => e.sectionFile));
+      const orphanedRemovals = writeResult.removedContentEntries.filter(
+        (e) => !survivingSectionFiles.has(e.sectionFile),
+      );
+      if (orphanedRemovals.length > 0) {
+        await recordDeletedSectionFiles(proposalId, operation.docPath, orphanedRemovals.map((e) => e.sectionFile));
       }
       // Create-at-position is still one semantic mutate call: the engine create
       // stays append-only and placement is the existing reorder primitive on the

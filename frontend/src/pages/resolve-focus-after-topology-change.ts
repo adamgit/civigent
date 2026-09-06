@@ -7,8 +7,8 @@
  * — no follow logic. The only real logic is REMOVAL handoff, encoded here.
  *
  * This fully replaces `adoptFreshSectionLayout`'s index-based focus reconciliation
- * (including the BFH-dissolve and no-predecessor→BFH special cases). The page runs
- * it on the replica `subscribe` when topology identity/order changed, keying off
+ * (including the no-predecessor→BFH special case). The page runs it on the
+ * replica `subscribe` when topology identity/order changed, keying off
  * `getTopology()` alone — the live update frame applies the structural Yjs update
  * and its resulting topology before notifying, so focus never reconciles against
  * half a structural fact.
@@ -26,7 +26,6 @@ import { BEFORE_FIRST_HEADING_SECTION_ID } from "../types/live-sections";
  *                                              author's caret there; "id still
  *                                              present" must not clobber it);
  *   - focused id still present               → keep it;
- *   - gone, was BFH                          → first headed section, else null;
  *   - gone, was first (no predecessor)       → BFH if present, else first
  *                                              remaining, else null;
  *   - gone, non-first                        → predecessor if present, else the
@@ -46,19 +45,14 @@ export function resolveFocusAfterTopologyChange(
   // Still present → identity is stable across moves; keep focus, no follow logic.
   if (nextIds.has(focusedId)) return focusedId;
 
-  const firstHeaded = (): SectionId | null =>
-    next.find((r) => r.headingPath.length > 0)?.id ?? null;
-
-  // Focused id was BFH and it dissolved → hand off to the first headed section.
-  if (focusedId === BEFORE_FIRST_HEADING_SECTION_ID) return firstHeaded();
-
   const prevIndex = prev.findIndex((r) => r.id === focusedId);
   // Focused id was not in prev either (never present / already gone) → clear.
   if (prevIndex < 0) return null;
 
   if (prevIndex === 0) {
     // The document's FIRST section (no predecessor) was removed — no-predecessor
-    // heading-deletion folds into BFH, or dissolves it. Hand off to BFH if it was
+    // heading-deletion folds its orphan body into a fresh document-start BFH
+    // anchor when there is content to carry. Hand off to that BFH if it was
     // created, else the first remaining section, else null.
     if (nextIds.has(BEFORE_FIRST_HEADING_SECTION_ID)) return BEFORE_FIRST_HEADING_SECTION_ID;
     return next[0]?.id ?? null;

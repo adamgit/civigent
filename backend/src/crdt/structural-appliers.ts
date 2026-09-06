@@ -27,11 +27,11 @@ import { updateYFragment } from "y-prosemirror";
 import { buildFragmentContent, EMPTY_BODY, appendBodyToFragment, bodyFromFragmentStrippingLeadingHeading, type FragmentContent, type SectionBody } from "../storage/section-formatting.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { resolveLiveSectionLayout, readLiveSectionBodies } from "./live-section-layout.js";
-import { BEFORE_FIRST_HEADING_KEY, fragmentKeyFromSectionFile, getBackendSchema } from "./ydoc-fragments.js";
+import { fragmentKeyFromSectionFile, getBackendSchema } from "./ydoc-fragments.js";
 import type { LiveFragmentStringsStore } from "./live-fragment-strings-store.js";
 import type { StructuralChange } from "./structural-change.js";
 import type { ProposalId, ProposalSectionClaim } from "../types/shared.js";
-import type { HeadingLevel } from "../types/shared.js";
+import { HeadingLevel } from "../types/shared.js";
 import type { UpsertSectionFromMarkdownDetailedResult } from "../storage/content-layer.js";
 import type { HeadingRemovalEffect } from "../storage/document-skeleton.js";
 import type { DocPath } from "../types/shared.js";
@@ -110,13 +110,12 @@ export interface StructuralSplitPlan {
   /** Fragment keys this plan touches, for the generator's pre-flight clock check. */
   affectedKeys: string[];
   /**
-   * Bootstrap BFH dissolve on empty-preamble root-split. When the survivor is
-   * the before-first-heading fragment AND the surviving `rootBody` is empty/
-   * whitespace, the applier unregisters the BFH live fragment key after clearing
-   * its children so it leaves the effective layout. The coordinator additionally
-   * removes BFH from the proposal skeleton (`deleteSubtree([])`) and emits
-   * `section:gone` for BFH — same client contract as heading-deletion merge.
-   * A non-empty preamble keeps BFH as the survivor section (unchanged root-split).
+   * True for a root-split whose reflected BFH survivor dissolved (empty/
+   * whitespace preamble — `upsertSectionFromMarkdownCore`'s empty-BFH lifecycle
+   * rule, detected here from the post-reflection layout no longer carrying a
+   * `headingPath: []` entry). The applier clears and unregisters the survivor
+   * fragment; a non-empty preamble keeps it registered under its existing
+   * identity (this field is absent/false).
    */
   dissolveSurvivorBfh?: boolean;
 }
@@ -180,7 +179,9 @@ export async function computeStructuralSplitPlan(
   const layout = await resolveLiveSectionLayout(docPath, currentProposalId);
   const liveKeys = new Set(liveFragments.getFragmentKeys());
   const addedEntries = layout.filter((e) => !liveKeys.has(e.fragmentKey));
-  if (addedEntries.length === 0) return null;
+  const dissolveSurvivorBfh =
+    change.kind === "root-split" && !layout.some((e) => e.headingPath.length === 0);
+  if (addedEntries.length === 0 && !dissolveSurvivorBfh) return null;
 
   // Moved-out boundaries. root-split: everything from the 1st heading onward
   // moves out. section-split: the survivor is the (before.length + 1)th heading —
@@ -205,16 +206,6 @@ export async function computeStructuralSplitPlan(
     const body = bulkContent?.get(SectionRef.headingKey(entry.headingPath)) ?? EMPTY_BODY;
     seeds.set(entry.fragmentKey, buildFragmentContent(body, entry.headingLevel, entry.heading));
   }
-
-  // Bootstrap BFH dissolve: an empty-doc BFH that just got its first heading
-  // typed inside has no preamble content to keep as a section — treat that
-  // survivor as a bootstrap mount target rather than a durable section (spec
-  // 14 empty-doc BFH rule). A non-empty preamble keeps BFH via the normal
-  // identity-preserving split path.
-  const dissolveSurvivorBfh =
-    change.kind === "root-split" &&
-    dirtyKey === BEFORE_FIRST_HEADING_KEY &&
-    change.rootBody.trim() === "";
 
   return {
     survivorKey: dirtyKey,
@@ -260,10 +251,11 @@ export function applyStructuralSplitPlan(
   for (const [key, content] of plan.seeds) {
     liveFragments.replaceFragmentString(key, content, origin);
   }
-  // Bootstrap BFH dissolve: unregister the emptied BFH so `getFragmentKeys()`
-  // stops listing it. Y.js cannot remove the top-level XmlFragment from
-  // `ydoc.share`; the canvas render guard + block-state gone signal keep the
-  // browser from touching the cleared-but-still-in-`share` key.
+  // Empty-BFH lifecycle: the reflected proposal already dissolved the BFH
+  // survivor (no `headingPath: []` entry remains in the layout), so the live
+  // fragment key is unregistered too — Y.js cannot remove the top-level
+  // XmlFragment from `ydoc.share`; the canvas render guard + block-state gone
+  // signal keep the browser from touching the cleared-but-still-in-`share` key.
   if (plan.dissolveSurvivorBfh) {
     liveFragments.unregisterFragmentKey(plan.survivorKey);
   }
@@ -292,6 +284,10 @@ export interface HeadingRemovalPlan {
   mergeTargetSeedContent: FragmentContent | null;
   /** The authoritative orphan body appended to an already-live merge target. */
   orphanBody: SectionBody;
+  /** The BFH fragment the merge additionally dissolved (empty-BFH lifecycle,
+   *  `effect.dissolvedBfh`), or null when nothing dissolved. Cleared and
+   *  unregistered exactly like `removeKey`. */
+  dissolvedBfhKey: string | null;
   affectedKeys: string[];
 }
 
@@ -319,13 +315,20 @@ export function deriveHeadingRemovalPlan(
       );
     }
   }
+  const dissolvedBfhKey = effect.dissolvedBfh
+    ? fragmentKeyFromSectionFile(effect.dissolvedBfh.sectionFile, true)
+    : null;
+  const affectedKeys = [removeKey];
+  if (mergeTargetKey) affectedKeys.push(mergeTargetKey);
+  if (dissolvedBfhKey) affectedKeys.push(dissolvedBfhKey);
   return {
     removeKey,
     removedHeadingPath: [...removedHeadingPath],
     mergeTargetKey,
     mergeTargetSeedContent,
     orphanBody,
-    affectedKeys: mergeTargetKey ? [mergeTargetKey, removeKey] : [removeKey],
+    dissolvedBfhKey,
+    affectedKeys,
   };
 }
 
@@ -359,6 +362,14 @@ export function applyHeadingRemovalPlan(
   const removed = ydoc.getXmlFragment(plan.removeKey);
   while (removed.length > 0) removed.delete(0, 1);
   liveFragments.unregisterFragmentKey(plan.removeKey);
+
+  if (plan.dissolvedBfhKey !== null) {
+    if (liveFragments.hasFragmentKey(plan.dissolvedBfhKey)) {
+      const dissolved = ydoc.getXmlFragment(plan.dissolvedBfhKey);
+      while (dissolved.length > 0) dissolved.delete(0, 1);
+    }
+    liveFragments.unregisterFragmentKey(plan.dissolvedBfhKey);
+  }
 }
 
 
@@ -370,21 +381,21 @@ export function applyHeadingRemovalPlan(
  * Consumes the classifier's already-parsed split shape — one classifier verdict
  * per settle pass; reflection never re-derives its own.
  *
- *  - section-split: when `renamedFromIdentity`, the survivor is first retitled
- *    in place to its new heading/level (id-preserving). Then the survivor +
- *    `after` sections are written through the parser-driven
- *    `writeSection(survivorPath, …, { expandHeadingsIntoSections })` — the
- *    first-heading==explicit-heading precondition holds by construction because
- *    the markdown is rebuilt from the survivor descriptor itself. Each `before`
- *    section is created via `createSection` and ordered above the survivor via
- *    `reorderSection(position: "before")`.
- *  - root-split (BFH, `headingPath: []`): a `[]` write is body-only and cannot
- *    promote structure, so the dedicated BFH-split primitive inserts the
- *    promoted heading at the front, preserving the orphan as the BFH body and
- *    every existing section id. Idempotent via its own already-promoted guard.
+ * root-split (BFH, `headingPath: []`) and section-split go through the SAME
+ * shared machinery: when `renamedFromIdentity` (section-split only — the BFH
+ * survivor has no heading to rename), the survivor is first retitled in place
+ * to its new heading/level (id-preserving). Then the survivor + `after`
+ * sections are written through the parser-driven
+ * `writeSection(survivorPath, …, { expandHeadingsIntoSections })` — for `[]`
+ * this is the target-relative-forest write from `upsertSectionFromMarkdownCore`
+ * (the headless BFH survivor followed by promoted headings), for a headed
+ * survivor it is the existing subtree-replace path. Each `before` section
+ * (root-split has none) is created via `createSection` and ordered above the
+ * survivor via `reorderSection(position: "before")`.
  *
- * Both branches are no-ops on a retry whose prior live apply aborted, so a
- * clock-check abort cannot duplicate proposal sections (item 23).
+ * The whole reflection is a no-op on a retry whose prior live apply aborted
+ * (via `writeSection`'s identity-upsert fast path), so a clock-check abort
+ * cannot duplicate proposal sections (item 23).
  */
 export async function reflectSplitIntoProposal(
   proposalId: ProposalId,
@@ -394,50 +405,74 @@ export async function reflectSplitIntoProposal(
 ): Promise<void> {
   const { ProposalEditor } = await import("../storage/proposal-editor.js");
   const { sectionWriteInputFromExternal } = await import("../storage/section-formatting.js");
-  const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
+  const { unionCurrentProposalSections, recordDeletedSectionFiles } = await import("../storage/proposal-repository.js");
   const editor = ProposalEditor.open(proposalId, "inprogress");
+
+  let survivorPath = [...identity.headingPath];
+  let survivorHeading: string;
+  let survivorHeadingLevel: HeadingLevel;
+  let survivorBody: SectionBody;
+  let beforeSections: ReadonlyArray<{ headingPath: string[]; heading: string; headingLevel: HeadingLevel; body: SectionBody }>;
+  let afterSections: ReadonlyArray<{ headingPath: string[]; heading: string; headingLevel: HeadingLevel; body: SectionBody }>;
+
+  if (change.kind === "root-split") {
+    survivorHeading = identity.heading;
+    survivorHeadingLevel = HeadingLevel.beforeFirstHeading;
+    survivorBody = change.rootBody;
+    beforeSections = [];
+    afterSections = change.sections;
+  } else {
+    if (change.survivor.renamedFromIdentity) {
+      await editor.retitleSection(
+        docPath,
+        survivorPath,
+        change.survivor.heading,
+        change.survivor.headingLevel,
+        change.survivor.body,
+      );
+      survivorPath = [...identity.headingPath.slice(0, -1), change.survivor.heading];
+    }
+    survivorHeading = change.survivor.heading;
+    survivorHeadingLevel = change.survivor.headingLevel;
+    survivorBody = change.survivor.body;
+    beforeSections = change.before;
+    afterSections = change.after;
+  }
 
   // Real-time manifest claim (placement decision in assumptions.md): claim the
   // promoted sections AT QUIESCENCE, here where the content promotion happens,
   // not only at publish. The manifest is GROW-ONLY (D6); union-add dedups
   // across clock-check retries. Deletes ride the id-based
   // `deleted_section_files` set, not a manifest path-claim removal.
-  if (change.kind === "root-split") {
-    const parts: string[] = [];
-    if (change.rootBody.trim() !== "") parts.push(change.rootBody);
-    for (const s of change.sections) parts.push(buildFragmentContent(s.body, s.headingLevel, s.heading));
-    const result = await editor.splitBeforeFirstHeading(docPath, parts.join("\n\n"));
-    await unionCurrentProposalSections(proposalId, manifestDeltaFromResult(docPath, result).add);
-    return;
-  }
-
-  let survivorPath = [...identity.headingPath];
-  if (change.survivor.renamedFromIdentity) {
-    await editor.retitleSection(
-      docPath,
-      survivorPath,
-      change.survivor.heading,
-      change.survivor.headingLevel,
-      change.survivor.body,
-    );
-    survivorPath = [...identity.headingPath.slice(0, -1), change.survivor.heading];
-  }
-
   const survivorMarkdown = [
-    buildFragmentContent(change.survivor.body, change.survivor.headingLevel, change.survivor.heading),
-    ...change.after.map((s) => buildFragmentContent(s.body, s.headingLevel, s.heading)),
+    buildFragmentContent(survivorBody, survivorHeadingLevel, survivorHeading),
+    ...afterSections.map((s) => buildFragmentContent(s.body, s.headingLevel, s.heading)),
   ].join("\n\n");
   const writeResult = await editor.writeSection(
     docPath,
     survivorPath,
-    change.survivor.heading,
+    survivorHeading,
     sectionWriteInputFromExternal(survivorMarkdown),
     { expandHeadingsIntoSections: true },
   );
   const add = [...manifestDeltaFromResult(docPath, writeResult).add];
 
+  // Empty-BFH lifecycle: a root-split whose BFH survivor dissolved (empty/
+  // whitespace preamble) reports the BFH in `removedContentEntries` with no
+  // successor reusing its section-file id (the promoted headings always mint
+  // fresh identities). Record that id in the proposal's identity-based delete
+  // overlay so the effective-structure merge stops inheriting it from
+  // canonical — `writeSection`'s shared subtree-replace path never records
+  // deletions itself (only `deleteSubtree` / heading-removal do).
+  if (change.kind === "root-split") {
+    const dissolvedBfh = writeResult.removedContentEntries.find((e) => e.headingPath.length === 0);
+    if (dissolvedBfh) {
+      await recordDeletedSectionFiles(proposalId, docPath, [dissolvedBfh.sectionFile]);
+    }
+  }
+
   const parentPath = [...identity.headingPath.slice(0, -1)];
-  for (const s of change.before) {
+  for (const s of beforeSections) {
     const createResult = await editor.createSection(
       docPath,
       [...parentPath, ...s.headingPath],
@@ -446,7 +481,7 @@ export async function reflectSplitIntoProposal(
     );
     add.push(...manifestDeltaFromResult(docPath, createResult).add);
   }
-  for (const s of change.before) {
+  for (const s of beforeSections) {
     if (s.headingPath.length !== 1) continue;
     await editor.reorderSection(docPath, [...parentPath, ...s.headingPath], survivorPath, "before");
   }

@@ -108,17 +108,6 @@ export interface DocSession {
    *  in the WS coordinator (MW-1b/MW-2) to decide when a fragment has settled. */
   fragmentLastActivity: Map<string, number>;
   dirtyFragmentKeys: Set<string>;
-  /**
-   * Fragment keys that a quiescence structural normalization REMOVED this session
-   * (heading-deletion merge, empty-BFH dissolve, no-predecessor→BFH), mapped to
-   * their removed heading path. Yjs cannot delete the top-level XmlFragment from
-   * `ydoc.share`, so a still-bound client can echo a late ("ghost") update into
-   * the emptied slot AFTER the section left the layout. The acceptance gate uses
-   * this tombstone set to treat such a late write as an EXPECTED delete-under-you
-   * (revert + re-emit `section:gone` to force the client off) rather than the
-   * hard "no section identity" corruption fatal, which stays for genuinely
-   * unknown keys. Keys are opaque and never reused, so entries are never removed.
-   */
   removedFragmentTombstones: Map<string, string[]>;
   lastActivityAt: number;
   createdAt: number;
@@ -696,6 +685,7 @@ export async function invalidateSessionForReplacement(
     session.ydoc.destroy();
     sessions.delete(docPath);
     sessionPromises.delete(docPath);
+    notifySessionDiscarded(docPath);
   }
 }
 

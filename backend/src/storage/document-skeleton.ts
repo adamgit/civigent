@@ -331,8 +331,15 @@ export interface HeadingRemovalEffect {
   /** The removed heading's body-bearing section-file id (the live fragment id). */
   removedBodySectionFile: string;
   /** Where the orphan body belongs, or null when nothing precedes the removed
-   *  heading and no body content had to survive (no anchor is fabricated). */
+   *  heading and no body content had to survive (no anchor is fabricated), or
+   *  when the merge settled into an empty BFH and `dissolvedBfh` reports it
+   *  removed instead. */
   mergeTarget: HeadingRemovalMergeTarget | null;
+  /** Completed by the heading-removal executor (content layer): the BFH entry
+   *  the removal's merge additionally dissolved because it settled empty/
+   *  whitespace (empty-BFH lifecycle) — `mergeTarget` is null in that case.
+   *  Null when the removal did not touch the BFH this way. */
+  dissolvedBfh: FlatEntry | null;
   /** Exact section-file ids the removal deletes. */
   deletedSectionFileIds: string[];
   /** Preserved descendants (body-bearing entries), ids/levels/order unchanged,
@@ -587,27 +594,9 @@ export class DocumentSkeleton {
     };
   }
 
-  /**
-   * Resolve the before-first-heading content entry directly from this.roots — no flat materialization.
-   * Returns null if the skeleton is empty (tombstone) or has no before-first-heading section.
-   */
+  /** Resolve the before-first-heading content entry, or null if none exists. */
   protected findBeforeFirstHeadingContentEntry(): ContentEntry | null {
-    const rootNode = this.roots.find(n => isBodyHolderShape(n));
-    if (!rootNode) {
-      return null;
-    }
-    const structuralNode = this.makeStructuralNodeEntry(rootNode, [], this.skeletonPath);
-    const bodyHolder = rootNode.children.find(c => isBodyHolderShape(c));
-    return this.makeContentEntry(structuralNode, bodyHolder?.sectionFile);
-  }
-
-  /**
-   * Resolve the before-first-heading structural node directly from this.roots.
-   * Returns null if the skeleton is empty (tombstone) or has no BFH node.
-   */
-  protected findBeforeFirstHeadingStructuralNode(): StructuralNodeEntry | null {
-    const rootNode = this.roots.find(n => isBodyHolderShape(n));
-    return rootNode ? this.makeStructuralNodeEntry(rootNode, [], this.skeletonPath) : null;
+    return this.findContentEntryByHeadingPath([]);
   }
 
   /**
@@ -693,25 +682,15 @@ export class DocumentSkeleton {
 
   /** Look up a content entry by heading path. Returns null if not found. */
   findContentEntryByHeadingPath(headingPath: string[]): ContentEntry | null {
-    if (headingPath.length === 0) {
-      return this.findBeforeFirstHeadingContentEntry();
-    }
-
-    const structuralNode = this.findStructuralNodeByHeadingPath(headingPath);
-    if (!structuralNode) return null;
-
-    let nodes = this.roots;
-    for (let i = 0; i < headingPath.length; i++) {
-      const target = headingPath[i];
-      const node = nodes.find(n => headingsEqual(n.heading, target));
-      if (!node) return null;
-      if (i === headingPath.length - 1) {
-        const bodyHolder = node.children.find(c => isBodyHolderShape(c));
-        return this.makeContentEntry(structuralNode, bodyHolder?.sectionFile);
-      }
-      nodes = node.children;
-    }
-    return this.makeContentEntry(structuralNode);
+    const located = this.locateStructuralNodeByHeadingPath(headingPath);
+    if (!located) return null;
+    const structuralNode = this.makeStructuralNodeEntry(
+      located.node,
+      located.parentPath,
+      located.parentSkeletonPath,
+    );
+    const bodyHolder = located.node.children.find(c => isBodyHolderShape(c));
+    return this.makeContentEntry(structuralNode, bodyHolder?.sectionFile);
   }
 
   /** Resolve a content entry by heading path. Throws if not found. */
@@ -728,31 +707,59 @@ export class DocumentSkeleton {
     return entry;
   }
 
-  /** Look up a structural node by heading path. Returns null if not found. */
-  findStructuralNodeByHeadingPath(headingPath: string[]): StructuralNodeEntry | null {
+  /**
+   * The single canonical tree traversal for every heading path: resolves the
+   * `SkeletonNode` at `headingPath`, its containing sibling array, its index
+   * within that array, and the resolved parent heading path / parent skeleton
+   * path (built from the ACTUAL matched heading text at each ancestor level,
+   * exactly like `findStructuralNodeByHeadingPath` always has). `headingPath:
+   * []` decodes to the headless root (BFH) node — this is the one place that
+   * address decoding happens; every heading-path-based read/mutation lookup
+   * goes through it instead of re-implementing the walk. `protected` (not
+   * `private`) so `DocumentSkeletonInternal` and the structural-mutation
+   * context it exposes to closures can use it too, but no external caller can
+   * mutate a raw `SkeletonNode` without going through a mutation transaction.
+   */
+  protected locateStructuralNodeByHeadingPath(headingPath: string[]): {
+    node: SkeletonNode;
+    siblings: SkeletonNode[];
+    index: number;
+    parentPath: string[];
+    parentSkeletonPath: string;
+  } | null {
     if (headingPath.length === 0) {
-      return this.findBeforeFirstHeadingStructuralNode();
+      const index = this.roots.findIndex(n => isBodyHolderShape(n));
+      if (index < 0) return null;
+      return { node: this.roots[index], siblings: this.roots, index, parentPath: [], parentSkeletonPath: this.skeletonPath };
     }
 
-    let nodes = this.roots;
-    let currentSkeletonPath = this.skeletonPath;
-    const resolvedPath: string[] = [];
+    let siblings = this.roots;
+    let parentSkeletonPath = this.skeletonPath;
+    const resolvedParentPath: string[] = [];
 
     for (let i = 0; i < headingPath.length; i++) {
       const target = headingPath[i];
-      const node = nodes.find(n => headingsEqual(n.heading, target));
-      if (!node) return null;
-      resolvedPath.push(node.heading);
+      const index = siblings.findIndex(n => headingsEqual(n.heading, target));
+      if (index < 0) return null;
+      const node = siblings[index];
 
       if (i === headingPath.length - 1) {
-        return this.makeStructuralNodeEntry(node, resolvedPath.slice(0, -1), currentSkeletonPath);
+        return { node, siblings, index, parentPath: resolvedParentPath, parentSkeletonPath };
       }
 
-      currentSkeletonPath = path.join(`${currentSkeletonPath}.sections`, node.sectionFile);
-      nodes = node.children;
+      resolvedParentPath.push(node.heading);
+      parentSkeletonPath = path.join(`${parentSkeletonPath}.sections`, node.sectionFile);
+      siblings = node.children;
     }
 
     return null;
+  }
+
+  /** Look up a structural node by heading path. Returns null if not found. */
+  findStructuralNodeByHeadingPath(headingPath: string[]): StructuralNodeEntry | null {
+    const located = this.locateStructuralNodeByHeadingPath(headingPath);
+    if (!located) return null;
+    return this.makeStructuralNodeEntry(located.node, located.parentPath, located.parentSkeletonPath);
   }
 
   /** Resolve a structural node by heading path. Throws if not found. */
@@ -842,28 +849,23 @@ export class DocumentSkeleton {
    * Return FlatEntry[] for the subtree rooted at headingPath (no file I/O).
    * Sub-skeleton entries are excluded — only body-file entries are returned.
    *
-   * ILLEGAL to call with headingPath=[]. Use allContentEntries() for
-   * whole-document enumeration, or expectBeforeFirstHeading() for the
-   * before-first-heading section.
+   * headingPath=[] locates the document's before-first-heading node (the
+   * same root-BFH lookup every other heading-path method in this class uses)
+   * and flattens only that node — it does NOT mean whole-document
+   * enumeration. Use allContentEntries() for that.
    */
   subtreeEntries(headingPath: string[]): FlatEntry[] {
-    if (headingPath.length === 0) {
+    const located = this.locateStructuralNodeByHeadingPath(headingPath);
+    if (!located) {
+      if (headingPath.length === 0) {
+        throw new Error(`No before-first-heading section in ${this.docPath}. The document may have no content before its first heading.`);
+      }
       throw new Error(
-        "subtreeEntries([]) is illegal — use allContentEntries() for whole-document enumeration, " +
-        "or expectBeforeFirstHeading() for the before-first-heading section"
+        `Skeleton integrity error: heading "${headingPath[headingPath.length - 1]}" not found in ${this.docPath} ` +
+        `at path [${headingPath.slice(0, -1).join(" > ")}]`
       );
     }
-    const parentPath = headingPath.slice(0, -1);
-    const target = headingPath[headingPath.length - 1];
-    const siblings = this.findSiblingList(parentPath);
-    const node = siblings.find(n => headingsEqual(n.heading, target));
-    if (!node) {
-      throw new Error(
-        `Skeleton integrity error: heading "${target}" not found in ${this.docPath} ` +
-        `at path [${parentPath.join(" > ")}]`
-      );
-    }
-    return this.flattenNode(node, parentPath, this.resolveSkeletonPathFor(parentPath))
+    return this.flattenNode(located.node, located.parentPath, located.parentSkeletonPath)
       .filter(e => !e.isSubSkeleton);
   }
 
@@ -1182,6 +1184,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
       flattenNode: (node, parentPath, parentSkeletonPath) =>
         this.flattenNode(node, parentPath, parentSkeletonPath),
       addBodyHoldersToParents: (nodes) => addBodyHoldersToParents(nodes),
+      locateStructuralNodeByHeadingPath: (headingPath) => this.locateStructuralNodeByHeadingPath(headingPath),
       createBfhAtFront: () => {
         if (this.roots[0]?.headingLevel === 0 && this.roots[0]?.heading === "") {
           throw new Error(
@@ -1333,15 +1336,15 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
         bodyWrites.push({ absolutePath: createdBfhEntry.absolutePath, content: "" });
       }
 
-      const siblings = ctx.findSiblingList(parentPath);
-      const idx = siblings.findIndex((n) => n.sectionFile === targetNode.sectionFile);
-      if (idx < 0) {
+      const located = ctx.locateStructuralNodeByHeadingPath(headingPath);
+      if (!located || located.node.sectionFile !== targetNode.sectionFile) {
         throw new Error(
           `Skeleton integrity error in ${this.docPath}: target sectionFile ` +
           `${targetNode.sectionFile} disappeared from its parent sibling list at ` +
           `[${parentPath.join(" > ")}] during removeHeading.`,
         );
       }
+      const { siblings, index: idx } = located;
 
       // The poppable open-heading chain at the removal point: the rightmost
       // real-heading descent of the nearest preceding REAL sibling (a preceding
@@ -1442,6 +1445,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
       removedTargetEntries: plan.removed,
       removedBodySectionFile,
       mergeTarget,
+      dissolvedBfh: null,
       deletedSectionFileIds: [...removedTargetIds],
       preservedDescendants,
       fragmentKeyChanges: plan.fragmentKeyRemaps,
@@ -1491,15 +1495,11 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     }
 
     return await this.applyStructuralMutationTransaction((ctx) => {
-      const parentPath = headingPath.slice(0, -1);
-      const target = headingPath[headingPath.length - 1];
-      const siblings = ctx.findSiblingList(parentPath);
-      const idx = siblings.findIndex((n) => headingsEqual(n.heading, target));
-      if (idx < 0) {
+      const located = ctx.locateStructuralNodeByHeadingPath(headingPath);
+      if (!located) {
         throw staleHeadingPath(this.docPath, headingPath, "replaceHeadingNodeInPlace");
       }
-      const oldNode = siblings[idx];
-      const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
+      const { siblings, index: idx, node: oldNode, parentPath, parentSkeletonPath } = located;
       const removed = ctx.flattenNode(oldNode, parentPath, parentSkeletonPath);
 
       const newSectionFile = generateSectionFilename(newHeading);
@@ -1565,15 +1565,11 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     }
 
     return await this.applyStructuralMutationTransaction((ctx) => {
-      const parentPath = headingPath.slice(0, -1);
-      const target = headingPath[headingPath.length - 1];
-      const siblings = ctx.findSiblingList(parentPath);
-      const idx = siblings.findIndex((n) => headingsEqual(n.heading, target));
-      if (idx < 0) {
+      const located = ctx.locateStructuralNodeByHeadingPath(headingPath);
+      if (!located) {
         throw staleHeadingPath(this.docPath, headingPath, "splitHeadingNode");
       }
-      const oldNode = siblings[idx];
-      const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
+      const { siblings, index: idx, node: oldNode, parentPath, parentSkeletonPath } = located;
       const removed = ctx.flattenNode(oldNode, parentPath, parentSkeletonPath);
 
       const originalLevel = oldNode.headingLevel;
@@ -2233,6 +2229,21 @@ export interface MutationTransactionContext {
   resolveSkeletonPathFor(parentPath: string[]): string;
   flattenNode(node: SkeletonNode, parentPath: string[], parentSkeletonPath: string): FlatEntry[];
   addBodyHoldersToParents(nodes: SkeletonNode[]): void;
+  /**
+   * The same canonical heading-path traversal `DocumentSkeleton` uses for
+   * reads (`findStructuralNodeByHeadingPath` / `subtreeEntries`), exposed to
+   * mutation closures so they locate a target's node, containing sibling
+   * array, and index without re-implementing the walk. `headingPath: []`
+   * resolves the BFH node exactly as it does for reads. Returns null when the
+   * path does not resolve — same as the read-side lookups, no throw.
+   */
+  locateStructuralNodeByHeadingPath(headingPath: string[]): {
+    node: SkeletonNode;
+    siblings: SkeletonNode[];
+    index: number;
+    parentPath: string[];
+    parentSkeletonPath: string;
+  } | null;
   /**
    * Mint a fresh BFH section node at the front of `roots` and return its
    * flattened entry. Caller is responsible for pushing the returned entry

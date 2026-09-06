@@ -118,6 +118,96 @@ describe("CRDTProposalGenerator structural normalization (quiescence-driven)", (
     ydoc.destroy();
   });
 
+  it("scopes movement detection to affected fragments and detects deletion-only movement", async () => {
+    const gen = makeGenerator();
+
+    const unrelatedDoc = new Y.Doc();
+    unrelatedDoc.getXmlFragment("section::affected").insert(0, [new Y.XmlElement("paragraph")]);
+    unrelatedDoc.getXmlFragment("section::unrelated").insert(0, [new Y.XmlElement("paragraph")]);
+    let unrelatedComputeCalls = 0;
+    await gen.normalizeQuiescedSection(
+      unrelatedDoc,
+      ["section::affected"],
+      () => {
+        unrelatedComputeCalls++;
+        if (unrelatedComputeCalls === 1) {
+          unrelatedDoc
+            .getXmlFragment("section::unrelated")
+            .insert(0, [new Y.XmlElement("paragraph")]);
+        }
+        return { ok: true };
+      },
+      () => undefined,
+    );
+
+    const deletionDoc = new Y.Doc();
+    const deletionFragment = deletionDoc.getXmlFragment("section::affected");
+    deletionFragment.insert(0, [
+      new Y.XmlElement("paragraph"),
+      new Y.XmlElement("paragraph"),
+    ]);
+    let deletionComputeCalls = 0;
+    await gen.normalizeQuiescedSection(
+      deletionDoc,
+      ["section::affected"],
+      () => {
+        deletionComputeCalls++;
+        if (deletionComputeCalls === 1) {
+          deletionFragment.delete(0, 1);
+        }
+        return { ok: true };
+      },
+      () => undefined,
+    );
+
+    expect({ unrelatedComputeCalls, deletionComputeCalls }).toEqual({
+      unrelatedComputeCalls: 1,
+      deletionComputeCalls: 2,
+    });
+
+    unrelatedDoc.destroy();
+    deletionDoc.destroy();
+  });
+
+  it("recomputes once, then throws when affected fragments move again", async () => {
+    const gen = makeGenerator();
+    const ydoc = new Y.Doc();
+    const fragment = ydoc.getXmlFragment("section::affected");
+    fragment.insert(0, [new Y.XmlElement("paragraph")]);
+
+    let computeCalls = 0;
+    let applyCalls = 0;
+    let caught: unknown;
+    try {
+      await gen.normalizeQuiescedSection(
+        ydoc,
+        ["section::affected"],
+        () => {
+          computeCalls++;
+          fragment.insert(fragment.length, [new Y.XmlElement("paragraph")]);
+          return { attempt: computeCalls };
+        },
+        () => {
+          applyCalls++;
+        },
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect({
+      threwInvariant: caught instanceof Error,
+      computeCalls,
+      applyCalls,
+    }).toEqual({
+      threwInvariant: true,
+      computeCalls: 2,
+      applyCalls: 0,
+    });
+
+    ydoc.destroy();
+  });
+
   it("PublishTriggerPolicy quiescence threshold gates fragment quietness", () => {
     const policy = new PublishTriggerPolicy({ quiescenceThresholdMs: 2000 });
     const now = 10_000;

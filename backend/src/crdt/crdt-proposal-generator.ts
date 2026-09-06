@@ -694,53 +694,70 @@ export class CRDTProposalGenerator {
    *   pre-flight clock check)
    * @param computeDelta precompute against a snapshot, OUTSIDE the transaction
    * @param applyDelta apply the precomputed delta, INSIDE the transaction
-   * @param maxRetries optimistic-concurrency retry budget
+   *
+   * Fail-closed: `{ applied: false }` means only that `computeDelta` returned
+   * `null` (nothing to do). If the affected fragments moved between snapshot
+   * and transaction open, this recomputes against a fresh snapshot exactly
+   * once; if they move again, or `applyDelta` itself throws, this throws
+   * rather than silently reporting `{ applied: false }` — a caller that already
+   * committed a durable proposal mutation for this delta must not treat a
+   * failed live application as a harmless no-op.
    */
   private async runIdentityPreservingTransaction<TDelta>(
     ydoc: Y.Doc,
     affectedFragmentKeys: readonly string[],
     computeDelta: () => Promise<TDelta | null> | TDelta | null,
     applyDelta: (delta: TDelta) => void,
-    maxRetries = 3,
   ): Promise<{ applied: boolean }> {
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      // Snapshot the affected fragments' state vector BEFORE computing the delta.
-      const preStateVector = this.fragmentClock(ydoc, affectedFragmentKeys);
+    const attemptOnce = async (): Promise<"applied" | "no-op" | "moved"> => {
+      // Snapshot the affected fragments' content BEFORE computing the delta.
+      const preClock = this.fragmentClock(ydoc, affectedFragmentKeys);
 
       const delta = await computeDelta();
-      if (delta === null) return { applied: false };
+      if (delta === null) return "no-op";
 
-      let applied = false;
+      let moved = false;
       ydoc.transact(() => {
         // Pre-flight clock check: if any affected fragment moved between snapshot
-        // and transaction open, abort this attempt and retry with a fresh snapshot.
-        const nowVector = this.fragmentClock(ydoc, affectedFragmentKeys);
-        if (nowVector !== preStateVector) {
-          return; // leaves `applied` false → outer loop retries
+        // and transaction open, abort this attempt without applying.
+        const nowClock = this.fragmentClock(ydoc, affectedFragmentKeys);
+        if (nowClock !== preClock) {
+          moved = true;
+          return;
         }
         applyDelta(delta);
-        applied = true;
       });
+      return moved ? "moved" : "applied";
+    };
 
-      if (applied) return { applied: true };
-    }
-    // Exhausted retries — the section kept moving; leave it for the next
-    // quiescence trigger rather than forcing a non-atomic write.
-    return { applied: false };
+    const first = await attemptOnce();
+    if (first !== "moved") return { applied: first === "applied" };
+
+    const second = await attemptOnce();
+    if (second !== "moved") return { applied: second === "applied" };
+
+    throw new Error(
+      `runIdentityPreservingTransaction: affected fragments [${affectedFragmentKeys.join(", ")}] ` +
+        `kept moving after one retry`,
+    );
   }
 
   /**
-   * Compute a cheap fingerprint of the affected fragments' Yjs clocks, used as
-   * the optimistic-concurrency pre-flight check. Any client edit to an affected
-   * fragment advances its clock, so a mismatch means the Y.Doc moved.
+   * Compute a cheap fingerprint of the affected fragments' content, used as the
+   * optimistic-concurrency pre-flight check. Reads each key via `ydoc.share.get`
+   * (never `getXmlFragment`, which would create a missing type as a side effect)
+   * so an absent key fingerprints as absent rather than springing into existence.
+   * An insert, format change, or deletion on an affected key changes its
+   * `toString()`, so a mismatch means one of the affected fragments moved; a
+   * mutation on any other key in the Y.Doc leaves this fingerprint untouched.
    */
   private fragmentClock(ydoc: Y.Doc, affectedFragmentKeys: readonly string[]): string {
-    const sv = Y.encodeStateVector(ydoc);
-    // The full state vector is sufficient: any update to any fragment advances
-    // it. We keep it scoped-by-key in the signature so a future, finer-grained
-    // implementation can narrow the check without changing callers.
-    void affectedFragmentKeys;
-    return Buffer.from(sv).toString("base64");
+    return affectedFragmentKeys
+      .map((key) => {
+        const shared = ydoc.share.get(key);
+        return `${key}\u0000${shared === undefined ? "\u0000absent" : shared.toString()}`;
+      })
+      .join("\u0001");
   }
 
   // ─── Final materialization + commit (publish) ─────────────────────

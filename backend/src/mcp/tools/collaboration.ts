@@ -903,14 +903,17 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
     {
       name: "create_proposal",
       description:
-        "Create a new proposal with intent and optional section content writes. The proposal starts in draft status. " +
-        "sections may be empty: an intent-only draft is a legal handle for later structural tools " +
+        "Create an UNPUBLISHED server-side proposal with intent and optional section content writes. " +
+        "This tool only stages changes: it does not publish them, does not change live content, " +
+        "and does not make them visible in the live wiki. The proposal's machine status starts as draft. " +
+        "sections may be empty: an intent-only unpublished proposal is a legal handle for later structural tools " +
         "(create_section, delete_section, move_section, rename_section, delete_document, rename_document) " +
-        "or write_proposal_section. A draft that still claims nothing cannot be published. " +
+        "or write_proposal_section. A proposal that still claims nothing cannot be published. " +
         "For large edits, prefer a SMALL create_proposal (one or a few sections) followed by repeated " +
         "write_proposal_section calls on the returned proposal_id, rather than one create_proposal " +
         "carrying a giant sections payload — big tool-call JSON is error-prone and hard to retry. " +
-        "When the draft is complete, call publish_proposal with the returned proposal_id to publish it.",
+        "When staged changes are complete, you MUST call publish_proposal with the returned proposal_id; " +
+        "only publish_proposal can make proposal content live.",
       inputSchema: {
         type: "object",
         properties: {

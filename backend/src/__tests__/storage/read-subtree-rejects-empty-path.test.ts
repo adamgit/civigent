@@ -5,17 +5,13 @@ import { ContentLayer } from "../../storage/content-layer.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 
 /**
- * ContentLayer.readSubtree rejects an empty headingPath.
- *
- * `[]` used to mean "whole document" — an overload that confused callers and
- * masked bugs. Whole-document enumeration goes through
- * `getSectionList(docPath)` + `readSection(...)`; before-first-heading reads go
- * through `readSection(ref(docPath, []))`. These tests lock in the rejection
- * behavior and prove the proper subtree path still works.
+ * ContentLayer.readSubtree(docPath, []) locates the before-first-heading
+ * node through the same heading-path lookup as every other heading path and
+ * returns its subtree — it is not whole-document enumeration.
  */
-describe("ContentLayer.readSubtree — empty headingPath rejection", () => {
+describe("ContentLayer.readSubtree — empty headingPath", () => {
   let ctx: TempDataRootContext;
-  const DOC = "/subtree-reject.md";
+  const DOC = "/subtree-empty-path.md";
 
   beforeAll(async () => {
     ctx = await createTempDataRoot();
@@ -23,14 +19,14 @@ describe("ContentLayer.readSubtree — empty headingPath rejection", () => {
     const sectionsDir = `${skeletonPath}.sections`;
     await mkdir(sectionsDir, { recursive: true });
     const skeleton = [
-      "{{section: --before-first-heading--subtree-reject.md}}",
+      "{{section: --before-first-heading--subtree-empty.md}}",
       "",
       "# A",
       "{{section: a.md}}",
       "",
     ].join("\n");
     await writeFile(skeletonPath, skeleton, "utf8");
-    await writeFile(join(sectionsDir, "--before-first-heading--subtree-reject.md"), "", "utf8");
+    await writeFile(join(sectionsDir, "--before-first-heading--subtree-empty.md"), "Intro body.", "utf8");
     await writeFile(join(sectionsDir, "a.md"), "# A\n\nA body.\n", "utf8");
   });
 
@@ -45,8 +41,12 @@ describe("ContentLayer.readSubtree — empty headingPath rejection", () => {
     expect(entries[0].bodyContent).toContain("A body.");
   });
 
-  it("readSubtree(docPath, []) throws and the message names getSectionList", async () => {
+  it("readSubtree(docPath, []) returns only the before-first-heading entry", async () => {
     const layer = new ContentLayer(ctx.contentDir);
-    await expect(layer.readSubtree(DOC, [])).rejects.toThrow(/getSectionList/);
+    const entries = await layer.readSubtree(DOC, []);
+    expect(entries.length).toBe(1);
+    expect(entries[0].headingPath).toEqual([]);
+    expect(entries[0].heading).toBe("");
+    expect(entries[0].bodyContent).toContain("Intro body.");
   });
 });
