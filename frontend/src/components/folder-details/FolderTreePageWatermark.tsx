@@ -4,7 +4,7 @@ import { FolderTreeRadialDots } from "./FolderTreeRadialDots";
 export function FolderTreePageWatermark({ entry }: { entry: DocumentTreeEntry }) {
   return (
     <div
-      className="folder-tree-page-watermark pointer-events-none absolute top-0 left-0 z-0 w-full h-dvh overflow-clip"
+      className="folder-tree-page-watermark pointer-events-none absolute inset-y-0 left-0 z-0 w-full overflow-clip"
       aria-hidden="true"
     >
       <div className="relative h-full w-full px-8 max-md:px-4">

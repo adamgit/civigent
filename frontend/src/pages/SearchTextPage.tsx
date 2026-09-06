@@ -1,12 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
-import { apiClient, type SearchTextResponse } from "../services/api-client";
+import { apiClient, type SearchHitKind, type SearchTextResponse } from "../services/api-client";
 import { buildHighlightRegex } from "./search/SearchHitCards";
 import { SearchHitInspector } from "./search/SearchHitInspector";
 import { SearchMapChrome, type SearchMapMode } from "./search/SearchMapChrome";
 import { SearchMapViewport } from "./search/SearchMapViewport";
-import { buildSearchHitForest, hitsForSelection } from "./search/search-hit-forest";
+import {
+  buildSearchHitForest,
+  countHitKind,
+  emptyHitKindCounts,
+  hitsForSelection,
+} from "./search/search-hit-forest";
 import { SEARCH_MAX_RESULTS } from "./search/search-request-defaults";
 
 function JsonPrimitive({ value }: { value: unknown }) {
@@ -65,7 +70,7 @@ function PrettyJsonValue({ value, depth = 0 }: { value: unknown; depth?: number 
 }
 
 export function SearchTextPage() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<SearchTextResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -76,6 +81,7 @@ export function SearchTextPage() {
    */
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [mapMode, setMapMode] = useState<SearchMapMode>("folder");
+  const [kindFilter, setKindFilter] = useState<readonly SearchHitKind[]>([]);
 
   const pattern = searchParams.get("pattern") ?? "";
   const syntax = searchParams.get("syntax") === "regexp" ? "regexp" : "literal";
@@ -118,8 +124,6 @@ export function SearchTextPage() {
       })
       .catch((err) => {
         if ((err as Error).name === "AbortError") return;
-        setResponse(null);
-        setSelectedPath(null);
         setError(err instanceof Error ? err.message : String(err));
         setLoading(false);
       });
@@ -134,9 +138,42 @@ export function SearchTextPage() {
     () => buildHighlightRegex(pattern, syntax, isCaseSensitive),
     [pattern, syntax, isCaseSensitive],
   );
-  const forest = useMemo(() => buildSearchHitForest(response?.matches ?? []), [response]);
+  const allMatches = response?.matches ?? [];
+  const visibleMatches = useMemo(
+    () => (kindFilter.length === 0 ? allMatches : allMatches.filter((match) => kindFilter.includes(match.kind))),
+    [allMatches, kindFilter],
+  );
+  const legendCounts = useMemo(() => {
+    const counts = emptyHitKindCounts();
+    for (const match of allMatches) {
+      countHitKind(counts, match.kind);
+    }
+    return counts;
+  }, [allMatches]);
+  const forest = useMemo(() => buildSearchHitForest(visibleMatches), [visibleMatches]);
   const selectedHits = useMemo(() => hitsForSelection(forest, selectedPath), [forest, selectedPath]);
   const hasResponsePayload = error !== null || response !== null;
+
+  const submitSearch = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const nextPattern = String(form.get("pattern") ?? "").trim();
+    const nextSyntax = form.get("syntax") === "regexp" ? "regexp" : "literal";
+    setSearchParams({
+      pattern: nextPattern,
+      syntax: nextSyntax,
+      root: "/",
+      case_sensitive: "false",
+      max_results: SEARCH_MAX_RESULTS,
+      context_bytes: "100",
+    });
+  };
+
+  const toggleKindFilter = (kind: SearchHitKind) => {
+    setKindFilter((current) =>
+      current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind],
+    );
+  };
 
   return (
     <section className="flex flex-col" style={{ padding: "0.5rem 0.75rem 0.75rem" }}>
@@ -145,6 +182,7 @@ export function SearchTextPage() {
       <form
         action="/search-text"
         method="GET"
+        onSubmit={submitSearch}
         className="shrink-0"
         style={{
           display: "grid",
@@ -184,7 +222,7 @@ export function SearchTextPage() {
       </form>
 
       {!pattern.trim() ? <p style={{ color: "var(--color-text-muted)" }}>Enter a search pattern to run `/api/search`.</p> : null}
-      {loading ? (
+      {loading && response === null ? (
         <div
           style={{
             minHeight: 260,
@@ -225,9 +263,14 @@ export function SearchTextPage() {
           </div>
         </div>
       ) : null}
+      {loading && response !== null ? (
+        <p className="shrink-0 text-[13px] text-text-muted" style={{ margin: "0 0 0.5rem" }}>
+          Updating results…
+        </p>
+      ) : null}
       {error ? <p className="text-error">{error}</p> : null}
 
-      {!loading && !error && response ? (
+      {response ? (
         <div className="flex flex-col" style={{ gap: "0.75rem" }}>
           <p className="shrink-0" style={{ marginBottom: 0 }}>
             {response.matches.length} match{response.matches.length === 1 ? "" : "es"} for <strong>{pattern}</strong> ({syntax})
@@ -272,7 +315,13 @@ export function SearchTextPage() {
           ) : (
             <div className="flex flex-col gap-3 lg:flex-row">
               <div className="flex h-[340px] shrink-0 flex-col gap-2 lg:sticky lg:top-0 lg:h-dvh lg:w-[380px] lg:self-start lg:overflow-auto">
-                <SearchMapChrome mode={mapMode} onModeChange={setMapMode} counts={forest.descendantCounts} />
+                <SearchMapChrome
+                  mode={mapMode}
+                  onModeChange={setMapMode}
+                  counts={legendCounts}
+                  kindFilter={kindFilter}
+                  onToggleKind={toggleKindFilter}
+                />
                 <div className="min-h-0 flex-1 overflow-auto canvas-scroll">
                   <SearchMapViewport
                     tree={forest}

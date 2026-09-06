@@ -7,11 +7,19 @@
  * Each card carries its hit kind loudly: a large kind icon, a kind-colored left
  * accent, and a kind badge, so a folder-name hit is never mistaken for body text.
  */
+import type { MouseEvent } from "react";
 import { Link } from "react-router-dom";
 import type { SearchTextMatch } from "../../services/api-client";
 import { docHref, folderHref } from "../../app/docs-location";
 import { DocPath, FolderPath } from "../../types/shared";
 import { SEARCH_HIT_KIND_TOKENS } from "./search-hit-kinds";
+
+function clickOpensTarget(event: MouseEvent<HTMLAnchorElement>): boolean {
+  if (event.defaultPrevented || event.button !== 0) return false;
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
+  const selection = window.getSelection();
+  return !selection || selection.isCollapsed || selection.toString() === "";
+}
 
 export function headingPathLabel(headingPath: string[]): string {
   if (headingPath.length === 0) return "(before first heading)";
@@ -126,12 +134,12 @@ export function SearchHitCards({
           : docHref(DocPath.parse(match.doc_path));
         const sectionLabel = headingPathLabel(match.heading_path);
         const documentTitle = documentTitleFromPath(match.doc_path);
-        return (
-          <div
-            key={`${match.kind}:${match.doc_path}:${match.heading_path.join(">>")}:${match.match_offset_bytes}:${index}`}
-            className="mb-3.5 overflow-hidden rounded-[10px] border border-footer-border border-l-[3px] bg-canvas-bg transition-all duration-150 hover:border-accent-border hover:shadow-[0_4px_16px_rgba(45,122,138,0.08)]"
-            style={{ borderLeftColor: tokens.foreground }}
-          >
+        const cardClassName =
+          "mb-3.5 block overflow-hidden rounded-[10px] border border-footer-border border-l-[3px] bg-canvas-bg text-inherit no-underline transition-all duration-150 hover:border-accent-border hover:shadow-[0_4px_16px_rgba(45,122,138,0.08)]";
+        const cardKey = `${match.kind}:${match.doc_path}:${match.heading_path.join(">>")}:${match.match_offset_bytes}:${index}`;
+        const cardStyle = { borderLeftColor: tokens.foreground };
+        const cardBody = (
+          <>
             <div className="bg-gradient-to-br from-sidebar-bg/60 to-page-bg px-3.5 py-2.5 flex items-center gap-2.5 border-b border-footer-border/70">
               <div
                 className="shrink-0 flex items-center justify-center rounded-lg border"
@@ -209,9 +217,9 @@ export function SearchHitCards({
 
             <div className="flex items-center gap-2 px-3.5 py-1.5 bg-canvas-bg border-t border-footer-border text-xs">
               {targetUrl ? (
-                <Link to={targetUrl} className="text-accent font-medium no-underline hover:underline">
+                <span className="text-accent font-medium">
                   {isFolderHit ? "Open folder →" : "Open document →"}
-                </Link>
+                </span>
               ) : (
                 <span className="text-text-faint font-medium">{match.doc_path}</span>
               )}
@@ -224,6 +232,23 @@ export function SearchHitCards({
                 </span>
               ) : null}
             </div>
+          </>
+        );
+        return targetUrl ? (
+          <Link
+            key={cardKey}
+            to={targetUrl}
+            className={cardClassName}
+            style={cardStyle}
+            onClick={(event) => {
+              if (!clickOpensTarget(event)) event.preventDefault();
+            }}
+          >
+            {cardBody}
+          </Link>
+        ) : (
+          <div key={cardKey} className={cardClassName} style={cardStyle}>
+            {cardBody}
           </div>
         );
       })}

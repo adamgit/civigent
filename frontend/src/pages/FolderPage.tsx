@@ -499,7 +499,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
   };
 
   return (
-    <div className="flex min-w-0 flex-col bg-folder-page-bg">
+    <div className="relative flex min-w-0 flex-col bg-folder-page-bg">
       {folderEntry ? <FolderTreePageWatermark entry={folderEntry} /> : null}
       <div className="px-8 py-7 font-ui max-md:px-4 max-md:py-4">
         {treeLoading ? (

@@ -426,9 +426,13 @@ a {
  *
  * Modes are driven by data-sidebar-mode on the layout root (set in AppLayout):
  *   "expanded" (default) — shell width = aside used width; aside in normal flow.
- *   "autohide"           — shell collapses to the hotedge; aside is taken out of
- *                          flow (position: fixed) and slid off-screen until hovered.
- * The autohide rules live under the S3 block further below. */
+ *   "autohide"           — shell collapses to the hotedge; aside is position:absolute
+ *                          against the sticky shell and slid off-screen until hovered.
+ * The autohide rules live under the S3 block further below.
+ *
+ * The rail is a viewport-tall column. Only `.sidebar-scroll` (the tree) scrolls.
+ * `min-height: 0` on the column and the tree is required: flex items default to
+ * min-height:auto (content size), which would leak the tree into page overflow. */
 
 /* Expanded (default) — shell is a flex row child that sizes to its content and
  * does not grow. max-width + min-width:0 are required on the shell AND the aside:
@@ -440,9 +444,11 @@ a {
   position: sticky;
   top: 0;
   height: 100svh;
+  min-height: 0;
   align-self: flex-start;
   max-width: 30vw;
   min-width: 0;
+  z-index: 20;
 }
 
 /* Narrow viewport: shell, hotedge, pin/hide toggle, and aside (including the
@@ -471,12 +477,21 @@ a {
   max-width: 30vw;
   min-width: 0;
   height: 100svh;
+  min-height: 0;
 }
 
-/* Flex column children must be allowed to shrink below content size or the
- * 30vw cap never wins against long tree labels. */
+/* Chrome (header, nav, identity, version) keeps its content height. The tree
+ * is the only child allowed to shrink; long labels still need min-width: 0
+ * or the 30vw cap loses to min-width:auto. */
 .sidebar > * {
   min-width: 0;
+  flex-shrink: 0;
+}
+
+.sidebar > .sidebar-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* Hotedge contributes NO layout width in expanded mode (width: 0 + clip). It only
@@ -489,17 +504,22 @@ a {
 
 /* --- Autohide / hover-reveal (taskbar-style) --------------------------------
  * When the layout root is data-sidebar-mode="autohide":
- *  - the shell's in-flow width collapses to the hotedge only (~7px), because the
+ *  - the shell's in-flow width collapses to the hotedge only (~14px), because the
  *    aside is taken out of flow, so main goes nearly full-bleed;
  *  - the hotedge becomes the full-height hoverable strip at that width;
- *  - the aside is position: fixed at the left edge, above main, slid off-screen
- *    by default and slid in on hover with a SHORT (150ms) transition.
+ *  - the aside is position:absolute against the sticky shell (already pinned to
+ *    the viewport) and slid off-screen until the shell is hovered.
+ * Do NOT use position:fixed on the aside while the shell is sticky: a sticky
+ * ancestor is a containing block for fixed descendants and Chromium clips that
+ * overlay to the 14px shell, so hover-reveal paints nothing.
  * Reveal is gated by data-sidebar-hover-reveal="on". After clicking collapse, AppLayout
  * sets that to "off" until pointer leaves the shell — otherwise :hover (pointer still
  * on the toggle) and :focus-within would immediately slide the sidebar back in.
  * Do NOT use :focus-within for reveal. */
 [data-sidebar-mode="autohide"] .sidebar-shell {
   max-width: none; /* in-flow width is just the hotedge */
+  z-index: 40; /* overflowing aside paints above main */
+  overflow: visible;
 }
 
 [data-sidebar-mode="autohide"] .sidebar-hotedge {
@@ -526,9 +546,8 @@ a {
 }
 
 [data-sidebar-mode="autohide"] .sidebar {
-  position: fixed;
+  position: absolute;
   top: 0;
-  bottom: 0;
   left: 0;
   z-index: 40; /* above main content */
   width: max-content;
@@ -615,14 +634,14 @@ a {
   box-shadow: 0 8px 28px rgba(26, 22, 16, 0.14);
   color: var(--color-text-secondary);
   pointer-events: none;
-  visibility: hidden;
-  opacity: 0;
+  /* Must be display:none while idle. visibility/opacity leave the 300px box in
+   * the scrollable overflow of the page, so a short folder list still scrolls. */
+  display: none;
   transform: translateY(-50%);
 }
 
 .folder-card:hover .folder-card-icon-legend {
-  visibility: visible;
-  opacity: 1;
+  display: grid;
 }
 
 .folder-card-icon-legend__icon {
@@ -693,7 +712,8 @@ a {
 }
 
 @media (max-width: 767px) {
-  .folder-card-icon-legend {
+  .folder-card-icon-legend,
+  .folder-card:hover .folder-card-icon-legend {
     display: none;
   }
 }

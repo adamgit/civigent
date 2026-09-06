@@ -849,7 +849,7 @@ export function AppLayout() {
         <SidebarNavLinks variant="primary" />
 
         {/* Sidebar tree */}
-        <div className="flex-1 px-2 py-0.5 overflow-y-auto sidebar-scroll">
+        <div className="sidebar-scroll min-h-0 min-w-0 flex-1 overflow-y-auto px-2 py-0.5">
           {/* All Documents + root export/import — text aligns with tree folder icons */}
           <div
             className={`flex items-center gap-1 pt-2.5 pb-1.5 rounded-[5px]${
