@@ -50,7 +50,7 @@ export function NewDocFullPathForm({
   );
 }
 
-/** Filename-only editor shown as a tree entry inside a specific folder. */
+/** Relative-path editor shown as a tree entry inside a specific folder. */
 export function NewDocFileNameForm({
   value,
   onChange,
@@ -80,7 +80,7 @@ export function NewDocFileNameForm({
             e.preventDefault();
             onCancel();
           }}
-          placeholder="my-doc"
+          placeholder="my-doc or sub/my-doc"
           className="flex-1 min-w-0 text-xs font-[family-name:var(--font-ui)] bg-white/60 border border-sidebar-border rounded px-2 py-1 outline-none focus:border-accent-border"
           autoFocus
           disabled={busy}

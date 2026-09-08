@@ -368,16 +368,13 @@ export function AppLayout() {
     if (!creatingInFolder || creatingDoc) return;
     const trimmed = newDocFileName.trim();
     if (!trimmed) return;
-    if (trimmed.includes("/") || trimmed.includes("\\")) {
-      setNewDocError("File name cannot contain '/'");
-      return;
-    }
     const folder = FolderPath.tryParse(creatingInFolder);
     if (!folder) {
       setNewDocError(`Invalid folder path: ${JSON.stringify(creatingInFolder)}`);
       return;
     }
-    const fileName = DocPath.normalizeMarkdownFileName(trimmed);
+    const relative = trimmed.replace(/\\/g, "/").replace(/^\/+/, "");
+    const fileName = DocPath.normalizeMarkdownFileName(relative);
     const joined = folder === FolderPath.root ? `/${fileName}` : `${folder}/${fileName}`;
     submitNewDocPath(joined);
   };
