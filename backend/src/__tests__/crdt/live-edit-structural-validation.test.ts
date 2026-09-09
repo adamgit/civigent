@@ -234,4 +234,55 @@ describe("validateLiveEditForDuplicateSiblingHeadings", () => {
     expect(rejectionGroups).toHaveLength(1);
     expect(rejectionGroups[0]?.reasonCode).toBe("duplicate-sibling-heading");
   });
+
+  it("rejects two same-name nested children typed inside one fragment", async () => {
+    const layout: LiveSectionLayoutEntry[] = [
+      layoutEntry("section::a", ["Overview"], 2),
+      layoutEntry("section::b", ["Timeline"], 2),
+    ];
+    const input: StructuralValidationInput = {
+      touchedFragmentKeys: ["section::a"],
+      layout,
+      readPreUpdateMarkdown: () => "## Overview\n\nbody." as never,
+      readPostUpdateMarkdown: () =>
+        "## Overview\n\nbody.\n\n### many\n\nfirst.\n\n### many\n\nsecond." as never,
+    };
+    const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
+    expect(rejectionGroups).toHaveLength(1);
+    expect(rejectionGroups[0]?.reasonCode).toBe("duplicate-sibling-heading");
+    expect(rejectionGroups[0]?.fragmentKeys).toEqual(["section::a"]);
+  });
+
+  it("rejects a nested child heading that collides with an existing child fragment", async () => {
+    const layout: LiveSectionLayoutEntry[] = [
+      layoutEntry("section::a", ["Overview"], 2),
+      layoutEntry("section::b", ["Timeline"], 2),
+      layoutEntry("section::many", ["Overview", "many"], 3),
+    ];
+    const input: StructuralValidationInput = {
+      touchedFragmentKeys: ["section::a"],
+      layout,
+      readPreUpdateMarkdown: () => "## Overview\n\nbody." as never,
+      readPostUpdateMarkdown: () => "## Overview\n\nbody.\n\n### many\n\nsecond." as never,
+    };
+    const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
+    expect(rejectionGroups).toHaveLength(1);
+    expect(rejectionGroups[0]?.reasonCode).toBe("duplicate-sibling-heading");
+    expect(rejectionGroups[0]?.fragmentKeys).toEqual(["section::a"]);
+  });
+
+  it("accepts a unique nested child heading", async () => {
+    const layout: LiveSectionLayoutEntry[] = [
+      layoutEntry("section::a", ["Overview"], 2),
+      layoutEntry("section::b", ["Timeline"], 2),
+    ];
+    const input: StructuralValidationInput = {
+      touchedFragmentKeys: ["section::a"],
+      layout,
+      readPreUpdateMarkdown: () => "## Overview\n\nbody." as never,
+      readPostUpdateMarkdown: () => "## Overview\n\nbody.\n\n### unique\n\nchild." as never,
+    };
+    const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
+    expect(rejectionGroups).toEqual([]);
+  });
 });

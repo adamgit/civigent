@@ -18,7 +18,11 @@ export function HomeWideFolderRow({ folder, now }: HomeWideFolderRowProps) {
     children: [],
   };
   return (
-    <Link className="folder-row" to={folderHref(folder.folderPath)}>
+    <Link
+      className={`folder-row${folder.writerKind === "agent" ? " folder-row--agent" : ""}`}
+      to={folderHref(folder.folderPath)}
+      data-writer-kind={folder.writerKind}
+    >
       <span className="folder-row__main">
         <span className="folder-row__name font-body">
           <FolderTreeRadialDots entry={tree} className="folder-row__icon" />

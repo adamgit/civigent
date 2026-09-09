@@ -47,12 +47,16 @@ export function HomeRecentDocumentCard({
     </>
   );
 
-  const className = `home-card home-doc-card${markYours ? " home-doc-card--yours" : ""}`;
+  const className = `home-card home-doc-card${markYours ? " home-doc-card--yours" : ""}${doc.writerKind === "agent" ? " home-doc-card--agent" : ""}`;
   if (!parsed) {
-    return <div className={className}>{body}</div>;
+    return (
+      <div className={className} data-writer-kind={doc.writerKind}>
+        {body}
+      </div>
+    );
   }
   return (
-    <Link to={docHref(parsed)} className={className}>
+    <Link to={docHref(parsed)} className={className} data-writer-kind={doc.writerKind}>
       {body}
     </Link>
   );

@@ -66,11 +66,7 @@ export function currentSlotStartMs(nowMs: number, slotMs: number): number {
   return Math.floor(nowMs / slotMs) * slotMs;
 }
 
-function countIntoBars(
-  bars: HomePulseHourBar[],
-  actions: readonly HomeMcpPulseAction[],
-  activity: readonly ActivityItem[],
-): void {
+function countIntoBars(bars: HomePulseHourBar[], actions: readonly HomeMcpPulseAction[]): void {
   for (const action of actions) {
     const ts = Date.parse(action.ts);
     if (Number.isNaN(ts)) continue;
@@ -78,15 +74,6 @@ function countIntoBars(
     if (!bar) continue;
     if (isReadTool(action.method)) bar.readCount += 1;
     else if (isWriteTool(action.method)) bar.writeCount += 1;
-  }
-
-  for (const item of activity) {
-    if (item.writer_type !== "agent") continue;
-    const ts = Date.parse(item.timestamp);
-    if (Number.isNaN(ts)) continue;
-    const bar = bars.find((row) => ts >= row.startMs && ts < row.endMs);
-    if (!bar) continue;
-    bar.writeCount += 1;
   }
 }
 
@@ -108,7 +95,7 @@ export function buildPulse1hBars(
     writeCount: 0,
     label: clockLabel(startMs),
   }));
-  countIntoBars(bars, actions, activity);
+  countIntoBars(bars, actions);
   return bars;
 }
 
@@ -126,7 +113,7 @@ export function buildPulseHourBars(
     writeCount: 0,
     label: hourLabel(startMs),
   }));
-  countIntoBars(bars, actions, activity);
+  countIntoBars(bars, actions);
   return bars;
 }
 
@@ -150,6 +137,6 @@ export function buildPulseDayBars(
     writeCount: 0,
     label: dayLabel(startMs),
   }));
-  countIntoBars(bars, actions, activity);
+  countIntoBars(bars, actions);
   return bars;
 }

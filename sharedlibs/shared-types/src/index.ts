@@ -1998,6 +1998,8 @@ export type ProposalReportingUndecodableEntry =
 export interface ActivityItem {
   id: string;
   timestamp: string;
+  opened_at: string;
+  landed_at: string;
   writer_id: string;
   writer_type: WriterType;
   writer_display_name: string;

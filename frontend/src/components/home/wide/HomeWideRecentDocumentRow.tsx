@@ -43,11 +43,16 @@ export function HomeWideRecentDocumentRow({ document: doc, now }: HomeWideRecent
     </>
   );
 
+  const className = `doc-row${doc.writerKind === "agent" ? " doc-row--agent" : ""}`;
   if (!parsed) {
-    return <div className="doc-row">{body}</div>;
+    return (
+      <div className={className} data-writer-kind={doc.writerKind}>
+        {body}
+      </div>
+    );
   }
   return (
-    <Link className="doc-row" to={docHref(parsed)}>
+    <Link className={className} to={docHref(parsed)} data-writer-kind={doc.writerKind}>
       {body}
     </Link>
   );

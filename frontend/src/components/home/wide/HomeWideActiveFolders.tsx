@@ -72,7 +72,13 @@ export function HomeWideActiveFolders({
             No folder activity in this window.
           </p>
         ) : (
-          slice.map((folder) => <HomeWideFolderRow key={folder.folderPath} folder={folder} now={now} />)
+          slice.map((folder) => (
+            <HomeWideFolderRow
+              key={`${folder.folderPath}\0${folder.writerKind}`}
+              folder={folder}
+              now={now}
+            />
+          ))
         )}
         <HomeWidePager
           page={safePage}

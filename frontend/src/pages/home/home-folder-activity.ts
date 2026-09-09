@@ -1,9 +1,10 @@
-import type { ActivityItem, AnyProposal } from "../../types/shared.js";
+import type { ActivityItem, AnyProposal, WriterType } from "../../types/shared.js";
 import { DocPath, FolderPath, proposalTargetDocPathForDisplay } from "../../types/shared.js";
 import { HOME_RECENT_WINDOW_DAYS } from "./home-constants.js";
 import { collectExistingDocPaths, countFilesInFolder, findFolderEntry, parentFolderOfDoc } from "./home-tree-stats.js";
 import { getDocDisplayName } from "../document-page-utils.js";
 import type { DocumentTreeEntry } from "../../types/shared.js";
+import { activityItemInWindow, rangeOverlapsWindow } from "./home-time.js";
 
 export interface HomeFolderChangeCounts {
   added: number;
@@ -17,14 +18,15 @@ export interface HomeActiveFolder {
   docCount: number;
   counts: HomeFolderChangeCounts;
   lastChangedAt: string;
+  writerKind: WriterType;
   /** Display names of documents that changed in the window, most recent first. */
   changedDocuments: string[];
   /** Tree used by the folder-details radial graphic; unique per folder. */
   tree: DocumentTreeEntry | null;
 }
 
-function inWindow(iso: string, nowMs: number, days: number): boolean {
-  return nowMs - Date.parse(iso) <= days * 24 * 60 * 60 * 1000;
+function pointInWindow(iso: string, windowStartMs: number, windowEndMs: number): boolean {
+  return rangeOverlapsWindow(Date.parse(iso), undefined, windowStartMs, windowEndMs);
 }
 
 function displayNameForDoc(docPath: string): string {
@@ -40,11 +42,14 @@ function changedDocumentNames(docTouched: Map<string, string>): string[] {
 
 /**
  * Folders with any file add / modify / delete in the recent window, newest
- * activity first. Modify is committed section activity on a path that still
- * exists in the tree the caller can see. Add/delete come from committed
- * proposals that claimed a document target (create / rename / delete). A file
- * created and then edited in the window counts toward both add and mod — those
- * two sets are not a partition. A deleted file is never also modified.
+ * activity first. A folder appears once per writer kind that touched it —
+ * newest human land and newest agent land are separate rows. Modify is
+ * committed section activity on a path that still exists in the tree the
+ * caller can see. Add/delete come from committed proposals that claimed a
+ * document target (create / rename / delete). A file created and then edited
+ * in the window counts toward both add and mod — those two sets are not a
+ * partition. A deleted file is never also modified. Counts and touched names
+ * stay on the writer-kind row that produced them.
  */
 export function buildActiveFolders(
   entries: DocumentTreeEntry[],
@@ -54,9 +59,11 @@ export function buildActiveFolders(
   windowDays: number = HOME_RECENT_WINDOW_DAYS,
 ): HomeActiveFolder[] {
   const existingDocs = collectExistingDocPaths(entries);
-  const byFolder = new Map<
-    FolderPath,
+  const byFolderKind = new Map<
+    string,
     {
+      folderPath: FolderPath;
+      writerKind: WriterType;
       added: Set<string>;
       modified: Set<string>;
       deleted: Set<string>;
@@ -65,65 +72,74 @@ export function buildActiveFolders(
     }
   >();
 
-  const touch = (folderPath: FolderPath, iso: string) => {
-    let row = byFolder.get(folderPath);
+  const touch = (folderPath: FolderPath, writerKind: WriterType, iso: string) => {
+    const key = `${folderPath}\0${writerKind}`;
+    let row = byFolderKind.get(key);
     if (!row) {
       row = {
+        folderPath,
+        writerKind,
         added: new Set(),
         modified: new Set(),
         deleted: new Set(),
         lastChangedAt: iso,
         docTouched: new Map(),
       };
-      byFolder.set(folderPath, row);
+      byFolderKind.set(key, row);
     } else if (Date.parse(iso) > Date.parse(row.lastChangedAt)) {
       row.lastChangedAt = iso;
     }
     return row;
   };
 
-  const touchDoc = (folderPath: FolderPath, iso: string, docPath: string) => {
-    const row = touch(folderPath, iso);
+  const touchDoc = (folderPath: FolderPath, writerKind: WriterType, iso: string, docPath: string) => {
+    const row = touch(folderPath, writerKind, iso);
     const prev = row.docTouched.get(docPath);
     if (!prev || Date.parse(iso) > Date.parse(prev)) row.docTouched.set(docPath, iso);
     return row;
   };
 
+  const windowStartMs = nowMs - windowDays * 24 * 60 * 60 * 1000;
+  const landedAtByProposalId = new Map<string, string>();
   for (const item of activity) {
-    if (!inWindow(item.timestamp, nowMs, windowDays)) continue;
+    landedAtByProposalId.set(item.id, item.landed_at);
+    if (!activityItemInWindow(item, windowStartMs, nowMs)) continue;
     for (const section of item.sections) {
       if (!existingDocs.has(section.doc_path)) continue;
       const folder = parentFolderOfDoc(section.doc_path);
       if (!folder) continue;
-      touchDoc(folder, item.timestamp, section.doc_path).modified.add(section.doc_path);
+      touchDoc(folder, item.writer_type, item.timestamp, section.doc_path).modified.add(section.doc_path);
     }
   }
 
   for (const proposal of proposals) {
     if (proposal.status !== "committed") continue;
-    if (!inWindow(proposal.created_at, nowMs, windowDays)) continue;
+    const landedAt = landedAtByProposalId.get(proposal.id);
+    if (!landedAt) continue;
+    if (!pointInWindow(landedAt, windowStartMs, nowMs)) continue;
     for (const target of proposal.targets) {
       if (target.kind !== "document") continue;
       const docPath = proposalTargetDocPathForDisplay(target);
       const folder = parentFolderOfDoc(docPath);
       if (!folder) continue;
-      const row = touchDoc(folder, proposal.created_at, docPath);
+      const row = touchDoc(folder, proposal.writer.type, landedAt, docPath);
       if (existingDocs.has(docPath)) row.added.add(docPath);
       else row.deleted.add(docPath);
     }
   }
 
   const folders: HomeActiveFolder[] = [];
-  for (const [folderPath, row] of byFolder) {
+  for (const row of byFolderKind.values()) {
     if (row.added.size === 0 && row.modified.size === 0 && row.deleted.size === 0) continue;
     folders.push({
-      folderPath,
-      name: FolderPath.displayName(folderPath),
-      docCount: countFilesInFolder(entries, folderPath),
+      folderPath: row.folderPath,
+      name: FolderPath.displayName(row.folderPath),
+      docCount: countFilesInFolder(entries, row.folderPath),
       counts: { added: row.added.size, modified: row.modified.size, deleted: row.deleted.size },
       lastChangedAt: row.lastChangedAt,
+      writerKind: row.writerKind,
       changedDocuments: changedDocumentNames(row.docTouched),
-      tree: findFolderEntry(entries, folderPath),
+      tree: findFolderEntry(entries, row.folderPath),
     });
   }
 
@@ -153,8 +169,11 @@ export function buildAllDocsFolder(
     if (!prev || Date.parse(iso) > Date.parse(prev)) docTouched.set(docPath, iso);
   };
 
+  const windowStartMs = nowMs - windowDays * 24 * 60 * 60 * 1000;
+  const landedAtByProposalId = new Map<string, string>();
   for (const item of activity) {
-    if (!inWindow(item.timestamp, nowMs, windowDays)) continue;
+    landedAtByProposalId.set(item.id, item.landed_at);
+    if (!activityItemInWindow(item, windowStartMs, nowMs)) continue;
     for (const section of item.sections) {
       if (!existingDocs.has(section.doc_path)) continue;
       modified.add(section.doc_path);
@@ -164,13 +183,15 @@ export function buildAllDocsFolder(
 
   for (const proposal of proposals) {
     if (proposal.status !== "committed") continue;
-    if (!inWindow(proposal.created_at, nowMs, windowDays)) continue;
+    const landedAt = landedAtByProposalId.get(proposal.id);
+    if (!landedAt) continue;
+    if (!pointInWindow(landedAt, windowStartMs, nowMs)) continue;
     for (const target of proposal.targets) {
       if (target.kind !== "document") continue;
       const docPath = proposalTargetDocPathForDisplay(target);
       if (existingDocs.has(docPath)) added.add(docPath);
       else deleted.add(docPath);
-      touchTime(proposal.created_at, docPath);
+      touchTime(landedAt, docPath);
     }
   }
 
@@ -180,6 +201,7 @@ export function buildAllDocsFolder(
     docCount: countFilesInFolder(entries, FolderPath.root),
     counts: { added: added.size, modified: modified.size, deleted: deleted.size },
     lastChangedAt: lastChangedAt || new Date(nowMs).toISOString(),
+    writerKind: "human",
     changedDocuments: changedDocumentNames(docTouched),
     tree: findFolderEntry(entries, FolderPath.root),
   };

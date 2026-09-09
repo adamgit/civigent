@@ -103,7 +103,13 @@ export function HomeAgentPulseSection({
         </div>
         <hr className="home-pulse__rule" />
         {chart.listTasks.length === 0 ? (
-          <p className="home-agents__empty">{emptyPulseCopy(chart.range, chart.selectedIndex != null)}</p>
+          <p className="home-agents__empty">
+            {emptyPulseCopy(
+              chart.range,
+              chart.selectedIndex != null,
+              chart.selectedIndex != null ? chart.bars[chart.selectedIndex] : undefined,
+            )}
+          </p>
         ) : (
           <div className="home-pulse__list">
             {chart.listTasks.map((task) => (

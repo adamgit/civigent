@@ -42,7 +42,11 @@ export function HomeActiveFoldersSection({
           <HomeActiveFolderCard folder={allDocsFolder} layoutMode={layoutMode} variant="all-docs" />
         ) : null}
         {rest.map((folder) => (
-          <HomeActiveFolderCard key={folder.folderPath} folder={folder} layoutMode={layoutMode} />
+          <HomeActiveFolderCard
+            key={`${folder.folderPath}\0${folder.writerKind}`}
+            folder={folder}
+            layoutMode={layoutMode}
+          />
         ))}
       </div>
     </section>

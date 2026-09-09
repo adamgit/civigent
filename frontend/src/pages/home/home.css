@@ -403,6 +403,14 @@
   border-color: var(--color-accent-border);
 }
 
+.home-folder-card--agent,
+.home-doc-card--agent {
+  background: var(--color-agent-surface);
+  border-color: var(--color-agent-rule);
+  border-top: 2px solid var(--color-agent);
+  border-bottom: 2px solid var(--color-agent);
+}
+
 .home-folder-card--all .home-folder-card__name,
 .home-folder-card--all .home-folder-card__count {
   color: var(--color-accent-text);
@@ -2099,6 +2107,14 @@
 .folder-row:hover {
   background: var(--color-section-hover);
 }
+.folder-row--agent {
+  background: var(--color-agent-surface);
+  border-top: 2px solid var(--color-agent);
+  border-bottom: 2px solid var(--color-agent);
+}
+.folder-row--agent:hover {
+  background: color-mix(in srgb, var(--color-agent-surface) 78%, #fff);
+}
 .folder-row__icon {
   width: 1.35em;
   height: 1.35em;
@@ -2168,6 +2184,14 @@
 }
 .doc-row:hover {
   background: var(--color-section-hover);
+}
+.doc-row--agent {
+  background: var(--color-agent-surface);
+  border-top: 2px solid var(--color-agent);
+  border-bottom: 2px solid var(--color-agent);
+}
+.doc-row--agent:hover {
+  background: color-mix(in srgb, var(--color-agent-surface) 78%, #fff);
 }
 .doc-row__main {
   min-width: 0;

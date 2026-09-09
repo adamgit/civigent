@@ -80,17 +80,17 @@ export function FolderFileRow({
       <span className="w-14 shrink-0 tabular-nums text-[11px] text-text-faint">
         {typeof secondsAgo === "number" ? compactAge(secondsAgo) : null}
       </span>
-      <span className="min-w-0 flex-1 truncate text-[15px] font-medium text-folder-link group-hover:text-folder-link-hover group-hover:underline md:max-w-[50%] md:flex-none md:shrink-0">
+      <span className="min-w-0 truncate text-[15px] font-medium text-folder-link group-hover:text-folder-link-hover group-hover:underline md:max-w-[50%]">
         {name}
       </span>
-      <span className="ml-auto min-w-0 shrink-0 overflow-hidden text-right md:flex-1">
+      <span className="ml-auto min-w-0 flex-1 overflow-hidden text-right">
         {sectionHeadings !== undefined ? (
           <>
             <span className="hidden group-hover:block">
               <SectionPreview headings={sectionHeadings} />
             </span>
-            <span className="flex min-w-0 items-center justify-end gap-2 group-hover:hidden">
-              {meta ? <span className="truncate text-[11px] text-text-faint">{meta}</span> : null}
+            <span className="flex min-w-0 max-w-full items-center justify-end gap-2 overflow-hidden group-hover:hidden">
+              {meta ? <span className="min-w-0 truncate text-[11px] text-text-faint">{meta}</span> : null}
               <SectionHeadingBarcode levels={sectionHeadings.map((heading) => heading.level)} />
             </span>
           </>

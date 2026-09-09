@@ -279,14 +279,13 @@ export function HomePage() {
   const currentWriterId = currentUser?.id ?? resolveWriterId();
   const recentWindowDays =
     layoutMode === "wide" ? homeRecentWindowDays(recentWindowId) : HOME_RECENT_WINDOW_DAYS;
-  const recentWriterType = layoutMode === "wide" ? "human" : undefined;
   const recentDocuments = useMemo(
-    () => buildRecentDocuments(activity, currentWriterId, Date.now(), recentWindowDays, recentWriterType),
-    [activity, currentWriterId, recentWindowDays, recentWriterType],
+    () => buildRecentDocuments(activity, currentWriterId, Date.now(), recentWindowDays),
+    [activity, currentWriterId, recentWindowDays],
   );
   const recentDocumentTotal = useMemo(
-    () => countRecentDocuments(activity, Date.now(), recentWindowDays, recentWriterType),
-    [activity, recentWindowDays, recentWriterType],
+    () => countRecentDocuments(activity, Date.now(), recentWindowDays),
+    [activity, recentWindowDays],
   );
   const agentRows = useMemo(
     () => buildAgentActivityRows(agents, formatHomeTime),

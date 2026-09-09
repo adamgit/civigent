@@ -31,7 +31,7 @@ export interface HomeAgentTask {
   intent: string;
   status: HomeAgentTaskStatus;
   startedAt: string;
-  endedAt: string | null;
+  endedAt: string;
   /** Documents read, in the order they were first read. */
   reads: HomeAgentTaskTouch[];
   /** Documents written, in the order they were first written. */

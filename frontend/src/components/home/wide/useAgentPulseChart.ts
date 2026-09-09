@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { ActivityItem } from "../../../types/shared.js";
-import { taskOverlapsRange } from "../experiment/build-agent-tasks";
+import { HOME_AGENT_TASK_LIMIT, taskOverlapsRange } from "../experiment/build-agent-tasks";
 import {
   buildPulse1hBars,
   buildPulseDayBars,
@@ -9,7 +9,16 @@ import {
 } from "../experiment/build-pulse-hours";
 import type { HomeAgentTask, HomeMcpPulseAction } from "../experiment/types";
 
-export function emptyPulseCopy(range: PulseRangeId, barPicked: boolean): string {
+export function emptyPulseCopy(
+  range: PulseRangeId,
+  barPicked: boolean,
+  barCounts?: { readCount: number; writeCount: number },
+): string {
+  if (barCounts && barCounts.readCount + barCounts.writeCount > 0) {
+    const reads = `${barCounts.readCount} read${barCounts.readCount === 1 ? "" : "s"}`;
+    const writes = `${barCounts.writeCount} write${barCounts.writeCount === 1 ? "" : "s"}`;
+    return `${reads} · ${writes} — no task detail for this window.`;
+  }
   if (barPicked) {
     if (range === "7d") return "Nothing on this day.";
     if (range === "24h") return "Nothing in this hour.";
@@ -41,12 +50,16 @@ export function useAgentPulseChart(
     if (selectedIndex != null) {
       const bar = bars[selectedIndex];
       if (!bar) return [];
-      return tasks.filter((task) => taskOverlapsRange(task, bar.startMs, bar.endMs));
+      return tasks
+        .filter((task) => taskOverlapsRange(task, bar.startMs, bar.endMs))
+        .slice(0, HOME_AGENT_TASK_LIMIT);
     }
     const first = bars[0];
     const last = bars[bars.length - 1];
     if (!first || !last) return [];
-    return tasks.filter((task) => taskOverlapsRange(task, first.startMs, last.endMs));
+    return tasks
+      .filter((task) => taskOverlapsRange(task, first.startMs, last.endMs))
+      .slice(0, HOME_AGENT_TASK_LIMIT);
   }, [bars, selectedIndex, tasks]);
 
   return {

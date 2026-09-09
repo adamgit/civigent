@@ -28,6 +28,10 @@ import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
 import { bodyFromDisk, bodyFromParser, stripHeadingFromFragment, buildFragmentContent, assembleFragments, fragmentFromBodyHolder, stripLeadingNewlines, appendToBody, fragmentFromExternalContent, type SectionBody, type FragmentContent, type SectionBodyWithPotentialSubsections } from "./section-formatting.js";
 import { isBodyHolderShape, isDocumentBeforeFirstHeading, parsedSectionIsHeadless } from "./section-shape.js";
 import type { ParsedSection } from "./markdown-sections.js";
+import {
+  findDuplicateHeadingAddresses,
+  headingPathsAddressEqual,
+} from "./heading-addressability.js";
 
 async function writeBodyFile(entry: ContentEntry | FlatEntry, content: string): Promise<void> {
   if ("kind" in entry) {
@@ -122,14 +126,18 @@ function buildReplacementRoots(
   const nodesByParsedHeadingPath = new Map<string, RewriteTreeNode>();
   const resultingKeyByNode = new Map<RewriteTreeNode, string>();
 
+  const duplicateParsedAddress = findDuplicateHeadingAddresses(
+    parsedSections.map((section) => section.headingPath),
+  )[0];
+  if (duplicateParsedAddress) {
+    throw new Error(
+      `Parsed markdown contains duplicate heading path [${[...duplicateParsedAddress.path].join(" > ")}].`,
+    );
+  }
+
   for (const section of parsedSections) {
     const parsedHeadingPath = [...section.headingPath];
     const parsedKey = headingPathKey(parsedHeadingPath);
-    if (nodesByParsedHeadingPath.has(parsedKey)) {
-      throw new Error(
-        `Parsed markdown contains duplicate heading path [${parsedHeadingPath.join(" > ")}].`,
-      );
-    }
 
     const resultingHeadingPath = [...targetParentPath, ...parsedHeadingPath];
     const resultingKey = headingPathKey(resultingHeadingPath);
@@ -287,10 +295,11 @@ function assertNoDuplicateSiblingHeadingCollision(
     proposedHeadingLevel: number;
   },
 ): void {
+  const proposedPath = [...args.parentHeadingPath, args.proposedHeading];
   for (const sibling of siblings) {
     if (sibling.sectionFile === args.targetSectionFile) continue;
-    if (sibling.headingLevel !== args.proposedHeadingLevel) continue;
-    if (!headingsEqual(sibling.heading, args.proposedHeading)) continue;
+    const siblingPath = [...args.parentHeadingPath, sibling.heading];
+    if (!headingPathsAddressEqual(proposedPath, siblingPath)) continue;
     throw new DuplicateSiblingHeadingError({
       operation: args.operation,
       docPath: args.docPath,

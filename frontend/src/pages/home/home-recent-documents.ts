@@ -3,6 +3,7 @@ import { HOME_RECENT_WINDOW_DAYS } from "./home-constants.js";
 import { folderPrefixOfDoc } from "./home-tree-stats.js";
 import { getDocDisplayName, headingText } from "../document-page-utils.js";
 import { DocPath } from "../../types/shared.js";
+import { activityItemInWindow } from "./home-time.js";
 
 export type HomeDocChangeKind = "rewritten" | "added" | "moved";
 
@@ -17,13 +18,10 @@ export interface HomeRecentDocument {
   folderPrefix: string;
   writerName: string;
   writerId: string;
+  writerKind: WriterType;
   timestamp: string;
   yours: boolean;
   changes: HomeDocChangeGroup[];
-}
-
-function inWindow(iso: string, nowMs: number, days: number): boolean {
-  return nowMs - Date.parse(iso) <= days * 24 * 60 * 60 * 1000;
 }
 
 function sectionLabel(headingPath: string[]): string | null {
@@ -33,7 +31,8 @@ function sectionLabel(headingPath: string[]): string | null {
 }
 
 /**
- * One card per document touched in the window, newest first. Not sliced —
+ * Up to two cards per document in the window — one for the newest human
+ * land, one for the newest agent land — mixed newest-first. Not sliced:
  * the home section paginates after partitioning so a wide Yours/Everyone-else
  * split can page each column independently.
  *
@@ -42,63 +41,74 @@ function sectionLabel(headingPath: string[]): string | null {
  * kinds are not persisted on the proposal manifest (create/write/move all
  * union into `sections`). Until a richer claim exists, every named heading is
  * shown as rewritten — the card still renders added/moved rows when a later
- * source fills those groups.
+ * source fills those groups. Headings stay on the writer-kind card that
+ * claimed them.
  *
- * `yours` is true when the current writer committed any proposal touching the
- * document in the window — participation, not last-writer. That is the only
- * durable, time-windowed, user-attributed signal the home page already has
- * (`ActivityItem.writer_id` vs `currentUser.id`). Views (`ks_recent_docs`)
- * have no timestamps and are device-local; live `document:activity` presence
- * is current-session only; drafts and per-section git last-editor are not on
- * this feed. A later collaborator or agent commit keeps the card in Yours
- * (the badge already meant that) and still names whoever wrote last.
+ * `yours` is true when the current writer committed any proposal of that
+ * writer kind touching the document in the window — participation, not
+ * last-writer. That is the only durable, time-windowed, user-attributed
+ * signal the home page already has (`ActivityItem.writer_id` vs
+ * `currentUser.id`). Views (`ks_recent_docs`) have no timestamps and are
+ * device-local; live `document:activity` presence is current-session only;
+ * drafts and per-section git last-editor are not on this feed.
  */
 export function buildRecentDocuments(
   activity: ActivityItem[],
   currentWriterId: string | null,
   nowMs: number = Date.now(),
   windowDays: number = HOME_RECENT_WINDOW_DAYS,
-  writerType?: WriterType,
 ): HomeRecentDocument[] {
-  const byDoc = new Map<
+  const byDocKind = new Map<
     string,
-    { timestamp: string; writerName: string; writerId: string; yours: boolean; headings: string[] }
+    {
+      docPath: string;
+      writerKind: WriterType;
+      timestamp: string;
+      writerName: string;
+      writerId: string;
+      yours: boolean;
+      headings: string[];
+    }
   >();
 
   const sorted = [...activity].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  const windowStartMs = nowMs - windowDays * 24 * 60 * 60 * 1000;
 
   for (const item of sorted) {
-    if (!inWindow(item.timestamp, nowMs, windowDays)) continue;
-    if (writerType && item.writer_type !== writerType) continue;
+    if (!activityItemInWindow(item, windowStartMs, nowMs)) continue;
     const isYours = currentWriterId != null && item.writer_id === currentWriterId;
     for (const section of item.sections) {
       const label = sectionLabel(section.heading_path);
-      let row = byDoc.get(section.doc_path);
+      const key = `${section.doc_path}\0${item.writer_type}`;
+      let row = byDocKind.get(key);
       if (!row) {
         row = {
+          docPath: section.doc_path,
+          writerKind: item.writer_type,
           timestamp: item.timestamp,
           writerName: item.writer_display_name,
           writerId: item.writer_id,
           yours: isYours,
           headings: [],
         };
-        byDoc.set(section.doc_path, row);
-      } else {
-        if (isYours) row.yours = true;
+        byDocKind.set(key, row);
+      } else if (isYours) {
+        row.yours = true;
       }
       if (label && !row.headings.includes(label)) row.headings.push(label);
     }
   }
 
   const docs: HomeRecentDocument[] = [];
-  for (const [docPath, row] of byDoc) {
-    const parsed = DocPath.tryParse(docPath);
+  for (const row of byDocKind.values()) {
+    const parsed = DocPath.tryParse(row.docPath);
     docs.push({
-      docPath,
-      title: parsed ? getDocDisplayName(parsed) : docPath,
-      folderPrefix: folderPrefixOfDoc(docPath),
+      docPath: row.docPath,
+      title: parsed ? getDocDisplayName(parsed) : row.docPath,
+      folderPrefix: folderPrefixOfDoc(row.docPath),
       writerName: row.writerName,
       writerId: row.writerId,
+      writerKind: row.writerKind,
       timestamp: row.timestamp,
       yours: row.yours,
       changes: row.headings.length > 0 ? [{ kind: "rewritten", headings: row.headings }] : [],
@@ -127,13 +137,12 @@ export function countRecentDocuments(
   activity: ActivityItem[],
   nowMs: number = Date.now(),
   windowDays: number = HOME_RECENT_WINDOW_DAYS,
-  writerType?: WriterType,
 ): number {
-  const docs = new Set<string>();
+  const rows = new Set<string>();
+  const windowStartMs = nowMs - windowDays * 24 * 60 * 60 * 1000;
   for (const item of activity) {
-    if (!inWindow(item.timestamp, nowMs, windowDays)) continue;
-    if (writerType && item.writer_type !== writerType) continue;
-    for (const section of item.sections) docs.add(section.doc_path);
+    if (!activityItemInWindow(item, windowStartMs, nowMs)) continue;
+    for (const section of item.sections) rows.add(`${section.doc_path}\0${item.writer_type}`);
   }
-  return docs.size;
+  return rows.size;
 }

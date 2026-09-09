@@ -4,33 +4,29 @@
  * Reads activity from committed proposals (agent) and git history (human auto-commits).
  */
 
-import { listCommittedProposals } from "./proposal-repository.js";
-import type {
-  ActivityItem,
-  CommittedProposalDomain,
-  SectionTargetRef,
-} from "../types/shared.js";
-import { DocPath } from "../types/shared.js";
+import path from "node:path";
 
-async function readCommittedProposals(): Promise<CommittedProposalDomain[]> {
-  const proposals = await listCommittedProposals();
-  const committed = proposals.filter(
-    (p): p is CommittedProposalDomain => p.status === "committed",
-  );
-  // Sort by created_at descending
-  committed.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
-  return committed;
-}
+import { getDataRoot, getProposalsCommittedRoot } from "./data-root.js";
+import { readFileIfExists } from "./fs-primitives.js";
+import { gitLogSinceForActivity } from "./git-repo.js";
+import { decodeProposal } from "./proposal-file-decoder.js";
+import type { ActivityItem, SectionTargetRef } from "../types/shared.js";
+import { DocPath, parseJson } from "../types/shared.js";
 
 export async function readActivity(limit: number, days: number): Promise<ActivityItem[]> {
-  const proposals = await readCommittedProposals();
-  const now = Date.now();
-  const maxAgeMs = Math.max(days, 0) * 24 * 60 * 60 * 1000;
+  const sinceIso = new Date(Date.now() - Math.max(days, 0) * 24 * 60 * 60 * 1000).toISOString();
+  const commits = await gitLogSinceForActivity(getDataRoot(), sinceIso);
 
   const items: ActivityItem[] = [];
-  for (const proposal of proposals) {
-    const age = now - new Date(proposal.created_at).getTime();
-    if (age > maxAgeMs) continue;
+  for (const commit of commits) {
+    if (!commit.proposalId) continue;
+
+    const metaPath = path.join(getProposalsCommittedRoot(), commit.proposalId, "meta.json");
+    const rawMeta = await readFileIfExists(metaPath);
+    if (rawMeta === null) continue;
+
+    const proposal = decodeProposal(parseJson(rawMeta), "committed");
+    if (proposal.status !== "committed") continue;
 
     const sections: SectionTargetRef[] = [];
     for (const s of proposal.sections) {
@@ -44,7 +40,9 @@ export async function readActivity(limit: number, days: number): Promise<Activit
 
     items.push({
       id: proposal.id,
-      timestamp: proposal.created_at,
+      timestamp: commit.landedAtIso,
+      opened_at: proposal.created_at,
+      landed_at: commit.landedAtIso,
       writer_id: proposal.writer.id,
       writer_type: proposal.writer.type,
       writer_display_name: proposal.writer.displayName,

@@ -1,3 +1,5 @@
+import type { ActivityItem } from "../../types/shared.js";
+
 /**
  * Relative timestamps for the home cards. Agent rows want a slightly longer
  * form ("4 minutes ago", "yesterday, 16:40"); document cards stay compact.
@@ -40,4 +42,19 @@ export function formatHomeTime(timestamp: string, style: "long" | "compact" = "c
     return days === 1 ? "1 day ago" : `${days} days ago`;
   }
   return days === 1 ? "1 day ago" : `${days} days ago`;
+}
+
+export function rangeOverlapsWindow(
+  eventStartMs: number,
+  eventEndMs: number | undefined,
+  windowStartMs: number,
+  windowEndMs: number,
+): boolean {
+  const end = eventEndMs ?? eventStartMs;
+  return eventStartMs <= windowEndMs && end >= windowStartMs;
+}
+
+/** Landed activity occupies `[opened_at, landed_at]`; touching a window edge counts. */
+export function activityItemInWindow(item: ActivityItem, windowStartMs: number, windowEndMs: number): boolean {
+  return rangeOverlapsWindow(Date.parse(item.opened_at), Date.parse(item.landed_at), windowStartMs, windowEndMs);
 }

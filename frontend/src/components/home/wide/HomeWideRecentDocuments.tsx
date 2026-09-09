@@ -41,7 +41,7 @@ export function HomeWideRecentDocuments({
 
   return (
     <section className="home-panel" aria-labelledby="recent-documents-heading">
-      <PanelHeader id="recent-documents-heading" title="Recent documents" subtitle="person-authored">
+      <PanelHeader id="recent-documents-heading" title="Recent documents">
         <SegmentedControl
           label="Document activity timeframe"
           options={HOME_RECENT_WINDOW_OPTIONS.map((option) => ({
@@ -63,7 +63,11 @@ export function HomeWideRecentDocuments({
           </p>
         ) : (
           slice.map((document) => (
-            <HomeWideRecentDocumentRow key={document.docPath} document={document} now={now} />
+            <HomeWideRecentDocumentRow
+              key={`${document.docPath}\0${document.writerKind}`}
+              document={document}
+              now={now}
+            />
           ))
         )}
         <HomeWidePager

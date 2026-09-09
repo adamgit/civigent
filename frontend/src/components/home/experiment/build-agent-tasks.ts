@@ -7,11 +7,10 @@ import {
   DocPath,
 } from "../../../types/shared.js";
 import { getDocDisplayName, headingPathToLabel } from "../../../pages/document-page-utils.js";
+import { rangeOverlapsWindow } from "../../../pages/home/home-time.js";
 import { isReadTool, isWriteTool } from "./mcp-kind.js";
 import type { HomeAgentTask, HomeAgentTaskDoc, HomeAgentTaskTouch, HomeMcpPulseAction } from "./types.js";
 
-/** Committed proposals have no committed_at; cap the read-attribution window. */
-const TERMINAL_CAP_MS = 4 * 60 * 60 * 1000;
 const EXPLORE_GAP_MS = 30 * 60 * 1000;
 const SHOW_FINISHED_MS = 7 * 24 * 60 * 60 * 1000;
 const RUNNING_ACTION_MS = 5 * 60 * 1000;
@@ -21,7 +20,6 @@ interface ProposalWindow {
   proposal: AnyProposal;
   startMs: number;
   endMs: number;
-  terminal: boolean;
 }
 
 function asDoc(path: string): HomeAgentTaskDoc | null {
@@ -102,10 +100,8 @@ function windowsForAgent(proposals: AnyProposal[], nowMs: number): ProposalWindo
     const startMs = Date.parse(proposal.created_at);
     const next = sorted[index + 1];
     const nextStart = next ? Date.parse(next.created_at) : Number.POSITIVE_INFINITY;
-    const terminal = proposal.status === "committed" || proposal.status === "withdrawn";
-    const cap = terminal ? startMs + TERMINAL_CAP_MS : nowMs;
-    const endMs = Math.max(startMs, Math.min(cap, nextStart, nowMs));
-    return { proposal, startMs, endMs, terminal };
+    const endMs = Math.max(startMs, Math.min(nextStart, nowMs));
+    return { proposal, startMs, endMs };
   });
 }
 
@@ -178,6 +174,8 @@ export function buildAgentTasks(
     actionsByWindow.set(window.proposal, list);
   });
 
+  const landedAtByProposalId = new Map(activity.map((item) => [item.id, item.landed_at]));
+
   const tasks: HomeAgentTask[] = [];
 
   for (const [agentId, windows] of windowsByAgent) {
@@ -196,7 +194,9 @@ export function buildAgentTasks(
       }
 
       const windowActions = actionsByWindow.get(proposal) ?? [];
-      const endedAt = isOpen ? null : new Date(lastActionMs).toISOString();
+      const endedAt = isOpen
+        ? new Date(lastActionByWindow.get(proposal) ?? nowMs).toISOString()
+        : landedAtByProposalId.get(proposal.id) ?? new Date(lastActionMs).toISOString();
       tasks.push({
         id: proposal.id,
         agentId,
@@ -302,7 +302,5 @@ export function buildAgentTasks(
 }
 
 export function taskOverlapsRange(task: HomeAgentTask, startMs: number, endMs: number): boolean {
-  const at = Date.parse(task.endedAt ?? task.startedAt);
-  if (Number.isNaN(at)) return false;
-  return at >= startMs && at < endMs;
+  return rangeOverlapsWindow(Date.parse(task.startedAt), Date.parse(task.endedAt), startMs, endMs);
 }

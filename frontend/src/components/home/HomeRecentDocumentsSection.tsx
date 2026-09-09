@@ -203,7 +203,7 @@ function RecentDocList({
       ) : (
         documents.map((doc) => (
           <HomeRecentDocumentCard
-            key={doc.docPath}
+            key={`${doc.docPath}\0${doc.writerKind}`}
             document={doc}
             showYoursMark={showYoursMark}
           />

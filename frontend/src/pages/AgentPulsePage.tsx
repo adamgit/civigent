@@ -57,7 +57,13 @@ export function AgentPulsePage() {
           {loading && chart.listTasks.length === 0 ? (
             <p className="agent-panel__empty">Loading agent activity…</p>
           ) : chart.listTasks.length === 0 ? (
-            <p className="agent-panel__empty">{emptyPulseCopy(chart.range, chart.selectedIndex != null)}</p>
+            <p className="agent-panel__empty">
+              {emptyPulseCopy(
+                chart.range,
+                chart.selectedIndex != null,
+                chart.selectedIndex != null ? chart.bars[chart.selectedIndex] : undefined,
+              )}
+            </p>
           ) : (
             <div className="agent-pulse-page__cards">
               {chart.listTasks.map((task) => (

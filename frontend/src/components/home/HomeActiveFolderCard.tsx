@@ -44,8 +44,9 @@ export function HomeActiveFolderCard({
       className={
         allDocs
           ? "home-card home-folder-card home-folder-card--all bg-accent-light border-accent-border"
-          : "home-card home-folder-card"
+          : `home-card home-folder-card${folder.writerKind === "agent" ? " home-folder-card--agent" : ""}`
       }
+      data-writer-kind={allDocs ? undefined : folder.writerKind}
     >
       <span className={`home-folder-card__name${allDocs ? " text-accent-text" : ""}`}>
         {folder.name}

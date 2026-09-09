@@ -268,6 +268,46 @@ export async function gitChangedFilesForCommit(dataRoot: string, sha: string): P
   return output.split("\0").filter(Boolean);
 }
 
+export interface GitLogSinceActivityEntry {
+  sha: string;
+  landedAtIso: string;
+  proposalId: string | null;
+}
+
+// The one windowed git walk that supplies land times for home activity — never
+// spawned per proposal. Capped independently of the caller's requested display
+// limit so the walk always covers the same window regardless of how many items
+// the caller ultimately shows.
+const HOME_ACTIVITY_GIT_LOG_CAP = 500;
+
+export async function gitLogSinceForActivity(
+  dataRoot: string,
+  sinceIso: string,
+): Promise<GitLogSinceActivityEntry[]> {
+  let output: string;
+  try {
+    output = await gitExec(
+      [
+        "log",
+        `--since=${sinceIso}`,
+        "-n", String(HOME_ACTIVITY_GIT_LOG_CAP),
+        `--format=%H%x00%aI%x00%(trailers:key=Proposal,valueonly)`,
+      ],
+      dataRoot,
+    );
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (gitErrorMeansRevisionResolvesToNoCommit(msg)) return [];
+    throw error;
+  }
+  if (!output) return [];
+  return output.split("\n").map((line) => {
+    const [sha, landedAtIso, proposalTrailer] = line.split("\0");
+    const proposalId = proposalTrailer ? proposalTrailer.trim() : "";
+    return { sha, landedAtIso, proposalId: proposalId || null };
+  });
+}
+
 export interface GitLogEntry {
   sha: string;
   author_name: string;
