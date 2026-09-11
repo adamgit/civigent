@@ -13,7 +13,7 @@ import { DocPath, expectJsonObject, parseJson } from "../types/shared.js";
 import { resolveAuthenticatedWriterFromHeaders, type AuthenticatedWriter } from "../auth/context.js";
 import { checkDocPermission } from "../auth/acl.js";
 import { getCurrentFatal, handleProcessFatal } from "../runtime/fatal-handler.js";
-import { getCurrentImpairments } from "../runtime/impairment-registry.js";
+import { getCurrentImpairments, pruneResolvedImpairments } from "../runtime/impairment-registry.js";
 import { getSystemState } from "../startup-state.js";
 import { sendDocumentActivitySnapshot } from "./document-activity.js";
 
@@ -159,10 +159,14 @@ export function createWsHub(): WsHub {
       socket.send(JSON.stringify(stickyEvent));
     }
 
-    for (const report of getCurrentImpairments()) {
-      const impairmentEvent: WsServerEvent = { type: "system:impairment", report };
-      socket.send(JSON.stringify(impairmentEvent));
-    }
+    void pruneResolvedImpairments().then(() => {
+      if (socket.readyState !== 1) return;
+      const snapshot: WsServerEvent = {
+        type: "system:impairment-snapshot",
+        reports: getCurrentImpairments(),
+      };
+      socket.send(JSON.stringify(snapshot));
+    });
 
     // Read-ACL check + initial activity snapshot make doc-open handling async;
     // the per-socket chain keeps document_open/document_closed ordering intact.

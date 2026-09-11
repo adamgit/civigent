@@ -703,6 +703,10 @@ export function AppLayout() {
         setFatalReport(event.report);
         return;
       }
+      if (event.type === "system:impairment-snapshot") {
+        setImpairments(new Map(event.reports.map((report) => [report.id, report])));
+        return;
+      }
       if (event.type === "system:impairment") {
         setImpairments((previous) => new Map(previous).set(event.report.id, event.report));
         return;

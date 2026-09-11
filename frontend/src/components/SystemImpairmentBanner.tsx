@@ -10,7 +10,7 @@ interface SystemImpairmentBannerProps {
 export function SystemImpairmentBanner({ impairments }: SystemImpairmentBannerProps) {
   if (impairments.length === 0) return null;
   return (
-    <div className="fixed top-0 left-0 right-0 z-10 flex flex-col">
+    <div className="shrink-0 flex flex-col">
       {impairments.map((impairment) => (
         <div
           key={impairment.id}

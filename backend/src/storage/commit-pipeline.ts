@@ -35,6 +35,7 @@ import { CanonicalStore, type AbsorbResult } from "./canonical-store.js";
 import type { DocPath, DocumentTargetRef, WriterIdentity } from "../types/shared.js";
 import { checkDocPermission } from "../auth/acl.js";
 import { isSystemAuthority, systemAuthority, type SystemAuthority } from "../auth/system-authority.js";
+import { clearImpairment } from "../runtime/impairment-registry.js";
 
 // ─────────────────────────────────────────────────────────────────
 
@@ -240,6 +241,7 @@ async function absorbCommittingProposalToCanonical(
   });
   // Transition to committed
   await transitionToCommitted(proposal.id, absorbResult.commitSha, committedMetadata);
+  clearImpairment(proposal.id);
 
   if (isSnapshotGenerationEnabled()) {
     scheduleSnapshotRegeneration([...absorbResult.rewrittenDocumentPaths]);

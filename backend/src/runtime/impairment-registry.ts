@@ -45,6 +45,21 @@ export function getCurrentImpairments(): ImpairmentReport[] {
   return [...impairments.values()];
 }
 
+/**
+ * Drop impairments whose proposal is no longer `inprogress` or `committing`.
+ * A successful publish or withdraw that missed `clearImpairment` must not stay
+ * sticky. Does not drop an id we cannot read — in-memory test raises have no
+ * on-disk proposal.
+ */
+export async function pruneResolvedImpairments(): Promise<void> {
+  for (const id of [...impairments.keys()]) {
+    const proposal = await readProposal(id).catch(() => null);
+    if (proposal && proposal.status !== "inprogress" && proposal.status !== "committing") {
+      clearImpairment(id);
+    }
+  }
+}
+
 export async function raiseImpairmentForLeftoverProposal(proposalId: ProposalId, error: unknown): Promise<void> {
   const proposal = await readProposal(proposalId).catch(() => null);
   if (!proposal || proposal.status !== "inprogress") return;

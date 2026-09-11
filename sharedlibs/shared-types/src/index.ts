@@ -2602,6 +2602,15 @@ export interface SystemImpairmentClearedEvent {
   proposal_id: ProposalId;
 }
 
+/**
+ * Authoritative set of current impairments, sent on every app-WS connect so a
+ * reconnect replaces client state instead of unioning with a stale map.
+ */
+export interface SystemImpairmentSnapshotEvent {
+  type: "system:impairment-snapshot";
+  reports: ImpairmentReport[];
+}
+
 export interface DocumentActivityHumanEntry {
   writer: WriterIdentity;
   page_open: boolean;
@@ -2642,6 +2651,7 @@ export type WsServerEvent =
   | SystemFatalEvent
   | SystemImpairmentEvent
   | SystemImpairmentClearedEvent
+  | SystemImpairmentSnapshotEvent
   | DocumentActivityEvent;
 
 // ─── WebSocket Client Messages ─────────────────────────────────────

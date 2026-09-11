@@ -90,9 +90,11 @@ describe("WsHub system:impairment delivery", () => {
     const lateTab = await openTab();
     try {
       await new Promise((resolve) => setTimeout(resolve, 60));
-      const impairments = lateTab.received.filter((e) => e.type === "system:impairment");
-      expect(impairments).toHaveLength(1);
-      expect((impairments[0] as { report: { id: string } }).report.id).toBe("proposal-leftover-1");
+      const snapshots = lateTab.received.filter((e) => e.type === "system:impairment-snapshot");
+      expect(snapshots).toHaveLength(1);
+      const reports = (snapshots[0] as { reports: Array<{ id: string }> }).reports;
+      expect(reports).toHaveLength(1);
+      expect(reports[0]!.id).toBe("proposal-leftover-1");
     } finally {
       await lateTab.close();
     }

@@ -144,6 +144,7 @@ export type {
   ImpairmentReport,
   SystemImpairmentEvent,
   SystemImpairmentClearedEvent,
+  SystemImpairmentSnapshotEvent,
   DocumentActivityEvent,
   DocumentActivityHumanEntry,
   DocumentActivityAgentEntry,
